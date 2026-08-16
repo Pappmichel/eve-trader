@@ -2,6 +2,11 @@
 config.yaml
 .env
 
+# SSH private keys (VM login + GitHub deploy key) - kept here so Dropbox
+# carries them to other machines automatically, but must never reach git -
+# see HANDOFF.md
+.ssh-local/
+
 # Runtime data - DB, OAuth tokens, backups, logs (see eve_trader/config.py DATA_DIR)
 data/*
 !data/.gitkeep

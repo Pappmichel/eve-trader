@@ -74,34 +74,33 @@ done
 "SSH keys" below. Cloud Shell also disconnects after ~15-20 min idle, so
 this needs occasional attention, not truly unattended.)
 
-## SSH keys - NOT in git, must be carried over manually
+## SSH keys - in the project folder, NOT in git
 
-Two ed25519 keypairs were generated **on this machine** in
-`%USERPROFILE%\.ssh\`:
+Two ed25519 keypairs, originally generated in `%USERPROFILE%\.ssh\` on this
+machine, are copied into **`.ssh-local/`** at the repo root (this exact
+folder name is gitignored - `git check-ignore -v .ssh-local/*` confirmed
+none of the 4 files are tracked or stageable):
 - `eve-trader-oracle` (+ `.pub`) - for logging into the VM itself once it
   exists.
 - `eve-trader-deploy` (+ `.pub`) - a **read-only GitHub deploy key**,
   already added at github.com/Pappmichel/eve-trader/settings/keys
   ("Oracle VM") - lets the VM `git clone` the private repo.
 
-**If continuing on a different computer**, either:
-1. Copy both **private** key files (`eve-trader-oracle` and
-   `eve-trader-deploy`, no `.pub`) from this machine's `~/.ssh/` to the new
-   one's, over a secure channel (not email/chat) - then everything above
-   still applies unchanged, or
-2. Generate fresh keypairs on the new machine instead - then: re-upload the
-   new `eve-trader-oracle.pub` to Cloud Shell for the launch command above,
-   and replace the GitHub deploy key with the new `eve-trader-deploy.pub`
-   (delete the old one, add the new one, same "Oracle VM" style entry).
+Since this project folder is Dropbox-synced to the new computer (same
+account, confirmed), **`.ssh-local/` arrives there automatically** - no
+manual transfer needed. On the new machine, either use the keys straight
+from `.ssh-local/` (e.g. `ssh -i .ssh-local/eve-trader-oracle ...`,
+`GIT_SSH_COMMAND="ssh -i .ssh-local/eve-trader-deploy" git clone ...`), or
+copy them into that machine's own `~/.ssh/` first if you'd rather not
+reference a Dropbox path directly - either way the keys themselves are
+unchanged, no need to regenerate or update the GitHub deploy key.
 
 ## Also not in git (by design) - confirmed handled by Dropbox here
 
 The new computer syncs the **same Dropbox account**, so this whole project
-folder - including `config.yaml`, `.env`, and `data/` (the real DB, OAuth
-tokens, backups) - arrives there automatically, unlike a from-scratch clone.
-Nothing to do for these. The **SSH keys** above are the one exception:
-`~/.ssh` lives outside the Dropbox-synced project folder, so they're the
-only thing that genuinely needs manual handling (see above).
+folder - `config.yaml`, `.env`, `data/` (the real DB, OAuth tokens,
+backups), and now `.ssh-local/` too - arrives there automatically, unlike a
+from-scratch git clone. Nothing manual needed for any of it.
 
 ## What's left once the VM exists
 
