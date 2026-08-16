@@ -78,18 +78,22 @@ sudo systemctl reload nginx
 
 cat <<EOF
 
-==> Done with system setup. Remaining steps (see deploy/README.md for detail):
+==> Done with system setup. Remaining steps (see deploy/README.md "Phase 1"
+    for detail - this assumes no domain yet, plain http:// on the bare IP;
+    see "Phase 2" there for adding a domain + HTTPS once you have one):
 
   1. Edit $APP_DIR/.env and $APP_DIR/config.yaml with your real values
      (EVE_SSO_CLIENT_ID, structure_id, character names, access-gate
      allowlists, ...).
-  2. Register/update your EVE SSO app's callback URL at
-     https://developers.eveonline.com/applications to:
-       https://$DOMAIN/api/auth/callback
+  2. Register a new EVE SSO app for this deployment at
+     https://developers.eveonline.com/applications with callback URL:
+       http://$DOMAIN/api/auth/callback
      and set EVE_SSO_REDIRECT_URI + FRONTEND_ORIGIN in .env to match
-     (both to https://$DOMAIN).
+     (both to http://$DOMAIN, no https:// yet).
   3. sudo systemctl restart eve-trader
-  4. sudo certbot --nginx -d $DOMAIN   (adds HTTPS + the http->https redirect)
-  5. Open https://$DOMAIN in a browser.
+  4. Open http://$DOMAIN in a browser.
+
+  Once you have a real domain pointed at this IP, see deploy/README.md's
+  "Phase 2" for adding HTTPS via certbot.
 
 EOF

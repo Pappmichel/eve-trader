@@ -47,6 +47,32 @@ def test_serializer_refuses_to_operate_without_a_session_secret_key():
         access_gate.create_session_token(1, "A", cfg)
 
 
+def test_set_session_cookie_is_not_secure_over_plain_http(cfg):
+    # Real bug confirmed 2026-08-16: a deployment on a bare IP with no domain
+    # yet (no Let's Encrypt cert possible without one) is non-localhost but
+    # still plain HTTP - Secure=True there would make the browser silently
+    # refuse to ever send the cookie back, breaking login with no visible
+    # error. Secure must follow frontend_origin's scheme, not just "is this
+    # localhost".
+    from fastapi import Response
+    cfg.frontend_origin = "http://192.0.2.10"
+    response = Response()
+
+    access_gate.set_session_cookie(response, 1, "A", cfg)
+
+    assert "secure" not in response.headers["set-cookie"].lower()
+
+
+def test_set_session_cookie_is_secure_over_https(cfg):
+    from fastapi import Response
+    cfg.frontend_origin = "https://eve-trader.example.com"
+    response = Response()
+
+    access_gate.set_session_cookie(response, 1, "A", cfg)
+
+    assert "secure" in response.headers["set-cookie"].lower()
+
+
 def test_is_allowed_matches_on_character_id():
     cfg = AccessConfig(allowed_character_ids=[42])
     assert access_gate.is_allowed(42, None, None, cfg) is True

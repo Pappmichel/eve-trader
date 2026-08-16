@@ -56,14 +56,18 @@ def read_session_token(token: str, cfg: OAuthConfig = OAUTH_CONFIG) -> Optional[
 
 def set_session_cookie(response: "Response", character_id: int, character_name: str,
                         cfg: OAuthConfig = OAUTH_CONFIG) -> None:
-    """Secure=True (cookie only sent over HTTPS) once this is actually
-    deployed somewhere real - inferred from callback_host rather than a
-    separate setting, since a non-localhost callback_host already implies a
-    real public deployment (see OAuthConfig.redirect_uri). Local dev over
-    plain http://localhost keeps Secure off, or the cookie would silently
-    never be set/sent at all."""
+    """Secure=True (cookie only sent over HTTPS) once frontend_origin is
+    actually an https:// URL - NOT inferred from callback_host being
+    non-localhost (an earlier version did that, confirmed wrong 2026-08-16:
+    a real deployment on a bare IP with no domain yet - no Let's Encrypt cert
+    possible without one - is non-localhost but still plain HTTP; Secure=True
+    there would make the browser silently refuse to ever send the cookie
+    back, breaking login with no visible error). frontend_origin already has
+    to be set correctly per environment anyway (see its own docstring), so
+    its scheme is the one honest signal for whether HTTPS is actually in use
+    right now, independent of what the domain/IP happens to be."""
     token = create_session_token(character_id, character_name, cfg)
-    secure = cfg.callback_host not in ("localhost", "127.0.0.1")
+    secure = cfg.frontend_origin.startswith("https://")
     response.set_cookie(
         SESSION_COOKIE_NAME, token, max_age=SESSION_MAX_AGE_SECONDS, httponly=True,
         secure=secure, samesite="lax", path="/",
