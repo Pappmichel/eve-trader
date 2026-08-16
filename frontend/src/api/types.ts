@@ -255,6 +255,7 @@ export interface IndustryJobRow {
   end_date: string | null
   remaining_seconds: number | null
   installer_name: string
+  output_value: number | null
 }
 
 export interface CharacterSlotRow {

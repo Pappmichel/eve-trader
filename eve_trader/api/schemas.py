@@ -251,6 +251,7 @@ class IndustryJobRow(_Base):
     end_date: Optional[str]
     remaining_seconds: Optional[float]
     installer_name: str
+    output_value: Optional[float] = None
 
 
 class CharacterSlotRow(_Base):

@@ -7,6 +7,9 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from .. import storage
+from ..goonmetrics_client import GoonmetricsClient
+from . import pricing
+from .config import PRODUCTION_CONFIG, ProductionConfig
 from .constants import ACTIVITY_JOB_LABELS, ACTIVITY_SLOT_CATEGORY, SLOT_CATEGORY_LABELS
 from .models import CharacterSlotRow, IndustryJobRow
 
@@ -17,9 +20,20 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def list_current_jobs() -> list[IndustryJobRow]:
+def list_current_jobs(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[IndustryJobRow]:
     """Every active character + corp industry job, one row per job (not
-    aggregated by item), sorted by soonest-completing first."""
+    aggregated by item), sorted by soonest-completing first.
+
+    output_value is quantity x unit price, priced the same way stock_value
+    prices owned stock (C-J sell quote, falling back to Jita sell quote) -
+    None if the job has no product (research/copying jobs - quantity is
+    already None for those, see IndustryJobRow's own docstring) or if
+    neither market has a sell quote for it, so a temporary data gap shows as
+    "no value" rather than silently as 0."""
+    gm_client = GoonmetricsClient(cfg)
+    home = pricing.home_prices(gm_client, cfg)
+    jita = pricing.jita_prices(gm_client)
+
     now = datetime.now(timezone.utc)
     rows = []
     for (job_id, activity_id, blueprint_type_id, product_type_id, type_name, runs,
@@ -29,6 +43,14 @@ def list_current_jobs() -> list[IndustryJobRow]:
             qty_per_run = storage.get_product_quantity(blueprint_type_id, activity_id, product_type_id)
             if qty_per_run is not None:
                 quantity = qty_per_run * runs
+        output_value = None
+        if quantity is not None and product_type_id is not None:
+            home_quote = home.get(product_type_id)
+            jita_quote = jita.get(product_type_id)
+            if home_quote and home_quote.sell > 0:
+                output_value = quantity * home_quote.sell
+            elif jita_quote and jita_quote.sell > 0:
+                output_value = quantity * jita_quote.sell
         end_dt = _parse_iso(end_date)
         remaining = (end_dt - now).total_seconds() if end_dt else None
         rows.append(IndustryJobRow(
@@ -37,6 +59,7 @@ def list_current_jobs() -> list[IndustryJobRow]:
             activity=ACTIVITY_JOB_LABELS.get(activity_id, str(activity_id)),
             runs=runs,
             quantity=quantity,
+            output_value=output_value,
             status=status,
             start_date=start_date,
             end_date=end_date,

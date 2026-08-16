@@ -222,6 +222,11 @@ class IndustryJobRow:
     end_date: Optional[str]
     remaining_seconds: Optional[float]
     installer_name: str
+    # quantity x unit price, priced the same way engine.stock_value prices
+    # owned stock (C-J sell quote, falling back to Jita sell quote) - None if
+    # quantity itself is None (no product - research/copying jobs) or if
+    # neither market has a sell quote right now.
+    output_value: Optional[float] = None
 
 
 @dataclass
