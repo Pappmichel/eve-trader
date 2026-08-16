@@ -52,12 +52,21 @@ PRODUCTION_SCOPES = [
 
 def list_producer_characters(tm: TokenManager | None = None) -> list[tuple[str, int, str]]:
     """Returns (role_key, character_id, character_name) for every registered
-    producer character, e.g. [("producer:2112625428", 2112625428, "Some Character")]."""
+    producer character, e.g. [("producer:2112625428", 2112625428, "Some Character")].
+
+    Uses get_record (no refresh), not get_token - this runs on every
+    "characters" sidebar render and at the top of every sync_esi() call, so
+    one character with a dead refresh token (revoked access, re-registered
+    SSO app, ...) must not take the whole list down. sync_esi() itself
+    already refreshes/uses each token independently, per-character, inside
+    its own try/except (see its docstring) - that's the right place for a
+    refresh failure to surface as "skipped", not here."""
     tm = tm or TokenManager(OAUTH_CONFIG)
     out = []
     for role in tm.list_roles(PRODUCTION_ROLE_PREFIX):
-        token = tm.get_token(role)
-        out.append((role, token.character_id, token.character_name))
+        record = tm.get_record(role)
+        if record is not None:
+            out.append((role, record.character_id, record.character_name))
     return out
 
 

@@ -272,6 +272,17 @@ class TokenManager:
     def has_token(self, role: str) -> bool:
         return role in self._tokens
 
+    def get_record(self, role: str) -> Optional[TokenRecord]:
+        """Like get_token, but never refreshes - character_id/character_name
+        are plain fields on the stored record, not derived from a live
+        access token, so listing who's registered shouldn't risk a refresh
+        failure (e.g. a revoked/stale refresh token) any more than reading a
+        dict. Used by list_producer_characters, which is on the hot path of
+        every 'characters' sidebar render and every sync_esi() call - a
+        single dead token there used to take the whole list down via
+        get_token's raise, instead of just that one character."""
+        return self._tokens.get(role)
+
     def auth_header(self, role: str) -> dict:
         return {"Authorization": f"Bearer {self.get_token(role).access_token}"}
 
