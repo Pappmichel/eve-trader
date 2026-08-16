@@ -2,21 +2,47 @@
 
 This walks through the "Option 1" deployment discussed and chosen
 2026-08-16: just you, reachable from anywhere, protected by the access gate
-(`eve_trader/access_gate.py`) instead of running fully open. Written for a
-fresh Ubuntu 22.04/24.04 VM; not tested against a real Oracle Cloud instance
-(no such environment was available while writing this) - read through it
-before running, and adapt anything that doesn't match your actual VM.
+(`eve_trader/access_gate.py`) instead of running fully open. **Confirmed
+working end-to-end against a real Oracle Cloud instance, 2026-08-16**
+(VM.Standard.E2.1.Micro, eu-frankfurt-1) - the steps and gotchas below are
+from that actual run, not just theory.
 
 ## Before you start
 
-- **A VM with SSH access.** Oracle's Always Free Ampere A1 (ARM) works fine -
-  nothing here is architecture-specific.
-- **Ports 80 and 443 open in Oracle's Security List / Network Security
-  Group**, not just the VM's own firewall (`ufw`/`iptables`). This is the
-  most common gotcha: Oracle has its *own* firewall layer in front of the
-  VM's network interface, separate from anything you configure on the VM
-  itself - forgetting it leaves the server unreachable from outside even
-  though everything looks fine locally.
+- **A VM with SSH access.** Oracle's Always Free Ampere A1 (ARM) or the
+  x86 E2.1.Micro fallback both work - nothing here is architecture-specific.
+- **TWO separate firewall layers need port 80/443 open, not just one** -
+  confirmed real, both bit us during the first real deployment:
+  1. **Oracle's Security List** (cloud-level, in front of the VM's network
+     interface) - Networking → Virtual Cloud Networks → your VCN → Security
+     Lists → add Ingress Rules for TCP 80 and 443, source `0.0.0.0/0`.
+  2. **The VM's own local `iptables`**, *separately* - Oracle's stock Ubuntu
+     images ship with a default `iptables` ruleset that only allows SSH (22)
+     inbound and rejects everything else, regardless of what the Security
+     List allows. Symptom: `sudo systemctl status nginx`/`eve-trader` both
+     show "active (running)", `curl http://localhost/...` works *on the VM*,
+     but the public IP is unreachable from outside. Fix (also persists
+     across reboots):
+     ```bash
+     sudo iptables -L INPUT -n --line-numbers   # find the REJECT rule's line number
+     sudo iptables -I INPUT <line-before-REJECT> -p tcp -m state --state NEW -m tcp --dport 80 -j ACCEPT
+     sudo iptables -I INPUT <line-before-REJECT> -p tcp -m state --state NEW -m tcp --dport 443 -j ACCEPT
+     sudo netfilter-persistent save
+     ```
+- **If you create the VCN/subnet manually** (the Console's "Create new public
+  subnet" wizard inside instance-creation didn't reliably auto-create
+  everything for us) - **also confirm an Internet Gateway exists and the
+  subnet's route table has a `0.0.0.0/0` route to it**, or the instance gets
+  a public IP with no actual path in/out (same symptom as the iptables issue
+  above - SSH/HTTP just time out, nothing gets rejected outright). Check:
+  ```bash
+  oci network internet-gateway list --compartment-id $TENANCY_ID --vcn-id $VCN_ID
+  oci network route-table get --rt-id $RT_ID --query "data.\"route-rules\""
+  ```
+  If either is empty: create the gateway
+  (`oci network internet-gateway create --compartment-id $TENANCY_ID --vcn-id $VCN_ID --is-enabled true --display-name "eve-trader-igw"`)
+  and add the route
+  (`oci network route-table update --rt-id $RT_ID --route-rules '[{"destination":"0.0.0.0/0","destination-type":"CIDR_BLOCK","network-entity-id":"<igw-id>"}]' --force`).
 - **No domain yet is fine** (confirmed 2026-08-16 - this deployment starts on
   the bare public IP over plain HTTP, domain/HTTPS added later - see "Phase
   2" below). Let's Encrypt/certbot needs a real domain, not a bare IP, so
@@ -45,12 +71,17 @@ mitigations, both already handled:
   (run this *before* `./deploy/setup.sh` on the VM, or re-run setup.sh
   afterward - it only skips the build step if `dist/` is already there).
 
-To launch the x86 shape instead of A1, in the retry-loop command (see the
-Oracle Cloud Shell instructions from earlier in this session / `HANDOFF.md`
-if this is a fresh session): drop `--shape-config` entirely (E2.1.Micro is a
-fixed size, not `.Flex`), change `--shape` to `VM.Standard.E2.1.Micro`, and
-look up its own image ID first (x86 images have a different OCID than the
-ARM one used for A1):
+To launch the x86 shape instead of A1: drop `--shape-config` entirely
+(E2.1.Micro is a fixed size, not `.Flex`), change `--shape` to
+`VM.Standard.E2.1.Micro`, and look up its own image ID first (x86 images
+have a different OCID than the ARM one used for A1). **Confirmed real
+2026-08-16: E2.1.Micro isn't available in every Availability Domain within
+a region** - `oci compute instance launch` fails with a vague
+`NotAuthorizedOrNotFound`/404 in an AD that doesn't have it. Check first:
+```bash
+oci compute shape list --compartment-id $TENANCY_ID --availability-domain "<AD>" --query "data[?contains(shape,'Micro')].shape"
+```
+and try each AD in the region until one returns `VM.Standard.E2.1.Micro`.
 ```bash
 IMAGE_ID=$(oci compute image list --compartment-id $TENANCY_ID \
   --operating-system "Canonical Ubuntu" --operating-system-version "24.04" \
@@ -115,6 +146,20 @@ EVE_SSO_CALLBACK_HOST=<public-ip>
 FRONTEND_ORIGIN=http://<public-ip>
 EVE_SSO_REDIRECT_URI=http://<public-ip>/api/auth/callback
 SESSION_SECRET_KEY=<generate with: python3 -c "import secrets; print(secrets.token_hex(32))">
+```
+Easy to hand-edit `.env` in `nano` and accidentally skip a line (confirmed
+real, 2026-08-16 - `SESSION_SECRET_KEY` got missed this way, which doesn't
+fail until the *first* login attempt, with a raw Internal Server Error and
+`RuntimeError: SESSION_SECRET_KEY is not set` in `sudo journalctl -u
+eve-trader -n 60`). Safer to append it directly instead of relying on the
+editor:
+```bash
+python3 -c "import secrets; print('SESSION_SECRET_KEY=' + secrets.token_hex(32))" >> ~/eve-trader/.env
+```
+Then verify every deployment-specific `.env` value actually landed before
+moving on:
+```bash
+grep -E "EVE_SSO_CALLBACK_HOST|FRONTEND_ORIGIN|EVE_SSO_REDIRECT_URI|SESSION_SECRET_KEY|EVE_SSO_CLIENT_ID" ~/eve-trader/.env
 ```
 
 **`config.yaml`:**
