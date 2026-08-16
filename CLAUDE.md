@@ -5,6 +5,11 @@ setup/usage; this file covers *how the code is organized and why*, so you
 don't have to re-derive it (or accidentally re-litigate a decision that was
 already made deliberately) from scratch.
 
+**If `HANDOFF.md` exists at the repo root, read it first** - it's a
+temporary, self-deleting note left when a session ends mid-task (e.g.
+continuing on a different computer with no access to this machine's Claude
+memory) and takes priority over re-deriving current status from scratch.
+
 ## Two tools, one backend
 
 - **Trading**: buys in Jita, sells at a private player structure ("C-J").
