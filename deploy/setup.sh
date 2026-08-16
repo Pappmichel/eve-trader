@@ -39,6 +39,24 @@ if ! command -v node >/dev/null 2>&1; then
     sudo apt-get install -y nodejs
 fi
 
+echo "==> Checking memory / swap..."
+# The Always Free x86 fallback shape (VM.Standard.E2.1.Micro, 1GB RAM) is a
+# real risk of an out-of-memory failure during the frontend build below or
+# under Trading's "Full Search"/Production's "Build Candidates" scan later -
+# a swap file turns that into "slow" instead of "crashed". Skipped entirely
+# on the Ampere A1 shape (this script's primary target, 6GB+ RAM) since
+# free -m already reports well above the threshold there. Idempotent - safe
+# to re-run, only creates /swapfile if it doesn't already exist.
+TOTAL_MEM_MB=$(free -m | awk '/^Mem:/{print $2}')
+if [ "$TOTAL_MEM_MB" -lt 2048 ] && [ ! -f /swapfile ]; then
+    echo "    Low memory (${TOTAL_MEM_MB}MB) - adding a 4GB swap file..."
+    sudo fallocate -l 4G /swapfile
+    sudo chmod 600 /swapfile
+    sudo mkswap /swapfile
+    sudo swapon /swapfile
+    echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab > /dev/null
+fi
+
 echo "==> Python venv + backend dependencies..."
 cd "$APP_DIR"
 if [ ! -d .venv ]; then
@@ -48,10 +66,17 @@ fi
 .venv/bin/pip install -e . -q
 
 echo "==> Frontend build..."
-cd "$APP_DIR/frontend"
-npm ci
-npm run build
-cd "$APP_DIR"
+if [ -f "$APP_DIR/frontend/dist/index.html" ]; then
+    echo "    frontend/dist already exists - skipping build (delete it first to force a rebuild)."
+    echo "    On a low-memory VM, building locally and rsyncing frontend/dist/ here first (instead"
+    echo "    of letting this script run 'npm run build' on the VM itself) avoids the biggest"
+    echo "    out-of-memory risk in this whole setup - see deploy/README.md's x86 fallback section."
+else
+    cd "$APP_DIR/frontend"
+    npm ci
+    npm run build
+    cd "$APP_DIR"
+fi
 
 echo "==> Config files (only if missing - existing config.yaml/.env are never overwritten)..."
 if [ ! -f .env ]; then

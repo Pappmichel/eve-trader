@@ -23,6 +23,48 @@ before running, and adapt anything that doesn't match your actual VM.
   HTTPS just isn't available until you have one - nothing else here depends
   on having a domain from day one.
 
+## Fallback: x86 shape instead of Ampere A1
+
+If Always Free A1 capacity ("Out of host capacity") never frees up, the
+x86 **VM.Standard.E2.1.Micro** shape is almost never capacity-constrained -
+trade-off is 1GB RAM instead of A1's several GB, a real risk for this app
+(`npm run build` alone can exceed 1GB; Trading's "Full Search" and
+Production's "Build Candidates" scan are also memory-hungry). Two
+mitigations, both already handled:
+
+- **`deploy/setup.sh` now adds a 4GB swap file automatically** on any VM
+  with under 2GB RAM (idempotent, safe to re-run) - turns a likely crash
+  into "slow" instead.
+- **Build the frontend locally first, don't build it on the VM.** `setup.sh`
+  already skips its own `npm run build` step if `frontend/dist/index.html`
+  already exists. On your own machine:
+  ```powershell
+  cd frontend; npm run build; cd ..
+  scp -i .ssh-local\eve-trader-oracle -r frontend\dist ubuntu@<public-ip>:~/eve-trader/frontend/dist
+  ```
+  (run this *before* `./deploy/setup.sh` on the VM, or re-run setup.sh
+  afterward - it only skips the build step if `dist/` is already there).
+
+To launch the x86 shape instead of A1, in the retry-loop command (see the
+Oracle Cloud Shell instructions from earlier in this session / `HANDOFF.md`
+if this is a fresh session): drop `--shape-config` entirely (E2.1.Micro is a
+fixed size, not `.Flex`), change `--shape` to `VM.Standard.E2.1.Micro`, and
+look up its own image ID first (x86 images have a different OCID than the
+ARM one used for A1):
+```bash
+IMAGE_ID=$(oci compute image list --compartment-id $TENANCY_ID \
+  --operating-system "Canonical Ubuntu" --operating-system-version "24.04" \
+  --shape "VM.Standard.E2.1.Micro" --query "data[0].id" --raw-output)
+oci compute instance launch \
+  --compartment-id $TENANCY_ID --availability-domain "<any AD>" \
+  --shape "VM.Standard.E2.1.Micro" \
+  --image-id "$IMAGE_ID" --subnet-id "$SUBNET_ID" --assign-public-ip true \
+  --ssh-authorized-keys-file ~/eve-trader-oracle.pub \
+  --display-name "eve-trader" --wait-for-state RUNNING
+```
+E2.1.Micro capacity is available immediately in practice - no retry loop
+needed, a single attempt should succeed.
+
 ## 1. Get the code onto the server
 
 The GitHub repo is currently **private**, so a plain `git clone` needs
