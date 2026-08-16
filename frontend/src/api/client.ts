@@ -5,6 +5,15 @@
 // origin as the API - see api/app.py's StaticFiles mount).
 import type * as T from './types'
 
+// Captured once at module load (page load), not re-read live on every 401 -
+// App.tsx's AuthRedirectHandler clears ?gate=denied from the URL shortly
+// after mount (via history.replaceState), so a live window.location.search
+// check inside request() could race: an in-flight query's 401 landing
+// *after* that cleanup would no longer see gate=denied and would redirect
+// straight back into EVE SSO, right back to another denial - a login loop.
+// A one-shot flag captured at load time survives that cleanup.
+const gateWasDeniedThisLoad = window.location.search.includes('gate=denied')
+
 export class ApiError extends Error {
   status: number
   constructor(status: number, message: string) {
@@ -35,11 +44,30 @@ function formatErrorDetail(detail: unknown, fallback: string): string {
   return fallback
 }
 
+// A 401 only ever means "no valid access-gate session" (see
+// api/app.py's AccessGateMiddleware - a no-op, so never actually returned,
+// unless AccessConfig.access_gate_enabled is true) - every other failure
+// mode in this app is a 400 (ActionError, via routers' _wrap) or a 422
+// (Pydantic validation), never a bare 401, so repurposing this one status
+// code for "go log in" doesn't collide with anything else. Skipped if the
+// URL already carries ?gate=denied - that means we *just* came back from a
+// failed gate login (not on the allowlist), and every query on that page
+// (e.g. App.tsx's SdeFreshnessChecker, which runs on every route including
+// Landing) would otherwise immediately 401 and bounce straight back into
+// another login attempt before the user ever sees the "access denied" message.
 async function request<TResp>(path: string, init?: RequestInit): Promise<TResp> {
   const resp = await fetch(path, {
     headers: init?.body ? { 'Content-Type': 'application/json' } : undefined,
     ...init,
   })
+  if (resp.status === 401 && !gateWasDeniedThisLoad) {
+    // Plain fetch, not get()/request() - avoids recursing back into this
+    // same function (this endpoint is exempt from the gate middleware, so
+    // it can't itself 401, but there's no reason to depend on that).
+    const { url } = await fetch('/api/auth/gate/start').then((r) => r.json())
+    window.location.href = url
+    return new Promise<TResp>(() => {})  // navigating away, never resolves
+  }
   if (!resp.ok) {
     let detail = resp.statusText
     try {
@@ -63,6 +91,12 @@ const del = <TResp>(path: string) => request<TResp>(path, { method: 'DELETE' })
 export const authApi = {
   start: (rolePrefix: string) => get<{ url: string }>(`/api/auth/${rolePrefix}/start`),
   status: () => get<T.AuthStatus>('/api/auth/status'),
+}
+
+// -------------------------------------------------------------- access gate
+export const gateApi = {
+  status: () => get<T.GateStatus>('/api/gate/status'),
+  logout: () => post<{ ok: boolean }>('/api/gate/logout'),
 }
 
 // ---------------------------------------------------------------- trading

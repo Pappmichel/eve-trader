@@ -1,10 +1,50 @@
-import { Container, Title, Text, SimpleGrid, Card, Button, Stack } from '@mantine/core'
+import { Container, Title, Text, SimpleGrid, Card, Button, Stack, Group, Badge } from '@mantine/core'
 import { IconArrowRight } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
+
+import { authApi, gateApi } from '../api/client'
+import { useAction } from '../hooks/useAction'
+
+// Only rendered once gateStatus.enabled is true (see AccessConfig.
+// access_gate_enabled - off by default) - a local/dev install with the gate
+// disabled never shows this at all, matching how it behaved before the
+// gate existed.
+function AccessGateStatus() {
+  const { data: gateStatus } = useQuery({ queryKey: ['gate', 'status'], queryFn: gateApi.status })
+  const logout = useAction('Log Out', gateApi.logout, [['gate', 'status']])
+  // /api/auth/gate/start returns {url}, same as every other LoginButton in
+  // this app (see TradingLayout.tsx) - not itself a redirect, so it has to
+  // be fetched and navigated to manually, not linked to directly.
+  const login = useAction('Login', async () => {
+    const { url } = await authApi.start('gate')
+    window.location.href = url
+  })
+
+  if (!gateStatus?.enabled) return null
+
+  return (
+    <Group justify="flex-end" mb="md">
+      {gateStatus.logged_in ? (
+        <>
+          <Badge color="accent" variant="light">{gateStatus.character_name}</Badge>
+          <Button size="xs" variant="default" onClick={() => logout.mutate()} loading={logout.isPending}>
+            Log Out
+          </Button>
+        </>
+      ) : (
+        <Button size="xs" onClick={() => login.mutate()} loading={login.isPending}>
+          Login with EVE Online
+        </Button>
+      )}
+    </Group>
+  )
+}
 
 export default function Landing() {
   return (
     <Container size="md" py="xl">
+      <AccessGateStatus />
       <Text tt="uppercase" size="xs" c="dimmed" fw={600} lts={2}>
         C-J Import & Manufacturing
       </Text>

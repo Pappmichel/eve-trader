@@ -80,6 +80,9 @@ def _check_type(key: str, value: Any, expected: type) -> None:
     elif expected is tuple:
         if not isinstance(value, (list, tuple)):
             raise ConfigError(f"{key}: expected a list, got {value!r} ({type(value).__name__})")
+    elif expected is list:
+        if not isinstance(value, list):
+            raise ConfigError(f"{key}: expected a list, got {value!r} ({type(value).__name__})")
     # Any other/unresolvable annotation (e.g. Path) is skipped rather than
     # guessed at - not a field config.yaml ever actually sets.
 
@@ -312,6 +315,12 @@ class OAuthConfig:
     client_secret: str = field(default_factory=lambda: os.getenv("EVE_SSO_CLIENT_SECRET", ""))
     callback_host: str = field(default_factory=lambda: os.getenv("EVE_SSO_CALLBACK_HOST", "localhost"))
     callback_port: int = field(default_factory=lambda: _int_env("EVE_SSO_CALLBACK_PORT", 8000))
+    # Signs the access-gate session cookie (see access_gate.py) - a secret,
+    # not a config.yaml value, same reasoning as client_id/client_secret.
+    # Empty by default: access_gate.py refuses to issue/accept sessions
+    # without one (see its own docstring) rather than silently signing with
+    # an empty/predictable key.
+    session_secret_key: str = field(default_factory=lambda: os.getenv("SESSION_SECRET_KEY", ""))
     authorize_url: str = "https://login.eveonline.com/v2/oauth/authorize"
     token_url: str = "https://login.eveonline.com/v2/oauth/token"
     jwks_url: str = "https://login.eveonline.com/oauth/jwks"
@@ -342,6 +351,36 @@ class OAuthConfig:
     )
 
 
+@dataclass
+class AccessConfig:
+    """Allowlist gating who may use the web app at all - checked once, right
+    after a scope-less EVE SSO login (see access_gate.py), before any other
+    API route is reachable. A match on *any* of the three lists (character,
+    corp, or alliance) grants access - confirmed with the user (2026-08-16)
+    all three should work together (e.g. an alliance-wide allow plus one
+    extra character from outside it), not just a single level.
+
+    Off by default (access_gate_enabled=False) - same "opt-in, never starts
+    happening without the user explicitly asking" reasoning as
+    TradingConfig.scheduler_enabled: this app has run for months as a
+    trusted-localhost tool with zero login wall, and turning that on by
+    default would break every existing local dev workflow (README's
+    documented `uvicorn` + `npm run dev` flow) the moment this field shipped.
+    Meant to be flipped on specifically when hosting this somewhere reachable
+    beyond localhost.
+
+    Deliberately NOT editable via the Settings page/API (unlike every other
+    *Config field) - see api/routers/*.py's Settings endpoints, none of which
+    expose these fields. An authenticated session being able to grant itself
+    (or anyone else) more access through a Settings call would defeat the
+    point of the gate; changing the allowlist should require actual
+    filesystem/SSH access to config.yaml."""
+    access_gate_enabled: bool = False
+    allowed_character_ids: list = field(default_factory=list)
+    allowed_corporation_ids: list = field(default_factory=list)
+    allowed_alliance_ids: list = field(default_factory=list)
+
+
 def load_trading_config(path: Path = DEFAULT_CONFIG_PATH) -> TradingConfig:
     cfg = TradingConfig()
     if path.exists():
@@ -352,8 +391,24 @@ def load_trading_config(path: Path = DEFAULT_CONFIG_PATH) -> TradingConfig:
     return cfg
 
 
+def load_access_config(path: Path = DEFAULT_CONFIG_PATH) -> AccessConfig:
+    """Same config.yaml, loaded the same way as TradingConfig - a separate
+    small dataclass rather than extra fields bolted onto TradingConfig
+    because this is a cross-cutting, app-wide concern (protects Production's
+    routes too, not just Trading's), same reasoning that already gave
+    OAuthConfig its own dataclass."""
+    cfg = AccessConfig()
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as f:
+            overrides = yaml.safe_load(f) or {}
+        validate_config_overrides(cfg, overrides)
+        apply_config_overrides(cfg, overrides)
+    return cfg
+
+
 TRADING_CONFIG = load_trading_config()
 OAUTH_CONFIG = OAuthConfig()
+ACCESS_CONFIG = load_access_config()
 
 
 def save_config_overrides(updates: dict[str, Any], *live_configs, path: Path = DEFAULT_CONFIG_PATH) -> None:

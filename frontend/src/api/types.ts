@@ -371,6 +371,12 @@ export interface AuthStatus {
   seller: string | null
 }
 
+export interface GateStatus {
+  enabled: boolean
+  logged_in: boolean
+  character_name: string | null
+}
+
 export interface SchedulerJobStatus {
   interval_hours: number
   last_run_at: string | null

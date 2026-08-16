@@ -84,3 +84,16 @@ manufacturing_rig_tier: "No Rig"
 encryption_skill_level: 4
 datacore_skill_1_level: 4
 datacore_skill_2_level: 4
+
+# ---- Access gate (see eve_trader/access_gate.py) - off by default. When
+# enabled, every /api/* route requires an EVE SSO login (identity only, no
+# ESI scopes) that resolves to a character/corp/alliance on one of the three
+# allowlists below - a match on *any* of the three grants access. Needed
+# before hosting this somewhere reachable beyond localhost; leave disabled
+# for a purely local install. Also needs SESSION_SECRET_KEY set in .env (see
+# .env.example) once enabled. NOT editable from the Settings page/API by
+# design - only a config.yaml hand-edit (+ restart) changes who's allowed in.
+access_gate_enabled: false
+allowed_character_ids: []
+allowed_corporation_ids: []
+allowed_alliance_ids: []

@@ -58,18 +58,33 @@ function AuthRedirectHandler() {
 
   useEffect(() => {
     const auth = params.get('auth')
-    if (!auth) return
+    const gate = params.get('gate')
     if (auth === 'success') {
       const role = params.get('role')
       const character = params.get('character')
       notifications.show({ title: 'Login successful', message: `${role}: ${character}`, color: 'accent' })
     } else if (auth === 'error') {
       notifications.show({ title: 'Login failed', message: params.get('message') ?? 'unknown error', color: 'danger' })
+    } else if (gate === 'success') {
+      notifications.show({
+        title: 'Access granted', message: `Logged in as ${params.get('character')}`, color: 'accent',
+      })
+    } else if (gate === 'denied') {
+      notifications.show({
+        title: 'Access denied',
+        message: 'This character/corp/alliance is not on the access allowlist.',
+        color: 'danger', autoClose: false,
+      })
+    } else if (gate === 'error') {
+      notifications.show({ title: 'Login failed', message: params.get('message') ?? 'unknown error', color: 'danger' })
+    } else {
+      return
     }
     params.delete('auth')
     params.delete('role')
     params.delete('character')
     params.delete('message')
+    params.delete('gate')
     setParams(params, { replace: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
