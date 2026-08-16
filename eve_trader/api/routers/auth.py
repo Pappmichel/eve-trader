@@ -29,8 +29,6 @@ from ...production import esi_sync
 
 router = APIRouter()
 
-FRONTEND_ORIGIN = "http://localhost:5173"
-
 # state -> {verifier, role_prefix, scopes, multi}, pruned after use/on expiry.
 # Single local user/process - an in-memory dict is sufficient (same lifetime
 # assumption as the old approach's temporary HTTP server).
@@ -84,11 +82,11 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
     (EVE_SSO_CALLBACK_HOST/PORT env vars) and match the EVE dev-portal app's
     registered callback URL exactly."""
     if error_description or not code or not state:
-        return RedirectResponse(f"{FRONTEND_ORIGIN}/?auth=error&message={urllib.parse.quote(error_description or 'missing code/state')}")
+        return RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?auth=error&message={urllib.parse.quote(error_description or 'missing code/state')}")
 
     pending = _pending.pop(state, None)
     if pending is None:
-        return RedirectResponse(f"{FRONTEND_ORIGIN}/?auth=error&message=state_expired_or_unknown")
+        return RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?auth=error&message=state_expired_or_unknown")
 
     tm = TokenManager(OAUTH_CONFIG)
     try:
@@ -104,7 +102,7 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
         # defeating the whole point of this route (always redirect back to
         # the frontend, even on failure) with a raw FastAPI 500 in the
         # middle of the SSO redirect instead.
-        return RedirectResponse(f"{FRONTEND_ORIGIN}/?auth=error&message={urllib.parse.quote(str(e))}")
+        return RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?auth=error&message={urllib.parse.quote(str(e))}")
 
     role_prefix = pending["role_prefix"]
 
@@ -122,8 +120,8 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
             # only the alliance/corp-level check degrades, not the whole login.
             corporation_id, alliance_id = None, None
         if not is_allowed(character_id, corporation_id, alliance_id):
-            return RedirectResponse(f"{FRONTEND_ORIGIN}/?gate=denied")
-        resp = RedirectResponse(f"{FRONTEND_ORIGIN}/?gate=success&character={urllib.parse.quote(character_name)}")
+            return RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?gate=denied")
+        resp = RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?gate=success&character={urllib.parse.quote(character_name)}")
         set_session_cookie(resp, character_id, character_name)
         return resp
 
@@ -133,7 +131,7 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
     tm._tokens[final_role] = record
     tm._save()
 
-    return RedirectResponse(f"{FRONTEND_ORIGIN}/?auth=success&role={urllib.parse.quote(final_role)}"
+    return RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?auth=success&role={urllib.parse.quote(final_role)}"
                              f"&character={urllib.parse.quote(character_name)}")
 
 

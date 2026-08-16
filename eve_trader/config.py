@@ -326,6 +326,22 @@ class OAuthConfig:
     jwks_url: str = "https://login.eveonline.com/oauth/jwks"
     issuer: str = "login.eveonline.com"
     token_store_path: Path = field(default_factory=lambda: DATA_DIR / "tokens.json")
+    # Where api/routers/auth.py's callback() redirects the browser back to
+    # after SSO - the React dev server's own origin in the usual two-process
+    # local dev setup (see README's "Running the app"), a *different* origin
+    # than the backend itself (hence needing to be a full origin, not a
+    # relative path). In the single-process "real run" deployment (FastAPI
+    # serves the built frontend on the same origin as the API - see app.py's
+    # StaticFiles mount) this should be that same public origin instead, e.g.
+    # https://eve-trader.example.com - see deploy/README.md.
+    frontend_origin: str = field(default_factory=lambda: os.getenv("FRONTEND_ORIGIN", "http://localhost:5173"))
+    # Full override for redirect_uri below, e.g.
+    # "https://eve-trader.example.com/api/auth/callback" - needed once
+    # deployed behind HTTPS/a reverse proxy, since the default construction
+    # below always builds a plain "http://host:port" URL. Must exactly match
+    # whichever URL is registered for this app at
+    # https://developers.eveonline.com/applications.
+    redirect_uri_override: str = field(default_factory=lambda: os.getenv("EVE_SSO_REDIRECT_URI", ""))
 
     @property
     def redirect_uri(self) -> str:
@@ -333,7 +349,12 @@ class OAuthConfig:
         (api/routers/auth.py's router is included at prefix "/api/auth") and
         the callback URL registered for this app at
         https://developers.eveonline.com/applications. Point
-        EVE_SSO_CALLBACK_PORT at the backend's uvicorn port (default 8000)."""
+        EVE_SSO_CALLBACK_PORT at the backend's uvicorn port (default 8000) -
+        or, once behind HTTPS/a reverse proxy where that plain "http://host:
+        port" shape no longer matches the real public URL, set
+        EVE_SSO_REDIRECT_URI directly instead (see redirect_uri_override)."""
+        if self.redirect_uri_override:
+            return self.redirect_uri_override
         return f"http://{self.callback_host}:{self.callback_port}/api/auth/callback"
 
     # Scopes required across all Trading features - kept to exactly what the

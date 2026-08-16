@@ -122,6 +122,14 @@ pytest
 Tests use mocked HTTP responses (no network / EVE SSO access required) and
 cover the scoring/decision/pricing logic for both tools.
 
+## Deploying somewhere reachable beyond localhost
+
+See [`deploy/README.md`](deploy/README.md) - a single-user deployment (e.g.
+a free-tier VPS) behind the access gate (`eve_trader/access_gate.py`), which
+requires an EVE SSO login matching an allowlisted character/corp/alliance
+before any part of the app is reachable. Off by default; local dev is
+unaffected either way.
+
 ## Interface
 
 The web app has a dark "trading terminal" look (inspired by the EVE HUD):
