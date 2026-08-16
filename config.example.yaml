@@ -1,0 +1,86 @@
+﻿# Copy to config.yaml and adjust. Any key omitted keeps its built-in default
+# (see eve_trader/config.py TradingConfig).
+#
+# Most of these can also be edited from within the app itself - each tool has
+# a "Settings" tab that writes back to this file immediately (see actions.py
+# do_update_settings / config.save_config_overrides). Editing this file
+# directly still works too.
+
+jita_region_id: 10000002          # The Forge (Jita)
+reference_region_id: 10000009     # Insmother - used only for historical backtests
+# structure_id: 123456789012      # Your destination player structure ID (uncomment and set -
+                                   # get it from the structure's info window in-game, or a
+                                   # market tool like appraise.gnf.lt/dotlan). Required before
+                                   # Trading can place/track orders there.
+
+import_cost_per_m3: 900.0
+structure_sell_haircut: 0.95
+min_profit_threshold: 0.0
+min_margin_threshold: 0.05
+
+min_hit_rate: 0.30
+safe_mode_max_ids: 500
+chunk_size: 25
+
+# Purely informational (shown on the Settings page) - the real character used
+# for each role comes from whichever character you authorize via
+# `eve-trader auth --role buyer` / `--role seller`, not from these fields.
+# buyer_character_id: 123456789
+# buyer_character_name: "Your Buyer Toon"
+# seller_character_name: "Your Seller Toon"
+
+lookback_days: 30
+
+# ---- Background scheduler (see eve_trader/scheduler.py) - off by default.
+# When enabled, the backend runs the Trading pipeline (do_pipeline, safe mode),
+# the Production ESI sync (do_sync_esi), and a DB/config backup (see
+# eve_trader/backup.py) on their own intervals for as long as the process
+# stays running, instead of only when you click "Run Complete Pipeline" /
+# "Sync ESI" / "Backup Now" by hand. Status (last run, last error) is shown
+# on the Portfolio page. A manual "Backup Now" is always available there too,
+# regardless of this setting.
+scheduler_enabled: false
+trading_pipeline_interval_hours: 24.0
+production_sync_interval_hours: 6.0
+backup_interval_hours: 24.0
+
+# ---- Production tool (see eve_trader/production/config.py ProductionConfig) ----
+component_overbuild: 0.7
+bpc_inventory: 4.0
+market_fees: 0.05
+min_margin: 0.15
+haul_cost_per_m3: 900.0
+# home_market: "your-market-slug"  # appraise.gnf.lt market slug for your home structure (case-sensitive,
+                              # uncomment and set - find your structure's slug at appraise.gnf.lt)
+home_location_id: null       # structure/station ID to filter ESI assets/sell-orders to (null = all locations)
+
+# System cost index is split by what's being built - job cost only, never ME/TE
+# (real EVE mechanic). Set the solar system name via the Settings tab, which
+# resolves it to the matching *_system_id via ESI automatically (don't hand-edit
+# the *_system_id fields - they're derived). Left unset (null) here - the app
+# falls back to a flat cost-index rate until you set these.
+# component_system: reactions, plus anything affected by the Standup M-Set
+# Advanced/Basic Component Manufacturing ME rigs (components, capital components,
+# T3 components, tools, data interfaces). manufacturing_system: everything else.
+component_system_name: null
+component_system_id: null
+manufacturing_system_name: null
+manufacturing_system_id: null
+
+# Where you build - see production/constants.py STRUCTURE_TYPES / RIG_TIERS for
+# the full option lists. These stack multiplicatively (real EVE mechanic).
+# Split by build profile, one level finer than the system cost index above:
+# reactions, rig-covered components, and everything else can each be built in
+# a different structure with a different rig installed.
+reaction_structure_type: "Citadel (no bonuses)"
+reaction_rig_tier: "No Rig"
+component_structure_type: "Citadel (no bonuses)"
+component_rig_tier: "No Rig"
+manufacturing_structure_type: "Citadel (no bonuses)"
+manufacturing_rig_tier: "No Rig"
+
+# Invention skill levels (see production/invention.py) - Encryption Methods +
+# the two datacore skills relevant to whatever you're inventing.
+encryption_skill_level: 4
+datacore_skill_1_level: 4
+datacore_skill_2_level: 4
