@@ -94,19 +94,14 @@ Two ed25519 keypairs were generated **on this machine** in
    and replace the GitHub deploy key with the new `eve-trader-deploy.pub`
    (delete the old one, add the new one, same "Oracle VM" style entry).
 
-## Also not in git (by design) - won't be on a new machine unless copied
+## Also not in git (by design) - confirmed handled by Dropbox here
 
-- `config.yaml`, `.env` - real settings/secrets, gitignored. Copy from this
-  machine, or recreate from `config.example.yaml`/`.env.example` (README
-  explains every field).
-- `data/eve_trader.db`, `data/tokens.json`, `data/backups/` - the real
-  database, OAuth tokens, and backups. Copy the whole `data/` folder if you
-  want the same trading/production history and logged-in characters on the
-  new machine instead of starting fresh.
-- *(If this project folder is Dropbox-synced under the same Dropbox account
-  on the new computer too, all of the above already arrives automatically -
-  only the SSH keys above are guaranteed to need manual handling, since
-  `~/.ssh` lives outside the synced project folder.)*
+The new computer syncs the **same Dropbox account**, so this whole project
+folder - including `config.yaml`, `.env`, and `data/` (the real DB, OAuth
+tokens, backups) - arrives there automatically, unlike a from-scratch clone.
+Nothing to do for these. The **SSH keys** above are the one exception:
+`~/.ssh` lives outside the Dropbox-synced project folder, so they're the
+only thing that genuinely needs manual handling (see above).
 
 ## What's left once the VM exists
 
