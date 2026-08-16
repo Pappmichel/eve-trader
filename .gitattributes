@@ -1,0 +1,5 @@
+# Shell scripts must check out with LF, regardless of the committer's OS or
+# git config (core.autocrlf) - a CRLF line ending on the shebang line makes
+# bash fail with "bad interpreter" on the actual Linux deploy target.
+*.sh text eol=lf
+deploy/*.template text eol=lf

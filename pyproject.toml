@@ -1,0 +1,32 @@
+[project]
+name = "eve-trader"
+version = "0.1.0"
+description = "C-J import trading and Tech I/II production planning toolkit for EVE Online"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Pappmichel" }]
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+    "pandas>=2.0",
+    "PyYAML>=6.0",
+    "ruamel.yaml>=0.18",
+    "python-dotenv>=1.0",
+    "click>=8.1",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "itsdangerous>=2.1",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0", "httpx>=0.27"]
+
+[project.scripts]
+eve-trader = "eve_trader.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["eve_trader*"]
