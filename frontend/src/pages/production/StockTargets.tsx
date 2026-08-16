@@ -24,7 +24,7 @@ const STOCK_KEYS = [
 // (remounts on selection change, giving each item its own fresh draft) +
 // commit on blur instead of every keystroke (was firing a POST + toast per
 // digit typed) fixes both at once.
-function CurrentStockInput({ typeId, initial, onCommit }: { typeId: number; initial: number; onCommit: (count: number) => void }) {
+function CurrentStockInput({ initial, onCommit }: { initial: number; onCommit: (count: number) => void }) {
   const [value, setValue] = useState<number | ''>(initial)
   return (
     <NumberInput
@@ -144,7 +144,6 @@ export default function StockTargets() {
             <Group grow align="flex-end" mt="sm">
               <CurrentStockInput
                 key={chosen.type_id}
-                typeId={chosen.type_id}
                 initial={manualStock?.[chosen.type_id] ?? 0}
                 onCommit={(count) => setManualStockAction.mutate({ typeId: chosen.type_id, count })}
               />

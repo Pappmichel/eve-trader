@@ -147,7 +147,7 @@ export default function Shortlist() {
             />
             <NumberInput
               value={capDraft}
-              onChange={setCapDraft}
+              onChange={(v) => setCapDraft(v === '' ? '' : Number(v))}
               onBlur={() => capDraft !== '' && toggleCap.mutate({ ...settings, max_active_shortlist_items: Number(capDraft) })}
               min={1} step={10} w={100} size="xs"
               disabled={toggleCap.isPending}
