@@ -162,10 +162,13 @@ new heuristic; if the SDE doesn't already carry the field you need, extend
 
 ## Environment specifics
 
-- **No git repository.** There is no version-control safety net - be extra
-  careful with anything destructive (overwriting files, DB migrations).
-  Prefer additive/reversible changes; ask before anything that can't be
-  undone.
+- **Git repository, GitHub remote.** `git init` + first commit + a GitHub
+  remote (`origin`, https://github.com/Pappmichel/eve-trader, currently
+  private) were set up 2026-08-16 as part of preparing the project for
+  publication - this repo is no longer "no VCS safety net." Workflow: commit
+  locally after completed work without asking (cheap, reversible, purely
+  local); never `git push` without the user explicitly asking for it in that
+  turn, since that's what actually publishes to the shared remote.
 - Windows 11 / PowerShell. Backend: `uvicorn eve_trader.api.main:app --port
   8000` (no `--reload` in the usual dev setup here - restart manually after
   backend changes, e.g. `Stop-Process -Id <pid> -Force` then relaunch).
