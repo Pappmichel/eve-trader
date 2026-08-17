@@ -16,12 +16,21 @@ pause point instead of leaving it stale.
 - This repo lives inside Dropbox (`C:\Users\marvi\Dropbox\Eve\eve_trader`), so the working
   tree - **including `.git`** - syncs across machines automatically. That's convenient but
   not fully reliable for git's internal state if Dropbox syncs mid-write. Treat Dropbox
-  sync as a convenience mirror, not the source of truth: **push the `multi-tenant` branch
-  to `origin` on GitHub too** (ask before pushing if that hasn't happened yet - standing
-  rule is commit locally freely, push only when asked) so a resume on another machine can
-  `git fetch && git checkout multi-tenant` instead of trusting whatever Dropbox synced last.
+  sync as a convenience mirror, not the source of truth: **the `multi-tenant` branch is
+  already pushed to `origin` on GitHub** (confirmed: `origin/multi-tenant` HEAD matches
+  local HEAD, commit `174845b`) - on a new machine, `git fetch && git checkout
+  multi-tenant` rather than trusting whatever Dropbox happened to sync. If you make more
+  commits on this branch in a future session, push again (standing rule: commit locally
+  freely, push when it's instrumentally needed - it is here, for exactly this
+  cross-machine-resume reason).
 
 ## Local dev environment set up this session
+
+**On a different machine, none of this exists yet** - Docker/Postgres/`.venv` are all
+machine-local, not synced by Dropbox or git. Re-run: install Docker Desktop (needs WSL2
+first, `wsl --install` as admin, then reboot), `docker run ...` below, apply
+`docs/phase0_setup.sql`, and `pip install -e .` (picks up `psycopg`/`psycopg_pool` from
+`pyproject.toml`, which *is* committed).
 
 - **Docker Desktop installed** on this machine (needed WSL2 first - already done).
 - **Postgres running** in a container named `eve-trader-pg` (`docker run -d --name
