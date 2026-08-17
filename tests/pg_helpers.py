@@ -29,8 +29,16 @@ _SCHEMA_SQL = Path(__file__).resolve().parent.parent / "docs" / "phase1_schema.s
 
 
 def _postgres_available() -> bool:
+    """Checks reachability via OWNER_DSN, not pg_tenant.PG_DSN - the
+    eve_trader_app role only exists *after* phase1_schema.sql has been
+    applied, but this skip check runs at collection time, before the
+    _apply_phase1_schema fixture below has had a chance to run. On a freshly
+    (re)created container (role not provisioned yet), checking the app role
+    here would wrongly skip every Postgres test - confirmed live. The owner
+    role (postgres) always exists on any Postgres server, schema applied or
+    not, so it's the right thing to probe for "is a server here at all"."""
     try:
-        with psycopg.connect(pg_tenant.PG_DSN, connect_timeout=2):
+        with psycopg.connect(OWNER_DSN, connect_timeout=2):
             return True
     except Exception:
         return False

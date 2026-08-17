@@ -30,9 +30,13 @@ pytestmark = pg_helpers.postgres_required
 @pytest.fixture(autouse=True)
 def _clean_stock_targets(tenant_pair):
     """Each test gets fresh rows - see pg_helpers.clean_tables for why this
-    runs as tenant A/B specifically rather than as the table owner."""
+    runs as tenant A/B specifically rather than as the table owner. Cleans
+    up after too, not just before - stock_targets' PK is tenant_id-widened
+    so a leftover row can never collide with a later session's fresh
+    tenant_pair, but tidying up avoids unbounded garbage in the dev DB."""
     pg_helpers.clean_tables(tenant_pair, "stock_targets")
     yield
+    pg_helpers.clean_tables(tenant_pair, "stock_targets")
 
 
 def test_two_tenants_can_insert_the_same_type_id_without_colliding(tenant_pair):

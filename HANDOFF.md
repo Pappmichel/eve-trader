@@ -55,10 +55,10 @@ first, `wsl --install` as admin, then reboot), `docker run ...` below, apply
       `tests/test_pg_tenant_isolation.py` (4/4 passing against the real local Postgres) -
       proves RLS isolation, the widened composite-PK `ON CONFLICT`, and the fail-closed
       "no tenant set" error, all through real code, not just raw SQL.
-- [~] **Phase 1 - started, schema + composite-PK bucket done.** Full Phase 1 (port ~24
-      per-tenant tables + 12 shared SDE tables + rework the ~136-occurrence test isolation
-      model + the actual `storage.py` cutover) is still its own multi-day sub-effort - progress
-      so far:
+- [~] **Phase 1 - started, schema + all 24 per-tenant tables' isolation tests done.** Full
+      Phase 1 (port ~24 per-tenant tables + 12 shared SDE tables + rework the
+      ~136-occurrence test isolation model + the actual `storage.py` cutover) is still its
+      own multi-day sub-effort - progress so far:
       - `docs/phase1_schema.sql` - the **complete** Postgres schema for all 37 tables
         (supersedes `docs/phase0_setup.sql` for schema purposes, that file stays as the
         historical Phase-0 record), correctly bucketed per the plan's three categories
@@ -70,7 +70,11 @@ first, `wsl --install` as admin, then reboot), `docker run ...` below, apply
       - `tests/pg_helpers.py` - reusable fixtures (`tenant_pair`, `clean_tables`,
         `postgres_required` skip marker) plus a session-scoped autouse fixture that applies
         `phase1_schema.sql` automatically - the manual `Get-Content | docker exec ... psql`
-        step is no longer a prerequisite for running the Postgres tests.
+        step is no longer a prerequisite for running the Postgres tests, **including on a
+        freshly (re)created container with no schema/role yet** - `_postgres_available()`
+        had to be fixed to probe via the owner role (always exists) instead of the app role
+        (only exists after the schema fixture runs), otherwise every Postgres test wrongly
+        self-skipped at collection time on a brand-new container. Confirmed live.
       - `tests/conftest.py` - new file (didn't exist before), registers the above fixtures
         project-wide.
       - `test_pg_tenant_isolation.py` refactored onto the new helpers - same 4 tests, still
@@ -79,15 +83,25 @@ first, `wsl --install` as admin, then reboot), `docker run ...` below, apply
         composite-PK-bucket tables (`stock_targets` itself already covered by
         `test_pg_tenant_isolation.py`) - 7 parametrized simple-upsert tests, 2 `ON CONFLICT
         DO NOTHING` tests (`shortlist_skip_streak`, `category_location_options`), 1 COALESCE
-        upsert test (`shortlist`, mirrors `stock_targets`'s). **The whole composite-PK bucket
-        (the highest-risk one per the plan) is now proven.**
-      - Full `pytest` suite: **317 passed**, no regressions.
-      - **Not yet done**: isolation tests for the column-only bucket (8 tables) and the
-        no-PK/append bucket (5 tables) - lower risk per the plan (no PK-collision problem),
-        but still untested; the 2 `pd.read_sql_query` call sites (`storage.py:1444`,
-        `1452`); and - the big one - actually rewiring `storage.py`'s
-        `connect()`/`batch_session()` to Postgres (only happens once every table is
-        proven, per the plan).
+        upsert test (`shortlist`, mirrors `stock_targets`'s).
+      - `tests/test_pg_column_only_and_no_pk_tables.py` - isolation tests for the remaining
+        13 tables (8 column-only-bucket + 5 no-PK-bucket) - the key thing proven here is
+        that an **unfiltered** `DELETE FROM {table}` (the real pattern every
+        `replace_*`/`save_*` function for these tables uses, since their PK was never
+        tenant_id-widened) only ever touches the calling tenant's own rows, purely via RLS.
+        Also caught a real test-hygiene bug: this bucket's hardcoded PK literals (e.g.
+        `item_id=100001`) can collide across *separate pytest sessions* (not just within
+        one), because a leftover row from an earlier passing run isn't tied to the new
+        run's fresh `tenant_pair` - fixed by cleaning up after each test too, not just
+        before (the composite-PK bucket doesn't strictly need this, since tenant_id is
+        part of its PK, but got the same fix for consistency/hygiene).
+      - **All ~24 per-tenant tables now have a passing isolation test** - full `pytest`
+        suite: **330 passed**, no regressions (confirmed stable across 2 consecutive runs,
+        proving the cleanup fixes actually stop garbage accumulation).
+      - **Not yet done**: the 2 `pd.read_sql_query` call sites (`storage.py:1444`, `1452`),
+        and - the big one - actually rewiring `storage.py`'s `connect()`/`batch_session()`
+        to Postgres (only happens once every table is proven, per the plan - which is now
+        true, so this is the next real milestone).
 - [ ] Phase 2 - config/secrets into Postgres + `TRADING_CONFIG`/`PRODUCTION_CONFIG` proxy
       objects (watch the `type(cfg)` break at `config.py:172`, already documented in the
       plan). **Not started.**
@@ -104,14 +118,20 @@ tables not yet in the new Postgres schema).
 
 ## Immediate next step
 
-The composite-PK bucket (highest risk) is fully proven. Next: isolation tests for the
-column-only bucket (`character_assets`, `corp_assets`, `character_blueprints`,
-`corp_blueprints`, `character_industry_jobs`, `corp_industry_jobs`,
-`character_sell_orders`, `character_slots` - PK unchanged, tenant_id + RLS only) and the
-no-PK/append bucket (`shortlist_snapshot`, `candidate_universe`, `focused_candidates`,
-`new_candidates`, `realized_trades` - tenant_id + RLS, no PK at all) - both lower-risk per
-the plan but still need their own proof, following `test_pg_composite_pk_tables.py`'s
-parametrized pattern (these two buckets are even more mechanically uniform, so likely
-one parametrized test file covers most of both). Once all ~24 per-tenant tables have a
-passing test, merge `pg_tenant.py`'s logic into `storage.py`'s actual
-`connect()`/`batch_session()` and retire the SQLite `SCHEMA` string.
+Every per-tenant table now has a passing isolation test - the schema-and-proof stage of
+Phase 1 is done. What's left before Phase 1 is fully complete:
+
+1. The 2 `pd.read_sql_query(..., conn)` call sites (`storage.py:1444`, `1452`) - pandas'
+   SQL layer doesn't reliably support raw `psycopg` connections, replace with manual
+   `cursor.fetchall()` + `pd.DataFrame(...)`.
+2. **The big one**: merge `pg_tenant.py`'s pool/contextvar/`SET LOCAL`/placeholder-shim
+   logic into `storage.py`'s actual `connect()`/`batch_session()`, and retire the SQLite
+   `SCHEMA` string. Note one thing this session's tests didn't need to deal with but the
+   real cutover will: several `storage.py` writes use bare `INSERT INTO table VALUES
+   (?,?,?,?)` (positional, no explicit column list - e.g. `replace_character_slots`,
+   `replace_blueprints`, `replace_sell_orders`) - once `tenant_id` is a real column (with
+   a server-side `DEFAULT`), those need an explicit column list or they'll silently
+   misalign against the new column order. `tests/test_pg_column_only_and_no_pk_tables.py`
+   sidestepped this by always listing columns explicitly - the real port doesn't get to.
+3. Rework the test suite's SQLite `tmp_path`/`db_path` isolation model (~136 occurrences)
+   to a Postgres equivalent once storage.py itself is on Postgres.

@@ -50,8 +50,14 @@ _ALL_TABLES = [t for t, *_ in _SIMPLE_UPDATE_TABLES] + ["shortlist_skip_streak",
 
 @pytest.fixture(autouse=True)
 def _clean(tenant_pair):
+    """Cleans up after too, not just before - every PK in this bucket is
+    tenant_id-widened so a leftover row can never collide with a later
+    session's fresh tenant_pair, but tidying up avoids unbounded garbage in
+    the dev DB (see test_pg_column_only_and_no_pk_tables.py's _clean for the
+    bucket where this actually matters for correctness, not just hygiene)."""
     pg_helpers.clean_tables(tenant_pair, *_ALL_TABLES)
     yield
+    pg_helpers.clean_tables(tenant_pair, *_ALL_TABLES)
 
 
 @pytest.mark.parametrize("table,cols,row_a,row_b,update_col", _SIMPLE_UPDATE_TABLES)
