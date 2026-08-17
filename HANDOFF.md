@@ -54,9 +54,28 @@ first, `wsl --install` as admin, then reboot), `docker run ...` below, apply
       `tests/test_pg_tenant_isolation.py` (4/4 passing against the real local Postgres) -
       proves RLS isolation, the widened composite-PK `ON CONFLICT`, and the fail-closed
       "no tenant set" error, all through real code, not just raw SQL.
-- [ ] Phase 1 - port the remaining ~24 per-tenant tables + 12 shared SDE tables + rework
-      the test suite's isolation model (currently SQLite `tmp_path`-based, ~136
-      occurrences - needs a Postgres equivalent). **Not started.**
+- [~] **Phase 1 - started, schema + test fixture slice done.** Full Phase 1 (port ~24
+      per-tenant tables + 12 shared SDE tables + rework the ~136-occurrence test isolation
+      model + the actual `storage.py` cutover) is still its own multi-day sub-effort - what's
+      done so far is the mechanical foundation, not the table-by-table port itself:
+      - `docs/phase1_schema.sql` - the **complete** Postgres schema for all 37 tables
+        (supersedes `docs/phase0_setup.sql` for schema purposes, that file stays as the
+        historical Phase-0 record), correctly bucketed per the plan's three categories
+        (shared/no-RLS, composite-PK, column-only+no-PK). Idempotent - verified by running
+        it twice in a row against the live container with zero errors.
+      - `tests/pg_helpers.py` - reusable fixtures (`tenant_pair`, `clean_tables`,
+        `postgres_required` skip marker) plus a session-scoped autouse fixture that applies
+        `phase1_schema.sql` automatically - the manual `Get-Content | docker exec ... psql`
+        step is no longer a prerequisite for running the Postgres tests.
+      - `tests/conftest.py` - new file (didn't exist before), registers the above fixtures
+        project-wide.
+      - `test_pg_tenant_isolation.py` refactored onto the new helpers - same 4 tests, still
+        passing, proves the extraction didn't break anything.
+      - Full `pytest` suite: **307 passed**, no regressions.
+      - **Not yet done**: per-table isolation tests for the other ~23 tables, the 2
+        `pd.read_sql_query` call sites (`storage.py:1444`, `1452`), and - the big one -
+        actually rewiring `storage.py`'s `connect()`/`batch_session()` to Postgres (only
+        happens once every table is proven, per the plan).
 - [ ] Phase 2 - config/secrets into Postgres + `TRADING_CONFIG`/`PRODUCTION_CONFIG` proxy
       objects (watch the `type(cfg)` break at `config.py:172`, already documented in the
       plan). **Not started.**
@@ -73,8 +92,9 @@ tables not yet in the new Postgres schema).
 
 ## Immediate next step
 
-Start Phase 1: pick the next per-tenant table (see docs/MULTI_TENANT_PLAN.md's two
-buckets - composite-PK-needed vs. tenant_id-column-only) and repeat the Phase 0 pattern -
-add to schema, widen conflict target if needed, add a test. Once all ~24 are ported,
-merge `pg_tenant.py`'s logic into `storage.py`'s actual `connect()`/`batch_session()` and
-retire the SQLite `SCHEMA` string.
+Schema + fixtures are done for all 37 tables (see above) - the remaining Phase 1 work is
+writing the actual per-table isolation tests (mirroring `test_pg_tenant_isolation.py`'s
+`stock_targets` tests, now much less boilerplate thanks to `tests/pg_helpers.py`) table by
+table, one bucket at a time. Once all ~24 per-tenant tables have a passing test, merge
+`pg_tenant.py`'s logic into `storage.py`'s actual `connect()`/`batch_session()` and retire
+the SQLite `SCHEMA` string.

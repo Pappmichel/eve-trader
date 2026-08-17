@@ -6,60 +6,43 @@ just raw SQL. This is the single most important guarantee of the whole
 migration (tenant A never sees tenant B's data) - keep this test even after
 Phase 1 moves the rest of storage.py onto the same mechanism.
 
-Requires a running Postgres with the Phase 0 schema (see
-docs/MULTI_TENANT_PLAN.md - `docker run` + `_poc_phase0.sql`'s CREATE ROLE/
-CREATE TABLE/RLS policy). Skipped automatically if unreachable, so the main
-`pytest` run stays green on a machine without this local dev Postgres up -
-not a substitute for actually running it locally when working on this
-migration.
+Requires a running local Postgres (`eve-trader-pg` container - see
+docs/MULTI_TENANT_PLAN.md). Schema is applied automatically per test session
+by tests/pg_helpers.py's `_apply_phase1_schema` fixture (docs/
+phase1_schema.sql, idempotent) - no manual `psql` step needed. Skipped
+automatically if Postgres isn't reachable, so the main `pytest` run stays
+green on a machine without this local dev Postgres up - not a substitute for
+actually running it locally when working on this migration.
 """
 from __future__ import annotations
-
-import uuid
 
 import pytest
 
 from eve_trader import pg_tenant
 
+from . import pg_helpers  # tenant_pair fixture comes from conftest.py
+
 psycopg = pytest.importorskip("psycopg")
 
-
-def _postgres_available() -> bool:
-    try:
-        with psycopg.connect(pg_tenant.PG_DSN, connect_timeout=2):
-            return True
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not _postgres_available(),
-    reason="Local Postgres (eve-trader-pg container) not reachable - see docs/MULTI_TENANT_PLAN.md Phase 0",
-)
+pytestmark = pg_helpers.postgres_required
 
 
 @pytest.fixture(autouse=True)
-def _clean_stock_targets():
-    """Each test gets fresh rows - deletes as tenant A and B specifically
-    (not as the table owner) so this itself exercises normal RLS-scoped
-    access, matching how the real app would ever touch this table."""
-    for tenant in (_TENANT_A, _TENANT_B):
-        with pg_tenant.tenant_context(tenant), pg_tenant.connect() as conn:
-            conn.execute("DELETE FROM stock_targets")
+def _clean_stock_targets(tenant_pair):
+    """Each test gets fresh rows - see pg_helpers.clean_tables for why this
+    runs as tenant A/B specifically rather than as the table owner."""
+    pg_helpers.clean_tables(tenant_pair, "stock_targets")
     yield
 
 
-_TENANT_A = str(uuid.uuid4())
-_TENANT_B = str(uuid.uuid4())
-
-
-def test_two_tenants_can_insert_the_same_type_id_without_colliding():
-    with pg_tenant.tenant_context(_TENANT_A), pg_tenant.connect() as conn:
+def test_two_tenants_can_insert_the_same_type_id_without_colliding(tenant_pair):
+    tenant_a, tenant_b = tenant_pair
+    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
         conn.execute(
             "INSERT INTO stock_targets (type_id, type_name) VALUES (?, ?)",
             (34, "Tritanium (A)"),
         )
-    with pg_tenant.tenant_context(_TENANT_B), pg_tenant.connect() as conn:
+    with pg_tenant.tenant_context(tenant_b), pg_tenant.connect() as conn:
         conn.execute(
             "INSERT INTO stock_targets (type_id, type_name) VALUES (?, ?)",
             (34, "Tritanium (B)"),
@@ -69,22 +52,23 @@ def test_two_tenants_can_insert_the_same_type_id_without_colliding():
     # second insert.
 
 
-def test_a_tenant_only_ever_sees_its_own_rows():
-    with pg_tenant.tenant_context(_TENANT_A), pg_tenant.connect() as conn:
+def test_a_tenant_only_ever_sees_its_own_rows(tenant_pair):
+    tenant_a, tenant_b = tenant_pair
+    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
         conn.execute("INSERT INTO stock_targets (type_id, type_name) VALUES (?, ?)", (34, "Tritanium (A)"))
-    with pg_tenant.tenant_context(_TENANT_B), pg_tenant.connect() as conn:
+    with pg_tenant.tenant_context(tenant_b), pg_tenant.connect() as conn:
         conn.execute("INSERT INTO stock_targets (type_id, type_name) VALUES (?, ?)", (34, "Tritanium (B)"))
 
-    with pg_tenant.tenant_context(_TENANT_A), pg_tenant.connect() as conn:
+    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
         rows = conn.execute("SELECT type_name FROM stock_targets").fetchall()
     assert rows == [("Tritanium (A)",)]
 
-    with pg_tenant.tenant_context(_TENANT_B), pg_tenant.connect() as conn:
+    with pg_tenant.tenant_context(tenant_b), pg_tenant.connect() as conn:
         rows = conn.execute("SELECT type_name FROM stock_targets").fetchall()
     assert rows == [("Tritanium (B)",)]
 
 
-def test_upsert_with_widened_conflict_target_stays_tenant_scoped():
+def test_upsert_with_widened_conflict_target_stays_tenant_scoped(tenant_pair):
     """Mirrors storage.py's real upsert_stock_target (storage.py:937-953)
     almost verbatim - only the ON CONFLICT target is widened from
     `type_id` to `tenant_id, type_id`, matching what Phase 1 needs to do to
@@ -92,6 +76,7 @@ def test_upsert_with_widened_conflict_target_stays_tenant_scoped():
     composite-PK section. Proves both that the widened conflict target
     works at all, and that an UPDATE via ON CONFLICT still can't touch
     another tenant's row with the same type_id."""
+    tenant_a, tenant_b = tenant_pair
     # `?::real IS NULL` (not bare `? IS NULL`) - confirmed live: Postgres's
     # parameter-typing is stricter than SQLite's here. A parameter used only
     # in an `IS NULL` check has no type context to infer from, and errors
@@ -108,20 +93,20 @@ def test_upsert_with_widened_conflict_target_stays_tenant_scoped():
         "home_market_stock=COALESCE(excluded.home_market_stock, stock_targets.home_market_stock), "
         "jita_market_stock=COALESCE(excluded.jita_market_stock, stock_targets.jita_market_stock)"
     )
-    with pg_tenant.tenant_context(_TENANT_A), pg_tenant.connect() as conn:
+    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
         conn.execute(upsert, (34, "Tritanium (A) v1", 100, None, None, 100))
-    with pg_tenant.tenant_context(_TENANT_B), pg_tenant.connect() as conn:
+    with pg_tenant.tenant_context(tenant_b), pg_tenant.connect() as conn:
         conn.execute(upsert, (34, "Tritanium (B) v1", 50, None, None, 50))
     # Re-upsert tenant A's row (same type_id) - must UPDATE tenant A's row
     # only, never touch tenant B's.
-    with pg_tenant.tenant_context(_TENANT_A), pg_tenant.connect() as conn:
+    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
         conn.execute(upsert, (34, "Tritanium (A) v2", None, None, None, None))
 
-    with pg_tenant.tenant_context(_TENANT_A), pg_tenant.connect() as conn:
+    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
         row = conn.execute("SELECT type_name, backup_stock FROM stock_targets WHERE type_id = ?", (34,)).fetchone()
     assert row == ("Tritanium (A) v2", 100.0)  # name updated, backup_stock kept (None -> COALESCE kept old)
 
-    with pg_tenant.tenant_context(_TENANT_B), pg_tenant.connect() as conn:
+    with pg_tenant.tenant_context(tenant_b), pg_tenant.connect() as conn:
         row = conn.execute("SELECT type_name, backup_stock FROM stock_targets WHERE type_id = ?", (34,)).fetchone()
     assert row == ("Tritanium (B) v1", 50.0)  # untouched by tenant A's upsert
 
