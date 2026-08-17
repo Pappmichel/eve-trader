@@ -166,6 +166,20 @@ were caught by actually running this (not discoverable by reading the code):
    Confirmed only one call site has this exact shape today
    (`storage.py:949`), but watch for the same pattern while porting Phase 1's
    other upserts.
+3. Postgres `INTEGER` is a strict 32-bit type (max ~2.1 billion) - SQLite's
+   `INTEGER` never enforced any width, so `storage.py`'s schema never needed
+   to distinguish "small EVE type/group/category ID" (always well under 2^31)
+   from "real ESI object ID" (`item_id`/`job_id`/`order_id`/`location_id` -
+   player-structure and modern-asset IDs routinely exceed 2^31). Confirmed
+   live: `docs/phase1_schema.sql`'s first draft used `INTEGER` everywhere and
+   `NumericValueOutOfRange` immediately failed a `job_category_locations`
+   test using a realistic structure ID. Fixed by widening every
+   `item_id`/`job_id`/`order_id`/`location_id`/`output_location_id`/
+   `installer_id` column (character_assets, corp_assets,
+   character/corp_industry_jobs, character/corp_blueprints,
+   character_sell_orders, job_category_locations, structure_names,
+   category_location_options) to `BIGINT` - watch for the same pattern on any
+   column holding a raw ESI object ID rather than an EVE type-scale ID.
 
 `eve_trader/pg_tenant.py` is intentionally a separate module for now, not yet
 wired into `storage.py`'s `connect()`/`batch_session()` - swapping those over

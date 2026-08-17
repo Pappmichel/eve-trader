@@ -220,7 +220,7 @@ CREATE POLICY tenant_isolation ON shortlist_skip_streak
 CREATE TABLE IF NOT EXISTS job_category_locations (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
     category TEXT NOT NULL,
-    location_id INTEGER NOT NULL,
+    location_id BIGINT NOT NULL,
     PRIMARY KEY (tenant_id, category)
 );
 ALTER TABLE job_category_locations ENABLE ROW LEVEL SECURITY;
@@ -255,7 +255,7 @@ CREATE POLICY tenant_isolation ON candidate_search_cursor
 
 CREATE TABLE IF NOT EXISTS structure_names (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
-    location_id INTEGER NOT NULL,
+    location_id BIGINT NOT NULL,
     name TEXT,
     PRIMARY KEY (tenant_id, location_id)
 );
@@ -268,7 +268,7 @@ CREATE POLICY tenant_isolation ON structure_names
 CREATE TABLE IF NOT EXISTS category_location_options (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
     category TEXT NOT NULL,
-    location_id INTEGER NOT NULL,
+    location_id BIGINT NOT NULL,
     PRIMARY KEY (tenant_id, category, location_id)
 );
 ALTER TABLE category_location_options ENABLE ROW LEVEL SECURITY;
@@ -284,9 +284,9 @@ CREATE POLICY tenant_isolation ON category_location_options
 
 CREATE TABLE IF NOT EXISTS character_assets (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
-    item_id INTEGER PRIMARY KEY,
+    item_id BIGINT PRIMARY KEY,
     type_id INTEGER,
-    location_id INTEGER,
+    location_id BIGINT,
     location_flag TEXT,
     quantity INTEGER,
     is_blueprint_copy INTEGER,
@@ -301,9 +301,9 @@ CREATE POLICY tenant_isolation ON character_assets
 
 CREATE TABLE IF NOT EXISTS corp_assets (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
-    item_id INTEGER PRIMARY KEY,
+    item_id BIGINT PRIMARY KEY,
     type_id INTEGER,
-    location_id INTEGER,
+    location_id BIGINT,
     location_flag TEXT,
     quantity INTEGER,
     is_blueprint_copy INTEGER,
@@ -318,16 +318,16 @@ CREATE POLICY tenant_isolation ON corp_assets
 
 CREATE TABLE IF NOT EXISTS character_industry_jobs (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
-    job_id INTEGER PRIMARY KEY,
+    job_id BIGINT PRIMARY KEY,
     activity_id INTEGER,
     blueprint_type_id INTEGER,
     product_type_id INTEGER,
     runs INTEGER,
-    output_location_id INTEGER,
+    output_location_id BIGINT,
     status TEXT,
     end_date TEXT,
     start_date TEXT,
-    installer_id INTEGER,
+    installer_id BIGINT,
     installer_name TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_character_industry_jobs_product_status
@@ -340,16 +340,16 @@ CREATE POLICY tenant_isolation ON character_industry_jobs
 
 CREATE TABLE IF NOT EXISTS corp_industry_jobs (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
-    job_id INTEGER PRIMARY KEY,
+    job_id BIGINT PRIMARY KEY,
     activity_id INTEGER,
     blueprint_type_id INTEGER,
     product_type_id INTEGER,
     runs INTEGER,
-    output_location_id INTEGER,
+    output_location_id BIGINT,
     status TEXT,
     end_date TEXT,
     start_date TEXT,
-    installer_id INTEGER,
+    installer_id BIGINT,
     installer_name TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_corp_industry_jobs_product_status
@@ -375,9 +375,9 @@ CREATE POLICY tenant_isolation ON character_slots
 
 CREATE TABLE IF NOT EXISTS character_blueprints (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
-    item_id INTEGER PRIMARY KEY,
+    item_id BIGINT PRIMARY KEY,
     type_id INTEGER,
-    location_id INTEGER,
+    location_id BIGINT,
     location_flag TEXT,
     quantity INTEGER,
     material_efficiency INTEGER,
@@ -393,9 +393,9 @@ CREATE POLICY tenant_isolation ON character_blueprints
 
 CREATE TABLE IF NOT EXISTS corp_blueprints (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
-    item_id INTEGER PRIMARY KEY,
+    item_id BIGINT PRIMARY KEY,
     type_id INTEGER,
-    location_id INTEGER,
+    location_id BIGINT,
     location_flag TEXT,
     quantity INTEGER,
     material_efficiency INTEGER,
@@ -411,9 +411,9 @@ CREATE POLICY tenant_isolation ON corp_blueprints
 
 CREATE TABLE IF NOT EXISTS character_sell_orders (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
-    order_id INTEGER PRIMARY KEY,
+    order_id BIGINT PRIMARY KEY,
     type_id INTEGER,
-    location_id INTEGER,
+    location_id BIGINT,
     region_id INTEGER,
     volume_remain INTEGER,
     character_name TEXT
