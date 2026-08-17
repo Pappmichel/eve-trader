@@ -154,7 +154,10 @@ existing `_pending[state]` dict alongside `role_prefix`; `/callback` recovers it
 (4 tests, all passing) proves cross-tenant isolation, the widened
 `ON CONFLICT(tenant_id, type_id)` upsert, and the fail-closed "no tenant set"
 error - through the real module, not just raw `psql`. Two real dialect gotchas
-were caught by actually running this (not discoverable by reading the code):
+were caught by actually running Phase 0 (not discoverable by reading the
+code); a third turned up during Phase 1's schema work (see below) and is
+recorded here too, since all three are the same category of "SQLite never
+enforced this, Postgres does" surprise:
 1. `SET LOCAL x = %s` does not accept a bound parameter - Postgres rejects it
    (`syntax error at or near "$1"`). Fixed by using
    `SELECT set_config('app.tenant_id', %s, true)` instead (a plain function

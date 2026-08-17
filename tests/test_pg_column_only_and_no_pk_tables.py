@@ -28,10 +28,11 @@ import pytest
 from eve_trader import pg_tenant
 
 from . import pg_helpers
+from .pg_helpers import _apply_phase1_schema  # noqa: F401 - scopes the schema-provisioning fixture to this module
 
 psycopg = pytest.importorskip("psycopg")
 
-pytestmark = pg_helpers.postgres_required
+pytestmark = pg_helpers.postgres_required()
 
 # (table, insert_columns, row_a, row_b) - minimal columns, just enough to
 # insert a distinguishable row per tenant; full column realism isn't needed

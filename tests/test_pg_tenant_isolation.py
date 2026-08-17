@@ -21,10 +21,11 @@ import pytest
 from eve_trader import pg_tenant
 
 from . import pg_helpers  # tenant_pair fixture comes from conftest.py
+from .pg_helpers import _apply_phase1_schema  # noqa: F401 - scopes the schema-provisioning fixture to this module
 
 psycopg = pytest.importorskip("psycopg")
 
-pytestmark = pg_helpers.postgres_required
+pytestmark = pg_helpers.postgres_required()
 
 
 @pytest.fixture(autouse=True)

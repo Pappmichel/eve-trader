@@ -17,13 +17,15 @@ pause point instead of leaving it stale.
 - This repo lives inside Dropbox (`C:\Users\marvi\Dropbox\Eve\eve_trader`), so the working
   tree - **including `.git`** - syncs across machines automatically. That's convenient but
   not fully reliable for git's internal state if Dropbox syncs mid-write. Treat Dropbox
-  sync as a convenience mirror, not the source of truth: **the `multi-tenant` branch is
-  already pushed to `origin` on GitHub** (confirmed: `origin/multi-tenant` HEAD matches
-  local HEAD, commit `174845b`) - on a new machine, `git fetch && git checkout
-  multi-tenant` rather than trusting whatever Dropbox happened to sync. If you make more
-  commits on this branch in a future session, push again (standing rule: commit locally
-  freely, push when it's instrumentally needed - it is here, for exactly this
-  cross-machine-resume reason).
+  sync as a convenience mirror, not the source of truth - on a new machine, `git fetch &&
+  git checkout multi-tenant` rather than trusting whatever Dropbox happened to sync.
+  **Local is currently 3 commits ahead of `origin/multi-tenant`** (this session's Phase 1
+  work - `origin` is still at `6b1d316`, the last pushed commit) - not yet pushed as of
+  this note. Push before resuming on a different machine, or `git fetch` there will not
+  see this session's work at all (Dropbox sync alone does carry the commits, per above,
+  but don't rely on that being complete/consistent - confirm with `git log` after
+  fetching). Standing rule: commit locally freely, push when it's instrumentally needed -
+  it is, for exactly this cross-machine-resume reason.
 
 ## Local dev environment set up this session
 
@@ -98,6 +100,24 @@ first, `wsl --install` as admin, then reboot), `docker run ...` below, apply
       - **All ~24 per-tenant tables now have a passing isolation test** - full `pytest`
         suite: **330 passed**, no regressions (confirmed stable across 2 consecutive runs,
         proving the cleanup fixes actually stop garbage accumulation).
+      - **Post-hoc review caught a real perf regression, now fixed**: registering
+        `_apply_phase1_schema` in `tests/conftest.py` (to auto-apply the schema
+        project-wide) made it run for *every* `pytest` invocation, not just Postgres
+        tests - confirmed live, a single unrelated file (`pytest
+        tests/test_shortlist.py`) cost an extra ~4-5s of pure connection-timeout
+        overhead with the local Postgres stopped. Root cause: importing a module
+        executes its *entire* body, so even `from .pg_helpers import tenant_pair`
+        (the only thing conftest.py actually needs) was enough to trigger a
+        module-level `_postgres_available()` network call. Fixed two ways: (1)
+        `postgres_required` is now a function, not a precomputed module-level
+        constant, so the connectivity check only fires in the 3 Postgres test
+        modules that actually call it; (2) `_apply_phase1_schema` moved back to
+        being imported per-file (like it briefly was earlier this session) instead
+        of registered in conftest.py; (3) `_postgres_available()` itself is now
+        `functools.lru_cache`d so it's at most one network round-trip per process
+        even within a Postgres-heavy run. Re-verified: unrelated single-file runs
+        are back to ~0.3-1.7s regardless of Postgres's state, full suite is still
+        330 passed with Postgres up and 303 passed/27 skipped with it down.
       - **Not yet done**: the 2 `pd.read_sql_query` call sites (`storage.py:1444`, `1452`),
         and - the big one - actually rewiring `storage.py`'s `connect()`/`batch_session()`
         to Postgres (only happens once every table is proven, per the plan - which is now

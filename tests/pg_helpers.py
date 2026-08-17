@@ -6,6 +6,7 @@ RLS-scoped cleanup from scratch.
 """
 from __future__ import annotations
 
+import functools
 import os
 import uuid
 from pathlib import Path
@@ -28,6 +29,7 @@ OWNER_DSN = os.getenv(
 _SCHEMA_SQL = Path(__file__).resolve().parent.parent / "docs" / "phase1_schema.sql"
 
 
+@functools.lru_cache(maxsize=1)
 def _postgres_available() -> bool:
     """Checks reachability via OWNER_DSN, not pg_tenant.PG_DSN - the
     eve_trader_app role only exists *after* phase1_schema.sql has been
@@ -36,7 +38,14 @@ def _postgres_available() -> bool:
     (re)created container (role not provisioned yet), checking the app role
     here would wrongly skip every Postgres test - confirmed live. The owner
     role (postgres) always exists on any Postgres server, schema applied or
-    not, so it's the right thing to probe for "is a server here at all"."""
+    not, so it's the right thing to probe for "is a server here at all".
+
+    Cached (single process, never invalidated - a test session doesn't
+    expect Postgres to appear/disappear mid-run) since this is otherwise
+    called twice per session (once for the `postgres_required` marker at
+    import time, once from `_apply_phase1_schema` at fixture setup) - each
+    call is a real network round-trip with a multi-second timeout when
+    unreachable, not worth paying twice."""
     try:
         with psycopg.connect(OWNER_DSN, connect_timeout=2):
             return True
@@ -44,13 +53,24 @@ def _postgres_available() -> bool:
         return False
 
 
-# Assign to `pytestmark` in any test module that needs a real Postgres -
-# `pytestmark = pg_helpers.postgres_required` (mirrors the original
-# test_pg_tenant_isolation.py skip, just reusable).
-postgres_required = pytest.mark.skipif(
-    not _postgres_available(),
-    reason="Local Postgres (eve-trader-pg container) not reachable - see docs/MULTI_TENANT_PLAN.md Phase 0",
-)
+def postgres_required() -> pytest.MarkDecorator:
+    """Call this in any test module that needs a real Postgres -
+    `pytestmark = pg_helpers.postgres_required()` (mirrors the original
+    test_pg_tenant_isolation.py skip, just reusable).
+
+    A *function*, not a precomputed module-level constant - `import`
+    executes a module's entire body regardless of which name you actually
+    reference, so a module-level `postgres_required = pytest.mark.skipif(not
+    _postgres_available(), ...)` would call `_postgres_available()` (a real
+    network round-trip) the moment *anything* imports this module - which
+    conftest.py does, for `tenant_pair`, on every single `pytest` run.
+    Confirmed live: that cost even a Postgres-unrelated single-file run
+    several seconds of pure connection-timeout overhead. A function defers
+    the check to only the test modules that actually call it."""
+    return pytest.mark.skipif(
+        not _postgres_available(),
+        reason="Local Postgres (eve-trader-pg container) not reachable - see docs/MULTI_TENANT_PLAN.md Phase 0",
+    )
 
 
 @pytest.fixture(scope="session", autouse=True)
