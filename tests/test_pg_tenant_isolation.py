@@ -1,7 +1,7 @@
 """Phase 0 acceptance test (see docs/MULTI_TENANT_PLAN.md): proves the core
 multi-tenant mechanism - Postgres RLS + composite (tenant_id, type_id) PK on
 stock_targets - actually isolates tenants, exercised through the real
-eve_trader.pg_tenant module (pool, contextvar, placeholder translation), not
+eve_trader.storage module (pool, contextvar, placeholder translation), not
 just raw SQL. This is the single most important guarantee of the whole
 migration (tenant A never sees tenant B's data) - keep this test even after
 Phase 1 moves the rest of storage.py onto the same mechanism.
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from eve_trader import pg_tenant
+from eve_trader import storage
 
 from . import pg_helpers  # tenant_pair fixture comes from conftest.py
 from .pg_helpers import _apply_phase1_schema  # noqa: F401 - scopes the schema-provisioning fixture to this module
@@ -42,12 +42,12 @@ def _clean_stock_targets(tenant_pair):
 
 def test_two_tenants_can_insert_the_same_type_id_without_colliding(tenant_pair):
     tenant_a, tenant_b = tenant_pair
-    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
         conn.execute(
             "INSERT INTO stock_targets (type_id, type_name) VALUES (?, ?)",
             (34, "Tritanium (A)"),
         )
-    with pg_tenant.tenant_context(tenant_b), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_b), storage.connect() as conn:
         conn.execute(
             "INSERT INTO stock_targets (type_id, type_name) VALUES (?, ?)",
             (34, "Tritanium (B)"),
@@ -59,16 +59,16 @@ def test_two_tenants_can_insert_the_same_type_id_without_colliding(tenant_pair):
 
 def test_a_tenant_only_ever_sees_its_own_rows(tenant_pair):
     tenant_a, tenant_b = tenant_pair
-    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
         conn.execute("INSERT INTO stock_targets (type_id, type_name) VALUES (?, ?)", (34, "Tritanium (A)"))
-    with pg_tenant.tenant_context(tenant_b), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_b), storage.connect() as conn:
         conn.execute("INSERT INTO stock_targets (type_id, type_name) VALUES (?, ?)", (34, "Tritanium (B)"))
 
-    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
         rows = conn.execute("SELECT type_name FROM stock_targets").fetchall()
     assert rows == [("Tritanium (A)",)]
 
-    with pg_tenant.tenant_context(tenant_b), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_b), storage.connect() as conn:
         rows = conn.execute("SELECT type_name FROM stock_targets").fetchall()
     assert rows == [("Tritanium (B)",)]
 
@@ -98,29 +98,29 @@ def test_upsert_with_widened_conflict_target_stays_tenant_scoped(tenant_pair):
         "home_market_stock=COALESCE(excluded.home_market_stock, stock_targets.home_market_stock), "
         "jita_market_stock=COALESCE(excluded.jita_market_stock, stock_targets.jita_market_stock)"
     )
-    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
         conn.execute(upsert, (34, "Tritanium (A) v1", 100, None, None, 100))
-    with pg_tenant.tenant_context(tenant_b), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_b), storage.connect() as conn:
         conn.execute(upsert, (34, "Tritanium (B) v1", 50, None, None, 50))
     # Re-upsert tenant A's row (same type_id) - must UPDATE tenant A's row
     # only, never touch tenant B's.
-    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
         conn.execute(upsert, (34, "Tritanium (A) v2", None, None, None, None))
 
-    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
         row = conn.execute("SELECT type_name, backup_stock FROM stock_targets WHERE type_id = ?", (34,)).fetchone()
     assert row == ("Tritanium (A) v2", 100.0)  # name updated, backup_stock kept (None -> COALESCE kept old)
 
-    with pg_tenant.tenant_context(tenant_b), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_b), storage.connect() as conn:
         row = conn.execute("SELECT type_name, backup_stock FROM stock_targets WHERE type_id = ?", (34,)).fetchone()
     assert row == ("Tritanium (B) v1", 50.0)  # untouched by tenant A's upsert
 
 
 def test_connect_without_a_current_tenant_refuses_to_run_unscoped():
-    token = pg_tenant._tenant_id_var.set(None)
+    token = storage._tenant_id_var.set(None)
     try:
         with pytest.raises(RuntimeError, match="no current tenant set"):
-            with pg_tenant.connect():
+            with storage.connect():
                 pass
     finally:
-        pg_tenant._tenant_id_var.reset(token)
+        storage._tenant_id_var.reset(token)

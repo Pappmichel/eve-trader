@@ -155,9 +155,9 @@ existing `_pending[state]` dict alongside `role_prefix`; `/callback` recovers it
 `ON CONFLICT(tenant_id, type_id)` upsert, and the fail-closed "no tenant set"
 error - through the real module, not just raw `psql`. Two real dialect gotchas
 were caught by actually running Phase 0 (not discoverable by reading the
-code); a third turned up during Phase 1's schema work (see below) and is
-recorded here too, since all three are the same category of "SQLite never
-enforced this, Postgres does" surprise:
+code); two more turned up during Phase 1's schema work and cutover (see
+below) and are recorded here too, since all four are the same category of
+"SQLite never enforced/offered this, Postgres does it differently" surprise:
 1. `SET LOCAL x = %s` does not accept a bound parameter - Postgres rejects it
    (`syntax error at or near "$1"`). Fixed by using
    `SELECT set_config('app.tenant_id', %s, true)` instead (a plain function
@@ -182,14 +182,73 @@ enforced this, Postgres does" surprise:
    character/corp_industry_jobs, character/corp_blueprints,
    character_sell_orders, job_category_locations, structure_names,
    category_location_options) to `BIGINT` - watch for the same pattern on any
-   column holding a raw ESI object ID rather than an EVE type-scale ID.
+   column holding a raw ESI object ID rather than an EVE type-scale ID. Same
+   gotcha resurfaced later in test *data*, not schema: a test reused a
+   BIGINT-scale fake structure ID as `sde_stations.station_id` (a real
+   column, correctly INTEGER - real NPC station ids are always small) -
+   fixed in the test, not the schema (see Phase 1 below).
+4. psycopg3's `Connection` object has no `executemany()` (only its `Cursor`
+   does) - `sqlite3.Connection.executemany()` is a shorthand SQLite offers
+   that Postgres's driver doesn't. Confirmed live:
+   `AttributeError: 'Connection' object has no attribute 'executemany'`, the
+   first time a real `storage.py` write (`upsert_shortlist`, called via
+   `conn.executemany(...)` exactly as every other multi-row write in the
+   file does) ran against Postgres end to end. Fixed once, centrally: added
+   an `executemany` method to `storage.py`'s `_TranslatingConnection`
+   wrapper (mirroring its existing `execute`) rather than touching each of
+   the ~15 call sites - every one of them keeps calling
+   `conn.executemany(...)` unchanged.
 
-`eve_trader/pg_tenant.py` is intentionally a separate module for now, not yet
-wired into `storage.py`'s `connect()`/`batch_session()` - swapping those over
-before every table is ported (Phase 1) would break the app for the other 36
-tables that don't exist in the new Postgres schema yet. The actual cutover of
-`storage.py` itself happens at the end of Phase 1, once the full schema is
-ported.
+**Phase 1 status: done.** `docs/phase1_schema.sql` covers all 37 tables;
+every one of the ~24 per-tenant tables has a passing isolation test
+(`tests/test_pg_tenant_isolation.py`, `test_pg_composite_pk_tables.py`,
+`test_pg_column_only_and_no_pk_tables.py` - 27 tests total). `pg_tenant.py`
+has been merged into `storage.py` itself and deleted - `storage.py`'s
+`connect()`/`batch_session()` are now the real pool/contextvar/`SET
+LOCAL`-equivalent/placeholder-shim mechanism (no more SQLite fallback, no
+more `db_path` parameter anywhere in the file - `DB_PATH` itself survives
+only as a legacy constant for `backup.py`'s still-unconverted direct-SQLite
+online-backup API, explicitly deferred to Phase 4). All ~78 storage
+functions had `db_path` stripped from their signatures; the 11
+composite-PK-bucket `ON CONFLICT` targets were widened in the real
+functions (not just the tests proving the pattern); 2 SQLite-only
+`INSERT OR REPLACE`/`INSERT OR IGNORE` statements were rewritten to
+`ON CONFLICT ... DO UPDATE`/`DO NOTHING`; 7 bare positional
+`INSERT INTO table VALUES (...)` sites for per-tenant tables got explicit
+column lists (needed once `tenant_id` became a real leading column); the 2
+`pd.read_sql_query(..., conn)` sites were replaced with manual
+`cursor.fetchall()` + `pd.DataFrame(...)`.
+
+Two further things learned only by actually running the full test suite
+against the real cutover (not discoverable by reading the code):
+- Column-only-bucket tables (PK never tenant_id-widened, by design) don't
+  get isolation for free from a fresh tenant_id the way composite-PK-bucket
+  tables do - a test using a hardcoded id like `item_id=1` can still hit a
+  physical PK collision with another test's row under a *different* tenant,
+  since RLS hides the row from queries but doesn't relax the PK constraint.
+  Fixed with `tests/pg_helpers.wipe_tables()` (an owner-role, cross-tenant
+  `DELETE FROM`) as an autouse fixture in the affected test files.
+- `@storage.with_batch_session()` (used by `plan_production`,
+  `plan_asset_optimized`, `discover_build_candidates`) and any *uncached*
+  `@lru_cache`'d SDE lookup (e.g. `get_system_security`, called
+  unconditionally by `_security_multiplier_for` for every activity)
+  unconditionally open a real pooled connection - even in tests that
+  monkeypatch every individual `storage.*` call, if the code path reaches
+  one of these it still needs a real tenant + reachable Postgres. This
+  pulled several dozen previously Postgres-independent tests (in
+  `test_production_engine.py`, `test_production_unlisted_stock.py`) into
+  needing `tests/pg_helpers.tenant`/`postgres_required()` too - not
+  something the original `db_path`/`tmp_path` text grep could have found,
+  since these tests never touched `db_path` at all.
+
+`storage.py` now requires an ambient tenant_id (fail-closed) for every real
+query - **the live app itself is deliberately left non-functional by this**
+(confirmed live: hitting a real endpoint returns HTTP 500 with
+`RuntimeError: ... no current tenant set`, not silently wrong data) until
+Phase 3 wires up real tenant resolution. Agreed explicitly with the user
+before starting Phase 1's cutover: no placeholder default-tenant stopgap -
+only the test suite (which sets its own tenant per test) needs to stay
+green in the meantime.
 
 **Phase 0 - Postgres + RLS proof of concept on `stock_targets`**
 Chosen specifically because its `type_id` PK has the collision problem, not because it's

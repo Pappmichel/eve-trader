@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import pytest
 
-from eve_trader import pg_tenant
+from eve_trader import storage
 
 from . import pg_helpers
 from .pg_helpers import _apply_phase1_schema  # noqa: F401 - scopes the schema-provisioning fixture to this module
@@ -71,19 +71,19 @@ def test_two_tenants_can_upsert_the_same_key_without_colliding(tenant_pair, tabl
         f"INSERT INTO {table} ({col_list}) VALUES ({placeholders}) "
         f"ON CONFLICT(tenant_id, {key_col}) DO UPDATE SET {update_col}=excluded.{update_col}"
     )
-    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
         conn.execute(upsert, row_a)
-    with pg_tenant.tenant_context(tenant_b), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_b), storage.connect() as conn:
         conn.execute(upsert, row_b)
     # No exception on either INSERT is itself part of what's being proven -
     # a shared/non-composite PK would raise a duplicate-key error on the
     # second insert.
 
-    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
         row = conn.execute(f"SELECT {update_col} FROM {table} WHERE {key_col} = ?", (row_a[0],)).fetchone()
     assert row == (row_a[1],)
 
-    with pg_tenant.tenant_context(tenant_b), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_b), storage.connect() as conn:
         row = conn.execute(f"SELECT {update_col} FROM {table} WHERE {key_col} = ?", (row_b[0],)).fetchone()
     assert row == (row_b[1],)
 
@@ -100,20 +100,20 @@ def test_shortlist_skip_streak_do_nothing_stays_tenant_scoped(tenant_pair):
         "INSERT INTO shortlist_skip_streak (item_id, skip_since) VALUES (?, ?) "
         "ON CONFLICT(tenant_id, item_id) DO NOTHING"
     )
-    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
         conn.execute(upsert, (501, "2026-08-01T00:00:00"))
-    with pg_tenant.tenant_context(tenant_b), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_b), storage.connect() as conn:
         conn.execute(upsert, (501, "2026-08-02T00:00:00"))
     # Re-call for tenant A with a later timestamp - DO NOTHING must keep the
     # original skip_since, not push it out.
-    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
         conn.execute(upsert, (501, "2026-08-03T00:00:00"))
 
-    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
         row = conn.execute("SELECT skip_since FROM shortlist_skip_streak WHERE item_id = ?", (501,)).fetchone()
     assert row == ("2026-08-01T00:00:00",)
 
-    with pg_tenant.tenant_context(tenant_b), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_b), storage.connect() as conn:
         row = conn.execute("SELECT skip_since FROM shortlist_skip_streak WHERE item_id = ?", (501,)).fetchone()
     assert row == ("2026-08-02T00:00:00",)
 
@@ -129,16 +129,16 @@ def test_category_location_options_do_nothing_stays_tenant_scoped(tenant_pair):
         "INSERT INTO category_location_options (category, location_id) VALUES (?, ?) "
         "ON CONFLICT(tenant_id, category, location_id) DO NOTHING"
     )
-    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
         conn.execute(upsert, ("Reactions", 1000000000005))
-    with pg_tenant.tenant_context(tenant_b), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_b), storage.connect() as conn:
         conn.execute(upsert, ("Reactions", 1000000000005))
 
-    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
         rows = conn.execute("SELECT category, location_id FROM category_location_options").fetchall()
     assert rows == [("Reactions", 1000000000005)]
 
-    with pg_tenant.tenant_context(tenant_b), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_b), storage.connect() as conn:
         rows = conn.execute("SELECT category, location_id FROM category_location_options").fetchall()
     assert rows == [("Reactions", 1000000000005)]
 
@@ -156,19 +156,19 @@ def test_shortlist_coalesce_upsert_stays_tenant_scoped(tenant_pair):
         "volume_m3=excluded.volume_m3, active=excluded.active, "
         "meta_level=COALESCE(excluded.meta_level, shortlist.meta_level)"
     )
-    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
         conn.execute(upsert, (1, "Tritanium (A)", "Material", 0.01, 1, 5))
-    with pg_tenant.tenant_context(tenant_b), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_b), storage.connect() as conn:
         conn.execute(upsert, (1, "Tritanium (B)", "Material", 0.01, 1, 3))
     # Re-upsert tenant A's row with meta_level=None - must keep meta_level=5,
     # must never touch tenant B's row.
-    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
         conn.execute(upsert, (1, "Tritanium (A) renamed", "Material", 0.01, 1, None))
 
-    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
         row = conn.execute("SELECT item, meta_level FROM shortlist WHERE item_id = ?", (1,)).fetchone()
     assert row == ("Tritanium (A) renamed", 5)
 
-    with pg_tenant.tenant_context(tenant_b), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_b), storage.connect() as conn:
         row = conn.execute("SELECT item, meta_level FROM shortlist WHERE item_id = ?", (1,)).fetchone()
     assert row == ("Tritanium (B)", 3)

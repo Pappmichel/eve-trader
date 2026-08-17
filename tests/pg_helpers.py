@@ -14,13 +14,13 @@ from typing import Iterable
 
 import pytest
 
-from eve_trader import pg_tenant
+from eve_trader import storage
 
 psycopg = pytest.importorskip("psycopg")
 
 # Owner/superuser DSN - only used to apply docs/phase1_schema.sql (DDL, role
 # creation, RLS policies). The app itself never connects with this - see
-# pg_tenant.PG_DSN for the non-owner eve_trader_app role it uses instead.
+# storage.PG_DSN for the non-owner eve_trader_app role it uses instead.
 OWNER_DSN = os.getenv(
     "EVE_TRADER_PG_OWNER_DSN",
     "host=localhost port=5432 dbname=eve_trader user=postgres password=devpassword",
@@ -95,13 +95,50 @@ def tenant_pair() -> tuple[str, str]:
     return str(uuid.uuid4()), str(uuid.uuid4())
 
 
+@pytest.fixture
+def tenant() -> str:
+    """One fresh tenant id per test, set as the current tenant for the whole
+    test body via storage.tenant_context - for the general storage.py test
+    files (test_storage_*.py etc.) that only need *an* isolated tenant, not
+    a pair to prove cross-tenant isolation between.
+
+    A fresh tenant_id alone only guarantees isolation for composite-PK-bucket
+    tables (tenant_id is part of the real PK there). For column-only-bucket
+    tables (character_assets, character_blueprints, character_sell_orders,
+    ...) the PK was deliberately left un-widened (the plan's reasoning:
+    those ids are already globally unique per ESI in real usage) - a test
+    using a small hardcoded id like item_id=1 can still collide with another
+    test's row at the physical PK level even though RLS hides one tenant's
+    rows from the other's queries. Use wipe_tables() for those."""
+    tenant_id = str(uuid.uuid4())
+    with storage.tenant_context(tenant_id):
+        yield tenant_id
+
+
 def clean_tables(tenant_ids: Iterable[str], *table_names: str) -> None:
     """Deletes all rows from `table_names` for each id in `tenant_ids` -
     generalizes test_pg_tenant_isolation.py's original _clean_stock_targets
     fixture to any table list. Runs as each tenant specifically (not as the
     table owner), so this itself exercises normal RLS-scoped access,
-    matching how the real app would ever touch these tables."""
+    matching how the real app would ever touch these tables. Only isolates
+    composite-PK-bucket tables - see wipe_tables() for the column-only
+    bucket, whose PK isn't tenant-scoped."""
     for tenant_id in tenant_ids:
-        with pg_tenant.tenant_context(tenant_id), pg_tenant.connect() as conn:
+        with storage.tenant_context(tenant_id), storage.connect() as conn:
             for table in table_names:
                 conn.execute(f"DELETE FROM {table}")
+
+
+def wipe_tables(*table_names: str) -> None:
+    """Deletes ALL rows from `table_names`, across every tenant - connects
+    as the owner role (bypassing RLS) specifically to do this. For
+    column-only-bucket tables, a fresh tenant_id doesn't prevent a small
+    hardcoded test id (item_id=1, 2, 3...) from colliding with the same
+    literal id inserted by an earlier test under a *different* tenant - the
+    PK collision happens regardless of which tenant can see the row. Call
+    this as an autouse fixture in any test file that seeds those tables with
+    hardcoded ids."""
+    with psycopg.connect(OWNER_DSN, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            for table in table_names:
+                cur.execute(f"DELETE FROM {table}")

@@ -8,6 +8,21 @@ from eve_trader.production.constants import SCC_SURCHARGE_RATE, ACTIVITY_MODS, r
 from eve_trader.production.engine import _activity_mods, _material_qty, _tech_ii_mods, _total_missing, classify_activity
 from eve_trader.production.models import CharacterSlotRow
 
+from . import pg_helpers
+from .pg_helpers import _apply_phase1_schema, tenant  # noqa: F401
+
+# Only the plan_asset_optimized/plan_production tests below need `tenant` +
+# postgres_required() - everything else in this file monkeypatches
+# storage.* entirely, but those two are wrapped in
+# @storage.with_batch_session(), which unconditionally checks out a real
+# pooled connection (to run `SELECT set_config(...)`) even when every
+# individual storage read/write inside is mocked - confirmed live, those
+# tests still raised "no current tenant set" without this. No module-level
+# pytestmark here (most tests in this file genuinely don't need Postgres) -
+# each of the 11 affected tests gets its own
+# @pg_helpers.postgres_required() decorator instead.
+psycopg = pytest.importorskip("psycopg")
+
 
 @pytest.fixture(autouse=True)
 def _reset_discover_cache():
@@ -130,7 +145,8 @@ def test_total_missing_zero_current_stock_matches_prior_behavior(monkeypatch):
     assert missing == 72.0
 
 
-def test_tech_iii_manual_decryptor_applies_without_invention_recipe(monkeypatch):
+@pg_helpers.postgres_required()
+def test_tech_iii_manual_decryptor_applies_without_invention_recipe(monkeypatch, tenant):
     # Tech III hulls/subsystems are Reverse-Engineering products, not T1-BP
     # Invention products, so find_invention_recipe_by_product_type_id always
     # returns None for them - a manually-selected decryptor must still drive
@@ -148,7 +164,8 @@ def test_tech_iii_manual_decryptor_applies_without_invention_recipe(monkeypatch)
     assert decryptor_name == "Accelerant"
 
 
-def test_tech_iii_falls_back_to_flat_baseline_without_override(monkeypatch):
+@pg_helpers.postgres_required()
+def test_tech_iii_falls_back_to_flat_baseline_without_override(monkeypatch, tenant):
     monkeypatch.setattr(storage, "find_invention_recipe_by_product_type_id", lambda blueprint_id: None)
     cfg = ProductionConfig()
 
@@ -161,7 +178,8 @@ def test_tech_iii_falls_back_to_flat_baseline_without_override(monkeypatch):
     assert decryptor_name is None
 
 
-def test_tech_i_uses_owned_bpo_me_te_when_available(monkeypatch):
+@pg_helpers.postgres_required()
+def test_tech_i_uses_owned_bpo_me_te_when_available(monkeypatch, tenant):
     # Owned BPO is ME10/TE6 (better ME than the flat "perfect" TE20 baseline
     # assumes, worse TE) - real owned data must win over the flat assumption.
     monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id: (10, 6))
@@ -172,7 +190,8 @@ def test_tech_i_uses_owned_bpo_me_te_when_available(monkeypatch):
     assert round(time_mult, 4) == 0.94      # 1 - 6/100
 
 
-def test_tech_i_falls_back_to_flat_baseline_when_bpo_not_owned(monkeypatch):
+@pg_helpers.postgres_required()
+def test_tech_i_falls_back_to_flat_baseline_when_bpo_not_owned(monkeypatch, tenant):
     monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id: None)
     cfg = ProductionConfig()
 
@@ -181,7 +200,8 @@ def test_tech_i_falls_back_to_flat_baseline_when_bpo_not_owned(monkeypatch):
     assert round(time_mult, 4) == 0.80
 
 
-def test_faction_is_always_me0_te0_and_ignores_owned_bpo_data(monkeypatch):
+@pg_helpers.postgres_required()
+def test_faction_is_always_me0_te0_and_ignores_owned_bpo_data(monkeypatch, tenant):
     # Confirmed with the user (2026-07-16): unlike Tech I, a Faction
     # blueprint's ME/TE is fixed at 0/0 in real EVE and can never be
     # researched or changed - even if get_owned_bpo_best_me_te somehow
@@ -304,7 +324,8 @@ def test_reaction_never_uses_owned_bpo_data(monkeypatch):
     assert round(time_mult, 4) == 1.00
 
 
-def test_job_cost_rate_includes_facility_tax_and_scc_surcharge(monkeypatch):
+@pg_helpers.postgres_required()
+def test_job_cost_rate_includes_facility_tax_and_scc_surcharge(monkeypatch, tenant):
     # Confirmed real bug (wiki.eveuniversity.org/Manufacturing): real job
     # cost = EIV * (system_index * structure_bonus + facility_tax + SCC
     # surcharge) - facility tax and the SCC surcharge are additive, not
@@ -396,7 +417,8 @@ class _FakePlanContext:
         self.adjusted_prices = {}
 
 
-def test_discover_build_candidates_skips_existing_stock_targets(monkeypatch):
+@pg_helpers.postgres_required()
+def test_discover_build_candidates_skips_existing_stock_targets(monkeypatch, tenant):
     monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
     monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: [
         (1, "Already Tracked", 1.0, 100, None, 7),  # type_id 1 - already a stock target, must be skipped
@@ -412,7 +434,8 @@ def test_discover_build_candidates_skips_existing_stock_targets(monkeypatch):
     assert [r["type_id"] for r in results] == [2]
 
 
-def test_discover_build_candidates_skips_non_manufacturable_items(monkeypatch):
+@pg_helpers.postgres_required()
+def test_discover_build_candidates_skips_non_manufacturable_items(monkeypatch, tenant):
     monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
     monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: [
         (2, "Raw Ore", 1.0, 100, None, 7),
@@ -424,7 +447,8 @@ def test_discover_build_candidates_skips_non_manufacturable_items(monkeypatch):
     assert results == []
 
 
-def test_discover_build_candidates_rejects_buy_equals_sell_as_synthetic_price(monkeypatch):
+@pg_helpers.postgres_required()
+def test_discover_build_candidates_rejects_buy_equals_sell_as_synthetic_price(monkeypatch, tenant):
     # Confirmed live: 'Racket' Light Neutron Blaster I showed buy=sell=
     # 689083.36 to the ISK - a real independent buy-side/sell-side order
     # book essentially never coincides exactly, so this is treated as a
@@ -448,7 +472,8 @@ def test_discover_build_candidates_rejects_buy_equals_sell_as_synthetic_price(mo
     assert results == []
 
 
-def test_discover_build_candidates_applies_min_margin_gate(monkeypatch):
+@pg_helpers.postgres_required()
+def test_discover_build_candidates_applies_min_margin_gate(monkeypatch, tenant):
     monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
     monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: [
         (2, "Marginal Widget", 1.0, 100, None, 7),
@@ -462,7 +487,8 @@ def test_discover_build_candidates_applies_min_margin_gate(monkeypatch):
     assert results == []
 
 
-def test_discover_build_candidates_rejects_implausibly_high_margins(monkeypatch):
+@pg_helpers.postgres_required()
+def test_discover_build_candidates_rejects_implausibly_high_margins(monkeypatch, tenant):
     # Confirmed real CCP SDE data quirk: reward/event ships (Gnosis, Praxis,
     # Sunesis, Metamorphosis) have a real published blueprint with a
     # vestigial 1-material placeholder list, producing a nonsensical
@@ -511,7 +537,8 @@ def test_build_material_tree_recurses_until_a_bought_leaf(monkeypatch):
     assert child["children"] == []
 
 
-def test_discover_build_candidates_sorts_by_potential_daily_profit_not_margin(monkeypatch):
+@pg_helpers.postgres_required()
+def test_discover_build_candidates_sorts_by_potential_daily_profit_not_margin(monkeypatch, tenant):
     # Confirmed with the user: margin alone isn't a useful ranking - a huge
     # margin nobody actually trades is worthless. Item 3 has the higher raw
     # margin (80% vs 20%) but zero observed market movement (nobody's buying
@@ -536,7 +563,8 @@ def test_discover_build_candidates_sorts_by_potential_daily_profit_not_margin(mo
     assert results[1]["margin"] > results[0]["margin"]  # the raw margin ranking would have gotten this backwards
 
 
-def test_discover_build_candidates_computes_potential_daily_profit_from_movement_and_margin(monkeypatch):
+@pg_helpers.postgres_required()
+def test_discover_build_candidates_computes_potential_daily_profit_from_movement_and_margin(monkeypatch, tenant):
     monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
     monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: [
         (2, "Widget", 1.0, 100, None, 7),
@@ -553,7 +581,8 @@ def test_discover_build_candidates_computes_potential_daily_profit_from_movement
     assert round(results[0]["potential_daily_profit"], 6) == 100000.0
 
 
-def test_discover_build_candidates_applies_min_daily_profit_gate(monkeypatch):
+@pg_helpers.postgres_required()
+def test_discover_build_candidates_applies_min_daily_profit_gate(monkeypatch, tenant):
     monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
     monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: [
         (2, "Untraded Widget", 1.0, 100, None, 7),
@@ -569,7 +598,8 @@ def test_discover_build_candidates_applies_min_daily_profit_gate(monkeypatch):
     assert results == []
 
 
-def test_discover_build_candidates_reuses_cache_within_ttl(monkeypatch):
+@pg_helpers.postgres_required()
+def test_discover_build_candidates_reuses_cache_within_ttl(monkeypatch, tenant):
     monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
     scan_calls = []
     monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: (
@@ -592,7 +622,8 @@ def test_discover_build_candidates_reuses_cache_within_ttl(monkeypatch):
     assert second == first
 
 
-def test_discover_build_candidates_top_n_slices_the_cached_list(monkeypatch):
+@pg_helpers.postgres_required()
+def test_discover_build_candidates_top_n_slices_the_cached_list(monkeypatch, tenant):
     monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
     monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: [
         (2, "Widget A", 1.0, 100, None, 7),
@@ -610,7 +641,8 @@ def test_discover_build_candidates_top_n_slices_the_cached_list(monkeypatch):
     assert sliced == full[:1]
 
 
-def test_invalidate_discover_cache_forces_a_rescan(monkeypatch):
+@pg_helpers.postgres_required()
+def test_invalidate_discover_cache_forces_a_rescan(monkeypatch, tenant):
     monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
     scan_calls = []
     monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: (
@@ -629,7 +661,8 @@ def test_invalidate_discover_cache_forces_a_rescan(monkeypatch):
     assert scan_calls == [1, 1]  # scanned again after invalidation
 
 
-def test_discover_build_candidates_concurrent_calls_do_not_double_scan(monkeypatch):
+@pg_helpers.postgres_required()
+def test_discover_build_candidates_concurrent_calls_do_not_double_scan(monkeypatch, tenant):
     # A cold cache hit by two threads at once (e.g. the background scheduler
     # and a user's own browser request landing together) must serialize on
     # _discover_cache_lock - the loser should reuse the winner's fresh cache,
@@ -654,7 +687,12 @@ def test_discover_build_candidates_concurrent_calls_do_not_double_scan(monkeypat
     results: list = [None, None]
 
     def call(i):
-        results[i] = engine.discover_build_candidates(cfg, client=_FakeGmClient())
+        # contextvars (the `tenant` fixture's storage.tenant_context) don't
+        # propagate to a new thread automatically (unlike asyncio tasks) -
+        # each spawned thread needs its own explicit set_current_tenant,
+        # using the same tenant id the main thread's `tenant` fixture set.
+        with storage.tenant_context(tenant):
+            results[i] = engine.discover_build_candidates(cfg, client=_FakeGmClient())
 
     t1 = threading.Thread(target=call, args=(0,))
     t2 = threading.Thread(target=call, args=(1,))
@@ -753,7 +791,8 @@ def test_expand_all_still_pools_multiple_edges_to_the_same_material_within_one_r
 
 
 # ------------------------------------------------------------ plan_asset_optimized
-def test_plan_asset_optimized_applies_the_same_overbuild_buffer_as_expand_all(monkeypatch, _expand_all_bom):
+@pg_helpers.postgres_required()
+def test_plan_asset_optimized_applies_the_same_overbuild_buffer_as_expand_all(monkeypatch, _expand_all_bom, tenant):
     # Real gap reported live (2026-08-15): "in der asset optimized buildlist
     # taucht nur eine reaction auf. in der normalen build list sehr viel
     # mehr" - plan_asset_optimized computed bare demand only, no
@@ -781,7 +820,8 @@ def test_plan_asset_optimized_applies_the_same_overbuild_buffer_as_expand_all(mo
     assert jobs_by_id[3].job_runs == 215  # Common - matches _expand_all's build_runs[(103, 1, 3)] exactly
 
 
-def test_plan_asset_optimized_pools_without_a_buffer_when_overbuild_is_zero(monkeypatch, _expand_all_bom):
+@pg_helpers.postgres_required()
+def test_plan_asset_optimized_pools_without_a_buffer_when_overbuild_is_zero(monkeypatch, _expand_all_bom, tenant):
     # Control case (component_overbuild=0.0) isolating pooling from the
     # buffer math, mirroring
     # test_expand_all_still_pools_multiple_edges_to_the_same_material_within_one_round.
@@ -802,7 +842,8 @@ def test_plan_asset_optimized_pools_without_a_buffer_when_overbuild_is_zero(monk
     assert jobs_by_id[3].job_runs == 110  # Common: 10 (ItemA) + 100 (Middle), no buffer
 
 
-def test_plan_asset_optimized_computes_stock_coverage_for_stock_targets_and_intermediates_alike(monkeypatch, _expand_all_bom):
+@pg_helpers.postgres_required()
+def test_plan_asset_optimized_computes_stock_coverage_for_stock_targets_and_intermediates_alike(monkeypatch, _expand_all_bom, tenant):
     # Display-only "how much of this item itself is already on hand" signal
     # (user request 2026-08-15, refined after user pushback: "Blocked" only
     # tells you about *this item's own materials*, not about how much of
@@ -836,7 +877,8 @@ def test_plan_asset_optimized_computes_stock_coverage_for_stock_targets_and_inte
     assert round(jobs_by_id[3].stock_coverage, 2) == 0.3  # 18 of 60 this-round demand already on hand
 
 
-def test_plan_asset_optimized_readiness_ignores_in_progress_industry_jobs(monkeypatch):
+@pg_helpers.postgres_required()
+def test_plan_asset_optimized_readiness_ignores_in_progress_industry_jobs(monkeypatch, tenant):
     # Real bug reported live (2026-08-15): user physically tried to queue
     # jobs off the Asset-Optimized list and couldn't, because a shared
     # material (Sylramic Fibers in their case) was already fully claimed by
@@ -885,7 +927,8 @@ def test_plan_asset_optimized_readiness_ignores_in_progress_industry_jobs(monkey
     assert jobs_by_id[2].runs_ready_now == 0
 
 
-def test_plan_asset_optimized_recommends_slot_split_for_eligible_categories_only(monkeypatch):
+@pg_helpers.postgres_required()
+def test_plan_asset_optimized_recommends_slot_split_for_eligible_categories_only(monkeypatch, tenant):
     # User request 2026-08-15: recommend how many free character job slots to
     # split a job's ready runs across, but only for Reactions/Advanced
     # Components/Capital Components - not Equipment/Ships/etc. Only one
@@ -973,7 +1016,8 @@ def test_allocate_slots_proportionally_weights_by_time_not_run_count():
     assert sum(result.values()) == 10
 
 
-def test_plan_asset_optimized_splits_slots_proportionally_across_competing_ready_jobs(monkeypatch):
+@pg_helpers.postgres_required()
+def test_plan_asset_optimized_splits_slots_proportionally_across_competing_ready_jobs(monkeypatch, tenant):
     # Real user correction (2026-08-16): the pool must be split *across*
     # every ready job sharing it, not each job recommended the pool as if it
     # were the only one wanting it - three jobs with 10/20/70 ready runs
@@ -1010,7 +1054,8 @@ def test_plan_asset_optimized_splits_slots_proportionally_across_competing_ready
     assert total == 10  # sums to the real pool, not each job claiming all 10 independently
 
 
-def test_plan_asset_optimized_weights_slot_split_by_job_time_not_run_count(monkeypatch):
+@pg_helpers.postgres_required()
+def test_plan_asset_optimized_weights_slot_split_by_job_time_not_run_count(monkeypatch, tenant):
     # Second real user correction (2026-08-16): "es soll ... die benötigte
     # zeit gewichtet werden. Jobs die mehr jobtime benötigen, sollen mehr
     # slots bekommen." ItemA has few ready runs (10) but each run takes 100s
@@ -1064,7 +1109,8 @@ def _make_fake_plan_context(stock_targets, manual_stock=None):
     return _FakeCtx
 
 
-def test_plan_production_drops_demand_entirely_when_build_margin_fails_min_margin(monkeypatch):
+@pg_helpers.postgres_required()
+def test_plan_production_drops_demand_entirely_when_build_margin_fails_min_margin(monkeypatch, tenant):
     # Real bug reported live: Ishtar/Golem (build margin 2.5%/10.7%, both
     # below the 15% default min_margin) showed up as ~10B ISK Buy List
     # entries purely because the tool used to fall back to force-buying an
@@ -1098,7 +1144,8 @@ def test_plan_production_drops_demand_entirely_when_build_margin_fails_min_margi
     assert inventory_by_id[20].total_missing == 1.0
 
 
-def test_plan_production_manual_override_bypasses_the_margin_gate(monkeypatch):
+@pg_helpers.postgres_required()
+def test_plan_production_manual_override_bypasses_the_margin_gate(monkeypatch, tenant):
     # A manual Build/Buy override (storage.manual_build_buy) is an explicit
     # user decision - the margin gate must not second-guess it.
     stock_targets = [(20, "BadMarginButOverridden", 1, 0, 0)]
@@ -1123,7 +1170,8 @@ def test_plan_production_manual_override_bypasses_the_margin_gate(monkeypatch):
     assert {row.type_id for row in result["build_list"]} == {20}
 
 
-def test_plan_production_buy_list_on_hand_pct_for_a_top_level_raw_material_target(monkeypatch):
+@pg_helpers.postgres_required()
+def test_plan_production_buy_list_on_hand_pct_for_a_top_level_raw_material_target(monkeypatch, tenant):
     # Real feature request: the Buy List should show what % of an item's
     # total demand is already on hand, not just the net quantity left to buy.
     stock_targets = [(30, "PartiallyStocked", 100, 0, 0)]  # backup_stock=100
@@ -1143,7 +1191,8 @@ def test_plan_production_buy_list_on_hand_pct_for_a_top_level_raw_material_targe
     assert round(row.on_hand_pct, 1) == 30.0  # 30 of 100 = 30% already on hand
 
 
-def test_plan_production_buy_list_on_hand_pct_for_a_recursively_reached_material(monkeypatch):
+@pg_helpers.postgres_required()
+def test_plan_production_buy_list_on_hand_pct_for_a_recursively_reached_material(monkeypatch, tenant):
     # Same "on hand %" column, but for an item reached only as a shared
     # material (not itself a stock target) - gross_demand must be tracked
     # inside _expand_all's netting step too, not just for top-level targets.

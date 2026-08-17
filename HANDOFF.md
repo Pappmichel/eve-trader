@@ -8,9 +8,9 @@ pause point instead of leaving it stale.
 ## Where things stand
 
 - Full architecture plan: `docs/MULTI_TENANT_PLAN.md` (committed, durable - read this
-  first, it has the full context/reasoning, plus the Phase 0 results and three real
-  dialect gotchas discovered while building it - the third (Postgres `INTEGER` is 32-bit,
-  real ESI object IDs need `BIGINT`) was found this session).
+  first, it has the full context/reasoning, plus **four** real dialect gotchas discovered
+  building Phases 0-1 (`SET LOCAL` param rejection, `IS NULL` parameter typing, Postgres
+  `INTEGER` being 32-bit, psycopg3's `Connection` missing `executemany()`).
 - Work happens on git branch **`multi-tenant`** (created from `main`, not yet merged).
   `main` and the live Oracle VM deployment are untouched and must stay that way until an
   explicit, separate go-ahead to cut over.
@@ -31,9 +31,9 @@ pause point instead of leaving it stale.
 
 **On a different machine, none of this exists yet** - Docker/Postgres/`.venv` are all
 machine-local, not synced by Dropbox or git. Re-run: install Docker Desktop (needs WSL2
-first, `wsl --install` as admin, then reboot), `docker run ...` below, apply
-`docs/phase0_setup.sql`, and `pip install -e .` (picks up `psycopg`/`psycopg_pool` from
-`pyproject.toml`, which *is* committed).
+first, `wsl --install` as admin, then reboot), `docker run ...` below (schema applies
+itself automatically the first time `pytest` runs - see below), and `pip install -e .`
+(picks up `psycopg`/`psycopg_pool` from `pyproject.toml`, which *is* committed).
 
 - **Docker Desktop installed** on this machine (needed WSL2 first - already done).
 - **Postgres running** in a container named `eve-trader-pg` (`docker run -d --name
@@ -57,101 +57,71 @@ first, `wsl --install` as admin, then reboot), `docker run ...` below, apply
       `tests/test_pg_tenant_isolation.py` (4/4 passing against the real local Postgres) -
       proves RLS isolation, the widened composite-PK `ON CONFLICT`, and the fail-closed
       "no tenant set" error, all through real code, not just raw SQL.
-- [~] **Phase 1 - started, schema + all 24 per-tenant tables' isolation tests done.** Full
-      Phase 1 (port ~24 per-tenant tables + 12 shared SDE tables + rework the
-      ~136-occurrence test isolation model + the actual `storage.py` cutover) is still its
-      own multi-day sub-effort - progress so far:
-      - `docs/phase1_schema.sql` - the **complete** Postgres schema for all 37 tables
-        (supersedes `docs/phase0_setup.sql` for schema purposes, that file stays as the
-        historical Phase-0 record), correctly bucketed per the plan's three categories
-        (shared/no-RLS, composite-PK, column-only+no-PK). Idempotent - verified by running
-        it twice in a row against the live container with zero errors. Real ESI object ID
-        columns (`item_id`/`job_id`/`order_id`/`location_id`/`output_location_id`/
-        `installer_id`) are `BIGINT`, not `INTEGER` - see the plan's 3rd dialect gotcha,
-        caught live by a test using a realistic structure ID.
-      - `tests/pg_helpers.py` - reusable fixtures (`tenant_pair`, `clean_tables`,
-        `postgres_required` skip marker) plus a session-scoped autouse fixture that applies
-        `phase1_schema.sql` automatically - the manual `Get-Content | docker exec ... psql`
-        step is no longer a prerequisite for running the Postgres tests, **including on a
-        freshly (re)created container with no schema/role yet** - `_postgres_available()`
-        had to be fixed to probe via the owner role (always exists) instead of the app role
-        (only exists after the schema fixture runs), otherwise every Postgres test wrongly
-        self-skipped at collection time on a brand-new container. Confirmed live.
-      - `tests/conftest.py` - new file (didn't exist before), registers the above fixtures
-        project-wide.
-      - `test_pg_tenant_isolation.py` refactored onto the new helpers - same 4 tests, still
-        passing, proves the extraction didn't break anything.
-      - `tests/test_pg_composite_pk_tables.py` - isolation tests for all 10 remaining
-        composite-PK-bucket tables (`stock_targets` itself already covered by
-        `test_pg_tenant_isolation.py`) - 7 parametrized simple-upsert tests, 2 `ON CONFLICT
-        DO NOTHING` tests (`shortlist_skip_streak`, `category_location_options`), 1 COALESCE
-        upsert test (`shortlist`, mirrors `stock_targets`'s).
-      - `tests/test_pg_column_only_and_no_pk_tables.py` - isolation tests for the remaining
-        13 tables (8 column-only-bucket + 5 no-PK-bucket) - the key thing proven here is
-        that an **unfiltered** `DELETE FROM {table}` (the real pattern every
-        `replace_*`/`save_*` function for these tables uses, since their PK was never
-        tenant_id-widened) only ever touches the calling tenant's own rows, purely via RLS.
-        Also caught a real test-hygiene bug: this bucket's hardcoded PK literals (e.g.
-        `item_id=100001`) can collide across *separate pytest sessions* (not just within
-        one), because a leftover row from an earlier passing run isn't tied to the new
-        run's fresh `tenant_pair` - fixed by cleaning up after each test too, not just
-        before (the composite-PK bucket doesn't strictly need this, since tenant_id is
-        part of its PK, but got the same fix for consistency/hygiene).
-      - **All ~24 per-tenant tables now have a passing isolation test** - full `pytest`
-        suite: **330 passed**, no regressions (confirmed stable across 2 consecutive runs,
-        proving the cleanup fixes actually stop garbage accumulation).
-      - **Post-hoc review caught a real perf regression, now fixed**: registering
-        `_apply_phase1_schema` in `tests/conftest.py` (to auto-apply the schema
-        project-wide) made it run for *every* `pytest` invocation, not just Postgres
-        tests - confirmed live, a single unrelated file (`pytest
-        tests/test_shortlist.py`) cost an extra ~4-5s of pure connection-timeout
-        overhead with the local Postgres stopped. Root cause: importing a module
-        executes its *entire* body, so even `from .pg_helpers import tenant_pair`
-        (the only thing conftest.py actually needs) was enough to trigger a
-        module-level `_postgres_available()` network call. Fixed two ways: (1)
-        `postgres_required` is now a function, not a precomputed module-level
-        constant, so the connectivity check only fires in the 3 Postgres test
-        modules that actually call it; (2) `_apply_phase1_schema` moved back to
-        being imported per-file (like it briefly was earlier this session) instead
-        of registered in conftest.py; (3) `_postgres_available()` itself is now
-        `functools.lru_cache`d so it's at most one network round-trip per process
-        even within a Postgres-heavy run. Re-verified: unrelated single-file runs
-        are back to ~0.3-1.7s regardless of Postgres's state, full suite is still
-        330 passed with Postgres up and 303 passed/27 skipped with it down.
-      - **Not yet done**: the 2 `pd.read_sql_query` call sites (`storage.py:1444`, `1452`),
-        and - the big one - actually rewiring `storage.py`'s `connect()`/`batch_session()`
-        to Postgres (only happens once every table is proven, per the plan - which is now
-        true, so this is the next real milestone).
+- [x] **Phase 1 - DONE.** Schema, isolation tests, and the actual `storage.py` cutover to
+      Postgres are all complete:
+      - `docs/phase1_schema.sql` - the complete Postgres schema for all 37 tables, bucketed
+        per the plan's three categories (shared/no-RLS, composite-PK, column-only+no-PK).
+        Idempotent (verified twice in a row against the live container).
+      - `tests/pg_helpers.py`/`tests/conftest.py` - reusable fixtures (`tenant_pair`,
+        `tenant`, `clean_tables`, `wipe_tables`, `postgres_required()`) + automatic schema
+        provisioning - no manual `psql` step needed to run the Postgres tests.
+      - All ~24 per-tenant tables have a passing isolation test (`test_pg_tenant_isolation.py`,
+        `test_pg_composite_pk_tables.py`, `test_pg_column_only_and_no_pk_tables.py` - 27
+        tests total).
+      - **The cutover itself**: `pg_tenant.py`'s pool/contextvar/`SET LOCAL`-equivalent/
+        placeholder-shim logic is now merged directly into `storage.py` (file deleted) -
+        `storage.py`'s real `connect()`/`batch_session()` talk to Postgres, not SQLite.
+        `db_path` removed from all ~78 function signatures; `DB_PATH` survives only as a
+        legacy constant for `backup.py`'s still-SQLite-based online-backup API (Phase 4).
+        The 11 composite-PK `ON CONFLICT` targets were widened in the real functions; 2
+        SQLite-only `INSERT OR REPLACE`/`INSERT OR IGNORE` rewritten to Postgres
+        `ON CONFLICT` syntax; 7 bare positional inserts got explicit column lists; the 2
+        `pd.read_sql_query` sites replaced with manual `fetchall()` + `pd.DataFrame(...)`.
+      - Converted all 7 SQLite-`tmp_path`-based storage test files (122 occurrences) to a
+        fresh-tenant-per-test model, including a full rework of
+        `test_storage_batch_session.py` (now counts `psycopg_pool` checkouts instead of
+        `sqlite3.connect()` calls). Also had to fix ~20 more tests across
+        `test_production_engine.py`/`test_production_unlisted_stock.py` that never
+        touched `db_path` at all but still needed a tenant - `@storage.with_batch_session()`
+        and any uncached `@lru_cache` SDE lookup (`get_system_security` etc.) opens a real
+        pooled connection unconditionally, even when every individual `storage.*` call in
+        the test is monkeypatched.
+      - **Full suite: 329 passed** (up from 330 - one net test removed,
+        `test_batch_session_raises_when_nested_for_a_different_db_path`, whose premise
+        (`db_path` existing at all) no longer applies), stable across repeated runs, both
+        with Postgres up and down (**241 passed/88 skipped** with it stopped - clean skips,
+        zero failures either way).
+      - **Live-verified the accepted trade-off**: started the real API server and hit a
+        real endpoint - got a clean HTTP 500 with `RuntimeError: ... no current tenant
+        set`, not a crash and not silently-wrong data. Confirms the fail-closed design
+        works as intended; the live app is genuinely unusable until Phase 3, exactly as
+        agreed with the user before starting this work.
+      - Two more dialect gotchas found live during the cutover (now documented in
+        `docs/MULTI_TENANT_PLAN.md`'s gotcha list): psycopg3's `Connection` has no
+        `executemany()` (fixed once, centrally, in `_TranslatingConnection`); and
+        column-only-bucket tables don't get free test isolation from a fresh tenant_id the
+        way composite-PK-bucket tables do (their PK was deliberately left un-widened, so a
+        hardcoded test id can still collide across tenants at the physical PK level) -
+        fixed with `pg_helpers.wipe_tables()`.
 - [ ] Phase 2 - config/secrets into Postgres + `TRADING_CONFIG`/`PRODUCTION_CONFIG` proxy
       objects (watch the `type(cfg)` break at `config.py:172`, already documented in the
-      plan). **Not started.**
+      plan). **Not started. This is the next phase to pick up.**
 - [ ] Phase 3 - tenant resolution / access-gate / OAuth-callback tenant-threading / admin
-      CLI provisioning. **Not started.**
+      CLI provisioning. **Not started.** (This is what actually makes the live app usable
+      again - Phase 1's cutover deliberately left it non-functional until this lands.)
 - [ ] Phase 4 - scheduler multi-tenant loop + migration *tooling* (not a live migration -
-      test against a copy of the SQLite file only). **Not started.**
+      test against a copy of the SQLite file only) + `backup.py`'s real Postgres
+      (`pg_dump`-based) rework. **Not started.**
 - [ ] Phase 5 - deploy docs. **Not started.**
-
-Note: `eve_trader/storage.py`'s real `connect()`/`batch_session()` have **not** been
-touched yet - `pg_tenant.py` is a deliberately separate module until Phase 1 finishes
-porting every table (swapping storage.py over earlier would break the app for the 36
-tables not yet in the new Postgres schema).
 
 ## Immediate next step
 
-Every per-tenant table now has a passing isolation test - the schema-and-proof stage of
-Phase 1 is done. What's left before Phase 1 is fully complete:
-
-1. The 2 `pd.read_sql_query(..., conn)` call sites (`storage.py:1444`, `1452`) - pandas'
-   SQL layer doesn't reliably support raw `psycopg` connections, replace with manual
-   `cursor.fetchall()` + `pd.DataFrame(...)`.
-2. **The big one**: merge `pg_tenant.py`'s pool/contextvar/`SET LOCAL`/placeholder-shim
-   logic into `storage.py`'s actual `connect()`/`batch_session()`, and retire the SQLite
-   `SCHEMA` string. Note one thing this session's tests didn't need to deal with but the
-   real cutover will: several `storage.py` writes use bare `INSERT INTO table VALUES
-   (?,?,?,?)` (positional, no explicit column list - e.g. `replace_character_slots`,
-   `replace_blueprints`, `replace_sell_orders`) - once `tenant_id` is a real column (with
-   a server-side `DEFAULT`), those need an explicit column list or they'll silently
-   misalign against the new column order. `tests/test_pg_column_only_and_no_pk_tables.py`
-   sidestepped this by always listing columns explicitly - the real port doesn't get to.
-3. Rework the test suite's SQLite `tmp_path`/`db_path` isolation model (~136 occurrences)
-   to a Postgres equivalent once storage.py itself is on Postgres.
+Phase 1 is fully done - `storage.py` runs on Postgres for real now, proven by the full test
+suite. Start Phase 2: create `tenant_settings`/`tenant_tokens` tables (add them to
+`docs/phase1_schema.sql`'s pattern, or a new `docs/phase2_schema.sql`), build the
+`TRADING_CONFIG`/`PRODUCTION_CONFIG` `contextvars`-backed proxy objects, fix
+`config.py:172`'s `type(cfg)` call site (pass the concrete dataclass type explicitly
+instead of deriving it), and swap `do_update_settings`'s persistence backend from the
+YAML-file write to a `tenant_settings` UPDATE. Acceptance test per the plan: a
+Settings-page save with a bad value still fails with `ConfigError` through the proxy,
+exactly as it does today.

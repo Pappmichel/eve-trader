@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import pytest
 
-from eve_trader import pg_tenant
+from eve_trader import storage
 
 from . import pg_helpers
 from .pg_helpers import _apply_phase1_schema  # noqa: F401 - scopes the schema-provisioning fixture to this module
@@ -92,24 +92,24 @@ def test_tenant_scoped_visibility_and_wholesale_delete(tenant_pair, table, cols,
     placeholders = ", ".join("?" for _ in cols)
     insert = f"INSERT INTO {table} ({col_list}) VALUES ({placeholders})"
 
-    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
         conn.execute(insert, row_a)
-    with pg_tenant.tenant_context(tenant_b), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_b), storage.connect() as conn:
         conn.execute(insert, row_b)
 
-    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
         assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone() == (1,)
-    with pg_tenant.tenant_context(tenant_b), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_b), storage.connect() as conn:
         assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone() == (1,)
 
     # Unfiltered DELETE, as tenant A only - mirrors the real replace_*/save_*
     # functions exactly (see module docstring). Must not touch tenant B's row.
-    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
         conn.execute(f"DELETE FROM {table}")
 
-    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
         assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone() == (0,)
-    with pg_tenant.tenant_context(tenant_b), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_b), storage.connect() as conn:
         assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone() == (1,)
 
 
@@ -120,14 +120,14 @@ def test_append_only_tables_stay_tenant_scoped(tenant_pair, table, cols, rows_a,
     placeholders = ", ".join("?" for _ in cols)
     insert = f"INSERT INTO {table} ({col_list}) VALUES ({placeholders})"
 
-    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
         for row in rows_a:
             conn.execute(insert, row)
-    with pg_tenant.tenant_context(tenant_b), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_b), storage.connect() as conn:
         for row in rows_b:
             conn.execute(insert, row)
 
-    with pg_tenant.tenant_context(tenant_a), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
         assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone() == (len(rows_a),)
-    with pg_tenant.tenant_context(tenant_b), pg_tenant.connect() as conn:
+    with storage.tenant_context(tenant_b), storage.connect() as conn:
         assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone() == (len(rows_b),)
