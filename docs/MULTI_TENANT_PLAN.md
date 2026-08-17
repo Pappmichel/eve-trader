@@ -148,6 +148,32 @@ existing `_pending[state]` dict alongside `role_prefix`; `/callback` recovers it
 
 ## Phased implementation
 
+**Phase 0 status: done, live-verified against a real local Postgres (Docker
+`eve-trader-pg`).** `eve_trader/pg_tenant.py` implements the pool/contextvar/
+`SET LOCAL`-equivalent/placeholder-shim; `tests/test_pg_tenant_isolation.py`
+(4 tests, all passing) proves cross-tenant isolation, the widened
+`ON CONFLICT(tenant_id, type_id)` upsert, and the fail-closed "no tenant set"
+error - through the real module, not just raw `psql`. Two real dialect gotchas
+were caught by actually running this (not discoverable by reading the code):
+1. `SET LOCAL x = %s` does not accept a bound parameter - Postgres rejects it
+   (`syntax error at or near "$1"`). Fixed by using
+   `SELECT set_config('app.tenant_id', %s, true)` instead (a plain function
+   call, `is_local=true` is the parameterized equivalent of `SET LOCAL`).
+2. `CASE WHEN ? IS NULL THEN ... END` fails with `could not determine data
+   type of parameter` whenever the bound value is actually `None` - Postgres
+   can't infer a parameter's type from an `IS NULL` check alone (SQLite never
+   required this). Fix: cast the parameter explicitly, e.g. `?::real IS NULL`.
+   Confirmed only one call site has this exact shape today
+   (`storage.py:949`), but watch for the same pattern while porting Phase 1's
+   other upserts.
+
+`eve_trader/pg_tenant.py` is intentionally a separate module for now, not yet
+wired into `storage.py`'s `connect()`/`batch_session()` - swapping those over
+before every table is ported (Phase 1) would break the app for the other 36
+tables that don't exist in the new Postgres schema yet. The actual cutover of
+`storage.py` itself happens at the end of Phase 1, once the full schema is
+ported.
+
 **Phase 0 - Postgres + RLS proof of concept on `stock_targets`**
 Chosen specifically because its `type_id` PK has the collision problem, not because it's
 easy. Stand up Postgres, add `psycopg[binary]` + `psycopg_pool` dependencies (no ORM -
