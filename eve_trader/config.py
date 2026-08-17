@@ -7,6 +7,7 @@ Values are loaded from (in order of increasing priority):
 """
 from __future__ import annotations
 
+import contextvars
 import os
 import typing
 from dataclasses import dataclass, field
@@ -15,9 +16,39 @@ from typing import Any, Optional
 
 import yaml
 from dotenv import load_dotenv
-from ruamel.yaml import YAML
 
 load_dotenv()
+
+
+class ConfigProxy:
+    """Forwards attribute reads *and* writes to whatever config instance a
+    contextvars.ContextVar currently resolves to - lets TRADING_CONFIG/
+    PRODUCTION_CONFIG stay the same importable name/object everywhere
+    (every `cfg: TradingConfig = TRADING_CONFIG`-style default parameter
+    across the app needs zero changes) while actually resolving to a
+    different instance per request, once Phase 3 sets one per tenant.
+
+    Until Phase 3 builds that per-request resolution, nothing ever calls
+    the ContextVar's own `.set()` - every read/write falls through to its
+    `default=` (the single shared instance loaded at import time, same as
+    before this proxy existed), so single-tenant behavior is unchanged.
+
+    Writes matter here, not just reads: apply_config_overrides does
+    `setattr(cfg, key, value)` directly on whatever's passed to it - a
+    read-only proxy would silently mutate a orphaned instance rather than
+    the one every other read actually sees."""
+
+    def __init__(self, var: contextvars.ContextVar):
+        object.__setattr__(self, "_var", var)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._var.get(), name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self._var.get(), name, value)
+
+    def __repr__(self) -> str:
+        return repr(self._var.get())
 
 
 class ConfigError(Exception):
@@ -161,15 +192,22 @@ def _check_range(key: str, value: Any) -> None:
         raise ConfigError(f"{key}: {value!r} is above the maximum allowed value ({hi})")
 
 
-def validate_config_overrides(cfg: Any, overrides: dict[str, Any]) -> None:
+def validate_config_overrides(cfg: Any, overrides: dict[str, Any], cfg_type: Optional[type] = None) -> None:
     """Type- and range-checks every `overrides` value against its field's
     declared type on `cfg` (a TradingConfig or ProductionConfig instance) -
     raises ConfigError on the *first* mismatch, before anything is applied,
     so a bad value never lands half-applied (some fields written, others
     not). Unknown keys (not a real field on `cfg`) are silently skipped
     here, same as apply_config_overrides - this is about catching a wrong
-    *type*/*range* for a real field, not about rejecting unrecognized keys."""
-    hints = typing.get_type_hints(type(cfg))
+    *type*/*range* for a real field, not about rejecting unrecognized keys.
+
+    `cfg_type` defaults to `type(cfg)` - correct whenever `cfg` is a plain
+    TradingConfig/ProductionConfig instance (every test in this repo, and
+    load_trading_config/load_production_config below), and *only* wrong
+    when `cfg` is a ConfigProxy (type(cfg) would return ConfigProxy itself,
+    not the real dataclass it forwards to) - callers passing a proxy
+    (do_update_settings) pass the concrete type explicitly instead."""
+    hints = typing.get_type_hints(cfg_type or type(cfg))
     for key, value in overrides.items():
         if not hasattr(cfg, key):
             continue
@@ -427,43 +465,47 @@ def load_access_config(path: Path = DEFAULT_CONFIG_PATH) -> AccessConfig:
     return cfg
 
 
-TRADING_CONFIG = load_trading_config()
+# TRADING_CONFIG is a ConfigProxy, not a plain TradingConfig instance - see
+# ConfigProxy's docstring above. The ContextVar's `default=` is the same
+# instance load_trading_config() would have returned directly before this
+# phase, so with no per-request value ever set (true until Phase 3), every
+# read/write behaves exactly as it did when TRADING_CONFIG was that
+# instance itself.
+_trading_config_var: contextvars.ContextVar[TradingConfig] = contextvars.ContextVar(
+    "trading_config", default=load_trading_config()
+)
+TRADING_CONFIG = ConfigProxy(_trading_config_var)
 OAUTH_CONFIG = OAuthConfig()
+# AccessConfig deliberately stays a plain instance, never a ConfigProxy -
+# per its own docstring, it's operator-only and becomes the tenant registry
+# in Phase 3, never a per-tenant Settings-page value.
 ACCESS_CONFIG = load_access_config()
 
 
-def save_config_overrides(updates: dict[str, Any], *live_configs, path: Path = DEFAULT_CONFIG_PATH) -> None:
-    """Persists `updates` into config.yaml and immediately applies them to
-    every object in `live_configs` that has a matching attribute (e.g.
-    TRADING_CONFIG, production.config.PRODUCTION_CONFIG - both dataclasses
-    loaded from this same file) so a Settings-page save takes effect without
-    restarting the app.
-
-    Uses ruamel.yaml's round-trip mode instead of plain PyYAML: config.yaml is
-    meant to be hand-edited too (see config.example.yaml's inline comments) -
-    a plain load+dump would silently strip every comment on first save.
+def save_tenant_config_overrides(scope: str, updates: dict[str, Any], *live_configs, cfg_type: type) -> None:
+    """Postgres-backed replacement for the old config.yaml-writing
+    save_config_overrides - persists `updates` into tenant_settings for
+    `scope` ('trading'/'production') and immediately applies them to every
+    object in `live_configs` (the live ConfigProxy objects) so a
+    Settings-page save takes effect without restarting the app.
 
     Validates `updates` against every live config's field types *before*
-    writing anything (see validate_config_overrides) - raises ConfigError on
-    a bad value (e.g. a string where a number is expected) instead of
-    writing a half-invalid config.yaml or letting it crash later, deep
-    inside engine.py, the first time that field is actually used. Callers
-    (actions.py do_update_settings) convert ConfigError to ActionError so it
-    reaches the Settings page as a normal, clear error.
+    persisting anything (see validate_config_overrides) - raises ConfigError
+    on a bad value (e.g. a string where a number is expected) instead of
+    writing a half-invalid row or letting it crash later, deep inside
+    engine.py, the first time that field is actually used. Callers
+    (do_update_settings) convert ConfigError to ActionError so it reaches
+    the Settings page as a normal, clear error.
+
+    `cfg_type` is passed explicitly rather than derived from `type(cfg)` -
+    see validate_config_overrides's own docstring for why (`live_configs`
+    are ConfigProxy objects here, not plain dataclass instances).
     """
     for cfg in live_configs:
-        validate_config_overrides(cfg, updates)
+        validate_config_overrides(cfg, updates, cfg_type)
 
-    yaml_rt = YAML()
-    yaml_rt.preserve_quotes = True
-    data = {}
-    if path.exists():
-        with open(path, "r", encoding="utf-8") as f:
-            data = yaml_rt.load(f) or {}
-    for key, value in updates.items():
-        data[key] = value
-    with open(path, "w", encoding="utf-8") as f:
-        yaml_rt.dump(data, f)
+    from . import storage  # deferred: storage.py imports config.py (DATA_DIR) at module level, so importing it back here at call time (not module load time) avoids a circular import
+    storage.save_tenant_settings(scope, updates)
 
     for cfg in live_configs:
         apply_config_overrides(cfg, updates)

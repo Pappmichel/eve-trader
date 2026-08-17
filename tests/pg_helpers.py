@@ -26,7 +26,9 @@ OWNER_DSN = os.getenv(
     "host=localhost port=5432 dbname=eve_trader user=postgres password=devpassword",
 )
 
-_SCHEMA_SQL = Path(__file__).resolve().parent.parent / "docs" / "phase1_schema.sql"
+_DOCS_DIR = Path(__file__).resolve().parent.parent / "docs"
+_PHASE1_SCHEMA_SQL = _DOCS_DIR / "phase1_schema.sql"
+_PHASE2_SCHEMA_SQL = _DOCS_DIR / "phase2_schema.sql"
 
 
 @functools.lru_cache(maxsize=1)
@@ -84,7 +86,22 @@ def _apply_phase1_schema() -> None:
     if not _postgres_available():
         return
     with psycopg.connect(OWNER_DSN, autocommit=True) as conn:
-        conn.execute(_SCHEMA_SQL.read_text())
+        conn.execute(_PHASE1_SCHEMA_SQL.read_text())
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _apply_phase2_schema(_apply_phase1_schema) -> None:
+    """Same idea as _apply_phase1_schema, for docs/phase2_schema.sql
+    (tenant_settings/tenant_tokens) - a separate fixture/file rather than
+    folding into phase1_schema.sql, matching how each phase got its own
+    schema file so far. Explicitly depends on _apply_phase1_schema (not
+    just relying on fixture-collection order) - phase2_schema.sql's GRANT
+    targets the eve_trader_app role, which phase1_schema.sql is what
+    creates."""
+    if not _postgres_available():
+        return
+    with psycopg.connect(OWNER_DSN, autocommit=True) as conn:
+        conn.execute(_PHASE2_SCHEMA_SQL.read_text())
 
 
 @pytest.fixture

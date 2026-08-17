@@ -1,9 +1,13 @@
 import pytest
 
+from eve_trader import storage
 from eve_trader.actions import ActionError
 from eve_trader.config import ConfigError, TradingConfig, apply_config_overrides, validate_config_overrides
 from eve_trader.production import actions as production_actions
 from eve_trader.production.config import ProductionConfig, validate_production_overrides
+
+from . import pg_helpers
+from .pg_helpers import _apply_phase1_schema, _apply_phase2_schema, tenant  # noqa: F401
 
 
 def test_validate_accepts_correctly_typed_overrides():
@@ -180,3 +184,44 @@ def test_production_do_update_settings_rejects_bad_structure_type():
     cfg = ProductionConfig()
     with pytest.raises(ActionError, match="reaction_structure_type"):
         production_actions.do_update_settings({"reaction_structure_type": "Bogus Structure"}, cfg=cfg)
+
+
+@pg_helpers.postgres_required()
+def test_do_update_settings_persists_to_tenant_settings_and_applies_live(tenant):
+    # Phase 2's actual new behavior: a valid Settings-page save now lands in
+    # Postgres tenant_settings (not config.yaml) *and* takes effect on the
+    # live TRADING_CONFIG proxy immediately - the same two guarantees
+    # save_config_overrides (YAML) used to provide, now backed by Postgres.
+    from eve_trader import actions
+    from eve_trader.config import TRADING_CONFIG
+
+    original = TRADING_CONFIG.min_hit_rate
+    try:
+        actions.do_update_settings({"min_hit_rate": 0.42})
+
+        assert TRADING_CONFIG.min_hit_rate == 0.42
+        assert storage.load_tenant_settings("trading") == {"min_hit_rate": 0.42}
+    finally:
+        apply_config_overrides(TRADING_CONFIG, {"min_hit_rate": original})  # don't leak into other tests
+
+
+@pg_helpers.postgres_required()
+def test_trading_and_production_settings_are_stored_under_separate_scopes(tenant):
+    # tenant_settings' PK is (tenant_id, scope) - a Trading save and a
+    # Production save for the same tenant must not clobber each other.
+    from eve_trader import actions
+    from eve_trader.config import TRADING_CONFIG
+    from eve_trader.production import actions as prod_actions
+    from eve_trader.production.config import PRODUCTION_CONFIG
+
+    trading_original = TRADING_CONFIG.min_hit_rate
+    production_original = PRODUCTION_CONFIG.min_margin
+    try:
+        actions.do_update_settings({"min_hit_rate": 0.42})
+        prod_actions.do_update_settings({"min_margin": 0.42})
+
+        assert storage.load_tenant_settings("trading") == {"min_hit_rate": 0.42}
+        assert storage.load_tenant_settings("production") == {"min_margin": 0.42}
+    finally:
+        apply_config_overrides(TRADING_CONFIG, {"min_hit_rate": trading_original})
+        apply_config_overrides(PRODUCTION_CONFIG, {"min_margin": production_original})

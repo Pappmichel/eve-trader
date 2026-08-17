@@ -250,6 +250,38 @@ before starting Phase 1's cutover: no placeholder default-tenant stopgap -
 only the test suite (which sets its own tenant per test) needs to stay
 green in the meantime.
 
+**Phase 2 status: done.** `docs/phase2_schema.sql` adds `tenant_settings`
+(`tenant_id`, `scope` - `'trading'`/`'production'`, `overrides JSONB`) and
+`tenant_tokens` (schema only - see below). `eve_trader/config.py` gained a
+`ConfigProxy` class (`__getattr__`/`__setattr__` forwarding to a
+`contextvars.ContextVar`'s current value) - `TRADING_CONFIG`/
+`PRODUCTION_CONFIG` are now proxies, not plain dataclass instances, so
+every one of the 92 `cfg: TradingConfig = TRADING_CONFIG`-style call sites
+across 20 files needed **zero changes** (confirmed live: both files import
+cleanly, `TRADING_CONFIG.jita_region_id` reads correctly, and a real GET
+`/api/trading/settings` returns real values with **no tenant context set
+at all** - the `ContextVar`'s `default=` is exactly the single shared
+instance the app used before this phase, so nothing broke for the
+still-single-tenant-in-practice app). `validate_config_overrides` gained an
+optional `cfg_type` parameter (defaults to `type(cfg)`, correct for every
+existing caller - only the one call site now passing a proxy needs it
+explicit) - fixes the `type(cfg)` break this plan flagged in advance.
+`save_config_overrides` (YAML-writing) is retired, replaced by
+`save_tenant_config_overrides` (validates, then `storage.
+save_tenant_settings`/`apply_config_overrides`) - `do_update_settings` in
+both `actions.py` and `production/actions.py`, plus `production/actions.py`'s
+`do_set_system`, all swapped over. Confirmed live: a real POST to
+`/api/trading/settings` now fails with the same "no tenant set" `RuntimeError`
+every other write does post-Phase-1 - expected, not a regression, matching
+the trade-off already accepted.
+
+**Decided with the user before starting Phase 2**: `tenant_tokens` gets its
+table (schema only) but `TokenManager` itself stays file-based
+(`data/tokens.json`) - wiring it to Postgres needs a known tenant_id at the
+OAuth-callback point, which doesn't exist until Phase 3 threads one
+through. Building both together in Phase 3 avoids a half-working
+stopgap now.
+
 **Phase 0 - Postgres + RLS proof of concept on `stock_targets`**
 Chosen specifically because its `type_id` PK has the collision problem, not because it's
 easy. Stand up Postgres, add `psycopg[binary]` + `psycopg_pool` dependencies (no ORM -
@@ -312,8 +344,8 @@ contributor forgetting this is the main long-term risk of this design).
 
 - `eve_trader/storage.py` - schema (37 `CREATE TABLE`s), `connect()`/`batch_session()`
   chokepoints (lines 532-615), ~116 query call sites
-- `eve_trader/config.py` - `TradingConfig`/`ProductionConfig`/`AccessConfig`, the
-  `type(cfg)` call site at line 172, `save_config_overrides`
+- `eve_trader/config.py` - `TradingConfig`/`ProductionConfig`/`AccessConfig`,
+  `ConfigProxy`, `save_tenant_config_overrides` (Phase 2, done)
 - `eve_trader/access_gate.py` - session cookie contents, `is_allowed`
 - `eve_trader/api/app.py` - `AccessGateMiddleware`
 - `eve_trader/api/routers/auth.py` - `/start`/`/callback`, the `_pending` dict

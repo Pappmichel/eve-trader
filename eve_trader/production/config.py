@@ -3,12 +3,13 @@
 """
 from __future__ import annotations
 
+import contextvars
 from dataclasses import dataclass
 from typing import Optional
 
 import yaml
 
-from ..config import ConfigError, DEFAULT_CONFIG_PATH, apply_config_overrides, validate_config_overrides
+from ..config import ConfigError, ConfigProxy, DEFAULT_CONFIG_PATH, apply_config_overrides, validate_config_overrides
 from .constants import RIG_TIERS, STRUCTURE_TYPES
 
 
@@ -124,4 +125,10 @@ def load_production_config(path=DEFAULT_CONFIG_PATH) -> ProductionConfig:
     return cfg
 
 
-PRODUCTION_CONFIG = load_production_config()
+# See eve_trader/config.py's ConfigProxy docstring for why this is a proxy,
+# not a plain ProductionConfig instance, and why that's a no-op change in
+# behavior until Phase 3 ever sets a per-request value.
+_production_config_var: contextvars.ContextVar[ProductionConfig] = contextvars.ContextVar(
+    "production_config", default=load_production_config()
+)
+PRODUCTION_CONFIG = ConfigProxy(_production_config_var)

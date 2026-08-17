@@ -103,12 +103,55 @@ itself automatically the first time `pytest` runs - see below), and `pip install
         way composite-PK-bucket tables do (their PK was deliberately left un-widened, so a
         hardcoded test id can still collide across tenants at the physical PK level) -
         fixed with `pg_helpers.wipe_tables()`.
-- [ ] Phase 2 - config/secrets into Postgres + `TRADING_CONFIG`/`PRODUCTION_CONFIG` proxy
-      objects (watch the `type(cfg)` break at `config.py:172`, already documented in the
-      plan). **Not started. This is the next phase to pick up.**
+- [x] **Phase 2 - DONE.** Config/secrets moved off `config.yaml` and into Postgres:
+      - `docs/phase2_schema.sql` - `tenant_settings` (JSONB `overrides` per tenant+scope,
+        not a wide per-field-column table - matches `save_config_overrides`'s existing
+        "merge a diff dict" semantics) and `tenant_tokens` (schema only - `TokenManager`
+        itself deliberately stays file-based, see below). Idempotent, depends on
+        `phase1_schema.sql`'s `eve_trader_app` role already existing (`tests/pg_helpers.py`'s
+        new `_apply_phase2_schema` fixture explicitly depends on `_apply_phase1_schema` to
+        guarantee ordering, not just fixture-collection luck).
+      - `eve_trader/config.py`'s new `ConfigProxy` class - `TRADING_CONFIG`/
+        `PRODUCTION_CONFIG` are now proxies over a `contextvars.ContextVar`
+        (`__getattr__`/`__setattr__` both forward), not plain dataclass instances. All 92
+        `cfg: TradingConfig = TRADING_CONFIG`-style call sites across 20 files needed **zero
+        changes** - confirmed live (both modules import cleanly, a real GET
+        `/api/trading/settings` returns real values with no tenant context set at all, since
+        the ContextVar's `default=` is exactly the one shared instance the app already used).
+        `AccessConfig` stays a plain instance, not proxied - operator-only, becomes the
+        tenant registry in Phase 3.
+      - Fixed the `type(cfg)` break the plan flagged in advance: `validate_config_overrides`
+        gained an optional `cfg_type` parameter (defaults to `type(cfg)`, correct for every
+        existing test/loader call site - only `do_update_settings`, which now passes a
+        proxy, needs it explicit).
+      - `save_config_overrides` (YAML-writing) retired, replaced by
+        `save_tenant_config_overrides` (validate -> `storage.save_tenant_settings` ->
+        `apply_config_overrides`) - swapped into `actions.py`/`production/actions.py`'s
+        `do_update_settings` *and* `production/actions.py`'s `do_set_system` (a third,
+        easy-to-miss caller of the old function).
+      - New `storage.save_tenant_settings`/`load_tenant_settings` - upsert-merges via
+        Postgres's JSONB `||` operator, using `psycopg.types.json.Jsonb` to serialize
+        (psycopg3 doesn't auto-adapt a plain `dict` to `jsonb` the way it auto-*deserializes*
+        one back on read).
+      - 2 new tests prove the actual round-trip (a real `do_update_settings` call lands in
+        `tenant_settings` and is readable back; Trading/Production saves don't clobber each
+        other, since `scope` is part of the PK) - the 3 pre-existing reject-invalid tests
+        needed **zero changes**.
+      - **Full suite: 331 passed** (329 + 2 new), stable with Postgres up and down (241
+        passed/90 skipped when down).
+      - **Live-verified**: real GET `/api/trading/settings` works with no tenant set (proxy
+        fallback); real POST to save fails with the same "no tenant set" `RuntimeError`
+        every other write does post-Phase-1 - expected, matches the accepted trade-off, not
+        a new regression.
+      - **Decided before starting**: `tenant_tokens` table exists but `TokenManager` stays
+        file-based (`data/tokens.json`) - wiring it up needs a tenant_id at the OAuth
+        callback, which is Phase 3's job (the plan's own "OAuth callback has no tenant
+        context" section already flags this).
 - [ ] Phase 3 - tenant resolution / access-gate / OAuth-callback tenant-threading / admin
-      CLI provisioning. **Not started.** (This is what actually makes the live app usable
-      again - Phase 1's cutover deliberately left it non-functional until this lands.)
+      CLI provisioning, **and** `TokenManager`'s actual switch to `tenant_tokens`.
+      **Not started. This is the next phase to pick up** - and the one that actually makes
+      the live app usable again (Phases 1-2 deliberately left it non-functional until this
+      lands).
 - [ ] Phase 4 - scheduler multi-tenant loop + migration *tooling* (not a live migration -
       test against a copy of the SQLite file only) + `backup.py`'s real Postgres
       (`pg_dump`-based) rework. **Not started.**
@@ -116,12 +159,15 @@ itself automatically the first time `pytest` runs - see below), and `pip install
 
 ## Immediate next step
 
-Phase 1 is fully done - `storage.py` runs on Postgres for real now, proven by the full test
-suite. Start Phase 2: create `tenant_settings`/`tenant_tokens` tables (add them to
-`docs/phase1_schema.sql`'s pattern, or a new `docs/phase2_schema.sql`), build the
-`TRADING_CONFIG`/`PRODUCTION_CONFIG` `contextvars`-backed proxy objects, fix
-`config.py:172`'s `type(cfg)` call site (pass the concrete dataclass type explicitly
-instead of deriving it), and swap `do_update_settings`'s persistence backend from the
-YAML-file write to a `tenant_settings` UPDATE. Acceptance test per the plan: a
-Settings-page save with a bad value still fails with `ConfigError` through the proxy,
-exactly as it does today.
+Phases 1 and 2 are both done - `storage.py` runs on Postgres for real, and
+`TRADING_CONFIG`/`PRODUCTION_CONFIG` persist to `tenant_settings` instead of `config.yaml`.
+Start Phase 3: extend the access-gate session cookie (`eve_trader/access_gate.py`) to carry
+`tenant_id`, resolved at login against a new tenant registry (character/corp/alliance ID ->
+tenant_id) instead of today's one global `AccessConfig`; have `AccessGateMiddleware`
+(`eve_trader/api/app.py`) set the request's tenant contextvar right after validating the
+cookie; fix the `/api/auth/callback` tenant-context gap (`_pending[state]` dict in
+`eve_trader/api/routers/auth.py` needs to carry `tenant_id` through from `/start`); switch
+`TokenManager` (`eve_trader/auth.py`) over to `tenant_tokens`; build the admin CLI
+(`eve-trader tenant create ...`) that provisions a tenant registry entry only. This is the
+phase where the live app actually becomes usable again - worth live-verifying end to end
+(a real login, a real Settings save) once it's done, not just passing tests.

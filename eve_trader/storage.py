@@ -39,6 +39,7 @@ from typing import Iterable, Optional
 
 import pandas as pd
 from psycopg_pool import ConnectionPool
+from psycopg.types.json import Jsonb
 
 from .config import DATA_DIR
 from .models import Candidate, NewCandidateResult, RealizedTrade, ShortlistItem, ShortlistRow
@@ -265,6 +266,31 @@ def with_batch_session():
                 return fn(*args, **kwargs)
         return wrapper
     return decorator
+
+
+# ------------------------------------------------------------ tenant settings
+def save_tenant_settings(scope: str, updates: dict) -> None:
+    """Merges `updates` into the current tenant's stored overrides for
+    `scope` ('trading'/'production') - same "later save wins per-key,
+    doesn't clobber unrelated keys" semantics config.yaml's old
+    data[key] = value loop had, now via Postgres's `||` JSONB merge
+    operator. Caller (do_update_settings) is responsible for validating
+    `updates` first - this never raises on a bad value, it assumes that's
+    already been checked."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO tenant_settings (scope, overrides) VALUES (?, ?) "
+            "ON CONFLICT(tenant_id, scope) DO UPDATE SET overrides = tenant_settings.overrides || excluded.overrides",
+            (scope, Jsonb(updates)),
+        )
+
+
+def load_tenant_settings(scope: str) -> dict:
+    """Returns the current tenant's stored overrides dict for `scope`, or
+    {} if nothing has been saved yet."""
+    with connect() as conn:
+        row = conn.execute("SELECT overrides FROM tenant_settings WHERE scope = ?", (scope,)).fetchone()
+    return row[0] if row else {}
 
 
 # --------------------------------------------------------------------- writes
