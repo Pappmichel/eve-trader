@@ -1,6 +1,7 @@
 # EVE Trader — C-J Import Trading & Production
 
-Two tools for EVE Online, sharing one backend and one SQLite store:
+Two tools for EVE Online, sharing one backend and one multi-tenant Postgres
+store (RLS-isolated per tenant - see `docs/MULTI_TENANT_PLAN.md`):
 
 - **Trading** — a market-arbitrage toolkit that buys goods in Jita (The
   Forge) and sells them in a private player structure ("C-J"): candidate
@@ -12,8 +13,8 @@ Two tools for EVE Online, sharing one backend and one SQLite store:
   Fuzzwork SDE cache plus live ESI/Goonmetrics prices.
 
 Highlights:
-- A SQLite store (`data/eve_trader.db`) as the durable source of truth for
-  both tools.
+- A multi-tenant Postgres store as the durable source of truth for both
+  tools, with row-level-security tenant isolation (`eve_trader/storage.py`).
 - A full OAuth2 (Authorization Code + PKCE) login flow against EVE SSO, with
   automatic token refresh and per-character token storage.
 - A React + FastAPI web app (charts, sortable/virtualized tables, live
@@ -31,17 +32,47 @@ cp .env.example .env          # fill in EVE_SSO_CLIENT_ID (register at developer
 cp config.example.yaml config.yaml   # adjust structure_id, character names, thresholds
 ```
 
+### Postgres (required before the app will start)
+
+Local dev runs Postgres in Docker (`docs/MULTI_TENANT_PLAN.md`'s "Phase 0"
+setup) - the default `EVE_TRADER_PG_DSN` in `.env.example` already matches
+this exactly, so no `.env` edit is needed for local dev:
+
+```bash
+docker run -d --name eve-trader-pg -e POSTGRES_PASSWORD=devpassword \
+  -e POSTGRES_DB=eve_trader -p 5432:5432 postgres:16
+
+# owner role applies the schema (never the app's own role - see CLAUDE.md's
+# "Multi-tenant Postgres" section for why):
+Get-Content docs\phase1_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
+Get-Content docs\phase2_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
+Get-Content docs\phase3_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
+```
+
+(`phase1_schema.sql` creates the `eve_trader_app` role with the checked-in
+dev password `app_devpassword` - fine for local dev, never for a real
+deployment, see `deploy/README.md`.)
+
 ### Registering an EVE SSO application
 
 1. Go to https://developers.eveonline.com/applications and create a new application.
 2. Connection type: **Authorization Code** (PKCE-capable / "public" client — no secret required).
-3. Callback URL: `http://localhost:8765/callback` (must match `.env` exactly).
-4. Scopes: exactly
-   `esi-markets.read_character_orders.v1`,
-   `esi-markets.structure_markets.v1`,
-   `esi-wallet.read_character_wallet.v1`,
-   plus (for Production) `esi-assets.read_assets.v1`, `esi-industry.read_character_jobs.v1`,
-   `esi-characters.read_blueprints.v1`.
+3. Callback URL: `http://localhost:8000/api/auth/callback` (must match `.env`'s
+   `EVE_SSO_CALLBACK_HOST`/`EVE_SSO_CALLBACK_PORT` exactly - see `.env.example`).
+4. Scopes - Trading (buyer/seller login) and Production (producer character
+   login) are two separate EVE SSO logins requesting two different scope
+   sets (see `eve_trader/config.py`'s `OAuthConfig.scopes` and
+   `eve_trader/production/esi_sync.py`'s `PRODUCTION_SCOPES`), so enable all
+   of both up front if you'll use both tools:
+   - Trading: `esi-markets.read_character_orders.v1`,
+     `esi-markets.structure_markets.v1`, `esi-wallet.read_character_wallet.v1`,
+     `esi-assets.read_assets.v1`.
+   - Production: `esi-assets.read_assets.v1`, `esi-assets.read_corporation_assets.v1`,
+     `esi-industry.read_character_jobs.v1`, `esi-industry.read_corporation_jobs.v1`,
+     `esi-characters.read_blueprints.v1`, `esi-corporations.read_blueprints.v1`,
+     `esi-markets.read_character_orders.v1`, `esi-markets.read_corporation_orders.v1`,
+     `esi-skills.read_skills.v1`, `esi-universe.read_structures.v1`,
+     `esi-corporations.read_structures.v1`.
    (Only request scopes you've enabled for the app *and* that the code
    actually uses — extra/misspelled scopes make EVE SSO reject the whole
    login with `invalid_scope`.)
@@ -119,8 +150,11 @@ drift apart.
 pytest
 ```
 
-Tests use mocked HTTP responses (no network / EVE SSO access required) and
-cover the scoring/decision/pricing logic for both tools.
+Most tests use mocked HTTP responses (no network/EVE SSO access required)
+and cover the scoring/decision/pricing logic for both tools. The Postgres-
+specific tests (tenant isolation, RLS, storage - see `tests/pg_helpers.py`)
+need a real local Postgres reachable at `EVE_TRADER_PG_DSN` (see "Postgres"
+above) - they skip automatically, rather than fail, when one isn't running.
 
 ## Deploying somewhere reachable beyond localhost
 
