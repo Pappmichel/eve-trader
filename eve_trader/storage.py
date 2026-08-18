@@ -1291,6 +1291,22 @@ def read_table(table: str) -> pd.DataFrame:
         return pd.DataFrame(cur.fetchall(), columns=columns)
 
 
+def read_goonmetrics_history_for_types(type_ids: list[int]) -> pd.DataFrame:
+    """Same shape as read_table("goonmetrics_history") but filtered to just
+    `type_ids` - confirmed real gap: do_shortlist_trends (called on every
+    Shortlist page load, see its own docstring) used to pull the *entire*
+    table (every candidate/focused-candidate type_id ever price-checked, not
+    just the shortlist's own items) just to immediately discard every row
+    outside compute_margin_trends' own `volumes` filter."""
+    if not type_ids:
+        return pd.DataFrame()
+    placeholders = ",".join("?" * len(type_ids))
+    with connect() as conn:
+        cur = conn.execute(f"SELECT * FROM goonmetrics_history WHERE type_id IN ({placeholders})", type_ids)
+        columns = [d[0] for d in cur.description]
+        return pd.DataFrame(cur.fetchall(), columns=columns)
+
+
 def latest_snapshot() -> pd.DataFrame:
     with connect() as conn:
         run_ts = conn.execute("SELECT MAX(run_ts) FROM shortlist_snapshot").fetchone()[0]

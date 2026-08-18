@@ -258,10 +258,17 @@ def do_shortlist_trends(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     history_backtest.compute_margin_trends. Pure local computation over
     already-persisted Goonmetrics history, no ESI/network calls, so unlike
     the unlisted-stock/undercut checks this doesn't need a login and is cheap
-    enough to call on every Shortlist page load."""
+    enough to call on every Shortlist page load.
+
+    Reads goonmetrics_history filtered to just this shortlist's own type_ids
+    (storage.read_goonmetrics_history_for_types), not the whole table -
+    confirmed real gap: compute_margin_trends only ever looks at rows whose
+    type_id is in `volumes` anyway, so pulling every other candidate/
+    focused-candidate type_id's history too (potentially the large majority
+    of the table) on every single page load was pure waste."""
     items = storage.load_shortlist()
     volumes = {i.item_id: i.volume_m3 for i in items if i.item_id and i.volume_m3}
-    history_df = storage.read_table("goonmetrics_history")
+    history_df = storage.read_goonmetrics_history_for_types(list(volumes.keys()))
     return history_backtest.compute_margin_trends(history_df, volumes, cfg)
 
 
