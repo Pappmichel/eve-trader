@@ -38,10 +38,22 @@ from functools import lru_cache
 from typing import Iterable, Optional
 
 import pandas as pd
+from dotenv import load_dotenv
 from psycopg_pool import ConnectionPool
 from psycopg.types.json import Jsonb
 
 from .models import Candidate, NewCandidateResult, RealizedTrade, ShortlistItem, ShortlistRow
+
+# PG_DSN below reads EVE_TRADER_PG_DSN via os.getenv() at module-import
+# time - .env needs to already be loaded into os.environ by then, or this
+# silently falls through to the hardcoded dev-password default instead of
+# a real deployment's real password (confirmed real: config.py already
+# calls load_dotenv() too, but relying on "whichever module happens to get
+# imported first already ran it" is fragile - two different modules
+# importing storage.py in a different order was enough to break it once
+# already during this migration). Idempotent - python-dotenv's own
+# load_dotenv() is safe to call more than once per process.
+load_dotenv()
 
 # Dev default matches the local `eve-trader-pg` Docker container (see
 # docs/MULTI_TENANT_PLAN.md's Phase 0/1) - override via env var for any
