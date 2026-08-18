@@ -176,8 +176,55 @@ CREATE POLICY tenant_isolation ON doctrine_contract_deviations
     USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 
+-- ================================================== per-tenant: own asset sync
+-- Doctrine's own ESI-synced asset cache - deliberately NOT a read of
+-- Production's character_assets/corp_assets (an earlier design decision,
+-- reversed after real use: Stockpile must work standalone, without
+-- requiring Production to have ever been set up/synced). Column-only
+-- bucket, same shape/reasoning as character_assets/corp_assets
+-- (phase1_schema.sql) - item_id is a real ESI-global identifier, already
+-- unique with no risk of cross-tenant collision, so the PK is left
+-- unwidened; tenant_id is still a plain column + RLS policy like every
+-- other per-tenant table.
+
+CREATE TABLE IF NOT EXISTS doctrine_character_assets (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    item_id BIGINT PRIMARY KEY,
+    type_id INTEGER,
+    location_id BIGINT,
+    location_flag TEXT,
+    quantity INTEGER,
+    is_blueprint_copy INTEGER,
+    owner_name TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_doctrine_character_assets_type_location
+    ON doctrine_character_assets (type_id, location_id);
+ALTER TABLE doctrine_character_assets ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON doctrine_character_assets;
+CREATE POLICY tenant_isolation ON doctrine_character_assets
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
+CREATE TABLE IF NOT EXISTS doctrine_corp_assets (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    item_id BIGINT PRIMARY KEY,
+    type_id INTEGER,
+    location_id BIGINT,
+    location_flag TEXT,
+    quantity INTEGER,
+    is_blueprint_copy INTEGER,
+    owner_name TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_doctrine_corp_assets_type_location
+    ON doctrine_corp_assets (type_id, location_id);
+ALTER TABLE doctrine_corp_assets ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON doctrine_corp_assets;
+CREATE POLICY tenant_isolation ON doctrine_corp_assets
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
 GRANT SELECT, INSERT, UPDATE, DELETE ON
     sde_type_slots, doctrines, doctrine_fittings, doctrine_fitting_items,
     doctrine_fitting_parse_issues, doctrine_contracts, doctrine_contract_items,
-    doctrine_contract_deviations
+    doctrine_contract_deviations, doctrine_character_assets, doctrine_corp_assets
     TO eve_trader_app;

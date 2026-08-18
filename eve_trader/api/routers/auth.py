@@ -50,6 +50,8 @@ def _scopes_for(role_prefix: str) -> list[str]:
         return esi_sync.PRODUCTION_SCOPES
     if role_prefix == "doctrine":
         return doctrine_esi_sync.DOCTRINE_SCOPES
+    if role_prefix == "doctrine-assets":
+        return doctrine_esi_sync.DOCTRINE_ASSET_SCOPES
     if role_prefix == "gate":
         return []  # identity only - see access_gate.py
     return list(OAUTH_CONFIG.scopes)

@@ -952,7 +952,7 @@ def set_cached_structure_name(location_id: int, name: Optional[str]) -> None:
 
 # --------------------------------------------------- Production: ESI-derived stock
 def replace_assets(table: str, rows: list[tuple]) -> None:
-    assert table in ("character_assets", "corp_assets")
+    assert table in ("character_assets", "corp_assets", "doctrine_character_assets", "doctrine_corp_assets")
     with connect() as conn:
         conn.execute(f"DELETE FROM {table}")
         conn.executemany(
@@ -1077,10 +1077,18 @@ OFFICE_TYPE_ID = 27  # generic "Office" item - see esi_stock_at_location
 NON_STOCK_LOCATION_FLAGS = ("AssetSafety", "Deliveries", "CorpDeliveries", "CorpMarket")
 
 
-def esi_stock_at_location(type_id: int, location_id: Optional[int]) -> float:
+def esi_stock_at_location(type_id: int, location_id: Optional[int],
+                           tables: tuple[str, str] = ("character_assets", "corp_assets")) -> float:
     """Sums character + corp asset quantities for `type_id`, optionally filtered
     to `location_id` (None = all locations - useful when the home structure's
     numeric ID isn't configured). Excludes NON_STOCK_LOCATION_FLAGS (see above).
+
+    `tables` defaults to Production's own ESI-synced asset tables - pass
+    `("doctrine_character_assets", "doctrine_corp_assets")` for Doctrine's
+    own independent asset sync (doctrine/esi_sync.py's sync_assets) instead;
+    same column shape, same Office-nesting/NON_STOCK_LOCATION_FLAGS logic
+    either way, just a different source table pair - not worth duplicating
+    this function's own (non-trivial) location-resolution logic for.
 
     Corp hangar contents are *not* flat under the station/structure's own
     location_id in ESI's asset model - they sit one level deeper, nested
@@ -1095,7 +1103,7 @@ def esi_stock_at_location(type_id: int, location_id: Optional[int]) -> float:
     flag_placeholders = ",".join("?" * len(NON_STOCK_LOCATION_FLAGS))
     with connect() as conn:
         total = 0.0
-        for table in ("character_assets", "corp_assets"):
+        for table in tables:
             if location_id is None:
                 row = conn.execute(
                     f"SELECT COALESCE(SUM(quantity), 0) FROM {table} "
@@ -1835,16 +1843,19 @@ def list_hull_type_names() -> list[str]:
     return [r[0] for r in rows]
 
 
-def has_any_synced_assets() -> bool:
-    """True if either character_assets or corp_assets has at least one row
-    for this tenant - Doctrine's Stockpile feature reads Production's own
-    asset tables (Phase 2 A.3) rather than syncing its own, so "no assets at
-    all yet" (Production never synced) has to be distinguished from
+def has_any_doctrine_synced_assets() -> bool:
+    """True if either doctrine_character_assets or doctrine_corp_assets has
+    at least one row for this tenant - Doctrine's Stockpile feature syncs
+    its own independent asset cache (doctrine/esi_sync.py's sync_assets,
+    via its own "doctrine-assets"-prefixed characters) rather than reading
+    Production's (an earlier design, reversed after real use: Stockpile
+    must work standalone, without requiring Production to ever be set up),
+    so "no assets at all yet" (never synced) has to be distinguished from
     "assets synced, this type just isn't in stock" (a real shortfall) -
     see doctrine/engine.py's stockpile status, which reports
     assets_available=False (a gray ampel) only in the former case."""
     with connect() as conn:
         row = conn.execute(
-            "SELECT EXISTS(SELECT 1 FROM character_assets) OR EXISTS(SELECT 1 FROM corp_assets)"
+            "SELECT EXISTS(SELECT 1 FROM doctrine_character_assets) OR EXISTS(SELECT 1 FROM doctrine_corp_assets)"
         ).fetchone()
     return bool(row[0])

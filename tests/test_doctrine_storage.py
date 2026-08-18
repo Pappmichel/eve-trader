@@ -118,3 +118,43 @@ def test_contracts_are_tenant_isolated_even_with_same_contract_id(tenant_pair):
 
     assert len(rows_a) == 1 and rows_a[0][6] == "A's view"
     assert len(rows_b) == 1 and rows_b[0][6] == "B's view"
+
+
+@pytest.fixture(autouse=True)
+def _wipe_doctrine_assets():
+    # doctrine_character_assets/doctrine_corp_assets are column-only-bucket
+    # tables (PK = item_id alone - same shape as Production's own
+    # character_assets/corp_assets, see test_storage_stock.py's own _wipe
+    # fixture for why that matters across tests reusing small item_ids).
+    pg_helpers.wipe_tables("doctrine_character_assets", "doctrine_corp_assets")
+    yield
+
+
+def test_has_any_doctrine_synced_assets_false_until_synced(tenant):
+    assert storage.has_any_doctrine_synced_assets() is False
+
+    storage.replace_assets("doctrine_character_assets", [(1, 34, 1000000000001, "Hangar", 100, 0, "pilot")])
+
+    assert storage.has_any_doctrine_synced_assets() is True
+
+
+def test_has_any_doctrine_synced_assets_ignores_productions_own_tables(tenant):
+    # Doctrine's Stockpile must work standalone, without Production ever
+    # having synced anything - the whole point of the architecture reversal
+    # this table pair exists for (see has_any_doctrine_synced_assets' own
+    # docstring in storage.py).
+    storage.replace_assets("character_assets", [(1, 34, 1000000000001, "Hangar", 100, 0, "pilot")])
+
+    assert storage.has_any_doctrine_synced_assets() is False
+
+
+def test_esi_stock_at_location_reads_doctrines_own_asset_tables(tenant):
+    type_id, location_id = 34, 1000000000001
+    storage.replace_assets("doctrine_character_assets", [(1, type_id, location_id, "Hangar", 100, 0, "pilot")])
+    storage.replace_assets("doctrine_corp_assets", [(2, type_id, location_id, "Hangar", 50, 0, "My Corp (corp)")])
+    # Production's own tables have unrelated stock at the same location -
+    # must not leak into a Doctrine-scoped read.
+    storage.replace_assets("character_assets", [(3, type_id, location_id, "Hangar", 999, 0, "pilot")])
+
+    doctrine_tables = ("doctrine_character_assets", "doctrine_corp_assets")
+    assert storage.esi_stock_at_location(type_id, location_id, tables=doctrine_tables) == 150

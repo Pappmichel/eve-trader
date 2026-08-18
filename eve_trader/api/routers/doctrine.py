@@ -121,6 +121,16 @@ def get_sync_time():
     return actions.do_get_esi_sync_time()
 
 
+@router.post("/assets/sync")
+def sync_assets():
+    return _wrap(actions.do_sync_assets)
+
+
+@router.get("/assets/sync-time")
+def get_asset_sync_time():
+    return actions.do_get_asset_sync_time()
+
+
 # --------------------------------------------------------------------- status
 @router.get("/status")
 def get_status(doctrine_id: Optional[str] = None):
@@ -149,6 +159,19 @@ def get_doctrine_characters():
 @router.delete("/characters/{role_key}")
 def remove_doctrine_character(role_key: str):
     return _wrap(actions.do_remove_doctrine_character, role_key=role_key)
+
+
+@router.get("/asset-characters")
+def get_doctrine_asset_characters():
+    return [
+        {"role_key": role, "character_id": cid, "character_name": name}
+        for role, cid, name in actions.do_list_doctrine_asset_characters()
+    ]
+
+
+@router.delete("/asset-characters/{role_key}")
+def remove_doctrine_asset_character(role_key: str):
+    return _wrap(actions.do_remove_doctrine_asset_character, role_key=role_key)
 
 
 # ------------------------------------------------------------------- settings

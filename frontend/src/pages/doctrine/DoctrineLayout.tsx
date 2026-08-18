@@ -26,8 +26,19 @@ function activeTab(pathname: string): string {
   return '/doctrine'
 }
 
-function CharacterList() {
-  const { data: characters } = useQuery({ queryKey: ['doctrine', 'characters'], queryFn: doctrineApi.characters })
+// Shared by both character groups below - only the query key, ssoRolePrefix,
+// and remove-fn differ between "characters authed to read contracts" and
+// "characters authed to scan their own inventory" (see doctrine/esi_sync.py's
+// own module docstring for why these stay two separate EVE SSO character
+// groups rather than one, each with its own narrower scope grant).
+function CharacterGroup({ title, queryKey, listFn, ssoRolePrefix, removeFn }: {
+  title: string
+  queryKey: string[]
+  listFn: () => Promise<{ role_key: string; character_id: number; character_name: string }[]>
+  ssoRolePrefix: string
+  removeFn: (roleKey: string) => Promise<unknown>
+}) {
+  const { data: characters } = useQuery({ queryKey, queryFn: listFn })
   // Same redirect-based EVE SSO flow Trading's buyer/seller login and
   // Production's own Add Character button use (see TradingLayout.tsx's
   // LoginButton / ProductionLayout.tsx) - navigates the whole page to EVE
@@ -39,14 +50,14 @@ function CharacterList() {
   // backend already listens on - works by accident in local dev, always
   // fails on a real deployment ("Cannot assign requested address").
   const addCharacter = useAction('Login', async () => {
-    const { url } = await authApi.start('doctrine')
+    const { url } = await authApi.start(ssoRolePrefix)
     window.location.href = url
   })
-  const removeCharacter = useAction('Remove Character', doctrineApi.removeCharacter, [['doctrine', 'characters']])
+  const removeCharacter = useAction('Remove Character', removeFn, [queryKey])
 
   return (
     <div>
-      <Title order={6} c="dimmed" tt="uppercase" mb="xs">Characters</Title>
+      <Title order={6} c="dimmed" tt="uppercase" mb="xs">{title}</Title>
       <Stack gap="xs">
         {(characters ?? []).map((c) => (
           <Group key={c.role_key} justify="space-between" wrap="nowrap">
@@ -75,6 +86,11 @@ export default function DoctrineLayout() {
     ['doctrine', 'status'], ['doctrine', 'contracts'], ['doctrine', 'sync-time'],
   ])
 
+  const { data: assetSyncTime } = useQuery({ queryKey: ['doctrine', 'asset-sync-time'], queryFn: doctrineApi.assetSyncTime })
+  const syncAssets = useAction('Sync Assets', doctrineApi.syncAssets, [
+    ['doctrine', 'stockpile'], ['doctrine', 'asset-sync-time'],
+  ])
+
   return (
     <AppShell header={{ height: 56 }} navbar={{ width: 260, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding="md">
       <AppShell.Header>
@@ -89,9 +105,8 @@ export default function DoctrineLayout() {
 
       <AppShell.Navbar p="md">
         <Stack gap="md">
-          <CharacterList />
-
-          <Divider />
+          <CharacterGroup title="Contract Characters" queryKey={['doctrine', 'characters']}
+            listFn={doctrineApi.characters} ssoRolePrefix="doctrine" removeFn={doctrineApi.removeCharacter} />
 
           <div>
             <Group justify="space-between" mb="xs" wrap="nowrap">
@@ -100,6 +115,21 @@ export default function DoctrineLayout() {
             </Group>
             <Button size="xs" leftSection={<IconRefresh size={14} />} onClick={() => sync.mutate()} loading={sync.isPending}>
               Sync Contracts
+            </Button>
+          </div>
+
+          <Divider />
+
+          <CharacterGroup title="Asset-Scanning Characters" queryKey={['doctrine', 'asset-characters']}
+            listFn={doctrineApi.assetCharacters} ssoRolePrefix="doctrine-assets" removeFn={doctrineApi.removeAssetCharacter} />
+
+          <div>
+            <Group justify="space-between" mb="xs" wrap="nowrap">
+              <Title order={6} c="dimmed" tt="uppercase">Asset Sync</Title>
+              <Text size="xs" c="dimmed">{dateTime(assetSyncTime?.synced_at)}</Text>
+            </Group>
+            <Button size="xs" leftSection={<IconRefresh size={14} />} onClick={() => syncAssets.mutate()} loading={syncAssets.isPending}>
+              Sync Assets
             </Button>
           </div>
 
