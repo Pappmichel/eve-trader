@@ -28,12 +28,17 @@ class ConfigProxy:
     PRODUCTION_CONFIG stay the same importable name/object everywhere
     (every `cfg: TradingConfig = TRADING_CONFIG`-style default parameter
     across the app needs zero changes) while actually resolving to a
-    different instance per request, once Phase 3 sets one per tenant.
+    different instance per tenant.
 
-    Until Phase 3 builds that per-request resolution, nothing ever calls
-    the ContextVar's own `.set()` - every read/write falls through to its
-    `default=` (the single shared instance loaded at import time, same as
-    before this proxy existed), so single-tenant behavior is unchanged.
+    `resolve_and_set_trading_config`/`resolve_and_set_production_config`
+    (below) are what actually call the ContextVar's `.set()`, via
+    `tenant_scope.enter_tenant` - used by `AccessGateMiddleware` (gate-
+    enabled requests) and `scheduler.py` (per-tenant job ticks), plus a
+    one-time boot-time load for `DEFAULT_TENANT_ID` (`api/app.py`'s
+    `_load_default_tenant_config`, `cli.py`'s `main()`). Anywhere none of
+    those has run yet (a bare test, an import-time read), every read/write
+    still falls through to the ContextVar's `default=` (the single shared
+    instance loaded at import time).
 
     Writes matter here, not just reads: apply_config_overrides does
     `setattr(cfg, key, value)` directly on whatever's passed to it - a

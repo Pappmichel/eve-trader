@@ -110,13 +110,21 @@ class AccessGateMiddleware(BaseHTTPMiddleware):
 
         token = request.cookies.get(SESSION_COOKIE_NAME)
         data = read_session_token(token) if token else None
-        if data is None:
+        # A still-valid (unexpired, correctly-signed) cookie from before
+        # tenant_id was added to the session payload (multi-tenant migration
+        # Phase 3a) would decode successfully - itsdangerous only checks the
+        # signature/expiry, not the payload shape - but have no "tenant_id"
+        # key. Treat that the same as "not authenticated" (a stale cookie
+        # forcing a fresh login) rather than letting `data["tenant_id"]`
+        # raise KeyError into an unhandled 500 below.
+        tenant_id = data.get("tenant_id") if data else None
+        if tenant_id is None:
             return JSONResponse({"detail": "Not authenticated"}, status_code=401)
         # Gate on - the request could genuinely be any of several different
         # real tenants, so their own TRADING_CONFIG/PRODUCTION_CONFIG must be
         # resolved fresh here, not left pointing at whichever tenant's
         # settings happened to be live last - see tenant_scope's own docstring.
-        with tenant_scope.enter_tenant(data["tenant_id"]):
+        with tenant_scope.enter_tenant(tenant_id):
             return await call_next(request)
 
     @staticmethod
