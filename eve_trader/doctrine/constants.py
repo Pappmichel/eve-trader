@@ -85,11 +85,17 @@ AMPEL_SEVERITY_ORDER = (AMPEL_GREEN, AMPEL_YELLOW, AMPEL_RED)
 
 # ---------------------------------------------------------------- ESI contract sync
 # Phase 2 E.3's pre-filter, before any per-contract items fetch: only
-# item_exchange contracts, only "outstanding" status, are ever candidates
-# for Doctrine matching - Auctions/Courier/already-accepted-or-expired
-# contracts are never fetched at all.
+# item_exchange contracts, only these statuses, are ever candidates for
+# Doctrine matching - Auctions/Courier/already-accepted/cancelled contracts
+# are never fetched at all. "expired" is included deliberately (unlike the
+# original Phase 2 spec) - a contract that just expired should still be
+# visible with a clear "Expired" marker (Contracts.tsx) rather than
+# silently vanishing from the next full-replace snapshot with no trace at
+# all; engine.fitting_status excludes status="expired" contracts from its
+# valid/tolerable counts, so an expired contract stops counting toward a
+# fitting's target ampel the moment it expires, even though it stays visible.
 CONTRACT_TYPE_ITEM_EXCHANGE = "item_exchange"
-SYNCABLE_CONTRACT_STATUSES = ("outstanding",)
+SYNCABLE_CONTRACT_STATUSES = ("outstanding", "expired")
 
 # ---------------------------------------------------------------- matching (Phase 3 B.5)
 MATCH_WEIGHT_EXACT = 0.8

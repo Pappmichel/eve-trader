@@ -126,10 +126,14 @@ class DeviationRow:
 
 @dataclass
 class StockpileRow:
-    """Not persisted - a live response model (Phase 2 B.2)."""
+    """Not persisted - a live response model (Phase 2 B.2). One row per
+    (fitting_id, type_id) - see engine.aggregate_stockpile_rows for the
+    combined-across-fittings/doctrines summary the Stockpile page also
+    shows."""
     fitting_id: str
     fitting_name: str
     doctrine_id: str
+    doctrine_name: str
     type_id: int
     type_name: str
     slot_section: str
@@ -137,6 +141,21 @@ class StockpileRow:
     available: float
     shortfall: float
     severity: Optional[str]   # None when shortfall == 0 (no deviation at all)
+
+
+@dataclass
+class AggregatedStockpileRow:
+    """engine.aggregate_stockpile_rows' output - the same item required by
+    several fittings/doctrines summed into one row, so "how much of X do I
+    need in total" doesn't require manually adding up several StockpileRows
+    (GitHub issue #1). Not persisted, same as StockpileRow."""
+    type_id: int
+    type_name: str
+    required_total: float
+    available: float
+    shortfall: float
+    severity: Optional[str]
+    fitting_count: int
 
 
 # --------------------------------------------------------------- status / ampel
@@ -150,6 +169,7 @@ class FittingStatus:
     tolerable_contracts: int
     contract_target: int
     stockpile_status: str           # ampel
+    stockpile_target: int
     worst_stockpile_shortfall_pct: float
     last_synced_at: Optional[str]
     assets_available: bool = True

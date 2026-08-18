@@ -283,7 +283,12 @@ def do_get_doctrine_status(doctrine_id: Optional[str] = None) -> dict:
 
 def do_get_stockpile_status(doctrine_id: Optional[str] = None) -> dict:
     rows, assets_available = engine.stockpile_rows_for_doctrine(doctrine_id)
-    return {"rows": [asdict(r) for r in rows], "assets_available": assets_available}
+    aggregated_rows = engine.aggregate_stockpile_rows(rows)
+    return {
+        "rows": [asdict(r) for r in rows],
+        "aggregated_rows": [asdict(r) for r in aggregated_rows],
+        "assets_available": assets_available,
+    }
 
 
 def do_list_contracts(fitting_id: Optional[str] = None, status: Optional[str] = None) -> dict:

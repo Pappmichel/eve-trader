@@ -510,6 +510,7 @@ export interface StockpileRow {
   fitting_id: string
   fitting_name: string
   doctrine_id: string
+  doctrine_name: string
   type_id: number
   type_name: string
   slot_section: string
@@ -517,6 +518,16 @@ export interface StockpileRow {
   available: number
   shortfall: number
   severity: string | null
+}
+
+export interface AggregatedStockpileRow {
+  type_id: number
+  type_name: string
+  required_total: number
+  available: number
+  shortfall: number
+  severity: string | null
+  fitting_count: number
 }
 
 export interface FittingStatus {
@@ -528,6 +539,7 @@ export interface FittingStatus {
   tolerable_contracts: number
   contract_target: number
   stockpile_status: 'green' | 'yellow' | 'red' | 'gray'
+  stockpile_target: number
   worst_stockpile_shortfall_pct: number
   last_synced_at: string | null
   assets_available: boolean
