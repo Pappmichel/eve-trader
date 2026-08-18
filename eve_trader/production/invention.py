@@ -20,8 +20,14 @@ against real SDE data - see engine.py classify_activity's docstring) - a
 Tech III item just needs to actually be *recognized* as invented, which is
 classify_activity's job, not this module's.
 
-Known simplification: ignores job installation cost (facility fee) for the
-invention job itself.
+Known simplifications: ignores job installation cost (facility fee) for the
+invention job itself, and ignores the T1 BPC's own copy cost (copying time +
+copy job fee to produce the blueprint copy an invention attempt consumes) -
+both real EVE costs, neither modeled here. Since both are omitted
+consistently across every decryptor choice for the same item, they don't
+change *which* decryptor `estimate` recommends unless two decryptors are
+close enough that this gap could plausibly flip the ranking - worth keeping
+in mind for genuinely marginal calls, confirmed real 2026-08-18.
 """
 from __future__ import annotations
 

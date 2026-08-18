@@ -241,7 +241,17 @@ DATA_DIR.mkdir(exist_ok=True)
 @dataclass
 class TradingConfig:
     # -- Regions / structure --
-    jita_region_id: int = 10000002          # "The Forge" - main trade hub used for imports
+    # "The Forge" - main trade hub used for imports. Every "Jita price" this
+    # app computes (esi_client.region_order_stats(jita_region_id, ...)) is
+    # really a *region*-wide order-book stat - The Forge includes Perimeter
+    # and other stations besides Jita 4-4 itself, and ESI has no
+    # station-level order filter to narrow it further. Confirmed as
+    # low-impact in practice (2026-08-18): the 5th-percentile pricing (see
+    # README's "Notes/limitations") plus Jita 4-4's own overwhelming share of
+    # Forge trade volume means a non-Jita-4-4 order rarely drives the
+    # percentile price - not "fixed", just not worth the added complexity of
+    # a location_id filter unless real evidence shows otherwise.
+    jita_region_id: int = 10000002
     reference_region_id: int = 10000009      # "Insmother" - used as price-history reference region
     # Destination player structure ("C-J" in this project's own docs) - no
     # sane default across installs, must be set in config.yaml. own_orders.py/
