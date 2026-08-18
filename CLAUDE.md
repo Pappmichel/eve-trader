@@ -16,10 +16,11 @@ memory) and takes priority over re-deriving current status from scratch.
 - **Production**: Tech I/II/Reaction manufacturing planning for the same C-J
   structure - buy-vs-build, stock targets, invention.
 
-Both share one FastAPI backend (`eve_trader/api/`), one SQLite store
-(`data/eve_trader.db`, via `eve_trader/storage.py`), and one React/TypeScript
-frontend (`frontend/src/`). `eve_trader/portfolio.py` and
-`eve_trader/scheduler.py` are the only modules that deliberately span both.
+Both share one FastAPI backend (`eve_trader/api/`), one Postgres store
+(`eve_trader/storage.py`, multi-tenant - see "Multi-tenant Postgres" below),
+and one React/TypeScript frontend (`frontend/src/`). `eve_trader/portfolio.py`
+and `eve_trader/scheduler.py` are the only modules that deliberately span
+both.
 
 **Production sells only at C-J, never Jita** - this was implemented once
 (a Jita-comparison feature) and explicitly reverted after confirming with the
@@ -43,21 +44,32 @@ across the whole app. A new failure mode should raise `ActionError` (or a
 narrower exception the caller converts to `ActionError`), not a raw
 exception that would otherwise surface as a bare 500.
 
-## Config: dataclasses + config.yaml, validated before applied
+## Config: dataclasses + config.yaml, validated before applied, resolved per-tenant
 
 `TradingConfig`/`ProductionConfig` (`eve_trader/config.py` /
 `eve_trader/production/config.py`) are dataclasses with built-in defaults,
-overridden by `config.yaml` at load time and by Settings-page saves at
-runtime (`save_config_overrides`). Both paths run
-`validate_config_overrides` (type-checks every field against its declared
-type) - and Production additionally runs `validate_production_overrides`
-(enum-checks `*_structure_type`/`*_rig_tier` against
-`production/constants.py`) - *before* anything is written to disk or applied
-to the live config object, so a bad value never lands half-applied. Raises
-`ConfigError`; `do_update_settings` in both actions modules catches it and
-re-raises as `ActionError` (kept separate from `ActionError` itself to avoid
-a circular import - `config.py` is imported *by* `actions.py`, not the other
-way around).
+overridden by `config.yaml` at load time (the base values every tenant
+starts from) and by Settings-page saves at runtime, persisted per-tenant to
+Postgres's `tenant_settings` table (`save_tenant_config_overrides` -
+`save_config_overrides`/YAML-writing was retired in the multi-tenant
+migration's Phase 2). Both paths run `validate_config_overrides`
+(type-checks every field against its declared type) - and Production
+additionally runs `validate_production_overrides` (enum-checks
+`*_structure_type`/`*_rig_tier` against `production/constants.py`) -
+*before* anything is written or applied to the live config object, so a bad
+value never lands half-applied. Raises `ConfigError`; `do_update_settings`
+in both actions modules catches it and re-raises as `ActionError` (kept
+separate from `ActionError` itself to avoid a circular import - `config.py`
+is imported *by* `actions.py`, not the other way around).
+
+`TRADING_CONFIG`/`PRODUCTION_CONFIG` (the names everything else imports and
+reads) are `ConfigProxy` objects, not plain dataclass instances - they
+forward every attribute read/write to whichever instance a `contextvars.
+ContextVar` currently resolves to. `tenant_scope.enter_tenant(tenant_id)`
+is what actually resolves and `.set()`s that per-request/per-job-tick (see
+"Multi-tenant Postgres" below) - a bare dataclass instance would leak one
+tenant's Settings-page save into every other tenant's live config, since
+they'd all be reading/writing the exact same object.
 
 If you add a new config field, it's automatically type-checked - no extra
 work needed unless it's an enum-style string field, in which case add it to
@@ -65,6 +77,88 @@ work needed unless it's an enum-style string field, in which case add it to
 shared `config.py` - that module is imported *by* `production/config.py`,
 reaching back into `production/constants.py` from the shared module would be
 a layering violation).
+
+## Multi-tenant Postgres: rules for new storage/schema code
+
+Full design history and rationale lives in `docs/MULTI_TENANT_PLAN.md`
+(read this if you need the "why", not just the "what" below) - this section
+is the durable, quick-reference version for anyone adding a new storage
+function or table after that migration (all 5 of its phases are done).
+
+- **`storage.DEFAULT_TENANT_ID`** (`00000000-0000-0000-0000-000000000001`,
+  seeded into `tenants` by `docs/phase3_schema.sql`) is the fixed tenant
+  used whenever there's no real per-request tenant to resolve: the CLI
+  (`cli.py`'s `main()` sets it once per process - a trusted single
+  operator, no login wall there at all) and every web request when
+  `AccessConfig.access_gate_enabled` is `False` (this app's default - it
+  ran for months as a single-operator tool with no login wall before the
+  multi-tenant migration). A real per-tenant login (gate enabled) resolves
+  and uses a different, real `tenant_id` from the registry instead.
+- **Two Postgres roles, never conflate them.** `eve_trader_app`
+  (`storage.PG_DSN`) is what the app itself connects as for every real
+  query - `NOSUPERUSER NOBYPASSRLS`, so it can *never* accidentally see
+  another tenant's rows even from a bug, only from Postgres itself
+  correctly refusing. `postgres` (the owner role) is used *only* for schema
+  DDL (`docs/phase*_schema.sql`, applied by hand/CI, never by the running
+  app) and `backup.py`'s `pg_dump` (a whole-database dump necessarily
+  bypasses RLS - see "Backup" above). Never give the app role `BYPASSRLS`
+  or run app queries as the owner "to make something easier" - that defeats
+  the entire isolation guarantee this migration exists for.
+- **Every real query goes through `storage.connect()`/`storage.
+  batch_session()`.** These are the only two places that check out a pooled
+  connection and set `app.tenant_id` (via `SELECT set_config(...)`, the
+  parameterized equivalent of `SET LOCAL` - see `connect()`'s own
+  docstring for why not literal `SET LOCAL`) from the ambient
+  `contextvars.ContextVar`, fail-closed (`RuntimeError`) if none is set.
+  Never open a raw `psycopg`/`psycopg_pool` connection anywhere else in
+  `storage.py` or elsewhere in the app - doing so would silently bypass
+  this entirely, and nothing would catch it (Postgres itself only enforces
+  RLS based on `app.tenant_id` actually being set on *that* connection).
+  `storage.connect_unscoped()` is a narrow, deliberate exception for the
+  handful of genuinely tenant-independent tables (`tenants`,
+  `tenant_registry_entries`) - don't reach for it for anything else.
+- **Adding a new per-tenant table** needs, in its `CREATE TABLE`: a
+  `tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id',
+  false)::uuid` column, `ENABLE ROW LEVEL SECURITY`, and a
+  `tenant_isolation` policy (`USING`/`WITH CHECK` both comparing
+  `tenant_id = current_setting('app.tenant_id', false)::uuid`) - copy the
+  shape of any existing table in `docs/phase1_schema.sql`, don't write it
+  from scratch. Decide whether its primary key needs widening to
+  `(tenant_id, ...)` - only if the "natural" key (without tenant_id) could
+  plausibly collide across tenants (an EVE item type ID, a literal
+  scope/category string) - see that same file's "composite-PK bucket" vs.
+  "column-only bucket" comment banners for real examples of each.
+- **`tenant_scope.enter_tenant(tenant_id)`** is the one place that resolves
+  a tenant fully - storage's own ambient tenant *and* `TRADING_CONFIG`/
+  `PRODUCTION_CONFIG`'s per-tenant instance together. Used by
+  `AccessGateMiddleware` (only its gate-*enabled* branch - see
+  `api/app.py`'s own comment for why the gate-disabled default path
+  deliberately stays on the cheaper `storage.set_current_tenant`-only path)
+  and `scheduler.py`'s per-tenant job iteration. If you add a new place
+  that needs to "become" a specific tenant for a stretch of code (a new
+  background job, a new admin script), use this, not a bare
+  `storage.set_current_tenant` - a table added in the future might need its
+  config resolved too, and this is the one chokepoint that stays correct
+  automatically.
+- **Connection pool sizing**: `storage._get_pool()` opens one
+  `psycopg_pool.ConnectionPool(PG_DSN, min_size=1, max_size=10)` per
+  process, shared across every request/job. 10 is a Phase-1-era default,
+  not the result of load testing - this app's traffic today is a handful of
+  invite-only tenants, well under that. If concurrent load ever routinely
+  saturates it (connections queuing, visible as request latency spikes
+  under concurrent Trading/Production dashboard use), raise `max_size`
+  first before anything more invasive - don't raise `min_size` preemptively,
+  it only trades connection-pool cold-start latency for idle-connection
+  overhead on Postgres's side, not something to guess at without a measured
+  problem.
+- **`ThreadPoolExecutor`/raw `threading.Thread` don't inherit contextvars**
+  from the thread that spawned them (confirmed live, twice, in this
+  migration - `production/esi_sync.py`'s `sync_esi` and `esi_client.py`'s
+  `_get_all_pages`, both fixed via `storage.with_current_tenant(fn)`). If
+  you parallelize anything that might transitively touch `storage.py`
+  (directly or via `TokenManager`'s lazy-refresh path), wrap the submitted
+  callable in `storage.with_current_tenant(...)` - don't assume the ambient
+  tenant "just carries over" into a worker thread.
 
 ## Testing conventions
 
@@ -110,31 +204,51 @@ correctness problem, not just a performance one.
 ## Scheduler
 
 `eve_trader/scheduler.py` is a stdlib-only (`threading`, no APScheduler)
-background daemon thread, started from `api/app.py`'s FastAPI lifespan,
-**off by default** (`TradingConfig.scheduler_enabled`). It runs three jobs
-(Trading pipeline, Production ESI sync, DB/config backup - see
-`_check_and_run_due_jobs`), each reusing an existing "when did this last
-happen" source instead of separate scheduler-specific persistence:
-`storage.esi_sync_state` (already written by `do_pipeline`/`do_sync_esi`) for
-the first two, the newest file's own mtime under `data/backups/` (`backup.
-list_backups()`) for the third. A manual run/backup from the UI correctly
-counts either way and pushes back the next scheduled one. Adding a fourth
-scheduled job means adding one interval field to `TradingConfig` (plus a
-`_FIELD_RANGES` entry, `(0, None)`, in `config.py`) and one
-`if _hours_since(...) >= cfg.x: _run_job(...)` line in
-`_check_and_run_due_jobs` - no other wiring needed.
+background daemon thread, started from `api/app.py`'s FastAPI lifespan.
+Whether it starts at all is an operator-level decision, read once at boot
+from `DEFAULT_TENANT_ID`'s own `TradingConfig.scheduler_enabled` (**off by
+default**) - see "Multi-tenant Postgres" below for what `DEFAULT_TENANT_ID`
+means. Each tick, `trading_pipeline`/`production_sync` run once **per
+tenant** (`storage.list_tenants()`, each fully scoped via `tenant_scope.
+enter_tenant`) - a tenant's own `scheduler_enabled`/interval fields decide
+independently whether *their* jobs run that tick, via
+`_check_and_run_due_jobs_for_tenant`. `backup` stays a single **global**,
+unscoped job (`_check_and_run_backup_job`) - one `pg_dump` already covers
+every tenant's data in one shot, nothing to iterate; its own interval/
+enabled check reads `DEFAULT_TENANT_ID`'s config, same operator-level
+reasoning as the thread's own on/off switch.
+
+Both per-tenant jobs reuse an existing "when did this last happen" source
+instead of separate scheduler-specific persistence: `storage.esi_sync_state`
+(already written by `do_pipeline`/`do_sync_esi`). The backup job reuses the
+newest backup file's own mtime (`backup.list_backups()`). A manual run/
+backup from the UI correctly counts either way and pushes back the next
+scheduled one. `last_run_status` is `{tenant_id: {job_name: {...}}}` for the
+two per-tenant jobs; a separate `_backup_status` (not tenant-keyed) covers
+the global one. Adding a fourth *per-tenant* scheduled job means adding one
+interval field to `TradingConfig` (plus a `_FIELD_RANGES` entry, `(0, None)`,
+in `config.py`) and one `if _hours_since(...) >= cfg.x: _run_job(tenant_id,
+...)` line in `_check_and_run_due_jobs_for_tenant` - no other wiring needed.
 
 ## Backup
 
-`eve_trader/backup.py`'s `create_backup()` zips `data/eve_trader.db`,
-`config.yaml`, and `data/tokens.json` (OAuth tokens - included so a restore
-doesn't require re-authenticating every character) into a timestamped
-`.zip` under `data/backups/`, pruning down to `MAX_BACKUPS` (14) automatically.
-Uses SQLite's own online backup API (`sqlite3.Connection.backup`), not a
-plain file copy - safe regardless of concurrent writers, unlike copying the
-`.db` file directly. Reachable two ways: the "Backup Now" button on the
-Portfolio page (always available, regardless of `scheduler_enabled`), and
-the scheduler's own `backup_interval_hours`-gated job (see above, opt-in).
+`eve_trader/backup.py`'s `create_backup()` zips a `pg_dump` (`-Fc`, custom/
+compressed format - restorable via `pg_restore`) of the whole Postgres
+database plus `config.yaml` into a timestamped `.zip` under `data/backups/`,
+pruning down to `MAX_BACKUPS` (14) automatically. `data/tokens.json` is
+**not** included - `TokenManager` persists to Postgres's `tenant_tokens`
+table now, so the live tokens are already inside the dump; a separate,
+possibly-stale file copy would be actively misleading on a restore. Shells
+out to `docker exec <container> pg_dump -U postgres ...` - must run as the
+Postgres *owner* role (`postgres`), not the app's own `eve_trader_app` role,
+since RLS raises on a missing tenant setting rather than silently returning
+zero rows (see "Multi-tenant Postgres" below) - a non-bypassing role
+couldn't dump per-tenant tables at all. `EVE_TRADER_PG_CONTAINER`/
+`EVE_TRADER_DOCKER_BIN` env vars override the container name/`docker`
+binary path (default `"eve-trader-pg"`/`"docker"`). Reachable two ways: the
+"Backup Now" button on the Portfolio page (always available), and the
+scheduler's own global backup job (see above, opt-in via
+`DEFAULT_TENANT_ID`'s `backup_interval_hours`).
 
 ## "Theoretical ceiling" figures - not bugs
 

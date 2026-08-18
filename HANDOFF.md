@@ -19,13 +19,15 @@ pause point instead of leaving it stale.
   not fully reliable for git's internal state if Dropbox syncs mid-write. Treat Dropbox
   sync as a convenience mirror, not the source of truth - on a new machine, `git fetch &&
   git checkout multi-tenant` rather than trusting whatever Dropbox happened to sync.
-  **Local is currently 3 commits ahead of `origin/multi-tenant`** (this session's Phase 1
-  work - `origin` is still at `6b1d316`, the last pushed commit) - not yet pushed as of
-  this note. Push before resuming on a different machine, or `git fetch` there will not
-  see this session's work at all (Dropbox sync alone does carry the commits, per above,
-  but don't rely on that being complete/consistent - confirm with `git log` after
-  fetching). Standing rule: commit locally freely, push when it's instrumentally needed -
-  it is, for exactly this cross-machine-resume reason.
+  **Local is currently 10 commits ahead of `origin/multi-tenant`** (`origin` is still at
+  `6b1d316`, the last pushed commit - everything through Phase 5, all 5 phases of the
+  plan, is local-only) - not yet pushed as of this note. Push before resuming on a
+  different machine, or `git fetch` there will not see this work at all (Dropbox sync
+  alone does carry the commits, per above, but don't rely on that being
+  complete/consistent - confirm with `git log` after fetching). Standing rule: commit
+  locally freely, push when it's instrumentally needed - it is, for exactly this
+  cross-machine-resume reason. Run `git rev-list --count origin/multi-tenant..HEAD` to
+  get the current true count rather than trusting this number as it ages.
 
 ## Local dev environment set up this session
 
@@ -285,19 +287,38 @@ itself automatically the first time `pytest` runs - see below), and `pip install
         base64-last-character tamper test, confirmed passing 5/5 solo reruns and
         confirmed unrelated to anything touched this phase) - not fixed, flagged as
         pre-existing test debt.
-- [ ] Phase 5 - deploy docs. **Not started - the last phase in the plan doc.**
+- [x] **Phase 5 - DONE.** Deploy docs - documentation-only, no code changes, the last
+      phase in the plan doc:
+      - `CLAUDE.md` (the durable, always-loaded "how the code is organized and why"
+        reference - distinct from `docs/MULTI_TENANT_PLAN.md`, the migration's own
+        design-history record) had drifted stale across Phases 1-4: the opening
+        "one SQLite store" line, "## Config" (didn't mention `ConfigProxy`/per-tenant
+        resolution, still referenced the retired `save_config_overrides`), and
+        "## Scheduler"/"## Backup" (both still described the pre-Phase-4
+        single-tenant/SQLite versions entirely) - all corrected.
+      - New `CLAUDE.md` section "## Multi-tenant Postgres: rules for new storage/
+        schema code" - the plan's literal ask (owner/app-role separation, the
+        `storage.connect()`/`SET LOCAL` discipline, connection pool sizing), plus
+        `DEFAULT_TENANT_ID`, new-per-tenant-table schema shape, `tenant_scope.
+        enter_tenant` vs. bare `storage.set_current_tenant`, and the
+        `ThreadPoolExecutor`/contextvars gotcha (found twice this migration) - the
+        rest of what a future contributor adding a table/job actually needs.
+      - `docs/MULTI_TENANT_PLAN.md` got its own "Phase 5 status: done" block.
 
 ## Immediate next step
 
-Phases 1 through 4 are all done - the app is genuinely multi-tenant end to end:
-`storage.py`, `TRADING_CONFIG`/`PRODUCTION_CONFIG`, and `TokenManager` all resolve
-per-tenant correctly (gate disabled -> `DEFAULT_TENANT_ID`; gate enabled -> real
-per-tenant resolution via the registry, now including config, not just storage), the
-scheduler runs each tenant's jobs independently, and backups/migration tooling are
-Postgres-native. Only Phase 5 remains per `docs/MULTI_TENANT_PLAN.md`: deploy docs -
-document the owner/app-role separation, connection pool sizing, and the `SET LOCAL`/
-`app.tenant_id` discipline required of any *new* storage function added after this
-migration (a future contributor forgetting this is the main long-term risk of this
-design). The actual live-deployment cutover (running `migrate-sqlite` for real, pointing
-the live Oracle VM at Postgres) is explicitly a separate, later decision beyond Phase 5 -
-not started, not planned as part of this document's scope.
+**All 5 phases of `docs/MULTI_TENANT_PLAN.md` are done.** The app is genuinely
+multi-tenant end to end: `storage.py`, `TRADING_CONFIG`/`PRODUCTION_CONFIG`, and
+`TokenManager` all resolve per-tenant correctly (gate disabled -> `DEFAULT_TENANT_ID`;
+gate enabled -> real per-tenant resolution via the registry, including config, not just
+storage), the scheduler runs each tenant's jobs independently, backups/migration
+tooling are Postgres-native, and both durable docs (`CLAUDE.md`, `docs/
+MULTI_TENANT_PLAN.md`) reflect the real current architecture.
+
+What's left is explicitly **not** part of this plan's own scope, per its own standing
+constraint (this branch never touches the live Oracle VM or its data): the actual
+live-deployment cutover - provisioning real Postgres for the live deployment, running
+`migrate-sqlite` for real (not a copy) against the live VM's `data/eve_trader.db`,
+merging `multi-tenant` into `main`, and only then deleting this file per its own
+top-of-file instruction. That's a separate, later decision for the user to make
+explicitly - not something to start unprompted.

@@ -502,6 +502,45 @@ underlying bytes depending on alignment, roughly 1-in-N runs; confirmed via
 `eve_trader/access_gate.py`-adjacent touched this phase) - not fixed here,
 flagged as pre-existing test debt, not a regression.
 
+**Phase 5 status: done.** Documentation-only, no code changes - the last
+phase in this plan. `CLAUDE.md` (the durable "how the code is organized
+and why" reference, loaded into context every session - distinct from this
+file, which is the migration's own design history) had drifted meaningfully
+stale across Phases 1-4 and is now corrected:
+
+- The opening "Two tools, one backend" description still said "one SQLite
+  store" - corrected to point at this file for the actual (multi-tenant
+  Postgres) architecture.
+- "## Config" didn't mention `ConfigProxy`/per-tenant resolution at all,
+  and still referenced `save_config_overrides`, retired in Phase 2 -
+  corrected, with a pointer to the new section below for *why* a bare
+  dataclass instance would be actively wrong now (one tenant's Settings
+  save leaking into every other tenant's live config).
+- "## Scheduler" and "## Backup" both still described the pre-Phase-4
+  single-tenant-SQLite versions entirely - rewritten to match the real,
+  current per-tenant-iteration/global-backup-job and `pg_dump`-based
+  designs.
+- New "## Multi-tenant Postgres: rules for new storage/schema code"
+  section - the actual literal content this phase's plan text called for
+  (owner/app-role separation, the `storage.connect()`/`SET LOCAL`
+  discipline, connection pool sizing) - plus, since a future contributor
+  adding a new table or background job needs the whole current picture,
+  not just those three specific facts: what `DEFAULT_TENANT_ID` is and
+  when it's used, what a new per-tenant table's schema needs, what
+  `tenant_scope.enter_tenant` is and when to reach for it over a bare
+  `storage.set_current_tenant`, and the `ThreadPoolExecutor`/contextvars
+  gotcha (found twice this migration, in `esi_sync.py` and
+  `esi_client.py`) so a third instance doesn't get rediscovered the hard
+  way.
+
+This document (`docs/MULTI_TENANT_PLAN.md`) stays as the permanent design-
+history record - `CLAUDE.md` is deliberately the terser, quick-reference
+version for day-to-day work, pointing back here for the "why" of anything
+non-obvious. `HANDOFF.md` still exists (per its own instruction, only
+deleted once this migration is "fully done and merged" - it isn't merged
+to `main` yet, still on the `multi-tenant` branch), updated to reflect
+Phase 5.
+
 **Phase 0 - Postgres + RLS proof of concept on `stock_targets`**
 Chosen specifically because its `type_id` PK has the collision problem, not because it's
 easy. Stand up Postgres, add `psycopg[binary]` + `psycopg_pool` dependencies (no ORM -
