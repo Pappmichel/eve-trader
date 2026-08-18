@@ -127,11 +127,61 @@ chmod +x deploy/setup.sh
 ./deploy/setup.sh <public-ip>
 ```
 
-Installs Python/Node/nginx/certbot, builds the venv and the frontend, writes
-`.env`/`config.yaml` from the `.example` files (only if they don't already
-exist - never overwrites a real config), and installs (but does not yet
-fully configure) the systemd service and nginx site. See the script itself
-for exactly what each step does - it's meant to be read, not just trusted.
+Installs Python/Node/nginx/certbot/Postgres, builds the venv and the
+frontend, writes `.env`/`config.yaml` from the `.example` files (only if
+they don't already exist - never overwrites a real config), and installs
+(but does not yet fully configure) the systemd service and nginx site. See
+the script itself for exactly what each step does - it's meant to be read,
+not just trusted.
+
+## 2b. Set up Postgres (multi-tenant)
+
+As of the multi-tenant migration (see `docs/MULTI_TENANT_PLAN.md`), this
+app needs a real Postgres database - **installed natively via apt, not
+Docker** (`deploy/setup.sh` already does this for you, idempotent). Oracle's
+Always Free shapes are memory-constrained (~1GB on the x86 E2.1.Micro
+fallback; confirmed real, see the swap-file section above) and Docker's own
+overhead isn't worth it for a single dedicated VM with no portability need -
+`eve_trader/backup.py`'s `pg_dump` call already supports this (see
+`EVE_TRADER_PG_CONTAINER=""` below).
+
+Tune `postgresql.conf` for low memory - the defaults assume far more RAM
+than a small VM has:
+```bash
+PG_CONF=$(sudo -u postgres psql -tAc "SHOW config_file;")
+sudo sed -i \
+  -e "s/^#\?shared_buffers.*/shared_buffers = 32MB/" \
+  -e "s/^#\?max_connections.*/max_connections = 20/" \
+  "$PG_CONF"
+sudo systemctl restart postgresql
+```
+(the app's own connection pool never opens more than 10 - see
+`storage._get_pool()` - 20 leaves headroom for a manual `psql` session too.)
+
+Apply the schema (idempotent - safe to re-run), owner role only:
+```bash
+cd ~/eve-trader
+sudo -u postgres psql -c "CREATE DATABASE eve_trader;"
+sudo -u postgres psql -d eve_trader -f docs/phase1_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/phase2_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/phase3_schema.sql
+```
+`phase1_schema.sql` creates the `eve_trader_app` role with the **checked-in
+dev password** (`app_devpassword`) - fine for local dev, not for a real
+deployment. Overwrite it with a real generated secret immediately after:
+```bash
+APP_PASSWORD=$(openssl rand -hex 24)
+sudo -u postgres psql -c "ALTER ROLE eve_trader_app WITH PASSWORD '$APP_PASSWORD';"
+echo "Save this - it only prints once: $APP_PASSWORD"
+```
+
+Add to `.env` (see `.env.example`'s own comments for the full explanation):
+```
+EVE_TRADER_PG_DSN=host=localhost port=5432 dbname=eve_trader user=eve_trader_app password=<the real password from above>
+EVE_TRADER_PG_CONTAINER=
+```
+(`EVE_TRADER_PG_CONTAINER=` with nothing after the `=` sets it to the empty
+string - the bare-`pg_dump`, no-Docker mode.)
 
 ## 3. Configure (Phase 1: bare IP, HTTP)
 
@@ -165,10 +215,19 @@ grep -E "EVE_SSO_CALLBACK_HOST|FRONTEND_ORIGIN|EVE_SSO_REDIRECT_URI|SESSION_SECR
 **`config.yaml`:**
 ```yaml
 access_gate_enabled: true
-allowed_character_ids: [<your character_id>]
-allowed_corporation_ids: []
-allowed_alliance_ids: []
 ```
+Who's actually *allowed* through the gate is no longer a `config.yaml`
+allowlist (that was retired in the multi-tenant migration's Phase 3a) - it's
+now the Postgres tenant registry, provisioned via the admin CLI. **This
+step is the one that keeps you able to log in at all once the gate is on**
+- do it before restarting with `access_gate_enabled: true`:
+```bash
+cd ~/eve-trader
+.venv/bin/eve-trader tenant create "My Deployment"   # prints a tenant_id - copy it
+.venv/bin/eve-trader tenant add-entry <tenant_id> --character <your_character_id>
+```
+(`eve-trader tenant list` shows every provisioned tenant and their
+registered characters/corps/alliances, if you need to check later.)
 
 **At https://developers.eveonline.com/applications:** register a **new**
 EVE SSO application for this deployment (don't reuse the local-dev one - an
@@ -192,6 +251,40 @@ sudo systemctl restart eve-trader
 - Open `http://<public-ip>` in a browser, click "Login with EVE Online" on
   the landing page, confirm you land back on the app logged in (and that a
   *different*, non-allowlisted character gets denied).
+
+## Upgrading an existing single-tenant SQLite deployment
+
+If you already have a running deployment from before the multi-tenant
+migration (data in `data/eve_trader.db`, `config.yaml`'s old
+`allowed_character_ids` etc.), cutting it over to Postgres:
+
+1. **Back up first** - copy `data/eve_trader.db`, `data/tokens.json`,
+   `config.yaml`, and `.env` off the VM before touching anything. There is
+   no automated rollback path once you start - a plain file copy is the
+   whole safety net (`git checkout <old-commit>` gets the *code* back, it
+   doesn't restore data).
+2. `sudo systemctl stop eve-trader`.
+3. Follow steps 1-2b above (pull the new code, install/tune Postgres, apply
+   the schema).
+4. Migrate the existing data into the default tenant:
+   ```bash
+   cd ~/eve-trader
+   .venv/bin/eve-trader migrate-sqlite data/eve_trader.db
+   .venv/bin/eve-trader tenant add-entry 00000000-0000-0000-0000-000000000001 --character <your_character_id>
+   .venv/bin/eve-trader tenant import-tokens
+   ```
+   (`migrate-sqlite` only ever reads `data/eve_trader.db` - it's never
+   modified, so re-running it is harmless; `tenant add-entry` targets
+   `DEFAULT_TENANT_ID` explicitly here, since that's what `migrate-sqlite`
+   defaults to and what the app itself uses for every request while the
+   access gate is disabled - see `eve_trader/storage.py`'s own
+   `DEFAULT_TENANT_ID` docstring; `import-tokens` reads `data/tokens.json`,
+   also never modified.)
+5. `sudo systemctl start eve-trader`, then run through "4. Verify" above.
+6. Once the new deployment has run cleanly for a while, `data/eve_trader.db`
+   is no longer read by anything (storage.py has no SQLite code path left)
+   - safe to leave in place (harmless dead weight) or delete once you're
+   confident you won't need to re-run `migrate-sqlite`.
 
 ## Phase 2: adding a domain + HTTPS later
 

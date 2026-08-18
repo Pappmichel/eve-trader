@@ -28,10 +28,25 @@ if [ -z "$DOMAIN" ]; then
     exit 1
 fi
 
-echo "==> Installing system packages (Python, Node.js, nginx, certbot)..."
+echo "==> Installing system packages (Python, Node.js, nginx, certbot, Postgres)..."
 sudo apt-get update -qq
 sudo apt-get install -y python3 python3-venv python3-pip python3-dev build-essential \
-    nginx certbot python3-certbot-nginx curl git
+    nginx certbot python3-certbot-nginx curl git postgresql
+
+echo "==> Tuning Postgres for a memory-constrained VM..."
+# Native install, not Docker (see deploy/README.md's "Set up Postgres"
+# section) - the distro defaults (128MB shared_buffers, 100 max_connections)
+# assume far more RAM than an Always-Free-tier VM has; the app's own
+# connection pool never opens more than 10 (storage._get_pool()). Idempotent
+# - re-running just re-applies the same sed substitutions.
+PG_CONF=$(sudo -u postgres psql -tAc "SHOW config_file;" 2>/dev/null || true)
+if [ -n "$PG_CONF" ]; then
+    sudo sed -i \
+        -e "s/^#\?shared_buffers.*/shared_buffers = 32MB/" \
+        -e "s/^#\?max_connections.*/max_connections = 20/" \
+        "$PG_CONF"
+    sudo systemctl restart postgresql
+fi
 
 if ! command -v node >/dev/null 2>&1; then
     echo "==> Installing Node.js 20.x (NodeSource)..."
@@ -103,20 +118,26 @@ sudo systemctl reload nginx
 
 cat <<EOF
 
-==> Done with system setup. Remaining steps (see deploy/README.md "Phase 1"
-    for detail - this assumes no domain yet, plain http:// on the bare IP;
-    see "Phase 2" there for adding a domain + HTTPS once you have one):
+==> Done with system setup. Remaining steps (see deploy/README.md "2b. Set
+    up Postgres" + "Phase 1" for detail - this assumes no domain yet, plain
+    http:// on the bare IP; see "Phase 2" there for adding a domain + HTTPS
+    once you have one):
 
-  1. Edit $APP_DIR/.env and $APP_DIR/config.yaml with your real values
-     (EVE_SSO_CLIENT_ID, structure_id, character names, access-gate
-     allowlists, ...).
-  2. Register a new EVE SSO app for this deployment at
+  1. Apply the Postgres schema and set a real EVE_TRADER_PG_DSN password
+     (see deploy/README.md's "2b. Set up Postgres" section) - Postgres
+     itself is already installed and tuned by this script, but the schema/
+     role password are deliberately manual, one-time steps.
+  2. Edit $APP_DIR/.env and $APP_DIR/config.yaml with your real values
+     (EVE_SSO_CLIENT_ID, structure_id, character names, ...), then provision
+     yourself as a tenant (`eve-trader tenant create`/`tenant add-entry` -
+     see deploy/README.md, this replaces the old config.yaml allowlist).
+  3. Register a new EVE SSO app for this deployment at
      https://developers.eveonline.com/applications with callback URL:
        http://$DOMAIN/api/auth/callback
      and set EVE_SSO_REDIRECT_URI + FRONTEND_ORIGIN in .env to match
      (both to http://$DOMAIN, no https:// yet).
-  3. sudo systemctl restart eve-trader
-  4. Open http://$DOMAIN in a browser.
+  4. sudo systemctl restart eve-trader
+  5. Open http://$DOMAIN in a browser.
 
   Once you have a real domain pointed at this IP, see deploy/README.md's
   "Phase 2" for adding HTTPS via certbot.

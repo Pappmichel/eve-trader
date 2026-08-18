@@ -13,11 +13,16 @@ setting (see storage.connect()'s own fail-closed docstring) rather than
 silently returning zero rows, so a non-bypassing role can't dump per-tenant
 tables at all without one already set - the owner role bypasses RLS
 entirely, which is exactly what a real disaster-recovery snapshot needs.
-Invoked via `docker exec <container> pg_dump ...` since the dev Postgres
-only runs inside Docker - EVE_TRADER_PG_CONTAINER/EVE_TRADER_DOCKER_BIN env
-vars make both the container name and the `docker` binary itself
-overridable, matching the existing EVE_TRADER_PG_DSN/EVE_TRADER_PG_OWNER_DSN
-convention.
+Invoked via `docker exec <container> pg_dump ...` by default, since the dev
+Postgres only runs inside Docker - EVE_TRADER_PG_CONTAINER/
+EVE_TRADER_DOCKER_BIN env vars make both the container name and the
+`docker` binary itself overridable, matching the existing
+EVE_TRADER_PG_DSN/EVE_TRADER_PG_OWNER_DSN convention. Setting
+EVE_TRADER_PG_CONTAINER to the literal empty string switches to a bare
+`pg_dump` call with no `docker exec` wrapper at all - for a host that runs
+Postgres natively (confirmed real: the live deploy target has ~1GB RAM,
+where adding Docker's own overhead just for this one command isn't worth
+it - see deploy/README.md's Postgres section).
 
 data/tokens.json is deliberately never included anymore (TokenManager
 persists to Postgres's tenant_tokens table now - see auth.py - so the live
@@ -28,7 +33,10 @@ Restoring is a manual operation, not a CLI command here (same as before
 this rework - list_backups()/create_backup() never had a restore
 counterpart either): extract eve_trader.dump from the zip, then
 `docker exec -i <container> pg_restore -U postgres -d eve_trader --clean --if-exists < eve_trader.dump`
-(add `-c` and `--if-exists` so it can run against an already-populated DB).
+(add `-c` and `--if-exists` so it can run against an already-populated DB) -
+or, on a bare-`pg_dump`-mode host, the same `pg_restore -U postgres -d
+eve_trader --clean --if-exists < eve_trader.dump` without the `docker exec`
+wrapper.
 """
 from __future__ import annotations
 
@@ -63,10 +71,14 @@ def create_backup() -> dict:
     backup_path = BACKUP_DIR / f"{BACKUP_NAME_PREFIX}{ts}.zip"
     tmp_dump_path = BACKUP_DIR / f".tmp_{ts}.dump"
 
+    pg_dump_cmd = ["pg_dump", "-U", "postgres", "-d", PG_DB_NAME, "-Fc"]
+    if PG_CONTAINER:
+        pg_dump_cmd = [DOCKER_BIN, "exec", PG_CONTAINER, *pg_dump_cmd]
+
     try:
         with open(tmp_dump_path, "wb") as dump_file:
             result = subprocess.run(
-                [DOCKER_BIN, "exec", PG_CONTAINER, "pg_dump", "-U", "postgres", "-d", PG_DB_NAME, "-Fc"],
+                pg_dump_cmd,
                 stdout=dump_file, stderr=subprocess.PIPE, timeout=300,
             )
         if result.returncode != 0:
