@@ -44,6 +44,10 @@ def fetch_recent_transactions(character_id: int, auth_role: str, client: ESIClie
             break
         all_txns.extend(page)
         oldest = min(page, key=lambda t: t["transaction_id"])
+        # len(page) < WALLET_TRANSACTIONS_PAGE_SIZE as the "no more pages"
+        # signal relies on ESI's per-call cap staying fixed at 2500 - correct
+        # today, but would silently under-page (looking identical to "no
+        # older transactions left") if CCP ever lowered it.
         if _parse_iso(oldest["date"]) < cutoff or len(page) < WALLET_TRANSACTIONS_PAGE_SIZE:
             break
         from_id = oldest["transaction_id"]
@@ -125,6 +129,18 @@ def reconcile_realized_trades(buyer_character_id: int, seller_character_id: int,
                 # per-unit volume, or cheap/small/bulk-traded items (ammo, ice
                 # products, ...) get a wildly overstated landed cost.
                 freight = volumes[type_id] * cfg.import_cost_per_m3
+                # jita_buy_broker_fee/structure_sell_haircut are *modeled*
+                # rates (config.py), applied on top of the real observed
+                # buy["unit_price"]/sell["unit_price"] from the wallet
+                # transaction itself - not the real fee actually charged for
+                # that specific transaction (ESI's wallet *journal*, a
+                # separate endpoint from wallet *transactions*, has the real
+                # per-transaction brokers_fee/transaction_tax entries, not
+                # pulled here). An approximation, same spirit as this app's
+                # other documented simplifications (e.g. invention's job-fee
+                # estimate) - real skill/standing changes over the lookback
+                # window could make Realized Trades' own profit/margin drift
+                # from what actually landed in the wallet.
                 landed = buy["unit_price"] * (1 + cfg.jita_buy_broker_fee) + freight
                 net_sell = sell["unit_price"] * cfg.structure_sell_haircut
                 profit_per_unit = net_sell - landed
