@@ -229,3 +229,62 @@ export const portfolioApi = {
   backups: () => get<T.BackupInfo[]>('/api/portfolio/backups'),
   createBackup: () => post<T.BackupInfo>('/api/portfolio/backups'),
 }
+
+// -------------------------------------------------------------- doctrine
+export const doctrineApi = {
+  listDoctrines: () => get<T.DoctrineStatus[]>('/api/doctrine/doctrines'),
+  createDoctrine: (name: string, description?: string | null) =>
+    post<T.Doctrine>('/api/doctrine/doctrines', { name, description: description ?? null }),
+  updateDoctrine: (doctrineId: string, req: { name?: string; description?: string | null; active?: boolean }) =>
+    request<T.Doctrine>(`/api/doctrine/doctrines/${doctrineId}`, { method: 'PATCH', body: JSON.stringify(req) }),
+  deleteDoctrine: (doctrineId: string) => del(`/api/doctrine/doctrines/${doctrineId}`),
+
+  parseFitting: (rawEft: string) => post<T.ParsedFittingPreview>('/api/doctrine/fittings/parse', { raw_eft: rawEft }),
+  addFitting: (doctrineId: string, req: {
+    raw_eft: string
+    name?: string | null
+    variant_label?: string | null
+    contract_target?: number
+    stockpile_target?: number
+    cargo_tolerance_pct?: number | null
+  }) => post<{ fitting: T.Fitting; issues: T.DoctrineParseIssue[] }>(`/api/doctrine/doctrines/${doctrineId}/fittings`, req),
+  updateFitting: (fittingId: string, req: {
+    raw_eft?: string | null
+    name?: string | null
+    variant_label?: string | null
+    contract_target?: number | null
+    stockpile_target?: number | null
+    cargo_tolerance_pct?: number | null
+    active?: boolean | null
+  }) =>
+    request<{ fitting: T.Fitting; issues: T.DoctrineParseIssue[] }>(`/api/doctrine/fittings/${fittingId}`, {
+      method: 'PATCH', body: JSON.stringify(req),
+    }),
+  deleteFitting: (fittingId: string) => del(`/api/doctrine/fittings/${fittingId}`),
+  fittingDetail: (fittingId: string) => get<T.FittingDetail>(`/api/doctrine/fittings/${fittingId}`),
+
+  syncContracts: () => post<T.DoctrineSyncReport>('/api/doctrine/sync'),
+  validateContracts: () => post<{ revalidated: number }>('/api/doctrine/validate'),
+  syncTime: () => get<{ synced_at: string | null }>('/api/doctrine/sync-time'),
+
+  status: (doctrineId?: string) =>
+    get<{ doctrines: T.DoctrineStatus[] }>(`/api/doctrine/status${doctrineId ? `?doctrine_id=${doctrineId}` : ''}`),
+  contracts: (fittingId?: string, status?: string) => {
+    const params = new URLSearchParams()
+    if (fittingId) params.set('fitting_id', fittingId)
+    if (status) params.set('status', status)
+    const qs = params.toString()
+    return get<T.DoctrineContractRow[]>(`/api/doctrine/contracts${qs ? `?${qs}` : ''}`)
+  },
+  stockpile: (doctrineId?: string) =>
+    get<{ rows: T.StockpileRow[]; assets_available: boolean }>(
+      `/api/doctrine/stockpile${doctrineId ? `?doctrine_id=${doctrineId}` : ''}`,
+    ),
+
+  characters: () => get<T.DoctrineCharacter[]>('/api/doctrine/characters'),
+  addCharacter: () => post<{ character_name: string; character_id: number }>('/api/doctrine/auth'),
+  removeCharacter: (roleKey: string) => del(`/api/doctrine/characters/${roleKey}`),
+
+  settings: () => get<T.DoctrineSettings>('/api/doctrine/settings'),
+  updateSettings: (s: T.DoctrineSettings) => post<T.DoctrineSettings>('/api/doctrine/settings', s),
+}

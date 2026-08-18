@@ -44,6 +44,14 @@ const MaterialTree = lazy(() => import('./pages/production/MaterialTree'))
 const AssetSearch = lazy(() => import('./pages/production/AssetSearch'))
 const ProductionSettings = lazy(() => import('./pages/production/ProductionSettings'))
 
+const DoctrineLayout = lazy(() => import('./pages/doctrine/DoctrineLayout'))
+const Doctrines = lazy(() => import('./pages/doctrine/Doctrines'))
+const DoctrineDetail = lazy(() => import('./pages/doctrine/DoctrineDetail'))
+const FittingDetail = lazy(() => import('./pages/doctrine/FittingDetail'))
+const Contracts = lazy(() => import('./pages/doctrine/Contracts'))
+const Stockpile = lazy(() => import('./pages/doctrine/Stockpile'))
+const DoctrineSettings = lazy(() => import('./pages/doctrine/DoctrineSettings'))
+
 function RouteFallback() {
   return (
     <Center h={200}>
@@ -175,6 +183,15 @@ function App() {
               <Route path="material-tree" element={<MaterialTree />} />
               <Route path="asset-search" element={<AssetSearch />} />
               <Route path="settings" element={<ProductionSettings />} />
+            </Route>
+
+            <Route path="/doctrine" element={<DoctrineLayout />}>
+              <Route index element={<Doctrines />} />
+              <Route path=":doctrineId" element={<DoctrineDetail />} />
+              <Route path="fittings/:fittingId" element={<FittingDetail />} />
+              <Route path="contracts" element={<Contracts />} />
+              <Route path="stockpile" element={<Stockpile />} />
+              <Route path="settings" element={<DoctrineSettings />} />
             </Route>
           </Routes>
         </Suspense>
