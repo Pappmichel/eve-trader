@@ -64,7 +64,7 @@ class ShortlistRow(_Base):
     # Not part of the underlying shortlist_snapshot row - computed by the
     # router from storage.get_shortlist_skip_since() +
     # TradingConfig.skip_grace_period_days. None unless this item is
-    # currently on an unbroken "No market data / Skip" streak (see
+    # currently on an unbroken "No market data"/"Skip" streak (see
     # actions.do_refresh_and_prune_candidates).
     days_until_deactivation: Optional[int] = None
 

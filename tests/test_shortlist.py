@@ -54,7 +54,7 @@ def test_inactive_item_short_circuits_without_stats():
     assert row.landed_cost is None
 
 
-def test_missing_market_data_is_skip():
+def test_missing_market_data_is_no_market_data():
     cfg = TradingConfig()
     item = ShortlistItem(item="No Market", item_id=42, category="Material", volume_m3=1.0, active=True)
     jita = OrderStats(sell_percentile=None, sell_volume=0, buy_percentile=None, buy_volume=0)
@@ -62,7 +62,22 @@ def test_missing_market_data_is_skip():
 
     row = evaluate_shortlist_item(item, own_orders_remaining=0.0,
                                    jita_stats=jita, structure_stats=structure, cfg=cfg)
-    assert row.decision == "No market data / Skip"
+    assert row.decision == "No market data"
+
+
+def test_priced_but_unprofitable_item_is_skip():
+    # Distinct from "No market data" (see shortlist.py's 2026-08-18 split) -
+    # this item has real jita/structure quotes, they just don't clear the
+    # margin bar, so the right label is "Skip", not "No market data".
+    cfg = TradingConfig(import_cost_per_m3=900.0, structure_sell_haircut=0.95,
+                         jita_buy_broker_fee=0.0, min_margin_threshold=0.05)
+    item = ShortlistItem(item="Test Widget", item_id=123, category="Module/Rig", volume_m3=0.1, active=True)
+    jita = OrderStats(sell_percentile=1000.0, sell_volume=500, buy_percentile=900.0, buy_volume=300)
+    structure = OrderStats(sell_percentile=1000.0, sell_volume=50, buy_percentile=900.0, buy_volume=10)
+
+    row = evaluate_shortlist_item(item, own_orders_remaining=0.0,
+                                   jita_stats=jita, structure_stats=structure, cfg=cfg)
+    assert row.decision == "Skip"
 
 
 def test_summary_counts_and_audit():

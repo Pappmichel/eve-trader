@@ -13,11 +13,12 @@ import { useAction } from '../../hooks/useAction'
 import { isk, pct, qty } from '../../format'
 import { COLORS } from '../../theme'
 
-const ALL_DECISIONS = ['Inactive', 'Missing ID', 'No market data / Skip', 'Already ordered', 'Import']
+const ALL_DECISIONS = ['Inactive', 'Missing ID', 'No market data', 'Skip', 'Already ordered', 'Import']
 const DECISION_COLOR: Record<string, string> = {
   Import: 'accent',
   'Already ordered': 'info',
-  'No market data / Skip': 'warn',
+  'No market data': 'warn',
+  Skip: 'warn',
   Inactive: 'danger',
   'Missing ID': 'danger',
 }

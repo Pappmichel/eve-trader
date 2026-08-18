@@ -17,7 +17,8 @@ from .config import OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, Trad
 from .esi_client import ESIClient, ESIError
 from .goonmetrics_client import GoonmetricsClient
 from .models import Candidate, ShortlistItem, UndercutRow, UnlistedStockRow
-from .shortlist import audit_shortlist, evaluate_shortlist, summary_counts, top_imports_by_daily_profit
+from .shortlist import (NO_MARKET_DATA_DECISION, SKIP_DECISION, audit_shortlist, evaluate_shortlist,
+                         summary_counts, top_imports_by_daily_profit)
 from .trade_reconciliation import reconcile_realized_trades, summarize_realized
 
 log = logging.getLogger("eve_trader.actions")
@@ -339,7 +340,14 @@ def do_check_undercut(cfg: TradingConfig = TRADING_CONFIG, oauth_cfg: OAuthConfi
     return {"rows": rows}
 
 
-SKIP_DECISION = "No market data / Skip"
+# Both decisions feed the same skip-grace-period deactivation streak (see
+# do_refresh_and_prune_candidates below) - "No market data" (never priced at
+# all) and "Skip" (priced but unprofitable) are shown as distinct labels to
+# the user (see shortlist.py's own comment on the 2026-08-18 split) but
+# treated identically for streak/deactivation purposes; splitting *that*
+# behavior too (e.g. a different grace period per label) is a separate,
+# not-yet-made decision.
+SKIP_STREAK_DECISIONS = (NO_MARKET_DATA_DECISION, SKIP_DECISION)
 
 
 def _items_past_skip_grace_period(rows: list, skip_since: dict[int, str], grace_period_days: int,
@@ -348,13 +356,14 @@ def _items_past_skip_grace_period(rows: list, skip_since: dict[int, str], grace_
     it's testable without ESI/DB access. `skip_since` is the current
     {item_id: ISO timestamp} skip-streak-start map (storage.
     get_shortlist_skip_since, read *before* this run's streak updates are
-    applied) - an item is due for deactivation only if it's Skip *this* run
-    AND its streak (possibly starting before this run) has run for at least
-    `grace_period_days`. Returns [(item_id, item_name), ...]."""
+    applied) - an item is due for deactivation only if it's Skip-like (see
+    SKIP_STREAK_DECISIONS) *this* run AND its streak (possibly starting
+    before this run) has run for at least `grace_period_days`. Returns
+    [(item_id, item_name), ...]."""
     grace_period = dt.timedelta(days=grace_period_days)
     due = []
     for r in rows:
-        if r.decision != SKIP_DECISION or not r.item_id:
+        if r.decision not in SKIP_STREAK_DECISIONS or not r.item_id:
             continue
         since_str = skip_since.get(r.item_id)
         if since_str is None:
@@ -395,12 +404,13 @@ def do_refresh_and_prune_candidates(safe: bool = True, cfg: TradingConfig = TRAD
     shortlist item's current profitability and deactivate (active=False, not
     deleted - shortlist_snapshot history is kept) two kinds of items:
 
-    1. Whichever have been continuously "No market data / Skip" for at least
-       cfg.skip_grace_period_days (default 30) - tracked per item_id in
-       storage.shortlist_skip_streak, reset the moment the item is profitable
-       again even once. Only targets that one decision - "Inactive" items are
-       already deactivated, and "Missing ID" means a data problem to fix
-       manually, not a profitability judgment to act on automatically. The
+    1. Whichever have been continuously "No market data" or "Skip" (see
+       SKIP_STREAK_DECISIONS) for at least cfg.skip_grace_period_days
+       (default 30) - tracked per item_id in storage.shortlist_skip_streak,
+       reset the moment the item is profitable again even once. Only targets
+       those two decisions - "Inactive" items are already deactivated, and
+       "Missing ID" means a data problem to fix manually, not a
+       profitability judgment to act on automatically. The
        grace period exists so a single temporary market-data gap (not a real,
        sustained loss of profitability) can't knock an otherwise-fine item
        off the active shortlist - the streak only leads to deactivation once
@@ -420,8 +430,8 @@ def do_refresh_and_prune_candidates(safe: bool = True, cfg: TradingConfig = TRAD
     skip_deactivate = _items_past_skip_grace_period(rows, skip_since, cfg.skip_grace_period_days,
                                                       dt.datetime.fromisoformat(run_ts))
 
-    skip_item_ids = [r.item_id for r in rows if r.decision == SKIP_DECISION and r.item_id]
-    recovered_item_ids = [r.item_id for r in rows if r.decision != SKIP_DECISION and r.item_id]
+    skip_item_ids = [r.item_id for r in rows if r.decision in SKIP_STREAK_DECISIONS and r.item_id]
+    recovered_item_ids = [r.item_id for r in rows if r.decision not in SKIP_STREAK_DECISIONS and r.item_id]
     storage.clear_shortlist_skip_streak(recovered_item_ids)
     storage.start_shortlist_skip_streak(skip_item_ids, run_ts)  # no-op for ids already mid-streak
 
@@ -466,7 +476,7 @@ def do_refresh_and_prune_candidates(safe: bool = True, cfg: TradingConfig = TRAD
 
 def shortlist_skip_deactivation_days(cfg: TradingConfig = TRADING_CONFIG) -> dict[int, int]:
     """{item_id: days_remaining} for every item currently on an unbroken
-    "No market data / Skip" streak (storage.get_shortlist_skip_since - see
+    "No market data"/"Skip" streak (storage.get_shortlist_skip_since - see
     do_refresh_and_prune_candidates) - an item not present in the returned
     dict isn't currently on a streak. Used by api/routers/trading.py's
     /shortlist/snapshot to surface a "days until auto-deactivation" column."""

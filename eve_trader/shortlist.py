@@ -5,7 +5,7 @@
     Profit / Unit    = Net Sell - Landed Cost
     Margin           = Profit / Landed Cost
     Profit / m3      = Profit / Volume
-    Decision         = Inactive | Missing ID | No market data / Skip |
+    Decision         = Inactive | Missing ID | No market data | Skip |
                        Already ordered | Import
 """
 from __future__ import annotations
@@ -19,7 +19,16 @@ from .models import ShortlistItem, ShortlistRow
 
 log = logging.getLogger(__name__)
 
-ALL_DECISIONS = ["Inactive", "Missing ID", "No market data / Skip", "Already ordered", "Import"]
+# Split 2026-08-18 from one merged "No market data / Skip" label - confirmed
+# real gap: a brand-new candidate with zero C-J sell history (never even
+# priced yet) and an item that's been fully evaluated but just isn't
+# profitable enough looked identical to the user, even though the right next
+# action differs (seed the market vs. accept it's not viable). Both still
+# feed the same skip-grace-period deactivation streak (see actions.py's
+# SKIP_STREAK_DECISIONS) - only the label shown to the user changes.
+NO_MARKET_DATA_DECISION = "No market data"
+SKIP_DECISION = "Skip"
+ALL_DECISIONS = ["Inactive", "Missing ID", NO_MARKET_DATA_DECISION, SKIP_DECISION, "Already ordered", "Import"]
 
 
 def _decision(active: bool, item_id: Optional[int], sell_volume: Optional[float],
@@ -27,21 +36,26 @@ def _decision(active: bool, item_id: Optional[int], sell_volume: Optional[float]
               own_orders_remaining: float, buyer_already_covered: bool, cfg: TradingConfig) -> str:
     """Precedence, most restrictive first: an inactive item is always
     "Inactive" regardless of everything else; a missing item_id can't be
-    priced at all, so it's next; only then does missing/insufficient market
-    data ("No market data / Skip") get checked, ahead of the actual buy
-    decision - a profitable-looking item with no real sell volume or margin
-    data behind it is still a Skip, not an Import. "Already ordered" only
-    applies once an item has otherwise cleared the Import bar (it's a
-    refinement of Import - "you'd import this, but you already have it
-    covered" - not an independent state)."""
+    priced at all, so it's next; only then does a genuine data gap
+    ("No market data" - sell_volume/profit/margin never came back at all,
+    e.g. no C-J listing has ever existed for this item) get checked, ahead
+    of the actual buy decision; a real, priced item that simply doesn't
+    clear the profit/margin bar is "Skip" instead - distinct from "No market
+    data" since the right next action differs (seed the market vs. accept
+    it's not viable). "Already ordered" only applies once an item has
+    otherwise cleared the Import bar (it's a refinement of Import - "you'd
+    import this, but you already have it covered" - not an independent
+    state)."""
     if not active:
         return "Inactive"
     if not item_id:
         return "Missing ID"
     have_data = sell_volume is not None and profit is not None and margin is not None
-    if have_data and sell_volume > 0 and profit > cfg.min_profit_threshold and margin >= cfg.min_margin_threshold:
+    if not have_data:
+        return NO_MARKET_DATA_DECISION
+    if sell_volume > 0 and profit > cfg.min_profit_threshold and margin >= cfg.min_margin_threshold:
         return "Already ordered" if (own_orders_remaining > 0 or buyer_already_covered) else "Import"
-    return "No market data / Skip"
+    return SKIP_DECISION
 
 
 def evaluate_shortlist_item(item: ShortlistItem, own_orders_remaining: float,
