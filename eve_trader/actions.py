@@ -8,7 +8,6 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import math
-import sqlite3
 
 import pandas as pd
 
@@ -538,18 +537,21 @@ def do_pipeline(safe: bool = True, rebuild_universe: bool = False) -> dict:
 
 
 def do_create_backup() -> dict:
-    """Backs up data/eve_trader.db, config.yaml, and data/tokens.json into a
-    single timestamped .zip (see backup.py) - this app's only persistence
-    (no git repo) so this is the only way to recover from a lost/corrupted
-    disk short of redoing every ESI sync and Settings change by hand."""
+    """Backs up the whole Postgres database (every tenant, via pg_dump) plus
+    config.yaml into a single timestamped .zip (see backup.py) - this app's
+    only persistence (no git repo) so this is the only way to recover from a
+    lost/corrupted disk short of redoing every ESI sync and Settings change
+    by hand."""
     try:
         return backup.create_backup()
-    except (OSError, sqlite3.Error) as e:
-        # sqlite3.Error (e.g. OperationalError on a locked/corrupt DB during
-        # the online backup) is not an OSError subclass - confirmed real gap:
-        # this used to only catch OSError, so a locked-DB failure escaped as
-        # a raw 500 instead of the ActionError every other user-facing
-        # failure in this app converts to.
+    except (OSError, RuntimeError) as e:
+        # RuntimeError covers a non-zero pg_dump exit (see backup.py's own
+        # create_backup) - confirmed real gap: this used to only catch
+        # OSError/sqlite3.Error (leftover from the pre-Postgres SQLite
+        # online-backup API), so a real pg_dump failure (Postgres
+        # unreachable, wrong password, ...) escaped as a raw 500 instead of
+        # the ActionError every other user-facing failure in this app
+        # converts to.
         raise ActionError(f"Backup failed: {e}") from e
 
 
