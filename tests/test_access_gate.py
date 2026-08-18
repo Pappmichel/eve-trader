@@ -1,9 +1,8 @@
-"""Unit tests for access_gate.py - session cookie signing and
-resolve_corp_alliance. Router-level tests (login flow, middleware
-enforcement) live in tests/test_gate_router.py. Tenant-resolution tests
-(storage.resolve_tenant_id, the Postgres-backed replacement for the old
-in-memory AccessConfig allowlist - see access_gate.py's module docstring)
-live in tests/test_tenant_registry.py.
+"""Unit tests for access_gate.py - session cookie signing. Router-level
+tests (login flow, middleware enforcement) live in tests/test_gate_router.py.
+Tenant-resolution tests (storage.resolve_tenant_id, the Postgres-backed
+replacement for the old in-memory AccessConfig allowlist - see
+access_gate.py's module docstring) live in tests/test_tenant_registry.py.
 """
 import pytest
 
@@ -74,30 +73,3 @@ def test_set_session_cookie_is_secure_over_https(cfg):
     access_gate.set_session_cookie(response, 1, "A", "tenant-abc", cfg)
 
     assert "secure" in response.headers["set-cookie"].lower()
-
-
-def test_resolve_corp_alliance_happy_path(monkeypatch):
-    from eve_trader.esi_client import ESIClient
-
-    monkeypatch.setattr(ESIClient, "character_public_info", lambda self, cid: {"corporation_id": 100})
-    monkeypatch.setattr(ESIClient, "corporation_public_info", lambda self, cid: {"alliance_id": 900, "name": "Corp"})
-
-    corporation_id, alliance_id = access_gate.resolve_corp_alliance(1)
-
-    assert corporation_id == 100
-    assert alliance_id == 900
-
-
-def test_resolve_corp_alliance_degrades_gracefully_when_alliance_lookup_fails(monkeypatch):
-    from eve_trader.esi_client import ESIClient
-
-    monkeypatch.setattr(ESIClient, "character_public_info", lambda self, cid: {"corporation_id": 100})
-
-    def _raise(self, cid):
-        raise RuntimeError("ESI hiccup")
-    monkeypatch.setattr(ESIClient, "corporation_public_info", _raise)
-
-    corporation_id, alliance_id = access_gate.resolve_corp_alliance(1)
-
-    assert corporation_id == 100
-    assert alliance_id is None  # degraded, not raised

@@ -41,7 +41,35 @@ function AccessGateStatus() {
   )
 }
 
+// Each card below is only rendered if `tools` contains its own tool_key -
+// `tools` is undefined while /api/gate/status hasn't loaded yet (or the gate
+// is disabled, in which case the backend already returns every tool_key -
+// see gate.py's status handler), so `undefined` means "show everything",
+// matching this app's pre-tool-grants behavior for local/dev installs
+// rather than flashing an empty page during the initial load.
+function ToolCard({ tools, toolKey, to, title, description }: {
+  tools: string[] | undefined
+  toolKey: string
+  to: string
+  title: string
+  description: string
+}) {
+  if (tools !== undefined && !tools.includes(toolKey)) return null
+  return (
+    <Card withBorder padding="lg" radius="md">
+      <Stack gap="xs">
+        <Title order={3}>{title}</Title>
+        <Text c="dimmed" size="sm">{description}</Text>
+        <Button component={Link} to={to} mt="sm" rightSection={<IconArrowRight size={14} />}>Open</Button>
+      </Stack>
+    </Card>
+  )
+}
+
 export default function Landing() {
+  const { data: gateStatus } = useQuery({ queryKey: ['gate', 'status'], queryFn: gateApi.status })
+  const tools = gateStatus?.tools
+
   return (
     <Container size="md" py="xl">
       <AccessGateStatus />
@@ -52,46 +80,20 @@ export default function Landing() {
       <Text c="dimmed" mb="xl">Margins, buy/build decisions and live market data in one place.</Text>
 
       <SimpleGrid cols={3} spacing="md">
-        <Card withBorder padding="lg" radius="md">
-          <Stack gap="xs">
-            <Title order={3}>Trading</Title>
-            <Text c="dimmed" size="sm">
-              C-J import trading: candidate search, shortlist, margins, trade reconciliation.
-            </Text>
-            <Button component={Link} to="/trading" mt="sm" rightSection={<IconArrowRight size={14} />}>Open</Button>
-          </Stack>
-        </Card>
-
-        <Card withBorder padding="lg" radius="md">
-          <Stack gap="xs">
-            <Title order={3}>Production</Title>
-            <Text c="dimmed" size="sm">
-              Stock targets, buy-vs-build decisions, buy/build lists for T2 manufacturing.
-            </Text>
-            <Button component={Link} to="/production" mt="sm" rightSection={<IconArrowRight size={14} />}>Open</Button>
-          </Stack>
-        </Card>
-
-        <Card withBorder padding="lg" radius="md">
-          <Stack gap="xs">
-            <Title order={3}>Doctrine</Title>
-            <Text c="dimmed" size="sm">
-              Fleet doctrine fittings, contract validation against C-J stock contracts, stockpile tracking.
-            </Text>
-            <Button component={Link} to="/doctrine" mt="sm" rightSection={<IconArrowRight size={14} />}>Open</Button>
-          </Stack>
-        </Card>
+        <ToolCard tools={tools} toolKey="trading" to="/trading" title="Trading"
+          description="C-J import trading: candidate search, shortlist, margins, trade reconciliation." />
+        <ToolCard tools={tools} toolKey="production" to="/production" title="Production"
+          description="Stock targets, buy-vs-build decisions, buy/build lists for T2 manufacturing." />
+        <ToolCard tools={tools} toolKey="doctrine" to="/doctrine" title="Doctrine"
+          description="Fleet doctrine fittings, contract validation against C-J stock contracts, stockpile tracking." />
       </SimpleGrid>
 
-      <Card withBorder padding="lg" radius="md" mt="md">
-        <Stack gap="xs">
-          <Title order={3}>Portfolio Overview</Title>
-          <Text c="dimmed" size="sm">
-            Combined read-only snapshot of Trading realized profit and Production stock value.
-          </Text>
-          <Button component={Link} to="/portfolio" mt="sm" rightSection={<IconArrowRight size={14} />}>Open</Button>
-        </Stack>
-      </Card>
+      <SimpleGrid cols={2} spacing="md" mt="md">
+        <ToolCard tools={tools} toolKey="portfolio" to="/portfolio" title="Portfolio Overview"
+          description="Combined read-only snapshot of Trading realized profit and Production stock value." />
+        <ToolCard tools={tools} toolKey="admin" to="/admin" title="Admin"
+          description="Manage tenants, users, and which tools each character can see." />
+      </SimpleGrid>
 
       <Text size="xs" c="dimmed" ta="center" mt="xl">
         EVE Trader is an unofficial third-party tool, not affiliated with or endorsed by CCP hf.

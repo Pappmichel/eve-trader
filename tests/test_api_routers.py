@@ -13,7 +13,7 @@ from eve_trader.actions import ActionError
 from eve_trader.api.app import create_app
 from eve_trader.models import ShortlistItem
 from eve_trader.production import actions as production_actions
-from eve_trader.production.models import AssetLocationRow
+from eve_trader.production.models import AssetLocationRow, ShipMarginRow
 
 client = TestClient(create_app())
 
@@ -215,6 +215,59 @@ def test_discover_build_candidates_action_error_maps_to_400(monkeypatch):
 
     assert resp.status_code == 400
     assert "SDE cache is empty" in resp.json()["detail"]
+
+
+def test_get_ship_margins_serializes_action_result(monkeypatch):
+    monkeypatch.setattr(production_actions, "do_get_ship_margins", lambda **kwargs: {"rows": [
+        ShipMarginRow(type_id=1, type_name="Rifter", activity="Tech I", home_price=1000.0, jita_price=900.0,
+                      build_cost=500.0, margin_home=1.0, margin_jita=0.8, meta_level=None),
+    ]})
+
+    resp = client.get("/api/production/margins")
+
+    assert resp.status_code == 200
+    assert resp.json() == [{
+        "type_id": 1, "type_name": "Rifter", "activity": "Tech I", "home_price": 1000.0, "jita_price": 900.0,
+        "build_cost": 500.0, "margin_home": 1.0, "margin_jita": 0.8, "meta_level": None,
+    }]
+
+
+def test_get_ship_margins_action_error_maps_to_400(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise ActionError("SDE cache is empty. Refresh SDE first.")
+    monkeypatch.setattr(production_actions, "do_get_ship_margins", _raise)
+
+    resp = client.get("/api/production/margins")
+
+    assert resp.status_code == 400
+    assert "SDE cache is empty" in resp.json()["detail"]
+
+
+def test_search_item_margin_passes_item_name(monkeypatch):
+    captured = {}
+
+    def _capture(item_name):
+        captured["item_name"] = item_name
+        return ShipMarginRow(type_id=1, type_name=item_name, activity="Tech I", home_price=1000.0,
+                              jita_price=None, build_cost=500.0, margin_home=1.0, margin_jita=None, meta_level=None)
+    monkeypatch.setattr(production_actions, "do_get_item_margin", _capture)
+
+    resp = client.post("/api/production/margins/search", json={"item_name": "Rifter"})
+
+    assert resp.status_code == 200
+    assert captured == {"item_name": "Rifter"}
+    assert resp.json()["type_name"] == "Rifter"
+
+
+def test_search_item_margin_action_error_maps_to_400(monkeypatch):
+    def _raise(item_name):
+        raise ActionError(f"No type found for '{item_name}'. Refresh SDE first?")
+    monkeypatch.setattr(production_actions, "do_get_item_margin", _raise)
+
+    resp = client.post("/api/production/margins/search", json={"item_name": "Nonexistent Thing"})
+
+    assert resp.status_code == 400
+    assert "Nonexistent Thing" in resp.json()["detail"]
 
 
 def test_get_material_tree_passes_type_name_and_quantity(monkeypatch):

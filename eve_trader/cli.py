@@ -54,7 +54,14 @@ def main():
 
 @main.group()
 def tenant():
-    """Tenant provisioning (admin-only, not reachable from the web app)."""
+    """Tenant provisioning. `create`/`add-entry`/`list` now also have a web
+    equivalent (the Admin tool, eve_trader/admin.py + api/routers/admin.py -
+    reachable only to storage.DEFAULT_TENANT_ID's own users, see access_gate.
+    tools_for) - this CLI group stays useful for initial setup before a
+    server/session exists at all, and both paths call the exact same
+    storage.py functions, so they can never drift apart. `import-tokens`/
+    `migrate-sqlite` remain CLI-only - genuinely one-time, operator-run
+    commands with no UI equivalent."""
 
 
 @tenant.command("create")
@@ -67,20 +74,14 @@ def tenant_create(name: str):
 
 @tenant.command("add-entry")
 @click.argument("tenant_id")
-@click.option("--character", type=int, help="EVE character_id to register to this tenant.")
-@click.option("--corporation", type=int, help="EVE corporation_id to register to this tenant.")
-@click.option("--alliance", type=int, help="EVE alliance_id to register to this tenant.")
-def tenant_add_entry(tenant_id: str, character: int | None, corporation: int | None, alliance: int | None):
-    """Registers a character/corp/alliance id as belonging to a tenant - a
-    login as any registered id resolves to this tenant (see
-    access_gate.py/storage.resolve_tenant_id)."""
-    entries = [("character", character), ("corporation", corporation), ("alliance", alliance)]
-    provided = [(t, i) for t, i in entries if i is not None]
-    if not provided:
-        raise click.UsageError("Provide at least one of --character/--corporation/--alliance.")
-    for entry_type, entry_id in provided:
-        storage.add_tenant_registry_entry(tenant_id, entry_type, entry_id)
-        click.echo(f"Registered {entry_type} {entry_id} -> tenant {tenant_id}")
+@click.option("--character", type=int, required=True, help="EVE character_id to register to this tenant.")
+def tenant_add_entry(tenant_id: str, character: int):
+    """Registers a character id as belonging to a tenant - a login as this
+    character resolves to this tenant (see access_gate.py/storage.
+    resolve_tenant_id). Character-only - corp/alliance registry entries were
+    retired once AccessGate became character-only (see docs/admin_schema.sql)."""
+    storage.add_tenant_registry_entry(tenant_id, character)
+    click.echo(f"Registered character {character} -> tenant {tenant_id}")
 
 
 @tenant.command("list")

@@ -274,3 +274,21 @@ class BuildCandidate:
     daily_movement: float
     potential_daily_profit: float
     meta_level: Optional[int]
+
+
+@dataclass
+class ShipMarginRow:
+    """Production's Margin page - engine.discover_ship_margins (list of every
+    ship) and engine.item_margin_detail (search, any item) both produce this
+    same shape. Unlike BuildCandidate, not gated by min_margin/existing-
+    stock-target status - a pure information view, see discover_ship_margins'
+    own docstring."""
+    type_id: int
+    type_name: str
+    activity: str
+    home_price: Optional[float]
+    jita_price: Optional[float]
+    build_cost: Optional[float]
+    margin_home: Optional[float]
+    margin_jita: Optional[float]
+    meta_level: Optional[int] = None

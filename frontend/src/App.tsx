@@ -40,6 +40,7 @@ const Invention = lazy(() => import('./pages/production/Invention'))
 const Blueprints = lazy(() => import('./pages/production/Blueprints'))
 const ProductionUnlistedStock = lazy(() => import('./pages/production/UnlistedStock'))
 const BuildCandidates = lazy(() => import('./pages/production/BuildCandidates'))
+const Margin = lazy(() => import('./pages/production/Margin'))
 const MaterialTree = lazy(() => import('./pages/production/MaterialTree'))
 const AssetSearch = lazy(() => import('./pages/production/AssetSearch'))
 const ProductionSettings = lazy(() => import('./pages/production/ProductionSettings'))
@@ -51,6 +52,8 @@ const FittingDetail = lazy(() => import('./pages/doctrine/FittingDetail'))
 const Contracts = lazy(() => import('./pages/doctrine/Contracts'))
 const Stockpile = lazy(() => import('./pages/doctrine/Stockpile'))
 const DoctrineSettings = lazy(() => import('./pages/doctrine/DoctrineSettings'))
+
+const AdminPage = lazy(() => import('./pages/admin/AdminPage'))
 
 function RouteFallback() {
   return (
@@ -155,6 +158,7 @@ function App() {
           <Routes>
             <Route path="/" element={<Landing />} />
             <Route path="/portfolio" element={<Portfolio />} />
+            <Route path="/admin" element={<AdminPage />} />
 
             <Route path="/trading" element={<TradingLayout />}>
               <Route index element={<Shortlist />} />
@@ -180,6 +184,7 @@ function App() {
               <Route path="blueprints" element={<Blueprints />} />
               <Route path="unlisted-stock" element={<ProductionUnlistedStock />} />
               <Route path="build-candidates" element={<BuildCandidates />} />
+              <Route path="margin" element={<Margin />} />
               <Route path="material-tree" element={<MaterialTree />} />
               <Route path="asset-search" element={<AssetSearch />} />
               <Route path="settings" element={<ProductionSettings />} />

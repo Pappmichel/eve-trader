@@ -287,6 +287,18 @@ export interface BuildCandidate {
   meta_level: number | null
 }
 
+export interface ShipMarginRow {
+  type_id: number
+  type_name: string
+  activity: string
+  home_price: number | null
+  jita_price: number | null
+  build_cost: number | null
+  margin_home: number | null
+  margin_jita: number | null
+  meta_level: number | null
+}
+
 export interface MaterialTreeNode {
   type_id: number
   type_name: string
@@ -376,6 +388,21 @@ export interface GateStatus {
   enabled: boolean
   logged_in: boolean
   character_name: string | null
+  tools: string[]
+}
+
+export interface AdminTenant {
+  tenant_id: string
+  name: string
+  created_at: string | null
+}
+
+export interface AdminUser {
+  character_id: number
+  character_name: string | null
+  tenant_id: string
+  tenant_name: string
+  tool_keys: string[]
 }
 
 export interface SchedulerJobStatus {

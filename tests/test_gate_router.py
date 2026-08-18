@@ -20,7 +20,6 @@ import urllib.parse
 import uuid
 
 import pytest
-import requests
 from fastapi.testclient import TestClient
 
 from eve_trader import access_gate, storage
@@ -30,7 +29,9 @@ from eve_trader.auth import TokenManager
 from eve_trader.config import ACCESS_CONFIG, OAUTH_CONFIG
 
 from . import pg_helpers
-from .pg_helpers import _apply_phase1_schema, _apply_phase2_schema, _apply_phase3_schema, tenant_pair  # noqa: F401
+from .pg_helpers import (  # noqa: F401
+    _apply_admin_schema, _apply_phase1_schema, _apply_phase2_schema, _apply_phase3_schema, tenant_pair,
+)
 
 client = TestClient(create_app())
 
@@ -62,6 +63,18 @@ def _wipe_registry():
     pg_helpers.wipe_tables("tenant_registry_entries")
 
 
+@pytest.fixture(autouse=True)
+def _wipe_tool_grants():
+    # Autouse (unlike _wipe_registry above) - several tests in this file set
+    # a real tool_grants row for character_id=1 (the _session_cookie default)
+    # under _DEFAULT_TEST_TENANT_ID; without wiping between tests, a grant
+    # set by one test would silently let a later "missing grant" test pass
+    # through instead of 403ing as expected.
+    if pg_helpers._postgres_available():
+        pg_helpers.wipe_tables("tool_grants")
+    yield
+
+
 # --------------------------------------------------------------- /gate/status
 def test_status_when_gate_disabled_reports_disabled(monkeypatch):
     monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", False)
@@ -69,7 +82,9 @@ def test_status_when_gate_disabled_reports_disabled(monkeypatch):
     resp = client.get("/api/gate/status")
 
     assert resp.status_code == 200
-    assert resp.json() == {"enabled": False, "logged_in": False, "character_name": None}
+    assert resp.json() == {
+        "enabled": False, "logged_in": False, "character_name": None, "tools": list(access_gate.ALL_TOOL_KEYS),
+    }
 
 
 def test_status_with_no_cookie_reports_logged_out(monkeypatch):
@@ -79,14 +94,28 @@ def test_status_with_no_cookie_reports_logged_out(monkeypatch):
 
     assert resp.json()["logged_in"] is False
     assert resp.json()["character_name"] is None
+    assert resp.json()["tools"] == []
 
 
-def test_status_with_valid_cookie_reports_logged_in(monkeypatch):
+@pg_helpers.postgres_required()
+def test_status_with_valid_cookie_reports_logged_in(monkeypatch, _apply_phase1_schema, _apply_admin_schema):
     _enable_gate(monkeypatch)
+    storage.set_tool_grant(1, "trading", _DEFAULT_TEST_TENANT_ID)
 
     resp = client.get("/api/gate/status", cookies=_session_cookie(character_name="Test Character"))
 
-    assert resp.json() == {"enabled": True, "logged_in": True, "character_name": "Test Character"}
+    assert resp.json() == {
+        "enabled": True, "logged_in": True, "character_name": "Test Character", "tools": ["trading"],
+    }
+
+
+@pg_helpers.postgres_required()
+def test_status_default_tenant_reports_every_tool(monkeypatch, _apply_phase1_schema, _apply_admin_schema):
+    _enable_gate(monkeypatch)
+
+    resp = client.get("/api/gate/status", cookies=_session_cookie(tenant_id=storage.DEFAULT_TENANT_ID))
+
+    assert resp.json()["tools"] == list(access_gate.ALL_TOOL_KEYS)
 
 
 def test_status_with_garbage_cookie_reports_logged_out_not_500(monkeypatch):
@@ -96,6 +125,7 @@ def test_status_with_garbage_cookie_reports_logged_out_not_500(monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json()["logged_in"] is False
+    assert resp.json()["tools"] == []
 
 
 # --------------------------------------------------------------- /gate/logout
@@ -130,14 +160,42 @@ def test_middleware_blocks_protected_routes_without_a_session_when_enabled(monke
 
 @pg_helpers.postgres_required()
 def test_middleware_allows_protected_routes_with_a_valid_session_when_enabled(
-    monkeypatch, _apply_phase1_schema, _apply_phase2_schema
+    monkeypatch, _apply_phase1_schema, _apply_phase2_schema, _apply_admin_schema
 ):
     # tenant_scope.enter_tenant (Phase 4) resolves this tenant's config via a
     # real Postgres query on every request now, not just storage's own
-    # ambient tenant - this test genuinely needs Postgres reachable.
+    # ambient tenant - this test genuinely needs Postgres reachable. A valid
+    # session alone isn't enough anymore (see access_gate.tools_for) - the
+    # cookie's own character_id/tenant_id must also have a "trading" grant.
+    _enable_gate(monkeypatch)
+    storage.set_tool_grant(1, "trading", _DEFAULT_TEST_TENANT_ID)
+
+    resp = client.get("/api/trading/settings", cookies=_session_cookie())
+
+    assert resp.status_code == 200
+
+
+@pg_helpers.postgres_required()
+def test_middleware_rejects_a_valid_session_missing_the_required_tool_grant(
+    monkeypatch, _apply_phase1_schema, _apply_phase2_schema, _apply_admin_schema
+):
+    # The real enforcement point - a valid, correctly-signed session with no
+    # matching tool_grants row must be refused, not just filtered out of the
+    # frontend's Landing page (hiding a card doesn't stop a direct API call).
     _enable_gate(monkeypatch)
 
     resp = client.get("/api/trading/settings", cookies=_session_cookie())
+
+    assert resp.status_code == 403
+
+
+@pg_helpers.postgres_required()
+def test_middleware_default_tenant_bypasses_the_tool_grant_check(monkeypatch, _apply_phase1_schema, _apply_phase2_schema):
+    # storage.DEFAULT_TENANT_ID's own users get every tool without an
+    # explicit tool_grants row (see access_gate.tools_for).
+    _enable_gate(monkeypatch)
+
+    resp = client.get("/api/trading/settings", cookies=_session_cookie(tenant_id=storage.DEFAULT_TENANT_ID))
 
     assert resp.status_code == 200
 
@@ -177,15 +235,11 @@ def test_callback_gate_branch_allowed_character_sets_cookie_and_redirects_succes
 ):
     _enable_gate(monkeypatch)
     tenant_id = str(uuid.uuid4())
-    storage.add_tenant_registry_entry(tenant_id, "character", 2112625428)
+    storage.add_tenant_registry_entry(tenant_id, 2112625428)
     state = "test-gate-allowed"
     auth_router._pending[state] = {"verifier": "v", "role_prefix": "gate", "scopes": [], "created_at": time.time()}
     monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
     monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (2112625428, "Allowed Character")))
-    # auth.py did `from ...access_gate import resolve_corp_alliance` (a direct
-    # name import) - patch the name as bound in auth_router's own namespace,
-    # not access_gate's, or auth.py's callback() would keep calling the original.
-    monkeypatch.setattr(auth_router, "resolve_corp_alliance", lambda character_id: (100, None))
 
     resp = client.get("/api/auth/callback", params={"code": "abc", "state": state}, follow_redirects=False)
 
@@ -199,6 +253,28 @@ def test_callback_gate_branch_allowed_character_sets_cookie_and_redirects_succes
 
 
 @pg_helpers.postgres_required()
+def test_callback_gate_branch_refreshes_the_cached_character_name(
+    monkeypatch, _wipe_registry, _apply_phase1_schema, _apply_phase3_schema
+):
+    # character_name is cached on tenant_registry_entries (docs/admin_
+    # schema.sql) for the Admin UI's user list - a gate login should keep it
+    # current (e.g. after an in-game character rename) at no extra ESI cost,
+    # since EVE SSO's own _verify() already returns the current name.
+    _enable_gate(monkeypatch)
+    tenant_id = storage.create_tenant(f"Test Tenant {uuid.uuid4()}")
+    storage.add_tenant_registry_entry(tenant_id, 2112625428, character_name="Old Name")
+    state = "test-gate-name-refresh"
+    auth_router._pending[state] = {"verifier": "v", "role_prefix": "gate", "scopes": [], "created_at": time.time()}
+    monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
+    monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (2112625428, "New Name")))
+
+    client.get("/api/auth/callback", params={"code": "abc", "state": state}, follow_redirects=False)
+
+    users = storage.list_users_with_grants()
+    assert next(u for u in users if u["character_id"] == 2112625428)["character_name"] == "New Name"
+
+
+@pg_helpers.postgres_required()
 def test_callback_gate_branch_denied_character_redirects_without_a_cookie(
     monkeypatch, _wipe_registry, _apply_phase1_schema, _apply_phase3_schema
 ):
@@ -207,36 +283,12 @@ def test_callback_gate_branch_denied_character_redirects_without_a_cookie(
     auth_router._pending[state] = {"verifier": "v", "role_prefix": "gate", "scopes": [], "created_at": time.time()}
     monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
     monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (999, "Denied Character")))
-    monkeypatch.setattr(auth_router, "resolve_corp_alliance", lambda character_id: (None, None))
 
     resp = client.get("/api/auth/callback", params={"code": "abc", "state": state}, follow_redirects=False)
 
     assert resp.status_code in (302, 307)
     assert "gate=denied" in resp.headers["location"]
     assert access_gate.SESSION_COOKIE_NAME not in resp.headers.get("set-cookie", "")
-
-
-@pg_helpers.postgres_required()
-def test_callback_gate_branch_corp_alliance_lookup_failure_still_allows_a_character_match(
-    monkeypatch, _wipe_registry, _apply_phase1_schema, _apply_phase3_schema
-):
-    # Confirmed-by-design degrade: resolve_corp_alliance failing shouldn't
-    # block a character-level registry match (see auth.py's callback()).
-    _enable_gate(monkeypatch)
-    tenant_id = str(uuid.uuid4())
-    storage.add_tenant_registry_entry(tenant_id, "character", 2112625428)
-    state = "test-gate-esi-hiccup"
-    auth_router._pending[state] = {"verifier": "v", "role_prefix": "gate", "scopes": [], "created_at": time.time()}
-    monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
-    monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (2112625428, "Allowed Character")))
-
-    def _raise(character_id):
-        raise requests.ConnectionError("ESI hiccup")
-    monkeypatch.setattr(auth_router, "resolve_corp_alliance", _raise)
-
-    resp = client.get("/api/auth/callback", params={"code": "abc", "state": state}, follow_redirects=False)
-
-    assert "gate=success" in resp.headers["location"]
 
 
 # --------------------------------- auth.py /start + /callback tenant threading (non-gate)

@@ -7,6 +7,10 @@ access_gate.py's is_allowed() used to check. All of these go through
 storage.connect_unscoped() (no ambient tenant needed/used - see its own
 docstring), matching how they're actually called (from the OAuth callback,
 before any tenant is known, and from the CLI's `tenant` command group).
+
+Character-only since docs/admin_schema.sql retired corp/alliance registry
+entries (see the Login/Admin architecture review) - these tests used to
+also cover corporation/alliance matching, which no longer exists.
 """
 import uuid
 
@@ -15,7 +19,7 @@ import pytest
 from eve_trader import storage
 
 from . import pg_helpers
-from .pg_helpers import _apply_phase1_schema, _apply_phase3_schema  # noqa: F401
+from .pg_helpers import _apply_admin_schema, _apply_phase1_schema, _apply_phase2_schema, _apply_phase3_schema  # noqa: F401
 
 psycopg = pytest.importorskip("psycopg")
 
@@ -30,7 +34,7 @@ def _wipe():
     # leftover row from an earlier run. Never touches the seeded
     # DEFAULT_TENANT_ID row in `tenants` (a different table, only deleting
     # rows this file itself creates via create_tenant).
-    pg_helpers.wipe_tables("tenant_registry_entries")
+    pg_helpers.wipe_tables("tenant_registry_entries", "tool_grants")
     with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
         conn.execute("DELETE FROM tenants WHERE tenant_id != %s", (storage.DEFAULT_TENANT_ID,))
     yield
@@ -49,43 +53,14 @@ def test_create_tenant_returns_a_usable_tenant_id():
 
 def test_resolve_tenant_id_matches_on_character():
     tenant_id = _new_tenant()
-    storage.add_tenant_registry_entry(tenant_id, "character", 42)
+    storage.add_tenant_registry_entry(tenant_id, 42)
 
-    assert storage.resolve_tenant_id(42, None, None) == tenant_id
-    assert storage.resolve_tenant_id(43, None, None) is None
-
-
-def test_resolve_tenant_id_matches_on_corporation():
-    tenant_id = _new_tenant()
-    storage.add_tenant_registry_entry(tenant_id, "corporation", 100)
-
-    assert storage.resolve_tenant_id(1, 100, None) == tenant_id
-    assert storage.resolve_tenant_id(1, 101, None) is None
-
-
-def test_resolve_tenant_id_matches_on_alliance():
-    tenant_id = _new_tenant()
-    storage.add_tenant_registry_entry(tenant_id, "alliance", 900)
-
-    assert storage.resolve_tenant_id(1, 100, 900) == tenant_id
-    assert storage.resolve_tenant_id(1, 100, 901) is None
-
-
-def test_resolve_tenant_id_any_of_the_three_is_sufficient():
-    # Real user request (2026-08-16, carried over from the old AccessConfig
-    # design): all three levels should work together - e.g. one extra
-    # character allowed outside an otherwise-registered alliance.
-    tenant_id = _new_tenant()
-    storage.add_tenant_registry_entry(tenant_id, "character", 7)
-    storage.add_tenant_registry_entry(tenant_id, "alliance", 900)
-
-    assert storage.resolve_tenant_id(7, None, None) == tenant_id      # via character
-    assert storage.resolve_tenant_id(1, None, 900) == tenant_id       # via alliance
-    assert storage.resolve_tenant_id(1, None, 901) is None            # matches neither
+    assert storage.resolve_tenant_id(42) == tenant_id
+    assert storage.resolve_tenant_id(43) is None
 
 
 def test_resolve_tenant_id_no_registry_entries_resolves_to_none():
-    assert storage.resolve_tenant_id(1, 2, 3) is None
+    assert storage.resolve_tenant_id(1) is None
 
 
 def test_add_tenant_registry_entry_upsert_reassigns_to_a_new_tenant():
@@ -94,18 +69,43 @@ def test_add_tenant_registry_entry_upsert_reassigns_to_a_new_tenant():
     # error - see add_tenant_registry_entry's own docstring.
     tenant_a = _new_tenant()
     tenant_b = _new_tenant()
-    storage.add_tenant_registry_entry(tenant_a, "character", 55)
-    assert storage.resolve_tenant_id(55, None, None) == tenant_a
+    storage.add_tenant_registry_entry(tenant_a, 55)
+    assert storage.resolve_tenant_id(55) == tenant_a
 
-    storage.add_tenant_registry_entry(tenant_b, "character", 55)
-    assert storage.resolve_tenant_id(55, None, None) == tenant_b
+    storage.add_tenant_registry_entry(tenant_b, 55)
+    assert storage.resolve_tenant_id(55) == tenant_b
+
+
+def test_add_tenant_registry_entry_stores_character_name():
+    tenant_id = _new_tenant()
+    storage.add_tenant_registry_entry(tenant_id, 55, character_name="Some Pilot")
+
+    users = storage.list_users_with_grants()
+    assert next(u for u in users if u["character_id"] == 55)["character_name"] == "Some Pilot"
+
+
+def test_add_tenant_registry_entry_none_name_leaves_existing_name_untouched():
+    tenant_id = _new_tenant()
+    storage.add_tenant_registry_entry(tenant_id, 55, character_name="Some Pilot")
+    storage.add_tenant_registry_entry(tenant_id, 55, character_name=None)
+
+    users = storage.list_users_with_grants()
+    assert next(u for u in users if u["character_id"] == 55)["character_name"] == "Some Pilot"
+
+
+def test_remove_tenant_registry_entry_deregisters_character():
+    tenant_id = _new_tenant()
+    storage.add_tenant_registry_entry(tenant_id, 55)
+    assert storage.resolve_tenant_id(55) == tenant_id
+
+    storage.remove_tenant_registry_entry(55)
+    assert storage.resolve_tenant_id(55) is None
 
 
 def test_list_tenant_registry_entries_returns_everything_registered_to_a_tenant():
     tenant_id = _new_tenant()
-    storage.add_tenant_registry_entry(tenant_id, "character", 1)
-    storage.add_tenant_registry_entry(tenant_id, "corporation", 2)
+    storage.add_tenant_registry_entry(tenant_id, 1)
 
     entries = storage.list_tenant_registry_entries(tenant_id)
 
-    assert set(entries) == {("character", 1), ("corporation", 2)}
+    assert set(entries) == {("character", 1)}

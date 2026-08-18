@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,11 +17,11 @@ from starlette.responses import JSONResponse
 from starlette.types import Scope
 
 from .. import scheduler, storage, tenant_scope
-from ..access_gate import SESSION_COOKIE_NAME, read_session_token
+from ..access_gate import SESSION_COOKIE_NAME, read_session_token, tools_for
 from ..config import ACCESS_CONFIG, TRADING_CONFIG, apply_config_overrides
 from ..doctrine.config import DOCTRINE_CONFIG
 from ..production.config import PRODUCTION_CONFIG
-from .routers import auth, doctrine, gate, portfolio, production, trading
+from .routers import admin, auth, doctrine, gate, portfolio, production, trading
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 
@@ -59,6 +60,25 @@ _GATE_EXEMPT_PATHS = {
     "/api/gate/status",
     "/api/gate/logout",
 }
+
+# Path prefix -> the tool_key a request under it requires (see access_gate.
+# tools_for). Only enforced while the gate is enabled - see dispatch() below;
+# a path with no matching prefix (e.g. /api/auth/*, /api/gate/*) is never
+# tool-gated, only session-gated.
+_TOOL_PATH_PREFIXES = {
+    "/api/trading/": "trading",
+    "/api/production/": "production",
+    "/api/doctrine/": "doctrine",
+    "/api/portfolio/": "portfolio",
+    "/api/admin/": "admin",
+}
+
+
+def _required_tool_for_path(path: str) -> Optional[str]:
+    for prefix, tool_key in _TOOL_PATH_PREFIXES.items():
+        if path.startswith(prefix):
+            return tool_key
+    return None
 
 
 class AccessGateMiddleware(BaseHTTPMiddleware):
@@ -121,6 +141,18 @@ class AccessGateMiddleware(BaseHTTPMiddleware):
         tenant_id = data.get("tenant_id") if data else None
         if tenant_id is None:
             return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+
+        # Per-tool enforcement - a valid session only proves *who*, not
+        # *which tools*; this is the actual authorization check (see
+        # access_gate.tools_for's own docstring for why it's the one
+        # chokepoint both this and /api/gate/status's `tools` field use).
+        # Deliberately only reachable here, not left to the frontend's own
+        # tool-filtered Landing page - hiding a card doesn't stop a direct
+        # API call, only this does.
+        required_tool = _required_tool_for_path(path)
+        if required_tool is not None and required_tool not in tools_for(tenant_id, data["character_id"]):
+            return JSONResponse({"detail": "Forbidden - missing tool grant"}, status_code=403)
+
         # Gate on - the request could genuinely be any of several different
         # real tenants, so their own TRADING_CONFIG/PRODUCTION_CONFIG must be
         # resolved fresh here, not left pointing at whichever tenant's
@@ -189,6 +221,7 @@ def create_app() -> FastAPI:
     app.include_router(production.router, prefix="/api/production", tags=["production"])
     app.include_router(portfolio.router, prefix="/api/portfolio", tags=["portfolio"])
     app.include_router(doctrine.router, prefix="/api/doctrine", tags=["doctrine"])
+    app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
 
     if FRONTEND_DIST.exists():
         app.mount("/", SPAStaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")

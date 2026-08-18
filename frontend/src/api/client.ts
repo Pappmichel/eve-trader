@@ -85,6 +85,8 @@ async function request<TResp>(path: string, init?: RequestInit): Promise<TResp> 
 const get = <TResp>(path: string) => request<TResp>(path)
 const post = <TResp>(path: string, body?: unknown) =>
   request<TResp>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined })
+const put = <TResp>(path: string, body?: unknown) =>
+  request<TResp>(path, { method: 'PUT', body: body ? JSON.stringify(body) : undefined })
 const del = <TResp>(path: string) => request<TResp>(path, { method: 'DELETE' })
 
 // ------------------------------------------------------------------- auth
@@ -146,6 +148,8 @@ export const productionApi = {
   stockValue: () => get<{ total_value: number; priced_items: number; unpriced_items: number }>('/api/production/stock-value'),
   checkUnlistedStock: () => post<T.ProductionUnlistedStockRow[]>('/api/production/unlisted-stock/check'),
   discoverBuildCandidates: (topN = 200) => post<T.BuildCandidate[]>(`/api/production/build-candidates/discover?top_n=${topN}`),
+  shipMargins: () => get<T.ShipMarginRow[]>('/api/production/margins'),
+  itemMargin: (itemName: string) => post<T.ShipMarginRow>('/api/production/margins/search', { item_name: itemName }),
   materialTree: (typeName: string, quantity: number) =>
     post<T.MaterialTreeNode>('/api/production/material-tree', { type_name: typeName, quantity }),
   searchAssetLocations: (itemName: string) =>
@@ -300,4 +304,20 @@ export const doctrineApi = {
 
   settings: () => get<T.DoctrineSettings>('/api/doctrine/settings'),
   updateSettings: (s: T.DoctrineSettings) => post<T.DoctrineSettings>('/api/doctrine/settings', s),
+}
+
+// ------------------------------------------------------------------- admin
+export const adminApi = {
+  tenants: () => get<T.AdminTenant[]>('/api/admin/tenants'),
+  createTenant: (name: string) => post<T.AdminTenant>('/api/admin/tenants', { name }),
+  users: () => get<T.AdminUser[]>('/api/admin/users'),
+  addUser: (characterId: number, tenantId: string) =>
+    post<{ character_id: number; character_name: string; tenant_id: string }>(
+      '/api/admin/users', { character_id: characterId, tenant_id: tenantId },
+    ),
+  removeUser: (characterId: number) => del(`/api/admin/users/${characterId}`),
+  setToolGrants: (characterId: number, toolKeys: string[]) =>
+    put<{ character_id: number; tool_keys: string[] }>(
+      `/api/admin/users/${characterId}/tools`, { tool_keys: toolKeys },
+    ),
 }

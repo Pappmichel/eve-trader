@@ -23,7 +23,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import RedirectResponse
 
 from ... import storage
-from ...access_gate import resolve_corp_alliance, set_session_cookie
+from ...access_gate import set_session_cookie
 from ...auth import TokenManager, _make_pkce_pair
 from ...config import OAUTH_CONFIG
 from ...doctrine import esi_sync as doctrine_esi_sync
@@ -125,17 +125,18 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
         # TokenManager/tokens.json, unlike every other role below: the
         # resulting session cookie IS the whole credential, re-verified via
         # EVE SSO on every future login rather than refreshed from a stored
-        # token.
-        try:
-            corporation_id, alliance_id = resolve_corp_alliance(character_id)
-        except (requests.RequestException, KeyError, ValueError):
-            # A character-level registry entry should still work even if
-            # this particular corp/alliance lookup has a transient hiccup -
-            # only the alliance/corp-level check degrades, not the whole login.
-            corporation_id, alliance_id = None, None
-        tenant_id = storage.resolve_tenant_id(character_id, corporation_id, alliance_id)
+        # token. Character-only (corp/alliance registry entries retired -
+        # see docs/admin_schema.sql), so no corp/alliance ESI lookup needed
+        # here anymore.
+        tenant_id = storage.resolve_tenant_id(character_id)
         if tenant_id is None:
             return RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?gate=denied")
+        # Refresh the cached character_name (tenant_registry_entries' own
+        # column, see docs/admin_schema.sql) with the name EVE SSO just
+        # verified - keeps the Admin UI's user list current if a character
+        # is renamed, at zero extra cost (character_name is already known
+        # here, no additional ESI call).
+        storage.add_tenant_registry_entry(tenant_id, character_id, character_name=character_name)
         resp = RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?gate=success&character={urllib.parse.quote(character_name)}")
         set_session_cookie(resp, character_id, character_name, tenant_id)
         return resp
