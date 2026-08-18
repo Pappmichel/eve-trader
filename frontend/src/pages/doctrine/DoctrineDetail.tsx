@@ -4,7 +4,7 @@ import {
   Stack, Title, Text, Table, Badge, Button, Group, Modal, Textarea, NumberInput, ActionIcon, Alert,
 } from '@mantine/core'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { IconTrash } from '@tabler/icons-react'
+import { IconCheck, IconTrash } from '@tabler/icons-react'
 
 import { doctrineApi } from '../../api/client'
 import type { FittingStatus, ParsedFittingPreview } from '../../api/types'
@@ -70,6 +70,41 @@ function AddFittingModal({ doctrineId, opened, onClose }: { doctrineId: string; 
   )
 }
 
+// Inline target editing (GitHub issue #2) - reuses the exact same
+// doctrineApi.updateFitting call FittingDetail.tsx's own target form does,
+// just without navigating there first. Same "local state + dirty-check +
+// Save button only shown once changed" pattern as AdminPage.tsx's
+// UserToolCheckboxes.
+function TargetEditor({ fittingId, contractTarget, stockpileTarget, doctrineId }: {
+  fittingId: string
+  contractTarget: number
+  stockpileTarget: number
+  doctrineId: string
+}) {
+  const [contract, setContract] = useState(contractTarget)
+  const [stockpile, setStockpile] = useState(stockpileTarget)
+  const dirty = contract !== contractTarget || stockpile !== stockpileTarget
+  const save = useAction('Save Targets',
+    () => doctrineApi.updateFitting(fittingId, { contract_target: contract, stockpile_target: stockpile }),
+    [['doctrine', 'status'], ['doctrine', 'doctrine-detail', doctrineId]])
+
+  return (
+    <Group gap={4} wrap="nowrap">
+      <NumberInput value={contract} onChange={(v) => setContract(Number(v))} min={0} w={64} size="xs"
+        aria-label="Contract target" />
+      <Text size="xs" c="dimmed">/</Text>
+      <NumberInput value={stockpile} onChange={(v) => setStockpile(Number(v))} min={0} w={64} size="xs"
+        aria-label="Stockpile target" />
+      {dirty && (
+        <ActionIcon size="sm" variant="filled" color="accent" aria-label="Save targets"
+          onClick={() => save.mutate()} loading={save.isPending}>
+          <IconCheck size={14} />
+        </ActionIcon>
+      )}
+    </Group>
+  )
+}
+
 function FittingRow({ f, onDelete }: { f: FittingStatus; onDelete: (id: string) => void }) {
   return (
     <Table.Tr>
@@ -87,6 +122,10 @@ function FittingRow({ f, onDelete }: { f: FittingStatus; onDelete: (id: string) 
         ) : (
           <Badge color="dimmed" variant="light">no asset data</Badge>
         )}
+      </Table.Td>
+      <Table.Td>
+        <TargetEditor fittingId={f.fitting_id} contractTarget={f.contract_target}
+          stockpileTarget={f.stockpile_target} doctrineId={f.doctrine_id} />
       </Table.Td>
       <Table.Td>
         <ActionIcon size="sm" variant="subtle" color="danger" onClick={() => onDelete(f.fitting_id)}>
@@ -143,6 +182,7 @@ export default function DoctrineDetail() {
               <Table.Th>Fitting</Table.Th>
               <Table.Th>Contracts</Table.Th>
               <Table.Th>Stockpile</Table.Th>
+              <Table.Th>Targets (Contract / Stockpile)</Table.Th>
               <Table.Th />
             </Table.Tr>
           </Table.Thead>

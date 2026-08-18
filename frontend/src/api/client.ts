@@ -285,7 +285,7 @@ export const doctrineApi = {
     return get<T.DoctrineContractRow[]>(`/api/doctrine/contracts${qs ? `?${qs}` : ''}`)
   },
   stockpile: (doctrineId?: string) =>
-    get<{ rows: T.StockpileRow[]; assets_available: boolean }>(
+    get<{ rows: T.StockpileRow[]; aggregated_rows: T.AggregatedStockpileRow[]; assets_available: boolean }>(
       `/api/doctrine/stockpile${doctrineId ? `?doctrine_id=${doctrineId}` : ''}`,
     ),
 

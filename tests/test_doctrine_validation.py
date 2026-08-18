@@ -282,3 +282,10 @@ def test_worst_ampel_prefers_non_gray_and_worst_of_remaining():
     assert v.worst_ampel(["gray", "gray"]) == "gray"
     assert v.worst_ampel(["green", "yellow"]) == "yellow"
     assert v.worst_ampel([]) == "gray"
+
+
+def test_worst_severity_prefers_non_none_and_worst_of_remaining():
+    assert v.worst_severity([SEVERITY_TOLERABLE, SEVERITY_CRITICAL, None]) == SEVERITY_CRITICAL
+    assert v.worst_severity([None, None]) is None
+    assert v.worst_severity([SEVERITY_INFO, SEVERITY_TOLERABLE]) == SEVERITY_TOLERABLE
+    assert v.worst_severity([]) is None

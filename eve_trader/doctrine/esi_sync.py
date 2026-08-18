@@ -70,24 +70,30 @@ def list_doctrine_characters(tm: Optional[TokenManager] = None) -> list[tuple[st
     return out
 
 
-def _not_expired(date_expired: Optional[str]) -> bool:
-    if not date_expired:
-        return True
-    try:
-        expired_at = datetime.fromisoformat(date_expired.replace("Z", "+00:00"))
-    except ValueError:
-        return True
-    return expired_at > datetime.now(timezone.utc)
-
-
 def _passes_prefilter(contract: dict, structure_id: Optional[int]) -> bool:
-    """Phase 2 E.3 point 2 - applied before any items fetch, never after."""
+    """Phase 2 E.3 point 2 - applied before any items fetch, never after.
+    Deliberately no date_expired/"is this actually still alive" check here
+    anymore - SYNCABLE_CONTRACT_STATUSES (ESI's own status field) is now the
+    single authoritative signal for that, see its own comment for why."""
     return (
         contract.get("type") == CONTRACT_TYPE_ITEM_EXCHANGE
         and contract.get("status") in SYNCABLE_CONTRACT_STATUSES
         and structure_id is not None
         and contract.get("start_location_id") == structure_id
-        and _not_expired(contract.get("date_expired"))
+    )
+
+
+def _issued_by_own_identity(contract: dict, character_id: int, corporation_id: Optional[int]) -> bool:
+    """ESI's character-contracts endpoint returns every contract the
+    character is issuer, acceptor, OR ASSIGNEE of (confirmed via esi_client.
+    ESIClient.character_contracts' own docstring) - a public/third-party
+    contract merely *assigned* to this character or their corp (never
+    actually created by them) would otherwise leak into the Doctrine match
+    pool. Only contracts this character (or their own corp) actually issued
+    are relevant - `issuer_corporation_id` is transient here, never stored
+    (_CONTRACT_COLUMNS keeps its existing issuer_id-only shape)."""
+    return contract.get("issuer_id") == character_id or (
+        corporation_id is not None and contract.get("issuer_corporation_id") == corporation_id
     )
 
 
@@ -129,10 +135,9 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
     per_character: dict = {}
     # (raw_contract, source_role, for_corporation, corporation_id) -
     # corporation_id is the corp the contract-list call itself used (the
-    # required path param for corporation_contract_items below) - NOT
-    # necessarily the same as the contract's own issuer_corporation_id, a
-    # real ESI distinction (a corp can see a contract it's merely assigned
-    # to, issued by someone else).
+    # required path param for corporation_contract_items below) - already
+    # filtered via _issued_by_own_identity above to only contracts this
+    # corp/character actually issued, not merely assigned to them.
     all_contracts: list[tuple[dict, str, bool, Optional[int]]] = []
     seen_contract_ids: set[int] = set()
     corp_contracts_done: dict[int, list[dict]] = {}
@@ -143,7 +148,9 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
         if result["error"] is not None:
             per_character[character_name] = f"skipped ({result['error']})"
             continue
-        char_contracts = [c for c in result["contracts"] if _passes_prefilter(c, structure_id)]
+        char_contracts = [c for c in result["contracts"]
+                          if _passes_prefilter(c, structure_id)
+                          and _issued_by_own_identity(c, character_id, result["corporation_id"])]
         for c in char_contracts:
             if c["contract_id"] not in seen_contract_ids:
                 seen_contract_ids.add(c["contract_id"])
@@ -160,7 +167,9 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
             corp_error_by_id[corporation_id] = str(e)  # a later character in this corp might have access
             continue
         corp_contracts_done[corporation_id] = corp_raw
-        corp_filtered = [c for c in corp_raw if _passes_prefilter(c, structure_id)]
+        corp_filtered = [c for c in corp_raw
+                         if _passes_prefilter(c, structure_id)
+                         and _issued_by_own_identity(c, character_id, corporation_id)]
         for c in corp_filtered:
             if c["contract_id"] not in seen_contract_ids:
                 seen_contract_ids.add(c["contract_id"])
@@ -219,6 +228,7 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
     item_rows: list[tuple] = []
     deviation_rows: list[tuple] = []
     synced_at = datetime.now(timezone.utc).isoformat()
+    no_hull_match_count = 0
 
     for raw, role, for_corp in usable:
         cid = raw["contract_id"]
@@ -233,6 +243,14 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
 
         matched_fitting_id, score, deviations, status = engine.match_and_validate_contract(
             cid, raw.get("title"), items, candidates, cfg)
+
+        if status == engine.NO_HULL_MATCH:
+            # Not a Doctrine ship sale at all (no known fitting's hull present,
+            # included+singleton) - never persisted, see engine.NO_HULL_MATCH's
+            # own docstring for why this is distinct from a genuine "unmatched"
+            # near-miss.
+            no_hull_match_count += 1
+            continue
 
         contract_rows.append((
             cid, role, for_corp, raw.get("issuer_id"), raw.get("start_location_id"), raw.get("status"),
@@ -252,6 +270,7 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
         "characters": per_character,
         "contracts_synced": len(contract_rows),
         "contracts_dropped_this_run": len(all_contracts) - len(usable),
+        "contracts_no_relevant_hull": no_hull_match_count,
         "corp_errors": {str(k): v for k, v in corp_error_by_id.items()},
         "item_fetch_errors": {str(k): v for k, v in fetch_errors.items()},
     }

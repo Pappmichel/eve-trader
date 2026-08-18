@@ -386,6 +386,7 @@ class StockpileRow(_Base):
     fitting_id: str
     fitting_name: str
     doctrine_id: str
+    doctrine_name: str
     type_id: int
     type_name: str
     slot_section: str
@@ -393,6 +394,16 @@ class StockpileRow(_Base):
     available: float
     shortfall: float
     severity: Optional[str] = None
+
+
+class AggregatedStockpileRow(_Base):
+    type_id: int
+    type_name: str
+    required_total: float
+    available: float
+    shortfall: float
+    severity: Optional[str] = None
+    fitting_count: int
 
 
 class FittingStatus(_Base):
@@ -404,6 +415,7 @@ class FittingStatus(_Base):
     tolerable_contracts: int
     contract_target: int
     stockpile_status: str
+    stockpile_target: int
     worst_stockpile_shortfall_pct: float
     last_synced_at: Optional[str] = None
     assets_available: bool = True

@@ -14,8 +14,8 @@ from . import parser, validation
 from .config import DOCTRINE_CONFIG, DoctrineConfig
 from .constants import AMPEL_GRAY, EXACT_SECTIONS
 from .models import (
-    ContractItemRow, ContractRow, DeviationRow, Doctrine, DoctrineStatus, Fitting, FittingItem,
-    FittingStatus, ParsedFitting, ParseIssue, StockpileRow,
+    AggregatedStockpileRow, ContractItemRow, ContractRow, DeviationRow, Doctrine, DoctrineStatus, Fitting,
+    FittingItem, FittingStatus, ParsedFitting, ParseIssue, StockpileRow,
 )
 from .parser import FittingParseError, ResolvedType
 
@@ -103,12 +103,24 @@ def load_match_candidates() -> list[_Candidate]:
     return candidates
 
 
+#: Internal-only status sentinel - never added to constants.VALIDATION_STATUSES
+#: and never persisted (esi_sync.sync_contracts drops any contract that gets
+#: this status before it ever reaches storage.replace_doctrine_sync_snapshot,
+#: see that function's own docstring). Distinct from the ordinary "unmatched"
+#: status (hull present, but score below threshold - a genuine near-miss
+#: worth keeping visible) - this one means no candidate fitting's hull was
+#: found in the contract at all, i.e. it isn't a Doctrine ship sale.
+NO_HULL_MATCH = "no_relevant_hull"
+
+
 def match_and_validate_contract(contract_id: int, contract_title: Optional[str],
                                  contract_items: list[ContractItemRow], candidates: list[_Candidate],
                                  cfg: DoctrineConfig = DOCTRINE_CONFIG) -> tuple[Optional[str], float, list[DeviationRow], str]:
     """Phase 3 spec B.5 (matching) + B.4/B.6 (deviations) + B.7 (status),
     combined into the one call esi_sync.py needs per contract. Returns
-    (matched_fitting_id, match_score, deviations, validation_status)."""
+    (matched_fitting_id, match_score, deviations, validation_status) -
+    validation_status can be NO_HULL_MATCH (see its own docstring), never
+    persisted as such."""
     scored: list[tuple[_Candidate, float]] = []
     for c in candidates:
         if not validation.hull_gate_satisfied(contract_items, c.fitting.hull_type_id):
@@ -118,7 +130,7 @@ def match_and_validate_contract(contract_id: int, contract_title: Optional[str],
         scored.append((c, score))
 
     if not scored:
-        return None, 0.0, [], "unmatched"
+        return None, 0.0, [], NO_HULL_MATCH
 
     max_score = max(s for _c, s in scored)
     if not validation.clears_match_threshold(max_score):
@@ -163,8 +175,12 @@ def stockpile_rows_for_doctrine(doctrine_id: Optional[str] = None,
     if not candidates or not assets_available:
         return [], assets_available
 
+    # {doctrine_id: name} - used below so each row carries its doctrine's own
+    # name (not a fitting's, which Stockpile.tsx used as a stand-in for the
+    # doctrine section heading until this was fixed - GitHub issue #1).
+    doctrine_name_by_id = {str(row[0]): row[1] for row in storage.list_doctrines()}
+
     ordered_soll: list[tuple[str, dict[int, tuple[float, str]]]] = []
-    doctrine_name_by_fitting: dict[str, str] = {}
     for c in candidates:
         soll = validation.build_stockpile_soll(c.items, c.fitting.hull_type_id, c.fitting.stockpile_target)
         ordered_soll.append((c.fitting.fitting_id, soll))
@@ -188,11 +204,44 @@ def stockpile_rows_for_doctrine(doctrine_id: Optional[str] = None,
             type_name = type_row[2] if type_row else str(type_id)
             slot_section = "hull" if type_id == c.fitting.hull_type_id else (
                 "low/med/high/rig/subsystem/service" if item_class == "exact" else "drone/cargo/charge")
-            rows.append(StockpileRow(fitting_id=c.fitting.fitting_id, fitting_name=c.fitting.name,
-                                      doctrine_id=c.fitting.doctrine_id, type_id=type_id, type_name=type_name,
-                                      slot_section=slot_section, required_total=required, available=allocated,
-                                      shortfall=shortfall, severity=severity))
+            rows.append(StockpileRow(
+                fitting_id=c.fitting.fitting_id, fitting_name=c.fitting.name,
+                doctrine_id=c.fitting.doctrine_id,
+                doctrine_name=doctrine_name_by_id.get(c.fitting.doctrine_id, c.fitting.doctrine_id),
+                type_id=type_id, type_name=type_name, slot_section=slot_section, required_total=required,
+                available=allocated, shortfall=shortfall, severity=severity,
+            ))
     return rows, assets_available
+
+
+def aggregate_stockpile_rows(rows: list[StockpileRow]) -> list[AggregatedStockpileRow]:
+    """Combines the same item across every fitting/doctrine that needs it
+    into one row (GitHub issue #1) - "how much of X do I need in total"
+    without manually adding up several StockpileRows. Summing
+    required_total/available/shortfall across rows for the same type_id is
+    mathematically safe: validation.allocate_stockpile already partitions
+    the physical stock across fittings by priority, so no row's `available`
+    double-counts another's. severity is the worst among contributing rows
+    (validation.worst_severity) - two fittings can legitimately disagree
+    (different cargo_tolerance_pct), so there's no single "correct" tolerance
+    to recompute a combined severity from directly."""
+    by_type: dict[int, list[StockpileRow]] = {}
+    for r in rows:
+        by_type.setdefault(r.type_id, []).append(r)
+
+    aggregated = [
+        AggregatedStockpileRow(
+            type_id=type_id, type_name=group[0].type_name,
+            required_total=sum(r.required_total for r in group),
+            available=sum(r.available for r in group),
+            shortfall=sum(r.shortfall for r in group),
+            severity=validation.worst_severity([r.severity for r in group]),
+            fitting_count=len(group),
+        )
+        for type_id, group in by_type.items()
+    ]
+    aggregated.sort(key=lambda r: r.shortfall, reverse=True)
+    return aggregated
 
 
 # ---------------------------------------------------------------- status / ampel
@@ -215,8 +264,14 @@ def fitting_status(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG,
                     assets_available: bool = True) -> FittingStatus:
     contracts = contract_rows_from_db(storage.list_doctrine_contracts(fitting_id=fitting.fitting_id))
     last_synced_at = storage.get_esi_sync_time("doctrine")
-    valid = sum(1 for c in contracts if c.validation_status == "valid")
-    tolerable = sum(1 for c in contracts if c.validation_status == "tolerable")
+    # status == "expired" (the raw ESI contract status, separate from
+    # validation_status) is excluded here even though SYNCABLE_CONTRACT_
+    # STATUSES now lets expired contracts stay synced/visible (see that
+    # constant's own comment) - an expired contract must stop counting
+    # toward a fitting's target ampel the moment it expires, it just
+    # doesn't disappear from the Contracts page without explanation anymore.
+    valid = sum(1 for c in contracts if c.validation_status == "valid" and c.status != "expired")
+    tolerable = sum(1 for c in contracts if c.validation_status == "tolerable" and c.status != "expired")
     contract_ampel = validation.contract_ampel(last_synced_at, fitting.contract_target, valid, tolerable)
 
     if stockpile_rows is None:
@@ -237,6 +292,7 @@ def fitting_status(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG,
     return FittingStatus(fitting_id=fitting.fitting_id, fitting_name=fitting.name, doctrine_id=fitting.doctrine_id,
                           contract_status=contract_ampel, valid_contracts=valid, tolerable_contracts=tolerable,
                           contract_target=fitting.contract_target, stockpile_status=stockpile_amp,
+                          stockpile_target=fitting.stockpile_target,
                           worst_stockpile_shortfall_pct=worst_shortfall_pct, last_synced_at=last_synced_at,
                           assets_available=assets_available)
 

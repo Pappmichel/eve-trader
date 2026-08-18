@@ -278,3 +278,15 @@ def worst_ampel(ampels: list[str]) -> str:
     if not non_gray:
         return AMPEL_GRAY
     return max(non_gray, key=lambda a: AMPEL_SEVERITY_ORDER.index(a))
+
+
+def worst_severity(severities: list[Optional[str]]) -> Optional[str]:
+    """Worst-of aggregation for stockpile item severities (critical > tolerable
+    > info > None) - mirrors worst_ampel's own shape, for engine.
+    aggregate_stockpile_rows combining several fittings' rows for the same
+    item into one. None never participates (no deviation at all); if every
+    input is None, the result is None (no shortfall anywhere)."""
+    real = [s for s in severities if s is not None]
+    if not real:
+        return None
+    return max(real, key=lambda s: _SEVERITY_RANK[s])

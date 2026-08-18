@@ -20,8 +20,17 @@ export default function Contracts() {
 
   const columns = useMemo<ColumnDef<DoctrineContractRow, any>[]>(() => [
     { header: 'Contract', accessorKey: 'title', size: 220, cell: (i) => i.getValue() ?? `#${i.row.original.contract_id}` },
-    { header: 'Status', accessorKey: 'validation_status', size: 140,
-      cell: (i) => <Badge color={STATUS_COLOR[i.getValue() as string] ?? 'dimmed'} variant="light">{i.getValue()}</Badge> },
+    { header: 'Status', accessorKey: 'validation_status', size: 180,
+      cell: (i) => (
+        <Group gap={4} wrap="nowrap">
+          <Badge color={STATUS_COLOR[i.getValue() as string] ?? 'dimmed'} variant="light">{i.getValue()}</Badge>
+          {/* Doesn't disappear from the snapshot on expiry anymore (see
+              constants.SYNCABLE_CONTRACT_STATUSES's own comment) - this is
+              what makes that visible instead of the contract just vanishing
+              with no explanation. */}
+          {i.row.original.status === 'expired' && <Badge color="dimmed" variant="outline">expired</Badge>}
+        </Group>
+      ) },
     { header: 'Source', accessorKey: 'source_role', size: 140 },
     { header: 'Corp?', accessorKey: 'for_corporation', size: 80, cell: (i) => (i.getValue() ? 'Yes' : 'No') },
     { header: 'Price', accessorKey: 'price', size: 140, cell: (i) => isk(i.getValue()) },
