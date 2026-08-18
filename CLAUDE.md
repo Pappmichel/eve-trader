@@ -28,6 +28,21 @@ user that freighting finished Production goods to Jita isn't part of this
 tool's business model. Don't reintroduce Jita as a Production sales channel
 without asking first.
 
+**Price sources matrix** - three different price sources answer three
+different questions, deliberately, not by accident, but nowhere else are
+they laid out side by side:
+| Question | Source | Where |
+|---|---|---|
+| Is a *newly discovered* candidate historically worth importing? | Goonmetrics region-average history for `reference_region_id` (Insmother) | `history_backtest.py` |
+| What can I actually buy/sell *right now* on the live Trading shortlist? | Real ESI order-book stats (5th-percentile) for `jita_region_id`/C-J's own structure | `esi_client.region_order_stats`/`structure_order_stats`, via `shortlist.py` |
+| What's a Production build/buy decision worth? | Goonmetrics current-price quotes (`appraise.gnf.lt`) for the configured home/Jita markets | `production/pricing.py` |
+Each is the right tool for its own job (a historical region average smooths
+out noise for "is this worth tracking at all", a live order-book percentile
+is what you'd actually pay/receive right now) - don't assume a number from
+one is interchangeable with a same-named-sounding number from another
+(see Finding 2.5's discovery/live-shortlist mismatch for a concrete case
+this caused).
+
 ## Architecture: actions.py is the one entry point
 
 `eve_trader/actions.py` and `eve_trader/production/actions.py` hold every
@@ -43,6 +58,18 @@ converts it to an HTTP 400 - `ActionError` is the one user-facing error type
 across the whole app. A new failure mode should raise `ActionError` (or a
 narrower exception the caller converts to `ActionError`), not a raw
 exception that would otherwise surface as a bare 500.
+
+Two narrow, deliberate exceptions call something other than a `do_*`
+function directly - not places where the rule was missed, but don't extend
+either without the same reasoning: `api/routers/portfolio.py` calls
+`portfolio.portfolio_overview()`/`scheduler.get_status()` directly, since
+`portfolio.py`/`scheduler.py` are the cross-cutting modules that
+deliberately span both tools (see "Two tools, one backend" above) - there's
+no natural `do_*` home for either without picking one tool arbitrarily.
+`cli.py`'s `tenant`/`migrate-sqlite` commands call `storage`/
+`sqlite_migration` directly - both are admin-only, operator-run-once
+commands with no web/API equivalent at all, so there's no router on the
+other side of them to keep in sync with.
 
 ## Config: dataclasses + config.yaml, validated before applied, resolved per-tenant
 
@@ -191,15 +218,34 @@ validation was even reachable via HTTP).
 
 ## Caching pattern
 
-`esi_client.py` established the pattern used everywhere else that caches an
-expensive call: a plain `time.time()`-based TTL (`self._x_cache`,
-`self._x_cache_at`), no external caching library. `discover_build_candidates`
-(`production/engine.py`) follows the same pattern at module level, plus
-explicit invalidation (`invalidate_discover_cache()`) from every action that
-actually changes its result set (Settings save, stock target add/remove,
-decryptor change, SDE refresh) - TTL alone would let a just-changed Setting
-serve stale results for the rest of the TTL window, which would be a real
-correctness problem, not just a performance one.
+The shared idea everywhere that caches an expensive call: a plain
+`time.time()`-based TTL, no external caching library - but it's grown three
+slightly different shapes as new needs came up, not one uniform pattern:
+- `esi_client.py`'s `ESIClient` uses **class-level** attributes
+  (`_adjusted_prices_cache`/`_adjusted_prices_cache_at`, etc, `clear_price_caches()`
+  to reset for tests) - deliberately class-wide, not per-instance, since a
+  fresh `ESIClient()` is constructed per call/request elsewhere in this
+  codebase, so an instance-level cache would never actually hit.
+- `goonmetrics_client.py`'s `current_prices` uses **module-level dicts**
+  (`_prices_cache`/`_prices_cache_at`, keyed by market) plus a **per-market**
+  lock (`_prices_locks`) - narrower than a single shared lock so concurrent
+  requests for two different markets don't serialize behind one one lock held
+  for the whole (multi-second) fetch.
+- `discover_build_candidates` (`production/engine.py`) uses a module-level
+  value (`_discover_cache`/`_discover_cache_at`) behind **one single lock**
+  covering the whole cached computation, plus explicit invalidation
+  (`invalidate_discover_cache()`) from every action that actually changes its
+  result set (Settings save, stock target add/remove, decryptor change, SDE
+  refresh) - TTL alone would let a just-changed Setting serve stale results
+  for the rest of the TTL window, a real correctness problem, not just a
+  performance one.
+
+Each shape exists for a reason specific to its own caller (see above) - when
+adding a new cache, match whichever of these three actually fits your
+situation (per-instance-never-hits -> class-level; multiple independent
+cache keys -> per-key lock; one whole-computation cache that must never
+serve stale-after-a-write results -> single lock + explicit invalidation)
+rather than assuming there's one canonical "the" pattern to copy.
 
 ## Scheduler
 
@@ -212,7 +258,13 @@ means. Each tick, `trading_pipeline`/`production_sync` run once **per
 tenant** (`storage.list_tenants()`, each fully scoped via `tenant_scope.
 enter_tenant`) - a tenant's own `scheduler_enabled`/interval fields decide
 independently whether *their* jobs run that tick, via
-`_check_and_run_due_jobs_for_tenant`. `backup` stays a single **global**,
+`_check_and_run_due_jobs_for_tenant`. This does mean a real second tenant
+who flips their own `scheduler_enabled` on (Settings page) is silently a
+no-op the entire background thread never even starts, and so never reaches
+that tenant's per-tick check, unless `DEFAULT_TENANT_ID` (the operator)
+*also* has theirs on. Semantically this field is closer to a global
+deploy-level switch than a genuine per-tenant setting - worth knowing before
+inviting a second tenant. `backup` stays a single **global**,
 unscoped job (`_check_and_run_backup_job`) - one `pg_dump` already covers
 every tenant's data in one shot, nothing to iterate; its own interval/
 enabled check reads `DEFAULT_TENANT_ID`'s config, same operator-level
