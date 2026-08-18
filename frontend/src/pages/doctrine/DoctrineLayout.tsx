@@ -4,7 +4,7 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { IconArrowLeft, IconRefresh, IconTrash } from '@tabler/icons-react'
 
-import { doctrineApi } from '../../api/client'
+import { authApi, doctrineApi } from '../../api/client'
 import { useAction } from '../../hooks/useAction'
 import { dateTime } from '../../format'
 
@@ -28,7 +28,20 @@ function activeTab(pathname: string): string {
 
 function CharacterList() {
   const { data: characters } = useQuery({ queryKey: ['doctrine', 'characters'], queryFn: doctrineApi.characters })
-  const addCharacter = useAction('Add Character', doctrineApi.addCharacter, [['doctrine', 'characters']])
+  // Same redirect-based EVE SSO flow Trading's buyer/seller login and
+  // Production's own Add Character button use (see TradingLayout.tsx's
+  // LoginButton / ProductionLayout.tsx) - navigates the whole page to EVE
+  // SSO and back via api/routers/auth.py's /callback route, rather than the
+  // old server-side webbrowser.open() + blocking-local-HTTP-server flow
+  // (doctrine/actions.py's do_auth_doctrine/auth.py's
+  // get_token_interactive_multi). Confirmed real bug live: that old flow
+  // tries to bind its own HTTP server on the exact host:port the running
+  // backend already listens on - works by accident in local dev, always
+  // fails on a real deployment ("Cannot assign requested address").
+  const addCharacter = useAction('Login', async () => {
+    const { url } = await authApi.start('doctrine')
+    window.location.href = url
+  })
   const removeCharacter = useAction('Remove Character', doctrineApi.removeCharacter, [['doctrine', 'characters']])
 
   return (

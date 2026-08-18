@@ -26,6 +26,7 @@ from ... import storage
 from ...access_gate import resolve_corp_alliance, set_session_cookie
 from ...auth import TokenManager, _make_pkce_pair
 from ...config import OAUTH_CONFIG
+from ...doctrine import esi_sync as doctrine_esi_sync
 from ...production import esi_sync
 
 router = APIRouter()
@@ -47,6 +48,8 @@ def _prune_pending() -> None:
 def _scopes_for(role_prefix: str) -> list[str]:
     if role_prefix == "producer":
         return esi_sync.PRODUCTION_SCOPES
+    if role_prefix == "doctrine":
+        return doctrine_esi_sync.DOCTRINE_SCOPES
     if role_prefix == "gate":
         return []  # identity only - see access_gate.py
     return list(OAUTH_CONFIG.scopes)

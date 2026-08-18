@@ -110,15 +110,15 @@ def do_check_sde_freshness(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     return {**freshness, "trading_universe_stale": trading_universe_stale, "trading_universe_built_at": universe_built_at}
 
 
-def do_auth_add_producer_character() -> dict:
-    """Authorizes one more character for asset/industry-job/blueprint tracking,
-    requesting only esi_sync.PRODUCTION_SCOPES (never the buyer/seller default
-    scope list, so an unrelated re-auth can't suddenly need scopes your EVE
-    dev-portal app doesn't have enabled). Safe to call repeatedly for
-    different characters - each is stored under its own role key."""
-    tm = TokenManager(OAUTH_CONFIG)
-    record = tm.get_token_interactive_multi(esi_sync.PRODUCTION_ROLE_PREFIX, scopes=esi_sync.PRODUCTION_SCOPES)
-    return {"character_name": record.character_name, "character_id": record.character_id}
+# No do_auth_add_producer_character() here, deliberately - removed (real bug,
+# confirmed live via the identical Doctrine-tool code path): a producer
+# character logs in via the redirect-based EVE SSO flow buyer/seller already
+# use (GET /api/auth/producer/start -> EVE SSO -> /api/auth/callback, see
+# api/routers/auth.py's _scopes_for and ProductionLayout.tsx), never via
+# TokenManager.get_token_interactive_multi's old server-side
+# webbrowser.open()-plus-local-HTTP-server flow, which binds its own
+# listener on the exact host:port the running backend already uses - works
+# only by accident in local dev, always fails on a real deployment.
 
 
 def do_list_producer_characters() -> list[tuple[str, int, str]]:
