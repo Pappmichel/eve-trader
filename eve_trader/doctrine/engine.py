@@ -154,7 +154,7 @@ def stockpile_rows_for_doctrine(doctrine_id: Optional[str] = None,
                                  cfg: DoctrineConfig = DOCTRINE_CONFIG) -> tuple[list[StockpileRow], bool]:
     """Phase 3 spec C - returns (rows, assets_available). Only ever computed
     live (never persisted, Phase 2 B.2's own note on StockpileRow)."""
-    assets_available = storage.has_any_synced_assets()
+    assets_available = storage.has_any_doctrine_synced_assets()
     location_id = cfg.effective_stockpile_location_id
 
     candidates = load_match_candidates()
@@ -170,7 +170,10 @@ def stockpile_rows_for_doctrine(doctrine_id: Optional[str] = None,
         ordered_soll.append((c.fitting.fitting_id, soll))
 
     type_ids = {t for _fid, soll in ordered_soll for t in soll}
-    available_by_type = {t: storage.esi_stock_at_location(t, location_id) for t in type_ids}
+    available_by_type = {
+        t: storage.esi_stock_at_location(t, location_id, tables=("doctrine_character_assets", "doctrine_corp_assets"))
+        for t in type_ids
+    }
     allocation = validation.allocate_stockpile(ordered_soll, available_by_type)
 
     rows: list[StockpileRow] = []

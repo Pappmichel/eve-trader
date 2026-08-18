@@ -268,6 +268,9 @@ export const doctrineApi = {
   validateContracts: () => post<{ revalidated: number }>('/api/doctrine/validate'),
   syncTime: () => get<{ synced_at: string | null }>('/api/doctrine/sync-time'),
 
+  syncAssets: () => post<{ characters: Record<string, unknown>; corporations: Record<string, unknown> }>('/api/doctrine/assets/sync'),
+  assetSyncTime: () => get<{ synced_at: string | null }>('/api/doctrine/assets/sync-time'),
+
   status: (doctrineId?: string) =>
     get<{ doctrines: T.DoctrineStatus[] }>(`/api/doctrine/status${doctrineId ? `?doctrine_id=${doctrineId}` : ''}`),
   contracts: (fittingId?: string, status?: string) => {
@@ -284,9 +287,16 @@ export const doctrineApi = {
 
   characters: () => get<T.DoctrineCharacter[]>('/api/doctrine/characters'),
   // No addCharacter() here, deliberately - see DoctrineLayout.tsx's
-  // CharacterList, which uses the same redirect-based EVE SSO flow
+  // CharacterGroup, which uses the same redirect-based EVE SSO flow
   // buyer/seller login does (authApi.start('doctrine')), not a POST action.
   removeCharacter: (roleKey: string) => del(`/api/doctrine/characters/${roleKey}`),
+
+  // Separate character group, authed for esi-assets scopes rather than
+  // esi-contracts ones - see doctrine/esi_sync.py's own module docstring.
+  // No addAssetCharacter() here either, same reasoning as above
+  // (authApi.start('doctrine-assets')).
+  assetCharacters: () => get<T.DoctrineCharacter[]>('/api/doctrine/asset-characters'),
+  removeAssetCharacter: (roleKey: string) => del(`/api/doctrine/asset-characters/${roleKey}`),
 
   settings: () => get<T.DoctrineSettings>('/api/doctrine/settings'),
   updateSettings: (s: T.DoctrineSettings) => post<T.DoctrineSettings>('/api/doctrine/settings', s),

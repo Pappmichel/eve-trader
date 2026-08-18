@@ -22,8 +22,8 @@ export default function Stockpile() {
 
       {!isLoading && data && !data.assets_available && (
         <HintCard>
-          No asset data available yet - Production hasn't synced ESI assets. Log in a producer character and run
-          Production's "Sync ESI Data" to populate stock levels here.
+          No asset data available yet - add an asset-scanning character under "Asset-Scanning Characters" in the
+          sidebar and run "Sync Assets" to populate stock levels here.
         </HintCard>
       )}
 

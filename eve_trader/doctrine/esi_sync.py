@@ -1,9 +1,23 @@
-"""ESI contract sync for the Doctrine tool (Phase 2 spec E.3, Phase 3 spec
-D.3's error table). Pulls character + corporation item_exchange contracts
-for every registered "doctrine:<character_id>" character, pre-filters to
-this app's own structure before ever fetching a contract's items (items are
-1 ESI call per contract), matches each surviving contract against the
-active Fitting pool (doctrine/engine.py), and writes one full snapshot.
+"""ESI sync for the Doctrine tool - two entirely independent flows sharing
+this one module because they're both "Doctrine's own ESI sync", nothing
+more:
+
+1. Contract sync (Phase 2 spec E.3, Phase 3 spec D.3's error table): pulls
+   character + corporation item_exchange contracts for every registered
+   "doctrine:<character_id>" character, pre-filters to this app's own
+   structure before ever fetching a contract's items (items are 1 ESI call
+   per contract), matches each surviving contract against the active
+   Fitting pool (doctrine/engine.py), and writes one full snapshot.
+2. Asset sync (sync_assets, below): pulls character + corporation assets
+   for every registered "doctrine-assets:<character_id>" character into
+   Doctrine's own doctrine_character_assets/doctrine_corp_assets tables -
+   deliberately a second, separate character-auth group from #1, not the
+   same "doctrine" role and not a read of Production's own asset tables (an
+   earlier design that assumed Stockpile could depend on Production ever
+   being set up - reversed after real use: a Doctrine-only tenant must be
+   able to use Stockpile standalone). Splitting the two ESI scope groups
+   also means a character that should only ever read contracts is never
+   asked to grant asset-read access, and vice versa.
 """
 from __future__ import annotations
 
@@ -29,6 +43,15 @@ DOCTRINE_SCOPES = [
     "esi-contracts.read_character_contracts.v1",
     "esi-contracts.read_corporation_contracts.v1",
     "esi-universe.read_structures.v1",   # structure name resolution, same as Production
+]
+
+# Separate role/scope group from DOCTRINE_ROLE_PREFIX above - see this
+# module's own docstring point 2 for why asset-scanning characters are kept
+# distinct from contract-reading ones.
+DOCTRINE_ASSET_ROLE_PREFIX = "doctrine-assets"
+DOCTRINE_ASSET_SCOPES = [
+    "esi-assets.read_assets.v1",
+    "esi-assets.read_corporation_assets.v1",
 ]
 
 
@@ -232,3 +255,109 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
         "corp_errors": {str(k): v for k, v in corp_error_by_id.items()},
         "item_fetch_errors": {str(k): v for k, v in fetch_errors.items()},
     }
+
+
+# =========================================================== asset sync (Stockpile)
+def list_doctrine_asset_characters(tm: Optional[TokenManager] = None) -> list[tuple[str, int, str]]:
+    """Returns (role_key, character_id, character_name) for every registered
+    asset-scanning character - same get_record (no refresh) pattern as
+    list_doctrine_characters above, for the same reason."""
+    tm = tm or TokenManager(OAUTH_CONFIG)
+    out = []
+    for role in tm.list_roles(DOCTRINE_ASSET_ROLE_PREFIX):
+        record = tm.get_record(role)
+        if record is not None:
+            out.append((role, record.character_id, record.character_name))
+    return out
+
+
+def _asset_rows(assets: list[dict]) -> list[tuple]:
+    return [
+        (a["item_id"], a["type_id"], a["location_id"], a["location_flag"],
+         a["quantity"], int(bool(a.get("is_blueprint_copy"))), a.get("owner_name"))
+        for a in assets
+    ]
+
+
+def _fetch_character_assets(client: ESIClient, role: str, character_id: int, character_name: str) -> dict:
+    """The parallelizable, per-character half of sync_assets (Phase A) -
+    mirrors production/esi_sync.py's _fetch_character_data, narrowed to just
+    assets + the corp lookup the corp-asset half (Phase B, sequential) needs."""
+    result: dict = {"character_name": character_name, "role": role, "assets": [],
+                     "corporation_id": None, "error": None}
+    try:
+        assets = client.character_assets(character_id, auth_role=role)
+    except ESIError as e:
+        result["error"] = str(e)
+        return result
+    for a in assets:
+        a["owner_name"] = character_name
+    result["assets"] = assets
+    try:
+        result["corporation_id"] = client.character_public_info(character_id)["corporation_id"]
+    except ESIError:
+        pass  # corp assets just won't be attempted for this character
+    return result
+
+
+def sync_assets() -> dict:
+    """Doctrine's own independent asset sync (Stockpile's Ist side) - see
+    this module's own top docstring point 2 for why this is deliberately
+    separate from Production's do_sync_esi/sync_esi, even though the
+    mechanics are nearly identical. Same two-phase shape as production/
+    esi_sync.py's sync_esi (see its own docstring for the full reasoning):
+    Phase A (parallel, per character) fetches each character's own assets;
+    Phase B (sequential) fetches each distinct corp's assets once, retried
+    with a later character in the same corp if an earlier one lacks the
+    Director role."""
+    tm = TokenManager(OAUTH_CONFIG)
+    characters = list_doctrine_asset_characters(tm)
+    if not characters:
+        raise ActionError(
+            "No asset-scanning character logged in yet. Use 'Add Character' under Stockpile in the sidebar."
+        )
+    client = ESIClient(tokens=tm)
+
+    with ThreadPoolExecutor(max_workers=min(8, len(characters))) as pool:
+        char_results = list(pool.map(
+            storage.with_current_tenant(lambda c: _fetch_character_assets(client, c[0], c[1], c[2])), characters,
+        ))
+
+    all_char_assets: list[dict] = []
+    all_corp_assets: list[dict] = []
+    per_character: dict = {}
+    per_corporation: dict = {}
+    corp_done: set[int] = set()
+    corp_error: dict[int, str] = {}
+
+    for r in char_results:
+        character_name = r["character_name"]
+        if r["error"] is not None:
+            per_character[character_name] = f"skipped ({r['error']})"
+            continue
+        all_char_assets.extend(r["assets"])
+        per_character[character_name] = {"assets": len(r["assets"])}
+
+        corporation_id = r["corporation_id"]
+        if corporation_id is None or corporation_id in corp_done or corporation_id in corp_error:
+            continue
+        try:
+            corp_assets = client.corporation_assets(corporation_id, auth_role=r["role"])
+        except ESIError as e:
+            corp_error[corporation_id] = str(e)  # a later character in this corp might have the Director role
+            continue
+        try:
+            corp_name = client.corporation_public_info(corporation_id).get("name", str(corporation_id))
+        except ESIError:
+            corp_name = str(corporation_id)
+        for a in corp_assets:
+            a["owner_name"] = f"{corp_name} (corp)"
+        corp_done.add(corporation_id)
+        all_corp_assets.extend(corp_assets)
+        per_corporation[corp_name] = {"assets": len(corp_assets)}
+
+    storage.replace_assets("doctrine_character_assets", _asset_rows(all_char_assets))
+    storage.replace_assets("doctrine_corp_assets", _asset_rows(all_corp_assets))
+    storage.set_esi_sync_time("doctrine_assets", datetime.now(timezone.utc).isoformat())
+
+    return {"characters": per_character, "corporations": per_corporation}
