@@ -156,6 +156,18 @@ RIG_TIERS: dict[str, RigTier] = {
 }
 
 
+def _rounded_security(security_status: float) -> float:
+    """EVE classifies/displays system security at 1-decimal precision, not
+    the SDE/ESI's raw multi-decimal true-sec value - confirmed against CCP's
+    own system-security dev docs (developers.eveonline.com/docs/guides/
+    system-security). Standard rounding, except CCP's own special case:
+    any positive true-sec below 0.05 still rounds to 0.1, never down to a
+    flat 0.0 (0.0 is reserved for genuine null-sec)."""
+    if 0.0 < security_status < 0.05:
+        return 0.1
+    return round(security_status, 1)
+
+
 def rig_security_multiplier(security_status: float | None, is_reaction: bool = False) -> float:
     """Real EVE mechanic (confirmed via rig dogma attributes): rig ME/TE
     bonuses scale with the security status of the system the structure sits
@@ -165,11 +177,18 @@ def rig_security_multiplier(security_status: float | None, is_reaction: bool = F
     Bonus Multiplier: 1x", "Nullsec and Wormhole Bonus Multiplier: 1.1x", and
     "Banned in High Sec Space: true" - reactor rigs cannot be fitted in
     highsec at all, since reactions themselves can't run there):
-    - Engineering Complex (`is_reaction=False`): 1x highsec (>=0.5), 1.9x
-      lowsec (0.0-0.45), 2.1x null-sec/wormhole (<=0.0).
+    - Engineering Complex (`is_reaction=False`): 1x highsec (rounded sec
+      >=0.5), 1.9x lowsec (0.0-0.45 raw, i.e. rounds to 0.1-0.4), 2.1x
+      null-sec/wormhole (<=0.0). Classified on the *rounded* security value
+      (see _rounded_security) - re-confirmed 2026-08-18: a system with raw
+      true-sec 0.45-0.4999 displays and is classified as 0.5 = highsec, even
+      though the old code here compared the raw value directly (so it would
+      have wrongly given such a system the 1.9x lowsec rig bonus instead of
+      no bonus at all).
     - Refinery/reactor (`is_reaction=True`): no highsec case (hard-banned in
       game); 1x lowsec, 1.1x null-sec/wormhole - a much smaller nullsec bonus
-      than the Engineering Complex table.
+      than the Engineering Complex table. No highsec/lowsec split to get
+      wrong here, so the rounding boundary doesn't affect this table.
     Unknown security (e.g. system not yet resolved) assumes the lowest-bonus
     case for the relevant table (1x either way) rather than over-crediting an
     unverified location."""
@@ -177,9 +196,10 @@ def rig_security_multiplier(security_status: float | None, is_reaction: bool = F
         return 1.1 if (security_status is not None and security_status <= 0.0) else 1.0
     if security_status is None:
         return 1.0
-    if security_status >= 0.5:
+    rounded = _rounded_security(security_status)
+    if rounded >= 0.5:
         return 1.0
-    if security_status > 0.0:
+    if rounded > 0.0:
         return 1.9
     return 2.1
 
