@@ -45,8 +45,11 @@ ME/TE stacks in two independently-stacking layers (see constants.py):
    Efficiency I/II", confirmed via dogma attributes - not the "no reactor TE
    rig exists" assumption an earlier version of this module made), so a
    reaction's rig te_bonus applies exactly like every other activity's, on
-   top of the refinery's own te_multiplier (Athanor -3%, Tatara -25%, both
-   confirmed against wiki.eveuniversity.org's Upwell structures page).
+   top of the refinery's own te_multiplier (Tatara -25%, Athanor has no
+   reaction-duration bonus of its own at all - confirmed against
+   wiki.eveuniversity.org's Refinery page, re-checked 2026-08-18 after an
+   earlier, wrong -3% Athanor figure was found here with no matching real
+   EVE attribute).
    Likewise a refinery's "yield" stat (Athanor 2%, Tatara 4%) is a
    *reprocessing* bonus, confirmed not to apply to reactions - refineries
    get no ME bonus of their own beyond whatever reactor ME rig is fitted.

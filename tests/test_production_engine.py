@@ -346,15 +346,17 @@ def test_reaction_te_rig_applies(monkeypatch):
     # used to be hard-coded to assume no such rig exists and always skip the
     # rig's TE bonus for reactions. A T2 TE rig (te_bonus=0.24) in a nullsec
     # system (is_reaction security multiplier 1.1x) must now measurably
-    # reduce time beyond the refinery's own -3% structure bonus alone.
+    # reduce time even though the Athanor itself has no reaction-duration
+    # structure bonus of its own.
     monkeypatch.setattr(storage, "get_system_security", lambda system_id: -0.5)  # nullsec
     cfg = ProductionConfig(reaction_structure_type="Athanor (M Refinery)", reaction_rig_tier="T2-Rig")
 
     _, time_mult, _ = _activity_mods("Reaction", type_id=1, cfg=cfg, cost_indices={}, blueprint_id=None)
-    # Athanor te_multiplier=0.97 alone (no rig) would give 0.97 - the rig must
-    # push it measurably lower.
+    # Athanor has no reaction-duration structure bonus of its own
+    # (te_multiplier=1.00, confirmed 2026-08-18 - see constants.py) - the rig
+    # alone must still measurably reduce time.
     assert time_mult < 0.90
-    assert round(time_mult, 5) == round(0.97 * (1 - 0.24 * 1.1), 5)
+    assert round(time_mult, 5) == round(1.00 * (1 - 0.24 * 1.1), 5)
 
 
 def test_reaction_rig_security_multiplier_uses_refinery_table_not_engineering_complex_table():
