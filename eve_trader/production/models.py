@@ -61,7 +61,7 @@ class BuildJobEntry:
     quantity: float
     job_runs: int
     job_time_seconds: float
-    job_cost: Optional[float]
+    unit_build_cost: Optional[float]  # materials + facility fee, per unit - not the raw facility fee alone (see engine.py's own job_cost local var)
     decryptor: Optional[str] = None  # Tech II only: which decryptor's ME/TE was assumed
     job_category: Optional[str] = None  # "where do I start this" grouping - see engine.job_category
 
@@ -99,7 +99,7 @@ class AssetPlanJob:
     job_runs: int             # runs actually needed after netting stock against pooled demand
     runs_ready_now: int       # of job_runs, how many the *scarcest* direct material covers right now
     job_time_seconds: float
-    job_cost: Optional[float]
+    unit_build_cost: Optional[float]  # materials + facility fee, per unit - not the raw facility fee alone (see engine.py's own job_cost local var)
     decryptor: Optional[str] = None
     job_category: Optional[str] = None  # "where do I start this" grouping - see engine.job_category
     # How much of this item's own current demand is already covered by owned

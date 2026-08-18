@@ -69,7 +69,7 @@ export default function AssetPlanList() {
     },
     { header: 'Quantity (Output)', accessorKey: 'quantity', size: 140, cell: (i) => qty(i.getValue()) },
     { header: 'Job Time (h, total)', id: 'hours', size: 140, accessorFn: (r) => r.job_time_seconds / 3600, cell: (i) => (i.getValue() as number).toFixed(2) },
-    { header: 'Modeled Unit Cost', accessorKey: 'job_cost', size: 150, cell: (i) => isk(i.getValue()) },
+    { header: 'Modeled Unit Cost', accessorKey: 'unit_build_cost', size: 150, cell: (i) => isk(i.getValue()) },
     { header: 'Decryptor', accessorKey: 'decryptor', size: 130, cell: (i) => i.getValue() ?? '–' },
   ], [])
 

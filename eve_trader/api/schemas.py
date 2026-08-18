@@ -159,7 +159,7 @@ class BuildJobEntry(_Base):
     quantity: float
     job_runs: int
     job_time_seconds: float
-    job_cost: Optional[float]
+    unit_build_cost: Optional[float]
     decryptor: Optional[str] = None
     job_category: Optional[str] = None
 
@@ -220,7 +220,7 @@ class AssetPlanJob(_Base):
     job_runs: int
     runs_ready_now: int
     job_time_seconds: float
-    job_cost: Optional[float]
+    unit_build_cost: Optional[float]
     decryptor: Optional[str] = None
     job_category: Optional[str] = None
     stock_coverage: Optional[float] = None

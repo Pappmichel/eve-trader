@@ -1097,7 +1097,7 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         build_list.append(BuildJobEntry(
             type_id=product_type_id, type_name=name, blueprint_type_id=blueprint_id,
             activity=activity_label, quantity=runs * product_qty, job_runs=runs,
-            job_time_seconds=job_time, job_cost=unit_cost, decryptor=decryptor_name,
+            job_time_seconds=job_time, unit_build_cost=unit_cost, decryptor=decryptor_name,
             job_category=job_category(product_type_id),
         ))
     build_list.sort(key=lambda e: e.job_time_seconds, reverse=True)
@@ -1449,7 +1449,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                     type_id=type_id, type_name=name, blueprint_type_id=blueprint_id,
                     activity=activity_label, quantity=runs * product_qty, job_runs=runs,
                     runs_ready_now=ready_increment, job_time_seconds=job_time,
-                    job_cost=cost_memo.get(type_id), decryptor=decryptor_name,
+                    unit_build_cost=cost_memo.get(type_id), decryptor=decryptor_name,
                     job_category=job_category(type_id),
                     stock_coverage=stock_coverage_by_id.get(type_id),
                 )
