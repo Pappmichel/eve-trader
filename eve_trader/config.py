@@ -181,6 +181,11 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "trading_pipeline_interval_hours": (0, None),
     "production_sync_interval_hours": (0, None),
     "backup_interval_hours": (0, None),
+    "doctrine_sync_interval_hours": (0, None),
+    # -- Doctrine tool (see doctrine/config.py's DoctrineConfig) --
+    "doctrine_structure_id": (1, None),
+    "stockpile_location_id": (1, None),
+    "cargo_tolerance_pct": (0, 1),
 }
 
 
@@ -362,6 +367,7 @@ class TradingConfig:
     trading_pipeline_interval_hours: float = 24.0     # do_pipeline(safe=True) - no universe rebuild
     production_sync_interval_hours: float = 6.0        # production do_sync_esi
     backup_interval_hours: float = 24.0                # backup.create_backup() - see backup.py
+    doctrine_sync_interval_hours: float = 12.0          # doctrine do_sync_contracts
 
 
 @dataclass
