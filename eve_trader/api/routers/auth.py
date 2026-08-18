@@ -64,6 +64,14 @@ def start_login(role_prefix: str):
     scopes = _scopes_for(role_prefix)
     _pending[state] = {
         "verifier": verifier, "role_prefix": role_prefix, "scopes": scopes, "created_at": time.time(),
+        # Stashed for /callback (an AccessGateMiddleware-exempt path with no
+        # automatic ambient tenant of its own) to pick back up - guaranteed
+        # non-None here for buyer/seller/producer (their /start routes are
+        # NOT gate-exempt, so the middleware has already set a real tenant
+        # by the time this handler runs); may be None for role_prefix="gate"
+        # (that one *is* exempt, by design - harmless, since the gate branch
+        # of /callback resolves its own tenant fresh via the registry).
+        "tenant_id": storage.get_current_tenant(),
     }
     params = {
         "response_type": "code",
@@ -128,10 +136,15 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
         return resp
 
     final_role = role_prefix if role_prefix in ("buyer", "seller") else f"{role_prefix}:{character_id}"
-    record = tm._to_record(final_role, token_json, " ".join(pending["scopes"]),
-                            character_id=character_id, character_name=character_name)
-    tm._tokens[final_role] = record
-    tm._save()
+    # /callback is AccessGateMiddleware-exempt, so no ambient tenant is set
+    # automatically here - use the one /start captured before redirecting to
+    # EVE SSO (falling back to DEFAULT_TENANT_ID for a hand-constructed
+    # _pending entry with no tenant_id key, e.g. in tests).
+    with storage.tenant_context(pending.get("tenant_id") or storage.DEFAULT_TENANT_ID):
+        record = tm._to_record(final_role, token_json, " ".join(pending["scopes"]),
+                                character_id=character_id, character_name=character_name)
+        tm._tokens[final_role] = record
+        tm._save_record(final_role)
 
     return RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?auth=success&role={urllib.parse.quote(final_role)}"
                              f"&character={urllib.parse.quote(character_name)}")

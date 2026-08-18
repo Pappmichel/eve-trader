@@ -103,6 +103,37 @@ def tenant_context(tenant_id: str):
         reset_current_tenant(token)
 
 
+def get_current_tenant() -> Optional[str]:
+    """Reads (without setting) the ambient tenant_id, or None if none is set
+    - e.g. api/routers/auth.py's /start route uses this to stash the
+    caller's already-resolved tenant into _pending[state], for /callback
+    (an AccessGateMiddleware-exempt path with no automatic tenant of its
+    own) to pick back up later."""
+    return _tenant_id_var.get()
+
+
+def with_current_tenant(fn):
+    """Wraps fn so that, no matter which thread later executes it, it runs
+    with the tenant_id ambient on the *calling* thread right now -
+    `concurrent.futures.ThreadPoolExecutor` worker threads do NOT inherit
+    contextvars from the thread that submitted the work (unlike asyncio
+    tasks/anyio's to_thread.run_sync, which explicitly copy the context;
+    confirmed by reading cpython's ThreadPoolExecutor._WorkItem.run, and
+    matching this project's own confirmed-live "a raw threading.Thread
+    doesn't inherit contextvars" gotcha). Needed anywhere ESI-fetching code
+    that might transitively touch storage.py (e.g. TokenManager refreshing
+    an expired token mid-fetch) gets parallelized via ThreadPoolExecutor -
+    see esi_client.py's _get_all_pages and production/esi_sync.py's
+    sync_esi."""
+    tenant_id = _tenant_id_var.get()
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with tenant_context(tenant_id):
+            return fn(*args, **kwargs)
+    return wrapper
+
+
 # Matches a `?` placeholder outside of single-quoted string literals - a
 # naive str.replace("?", "%s") would also corrupt a literal "?" appearing
 # inside quoted SQL text (e.g. a LIKE pattern). None of this file's queries
@@ -388,6 +419,35 @@ def load_tenant_settings(scope: str) -> dict:
     with connect() as conn:
         row = conn.execute("SELECT overrides FROM tenant_settings WHERE scope = ?", (scope,)).fetchone()
     return row[0] if row else {}
+
+
+# -------------------------------------------------------------- tenant tokens
+def save_tenant_token(role: str, record: dict) -> None:
+    """Upserts one OAuth token record (see auth.py's TokenRecord/asdict) for
+    `role` under the current tenant."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO tenant_tokens (role, record) VALUES (?, ?) "
+            "ON CONFLICT(tenant_id, role) DO UPDATE SET record = excluded.record",
+            (role, Jsonb(record)),
+        )
+
+
+def load_all_tenant_tokens() -> dict[str, dict]:
+    """Returns {role: record} for every token stored under the current
+    tenant - TokenManager always operates on its whole store at once (same
+    "read everything in one go" shape its old file-based _load() had), not
+    a single role in isolation."""
+    with connect() as conn:
+        rows = conn.execute("SELECT role, record FROM tenant_tokens").fetchall()
+    return {role: record for role, record in rows}
+
+
+def delete_tenant_token(role: str) -> None:
+    """Idempotent - deleting a role with no stored row is a no-op, not an
+    error, so callers never need to check existence first."""
+    with connect() as conn:
+        conn.execute("DELETE FROM tenant_tokens WHERE role = ?", (role,))
 
 
 # --------------------------------------------------------------------- writes

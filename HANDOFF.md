@@ -185,8 +185,51 @@ itself automatically the first time `pytest` runs - see below), and `pip install
         threading `tenant_id` through `/start`'s `_pending` dict + `/callback`'s
         buyer/seller/producer branches, deferred to their own session - nothing would
         consume a `tenant_id` there yet.
-- [ ] **TokenManager -> Postgres** (was folded into "Phase 3" originally, now its own
-      explicit next step - see below). **Not started.**
+- [x] **Phase 3b - DONE.** `TokenManager` cut over to Postgres, `tenant_id` threaded
+      through the buyer/seller/producer OAuth flow:
+      - `eve_trader/auth.py` - `TokenManager.__init__` no longer eagerly loads
+        (construction is now storage-free); `_ensure_loaded()` lazily reads
+        `storage.load_all_tenant_tokens()` on first real access
+        (`get_token`/`has_token`/`get_record`/`list_roles`); `_save()` became
+        `_save_record(role)` (single-row upsert, not a whole-file rewrite);
+        `remove_token` is now an unconditional (idempotent) delete. The old
+        one-time "producer" -> "producer:<id>" on-disk migration was dropped from
+        the runtime load path and moved into a new `import_tokens_file(tenant_id,
+        path=None)` helper instead.
+      - `storage.py` - `save_tenant_token`/`load_all_tenant_tokens`/`delete_tenant_token`
+        (same pattern as `tenant_settings`'s functions); `get_current_tenant()` (read-only
+        contextvar accessor); `with_current_tenant(fn)` - fixes a real gap found while
+        researching this phase: `ThreadPoolExecutor` worker threads don't inherit
+        contextvars from the submitting thread (confirmed via cpython's `_WorkItem.run`),
+        so a token expiring *during* a parallelized ESI fetch
+        (`production/esi_sync.py`'s `sync_esi`, `esi_client.py`'s `_get_all_pages`) would
+        have 500'd with "no tenant set" from inside a worker thread. Applied at both
+        `ThreadPoolExecutor` call sites.
+      - `api/routers/auth.py` - `/start` stashes `storage.get_current_tenant()` into
+        `_pending[state]["tenant_id"]` for every role_prefix; `/callback`'s non-gate
+        branch wraps its `TokenManager` persistence in
+        `with storage.tenant_context(pending.get("tenant_id") or DEFAULT_TENANT_ID):`.
+      - `cli.py` - new `eve-trader tenant import-tokens` command (one-time cutover
+        helper - hit a real naming collision live: `cli.py` already defines an `auth`
+        *command* function that shadows a module-level `auth` import, so the fix
+        imports `import_tokens_file` directly rather than the `auth` module).
+      - New `tests/test_token_manager.py` (8 tests, real Postgres) + 2 new tests in
+        `tests/test_gate_router.py` (`/start` capturing ambient tenant;
+        `/callback`'s buyer branch persisting under the right tenant, isolated from a
+        second tenant via `tenant_pair`).
+      - **Decided before starting**: one-time import of the real local `data/tokens.json`
+        (18 real records) into `tenant_tokens` under `DEFAULT_TENANT_ID`, rather than a
+        clean cutover with no import - preserves today's live local dev SSO sessions.
+      - **Full suite: 344 passed** (334 + 10 new) with Postgres up, **234 passed/110
+        skipped** (clean, zero failures) with it stopped.
+      - **Live-verified**: `eve-trader tenant import-tokens` imported all 18 records;
+        real `GET /api/auth/status` returned the real buyer/seller names
+        (`jason Andven`/`pappmichl`) straight from Postgres, no re-authorization; real
+        `GET /api/production/producer-characters` returned all 16 real producer
+        characters.
+      - **Explicitly out of scope**: `backup.py` still zips the now-stale
+        `data/tokens.json` (Phase 4's `pg_dump` rework); `scheduler.py`'s own
+        pre-existing "no tenant in its background thread" gap (Phase 4).
 - [ ] Phase 4 - scheduler multi-tenant loop + migration *tooling* (not a live migration -
       test against a copy of the SQLite file only) + `backup.py`'s real Postgres
       (`pg_dump`-based) rework. **Not started.**
@@ -194,13 +237,12 @@ itself automatically the first time `pytest` runs - see below), and `pip install
 
 ## Immediate next step
 
-Phases 1, 2, and 3a are all done - `storage.py` runs on Postgres for real,
-`TRADING_CONFIG`/`PRODUCTION_CONFIG` persist to `tenant_settings`, and the live app is
-usable again (gate disabled -> `DEFAULT_TENANT_ID`; gate enabled -> real per-tenant
-resolution via the new registry). What's left, explicitly deferred at the end of Phase 3a:
-switch `TokenManager` (`eve_trader/auth.py`) from `data/tokens.json` to the already-created
-`tenant_tokens` table (14 call sites), and thread `tenant_id` through `/api/auth/*start`'s
-`_pending[state]` dict and `/callback`'s buyer/seller/producer branches (currently only the
-`gate` branch resolves/uses a tenant_id) so an ESI token actually gets stored per-tenant
-once that lands. After that, Phase 4 (scheduler multi-tenant loop, migration tooling,
-`backup.py` rework) is next per `docs/MULTI_TENANT_PLAN.md`.
+Phases 1, 2, 3a, and 3b are all done - `storage.py` runs on Postgres for real,
+`TRADING_CONFIG`/`PRODUCTION_CONFIG` persist to `tenant_settings`, the live app is usable
+again (gate disabled -> `DEFAULT_TENANT_ID`; gate enabled -> real per-tenant resolution via
+the registry), and `TokenManager` persists OAuth tokens to `tenant_tokens` instead of
+`data/tokens.json`. Next up is Phase 4 (scheduler multi-tenant loop - `scheduler.py`'s
+background thread currently sets no tenant context at all, so `scheduler_enabled: true`
+would already break today; migration *tooling* against a copy of the SQLite file; and
+`backup.py`'s real Postgres `pg_dump`-based rework, since it still only backs up the
+now-stale `data/eve_trader.db`/`data/tokens.json`) per `docs/MULTI_TENANT_PLAN.md`.

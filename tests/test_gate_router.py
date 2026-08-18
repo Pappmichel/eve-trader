@@ -1,18 +1,22 @@
 """Router + middleware tests for the access gate: /api/gate/status,
-/api/gate/logout, AccessGateMiddleware's enforcement (enabled/disabled), and
-auth.py's callback() "gate" branch (allowed/denied). See
-tests/test_access_gate.py for the underlying cookie unit tests, and
-tests/test_tenant_registry.py for storage.resolve_tenant_id's own coverage.
+/api/gate/logout, AccessGateMiddleware's enforcement (enabled/disabled),
+auth.py's callback() "gate" branch (allowed/denied), and (bottom of the
+file) /start + /callback's tenant-id threading for the buyer/seller/
+producer branches. See tests/test_access_gate.py for the underlying cookie
+unit tests, tests/test_tenant_registry.py for storage.resolve_tenant_id's
+own coverage, and tests/test_token_manager.py for TokenManager's own
+Postgres-backed coverage.
 
 Most tests here never touch Postgres - a session cookie carries its
 tenant_id directly (signed, not looked up), and the endpoints exercised
-below (settings GET, gate status/logout) don't query storage. Only the 3
-test_callback_gate_branch_* tests call storage.resolve_tenant_id for real
-(that's the thing being tested), so only those are marked
-postgres_required and touch the real tenant_registry_entries table.
+below (settings GET, gate status/logout) don't query storage. Only the
+test_callback_gate_branch_*/test_start_login_*/test_callback_buyer_branch_*
+tests touch real Postgres (that's the thing being tested in each case), so
+only those are marked postgres_required.
 """
 import http.cookies
 import time
+import urllib.parse
 import uuid
 
 import pytest
@@ -26,7 +30,7 @@ from eve_trader.auth import TokenManager
 from eve_trader.config import ACCESS_CONFIG, OAUTH_CONFIG
 
 from . import pg_helpers
-from .pg_helpers import _apply_phase1_schema, _apply_phase3_schema  # noqa: F401
+from .pg_helpers import _apply_phase1_schema, _apply_phase2_schema, _apply_phase3_schema, tenant_pair  # noqa: F401
 
 client = TestClient(create_app())
 
@@ -205,3 +209,48 @@ def test_callback_gate_branch_corp_alliance_lookup_failure_still_allows_a_charac
     resp = client.get("/api/auth/callback", params={"code": "abc", "state": state}, follow_redirects=False)
 
     assert "gate=success" in resp.headers["location"]
+
+
+# --------------------------------- auth.py /start + /callback tenant threading (non-gate)
+@pg_helpers.postgres_required()
+def test_start_login_captures_the_ambient_tenant_into_pending(monkeypatch):
+    # Gate disabled (today's default) - AccessGateMiddleware sets
+    # DEFAULT_TENANT_ID unconditionally, and /start must capture exactly
+    # that into _pending[state] for /callback (an exempt path with no
+    # automatic ambient tenant) to pick back up.
+    monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", False)
+    monkeypatch.setattr(OAUTH_CONFIG, "client_id", "test-client-id")
+
+    resp = client.get("/api/auth/buyer/start")
+    state = urllib.parse.parse_qs(urllib.parse.urlparse(resp.json()["url"]).query)["state"][0]
+
+    assert auth_router._pending[state]["tenant_id"] == storage.DEFAULT_TENANT_ID
+
+
+@pg_helpers.postgres_required()
+def test_callback_buyer_branch_persists_the_token_under_the_correct_tenant(
+    monkeypatch, _apply_phase1_schema, _apply_phase2_schema, tenant_pair
+):
+    # The real fix this session adds: /callback's non-gate branches used to
+    # have no tenant context at all (an AccessGateMiddleware-exempt path) -
+    # a buyer/seller/producer login must land under the same tenant whose
+    # already-authenticated session initiated /start, not some other tenant.
+    tenant_a, tenant_b = tenant_pair
+    monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", True)
+    monkeypatch.setattr(OAUTH_CONFIG, "session_secret_key", "test-secret-key")
+    monkeypatch.setattr(OAUTH_CONFIG, "client_id", "test-client-id")
+
+    start_resp = client.get("/api/auth/buyer/start", cookies=_session_cookie(tenant_id=tenant_a))
+    state = urllib.parse.parse_qs(urllib.parse.urlparse(start_resp.json()["url"]).query)["state"][0]
+
+    monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
+    monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (42, "Buyer Char")))
+
+    resp = client.get("/api/auth/callback", params={"code": "abc", "state": state}, follow_redirects=False)
+
+    assert "auth=success" in resp.headers["location"]
+    with storage.tenant_context(tenant_a):
+        record = TokenManager().get_record("buyer")
+        assert record is not None and record.character_id == 42
+    with storage.tenant_context(tenant_b):
+        assert TokenManager().get_record("buyer") is None

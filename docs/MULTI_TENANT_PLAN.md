@@ -332,6 +332,75 @@ branches, are deferred to their own future session - nothing would consume
 a `tenant_id` there yet (matches the project's "don't add code for a need
 that doesn't exist yet" convention).
 
+**Phase 3b status: done.** `TokenManager` (`eve_trader/auth.py`) is cut
+over to `tenant_tokens`, and `tenant_id` is threaded through the
+buyer/seller/producer OAuth flow.
+
+`TokenManager.__init__` no longer eagerly loads - construction itself no
+longer touches storage at all, deferred to a new `_ensure_loaded()` guard
+on first real access (`get_token`/`has_token`/`get_record`/`list_roles`).
+`_save()` became `_save_record(role)` (a single-row upsert via
+`storage.save_tenant_token`, not a whole-file rewrite); `remove_token`
+became an unconditional `storage.delete_tenant_token(role)` (idempotent at
+the DB layer). The old one-time "producer" -> "producer:<id>" on-disk-format
+migration was dropped from the runtime `_load()` path entirely - a
+Postgres-backed `TokenManager` never needs to see that legacy shape again -
+and moved into a new one-time `import_tokens_file(tenant_id, path=None)`
+helper instead, reachable via `eve-trader tenant import-tokens`.
+
+`storage.py` gained `save_tenant_token`/`load_all_tenant_tokens`/
+`delete_tenant_token` (same `connect()`+`Jsonb()` pattern as
+`save_tenant_settings`/`load_tenant_settings`), `get_current_tenant()` (a
+read-only accessor for the ambient tenant contextvar - needed by `/start`
+to stash it into `_pending[state]`), and `with_current_tenant(fn)` - a
+generic fix for a real gap found while researching this phase, not part of
+the original ask: `concurrent.futures.ThreadPoolExecutor` worker threads do
+**not** inherit contextvars from the thread that submitted the work
+(confirmed by reading cpython's `_WorkItem.run` - unlike `asyncio`/anyio's
+`to_thread.run_sync`, which explicitly copies the context). Once
+`TokenManager.get_token`'s refresh path could touch Postgres (fail-closed
+on missing tenant_id), a token expiring *during* a `ThreadPoolExecutor`-
+parallelized ESI fetch (`production/esi_sync.py`'s `sync_esi`,
+`esi_client.py`'s `_get_all_pages`) would 500 from inside a worker thread
+with no ambient tenant. `with_current_tenant` wraps the submitted callable
+so it re-establishes whatever tenant was ambient on the calling thread,
+wherever it actually runs; applied at both `ThreadPoolExecutor` call sites.
+
+`api/routers/auth.py`'s `/start` now stashes `storage.get_current_tenant()`
+into `_pending[state]["tenant_id"]` for every role_prefix - guaranteed
+non-None for buyer/seller/producer (their `/start` routes are **not**
+gate-exempt, so `AccessGateMiddleware` has already set a real ambient
+tenant by the time the handler runs); may be `None` for `gate` (that one
+*is* exempt - harmless, since the `gate` branch of `/callback` resolves its
+own tenant fresh via the registry, unchanged). `/callback`'s non-gate
+branch now wraps its `TokenManager` persistence step in
+`with storage.tenant_context(pending.get("tenant_id") or DEFAULT_TENANT_ID):`
+- the `or` fallback covers a hand-constructed `_pending` entry with no
+`tenant_id` key (confirmed this pattern exists in one pre-existing test).
+
+**Decided with the user before starting Phase 3b**: rather than a clean
+cutover with no migration, this session did a one-time import of the real
+local `data/tokens.json` (18 real records: buyer, seller, 16 producer
+alts) into `tenant_tokens` under `DEFAULT_TENANT_ID` via the new
+`eve-trader tenant import-tokens` command - preserves today's live local
+dev SSO sessions instead of requiring a re-authorize click for each role.
+
+Confirmed live: `eve-trader tenant import-tokens` reported importing all
+18 records; a real `GET /api/auth/status` against the running server
+returned the real buyer/seller character names (`jason Andven`/`pappmichl`)
+straight from Postgres with no re-authorization; `GET
+/api/production/producer-characters` returned all 16 real producer
+characters. Full `pytest` suite: 344 passed with Postgres up (334 + 10 new
+tests), 234 passed / 110 skipped (clean, no failures) with it stopped.
+
+**Explicitly out of scope for Phase 3b**: `backup.py` still zips
+`data/tokens.json` (now dead/stale going forward, same as
+`data/eve_trader.db` already is post-Phase-1) - its real Postgres
+(`pg_dump`-based) rework stays Phase 4. `scheduler.py`'s own pre-existing
+"no tenant context at all in its background thread" gap is unrelated to
+this change (would already break today if `scheduler_enabled: true`) and
+stays tracked as Phase 4 scope.
+
 **Phase 0 - Postgres + RLS proof of concept on `stock_targets`**
 Chosen specifically because its `type_id` PK has the collision problem, not because it's
 easy. Stand up Postgres, add `psycopg[binary]` + `psycopg_pool` dependencies (no ORM -

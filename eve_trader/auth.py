@@ -2,8 +2,11 @@
 
 Two characters need to authorize (buyer in Jita, seller in the structure) so
 that CHARACTER_ORDERS, WALLET_TRANSACTIONS and STRUCTURE_MARKETS calls work
-for both. Tokens are cached per-character in data/tokens.json and refreshed
-automatically when expired.
+for both. Tokens are cached per-character in the tenant_tokens Postgres
+table (see storage.py) and refreshed automatically when expired -
+data/tokens.json was the store before the multi-tenant migration's Phase 3b;
+import_tokens_file() below is the one-time cutover helper that moved a real
+file's contents into Postgres.
 
 Usage:
     from eve_trader.auth import TokenManager
@@ -28,6 +31,7 @@ from typing import Optional
 
 import requests
 
+from . import storage
 from .config import OAUTH_CONFIG, OAuthConfig
 
 
@@ -77,49 +81,41 @@ def _make_pkce_pair() -> tuple[str, str]:
 
 class TokenManager:
     # Class-level (not per-instance): every request/action creates its own
-    # fresh TokenManager() that re-reads the same tokens.json from scratch
-    # (see _load), so a per-instance lock wouldn't stop two concurrent
-    # requests - hitting FastAPI's sync-route thread pool at the same time -
-    # from both seeing the same near-expiry token, both POSTing a refresh,
-    # and racing to overwrite tokens.json last. Guards get_token's
-    # check-expired -> refresh -> save sequence.
+    # fresh TokenManager() that lazily re-reads the same tenant_tokens rows
+    # from scratch (see _load), so a per-instance lock wouldn't stop two
+    # concurrent requests - hitting FastAPI's sync-route thread pool at the
+    # same time - from both seeing the same near-expiry token, both POSTing
+    # a refresh, and racing to overwrite each other's saved record. Guards
+    # get_token's check-expired -> refresh -> save sequence.
     _refresh_lock = threading.Lock()
 
     def __init__(self, cfg: OAuthConfig = OAUTH_CONFIG):
         self.cfg = cfg
         self._tokens: dict[str, TokenRecord] = {}
-        self._load()
+        self._loaded = False
 
     # ---------------------------------------------------------------- storage
+    def _ensure_loaded(self) -> None:
+        """Lazy - construction itself no longer touches storage (matches this
+        class's own existing docstring: every request/action creates its own
+        fresh TokenManager(), so deferring the read to first actual use costs
+        nothing and lets a TokenManager be constructed even with no ambient
+        tenant set yet, e.g. before the OAuth callback has resolved one -
+        see api/routers/auth.py's callback())."""
+        if not self._loaded:
+            self._load()
+
     def _load(self) -> None:
-        path = self.cfg.token_store_path
-        if path.exists():
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            self._tokens = {role: TokenRecord(**rec) for role, rec in raw.items()}
-            self._migrate_single_producer_role()
+        """Force-reload from storage, bypassing the _loaded guard - used both
+        by _ensure_loaded (first access) and by get_token's lock-protected
+        re-check (a concurrent request may have already refreshed this exact
+        role while we were waiting, so that check needs a genuinely fresh
+        read, not the cached one)."""
+        self._tokens = {role: TokenRecord(**rec) for role, rec in storage.load_all_tenant_tokens().items()}
+        self._loaded = True
 
-    def _migrate_single_producer_role(self) -> None:
-        """One-time migration: the first version of multi-character ESI tracking
-        stored a single fixed "producer" role. Re-key it to the
-        get_token_interactive_multi format ("producer:<character_id>") so it
-        shows up alongside any additional characters added afterwards, instead
-        of silently vanishing."""
-        old = self._tokens.pop("producer", None)
-        if old is None:
-            return
-        new_role = f"producer:{old.character_id}"
-        if new_role not in self._tokens:
-            old.role = new_role
-            self._tokens[new_role] = old
-        self._save()
-
-    def _save(self) -> None:
-        path = self.cfg.token_store_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps({role: asdict(rec) for role, rec in self._tokens.items()}, indent=2),
-            encoding="utf-8",
-        )
+    def _save_record(self, role: str) -> None:
+        storage.save_tenant_token(role, asdict(self._tokens[role]))
 
     # ------------------------------------------------------------- SSO flow
     def get_token_interactive(self, role: str, scopes: Optional[list[str]] = None) -> TokenRecord:
@@ -128,7 +124,7 @@ class TokenManager:
         token_json = self._authorize_browser_flow(role, scopes)
         record = self._to_record(role, token_json, " ".join(scopes))
         self._tokens[role] = record
-        self._save()
+        self._save_record(role)
         return record
 
     def get_token_interactive_multi(self, role_prefix: str, scopes: list[str]) -> TokenRecord:
@@ -144,7 +140,7 @@ class TokenManager:
         record = self._to_record(final_role, token_json, " ".join(scopes),
                                   character_id=character_id, character_name=character_name)
         self._tokens[final_role] = record
-        self._save()
+        self._save_record(final_role)
         return record
 
     def _authorize_browser_flow(self, label: str, scopes: list[str]) -> dict:
@@ -220,7 +216,7 @@ class TokenManager:
                                       character_id=record.character_id,
                                       character_name=record.character_name)
         self._tokens[record.role] = new_record
-        self._save()
+        self._save_record(record.role)
         return new_record
 
     def _to_record(self, role: str, token_json: dict, scopes: str,
@@ -251,6 +247,7 @@ class TokenManager:
 
     # ------------------------------------------------------------- public API
     def get_token(self, role: str) -> TokenRecord:
+        self._ensure_loaded()
         record = self._tokens.get(role)
         if record is None:
             raise RuntimeError(
@@ -270,6 +267,7 @@ class TokenManager:
         return record
 
     def has_token(self, role: str) -> bool:
+        self._ensure_loaded()
         return role in self._tokens
 
     def get_record(self, role: str) -> Optional[TokenRecord]:
@@ -281,6 +279,7 @@ class TokenManager:
         every 'characters' sidebar render and every sync_esi() call - a
         single dead token there used to take the whole list down via
         get_token's raise, instead of just that one character."""
+        self._ensure_loaded()
         return self._tokens.get(role)
 
     def auth_header(self, role: str) -> dict:
@@ -289,9 +288,38 @@ class TokenManager:
     def list_roles(self, prefix: str) -> list[str]:
         """Returns all stored role keys starting with f"{prefix}:" (see
         get_token_interactive_multi), e.g. every registered "producer:<id>"."""
+        self._ensure_loaded()
         return [role for role in self._tokens if role.startswith(f"{prefix}:")]
 
     def remove_token(self, role: str) -> None:
-        if role in self._tokens:
-            del self._tokens[role]
-            self._save()
+        """Unconditional delete (idempotent at the DB layer - a role with no
+        stored row is simply a no-op), not "check then delete" - no longer
+        needs a full load first the way the old whole-file rewrite did."""
+        self._tokens.pop(role, None)
+        storage.delete_tenant_token(role)
+
+
+def import_tokens_file(tenant_id: str, path: Optional[Path] = None) -> int:
+    """One-time cutover helper (multi-tenant migration Phase 3b): reads a
+    file-based tokens.json (the format TokenManager itself wrote before its
+    Postgres cutover) and upserts every record into tenant_tokens for
+    `tenant_id`. Applies the same one-time "producer" -> "producer:<id>"
+    re-keying TokenManager's old _load() used to (a single fixed "producer"
+    role predates multi-character tracking) - a Postgres-backed
+    TokenManager never needs to understand that legacy on-disk shape again
+    once this has run. Idempotent - every write is an upsert, so re-running
+    this against the same file just overwrites with the same data. Returns
+    the number of records imported."""
+    path = path or OAUTH_CONFIG.token_store_path
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    tokens = {role: TokenRecord(**rec) for role, rec in raw.items()}
+    old_producer = tokens.pop("producer", None)
+    if old_producer is not None:
+        new_role = f"producer:{old_producer.character_id}"
+        if new_role not in tokens:
+            old_producer.role = new_role
+            tokens[new_role] = old_producer
+    with storage.tenant_context(tenant_id):
+        for role, record in tokens.items():
+            storage.save_tenant_token(role, asdict(record))
+    return len(tokens)

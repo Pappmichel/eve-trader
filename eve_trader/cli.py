@@ -22,6 +22,7 @@ import logging
 import click
 
 from . import actions, storage
+from .auth import import_tokens_file
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("eve_trader.cli")
@@ -77,6 +78,21 @@ def tenant_list():
         click.echo(f"{tenant_id}  {name}  (created {created_at})")
         for entry_type, entry_id in storage.list_tenant_registry_entries(str(tenant_id)):
             click.echo(f"    {entry_type}: {entry_id}")
+
+
+@tenant.command("import-tokens")
+@click.option("--tenant-id", default=None, help="Tenant to import into (default: the fixed default tenant).")
+@click.option("--path", type=click.Path(exists=True), default=None,
+              help="tokens.json path (default: OAUTH_CONFIG.token_store_path).")
+def tenant_import_tokens(tenant_id: str | None, path: str | None):
+    """One-time import of a file-based tokens.json (TokenManager's format
+    before its Postgres cutover) into tenant_tokens. Safe to re-run - every
+    record is upserted."""
+    from pathlib import Path
+    count = import_tokens_file(
+        tenant_id or storage.DEFAULT_TENANT_ID, Path(path) if path else None
+    )
+    click.echo(f"Imported {count} token(s) into tenant {tenant_id or storage.DEFAULT_TENANT_ID}.")
 
 
 @main.command()

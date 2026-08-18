@@ -237,12 +237,17 @@ def sync_esi() -> dict:
         )
     client = ESIClient(tokens=tm)
 
+    # storage.with_current_tenant: pool workers don't inherit contextvars
+    # from this thread - if a character's token happens to be expired right
+    # now, _fetch_character_data's ESI calls would otherwise refresh it from
+    # inside a worker thread with no ambient tenant set, 500ing with "no
+    # current tenant set" (see storage.with_current_tenant's own docstring).
     with ThreadPoolExecutor(max_workers=min(8, len(characters))) as pool:
         # list(), not as_completed() - preserves `characters`' original order
         # so Phase B's "first character in the original list order claims
         # this corp" behavior is unchanged from the old sequential version.
         char_results = list(pool.map(
-            lambda c: _fetch_character_data(client, c[0], c[1], c[2]), characters,
+            storage.with_current_tenant(lambda c: _fetch_character_data(client, c[0], c[1], c[2])), characters,
         ))
 
     all_char_assets: list[dict] = []
