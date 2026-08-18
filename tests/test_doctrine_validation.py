@@ -47,9 +47,14 @@ def test_build_stockpile_soll_includes_hull_and_multiplies_by_target():
 
 
 # --------------------------------------------------------------- hull gate / Ist
-def test_hull_gate_requires_included_and_singleton():
+def test_hull_gate_requires_included_only_not_singleton():
+    # Confirmed live (2026-08-19) against a real contract: a genuinely
+    # assembled/fitted ship's own hull line can still come back with
+    # is_singleton=False from ESI's contract-items endpoint - unlike the
+    # asset endpoints, that field isn't a reliable packaged-vs-assembled
+    # signal here, so the gate no longer requires it.
     assert v.hull_gate_satisfied([ContractItemRow(1, 0, HULL, 1, True, True)], HULL)
-    assert not v.hull_gate_satisfied([ContractItemRow(1, 0, HULL, 1, True, False)], HULL)  # packaged, not montiert
+    assert v.hull_gate_satisfied([ContractItemRow(1, 0, HULL, 1, True, False)], HULL)  # is_singleton=False, still gates
     assert not v.hull_gate_satisfied([ContractItemRow(1, 0, HULL, 1, False, True)], HULL)  # not included
     assert not v.hull_gate_satisfied([ContractItemRow(1, 0, 111, 1, True, True)], HULL)  # wrong type
 
