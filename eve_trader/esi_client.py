@@ -14,6 +14,7 @@ from typing import Any, Optional
 
 import requests
 
+from . import storage
 from .auth import TokenManager
 from .config import TRADING_CONFIG, TradingConfig
 
@@ -219,8 +220,14 @@ class ESIClient:
             return self._get_response(path, page_params, auth_role).json()
 
         pages: dict[int, list] = {1: first_chunk}
+        # storage.with_current_tenant: ThreadPoolExecutor workers don't
+        # inherit contextvars from the submitting thread - if auth_role's
+        # token happens to be expired right now, _fetch_page's auth_header()
+        # call would otherwise refresh it from inside a worker thread with no
+        # ambient tenant set, 500ing with "no current tenant set".
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(_fetch_page, page): page for page in range(2, total_pages + 1)}
+            futures = {pool.submit(storage.with_current_tenant(_fetch_page), page): page
+                       for page in range(2, total_pages + 1)}
             for future in as_completed(futures):
                 pages[futures[future]] = future.result()
 

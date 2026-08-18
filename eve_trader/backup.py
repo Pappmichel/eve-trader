@@ -1,25 +1,44 @@
-"""Backs up the app's own persistent state - data/eve_trader.db, config.yaml,
-and data/tokens.json (OAuth tokens) - into a single timestamped .zip under
-data/backups/. This is the app's only source of truth (no git repo, no other
-persistence layer for either tool) - a backup exists so a disk failure or an
-accidental delete doesn't lose everything with no way back.
+"""Backs up the app's own persistent state - the whole Postgres database
+(every tenant's data, via pg_dump) and config.yaml - into a single
+timestamped .zip under data/backups/. This is the app's only source of
+truth (no other persistence layer) - a backup exists so a disk/container
+failure or an accidental delete doesn't lose everything with no way back.
 
-Uses SQLite's own online backup API (sqlite3.Connection.backup), not a plain
-file copy - a raw copy of a live SQLite file isn't guaranteed consistent if
-something else has it open for writing at the same moment (this app doesn't
-force WAL mode, so a naive copy could snapshot a half-written page); the
-backup API produces a guaranteed-consistent snapshot regardless of
-concurrent access, without needing to coordinate with every other writer.
+Shells out to `pg_dump` (custom/compressed format, `-Fc` - restorable via
+`pg_restore`) rather than going through psycopg, since this is a whole-
+database, cross-tenant dump - it must run as the Postgres *owner* role
+(`postgres`, `-U postgres`), not the app's own `eve_trader_app` role: every
+per-tenant table's RLS policy raises on a missing `app.tenant_id` session
+setting (see storage.connect()'s own fail-closed docstring) rather than
+silently returning zero rows, so a non-bypassing role can't dump per-tenant
+tables at all without one already set - the owner role bypasses RLS
+entirely, which is exactly what a real disaster-recovery snapshot needs.
+Invoked via `docker exec <container> pg_dump ...` since the dev Postgres
+only runs inside Docker - EVE_TRADER_PG_CONTAINER/EVE_TRADER_DOCKER_BIN env
+vars make both the container name and the `docker` binary itself
+overridable, matching the existing EVE_TRADER_PG_DSN/EVE_TRADER_PG_OWNER_DSN
+convention.
+
+data/tokens.json is deliberately never included anymore (TokenManager
+persists to Postgres's tenant_tokens table now - see auth.py - so the live
+tokens are already inside the pg_dump; including a separate, possibly-stale
+copy would be actively misleading on a restore).
+
+Restoring is a manual operation, not a CLI command here (same as before
+this rework - list_backups()/create_backup() never had a restore
+counterpart either): extract eve_trader.dump from the zip, then
+`docker exec -i <container> pg_restore -U postgres -d eve_trader --clean --if-exists < eve_trader.dump`
+(add `-c` and `--if-exists` so it can run against an already-populated DB).
 """
 from __future__ import annotations
 
-import sqlite3
+import os
+import subprocess
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import storage
-from .config import DATA_DIR, DEFAULT_CONFIG_PATH, OAUTH_CONFIG
+from .config import DATA_DIR, DEFAULT_CONFIG_PATH
 
 BACKUP_DIR = DATA_DIR / "backups"
 BACKUP_NAME_PREFIX = "eve_trader_backup_"
@@ -29,50 +48,50 @@ BACKUP_NAME_PREFIX = "eve_trader_backup_"
 # logging_setup.py's RotatingFileHandler.
 MAX_BACKUPS = 14
 
+PG_CONTAINER = os.getenv("EVE_TRADER_PG_CONTAINER", "eve-trader-pg")
+DOCKER_BIN = os.getenv("EVE_TRADER_DOCKER_BIN", "docker")
+PG_DB_NAME = "eve_trader"
+
 
 def create_backup() -> dict:
-    """Creates one timestamped .zip under BACKUP_DIR containing a consistent
-    snapshot of the DB, config.yaml (if present), and tokens.json (if
-    present), then prunes anything beyond MAX_BACKUPS. Returns the same shape
-    as one entry of list_backups()."""
+    """Creates one timestamped .zip under BACKUP_DIR containing a pg_dump
+    (`-Fc`) of the whole Postgres database plus config.yaml (if present),
+    then prunes anything beyond MAX_BACKUPS. Returns the same shape as one
+    entry of list_backups()."""
     BACKUP_DIR.mkdir(exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
     backup_path = BACKUP_DIR / f"{BACKUP_NAME_PREFIX}{ts}.zip"
-    tmp_db_path = BACKUP_DIR / f".tmp_{ts}.db"
+    tmp_dump_path = BACKUP_DIR / f".tmp_{ts}.dump"
 
     try:
-        with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            src = sqlite3.connect(storage.DB_PATH)
-            dst = sqlite3.connect(tmp_db_path)
-            try:
-                src.backup(dst)
-            finally:
-                dst.close()
-                src.close()
-            zf.write(tmp_db_path, arcname="eve_trader.db")
+        with open(tmp_dump_path, "wb") as dump_file:
+            result = subprocess.run(
+                [DOCKER_BIN, "exec", PG_CONTAINER, "pg_dump", "-U", "postgres", "-d", PG_DB_NAME, "-Fc"],
+                stdout=dump_file, stderr=subprocess.PIPE, timeout=300,
+            )
+        if result.returncode != 0:
+            raise RuntimeError(f"pg_dump failed (exit {result.returncode}): {result.stderr.decode(errors='replace')}")
 
+        with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(tmp_dump_path, arcname="eve_trader.dump")
             if DEFAULT_CONFIG_PATH.exists():
                 zf.write(DEFAULT_CONFIG_PATH, arcname="config.yaml")
-            if OAUTH_CONFIG.token_store_path.exists():
-                zf.write(OAUTH_CONFIG.token_store_path, arcname="tokens.json")
     except Exception:
-        # Confirmed real gap: a failure partway through (a locked/corrupt
-        # source DB, a full disk, ...) used to leave the partial/corrupt
-        # .zip behind - it matches BACKUP_NAME_PREFIX, so _prune_old_backups
-        # counts it against the rotation and list_backups() (Portfolio page,
-        # scheduler) shows it looking like a normal, complete backup. Clean
-        # it up before re-raising instead.
+        # A failure partway through (pg_dump not reachable, a full disk, ...)
+        # used to leave a partial/corrupt .zip behind - it matches
+        # BACKUP_NAME_PREFIX, so _prune_old_backups counts it against the
+        # rotation and list_backups() (Portfolio page, scheduler) shows it
+        # looking like a normal, complete backup. Clean it up before
+        # re-raising instead.
         backup_path.unlink(missing_ok=True)
         raise
     finally:
-        # tmp_db_path is a raw sqlite copy, never itself part of the zip
-        # (only its *contents* were written in via zf.write above) - always
-        # remove it, success or failure. Confirmed real gap: the old code
-        # only unlinked it on the success path, so a failure between the
-        # backup() call and this point left an orphaned .tmp_*.db under
-        # BACKUP_DIR forever (it doesn't match BACKUP_NAME_PREFIX, so
-        # nothing else here ever notices or cleans it up).
-        tmp_db_path.unlink(missing_ok=True)
+        # tmp_dump_path is never itself part of the zip (only its *contents*
+        # were written in via zf.write above) - always remove it, success or
+        # failure, or a failure between the pg_dump call and this point would
+        # leave an orphaned .tmp_*.dump under BACKUP_DIR forever (it doesn't
+        # match BACKUP_NAME_PREFIX, so nothing else here ever notices it).
+        tmp_dump_path.unlink(missing_ok=True)
 
     _prune_old_backups()
     return _backup_info(backup_path)

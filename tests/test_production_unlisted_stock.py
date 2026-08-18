@@ -1,8 +1,20 @@
+import pytest
+
 from eve_trader import storage
 from eve_trader.auth import TokenManager
 from eve_trader.esi_client import ESIClient
 from eve_trader.production import actions
 from eve_trader.production.config import ProductionConfig
+
+from . import pg_helpers
+from .pg_helpers import _apply_phase1_schema, tenant  # noqa: F401
+
+# Only the 2 tests below need `tenant` + postgres_required() - they're the
+# ones whose ESI-fetch fixtures actually produce assets that reach
+# do_unlisted_stock's real storage.replace_assets()/replace_industry_jobs()
+# write path; the other 3 in this file never get far enough to touch real
+# storage (empty fixture data, or the early ActionError return).
+psycopg = pytest.importorskip("psycopg")
 
 HOME_LOCATION_ID = 1000000000001
 
@@ -25,7 +37,8 @@ def test_returns_empty_when_home_location_not_configured():
         pass
 
 
-def test_live_fetches_assets_and_orders_and_flags_unlisted_stock(monkeypatch):
+@pg_helpers.postgres_required()
+def test_live_fetches_assets_and_orders_and_flags_unlisted_stock(monkeypatch, tenant):
     cfg = ProductionConfig(home_location_id=HOME_LOCATION_ID)
     # type_id 99 deliberately has no matching entry here - it has stock and no
     # sell order too, but isn't a tracked stock target, so must be excluded.
@@ -124,7 +137,8 @@ def test_backup_only_stock_target_is_never_flagged_as_unlisted(monkeypatch):
     assert result["rows"] == []
 
 
-def test_corp_order_role_failure_does_not_block_corp_asset_role_success(monkeypatch):
+@pg_helpers.postgres_required()
+def test_corp_order_role_failure_does_not_block_corp_asset_role_success(monkeypatch, tenant):
     # Assets need Director, orders need Accountant/Trader - a character (or
     # every registered character) missing one of the two roles must not
     # prevent the other from being fetched and used.

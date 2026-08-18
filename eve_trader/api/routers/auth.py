@@ -22,7 +22,8 @@ import requests
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import RedirectResponse
 
-from ...access_gate import is_allowed, resolve_corp_alliance, set_session_cookie
+from ... import storage
+from ...access_gate import resolve_corp_alliance, set_session_cookie
 from ...auth import TokenManager, _make_pkce_pair
 from ...config import OAUTH_CONFIG
 from ...production import esi_sync
@@ -63,6 +64,14 @@ def start_login(role_prefix: str):
     scopes = _scopes_for(role_prefix)
     _pending[state] = {
         "verifier": verifier, "role_prefix": role_prefix, "scopes": scopes, "created_at": time.time(),
+        # Stashed for /callback (an AccessGateMiddleware-exempt path with no
+        # automatic ambient tenant of its own) to pick back up - guaranteed
+        # non-None here for buyer/seller/producer (their /start routes are
+        # NOT gate-exempt, so the middleware has already set a real tenant
+        # by the time this handler runs); may be None for role_prefix="gate"
+        # (that one *is* exempt, by design - harmless, since the gate branch
+        # of /callback resolves its own tenant fresh via the registry).
+        "tenant_id": storage.get_current_tenant(),
     }
     params = {
         "response_type": "code",
@@ -115,21 +124,27 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
         try:
             corporation_id, alliance_id = resolve_corp_alliance(character_id)
         except (requests.RequestException, KeyError, ValueError):
-            # A character-level allowlist entry should still work even if
+            # A character-level registry entry should still work even if
             # this particular corp/alliance lookup has a transient hiccup -
             # only the alliance/corp-level check degrades, not the whole login.
             corporation_id, alliance_id = None, None
-        if not is_allowed(character_id, corporation_id, alliance_id):
+        tenant_id = storage.resolve_tenant_id(character_id, corporation_id, alliance_id)
+        if tenant_id is None:
             return RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?gate=denied")
         resp = RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?gate=success&character={urllib.parse.quote(character_name)}")
-        set_session_cookie(resp, character_id, character_name)
+        set_session_cookie(resp, character_id, character_name, tenant_id)
         return resp
 
     final_role = role_prefix if role_prefix in ("buyer", "seller") else f"{role_prefix}:{character_id}"
-    record = tm._to_record(final_role, token_json, " ".join(pending["scopes"]),
-                            character_id=character_id, character_name=character_name)
-    tm._tokens[final_role] = record
-    tm._save()
+    # /callback is AccessGateMiddleware-exempt, so no ambient tenant is set
+    # automatically here - use the one /start captured before redirecting to
+    # EVE SSO (falling back to DEFAULT_TENANT_ID for a hand-constructed
+    # _pending entry with no tenant_id key, e.g. in tests).
+    with storage.tenant_context(pending.get("tenant_id") or storage.DEFAULT_TENANT_ID):
+        record = tm._to_record(final_role, token_json, " ".join(pending["scopes"]),
+                                character_id=character_id, character_name=character_name)
+        tm._tokens[final_role] = record
+        tm._save_record(final_role)
 
     return RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?auth=success&role={urllib.parse.quote(final_role)}"
                              f"&character={urllib.parse.quote(character_name)}")

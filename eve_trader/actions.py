@@ -14,7 +14,7 @@ import pandas as pd
 
 from . import backup, candidate_discovery, history_backtest, own_orders, storage
 from .auth import TokenManager
-from .config import OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, TradingConfig, save_config_overrides
+from .config import OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, TradingConfig, save_tenant_config_overrides
 from .esi_client import ESIClient, ESIError
 from .goonmetrics_client import GoonmetricsClient
 from .models import Candidate, ShortlistItem, UndercutRow, UnlistedStockRow
@@ -50,10 +50,10 @@ def do_auth(role: str, scopes: list[str] | None = None, oauth_cfg: OAuthConfig =
 
 
 def do_update_settings(updates: dict, cfg: TradingConfig = TRADING_CONFIG) -> dict:
-    """Persists `updates` to config.yaml and applies them to the live
+    """Persists `updates` to tenant_settings and applies them to the live
     TRADING_CONFIG immediately (see Settings tab in the dashboard)."""
     try:
-        save_config_overrides(updates, cfg)
+        save_tenant_config_overrides("trading", updates, cfg, cfg_type=TradingConfig)
     except ConfigError as e:
         raise ActionError(str(e)) from e
     return updates

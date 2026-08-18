@@ -21,7 +21,10 @@ import logging
 
 import click
 
-from . import actions
+from . import actions, config, storage
+from .auth import import_tokens_file
+from .production import config as production_config
+from .sqlite_migration import migrate_sqlite_to_postgres
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("eve_trader.cli")
@@ -30,6 +33,93 @@ log = logging.getLogger("eve_trader.cli")
 @click.group()
 def main():
     """EVE Trader - C-J import trading toolkit."""
+    # Every storage.py query now needs an ambient tenant_id (see
+    # storage.connect()'s fail-closed check) - the CLI is a trusted single
+    # operator, same reasoning as AccessGateMiddleware's gate-disabled case
+    # (api/app.py), so every command gets storage.DEFAULT_TENANT_ID set
+    # once here rather than each command setting it individually. No
+    # explicit reset needed - the process exits when the command finishes.
+    storage.set_current_tenant(storage.DEFAULT_TENANT_ID)
+    # Also resolve DEFAULT_TENANT_ID's own TRADING_CONFIG/PRODUCTION_CONFIG
+    # (config.yaml + any Settings-page overrides already saved to Postgres's
+    # tenant_settings) - confirmed real gap: without this, every CLI command
+    # silently ignored a Settings-page save (do_update_settings persists to
+    # Postgres only, not config.yaml, since Phase 2), reading only the
+    # ContextVar's plain config.yaml-only default instead. Same fix
+    # api/app.py's _load_default_tenant_config() already applies for the
+    # gate-disabled web path. No reset needed here either - same reasoning.
+    config.resolve_and_set_trading_config(storage.DEFAULT_TENANT_ID)
+    production_config.resolve_and_set_production_config(storage.DEFAULT_TENANT_ID)
+
+
+@main.group()
+def tenant():
+    """Tenant provisioning (admin-only, not reachable from the web app)."""
+
+
+@tenant.command("create")
+@click.argument("name")
+def tenant_create(name: str):
+    """Provisions a new tenant, prints its tenant_id."""
+    tenant_id = storage.create_tenant(name)
+    click.echo(f"Created tenant '{name}': {tenant_id}")
+
+
+@tenant.command("add-entry")
+@click.argument("tenant_id")
+@click.option("--character", type=int, help="EVE character_id to register to this tenant.")
+@click.option("--corporation", type=int, help="EVE corporation_id to register to this tenant.")
+@click.option("--alliance", type=int, help="EVE alliance_id to register to this tenant.")
+def tenant_add_entry(tenant_id: str, character: int | None, corporation: int | None, alliance: int | None):
+    """Registers a character/corp/alliance id as belonging to a tenant - a
+    login as any registered id resolves to this tenant (see
+    access_gate.py/storage.resolve_tenant_id)."""
+    entries = [("character", character), ("corporation", corporation), ("alliance", alliance)]
+    provided = [(t, i) for t, i in entries if i is not None]
+    if not provided:
+        raise click.UsageError("Provide at least one of --character/--corporation/--alliance.")
+    for entry_type, entry_id in provided:
+        storage.add_tenant_registry_entry(tenant_id, entry_type, entry_id)
+        click.echo(f"Registered {entry_type} {entry_id} -> tenant {tenant_id}")
+
+
+@tenant.command("list")
+def tenant_list():
+    """Lists every provisioned tenant and its registered entries."""
+    for tenant_id, name, created_at in storage.list_tenants():
+        click.echo(f"{tenant_id}  {name}  (created {created_at})")
+        for entry_type, entry_id in storage.list_tenant_registry_entries(str(tenant_id)):
+            click.echo(f"    {entry_type}: {entry_id}")
+
+
+@tenant.command("import-tokens")
+@click.option("--tenant-id", default=None, help="Tenant to import into (default: the fixed default tenant).")
+@click.option("--path", type=click.Path(exists=True), default=None,
+              help="tokens.json path (default: OAUTH_CONFIG.token_store_path).")
+def tenant_import_tokens(tenant_id: str | None, path: str | None):
+    """One-time import of a file-based tokens.json (TokenManager's format
+    before its Postgres cutover) into tenant_tokens. Safe to re-run - every
+    record is upserted."""
+    from pathlib import Path
+    count = import_tokens_file(
+        tenant_id or storage.DEFAULT_TENANT_ID, Path(path) if path else None
+    )
+    click.echo(f"Imported {count} token(s) into tenant {tenant_id or storage.DEFAULT_TENANT_ID}.")
+
+
+@main.command("migrate-sqlite")
+@click.argument("db_path", type=click.Path(exists=True))
+@click.option("--tenant-id", default=None, help="Tenant to migrate into (default: the fixed default tenant).")
+def migrate_sqlite(db_path: str, tenant_id: str | None):
+    """One-time ETL: migrates a single-tenant data/eve_trader.db (the
+    pre-multi-tenant-migration SQLite schema) into Postgres for one tenant.
+    Run this against a COPY of the real file, never the live one directly -
+    see eve_trader/sqlite_migration.py's own docstring."""
+    from pathlib import Path
+    counts = migrate_sqlite_to_postgres(Path(db_path), tenant_id or storage.DEFAULT_TENANT_ID)
+    for table, count in counts.items():
+        click.echo(f"  {table}: {count} row(s)")
+    click.echo(f"Migrated {sum(counts.values())} total row(s) into tenant {tenant_id or storage.DEFAULT_TENANT_ID}.")
 
 
 @main.command()

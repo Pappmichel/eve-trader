@@ -15,9 +15,10 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import Scope
 
-from .. import scheduler
+from .. import scheduler, storage, tenant_scope
 from ..access_gate import SESSION_COOKIE_NAME, read_session_token
-from ..config import ACCESS_CONFIG
+from ..config import ACCESS_CONFIG, TRADING_CONFIG, apply_config_overrides
+from ..production.config import PRODUCTION_CONFIG
 from .routers import auth, gate, portfolio, production, trading
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
@@ -61,12 +62,24 @@ _GATE_EXEMPT_PATHS = {
 
 class AccessGateMiddleware(BaseHTTPMiddleware):
     """Gates every /api/* route behind a valid access-gate session cookie
-    once AccessConfig.access_gate_enabled is true - a complete no-op
-    otherwise (the check re-reads ACCESS_CONFIG on every request rather than
-    once at startup, so flipping it in config.yaml + restarting is the only
-    wiring needed, nothing here needs to change). See access_gate.py's own
-    module docstring for why this exists, and auth.py's callback()/gate.py
-    for the login flow that issues the cookie this checks.
+    once AccessConfig.access_gate_enabled is true (the check re-reads
+    ACCESS_CONFIG on every request rather than once at startup, so flipping
+    it in config.yaml + restarting is the only wiring needed, nothing here
+    needs to change). See access_gate.py's own module docstring for why this
+    exists, and auth.py's callback()/gate.py for the login flow that issues
+    the cookie this checks.
+
+    Also - regardless of whether the gate is enabled - sets storage.py's
+    ambient tenant_id contextvar for the duration of the request (reset in a
+    finally, so it can never leak into a later, unrelated request on the
+    same worker): storage.DEFAULT_TENANT_ID when the gate is off (this app's
+    default - a trusted single operator, no login wall, see
+    docs/phase3_schema.sql's seed row) or on but the path is exempt/no
+    tenant resolution applies yet; the session cookie's own resolved
+    tenant_id when the gate is on and the cookie is valid. Every real
+    storage.py query needs a tenant now (see storage.connect()'s fail-closed
+    check) - without this, every request would 500 with "no tenant set"
+    regardless of the gate's own enabled/disabled state.
 
     Registered *after* CORSMiddleware below (Starlette's first-added
     middleware ends up outermost) so CORS preflight (OPTIONS) requests and
@@ -77,21 +90,81 @@ class AccessGateMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         if not ACCESS_CONFIG.access_gate_enabled:
-            return await call_next(request)
+            # Gate off - every request is DEFAULT_TENANT_ID, structurally
+            # (there's no session to resolve a *different* tenant from), so
+            # the config-bleeds-across-tenants gap tenant_scope.enter_tenant
+            # exists to fix cannot occur here - only one tenant is ever in
+            # play. A bare storage.set_current_tenant is enough (and doesn't
+            # cost every request a real Postgres round-trip just to
+            # re-resolve config for the one tenant that already owns the
+            # live shared instance - see _lifespan's own one-time load for
+            # how a Settings-page save still survives a restart).
+            return await self._call_with_default_tenant(call_next, request)
+
         path = request.url.path
         if not path.startswith("/api/") or path in _GATE_EXEMPT_PATHS:
+            # Exempt paths (the login flow itself, gate status/logout) never
+            # had a tenant to resolve yet - /callback resolves its own via
+            # storage.connect_unscoped() internally, doesn't need one set here.
             return await call_next(request)
+
         token = request.cookies.get(SESSION_COOKIE_NAME)
-        if not token or read_session_token(token) is None:
+        data = read_session_token(token) if token else None
+        # A still-valid (unexpired, correctly-signed) cookie from before
+        # tenant_id was added to the session payload (multi-tenant migration
+        # Phase 3a) would decode successfully - itsdangerous only checks the
+        # signature/expiry, not the payload shape - but have no "tenant_id"
+        # key. Treat that the same as "not authenticated" (a stale cookie
+        # forcing a fresh login) rather than letting `data["tenant_id"]`
+        # raise KeyError into an unhandled 500 below.
+        tenant_id = data.get("tenant_id") if data else None
+        if tenant_id is None:
             return JSONResponse({"detail": "Not authenticated"}, status_code=401)
-        return await call_next(request)
+        # Gate on - the request could genuinely be any of several different
+        # real tenants, so their own TRADING_CONFIG/PRODUCTION_CONFIG must be
+        # resolved fresh here, not left pointing at whichever tenant's
+        # settings happened to be live last - see tenant_scope's own docstring.
+        with tenant_scope.enter_tenant(tenant_id):
+            return await call_next(request)
+
+    @staticmethod
+    async def _call_with_default_tenant(call_next, request: Request):
+        context_token = storage.set_current_tenant(storage.DEFAULT_TENANT_ID)
+        try:
+            return await call_next(request)
+        finally:
+            storage.reset_current_tenant(context_token)
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    scheduler.start()  # no-op unless TradingConfig.scheduler_enabled - see scheduler.py
+    _load_default_tenant_config()
+    scheduler.start()  # no-op unless DEFAULT_TENANT_ID's own scheduler_enabled - see scheduler.py
     yield
     scheduler.stop()
+
+
+def _load_default_tenant_config() -> None:
+    """One-time, at-boot load of DEFAULT_TENANT_ID's own saved Settings-page
+    overrides into TRADING_CONFIG/PRODUCTION_CONFIG's *shared default*
+    instance (mutated directly via apply_config_overrides, not via a
+    ContextVar.set() - the gate-disabled request path above never sets a
+    per-request value at all, it always falls through to this same default
+    object, so mutating it once here is enough for every future
+    gate-disabled request to see it, with no per-request Postgres cost).
+
+    Without this, a Settings-page save already takes effect immediately for
+    the rest of the current process (apply_config_overrides mutates the
+    live instance in place) but is silently lost across a restart - only
+    config.yaml is read at TRADING_CONFIG/PRODUCTION_CONFIG's own import
+    time, never tenant_settings."""
+    with storage.tenant_context(storage.DEFAULT_TENANT_ID):
+        trading_overrides = storage.load_tenant_settings("trading")
+        production_overrides = storage.load_tenant_settings("production")
+    if trading_overrides:
+        apply_config_overrides(TRADING_CONFIG, trading_overrides)
+    if production_overrides:
+        apply_config_overrides(PRODUCTION_CONFIG, production_overrides)
 
 
 def create_app() -> FastAPI:
