@@ -1,0 +1,284 @@
+"""Doctrine tool actions - the do_* functions api/routers/doctrine.py and
+(should a CLI equivalent ever be added) cli.py both call, exactly the same
+UI-agnostic, thin-orchestration-wrapper shape as actions.py/production/
+actions.py (see CLAUDE.md's "Architecture: actions.py is the one entry
+point"). Real logic lives in parser.py/validation.py/engine.py/esi_sync.py;
+every function here does load -> call -> ActionError-on-failure -> return
+plain dict/dataclass, nothing more.
+"""
+from __future__ import annotations
+
+from dataclasses import asdict
+from typing import Optional
+
+from .. import storage
+from ..actions import ActionError
+from ..auth import TokenManager
+from ..config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
+from . import engine, esi_sync
+from .config import DOCTRINE_CONFIG, DoctrineConfig
+from .models import ContractItemRow
+from .parser import FittingParseError
+
+
+# ---------------------------------------------------------------------- auth
+def do_auth_doctrine() -> dict:
+    """SSO login for one more doctrine character - requesting only
+    esi_sync.DOCTRINE_SCOPES (never Trading/Production's own scope lists),
+    same reasoning as Production's do_auth_add_producer_character: an
+    unrelated tool's re-auth must never suddenly need scopes this app's own
+    dev-portal registration doesn't have enabled."""
+    tm = TokenManager(OAUTH_CONFIG)
+    record = tm.get_token_interactive_multi(esi_sync.DOCTRINE_ROLE_PREFIX, scopes=esi_sync.DOCTRINE_SCOPES)
+    return {"character_name": record.character_name, "character_id": record.character_id}
+
+
+def do_list_doctrine_characters() -> list[tuple[str, int, str]]:
+    return esi_sync.list_doctrine_characters()
+
+
+def do_remove_doctrine_character(role_key: str) -> dict:
+    TokenManager(OAUTH_CONFIG).remove_token(role_key)
+    return {"removed": role_key}
+
+
+# ------------------------------------------------------------------ doctrines
+def do_create_doctrine(name: str, description: Optional[str] = None) -> dict:
+    name = (name or "").strip()
+    if not name:
+        raise ActionError("Doctrine name is required.")
+    if any(row[1].lower() == name.lower() for row in storage.list_doctrines()):
+        raise ActionError(f"A doctrine named '{name}' already exists.")
+    doctrine_id = storage.create_doctrine(name, description)
+    return asdict(engine.doctrine_from_row(storage.get_doctrine(doctrine_id)))
+
+
+def do_update_doctrine(doctrine_id: str, name: Optional[str] = None, description: Optional[str] = None,
+                        active: Optional[bool] = None) -> dict:
+    if storage.get_doctrine(doctrine_id) is None:
+        raise ActionError(f"Doctrine {doctrine_id} not found.")
+    updates = {}
+    if name is not None:
+        name = name.strip()
+        if not name:
+            raise ActionError("Doctrine name cannot be empty.")
+        updates["name"] = name
+    if description is not None:
+        updates["description"] = description
+    if active is not None:
+        updates["active"] = active
+    storage.update_doctrine(doctrine_id, updates)
+    return asdict(engine.doctrine_from_row(storage.get_doctrine(doctrine_id)))
+
+
+def do_delete_doctrine(doctrine_id: str) -> dict:
+    """Cascades app-side in one batch (Phase 2 F): every fitting under this
+    doctrine, and everything under each of those (items/issues/contract
+    unmatching) - the schema itself has no FK constraints (this app's
+    established convention, see phase1_schema.sql), so this orchestration
+    is this function's own job, not the database's."""
+    if storage.get_doctrine(doctrine_id) is None:
+        raise ActionError(f"Doctrine {doctrine_id} not found.")
+    with storage.batch_session():
+        for row in storage.list_fittings_for_doctrine(doctrine_id):
+            fitting_id = str(row[0])
+            storage.unmatch_contracts_for_fitting(fitting_id)
+            storage.delete_fitting(fitting_id)
+        storage.delete_doctrine(doctrine_id)
+    return {"deleted": doctrine_id}
+
+
+# -------------------------------------------------------------------- fittings
+def do_parse_fitting(raw_eft: str) -> dict:
+    """Preview only - never persists (Phase 2 F/Phase 3 A.7's "einfügen ->
+    Vorschau prüfen -> speichern" flow)."""
+    try:
+        parsed = engine.parse_fitting_text(raw_eft)
+    except FittingParseError as e:
+        raise ActionError(str(e)) from e
+    return {
+        "hull_type_id": parsed.hull_type_id, "hull_name": parsed.hull_name, "fit_name": parsed.fit_name,
+        "items": [asdict(i) for i in parsed.items], "issues": [asdict(i) for i in parsed.issues],
+    }
+
+
+def do_add_fitting(doctrine_id: str, raw_eft: str, name: Optional[str] = None,
+                    variant_label: Optional[str] = None, contract_target: int = 0,
+                    stockpile_target: int = 0, cargo_tolerance_pct: Optional[float] = None) -> dict:
+    if storage.get_doctrine(doctrine_id) is None:
+        raise ActionError(f"Doctrine {doctrine_id} not found.")
+    if contract_target < 0 or stockpile_target < 0:
+        raise ActionError("Targets must be zero or greater.")
+    try:
+        parsed = engine.parse_fitting_text(raw_eft)
+    except FittingParseError as e:
+        raise ActionError(str(e)) from e
+
+    with storage.batch_session():
+        fitting_id = storage.create_fitting(
+            doctrine_id, name or parsed.fit_name, parsed.hull_type_id, raw_eft, variant_label,
+            contract_target, stockpile_target, cargo_tolerance_pct,
+        )
+        storage.replace_fitting_items(
+            fitting_id, [(i.line_no, i.slot_section, i.type_id, i.quantity, i.is_offline) for i in parsed.items])
+        storage.replace_fitting_parse_issues(
+            fitting_id, [(i.line_no, i.raw_line, i.issue_kind, i.message) for i in parsed.issues])
+
+    fitting, _items = engine.load_fitting_with_items(fitting_id)
+    return {"fitting": asdict(fitting), "issues": [asdict(i) for i in parsed.issues]}
+
+
+def do_update_fitting(fitting_id: str, raw_eft: Optional[str] = None, name: Optional[str] = None,
+                       variant_label: Optional[str] = None, contract_target: Optional[int] = None,
+                       stockpile_target: Optional[int] = None, cargo_tolerance_pct: Optional[float] = None,
+                       active: Optional[bool] = None) -> dict:
+    """Re-parses on a new raw_eft, then always re-validates this fitting's
+    already-persisted contracts (Phase 2 F: changed Soll data must never
+    leave a stale validation result standing - same invalidation discipline
+    as production/engine.py's invalidate_discover_cache)."""
+    if storage.get_fitting(fitting_id) is None:
+        raise ActionError(f"Fitting {fitting_id} not found.")
+    if (contract_target is not None and contract_target < 0) or (stockpile_target is not None and stockpile_target < 0):
+        raise ActionError("Targets must be zero or greater.")
+
+    issues = []
+    with storage.batch_session():
+        updates: dict = {}
+        if name is not None:
+            updates["name"] = name
+        if variant_label is not None:
+            updates["variant_label"] = variant_label
+        if contract_target is not None:
+            updates["contract_target"] = contract_target
+        if stockpile_target is not None:
+            updates["stockpile_target"] = stockpile_target
+        if cargo_tolerance_pct is not None:
+            updates["cargo_tolerance_pct"] = cargo_tolerance_pct
+        if active is not None:
+            updates["active"] = active
+        if raw_eft is not None:
+            try:
+                parsed = engine.parse_fitting_text(raw_eft)
+            except FittingParseError as e:
+                raise ActionError(str(e)) from e
+            updates["raw_eft"] = raw_eft
+            updates["hull_type_id"] = parsed.hull_type_id
+            storage.replace_fitting_items(
+                fitting_id, [(i.line_no, i.slot_section, i.type_id, i.quantity, i.is_offline) for i in parsed.items])
+            storage.replace_fitting_parse_issues(
+                fitting_id, [(i.line_no, i.raw_line, i.issue_kind, i.message) for i in parsed.issues])
+            issues = parsed.issues
+
+        if updates:
+            storage.update_fitting(fitting_id, updates)
+
+    do_validate_contracts()
+    fitting, _items = engine.load_fitting_with_items(fitting_id)
+    return {"fitting": asdict(fitting), "issues": [asdict(i) for i in issues]}
+
+
+def do_delete_fitting(fitting_id: str) -> dict:
+    """Contracts matched to this fitting persist, unmatched (Phase 2 F -
+    never deleted, a contract is real inventory-tracking data independent
+    of whichever fitting definition it happened to match)."""
+    if storage.get_fitting(fitting_id) is None:
+        raise ActionError(f"Fitting {fitting_id} not found.")
+    with storage.batch_session():
+        storage.unmatch_contracts_for_fitting(fitting_id)
+        storage.delete_fitting(fitting_id)
+    return {"deleted": fitting_id}
+
+
+def _type_name(type_id: int) -> str:
+    row = storage.get_sde_type(type_id)
+    return row[2] if row else str(type_id)
+
+
+def do_get_fitting_detail(fitting_id: str) -> dict:
+    fitting, items = engine.load_fitting_with_items(fitting_id)
+    issue_rows = storage.load_fitting_parse_issues(fitting_id)
+    contracts = engine.contract_rows_from_db(storage.list_doctrine_contracts(fitting_id=fitting_id))
+    contracts_with_deviations = []
+    for c in contracts:
+        dev_rows = storage.load_doctrine_contract_deviations(c.contract_id)
+        deviations = [{"type_id": t, "type_name": _type_name(t), "kind": k, "expected_qty": e,
+                        "actual_qty": a, "severity": s} for t, k, e, a, s in dev_rows]
+        contracts_with_deviations.append({**asdict(c), "deviations": deviations})
+    status = engine.fitting_status(fitting)
+    return {
+        "fitting": asdict(fitting),
+        "items": [{**asdict(i), "type_name": _type_name(i.type_id)} for i in items],
+        "issues": [{"line_no": ln, "raw_line": rl, "issue_kind": ik, "message": m}
+                   for ln, rl, ik, m in issue_rows],
+        "contracts": contracts_with_deviations, "status": asdict(status),
+    }
+
+
+# --------------------------------------------------------------------- sync
+def do_sync_contracts() -> dict:
+    return esi_sync.sync_contracts()
+
+
+def do_validate_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+    """Re-matches + re-validates every persisted contract against the
+    current Fitting definitions, without touching ESI (Phase 2 F) - used
+    after editing a fitting (do_update_fitting) and as its own standalone
+    action for "I only changed targets/tolerance, no need to re-sync"."""
+    candidates = engine.load_match_candidates()
+    contracts = engine.contract_rows_from_db(storage.list_doctrine_contracts())
+    revalidated = 0
+    contract_rows: list[tuple] = []
+    item_rows: list[tuple] = []
+    deviation_rows: list[tuple] = []
+    with storage.batch_session():
+        for c in contracts:
+            items_raw = storage.load_doctrine_contract_items(c.contract_id)
+            items = [ContractItemRow(c.contract_id, rid, tid, qty, bool(incl), bool(single))
+                     for rid, tid, qty, incl, single in items_raw]
+            matched_fitting_id, score, deviations, status = engine.match_and_validate_contract(
+                c.contract_id, c.title, items, candidates, cfg)
+            contract_rows.append((
+                c.contract_id, c.source_role, c.for_corporation, c.issuer_id, c.start_location_id,
+                c.status, c.title, c.price, c.date_expired, matched_fitting_id, score, status, c.synced_at,
+            ))
+            for it in items:
+                item_rows.append((c.contract_id, it.record_id, it.type_id, it.quantity, it.is_included,
+                                   it.is_singleton))
+            for d in deviations:
+                deviation_rows.append((c.contract_id, d.type_id, d.kind, d.expected_qty, d.actual_qty, d.severity))
+            revalidated += 1
+        storage.replace_doctrine_sync_snapshot(contract_rows, item_rows, deviation_rows)
+    return {"revalidated": revalidated}
+
+
+# ------------------------------------------------------------------- status
+def do_get_doctrine_status(doctrine_id: Optional[str] = None) -> dict:
+    if doctrine_id is not None:
+        row = storage.get_doctrine(doctrine_id)
+        if row is None:
+            raise ActionError(f"Doctrine {doctrine_id} not found.")
+        return {"doctrines": [asdict(engine.doctrine_status(row))]}
+    return {"doctrines": [asdict(engine.doctrine_status(row)) for row in storage.list_doctrines()]}
+
+
+def do_get_stockpile_status(doctrine_id: Optional[str] = None) -> dict:
+    rows, assets_available = engine.stockpile_rows_for_doctrine(doctrine_id)
+    return {"rows": [asdict(r) for r in rows], "assets_available": assets_available}
+
+
+def do_list_contracts(fitting_id: Optional[str] = None, status: Optional[str] = None) -> dict:
+    contracts = engine.contract_rows_from_db(storage.list_doctrine_contracts(fitting_id=fitting_id, status=status))
+    return {"rows": [asdict(c) for c in contracts]}
+
+
+def do_get_esi_sync_time() -> dict:
+    return {"synced_at": storage.get_esi_sync_time("doctrine")}
+
+
+# ------------------------------------------------------------------ settings
+def do_update_settings(updates: dict, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+    try:
+        save_tenant_config_overrides("doctrine", updates, cfg, cfg_type=DoctrineConfig)
+    except ConfigError as e:
+        raise ActionError(str(e)) from e
+    return {"updated": list(updates.keys())}

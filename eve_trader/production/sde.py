@@ -115,6 +115,17 @@ def refresh_sde(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     activity_probabilities = _fetch_csv(session, base, "industryActivityProbabilities.csv")
     solar_systems = _fetch_csv(session, base, "mapSolarSystems.csv")
     stations = _fetch_csv(session, base, "staStations.csv")
+    # typeID -> fitting slot, for the Doctrine tool's EFT parser (see
+    # doctrine/parser.py's SDE-verification step). dgmTypeEffects.csv is a
+    # typeID/effectID/isDefault table (every dogma effect a type has, not
+    # just slot-related ones) - filtered here to just the 6 slot-defining
+    # effect IDs (confirmed against EVE Ref dogma attribute references):
+    # 11=loPower, 13=medPower, 12=hiPower, 2663=rigSlot, 3772=subSystem,
+    # 6306=serviceSlot. A type has at most one of these in practice (a
+    # module fits exactly one slot kind) - the dict comprehension below
+    # keeps the last match per typeID if that assumption is ever wrong for
+    # some edge-case type, rather than crashing the whole refresh.
+    type_effects = _fetch_csv(session, base, "dgmTypeEffects.csv")
 
     meta_group_by_type = {int(r["typeID"]): _int_or_none(r["metaGroupID"]) for r in inv_meta_types}
     types_rows = [
@@ -162,13 +173,20 @@ def refresh_sde(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         (int(r["stationID"]), int(r["solarSystemID"]), r.get("stationName"))
         for r in stations if r.get("solarSystemID") not in (None, "")
     ]
+    _SLOT_EFFECT_IDS = {11: "low", 13: "med", 12: "high", 2663: "rig", 3772: "subsystem", 6306: "service"}
+    type_slot_by_id: dict[int, str] = {}
+    for r in type_effects:
+        slot = _SLOT_EFFECT_IDS.get(int(r["effectID"]))
+        if slot is not None:
+            type_slot_by_id[int(r["typeID"])] = slot
+    type_slot_rows = list(type_slot_by_id.items())
 
     storage.replace_sde_data(
         types=types_rows, groups=groups_rows, market_groups=market_groups_rows,
         blueprint_time=time_rows, blueprint_materials=material_rows, blueprint_products=product_rows,
         stations=station_rows,
         invention_probability=probability_rows, solar_systems=solar_system_rows,
-        categories=category_rows,
+        categories=category_rows, type_slots=type_slot_rows,
     )
     storage.set_sde_refresh_state(datetime.now(timezone.utc).isoformat(), dump_etag)
 

@@ -14,34 +14,38 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 from . import config, storage
+from .doctrine import config as doctrine_config
 from .production import config as production_config
 
 
 @contextmanager
 def enter_tenant(tenant_id: str):
-    """Sets storage's ambient tenant, then resolves and sets both
-    TRADING_CONFIG's and PRODUCTION_CONFIG's live instance for that same
+    """Sets storage's ambient tenant, then resolves and sets TRADING_CONFIG's,
+    PRODUCTION_CONFIG's, and DOCTRINE_CONFIG's live instance for that same
     tenant (base defaults + config.yaml, overlaid with that tenant's own
-    tenant_settings) - resets all three on exit, storage's tenant last, so
+    tenant_settings) - resets all four on exit, storage's tenant last, so
     the config-resolution steps still have a tenant to read
     tenant_settings under for as long as they need it.
 
     Each `set`/resolve step gets its own nested `try/finally` rather than
-    one flat `try` wrapping all three - if `resolve_and_set_production_config`
-    raises (e.g. a transient Postgres error), `storage_token`/`trading_token`
-    were already set by the two steps before it and must still be reset;
-    a single flat `try` starting only after all three `.set()` calls would
-    leave those two contextvars permanently pointing at this tenant for the
-    rest of the thread/task's lifetime - confirmed real risk for
-    scheduler.py's per-tenant loop, which reuses one background thread
-    across every tenant on each tick."""
+    one flat `try` wrapping all four - if a later resolve step raises (e.g.
+    a transient Postgres error), the tokens already set by the steps before
+    it must still be reset; a single flat `try` starting only after every
+    `.set()` call would leave those contextvars permanently pointing at
+    this tenant for the rest of the thread/task's lifetime - confirmed real
+    risk for scheduler.py's per-tenant loop, which reuses one background
+    thread across every tenant on each tick."""
     storage_token = storage.set_current_tenant(tenant_id)
     try:
         trading_token = config.resolve_and_set_trading_config(tenant_id)
         try:
             production_token = production_config.resolve_and_set_production_config(tenant_id)
             try:
-                yield
+                doctrine_token = doctrine_config.resolve_and_set_doctrine_config(tenant_id)
+                try:
+                    yield
+                finally:
+                    doctrine_config.reset_doctrine_config(doctrine_token)
             finally:
                 production_config.reset_production_config(production_token)
         finally:

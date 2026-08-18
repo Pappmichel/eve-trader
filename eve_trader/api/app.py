@@ -18,8 +18,9 @@ from starlette.types import Scope
 from .. import scheduler, storage, tenant_scope
 from ..access_gate import SESSION_COOKIE_NAME, read_session_token
 from ..config import ACCESS_CONFIG, TRADING_CONFIG, apply_config_overrides
+from ..doctrine.config import DOCTRINE_CONFIG
 from ..production.config import PRODUCTION_CONFIG
-from .routers import auth, gate, portfolio, production, trading
+from .routers import auth, doctrine, gate, portfolio, production, trading
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 
@@ -146,25 +147,28 @@ async def _lifespan(app: FastAPI):
 
 def _load_default_tenant_config() -> None:
     """One-time, at-boot load of DEFAULT_TENANT_ID's own saved Settings-page
-    overrides into TRADING_CONFIG/PRODUCTION_CONFIG's *shared default*
-    instance (mutated directly via apply_config_overrides, not via a
-    ContextVar.set() - the gate-disabled request path above never sets a
-    per-request value at all, it always falls through to this same default
-    object, so mutating it once here is enough for every future
+    overrides into TRADING_CONFIG/PRODUCTION_CONFIG/DOCTRINE_CONFIG's
+    *shared default* instance (mutated directly via apply_config_overrides,
+    not via a ContextVar.set() - the gate-disabled request path above never
+    sets a per-request value at all, it always falls through to this same
+    default object, so mutating it once here is enough for every future
     gate-disabled request to see it, with no per-request Postgres cost).
 
     Without this, a Settings-page save already takes effect immediately for
     the rest of the current process (apply_config_overrides mutates the
     live instance in place) but is silently lost across a restart - only
-    config.yaml is read at TRADING_CONFIG/PRODUCTION_CONFIG's own import
-    time, never tenant_settings."""
+    config.yaml is read at TRADING_CONFIG/PRODUCTION_CONFIG/DOCTRINE_CONFIG's
+    own import time, never tenant_settings."""
     with storage.tenant_context(storage.DEFAULT_TENANT_ID):
         trading_overrides = storage.load_tenant_settings("trading")
         production_overrides = storage.load_tenant_settings("production")
+        doctrine_overrides = storage.load_tenant_settings("doctrine")
     if trading_overrides:
         apply_config_overrides(TRADING_CONFIG, trading_overrides)
     if production_overrides:
         apply_config_overrides(PRODUCTION_CONFIG, production_overrides)
+    if doctrine_overrides:
+        apply_config_overrides(DOCTRINE_CONFIG, doctrine_overrides)
 
 
 def create_app() -> FastAPI:
@@ -184,6 +188,7 @@ def create_app() -> FastAPI:
     app.include_router(trading.router, prefix="/api/trading", tags=["trading"])
     app.include_router(production.router, prefix="/api/production", tags=["production"])
     app.include_router(portfolio.router, prefix="/api/portfolio", tags=["portfolio"])
+    app.include_router(doctrine.router, prefix="/api/doctrine", tags=["doctrine"])
 
     if FRONTEND_DIST.exists():
         app.mount("/", SPAStaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")

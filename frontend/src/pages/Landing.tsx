@@ -51,7 +51,7 @@ export default function Landing() {
       <Title order={1} mb="lg">EVE Trader</Title>
       <Text c="dimmed" mb="xl">Margins, buy/build decisions and live market data in one place.</Text>
 
-      <SimpleGrid cols={2} spacing="md">
+      <SimpleGrid cols={3} spacing="md">
         <Card withBorder padding="lg" radius="md">
           <Stack gap="xs">
             <Title order={3}>Trading</Title>
@@ -69,6 +69,16 @@ export default function Landing() {
               Stock targets, buy-vs-build decisions, buy/build lists for T2 manufacturing.
             </Text>
             <Button component={Link} to="/production" mt="sm" rightSection={<IconArrowRight size={14} />}>Open</Button>
+          </Stack>
+        </Card>
+
+        <Card withBorder padding="lg" radius="md">
+          <Stack gap="xs">
+            <Title order={3}>Doctrine</Title>
+            <Text c="dimmed" size="sm">
+              Fleet doctrine fittings, contract validation against C-J stock contracts, stockpile tracking.
+            </Text>
+            <Button component={Link} to="/doctrine" mt="sm" rightSection={<IconArrowRight size={14} />}>Open</Button>
           </Stack>
         </Card>
       </SimpleGrid>
