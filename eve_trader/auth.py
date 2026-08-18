@@ -167,7 +167,24 @@ class TokenManager:
         url = f"{self.cfg.authorize_url}?{urllib.parse.urlencode(params)}"
 
         _CallbackHandler.result = {}
-        server = http.server.HTTPServer((self.cfg.callback_host, self.cfg.callback_port), _CallbackHandler)
+        try:
+            server = http.server.HTTPServer((self.cfg.callback_host, self.cfg.callback_port), _CallbackHandler)
+        except OSError as e:
+            # Confirmed real gap: this CLI flow binds its own throwaway
+            # HTTPServer on the exact same host:port as the running FastAPI
+            # backend's /api/auth/callback (same EVE_SSO_CALLBACK_HOST/PORT -
+            # the redirect_uri registered with EVE SSO is one fixed URL, so
+            # they can't both listen at once). Used to surface as a raw
+            # "Address already in use" OSError traceback with no indication
+            # of *why* or what to do about it.
+            raise RuntimeError(
+                f"Can't start the CLI login server on {self.cfg.callback_host}:"
+                f"{self.cfg.callback_port} ({e}) - something else (usually the "
+                "running backend, e.g. `uvicorn eve_trader.api.main:app`) is "
+                "already using that port. Stop it first, or log in via the web "
+                "app instead (it has its own /api/auth/callback route and "
+                "doesn't need this CLI flow at all)."
+            ) from e
         thread = threading.Thread(target=server.handle_request, daemon=True)
         thread.start()
 
