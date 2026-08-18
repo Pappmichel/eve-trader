@@ -68,10 +68,17 @@ def build_stockpile_soll(items: list[FittingItem], hull_type_id: int,
 
 # ---------------------------------------------------------------- Contract matching gate + Ist (B.2/B.3)
 def hull_gate_satisfied(contract_items: list[ContractItemRow], hull_type_id: int) -> bool:
-    """B.2: the hull must be present, is_included, AND is_singleton
-    (montiert) - a packaged-only hull does NOT satisfy the gate (a "kit"
-    contract is unmatched by design, not a bug)."""
-    return any(ci.type_id == hull_type_id and ci.is_included and ci.is_singleton for ci in contract_items)
+    """B.2: the hull must be present and is_included. Deliberately does NOT
+    also require is_singleton anymore - confirmed live (2026-08-19) against
+    a real contract that a genuinely assembled/fitted ship's own items can
+    still come back with is_singleton=False from ESI's contract-items
+    endpoint (unlike the asset endpoints, where is_singleton reliably means
+    assembled-vs-packaged for ships) - a real fitted Raven with correctly
+    slot-labeled modules in the EVE client was wrongly excluded by this
+    check. No public ESI signal reliably distinguishes "packaged kit" from
+    "assembled ship" at the contract-items level, so this only gates on the
+    hull type actually being part of the deal."""
+    return any(ci.type_id == hull_type_id and ci.is_included for ci in contract_items)
 
 
 def build_contract_ist(contract_items: list[ContractItemRow], hull_type_id: int) -> dict[int, float]:
