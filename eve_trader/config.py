@@ -17,6 +17,8 @@ from typing import Any, Optional
 import yaml
 from dotenv import load_dotenv
 
+from . import storage
+
 load_dotenv()
 
 
@@ -466,9 +468,12 @@ def load_access_config(path: Path = DEFAULT_CONFIG_PATH) -> AccessConfig:
 # TRADING_CONFIG is a ConfigProxy, not a plain TradingConfig instance - see
 # ConfigProxy's docstring above. The ContextVar's `default=` is the same
 # instance load_trading_config() would have returned directly before this
-# phase, so with no per-request value ever set (true until Phase 3), every
-# read/write behaves exactly as it did when TRADING_CONFIG was that
-# instance itself.
+# phase - used whenever nothing has resolved a per-tenant instance (tests,
+# any code path outside a request/scheduler-job/CLI-command context).
+# resolve_and_set_trading_config (below) is what actually calls `.set()`,
+# wired up via tenant_scope.enter_tenant (see AccessGateMiddleware/
+# scheduler.py) - Phase 2 built this ContextVar but nothing called `.set()`
+# on it until Phase 4 (multi-tenant migration).
 _trading_config_var: contextvars.ContextVar[TradingConfig] = contextvars.ContextVar(
     "trading_config", default=load_trading_config()
 )
@@ -502,8 +507,28 @@ def save_tenant_config_overrides(scope: str, updates: dict[str, Any], *live_conf
     for cfg in live_configs:
         validate_config_overrides(cfg, updates, cfg_type)
 
-    from . import storage  # deferred: storage.py imports config.py (DATA_DIR) at module level, so importing it back here at call time (not module load time) avoids a circular import
     storage.save_tenant_settings(scope, updates)
 
     for cfg in live_configs:
         apply_config_overrides(cfg, updates)
+
+
+def resolve_and_set_trading_config(tenant_id: str) -> contextvars.Token:
+    """Loads `tenant_id`'s own TradingConfig (defaults + config.yaml as the
+    base, same as load_trading_config(), then that tenant's tenant_settings
+    overrides on top) and sets it as _trading_config_var's current value for
+    the caller's scope - callers must reset via reset_trading_config(token).
+
+    Requires storage's own tenant contextvar to already be set to this same
+    tenant_id first (load_tenant_settings reads via storage.connect(),
+    itself tenant-scoped) - see tenant_scope.enter_tenant, which sets both
+    in the right order rather than calling this directly."""
+    cfg = load_trading_config()
+    overrides = storage.load_tenant_settings("trading")
+    if overrides:
+        apply_config_overrides(cfg, overrides)
+    return _trading_config_var.set(cfg)
+
+
+def reset_trading_config(token: contextvars.Token) -> None:
+    _trading_config_var.reset(token)

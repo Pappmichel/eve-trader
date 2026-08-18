@@ -230,19 +230,74 @@ itself automatically the first time `pytest` runs - see below), and `pip install
       - **Explicitly out of scope**: `backup.py` still zips the now-stale
         `data/tokens.json` (Phase 4's `pg_dump` rework); `scheduler.py`'s own
         pre-existing "no tenant in its background thread" gap (Phase 4).
-- [ ] Phase 4 - scheduler multi-tenant loop + migration *tooling* (not a live migration -
-      test against a copy of the SQLite file only) + `backup.py`'s real Postgres
-      (`pg_dump`-based) rework. **Not started.**
-- [ ] Phase 5 - deploy docs. **Not started.**
+- [x] **Phase 4 - DONE.** Scheduler multi-tenant loop, a real config-resolution gap
+      closed, the SQLite->Postgres ETL script, `backup.py`'s `pg_dump` rework:
+      - New `eve_trader/tenant_scope.py`'s `enter_tenant(tenant_id)` - sets storage's
+        tenant contextvar *and* resolves/sets `TRADING_CONFIG`/`PRODUCTION_CONFIG`'s
+        per-tenant instance together (`config.py`/`production/config.py` gained
+        `resolve_and_set_trading_config`/`resolve_and_set_production_config` + `reset_*`).
+      - **Real gap found while researching this phase**: `TRADING_CONFIG`/
+        `PRODUCTION_CONFIG`'s `ContextVar`s (Phase 2) were never actually `.set()`
+        anywhere - every tenant silently shared one in-memory config instance.
+        Confirmed with the user before fixing it as part of this phase (not just the
+        plan doc's original narrower "scheduler" scope).
+      - Applied *only* where the bug is reachable: `AccessGateMiddleware`'s gate-
+        *enabled* branch uses full `tenant_scope.enter_tenant` (a request could be any
+        of several real tenants there). The gate-*disabled* branch (this app's
+        default) deliberately keeps the original lightweight
+        `storage.set_current_tenant` only - every request is structurally
+        `DEFAULT_TENANT_ID` there, so the bug can't occur, and the full resolution
+        would have cost every gate-disabled request a real Postgres round-trip -
+        **confirmed live this broke `tests/test_api_routers.py`'s "safe to run
+        anywhere" contract for ~30 tests**, caught by running the full suite with
+        Postgres down (not just up) before calling this done, then fixed by narrowing
+        the scope. A one-time `_load_default_tenant_config()` at `api/app.py`'s
+        lifespan startup (mutating the shared default config instance directly, not
+        via `.set()`) still closes the "Settings save survives a restart" gap for the
+        default-tenant case, with no per-request cost. `scheduler.start()` gets the
+        same one-time-at-boot treatment for its own `scheduler_enabled` check.
+      - `scheduler.py` - `trading_pipeline`/`production_sync` iterate
+        `storage.list_tenants()` each tick, each tenant's own `scheduler_enabled`/
+        interval fields deciding independently; `backup` stays a single **global**,
+        unscoped job (one `pg_dump` already covers every tenant), governed by
+        `DEFAULT_TENANT_ID`'s own config. `last_run_status` is now `{tenant_id:
+        {job_name: {...}}}`; a separate `_backup_status` covers the global job.
+      - New `eve_trader/sqlite_migration.py` - generic, table-driven ETL
+        (`_PER_TENANT_TABLES`, not 24 hand-written functions) for all 24 per-tenant
+        tables. `eve-trader migrate-sqlite <db-path> [--tenant-id ...]`.
+        **Live-verified against a real copy of this machine's actual (stale,
+        pre-Phase-1) `data/eve_trader.db`** - 165,056 real rows migrated in one run
+        (2,184 shortlist items, 9,162 corp assets, 66,972 new-candidate rows, ...);
+        re-running confirmed PK-bearing tables don't duplicate, no-PK tables do
+        (matches a real pipeline re-run).
+      - `backup.py` dropped `sqlite3`/`storage.DB_PATH` entirely (removed from
+        `storage.py` too) - now shells out to `docker exec <container> pg_dump -U
+        postgres ... -Fc` (the *owner* role - RLS raises on a missing tenant setting,
+        so the app's own non-bypassing role can't dump per-tenant tables at all).
+        `EVE_TRADER_PG_CONTAINER`/`EVE_TRADER_DOCKER_BIN` env vars (this machine's
+        `docker.exe` isn't on `PATH` - confirmed live, installed under a non-default
+        path). `data/tokens.json` dropped from the zip entirely (dead now that
+        `tenant_tokens` is the real store). **Live-verified**: a real `create_backup()`
+        produced a valid `PGDMP`-header dump + `config.yaml`, no `tokens.json`.
+      - **Full suite: 354 passed** (344 + 10 new) with Postgres up, **235 passed/119
+        skipped** (clean, zero failures) with it stopped. One pre-existing, unrelated
+        flaky test noticed (`test_read_session_token_rejects_tampered_token` - a
+        base64-last-character tamper test, confirmed passing 5/5 solo reruns and
+        confirmed unrelated to anything touched this phase) - not fixed, flagged as
+        pre-existing test debt.
+- [ ] Phase 5 - deploy docs. **Not started - the last phase in the plan doc.**
 
 ## Immediate next step
 
-Phases 1, 2, 3a, and 3b are all done - `storage.py` runs on Postgres for real,
-`TRADING_CONFIG`/`PRODUCTION_CONFIG` persist to `tenant_settings`, the live app is usable
-again (gate disabled -> `DEFAULT_TENANT_ID`; gate enabled -> real per-tenant resolution via
-the registry), and `TokenManager` persists OAuth tokens to `tenant_tokens` instead of
-`data/tokens.json`. Next up is Phase 4 (scheduler multi-tenant loop - `scheduler.py`'s
-background thread currently sets no tenant context at all, so `scheduler_enabled: true`
-would already break today; migration *tooling* against a copy of the SQLite file; and
-`backup.py`'s real Postgres `pg_dump`-based rework, since it still only backs up the
-now-stale `data/eve_trader.db`/`data/tokens.json`) per `docs/MULTI_TENANT_PLAN.md`.
+Phases 1 through 4 are all done - the app is genuinely multi-tenant end to end:
+`storage.py`, `TRADING_CONFIG`/`PRODUCTION_CONFIG`, and `TokenManager` all resolve
+per-tenant correctly (gate disabled -> `DEFAULT_TENANT_ID`; gate enabled -> real
+per-tenant resolution via the registry, now including config, not just storage), the
+scheduler runs each tenant's jobs independently, and backups/migration tooling are
+Postgres-native. Only Phase 5 remains per `docs/MULTI_TENANT_PLAN.md`: deploy docs -
+document the owner/app-role separation, connection pool sizing, and the `SET LOCAL`/
+`app.tenant_id` discipline required of any *new* storage function added after this
+migration (a future contributor forgetting this is the main long-term risk of this
+design). The actual live-deployment cutover (running `migrate-sqlite` for real, pointing
+the live Oracle VM at Postgres) is explicitly a separate, later decision beyond Phase 5 -
+not started, not planned as part of this document's scope.

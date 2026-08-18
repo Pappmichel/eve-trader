@@ -23,6 +23,7 @@ import click
 
 from . import actions, storage
 from .auth import import_tokens_file
+from .sqlite_migration import migrate_sqlite_to_postgres
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("eve_trader.cli")
@@ -93,6 +94,21 @@ def tenant_import_tokens(tenant_id: str | None, path: str | None):
         tenant_id or storage.DEFAULT_TENANT_ID, Path(path) if path else None
     )
     click.echo(f"Imported {count} token(s) into tenant {tenant_id or storage.DEFAULT_TENANT_ID}.")
+
+
+@main.command("migrate-sqlite")
+@click.argument("db_path", type=click.Path(exists=True))
+@click.option("--tenant-id", default=None, help="Tenant to migrate into (default: the fixed default tenant).")
+def migrate_sqlite(db_path: str, tenant_id: str | None):
+    """One-time ETL: migrates a single-tenant data/eve_trader.db (the
+    pre-multi-tenant-migration SQLite schema) into Postgres for one tenant.
+    Run this against a COPY of the real file, never the live one directly -
+    see eve_trader/sqlite_migration.py's own docstring."""
+    from pathlib import Path
+    counts = migrate_sqlite_to_postgres(Path(db_path), tenant_id or storage.DEFAULT_TENANT_ID)
+    for table, count in counts.items():
+        click.echo(f"  {table}: {count} row(s)")
+    click.echo(f"Migrated {sum(counts.values())} total row(s) into tenant {tenant_id or storage.DEFAULT_TENANT_ID}.")
 
 
 @main.command()

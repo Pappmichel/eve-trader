@@ -41,16 +41,7 @@ import pandas as pd
 from psycopg_pool import ConnectionPool
 from psycopg.types.json import Jsonb
 
-from .config import DATA_DIR
 from .models import Candidate, NewCandidateResult, RealizedTrade, ShortlistItem, ShortlistRow
-
-# Legacy - kept only for eve_trader/backup.py's own direct sqlite3.connect()
-# online-backup API, deliberately NOT reworked by this cutover (see
-# docs/MULTI_TENANT_PLAN.md Phase 4: backup.py becomes pg_dump-based, a
-# separate, later change). storage.py itself no longer reads/writes this
-# path - every real write now goes to Postgres, so a "backup" of this file
-# only captures pre-cutover data until Phase 4 lands.
-DB_PATH = DATA_DIR / "eve_trader.db"
 
 # Dev default matches the local `eve-trader-pg` Docker container (see
 # docs/MULTI_TENANT_PLAN.md's Phase 0/1) - override via env var for any

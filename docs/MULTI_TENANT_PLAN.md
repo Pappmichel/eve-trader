@@ -401,6 +401,107 @@ tests), 234 passed / 110 skipped (clean, no failures) with it stopped.
 this change (would already break today if `scheduler_enabled: true`) and
 stays tracked as Phase 4 scope.
 
+**Phase 4 status: done.** `scheduler.py`'s background loop is genuinely
+multi-tenant; a real config-resolution gap found while researching it is
+closed; a one-time SQLite->Postgres ETL script is written and proven
+against a copy of the real data; `backup.py` is `pg_dump`-based.
+
+New `eve_trader/tenant_scope.py`'s `enter_tenant(tenant_id)` sets storage's
+tenant contextvar *and* resolves/sets both `TRADING_CONFIG`'s and
+`PRODUCTION_CONFIG`'s per-tenant instance together (`config.py`/
+`production/config.py` gained `resolve_and_set_trading_config`/
+`resolve_and_set_production_config` + matching `reset_*` functions) - the
+real gap found while researching this phase: `TRADING_CONFIG`/
+`PRODUCTION_CONFIG`'s `ContextVar`s (added in Phase 2) were never actually
+`.set()` anywhere, so every tenant silently shared the exact same in-memory
+config instance. Fixed for the case where it actually matters - the gate-
+*enabled* request path in `AccessGateMiddleware`, where a request could
+genuinely belong to any of several different real tenants - using the full
+`tenant_scope.enter_tenant`. The gate-*disabled* path (this app's default)
+deliberately keeps the original lightweight `storage.set_current_tenant`
+only: with the gate off, every request is structurally `DEFAULT_TENANT_ID`
+(there's no session to resolve a *different* tenant from), so the
+"config bleeds across tenants" bug this fixes cannot occur there, and
+requiring a real Postgres round-trip on every gate-disabled request would
+have broken `tests/test_api_routers.py`'s "safe to run anywhere, no
+network required" contract for ~30 previously-independent tests -
+confirmed live during this phase's own testing, then fixed by narrowing
+the scope to where the bug is actually reachable. A separate, one-time
+`_load_default_tenant_config()` at `api/app.py`'s lifespan startup
+(mutating `TRADING_CONFIG`/`PRODUCTION_CONFIG`'s *shared default instance*
+directly via `apply_config_overrides`, not via `.set()`) closes the
+remaining edge: a Settings-page save already took effect immediately
+in-process before this phase (the shared instance is mutated in place),
+but was silently lost across a restart, since only `config.yaml` was ever
+read at import time, never `tenant_settings` - this now loads
+`DEFAULT_TENANT_ID`'s saved overrides once at boot. `scheduler.start()`
+gets the same one-time-at-boot treatment for its own `scheduler_enabled`
+check (previously only ever saw `config.yaml`'s on-disk value).
+
+`scheduler.py`: `trading_pipeline`/`production_sync` now iterate
+`storage.list_tenants()` each tick, fully scoped via `tenant_scope.
+enter_tenant` per tenant - each tenant's own `scheduler_enabled`/interval
+fields decide whether *their* jobs run, independently of any other
+tenant's. `backup` stays a single **global**, unscoped job - one `pg_dump`
+of the whole Postgres database already captures every tenant's RLS-scoped
+data in one shot, nothing to iterate; its interval/enabled check reads
+`DEFAULT_TENANT_ID`'s own config, the operator-level setting, same
+reasoning as `start()`'s own gate. `last_run_status` became `{tenant_id:
+{job_name: {...}}}`; a separate `_backup_status` dict (not tenant-keyed)
+covers the global job. `_check_and_run_due_jobs_for_tenant(tenant_id, cfg)`
+deliberately keeps taking `cfg` explicitly (today's pre-Phase-4 shape,
+renamed) so it stays directly unit-testable without real Postgres - only
+the new outer `storage.list_tenants()` iteration itself needs it.
+
+New `eve_trader/sqlite_migration.py`'s `migrate_sqlite_to_postgres(sqlite_db_path,
+tenant_id)` - generic and table-driven (one `_PER_TENANT_TABLES` list of
+`(table, conflict_target_columns)`, not 24 hand-written functions): for
+each of the 24 per-tenant tables (11 composite-PK-bucket + 8 column-only-
+bucket + 5 no-PK-append, confirmed exhaustively against `git show
+e762245:eve_trader/storage.py`, the pre-migration schema), reads every row
+via `cursor.description` for the real column list, then bulk-inserts
+through `storage.connect()` (tenant_id populated by each table's own
+`DEFAULT current_setting('app.tenant_id', ...)::uuid`, same as every other
+write in this app, never a literal value in the ETL script itself) with
+`ON CONFLICT DO NOTHING` for the 19 PK-bearing tables. The 13 shared/SDE
+tables are deliberately never migrated - reproducible via `refresh_sde()`/
+the normal pipeline, not "this tenant's data". Reachable via
+`eve-trader migrate-sqlite <db-path> [--tenant-id ...]`. **Live-verified
+against a real copy of this machine's actual (now-stale, pre-Phase-1)
+`data/eve_trader.db`** (not run against the live file itself, per this
+migration's standing constraint) - 165,056 real rows migrated across all
+24 tables in one run (2,184 shortlist items, 7,478 character assets, 9,162
+corp assets, 66,972 new-candidate rows, ...); re-running confirmed the
+19 PK-bearing tables stay exactly the same count (`ON CONFLICT DO
+NOTHING` working as intended) while the 5 no-PK tables correctly
+accumulate more rows each run, matching how a real pipeline re-run would
+behave.
+
+`backup.py` dropped `sqlite3`/`storage.DB_PATH` entirely (removed from
+`storage.py` too - nothing else referenced it) - `create_backup()` now
+shells out to `docker exec <container> pg_dump -U postgres -d eve_trader
+-Fc` (the *owner* role, not the app's own `eve_trader_app` - RLS raises on
+a missing tenant setting rather than silently returning zero rows, so a
+non-bypassing role can't dump per-tenant tables at all). Container name/
+`docker` binary come from new `EVE_TRADER_PG_CONTAINER`/
+`EVE_TRADER_DOCKER_BIN` env vars (this dev machine's `docker.exe` isn't on
+`PATH` at all - confirmed live, installed under a non-default `AppData\
+Local\Programs\DockerDesktop` path). `data/tokens.json` is dropped from
+the zip's contents entirely (dead/stale now that `tenant_tokens` is the
+real store - including it would be actively misleading on a restore).
+**Live-verified**: a real `create_backup()` call produced a valid `PGDMP`-
+header custom-format dump (91KB) + `config.yaml`, no `tokens.json`.
+
+Full `pytest` suite: 354 passed with Postgres up (344 + 10 new tests), 235
+passed / 119 skipped (clean, no failures) with it stopped. One pre-existing,
+unrelated flaky test noticed during this phase's own repeated full-suite
+runs (`test_read_session_token_rejects_tampered_token` - a base64-last-
+character tamper test that can coincidentally decode to the same
+underlying bytes depending on alignment, roughly 1-in-N runs; confirmed via
+5 repeated solo runs, all passing, and confirmed unrelated to anything
+`eve_trader/access_gate.py`-adjacent touched this phase) - not fixed here,
+flagged as pre-existing test debt, not a regression.
+
 **Phase 0 - Postgres + RLS proof of concept on `stock_targets`**
 Chosen specifically because its `type_id` PK has the collision problem, not because it's
 easy. Stand up Postgres, add `psycopg[binary]` + `psycopg_pool` dependencies (no ORM -

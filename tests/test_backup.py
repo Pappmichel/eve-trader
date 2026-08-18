@@ -1,4 +1,3 @@
-import sqlite3
 import zipfile
 
 import pytest
@@ -6,35 +5,43 @@ import pytest
 from eve_trader import backup
 
 
+class _FakeCompletedProcess:
+    def __init__(self, returncode=0, stderr=b""):
+        self.returncode = returncode
+        self.stderr = stderr
+
+
+def _fake_pg_dump_run(dump_bytes=b"FAKE_PG_DUMP_CONTENT", returncode=0, fake_stderr=b""):
+    """Stands in for subprocess.run(["docker", "exec", ..., "pg_dump", ...],
+    stdout=<file>, ...) - a real test run can't depend on Docker/Postgres
+    being reachable, so this just writes known bytes to the same file
+    handle create_backup() passes as `stdout=`, mirroring what a real
+    subprocess would have written there."""
+    def _run(cmd, stdout=None, stderr=None, timeout=None):
+        if stdout is not None:
+            stdout.write(dump_bytes)
+        return _FakeCompletedProcess(returncode=returncode, stderr=fake_stderr)
+    return _run
+
+
 @pytest.fixture
 def isolated_backup_dir(tmp_path, monkeypatch):
-    # Real filesystem (zipfile/sqlite3 need real paths), but under pytest's
-    # tmp_path - never touches the real data/backups/ or data/eve_trader.db.
+    # Real filesystem (zipfile needs real paths), but under pytest's
+    # tmp_path - never touches the real data/backups/.
     backup_dir = tmp_path / "backups"
     monkeypatch.setattr(backup, "BACKUP_DIR", backup_dir)
-
-    db_path = tmp_path / "eve_trader.db"
-    conn = sqlite3.connect(db_path)
-    conn.execute("CREATE TABLE t (x INTEGER)")
-    conn.execute("INSERT INTO t VALUES (42)")
-    conn.commit()
-    conn.close()
-    monkeypatch.setattr(backup.storage, "DB_PATH", db_path)
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text("jita_region_id: 10000002\n")
     monkeypatch.setattr(backup, "DEFAULT_CONFIG_PATH", config_path)
 
-    class _FakeOAuthConfig:
-        token_store_path = tmp_path / "tokens.json"  # deliberately absent - optional file
+    monkeypatch.setattr(backup.subprocess, "run", _fake_pg_dump_run())
 
-    monkeypatch.setattr(backup, "OAUTH_CONFIG", _FakeOAuthConfig())
-
-    return backup_dir, db_path, config_path
+    return backup_dir, config_path
 
 
-def test_create_backup_produces_a_zip_with_db_and_config(isolated_backup_dir):
-    backup_dir, db_path, config_path = isolated_backup_dir
+def test_create_backup_produces_a_zip_with_dump_and_config(isolated_backup_dir):
+    backup_dir, config_path = isolated_backup_dir
 
     info = backup.create_backup()
 
@@ -42,26 +49,26 @@ def test_create_backup_produces_a_zip_with_db_and_config(isolated_backup_dir):
     assert zip_path.exists()
     with zipfile.ZipFile(zip_path) as zf:
         names = zf.namelist()
-        assert "eve_trader.db" in names
+        assert "eve_trader.dump" in names
         assert "config.yaml" in names
-        assert "tokens.json" not in names  # wasn't present on disk - correctly skipped, not a hard error
+        assert "tokens.json" not in names  # never included anymore - TokenManager persists to Postgres now
 
-        # Restored DB content is real, not an empty/corrupt placeholder -
-        # proves the sqlite backup API path actually worked, not just zipped nothing.
-        zf.extract("eve_trader.db", backup_dir)
-    conn = sqlite3.connect(backup_dir / "eve_trader.db")
-    assert conn.execute("SELECT x FROM t").fetchone() == (42,)
-    conn.close()
+        # Real bytes made it through the subprocess -> file -> zip path, not
+        # an empty/corrupt placeholder.
+        assert zf.read("eve_trader.dump") == b"FAKE_PG_DUMP_CONTENT"
 
 
-def test_create_backup_includes_tokens_when_present(isolated_backup_dir):
-    backup_dir, db_path, config_path = isolated_backup_dir
-    backup.OAUTH_CONFIG.token_store_path.write_text('{"buyer": "fake"}')
+def test_create_backup_raises_and_cleans_up_on_pg_dump_failure(isolated_backup_dir, monkeypatch):
+    backup_dir, config_path = isolated_backup_dir
+    monkeypatch.setattr(backup.subprocess, "run",
+                         _fake_pg_dump_run(returncode=1, fake_stderr=b"connection refused"))
 
-    info = backup.create_backup()
+    with pytest.raises(RuntimeError, match="connection refused"):
+        backup.create_backup()
 
-    with zipfile.ZipFile(backup_dir / info["name"]) as zf:
-        assert "tokens.json" in zf.namelist()
+    # No partial/corrupt zip or orphaned .tmp_*.dump left behind.
+    assert list(backup_dir.glob(f"{backup.BACKUP_NAME_PREFIX}*.zip")) == []
+    assert list(backup_dir.glob(".tmp_*.dump")) == []
 
 
 def test_list_backups_empty_when_none_exist(isolated_backup_dir):

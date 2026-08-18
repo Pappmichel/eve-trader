@@ -40,8 +40,13 @@ def _enable_gate(monkeypatch):
     monkeypatch.setattr(OAUTH_CONFIG, "session_secret_key", "test-secret-key")
 
 
+_DEFAULT_TEST_TENANT_ID = "00000000-0000-0000-0000-000000000abc"  # must be a real UUID -
+# tenant_scope.enter_tenant (Phase 4) resolves TRADING_CONFIG/PRODUCTION_CONFIG for
+# whatever tenant a valid cookie carries, via a real ::uuid-cast Postgres query
+
+
 def _session_cookie(character_id: int = 1, character_name: str = "Some Character",
-                     tenant_id: str = "tenant-abc") -> dict:
+                     tenant_id: str = _DEFAULT_TEST_TENANT_ID) -> dict:
     token = access_gate.create_session_token(character_id, character_name, tenant_id)
     return {access_gate.SESSION_COOKIE_NAME: token}
 
@@ -123,7 +128,13 @@ def test_middleware_blocks_protected_routes_without_a_session_when_enabled(monke
     assert resp.status_code == 401
 
 
-def test_middleware_allows_protected_routes_with_a_valid_session_when_enabled(monkeypatch):
+@pg_helpers.postgres_required()
+def test_middleware_allows_protected_routes_with_a_valid_session_when_enabled(
+    monkeypatch, _apply_phase1_schema, _apply_phase2_schema
+):
+    # tenant_scope.enter_tenant (Phase 4) resolves this tenant's config via a
+    # real Postgres query on every request now, not just storage's own
+    # ambient tenant - this test genuinely needs Postgres reachable.
     _enable_gate(monkeypatch)
 
     resp = client.get("/api/trading/settings", cookies=_session_cookie())
