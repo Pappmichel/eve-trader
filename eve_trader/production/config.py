@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextvars
+import copy
 from dataclasses import dataclass
 from typing import Optional
 
@@ -112,18 +113,31 @@ def validate_production_overrides(overrides: dict) -> None:
                                f"Options: {', '.join(RIG_TIERS)}")
 
 
+_production_config_yaml_cache: dict = {}
+
+
 def load_production_config(path=DEFAULT_CONFIG_PATH) -> ProductionConfig:
-    cfg = ProductionConfig()
-    if path.exists():
-        with open(path, "r", encoding="utf-8") as f:
-            overrides = yaml.safe_load(f) or {}
-        # Fail fast, at startup, with the specific bad field named - not a
-        # confusing crash later, deep inside engine.py, the first time that
-        # field is actually used.
-        validate_config_overrides(cfg, overrides)
-        validate_production_overrides(overrides)
-        apply_config_overrides(cfg, overrides)
-    return cfg
+    """Cached per `path` after the first real disk read - same reasoning as
+    eve_trader/config.py's load_trading_config (see its own docstring):
+    resolve_and_set_production_config below calls this on every gate-enabled
+    request/scheduler tick, but config.yaml can't change without a process
+    restart anyway, so re-parsing it every time was pure waste. Returns a
+    deep copy each call so a caller's in-place overrides (e.g.
+    resolve_and_set_production_config's apply_config_overrides) never leak
+    into what every other call/tenant sees."""
+    if path not in _production_config_yaml_cache:
+        cfg = ProductionConfig()
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                overrides = yaml.safe_load(f) or {}
+            # Fail fast, at startup, with the specific bad field named - not a
+            # confusing crash later, deep inside engine.py, the first time that
+            # field is actually used.
+            validate_config_overrides(cfg, overrides)
+            validate_production_overrides(overrides)
+            apply_config_overrides(cfg, overrides)
+        _production_config_yaml_cache[path] = cfg
+    return copy.deepcopy(_production_config_yaml_cache[path])
 
 
 # See eve_trader/config.py's ConfigProxy docstring for why this is a proxy,

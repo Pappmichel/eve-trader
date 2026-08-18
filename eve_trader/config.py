@@ -8,6 +8,7 @@ Values are loaded from (in order of increasing priority):
 from __future__ import annotations
 
 import contextvars
+import copy
 import os
 import typing
 from dataclasses import dataclass, field
@@ -455,14 +456,33 @@ class AccessConfig:
     access_gate_enabled: bool = False
 
 
+_trading_config_yaml_cache: dict[Path, TradingConfig] = {}
+
+
 def load_trading_config(path: Path = DEFAULT_CONFIG_PATH) -> TradingConfig:
-    cfg = TradingConfig()
-    if path.exists():
-        with open(path, "r", encoding="utf-8") as f:
-            overrides = yaml.safe_load(f) or {}
-        validate_config_overrides(cfg, overrides)  # fail fast, at startup, with the specific bad field named
-        apply_config_overrides(cfg, overrides)
-    return cfg
+    """Cached per `path` (module-level, no TTL/invalidation) after the first
+    real disk read - confirmed real gap: resolve_and_set_trading_config below
+    calls this on *every* gate-enabled request's tenant_scope.enter_tenant
+    (see AccessGateMiddleware) and every scheduler tick, but config.yaml is
+    hand-maintained and never rewritten by the running app (Settings-page
+    saves go to Postgres's tenant_settings, not this file - see CLAUDE.md's
+    Config section) - a manual edit to it already needs a process restart to
+    take effect (nothing watches its mtime), so re-parsing the same
+    unchanged file on every single request was pure waste with zero
+    staleness risk from caching it. Returns a deep copy of the cached base
+    config each call, never the cached instance itself, so a caller that
+    mutates its result (e.g. resolve_and_set_trading_config's
+    apply_config_overrides, applying one tenant's own overrides on top)
+    can't corrupt what every other call/tenant sees."""
+    if path not in _trading_config_yaml_cache:
+        cfg = TradingConfig()
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                overrides = yaml.safe_load(f) or {}
+            validate_config_overrides(cfg, overrides)  # fail fast, at startup, with the specific bad field named
+            apply_config_overrides(cfg, overrides)
+        _trading_config_yaml_cache[path] = cfg
+    return copy.deepcopy(_trading_config_yaml_cache[path])
 
 
 def load_access_config(path: Path = DEFAULT_CONFIG_PATH) -> AccessConfig:
