@@ -95,11 +95,12 @@ def _check_and_run_due_jobs_for_tenant(tenant_id: str, cfg: TradingConfig) -> No
     it stays directly unit-testable the way it already was pre-Phase-4;
     the caller (_check_and_run_due_jobs) is what resolves `cfg` for
     `tenant_id` via tenant_scope.enter_tenant before calling this."""
-    # Lazy imports: actions.py and production/actions.py both import from
-    # this same config module - importing them at module load time would
-    # risk a circular import; deferring to call time avoids that without
-    # restructuring either actions module.
+    # Lazy imports: actions.py, production/actions.py, and doctrine/actions.py
+    # all import from this same config module - importing them at module
+    # load time would risk a circular import; deferring to call time avoids
+    # that without restructuring any of the three actions modules.
     from . import actions
+    from .doctrine import actions as doctrine_actions
     from .production import actions as production_actions
 
     if not cfg.scheduler_enabled:
@@ -110,6 +111,9 @@ def _check_and_run_due_jobs_for_tenant(tenant_id: str, cfg: TradingConfig) -> No
 
     if _hours_since(storage.get_esi_sync_time("production")) >= cfg.production_sync_interval_hours:
         _run_job(tenant_id, "production_sync", production_actions.do_sync_esi)
+
+    if _hours_since(storage.get_esi_sync_time("doctrine")) >= cfg.doctrine_sync_interval_hours:
+        _run_job(tenant_id, "doctrine_contract_sync", doctrine_actions.do_sync_contracts)
 
 
 def _check_and_run_backup_job() -> None:
@@ -197,6 +201,11 @@ def get_status() -> dict:
                 "interval_hours": TRADING_CONFIG.production_sync_interval_hours,
                 "last_run_at": storage.get_esi_sync_time("production"),
                 "last_error": tenant_jobs.get("production_sync", {}).get("error"),
+            },
+            "doctrine_contract_sync": {
+                "interval_hours": TRADING_CONFIG.doctrine_sync_interval_hours,
+                "last_run_at": storage.get_esi_sync_time("doctrine"),
+                "last_error": tenant_jobs.get("doctrine_contract_sync", {}).get("error"),
             },
             "backup": {
                 "interval_hours": TRADING_CONFIG.backup_interval_hours,
