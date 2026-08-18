@@ -146,11 +146,6 @@ def get_doctrine_characters():
     ]
 
 
-@router.post("/auth")
-def add_doctrine_character():
-    return _wrap(actions.do_auth_doctrine)
-
-
 @router.delete("/characters/{role_key}")
 def remove_doctrine_character(role_key: str):
     return _wrap(actions.do_remove_doctrine_character, role_key=role_key)

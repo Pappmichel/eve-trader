@@ -219,11 +219,6 @@ def refresh_sde():
     return _wrap(actions.do_refresh_sde)
 
 
-@router.post("/auth/add-character")
-def add_producer_character():
-    return _wrap(actions.do_auth_add_producer_character)
-
-
 @router.delete("/auth/character/{role_key}")
 def remove_producer_character(role_key: str):
     return _wrap(actions.do_remove_producer_character, role_key=role_key)

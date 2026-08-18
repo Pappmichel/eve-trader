@@ -187,8 +187,9 @@ export const productionApi = {
     ),
 
   refreshSde: () => post<Record<string, number>>('/api/production/sde/refresh'),
-  addCharacter: () =>
-    post<{ character_name: string; character_id: number }>('/api/production/auth/add-character'),
+  // No addCharacter() here, deliberately - Add Character uses the same
+  // redirect-based EVE SSO flow buyer/seller login does (see
+  // ProductionLayout.tsx: authApi.start('producer')), not a POST action.
   removeCharacter: (roleKey: string) => del(`/api/production/auth/character/${roleKey}`),
   syncEsi: () => post<Record<string, unknown>>('/api/production/esi/sync'),
   esiSyncTime: () => get<{ synced_at: string | null }>('/api/production/esi/sync-time'),
@@ -282,7 +283,9 @@ export const doctrineApi = {
     ),
 
   characters: () => get<T.DoctrineCharacter[]>('/api/doctrine/characters'),
-  addCharacter: () => post<{ character_name: string; character_id: number }>('/api/doctrine/auth'),
+  // No addCharacter() here, deliberately - see DoctrineLayout.tsx's
+  // CharacterList, which uses the same redirect-based EVE SSO flow
+  // buyer/seller login does (authApi.start('doctrine')), not a POST action.
   removeCharacter: (roleKey: string) => del(`/api/doctrine/characters/${roleKey}`),
 
   settings: () => get<T.DoctrineSettings>('/api/doctrine/settings'),
