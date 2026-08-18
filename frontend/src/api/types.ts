@@ -166,7 +166,7 @@ export interface BuildJobEntry {
   quantity: number
   job_runs: number
   job_time_seconds: number
-  job_cost: number | null
+  unit_build_cost: number | null
   decryptor: string | null
   job_category: string | null
 }
@@ -220,7 +220,7 @@ export interface AssetPlanJob {
   job_runs: number
   runs_ready_now: number
   job_time_seconds: number
-  job_cost: number | null
+  unit_build_cost: number | null
   decryptor: string | null
   job_category: string | null
   stock_coverage: number | null
