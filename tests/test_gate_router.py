@@ -142,6 +142,23 @@ def test_middleware_allows_protected_routes_with_a_valid_session_when_enabled(
     assert resp.status_code == 200
 
 
+def test_middleware_rejects_not_500s_a_cookie_from_before_tenant_id_existed(monkeypatch):
+    # Confirmed real gap: a still-valid, correctly-signed cookie from before
+    # tenant_id was added to the session payload (Phase 3a) decodes fine
+    # (itsdangerous only checks signature/expiry, not payload shape) but has
+    # no "tenant_id" key - must be treated as "not authenticated", not let
+    # `data["tenant_id"]` raise KeyError into an unhandled 500.
+    _enable_gate(monkeypatch)
+    old_format_token = access_gate._serializer(OAUTH_CONFIG).dumps(
+        {"character_id": 1, "character_name": "Old Format"}
+    )
+
+    resp = client.get("/api/trading/settings",
+                       cookies={access_gate.SESSION_COOKIE_NAME: old_format_token})
+
+    assert resp.status_code == 401
+
+
 def test_middleware_exempts_the_gate_login_and_status_endpoints_even_when_enabled(monkeypatch):
     _enable_gate(monkeypatch)
 

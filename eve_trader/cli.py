@@ -21,8 +21,9 @@ import logging
 
 import click
 
-from . import actions, storage
+from . import actions, config, storage
 from .auth import import_tokens_file
+from .production import config as production_config
 from .sqlite_migration import migrate_sqlite_to_postgres
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -39,6 +40,16 @@ def main():
     # once here rather than each command setting it individually. No
     # explicit reset needed - the process exits when the command finishes.
     storage.set_current_tenant(storage.DEFAULT_TENANT_ID)
+    # Also resolve DEFAULT_TENANT_ID's own TRADING_CONFIG/PRODUCTION_CONFIG
+    # (config.yaml + any Settings-page overrides already saved to Postgres's
+    # tenant_settings) - confirmed real gap: without this, every CLI command
+    # silently ignored a Settings-page save (do_update_settings persists to
+    # Postgres only, not config.yaml, since Phase 2), reading only the
+    # ContextVar's plain config.yaml-only default instead. Same fix
+    # api/app.py's _load_default_tenant_config() already applies for the
+    # gate-disabled web path. No reset needed here either - same reasoning.
+    config.resolve_and_set_trading_config(storage.DEFAULT_TENANT_ID)
+    production_config.resolve_and_set_production_config(storage.DEFAULT_TENANT_ID)
 
 
 @main.group()
