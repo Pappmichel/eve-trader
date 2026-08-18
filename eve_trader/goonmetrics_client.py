@@ -1,5 +1,11 @@
 """Client for the Goonmetrics price-history API - used by history_backtest.py's
-candidate discovery/scoring (find_new_import_candidates).
+candidate discovery/scoring (find_new_import_candidates). "Goonmetrics" is a
+naming legacy from the original third-party tool - the actual endpoints this
+client calls are gnf.lt's rehosting of it (goonmetrics.apps.gnf.lt, see
+config.py's goonmetrics_history_base; appraise.gnf.lt, see this module's own
+APPRAISE_BASE below). Not worth a module rename (every caller, this
+project's own docs, and the mental model around "the Goonmetrics client"
+all already use this name).
 
 The endpoint returns XML like:
     <evec_api><result><rowset name="history">
