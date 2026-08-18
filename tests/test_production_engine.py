@@ -375,6 +375,18 @@ def test_reaction_rig_security_multiplier_uses_refinery_table_not_engineering_co
     assert rig_security_multiplier(-0.2, is_reaction=True) == 1.1
 
 
+def test_ec_rig_security_multiplier_uses_rounded_not_raw_security():
+    # Confirmed real bug: EVE classifies a system by its *rounded*, displayed
+    # security status (CCP's own system-security dev docs), not the SDE's
+    # raw multi-decimal true-sec. A system with raw true-sec 0.45-0.4999...
+    # displays and is classified as 0.5 = highsec - the old code compared the
+    # raw value directly and would have wrongly given such a system the
+    # 1.9x lowsec rig bonus instead of the correct 1.0x (no bonus).
+    assert rig_security_multiplier(0.45, is_reaction=False) == 1.0
+    assert rig_security_multiplier(0.449, is_reaction=False) == 1.9  # rounds to 0.4, still lowsec
+    assert rig_security_multiplier(0.4999, is_reaction=False) == 1.0
+
+
 def _fake_quote(type_id, buy=100.0, sell=200.0):
     return CurrentPrice(type_id=type_id, updated="2026-01-01", buy=buy, sell=sell)
 
