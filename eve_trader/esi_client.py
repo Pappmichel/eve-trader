@@ -498,6 +498,37 @@ class ESIClient:
         return self._get_all_pages(f"/corporations/{corporation_id}/blueprints/",
                                     params={"datasource": "tranquility"}, auth_role=auth_role)
 
+    # ------------------------------------------------------------- contracts
+    def character_contracts(self, character_id: int, auth_role: str) -> list[dict]:
+        """Requires esi-contracts.read_character_contracts.v1. Every contract
+        the character is issuer, acceptor, or assignee of, only up to 30
+        days old or still `in_progress`/`outstanding` (ESI's own retention
+        rule, not filtered here) - doctrine/esi_sync.py narrows this further
+        to item_exchange + outstanding + this app's own structure before
+        ever fetching a single contract's items."""
+        return self._get_all_pages(f"/characters/{character_id}/contracts/",
+                                    params={"datasource": "tranquility"}, auth_role=auth_role)
+
+    def corporation_contracts(self, corporation_id: int, auth_role: str) -> list[dict]:
+        """Requires esi-contracts.read_corporation_contracts.v1. Same
+        retention/shape as character_contracts, corp-wide."""
+        return self._get_all_pages(f"/corporations/{corporation_id}/contracts/",
+                                    params={"datasource": "tranquility"}, auth_role=auth_role)
+
+    def character_contract_items(self, character_id: int, contract_id: int, auth_role: str) -> list[dict]:
+        """Requires esi-contracts.read_character_contracts.v1 (same scope as
+        character_contracts, not a separate one). A contract's item list
+        never changes after creation (ESI guarantee) - doctrine/esi_sync.py
+        relies on this to only re-fetch items for contracts it hasn't
+        already stored."""
+        return self._get(f"/characters/{character_id}/contracts/{contract_id}/items/",
+                          params={"datasource": "tranquility"}, auth_role=auth_role)
+
+    def corporation_contract_items(self, corporation_id: int, contract_id: int, auth_role: str) -> list[dict]:
+        """Requires esi-contracts.read_corporation_contracts.v1."""
+        return self._get(f"/corporations/{corporation_id}/contracts/{contract_id}/items/",
+                          params={"datasource": "tranquility"}, auth_role=auth_role)
+
     def character_wallet_transactions(self, character_id: int, auth_role: str,
                                        from_id: Optional[int] = None) -> list[dict]:
         """This character's wallet transaction history.

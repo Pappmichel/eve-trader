@@ -306,6 +306,106 @@ MaterialTreeNode.model_rebuild()
 
 
 # ------------------------------------------------------------------ portfolio
+class Doctrine(_Base):
+    doctrine_id: str
+    name: str
+    description: Optional[str] = None
+    active: bool
+    created_at: Optional[str] = None
+
+
+class Fitting(_Base):
+    fitting_id: str
+    doctrine_id: str
+    name: str
+    hull_type_id: int
+    raw_eft: str
+    variant_label: Optional[str] = None
+    contract_target: int
+    stockpile_target: int
+    cargo_tolerance_pct: Optional[float] = None
+    active: bool
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class FittingItem(_Base):
+    fitting_id: str
+    line_no: int
+    slot_section: str
+    type_id: int
+    quantity: float
+    is_offline: bool = False
+
+
+class ParseIssue(_Base):
+    line_no: int
+    raw_line: str
+    issue_kind: str
+    message: str
+
+
+class DeviationRow(_Base):
+    contract_id: int
+    type_id: int
+    kind: str
+    severity: str
+    expected_qty: float = 0.0
+    actual_qty: float = 0.0
+
+
+class ContractRow(_Base):
+    contract_id: int
+    source_role: str
+    for_corporation: bool
+    status: str
+    validation_status: str
+    issuer_id: Optional[int] = None
+    start_location_id: Optional[int] = None
+    title: Optional[str] = None
+    price: Optional[float] = None
+    date_expired: Optional[str] = None
+    matched_fitting_id: Optional[str] = None
+    match_score: Optional[float] = None
+    synced_at: Optional[str] = None
+
+
+class StockpileRow(_Base):
+    fitting_id: str
+    fitting_name: str
+    doctrine_id: str
+    type_id: int
+    type_name: str
+    slot_section: str
+    required_total: float
+    available: float
+    shortfall: float
+    severity: Optional[str] = None
+
+
+class FittingStatus(_Base):
+    fitting_id: str
+    fitting_name: str
+    doctrine_id: str
+    contract_status: str
+    valid_contracts: int
+    tolerable_contracts: int
+    contract_target: int
+    stockpile_status: str
+    worst_stockpile_shortfall_pct: float
+    last_synced_at: Optional[str] = None
+    assets_available: bool = True
+
+
+class DoctrineStatus(_Base):
+    doctrine_id: str
+    doctrine_name: str
+    overall: str
+    contract_rollup: str
+    stockpile_rollup: str
+    fittings: list[FittingStatus] = []
+
+
 class PortfolioOverview(_Base):
     trading_realized_profit: float
     trading_average_margin: float

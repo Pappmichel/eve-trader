@@ -607,7 +607,7 @@ def replace_sde_data(
     types: list[tuple], groups: list[tuple], market_groups: list[tuple],
     blueprint_time: list[tuple], blueprint_materials: list[tuple], blueprint_products: list[tuple],
     invention_probability: list[tuple] = (), solar_systems: list[tuple] = (),
-    stations: list[tuple] = (), categories: list[tuple] = (),
+    stations: list[tuple] = (), categories: list[tuple] = (), type_slots: list[tuple] = (),
 ) -> None:
     """Wholesale-replaces the SDE cache tables (each refresh reflects one Fuzzwork
     dump snapshot, not an incremental merge - stale rows from a previous CCP
@@ -623,6 +623,7 @@ def replace_sde_data(
         conn.execute("DELETE FROM sde_solar_systems")
         conn.execute("DELETE FROM sde_stations")
         conn.execute("DELETE FROM sde_categories")
+        conn.execute("DELETE FROM sde_type_slots")
         conn.executemany("INSERT INTO sde_types VALUES (?,?,?,?,?,?,?,?)", types)
         conn.executemany("INSERT INTO sde_groups VALUES (?,?,?)", groups)
         conn.executemany("INSERT INTO sde_market_groups VALUES (?,?,?)", market_groups)
@@ -633,6 +634,7 @@ def replace_sde_data(
         conn.executemany("INSERT INTO sde_solar_systems VALUES (?,?,?,?)", solar_systems)
         conn.executemany("INSERT INTO sde_stations VALUES (?,?,?)", stations)
         conn.executemany("INSERT INTO sde_categories VALUES (?,?)", categories)
+        conn.executemany("INSERT INTO sde_type_slots VALUES (?,?)", type_slots)
     get_system_security.cache_clear()
     get_sde_type.cache_clear()
     get_type_category.cache_clear()
@@ -642,12 +644,13 @@ def replace_sde_data(
     find_invention_recipe_by_product_type_id.cache_clear()
     get_station_ids_in_system.cache_clear()
     get_station_ids_in_region.cache_clear()
+    get_type_slot.cache_clear()
 
 
 def sde_row_counts() -> dict[str, int]:
     tables = ["sde_types", "sde_groups", "sde_market_groups", "sde_blueprint_time",
               "sde_blueprint_materials", "sde_blueprint_products", "sde_invention_probability",
-              "sde_solar_systems", "sde_stations", "sde_categories"]
+              "sde_solar_systems", "sde_stations", "sde_categories", "sde_type_slots"]
     with connect() as conn:
         return {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables}
 
@@ -1364,6 +1367,19 @@ def get_type_category(type_id: int) -> Optional[int]:
     return row[0] if row else None
 
 
+@lru_cache(maxsize=None)
+def get_type_slot(type_id: int) -> Optional[str]:
+    """Returns the type's fitting slot ("low"|"med"|"high"|"rig"|"subsystem"|
+    "service"), derived from dgmTypeEffects.csv's slot-defining dogma
+    effects (see production/sde.py's refresh_sde) - None if the type has no
+    slot effect at all (not fittable - ammo, drones, ships, ...). Used by
+    doctrine/parser.py's SDE-verification step, not by anything Trading/
+    Production-side. Cached - see get_sde_type."""
+    with connect() as conn:
+        row = conn.execute("SELECT slot FROM sde_type_slots WHERE type_id = ?", (type_id,)).fetchone()
+    return row[0] if row else None
+
+
 def get_cached_packaged_volume(type_id: int) -> Optional[float]:
     """None means "never looked up yet" - distinct from a cached value that
     happens to equal the flight volume, so callers know whether to fetch."""
@@ -1517,3 +1533,318 @@ def get_invention_recipe(t1_blueprint_type_id: int) -> Optional[dict]:
         "job_time": time_row[0] if time_row else None,
         "datacores": materials,
     }
+
+
+# ------------------------------------------------------------------- Doctrine tool
+# Returns plain tuples throughout, same convention as every other table in
+# this file (production.jobs/engine.py unpack raw tuples too) - doctrine/
+# engine.py is where these get wrapped into doctrine.models dataclasses,
+# keeping this module free of any tool-specific dataclass import.
+
+def create_doctrine(name: str, description: Optional[str]) -> str:
+    with connect() as conn:
+        row = conn.execute(
+            "INSERT INTO doctrines (name, description) VALUES (?, ?) RETURNING doctrine_id",
+            (name, description),
+        ).fetchone()
+    return str(row[0])
+
+
+def list_doctrines() -> list[tuple]:
+    """(doctrine_id, name, description, active, created_at) for every
+    doctrine, most-recently-created first."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT doctrine_id, name, description, active, created_at FROM doctrines ORDER BY created_at DESC"
+        ).fetchall()
+
+
+def get_doctrine(doctrine_id: str) -> Optional[tuple]:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT doctrine_id, name, description, active, created_at FROM doctrines WHERE doctrine_id = ?",
+            (doctrine_id,),
+        ).fetchone()
+
+
+def update_doctrine(doctrine_id: str, updates: dict) -> None:
+    """`updates` keys must be a subset of {"name", "description", "active"} -
+    caller (actions.do_update_doctrine) is responsible for only passing
+    real fields; this does no validation of its own (same "thin storage
+    layer" convention as every other update_* function here)."""
+    if not updates:
+        return
+    cols = ", ".join(f"{k} = ?" for k in updates)
+    with connect() as conn:
+        conn.execute(f"UPDATE doctrines SET {cols} WHERE doctrine_id = ?", (*updates.values(), doctrine_id))
+
+
+def delete_doctrine(doctrine_id: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM doctrines WHERE doctrine_id = ?", (doctrine_id,))
+
+
+def create_fitting(doctrine_id: str, name: str, hull_type_id: int, raw_eft: str,
+                    variant_label: Optional[str], contract_target: int, stockpile_target: int,
+                    cargo_tolerance_pct: Optional[float]) -> str:
+    with connect() as conn:
+        row = conn.execute(
+            "INSERT INTO doctrine_fittings (doctrine_id, name, hull_type_id, raw_eft, variant_label, "
+            "contract_target, stockpile_target, cargo_tolerance_pct) VALUES (?,?,?,?,?,?,?,?) "
+            "RETURNING fitting_id",
+            (doctrine_id, name, hull_type_id, raw_eft, variant_label, contract_target, stockpile_target,
+             cargo_tolerance_pct),
+        ).fetchone()
+    return str(row[0])
+
+
+_FITTING_COLUMNS = ("fitting_id", "doctrine_id", "name", "variant_label", "hull_type_id", "raw_eft",
+                     "contract_target", "stockpile_target", "cargo_tolerance_pct", "active",
+                     "created_at", "updated_at")
+
+
+def get_fitting(fitting_id: str) -> Optional[tuple]:
+    with connect() as conn:
+        return conn.execute(
+            f"SELECT {', '.join(_FITTING_COLUMNS)} FROM doctrine_fittings WHERE fitting_id = ?",
+            (fitting_id,),
+        ).fetchone()
+
+
+def list_fittings_for_doctrine(doctrine_id: str) -> list[tuple]:
+    with connect() as conn:
+        return conn.execute(
+            f"SELECT {', '.join(_FITTING_COLUMNS)} FROM doctrine_fittings WHERE doctrine_id = ? ORDER BY created_at",
+            (doctrine_id,),
+        ).fetchall()
+
+
+def list_active_fittings() -> list[tuple]:
+    """Every active fitting belonging to an active doctrine, across the
+    whole tenant - the candidate pool for Contract->Fitting matching
+    (Phase 3 spec B.5) and Stockpile computation, in doctrine-then-fitting
+    creation order (the priority order Phase 3 C.2's stockpile allocation
+    relies on)."""
+    with connect() as conn:
+        return conn.execute(
+            f"SELECT {', '.join('f.' + c for c in _FITTING_COLUMNS)} FROM doctrine_fittings f "
+            "JOIN doctrines d ON d.doctrine_id = f.doctrine_id "
+            "WHERE f.active = true AND d.active = true "
+            "ORDER BY d.created_at, f.created_at"
+        ).fetchall()
+
+
+def update_fitting(fitting_id: str, updates: dict) -> None:
+    """Always bumps updated_at server-side, even if `updates` only touches
+    other fields - it exists specifically to mark "this fitting definition
+    changed since its contracts were last validated" (see actions.
+    do_update_fitting's re-validation trigger)."""
+    if not updates:
+        return
+    set_clauses = [f"{k} = ?" for k in updates] + ["updated_at = now()"]
+    params = list(updates.values()) + [fitting_id]
+    with connect() as conn:
+        conn.execute(f"UPDATE doctrine_fittings SET {', '.join(set_clauses)} WHERE fitting_id = ?", params)
+
+
+def delete_fitting(fitting_id: str) -> None:
+    """Only the fitting row itself + its own items/issues - contract rows
+    that were matched to it are unmatched separately (see
+    unmatch_contracts_for_fitting), never deleted (Phase 2 F: contracts
+    persist, they just become unmatched)."""
+    with connect() as conn:
+        conn.execute("DELETE FROM doctrine_fitting_items WHERE fitting_id = ?", (fitting_id,))
+        conn.execute("DELETE FROM doctrine_fitting_parse_issues WHERE fitting_id = ?", (fitting_id,))
+        conn.execute("DELETE FROM doctrine_fittings WHERE fitting_id = ?", (fitting_id,))
+
+
+def unmatch_contracts_for_fitting(fitting_id: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE doctrine_contracts SET matched_fitting_id = NULL, match_score = NULL, "
+            "validation_status = 'unmatched' WHERE matched_fitting_id = ?",
+            (fitting_id,),
+        )
+        conn.execute("DELETE FROM doctrine_contract_deviations WHERE contract_id IN "
+                      "(SELECT contract_id FROM doctrine_contracts WHERE matched_fitting_id IS NULL)")
+
+
+def replace_fitting_items(fitting_id: str, rows: list[tuple]) -> None:
+    """rows: [(line_no, slot_section, type_id, quantity, is_offline), ...],
+    in parse order. item_index (the PK's 4th component alongside line_no -
+    see doctrine_schema.sql's own comment) is derived here automatically as
+    each row's position among same-line_no rows in `rows`' own order -
+    callers never construct it themselves. Needed because one EFT line can
+    produce two items (a module + its comma-paired charge, Phase 3 spec
+    A.5) that would otherwise collide on (fitting_id, line_no) alone."""
+    counts: dict[int, int] = {}
+    indexed_rows = []
+    for line_no, slot_section, type_id, quantity, is_offline in rows:
+        item_index = counts.get(line_no, 0)
+        counts[line_no] = item_index + 1
+        indexed_rows.append((fitting_id, line_no, item_index, slot_section, type_id, quantity, is_offline))
+    with connect() as conn:
+        conn.execute("DELETE FROM doctrine_fitting_items WHERE fitting_id = ?", (fitting_id,))
+        conn.executemany(
+            "INSERT INTO doctrine_fitting_items (fitting_id, line_no, item_index, slot_section, type_id, "
+            "quantity, is_offline) VALUES (?,?,?,?,?,?,?)",
+            indexed_rows,
+        )
+
+
+def load_fitting_items(fitting_id: str) -> list[tuple]:
+    """(line_no, slot_section, type_id, quantity, is_offline), ordered by
+    (line_no, item_index) - item_index itself isn't returned, callers never
+    need it (see replace_fitting_items's own docstring)."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT line_no, slot_section, type_id, quantity, is_offline FROM doctrine_fitting_items "
+            "WHERE fitting_id = ? ORDER BY line_no, item_index",
+            (fitting_id,),
+        ).fetchall()
+
+
+def replace_fitting_parse_issues(fitting_id: str, rows: list[tuple]) -> None:
+    """rows: [(line_no, raw_line, issue_kind, message), ...]."""
+    with connect() as conn:
+        conn.execute("DELETE FROM doctrine_fitting_parse_issues WHERE fitting_id = ?", (fitting_id,))
+        conn.executemany(
+            "INSERT INTO doctrine_fitting_parse_issues (fitting_id, line_no, raw_line, issue_kind, message) "
+            "VALUES (?,?,?,?,?)",
+            [(fitting_id, *r) for r in rows],
+        )
+
+
+def load_fitting_parse_issues(fitting_id: str) -> list[tuple]:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT line_no, raw_line, issue_kind, message FROM doctrine_fitting_parse_issues "
+            "WHERE fitting_id = ? ORDER BY line_no",
+            (fitting_id,),
+        ).fetchall()
+
+
+_CONTRACT_COLUMNS = ("contract_id", "source_role", "for_corporation", "issuer_id", "start_location_id",
+                      "status", "title", "price", "date_expired", "matched_fitting_id", "match_score",
+                      "validation_status", "synced_at")
+
+
+def load_doctrine_contracts() -> list[tuple]:
+    """The current full contract snapshot - esi_sync.py reads this before a
+    new sync to know which contract_ids are already known+unchanged (so
+    their items don't need re-fetching from ESI, see Phase 3 spec E.3) and
+    to carry their existing items/deviations forward into the new
+    snapshot."""
+    with connect() as conn:
+        return conn.execute(f"SELECT {', '.join(_CONTRACT_COLUMNS)} FROM doctrine_contracts").fetchall()
+
+
+def load_doctrine_contract_items(contract_id: int) -> list[tuple]:
+    """(record_id, type_id, quantity, is_included, is_singleton) for one
+    contract - used to carry an unchanged contract's items forward without
+    re-fetching them from ESI."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT record_id, type_id, quantity, is_included, is_singleton FROM doctrine_contract_items "
+            "WHERE contract_id = ?",
+            (contract_id,),
+        ).fetchall()
+
+
+def load_doctrine_contract_deviations(contract_id: int) -> list[tuple]:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT type_id, kind, expected_qty, actual_qty, severity FROM doctrine_contract_deviations "
+            "WHERE contract_id = ?",
+            (contract_id,),
+        ).fetchall()
+
+
+def replace_doctrine_sync_snapshot(contracts: list[tuple], items: list[tuple], deviations: list[tuple]) -> None:
+    """Wholesale-replaces all three doctrine-contract tables in one
+    transaction (via connect()'s own commit-on-exit - wrap the caller in
+    storage.batch_session() if it does other writes too) - Phase 3 spec
+    E.3's "one storage.batch_session() write... full-snapshot semantics
+    like Production's asset sync": a contract that's disappeared (accepted/
+    expired/deleted since the last sync) simply isn't in `contracts`
+    anymore and is gone from the table, no separate cleanup step needed.
+
+    contracts: rows matching _CONTRACT_COLUMNS (minus tenant_id).
+    items: (contract_id, record_id, type_id, quantity, is_included, is_singleton).
+    deviations: (contract_id, type_id, kind, expected_qty, actual_qty, severity)."""
+    with connect() as conn:
+        conn.execute("DELETE FROM doctrine_contract_deviations")
+        conn.execute("DELETE FROM doctrine_contract_items")
+        conn.execute("DELETE FROM doctrine_contracts")
+        conn.executemany(
+            f"INSERT INTO doctrine_contracts ({', '.join(_CONTRACT_COLUMNS)}) "
+            f"VALUES ({', '.join('?' for _ in _CONTRACT_COLUMNS)})",
+            contracts,
+        )
+        conn.executemany(
+            "INSERT INTO doctrine_contract_items (contract_id, record_id, type_id, quantity, is_included, "
+            "is_singleton) VALUES (?,?,?,?,?,?)",
+            items,
+        )
+        conn.executemany(
+            "INSERT INTO doctrine_contract_deviations (contract_id, type_id, kind, expected_qty, actual_qty, "
+            "severity) VALUES (?,?,?,?,?,?)",
+            deviations,
+        )
+
+
+def list_doctrine_contracts(fitting_id: Optional[str] = None, status: Optional[str] = None) -> list[tuple]:
+    query = f"SELECT {', '.join(_CONTRACT_COLUMNS)} FROM doctrine_contracts WHERE 1=1"
+    params: list = []
+    if fitting_id is not None:
+        query += " AND matched_fitting_id = ?"
+        params.append(fitting_id)
+    if status is not None:
+        query += " AND validation_status = ?"
+        params.append(status)
+    query += " ORDER BY synced_at DESC"
+    with connect() as conn:
+        return conn.execute(query, params).fetchall()
+
+
+def resolve_sde_type_by_name(name: str) -> Optional[tuple]:
+    """Exact, case-insensitive type-name lookup for doctrine/parser.py's
+    injected name resolver - (type_id, group_id, category_id, meta_group_id,
+    meta_level, type_name), or None. Deliberately exact-only (no fuzzy
+    matching in real resolution, ever - see parser.py's own docstring);
+    Levenshtein suggestions for a *failed* lookup use list_hull_type_names
+    separately, only for the hull-name case."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT t.type_id, t.group_id, g.category_id, t.meta_group_id, t.meta_level, t.type_name "
+            "FROM sde_types t JOIN sde_groups g ON g.group_id = t.group_id "
+            "WHERE LOWER(t.type_name) = LOWER(?) LIMIT 1",
+            (name,),
+        ).fetchone()
+
+
+def list_hull_type_names() -> list[str]:
+    """Every published ship/structure type name - used only to compute a
+    Levenshtein "did you mean" suggestion when a fitting's hull name fails
+    to resolve (Phase 3 spec A.7)."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT t.type_name FROM sde_types t JOIN sde_groups g ON g.group_id = t.group_id "
+            "WHERE g.category_id IN (6, 65) AND t.published = 1"
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+def has_any_synced_assets() -> bool:
+    """True if either character_assets or corp_assets has at least one row
+    for this tenant - Doctrine's Stockpile feature reads Production's own
+    asset tables (Phase 2 A.3) rather than syncing its own, so "no assets at
+    all yet" (Production never synced) has to be distinguished from
+    "assets synced, this type just isn't in stock" (a real shortfall) -
+    see doctrine/engine.py's stockpile status, which reports
+    assets_available=False (a gray ampel) only in the former case."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM character_assets) OR EXISTS(SELECT 1 FROM corp_assets)"
+        ).fetchone()
+    return bool(row[0])

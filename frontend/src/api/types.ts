@@ -390,6 +390,7 @@ export interface SchedulerStatus {
   jobs: {
     trading_pipeline: SchedulerJobStatus
     production_sync: SchedulerJobStatus
+    doctrine_contract_sync: SchedulerJobStatus
     backup: SchedulerJobStatus
   }
 }
@@ -398,4 +399,147 @@ export interface BackupInfo {
   name: string
   created_at: string
   size_bytes: number
+}
+
+// ------------------------------------------------------------------ doctrine
+export interface Doctrine {
+  doctrine_id: string
+  name: string
+  description: string | null
+  active: boolean
+  created_at: string | null
+}
+
+export interface Fitting {
+  fitting_id: string
+  doctrine_id: string
+  name: string
+  hull_type_id: number
+  raw_eft: string
+  variant_label: string | null
+  contract_target: number
+  stockpile_target: number
+  cargo_tolerance_pct: number | null
+  active: boolean
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface DoctrineFittingItem {
+  line_no: number
+  slot_section: string
+  type_id: number
+  type_name: string
+  quantity: number
+  is_offline: boolean
+}
+
+export interface DoctrineParseIssue {
+  line_no: number
+  raw_line: string
+  issue_kind: string
+  message: string
+}
+
+export interface ParsedFittingPreview {
+  hull_type_id: number
+  hull_name: string
+  fit_name: string
+  items: DoctrineFittingItem[]
+  issues: DoctrineParseIssue[]
+}
+
+export interface DoctrineDeviation {
+  contract_id: number
+  type_id: number
+  type_name: string
+  kind: string
+  severity: string
+  expected_qty: number
+  actual_qty: number
+}
+
+export interface DoctrineContractRow {
+  contract_id: number
+  source_role: string
+  for_corporation: boolean
+  status: string
+  validation_status: string
+  issuer_id: number | null
+  start_location_id: number | null
+  title: string | null
+  price: number | null
+  date_expired: string | null
+  matched_fitting_id: string | null
+  match_score: number | null
+  synced_at: string | null
+}
+
+export interface DoctrineContractWithDeviations extends DoctrineContractRow {
+  deviations: DoctrineDeviation[]
+}
+
+export interface StockpileRow {
+  fitting_id: string
+  fitting_name: string
+  doctrine_id: string
+  type_id: number
+  type_name: string
+  slot_section: string
+  required_total: number
+  available: number
+  shortfall: number
+  severity: string | null
+}
+
+export interface FittingStatus {
+  fitting_id: string
+  fitting_name: string
+  doctrine_id: string
+  contract_status: 'green' | 'yellow' | 'red' | 'gray'
+  valid_contracts: number
+  tolerable_contracts: number
+  contract_target: number
+  stockpile_status: 'green' | 'yellow' | 'red' | 'gray'
+  worst_stockpile_shortfall_pct: number
+  last_synced_at: string | null
+  assets_available: boolean
+}
+
+export interface DoctrineStatus {
+  doctrine_id: string
+  doctrine_name: string
+  overall: 'green' | 'yellow' | 'red' | 'gray'
+  contract_rollup: 'green' | 'yellow' | 'red' | 'gray'
+  stockpile_rollup: 'green' | 'yellow' | 'red' | 'gray'
+  fittings: FittingStatus[]
+}
+
+export interface FittingDetail {
+  fitting: Fitting
+  items: DoctrineFittingItem[]
+  issues: DoctrineParseIssue[]
+  contracts: DoctrineContractWithDeviations[]
+  status: FittingStatus
+}
+
+export interface DoctrineSyncReport {
+  characters: Record<string, unknown>
+  contracts_synced: number
+  contracts_dropped_this_run: number
+  corp_errors: Record<string, string>
+  item_fetch_errors: Record<string, string>
+}
+
+export interface DoctrineSettings {
+  doctrine_structure_id: number | null
+  stockpile_location_id: number | null
+  cargo_tolerance_pct: number
+  strict_extras: boolean
+}
+
+export interface DoctrineCharacter {
+  role_key: string
+  character_id: number
+  character_name: string
 }
