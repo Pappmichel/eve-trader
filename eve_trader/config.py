@@ -412,12 +412,9 @@ class OAuthConfig:
 
 @dataclass
 class AccessConfig:
-    """Allowlist gating who may use the web app at all - checked once, right
-    after a scope-less EVE SSO login (see access_gate.py), before any other
-    API route is reachable. A match on *any* of the three lists (character,
-    corp, or alliance) grants access - confirmed with the user (2026-08-16)
-    all three should work together (e.g. an alliance-wide allow plus one
-    extra character from outside it), not just a single level.
+    """The access-gate on/off switch - checked once, right after a
+    scope-less EVE SSO login (see access_gate.py), before any other API
+    route is reachable.
 
     Off by default (access_gate_enabled=False) - same "opt-in, never starts
     happening without the user explicitly asking" reasoning as
@@ -428,16 +425,17 @@ class AccessConfig:
     Meant to be flipped on specifically when hosting this somewhere reachable
     beyond localhost.
 
-    Deliberately NOT editable via the Settings page/API (unlike every other
-    *Config field) - see api/routers/*.py's Settings endpoints, none of which
-    expose these fields. An authenticated session being able to grant itself
-    (or anyone else) more access through a Settings call would defeat the
-    point of the gate; changing the allowlist should require actual
-    filesystem/SSH access to config.yaml."""
+    Used to hold the character/corp/alliance allowlist directly
+    (allowed_character_ids/allowed_corporation_ids/allowed_alliance_ids) -
+    that moved to the tenant_registry_entries table (see
+    docs/phase3_schema.sql, storage.resolve_tenant_id) once a login needed
+    to resolve *which tenant*, not just yes/no. Deliberately NOT editable
+    via the Settings page/API (unlike every other *Config field) - see
+    api/routers/*.py's Settings endpoints, none of which expose this field.
+    An authenticated session being able to flip its own gate would defeat
+    the point of it; that should require actual filesystem/SSH access to
+    config.yaml."""
     access_gate_enabled: bool = False
-    allowed_character_ids: list = field(default_factory=list)
-    allowed_corporation_ids: list = field(default_factory=list)
-    allowed_alliance_ids: list = field(default_factory=list)
 
 
 def load_trading_config(path: Path = DEFAULT_CONFIG_PATH) -> TradingConfig:

@@ -282,6 +282,56 @@ OAuth-callback point, which doesn't exist until Phase 3 threads one
 through. Building both together in Phase 3 avoids a half-working
 stopgap now.
 
+**Phase 3a status: done.** `docs/phase3_schema.sql` adds `tenants`
+(`tenant_id UUID PRIMARY KEY DEFAULT gen_random_uuid()`, `name`,
+`created_at`) and `tenant_registry_entries` (`entry_type` - `'character'`/
+`'corporation'`/`'alliance'`, `entry_id BIGINT`, `tenant_id` - PK
+`(entry_type, entry_id)`) - deliberately **not** RLS-scoped, since they're
+the directory used to resolve *which* tenant a visitor is, before any
+tenant context exists; seeds the fixed `DEFAULT_TENANT_ID` row
+(`00000000-0000-0000-0000-000000000001`, name `'Default'`) idempotently.
+
+`storage.py` gained `DEFAULT_TENANT_ID`, `connect_unscoped()` (a `connect()`
+sibling that checks out a pooled connection without requiring/setting an
+ambient tenant_id - Postgres itself would fail loudly if this were misused
+against a real RLS-scoped table, same fail-closed spirit as `connect()`),
+and 5 tenant-registry functions built on it: `create_tenant`,
+`add_tenant_registry_entry` (upsert - re-registering an id to a different
+tenant is a legitimate re-provisioning operation, not an error),
+`resolve_tenant_id(character_id, corporation_id, alliance_id)` (character
+checked first, then corp, then alliance - same "any wins" order the old
+`AccessConfig` allowlist used), `list_tenants`, `list_tenant_registry_entries`.
+
+`access_gate.py`'s session cookie now signs `tenant_id` alongside
+`character_id`/`character_name`; `is_allowed()` and `AccessConfig`'s three
+`allowed_*_ids` list fields are retired entirely, replaced by
+`storage.resolve_tenant_id(...)`. `AccessGateMiddleware` (`api/app.py`) now
+**unconditionally** sets storage's ambient tenant contextvar for every
+request, not just when the gate is enabled: `DEFAULT_TENANT_ID` when the
+gate is off (this app's default - a trusted single operator, no login
+wall) or the path is exempt, the session cookie's resolved `tenant_id`
+otherwise. `auth.py`'s `/callback` route's `role_prefix == "gate"` branch
+calls `storage.resolve_tenant_id(...)` instead of the old `is_allowed`
+check. `cli.py` gained a `tenant` command group (`create`/`add-entry`/
+`list`) for admin provisioning, and `main()`'s group callback sets
+`storage.DEFAULT_TENANT_ID` once for every command (same "trusted single
+operator" reasoning as the gate-disabled web case).
+
+Confirmed live: with the gate disabled (today's default), a real CLI
+command (`eve-trader refresh-shortlist`) and a real HTTP request
+(`GET /api/portfolio/overview`, which queries Postgres) both now succeed
+end-to-end - this is the headline proof Phase 3a was worth doing (neither
+worked after Phase 1's cutover, by design, until this phase). Full
+`pytest` suite: 334 passed with Postgres up, 233 passed / 101 skipped
+(clean skips, no failures) with Postgres stopped.
+
+**Decided with the user before starting Phase 3a**: `TokenManager`'s actual
+switch to `tenant_tokens` (14 call sites), and threading `tenant_id`
+through `/start`'s `_pending` dict and `/callback`'s buyer/seller/producer
+branches, are deferred to their own future session - nothing would consume
+a `tenant_id` there yet (matches the project's "don't add code for a need
+that doesn't exist yet" convention).
+
 **Phase 0 - Postgres + RLS proof of concept on `stock_targets`**
 Chosen specifically because its `type_id` PK has the collision problem, not because it's
 easy. Stand up Postgres, add `psycopg[binary]` + `psycopg_pool` dependencies (no ORM -

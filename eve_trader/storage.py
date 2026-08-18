@@ -60,6 +60,14 @@ PG_DSN = os.getenv(
     "host=localhost port=5432 dbname=eve_trader user=eve_trader_app password=app_devpassword",
 )
 
+# The fixed tenant used when there's no real tenant-resolution to defer to -
+# access-gate disabled (this app's default: trusted single operator, no
+# login wall - see docs/phase3_schema.sql) and every CLI command (same
+# "trusted single operator" reasoning, see cli.py's main()). Seeded into
+# `tenants` by phase3_schema.sql; a real per-tenant login (gate enabled)
+# resolves and uses a different, real tenant_id instead.
+DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001"
+
 _tenant_id_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("tenant_id", default=None)
 
 _pool: Optional[ConnectionPool] = None
@@ -266,6 +274,95 @@ def with_batch_session():
                 return fn(*args, **kwargs)
         return wrapper
     return decorator
+
+
+@contextmanager
+def connect_unscoped():
+    """A `connect()` sibling for the handful of genuinely tenant-independent
+    tables (`tenants`, `tenant_registry_entries` - see docs/phase3_schema.sql)
+    - checks out a pooled connection *without* requiring or setting an
+    ambient tenant_id. Needed because resolving *which* tenant a visitor
+    belongs to (storage.resolve_tenant_id, called from the OAuth callback's
+    identity-login branch) necessarily happens before any tenant_id exists
+    for that request - the normal connect() would fail-closed right there.
+
+    Deliberately narrow: using this against a real per-tenant RLS-enabled
+    table doesn't silently bypass RLS - Postgres itself raises
+    `unrecognized configuration parameter "app.tenant_id"` immediately,
+    since nothing here ever calls `set_config`, same fail-loud spirit as
+    connect()'s own check, just enforced by Postgres instead of Python."""
+    pool = _get_pool()
+    with pool.connection() as conn:
+        try:
+            yield _TranslatingConnection(conn)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+
+# ------------------------------------------------------------- tenant registry
+def create_tenant(name: str) -> str:
+    """Provisions a new tenant, returns its tenant_id. Admin-CLI-only (see
+    cli.py's `tenant create`) - not reachable from the web app itself."""
+    with connect_unscoped() as conn:
+        row = conn.execute(
+            "INSERT INTO tenants (name) VALUES (?) RETURNING tenant_id", (name,)
+        ).fetchone()
+    return str(row[0])
+
+
+def add_tenant_registry_entry(tenant_id: str, entry_type: str, entry_id: int) -> None:
+    """Registers `entry_id` (a character/corp/alliance id) as belonging to
+    `tenant_id` - upsert, since re-registering an id to a different tenant
+    is a legitimate re-provisioning operation (e.g. a character moved
+    accounts), not an error to reject."""
+    assert entry_type in ("character", "corporation", "alliance")
+    with connect_unscoped() as conn:
+        conn.execute(
+            "INSERT INTO tenant_registry_entries (entry_type, entry_id, tenant_id) VALUES (?, ?, ?) "
+            "ON CONFLICT(entry_type, entry_id) DO UPDATE SET tenant_id = excluded.tenant_id",
+            (entry_type, entry_id, tenant_id),
+        )
+
+
+def resolve_tenant_id(character_id: int, corporation_id: Optional[int],
+                       alliance_id: Optional[int]) -> Optional[str]:
+    """Returns the tenant_id registered for `character_id`, else
+    `corporation_id`, else `alliance_id` (same "any wins", character-first
+    order as access_gate.py's old is_allowed), or None if none of the three
+    match any registry entry."""
+    with connect_unscoped() as conn:
+        for entry_type, entry_id in (
+            ("character", character_id), ("corporation", corporation_id), ("alliance", alliance_id),
+        ):
+            if entry_id is None:
+                continue
+            row = conn.execute(
+                "SELECT tenant_id FROM tenant_registry_entries WHERE entry_type = ? AND entry_id = ?",
+                (entry_type, entry_id),
+            ).fetchone()
+            if row is not None:
+                return str(row[0])
+    return None
+
+
+def list_tenants() -> list[tuple]:
+    """Returns (tenant_id, name, created_at) for every provisioned tenant -
+    admin-CLI-only (`tenant list`)."""
+    with connect_unscoped() as conn:
+        return conn.execute("SELECT tenant_id, name, created_at FROM tenants ORDER BY created_at").fetchall()
+
+
+def list_tenant_registry_entries(tenant_id: str) -> list[tuple]:
+    """Returns (entry_type, entry_id) for every id registered to `tenant_id`
+    - admin-CLI-only (`tenant list`)."""
+    with connect_unscoped() as conn:
+        return conn.execute(
+            "SELECT entry_type, entry_id FROM tenant_registry_entries WHERE tenant_id = ? "
+            "ORDER BY entry_type, entry_id",
+            (tenant_id,),
+        ).fetchall()
 
 
 # ------------------------------------------------------------ tenant settings

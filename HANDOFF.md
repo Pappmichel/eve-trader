@@ -147,11 +147,46 @@ itself automatically the first time `pytest` runs - see below), and `pip install
         file-based (`data/tokens.json`) - wiring it up needs a tenant_id at the OAuth
         callback, which is Phase 3's job (the plan's own "OAuth callback has no tenant
         context" section already flags this).
-- [ ] Phase 3 - tenant resolution / access-gate / OAuth-callback tenant-threading / admin
-      CLI provisioning, **and** `TokenManager`'s actual switch to `tenant_tokens`.
-      **Not started. This is the next phase to pick up** - and the one that actually makes
-      the live app usable again (Phases 1-2 deliberately left it non-functional until this
-      lands).
+- [x] **Phase 3a - DONE.** Tenant resolution / access-gate / OAuth-callback (`gate` branch
+      only) / admin CLI provisioning:
+      - `docs/phase3_schema.sql` - `tenants` + `tenant_registry_entries` (deliberately not
+        RLS-scoped - they're the directory used to resolve a tenant *before* one exists).
+        Seeds `DEFAULT_TENANT_ID` (`00000000-0000-0000-0000-000000000001`) idempotently.
+      - `storage.py` - `DEFAULT_TENANT_ID`, `connect_unscoped()` (a `connect()` sibling that
+        doesn't require/set an ambient tenant_id - narrow, deliberately-documented escape
+        hatch used only by the tenant-registry functions), `create_tenant`,
+        `add_tenant_registry_entry` (upsert), `resolve_tenant_id(character_id,
+        corporation_id, alliance_id)`, `list_tenants`, `list_tenant_registry_entries`.
+      - `access_gate.py` - session cookie now signs `tenant_id` too; `is_allowed()` and
+        `AccessConfig`'s 3 `allowed_*_ids` list fields retired entirely, replaced by
+        `storage.resolve_tenant_id(...)`.
+      - `api/app.py`'s `AccessGateMiddleware` - now *unconditionally* sets storage's ambient
+        tenant contextvar every request: `DEFAULT_TENANT_ID` when the gate is off (today's
+        default) or the path is exempt, the cookie's resolved `tenant_id` otherwise.
+      - `auth.py`'s `/callback` - only the `role_prefix == "gate"` branch changed
+        (`is_allowed` -> `storage.resolve_tenant_id`). Buyer/seller/producer branches and
+        `/start`'s `_pending` dict are untouched - see deferred item below.
+      - `cli.py` - new `tenant create`/`tenant add-entry`/`tenant list` admin commands;
+        `main()`'s group callback sets `storage.DEFAULT_TENANT_ID` once per process (every
+        existing command gets a working tenant context for free).
+      - Tests: `test_access_gate.py` rewritten (cookie calls take `tenant_id`, `is_allowed`
+        tests removed); `test_tenant_registry.py` (new, 8 tests) covers the removed
+        `is_allowed` functionality's replacement; `test_gate_router.py` rewritten
+        (`_enable_gate`/`_session_cookie` no longer touch `AccessConfig` allowlists; the 3
+        `callback_gate_branch` tests register real rows via
+        `storage.add_tenant_registry_entry` against real Postgres instead of monkeypatching).
+      - **Full suite: 334 passed** with Postgres up, **233 passed/101 skipped** (clean, zero
+        failures) with it stopped.
+      - **Live-verified the headline claim**: with the gate disabled (today's default), a
+        real CLI command (`eve-trader refresh-shortlist`) and a real HTTP request
+        (`GET /api/portfolio/overview`, which queries Postgres) both now succeed end-to-end -
+        this didn't work after Phase 1 (by design) and does now.
+      - **Decided before starting**: `TokenManager`'s actual switch to `tenant_tokens`, and
+        threading `tenant_id` through `/start`'s `_pending` dict + `/callback`'s
+        buyer/seller/producer branches, deferred to their own session - nothing would
+        consume a `tenant_id` there yet.
+- [ ] **TokenManager -> Postgres** (was folded into "Phase 3" originally, now its own
+      explicit next step - see below). **Not started.**
 - [ ] Phase 4 - scheduler multi-tenant loop + migration *tooling* (not a live migration -
       test against a copy of the SQLite file only) + `backup.py`'s real Postgres
       (`pg_dump`-based) rework. **Not started.**
@@ -159,15 +194,13 @@ itself automatically the first time `pytest` runs - see below), and `pip install
 
 ## Immediate next step
 
-Phases 1 and 2 are both done - `storage.py` runs on Postgres for real, and
-`TRADING_CONFIG`/`PRODUCTION_CONFIG` persist to `tenant_settings` instead of `config.yaml`.
-Start Phase 3: extend the access-gate session cookie (`eve_trader/access_gate.py`) to carry
-`tenant_id`, resolved at login against a new tenant registry (character/corp/alliance ID ->
-tenant_id) instead of today's one global `AccessConfig`; have `AccessGateMiddleware`
-(`eve_trader/api/app.py`) set the request's tenant contextvar right after validating the
-cookie; fix the `/api/auth/callback` tenant-context gap (`_pending[state]` dict in
-`eve_trader/api/routers/auth.py` needs to carry `tenant_id` through from `/start`); switch
-`TokenManager` (`eve_trader/auth.py`) over to `tenant_tokens`; build the admin CLI
-(`eve-trader tenant create ...`) that provisions a tenant registry entry only. This is the
-phase where the live app actually becomes usable again - worth live-verifying end to end
-(a real login, a real Settings save) once it's done, not just passing tests.
+Phases 1, 2, and 3a are all done - `storage.py` runs on Postgres for real,
+`TRADING_CONFIG`/`PRODUCTION_CONFIG` persist to `tenant_settings`, and the live app is
+usable again (gate disabled -> `DEFAULT_TENANT_ID`; gate enabled -> real per-tenant
+resolution via the new registry). What's left, explicitly deferred at the end of Phase 3a:
+switch `TokenManager` (`eve_trader/auth.py`) from `data/tokens.json` to the already-created
+`tenant_tokens` table (14 call sites), and thread `tenant_id` through `/api/auth/*start`'s
+`_pending[state]` dict and `/callback`'s buyer/seller/producer branches (currently only the
+`gate` branch resolves/uses a tenant_id) so an ESI token actually gets stored per-tenant
+once that lands. After that, Phase 4 (scheduler multi-tenant loop, migration tooling,
+`backup.py` rework) is next per `docs/MULTI_TENANT_PLAN.md`.

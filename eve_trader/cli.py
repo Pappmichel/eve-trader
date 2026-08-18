@@ -21,7 +21,7 @@ import logging
 
 import click
 
-from . import actions
+from . import actions, storage
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("eve_trader.cli")
@@ -30,6 +30,53 @@ log = logging.getLogger("eve_trader.cli")
 @click.group()
 def main():
     """EVE Trader - C-J import trading toolkit."""
+    # Every storage.py query now needs an ambient tenant_id (see
+    # storage.connect()'s fail-closed check) - the CLI is a trusted single
+    # operator, same reasoning as AccessGateMiddleware's gate-disabled case
+    # (api/app.py), so every command gets storage.DEFAULT_TENANT_ID set
+    # once here rather than each command setting it individually. No
+    # explicit reset needed - the process exits when the command finishes.
+    storage.set_current_tenant(storage.DEFAULT_TENANT_ID)
+
+
+@main.group()
+def tenant():
+    """Tenant provisioning (admin-only, not reachable from the web app)."""
+
+
+@tenant.command("create")
+@click.argument("name")
+def tenant_create(name: str):
+    """Provisions a new tenant, prints its tenant_id."""
+    tenant_id = storage.create_tenant(name)
+    click.echo(f"Created tenant '{name}': {tenant_id}")
+
+
+@tenant.command("add-entry")
+@click.argument("tenant_id")
+@click.option("--character", type=int, help="EVE character_id to register to this tenant.")
+@click.option("--corporation", type=int, help="EVE corporation_id to register to this tenant.")
+@click.option("--alliance", type=int, help="EVE alliance_id to register to this tenant.")
+def tenant_add_entry(tenant_id: str, character: int | None, corporation: int | None, alliance: int | None):
+    """Registers a character/corp/alliance id as belonging to a tenant - a
+    login as any registered id resolves to this tenant (see
+    access_gate.py/storage.resolve_tenant_id)."""
+    entries = [("character", character), ("corporation", corporation), ("alliance", alliance)]
+    provided = [(t, i) for t, i in entries if i is not None]
+    if not provided:
+        raise click.UsageError("Provide at least one of --character/--corporation/--alliance.")
+    for entry_type, entry_id in provided:
+        storage.add_tenant_registry_entry(tenant_id, entry_type, entry_id)
+        click.echo(f"Registered {entry_type} {entry_id} -> tenant {tenant_id}")
+
+
+@tenant.command("list")
+def tenant_list():
+    """Lists every provisioned tenant and its registered entries."""
+    for tenant_id, name, created_at in storage.list_tenants():
+        click.echo(f"{tenant_id}  {name}  (created {created_at})")
+        for entry_type, entry_id in storage.list_tenant_registry_entries(str(tenant_id)):
+            click.echo(f"    {entry_type}: {entry_id}")
 
 
 @main.command()

@@ -29,6 +29,7 @@ OWNER_DSN = os.getenv(
 _DOCS_DIR = Path(__file__).resolve().parent.parent / "docs"
 _PHASE1_SCHEMA_SQL = _DOCS_DIR / "phase1_schema.sql"
 _PHASE2_SCHEMA_SQL = _DOCS_DIR / "phase2_schema.sql"
+_PHASE3_SCHEMA_SQL = _DOCS_DIR / "phase3_schema.sql"
 
 
 @functools.lru_cache(maxsize=1)
@@ -102,6 +103,18 @@ def _apply_phase2_schema(_apply_phase1_schema) -> None:
         return
     with psycopg.connect(OWNER_DSN, autocommit=True) as conn:
         conn.execute(_PHASE2_SCHEMA_SQL.read_text())
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _apply_phase3_schema(_apply_phase1_schema) -> None:
+    """Same idea as _apply_phase1_schema, for docs/phase3_schema.sql (the
+    tenants/tenant_registry_entries tenant registry) - depends on
+    _apply_phase1_schema for the same reason _apply_phase2_schema does
+    (the eve_trader_app role, which its own GRANT targets)."""
+    if not _postgres_available():
+        return
+    with psycopg.connect(OWNER_DSN, autocommit=True) as conn:
+        conn.execute(_PHASE3_SCHEMA_SQL.read_text())
 
 
 @pytest.fixture

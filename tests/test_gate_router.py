@@ -1,32 +1,56 @@
 """Router + middleware tests for the access gate: /api/gate/status,
 /api/gate/logout, AccessGateMiddleware's enforcement (enabled/disabled), and
 auth.py's callback() "gate" branch (allowed/denied). See
-tests/test_access_gate.py for the underlying cookie/allowlist unit tests.
-"""
-import time
+tests/test_access_gate.py for the underlying cookie unit tests, and
+tests/test_tenant_registry.py for storage.resolve_tenant_id's own coverage.
 
+Most tests here never touch Postgres - a session cookie carries its
+tenant_id directly (signed, not looked up), and the endpoints exercised
+below (settings GET, gate status/logout) don't query storage. Only the 3
+test_callback_gate_branch_* tests call storage.resolve_tenant_id for real
+(that's the thing being tested), so only those are marked
+postgres_required and touch the real tenant_registry_entries table.
+"""
+import http.cookies
+import time
+import uuid
+
+import pytest
 import requests
 from fastapi.testclient import TestClient
 
-from eve_trader import access_gate
+from eve_trader import access_gate, storage
 from eve_trader.api.app import create_app
 from eve_trader.api.routers import auth as auth_router
 from eve_trader.auth import TokenManager
 from eve_trader.config import ACCESS_CONFIG, OAUTH_CONFIG
 
+from . import pg_helpers
+from .pg_helpers import _apply_phase1_schema, _apply_phase3_schema  # noqa: F401
+
 client = TestClient(create_app())
 
 
-def _enable_gate(monkeypatch, **overrides):
+def _enable_gate(monkeypatch):
     monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", True)
     monkeypatch.setattr(OAUTH_CONFIG, "session_secret_key", "test-secret-key")
-    for key in ("allowed_character_ids", "allowed_corporation_ids", "allowed_alliance_ids"):
-        monkeypatch.setattr(ACCESS_CONFIG, key, overrides.get(key, []))
 
 
-def _session_cookie(character_id: int = 1, character_name: str = "Some Character") -> dict:
-    token = access_gate.create_session_token(character_id, character_name, OAUTH_CONFIG)
+def _session_cookie(character_id: int = 1, character_name: str = "Some Character",
+                     tenant_id: str = "tenant-abc") -> dict:
+    token = access_gate.create_session_token(character_id, character_name, tenant_id)
     return {access_gate.SESSION_COOKIE_NAME: token}
+
+
+@pytest.fixture
+def _wipe_registry():
+    """Only requested by the 3 postgres_required callback tests below - a
+    real DELETE against tenant_registry_entries, run both before and after
+    so a leftover row from a previous run/test can't make
+    resolve_tenant_id match unexpectedly."""
+    pg_helpers.wipe_tables("tenant_registry_entries")
+    yield
+    pg_helpers.wipe_tables("tenant_registry_entries")
 
 
 # --------------------------------------------------------------- /gate/status
@@ -115,8 +139,13 @@ def test_middleware_exempts_the_gate_login_and_status_endpoints_even_when_enable
 
 
 # --------------------------------------------------- auth.py callback() gate branch
-def test_callback_gate_branch_allowed_character_sets_cookie_and_redirects_success(monkeypatch):
-    _enable_gate(monkeypatch, allowed_character_ids=[2112625428])
+@pg_helpers.postgres_required()
+def test_callback_gate_branch_allowed_character_sets_cookie_and_redirects_success(
+    monkeypatch, _wipe_registry, _apply_phase1_schema, _apply_phase3_schema
+):
+    _enable_gate(monkeypatch)
+    tenant_id = str(uuid.uuid4())
+    storage.add_tenant_registry_entry(tenant_id, "character", 2112625428)
     state = "test-gate-allowed"
     auth_router._pending[state] = {"verifier": "v", "role_prefix": "gate", "scopes": [], "created_at": time.time()}
     monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
@@ -130,11 +159,18 @@ def test_callback_gate_branch_allowed_character_sets_cookie_and_redirects_succes
 
     assert resp.status_code in (302, 307)
     assert "gate=success" in resp.headers["location"]
-    assert access_gate.SESSION_COOKIE_NAME in resp.headers.get("set-cookie", "")
+    set_cookie = resp.headers.get("set-cookie", "")
+    assert access_gate.SESSION_COOKIE_NAME in set_cookie
+    token = http.cookies.SimpleCookie(set_cookie)[access_gate.SESSION_COOKIE_NAME].value
+    data = access_gate.read_session_token(token)
+    assert data["tenant_id"] == tenant_id
 
 
-def test_callback_gate_branch_denied_character_redirects_without_a_cookie(monkeypatch):
-    _enable_gate(monkeypatch)  # empty allowlists - nobody is allowed
+@pg_helpers.postgres_required()
+def test_callback_gate_branch_denied_character_redirects_without_a_cookie(
+    monkeypatch, _wipe_registry, _apply_phase1_schema, _apply_phase3_schema
+):
+    _enable_gate(monkeypatch)  # no registry entries - nobody resolves to a tenant
     state = "test-gate-denied"
     auth_router._pending[state] = {"verifier": "v", "role_prefix": "gate", "scopes": [], "created_at": time.time()}
     monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
@@ -148,10 +184,15 @@ def test_callback_gate_branch_denied_character_redirects_without_a_cookie(monkey
     assert access_gate.SESSION_COOKIE_NAME not in resp.headers.get("set-cookie", "")
 
 
-def test_callback_gate_branch_corp_alliance_lookup_failure_still_allows_a_character_match(monkeypatch):
+@pg_helpers.postgres_required()
+def test_callback_gate_branch_corp_alliance_lookup_failure_still_allows_a_character_match(
+    monkeypatch, _wipe_registry, _apply_phase1_schema, _apply_phase3_schema
+):
     # Confirmed-by-design degrade: resolve_corp_alliance failing shouldn't
-    # block a character-level allowlist entry (see auth.py's callback()).
-    _enable_gate(monkeypatch, allowed_character_ids=[2112625428])
+    # block a character-level registry match (see auth.py's callback()).
+    _enable_gate(monkeypatch)
+    tenant_id = str(uuid.uuid4())
+    storage.add_tenant_registry_entry(tenant_id, "character", 2112625428)
     state = "test-gate-esi-hiccup"
     auth_router._pending[state] = {"verifier": "v", "role_prefix": "gate", "scopes": [], "created_at": time.time()}
     monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})

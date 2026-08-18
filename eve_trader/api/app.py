@@ -15,7 +15,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import Scope
 
-from .. import scheduler
+from .. import scheduler, storage
 from ..access_gate import SESSION_COOKIE_NAME, read_session_token
 from ..config import ACCESS_CONFIG
 from .routers import auth, gate, portfolio, production, trading
@@ -61,12 +61,24 @@ _GATE_EXEMPT_PATHS = {
 
 class AccessGateMiddleware(BaseHTTPMiddleware):
     """Gates every /api/* route behind a valid access-gate session cookie
-    once AccessConfig.access_gate_enabled is true - a complete no-op
-    otherwise (the check re-reads ACCESS_CONFIG on every request rather than
-    once at startup, so flipping it in config.yaml + restarting is the only
-    wiring needed, nothing here needs to change). See access_gate.py's own
-    module docstring for why this exists, and auth.py's callback()/gate.py
-    for the login flow that issues the cookie this checks.
+    once AccessConfig.access_gate_enabled is true (the check re-reads
+    ACCESS_CONFIG on every request rather than once at startup, so flipping
+    it in config.yaml + restarting is the only wiring needed, nothing here
+    needs to change). See access_gate.py's own module docstring for why this
+    exists, and auth.py's callback()/gate.py for the login flow that issues
+    the cookie this checks.
+
+    Also - regardless of whether the gate is enabled - sets storage.py's
+    ambient tenant_id contextvar for the duration of the request (reset in a
+    finally, so it can never leak into a later, unrelated request on the
+    same worker): storage.DEFAULT_TENANT_ID when the gate is off (this app's
+    default - a trusted single operator, no login wall, see
+    docs/phase3_schema.sql's seed row) or on but the path is exempt/no
+    tenant resolution applies yet; the session cookie's own resolved
+    tenant_id when the gate is on and the cookie is valid. Every real
+    storage.py query needs a tenant now (see storage.connect()'s fail-closed
+    check) - without this, every request would 500 with "no tenant set"
+    regardless of the gate's own enabled/disabled state.
 
     Registered *after* CORSMiddleware below (Starlette's first-added
     middleware ends up outermost) so CORS preflight (OPTIONS) requests and
@@ -77,14 +89,28 @@ class AccessGateMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         if not ACCESS_CONFIG.access_gate_enabled:
-            return await call_next(request)
+            return await self._call_with_tenant(storage.DEFAULT_TENANT_ID, call_next, request)
+
         path = request.url.path
         if not path.startswith("/api/") or path in _GATE_EXEMPT_PATHS:
+            # Exempt paths (the login flow itself, gate status/logout) never
+            # had a tenant to resolve yet - /callback resolves its own via
+            # storage.connect_unscoped() internally, doesn't need one set here.
             return await call_next(request)
+
         token = request.cookies.get(SESSION_COOKIE_NAME)
-        if not token or read_session_token(token) is None:
+        data = read_session_token(token) if token else None
+        if data is None:
             return JSONResponse({"detail": "Not authenticated"}, status_code=401)
-        return await call_next(request)
+        return await self._call_with_tenant(data["tenant_id"], call_next, request)
+
+    @staticmethod
+    async def _call_with_tenant(tenant_id: str, call_next, request: Request):
+        context_token = storage.set_current_tenant(tenant_id)
+        try:
+            return await call_next(request)
+        finally:
+            storage.reset_current_tenant(context_token)
 
 
 @asynccontextmanager

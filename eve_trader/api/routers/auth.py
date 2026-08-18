@@ -22,7 +22,8 @@ import requests
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import RedirectResponse
 
-from ...access_gate import is_allowed, resolve_corp_alliance, set_session_cookie
+from ... import storage
+from ...access_gate import resolve_corp_alliance, set_session_cookie
 from ...auth import TokenManager, _make_pkce_pair
 from ...config import OAUTH_CONFIG
 from ...production import esi_sync
@@ -115,14 +116,15 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
         try:
             corporation_id, alliance_id = resolve_corp_alliance(character_id)
         except (requests.RequestException, KeyError, ValueError):
-            # A character-level allowlist entry should still work even if
+            # A character-level registry entry should still work even if
             # this particular corp/alliance lookup has a transient hiccup -
             # only the alliance/corp-level check degrades, not the whole login.
             corporation_id, alliance_id = None, None
-        if not is_allowed(character_id, corporation_id, alliance_id):
+        tenant_id = storage.resolve_tenant_id(character_id, corporation_id, alliance_id)
+        if tenant_id is None:
             return RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?gate=denied")
         resp = RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?gate=success&character={urllib.parse.quote(character_name)}")
-        set_session_cookie(resp, character_id, character_name)
+        set_session_cookie(resp, character_id, character_name, tenant_id)
         return resp
 
     final_role = role_prefix if role_prefix in ("buyer", "seller") else f"{role_prefix}:{character_id}"
