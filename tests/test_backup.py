@@ -71,6 +71,43 @@ def test_create_backup_raises_and_cleans_up_on_pg_dump_failure(isolated_backup_d
     assert list(backup_dir.glob(".tmp_*.dump")) == []
 
 
+def test_create_backup_wraps_pg_dump_in_docker_exec_by_default(isolated_backup_dir, monkeypatch):
+    calls = []
+
+    def _run(cmd, stdout=None, stderr=None, timeout=None):
+        calls.append(cmd)
+        if stdout is not None:
+            stdout.write(b"x")
+        return _FakeCompletedProcess()
+    monkeypatch.setattr(backup.subprocess, "run", _run)
+
+    backup.create_backup()
+
+    assert calls[0][:2] == [backup.DOCKER_BIN, "exec"]
+    assert "pg_dump" in calls[0]
+
+
+def test_create_backup_uses_bare_pg_dump_when_container_is_empty(isolated_backup_dir, monkeypatch):
+    # EVE_TRADER_PG_CONTAINER="" - a host running Postgres natively (no
+    # Docker at all, e.g. the live deploy's ~1GB-RAM VM - see
+    # deploy/README.md's Postgres section) needs no docker exec wrapper.
+    monkeypatch.setattr(backup, "PG_CONTAINER", "")
+    calls = []
+
+    def _run(cmd, stdout=None, stderr=None, timeout=None):
+        calls.append(cmd)
+        if stdout is not None:
+            stdout.write(b"x")
+        return _FakeCompletedProcess()
+    monkeypatch.setattr(backup.subprocess, "run", _run)
+
+    backup.create_backup()
+
+    assert calls[0][0] == "pg_dump"
+    assert "docker" not in calls[0]
+    assert "exec" not in calls[0]
+
+
 def test_list_backups_empty_when_none_exist(isolated_backup_dir):
     assert backup.list_backups() == []
 
