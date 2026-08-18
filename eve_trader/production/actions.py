@@ -12,7 +12,7 @@ import requests
 from .. import storage
 from ..actions import ActionError
 from ..auth import TokenManager
-from ..config import ConfigError, OAUTH_CONFIG, save_config_overrides
+from ..config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
 from ..esi_client import ESIClient, ESIError
 from ..goonmetrics_client import GoonmetricsClient
 from . import esi_sync, invention, jobs, pricing, sde
@@ -26,11 +26,11 @@ from .models import AssetLocationRow, BuildCandidate, OwnedBlueprintRow, Unliste
 
 
 def do_update_settings(updates: dict, cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
-    """Persists `updates` to config.yaml and applies them to the live
+    """Persists `updates` to tenant_settings and applies them to the live
     PRODUCTION_CONFIG immediately (see Settings tab)."""
     try:
         validate_production_overrides(updates)  # structure_type/rig_tier enum check - see its docstring
-        save_config_overrides(updates, cfg)
+        save_tenant_config_overrides("production", updates, cfg, cfg_type=ProductionConfig)
     except ConfigError as e:
         raise ActionError(str(e)) from e
     invalidate_discover_cache()  # a settings change (margin gate, structure/rig, ...) can change the result set
@@ -57,7 +57,10 @@ def do_set_system(profile: str, system_name: str, cfg: ProductionConfig = PRODUC
         raise ActionError(f"Could not resolve '{system_name}' via ESI right now: {e}") from e
     if system_id is None:
         raise ActionError(f"Solar system '{system_name}' not found. Exact name?")
-    save_config_overrides({f"{profile}_system_id": system_id, f"{profile}_system_name": system_name}, cfg)
+    save_tenant_config_overrides(
+        "production", {f"{profile}_system_id": system_id, f"{profile}_system_name": system_name},
+        cfg, cfg_type=ProductionConfig,
+    )
     invalidate_discover_cache()  # system cost index feeds directly into build cost
     return {f"{profile}_system_name": system_name, f"{profile}_system_id": system_id}
 

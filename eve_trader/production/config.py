@@ -3,12 +3,14 @@
 """
 from __future__ import annotations
 
+import contextvars
 from dataclasses import dataclass
 from typing import Optional
 
 import yaml
 
-from ..config import ConfigError, DEFAULT_CONFIG_PATH, apply_config_overrides, validate_config_overrides
+from .. import storage
+from ..config import ConfigError, ConfigProxy, DEFAULT_CONFIG_PATH, apply_config_overrides, validate_config_overrides
 from .constants import RIG_TIERS, STRUCTURE_TYPES
 
 
@@ -124,4 +126,27 @@ def load_production_config(path=DEFAULT_CONFIG_PATH) -> ProductionConfig:
     return cfg
 
 
-PRODUCTION_CONFIG = load_production_config()
+# See eve_trader/config.py's ConfigProxy docstring for why this is a proxy,
+# not a plain ProductionConfig instance. resolve_and_set_production_config
+# (below) is what actually calls `.set()`, wired up via
+# tenant_scope.enter_tenant (multi-tenant migration Phase 4).
+_production_config_var: contextvars.ContextVar[ProductionConfig] = contextvars.ContextVar(
+    "production_config", default=load_production_config()
+)
+PRODUCTION_CONFIG = ConfigProxy(_production_config_var)
+
+
+def resolve_and_set_production_config(tenant_id: str) -> contextvars.Token:
+    """Same idea as eve_trader/config.py's resolve_and_set_trading_config,
+    for ProductionConfig/scope "production" - see its docstring for the
+    full reasoning (requires storage's tenant contextvar already set to
+    tenant_id; use tenant_scope.enter_tenant, not this directly)."""
+    cfg = load_production_config()
+    overrides = storage.load_tenant_settings("production")
+    if overrides:
+        apply_config_overrides(cfg, overrides)
+    return _production_config_var.set(cfg)
+
+
+def reset_production_config(token: contextvars.Token) -> None:
+    _production_config_var.reset(token)

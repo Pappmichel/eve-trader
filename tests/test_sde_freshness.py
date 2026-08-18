@@ -1,26 +1,39 @@
+import pytest
+
 from eve_trader import storage
 from eve_trader.production import actions as production_actions
 from eve_trader.production import sde
 from eve_trader.production.config import ProductionConfig
 
+from . import pg_helpers
+from .pg_helpers import _apply_phase1_schema, tenant  # noqa: F401
 
-def test_sde_refresh_state_round_trips(tmp_path):
-    db_path = tmp_path / "test.db"
-    assert storage.get_sde_refresh_state(db_path=db_path) is None
+# Only the two tests below touch real storage.py/Postgres functions - the
+# rest of this file monkeypatches storage.* entirely and never opens a real
+# connection, so they don't need `tenant` or postgres_required() at all.
+psycopg = pytest.importorskip("psycopg")
 
-    storage.set_sde_refresh_state("2026-07-16T10:00:00+00:00", "etag-1", db_path=db_path)
-    assert storage.get_sde_refresh_state(db_path=db_path) == ("2026-07-16T10:00:00+00:00", "etag-1")
+
+@pg_helpers.postgres_required()
+def test_sde_refresh_state_round_trips(tenant):
+    # sde_refresh_state is a shared, single-row (id=1) table - wipe first so
+    # a value left by an earlier test run can't make "is None" wrongly fail.
+    pg_helpers.wipe_tables("sde_refresh_state")
+    assert storage.get_sde_refresh_state() is None
+
+    storage.set_sde_refresh_state("2026-07-16T10:00:00+00:00", "etag-1")
+    assert storage.get_sde_refresh_state() == ("2026-07-16T10:00:00+00:00", "etag-1")
 
     # A second call replaces, not appends (single-row table).
-    storage.set_sde_refresh_state("2026-07-17T10:00:00+00:00", "etag-2", db_path=db_path)
-    assert storage.get_sde_refresh_state(db_path=db_path) == ("2026-07-17T10:00:00+00:00", "etag-2")
+    storage.set_sde_refresh_state("2026-07-17T10:00:00+00:00", "etag-2")
+    assert storage.get_sde_refresh_state() == ("2026-07-17T10:00:00+00:00", "etag-2")
 
 
-def test_candidate_universe_built_at_returns_latest_run_ts(tmp_path):
-    db_path = tmp_path / "test.db"
-    assert storage.get_candidate_universe_built_at(db_path=db_path) is None
+@pg_helpers.postgres_required()
+def test_candidate_universe_built_at_returns_latest_run_ts(tenant):
+    assert storage.get_candidate_universe_built_at() is None
 
-    with storage.connect(db_path) as conn:
+    with storage.connect() as conn:
         conn.execute(
             "INSERT INTO candidate_universe (run_ts, item, type_id, volume_m3, category, market_group_path, meta_level) "
             "VALUES (?, 'Widget', 1, 1.0, 'Material', 'Path', NULL)",
@@ -32,7 +45,7 @@ def test_candidate_universe_built_at_returns_latest_run_ts(tmp_path):
             ("2026-07-16T10:00:00",),
         )
 
-    assert storage.get_candidate_universe_built_at(db_path=db_path) == "2026-07-16T10:00:00"
+    assert storage.get_candidate_universe_built_at() == "2026-07-16T10:00:00"
 
 
 class _FakeHeadResponse:
