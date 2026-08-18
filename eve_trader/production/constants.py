@@ -105,7 +105,6 @@ ACTIVITY_MODS: dict[str, ActivityMods] = {
     "Officer": ActivityMods(material_multiplier=1.00, time_multiplier=1.00, job_cost_rate=0.077742),
     "Deadspace": ActivityMods(material_multiplier=1.00, time_multiplier=1.00, job_cost_rate=0.077742),
     "Tech II": ActivityMods(material_multiplier=0.98, time_multiplier=0.96, job_cost_rate=0.07813),
-    "Input": ActivityMods(material_multiplier=0.940104, time_multiplier=0.2968064, job_cost_rate=0.07813),
 }
 
 
@@ -116,21 +115,24 @@ class StructureType:
     te_multiplier: float
 
 
-# Confirmed against wiki.eveuniversity.org "Upwell structures" (job fee/material/
+# Confirmed against wiki.eveuniversity.org "Refinery" (job fee/material/
 # duration bonuses) - job fee only applies to Engineering Complexes, never to
 # Refineries (Athanor/Tatara get no cost bonus at all, hence cost_multiplier=1.0).
 # Athanor/Tatara's own material_multiplier stays 1.0 too - their "refinery
 # yield" stat (2%/4%) is a *reprocessing* bonus, confirmed not to apply to
 # reactions; reactions only get a structure te_multiplier ("reaction job
-# duration reduction": Athanor -3%, Tatara -25%) plus, if fitted, reactor-
-# specific ME *and* TE rigs (see RIG_TIERS/structure_rig_multiplier - both
-# exist in EVE, e.g. "Standup M-Set Composite Reactor Time Efficiency I/II").
+# duration reduction") plus, if fitted, reactor-specific ME *and* TE rigs
+# (see RIG_TIERS/structure_rig_multiplier - both exist in EVE, e.g. "Standup
+# M-Set Composite Reactor Time Efficiency I/II"). Re-confirmed 2026-08-18
+# (wiki.eveuniversity.org/Refinery's own role-bonus table): only the Tatara
+# has a reaction-duration bonus (-25%) - the Athanor has none at all, a
+# previous -3% entry here didn't correspond to any real EVE attribute.
 STRUCTURE_TYPES: dict[str, StructureType] = {
     "Citadel (no bonuses)": StructureType(1.00, 1.00, 1.00),
     "Raitaru (M Engineering Complex)": StructureType(0.97, 0.99, 0.85),
     "Azbel (L Engineering Complex)": StructureType(0.96, 0.99, 0.80),
     "Sotiyo (XL Engineering Complex)": StructureType(0.95, 0.99, 0.70),
-    "Athanor (M Refinery)": StructureType(1.00, 1.00, 0.97),
+    "Athanor (M Refinery)": StructureType(1.00, 1.00, 1.00),
     "Tatara (L Refinery)": StructureType(1.00, 1.00, 0.75),
 }
 
@@ -372,13 +374,16 @@ SKILL_LABORATORY_OPERATION = 3406
 SKILL_ADVANCED_LABORATORY_OPERATION = 24624
 
 # ESI industryActivity activity_id -> which slot category it draws from.
+# No activity_id 7 ("Reverse Engineering") entry - that Ancient-Relic-based
+# Tech III mechanic was removed from EVE years ago (see sde.py/invention.py/
+# engine.py's own comments on this), so no live ESI industry job can ever
+# report it.
 ACTIVITY_SLOT_CATEGORY: dict[int, str] = {
     1: "manufacturing",   # Manufacturing
     11: "reaction",       # Reaction
     3: "science",         # Time Efficiency Research
     4: "science",         # Material Efficiency Research
     5: "science",         # Copying
-    7: "science",         # Reverse Engineering
     8: "science",         # Invention
 }
 
@@ -388,7 +393,6 @@ ACTIVITY_JOB_LABELS: dict[int, str] = {
     3: "TE Research",
     4: "ME Research",
     5: "Copying",
-    7: "Reverse Engineering",
     8: "Invention",
 }
 
