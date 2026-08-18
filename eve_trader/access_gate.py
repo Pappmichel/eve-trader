@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Optional
 
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
+from . import storage
 from .config import OAUTH_CONFIG, OAuthConfig
 
 if TYPE_CHECKING:
@@ -31,6 +32,12 @@ if TYPE_CHECKING:
 
 SESSION_COOKIE_NAME = "eve_trader_session"
 SESSION_MAX_AGE_SECONDS = 30 * 24 * 3600  # 30 days
+
+# Every tool this app has - the Admin tool is one more entry here, not a
+# special case elsewhere (see tools_for's own docstring for why
+# DEFAULT_TENANT_ID's users get all of these, including "admin", without an
+# explicit tool_grants row).
+ALL_TOOL_KEYS = ("trading", "production", "doctrine", "portfolio", "admin")
 
 
 def _serializer(cfg: OAuthConfig) -> URLSafeTimedSerializer:
@@ -85,20 +92,18 @@ def clear_session_cookie(response: "Response") -> None:
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
 
 
-def resolve_corp_alliance(character_id: int) -> tuple[Optional[int], Optional[int]]:
-    """(corporation_id, alliance_id) for `character_id`, via ESI's public
-    (no-auth) character/corporation endpoints - alliance_id is None both for
-    a corp with no alliance and for a lookup failure (best-effort: a
-    character/corp allowlist entry should still work even if this particular
-    call has a transient hiccup, only the alliance-level check degrades)."""
-    from .esi_client import ESIClient  # local import: avoids a hard dependency for callers that don't need it
+def tools_for(tenant_id: str, character_id: int) -> list[str]:
+    """Every tool_key `character_id` (registered to `tenant_id`) currently
+    has access to. storage.DEFAULT_TENANT_ID's own users always get every
+    tool (including "admin") without an explicit tool_grants row - the
+    Admin tool is a deliberate cross-tenant superadmin surface, only ever
+    reachable from the one tenant that represents this app's own operator
+    (see docs/admin_schema.sql's own comment on the tool_grants table).
 
-    client = ESIClient()
-    corporation_id = client.character_public_info(character_id).get("corporation_id")
-    alliance_id = None
-    if corporation_id is not None:
-        try:
-            alliance_id = client.corporation_public_info(corporation_id).get("alliance_id")
-        except Exception:  # noqa: BLE001 - best-effort, see docstring
-            pass
-    return corporation_id, alliance_id
+    One chokepoint, used by both AccessGateMiddleware's per-request
+    enforcement (api/app.py) and /api/gate/status's `tools` field
+    (api/routers/gate.py) - so the two can never disagree about what a
+    given character can see vs. what they're actually allowed to call."""
+    if tenant_id == storage.DEFAULT_TENANT_ID:
+        return list(ALL_TOOL_KEYS)
+    return storage.list_tool_grants_for_character(character_id)

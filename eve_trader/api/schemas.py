@@ -291,6 +291,18 @@ class BuildCandidate(_Base):
     meta_level: Optional[int] = None
 
 
+class ShipMarginRow(_Base):
+    type_id: int
+    type_name: str
+    activity: str
+    home_price: Optional[float] = None
+    jita_price: Optional[float] = None
+    build_cost: Optional[float] = None
+    margin_home: Optional[float] = None
+    margin_jita: Optional[float] = None
+    meta_level: Optional[int] = None
+
+
 class MaterialTreeNode(_Base):
     """Recursive - see engine.build_material_tree. Pydantic resolves the
     self-reference in `children` via model_rebuild() below."""
@@ -414,6 +426,21 @@ class PortfolioOverview(_Base):
     production_stock_value: float
     production_stock_targets_configured: bool
     combined_value: float
+
+
+# ----------------------------------------------------------------------- admin
+class AdminTenant(_Base):
+    tenant_id: str
+    name: str
+    created_at: Optional[str] = None
+
+
+class AdminUser(_Base):
+    character_id: int
+    character_name: Optional[str] = None
+    tenant_id: str
+    tenant_name: str
+    tool_keys: list[str] = []
 
 
 # ------------------------------------------------------------ plan payloads

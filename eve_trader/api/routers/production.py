@@ -244,6 +244,20 @@ def discover_build_candidates(top_n: int = 200):
     return _wrap(actions.do_discover_build_candidates, top_n=top_n)["rows"]
 
 
+@router.get("/margins", response_model=list[schemas.ShipMarginRow])
+def get_ship_margins():
+    return _wrap(actions.do_get_ship_margins)["rows"]
+
+
+class ItemMarginSearchRequest(BaseModel):
+    item_name: str
+
+
+@router.post("/margins/search", response_model=schemas.ShipMarginRow)
+def search_item_margin(req: ItemMarginSearchRequest):
+    return _wrap(actions.do_get_item_margin, item_name=req.item_name)
+
+
 class AddStockTargetRequest(BaseModel):
     type_name: str
     backup_stock: float = 0

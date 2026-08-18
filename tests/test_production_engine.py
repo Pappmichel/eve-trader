@@ -36,6 +36,14 @@ def _reset_discover_cache():
     engine.invalidate_discover_cache()
 
 
+@pytest.fixture(autouse=True)
+def _reset_ship_margin_cache():
+    # Same reasoning as _reset_discover_cache above, for engine._ship_margin_cache.
+    engine.invalidate_ship_margin_cache()
+    yield
+    engine.invalidate_ship_margin_cache()
+
+
 def test_material_qty_never_reduces_below_runs():
     # base_qty=1 is never ME-reduced in real EVE - floored at runs regardless
     # of how large the reduction is.
@@ -391,6 +399,60 @@ def _fake_quote(type_id, buy=100.0, sell=200.0):
     return CurrentPrice(type_id=type_id, updated="2026-01-01", buy=buy, sell=sell)
 
 
+def test_margin_home_computes_net_of_market_fees():
+    cfg = ProductionConfig(market_fees=0.05)
+    home = {1: _fake_quote(1, sell=200.0)}
+
+    # sell_price = 200 * 0.95 = 190; margin = (190 - 100) / 100 = 0.9
+    assert engine.margin_home(1, 100.0, home, cfg) == pytest.approx(0.9)
+
+
+def test_margin_home_none_when_no_home_sell_quote():
+    cfg = ProductionConfig()
+    assert engine.margin_home(1, 100.0, {}, cfg) is None
+
+
+def test_margin_home_none_when_build_cost_invalid():
+    cfg = ProductionConfig()
+    home = {1: _fake_quote(1, sell=200.0)}
+
+    assert engine.margin_home(1, None, home, cfg) is None
+    assert engine.margin_home(1, 0.0, home, cfg) is None
+
+
+def test_margin_jita_nets_fees_and_export_haul_cost(monkeypatch):
+    cfg = ProductionConfig(market_fees=0.05, haul_cost_per_m3=10.0)
+    jita = {1: _fake_quote(1, sell=200.0)}
+    monkeypatch.setattr(engine, "_haul_volume", lambda *a, **k: 2.0)
+
+    # sell_price = 200*0.95 - 10*2 = 190 - 20 = 170; margin = (170-100)/100 = 0.7
+    assert engine.margin_jita(1, 100.0, jita, cfg) == pytest.approx(0.7)
+
+
+def test_margin_jita_none_when_no_jita_sell_quote(monkeypatch):
+    cfg = ProductionConfig()
+    monkeypatch.setattr(engine, "_haul_volume", lambda *a, **k: 1.0)
+
+    assert engine.margin_jita(1, 100.0, {}, cfg) is None
+
+
+def test_build_margin_dispatches_to_jita_when_jita_target_set(monkeypatch):
+    cfg = ProductionConfig()
+    monkeypatch.setattr(engine, "margin_home", lambda *a, **k: 0.1)
+    monkeypatch.setattr(engine, "margin_jita", lambda *a, **k: 0.9)
+
+    assert engine._build_margin(1, 100.0, jita_target=5.0, home={}, jita={}, cfg=cfg) == 0.9
+
+
+def test_build_margin_dispatches_to_home_when_no_jita_target(monkeypatch):
+    cfg = ProductionConfig()
+    monkeypatch.setattr(engine, "margin_home", lambda *a, **k: 0.1)
+    monkeypatch.setattr(engine, "margin_jita", lambda *a, **k: 0.9)
+
+    assert engine._build_margin(1, 100.0, jita_target=None, home={}, jita={}, cfg=cfg) == 0.1
+    assert engine._build_margin(1, 100.0, jita_target=0.0, home={}, jita={}, cfg=cfg) == 0.1
+
+
 class _FakeGmClient:
     """Stub for GoonmetricsClient - avoids a real Goonmetrics history call in
     discover_build_candidates' second (post-margin-gate) pass. `movement_by_type`
@@ -717,6 +779,113 @@ def test_discover_build_candidates_concurrent_calls_do_not_double_scan(monkeypat
 
     assert scan_calls == [1]  # only one thread actually performed the scan
     assert results[0] == results[1]
+
+
+# ---------------------------------------------------------------- discover_ship_margins
+@pg_helpers.postgres_required()
+def test_discover_ship_margins_only_includes_ships(monkeypatch, tenant):
+    monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
+    monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: [
+        (1, "Some Ship", 1.0, 100, None, engine.SHIP_CATEGORY_ID),
+        (2, "Some Module", 1.0, 100, None, 7),  # not a ship - must be excluded
+    ])
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (999, 1, 1.0)))
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+
+    results = engine.discover_ship_margins(ProductionConfig())
+
+    assert [r["type_id"] for r in results] == [1]
+
+
+@pg_helpers.postgres_required()
+def test_discover_ship_margins_includes_already_tracked_stock_targets(monkeypatch, tenant):
+    # Deliberately different from discover_build_candidates - the Margin page
+    # is an information browser, not a candidate filter, so an already-
+    # tracked stock target (type_id 1 in _FakePlanContext.stock_targets)
+    # still appears here.
+    monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
+    monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: [
+        (1, "Already Tracked Ship", 1.0, 100, None, engine.SHIP_CATEGORY_ID),
+    ])
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (999, 1, 1.0)))
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+
+    results = engine.discover_ship_margins(ProductionConfig())
+
+    assert [r["type_id"] for r in results] == [1]
+
+
+@pg_helpers.postgres_required()
+def test_discover_ship_margins_skips_non_manufacturable_ships(monkeypatch, tenant):
+    monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
+    monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: [
+        (1, "Unbuildable Ship", 1.0, 100, None, engine.SHIP_CATEGORY_ID),
+    ])
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))  # no blueprint
+
+    results = engine.discover_ship_margins(ProductionConfig())
+
+    assert results == []
+
+
+@pg_helpers.postgres_required()
+def test_discover_ship_margins_populates_prices_and_both_margins(monkeypatch, tenant):
+    monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)  # home[1]=(buy=100,sell=200), jita={}
+    monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: [
+        (1, "Some Ship", 1.0, 100, None, engine.SHIP_CATEGORY_ID),
+    ])
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (999, 1, 1.0)))
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "margin_home", lambda *a, **k: 0.5)
+    monkeypatch.setattr(engine, "margin_jita", lambda *a, **k: None)  # no Jita quote in _FakePlanContext
+
+    results = engine.discover_ship_margins(ProductionConfig())
+
+    assert results == [{
+        "type_id": 1, "type_name": "Some Ship", "activity": "Tech I",
+        "home_price": 200.0, "jita_price": None, "build_cost": 100.0,
+        "margin_home": 0.5, "margin_jita": None, "meta_level": None,
+    }]
+
+
+@pg_helpers.postgres_required()
+def test_discover_ship_margins_reuses_cache_within_ttl(monkeypatch, tenant):
+    monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
+    scan_calls = []
+    monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: (
+        scan_calls.append(1),
+        [(1, "Some Ship", 1.0, 100, None, engine.SHIP_CATEGORY_ID)],
+    )[1])
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (999, 1, 1.0)))
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    cfg = ProductionConfig()
+
+    first = engine.discover_ship_margins(cfg)
+    monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: (_ for _ in ()).throw(
+        AssertionError("should not re-scan - cache should have been reused")))
+    second = engine.discover_ship_margins(cfg)
+
+    assert scan_calls == [1]
+    assert second == first
+
+
+@pg_helpers.postgres_required()
+def test_invalidate_ship_margin_cache_forces_a_rescan(monkeypatch, tenant):
+    monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
+    scan_calls = []
+    monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: (
+        scan_calls.append(1),
+        [(1, "Some Ship", 1.0, 100, None, engine.SHIP_CATEGORY_ID)],
+    )[1])
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (999, 1, 1.0)))
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    cfg = ProductionConfig()
+
+    engine.discover_ship_margins(cfg)
+    engine.invalidate_ship_margin_cache()
+    engine.discover_ship_margins(cfg)
+
+    assert scan_calls == [1, 1]
 
 
 # ---------------------------------------------------------------- _expand_all

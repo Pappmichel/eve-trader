@@ -66,10 +66,15 @@ either without the same reasoning: `api/routers/portfolio.py` calls
 `portfolio.py`/`scheduler.py` are the cross-cutting modules that
 deliberately span both tools (see "Two tools, one backend" above) - there's
 no natural `do_*` home for either without picking one tool arbitrarily.
-`cli.py`'s `tenant`/`migrate-sqlite` commands call `storage`/
-`sqlite_migration` directly - both are admin-only, operator-run-once
+`cli.py`'s `tenant import-tokens`/`migrate-sqlite` commands call `storage`/
+`sqlite_migration` directly - both are genuinely one-time, operator-run
 commands with no web/API equivalent at all, so there's no router on the
-other side of them to keep in sync with.
+other side of them to keep in sync with. `tenant create`/`add-entry`/`list`
+are *not* this exception anymore - they call `storage.create_tenant`/
+`add_tenant_registry_entry`/`list_tenants` too, but the Admin tool
+(`eve_trader/admin.py`'s `do_*` functions, see "Tool permissions & Admin"
+below) calls the exact same `storage.py` functions, so both paths stay in
+sync by construction.
 
 ## Config: dataclasses + config.yaml, validated before applied, resolved per-tenant
 
@@ -186,6 +191,44 @@ function or table after that migration (all 5 of its phases are done).
   (directly or via `TokenManager`'s lazy-refresh path), wrap the submitted
   callable in `storage.with_current_tenant(...)` - don't assume the ambient
   tenant "just carries over" into a worker thread.
+
+## Tool permissions & Admin
+
+Two independent authorization layers, don't conflate them: **tenant_id**
+(RLS, "whose data") and **tool grants** (`tool_grants` table, "which tools
+can this specific character see/use"). A valid access-gate session only
+proves *who* - `AccessGateMiddleware` (`api/app.py`) is what actually
+enforces the second layer, via `access_gate.tools_for(tenant_id,
+character_id)` checked against a path-prefix-to-`tool_key` map
+(`_TOOL_PATH_PREFIXES`) before `call_next`. `/api/gate/status`'s own
+`tools` field (via the same `tools_for`, one chokepoint so the two can never
+disagree) is *informational only* - it's what `Landing.tsx` uses to decide
+which cards to render, but hiding a card there does not, by itself, block a
+direct API call; the middleware is the actual enforcement point. Both are
+no-ops while `AccessConfig.access_gate_enabled` is `False` (this app's
+default) - every tool is visible/usable, matching the pre-tool-grants
+behavior for local/trusted-single-operator installs.
+
+`tool_grants` (`character_id, tool_key, tenant_id`) is deliberately **not
+RLS-scoped**, same reasoning as `tenants`/`tenant_registry_entries`
+(`docs/phase3_schema.sql`) - queried via `storage.connect_unscoped()`. The
+Admin tool (`eve_trader/admin.py`'s `do_*` functions, `api/routers/
+admin.py`, tool_key `"admin"`) is a deliberate **cross-tenant superadmin**
+surface, not a per-tenant self-service page: `storage.DEFAULT_TENANT_ID`'s
+own users get every tool (including `"admin"`) automatically, with no
+`tool_grants` row needed (`access_gate.tools_for`'s own bypass) - the same
+"the operator is special, not just another tenant" pattern already used for
+the scheduler/backup job. No other tenant can reach `/admin` at all unless
+explicitly granted that tool_key by a Default-tenant admin.
+
+`AccessGate` is character-only (`tenant_registry_entries.entry_type`
+CHECK-constrained to `'character'`, `docs/admin_schema.sql`) - corp/alliance
+registry entries were retired once tool-level permissions made "any
+character in this corp/alliance gets full access" too coarse. Before
+narrowing that constraint on a real deployment, check for existing
+corp/alliance rows first (`SELECT entry_type, count(*) FROM
+tenant_registry_entries GROUP BY entry_type`) - narrowing without migrating
+them first locks those characters out.
 
 ## Testing conventions
 

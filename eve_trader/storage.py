@@ -337,8 +337,12 @@ def connect_unscoped():
 
 # ------------------------------------------------------------- tenant registry
 def create_tenant(name: str) -> str:
-    """Provisions a new tenant, returns its tenant_id. Admin-CLI-only (see
-    cli.py's `tenant create`) - not reachable from the web app itself."""
+    """Provisions a new tenant, returns its tenant_id. Reachable from both
+    `cli.py`'s `tenant create` and the web Admin tool (`admin.do_create_tenant`
+    - a deliberate cross-tenant superadmin surface, see admin.py's own module
+    docstring) - the CLI command predates the Admin tool and stays useful for
+    initial setup with no server running yet, both now call this same
+    function rather than drifting into two implementations."""
     with connect_unscoped() as conn:
         row = conn.execute(
             "INSERT INTO tenants (name) VALUES (?) RETURNING tenant_id", (name,)
@@ -346,44 +350,64 @@ def create_tenant(name: str) -> str:
     return str(row[0])
 
 
-def add_tenant_registry_entry(tenant_id: str, entry_type: str, entry_id: int) -> None:
-    """Registers `entry_id` (a character/corp/alliance id) as belonging to
-    `tenant_id` - upsert, since re-registering an id to a different tenant
-    is a legitimate re-provisioning operation (e.g. a character moved
-    accounts), not an error to reject."""
-    assert entry_type in ("character", "corporation", "alliance")
+def add_tenant_registry_entry(tenant_id: str, character_id: int, character_name: Optional[str] = None) -> None:
+    """Registers `character_id` as belonging to `tenant_id` - upsert, since
+    re-registering an id to a different tenant is a legitimate
+    re-provisioning operation (e.g. a character moved accounts), not an
+    error to reject. AccessGate is character-only now (corp/alliance
+    registry entries retired - see docs/admin_schema.sql). `character_name`
+    is cached on this row (docs/admin_schema.sql's own ALTER) so the Admin
+    UI's user list never needs a live ESI lookup per page load - pass None
+    to leave an existing name untouched (a re-registration that doesn't
+    know the name)."""
+    with connect_unscoped() as conn:
+        if character_name is not None:
+            conn.execute(
+                "INSERT INTO tenant_registry_entries (entry_type, entry_id, tenant_id, character_name) "
+                "VALUES ('character', ?, ?, ?) "
+                "ON CONFLICT(entry_type, entry_id) DO UPDATE SET "
+                "tenant_id = excluded.tenant_id, character_name = excluded.character_name",
+                (character_id, tenant_id, character_name),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO tenant_registry_entries (entry_type, entry_id, tenant_id) VALUES ('character', ?, ?) "
+                "ON CONFLICT(entry_type, entry_id) DO UPDATE SET tenant_id = excluded.tenant_id",
+                (character_id, tenant_id),
+            )
+
+
+def remove_tenant_registry_entry(character_id: int) -> None:
+    """Deregisters `character_id` entirely - Admin-UI "remove user" (see
+    admin.do_remove_user, which also clears this character's tool_grants in
+    the same call, since a grant for a character who can no longer log in at
+    all is dead weight, not a meaningful "revoked but still registered"
+    state)."""
     with connect_unscoped() as conn:
         conn.execute(
-            "INSERT INTO tenant_registry_entries (entry_type, entry_id, tenant_id) VALUES (?, ?, ?) "
-            "ON CONFLICT(entry_type, entry_id) DO UPDATE SET tenant_id = excluded.tenant_id",
-            (entry_type, entry_id, tenant_id),
+            "DELETE FROM tenant_registry_entries WHERE entry_type = 'character' AND entry_id = ?",
+            (character_id,),
         )
 
 
-def resolve_tenant_id(character_id: int, corporation_id: Optional[int],
-                       alliance_id: Optional[int]) -> Optional[str]:
-    """Returns the tenant_id registered for `character_id`, else
-    `corporation_id`, else `alliance_id` (same "any wins", character-first
-    order as access_gate.py's old is_allowed), or None if none of the three
-    match any registry entry."""
+def resolve_tenant_id(character_id: int) -> Optional[str]:
+    """Returns the tenant_id registered for `character_id`, or None if it
+    isn't registered at all - access_gate.py's login flow denies access on
+    None. Character-only (corp/alliance registry entries retired - see
+    docs/admin_schema.sql; confirmed live before removal that no corp/
+    alliance rows existed in production)."""
     with connect_unscoped() as conn:
-        for entry_type, entry_id in (
-            ("character", character_id), ("corporation", corporation_id), ("alliance", alliance_id),
-        ):
-            if entry_id is None:
-                continue
-            row = conn.execute(
-                "SELECT tenant_id FROM tenant_registry_entries WHERE entry_type = ? AND entry_id = ?",
-                (entry_type, entry_id),
-            ).fetchone()
-            if row is not None:
-                return str(row[0])
-    return None
+        row = conn.execute(
+            "SELECT tenant_id FROM tenant_registry_entries WHERE entry_type = 'character' AND entry_id = ?",
+            (character_id,),
+        ).fetchone()
+    return str(row[0]) if row is not None else None
 
 
 def list_tenants() -> list[tuple]:
     """Returns (tenant_id, name, created_at) for every provisioned tenant -
-    admin-CLI-only (`tenant list`)."""
+    used by both `cli.py`'s `tenant list` and the web Admin tool
+    (`admin.do_list_tenants`)."""
     with connect_unscoped() as conn:
         return conn.execute("SELECT tenant_id, name, created_at FROM tenants ORDER BY created_at").fetchall()
 
@@ -397,6 +421,79 @@ def list_tenant_registry_entries(tenant_id: str) -> list[tuple]:
             "ORDER BY entry_type, entry_id",
             (tenant_id,),
         ).fetchall()
+
+
+# ------------------------------------------------------------------ tool grants
+def set_tool_grant(character_id: int, tool_key: str, tenant_id: str) -> None:
+    """Grants `tool_key` to `character_id` - upsert (re-granting an
+    already-granted tool is a no-op, not an error). Unscoped, same reasoning
+    as tenant_registry_entries (see docs/admin_schema.sql's own comment on
+    tool_grants) - Admin-UI-only (`admin.do_set_tool_grants`)."""
+    with connect_unscoped() as conn:
+        conn.execute(
+            "INSERT INTO tool_grants (character_id, tool_key, tenant_id) VALUES (?, ?, ?) "
+            "ON CONFLICT (character_id, tool_key) DO UPDATE SET tenant_id = excluded.tenant_id",
+            (character_id, tool_key, tenant_id),
+        )
+
+
+def revoke_tool_grant(character_id: int, tool_key: str) -> None:
+    """Removes a single tool grant - no-op if it wasn't granted (matches
+    set_tool_grant's own "upsert, not error" symmetry)."""
+    with connect_unscoped() as conn:
+        conn.execute(
+            "DELETE FROM tool_grants WHERE character_id = ? AND tool_key = ?",
+            (character_id, tool_key),
+        )
+
+
+def revoke_all_tool_grants(character_id: int) -> None:
+    """Removes every tool grant for `character_id` - called from
+    admin.do_remove_user alongside remove_tenant_registry_entry, and from
+    admin.do_set_tool_grants (replace-not-append semantics, see that
+    function's own docstring)."""
+    with connect_unscoped() as conn:
+        conn.execute("DELETE FROM tool_grants WHERE character_id = ?", (character_id,))
+
+
+def list_tool_grants_for_character(character_id: int) -> list[str]:
+    """Returns every tool_key currently granted to `character_id` - the
+    plain per-character grant list only, does NOT apply the
+    DEFAULT_TENANT_ID "all tools" bypass (see gate.py's own status handler,
+    which checks that separately before falling back to this)."""
+    with connect_unscoped() as conn:
+        rows = conn.execute(
+            "SELECT tool_key FROM tool_grants WHERE character_id = ? ORDER BY tool_key",
+            (character_id,),
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+def list_users_with_grants() -> list[dict]:
+    """Returns one dict per registered character - {character_id,
+    character_name, tenant_id, tenant_name, tool_keys} - tool_keys is the
+    list of currently-granted tool_key strings (empty if none yet).
+    Admin-UI-only (cross-tenant superadmin - see admin.py's own module
+    docstring for why this deliberately reads across every tenant rather
+    than being RLS-scoped)."""
+    with connect_unscoped() as conn:
+        users = conn.execute(
+            "SELECT tre.entry_id, tre.character_name, tre.tenant_id, t.name "
+            "FROM tenant_registry_entries tre JOIN tenants t ON t.tenant_id = tre.tenant_id "
+            "WHERE tre.entry_type = 'character' ORDER BY tre.entry_id"
+        ).fetchall()
+        grants = conn.execute("SELECT character_id, tool_key FROM tool_grants").fetchall()
+    grants_by_character: dict[int, list[str]] = {}
+    for character_id, tool_key in grants:
+        grants_by_character.setdefault(character_id, []).append(tool_key)
+    return [
+        {
+            "character_id": character_id, "character_name": character_name,
+            "tenant_id": str(tenant_id), "tenant_name": tenant_name,
+            "tool_keys": grants_by_character.get(character_id, []),
+        }
+        for character_id, character_name, tenant_id, tenant_name in users
+    ]
 
 
 # ------------------------------------------------------------ tenant settings

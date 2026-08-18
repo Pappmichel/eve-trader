@@ -19,10 +19,11 @@ from . import esi_sync, invention, jobs, pricing, sde
 from .config import PRODUCTION_CONFIG, ProductionConfig, validate_production_overrides
 from .constants import DECRYPTORS, JOB_CATEGORIES
 from .engine import (
-    build_material_tree, discover_build_candidates, invalidate_discover_cache,
+    build_material_tree, discover_build_candidates, discover_ship_margins, item_margin_detail,
+    invalidate_discover_cache, invalidate_ship_margin_cache,
     invalidate_production_locations_cache, market_status, plan_asset_optimized, plan_production, stock_value,
 )
-from .models import AssetLocationRow, BuildCandidate, OwnedBlueprintRow, UnlistedStockRow
+from .models import AssetLocationRow, BuildCandidate, OwnedBlueprintRow, ShipMarginRow, UnlistedStockRow
 
 
 def do_update_settings(updates: dict, cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
@@ -34,6 +35,7 @@ def do_update_settings(updates: dict, cfg: ProductionConfig = PRODUCTION_CONFIG)
     except ConfigError as e:
         raise ActionError(str(e)) from e
     invalidate_discover_cache()  # a settings change (margin gate, structure/rig, ...) can change the result set
+    invalidate_ship_margin_cache()  # structure/rig/fee settings feed build_cost/margins here too
     if "home_location_id" in updates:
         invalidate_production_locations_cache()  # _current_stock's location set includes this
     return updates
@@ -62,6 +64,7 @@ def do_set_system(profile: str, system_name: str, cfg: ProductionConfig = PRODUC
         cfg, cfg_type=ProductionConfig,
     )
     invalidate_discover_cache()  # system cost index feeds directly into build cost
+    invalidate_ship_margin_cache()
     return {f"{profile}_system_name": system_name, f"{profile}_system_id": system_id}
 
 
@@ -76,6 +79,7 @@ def do_refresh_sde() -> dict:
         # action in this module converts a network failure to.
         raise ActionError(f"SDE refresh failed: {e}") from e
     invalidate_discover_cache()  # the item/blueprint universe itself may have changed
+    invalidate_ship_margin_cache()
     return result
 
 
@@ -146,6 +150,7 @@ def do_sync_esi() -> dict:
     # blueprints/corp_blueprints keep whatever was last synced either way,
     # until the next do_sync_esi call, which is this one).
     invalidate_discover_cache()
+    invalidate_ship_margin_cache()  # owned-BPO ME/TE feeds Tech I build_cost, including for ships
     return result
 
 
@@ -200,12 +205,14 @@ def do_set_selected_decryptor(type_id: int, decryptor: str) -> dict:
         raise ActionError(f"Unknown decryptor '{decryptor}'. Options: {', '.join(DECRYPTORS)}")
     storage.upsert_selected_decryptor(type_id, decryptor)
     invalidate_discover_cache()  # changes this item's T2 build cost/margin
+    invalidate_ship_margin_cache()  # T2 ships are affected too
     return {"type_id": type_id, "decryptor": decryptor}
 
 
 def do_clear_selected_decryptor(type_id: int) -> dict:
     storage.delete_selected_decryptor(type_id)
     invalidate_discover_cache()
+    invalidate_ship_margin_cache()
     return {"type_id": type_id, "decryptor": "Best"}
 
 
@@ -439,6 +446,32 @@ def do_discover_build_candidates(top_n: int = 200, cfg: ProductionConfig = PRODU
         raise ActionError("SDE cache is empty. Refresh SDE first.")
     candidates = discover_build_candidates(cfg, top_n=top_n)
     return {"rows": [BuildCandidate(**c) for c in candidates]}
+
+
+def do_get_ship_margins(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
+    """Margin page's list view - every ship's current home/Jita price, build
+    cost, and both margins. See engine.discover_ship_margins - cached there,
+    same as do_discover_build_candidates."""
+    if not storage.sde_row_counts().get("sde_types"):
+        raise ActionError("SDE cache is empty. Refresh SDE first.")
+    rows = discover_ship_margins(cfg)
+    return {"rows": [ShipMarginRow(**r) for r in rows]}
+
+
+def do_get_item_margin(item_name: str, cfg: ProductionConfig = PRODUCTION_CONFIG) -> ShipMarginRow:
+    """Margin page's search - resolves `item_name` (exact match, same lookup
+    do_build_material_tree/do_search_item_locations use) and returns its
+    current home/Jita price, build cost, and both margins for any category,
+    not just ships. See engine.item_margin_detail."""
+    matches = storage.search_sde_types(item_name, limit=2)
+    exact = [m for m in matches if m[1].lower() == item_name.strip().lower()]
+    if not exact:
+        if not matches:
+            raise ActionError(f"No type found for '{item_name}'. Refresh SDE first?")
+        raise ActionError(f"No exact match for '{item_name}'. Did you mean: {matches[0][1]}?")
+    type_id, resolved_name = exact[0]
+
+    return ShipMarginRow(**item_margin_detail(type_id, resolved_name, cfg))
 
 
 def _accumulate_stock_at_location(assets: list[dict], location_id: int, out: dict[int, float]) -> None:

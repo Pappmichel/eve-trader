@@ -495,39 +495,57 @@ def _unit_cost(type_id: int, cfg: ProductionConfig, home: dict, jita: dict,
     return best
 
 
+def _sell_margin(sell_price: float, build_cost: Optional[float]) -> Optional[float]:
+    """Shared core of margin_home/margin_jita - (sell_price - build_cost) /
+    build_cost, or None if build_cost isn't a real positive cost (gate not
+    applied, falls back to the plain cost comparison - a temporary
+    market-data gap shouldn't block every build outright)."""
+    if build_cost is None or build_cost <= 0:
+        return None
+    return (sell_price - build_cost) / build_cost
+
+
+def margin_home(type_id: int, build_cost: Optional[float], home: dict, cfg: ProductionConfig) -> Optional[float]:
+    """Margin if you built and sold one unit of `type_id` at the C-J (home)
+    sell quote right now, net of cfg.market_fees - its real opportunity-cost
+    value even if it's actually consumed internally rather than resold.
+    Returns None if there's no home sell quote to check against."""
+    home_quote = home.get(type_id)
+    if not home_quote or home_quote.sell <= 0:
+        return None
+    return _sell_margin(home_quote.sell * (1 - cfg.market_fees), build_cost)
+
+
+def margin_jita(type_id: int, build_cost: Optional[float], jita: dict, cfg: ProductionConfig) -> Optional[float]:
+    """Margin if you built and shipped one unit of `type_id` to Jita and sold
+    it there right now, net of cfg.market_fees and export haul cost (the same
+    haul_cost_per_m3 rate used for the reverse Jita->C-J import haul, just
+    subtracted instead of added). Returns None if there's no Jita sell quote
+    to check against."""
+    jita_quote = jita.get(type_id)
+    if not jita_quote or jita_quote.sell <= 0:
+        return None
+    export_cost = cfg.haul_cost_per_m3 * (_haul_volume(type_id, cfg) or 0)
+    return _sell_margin(jita_quote.sell * (1 - cfg.market_fees) - export_cost, build_cost)
+
+
 def _build_margin(type_id: int, build_cost: Optional[float], jita_target: Optional[float],
                    home: dict, jita: dict, cfg: ProductionConfig) -> Optional[float]:
     """Margin if you built and sold one unit of `type_id` right now - gates
     whether a *stock target* is worth building at all, separate from
     _expand's plain build-cheaper-than-buy sourcing comparison (that's about
     minimizing cost for something you're building anyway; this is "should you
-    even bother"). Stock targets with a Jita-market stock target (sell there)
-    price at the Jita sell quote, minus cfg.market_fees (broker's fee + sales
-    tax) and minus export cost - the same haul_cost_per_m3 rate used for the
-    reverse Jita->C-J import haul, just subtracted instead of added, since
-    you're shipping the finished item to Jita instead of materials to C-J.
-    Everything else (home-market target or pure backup/component stock with
-    no direct resale) prices at the C-J (home) sell quote, also net of
-    cfg.market_fees - its real opportunity-cost value even if it's actually
-    consumed internally rather than resold. Returns None (gate not applied,
-    falls back to the plain cost comparison) if there's no sell quote to
-    check against - a temporary market-data gap shouldn't block every build
-    outright."""
-    if build_cost is None or build_cost <= 0:
-        return None
-    volume = _haul_volume(type_id, cfg)
+    even bother"). A stock target with a Jita-market target (sell there) uses
+    margin_jita; everything else (home-market target or pure backup/component
+    stock with no direct resale) uses margin_home - see those functions' own
+    docstrings for the actual pricing. Thin dispatcher, kept for
+    plan_production/discover_build_candidates (both single-margin, gated by
+    whether *this specific stock target* has a jita_target) - the new
+    Margin page (engine.discover_ship_margins/actions.do_get_item_margin)
+    computes both unconditionally instead of picking one via this gate."""
     if jita_target and jita_target > 0:
-        jita_quote = jita.get(type_id)
-        if not jita_quote or jita_quote.sell <= 0:
-            return None
-        export_cost = cfg.haul_cost_per_m3 * (volume or 0)
-        sell_price = jita_quote.sell * (1 - cfg.market_fees) - export_cost
-    else:
-        home_quote = home.get(type_id)
-        if not home_quote or home_quote.sell <= 0:
-            return None
-        sell_price = home_quote.sell * (1 - cfg.market_fees)
-    return (sell_price - build_cost) / build_cost
+        return margin_jita(type_id, build_cost, jita, cfg)
+    return margin_home(type_id, build_cost, home, cfg)
 
 
 def _buy_or_build_decision(type_id: int, cfg: ProductionConfig, home: dict, jita: dict,
@@ -1762,6 +1780,121 @@ def _scan_build_candidates(cfg: ProductionConfig, client: Optional["GoonmetricsC
 
     results.sort(key=lambda r: r.get("potential_daily_profit", 0.0), reverse=True)
     return results
+
+
+# Separate cache from _discover_cache above, same TTL/lock shape - a
+# different result set (every ship, not just margin-qualifying non-tracked
+# candidates) computed from the same underlying inputs, so it needs its own
+# staleness window rather than sharing one cache key for two different
+# questions. Invalidated at the exact same call sites as
+# invalidate_discover_cache (see production/actions.py) - anything that
+# changes build_cost/margin inputs invalidates both.
+_SHIP_MARGIN_CACHE_TTL = 600  # seconds
+_ship_margin_cache: Optional[list[dict]] = None
+_ship_margin_cache_at: float = 0.0
+_ship_margin_cache_lock = threading.Lock()
+
+
+def invalidate_ship_margin_cache() -> None:
+    """Forces the next discover_ship_margins call to re-scan - call
+    alongside invalidate_discover_cache (see that function's own call
+    sites in production/actions.py)."""
+    global _ship_margin_cache, _ship_margin_cache_at
+    with _ship_margin_cache_lock:
+        _ship_margin_cache = None
+        _ship_margin_cache_at = 0.0
+
+
+def discover_ship_margins(cfg: ProductionConfig = PRODUCTION_CONFIG,
+                           client: Optional["GoonmetricsClient"] = None) -> list[dict]:
+    """Production's Margin page (list view): every ship with a real
+    Manufacturing/Reaction/Invention recipe (classify_activity), with its
+    current home/Jita sell price, build cost, and both margin_home/
+    margin_jita (see those functions' own docstrings) - deliberately an
+    information browser, not a candidate filter like discover_build_
+    candidates: no existing_target_ids exclusion, no min_margin/
+    min_daily_profit gate, no history/movement lookup. A ship with no real
+    order book on one or both sides still appears, with None for whichever
+    price/margin couldn't be computed (matches Doctrine Stockpile's own
+    "gray = no data yet" convention rather than silently hiding rows).
+
+    Cached the same way discover_build_candidates is (_SHIP_MARGIN_CACHE_TTL,
+    _ship_margin_cache_lock) - `client` param only exists for tests to
+    inject a fake Goonmetrics client the same way discover_build_candidates
+    accepts one, though this function never actually calls it (no movement
+    lookup needed here)."""
+    global _ship_margin_cache, _ship_margin_cache_at
+    with _ship_margin_cache_lock:
+        if _ship_margin_cache is not None and (time.time() - _ship_margin_cache_at) < _SHIP_MARGIN_CACHE_TTL:
+            return _ship_margin_cache
+        results = _scan_ship_margins(cfg)
+        _ship_margin_cache = results
+        _ship_margin_cache_at = time.time()
+        return results
+
+
+@storage.with_batch_session()
+def _scan_ship_margins(cfg: ProductionConfig) -> list[dict]:
+    """The actual scan behind discover_ship_margins - split out for the same
+    reason _scan_build_candidates is (holds the cache lock across the whole
+    scan, not just the read/write). Ships are a much smaller SDE slice than
+    discover_build_candidates' full scan (~19,400 items), so this is cheap
+    by comparison even though it's not gated by margin/daily-profit at all."""
+    ctx = _PlanContext(cfg)
+    cost_memo: dict[int, Optional[float]] = {}
+    t2_memo: dict[int, tuple[float, float, Optional[str]]] = {}
+
+    results = []
+    for type_id, type_name, _volume, _market_group_id, meta_level, category_id in storage.load_sde_types_with_market_group():
+        if category_id != SHIP_CATEGORY_ID:
+            continue
+        activity, bp = classify_activity(type_id)
+        if bp is None:
+            continue
+        build_cost = _unit_cost(type_id, cfg, ctx.home, ctx.jita, cost_memo, ctx.selected_decryptors,
+                                 t2_memo, ctx.cost_indices, ctx.adjusted_prices)
+        home_quote = ctx.home.get(type_id)
+        jita_quote = ctx.jita.get(type_id)
+        results.append({
+            "type_id": type_id, "type_name": type_name, "activity": activity,
+            "home_price": home_quote.sell if home_quote and home_quote.sell > 0 else None,
+            "jita_price": jita_quote.sell if jita_quote and jita_quote.sell > 0 else None,
+            "build_cost": build_cost,
+            "margin_home": margin_home(type_id, build_cost, ctx.home, cfg),
+            "margin_jita": margin_jita(type_id, build_cost, ctx.jita, cfg),
+            "meta_level": meta_level,
+        })
+
+    results.sort(key=lambda r: r.get("margin_home") or 0.0, reverse=True)
+    return results
+
+
+@storage.with_batch_session()
+def item_margin_detail(type_id: int, type_name: str, cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
+    """Production Margin page's search: the same row shape discover_ship_
+    margins produces, for one arbitrary already-resolved item (any category,
+    not just ships - see production/actions.py's do_get_item_margin, which
+    resolves `type_name` -> `type_id` the same way do_build_material_tree
+    does before calling this). No caching needed (one item per call, same
+    cheap cost profile as the existing Material Tree feature) - a fresh
+    _PlanContext every call, unlike discover_ship_margins' cached whole-
+    catalog scan."""
+    ctx = _PlanContext(cfg)
+    cost_memo: dict[int, Optional[float]] = {}
+    t2_memo: dict[int, tuple[float, float, Optional[str]]] = {}
+    activity, _bp = classify_activity(type_id)
+    build_cost = _unit_cost(type_id, cfg, ctx.home, ctx.jita, cost_memo, ctx.selected_decryptors,
+                             t2_memo, ctx.cost_indices, ctx.adjusted_prices)
+    home_quote = ctx.home.get(type_id)
+    jita_quote = ctx.jita.get(type_id)
+    return {
+        "type_id": type_id, "type_name": type_name, "activity": activity,
+        "home_price": home_quote.sell if home_quote and home_quote.sell > 0 else None,
+        "jita_price": jita_quote.sell if jita_quote and jita_quote.sell > 0 else None,
+        "build_cost": build_cost,
+        "margin_home": margin_home(type_id, build_cost, ctx.home, cfg),
+        "margin_jita": margin_jita(type_id, build_cost, ctx.jita, cfg),
+    }
 
 
 def build_material_tree(type_id: int, quantity: float, cfg: ProductionConfig, home: dict, jita: dict,
