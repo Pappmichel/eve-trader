@@ -67,7 +67,7 @@ def test_price_history_falls_back_to_esi_on_goonmetrics_failure(monkeypatch):
     assert p.min_price == 4.5
     assert p.max_price == 5.5
     assert p.num_orders == 42
-    assert p.movement == 5.0 * 1000
+    assert p.movement == 1000  # ESI's own volume (units/day), not average*volume - see goonmetrics_client.py
 
 
 class _FakeResponse:

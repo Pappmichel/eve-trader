@@ -175,12 +175,15 @@ class GoonmetricsClient:
     def _esi_price_history_fallback(self, region_id: int, type_ids: list[int]) -> list[HistoryPoint]:
         """Refetches via ESI's /markets/{region_id}/history/ (esi_client.py's
         region_market_history), one call per type_id since ESI has no batch
-        endpoint for this. Maps ESI's schema onto HistoryPoint: `movement`
-        (Goonmetrics' ISK-value-traded liquidity measure, used directly in
-        history_backtest.py's scoring) has no ESI equivalent, so it's
-        approximated as average_price * volume for that day - the standard
-        way EVE market tools derive ISK-value-traded from ESI's raw
-        (average, volume) pair."""
+        endpoint for this. Maps ESI's schema onto HistoryPoint: `movement` is
+        ESI's own `volume` field (units traded that day, not an ISK value -
+        confirmed live 2026-07-15 against ESI's own history endpoint, see
+        production/engine.py's discover_build_candidates docstring), so this
+        passes it straight through rather than multiplying by average_price -
+        that multiplication used to happen here and silently mixed
+        unit-count and ISK-value figures in the same HistoryPoint.movement
+        field depending on whether Goonmetrics or this fallback served the
+        request."""
         from .esi_client import ESIClient, ESIError  # local import: avoids a hard esi_client<->goonmetrics_client coupling for callers that never hit this fallback
 
         esi = ESIClient(self.cfg)
@@ -195,7 +198,7 @@ class GoonmetricsClient:
                 points.append(HistoryPoint(
                     region_id=region_id, type_id=type_id, date=r["date"],
                     min_price=r["lowest"], max_price=r["highest"], avg_price=r["average"],
-                    movement=r["average"] * r["volume"], num_orders=r["order_count"],
+                    movement=r["volume"], num_orders=r["order_count"],
                 ))
         return points
 
