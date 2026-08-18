@@ -183,6 +183,21 @@ EVE_TRADER_PG_CONTAINER=
 (`EVE_TRADER_PG_CONTAINER=` with nothing after the `=` sets it to the empty
 string - the bare-`pg_dump`, no-Docker mode.)
 
+`eve_trader/backup.py`'s bare-`pg_dump` mode needs its own, separate
+password path - it runs as the app's own OS user (`ubuntu`, not
+`postgres`), and `pg_dump -h 127.0.0.1 -U postgres` looks up a password via
+the standard libpq `~/.pgpass` convention (never passed on the command line
+or in an env var). Confirmed real during the actual cutover: the
+`postgres` role has no password at all by default on a fresh install (only
+peer-auth via `sudo -u postgres`, which `pg_dump` running as `ubuntu` can't
+use), so `create_backup()` fails outright without this step:
+```bash
+OWNER_PASSWORD=$(openssl rand -hex 24)
+sudo -u postgres psql -c "ALTER ROLE postgres WITH PASSWORD '$OWNER_PASSWORD';"
+echo "127.0.0.1:5432:eve_trader:postgres:$OWNER_PASSWORD" >> ~/.pgpass
+chmod 600 ~/.pgpass
+```
+
 ## 3. Configure (Phase 1: bare IP, HTTP)
 
 Edit `.env` (secrets) and `config.yaml` (everything else) with your real

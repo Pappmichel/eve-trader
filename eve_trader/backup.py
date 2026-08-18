@@ -71,9 +71,17 @@ def create_backup() -> dict:
     backup_path = BACKUP_DIR / f"{BACKUP_NAME_PREFIX}{ts}.zip"
     tmp_dump_path = BACKUP_DIR / f".tmp_{ts}.dump"
 
-    pg_dump_cmd = ["pg_dump", "-U", "postgres", "-d", PG_DB_NAME, "-Fc"]
     if PG_CONTAINER:
-        pg_dump_cmd = [DOCKER_BIN, "exec", PG_CONTAINER, *pg_dump_cmd]
+        pg_dump_cmd = [DOCKER_BIN, "exec", PG_CONTAINER, "pg_dump", "-U", "postgres", "-d", PG_DB_NAME, "-Fc"]
+    else:
+        # Bare mode - the app process runs as an unprivileged OS user (not
+        # `postgres`), so the default Unix-socket connection would try (and
+        # fail) peer auth. `-h 127.0.0.1` forces a TCP connection instead,
+        # which uses password auth - looked up automatically from `~/.pgpass`
+        # (standard libpq convention, no password ever needs to live in this
+        # process's own env/command line). See deploy/README.md's Postgres
+        # section for setting up ~/.pgpass for the owner role.
+        pg_dump_cmd = ["pg_dump", "-h", "127.0.0.1", "-U", "postgres", "-d", PG_DB_NAME, "-Fc"]
 
     try:
         with open(tmp_dump_path, "wb") as dump_file:
