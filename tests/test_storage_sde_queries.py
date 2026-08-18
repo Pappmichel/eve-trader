@@ -1,0 +1,97 @@
+import pytest
+
+from eve_trader import storage
+
+from . import pg_helpers
+from .pg_helpers import _apply_phase1_schema, tenant  # noqa: F401
+
+psycopg = pytest.importorskip("psycopg")
+
+pytestmark = pg_helpers.postgres_required()
+
+
+@pytest.fixture(autouse=True)
+def _wipe():
+    # sde_types/sde_blueprint_products/sde_invention_probability are shared
+    # tables (no tenant_id at all) - wipe before each test so a leftover row
+    # from an earlier test can never affect this one, regardless of which
+    # ids happen to be reused. Note: conftest.py's autouse
+    # _clear_storage_lru_caches fixture already handles the @lru_cache'd
+    # storage functions (get_blueprint_for_product,
+    # find_invention_recipe_by_product_type_id) reading this data.
+    pg_helpers.wipe_tables("sde_types", "sde_blueprint_products", "sde_invention_probability")
+    yield
+
+
+def _insert_type(type_id, name, published=1, group_id=1):
+    with storage.connect() as conn:
+        conn.execute(
+            "INSERT INTO sde_types (type_id, group_id, type_name, volume, published, market_group_id, meta_level) "
+            "VALUES (?, ?, ?, 1.0, ?, NULL, NULL)",
+            (type_id, group_id, name, published),
+        )
+
+
+def _insert_product(blueprint_type_id, activity_id, product_type_id, quantity):
+    with storage.connect() as conn:
+        conn.execute(
+            "INSERT INTO sde_blueprint_products (blueprint_type_id, activity_id, product_type_id, quantity) "
+            "VALUES (?, ?, ?, ?)",
+            (blueprint_type_id, activity_id, product_type_id, quantity),
+        )
+
+
+def _insert_probability(t1_blueprint_type_id, product_type_id, probability):
+    with storage.connect() as conn:
+        conn.execute(
+            "INSERT INTO sde_invention_probability (t1_blueprint_type_id, product_type_id, probability) "
+            "VALUES (?, ?, ?)",
+            (t1_blueprint_type_id, product_type_id, probability),
+        )
+
+
+def test_get_blueprint_for_product_prefers_published_blueprint(tenant):
+    # Confirmed real bug against live data: product 16672 (Tungsten Carbide)
+    # has an unpublished leftover "Test Reaction Blueprint" (blueprint_type_id
+    # 45732, produces 20/run) alongside the real published one (46207,
+    # produces 10000/run) - without a published-first tiebreak this could
+    # return either one.
+    _insert_type(45732, "Test Reaction Blueprint", published=0)
+    _insert_type(46207, "Tungsten Carbide Reaction Formula", published=1)
+    _insert_product(45732, 11, 16672, 20.0)
+    _insert_product(46207, 11, 16672, 10000.0)
+
+    row = storage.get_blueprint_for_product(16672)
+    assert row == (46207, 11, 10000.0)
+
+
+def test_find_invention_recipe_by_product_name_is_case_and_whitespace_insensitive(tenant):
+    _insert_type(100, "Loki")
+    _insert_type(101, "Loki Blueprint")
+    _insert_product(200, 8, 101, 1.0)
+
+    assert storage.find_invention_recipe_by_product_name("loki blueprint") == (200, 101)
+    assert storage.find_invention_recipe_by_product_name("  Loki Blueprint  ") == (200, 101)
+
+
+def test_find_invention_recipe_by_product_type_id_prefers_highest_probability(tenant):
+    # Confirmed real bug: T3 hulls/subsystems have 3 valid relic BPCs
+    # (Intact/Malfunctioning/Wrecked) with different success probability but
+    # identical materials/time - without an explicit ORDER BY, whichever row
+    # SQLite's unordered scan returned first won, by accident not by design.
+    product_type_id = 999
+    _insert_product(301, 8, product_type_id, 1.0)  # Wrecked - worst odds
+    _insert_product(302, 8, product_type_id, 1.0)  # Intact - best odds
+    _insert_product(303, 8, product_type_id, 1.0)  # Malfunctioning - middle
+    _insert_probability(301, product_type_id, 0.14)
+    _insert_probability(302, product_type_id, 0.26)
+    _insert_probability(303, product_type_id, 0.21)
+
+    result = storage.find_invention_recipe_by_product_type_id(product_type_id)
+    assert result == 302
+
+
+def test_search_sde_types_tolerates_incidental_whitespace(tenant):
+    _insert_type(34, "Tritanium")
+
+    assert storage.search_sde_types("  Tritanium  ") == [(34, "Tritanium")]

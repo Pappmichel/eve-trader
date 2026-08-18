@@ -1,0 +1,318 @@
+# CLAUDE.md
+
+Conventions and settled decisions for working in this repo. README.md covers
+setup/usage; this file covers *how the code is organized and why*, so you
+don't have to re-derive it (or accidentally re-litigate a decision that was
+already made deliberately) from scratch.
+
+**If `HANDOFF.md` exists at the repo root, read it first** - it's a
+temporary, self-deleting note left when a session ends mid-task (e.g.
+continuing on a different computer with no access to this machine's Claude
+memory) and takes priority over re-deriving current status from scratch.
+
+## Two tools, one backend
+
+- **Trading**: buys in Jita, sells at a private player structure ("C-J").
+- **Production**: Tech I/II/Reaction manufacturing planning for the same C-J
+  structure - buy-vs-build, stock targets, invention.
+
+Both share one FastAPI backend (`eve_trader/api/`), one Postgres store
+(`eve_trader/storage.py`, multi-tenant - see "Multi-tenant Postgres" below),
+and one React/TypeScript frontend (`frontend/src/`). `eve_trader/portfolio.py`
+and `eve_trader/scheduler.py` are the only modules that deliberately span
+both.
+
+**Production sells only at C-J, never Jita** - this was implemented once
+(a Jita-comparison feature) and explicitly reverted after confirming with the
+user that freighting finished Production goods to Jita isn't part of this
+tool's business model. Don't reintroduce Jita as a Production sales channel
+without asking first.
+
+## Architecture: actions.py is the one entry point
+
+`eve_trader/actions.py` and `eve_trader/production/actions.py` hold every
+`do_*` function - UI-agnostic, no framework imports, return plain
+dicts/dataclasses. Both `cli.py` and the FastAPI routers
+(`api/routers/*.py`) call the *same* `do_*` functions, so the CLI and the web
+app can never drift apart. If you add a feature, the real logic goes in
+`engine.py`/`pricing.py`/`storage.py`; the `do_*` action is a thin
+orchestration wrapper; the router is thinner still.
+
+Routers use a `_wrap(fn, **kwargs)` helper that catches `ActionError` and
+converts it to an HTTP 400 - `ActionError` is the one user-facing error type
+across the whole app. A new failure mode should raise `ActionError` (or a
+narrower exception the caller converts to `ActionError`), not a raw
+exception that would otherwise surface as a bare 500.
+
+## Config: dataclasses + config.yaml, validated before applied, resolved per-tenant
+
+`TradingConfig`/`ProductionConfig` (`eve_trader/config.py` /
+`eve_trader/production/config.py`) are dataclasses with built-in defaults,
+overridden by `config.yaml` at load time (the base values every tenant
+starts from) and by Settings-page saves at runtime, persisted per-tenant to
+Postgres's `tenant_settings` table (`save_tenant_config_overrides` -
+`save_config_overrides`/YAML-writing was retired in the multi-tenant
+migration's Phase 2). Both paths run `validate_config_overrides`
+(type-checks every field against its declared type) - and Production
+additionally runs `validate_production_overrides` (enum-checks
+`*_structure_type`/`*_rig_tier` against `production/constants.py`) -
+*before* anything is written or applied to the live config object, so a bad
+value never lands half-applied. Raises `ConfigError`; `do_update_settings`
+in both actions modules catches it and re-raises as `ActionError` (kept
+separate from `ActionError` itself to avoid a circular import - `config.py`
+is imported *by* `actions.py`, not the other way around).
+
+`TRADING_CONFIG`/`PRODUCTION_CONFIG` (the names everything else imports and
+reads) are `ConfigProxy` objects, not plain dataclass instances - they
+forward every attribute read/write to whichever instance a `contextvars.
+ContextVar` currently resolves to. `tenant_scope.enter_tenant(tenant_id)`
+is what actually resolves and `.set()`s that per-request/per-job-tick (see
+"Multi-tenant Postgres" below) - a bare dataclass instance would leak one
+tenant's Settings-page save into every other tenant's live config, since
+they'd all be reading/writing the exact same object.
+
+If you add a new config field, it's automatically type-checked - no extra
+work needed unless it's an enum-style string field, in which case add it to
+`validate_production_overrides` (Production-specific checks stay out of the
+shared `config.py` - that module is imported *by* `production/config.py`,
+reaching back into `production/constants.py` from the shared module would be
+a layering violation).
+
+## Multi-tenant Postgres: rules for new storage/schema code
+
+Full design history and rationale lives in `docs/MULTI_TENANT_PLAN.md`
+(read this if you need the "why", not just the "what" below) - this section
+is the durable, quick-reference version for anyone adding a new storage
+function or table after that migration (all 5 of its phases are done).
+
+- **`storage.DEFAULT_TENANT_ID`** (`00000000-0000-0000-0000-000000000001`,
+  seeded into `tenants` by `docs/phase3_schema.sql`) is the fixed tenant
+  used whenever there's no real per-request tenant to resolve: the CLI
+  (`cli.py`'s `main()` sets it once per process - a trusted single
+  operator, no login wall there at all) and every web request when
+  `AccessConfig.access_gate_enabled` is `False` (this app's default - it
+  ran for months as a single-operator tool with no login wall before the
+  multi-tenant migration). A real per-tenant login (gate enabled) resolves
+  and uses a different, real `tenant_id` from the registry instead.
+- **Two Postgres roles, never conflate them.** `eve_trader_app`
+  (`storage.PG_DSN`) is what the app itself connects as for every real
+  query - `NOSUPERUSER NOBYPASSRLS`, so it can *never* accidentally see
+  another tenant's rows even from a bug, only from Postgres itself
+  correctly refusing. `postgres` (the owner role) is used *only* for schema
+  DDL (`docs/phase*_schema.sql`, applied by hand/CI, never by the running
+  app) and `backup.py`'s `pg_dump` (a whole-database dump necessarily
+  bypasses RLS - see "Backup" above). Never give the app role `BYPASSRLS`
+  or run app queries as the owner "to make something easier" - that defeats
+  the entire isolation guarantee this migration exists for.
+- **Every real query goes through `storage.connect()`/`storage.
+  batch_session()`.** These are the only two places that check out a pooled
+  connection and set `app.tenant_id` (via `SELECT set_config(...)`, the
+  parameterized equivalent of `SET LOCAL` - see `connect()`'s own
+  docstring for why not literal `SET LOCAL`) from the ambient
+  `contextvars.ContextVar`, fail-closed (`RuntimeError`) if none is set.
+  Never open a raw `psycopg`/`psycopg_pool` connection anywhere else in
+  `storage.py` or elsewhere in the app - doing so would silently bypass
+  this entirely, and nothing would catch it (Postgres itself only enforces
+  RLS based on `app.tenant_id` actually being set on *that* connection).
+  `storage.connect_unscoped()` is a narrow, deliberate exception for the
+  handful of genuinely tenant-independent tables (`tenants`,
+  `tenant_registry_entries`) - don't reach for it for anything else.
+- **Adding a new per-tenant table** needs, in its `CREATE TABLE`: a
+  `tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id',
+  false)::uuid` column, `ENABLE ROW LEVEL SECURITY`, and a
+  `tenant_isolation` policy (`USING`/`WITH CHECK` both comparing
+  `tenant_id = current_setting('app.tenant_id', false)::uuid`) - copy the
+  shape of any existing table in `docs/phase1_schema.sql`, don't write it
+  from scratch. Decide whether its primary key needs widening to
+  `(tenant_id, ...)` - only if the "natural" key (without tenant_id) could
+  plausibly collide across tenants (an EVE item type ID, a literal
+  scope/category string) - see that same file's "composite-PK bucket" vs.
+  "column-only bucket" comment banners for real examples of each.
+- **`tenant_scope.enter_tenant(tenant_id)`** is the one place that resolves
+  a tenant fully - storage's own ambient tenant *and* `TRADING_CONFIG`/
+  `PRODUCTION_CONFIG`'s per-tenant instance together. Used by
+  `AccessGateMiddleware` (only its gate-*enabled* branch - see
+  `api/app.py`'s own comment for why the gate-disabled default path
+  deliberately stays on the cheaper `storage.set_current_tenant`-only path)
+  and `scheduler.py`'s per-tenant job iteration. If you add a new place
+  that needs to "become" a specific tenant for a stretch of code (a new
+  background job, a new admin script), use this, not a bare
+  `storage.set_current_tenant` - a table added in the future might need its
+  config resolved too, and this is the one chokepoint that stays correct
+  automatically.
+- **Connection pool sizing**: `storage._get_pool()` opens one
+  `psycopg_pool.ConnectionPool(PG_DSN, min_size=1, max_size=10)` per
+  process, shared across every request/job. 10 is a Phase-1-era default,
+  not the result of load testing - this app's traffic today is a handful of
+  invite-only tenants, well under that. If concurrent load ever routinely
+  saturates it (connections queuing, visible as request latency spikes
+  under concurrent Trading/Production dashboard use), raise `max_size`
+  first before anything more invasive - don't raise `min_size` preemptively,
+  it only trades connection-pool cold-start latency for idle-connection
+  overhead on Postgres's side, not something to guess at without a measured
+  problem.
+- **`ThreadPoolExecutor`/raw `threading.Thread` don't inherit contextvars**
+  from the thread that spawned them (confirmed live, twice, in this
+  migration - `production/esi_sync.py`'s `sync_esi` and `esi_client.py`'s
+  `_get_all_pages`, both fixed via `storage.with_current_tenant(fn)`). If
+  you parallelize anything that might transitively touch `storage.py`
+  (directly or via `TokenManager`'s lazy-refresh path), wrap the submitted
+  callable in `storage.with_current_tenant(...)` - don't assume the ambient
+  tenant "just carries over" into a worker thread.
+
+## Testing conventions
+
+- Router tests (`tests/test_api_routers.py`) monkeypatch the already-imported
+  `actions`/`production_actions`/`portfolio`/`scheduler` **module objects**,
+  not individual functions - this only works because every router does
+  `from ... import actions` (module-level import), never
+  `from .actions import do_thing`. If you add a router that imports
+  differently, its tests need a different monkeypatch target.
+- Any function with a module-level cache (see `discover_build_candidates`
+  below) needs an autouse fixture resetting it between tests, or later tests
+  will silently reuse an earlier test's monkeypatched result.
+- Full suite: `pytest` from the repo root. Keep it green before calling
+  anything done - it currently runs in a few seconds, there's no excuse to
+  skip it.
+
+## "Live-verify before declaring done" discipline
+
+Passing unit tests is necessary but not sufficient. Before calling a
+backend change done, hit the real running endpoint (`Invoke-RestMethod`/
+`Invoke-WebRequest` against `localhost:8000`) and read the actual response -
+not just the mocked unit-test path. Before calling a frontend change done,
+load it in a real browser (Playwright via a throwaway `_verify_*.mjs`
+script - screenshot it, check console/network errors, then delete the
+script and screenshot afterward; don't leave verification artifacts in the
+repo). This caught real bugs during development (e.g. a settings save that
+looked fine in isolated unit tests but needed checking against the actual
+Pydantic request-validation layer to know whether the new backend
+validation was even reachable via HTTP).
+
+## Caching pattern
+
+`esi_client.py` established the pattern used everywhere else that caches an
+expensive call: a plain `time.time()`-based TTL (`self._x_cache`,
+`self._x_cache_at`), no external caching library. `discover_build_candidates`
+(`production/engine.py`) follows the same pattern at module level, plus
+explicit invalidation (`invalidate_discover_cache()`) from every action that
+actually changes its result set (Settings save, stock target add/remove,
+decryptor change, SDE refresh) - TTL alone would let a just-changed Setting
+serve stale results for the rest of the TTL window, which would be a real
+correctness problem, not just a performance one.
+
+## Scheduler
+
+`eve_trader/scheduler.py` is a stdlib-only (`threading`, no APScheduler)
+background daemon thread, started from `api/app.py`'s FastAPI lifespan.
+Whether it starts at all is an operator-level decision, read once at boot
+from `DEFAULT_TENANT_ID`'s own `TradingConfig.scheduler_enabled` (**off by
+default**) - see "Multi-tenant Postgres" below for what `DEFAULT_TENANT_ID`
+means. Each tick, `trading_pipeline`/`production_sync` run once **per
+tenant** (`storage.list_tenants()`, each fully scoped via `tenant_scope.
+enter_tenant`) - a tenant's own `scheduler_enabled`/interval fields decide
+independently whether *their* jobs run that tick, via
+`_check_and_run_due_jobs_for_tenant`. `backup` stays a single **global**,
+unscoped job (`_check_and_run_backup_job`) - one `pg_dump` already covers
+every tenant's data in one shot, nothing to iterate; its own interval/
+enabled check reads `DEFAULT_TENANT_ID`'s config, same operator-level
+reasoning as the thread's own on/off switch.
+
+Both per-tenant jobs reuse an existing "when did this last happen" source
+instead of separate scheduler-specific persistence: `storage.esi_sync_state`
+(already written by `do_pipeline`/`do_sync_esi`). The backup job reuses the
+newest backup file's own mtime (`backup.list_backups()`). A manual run/
+backup from the UI correctly counts either way and pushes back the next
+scheduled one. `last_run_status` is `{tenant_id: {job_name: {...}}}` for the
+two per-tenant jobs; a separate `_backup_status` (not tenant-keyed) covers
+the global one. Adding a fourth *per-tenant* scheduled job means adding one
+interval field to `TradingConfig` (plus a `_FIELD_RANGES` entry, `(0, None)`,
+in `config.py`) and one `if _hours_since(...) >= cfg.x: _run_job(tenant_id,
+...)` line in `_check_and_run_due_jobs_for_tenant` - no other wiring needed.
+
+## Backup
+
+`eve_trader/backup.py`'s `create_backup()` zips a `pg_dump` (`-Fc`, custom/
+compressed format - restorable via `pg_restore`) of the whole Postgres
+database plus `config.yaml` into a timestamped `.zip` under `data/backups/`,
+pruning down to `MAX_BACKUPS` (14) automatically. `data/tokens.json` is
+**not** included - `TokenManager` persists to Postgres's `tenant_tokens`
+table now, so the live tokens are already inside the dump; a separate,
+possibly-stale file copy would be actively misleading on a restore. Shells
+out to `docker exec <container> pg_dump -U postgres ...` - must run as the
+Postgres *owner* role (`postgres`), not the app's own `eve_trader_app` role,
+since RLS raises on a missing tenant setting rather than silently returning
+zero rows (see "Multi-tenant Postgres" below) - a non-bypassing role
+couldn't dump per-tenant tables at all. `EVE_TRADER_PG_CONTAINER`/
+`EVE_TRADER_DOCKER_BIN` env vars override the container name/`docker`
+binary path (default `"eve-trader-pg"`/`"docker"`). Reachable two ways: the
+"Backup Now" button on the Portfolio page (always available), and the
+scheduler's own global backup job (see above, opt-in via
+`DEFAULT_TENANT_ID`'s `backup_interval_hours`).
+
+## "Theoretical ceiling" figures - not bugs
+
+`potential_daily_profit` (Production's Build Candidates) and "Profit / Day"
+(Trading's Shortlist) are deliberately `profit_per_unit x total daily
+sell_volume` - the value of an item's *entire* day of market turnover, not a
+claim about what one seller could personally capture. A tiny-volume,
+huge-per-unit item (a capital hull, a faction module) can show an enormous
+number - that's mathematically correct for "what's the whole market worth,"
+confirmed deliberate with the user after live-testing surfaced exactly this
+case. Don't cap, filter, or "fix" these values without asking first.
+
+## Real SDE data drives classification, not heuristics
+
+Item categorization (`classify_activity` in `production/engine.py`) uses
+real SDE fields (`meta_group_id` for the "Faction"/"Officer"/"Storyline"/
+"Deadspace" categories - meta_group_id 4/5/3/6 respectively, all mapped via
+one `meta_group_labels` dict at the end of `classify_activity` - and
+invention-recipe lookups for Tech II) rather than guessing from name
+patterns or `metaLevel` alone - a past bug (Machariel/Nestor miscategorized
+as Tech II) came from exactly that kind of heuristic (`metaLevel >= 2`
+catching Faction ships too). All four of these meta-group labels share the
+same ME0/TE0, non-researchable treatment (`constants.ACTIVITY_MODS`) - none
+of them get Tech I's owned-BPO-preference/research-baseline treatment (see
+`_activity_mods`). When adding another classification category, prefer an
+SDE column already fetched by `production/sde.py`'s `refresh_sde()` over a
+new heuristic; if the SDE doesn't already carry the field you need, extend
+`refresh_sde()` to fetch it (see the `invMetaTypes.csv` merge that added
+`meta_group_id` for precedent) rather than approximating.
+
+## Environment specifics
+
+- **Git repository, GitHub remote.** `git init` + first commit + a GitHub
+  remote (`origin`, https://github.com/Pappmichel/eve-trader, currently
+  private) were set up 2026-08-16 as part of preparing the project for
+  publication - this repo is no longer "no VCS safety net." Workflow: commit
+  locally after completed work without asking (cheap, reversible, purely
+  local); never `git push` without the user explicitly asking for it in that
+  turn, since that's what actually publishes to the shared remote.
+- Windows 11 / PowerShell. Backend: `uvicorn eve_trader.api.main:app --port
+  8000` (no `--reload` in the usual dev setup here - restart manually after
+  backend changes, e.g. `Stop-Process -Id <pid> -Force` then relaunch).
+  Frontend: Vite dev server on `:5173`.
+- `config.yaml` is hand-maintained and not under version control - never
+  overwrite it with synthetic test data; tests use their own
+  `TradingConfig()`/`ProductionConfig()` instances, not the real file, and
+  any live HTTP verification against `/settings` should restore/no-op the
+  real values afterward.
+
+## Deferred, not rejected
+
+Contract-Scanner, Discord alerts, and a PI (Planetary Interaction) calculator
+were explicitly discussed and deferred (not rejected) as of 2026-07-14 -
+they're legitimate future scope, just not started. Don't start on these
+without asking first.
+
+## Windows packaging lives in a sibling repo
+
+`../eve_trader_electron` (a sibling of this directory, **not** a
+subdirectory of it) is a separate, already-packaged copy of this app -
+PyInstaller-bundled backend (`backend_entry.py`, `eve-trader-backend.spec`,
+`build_backend/`, `dist_backend/`) plus an Electron shell, last touched
+2026-07-14. It is not kept in continuous sync with this repo - treat it as
+its own project, not a build target of this one, unless the user says
+otherwise. Do not assume packaging work is unstarted or "deferred until
+feature-complete" - that framing was true earlier in this project's history
+but is now stale; the packaging already happened once, over there.

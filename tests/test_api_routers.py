@@ -1,0 +1,386 @@
+"""Router-level tests: verify request/response marshaling for the FastAPI
+routes themselves (query params reach the right actions.do_* kwargs, action
+results serialize correctly, ActionError maps to HTTP 400) - the layer below
+(actions.py/storage.py/engine.py) already has its own tests, these don't
+re-test that logic, only the thin wrapper on top of it. Every underlying
+storage/action call is monkeypatched, so these never touch the real DB, ESI,
+or Goonmetrics - safe to run anywhere, no network/auth required.
+"""
+from fastapi.testclient import TestClient
+
+from eve_trader import actions, storage
+from eve_trader.actions import ActionError
+from eve_trader.api.app import create_app
+from eve_trader.models import ShortlistItem
+from eve_trader.production import actions as production_actions
+from eve_trader.production.models import AssetLocationRow
+
+client = TestClient(create_app())
+
+
+# ------------------------------------------------------------------- trading
+def test_get_shortlist_items_serializes_storage_rows(monkeypatch):
+    monkeypatch.setattr(storage, "load_shortlist", lambda: [
+        ShortlistItem(item="Widget", item_id=1, category="Material", volume_m3=0.5, active=True, meta_level=None),
+    ])
+    resp = client.get("/api/trading/shortlist/items")
+    assert resp.status_code == 200
+    assert resp.json() == [{
+        "item": "Widget", "item_id": 1, "category": "Material",
+        "volume_m3": 0.5, "active": True, "meta_level": None,
+    }]
+
+
+def test_refresh_shortlist_action_error_maps_to_400(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise ActionError("Shortlist is empty.")
+    monkeypatch.setattr(actions, "do_refresh_shortlist", _raise)
+
+    resp = client.post("/api/trading/shortlist/refresh")
+
+    assert resp.status_code == 400
+    assert resp.json() == {"detail": "Shortlist is empty."}
+
+
+def test_refresh_and_prune_candidates_passes_safe_query_param(monkeypatch):
+    captured = {}
+
+    def _capture(safe=True, **kwargs):
+        captured["safe"] = safe
+        return {"new_candidates_evaluated": 0}
+    monkeypatch.setattr(actions, "do_refresh_and_prune_candidates", _capture)
+
+    resp = client.post("/api/trading/candidates/refresh-and-prune?safe=false")
+
+    assert resp.status_code == 200
+    assert captured["safe"] is False
+    assert resp.json() == {"new_candidates_evaluated": 0}
+
+
+def test_shortlist_snapshot_merges_days_until_deactivation(monkeypatch):
+    import pandas as pd
+
+    df = pd.DataFrame([{
+        "item": "Widget", "category": "Material", "landed_cost": 100.0, "net_sell": 150.0,
+        "sell_volume": 10.0, "own_orders_remaining": 0.0, "profit_per_unit": 50.0, "margin": 0.5,
+        "profit_per_m3": 100.0, "decision": "No market data / Skip", "active": True, "item_id": 1,
+        "volume_m3": 0.5, "jita_sell": 100.0, "import_cost": 0.0, "meta_level": None,
+    }])
+    monkeypatch.setattr(storage, "latest_snapshot", lambda: df)
+    monkeypatch.setattr(actions, "shortlist_skip_deactivation_days", lambda: {1: 12})
+
+    resp = client.get("/api/trading/shortlist/snapshot")
+
+    assert resp.status_code == 200
+    assert resp.json()[0]["days_until_deactivation"] == 12
+
+
+def test_get_trading_settings():
+    resp = client.get("/api/trading/settings")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "structure_sell_haircut" in body
+    assert "skip_grace_period_days" in body
+
+
+# ---------------------------------------------------------------- production
+def test_get_sde_counts(monkeypatch):
+    monkeypatch.setattr(storage, "sde_row_counts", lambda: {"sde_types": 42})
+    resp = client.get("/api/production/sde/counts")
+    assert resp.status_code == 200
+    assert resp.json() == {"sde_types": 42}
+
+
+def test_get_stock_value_success(monkeypatch):
+    monkeypatch.setattr(production_actions, "do_stock_value",
+                         lambda: {"total_value": 12345.0, "priced_items": 3, "unpriced_items": 1})
+    resp = client.get("/api/production/stock-value")
+    assert resp.status_code == 200
+    assert resp.json() == {"total_value": 12345.0, "priced_items": 3, "unpriced_items": 1}
+
+
+def test_get_stock_value_action_error_maps_to_400(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise ActionError("Keine Stock-Ziele konfiguriert.")
+    monkeypatch.setattr(production_actions, "do_stock_value", _raise)
+
+    resp = client.get("/api/production/stock-value")
+
+    assert resp.status_code == 400
+    assert resp.json() == {"detail": "Keine Stock-Ziele konfiguriert."}
+
+
+def test_get_owned_blueprints(monkeypatch):
+    from eve_trader.production.models import OwnedBlueprintRow
+    monkeypatch.setattr(production_actions, "do_list_owned_blueprints", lambda: {"rows": [
+        OwnedBlueprintRow(type_id=1, type_name="Rifter Blueprint", is_original=True,
+                           quantity=1, material_efficiency=10, time_efficiency=20, runs=None),
+    ]})
+    resp = client.get("/api/production/blueprints")
+    assert resp.status_code == 200
+    assert resp.json()[0]["type_name"] == "Rifter Blueprint"
+    assert resp.json()[0]["runs"] is None
+
+
+def test_set_system_action_error_maps_to_400(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise ActionError("Solarsystem 'Nowhere' nicht gefunden. Exakter Name?")
+    monkeypatch.setattr(production_actions, "do_set_system", _raise)
+
+    resp = client.post("/api/production/settings/systems", json={"profile": "component", "system_name": "Nowhere"})
+
+    assert resp.status_code == 400
+    assert "Nowhere" in resp.json()["detail"]
+
+
+# --------------------------------------------------- trend/undercut/discovery
+def test_get_shortlist_trends(monkeypatch):
+    monkeypatch.setattr(actions, "do_shortlist_trends", lambda: {
+        205: {"recent_avg_margin": 0.15, "baseline_avg_margin": 0.10, "trend_pct": 0.5},
+    })
+    resp = client.get("/api/trading/shortlist/trends")
+    assert resp.status_code == 200
+    assert resp.json() == {"205": {"recent_avg_margin": 0.15, "baseline_avg_margin": 0.10, "trend_pct": 0.5}}
+
+
+def test_check_undercut_success(monkeypatch):
+    from eve_trader.models import UndercutRow
+    monkeypatch.setattr(actions, "do_check_undercut", lambda: {"rows": [
+        UndercutRow(type_id=205, item="Nova Cruise Missile", my_price=100.0, competitor_price=90.0, difference=10.0),
+    ]})
+    resp = client.post("/api/trading/seller/undercut")
+    assert resp.status_code == 200
+    assert resp.json() == [{"type_id": 205, "item": "Nova Cruise Missile",
+                             "my_price": 100.0, "competitor_price": 90.0, "difference": 10.0}]
+
+
+def test_check_undercut_action_error_maps_to_400(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise ActionError("Seller character isn't logged in yet (Login → Seller).")
+    monkeypatch.setattr(actions, "do_check_undercut", _raise)
+
+    resp = client.post("/api/trading/seller/undercut")
+
+    assert resp.status_code == 400
+    assert "Seller" in resp.json()["detail"]
+
+
+def test_get_sde_freshness(monkeypatch):
+    monkeypatch.setattr(production_actions, "do_check_sde_freshness", lambda: {
+        "local_refreshed_at": "2026-07-17T07:56:26.701476+00:00",
+        "remote_check_succeeded": True, "newer_sde_available": False,
+        "trading_universe_stale": False, "trading_universe_built_at": "2026-07-17T07:55:58",
+    })
+    resp = client.get("/api/production/sde/freshness")
+    assert resp.status_code == 200
+    assert resp.json()["newer_sde_available"] is False
+    assert resp.json()["trading_universe_stale"] is False
+
+
+def test_discover_build_candidates_passes_top_n_query_param(monkeypatch):
+    captured = {}
+
+    def _capture(top_n=200, **kwargs):
+        captured["top_n"] = top_n
+        return {"rows": []}
+    monkeypatch.setattr(production_actions, "do_discover_build_candidates", _capture)
+
+    resp = client.post("/api/production/build-candidates/discover?top_n=50")
+
+    assert resp.status_code == 200
+    assert captured["top_n"] == 50
+    assert resp.json() == []
+
+
+def test_discover_build_candidates_defaults_top_n_to_200(monkeypatch):
+    captured = {}
+
+    def _capture(top_n=200, **kwargs):
+        captured["top_n"] = top_n
+        return {"rows": []}
+    monkeypatch.setattr(production_actions, "do_discover_build_candidates", _capture)
+
+    resp = client.post("/api/production/build-candidates/discover")
+
+    assert resp.status_code == 200
+    assert captured["top_n"] == 200
+
+
+def test_discover_build_candidates_action_error_maps_to_400(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise ActionError("SDE cache is empty. Refresh SDE first.")
+    monkeypatch.setattr(production_actions, "do_discover_build_candidates", _raise)
+
+    resp = client.post("/api/production/build-candidates/discover")
+
+    assert resp.status_code == 400
+    assert "SDE cache is empty" in resp.json()["detail"]
+
+
+def test_get_material_tree_passes_type_name_and_quantity(monkeypatch):
+    captured = {}
+
+    def _capture(type_name, quantity):
+        captured["type_name"] = type_name
+        captured["quantity"] = quantity
+        return {"type_id": 1, "type_name": type_name, "quantity": quantity,
+                "activity": "Tech I", "decryptor": None, "children": []}
+    monkeypatch.setattr(production_actions, "do_build_material_tree", _capture)
+
+    resp = client.post("/api/production/material-tree", json={"type_name": "Rifter", "quantity": 3})
+
+    assert resp.status_code == 200
+    assert captured == {"type_name": "Rifter", "quantity": 3.0}
+    assert resp.json()["type_name"] == "Rifter"
+    assert resp.json()["quantity"] == 3.0
+
+
+def test_get_material_tree_defaults_quantity_to_one(monkeypatch):
+    captured = {}
+
+    def _capture(type_name, quantity):
+        captured["quantity"] = quantity
+        return {"type_id": 1, "type_name": type_name, "quantity": quantity,
+                "activity": "Tech I", "decryptor": None, "children": []}
+    monkeypatch.setattr(production_actions, "do_build_material_tree", _capture)
+
+    resp = client.post("/api/production/material-tree", json={"type_name": "Rifter"})
+
+    assert resp.status_code == 200
+    assert captured["quantity"] == 1.0
+
+
+def test_get_material_tree_action_error_maps_to_400(monkeypatch):
+    def _raise(type_name, quantity):
+        raise ActionError(f"No type found for '{type_name}'. Refresh SDE first?")
+    monkeypatch.setattr(production_actions, "do_build_material_tree", _raise)
+
+    resp = client.post("/api/production/material-tree", json={"type_name": "Nonexistent Thing"})
+
+    assert resp.status_code == 400
+    assert "Nonexistent Thing" in resp.json()["detail"]
+
+
+def test_search_asset_locations_passes_item_name_and_serializes_result(monkeypatch):
+    captured = {}
+
+    def _capture(item_name):
+        captured["item_name"] = item_name
+        return {"type_id": 34, "type_name": "Tritanium", "locations": [
+            AssetLocationRow(location_id=1000000000001, location_name="Some Station", owner_name="Alice", quantity=100.0),
+        ]}
+    monkeypatch.setattr(production_actions, "do_search_item_locations", _capture)
+
+    resp = client.post("/api/production/asset-locations", json={"item_name": "Tritanium"})
+
+    assert resp.status_code == 200
+    assert captured == {"item_name": "Tritanium"}
+    body = resp.json()
+    assert body["type_name"] == "Tritanium"
+    assert body["locations"] == [{
+        "location_id": 1000000000001, "location_name": "Some Station", "owner_name": "Alice", "quantity": 100.0,
+    }]
+
+
+def test_search_asset_locations_action_error_maps_to_400(monkeypatch):
+    def _raise(item_name):
+        raise ActionError(f"No type found for '{item_name}'. Refresh SDE first?")
+    monkeypatch.setattr(production_actions, "do_search_item_locations", _raise)
+
+    resp = client.post("/api/production/asset-locations", json={"item_name": "Nonexistent Thing"})
+
+    assert resp.status_code == 400
+    assert "Nonexistent Thing" in resp.json()["detail"]
+
+
+# ------------------------------------------------------------------ portfolio
+def test_get_portfolio_overview(monkeypatch):
+    from eve_trader import portfolio
+    monkeypatch.setattr(portfolio, "portfolio_overview", lambda: {
+        "trading_realized_profit": 1000.0, "trading_average_margin": 0.2,
+        "trading_daily_profit_volatility": None, "trading_trade_count": 5,
+        "production_stock_value": 2000.0, "production_stock_targets_configured": True,
+        "combined_value": 3000.0,
+    })
+    resp = client.get("/api/portfolio/overview")
+    assert resp.status_code == 200
+    assert resp.json()["combined_value"] == 3000.0
+    assert resp.json()["trading_daily_profit_volatility"] is None
+
+
+def test_get_scheduler_status(monkeypatch):
+    from eve_trader import scheduler
+    monkeypatch.setattr(scheduler, "get_status", lambda: {
+        "enabled": True, "running": True,
+        "jobs": {
+            "trading_pipeline": {"interval_hours": 24.0, "last_run_at": "2026-07-17T08:06:35", "last_error": None},
+            "production_sync": {"interval_hours": 6.0, "last_run_at": None, "last_error": "no auth"},
+        },
+    })
+    resp = client.get("/api/portfolio/scheduler-status")
+    assert resp.status_code == 200
+    assert resp.json()["enabled"] is True
+    assert resp.json()["jobs"]["production_sync"]["last_error"] == "no auth"
+
+
+def test_get_backups(monkeypatch):
+    from eve_trader import actions
+    monkeypatch.setattr(actions, "do_list_backups", lambda: {"rows": [
+        {"name": "eve_trader_backup_x.zip", "created_at": "2026-07-17T08:00:00+00:00", "size_bytes": 1234},
+    ]})
+    resp = client.get("/api/portfolio/backups")
+    assert resp.status_code == 200
+    assert resp.json()[0]["name"] == "eve_trader_backup_x.zip"
+
+
+def test_create_backup(monkeypatch):
+    from eve_trader import actions
+    monkeypatch.setattr(actions, "do_create_backup", lambda: {
+        "name": "eve_trader_backup_x.zip", "created_at": "2026-07-17T08:00:00+00:00", "size_bytes": 1234,
+    })
+    resp = client.post("/api/portfolio/backups")
+    assert resp.status_code == 200
+    assert resp.json()["size_bytes"] == 1234
+
+
+def test_create_backup_action_error_maps_to_400(monkeypatch):
+    from eve_trader.actions import ActionError
+    from eve_trader import actions
+
+    def boom():
+        raise ActionError("Backup failed: disk full")
+    monkeypatch.setattr(actions, "do_create_backup", boom)
+
+    resp = client.post("/api/portfolio/backups")
+    assert resp.status_code == 400
+    assert "disk full" in resp.json()["detail"]
+
+
+# ------------------------------------------------------------------------ auth
+def test_auth_callback_network_failure_redirects_with_error_instead_of_500(monkeypatch):
+    # Real gap confirmed live (2026-08-16): callback() used to only catch
+    # requests.HTTPError (the raise_for_status 4xx/5xx case) around the
+    # token exchange - a network-level failure (ConnectionError/Timeout,
+    # siblings of HTTPError under RequestException, not subclasses of it)
+    # escaped entirely, defeating the whole point of this route (always
+    # redirect back to the frontend, even on failure) with a raw 500 in the
+    # middle of the SSO redirect the user's browser just landed on.
+    import time
+    import requests
+    from eve_trader.api.routers import auth as auth_router
+    from eve_trader.auth import TokenManager
+
+    state = "test-state-network-failure"
+    auth_router._pending[state] = {
+        "verifier": "v", "role_prefix": "producer", "scopes": ["esi-assets.read_assets.v1"],
+        "created_at": time.time(),
+    }
+
+    def _raise(self, code, verifier):
+        raise requests.ConnectionError("network blip")
+    monkeypatch.setattr(TokenManager, "_exchange_code", _raise)
+
+    resp = client.get("/api/auth/callback", params={"code": "abc", "state": state}, follow_redirects=False)
+
+    assert resp.status_code in (302, 307)
+    assert "auth=error" in resp.headers["location"]

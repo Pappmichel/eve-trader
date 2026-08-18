@@ -1,0 +1,30 @@
+# Personal config/secrets - copy from the committed *.example files instead
+config.yaml
+.env
+
+# SSH private keys (VM login + GitHub deploy key) - kept here so Dropbox
+# carries them to other machines automatically, but must never reach git -
+# see HANDOFF.md
+.ssh-local/
+
+# Runtime data - DB, OAuth tokens, backups, logs (see eve_trader/config.py DATA_DIR)
+data/*
+!data/.gitkeep
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Editors
+.idea/
+.vscode/
+
+# Local Claude Code settings/state - machine-specific, not project config
+.claude/

@@ -1,0 +1,26 @@
+# systemd unit for the EVE Trader backend - installed by setup.sh, which
+# substitutes __APP_DIR__/__APP_USER__ and writes the result to
+# /etc/systemd/system/eve-trader.service. Not meant to be installed as-is.
+#
+# --host 127.0.0.1 (not 0.0.0.0): uvicorn is never exposed directly to the
+# internet - nginx (see nginx-eve-trader.conf) is the only thing that should
+# be reachable on the public interface, terminating TLS and proxying to this
+# loopback-only port. WorkingDirectory matters beyond convention: config.py's
+# load_dotenv() and DEFAULT_CONFIG_PATH both resolve relative to the process's
+# CWD-adjacent project root, same as running `uvicorn` by hand from the repo
+# root in local dev.
+
+[Unit]
+Description=EVE Trader backend (FastAPI/uvicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=__APP_USER__
+WorkingDirectory=__APP_DIR__
+ExecStart=__APP_DIR__/.venv/bin/uvicorn eve_trader.api.main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
