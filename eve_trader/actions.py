@@ -530,7 +530,7 @@ def do_pipeline(safe: bool = True, rebuild_universe: bool = False) -> dict:
 
     try:
         results["reconcile_trades"] = do_reconcile_trades()
-    except ActionError as e:
+    except (ActionError, ESIError) as e:
         results["reconcile_trades"] = {"error": str(e)}
 
     return results
