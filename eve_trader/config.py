@@ -262,7 +262,7 @@ class TradingConfig:
     min_profit_threshold: float = 0.0        # Minimum absolute profit/unit to consider
     min_margin_threshold: float = 0.05       # Minimum margin to mark an item "Import"
     # Grace period before actions.do_refresh_and_prune_candidates deactivates a
-    # shortlist item that's been continuously "No market data / Skip" - a
+    # shortlist item that's been continuously "No market data"/"Skip" - a
     # streak, tracked in storage.shortlist_skip_streak, resets the moment the
     # item is profitable again even once. Guards against a single bad/missing
     # market-data day knocking out an otherwise-fine item.

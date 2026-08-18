@@ -1,7 +1,7 @@
 import datetime as dt
 
 from eve_trader import actions, storage
-from eve_trader.actions import SKIP_DECISION, _items_beyond_rank, _items_past_skip_grace_period
+from eve_trader.actions import NO_MARKET_DATA_DECISION, SKIP_DECISION, _items_beyond_rank, _items_past_skip_grace_period
 from eve_trader.config import TradingConfig
 from eve_trader.models import ShortlistRow
 
@@ -60,6 +60,16 @@ def test_multiple_items_mixed():
         2: (NOW - dt.timedelta(days=5)).isoformat(),
     }
     assert _items_past_skip_grace_period(rows, skip_since, grace_period_days=30, now=NOW) == [(1, "Old Skip")]
+
+
+def test_no_market_data_counts_toward_the_same_streak_as_skip():
+    # "No market data" and "Skip" are distinct labels (see shortlist.py's
+    # 2026-08-18 split) but must still feed the same deactivation streak -
+    # a candidate stuck with zero C-J listings shouldn't linger forever just
+    # because its label differs from a priced-but-unprofitable item's.
+    since = (NOW - dt.timedelta(days=31)).isoformat()
+    rows = [_row(1, "Never Listed", NO_MARKET_DATA_DECISION)]
+    assert _items_past_skip_grace_period(rows, {1: since}, grace_period_days=30, now=NOW) == [(1, "Never Listed")]
 
 
 def test_skip_deactivation_days_counts_down(monkeypatch):

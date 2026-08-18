@@ -63,7 +63,7 @@ def test_shortlist_snapshot_merges_days_until_deactivation(monkeypatch):
     df = pd.DataFrame([{
         "item": "Widget", "category": "Material", "landed_cost": 100.0, "net_sell": 150.0,
         "sell_volume": 10.0, "own_orders_remaining": 0.0, "profit_per_unit": 50.0, "margin": 0.5,
-        "profit_per_m3": 100.0, "decision": "No market data / Skip", "active": True, "item_id": 1,
+        "profit_per_m3": 100.0, "decision": "Skip", "active": True, "item_id": 1,
         "volume_m3": 0.5, "jita_sell": 100.0, "import_cost": 0.0, "meta_level": None,
     }])
     monkeypatch.setattr(storage, "latest_snapshot", lambda: df)
