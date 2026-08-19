@@ -126,6 +126,19 @@ function or table after that migration (all 5 of its phases are done).
   ran for months as a single-operator tool with no login wall before the
   multi-tenant migration). A real per-tenant login (gate enabled) resolves
   and uses a different, real `tenant_id` from the registry instead.
+- **One tenant per character, enforced at the DB level.**
+  `tenant_registry_entries.tenant_id` has a `UNIQUE` constraint
+  (`docs/admin_schema.sql`) - no two characters can ever share a tenant, by
+  DB guarantee, not just UI convention. The Admin tool's "Add User"
+  (`admin.do_add_user`) reflects this: it always creates a brand-new
+  tenant (named after the character's own ESI-resolved name) as part of
+  adding a user, there's no "assign to an existing tenant" flow anymore -
+  `admin.do_create_tenant`/the standalone "Create Tenant" UI were removed
+  for the same reason. `admin.do_remove_user` deliberately does *not*
+  delete the now-permanently-orphaned tenant or its data - it just
+  deregisters the character, leaving the tenant's data intact/recoverable
+  (matches this app's general preference for reversible over destructive
+  admin operations).
 - **Two Postgres roles, never conflate them.** `eve_trader_app`
   (`storage.PG_DSN`) is what the app itself connects as for every real
   query - `NOSUPERUSER NOBYPASSRLS`, so it can *never* accidentally see

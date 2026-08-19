@@ -23,17 +23,6 @@ def test_list_tenants_serializes_action_result(monkeypatch):
     assert resp.json() == [{"tenant_id": "t1", "name": "Some Corp", "created_at": "2026-08-18T00:00:00"}]
 
 
-def test_create_tenant_action_error_maps_to_400(monkeypatch):
-    def _raise(*args, **kwargs):
-        raise ActionError("Tenant name can't be empty.")
-    monkeypatch.setattr(admin, "do_create_tenant", _raise)
-
-    resp = client.post("/api/admin/tenants", json={"name": ""})
-
-    assert resp.status_code == 400
-    assert resp.json() == {"detail": "Tenant name can't be empty."}
-
-
 def test_list_users_serializes_action_result(monkeypatch):
     monkeypatch.setattr(admin, "do_list_users", lambda: [
         {"character_id": 1, "character_name": "Alice", "tenant_id": "t1",
@@ -54,24 +43,24 @@ def test_add_user_passes_body_fields_to_action(monkeypatch):
 
     def _capture(**kwargs):
         captured.update(kwargs)
-        return {"character_id": kwargs["character_id"], "character_name": "Alice", "tenant_id": kwargs["tenant_id"]}
+        return {"character_id": kwargs["character_id"], "character_name": "Alice", "tenant_id": "t1"}
     monkeypatch.setattr(admin, "do_add_user", _capture)
 
-    resp = client.post("/api/admin/users", json={"character_id": 42, "tenant_id": "t1"})
+    resp = client.post("/api/admin/users", json={"character_id": 42})
 
     assert resp.status_code == 200
-    assert captured == {"character_id": 42, "tenant_id": "t1"}
+    assert captured == {"character_id": 42}
 
 
 def test_add_user_action_error_maps_to_400(monkeypatch):
     def _raise(*args, **kwargs):
-        raise ActionError("Unknown tenant_id 'bogus'.")
+        raise ActionError("Could not resolve character 42 via ESI: ESI down")
     monkeypatch.setattr(admin, "do_add_user", _raise)
 
-    resp = client.post("/api/admin/users", json={"character_id": 42, "tenant_id": "bogus"})
+    resp = client.post("/api/admin/users", json={"character_id": 42})
 
     assert resp.status_code == 400
-    assert resp.json() == {"detail": "Unknown tenant_id 'bogus'."}
+    assert resp.json() == {"detail": "Could not resolve character 42 via ESI: ESI down"}
 
 
 def test_remove_user_passes_character_id(monkeypatch):

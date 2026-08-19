@@ -38,3 +38,12 @@ CREATE TABLE IF NOT EXISTS tool_grants (
 );
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON tool_grants TO eve_trader_app;
+
+-- ================================================== one tenant per character
+-- Every logged-in character gets its own dedicated tenant now - no sharing,
+-- not even by an admin's mistake (see CLAUDE.md's "Multi-tenant Postgres").
+-- admin.do_add_user always creates a brand-new tenant as part of adding a
+-- user (there's no more "assign to an existing tenant" flow), so this is a
+-- DB-level backstop for that invariant, not just the UI/action-layer logic.
+ALTER TABLE tenant_registry_entries DROP CONSTRAINT IF EXISTS tenant_registry_entries_tenant_id_unique;
+ALTER TABLE tenant_registry_entries ADD CONSTRAINT tenant_registry_entries_tenant_id_unique UNIQUE (tenant_id);
