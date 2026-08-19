@@ -13,10 +13,33 @@ from eve_trader.doctrine.constants import SEVERITY_CRITICAL, SEVERITY_TOLERABLE,
 from eve_trader.doctrine.engine import _Candidate
 from eve_trader.doctrine.models import AggregatedStockpileRow, ContractItemRow, Fitting, FittingItem, StockpileRow
 from eve_trader.goonmetrics_client import CurrentPrice
+from eve_trader.production.constants import MODULE_CATEGORY_ID
 
 HULL_A = 1000
 HULL_B = 2000
 MODULE = 100
+
+
+class _FakeTokens:
+    def has_token(self, role):
+        return False  # no seller token in these lightweight tests - C-J leg stays unverified
+
+
+class _FakeESIClient:
+    """Stand-in for ESIClient in shopping_list_rows tests - no seller token
+    (skips the C-J structure order-book check entirely, same as a real
+    deployment without one) and an empty Jita order book by default, so
+    every test that doesn't care about issue #10's own order-book gate opts
+    back into the pre-issue-#10 "trust Goonmetrics" behavior by overriding
+    region_order_stats_bulk to return real listed volume."""
+    def __init__(self, *a, **k):
+        self.tokens = _FakeTokens()
+
+    def region_order_stats_bulk(self, region_id, type_ids):
+        return {}
+
+    def structure_order_stats_bulk(self, structure_id, type_ids, auth_role):
+        return {}
 
 
 def _candidate(fitting_id: str, hull_type_id: int, items: list[FittingItem]) -> _Candidate:
@@ -176,6 +199,52 @@ def test_shopping_prices_cj_price_includes_broker_fee(monkeypatch):
     assert jita is None  # no jita quote at all
 
 
+def test_shopping_prices_suppresses_cj_price_with_zero_listed_sell_volume(monkeypatch):
+    # GitHub issue #10 (still broken after the first "shipped" fix):
+    # Goonmetrics can return a nonzero sell price for a market with no real
+    # sell orders right now - a live order-book check (sell_volume == 0)
+    # should suppress that price instead of trusting the quote blindly.
+    cfg = DoctrineConfig(import_cost_per_m3=900.0)
+    home = {MODULE: CurrentPrice(type_id=MODULE, updated="2026-01-01", buy=90.0, sell=100.0)}
+    home_stats = engine.OrderStats(sell_percentile=None, sell_volume=0.0, buy_percentile=None, buy_volume=0.0)
+
+    cj, jita = engine._shopping_prices(MODULE, home, {}, volume=5.0, cfg=cfg, home_stats=home_stats)
+
+    assert cj is None
+
+
+def test_shopping_prices_keeps_cj_price_with_real_listed_sell_volume(monkeypatch):
+    cfg = DoctrineConfig(import_cost_per_m3=900.0)
+    home = {MODULE: CurrentPrice(type_id=MODULE, updated="2026-01-01", buy=90.0, sell=100.0)}
+    home_stats = engine.OrderStats(sell_percentile=100.0, sell_volume=42.0, buy_percentile=None, buy_volume=0.0)
+
+    cj, jita = engine._shopping_prices(MODULE, home, {}, volume=5.0, cfg=cfg, home_stats=home_stats)
+
+    assert cj == pytest.approx(100.0 * (1 + engine.PRODUCTION_CONFIG.jita_buy_broker_fee))
+
+
+def test_shopping_prices_suppresses_jita_price_with_zero_listed_sell_volume(monkeypatch):
+    cfg = DoctrineConfig(import_cost_per_m3=900.0)
+    jita = {MODULE: CurrentPrice(type_id=MODULE, updated="2026-01-01", buy=45.0, sell=50.0)}
+    jita_stats = engine.OrderStats(sell_percentile=None, sell_volume=0.0, buy_percentile=None, buy_volume=0.0)
+
+    cj, jita_landed = engine._shopping_prices(MODULE, {}, jita, volume=2.0, cfg=cfg, jita_stats=jita_stats)
+
+    assert jita_landed is None
+
+
+def test_shopping_prices_untrusted_stats_falls_back_to_goonmetrics(monkeypatch):
+    # None (not an OrderStats) means "couldn't verify" (e.g. no seller token
+    # for the C-J leg) - degrades to the pre-issue-#10 behavior instead of
+    # suppressing the price outright.
+    cfg = DoctrineConfig(import_cost_per_m3=900.0)
+    home = {MODULE: CurrentPrice(type_id=MODULE, updated="2026-01-01", buy=90.0, sell=100.0)}
+
+    cj, jita = engine._shopping_prices(MODULE, home, {}, volume=5.0, cfg=cfg, home_stats=None)
+
+    assert cj == pytest.approx(100.0 * (1 + engine.PRODUCTION_CONFIG.jita_buy_broker_fee))
+
+
 def test_shopping_prices_jita_landed_includes_doctrine_import_cost(monkeypatch):
     cfg = DoctrineConfig(import_cost_per_m3=900.0)
     jita = {MODULE: CurrentPrice(type_id=MODULE, updated="2026-01-01", buy=45.0, sell=50.0)}
@@ -203,6 +272,9 @@ def test_shopping_list_rows_picks_cheapest_of_build_cj_jita(monkeypatch):
     monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
     monkeypatch.setattr(engine, "unit_cost_detail", lambda *a, **k: (None, 25.0, None))  # Build is cheapest
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Damage Control II", 5.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: MODULE_CATEGORY_ID)
+    monkeypatch.setattr(storage, "get_cached_packaged_volume", lambda type_id: 5.0)  # no packaged/flight difference
+    monkeypatch.setattr(engine, "ESIClient", _FakeESIClient)
 
     rows = engine.shopping_list_rows(cfg=DoctrineConfig(import_cost_per_m3=900.0))
 
@@ -238,11 +310,43 @@ def test_shopping_list_rows_recommends_none_when_no_price_data(monkeypatch):
     monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
     monkeypatch.setattr(engine, "unit_cost_detail", lambda *a, **k: (None, None, None))
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: None)
+    monkeypatch.setattr(engine, "ESIClient", _FakeESIClient)
 
     rows = engine.shopping_list_rows()
 
     assert rows[0].recommended_source is None
     assert rows[0].total_cost is None
+
+
+def test_shopping_list_rows_suppresses_jita_price_with_no_live_orders(monkeypatch):
+    # End-to-end: shopping_list_rows actually threads region_order_stats_bulk's
+    # result through to _shopping_prices, not just _shopping_prices in
+    # isolation (GitHub issue #10).
+    agg_row = AggregatedStockpileRow(type_id=MODULE, type_name="Illiquid Charge", required_total=10.0,
+                                      available=4.0, shortfall=6.0, severity=SEVERITY_CRITICAL, fitting_count=1)
+    monkeypatch.setattr(engine, "stockpile_rows_for_doctrine", lambda doctrine_id, cfg: ([], True))
+    monkeypatch.setattr(engine, "aggregate_stockpile_rows", lambda rows: [agg_row])
+
+    class _FakePlanContext:
+        def __init__(self, cfg):
+            self.home = {}
+            self.jita = {MODULE: CurrentPrice(type_id=MODULE, updated="2026-01-01", buy=45.0, sell=50.0)}
+            self.cost_indices, self.adjusted_prices, self.selected_decryptors = {}, {}, {}
+    monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
+    monkeypatch.setattr(engine, "unit_cost_detail", lambda *a, **k: (None, None, None))
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Illiquid Charge", 0.01, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 8)  # Charge
+
+    class _NoOrdersESIClient(_FakeESIClient):
+        def region_order_stats_bulk(self, region_id, type_ids):
+            return {tid: engine.OrderStats(sell_percentile=None, sell_volume=0.0, buy_percentile=None, buy_volume=0.0)
+                    for tid in type_ids}
+    monkeypatch.setattr(engine, "ESIClient", _NoOrdersESIClient)
+
+    rows = engine.shopping_list_rows()
+
+    assert rows[0].jita_landed_price is None
+    assert rows[0].recommended_source is None
 
 
 # ---------------------------------------------------------------- aggregate_stockpile_rows
