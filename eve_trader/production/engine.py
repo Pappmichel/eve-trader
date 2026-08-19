@@ -495,6 +495,49 @@ def _unit_cost(type_id: int, cfg: ProductionConfig, home: dict, jita: dict,
     return best
 
 
+def unit_cost_detail(type_id: int, cfg: ProductionConfig, home: dict, jita: dict,
+                      memo: dict[int, Optional[float]], selected_decryptors: dict[int, str],
+                      t2_memo: dict[int, tuple[float, float, Optional[str]]], cost_indices: CostIndices,
+                      adjusted_prices: dict[int, float]) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    """Like _unit_cost, but for callers (Doctrine's Shopping List) that need
+    Buy vs Build shown side by side, not just the cheaper of the two -
+    returns (best, build_cost, buy_price) instead of just `best`. Recurses
+    into _unit_cost (not itself) for sub-materials, same as _unit_cost's own
+    recursion - sub-material sourcing still picks whichever of buy/build is
+    cheaper at each level, only this top-level type_id's own build_cost/
+    buy_price are exposed separately here. Deliberately duplicates _unit_
+    cost's own top-level formula rather than modifying it - this is only
+    ever called once per top-level item (not recursively on itself), so the
+    duplication is small and isolated, and _unit_cost's own recursive
+    machinery (and its existing tests) stay completely unchanged."""
+    volume = _haul_volume(type_id, cfg)
+    buy = pricing.buy_price(type_id, home, jita, volume, cfg)
+    activity, bp = classify_activity(type_id)
+    if bp is None:
+        return buy, None, buy
+    blueprint_id, activity_id, product_qty = bp
+    if activity == "Tech II":
+        material_mult, _, _ = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
+                                             selected_decryptors, t2_memo)
+        job_cost_rate = _job_cost_rate("Tech II", type_id, cfg, cost_indices)
+    else:
+        material_mult, _, job_cost_rate = _activity_mods(activity, type_id, cfg, cost_indices, blueprint_id)
+    materials = storage.get_blueprint_materials(blueprint_id, activity_id)
+    material_cost = 0.0
+    eiv = 0.0
+    for material_id, base_qty in materials:
+        m_cost = _unit_cost(material_id, cfg, home, jita, memo, selected_decryptors, t2_memo,
+                             cost_indices, adjusted_prices, depth=1)
+        if m_cost is None:
+            return buy, None, buy
+        material_cost += _material_qty(base_qty, material_mult, 1) * m_cost
+        eiv += base_qty * adjusted_prices.get(material_id, 0.0)
+    job_cost = eiv * job_cost_rate
+    build_cost = (material_cost + job_cost) / product_qty
+    best = build_cost if buy is None else min(buy, build_cost)
+    return best, build_cost, buy
+
+
 def _sell_margin(sell_price: float, build_cost: Optional[float]) -> Optional[float]:
     """Shared core of margin_home/margin_jita - (sell_price - build_cost) /
     build_cost, or None if build_cost isn't a real positive cost (gate not

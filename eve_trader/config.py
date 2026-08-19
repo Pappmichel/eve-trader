@@ -186,6 +186,7 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "doctrine_structure_id": (1, None),
     "stockpile_location_id": (1, None),
     "cargo_tolerance_pct": (0, 1),
+    "import_cost_per_m3": (0, None),
 }
 
 

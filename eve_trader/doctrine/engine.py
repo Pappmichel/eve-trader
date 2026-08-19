@@ -15,9 +15,22 @@ from .config import DOCTRINE_CONFIG, DoctrineConfig
 from .constants import AMPEL_GRAY, EXACT_SECTIONS
 from .models import (
     AggregatedStockpileRow, ContractItemRow, ContractRow, DeviationRow, Doctrine, DoctrineStatus, Fitting,
-    FittingItem, FittingStatus, ParsedFitting, ParseIssue, StockpileRow,
+    FittingItem, FittingStatus, ParsedFitting, ParseIssue, ShoppingListRow, StockpileRow,
 )
 from .parser import FittingParseError, ResolvedType
+
+# Deliberate, confirmed exception to constants.py's own "no imports from
+# eve_trader.production" policy (see that module's docstring) - the
+# Shopping List's Build cost (shopping_list_rows below) reuses Production's
+# real build-cost engine directly rather than a second, possibly-divergent
+# estimate, so a user's owned-BPO/ME/TE/structure config gives the exact
+# same number here as it would in the Production tool itself. Only pure,
+# stateless price/cost computation is imported - no shared mutable state or
+# tables, so this doesn't reintroduce the kind of coupling that policy was
+# actually protecting against.
+from ..production.config import PRODUCTION_CONFIG
+from ..production import pricing as production_pricing
+from ..production.engine import _PlanContext, unit_cost_detail
 
 
 # ---------------------------------------------------------------- parsing entry point
@@ -244,6 +257,63 @@ def aggregate_stockpile_rows(rows: list[StockpileRow]) -> list[AggregatedStockpi
     return aggregated
 
 
+# ------------------------------------------------------------- shopping list
+def _shopping_prices(type_id: int, home: dict, jita: dict, volume: Optional[float],
+                      cfg: DoctrineConfig) -> tuple[Optional[float], Optional[float]]:
+    """(cj_price, jita_landed_price) for the Shopping List's own Buy columns -
+    mirrors production.pricing's own buy-candidate formula, but uses
+    Doctrine's own cfg.import_cost_per_m3 for the Jita leg instead of
+    Production's haul_cost_per_m3 (a deliberately separate, independently-
+    configurable value - see DoctrineConfig.import_cost_per_m3's own
+    comment). The broker fee is the same real per-character fee either way,
+    so that part is still read off PRODUCTION_CONFIG - no reason to
+    duplicate it as a second Doctrine setting nobody asked for."""
+    home_quote, jita_quote = home.get(type_id), jita.get(type_id)
+    broker_fee = PRODUCTION_CONFIG.jita_buy_broker_fee
+    cj = home_quote.sell * (1 + broker_fee) if home_quote and home_quote.sell > 0 else None
+    jita_landed = (jita_quote.sell * (1 + broker_fee) + cfg.import_cost_per_m3 * (volume or 0)
+                   if jita_quote and jita_quote.sell > 0 else None)
+    return cj, jita_landed
+
+
+def shopping_list_rows(doctrine_id: Optional[str] = None, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> list[ShoppingListRow]:
+    """Every item with a real stockpile shortfall (across every doctrine,
+    same aggregation as the Stockpile page's own combined view - GitHub
+    issue #1's aggregate_stockpile_rows), each with a Build-vs-Buy-C-J-vs-
+    Buy-Jita comparison. Build cost reuses Production's real cost engine
+    directly (_PlanContext/unit_cost_detail) - see this module's own import
+    comment for why - so it reflects the user's actual owned-BPO/ME/TE/
+    structure config, not a second, possibly-divergent estimate."""
+    rows, _ = stockpile_rows_for_doctrine(doctrine_id, cfg)
+    aggregated = [r for r in aggregate_stockpile_rows(rows) if r.shortfall > 0]
+    if not aggregated:
+        return []
+
+    ctx = _PlanContext(PRODUCTION_CONFIG)
+    cost_memo: dict[int, Optional[float]] = {}
+    t2_memo: dict[int, tuple[float, float, Optional[str]]] = {}
+
+    result = []
+    for row in aggregated:
+        _, build_cost, _ = unit_cost_detail(row.type_id, PRODUCTION_CONFIG, ctx.home, ctx.jita, cost_memo,
+                                             ctx.selected_decryptors, t2_memo, ctx.cost_indices, ctx.adjusted_prices)
+        sde_type = storage.get_sde_type(row.type_id)
+        volume = sde_type[3] if sde_type else None
+        cj_price, jita_landed_price = _shopping_prices(row.type_id, ctx.home, ctx.jita, volume, cfg)
+
+        candidates = {"Build": build_cost, "C-J": cj_price, "Jita": jita_landed_price}
+        priced = {k: v for k, v in candidates.items() if v is not None}
+        recommended_source = min(priced, key=priced.get) if priced else None
+        total_cost = priced[recommended_source] * row.shortfall if recommended_source else None
+
+        result.append(ShoppingListRow(
+            type_id=row.type_id, type_name=row.type_name, shortfall=row.shortfall,
+            build_cost=build_cost, cj_price=cj_price, jita_landed_price=jita_landed_price,
+            recommended_source=recommended_source, total_cost=total_cost,
+        ))
+    return result
+
+
 # ---------------------------------------------------------------- status / ampel
 def contract_rows_from_db(rows: list[tuple]) -> list[ContractRow]:
     result = []
@@ -261,7 +331,12 @@ def contract_rows_from_db(rows: list[tuple]) -> list[ContractRow]:
 
 def fitting_status(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG,
                     stockpile_rows: Optional[list[StockpileRow]] = None,
-                    assets_available: bool = True) -> FittingStatus:
+                    assets_available: bool = True, home: Optional[dict] = None) -> FittingStatus:
+    """`home` (Goonmetrics current-price dict, production_pricing.home_prices'
+    own return shape) is an optional passthrough for multibuy_cost, same
+    "compute once in doctrine_status' loop, don't refetch per fitting"
+    reasoning as `stockpile_rows` above - None (the default, e.g. a lone
+    do_get_fitting_detail call) just means multibuy_cost comes back None."""
     contracts = contract_rows_from_db(storage.list_doctrine_contracts(fitting_id=fitting.fitting_id))
     last_synced_at = storage.get_esi_sync_time("doctrine")
     # status == "expired" (the raw ESI contract status, separate from
@@ -289,12 +364,31 @@ def fitting_status(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG,
             worst_severity = r.severity
     stockpile_amp = validation.stockpile_ampel(assets_available, fitting.stockpile_target, worst_severity)
 
+    hull_sde = storage.get_sde_type(fitting.hull_type_id)
+    hull_name = hull_sde[2] if hull_sde else str(fitting.hull_type_id)
+
+    multibuy_cost = None
+    if home is not None:
+        items = storage.load_fitting_items(fitting.fitting_id)
+        quantities: dict[int, float] = {fitting.hull_type_id: 1.0}
+        for _line_no, _slot_section, type_id, quantity, _is_offline in items:
+            quantities[type_id] = quantities.get(type_id, 0.0) + quantity
+        total = 0.0
+        for type_id, quantity in quantities.items():
+            quote = home.get(type_id)
+            if quote is None or quote.sell <= 0:
+                total = None
+                break
+            total += quote.sell * quantity
+        multibuy_cost = total
+
     return FittingStatus(fitting_id=fitting.fitting_id, fitting_name=fitting.name, doctrine_id=fitting.doctrine_id,
                           contract_status=contract_ampel, valid_contracts=valid, tolerable_contracts=tolerable,
                           contract_target=fitting.contract_target, stockpile_status=stockpile_amp,
                           stockpile_target=fitting.stockpile_target,
                           worst_stockpile_shortfall_pct=worst_shortfall_pct, last_synced_at=last_synced_at,
-                          assets_available=assets_available)
+                          assets_available=assets_available, hull_type_id=fitting.hull_type_id,
+                          hull_name=hull_name, multibuy_cost=multibuy_cost)
 
 
 def doctrine_status(doctrine_row: tuple, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> DoctrineStatus:
@@ -302,13 +396,21 @@ def doctrine_status(doctrine_row: tuple, cfg: DoctrineConfig = DOCTRINE_CONFIG) 
     fitting_rows = storage.list_fittings_for_doctrine(doctrine.doctrine_id)
     stockpile_rows, assets_available = stockpile_rows_for_doctrine(doctrine.doctrine_id, cfg)
 
+    # Fetched once for every fitting's multibuy_cost below, not per-fitting -
+    # GoonmetricsClient's own 60s cache would mostly cover repeat calls
+    # anyway, but explicit-once matches this function's existing
+    # stockpile_rows-computed-once convention.
+    from ..goonmetrics_client import GoonmetricsClient
+    home = production_pricing.home_prices(GoonmetricsClient(), PRODUCTION_CONFIG)
+
     statuses = []
     for row in fitting_rows:
         fitting = fitting_from_row(row)
         if not fitting.active:
             continue
         own_rows = [r for r in stockpile_rows if r.fitting_id == fitting.fitting_id]
-        statuses.append(fitting_status(fitting, cfg, stockpile_rows=own_rows, assets_available=assets_available))
+        statuses.append(fitting_status(fitting, cfg, stockpile_rows=own_rows, assets_available=assets_available,
+                                        home=home))
 
     contract_rollup = validation.worst_ampel([s.contract_status for s in statuses]) if statuses else AMPEL_GRAY
     stockpile_rollup = validation.worst_ampel([s.stockpile_status for s in statuses]) if statuses else AMPEL_GRAY

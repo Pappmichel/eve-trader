@@ -351,6 +351,48 @@ def test_job_category_treats_basic_capital_components_as_capital(monkeypatch):
     assert engine.job_category(100) == "Capital Components"
 
 
+def test_unit_cost_detail_returns_build_cost_and_buy_price_separately(monkeypatch):
+    # unit_cost_detail exists so a caller (Doctrine's Shopping List) can show
+    # Build cost and Buy price side by side, not just _unit_cost's own
+    # min(buy, build) - confirms it exposes both, not just the winner.
+    # Empty materials isolates unit_cost_detail's own new top-level formula
+    # without needing to also exercise _unit_cost's recursion (never directly
+    # tested even for _unit_cost itself in this file - always mocked away in
+    # its own downstream tests).
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (200, 1, 1.0))
+    monkeypatch.setattr(storage, "find_invention_recipe_by_product_type_id", lambda blueprint_id: None)
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (100, 958, "Plain Tech I Thing", 40.0, 1, 1125, 0, None))
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 99)  # not a ship - plain SDE volume path
+    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id: None)
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [])
+
+    cfg = ProductionConfig()
+    home = {100: _fake_quote(100, sell=500.0)}
+
+    best, build_cost, buy_price = engine.unit_cost_detail(
+        100, cfg, home, {}, memo={}, selected_decryptors={}, t2_memo={}, cost_indices={}, adjusted_prices={})
+
+    assert buy_price == pytest.approx(500.0 * (1 + cfg.jita_buy_broker_fee))
+    assert build_cost == 0.0  # no materials, no job cost (adjusted_prices empty -> eiv=0)
+    assert best == 0.0  # min(buy, 0.0) - build wins
+
+
+def test_unit_cost_detail_returns_buy_only_when_not_buildable(monkeypatch):
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: None)  # no blueprint at all
+    monkeypatch.setattr(storage, "find_invention_recipe_by_product_type_id", lambda blueprint_id: None)
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (100, 958, "Buy-only Thing", 40.0, 1, 1125, 0, None))
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 99)
+
+    cfg = ProductionConfig()
+    home = {100: _fake_quote(100, sell=500.0)}
+
+    best, build_cost, buy_price = engine.unit_cost_detail(
+        100, cfg, home, {}, memo={}, selected_decryptors={}, t2_memo={}, cost_indices={}, adjusted_prices={})
+
+    assert build_cost is None
+    assert buy_price == best == pytest.approx(500.0 * (1 + cfg.jita_buy_broker_fee))
+
+
 def test_reaction_never_uses_owned_bpo_data(monkeypatch):
     # Reactions have no BPO research in real EVE - _owned_bpo_mods must never
     # be consulted for them, even if the lookup would return something.

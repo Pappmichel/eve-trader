@@ -51,6 +51,7 @@ const DoctrineDetail = lazy(() => import('./pages/doctrine/DoctrineDetail'))
 const FittingDetail = lazy(() => import('./pages/doctrine/FittingDetail'))
 const Contracts = lazy(() => import('./pages/doctrine/Contracts'))
 const Stockpile = lazy(() => import('./pages/doctrine/Stockpile'))
+const ShoppingList = lazy(() => import('./pages/doctrine/ShoppingList'))
 const DoctrineSettings = lazy(() => import('./pages/doctrine/DoctrineSettings'))
 
 const AdminPage = lazy(() => import('./pages/admin/AdminPage'))
@@ -196,6 +197,7 @@ function App() {
               <Route path="fittings/:fittingId" element={<FittingDetail />} />
               <Route path="contracts" element={<Contracts />} />
               <Route path="stockpile" element={<Stockpile />} />
+              <Route path="shopping-list" element={<ShoppingList />} />
               <Route path="settings" element={<DoctrineSettings />} />
             </Route>
           </Routes>

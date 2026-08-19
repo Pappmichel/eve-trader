@@ -12,6 +12,7 @@ const TABS = [
   { path: '/doctrine', label: 'Doctrines' },
   { path: '/doctrine/contracts', label: 'Contracts' },
   { path: '/doctrine/stockpile', label: 'Stockpile' },
+  { path: '/doctrine/shopping-list', label: 'Shopping List' },
   { path: '/doctrine/settings', label: 'Settings' },
 ]
 
@@ -22,6 +23,7 @@ const TABS = [
 function activeTab(pathname: string): string {
   if (pathname.startsWith('/doctrine/contracts')) return '/doctrine/contracts'
   if (pathname.startsWith('/doctrine/stockpile')) return '/doctrine/stockpile'
+  if (pathname.startsWith('/doctrine/shopping-list')) return '/doctrine/shopping-list'
   if (pathname.startsWith('/doctrine/settings')) return '/doctrine/settings'
   return '/doctrine'
 }

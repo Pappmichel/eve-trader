@@ -291,9 +291,31 @@ def do_get_stockpile_status(doctrine_id: Optional[str] = None) -> dict:
     }
 
 
+def do_get_shopping_list(doctrine_id: Optional[str] = None, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+    return {"rows": [asdict(r) for r in engine.shopping_list_rows(doctrine_id, cfg)]}
+
+
 def do_list_contracts(fitting_id: Optional[str] = None, status: Optional[str] = None) -> dict:
     contracts = engine.contract_rows_from_db(storage.list_doctrine_contracts(fitting_id=fitting_id, status=status))
-    return {"rows": [asdict(c) for c in contracts]}
+
+    # source_role is an ESI-token role key ("doctrine:<character_id>", see
+    # esi_sync.DOCTRINE_ROLE_PREFIX) - resolve it to the character's actual
+    # name for display rather than leaving the raw string on screen.
+    character_names = {role_key: name for role_key, _character_id, name in esi_sync.list_doctrine_characters()}
+    # Hull comes from the matched fitting, if any - an unmatched contract
+    # doesn't authoritatively identify which of possibly-several relevant
+    # hulls it's for, so it stays blank rather than guessing from its items.
+    hull_by_fitting_id = {}
+    for row in storage.list_active_fittings():
+        fitting = engine.fitting_from_row(row)
+        hull_by_fitting_id[fitting.fitting_id] = (fitting.hull_type_id, _type_name(fitting.hull_type_id))
+
+    rows = []
+    for c in contracts:
+        hull_type_id, hull_name = hull_by_fitting_id.get(c.matched_fitting_id, (None, None))
+        rows.append({**asdict(c), "source_character_name": character_names.get(c.source_role),
+                     "hull_type_id": hull_type_id, "hull_name": hull_name})
+    return {"rows": rows}
 
 
 def do_get_esi_sync_time() -> dict:

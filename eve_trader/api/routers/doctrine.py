@@ -147,6 +147,11 @@ def get_stockpile(doctrine_id: Optional[str] = None):
     return _wrap(actions.do_get_stockpile_status, doctrine_id=doctrine_id)
 
 
+@router.get("/shopping-list")
+def get_shopping_list(doctrine_id: Optional[str] = None):
+    return _wrap(actions.do_get_shopping_list, doctrine_id=doctrine_id)
+
+
 # ------------------------------------------------------------------ characters
 @router.get("/characters")
 def get_doctrine_characters():
@@ -180,6 +185,7 @@ class DoctrineSettings(BaseModel):
     stockpile_location_id: Optional[int] = None
     cargo_tolerance_pct: float
     strict_extras: bool
+    import_cost_per_m3: float
 
 
 @router.get("/settings", response_model=DoctrineSettings)
