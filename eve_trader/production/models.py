@@ -159,6 +159,28 @@ class LogisticsRow:
     needed: float
     available: float
     missing: float
+    # Which other configured category-location has the most of this item
+    # right now, if any (GitHub issue #4's "where to pull from" hint) - None
+    # when nothing's missing, or no other configured location has any.
+    pull_from_location_id: Optional[int] = None
+    pull_from_available: Optional[float] = None
+
+
+@dataclass
+class DistributionRow:
+    """One row of the Logistik tab's Distribution section (GitHub issue #4):
+    a recommended move of `quantity` units of `type_id` from the configured
+    distribution source (ProductionConfig.distribution_source_location_id,
+    falls back to home_location_id) to a category's own assigned station,
+    where that category is currently short. See engine.
+    distribution_recommendations - when the source can't cover every
+    shortfall for the same item, the largest one is covered first."""
+    type_id: int
+    type_name: str
+    from_location_id: int
+    to_category: str
+    to_location_id: int
+    quantity: float
 
 
 @dataclass

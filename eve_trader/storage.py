@@ -847,6 +847,19 @@ def load_sde_types_with_market_group() -> list[tuple[int, str, float, int, Optio
         ).fetchall()
 
 
+def load_sde_type_groups() -> dict[int, int]:
+    """type_id -> group_id for every SDE type - used by candidate_discovery.
+    guess_category to tell Boosters/Drugs (group_id 746) apart from real
+    Cyberimplants, which otherwise share category_id 20 "Implant" and can't
+    be distinguished from category_id alone. Kept as its own function rather
+    than widening load_sde_types_with_market_group()'s tuple shape, since
+    that function already has several other callers/tests relying on its
+    current shape."""
+    with connect() as conn:
+        rows = conn.execute("SELECT type_id, group_id FROM sde_types").fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
 @lru_cache(maxsize=32)
 def get_system_security(system_id: Optional[int]) -> Optional[float]:
     """Static per-system security status from the local SDE cache (never
@@ -1513,17 +1526,20 @@ def get_blueprint_for_product(product_type_id: int) -> Optional[tuple[int, int, 
     Confirmed real bug: some products (e.g. Tungsten Carbide, type 16672) have
     a leftover *unpublished* blueprint row in the SDE (CCP test/legacy data,
     e.g. "Test Reaction Blueprint") alongside the real published one, with
-    wildly different quantity/materials - without an explicit published-first
-    tiebreak, SQLite's unordered scan could return either one. `t.published
-    DESC` prefers the real, currently-buildable blueprint; the extra
-    `blueprint_type_id` tiebreak keeps the choice deterministic if several
-    published blueprints somehow tie. Cached - see get_sde_type."""
+    wildly different quantity/materials - `t.published = 1` excludes those
+    rows outright rather than merely deprioritizing them, since a product
+    whose *only* blueprint is unpublished (e.g. Freki/Utu - CCP-unpublished,
+    Faction-meta ships that classify_activity would otherwise treat as
+    buildable, confirmed live 2026-08-19) isn't actually buildable by any
+    player either; the extra `blueprint_type_id` tiebreak keeps the choice
+    deterministic if several published blueprints somehow tie. Cached - see
+    get_sde_type."""
     with connect() as conn:
         row = conn.execute(
             "SELECT p.blueprint_type_id, p.activity_id, p.quantity FROM sde_blueprint_products p "
             "JOIN sde_types t ON t.type_id = p.blueprint_type_id "
-            "WHERE p.product_type_id = ? AND p.activity_id IN (1, 11) "
-            "ORDER BY t.published DESC, p.activity_id, p.blueprint_type_id LIMIT 1",
+            "WHERE p.product_type_id = ? AND p.activity_id IN (1, 11) AND t.published = 1 "
+            "ORDER BY p.activity_id, p.blueprint_type_id LIMIT 1",
             (product_type_id,),
         ).fetchone()
     return row

@@ -1,5 +1,6 @@
 from eve_trader.candidate_discovery import (
-    MODULE_CATEGORY_ID, build_focused_candidate_universe, guess_category, is_wanted_market_path,
+    BOOSTER_GROUP_ID, IMPLANT_CATEGORY_ID, MODULE_CATEGORY_ID, build_focused_candidate_universe, guess_category,
+    is_wanted_market_path,
 )
 from eve_trader.config import TradingConfig
 from eve_trader.models import Candidate
@@ -32,6 +33,21 @@ def test_guess_category_uses_real_sde_category_name_when_available():
     # old binary split rather than crashing.
     assert guess_category("Materials > Whatever", "Something", 0.1,
                            category_id=999, category_names=category_names) == "Material"
+
+
+def test_guess_category_splits_boosters_out_of_implant():
+    # Boosters/Drugs share category_id 20 "Implant" with real cyberimplants
+    # in the SDE - only group_id (746 "Booster") tells them apart. Confirmed
+    # wrong labeling (both showing as "Implant") by the user.
+    category_names = {IMPLANT_CATEGORY_ID: "Implant"}
+    assert guess_category("Pilot's Services > Boosters", "Blue Pill", 0.1,
+                           category_id=IMPLANT_CATEGORY_ID, category_names=category_names,
+                           group_id=BOOSTER_GROUP_ID) == "Drugs"
+    # A real cyberimplant (same category_id, different group_id) still gets
+    # the real SDE category name, unaffected.
+    assert guess_category("Pilot's Services > Implants", "Ocular Filter", 0.1,
+                           category_id=IMPLANT_CATEGORY_ID, category_names=category_names,
+                           group_id=300) == "Implant"
 
 
 def test_guess_category_falls_back_to_string_heuristic_without_category_id():

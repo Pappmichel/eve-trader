@@ -44,13 +44,42 @@ def test_already_ordered_when_own_orders_remain():
     assert row.decision == "Already ordered"
 
 
-def test_inactive_item_short_circuits_without_stats():
+def test_inactive_item_still_decision_inactive_when_stats_absent():
     cfg = TradingConfig()
     item = ShortlistItem(item="Disabled", item_id=999, category="Material", volume_m3=1.0, active=False)
 
     row = evaluate_shortlist_item(item, own_orders_remaining=0.0,
                                    jita_stats=None, structure_stats=None, cfg=cfg)
     assert row.decision == "Inactive"
+    assert row.landed_cost is None  # no stats were supplied at all, not because it's inactive
+
+
+def test_inactive_item_still_gets_priced_when_stats_are_supplied():
+    # GitHub issue #6: margin/trend/profit used to go blank the moment an
+    # item was deactivated, even when real market data was available - only
+    # a genuinely unpriceable item (no item_id) should short-circuit.
+    cfg = TradingConfig(import_cost_per_m3=900.0, structure_sell_haircut=0.95, jita_buy_broker_fee=0.0)
+    item = ShortlistItem(item="Disabled but priceable", item_id=999, category="Material", volume_m3=0.1, active=False)
+    jita = OrderStats(sell_percentile=1000.0, sell_volume=500, buy_percentile=900.0, buy_volume=300)
+    structure = OrderStats(sell_percentile=2000.0, sell_volume=50, buy_percentile=1800.0, buy_volume=10)
+
+    row = evaluate_shortlist_item(item, own_orders_remaining=0.0,
+                                   jita_stats=jita, structure_stats=structure, cfg=cfg)
+
+    assert row.decision == "Inactive"
+    assert row.landed_cost == 1090.0
+    assert row.net_sell == 1900.0
+    assert round(row.profit_per_unit, 2) == 810.0
+    assert row.margin is not None
+
+
+def test_missing_item_id_still_short_circuits_regardless_of_active():
+    cfg = TradingConfig()
+    item = ShortlistItem(item="No ID", item_id=0, category="Material", volume_m3=1.0, active=True)
+
+    row = evaluate_shortlist_item(item, own_orders_remaining=0.0,
+                                   jita_stats=None, structure_stats=None, cfg=cfg)
+    assert row.decision == "Missing ID"
     assert row.landed_cost is None
 
 

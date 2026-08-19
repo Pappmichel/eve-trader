@@ -31,6 +31,13 @@ log = logging.getLogger(__name__)
 # dependency on the Production tool's module.
 MODULE_CATEGORY_ID = 7
 
+# SDE category_id=20 ("Implant") covers both real cyberimplants and Boosters/
+# Drugs - CCP doesn't split them into separate categories. group_id=746
+# ("Booster") is what actually distinguishes them - confirmed wrong labeling
+# (both showing as "Implant") by the user.
+IMPLANT_CATEGORY_ID = 20
+BOOSTER_GROUP_ID = 746
+
 
 def is_wanted_market_path(path: str, cfg: TradingConfig = TRADING_CONFIG) -> bool:
     """True unless `path` starts with one of the handful of categorically-
@@ -49,7 +56,7 @@ def is_wanted_market_path(path: str, cfg: TradingConfig = TRADING_CONFIG) -> boo
 
 
 def guess_category(path: str, item_name: str, volume_m3: float, category_id: Optional[int] = None,
-                    category_names: Optional[dict[int, str]] = None) -> str:
+                    category_names: Optional[dict[int, str]] = None, group_id: Optional[int] = None) -> str:
     """Display category for the Shortlist's "Kategorie" column - not used for
     any margin/filtering math. Prefers the real SDE category name (e.g.
     "Implant", "Charge", "Drone", "Skill", "Material") via `category_names`
@@ -60,8 +67,14 @@ def guess_category(path: str, item_name: str, volume_m3: float, category_id: Opt
     the user. Falls back to the old string-matching heuristic ("module"/"rig"
     in the name/path, or a volume >=5m3 guess) only for the rare live-ESI-walk
     path (_build_candidate_universe_from_esi) where fetching each type's real
-    category would mean an extra ESI call per type."""
+    category would mean an extra ESI call per type.
+
+    `group_id` (optional - only the SDE-backed path has it) splits Boosters/
+    Drugs (BOOSTER_GROUP_ID) out of the "Implant" category they'd otherwise
+    share with real cyberimplants - see IMPLANT_CATEGORY_ID's own comment."""
     if category_id is not None:
+        if category_id == IMPLANT_CATEGORY_ID and group_id == BOOSTER_GROUP_ID:
+            return "Drugs"
         if category_names and category_id in category_names:
             return category_names[category_id]
         return "Module/Rig" if category_id == MODULE_CATEGORY_ID else "Material"
@@ -99,14 +112,16 @@ def build_candidate_universe(client: ESIClient | None = None,
     sde_types = storage.load_sde_types_with_market_group()
     if market_groups and sde_types:
         category_names = storage.load_sde_category_names()
-        return _build_candidate_universe_from_sde(market_groups, sde_types, cfg, category_names)
+        type_groups = storage.load_sde_type_groups()
+        return _build_candidate_universe_from_sde(market_groups, sde_types, cfg, category_names, type_groups)
     return _build_candidate_universe_from_esi(client, cfg, progress)
 
 
 def _build_candidate_universe_from_sde(market_groups: list[tuple[int, int, str]],
                                         sde_types: list[tuple[int, str, float, int, Optional[int], Optional[int]]],
                                         cfg: TradingConfig,
-                                        category_names: Optional[dict[int, str]] = None) -> list[Candidate]:
+                                        category_names: Optional[dict[int, str]] = None,
+                                        type_groups: Optional[dict[int, int]] = None) -> list[Candidate]:
     names = {gid: name for gid, _parent, name in market_groups}
     parents = {gid: (parent or 0) for gid, parent, _name in market_groups}
 
@@ -122,7 +137,8 @@ def _build_candidate_universe_from_sde(market_groups: list[tuple[int, int, str]]
             continue
         candidates.append(Candidate(
             item=type_name, type_id=type_id, volume_m3=volume,
-            category=guess_category(path, type_name, volume, category_id, category_names),
+            category=guess_category(path, type_name, volume, category_id, category_names,
+                                     (type_groups or {}).get(type_id)),
             market_group_path=path, meta_level=meta_level,
         ))
     return candidates

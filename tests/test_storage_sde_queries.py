@@ -65,6 +65,20 @@ def test_get_blueprint_for_product_prefers_published_blueprint(tenant):
     assert row == (46207, 11, 10000.0)
 
 
+def test_get_blueprint_for_product_none_when_only_blueprint_is_unpublished(tenant):
+    # Confirmed live 2026-08-19 (GitHub issue #7): Freki (32207) and Utu
+    # (2834) both have meta_group_id=4 "Faction" (a genuinely buildable
+    # category in general) but their *only* blueprint row is CCP-unpublished
+    # (Freki Blueprint 32208, Utu Blueprint 2835) - never actually obtainable
+    # by any player. Without excluding unpublished rows outright (not just
+    # deprioritizing them), classify_activity would still treat these as
+    # buildable and they'd leak into the Margin tab / build-candidate scans.
+    _insert_type(32208, "Freki Blueprint", published=0)
+    _insert_product(32208, 1, 32207, 1.0)
+
+    assert storage.get_blueprint_for_product(32207) is None
+
+
 def test_find_invention_recipe_by_product_name_is_case_and_whitespace_insensitive(tenant):
     _insert_type(100, "Loki")
     _insert_type(101, "Loki Blueprint")

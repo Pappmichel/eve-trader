@@ -67,8 +67,15 @@ def evaluate_shortlist_item(item: ShortlistItem, own_orders_remaining: float,
     the buyer already has an open buy order or inventory for this item at
     Jita or at the destination structure (see
     own_orders.fetch_buyer_already_covered) - also counts as "Already
-    ordered", same as the seller already having it listed."""
-    if not item.active or not item.item_id:
+    ordered", same as the seller already having it listed.
+
+    An inactive item still gets fully priced below (GitHub issue #6,
+    confirmed real gap: margin/trend/profit used to go blank the moment an
+    item was deactivated) - only a genuinely unpriceable item (no item_id at
+    all) short-circuits here. `_decision` still independently returns
+    "Inactive" first regardless of these pricing fields, so the Status
+    column is unaffected either way."""
+    if not item.item_id:
         return ShortlistRow(
             item=item.item, category=item.category, landed_cost=None, net_sell=None,
             sell_volume=None, own_orders_remaining=own_orders_remaining,

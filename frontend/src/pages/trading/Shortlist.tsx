@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Checkbox, Group, MultiSelect, TextInput, NumberInput, Badge, Text, Stack, Title } from '@mantine/core'
+import { Button, Checkbox, Group, MultiSelect, TextInput, NumberInput, Badge, Text, Stack, Title } from '@mantine/core'
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts'
 import { IconMinus, IconTrendingDown, IconTrendingUp } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
@@ -32,6 +32,7 @@ export default function Shortlist() {
   // to fetch unconditionally alongside the snapshot, no login/ESI needed.
   const { data: trends } = useQuery({ queryKey: ['trading', 'shortlist', 'trends'], queryFn: tradingApi.shortlistTrends })
   const toggleCap = useAction('Shortlist Cap', tradingApi.updateSettings, [['trading', 'settings']])
+  const recategorize = useAction('Recategorize', tradingApi.recategorizeShortlist, [['trading', 'shortlist', 'snapshot']])
 
   const activeCount = useMemo(() => (data ?? []).filter((r) => r.decision !== 'Inactive').length, [data])
 
@@ -170,6 +171,12 @@ export default function Shortlist() {
         <MultiSelect label="Meta Level" data={metaLevels} value={selMeta} onChange={setSelMeta} placeholder="All" clearable />
         <TextInput label="Search (item)" value={search} onChange={(e) => setSearch(e.currentTarget.value)} />
         <NumberInput label="Min. margin %" value={minMarginPct} onChange={(v) => setMinMarginPct(v === '' ? '' : Number(v))} min={0} step={1} />
+      </Group>
+
+      <Group justify="flex-end">
+        <Button size="xs" variant="default" onClick={() => recategorize.mutate()} loading={recategorize.isPending}>
+          Fix Categories (Drugs vs. Implant)
+        </Button>
       </Group>
 
       <Text size="sm" c="dimmed">{filtered.length} of {data.length} items</Text>

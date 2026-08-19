@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import math
+from typing import Optional
 
 import pandas as pd
 
@@ -37,6 +38,11 @@ def _int_or_none(v):
     if v is None or (isinstance(v, float) and pd.isna(v)):
         return None
     return int(v)
+
+
+def _group_id(type_id: int) -> Optional[int]:
+    row = storage.get_sde_type(type_id)
+    return row[1] if row else None
 
 
 def do_auth(role: str, scopes: list[str] | None = None, oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
@@ -131,11 +137,35 @@ def do_add_to_shortlist() -> dict:
     category_names = storage.load_sde_category_names()
     items = [ShortlistItem(item=r.item, item_id=r.type_id,
                             category=candidate_discovery.guess_category(
-                                "", r.item, r.volume_m3, storage.get_type_category(r.type_id), category_names),
+                                "", r.item, r.volume_m3, storage.get_type_category(r.type_id), category_names,
+                                _group_id(r.type_id)),
                             volume_m3=r.volume_m3, active=True,
                             meta_level=_int_or_none(r.meta_level)) for r in df.itertuples()]
     storage.upsert_shortlist(items)
     return {"added": len(items)}
+
+
+def do_recategorize_shortlist() -> dict:
+    """One-time fix-up for shortlist items added before guess_category could
+    tell Boosters/Drugs apart from real Cyberimplants (both share SDE
+    category_id 20 "Implant" - see candidate_discovery.guess_category's own
+    comment). category is a persisted snapshot (ShortlistItem.category),
+    never recomputed on its own (same "confirmed real bug: 441 of 1305
+    shortlist items had drifted this way" reasoning do_add_to_shortlist's
+    own re-derive-fresh comment documents) - existing rows stay stale until
+    either re-added or run through here."""
+    items = storage.load_shortlist()
+    category_names = storage.load_sde_category_names()
+    changed = 0
+    for item in items:
+        new_category = candidate_discovery.guess_category(
+            "", item.item, item.volume_m3, storage.get_type_category(item.item_id), category_names,
+            _group_id(item.item_id))
+        if new_category != item.category:
+            item.category = new_category
+            changed += 1
+    storage.upsert_shortlist(items)
+    return {"checked": len(items), "recategorized": changed}
 
 
 def _backfill_meta_levels(items: list[ShortlistItem], client: ESIClient) -> dict:
@@ -205,7 +235,14 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
             # gracefully rather than block the whole refresh.
             log.warning("Could not fetch buyer's Jita buy-orders/assets (%s) - re-add buyer character?", e)
 
-    active_item_ids = [i.item_id for i in items if i.active and i.item_id]
+    # Deliberately every item with an item_id, not just active ones - an
+    # inactive item still gets margin/trend/profit shown (GitHub issue #6,
+    # confirmed real gap: they used to go blank the moment an item was
+    # deactivated), so its order-book stats need fetching too, not just its
+    # decision. This means more ESI/Goonmetrics calls per refresh than the
+    # previous active-only filter (a real, deliberate tradeoff - proportional
+    # to total shortlist size now, not just the active count).
+    priced_item_ids = [i.item_id for i in items if i.item_id]
     # Fetch every item's market stats up front instead of one-by-one inside
     # evaluate_shortlist: the structure endpoint has no type_id filter, so a
     # per-item call there re-downloaded the *entire* order book every time
@@ -214,7 +251,7 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
     # multi-type_id batch endpoint for regional orders.
     try:
         structure_stats_by_item = client.structure_order_stats_bulk(
-            cfg.structure_id, active_item_ids, auth_role="seller")
+            cfg.structure_id, priced_item_ids, auth_role="seller")
     except ESIError as e:
         # esi-markets.structure_markets.v1 additionally requires the seller
         # character to actually have current docking access to the structure
@@ -227,7 +264,7 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
         # "no market data."
         raise ActionError(f"Could not fetch the structure's order book ({e}). "
                            f"Does the seller character still have docking access?") from e
-    jita_stats_by_item = client.region_order_stats_bulk(cfg.jita_region_id, active_item_ids)
+    jita_stats_by_item = client.region_order_stats_bulk(cfg.jita_region_id, priced_item_ids)
 
     rows = evaluate_shortlist(items, own_remaining, jita_stats_by_item, structure_stats_by_item, cfg=cfg,
                                buyer_already_covered_ids=buyer_already_covered_ids)

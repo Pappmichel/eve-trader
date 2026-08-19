@@ -136,7 +136,8 @@ from .constants import (
 )
 from .jobs import character_slot_overview
 from .models import (
-    AssetPlanJob, BuildJobEntry, BuyListEntry, InventionNeedRow, InventoryRow, LogisticsRow, MarketStatusRow,
+    AssetPlanJob, BuildJobEntry, BuyListEntry, DistributionRow, InventionNeedRow, InventoryRow, LogisticsRow,
+    MarketStatusRow,
 )
 
 MAX_DEPTH = 10
@@ -2011,22 +2012,14 @@ def _direct_material_mult(type_id: int, activity: str, decryptor_name: Optional[
     return material_mult
 
 
-def logistics_status(build_list: list[BuildJobEntry], cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[LogisticsRow]:
-    """Per job_category, how much of each *direct* material (one level only -
-    confirmed with the user, not the full recursive chain _expand_all walks)
-    is needed for every currently-planned job in that category, netted
-    against what's actually sitting at the structure the user assigned that
-    category to (Logistik tab, storage.job_category_locations) - not stock
-    *anywhere* the way _current_stock's corp-wide default works, since the
-    whole point here is "is it at *this specific* structure". Categories with
-    no assigned location are skipped (nothing to net against). Reads
-    `build_list` from an already-computed plan rather than recomputing one -
-    the Logistik tab doesn't need its own ESI/pricing round-trip, just the
-    already-synced asset snapshot (storage.esi_stock_at_location, a plain DB
-    read) against whatever Bauliste is already on screen."""
-    category_locations = storage.load_category_locations()
+def _category_material_demand(build_list: list[BuildJobEntry], category_locations: dict[str, int],
+                               cfg: ProductionConfig) -> dict[tuple[str, int], float]:
+    """Shared by logistics_status and distribution_recommendations: how much
+    of each *direct* material (one level only, not the full recursive chain
+    _expand_all walks) is needed for every currently-planned job in each
+    category that has an assigned location. Categories with no assigned
+    location are skipped entirely (nothing to net against either way)."""
     demand: dict[tuple[str, int], float] = {}
-
     for entry in build_list:
         category = entry.job_category
         if category is None or category not in category_locations:
@@ -2041,16 +2034,140 @@ def logistics_status(build_list: list[BuildJobEntry], cfg: ProductionConfig = PR
             if qty > 0:
                 key = (category, material_id)
                 demand[key] = demand.get(key, 0.0) + qty
+    return demand
+
+
+def logistics_status(build_list: list[BuildJobEntry], cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[LogisticsRow]:
+    """Per job_category, how much of each direct material is needed for every
+    currently-planned job in that category, netted against what's actually
+    sitting at the structure the user assigned that category to (Logistik
+    tab, storage.job_category_locations) - not stock *anywhere* the way
+    _current_stock's corp-wide default works, since the whole point here is
+    "is it at *this specific* structure". Reads `build_list` from an already-
+    computed plan rather than recomputing one - the Logistik tab doesn't need
+    its own ESI/pricing round-trip, just the already-synced asset snapshot
+    (storage.esi_stock_at_location, a plain DB read) against whatever
+    Bauliste is already on screen.
+
+    A row with missing > 0 also gets a "pull from" hint (GitHub issue #4) -
+    whichever *other* configured category location currently holds the most
+    of that same material, if any."""
+    category_locations = storage.load_category_locations()
+    demand = _category_material_demand(build_list, category_locations, cfg)
+    other_locations_by_category = {
+        category: sorted({loc for cat, loc in category_locations.items() if cat != category})
+        for category in category_locations
+    }
 
     rows = []
     for (category, material_id), needed in demand.items():
         location_id = category_locations[category]
         available = storage.esi_stock_at_location(material_id, location_id)
+        missing = max(0.0, needed - available)
         sde_type = storage.get_sde_type(material_id)
         name = sde_type[2] if sde_type else str(material_id)
+
+        pull_from_location_id = None
+        pull_from_available = None
+        if missing > 0:
+            for other_location_id in other_locations_by_category[category]:
+                stock = storage.esi_stock_at_location(material_id, other_location_id)
+                if stock > 0 and (pull_from_available is None or stock > pull_from_available):
+                    pull_from_location_id, pull_from_available = other_location_id, stock
+
         rows.append(LogisticsRow(
             category=category, location_id=location_id, type_id=material_id, type_name=name,
-            needed=needed, available=available, missing=max(0.0, needed - available),
+            needed=needed, available=available, missing=missing,
+            pull_from_location_id=pull_from_location_id, pull_from_available=pull_from_available,
         ))
     rows.sort(key=lambda r: (r.category, -r.missing))
+    return rows
+
+
+def distribution_recommendations(build_list: list[BuildJobEntry],
+                                  cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[DistributionRow]:
+    """What to move from the configured distribution source (cfg.
+    distribution_source_location_id, falling back to home_location_id - "the
+    home market acts as the central warehouse" by default, GitHub issue #4)
+    to whichever category stations are currently short of it. When several
+    categories are short on the same material and the source can't cover all
+    of them, the largest shortfall is covered first (source stock is
+    limited) - consistent with logistics_status' own -missing sort. Returns
+    [] if no distribution source is configured at all."""
+    source_location_id = cfg.distribution_source_location_id or cfg.home_location_id
+    if source_location_id is None:
+        return []
+
+    category_locations = storage.load_category_locations()
+    demand = _category_material_demand(build_list, category_locations, cfg)
+
+    shortfalls_by_material: dict[int, list[tuple[str, float]]] = {}
+    for (category, material_id), needed in demand.items():
+        location_id = category_locations[category]
+        if location_id == source_location_id:
+            continue  # already sourced locally, nothing to move
+        available = storage.esi_stock_at_location(material_id, location_id)
+        missing = max(0.0, needed - available)
+        if missing > 0:
+            shortfalls_by_material.setdefault(material_id, []).append((category, missing))
+
+    rows = []
+    for material_id, shortfalls in shortfalls_by_material.items():
+        remaining = storage.esi_stock_at_location(material_id, source_location_id)
+        if remaining <= 0:
+            continue
+        sde_type = storage.get_sde_type(material_id)
+        name = sde_type[2] if sde_type else str(material_id)
+        for category, missing in sorted(shortfalls, key=lambda x: -x[1]):
+            if remaining <= 0:
+                break
+            move_qty = min(missing, remaining)
+            remaining -= move_qty
+            rows.append(DistributionRow(
+                type_id=material_id, type_name=name, from_location_id=source_location_id,
+                to_category=category, to_location_id=category_locations[category], quantity=move_qty,
+            ))
+    rows.sort(key=lambda r: r.quantity, reverse=True)
+    return rows
+
+
+def invention_logistics(invention_list: list[InventionNeedRow],
+                         cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[LogisticsRow]:
+    """Datacores/decryptors/T1 BPC copies needed vs. what's sitting at the
+    configured invention station (cfg.invention_location_id - GitHub issue
+    #9), reusing LogisticsRow's existing "needed vs available at one
+    location" shape. Needs bpcs_needed (not recommended_invention_runs)
+    copies of the T1 blueprint itself - a BPC copy is consumed once
+    attempted, successful or not, but "enough copies queued" means enough to
+    cover every planned attempt at bpcs_needed's own 1-BPC-per-manufacturing-
+    run rate, not the *expected* (probability-adjusted) attempt count.
+    Decryptor/datacore *attempts* do scale with recommended_invention_runs
+    though, since each attempt consumes one of each regardless of outcome."""
+    if cfg.invention_location_id is None:
+        return []
+
+    demand: dict[int, float] = {}
+    for need in invention_list:
+        if need.recommended_invention_runs <= 0:
+            continue
+        demand[need.t1_blueprint_type_id] = demand.get(need.t1_blueprint_type_id, 0.0) + need.bpcs_needed
+
+        decryptor = DECRYPTORS.get(need.decryptor)
+        if decryptor is not None:
+            demand[decryptor.type_id] = demand.get(decryptor.type_id, 0.0) + need.recommended_invention_runs
+
+        recipe = storage.get_invention_recipe(need.t1_blueprint_type_id)
+        for datacore_id, datacore_qty in (recipe.get("datacores", []) if recipe else []):
+            demand[datacore_id] = demand.get(datacore_id, 0.0) + datacore_qty * need.recommended_invention_runs
+
+    rows = []
+    for type_id, needed in demand.items():
+        available = storage.esi_stock_at_location(type_id, cfg.invention_location_id)
+        sde_type = storage.get_sde_type(type_id)
+        name = sde_type[2] if sde_type else str(type_id)
+        rows.append(LogisticsRow(
+            category="Invention", location_id=cfg.invention_location_id, type_id=type_id, type_name=name,
+            needed=needed, available=available, missing=max(0.0, needed - available),
+        ))
+    rows.sort(key=lambda r: -r.missing)
     return rows

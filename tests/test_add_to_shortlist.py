@@ -21,6 +21,7 @@ def test_do_add_to_shortlist_recomputes_category_fresh_from_sde(monkeypatch):
     monkeypatch.setattr(storage, "read_table", lambda table: new_candidates_df)
     monkeypatch.setattr(storage, "load_sde_category_names", lambda: {16: "Skill"})
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 16)
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 273, "Amarr Frigate", 0.0, 1, 1, 0, None))
 
     captured = {}
     monkeypatch.setattr(storage, "upsert_shortlist", lambda items: captured.setdefault("items", items))
@@ -29,3 +30,27 @@ def test_do_add_to_shortlist_recomputes_category_fresh_from_sde(monkeypatch):
 
     assert result == {"added": 1}
     assert captured["items"][0].category == "Skill"
+
+
+def test_do_recategorize_shortlist_fixes_stale_booster_labels(monkeypatch):
+    from eve_trader.models import ShortlistItem
+
+    existing = [
+        ShortlistItem(item="Blue Pill", item_id=44, category="Implant", volume_m3=0.1, active=True),
+        ShortlistItem(item="Already Correct", item_id=45, category="Skill", volume_m3=0.1, active=True),
+    ]
+    monkeypatch.setattr(storage, "load_shortlist", lambda: existing)
+    monkeypatch.setattr(storage, "load_sde_category_names", lambda: {20: "Implant", 16: "Skill"})
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: {44: 20, 45: 16}[type_id])
+    # group_id 746 = Booster for item 44 (currently mislabeled "Implant")
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, {44: 746, 45: 273}[type_id], "x", 0.1, 1, 1, 0, None))
+
+    captured = {}
+    monkeypatch.setattr(storage, "upsert_shortlist", lambda items: captured.setdefault("items", items))
+
+    result = actions.do_recategorize_shortlist()
+
+    assert result == {"checked": 2, "recategorized": 1}
+    by_id = {i.item_id: i for i in captured["items"]}
+    assert by_id[44].category == "Drugs"
+    assert by_id[45].category == "Skill"
