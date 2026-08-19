@@ -28,15 +28,6 @@ def list_tenants():
     return admin.do_list_tenants()
 
 
-class CreateTenantRequest(BaseModel):
-    name: str
-
-
-@router.post("/tenants", response_model=schemas.AdminTenant)
-def create_tenant(req: CreateTenantRequest):
-    return _wrap(admin.do_create_tenant, name=req.name)
-
-
 @router.get("/users", response_model=list[schemas.AdminUser])
 def list_users():
     return admin.do_list_users()
@@ -44,7 +35,6 @@ def list_users():
 
 class AddUserRequest(BaseModel):
     character_id: int
-    tenant_id: str
 
 
 @router.post("/users")
@@ -54,7 +44,7 @@ def add_user(req: AddUserRequest):
     # include tenant_name/tool_keys (a freshly-added user has neither
     # resolved nor granted yet) - GET /users is what returns full AdminUser
     # rows.
-    return _wrap(admin.do_add_user, character_id=req.character_id, tenant_id=req.tenant_id)
+    return _wrap(admin.do_add_user, character_id=req.character_id)
 
 
 @router.delete("/users/{character_id}")

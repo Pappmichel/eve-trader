@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import {
-  Container, Title, Text, Group, Stack, Button, Table, TextInput, Select, Checkbox, ActionIcon, Divider,
+  Container, Title, Text, Group, Stack, Button, Table, TextInput, Checkbox, ActionIcon, Divider,
 } from '@mantine/core'
 import { IconArrowLeft, IconTrash } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
@@ -16,10 +16,13 @@ import type { AdminUser } from '../../api/types'
 // hardcoded on the frontend elsewhere in this app.
 const ALL_TOOL_KEYS = ['trading', 'production', 'doctrine', 'portfolio', 'admin']
 
+// Read-only - tenants are always created implicitly as part of "Add User"
+// below (one dedicated tenant per character, enforced at the DB level, see
+// docs/admin_schema.sql). Kept visible here mainly to spot orphaned tenants
+// left behind by a removed user (do_remove_user intentionally leaves the
+// tenant and its data in place).
 function TenantSection() {
   const { data: tenants } = useQuery({ queryKey: ['admin', 'tenants'], queryFn: adminApi.tenants })
-  const [name, setName] = useState('')
-  const createTenant = useAction('Create Tenant', () => adminApi.createTenant(name), [['admin', 'tenants']])
 
   return (
     <div>
@@ -42,13 +45,6 @@ function TenantSection() {
           ))}
         </Table.Tbody>
       </Table>
-      <Group>
-        <TextInput placeholder="Tenant name" value={name} onChange={(e) => setName(e.currentTarget.value)} />
-        <Button size="xs" disabled={!name.trim()} loading={createTenant.isPending}
-          onClick={() => { createTenant.mutate(); setName('') }}>
-          Create Tenant
-        </Button>
-      </Group>
     </div>
   )
 }
@@ -79,11 +75,9 @@ function UserToolCheckboxes({ user }: { user: AdminUser }) {
 
 function UsersSection() {
   const { data: users, isLoading } = useQuery({ queryKey: ['admin', 'users'], queryFn: adminApi.users })
-  const { data: tenants } = useQuery({ queryKey: ['admin', 'tenants'], queryFn: adminApi.tenants })
   const [characterId, setCharacterId] = useState('')
-  const [tenantId, setTenantId] = useState<string | null>(null)
-  const addUser = useAction('Add User', () => adminApi.addUser(Number(characterId), tenantId!),
-    [['admin', 'users']])
+  const addUser = useAction('Add User', () => adminApi.addUser(Number(characterId)),
+    [['admin', 'users'], ['admin', 'tenants']])
   const removeUser = useAction('Remove User', adminApi.removeUser, [['admin', 'users']])
 
   return (
@@ -122,9 +116,7 @@ function UsersSection() {
       <Group>
         <TextInput placeholder="Character ID" value={characterId}
           onChange={(e) => setCharacterId(e.currentTarget.value)} w={140} />
-        <Select placeholder="Tenant" data={(tenants ?? []).map((t) => ({ value: t.tenant_id, label: t.name }))}
-          value={tenantId} onChange={setTenantId} w={220} />
-        <Button size="xs" disabled={!characterId.trim() || !tenantId} loading={addUser.isPending}
+        <Button size="xs" disabled={!characterId.trim()} loading={addUser.isPending}
           onClick={() => { addUser.mutate(); setCharacterId('') }}>
           Add User
         </Button>

@@ -25,27 +25,22 @@ def do_list_tenants() -> list[dict]:
     ]
 
 
-def do_create_tenant(name: str) -> dict:
-    if not name.strip():
-        raise ActionError("Tenant name can't be empty.")
-    tenant_id = storage.create_tenant(name.strip())
-    return {"tenant_id": tenant_id, "name": name.strip()}
-
-
 def do_list_users() -> list[dict]:
     return storage.list_users_with_grants()
 
 
-def do_add_user(character_id: int, tenant_id: str) -> dict:
-    """Registers `character_id` to `tenant_id` - resolves the character's
-    current name via ESI's public character endpoint (no auth needed) so the
-    Admin UI's user list has a name to show immediately, without waiting for
-    that character's own first gate login (see auth.py's callback() gate
-    branch, which refreshes this same cached name on every future login)."""
-    known_tenant_ids = {t["tenant_id"] for t in do_list_tenants()}
-    if tenant_id not in known_tenant_ids:
-        raise ActionError(f"Unknown tenant_id '{tenant_id}'.")
-
+def do_add_user(character_id: int) -> dict:
+    """Registers `character_id` as a brand-new user - always creates a
+    fresh, dedicated tenant for them (named after their own resolved
+    character name) rather than assigning them into an existing tenant, so
+    two characters can never end up sharing one tenant's data (also backed
+    by a DB-level UNIQUE constraint on tenant_registry_entries.tenant_id,
+    see docs/admin_schema.sql - this is belt-and-suspenders, not the only
+    guarantee). Resolves the character's current name via ESI's public
+    character endpoint (no auth needed) so the Admin UI's user list has a
+    name to show immediately, without waiting for that character's own
+    first gate login (see auth.py's callback() gate branch, which refreshes
+    this same cached name on every future login)."""
     from .esi_client import ESIClient  # local import: avoids a hard dependency for callers that don't need it
     try:
         character_name = ESIClient().character_public_info(character_id).get("name")
@@ -54,6 +49,7 @@ def do_add_user(character_id: int, tenant_id: str) -> dict:
     if not character_name:
         raise ActionError(f"No character found for id {character_id}.")
 
+    tenant_id = storage.create_tenant(character_name)
     storage.add_tenant_registry_entry(tenant_id, character_id, character_name=character_name)
     return {"character_id": character_id, "character_name": character_name, "tenant_id": tenant_id}
 

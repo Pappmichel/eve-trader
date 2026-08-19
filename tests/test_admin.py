@@ -1,8 +1,6 @@
 """Tests for admin.py's do_* actions - see that module's own docstring for
 why they're a deliberate cross-tenant superadmin surface (unscoped storage
 reads/writes across every tenant, not RLS'd)."""
-import uuid
-
 import pytest
 
 from eve_trader import admin, storage
@@ -25,56 +23,50 @@ def _wipe():
     yield
 
 
-def _new_tenant() -> str:
-    return storage.create_tenant(f"Test Tenant {uuid.uuid4()}")
-
-
-def test_do_create_tenant_then_appears_in_do_list_tenants():
-    created = admin.do_create_tenant("Some Corp")
-
-    tenant_ids = {t["tenant_id"] for t in admin.do_list_tenants()}
-    assert created["tenant_id"] in tenant_ids
-
-
-def test_do_create_tenant_rejects_empty_name():
-    with pytest.raises(ActionError, match="empty"):
-        admin.do_create_tenant("   ")
-
-
-def test_do_add_user_resolves_name_via_esi_and_registers(monkeypatch):
-    tenant_id = _new_tenant()
+def test_do_add_user_resolves_name_via_esi_and_creates_dedicated_tenant(monkeypatch):
     monkeypatch.setattr(ESIClient, "character_public_info", lambda self, cid: {"name": "Some Pilot"})
 
-    result = admin.do_add_user(42, tenant_id)
+    result = admin.do_add_user(42)
 
-    assert result == {"character_id": 42, "character_name": "Some Pilot", "tenant_id": tenant_id}
+    assert result["character_id"] == 42
+    assert result["character_name"] == "Some Pilot"
     users = {u["character_id"]: u for u in admin.do_list_users()}
     assert users[42]["character_name"] == "Some Pilot"
-    assert users[42]["tenant_id"] == tenant_id
+    assert users[42]["tenant_id"] == result["tenant_id"]
+    tenants = {t["tenant_id"]: t for t in admin.do_list_tenants()}
+    assert tenants[result["tenant_id"]]["name"] == "Some Pilot"
 
 
-def test_do_add_user_rejects_unknown_tenant(monkeypatch):
-    monkeypatch.setattr(ESIClient, "character_public_info", lambda self, cid: {"name": "Some Pilot"})
+def test_do_add_user_never_reuses_an_existing_tenant(monkeypatch):
+    monkeypatch.setattr(ESIClient, "character_public_info", lambda self, cid: {"name": f"Pilot {cid}"})
 
-    with pytest.raises(ActionError, match="Unknown tenant_id"):
-        admin.do_add_user(42, str(uuid.uuid4()))
+    first = admin.do_add_user(42)
+    second = admin.do_add_user(43)
+
+    assert first["tenant_id"] != second["tenant_id"]
 
 
 def test_do_add_user_wraps_esi_failure_as_action_error(monkeypatch):
-    tenant_id = _new_tenant()
-
     def _raise(self, cid):
         raise ESIError("ESI down")
     monkeypatch.setattr(ESIClient, "character_public_info", _raise)
 
     with pytest.raises(ActionError, match="ESI down"):
-        admin.do_add_user(42, tenant_id)
+        admin.do_add_user(42)
+
+
+def test_tenant_registry_entries_tenant_id_is_unique_at_db_level(monkeypatch):
+    monkeypatch.setattr(ESIClient, "character_public_info", lambda self, cid: {"name": "Some Pilot"})
+    result = admin.do_add_user(42)
+
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        storage.add_tenant_registry_entry(result["tenant_id"], 43, character_name="Someone Else")
 
 
 def test_do_remove_user_clears_registry_and_grants(monkeypatch):
-    tenant_id = _new_tenant()
     monkeypatch.setattr(ESIClient, "character_public_info", lambda self, cid: {"name": "Some Pilot"})
-    admin.do_add_user(42, tenant_id)
+    result = admin.do_add_user(42)
+    tenant_id = result["tenant_id"]
     storage.set_tool_grant(42, "production", tenant_id)
 
     admin.do_remove_user(42)
@@ -88,10 +80,9 @@ def test_do_remove_user_on_unknown_character_is_a_no_op():
 
 
 def test_do_set_tool_grants_replaces_not_merges(monkeypatch):
-    tenant_id = _new_tenant()
     monkeypatch.setattr(ESIClient, "character_public_info", lambda self, cid: {"name": "Some Pilot"})
-    admin.do_add_user(42, tenant_id)
-    storage.set_tool_grant(42, "trading", tenant_id)
+    result = admin.do_add_user(42)
+    storage.set_tool_grant(42, "trading", result["tenant_id"])
 
     admin.do_set_tool_grants(42, ["production", "admin"])
 
@@ -99,9 +90,8 @@ def test_do_set_tool_grants_replaces_not_merges(monkeypatch):
 
 
 def test_do_set_tool_grants_rejects_unknown_tool_key(monkeypatch):
-    tenant_id = _new_tenant()
     monkeypatch.setattr(ESIClient, "character_public_info", lambda self, cid: {"name": "Some Pilot"})
-    admin.do_add_user(42, tenant_id)
+    admin.do_add_user(42)
 
     with pytest.raises(ActionError, match="Unknown tool_key"):
         admin.do_set_tool_grants(42, ["not-a-real-tool"])

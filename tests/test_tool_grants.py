@@ -86,9 +86,12 @@ def test_revoke_all_tool_grants_clears_every_grant_for_character():
 
 
 def test_list_users_with_grants_includes_registered_characters_with_and_without_grants():
+    # Two distinct tenants (one per character) - tenant_registry_entries.
+    # tenant_id is UNIQUE now, one tenant per character, see CLAUDE.md's
+    # "Multi-tenant Postgres".
     tenant_id = _new_tenant()
     storage.add_tenant_registry_entry(tenant_id, 1, character_name="Alice")
-    storage.add_tenant_registry_entry(tenant_id, 2, character_name="Bob")
+    storage.add_tenant_registry_entry(_new_tenant(), 2, character_name="Bob")
     storage.set_tool_grant(1, "production", tenant_id)
 
     users = storage.list_users_with_grants()
