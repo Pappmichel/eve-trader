@@ -288,6 +288,8 @@ export const doctrineApi = {
     get<{ rows: T.StockpileRow[]; aggregated_rows: T.AggregatedStockpileRow[]; assets_available: boolean }>(
       `/api/doctrine/stockpile${doctrineId ? `?doctrine_id=${doctrineId}` : ''}`,
     ),
+  shoppingList: (doctrineId?: string) =>
+    get<{ rows: T.ShoppingListRow[] }>(`/api/doctrine/shopping-list${doctrineId ? `?doctrine_id=${doctrineId}` : ''}`),
 
   characters: () => get<T.DoctrineCharacter[]>('/api/doctrine/characters'),
   // No addCharacter() here, deliberately - see DoctrineLayout.tsx's

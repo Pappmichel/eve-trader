@@ -380,6 +380,9 @@ class ContractRow(_Base):
     matched_fitting_id: Optional[str] = None
     match_score: Optional[float] = None
     synced_at: Optional[str] = None
+    source_character_name: Optional[str] = None
+    hull_type_id: Optional[int] = None
+    hull_name: Optional[str] = None
 
 
 class StockpileRow(_Base):
@@ -406,6 +409,17 @@ class AggregatedStockpileRow(_Base):
     fitting_count: int
 
 
+class ShoppingListRow(_Base):
+    type_id: int
+    type_name: str
+    shortfall: float
+    build_cost: Optional[float] = None
+    cj_price: Optional[float] = None
+    jita_landed_price: Optional[float] = None
+    recommended_source: Optional[str] = None
+    total_cost: Optional[float] = None
+
+
 class FittingStatus(_Base):
     fitting_id: str
     fitting_name: str
@@ -419,6 +433,9 @@ class FittingStatus(_Base):
     worst_stockpile_shortfall_pct: float
     last_synced_at: Optional[str] = None
     assets_available: bool = True
+    hull_type_id: int = 0
+    hull_name: str = ""
+    multibuy_cost: Optional[float] = None
 
 
 class DoctrineStatus(_Base):

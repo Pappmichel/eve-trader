@@ -500,6 +500,9 @@ export interface DoctrineContractRow {
   matched_fitting_id: string | null
   match_score: number | null
   synced_at: string | null
+  source_character_name: string | null
+  hull_type_id: number | null
+  hull_name: string | null
 }
 
 export interface DoctrineContractWithDeviations extends DoctrineContractRow {
@@ -530,6 +533,17 @@ export interface AggregatedStockpileRow {
   fitting_count: number
 }
 
+export interface ShoppingListRow {
+  type_id: number
+  type_name: string
+  shortfall: number
+  build_cost: number | null
+  cj_price: number | null
+  jita_landed_price: number | null
+  recommended_source: 'Build' | 'C-J' | 'Jita' | null
+  total_cost: number | null
+}
+
 export interface FittingStatus {
   fitting_id: string
   fitting_name: string
@@ -543,6 +557,9 @@ export interface FittingStatus {
   worst_stockpile_shortfall_pct: number
   last_synced_at: string | null
   assets_available: boolean
+  hull_type_id: number
+  hull_name: string
+  multibuy_cost: number | null
 }
 
 export interface DoctrineStatus {
@@ -575,6 +592,7 @@ export interface DoctrineSettings {
   stockpile_location_id: number | null
   cargo_tolerance_pct: number
   strict_extras: boolean
+  import_cost_per_m3: number
 }
 
 export interface DoctrineCharacter {

@@ -40,6 +40,15 @@ class DoctrineConfig:
     # Turning this on treats it as "tolerable" instead, for an operator who
     # wants to enforce clean, exact contracts.
     strict_extras: bool = False
+    # ISK/m3 to haul a Shopping List item bought at Jita back to C-J -
+    # deliberately a separate setting from ProductionConfig.haul_cost_per_m3
+    # (production/config.py), not a read of that same value: fitted modules/
+    # ships bought for Doctrine plausibly have different freight logistics
+    # than raw production materials, so the user asked for independent
+    # control here. Seeded from Production's own 900.0 default at
+    # first-setup time only (see engine._shopping_prices) - the two don't
+    # stay in sync after that, editing one doesn't touch the other.
+    import_cost_per_m3: float = 900.0
 
     @property
     def effective_structure_id(self) -> Optional[int]:

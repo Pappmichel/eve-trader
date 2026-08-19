@@ -46,6 +46,17 @@ export default function DoctrineSettings() {
         the tolerance above to count as "tolerable" instead of "critical".
       </Text>
 
+      <Title order={6} c="dimmed" tt="uppercase" mt="md">Shopping List</Title>
+      <SimpleGrid cols={2}>
+        <NumberInput label="Jita import cost (ISK/m³)" value={form.import_cost_per_m3} min={0} step={50}
+          onChange={(v) => set('import_cost_per_m3', Number(v))} />
+      </SimpleGrid>
+      <Text size="xs" c="dimmed">
+        Only affects the Shopping List's own Buy-Jita price (a separate setting from Production's own freight
+        cost, seeded from the same 900 ISK/m³ default) - fitted modules/ships plausibly have different logistics
+        than raw production materials.
+      </Text>
+
       <Button mt="md" w={200} onClick={() => save.mutate(form)} loading={save.isPending}>
         Save Settings
       </Button>

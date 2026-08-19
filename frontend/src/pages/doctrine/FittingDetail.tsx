@@ -1,14 +1,39 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
-  Stack, Title, Text, Table, Badge, Group, Grid, Card, CopyButton, Button, Collapse, NumberInput,
+  Stack, Title, Text, Table, Badge, Group, Grid, Card, CopyButton, Button, Collapse, NumberInput, Modal,
 } from '@mantine/core'
 import { useParams } from 'react-router-dom'
-import { IconCopy, IconCheck } from '@tabler/icons-react'
+import { IconCopy, IconCheck, IconPencil } from '@tabler/icons-react'
 
 import { doctrineApi } from '../../api/client'
 import { useAction } from '../../hooks/useAction'
 import { isk, dateTime } from '../../format'
+import { EftFittingForm } from './EftFittingForm'
+
+function EditFittingModal({ fittingId, initialRawEft, opened, onClose }: {
+  fittingId: string
+  initialRawEft: string
+  opened: boolean
+  onClose: () => void
+}) {
+  const save = useAction('Save Fitting', (rawEft: string) => doctrineApi.updateFitting(fittingId, { raw_eft: rawEft }), [
+    ['doctrine', 'status'], ['doctrine', 'fitting-detail', fittingId],
+  ])
+
+  return (
+    <Modal opened={opened} onClose={onClose} title="Edit Fitting" size="lg">
+      {/* key=opened resets EftFittingForm's own internal state each time the modal reopens */}
+      <EftFittingForm key={String(opened)} initialRawEft={initialRawEft}>
+        {({ rawEft }) => (
+          <Button onClick={() => save.mutate(rawEft, { onSuccess: () => onClose() })} loading={save.isPending}>
+            Save Changes
+          </Button>
+        )}
+      </EftFittingForm>
+    </Modal>
+  )
+}
 
 const SEVERITY_COLOR: Record<string, string> = { critical: 'danger', tolerable: 'warn', info: 'dimmed' }
 const AMPEL_COLOR: Record<string, string> = { green: 'accent', yellow: 'warn', red: 'danger', gray: 'dimmed' }
@@ -22,6 +47,7 @@ const SECTION_LABEL: Record<string, string> = {
 export default function FittingDetail() {
   const { fittingId } = useParams<{ fittingId: string }>()
   const [showRaw, setShowRaw] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['doctrine', 'fitting-detail', fittingId],
@@ -60,8 +86,14 @@ export default function FittingDetail() {
           <Badge color={AMPEL_COLOR[status.stockpile_status] ?? 'dimmed'} variant="light">
             Stockpile: {status.stockpile_status}
           </Badge>
+          <Button size="xs" variant="default" leftSection={<IconPencil size={14} />} onClick={() => setEditOpen(true)}>
+            Edit
+          </Button>
         </Group>
       </Group>
+
+      <EditFittingModal fittingId={fittingId} initialRawEft={fitting.raw_eft} opened={editOpen}
+        onClose={() => setEditOpen(false)} />
 
       <Group>
         <NumberInput label="Contract target" defaultValue={fitting.contract_target} min={0}

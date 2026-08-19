@@ -31,7 +31,12 @@ export default function Contracts() {
           {i.row.original.status === 'expired' && <Badge color="dimmed" variant="outline">expired</Badge>}
         </Group>
       ) },
-    { header: 'Source', accessorKey: 'source_role', size: 140 },
+    { header: 'Hull', accessorKey: 'hull_name', size: 160, cell: (i) => i.getValue() ?? '–' },
+    // source_role is an ESI-token role key ("doctrine:<character_id>") -
+    // show the resolved character name where known, falling back to the
+    // raw key only if that character was since removed/never resolved.
+    { header: 'Source', accessorKey: 'source_role', size: 140,
+      cell: (i) => i.row.original.source_character_name ?? i.getValue() },
     { header: 'Corp?', accessorKey: 'for_corporation', size: 80, cell: (i) => (i.getValue() ? 'Yes' : 'No') },
     { header: 'Price', accessorKey: 'price', size: 140, cell: (i) => isk(i.getValue()) },
     { header: 'Expires', accessorKey: 'date_expired', size: 180, cell: (i) => dateTime(i.getValue()) },

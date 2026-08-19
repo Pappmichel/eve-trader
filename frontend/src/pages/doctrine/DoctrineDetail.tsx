@@ -1,15 +1,17 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
-  Stack, Title, Text, Table, Badge, Button, Group, Modal, Textarea, NumberInput, ActionIcon, Alert,
+  Stack, Title, Text, Table, Badge, Button, Group, Modal, NumberInput, ActionIcon,
 } from '@mantine/core'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { IconCheck, IconTrash } from '@tabler/icons-react'
 
 import { doctrineApi } from '../../api/client'
-import type { FittingStatus, ParsedFittingPreview } from '../../api/types'
+import type { FittingStatus } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { HintCard } from '../../components/HintCard'
+import { isk } from '../../format'
+import { EftFittingForm } from './EftFittingForm'
 
 const AMPEL_COLOR: Record<string, string> = { green: 'accent', yellow: 'warn', red: 'danger', gray: 'dimmed' }
 
@@ -18,54 +20,31 @@ function AmpelBadge({ status, label }: { status: string; label: string }) {
 }
 
 function AddFittingModal({ doctrineId, opened, onClose }: { doctrineId: string; opened: boolean; onClose: () => void }) {
-  const [rawEft, setRawEft] = useState('')
   const [contractTarget, setContractTarget] = useState(0)
   const [stockpileTarget, setStockpileTarget] = useState(0)
-  const [preview, setPreview] = useState<ParsedFittingPreview | null>(null)
 
-  const parse = useAction('Parse Fitting', () => doctrineApi.parseFitting(rawEft))
-  const add = useAction('Add Fitting', () => doctrineApi.addFitting(doctrineId, {
+  const add = useAction('Add Fitting', (rawEft: string) => doctrineApi.addFitting(doctrineId, {
     raw_eft: rawEft, contract_target: contractTarget, stockpile_target: stockpileTarget,
   }), [['doctrine', 'status'], ['doctrine', 'doctrine-detail', doctrineId]])
 
-  const reset = () => { setRawEft(''); setPreview(null); setContractTarget(0); setStockpileTarget(0) }
+  const reset = () => { setContractTarget(0); setStockpileTarget(0) }
 
   return (
     <Modal opened={opened} onClose={() => { onClose(); reset() }} title="New Fitting" size="lg">
-      <Stack>
-        <Textarea label="EFT fitting text" placeholder="[Rifter, My Fit]&#10;..." value={rawEft}
-          onChange={(e) => { setRawEft(e.currentTarget.value); setPreview(null) }} minRows={10} autosize maxRows={20}
-          styles={{ input: { fontFamily: 'monospace' } }} />
-
-        {!preview && (
-          <Button variant="default" disabled={!rawEft.trim()} loading={parse.isPending}
-            onClick={() => parse.mutate(undefined, { onSuccess: (r) => setPreview(r as ParsedFittingPreview) })}>
-            Preview
-          </Button>
-        )}
-
-        {preview && (
+      {/* key=opened resets EftFittingForm's own internal state each time the modal reopens */}
+      <EftFittingForm key={String(opened)}>
+        {({ rawEft }) => (
           <>
-            <Alert color="accent" variant="light">
-              Hull: <b>{preview.hull_name}</b> — {preview.items.length} item(s), {preview.issues.length} warning(s)
-            </Alert>
-            {preview.issues.length > 0 && (
-              <Stack gap={4}>
-                {preview.issues.map((iss, i) => (
-                  <Text key={i} size="xs" c="warn">Line {iss.line_no}: {iss.message}</Text>
-                ))}
-              </Stack>
-            )}
             <Group grow>
               <NumberInput label="Contract target" value={contractTarget} min={0} onChange={(v) => setContractTarget(Number(v))} />
               <NumberInput label="Stockpile target (sets)" value={stockpileTarget} min={0} onChange={(v) => setStockpileTarget(Number(v))} />
             </Group>
-            <Button onClick={() => add.mutate(undefined, { onSuccess: () => { onClose(); reset() } })} loading={add.isPending}>
+            <Button onClick={() => add.mutate(rawEft, { onSuccess: () => { onClose(); reset() } })} loading={add.isPending}>
               Save Fitting
             </Button>
           </>
         )}
-      </Stack>
+      </EftFittingForm>
     </Modal>
   )
 }
@@ -109,6 +88,7 @@ function FittingRow({ f, onDelete }: { f: FittingStatus; onDelete: (id: string) 
   return (
     <Table.Tr>
       <Table.Td><Link to={`/doctrine/fittings/${f.fitting_id}`}>{f.fitting_name}</Link></Table.Td>
+      <Table.Td>{f.hull_name}</Table.Td>
       <Table.Td>
         {f.last_synced_at ? (
           <AmpelBadge status={f.contract_status} label={`${f.valid_contracts}/${f.contract_target}`} />
@@ -127,6 +107,7 @@ function FittingRow({ f, onDelete }: { f: FittingStatus; onDelete: (id: string) 
         <TargetEditor fittingId={f.fitting_id} contractTarget={f.contract_target}
           stockpileTarget={f.stockpile_target} doctrineId={f.doctrine_id} />
       </Table.Td>
+      <Table.Td>{f.multibuy_cost != null ? isk(f.multibuy_cost) : '–'}</Table.Td>
       <Table.Td>
         <ActionIcon size="sm" variant="subtle" color="danger" onClick={() => onDelete(f.fitting_id)}>
           <IconTrash size={14} />
@@ -180,9 +161,11 @@ export default function DoctrineDetail() {
           <Table.Thead>
             <Table.Tr>
               <Table.Th>Fitting</Table.Th>
+              <Table.Th>Hull</Table.Th>
               <Table.Th>Contracts</Table.Th>
               <Table.Th>Stockpile</Table.Th>
               <Table.Th>Targets (Contract / Stockpile)</Table.Th>
+              <Table.Th>Multibuy</Table.Th>
               <Table.Th />
             </Table.Tr>
           </Table.Thead>
