@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .. import storage
+from ..config import TRADING_CONFIG
+from ..esi_client import ESIClient, ESIError, OrderStats
 from . import parser, validation
 from .config import DOCTRINE_CONFIG, DoctrineConfig
 from .constants import AMPEL_GRAY, EXACT_SECTIONS
@@ -30,7 +32,7 @@ from .parser import FittingParseError, ResolvedType
 # actually protecting against.
 from ..production.config import PRODUCTION_CONFIG
 from ..production import pricing as production_pricing
-from ..production.engine import _PlanContext, unit_cost_detail
+from ..production.engine import _PlanContext, _haul_volume, unit_cost_detail
 
 
 # ---------------------------------------------------------------- parsing entry point
@@ -259,7 +261,8 @@ def aggregate_stockpile_rows(rows: list[StockpileRow]) -> list[AggregatedStockpi
 
 # ------------------------------------------------------------- shopping list
 def _shopping_prices(type_id: int, home: dict, jita: dict, volume: Optional[float],
-                      cfg: DoctrineConfig) -> tuple[Optional[float], Optional[float]]:
+                      cfg: DoctrineConfig, home_stats: Optional[OrderStats] = None,
+                      jita_stats: Optional[OrderStats] = None) -> tuple[Optional[float], Optional[float]]:
     """(cj_price, jita_landed_price) for the Shopping List's own Buy columns -
     mirrors production.pricing's own buy-candidate formula, but uses
     Doctrine's own cfg.import_cost_per_m3 for the Jita leg instead of
@@ -267,12 +270,27 @@ def _shopping_prices(type_id: int, home: dict, jita: dict, volume: Optional[floa
     configurable value - see DoctrineConfig.import_cost_per_m3's own
     comment). The broker fee is the same real per-character fee either way,
     so that part is still read off PRODUCTION_CONFIG - no reason to
-    duplicate it as a second Doctrine setting nobody asked for."""
+    duplicate it as a second Doctrine setting nobody asked for.
+
+    `home_stats`/`jita_stats` (shopping_list_rows' own live ESI order-book
+    check, GitHub issue #10) gate each price on real listed sell volume, not
+    just Goonmetrics' quote existing - confirmed real bug: Goonmetrics can
+    return a nonzero "sell" price for a market with zero actual sell orders
+    right now (confirmed live 2026-08-19 for Federation Navy Iridium Charge
+    M at C-J - Goonmetrics' own C-J and Jita quotes for it came back under
+    the same "updated" timestamp despite Jita's real ESI order book showing
+    over a million units listed and C-J's structure having none). None (not
+    an OrderStats) means "couldn't verify" (no seller token / structure
+    docking access for the C-J leg) - degrades to trusting the Goonmetrics
+    quote as before rather than blocking the page on a fixable auth gap."""
     home_quote, jita_quote = home.get(type_id), jita.get(type_id)
     broker_fee = PRODUCTION_CONFIG.jita_buy_broker_fee
-    cj = home_quote.sell * (1 + broker_fee) if home_quote and home_quote.sell > 0 else None
-    jita_landed = (jita_quote.sell * (1 + broker_fee) + cfg.import_cost_per_m3 * (volume or 0)
-                   if jita_quote and jita_quote.sell > 0 else None)
+    cj = None
+    if home_quote and home_quote.sell > 0 and (home_stats is None or home_stats.sell_volume > 0):
+        cj = home_quote.sell * (1 + broker_fee)
+    jita_landed = None
+    if jita_quote and jita_quote.sell > 0 and (jita_stats is None or jita_stats.sell_volume > 0):
+        jita_landed = jita_quote.sell * (1 + broker_fee) + cfg.import_cost_per_m3 * (volume or 0)
     return cj, jita_landed
 
 
@@ -293,13 +311,42 @@ def shopping_list_rows(doctrine_id: Optional[str] = None, cfg: DoctrineConfig = 
     cost_memo: dict[int, Optional[float]] = {}
     t2_memo: dict[int, tuple[float, float, Optional[str]]] = {}
 
+    # Live order-book presence check (GitHub issue #10) - fetched once for
+    # every shortfall item up front (the structure endpoint has no type_id
+    # filter, so a per-item call would re-download the whole order book
+    # every time, same reasoning actions.py's own shortlist refresh already
+    # documents for structure_order_stats_bulk). Jita is public/no-auth, so
+    # it's always attempted; the C-J leg reuses Trading's own "seller" token
+    # (esi-markets.structure_markets.v1 isn't a scope Doctrine/Production
+    # characters have) since Doctrine's structure defaults to Trading's own
+    # sell structure anyway (DoctrineConfig.effective_structure_id) - best
+    # effort, degrades to trusting Goonmetrics for whichever leg it can't
+    # verify rather than failing the whole page.
+    esi = ESIClient()
+    type_ids = [row.type_id for row in aggregated]
+    try:
+        jita_stats = esi.region_order_stats_bulk(TRADING_CONFIG.jita_region_id, type_ids)
+    except Exception:  # noqa: BLE001 - best-effort; falls back to trusting Goonmetrics for every row
+        jita_stats = {}
+    home_stats: dict[int, OrderStats] = {}
+    structure_id = cfg.effective_structure_id
+    if structure_id is not None and esi.tokens.has_token("seller"):
+        try:
+            home_stats = esi.structure_order_stats_bulk(structure_id, type_ids, auth_role="seller")
+        except ESIError:
+            home_stats = {}  # no docking access right now - degrade, don't break the page
+
     result = []
     for row in aggregated:
         _, build_cost, _ = unit_cost_detail(row.type_id, PRODUCTION_CONFIG, ctx.home, ctx.jita, cost_memo,
                                              ctx.selected_decryptors, t2_memo, ctx.cost_indices, ctx.adjusted_prices)
-        sde_type = storage.get_sde_type(row.type_id)
-        volume = sde_type[3] if sde_type else None
-        cj_price, jita_landed_price = _shopping_prices(row.type_id, ctx.home, ctx.jita, volume, cfg)
+        # _haul_volume (not raw sde_type volume) so ships/capital modules use
+        # their packaged volume for the Jita haul leg, not the much larger
+        # flight/assembled volume - GitHub issue #11.
+        volume = _haul_volume(row.type_id, PRODUCTION_CONFIG)
+        cj_price, jita_landed_price = _shopping_prices(
+            row.type_id, ctx.home, ctx.jita, volume, cfg,
+            home_stats.get(row.type_id), jita_stats.get(row.type_id))
 
         candidates = {"Build": build_cost, "C-J": cj_price, "Jita": jita_landed_price}
         priced = {k: v for k, v in candidates.items() if v is not None}
