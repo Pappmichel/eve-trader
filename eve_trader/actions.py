@@ -41,8 +41,23 @@ def _int_or_none(v):
 
 
 def _group_id(type_id: int) -> Optional[int]:
+    """SDE group_id for `type_id`, falling back to a live ESI lookup when the
+    local SDE cache doesn't have this type yet (stale/incomplete cache since
+    the last Refresh SDE - confirmed real cause of GitHub issue #5: a booster
+    stayed miscategorized as "Implant" because storage.get_sde_type returned
+    None here, so guess_category never even saw a group_id to check against
+    BOOSTER_GROUP_ID and fell through to its category_id-only branch). Same
+    "missing SDE field -> ask ESI directly rather than guess" precedent
+    do_refresh_shortlist's own meta_level backfill already uses
+    (_backfill_meta_levels) - not persisted locally since this is a rare,
+    self-healing gap (the next Refresh SDE populates the row for good)."""
     row = storage.get_sde_type(type_id)
-    return row[1] if row else None
+    if row is not None:
+        return row[1]
+    try:
+        return ESIClient().get_type_info(type_id).get("group_id")
+    except Exception:  # noqa: BLE001 - best-effort; None leaves guess_category's existing behavior unchanged
+        return None
 
 
 def do_auth(role: str, scopes: list[str] | None = None, oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:

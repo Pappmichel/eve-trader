@@ -1,6 +1,6 @@
 import pandas as pd
 
-from eve_trader import actions, storage
+from eve_trader import actions, esi_client, storage
 
 
 def test_do_add_to_shortlist_recomputes_category_fresh_from_sde(monkeypatch):
@@ -54,3 +54,53 @@ def test_do_recategorize_shortlist_fixes_stale_booster_labels(monkeypatch):
     by_id = {i.item_id: i for i in captured["items"]}
     assert by_id[44].category == "Drugs"
     assert by_id[45].category == "Skill"
+
+
+def test_do_recategorize_shortlist_falls_back_to_esi_for_a_missing_sde_row(monkeypatch):
+    # GitHub issue #5 (still broken after the first "shipped" fix): a booster
+    # stays mislabeled "Implant" whenever the local SDE cache hasn't been
+    # refreshed since this specific type_id was introduced/last touched -
+    # storage.get_sde_type returns None, so guess_category never even sees a
+    # group_id to check against BOOSTER_GROUP_ID and falls back to the raw
+    # category_id's own label ("Implant"). _group_id should fall back to a
+    # live ESI lookup instead of leaving the item stuck.
+    from eve_trader.models import ShortlistItem
+
+    existing = [ShortlistItem(item="Synth Crash Booster", item_id=28672, category="Implant",
+                               volume_m3=0.1, active=True)]
+    monkeypatch.setattr(storage, "load_shortlist", lambda: existing)
+    monkeypatch.setattr(storage, "load_sde_category_names", lambda: {20: "Implant"})
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 20)
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: None)  # not in the local cache yet
+    monkeypatch.setattr(esi_client.ESIClient, "get_type_info", lambda self, type_id: {"group_id": 303})
+
+    captured = {}
+    monkeypatch.setattr(storage, "upsert_shortlist", lambda items: captured.setdefault("items", items))
+
+    result = actions.do_recategorize_shortlist()
+
+    assert result == {"checked": 1, "recategorized": 1}
+    assert captured["items"][0].category == "Drugs"
+
+
+def test_do_recategorize_shortlist_stays_implant_when_esi_lookup_also_fails(monkeypatch):
+    from eve_trader.models import ShortlistItem
+
+    existing = [ShortlistItem(item="Ocular Filter", item_id=99, category="Implant",
+                               volume_m3=0.1, active=True)]
+    monkeypatch.setattr(storage, "load_shortlist", lambda: existing)
+    monkeypatch.setattr(storage, "load_sde_category_names", lambda: {20: "Implant"})
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 20)
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: None)
+
+    def _raise(self, type_id):
+        raise esi_client.ESIError("boom")
+    monkeypatch.setattr(esi_client.ESIClient, "get_type_info", _raise)
+
+    captured = {}
+    monkeypatch.setattr(storage, "upsert_shortlist", lambda items: captured.setdefault("items", items))
+
+    result = actions.do_recategorize_shortlist()
+
+    assert result == {"checked": 1, "recategorized": 0}
+    assert captured["items"][0].category == "Implant"
