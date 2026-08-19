@@ -34,9 +34,13 @@ MODULE_CATEGORY_ID = 7
 # SDE category_id=20 ("Implant") covers both real cyberimplants and Boosters/
 # Drugs - CCP doesn't split them into separate categories. group_id=746
 # ("Booster") is what actually distinguishes them - confirmed wrong labeling
-# (both showing as "Implant") by the user.
+# (both showing as "Implant") by the user. Confirmed against real live SDE
+# data (2026-08-19) - group_id 303 is the real "Booster" group (real drugs
+# like AIR Agility Booster II); 746 ("Cyber Missile", an initial wrong guess
+# caught during live post-deploy verification) is actually a skill-
+# hardwiring implant group, not boosters at all.
 IMPLANT_CATEGORY_ID = 20
-BOOSTER_GROUP_ID = 746
+BOOSTER_GROUP_ID = 303
 
 
 def is_wanted_market_path(path: str, cfg: TradingConfig = TRADING_CONFIG) -> bool:
