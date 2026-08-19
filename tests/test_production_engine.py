@@ -1476,3 +1476,177 @@ def test_plan_production_buy_list_on_hand_pct_for_a_recursively_reached_material
     row = next(r for r in result["buy_list"] if r.type_id == 2)
     assert row.quantity == 6.0  # 10 gross - 4 on hand
     assert round(row.on_hand_pct, 1) == 40.0  # 4 of 10 = 40%
+
+
+# ---------------------------------------------------------------- logistics_status
+def _build_job(type_id=1, category="Advanced Components", job_runs=1, decryptor=None):
+    from eve_trader.production.models import BuildJobEntry
+    return BuildJobEntry(type_id=type_id, type_name=f"Item{type_id}", blueprint_type_id=type_id + 100,
+                          activity="Manufacturing", quantity=job_runs, job_runs=job_runs, job_time_seconds=100.0,
+                          unit_build_cost=None, decryptor=decryptor, job_category=category)
+
+
+def _stub_material_demand(monkeypatch, material_id=2, base_qty=10.0):
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (type_id + 100, 1, 1.0)))
+    monkeypatch.setattr(engine, "_direct_material_mult", lambda *a, **k: 1.0)
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [(material_id, base_qty)])
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+
+
+def test_logistics_status_nets_needed_against_available_at_assigned_location(monkeypatch):
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {"Advanced Components": 1001})
+    _stub_material_demand(monkeypatch)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: 3.0)
+
+    rows = engine.logistics_status([_build_job()])
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.needed == 10.0
+    assert row.available == 3.0
+    assert row.missing == 7.0
+    assert row.location_id == 1001
+
+
+def test_logistics_status_skips_categories_with_no_assigned_location(monkeypatch):
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {})
+    _stub_material_demand(monkeypatch)
+
+    rows = engine.logistics_status([_build_job()])
+
+    assert rows == []
+
+
+def test_logistics_status_pull_from_hint_picks_richest_other_location(monkeypatch):
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {
+        "Advanced Components": 1001, "Capital Components": 1002, "Equipment": 1003,
+    })
+    _stub_material_demand(monkeypatch)
+
+    def fake_stock(type_id, location_id):
+        return {1001: 3.0, 1002: 20.0, 1003: 5.0}[location_id]
+    monkeypatch.setattr(storage, "esi_stock_at_location", fake_stock)
+
+    rows = engine.logistics_status([_build_job()])
+
+    row = rows[0]
+    assert row.missing == 7.0
+    assert row.pull_from_location_id == 1002  # 20 > 5, richest other location
+    assert row.pull_from_available == 20.0
+
+
+def test_logistics_status_no_pull_from_hint_when_nothing_missing(monkeypatch):
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {
+        "Advanced Components": 1001, "Capital Components": 1002,
+    })
+    _stub_material_demand(monkeypatch)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: 100.0)  # plenty everywhere
+
+    rows = engine.logistics_status([_build_job()])
+
+    assert rows[0].missing == 0.0
+    assert rows[0].pull_from_location_id is None
+
+
+# ------------------------------------------------------- distribution_recommendations
+def test_distribution_recommendations_moves_from_source_to_shortest_category(monkeypatch):
+    cfg = ProductionConfig(distribution_source_location_id=2000)
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {"Advanced Components": 1001})
+    _stub_material_demand(monkeypatch)
+
+    def fake_stock(type_id, location_id):
+        return {1001: 3.0, 2000: 50.0}[location_id]
+    monkeypatch.setattr(storage, "esi_stock_at_location", fake_stock)
+
+    rows = engine.distribution_recommendations([_build_job()], cfg)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.type_id == 2
+    assert row.from_location_id == 2000
+    assert row.to_category == "Advanced Components"
+    assert row.to_location_id == 1001
+    assert row.quantity == 7.0  # 10 needed - 3 on hand
+
+
+def test_distribution_recommendations_falls_back_to_home_location(monkeypatch):
+    cfg = ProductionConfig(distribution_source_location_id=None, home_location_id=3000)
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {"Advanced Components": 1001})
+    _stub_material_demand(monkeypatch)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: {1001: 0.0, 3000: 50.0}[location_id])
+
+    rows = engine.distribution_recommendations([_build_job()], cfg)
+
+    assert rows[0].from_location_id == 3000
+
+
+def test_distribution_recommendations_empty_without_any_source_configured(monkeypatch):
+    cfg = ProductionConfig(distribution_source_location_id=None, home_location_id=None)
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {"Advanced Components": 1001})
+
+    assert engine.distribution_recommendations([_build_job()], cfg) == []
+
+
+def test_distribution_recommendations_covers_largest_shortfall_first_when_source_limited(monkeypatch):
+    cfg = ProductionConfig(distribution_source_location_id=2000)
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {
+        "Advanced Components": 1001, "Capital Components": 1002,
+    })
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (type_id + 100, 1, 1.0)))
+    monkeypatch.setattr(engine, "_direct_material_mult", lambda *a, **k: 1.0)
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [(2, 10.0)])
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+
+    def fake_stock(type_id, location_id):
+        # Advanced Components short by 8, Capital Components short by 3 - only 5 available at source, not enough for both
+        return {1001: 2.0, 1002: 7.0, 2000: 5.0}[location_id]
+    monkeypatch.setattr(storage, "esi_stock_at_location", fake_stock)
+
+    rows = engine.distribution_recommendations(
+        [_build_job(category="Advanced Components"), _build_job(category="Capital Components")], cfg)
+
+    assert len(rows) == 1  # only enough source stock for the larger shortfall
+    assert rows[0].to_category == "Advanced Components"
+    assert rows[0].quantity == 5.0
+
+
+# ------------------------------------------------------------- invention_logistics
+def test_invention_logistics_needs_bpcs_decryptors_and_datacores(monkeypatch):
+    from eve_trader.production.models import InventionNeedRow
+    cfg = ProductionConfig(invention_location_id=5000)
+    need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
+                             t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
+                             output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
+    monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id: {"datacores": [(300, 2), (301, 2)]})
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: 0.0)
+
+    rows = engine.invention_logistics([need], cfg)
+
+    by_type = {r.type_id: r for r in rows}
+    assert by_type[200].needed == 5.0  # bpcs_needed T1 copies, not recommended_invention_runs
+    from eve_trader.production.constants import DECRYPTORS
+    parity_type_id = DECRYPTORS["Parity"].type_id
+    assert by_type[parity_type_id].needed == 6.0  # one decryptor per attempt
+    assert by_type[300].needed == 12.0  # 2 per attempt * 6 attempts
+    assert by_type[301].needed == 12.0
+
+
+def test_invention_logistics_empty_without_location_configured(monkeypatch):
+    from eve_trader.production.models import InventionNeedRow
+    cfg = ProductionConfig(invention_location_id=None)
+    need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
+                             t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
+                             output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
+
+    assert engine.invention_logistics([need], cfg) == []
+
+
+def test_invention_logistics_skips_rows_with_no_runs_needed(monkeypatch):
+    from eve_trader.production.models import InventionNeedRow
+    cfg = ProductionConfig(invention_location_id=5000)
+    need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
+                             t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
+                             output_runs=2, runs_needed=0, bpcs_needed=0, recommended_invention_runs=0)
+
+    assert engine.invention_logistics([need], cfg) == []

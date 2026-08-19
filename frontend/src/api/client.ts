@@ -123,6 +123,7 @@ export const tradingApi = {
     post<{ evaluated: number; recommended: number }>(`/api/trading/candidates/find-new?safe=${safe}`),
   addToShortlist: () => post<{ added: number }>('/api/trading/shortlist/add-new'),
   refreshShortlist: () => post<Record<string, unknown>>('/api/trading/shortlist/refresh'),
+  recategorizeShortlist: () => post<{ checked: number; recategorized: number }>('/api/trading/shortlist/recategorize'),
   refreshAndPruneCandidates: (safe = true) =>
     post<Record<string, unknown>>(`/api/trading/candidates/refresh-and-prune?safe=${safe}`),
   reconcileTrades: () => post<Record<string, unknown>>('/api/trading/trades/reconcile'),
@@ -184,6 +185,8 @@ export const productionApi = {
   removeCategoryLocationOption: (category: string, locationId: number) =>
     del(`/api/production/logistics/location-options/${encodeURIComponent(category)}/${locationId}`),
   logisticsStatus: () => get<T.LogisticsRow[]>('/api/production/logistics'),
+  distributionRecommendations: () => get<T.DistributionRow[]>('/api/production/logistics/distribution'),
+  inventionLogistics: () => get<T.LogisticsRow[]>('/api/production/logistics/invention'),
   structureNames: () => get<Record<string, string | null>>('/api/production/logistics/structure-names'),
   resolveStructureName: (locationId: number, force = false) =>
     post<{ location_id: number; name: string | null; cached: boolean }>(

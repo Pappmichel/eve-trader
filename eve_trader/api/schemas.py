@@ -172,6 +172,17 @@ class LogisticsRow(_Base):
     needed: float
     available: float
     missing: float
+    pull_from_location_id: Optional[int] = None
+    pull_from_available: Optional[float] = None
+
+
+class DistributionRow(_Base):
+    type_id: int
+    type_name: str
+    from_location_id: int
+    to_category: str
+    to_location_id: int
+    quantity: float
 
 
 class AssetLocationRow(_Base):

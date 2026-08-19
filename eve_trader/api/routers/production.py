@@ -118,6 +118,8 @@ class ProductionSettings(BaseModel):
     haul_cost_per_m3: float
     home_market: Optional[str] = None
     home_location_id: Optional[int] = None
+    distribution_source_location_id: Optional[int] = None
+    invention_location_id: Optional[int] = None
     reaction_structure_type: str
     reaction_rig_tier: str
     component_structure_type: str
@@ -188,6 +190,26 @@ def get_logistics_status():
         raise HTTPException(status_code=400, detail="No build list computed yet. Run 'Compute Buy/Build List' first.")
     from ...production.engine import logistics_status
     return logistics_status(_last_plan["build_list"])
+
+
+@router.get("/logistics/distribution", response_model=list[schemas.DistributionRow])
+def get_distribution_recommendations():
+    if not _last_plan or not _last_plan.get("build_list"):
+        raise HTTPException(status_code=400, detail="No build list computed yet. Run 'Compute Buy/Build List' first.")
+    from ...production.engine import distribution_recommendations
+    return distribution_recommendations(_last_plan["build_list"])
+
+
+@router.get("/logistics/invention", response_model=list[schemas.LogisticsRow])
+def get_invention_logistics():
+    # Deliberately only checks _last_plan is None (not invention_list's own
+    # truthiness, unlike the sibling endpoints above) - an empty
+    # invention_list is a real, valid "nothing needs inventing right now"
+    # state (no Tech II stock targets configured), not an error.
+    if _last_plan is None:
+        raise HTTPException(status_code=400, detail="No build list computed yet. Run 'Compute Buy/Build List' first.")
+    from ...production.engine import invention_logistics
+    return invention_logistics(_last_plan.get("invention_list") or [])
 
 
 @router.get("/logistics/structure-names")

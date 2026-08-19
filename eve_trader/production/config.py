@@ -54,6 +54,18 @@ class ProductionConfig:
     # instead of requesting ".../market/None/prices.json").
     home_market: Optional[str] = None     # appraise.gnf.lt market slug (case-sensitive)
     home_location_id: Optional[int] = None  # structure/station ID to filter ESI assets to (None = all locations)
+    # Station to move materials *from* on the Logistik tab's Distribution
+    # section (GitHub issue #4) - falls back to home_location_id when unset
+    # ("the home market acts as the central warehouse" by default), but
+    # independently overridable, since the user may want to distribute from
+    # somewhere other than the home structure - see engine.
+    # distribution_recommendations.
+    distribution_source_location_id: Optional[int] = None
+    # Dedicated station for invention materials (datacores/decryptors/T1
+    # copies) - GitHub issue #9. Independent of job_category_locations
+    # (invention isn't itself a job_category bucket) - see engine.
+    # invention_logistics.
+    invention_location_id: Optional[int] = None
 
     # -- System cost index, split by *what's being built* (see engine.py /
     # constants.py COMPONENT_GROUP_IDS): reactions + certain component groups

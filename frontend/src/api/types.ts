@@ -179,6 +179,17 @@ export interface LogisticsRow {
   needed: number
   available: number
   missing: number
+  pull_from_location_id: number | null
+  pull_from_available: number | null
+}
+
+export interface DistributionRow {
+  type_id: number
+  type_name: string
+  from_location_id: number
+  to_category: string
+  to_location_id: number
+  quantity: number
 }
 
 export interface MarketStatusRow {
@@ -354,6 +365,8 @@ export interface ProductionSettings {
   haul_cost_per_m3: number
   home_market: string | null
   home_location_id: number | null
+  distribution_source_location_id: number | null
+  invention_location_id: number | null
   reaction_structure_type: string
   reaction_rig_tier: string
   component_structure_type: string

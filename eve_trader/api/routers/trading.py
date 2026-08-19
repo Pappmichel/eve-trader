@@ -168,6 +168,11 @@ def refresh_shortlist():
     return _wrap(actions.do_refresh_shortlist)
 
 
+@router.post("/shortlist/recategorize")
+def recategorize_shortlist():
+    return _wrap(actions.do_recategorize_shortlist)
+
+
 @router.post("/candidates/refresh-and-prune")
 def refresh_and_prune_candidates(safe: bool = True):
     return _wrap(actions.do_refresh_and_prune_candidates, safe=safe)

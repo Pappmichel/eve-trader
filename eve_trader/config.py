@@ -176,6 +176,8 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "datacore_skill_1_level": (0, 5),
     "datacore_skill_2_level": (0, 5),
     "home_location_id": (1, None),
+    "distribution_source_location_id": (1, None),
+    "invention_location_id": (1, None),
     "component_system_id": (1, None),
     "manufacturing_system_id": (1, None),
     "trading_pipeline_interval_hours": (0, None),

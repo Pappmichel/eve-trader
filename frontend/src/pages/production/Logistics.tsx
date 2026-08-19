@@ -5,7 +5,7 @@ import { IconX } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
-import type { LogisticsRow } from '../../api/types'
+import type { DistributionRow, LogisticsRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
@@ -19,6 +19,33 @@ export default function Logistics() {
   const { data: rows, isError } = useQuery({
     queryKey: ['production', 'logistics'], queryFn: productionApi.logisticsStatus, retry: false,
   })
+  const { data: distributionRows } = useQuery({
+    queryKey: ['production', 'logistics', 'distribution'], queryFn: productionApi.distributionRecommendations, retry: false,
+  })
+  const { data: inventionRows } = useQuery({
+    queryKey: ['production', 'logistics', 'invention'], queryFn: productionApi.inventionLogistics, retry: false,
+  })
+  const { data: settings } = useQuery({ queryKey: ['production', 'settings'], queryFn: productionApi.settings })
+
+  const [sourceDraft, setSourceDraft] = useState('')
+  const [inventionDraft, setInventionDraft] = useState('')
+  useEffect(() => {
+    if (!settings) return
+    setSourceDraft(settings.distribution_source_location_id != null ? String(settings.distribution_source_location_id) : '')
+    setInventionDraft(settings.invention_location_id != null ? String(settings.invention_location_id) : '')
+  }, [settings])
+
+  const saveDistributionSource = useAction('Distribution Source Saved', async () => {
+    if (!settings) return
+    return productionApi.updateSettings({
+      ...settings, distribution_source_location_id: sourceDraft ? Number(sourceDraft) : null,
+    })
+  }, [['production', 'settings'], ['production', 'logistics', 'distribution']])
+
+  const saveInventionLocation = useAction('Invention Station Saved', async () => {
+    if (!settings) return
+    return productionApi.updateSettings({ ...settings, invention_location_id: inventionDraft ? Number(inventionDraft) : null })
+  }, [['production', 'settings'], ['production', 'logistics', 'invention']])
 
   const [draft, setDraft] = useState<Record<string, string>>({})
   // Only fills in categories *missing* from draft (a first load, or a newly
@@ -88,7 +115,31 @@ export default function Logistics() {
       header: 'Missing', accessorKey: 'missing', size: 110,
       cell: (i) => <Text c={i.getValue() > 0 ? 'warn' : 'accent'} fw={i.getValue() > 0 ? 600 : 400}>{qty(i.getValue())}</Text>,
     },
-  ], [])
+    {
+      header: 'Pull From', accessorKey: 'pull_from_location_id', size: 200,
+      cell: (i) => {
+        const locationId = i.getValue() as number | null
+        if (locationId == null) return '–'
+        const name = structureNames?.[String(locationId)]
+        const available = i.row.original.pull_from_available
+        return `${name ?? locationId} (${qty(available)})`
+      },
+    },
+  ], [structureNames])
+
+  const distributionColumns = useMemo<ColumnDef<DistributionRow, any>[]>(() => [
+    { header: 'Item', accessorKey: 'type_name', size: 240 },
+    {
+      header: 'From', accessorKey: 'from_location_id', size: 200,
+      cell: (i) => structureNames?.[String(i.getValue())] ?? i.getValue(),
+    },
+    { header: 'To Category', accessorKey: 'to_category', size: 180 },
+    {
+      header: 'To', accessorKey: 'to_location_id', size: 200,
+      cell: (i) => structureNames?.[String(i.getValue())] ?? i.getValue(),
+    },
+    { header: 'Quantity', accessorKey: 'quantity', size: 120, cell: (i) => qty(i.getValue()) },
+  ], [structureNames])
 
   return (
     <Stack>
@@ -208,6 +259,49 @@ export default function Logistics() {
           )
         })
       )}
+
+      <Card withBorder>
+        <Title order={4} mb="xs">Distribution</Title>
+        <Text size="xs" c="dimmed" mb="sm">
+          What to move from a central source station to whichever category stations are currently short of it -
+          defaults to the home structure (Production Settings) if left empty.
+        </Text>
+        <Group align="flex-end" gap="xs" mb="sm">
+          <NumberInput label="Distribution source structure ID" placeholder="Home structure ID" value={sourceDraft}
+            onChange={(v) => setSourceDraft(String(v))} min={0} hideControls style={{ flex: 1, maxWidth: 300 }} />
+          <Button size="xs" variant="default" loading={saveDistributionSource.isPending}
+            onClick={() => saveDistributionSource.mutate()}>
+            Save
+          </Button>
+        </Group>
+        {!distributionRows || distributionRows.length === 0 ? (
+          <Text size="sm" c="dimmed">Nothing to move right now.</Text>
+        ) : (
+          <DataTable data={distributionRows} columns={distributionColumns} maxHeight={320} />
+        )}
+      </Card>
+
+      <Card withBorder>
+        <Title order={4} mb="xs">Invention</Title>
+        <Text size="xs" c="dimmed" mb="sm">
+          Datacores/decryptors/T1 blueprint copies needed vs. what's at the configured invention station.
+        </Text>
+        <Group align="flex-end" gap="xs" mb="sm">
+          <NumberInput label="Invention structure ID" placeholder="Structure ID" value={inventionDraft}
+            onChange={(v) => setInventionDraft(String(v))} min={0} hideControls style={{ flex: 1, maxWidth: 300 }} />
+          <Button size="xs" variant="default" loading={saveInventionLocation.isPending}
+            onClick={() => saveInventionLocation.mutate()}>
+            Save
+          </Button>
+        </Group>
+        {!inventionRows || inventionRows.length === 0 ? (
+          <Text size="sm" c="dimmed">
+            {inventionDraft ? 'Nothing needed right now.' : 'Set an invention structure ID above to track this.'}
+          </Text>
+        ) : (
+          <DataTable data={inventionRows} columns={columns} maxHeight={320} />
+        )}
+      </Card>
     </Stack>
   )
 }
