@@ -321,6 +321,36 @@ def test_classify_activity_falls_back_to_tech_i_for_unmapped_meta_group(monkeypa
     assert activity == "Tech I"
 
 
+def test_job_category_treats_advanced_capital_components_as_advanced_not_capital(monkeypatch):
+    # Real item, real bug (2026-08-19): group 913 "Advanced Capital
+    # Construction Components" (e.g. Capital Nanoelectrical Microprocessor)
+    # is a Tech 2 *capital* component, but per its own ME rig's ESI
+    # description it's built on the same "Standup M-Set Advanced Component
+    # Manufacturing" structure as plain Tech 2/Tech 3/Tools/Data Interfaces
+    # components, not the dedicated Basic-Capital-Component one - confirmed
+    # against the user's own real build location. Only group 873 (actual
+    # Basic Capital Components) should ever come back "Capital Components".
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (29074, 1, 1.0))
+    monkeypatch.setattr(storage, "find_invention_recipe_by_product_type_id", lambda blueprint_id: None)
+    monkeypatch.setattr(
+        storage, "get_sde_type",
+        lambda type_id: (29073, 913, "Capital Nanoelectrical Microprocessor", 10.0, 1, 1884, None, None),
+    )
+
+    assert engine.job_category(29073) == "Advanced Components"
+
+
+def test_job_category_treats_basic_capital_components_as_capital(monkeypatch):
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (200, 1, 1.0))
+    monkeypatch.setattr(storage, "find_invention_recipe_by_product_type_id", lambda blueprint_id: None)
+    monkeypatch.setattr(
+        storage, "get_sde_type",
+        lambda type_id: (100, 873, "Capital Construction Parts", 10.0, 1, 1884, None, None),
+    )
+
+    assert engine.job_category(100) == "Capital Components"
+
+
 def test_reaction_never_uses_owned_bpo_data(monkeypatch):
     # Reactions have no BPO research in real EVE - _owned_bpo_mods must never
     # be consulted for them, even if the lookup would return something.

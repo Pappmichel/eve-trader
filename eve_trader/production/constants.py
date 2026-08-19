@@ -286,9 +286,19 @@ COMPONENT_GROUP_IDS: frozenset = frozenset({
 # which SDE ship groups belong to which size tier and which item categories
 # get their own bucket.
 
-# The two COMPONENT_GROUP_IDS groups (873, 913) that are specifically Capital
-# components - the rest of COMPONENT_GROUP_IDS is "Advanced Components".
-CAPITAL_COMPONENT_GROUP_IDS: frozenset = frozenset({873, 913})
+# Which of COMPONENT_GROUP_IDS is "Capital Components" vs "Advanced
+# Components" follows the same two ME rigs COMPONENT_GROUP_IDS' own comment
+# above is built from, not in-game "is this lore-capital-tier" naming - group
+# 913 ("Advanced Capital Construction Components", e.g. Capital Nanoelectrical
+# Microprocessor) is a Tech 2 capital *component*, but per that rig's own ESI
+# description it's built on the same "Standup M-Set Advanced Component
+# Manufacturing" structure/rig as the plain Tech 2/Tech 3/Tools/Data
+# Interfaces groups, not the dedicated "Standup M-Set Basic Capital Component
+# Manufacturing" one - confirmed with the user against their own real build
+# location for it (2026-08-19). Only group 873 (actual Basic Capital
+# Components) uses that dedicated rig, so it's the only "Capital Components"
+# group - everything else in COMPONENT_GROUP_IDS is "Advanced Components".
+CAPITAL_COMPONENT_GROUP_IDS: frozenset = frozenset({873})
 ADVANCED_COMPONENT_GROUP_IDS: frozenset = COMPONENT_GROUP_IDS - CAPITAL_COMPONENT_GROUP_IDS
 
 # Every value engine.job_category() can return, in the Logistik tab's display
