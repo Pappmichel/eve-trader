@@ -853,10 +853,78 @@ def test_discover_build_candidates_concurrent_calls_do_not_double_scan(monkeypat
     assert results[0] == results[1]
 
 
+# ---------------------------------------------------------------------- _haul_volume
+def test_haul_volume_uses_flight_volume_for_non_ship_non_module_types(monkeypatch):
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Tritanium", 0.01, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 4)  # Material
+
+    assert engine._haul_volume(34, ProductionConfig()) == 0.01
+
+
+def test_haul_volume_uses_packaged_volume_for_ships(monkeypatch):
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 25, "Rifter", 27289.0, 1, 64, 0, None))
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: engine.SHIP_CATEGORY_ID)
+    monkeypatch.setattr(storage, "get_cached_packaged_volume", lambda type_id: 2500.0)
+
+    assert engine._haul_volume(587, ProductionConfig()) == 2500.0
+
+
+def test_haul_volume_uses_packaged_volume_for_capital_modules(monkeypatch):
+    # GitHub issue #11 (still broken after the first "shipped" fix): capital
+    # modules (e.g. Capital Shield Booster I, SDE flight volume 4000) also
+    # shrink when packaged (confirmed live via ESI: packaged_volume=1000) -
+    # not just ships.
+    monkeypatch.setattr(storage, "get_sde_type",
+                         lambda type_id: (type_id, 40, "Capital Shield Booster I", 4000.0, 1, 778, 0, None))
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: engine.MODULE_CATEGORY_ID)
+    monkeypatch.setattr(storage, "get_cached_packaged_volume", lambda type_id: 1000.0)
+
+    assert engine._haul_volume(20703, ProductionConfig()) == 1000.0
+
+
+def test_haul_volume_looks_up_esi_once_then_caches_for_modules(monkeypatch):
+    monkeypatch.setattr(storage, "get_sde_type",
+                         lambda type_id: (type_id, 40, "Capital Shield Booster I", 4000.0, 1, 778, 0, None))
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: engine.MODULE_CATEGORY_ID)
+    monkeypatch.setattr(storage, "get_cached_packaged_volume", lambda type_id: None)  # not cached yet
+    cached = {}
+    monkeypatch.setattr(storage, "set_cached_packaged_volume", lambda type_id, v: cached.setdefault(type_id, v))
+
+    from eve_trader import esi_client
+    monkeypatch.setattr(esi_client.ESIClient, "get_packaged_volume", lambda self, type_id: 1000.0)
+
+    assert engine._haul_volume(20703, ProductionConfig()) == 1000.0
+    assert cached == {20703: 1000.0}
+
+
+def test_haul_volume_returns_none_when_type_not_in_sde(monkeypatch):
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: None)
+
+    assert engine._haul_volume(999999, ProductionConfig()) is None
+
+
 # ---------------------------------------------------------------- discover_ship_margins
+# Minimal stand-in for the real sde_market_groups tree (market_group_id,
+# parent_group_id, name) - 1612 "Special Edition Ships" and its child 1699
+# "Special Edition Cruisers" mirror the real subtree confirmed live
+# (2026-08-19) to contain every ship named in GitHub issue #7; 1379 "Navy
+# Faction" is a sibling subtree that must stay unaffected (Faction ships like
+# Navy Issue battleships should still show up on the Margin tab).
+_FAKE_MARKET_GROUPS = [
+    (1612, 4, "Special Edition Ships"),
+    (1699, 1612, "Special Edition Cruisers"),
+    (1379, 1378, "Navy Faction"),
+]
+
+
+def _stub_market_groups(monkeypatch):
+    monkeypatch.setattr(storage, "load_sde_market_groups", lambda: _FAKE_MARKET_GROUPS)
+
+
 @pg_helpers.postgres_required()
 def test_discover_ship_margins_only_includes_ships(monkeypatch, tenant):
     monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
+    _stub_market_groups(monkeypatch)
     monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: [
         (1, "Some Ship", 1.0, 100, None, engine.SHIP_CATEGORY_ID),
         (2, "Some Module", 1.0, 100, None, 7),  # not a ship - must be excluded
@@ -876,6 +944,7 @@ def test_discover_ship_margins_includes_already_tracked_stock_targets(monkeypatc
     # tracked stock target (type_id 1 in _FakePlanContext.stock_targets)
     # still appears here.
     monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
+    _stub_market_groups(monkeypatch)
     monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: [
         (1, "Already Tracked Ship", 1.0, 100, None, engine.SHIP_CATEGORY_ID),
     ])
@@ -890,6 +959,7 @@ def test_discover_ship_margins_includes_already_tracked_stock_targets(monkeypatc
 @pg_helpers.postgres_required()
 def test_discover_ship_margins_skips_non_manufacturable_ships(monkeypatch, tenant):
     monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
+    _stub_market_groups(monkeypatch)
     monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: [
         (1, "Unbuildable Ship", 1.0, 100, None, engine.SHIP_CATEGORY_ID),
     ])
@@ -901,8 +971,48 @@ def test_discover_ship_margins_skips_non_manufacturable_ships(monkeypatch, tenan
 
 
 @pg_helpers.postgres_required()
+def test_discover_ship_margins_skips_special_edition_ships(monkeypatch, tenant):
+    # GitHub issue #7 (still broken after the first "shipped" fix): a ship
+    # with a real, published blueprint but market_group_id under "Special
+    # Edition Ships" (1612) shouldn't show as buildable, even though the
+    # existing published-blueprint filter alone doesn't catch it.
+    monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
+    _stub_market_groups(monkeypatch)
+    monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: [
+        (1, "Guardian-Vexor", 1.0, 1699, None, engine.SHIP_CATEGORY_ID),  # under 1612 via 1699
+        (2, "Vexor", 1.0, 76, None, engine.SHIP_CATEGORY_ID),  # ordinary ship market group
+    ])
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (999, 1, 1.0)))
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+
+    results = engine.discover_ship_margins(ProductionConfig())
+
+    assert [r["type_id"] for r in results] == [2]
+
+
+@pg_helpers.postgres_required()
+def test_discover_ship_margins_keeps_navy_issue_ships(monkeypatch, tenant):
+    # Faction ships (Navy Issue, market_group_id 1379 "Navy Faction") live in
+    # a sibling subtree, not under "Special Edition Ships" - the user
+    # explicitly wants these to keep showing (GitHub issue #7's own "auch
+    # faction... schiffe" ask).
+    monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
+    _stub_market_groups(monkeypatch)
+    monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: [
+        (1, "Raven Navy Issue", 1.0, 1379, None, engine.SHIP_CATEGORY_ID),
+    ])
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (999, 1, 1.0)))
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+
+    results = engine.discover_ship_margins(ProductionConfig())
+
+    assert [r["type_id"] for r in results] == [1]
+
+
+@pg_helpers.postgres_required()
 def test_discover_ship_margins_populates_prices_and_both_margins(monkeypatch, tenant):
     monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)  # home[1]=(buy=100,sell=200), jita={}
+    _stub_market_groups(monkeypatch)
     monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: [
         (1, "Some Ship", 1.0, 100, None, engine.SHIP_CATEGORY_ID),
     ])
@@ -923,6 +1033,7 @@ def test_discover_ship_margins_populates_prices_and_both_margins(monkeypatch, te
 @pg_helpers.postgres_required()
 def test_discover_ship_margins_reuses_cache_within_ttl(monkeypatch, tenant):
     monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
+    _stub_market_groups(monkeypatch)
     scan_calls = []
     monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: (
         scan_calls.append(1),
@@ -944,6 +1055,7 @@ def test_discover_ship_margins_reuses_cache_within_ttl(monkeypatch, tenant):
 @pg_helpers.postgres_required()
 def test_invalidate_ship_margin_cache_forces_a_rescan(monkeypatch, tenant):
     monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
+    _stub_market_groups(monkeypatch)
     scan_calls = []
     monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: (
         scan_calls.append(1),
@@ -1517,7 +1629,8 @@ def test_logistics_status_skips_categories_with_no_assigned_location(monkeypatch
     assert rows == []
 
 
-def test_logistics_status_pull_from_hint_picks_richest_other_location(monkeypatch):
+def test_logistics_status_pull_from_hint_picks_richest_surplus_when_no_warehouse(monkeypatch):
+    cfg = ProductionConfig(distribution_source_location_id=None, home_location_id=None)
     monkeypatch.setattr(storage, "load_category_locations", lambda: {
         "Advanced Components": 1001, "Capital Components": 1002, "Equipment": 1003,
     })
@@ -1527,22 +1640,88 @@ def test_logistics_status_pull_from_hint_picks_richest_other_location(monkeypatc
         return {1001: 3.0, 1002: 20.0, 1003: 5.0}[location_id]
     monkeypatch.setattr(storage, "esi_stock_at_location", fake_stock)
 
-    rows = engine.logistics_status([_build_job()])
+    rows = engine.logistics_status([_build_job()], cfg)
 
     row = rows[0]
     assert row.missing == 7.0
-    assert row.pull_from_location_id == 1002  # 20 > 5, richest other location
+    assert row.pull_from_location_id == 1002  # 20 > 5, richest surplus (neither has its own demand here)
     assert row.pull_from_available == 20.0
 
 
+def test_logistics_status_prefers_warehouse_over_surplus(monkeypatch):
+    cfg = ProductionConfig(distribution_source_location_id=None, home_location_id=9000)
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {
+        "Advanced Components": 1001, "Capital Components": 1002,
+    })
+    _stub_material_demand(monkeypatch)
+
+    def fake_stock(type_id, location_id):
+        return {1001: 3.0, 1002: 20.0, 9000: 6.0}[location_id]
+    monkeypatch.setattr(storage, "esi_stock_at_location", fake_stock)
+
+    rows = engine.logistics_status([_build_job()], cfg)
+
+    row = rows[0]
+    assert row.missing == 7.0
+    # Warehouse (9000) only has 6, less than Capital Components' surplus of 20,
+    # but it's still preferred - GitHub issue #4's explicit ask.
+    assert row.pull_from_location_id == 9000
+    assert row.pull_from_available == 6.0
+
+
+def test_logistics_status_falls_back_to_surplus_when_warehouse_empty(monkeypatch):
+    cfg = ProductionConfig(distribution_source_location_id=None, home_location_id=9000)
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {
+        "Advanced Components": 1001, "Capital Components": 1002,
+    })
+    _stub_material_demand(monkeypatch)
+
+    def fake_stock(type_id, location_id):
+        return {1001: 3.0, 1002: 20.0, 9000: 0.0}[location_id]
+    monkeypatch.setattr(storage, "esi_stock_at_location", fake_stock)
+
+    rows = engine.logistics_status([_build_job()], cfg)
+
+    row = rows[0]
+    assert row.pull_from_location_id == 1002
+    assert row.pull_from_available == 20.0
+
+
+def test_logistics_status_pull_from_hint_nets_other_locations_own_demand(monkeypatch):
+    # Capital Components has more raw stock (20) than Equipment (5), but
+    # Capital Components' own demand (18) eats almost all of it - Equipment's
+    # smaller surplus (5, no demand of its own here) should win instead.
+    cfg = ProductionConfig(distribution_source_location_id=None, home_location_id=None)
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {
+        "Advanced Components": 1001, "Capital Components": 1002, "Equipment": 1003,
+    })
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (type_id + 100, 1, 1.0)))
+    monkeypatch.setattr(engine, "_direct_material_mult", lambda *a, **k: 1.0)
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [(2, 10.0)])
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+
+    def fake_stock(type_id, location_id):
+        return {1001: 3.0, 1002: 20.0, 1003: 5.0}[location_id]
+    monkeypatch.setattr(storage, "esi_stock_at_location", fake_stock)
+
+    rows = engine.logistics_status(
+        [_build_job(category="Advanced Components"), _build_job(category="Capital Components", job_runs=1.8)],
+        cfg)
+
+    row = next(r for r in rows if r.category == "Advanced Components")
+    assert row.pull_from_location_id == 1003
+    assert row.pull_from_available == 5.0
+
+
 def test_logistics_status_no_pull_from_hint_when_nothing_missing(monkeypatch):
+    cfg = ProductionConfig(distribution_source_location_id=None, home_location_id=None)
     monkeypatch.setattr(storage, "load_category_locations", lambda: {
         "Advanced Components": 1001, "Capital Components": 1002,
     })
     _stub_material_demand(monkeypatch)
     monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: 100.0)  # plenty everywhere
 
-    rows = engine.logistics_status([_build_job()])
+    rows = engine.logistics_status([_build_job()], cfg)
 
     assert rows[0].missing == 0.0
     assert rows[0].pull_from_location_id is None
@@ -1608,6 +1787,65 @@ def test_distribution_recommendations_covers_largest_shortfall_first_when_source
     assert len(rows) == 1  # only enough source stock for the larger shortfall
     assert rows[0].to_category == "Advanced Components"
     assert rows[0].quantity == 5.0
+
+
+def test_distribution_recommendations_falls_back_to_surplus_when_warehouse_exhausted(monkeypatch):
+    # Advanced Components needs 8, Capital Components needs 3, warehouse only has 5
+    # (covers Advanced Components' larger shortfall in full) - the leftover 3 for
+    # Capital Components should come from Equipment's surplus (stock beyond its
+    # own demand), not go unfulfilled the way it used to before GitHub issue #4's
+    # "also try surplus locations" follow-up.
+    cfg = ProductionConfig(distribution_source_location_id=2000)
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {
+        "Advanced Components": 1001, "Capital Components": 1002, "Equipment": 1003,
+    })
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (type_id + 100, 1, 1.0)))
+    monkeypatch.setattr(engine, "_direct_material_mult", lambda *a, **k: 1.0)
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [(2, 8.0)])
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+
+    def fake_stock(type_id, location_id):
+        return {1001: 0.0, 1002: 5.0, 1003: 20.0, 2000: 8.0}[location_id]
+    monkeypatch.setattr(storage, "esi_stock_at_location", fake_stock)
+
+    rows = engine.distribution_recommendations(
+        [_build_job(category="Advanced Components"), _build_job(category="Capital Components")], cfg)
+
+    warehouse_row = next(r for r in rows if r.from_location_id == 2000)
+    assert warehouse_row.to_category == "Advanced Components"
+    assert warehouse_row.quantity == 8.0
+    surplus_row = next(r for r in rows if r.from_location_id == 1003)
+    assert surplus_row.to_category == "Capital Components"
+    assert surplus_row.quantity == 3.0
+
+
+def test_distribution_recommendations_never_double_books_a_surplus_location(monkeypatch):
+    # Two categories (Advanced Components, Capital Components) are both short
+    # 10 of the same material with no warehouse configured. The only surplus
+    # location (Equipment) has just 12 spare - not enough for both shortfalls
+    # in full. Recomputing "surplus" independently per category (the bug an
+    # earlier attempt at this shipped with) would recommend pulling up to 10
+    # from Equipment for *each* category, 20 total, more than the 12 actually
+    # sitting there. The combined recommended quantity out of Equipment must
+    # never exceed its real surplus.
+    cfg = ProductionConfig(distribution_source_location_id=None, home_location_id=None)
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {
+        "Advanced Components": 1001, "Capital Components": 1002, "Equipment": 1003,
+    })
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (type_id + 100, 1, 1.0)))
+    monkeypatch.setattr(engine, "_direct_material_mult", lambda *a, **k: 1.0)
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [(2, 10.0)])
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+
+    def fake_stock(type_id, location_id):
+        return {1001: 0.0, 1002: 0.0, 1003: 12.0}[location_id]
+    monkeypatch.setattr(storage, "esi_stock_at_location", fake_stock)
+
+    rows = engine.distribution_recommendations(
+        [_build_job(category="Advanced Components"), _build_job(category="Capital Components")], cfg)
+
+    from_equipment = [r for r in rows if r.from_location_id == 1003]
+    assert sum(r.quantity for r in from_equipment) <= 12.0
 
 
 # ------------------------------------------------------------- invention_logistics

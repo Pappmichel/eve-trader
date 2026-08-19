@@ -50,10 +50,28 @@ ACTIVITY_REACTION = 11
 ACTIVITY_COPYING = 5
 ACTIVITY_INVENTION = 8
 
-# SDE category_id for the "Ship" category - the only category where packaged
-# (repackaged/cargo) volume commonly differs from flight volume; see
-# engine._haul_volume.
+# SDE category_id for the "Ship" category; see engine._haul_volume.
 SHIP_CATEGORY_ID = 6
+
+# SDE market_group_id for "Special Edition Ships" (sde_market_groups) - the
+# root of the market-group subtree covering promotional/gift/anniversary
+# ship variants (Guardian-Vexor, Council Diplomatic Shuttle, Miasmos Quafe
+# Editions, Gold/Silver Magnate, Opux/Victorieux Luxury Yacht, Freki, Utu,
+# ...). GitHub issue #7: these ships have real, *published* blueprint
+# entries in the SDE (so the existing published-blueprint filter at
+# storage.get_blueprint_for_product doesn't catch them) but were never
+# actually sold/obtainable through normal gameplay. Confirmed against a live
+# SDE sync (2026-08-19) that every ship named in the issue lives somewhere
+# under this market-group subtree, while Faction ships that should stay
+# visible (e.g. Raven/Megathron/Apocalypse Navy Issue) live in a sibling
+# subtree ("Navy Faction", market_group_id 1379) - not this one. See
+# engine._scan_ship_margins, which walks sde_market_groups' parent_group_id
+# edges to build the full excluded set rather than hardcoding a type_id/name
+# list (the two approaches an earlier, reverted attempt at this issue tried
+# and which both proved incomplete/unsafe - a fixed type_id list misses any
+# ship CCP adds later, and a name-keyword list like "issue"/"special" risks
+# excluding real buildable ships that happen to share those words).
+SPECIAL_EDITION_SHIPS_MARKET_GROUP_ID = 1612
 
 # SDE metaGroupID (Fuzzwork invMetaTypes.csv, see production/sde.py/storage.
 # get_sde_type) - used by engine.classify_activity to label a non-invented
