@@ -23,10 +23,10 @@ def _wipe():
     yield
 
 
-def test_do_add_user_resolves_name_via_esi_and_creates_dedicated_tenant(monkeypatch):
-    monkeypatch.setattr(ESIClient, "character_public_info", lambda self, cid: {"name": "Some Pilot"})
+def test_do_add_user_resolves_id_via_esi_search_and_creates_dedicated_tenant(monkeypatch):
+    monkeypatch.setattr(ESIClient, "character_search", lambda self, name: 42 if name == "Some Pilot" else None)
 
-    result = admin.do_add_user(42)
+    result = admin.do_add_user("Some Pilot")
 
     assert result["character_id"] == 42
     assert result["character_name"] == "Some Pilot"
@@ -37,35 +37,47 @@ def test_do_add_user_resolves_name_via_esi_and_creates_dedicated_tenant(monkeypa
     assert tenants[result["tenant_id"]]["name"] == "Some Pilot"
 
 
-def test_do_add_user_never_reuses_an_existing_tenant(monkeypatch):
-    monkeypatch.setattr(ESIClient, "character_public_info", lambda self, cid: {"name": f"Pilot {cid}"})
+def test_do_add_user_strips_whitespace_from_name():
+    with pytest.raises(ActionError, match="empty"):
+        admin.do_add_user("   ")
 
-    first = admin.do_add_user(42)
-    second = admin.do_add_user(43)
+
+def test_do_add_user_rejects_a_name_esi_cant_resolve(monkeypatch):
+    monkeypatch.setattr(ESIClient, "character_search", lambda self, name: None)
+
+    with pytest.raises(ActionError, match="No character found named"):
+        admin.do_add_user("Nobody Real")
+
+
+def test_do_add_user_never_reuses_an_existing_tenant(monkeypatch):
+    monkeypatch.setattr(ESIClient, "character_search", lambda self, name: {"Pilot A": 42, "Pilot B": 43}[name])
+
+    first = admin.do_add_user("Pilot A")
+    second = admin.do_add_user("Pilot B")
 
     assert first["tenant_id"] != second["tenant_id"]
 
 
 def test_do_add_user_wraps_esi_failure_as_action_error(monkeypatch):
-    def _raise(self, cid):
+    def _raise(self, name):
         raise ESIError("ESI down")
-    monkeypatch.setattr(ESIClient, "character_public_info", _raise)
+    monkeypatch.setattr(ESIClient, "character_search", _raise)
 
     with pytest.raises(ActionError, match="ESI down"):
-        admin.do_add_user(42)
+        admin.do_add_user("Some Pilot")
 
 
 def test_tenant_registry_entries_tenant_id_is_unique_at_db_level(monkeypatch):
-    monkeypatch.setattr(ESIClient, "character_public_info", lambda self, cid: {"name": "Some Pilot"})
-    result = admin.do_add_user(42)
+    monkeypatch.setattr(ESIClient, "character_search", lambda self, name: 42)
+    result = admin.do_add_user("Some Pilot")
 
     with pytest.raises(psycopg.errors.UniqueViolation):
         storage.add_tenant_registry_entry(result["tenant_id"], 43, character_name="Someone Else")
 
 
 def test_do_remove_user_clears_registry_and_grants(monkeypatch):
-    monkeypatch.setattr(ESIClient, "character_public_info", lambda self, cid: {"name": "Some Pilot"})
-    result = admin.do_add_user(42)
+    monkeypatch.setattr(ESIClient, "character_search", lambda self, name: 42)
+    result = admin.do_add_user("Some Pilot")
     tenant_id = result["tenant_id"]
     storage.set_tool_grant(42, "production", tenant_id)
 
@@ -80,8 +92,8 @@ def test_do_remove_user_on_unknown_character_is_a_no_op():
 
 
 def test_do_set_tool_grants_replaces_not_merges(monkeypatch):
-    monkeypatch.setattr(ESIClient, "character_public_info", lambda self, cid: {"name": "Some Pilot"})
-    result = admin.do_add_user(42)
+    monkeypatch.setattr(ESIClient, "character_search", lambda self, name: 42)
+    result = admin.do_add_user("Some Pilot")
     storage.set_tool_grant(42, "trading", result["tenant_id"])
 
     admin.do_set_tool_grants(42, ["production", "admin"])
@@ -90,8 +102,8 @@ def test_do_set_tool_grants_replaces_not_merges(monkeypatch):
 
 
 def test_do_set_tool_grants_rejects_unknown_tool_key(monkeypatch):
-    monkeypatch.setattr(ESIClient, "character_public_info", lambda self, cid: {"name": "Some Pilot"})
-    admin.do_add_user(42)
+    monkeypatch.setattr(ESIClient, "character_search", lambda self, name: 42)
+    admin.do_add_user("Some Pilot")
 
     with pytest.raises(ActionError, match="Unknown tool_key"):
         admin.do_set_tool_grants(42, ["not-a-real-tool"])

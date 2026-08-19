@@ -34,7 +34,7 @@ def list_users():
 
 
 class AddUserRequest(BaseModel):
-    character_id: int
+    character_name: str
 
 
 @router.post("/users")
@@ -44,7 +44,7 @@ def add_user(req: AddUserRequest):
     # include tenant_name/tool_keys (a freshly-added user has neither
     # resolved nor granted yet) - GET /users is what returns full AdminUser
     # rows.
-    return _wrap(admin.do_add_user, character_id=req.character_id)
+    return _wrap(admin.do_add_user, character_name=req.character_name)
 
 
 @router.delete("/users/{character_id}")
