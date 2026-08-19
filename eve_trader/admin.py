@@ -29,25 +29,29 @@ def do_list_users() -> list[dict]:
     return storage.list_users_with_grants()
 
 
-def do_add_user(character_id: int) -> dict:
-    """Registers `character_id` as a brand-new user - always creates a
-    fresh, dedicated tenant for them (named after their own resolved
-    character name) rather than assigning them into an existing tenant, so
-    two characters can never end up sharing one tenant's data (also backed
-    by a DB-level UNIQUE constraint on tenant_registry_entries.tenant_id,
-    see docs/admin_schema.sql - this is belt-and-suspenders, not the only
-    guarantee). Resolves the character's current name via ESI's public
-    character endpoint (no auth needed) so the Admin UI's user list has a
-    name to show immediately, without waiting for that character's own
-    first gate login (see auth.py's callback() gate branch, which refreshes
-    this same cached name on every future login)."""
+def do_add_user(character_name: str) -> dict:
+    """Registers a character as a brand-new user, looked up by name (exact,
+    case-insensitive match via ESI's /universe/ids/ search - character_id
+    isn't something an admin would have on hand, unlike the character's own
+    name) - always creates a fresh, dedicated tenant for them (named after
+    the admin-provided name; self-heals to ESI's own canonical casing the
+    first time this character actually logs in, see auth.py's callback()
+    gate branch) rather than assigning them into an existing tenant, so two
+    characters can never end up sharing one tenant's data (also backed by a
+    DB-level UNIQUE constraint on tenant_registry_entries.tenant_id, see
+    docs/admin_schema.sql - this is belt-and-suspenders, not the only
+    guarantee)."""
+    character_name = character_name.strip()
+    if not character_name:
+        raise ActionError("Character name can't be empty.")
+
     from .esi_client import ESIClient  # local import: avoids a hard dependency for callers that don't need it
     try:
-        character_name = ESIClient().character_public_info(character_id).get("name")
+        character_id = ESIClient().character_search(character_name)
     except ESIError as e:
-        raise ActionError(f"Could not resolve character {character_id} via ESI: {e}") from e
-    if not character_name:
-        raise ActionError(f"No character found for id {character_id}.")
+        raise ActionError(f"Could not resolve character '{character_name}' via ESI: {e}") from e
+    if character_id is None:
+        raise ActionError(f"No character found named '{character_name}'.")
 
     tenant_id = storage.create_tenant(character_name)
     storage.add_tenant_registry_entry(tenant_id, character_id, character_name=character_name)

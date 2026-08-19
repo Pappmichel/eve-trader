@@ -75,8 +75,8 @@ function UserToolCheckboxes({ user }: { user: AdminUser }) {
 
 function UsersSection() {
   const { data: users, isLoading } = useQuery({ queryKey: ['admin', 'users'], queryFn: adminApi.users })
-  const [characterId, setCharacterId] = useState('')
-  const addUser = useAction('Add User', () => adminApi.addUser(Number(characterId)),
+  const [characterName, setCharacterName] = useState('')
+  const addUser = useAction('Add User', () => adminApi.addUser(characterName),
     [['admin', 'users'], ['admin', 'tenants']])
   const removeUser = useAction('Remove User', adminApi.removeUser, [['admin', 'users']])
 
@@ -114,10 +114,10 @@ function UsersSection() {
         </Table>
       )}
       <Group>
-        <TextInput placeholder="Character ID" value={characterId}
-          onChange={(e) => setCharacterId(e.currentTarget.value)} w={140} />
-        <Button size="xs" disabled={!characterId.trim()} loading={addUser.isPending}
-          onClick={() => { addUser.mutate(); setCharacterId('') }}>
+        <TextInput placeholder="Character name" value={characterName}
+          onChange={(e) => setCharacterName(e.currentTarget.value)} w={220} />
+        <Button size="xs" disabled={!characterName.trim()} loading={addUser.isPending}
+          onClick={() => { addUser.mutate(); setCharacterName('') }}>
           Add User
         </Button>
       </Group>

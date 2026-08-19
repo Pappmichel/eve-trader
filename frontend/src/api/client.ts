@@ -310,9 +310,9 @@ export const doctrineApi = {
 export const adminApi = {
   tenants: () => get<T.AdminTenant[]>('/api/admin/tenants'),
   users: () => get<T.AdminUser[]>('/api/admin/users'),
-  addUser: (characterId: number) =>
+  addUser: (characterName: string) =>
     post<{ character_id: number; character_name: string; tenant_id: string }>(
-      '/api/admin/users', { character_id: characterId },
+      '/api/admin/users', { character_name: characterName },
     ),
   removeUser: (characterId: number) => del(`/api/admin/users/${characterId}`),
   setToolGrants: (characterId: number, toolKeys: string[]) =>

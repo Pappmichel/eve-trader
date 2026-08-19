@@ -43,24 +43,24 @@ def test_add_user_passes_body_fields_to_action(monkeypatch):
 
     def _capture(**kwargs):
         captured.update(kwargs)
-        return {"character_id": kwargs["character_id"], "character_name": "Alice", "tenant_id": "t1"}
+        return {"character_id": 42, "character_name": kwargs["character_name"], "tenant_id": "t1"}
     monkeypatch.setattr(admin, "do_add_user", _capture)
 
-    resp = client.post("/api/admin/users", json={"character_id": 42})
+    resp = client.post("/api/admin/users", json={"character_name": "Some Pilot"})
 
     assert resp.status_code == 200
-    assert captured == {"character_id": 42}
+    assert captured == {"character_name": "Some Pilot"}
 
 
 def test_add_user_action_error_maps_to_400(monkeypatch):
     def _raise(*args, **kwargs):
-        raise ActionError("Could not resolve character 42 via ESI: ESI down")
+        raise ActionError("No character found named 'Nobody Real'.")
     monkeypatch.setattr(admin, "do_add_user", _raise)
 
-    resp = client.post("/api/admin/users", json={"character_id": 42})
+    resp = client.post("/api/admin/users", json={"character_name": "Nobody Real"})
 
     assert resp.status_code == 400
-    assert resp.json() == {"detail": "Could not resolve character 42 via ESI: ESI down"}
+    assert resp.json() == {"detail": "No character found named 'Nobody Real'."}
 
 
 def test_remove_user_passes_character_id(monkeypatch):
