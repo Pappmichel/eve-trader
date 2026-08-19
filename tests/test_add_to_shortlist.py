@@ -42,8 +42,8 @@ def test_do_recategorize_shortlist_fixes_stale_booster_labels(monkeypatch):
     monkeypatch.setattr(storage, "load_shortlist", lambda: existing)
     monkeypatch.setattr(storage, "load_sde_category_names", lambda: {20: "Implant", 16: "Skill"})
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: {44: 20, 45: 16}[type_id])
-    # group_id 746 = Booster for item 44 (currently mislabeled "Implant")
-    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, {44: 746, 45: 273}[type_id], "x", 0.1, 1, 1, 0, None))
+    # group_id 303 = Booster for item 44 (currently mislabeled "Implant")
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, {44: 303, 45: 273}[type_id], "x", 0.1, 1, 1, 0, None))
 
     captured = {}
     monkeypatch.setattr(storage, "upsert_shortlist", lambda items: captured.setdefault("items", items))

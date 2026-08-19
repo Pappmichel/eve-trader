@@ -37,7 +37,7 @@ def test_guess_category_uses_real_sde_category_name_when_available():
 
 def test_guess_category_splits_boosters_out_of_implant():
     # Boosters/Drugs share category_id 20 "Implant" with real cyberimplants
-    # in the SDE - only group_id (746 "Booster") tells them apart. Confirmed
+    # in the SDE - only group_id (303 "Booster") tells them apart. Confirmed
     # wrong labeling (both showing as "Implant") by the user.
     category_names = {IMPLANT_CATEGORY_ID: "Implant"}
     assert guess_category("Pilot's Services > Boosters", "Blue Pill", 0.1,
