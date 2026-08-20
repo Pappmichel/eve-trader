@@ -522,6 +522,22 @@ export interface DoctrineContractWithDeviations extends DoctrineContractRow {
   deviations: DoctrineDeviation[]
 }
 
+export interface ContractHistoryRow {
+  contract_id: number
+  source_role: string
+  fitting_id: string | null
+  fitting_name: string | null
+  hull_type_id: number | null
+  hull_name: string | null
+  title: string | null
+  price: number | null
+  acceptor_id: number | null
+  acceptor_name: string | null
+  date_issued: string | null
+  date_completed: string | null
+  source_character_name: string | null
+}
+
 export interface StockpileRow {
   fitting_id: string
   fitting_name: string

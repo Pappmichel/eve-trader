@@ -1928,6 +1928,42 @@ def list_doctrine_contracts(fitting_id: Optional[str] = None, status: Optional[s
         return conn.execute(query, params).fetchall()
 
 
+_CONTRACT_HISTORY_COLUMNS = ("contract_id", "source_role", "fitting_id", "fitting_name", "hull_type_id",
+                             "title", "price", "acceptor_id", "acceptor_name", "date_issued", "date_completed")
+
+
+def upsert_doctrine_contract_history(rows: list[tuple]) -> None:
+    """GitHub issue #19 - rows matching _CONTRACT_HISTORY_COLUMNS. Upserted
+    (never wholesale-replaced, unlike doctrine_contracts' own snapshot) -
+    this table is permanent, append-only history: a contract only reaches a
+    FINISHED_CONTRACT_STATUSES status once, but ON CONFLICT still updates
+    rather than doing nothing, since a later sync might resolve an
+    acceptor_name that failed to resolve (e.g. a transient ESI error) the
+    first time it was recorded."""
+    if not rows:
+        return
+    set_clause = ", ".join(f"{c}=excluded.{c}" for c in _CONTRACT_HISTORY_COLUMNS if c != "contract_id")
+    with connect() as conn:
+        conn.executemany(
+            f"INSERT INTO doctrine_contract_history ({', '.join(_CONTRACT_HISTORY_COLUMNS)}) "
+            f"VALUES ({', '.join('?' for _ in _CONTRACT_HISTORY_COLUMNS)}) "
+            f"ON CONFLICT(tenant_id, contract_id) DO UPDATE SET {set_clause}",
+            rows,
+        )
+
+
+def load_doctrine_contract_history() -> list[tuple]:
+    """Most-recently-completed first; a history row with no date_completed
+    at all (shouldn't normally happen - ESI sets it the moment a contract
+    finishes - but the field is nullable in ESI's own model) sorts last
+    rather than first."""
+    with connect() as conn:
+        return conn.execute(
+            f"SELECT {', '.join(_CONTRACT_HISTORY_COLUMNS)} FROM doctrine_contract_history "
+            "ORDER BY date_completed DESC NULLS LAST"
+        ).fetchall()
+
+
 def resolve_sde_type_by_name(name: str) -> Optional[tuple]:
     """Exact, case-insensitive type-name lookup for doctrine/parser.py's
     injected name resolver - (type_id, group_id, category_id, meta_group_id,

@@ -113,6 +113,32 @@ class ContractRow:
 
 
 @dataclass
+class ContractHistoryRow:
+    """GitHub issue #19 - a permanent record of a finished (accepted) Doctrine
+    contract sale, independent of doctrine_contracts' own active/wholesale-
+    replaced snapshot (see storage.upsert_doctrine_contract_history's own
+    docstring for why). fitting_name/hull_type_id are a denormalized
+    snapshot captured when the contract finished, not a live join - stays
+    meaningful even if that fitting is later edited/deactivated/deleted.
+    hull_name is resolved at read time (SDE type names are stable reference
+    data, not something a tenant edits/deletes the way their own fittings
+    are - see actions.do_contract_history)."""
+    contract_id: int
+    source_role: str
+    fitting_id: Optional[str] = None
+    fitting_name: Optional[str] = None
+    hull_type_id: Optional[int] = None
+    hull_name: Optional[str] = None
+    title: Optional[str] = None
+    price: Optional[float] = None
+    acceptor_id: Optional[int] = None
+    acceptor_name: Optional[str] = None
+    date_issued: Optional[str] = None
+    date_completed: Optional[str] = None
+    source_character_name: Optional[str] = None
+
+
+@dataclass
 class ContractItemRow:
     contract_id: int
     record_id: int
