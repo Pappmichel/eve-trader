@@ -290,9 +290,19 @@ CREATE TABLE IF NOT EXISTS character_assets (
     location_flag TEXT,
     quantity INTEGER,
     is_blueprint_copy INTEGER,
-    owner_name TEXT
+    owner_name TEXT,
+    resolved_location_id BIGINT
 );
-CREATE INDEX IF NOT EXISTS idx_character_assets_type_location ON character_assets (type_id, location_id);
+-- GitHub issue #4/#20: location_id is the item's *immediate* parent (a ship,
+-- a container, a corp Office, ...), which can be several containers deep -
+-- resolved_location_id is that chain walked all the way up to the outermost
+-- station/structure (see storage.replace_assets), computed once at sync
+-- time so every query can filter on it directly instead of re-walking the
+-- chain (or missing anything past one level, the original bug) per query.
+ALTER TABLE character_assets ADD COLUMN IF NOT EXISTS resolved_location_id BIGINT;
+DROP INDEX IF EXISTS idx_character_assets_type_location;
+CREATE INDEX IF NOT EXISTS idx_character_assets_type_resolved_location
+    ON character_assets (type_id, resolved_location_id);
 ALTER TABLE character_assets ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON character_assets;
 CREATE POLICY tenant_isolation ON character_assets
@@ -307,9 +317,12 @@ CREATE TABLE IF NOT EXISTS corp_assets (
     location_flag TEXT,
     quantity INTEGER,
     is_blueprint_copy INTEGER,
-    owner_name TEXT
+    owner_name TEXT,
+    resolved_location_id BIGINT
 );
-CREATE INDEX IF NOT EXISTS idx_corp_assets_type_location ON corp_assets (type_id, location_id);
+ALTER TABLE corp_assets ADD COLUMN IF NOT EXISTS resolved_location_id BIGINT;
+DROP INDEX IF EXISTS idx_corp_assets_type_location;
+CREATE INDEX IF NOT EXISTS idx_corp_assets_type_resolved_location ON corp_assets (type_id, resolved_location_id);
 ALTER TABLE corp_assets ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON corp_assets;
 CREATE POLICY tenant_isolation ON corp_assets
@@ -382,9 +395,18 @@ CREATE TABLE IF NOT EXISTS character_blueprints (
     quantity INTEGER,
     material_efficiency INTEGER,
     time_efficiency INTEGER,
-    runs INTEGER
+    runs INTEGER,
+    resolved_location_id BIGINT
 );
+-- Same resolved_location_id idea as character_assets above (GitHub issue
+-- #20: a BPC sitting inside a container read as "missing" since only its
+-- container's own item_id, not the outer station/structure, was stored) -
+-- resolved against character_assets/corp_assets by storage.replace_blueprints
+-- (a blueprint's immediate container is always a regular asset).
+ALTER TABLE character_blueprints ADD COLUMN IF NOT EXISTS resolved_location_id BIGINT;
 CREATE INDEX IF NOT EXISTS idx_character_blueprints_type_runs ON character_blueprints (type_id, runs);
+CREATE INDEX IF NOT EXISTS idx_character_blueprints_type_resolved_location
+    ON character_blueprints (type_id, resolved_location_id);
 ALTER TABLE character_blueprints ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON character_blueprints;
 CREATE POLICY tenant_isolation ON character_blueprints
@@ -400,9 +422,13 @@ CREATE TABLE IF NOT EXISTS corp_blueprints (
     quantity INTEGER,
     material_efficiency INTEGER,
     time_efficiency INTEGER,
-    runs INTEGER
+    runs INTEGER,
+    resolved_location_id BIGINT
 );
+ALTER TABLE corp_blueprints ADD COLUMN IF NOT EXISTS resolved_location_id BIGINT;
 CREATE INDEX IF NOT EXISTS idx_corp_blueprints_type_runs ON corp_blueprints (type_id, runs);
+CREATE INDEX IF NOT EXISTS idx_corp_blueprints_type_resolved_location
+    ON corp_blueprints (type_id, resolved_location_id);
 ALTER TABLE corp_blueprints ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON corp_blueprints;
 CREATE POLICY tenant_isolation ON corp_blueprints

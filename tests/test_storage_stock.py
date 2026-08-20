@@ -52,6 +52,26 @@ def test_esi_stock_at_location_still_unwraps_corp_office(tenant):
     assert storage.esi_stock_at_location(TYPE_ID, LOCATION_ID) == 300
 
 
+def test_esi_stock_at_location_sees_stock_inside_a_container_in_corp_hangar(tenant):
+    # GitHub issue #4: esi_stock_at_location used to resolve nesting only one
+    # level deep (a hardcoded Office special-case) - a Station Container
+    # sitting inside the corp Office (two hops: container -> Office ->
+    # structure) read as completely invisible stock. Confirmed real report:
+    # ~300M tritanium sitting in a container at C-J never showed up as
+    # available to Distribution, which kept recommending pulling it from
+    # other production facilities instead of the (actually well-stocked)
+    # warehouse.
+    office_item_id = 900
+    container_item_id = 901
+    storage.replace_assets("corp_assets", [
+        (office_item_id, storage.OFFICE_TYPE_ID, LOCATION_ID, "OfficeFolder", 1, 0, "My Corp (corp)"),
+        (container_item_id, 649, office_item_id, "CorpSAG1", 1, 0, "My Corp (corp)"),  # a Station Container
+        (2, TYPE_ID, container_item_id, "Unlocked", 300000000, 0, "My Corp (corp)"),  # tritanium inside it
+    ])
+
+    assert storage.esi_stock_at_location(TYPE_ID, LOCATION_ID) == 300000000
+
+
 def test_search_item_stock_locations_groups_by_location_and_owner(tenant):
     other_location = 1000000000002
     storage.replace_assets("character_assets", [
