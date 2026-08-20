@@ -87,6 +87,8 @@ const post = <TResp>(path: string, body?: unknown) =>
   request<TResp>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined })
 const put = <TResp>(path: string, body?: unknown) =>
   request<TResp>(path, { method: 'PUT', body: body ? JSON.stringify(body) : undefined })
+const patch = <TResp>(path: string, body?: unknown) =>
+  request<TResp>(path, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined })
 const del = <TResp>(path: string) => request<TResp>(path, { method: 'DELETE' })
 
 // ------------------------------------------------------------------- auth
@@ -208,6 +210,11 @@ export const productionApi = {
     jita_market_stock?: number | null
   }) => post<T.StockTarget>('/api/production/stock-targets', req),
   removeStockTarget: (typeId: number) => del(`/api/production/stock-targets/${typeId}`),
+  updateStockTarget: (typeId: number, updates: {
+    backup_stock?: number | null
+    home_market_stock?: number | null
+    jita_market_stock?: number | null
+  }) => patch<T.StockTarget>(`/api/production/stock-targets/${typeId}`, updates),
   setManualStock: (typeId: number, count: number) =>
     post('/api/production/manual-stock', { type_id: typeId, count }),
   setManualBuildBuy: (typeId: number, decision: string) =>

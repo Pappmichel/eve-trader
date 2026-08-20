@@ -301,6 +301,17 @@ def add_stock_target(req: AddStockTargetRequest):
     return _wrap(actions.do_add_stock_target, **req.model_dump())
 
 
+class UpdateStockTargetRequest(BaseModel):
+    backup_stock: Optional[float] = None
+    home_market_stock: Optional[float] = None
+    jita_market_stock: Optional[float] = None
+
+
+@router.patch("/stock-targets/{type_id}")
+def update_stock_target(type_id: int, req: UpdateStockTargetRequest):
+    return _wrap(actions.do_update_stock_target, type_id=type_id, **req.model_dump())
+
+
 @router.delete("/stock-targets/{type_id}")
 def remove_stock_target(type_id: int):
     return _wrap(actions.do_remove_stock_target, type_id=type_id)

@@ -54,6 +54,19 @@ interface DataTableProps<T> {
   isLoading?: boolean
   tableId?: string
   exportFilename?: string
+  // Without this, tanstack-table's default row.id is the row's *index* in
+  // the current (sorted/filtered) data array - stable enough for read-only
+  // display, but not for a cell that owns its own editing state (a
+  // NumberInput's local useState) keyed only by React's rendering position:
+  // sorting/filtering can put a *different* underlying row at the same
+  // index across a re-render, and since the index-based id doesn't change,
+  // React reuses the same component instance/state instead of resetting it
+  // - the exact "stale value saved against the wrong item" bug class
+  // StockTargets.tsx's CurrentStockInput already hit once (see its own
+  // comment) at a different call site. Pass a real per-row identity
+  // (usually `(row) => String(row.type_id)`) for any table with editable
+  // cells.
+  getRowId?: (row: T) => string
 }
 
 const SKELETON_ROWS = 8
@@ -94,6 +107,7 @@ export function DataTable<T>({
   isLoading = false,
   tableId,
   exportFilename = 'export',
+  getRowId,
 }: DataTableProps<T>) {
   const [sorting, setSorting] = useState<SortingState>([])
   const [globalFilter, setGlobalFilter] = useState('')
@@ -124,6 +138,7 @@ export function DataTable<T>({
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
+    getRowId: getRowId ? (row) => getRowId(row) : undefined,
     defaultColumn: { size: 140, minSize: 60 },
   })
 
