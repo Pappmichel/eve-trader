@@ -143,7 +143,11 @@ from .models import (
 
 MAX_DEPTH = 10
 
-CostIndices = dict[str, dict[str, float]]  # {"component"|"manufacturing": {"manufacturing"|"reaction": rate}}
+CostIndices = dict[str, dict[str, float]]
+# {"component"|"manufacturing": {"manufacturing"|"reaction": rate}} - plus,
+# per job_category actually configured with a resolved-system structure in
+# Logistik (GitHub issue #12), a "category:<name>" entry of the same shape -
+# see _job_cost_rate/_PlanContext.
 
 
 def _material_qty(base_qty: float, material_mult: float, runs: float) -> float:
@@ -318,12 +322,39 @@ def _job_cost_rate(activity: str, type_id: int, cfg: ProductionConfig, cost_indi
     bug: every job/build cost estimate understated the true ISK fee by the
     whole facility-tax + surcharge amount, at least ~4.25% of EIV at the NPC
     defaults). SCC surcharge is a fixed CCP-wide rate (not configurable, unlike
-    facility_tax_rate which a player structure's owner can change)."""
+    facility_tax_rate which a player structure's owner can change).
+
+    GitHub issue #12: prefers the cost index of the system `type_id`'s own
+    job_category is actually configured to build in (Logistik's per-category
+    structure assignment, resolved to a system by storage.
+    load_category_system_ids and stashed into cost_indices under a
+    "category:<name>" key by _PlanContext - see CostIndices' own comment)
+    over the flat component/manufacturing 2-way split, since a real account
+    can easily have build categories split across more than two systems.
+    Falls back to that flat split when the category has no assigned
+    structure, or its system hasn't been resolved yet - so this is a
+    strict refinement, never a regression, for anyone not using Logistik at
+    all. The job_category(type_id) lookup itself (re-derives classify_
+    activity - a real storage/tenant-scoped call, unlike everything else in
+    this function) is only made at all when cost_indices actually carries at
+    least one "category:" entry - the overwhelming majority of call sites
+    (every _activity_mods call whose job_cost_rate is immediately discarded,
+    material_mult/time_mult-only formula tests included) pass a plain
+    component/manufacturing dict or {} and must stay exactly as cheap and
+    storage-independent as before."""
     structure_type, rig_tier = _structure_rig(_structure_profile(activity, type_id), cfg)
     cost_mult, _, _ = structure_rig_multiplier(structure_type, rig_tier)
-    system_profile = "component" if (activity == "Reaction" or _is_component(type_id)) else "manufacturing"
     esi_activity = "reaction" if activity == "Reaction" else "manufacturing"
-    index = cost_indices.get(system_profile, {}).get(esi_activity)
+
+    index = None
+    if any(key.startswith("category:") for key in cost_indices):
+        category = job_category(type_id)
+        if category is not None:
+            index = cost_indices.get(f"category:{category}", {}).get(esi_activity)
+    if index is None:
+        system_profile = "component" if (activity == "Reaction" or _is_component(type_id)) else "manufacturing"
+        index = cost_indices.get(system_profile, {}).get(esi_activity)
+
     index_rate = ACTIVITY_MODS[activity].job_cost_rate if index is None else index
     return index_rate * cost_mult + cfg.facility_tax_rate + SCC_SURCHARGE_RATE
 
@@ -1017,6 +1048,18 @@ class _PlanContext:
             "component": pricing.system_cost_indices_for(esi_client, cfg.component_system_id),
             "manufacturing": pricing.system_cost_indices_for(esi_client, cfg.manufacturing_system_id),
         }
+        # GitHub issue #12: also fetch cost indices for whichever solar
+        # systems the user's own Logistik (per-category structure)
+        # assignments actually resolve to - _job_cost_rate prefers these
+        # "category:<name>" entries over the flat component/manufacturing
+        # split above whenever the specific category being built has one.
+        # One ESI call per *distinct* system (categories sharing a system
+        # share the fetch, via system_indices_by_id's cache-by-system-id).
+        system_indices_by_id: dict[int, dict[str, float]] = {}
+        for category, system_id in storage.load_category_system_ids().items():
+            if system_id not in system_indices_by_id:
+                system_indices_by_id[system_id] = pricing.system_cost_indices_for(esi_client, system_id)
+            self.cost_indices[f"category:{category}"] = system_indices_by_id[system_id]
         try:
             self.adjusted_prices = esi_client.get_adjusted_prices()
         except Exception:  # noqa: BLE001 - best-effort; falls back to 0 (job_cost=0), not a guess
