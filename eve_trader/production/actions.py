@@ -246,7 +246,8 @@ def do_remove_category_location_option(category: str, location_id: int) -> dict:
 
 
 def do_resolve_structure_name(location_id: int, force: bool = False) -> dict:
-    """Resolves `location_id` to its structure name via ESI, cached
+    """Resolves `location_id` to its structure name (and solar_system_id,
+    GitHub issue #12 - see storage.load_category_system_ids) via ESI, cached
     indefinitely (storage.get/set_cached_structure_name) unless `force`.
 
     Tries two paths, in order:
@@ -278,6 +279,7 @@ def do_resolve_structure_name(location_id: int, force: bool = False) -> dict:
 
     client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))
     name = None
+    solar_system_id = None
 
     tried_corporations: set[int] = set()
     for role, character_id, character_name in characters:
@@ -295,6 +297,7 @@ def do_resolve_structure_name(location_id: int, force: bool = False) -> dict:
         for structure in structures:
             if structure.get("structure_id") == location_id:
                 name = structure.get("name")
+                solar_system_id = structure.get("solar_system_id")
                 break
         if name:
             break
@@ -302,12 +305,14 @@ def do_resolve_structure_name(location_id: int, force: bool = False) -> dict:
     if name is None:
         for role, character_id, character_name in characters:
             try:
-                name = client.get_structure_name(location_id, auth_role=role)
+                info = client.get_structure_name(location_id, auth_role=role)
+                name = info.get("name")
+                solar_system_id = info.get("solar_system_id")
                 break
             except ESIError:
                 continue  # this character can't see it - try the next one
 
-    storage.set_cached_structure_name(location_id, name)
+    storage.set_cached_structure_name(location_id, name, solar_system_id)
     return {"location_id": location_id, "name": name, "cached": False}
 
 

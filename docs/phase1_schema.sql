@@ -257,8 +257,14 @@ CREATE TABLE IF NOT EXISTS structure_names (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
     location_id BIGINT NOT NULL,
     name TEXT,
+    solar_system_id INTEGER,
     PRIMARY KEY (tenant_id, location_id)
 );
+-- GitHub issue #12: lets production/engine.py's cost-index calculation look
+-- up the actual system a Logistik category's assigned structure sits in,
+-- instead of always using the flat component/manufacturing 2-way split -
+-- see storage.load_category_system_ids.
+ALTER TABLE structure_names ADD COLUMN IF NOT EXISTS solar_system_id INTEGER;
 ALTER TABLE structure_names ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON structure_names;
 CREATE POLICY tenant_isolation ON structure_names
