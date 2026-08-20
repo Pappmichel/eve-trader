@@ -1073,13 +1073,54 @@ def get_cached_structure_names(location_ids: list[int]) -> dict[int, tuple[bool,
     return True, row[0]
 
 
-def set_cached_structure_name(location_id: int, name: Optional[str]) -> None:
+def set_cached_structure_name(location_id: int, name: Optional[str], solar_system_id: Optional[int] = None) -> None:
+    """solar_system_id (GitHub issue #12) is best-effort - do_resolve_
+    structure_name passes it whenever the ESI response it just resolved
+    `name` from happened to include one; a resolution failure (name=None)
+    never has one. Only ever overwritten with a non-None value (COALESCE)
+    so a later best-effort call with solar_system_id=None (or a caller that
+    predates this parameter) can't blow away a value an earlier call already
+    captured."""
     with connect() as conn:
         conn.execute(
-            "INSERT INTO structure_names (location_id, name) VALUES (?, ?) "
-            "ON CONFLICT(tenant_id, location_id) DO UPDATE SET name=excluded.name",
-            (location_id, name),
+            "INSERT INTO structure_names (location_id, name, solar_system_id) VALUES (?, ?, ?) "
+            "ON CONFLICT(tenant_id, location_id) DO UPDATE SET name=excluded.name, "
+            "solar_system_id=COALESCE(excluded.solar_system_id, structure_names.solar_system_id)",
+            (location_id, name, solar_system_id),
         )
+
+
+def get_structure_system_id(location_id: int) -> Optional[int]:
+    """solar_system_id cached for `location_id` (see set_cached_structure_name),
+    None if never resolved with one. Used by production/engine.py's
+    _job_cost_rate (GitHub issue #12) via load_category_system_ids below,
+    not called per-item directly - system security likewise stays on
+    get_system_security's own separate sde_solar_systems lookup, unrelated
+    to this cache."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT solar_system_id FROM structure_names WHERE location_id = ?", (location_id,)
+        ).fetchone()
+    return row[0] if row else None
+
+
+def load_category_system_ids() -> dict[str, int]:
+    """{job_category: solar_system_id} for every job_category_locations entry
+    whose structure's solar_system_id has actually been resolved (see
+    set_cached_structure_name) - categories with no assigned structure, or
+    one whose name/system hasn't been resolved yet, are simply absent (the
+    caller, production/engine.py's _PlanContext, falls back to the existing
+    flat component/manufacturing system split for those). GitHub issue #12:
+    "the cost index should be calculated by the system where the specific
+    item is being built... can use the systems that are specified in
+    logistics" - this is that lookup, one query instead of N."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT jcl.category, sn.solar_system_id FROM job_category_locations jcl "
+            "JOIN structure_names sn ON sn.location_id = jcl.location_id "
+            "WHERE sn.solar_system_id IS NOT NULL"
+        ).fetchall()
+    return {category: system_id for category, system_id in rows}
 
 
 def _resolve_locations(rows: list[tuple], location_index: int = 2) -> list[int]:

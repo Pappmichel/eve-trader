@@ -420,6 +420,96 @@ def test_job_cost_rate_includes_facility_tax_and_scc_surcharge(monkeypatch, tena
     assert job_cost_rate > ACTIVITY_MODS["Tech I"].job_cost_rate
 
 
+def test_job_cost_rate_prefers_category_system_index_over_flat_split(monkeypatch):
+    # GitHub issue #12: a category-specific system index (from Logistik's
+    # own per-category structure assignment) must win over the flat
+    # component/manufacturing 2-way split when both are present.
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (500, 11, 1.0))  # activity_id 11 = Reaction
+    cfg = ProductionConfig()
+    cost_indices = {
+        "component": {"reaction": 0.05},  # flat split - must be ignored, not used
+        "category:Reactions": {"reaction": 0.20},
+    }
+
+    _, _, job_cost_rate = _activity_mods("Reaction", type_id=1, cfg=cfg, cost_indices=cost_indices, blueprint_id=2)
+
+    expected = 0.20 * 1.0 + cfg.facility_tax_rate + SCC_SURCHARGE_RATE  # cost_mult=1.0, default "Citadel" structure
+    assert round(job_cost_rate, 6) == round(expected, 6)
+
+
+def test_job_cost_rate_falls_back_to_flat_split_when_category_has_no_index(monkeypatch):
+    # cost_indices carries *some* "category:" entry (so the lookup fires),
+    # but not one for *this* item's own category - must still fall back to
+    # the flat component/manufacturing split, not silently drop to the
+    # ACTIVITY_MODS default while a perfectly good flat index sits right there.
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (500, 11, 1.0))
+    cfg = ProductionConfig()
+    cost_indices = {
+        "component": {"reaction": 0.05},
+        "category:Capital Components": {"manufacturing": 0.30},  # a different category
+    }
+
+    _, _, job_cost_rate = _activity_mods("Reaction", type_id=1, cfg=cfg, cost_indices=cost_indices, blueprint_id=2)
+
+    expected = 0.05 * 1.0 + cfg.facility_tax_rate + SCC_SURCHARGE_RATE
+    assert round(job_cost_rate, 6) == round(expected, 6)
+
+
+def test_job_cost_rate_skips_job_category_lookup_when_no_category_entries_present(monkeypatch):
+    # Efficiency/tenant-safety guard: job_category(type_id) re-derives
+    # classify_activity, a real storage-backed call - must not even be
+    # attempted when cost_indices has no "category:" entries at all (the
+    # overwhelming majority of call sites, including every test in this file
+    # that passes cost_indices={} with no tenant context set up).
+    def _boom(type_id):
+        raise AssertionError("must not call storage.get_blueprint_for_product when no category entries exist")
+    monkeypatch.setattr(storage, "get_blueprint_for_product", _boom)
+    cfg = ProductionConfig()
+
+    material_mult, time_mult, job_cost_rate = _activity_mods(
+        "Reaction", type_id=1, cfg=cfg, cost_indices={"component": {"reaction": 0.05}}, blueprint_id=2)
+
+    expected = 0.05 * 1.0 + cfg.facility_tax_rate + SCC_SURCHARGE_RATE
+    assert round(job_cost_rate, 6) == round(expected, 6)
+
+
+def test_plan_context_populates_category_cost_indices_sharing_fetches_by_system(monkeypatch):
+    # GitHub issue #12: _PlanContext.cost_indices gains one "category:<name>"
+    # entry per Logistik category with a resolved system - two categories
+    # sharing the same system must only trigger one ESI fetch for it.
+    from eve_trader import esi_client as esi_client_module
+    from eve_trader import goonmetrics_client as goonmetrics_client_module
+    from eve_trader.production import pricing as pricing_module
+
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
+    monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
+    monkeypatch.setattr(storage, "load_manual_build_buy", lambda: {})
+    monkeypatch.setattr(storage, "load_selected_decryptors", lambda: {})
+    monkeypatch.setattr(storage, "load_category_system_ids",
+                         lambda: {"Reactions": 30000142, "Capital Components": 30000142, "Equipment": 30000144})
+    monkeypatch.setattr(pricing_module, "home_prices", lambda gm_client, cfg: {})
+    monkeypatch.setattr(pricing_module, "jita_prices", lambda gm_client: {})
+    monkeypatch.setattr(goonmetrics_client_module.GoonmetricsClient, "__init__", lambda self: None)
+    monkeypatch.setattr(esi_client_module.ESIClient, "__init__", lambda self: None)
+    monkeypatch.setattr(esi_client_module.ESIClient, "get_adjusted_prices", lambda self: {})
+
+    fetch_calls = []
+    def fake_indices_for(client, system_id):
+        fetch_calls.append(system_id)
+        if system_id is None:
+            return {}
+        return {"manufacturing": 0.10 * system_id / 30000142, "reaction": 0.05}
+    monkeypatch.setattr(pricing_module, "system_cost_indices_for", fake_indices_for)
+
+    cfg = ProductionConfig(component_system_id=None, manufacturing_system_id=None)
+    ctx = engine._PlanContext(cfg)
+
+    real_system_fetches = sorted(s for s in fetch_calls if s is not None)
+    assert real_system_fetches == [30000142, 30000144]  # one fetch per distinct system, not per category
+    assert ctx.cost_indices["category:Reactions"] == ctx.cost_indices["category:Capital Components"]
+    assert ctx.cost_indices["category:Equipment"] != ctx.cost_indices["category:Reactions"]
+
+
 def test_reaction_te_rig_applies(monkeypatch):
     # Confirmed real bug: reactor Time Efficiency rigs are a real EVE item
     # (e.g. "Standup M-Set Composite Reactor Time Efficiency I/II") - this

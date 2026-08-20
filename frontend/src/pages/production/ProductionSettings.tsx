@@ -24,7 +24,24 @@ export default function ProductionSettings() {
     }
   }, [systemSettings])
 
-  const save = useAction('Save Settings', productionApi.updateSettings, [['production', 'settings']])
+  const save = useAction('Save Settings', async (updates: ProductionSettingsT) => {
+    const result = await productionApi.updateSettings(updates)
+    // Best-effort name resolution for the home structure (GitHub issue #21 -
+    // this was never resolved at all, so the Logistics tab's Distribution
+    // section showed a raw numeric ID forever whenever no separate
+    // distribution-source override was set, since home_location_id is the
+    // fallback source in that case). Cached indefinitely once resolved
+    // (do_resolve_structure_name), so re-running this on every settings
+    // save is cheap - not a fresh ESI call after the first success.
+    if (updates.home_location_id != null) {
+      try {
+        await productionApi.resolveStructureName(updates.home_location_id)
+      } catch {
+        // best-effort - the settings save above already succeeded
+      }
+    }
+    return result
+  }, [['production', 'settings'], ['production', 'structure-names']])
   const saveComponentSystem = useAction('Save Component System',
     () => productionApi.setSystem('component', componentSystemInput), [['production', 'system-settings']])
   const saveManufacturingSystem = useAction('Save Manufacturing System',
