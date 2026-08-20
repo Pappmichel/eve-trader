@@ -1,7 +1,11 @@
+import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Stack, Title, Table, Badge, Text } from '@mantine/core'
+import { Stack, Title, Badge, Text } from '@mantine/core'
+import type { ColumnDef } from '@tanstack/react-table'
 
 import { doctrineApi } from '../../api/client'
+import type { ShoppingListRow } from '../../api/types'
+import { DataTable } from '../../components/DataTable'
 import { qty, isk } from '../../format'
 
 const SOURCE_COLOR: Record<string, string> = { Build: 'accent', 'C-J': 'warn', Jita: 'dimmed' }
@@ -11,6 +15,25 @@ export default function ShoppingList() {
     queryKey: ['doctrine', 'shopping-list'], queryFn: () => doctrineApi.shoppingList(),
   })
   const rows = data?.rows ?? []
+
+  const columns = useMemo<ColumnDef<ShoppingListRow, any>[]>(() => [
+    { header: 'Type', accessorKey: 'type_name', size: 220 },
+    { header: 'Shortfall', accessorKey: 'shortfall', size: 110, cell: (i) => qty(i.getValue()) },
+    { header: 'Build', accessorKey: 'build_cost', size: 130, cell: (i) => (i.getValue() != null ? isk(i.getValue()) : '–') },
+    { header: 'C-J', accessorKey: 'cj_price', size: 130, cell: (i) => (i.getValue() != null ? isk(i.getValue()) : '–') },
+    {
+      header: 'Jita (landed)', accessorKey: 'jita_landed_price', size: 140,
+      cell: (i) => (i.getValue() != null ? isk(i.getValue()) : '–'),
+    },
+    {
+      header: 'Recommended', accessorKey: 'recommended_source', size: 130,
+      cell: (i) => {
+        const source = i.getValue() as string | null
+        return source ? <Badge size="sm" color={SOURCE_COLOR[source] ?? 'dimmed'} variant="light">{source}</Badge> : null
+      },
+    },
+    { header: 'Total Cost', accessorKey: 'total_cost', size: 140, cell: (i) => (i.getValue() != null ? isk(i.getValue()) : '–') },
+  ], [])
 
   return (
     <Stack>
@@ -22,39 +45,15 @@ export default function ShoppingList() {
 
       {!isLoading && rows.length === 0 && <Text c="dimmed">Nothing short right now.</Text>}
 
-      {rows.length > 0 && (
-        <Table striped highlightOnHover fz="sm">
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th>Type</Table.Th>
-              <Table.Th>Shortfall</Table.Th>
-              <Table.Th>Build</Table.Th>
-              <Table.Th>C-J</Table.Th>
-              <Table.Th>Jita (landed)</Table.Th>
-              <Table.Th>Recommended</Table.Th>
-              <Table.Th>Total Cost</Table.Th>
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {rows.map((r) => (
-              <Table.Tr key={r.type_id}>
-                <Table.Td>{r.type_name}</Table.Td>
-                <Table.Td>{qty(r.shortfall)}</Table.Td>
-                <Table.Td>{r.build_cost != null ? isk(r.build_cost) : '–'}</Table.Td>
-                <Table.Td>{r.cj_price != null ? isk(r.cj_price) : '–'}</Table.Td>
-                <Table.Td>{r.jita_landed_price != null ? isk(r.jita_landed_price) : '–'}</Table.Td>
-                <Table.Td>
-                  {r.recommended_source && (
-                    <Badge size="sm" color={SOURCE_COLOR[r.recommended_source] ?? 'dimmed'} variant="light">
-                      {r.recommended_source}
-                    </Badge>
-                  )}
-                </Table.Td>
-                <Table.Td>{r.total_cost != null ? isk(r.total_cost) : '–'}</Table.Td>
-              </Table.Tr>
-            ))}
-          </Table.Tbody>
-        </Table>
+      {(isLoading || rows.length > 0) && (
+        <DataTable
+          data={rows}
+          columns={columns}
+          tableId="doctrine-shopping-list"
+          exportFilename="doctrine-shopping-list"
+          getRowId={(r) => String(r.type_id)}
+          isLoading={isLoading}
+        />
       )}
     </Stack>
   )
