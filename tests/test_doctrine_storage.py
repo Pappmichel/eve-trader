@@ -126,7 +126,15 @@ def _wipe_doctrine_assets():
     # tables (PK = item_id alone - same shape as Production's own
     # character_assets/corp_assets, see test_storage_stock.py's own _wipe
     # fixture for why that matters across tests reusing small item_ids).
-    pg_helpers.wipe_tables("doctrine_character_assets", "doctrine_corp_assets")
+    # character_assets is wiped here too - a couple of tests below write
+    # directly into it (to prove Doctrine's own reads ignore Production's
+    # tables) with the same small hardcoded item_ids test_storage_stock.py
+    # uses; without wiping it here, a leftover row from an earlier session
+    # collides on the physical PK the next time this file runs (confirmed
+    # real flake: replace_assets' own DELETE is RLS-scoped to the *current*
+    # tenant, but item_id's PK isn't tenant-scoped, so a different tenant's
+    # already-committed row isn't deleted and blocks the INSERT).
+    pg_helpers.wipe_tables("doctrine_character_assets", "doctrine_corp_assets", "character_assets", "corp_assets")
     yield
 
 

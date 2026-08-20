@@ -195,10 +195,17 @@ CREATE TABLE IF NOT EXISTS doctrine_character_assets (
     location_flag TEXT,
     quantity INTEGER,
     is_blueprint_copy INTEGER,
-    owner_name TEXT
+    owner_name TEXT,
+    resolved_location_id BIGINT
 );
-CREATE INDEX IF NOT EXISTS idx_doctrine_character_assets_type_location
-    ON doctrine_character_assets (type_id, location_id);
+-- Same resolved_location_id shape as phase1_schema.sql's character_assets/
+-- corp_assets (GitHub issue #4/#20) - both go through storage.replace_assets,
+-- which computes this the same way regardless of which pair of tables it's
+-- called for.
+ALTER TABLE doctrine_character_assets ADD COLUMN IF NOT EXISTS resolved_location_id BIGINT;
+DROP INDEX IF EXISTS idx_doctrine_character_assets_type_location;
+CREATE INDEX IF NOT EXISTS idx_doctrine_character_assets_type_resolved_location
+    ON doctrine_character_assets (type_id, resolved_location_id);
 ALTER TABLE doctrine_character_assets ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON doctrine_character_assets;
 CREATE POLICY tenant_isolation ON doctrine_character_assets
@@ -213,10 +220,13 @@ CREATE TABLE IF NOT EXISTS doctrine_corp_assets (
     location_flag TEXT,
     quantity INTEGER,
     is_blueprint_copy INTEGER,
-    owner_name TEXT
+    owner_name TEXT,
+    resolved_location_id BIGINT
 );
-CREATE INDEX IF NOT EXISTS idx_doctrine_corp_assets_type_location
-    ON doctrine_corp_assets (type_id, location_id);
+ALTER TABLE doctrine_corp_assets ADD COLUMN IF NOT EXISTS resolved_location_id BIGINT;
+DROP INDEX IF EXISTS idx_doctrine_corp_assets_type_location;
+CREATE INDEX IF NOT EXISTS idx_doctrine_corp_assets_type_resolved_location
+    ON doctrine_corp_assets (type_id, resolved_location_id);
 ALTER TABLE doctrine_corp_assets ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON doctrine_corp_assets;
 CREATE POLICY tenant_isolation ON doctrine_corp_assets
