@@ -294,6 +294,7 @@ export const doctrineApi = {
     const qs = params.toString()
     return get<T.DoctrineContractRow[]>(`/api/doctrine/contracts${qs ? `?${qs}` : ''}`)
   },
+  contractHistory: () => get<T.ContractHistoryRow[]>('/api/doctrine/contracts/history'),
   stockpile: (doctrineId?: string) =>
     get<{ rows: T.StockpileRow[]; aggregated_rows: T.AggregatedStockpileRow[]; assets_available: boolean }>(
       `/api/doctrine/stockpile${doctrineId ? `?doctrine_id=${doctrineId}` : ''}`,

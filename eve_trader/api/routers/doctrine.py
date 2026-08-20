@@ -142,6 +142,11 @@ def list_contracts(fitting_id: Optional[str] = None, status: Optional[str] = Non
     return _wrap(actions.do_list_contracts, fitting_id=fitting_id, status=status)["rows"]
 
 
+@router.get("/contracts/history", response_model=list[schemas.ContractHistoryRow])
+def get_contract_history():
+    return _wrap(actions.do_contract_history)["rows"]
+
+
 @router.get("/stockpile")
 def get_stockpile(doctrine_id: Optional[str] = None):
     return _wrap(actions.do_get_stockpile_status, doctrine_id=doctrine_id)
