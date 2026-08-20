@@ -215,12 +215,21 @@ def get_invention_logistics():
 @router.get("/logistics/structure-names")
 def get_structure_names():
     """Cached names (storage.structure_names) for every location_id
-    currently assigned to a job category *or* saved as a quick-switch option
-    - never makes a live ESI call itself, so this is always fast; use POST
-    resolve-structure-name to actually (re-)resolve one."""
+    currently assigned to a job category, saved as a quick-switch option, or
+    configured as the distribution source/home/invention station (GitHub
+    issue #21 - these three used to be left out entirely, so Distribution's
+    "From" column and the Invention station both showed a raw numeric ID
+    forever, never a name, regardless of how many times resolve-structure-
+    name was called for a category location) - never makes a live ESI call
+    itself, so this is always fast; use POST resolve-structure-name to
+    actually (re-)resolve one."""
     location_ids = set(storage.load_category_locations().values())
     for ids in storage.load_category_location_options().values():
         location_ids.update(ids)
+    for loc_id in (PRODUCTION_CONFIG.distribution_source_location_id, PRODUCTION_CONFIG.home_location_id,
+                   PRODUCTION_CONFIG.invention_location_id):
+        if loc_id is not None:
+            location_ids.add(loc_id)
     cached = storage.get_cached_structure_names(list(location_ids))
     return {str(loc_id): (name if was_cached else None) for loc_id, (was_cached, name) in cached.items()}
 
