@@ -166,3 +166,77 @@ def test_esi_stock_at_location_reads_doctrines_own_asset_tables(tenant):
 
     doctrine_tables = ("doctrine_character_assets", "doctrine_corp_assets")
     assert storage.esi_stock_at_location(type_id, location_id, tables=doctrine_tables) == 150
+
+
+def _history_row(**overrides) -> tuple:
+    base = dict(contract_id=1, source_role="doctrine:1560510246", fitting_id=None, fitting_name="Fit",
+                hull_type_id=1000, title="t", price=100.0, acceptor_id=99, acceptor_name="Buyer",
+                date_issued="2026-01-01T00:00:00Z", date_completed="2026-01-02T00:00:00Z")
+    base.update(overrides)
+    fields = ("contract_id", "source_role", "fitting_id", "fitting_name", "hull_type_id", "title", "price",
+              "acceptor_id", "acceptor_name", "date_issued", "date_completed")
+    return tuple(base[f] for f in fields)
+
+
+def test_upsert_doctrine_contract_history_round_trips(tenant):
+    storage.upsert_doctrine_contract_history([_history_row()])
+
+    rows = storage.load_doctrine_contract_history()
+
+    # date_issued/date_completed round-trip as tz-aware datetimes (TIMESTAMPTZ
+    # columns, not TEXT) rather than the original ISO strings - compared
+    # separately below, everything else compared verbatim.
+    assert len(rows) == 1
+    assert rows[0][:9] == _history_row()[:9]
+    assert rows[0][9].isoformat() == "2026-01-01T00:00:00+00:00"
+    assert rows[0][10].isoformat() == "2026-01-02T00:00:00+00:00"
+
+
+def test_upsert_doctrine_contract_history_empty_list_is_a_no_op(tenant):
+    # GitHub issue #19: sync_contracts calls this unconditionally every run
+    # (all_history_contracts is usually empty - most syncs have no newly-
+    # finished contract) - must not error on an empty executemany batch.
+    storage.upsert_doctrine_contract_history([])
+
+    assert storage.load_doctrine_contract_history() == []
+
+
+def test_upsert_doctrine_contract_history_updates_on_conflict(tenant):
+    # A later sync resolving an acceptor_name that failed to resolve the
+    # first time (see storage.upsert_doctrine_contract_history's own
+    # docstring) must update the existing row, not skip/duplicate it.
+    storage.upsert_doctrine_contract_history([_history_row(acceptor_name=None)])
+    storage.upsert_doctrine_contract_history([_history_row(acceptor_name="Buyer")])
+
+    rows = storage.load_doctrine_contract_history()
+
+    assert len(rows) == 1
+    assert rows[0][8] == "Buyer"  # acceptor_name
+
+
+def test_load_doctrine_contract_history_orders_most_recently_completed_first(tenant):
+    storage.upsert_doctrine_contract_history([
+        _history_row(contract_id=1, date_completed="2026-01-01T00:00:00Z"),
+        _history_row(contract_id=2, date_completed="2026-01-03T00:00:00Z"),
+        _history_row(contract_id=3, date_completed="2026-01-02T00:00:00Z"),
+    ])
+
+    rows = storage.load_doctrine_contract_history()
+
+    assert [r[0] for r in rows] == [2, 3, 1]
+
+
+def test_contract_history_tenant_isolated_even_with_same_contract_id(tenant_pair):
+    tenant_a, tenant_b = tenant_pair
+    with storage.tenant_context(tenant_a):
+        storage.upsert_doctrine_contract_history([_history_row(contract_id=1, acceptor_name="A's buyer")])
+    with storage.tenant_context(tenant_b):
+        storage.upsert_doctrine_contract_history([_history_row(contract_id=1, acceptor_name="B's buyer")])
+
+    with storage.tenant_context(tenant_a):
+        rows_a = storage.load_doctrine_contract_history()
+    with storage.tenant_context(tenant_b):
+        rows_b = storage.load_doctrine_contract_history()
+
+    assert len(rows_a) == 1 and rows_a[0][8] == "A's buyer"
+    assert len(rows_b) == 1 and rows_b[0][8] == "B's buyer"
