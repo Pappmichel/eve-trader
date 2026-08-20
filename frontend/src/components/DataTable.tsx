@@ -1,14 +1,17 @@
-import { useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   useReactTable,
   getCoreRowModel,
   getSortedRowModel,
+  getFilteredRowModel,
   flexRender,
   type ColumnDef,
   type SortingState,
+  type VisibilityState,
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Table, ScrollArea, Text, Skeleton } from '@mantine/core'
+import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon } from '@mantine/core'
+import { IconSearch, IconDownload, IconColumns, IconX } from '@tabler/icons-react'
 
 // Generic sortable, row-virtualized table.
 //
@@ -34,6 +37,14 @@ import { Table, ScrollArea, Text, Skeleton } from '@mantine/core'
 //    `title`) so every row is exactly `rowHeight` regardless of content -
 //    matching the virtualizer's fixed estimateSize instead of drifting from
 //    it (which otherwise causes overlapping/gapped rows during scroll too).
+//
+// GitHub issue #15 ("all tables should be sortable/filterable, columns
+// hideable, tables exportable") added a small toolbar (global text filter,
+// column-visibility menu, CSV export) to this one shared component instead
+// of each page reimplementing it - every page using DataTable gets all
+// three for free, same as sorting already worked. `tableId` (optional)
+// persists column visibility to localStorage per table; omit it and
+// visibility still works, just doesn't survive a remount/reload.
 interface DataTableProps<T> {
   data: T[]
   columns: ColumnDef<T, any>[]
@@ -41,6 +52,8 @@ interface DataTableProps<T> {
   emptyLabel?: string
   rowHeight?: number
   isLoading?: boolean
+  tableId?: string
+  exportFilename?: string
 }
 
 const SKELETON_ROWS = 8
@@ -51,6 +64,27 @@ function cellText(value: unknown): string | undefined {
   return undefined
 }
 
+function columnLabel(header: unknown, id: string): string {
+  return typeof header === 'string' ? header : id
+}
+
+// RFC4126-ish CSV quoting - always quotes (simplest correct approach: never
+// have to special-case which fields *need* it) and doubles internal quotes.
+function csvField(value: unknown): string {
+  const text = cellText(value) ?? ''
+  return `"${text.replace(/"/g, '""')}"`
+}
+
+function loadPersistedVisibility(tableId: string | undefined): VisibilityState {
+  if (!tableId) return {}
+  try {
+    const raw = localStorage.getItem(`datatable:${tableId}:columns`)
+    return raw ? JSON.parse(raw) : {}
+  } catch {
+    return {} // corrupt/unavailable storage - fall back to "everything visible", never crash the page over this
+  }
+}
+
 export function DataTable<T>({
   data,
   columns,
@@ -58,21 +92,45 @@ export function DataTable<T>({
   emptyLabel = 'No data.',
   rowHeight = 36,
   isLoading = false,
+  tableId,
+  exportFilename = 'export',
 }: DataTableProps<T>) {
   const [sorting, setSorting] = useState<SortingState>([])
+  const [globalFilter, setGlobalFilter] = useState('')
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(() => loadPersistedVisibility(tableId))
+
+  // Re-derive from localStorage (or reset to "everything visible") whenever
+  // this instance switches to a *different* tableId - without this, a page
+  // that reuses one <DataTable> for several tabs (same component instance,
+  // changing tableId as the user switches tabs) would keep showing the
+  // previous tab's hidden-columns selection.
+  useEffect(() => {
+    setColumnVisibility(loadPersistedVisibility(tableId))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tableId])
+
+  useEffect(() => {
+    if (!tableId) return
+    localStorage.setItem(`datatable:${tableId}:columns`, JSON.stringify(columnVisibility))
+  }, [tableId, columnVisibility])
+
   const table = useReactTable({
     data,
     columns,
-    state: { sorting },
+    state: { sorting, globalFilter, columnVisibility },
     onSortingChange: setSorting,
+    onGlobalFilterChange: setGlobalFilter,
+    onColumnVisibilityChange: setColumnVisibility,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
     defaultColumn: { size: 140, minSize: 60 },
   })
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const rows = table.getRowModel().rows
   const leafColumns = table.getVisibleLeafColumns()
+  const allColumns = table.getAllLeafColumns()
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -80,6 +138,20 @@ export function DataTable<T>({
     estimateSize: () => rowHeight,
     overscan: 12,
   })
+
+  const exportCsv = () => {
+    const header = leafColumns.map((col) => columnLabel(col.columnDef.header, col.id)).join(',')
+    const body = rows
+      .map((row) => row.getVisibleCells().map((cell) => csvField(cell.getValue())).join(','))
+      .join('\r\n')
+    const blob = new Blob([`${header}\r\n${body}`], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${exportFilename}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
 
   // Rendered instead of the real table while the owning page's query is
   // still in flight - keeps the exact same column widths (colgroup) so
@@ -136,60 +208,113 @@ export function DataTable<T>({
   }
 
   return (
-    <ScrollArea h={maxHeight} type="auto" viewportRef={scrollRef}>
-      <Table stickyHeader striped style={{ tableLayout: 'fixed', width: '100%' }}>
-        <colgroup>
-          {leafColumns.map((col) => (
-            <col key={col.id} style={{ width: col.getSize() }} />
-          ))}
-        </colgroup>
-        <Table.Thead>
-          {table.getHeaderGroups().map((hg) => (
-            <Table.Tr key={hg.id}>
-              {hg.headers.map((h) => {
-                const sorted = h.column.getIsSorted()
-                return (
-                  <Table.Th
-                    key={h.id}
-                    onClick={h.column.getToggleSortingHandler()}
-                    style={{
-                      cursor: h.column.getCanSort() ? 'pointer' : undefined, userSelect: 'none',
-                      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                    }}
-                  >
-                    {flexRender(h.column.columnDef.header, h.getContext())}
-                    {sorted === 'asc' ? ' ▲' : sorted === 'desc' ? ' ▼' : ''}
-                  </Table.Th>
-                )
-              })}
-            </Table.Tr>
-          ))}
-        </Table.Thead>
-        <Table.Tbody>
-          {paddingTop > 0 && (
-            <tr>
-              <td style={{ height: paddingTop, padding: 0, border: 0 }} colSpan={columns.length} />
-            </tr>
-          )}
-          {virtualItems.map((vItem) => {
-            const row = rows[vItem.index]
-            return (
-              <Table.Tr key={row.id}>
-                {row.getVisibleCells().map((cell) => (
-                  <Table.Td key={cell.id} style={cellStyle} title={cellText(cell.getValue())}>
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                  </Table.Td>
-                ))}
+    <div>
+      <Group justify="space-between" mb="xs" gap="xs" wrap="nowrap">
+        <TextInput
+          size="xs"
+          placeholder="Filter..."
+          leftSection={<IconSearch size={14} />}
+          rightSection={globalFilter ? (
+            <ActionIcon size="xs" variant="subtle" color="dimmed" aria-label="Clear filter" onClick={() => setGlobalFilter('')}>
+              <IconX size={12} />
+            </ActionIcon>
+          ) : undefined}
+          value={globalFilter}
+          onChange={(e) => setGlobalFilter(e.currentTarget.value)}
+          style={{ flex: 1, maxWidth: 280 }}
+        />
+        <Group gap="xs" wrap="nowrap">
+          <Menu shadow="md" closeOnItemClick={false}>
+            <Menu.Target>
+              <Button size="xs" variant="default" leftSection={<IconColumns size={14} />}>
+                Columns
+              </Button>
+            </Menu.Target>
+            <Menu.Dropdown>
+              {allColumns.map((col) => (
+                <Menu.Item key={col.id} onClick={() => col.toggleVisibility()} closeMenuOnClick={false}>
+                  <Checkbox
+                    size="xs"
+                    readOnly
+                    checked={col.getIsVisible()}
+                    label={columnLabel(col.columnDef.header, col.id)}
+                  />
+                </Menu.Item>
+              ))}
+            </Menu.Dropdown>
+          </Menu>
+          <Button size="xs" variant="default" leftSection={<IconDownload size={14} />} onClick={exportCsv}>
+            Export
+          </Button>
+        </Group>
+      </Group>
+
+      <ScrollArea h={maxHeight} type="auto" viewportRef={scrollRef}>
+        <Table stickyHeader striped style={{ tableLayout: 'fixed', width: '100%' }}>
+          <colgroup>
+            {leafColumns.map((col) => (
+              <col key={col.id} style={{ width: col.getSize() }} />
+            ))}
+          </colgroup>
+          <Table.Thead>
+            {table.getHeaderGroups().map((hg) => (
+              <Table.Tr key={hg.id}>
+                {hg.headers.map((h) => {
+                  const sorted = h.column.getIsSorted()
+                  return (
+                    <Table.Th
+                      key={h.id}
+                      onClick={h.column.getToggleSortingHandler()}
+                      title={columnLabel(h.column.columnDef.header, h.column.id)}
+                      style={{
+                        cursor: h.column.getCanSort() ? 'pointer' : undefined, userSelect: 'none',
+                        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {flexRender(h.column.columnDef.header, h.getContext())}
+                      {sorted === 'asc' ? ' ▲' : sorted === 'desc' ? ' ▼' : ''}
+                    </Table.Th>
+                  )
+                })}
               </Table.Tr>
-            )
-          })}
-          {paddingBottom > 0 && (
-            <tr>
-              <td style={{ height: paddingBottom, padding: 0, border: 0 }} colSpan={columns.length} />
-            </tr>
-          )}
-        </Table.Tbody>
-      </Table>
-    </ScrollArea>
+            ))}
+          </Table.Thead>
+          <Table.Tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td colSpan={leafColumns.length} style={{ padding: 'var(--mantine-spacing-sm)' }}>
+                  <Text c="dimmed" size="sm">No rows match your filter.</Text>
+                </td>
+              </tr>
+            ) : (
+              <>
+                {paddingTop > 0 && (
+                  <tr>
+                    <td style={{ height: paddingTop, padding: 0, border: 0 }} colSpan={leafColumns.length} />
+                  </tr>
+                )}
+                {virtualItems.map((vItem) => {
+                  const row = rows[vItem.index]
+                  return (
+                    <Table.Tr key={row.id}>
+                      {row.getVisibleCells().map((cell) => (
+                        <Table.Td key={cell.id} style={cellStyle} title={cellText(cell.getValue())}>
+                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                        </Table.Td>
+                      ))}
+                    </Table.Tr>
+                  )
+                })}
+                {paddingBottom > 0 && (
+                  <tr>
+                    <td style={{ height: paddingBottom, padding: 0, border: 0 }} colSpan={leafColumns.length} />
+                  </tr>
+                )}
+              </>
+            )}
+          </Table.Tbody>
+        </Table>
+      </ScrollArea>
+    </div>
   )
 }
