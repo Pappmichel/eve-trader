@@ -17,7 +17,7 @@ from ..auth import TokenManager
 from ..config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
 from . import engine, esi_sync
 from .config import DOCTRINE_CONFIG, DoctrineConfig
-from .models import ContractHistoryRow, ContractItemRow
+from .models import ContractHistoryRow, ContractItemRow, ParsedFitting
 from .parser import FittingParseError
 
 
@@ -122,9 +122,34 @@ def do_parse_fitting(raw_eft: str) -> dict:
     }
 
 
+def _merge_bay_items(parsed: ParsedFitting, fuel_bay_text: Optional[str],
+                      ship_maintenance_bay_text: Optional[str]) -> tuple[list, list]:
+    """GitHub issue #18: Fuel Bay / Ship Maintenance Bay content lists parse
+    separately from the main EFT body (parse_fitting has no syntax for
+    either - see parser.parse_bay_items' own docstring) and are merged into
+    one combined item/issue set here, numbered to continue on from wherever
+    the main body's own line numbers left off so a bay-content issue's
+    line_no never collides with a main-body one."""
+    all_items = list(parsed.items)
+    all_issues = list(parsed.issues)
+    next_line_no = max((i.line_no for i in all_items), default=0) + 1
+    if fuel_bay_text:
+        bay_items, bay_issues = engine.parse_bay_items_text(fuel_bay_text, "fuelbay", line_no_start=next_line_no)
+        all_items.extend(bay_items)
+        all_issues.extend(bay_issues)
+        next_line_no = max((i.line_no for i in bay_items), default=next_line_no - 1) + 1
+    if ship_maintenance_bay_text:
+        bay_items, bay_issues = engine.parse_bay_items_text(
+            ship_maintenance_bay_text, "shipmaintenancebay", line_no_start=next_line_no)
+        all_items.extend(bay_items)
+        all_issues.extend(bay_issues)
+    return all_items, all_issues
+
+
 def do_add_fitting(doctrine_id: str, raw_eft: str, name: Optional[str] = None,
                     variant_label: Optional[str] = None, contract_target: int = 0,
-                    stockpile_target: int = 0, cargo_tolerance_pct: Optional[float] = None) -> dict:
+                    stockpile_target: int = 0, cargo_tolerance_pct: Optional[float] = None,
+                    fuel_bay_text: Optional[str] = None, ship_maintenance_bay_text: Optional[str] = None) -> dict:
     if storage.get_doctrine(doctrine_id) is None:
         raise ActionError(f"Doctrine {doctrine_id} not found.")
     if contract_target < 0 or stockpile_target < 0:
@@ -133,30 +158,39 @@ def do_add_fitting(doctrine_id: str, raw_eft: str, name: Optional[str] = None,
         parsed = engine.parse_fitting_text(raw_eft)
     except FittingParseError as e:
         raise ActionError(str(e)) from e
+    all_items, all_issues = _merge_bay_items(parsed, fuel_bay_text, ship_maintenance_bay_text)
 
     with storage.batch_session():
         fitting_id = storage.create_fitting(
             doctrine_id, name or parsed.fit_name, parsed.hull_type_id, raw_eft, variant_label,
-            contract_target, stockpile_target, cargo_tolerance_pct,
+            contract_target, stockpile_target, cargo_tolerance_pct, fuel_bay_text, ship_maintenance_bay_text,
         )
         storage.replace_fitting_items(
-            fitting_id, [(i.line_no, i.slot_section, i.type_id, i.quantity, i.is_offline) for i in parsed.items])
+            fitting_id, [(i.line_no, i.slot_section, i.type_id, i.quantity, i.is_offline) for i in all_items])
         storage.replace_fitting_parse_issues(
-            fitting_id, [(i.line_no, i.raw_line, i.issue_kind, i.message) for i in parsed.issues])
+            fitting_id, [(i.line_no, i.raw_line, i.issue_kind, i.message) for i in all_issues])
 
     fitting, _items = engine.load_fitting_with_items(fitting_id)
-    return {"fitting": asdict(fitting), "issues": [asdict(i) for i in parsed.issues]}
+    return {"fitting": asdict(fitting), "issues": [asdict(i) for i in all_issues]}
 
 
 def do_update_fitting(fitting_id: str, raw_eft: Optional[str] = None, name: Optional[str] = None,
                        variant_label: Optional[str] = None, contract_target: Optional[int] = None,
                        stockpile_target: Optional[int] = None, cargo_tolerance_pct: Optional[float] = None,
-                       active: Optional[bool] = None) -> dict:
+                       active: Optional[bool] = None, fuel_bay_text: Optional[str] = None,
+                       ship_maintenance_bay_text: Optional[str] = None) -> dict:
     """Re-parses on a new raw_eft, then always re-validates this fitting's
     already-persisted contracts (Phase 2 F: changed Soll data must never
     leave a stale validation result standing - same invalidation discipline
-    as production/engine.py's invalidate_discover_cache)."""
-    if storage.get_fitting(fitting_id) is None:
+    as production/engine.py's invalidate_discover_cache).
+
+    GitHub issue #18: raw_eft/fuel_bay_text/ship_maintenance_bay_text share
+    replace_fitting_items' own wholesale-replace semantics - there's one
+    combined item set per fitting, not one per text field, so editing *any*
+    of the three re-parses *all* of them together, falling back to whatever
+    is already stored for the ones this call didn't touch."""
+    existing_row = storage.get_fitting(fitting_id)
+    if existing_row is None:
         raise ActionError(f"Fitting {fitting_id} not found.")
     if (contract_target is not None and contract_target < 0) or (stockpile_target is not None and stockpile_target < 0):
         raise ActionError("Targets must be zero or greater.")
@@ -176,18 +210,28 @@ def do_update_fitting(fitting_id: str, raw_eft: Optional[str] = None, name: Opti
             updates["cargo_tolerance_pct"] = cargo_tolerance_pct
         if active is not None:
             updates["active"] = active
-        if raw_eft is not None:
+
+        if raw_eft is not None or fuel_bay_text is not None or ship_maintenance_bay_text is not None:
+            existing = engine.fitting_from_row(existing_row)
+            effective_raw_eft = raw_eft if raw_eft is not None else existing.raw_eft
+            effective_fuel_bay_text = fuel_bay_text if fuel_bay_text is not None else existing.fuel_bay_text
+            effective_smb_text = (ship_maintenance_bay_text if ship_maintenance_bay_text is not None
+                                   else existing.ship_maintenance_bay_text)
             try:
-                parsed = engine.parse_fitting_text(raw_eft)
+                parsed = engine.parse_fitting_text(effective_raw_eft)
             except FittingParseError as e:
                 raise ActionError(str(e)) from e
-            updates["raw_eft"] = raw_eft
+            all_items, all_issues = _merge_bay_items(parsed, effective_fuel_bay_text, effective_smb_text)
+
+            updates["raw_eft"] = effective_raw_eft
             updates["hull_type_id"] = parsed.hull_type_id
+            updates["fuel_bay_text"] = effective_fuel_bay_text
+            updates["ship_maintenance_bay_text"] = effective_smb_text
             storage.replace_fitting_items(
-                fitting_id, [(i.line_no, i.slot_section, i.type_id, i.quantity, i.is_offline) for i in parsed.items])
+                fitting_id, [(i.line_no, i.slot_section, i.type_id, i.quantity, i.is_offline) for i in all_items])
             storage.replace_fitting_parse_issues(
-                fitting_id, [(i.line_no, i.raw_line, i.issue_kind, i.message) for i in parsed.issues])
-            issues = parsed.issues
+                fitting_id, [(i.line_no, i.raw_line, i.issue_kind, i.message) for i in all_issues])
+            issues = all_issues
 
         if updates:
             storage.update_fitting(fitting_id, updates)

@@ -17,7 +17,7 @@ from .config import DOCTRINE_CONFIG, DoctrineConfig
 from .constants import AMPEL_GRAY, EXACT_SECTIONS
 from .models import (
     AggregatedStockpileRow, ContractItemRow, ContractRow, DeviationRow, Doctrine, DoctrineStatus, Fitting,
-    FittingItem, FittingStatus, ParsedFitting, ParseIssue, ShoppingListRow, StockpileRow,
+    FittingItem, FittingStatus, ParsedFitting, ParsedIssue, ParsedItem, ParseIssue, ShoppingListRow, StockpileRow,
 )
 from .parser import FittingParseError, ResolvedType
 
@@ -57,16 +57,28 @@ def parse_fitting_text(raw_eft: str) -> ParsedFitting:
     return parser.parse_fitting(raw_eft, _resolve_name, _resolve_slot, hull_name_candidates=candidates)
 
 
+def parse_bay_items_text(text: str, slot_section: str,
+                          line_no_start: int = 1) -> tuple[list[ParsedItem], list[ParsedIssue]]:
+    """Same real-SDE wiring as parse_fitting_text above, for parser.
+    parse_bay_items (GitHub issue #18 - Fuel Bay / Ship Maintenance Bay
+    content lists, entered separately from the main EFT paste since that
+    format has no syntax for either)."""
+    items, issues = parser.parse_bay_items(text, _resolve_name, slot_section, line_no_start=line_no_start)
+    return items, issues
+
+
 # ---------------------------------------------------------------- row <-> dataclass mapping
 def fitting_from_row(row: tuple) -> Fitting:
     (fitting_id, doctrine_id, name, variant_label, hull_type_id, raw_eft, contract_target,
-     stockpile_target, cargo_tolerance_pct, active, created_at, updated_at) = row
+     stockpile_target, cargo_tolerance_pct, active, created_at, updated_at, fuel_bay_text,
+     ship_maintenance_bay_text) = row
     return Fitting(fitting_id=str(fitting_id), doctrine_id=str(doctrine_id), name=name,
                     variant_label=variant_label, hull_type_id=hull_type_id, raw_eft=raw_eft,
                     contract_target=contract_target, stockpile_target=stockpile_target,
                     cargo_tolerance_pct=cargo_tolerance_pct, active=active,
                     created_at=str(created_at) if created_at else None,
-                    updated_at=str(updated_at) if updated_at else None)
+                    updated_at=str(updated_at) if updated_at else None,
+                    fuel_bay_text=fuel_bay_text, ship_maintenance_bay_text=ship_maintenance_bay_text)
 
 
 def doctrine_from_row(row: tuple) -> Doctrine:

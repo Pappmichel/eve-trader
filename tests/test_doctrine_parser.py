@@ -1,6 +1,6 @@
 import pytest
 
-from eve_trader.doctrine.parser import FittingParseError, ResolvedType, parse_fitting
+from eve_trader.doctrine.parser import FittingParseError, ResolvedType, parse_bay_items, parse_fitting
 
 # Fake SDE: name (lowercase) -> ResolvedType. Category IDs match
 # doctrine/constants.py: 6=Ship, 7=Module (arbitrary "not special" stand-in
@@ -212,3 +212,63 @@ def test_no_markers_no_position_conflict_issue_even_when_reordered():
     result = _parse(text)
     assert len(result.items) == 1
     assert result.issues == []
+
+
+# --------------------------------------------------- parse_bay_items (GitHub issue #18)
+def test_parse_bay_items_plain_name_defaults_to_qty_one():
+    items, issues = parse_bay_items("Tritanium", _resolve_name, "fuelbay")
+    assert issues == []
+    assert len(items) == 1
+    assert items[0].type_id == 8
+    assert items[0].quantity == 1.0
+    assert items[0].slot_section == "fuelbay"
+
+
+def test_parse_bay_items_qty_suffix_sets_quantity():
+    items, issues = parse_bay_items("Tritanium x50", _resolve_name, "fuelbay")
+    assert issues == []
+    assert items[0].quantity == 50.0
+
+
+def test_parse_bay_items_every_resolved_line_uses_the_passed_section():
+    # Same list of resolved names, different slot_section per call - proves
+    # the caller's `slot_section` wins over anything the item's own SDE
+    # category/slot would normally classify it as (no slot classification
+    # happens here at all, unlike parse_fitting's own _classify_section).
+    items, _issues = parse_bay_items("Warrior II\nRifter", _resolve_name, "shipmaintenancebay")
+    assert all(i.slot_section == "shipmaintenancebay" for i in items)
+    assert [i.type_id for i in items] == [7, 1]
+
+
+def test_parse_bay_items_unresolved_name_becomes_issue_not_item():
+    items, issues = parse_bay_items("Some Unknown Thing", _resolve_name, "fuelbay")
+    assert items == []
+    assert len(issues) == 1
+    assert issues[0].issue_kind == "unresolved_name"
+
+
+def test_parse_bay_items_blank_lines_are_skipped():
+    items, issues = parse_bay_items("Tritanium\n\n\nWarrior II\n", _resolve_name, "fuelbay")
+    assert len(items) == 2
+    assert issues == []
+
+
+def test_parse_bay_items_empty_text_returns_nothing():
+    items, issues = parse_bay_items("", _resolve_name, "fuelbay")
+    assert items == []
+    assert issues == []
+
+
+def test_parse_bay_items_line_no_starts_from_given_offset():
+    items, _issues = parse_bay_items("Tritanium\nWarrior II", _resolve_name, "fuelbay", line_no_start=42)
+    assert [i.line_no for i in items] == [42, 43]
+
+
+def test_parse_bay_items_ignores_offline_and_comma_charge_pairing():
+    # Bay contents never carry an /offline suffix or a comma-paired charge
+    # the way a fitted module can (GitHub #18's own scope: plain item lists
+    # only) - a comma-containing line simply fails to resolve as a whole
+    # name, becoming an unresolved-name issue rather than being split.
+    items, issues = parse_bay_items("Damage Control II /offline", _resolve_name, "fuelbay")
+    assert items == []
+    assert issues[0].issue_kind == "unresolved_name"

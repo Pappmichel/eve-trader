@@ -463,6 +463,8 @@ export interface Fitting {
   active: boolean
   created_at: string | null
   updated_at: string | null
+  fuel_bay_text: string | null
+  ship_maintenance_bay_text: string | null
 }
 
 export interface DoctrineFittingItem {

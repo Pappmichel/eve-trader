@@ -20,10 +20,11 @@ def _contract_db_row(**overrides) -> tuple:
 def _fitting_db_row(**overrides) -> tuple:
     base = dict(fitting_id="f1", doctrine_id="d1", name="Fit", variant_label=None, hull_type_id=1000,
                 raw_eft="", contract_target=1, stockpile_target=0, cargo_tolerance_pct=None, active=True,
-                created_at=None, updated_at=None)
+                created_at=None, updated_at=None, fuel_bay_text=None, ship_maintenance_bay_text=None)
     base.update(overrides)
     fields = ("fitting_id", "doctrine_id", "name", "variant_label", "hull_type_id", "raw_eft", "contract_target",
-               "stockpile_target", "cargo_tolerance_pct", "active", "created_at", "updated_at")
+               "stockpile_target", "cargo_tolerance_pct", "active", "created_at", "updated_at",
+               "fuel_bay_text", "ship_maintenance_bay_text")
     return tuple(base[f] for f in fields)
 
 

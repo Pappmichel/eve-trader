@@ -63,8 +63,19 @@ CREATE TABLE IF NOT EXISTS doctrine_fittings (
     active BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- GitHub issue #18: capital ship contracts also carry a Fuel Bay and a
+    -- Ship Maintenance Bay, neither expressible in standard EFT export text
+    -- at all (CCP's Fitting Formats spec only covers slots/drones/cargo) -
+    -- entered as their own plain-text item lists (doctrine/parser.py's
+    -- parse_bay_items), stored verbatim here the same way raw_eft is, so
+    -- they can be redisplayed/re-edited. NULL/empty means "not a capital
+    -- fit, no bay contents to track".
+    fuel_bay_text TEXT,
+    ship_maintenance_bay_text TEXT,
     PRIMARY KEY (tenant_id, fitting_id)
 );
+ALTER TABLE doctrine_fittings ADD COLUMN IF NOT EXISTS fuel_bay_text TEXT;
+ALTER TABLE doctrine_fittings ADD COLUMN IF NOT EXISTS ship_maintenance_bay_text TEXT;
 CREATE INDEX IF NOT EXISTS idx_doctrine_fittings_doctrine ON doctrine_fittings (tenant_id, doctrine_id);
 ALTER TABLE doctrine_fittings ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON doctrine_fittings;

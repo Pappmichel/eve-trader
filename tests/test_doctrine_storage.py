@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from eve_trader import storage
+from eve_trader.doctrine import actions
 
 from . import pg_helpers
 from .pg_helpers import _apply_phase1_schema, _apply_phase2_schema, tenant, tenant_pair  # noqa: F401
@@ -43,6 +44,88 @@ def test_doctrine_and_fitting_crud(tenant):
     assert storage.load_fitting_items(fitting_id) == []
     storage.delete_doctrine(doctrine_id)
     assert storage.get_doctrine(doctrine_id) is None
+
+
+# Large, unlikely-to-collide fake IDs - sde_types/sde_groups are shared,
+# non-tenant-scoped reference tables (see phase1_schema.sql's own "shared
+# tables" bucket), so this seeds additional rows alongside whatever real SDE
+# data already exists rather than wiping/replacing anything.
+_FAKE_HULL_TYPE_ID = 900001
+_FAKE_FUEL_TYPE_ID = 900002
+_FAKE_SHIP_GROUP_ID = 900101
+_FAKE_MATERIAL_GROUP_ID = 900102
+
+
+@pytest.fixture
+def _fake_capital_sde():
+    # resolve_sde_type_by_name INNER JOINs sde_types.group_id -> sde_groups
+    # - a NULL group_id would never match, so both fake types need a real
+    # (fake) group row, not just the ship hull.
+    with pg_helpers.psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO sde_groups (group_id, category_id, group_name) VALUES (%s, 6, 'Fake Dreadnought') "
+            "ON CONFLICT (group_id) DO UPDATE SET category_id = excluded.category_id",
+            (_FAKE_SHIP_GROUP_ID,),
+        )
+        conn.execute(
+            "INSERT INTO sde_groups (group_id, category_id, group_name) VALUES (%s, 4, 'Fake Fuel Material') "
+            "ON CONFLICT (group_id) DO UPDATE SET category_id = excluded.category_id",
+            (_FAKE_MATERIAL_GROUP_ID,),
+        )
+        conn.execute(
+            "INSERT INTO sde_types (type_id, group_id, type_name, published) VALUES (%s, %s, 'Fake Capital Hull', 1) "
+            "ON CONFLICT (type_id) DO UPDATE SET group_id = excluded.group_id",
+            (_FAKE_HULL_TYPE_ID, _FAKE_SHIP_GROUP_ID),
+        )
+        conn.execute(
+            "INSERT INTO sde_types (type_id, group_id, type_name, published) VALUES (%s, %s, 'Fake Fuel Block', 1) "
+            "ON CONFLICT (type_id) DO UPDATE SET group_id = excluded.group_id",
+            (_FAKE_FUEL_TYPE_ID, _FAKE_MATERIAL_GROUP_ID),
+        )
+    yield
+
+
+def test_do_add_fitting_persists_and_parses_fuel_bay_text(tenant, _fake_capital_sde):
+    # GitHub issue #18 - end-to-end wiring test: fuel_bay_text is stored
+    # verbatim on the fitting row *and* parsed into a real "fuelbay" item,
+    # merged alongside the main EFT body's own items in one combined
+    # replace_fitting_items call.
+    doctrine_id = storage.create_doctrine("Capital Doctrine", None)
+    result = actions.do_add_fitting(
+        doctrine_id, raw_eft="[Fake Capital Hull, Test Dread]\n",
+        fuel_bay_text="Fake Fuel Block x2500",
+    )
+
+    fitting = result["fitting"]
+    assert fitting["fuel_bay_text"] == "Fake Fuel Block x2500"
+    assert fitting["ship_maintenance_bay_text"] is None
+
+    items = storage.load_fitting_items(fitting["fitting_id"])
+    fuelbay_items = [i for i in items if i[1] == "fuelbay"]
+    assert len(fuelbay_items) == 1
+    assert fuelbay_items[0][2] == _FAKE_FUEL_TYPE_ID  # type_id
+    assert fuelbay_items[0][3] == 2500.0  # quantity
+
+
+def test_do_update_fitting_keeps_existing_fuel_bay_text_when_only_raw_eft_changes(tenant, _fake_capital_sde):
+    # GitHub issue #18: editing just the EFT body (e.g. swapping a module)
+    # must not silently wipe an already-set fuel_bay_text - the two are
+    # meant to be editable independently even though they share one
+    # combined replace_fitting_items call under the hood.
+    doctrine_id = storage.create_doctrine("Capital Doctrine", None)
+    added = actions.do_add_fitting(
+        doctrine_id, raw_eft="[Fake Capital Hull, Test Dread]\n",
+        fuel_bay_text="Fake Fuel Block x2500",
+    )
+    fitting_id = added["fitting"]["fitting_id"]
+
+    updated = actions.do_update_fitting(fitting_id, raw_eft="[Fake Capital Hull, Test Dread v2]\n")
+
+    assert updated["fitting"]["fuel_bay_text"] == "Fake Fuel Block x2500"
+    items = storage.load_fitting_items(fitting_id)
+    fuelbay_items = [i for i in items if i[1] == "fuelbay"]
+    assert len(fuelbay_items) == 1
+    assert fuelbay_items[0][3] == 2500.0
 
 
 def test_fitting_items_same_line_no_two_items_do_not_collide(tenant):

@@ -350,6 +350,8 @@ class Fitting(_Base):
     active: bool
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    fuel_bay_text: Optional[str] = None
+    ship_maintenance_bay_text: Optional[str] = None
 
 
 class FittingItem(_Base):

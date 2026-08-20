@@ -262,6 +262,8 @@ export const doctrineApi = {
     contract_target?: number
     stockpile_target?: number
     cargo_tolerance_pct?: number | null
+    fuel_bay_text?: string | null
+    ship_maintenance_bay_text?: string | null
   }) => post<{ fitting: T.Fitting; issues: T.DoctrineParseIssue[] }>(`/api/doctrine/doctrines/${doctrineId}/fittings`, req),
   updateFitting: (fittingId: string, req: {
     raw_eft?: string | null
@@ -271,6 +273,8 @@ export const doctrineApi = {
     stockpile_target?: number | null
     cargo_tolerance_pct?: number | null
     active?: boolean | null
+    fuel_bay_text?: string | null
+    ship_maintenance_bay_text?: string | null
   }) =>
     request<{ fitting: T.Fitting; issues: T.DoctrineParseIssue[] }>(`/api/doctrine/fittings/${fittingId}`, {
       method: 'PATCH', body: JSON.stringify(req),
