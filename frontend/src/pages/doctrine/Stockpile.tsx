@@ -1,11 +1,20 @@
+import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Stack, Title, Table, Badge, Text, Divider } from '@mantine/core'
+import { Stack, Title, Badge, Text, Divider } from '@mantine/core'
+import type { ColumnDef } from '@tanstack/react-table'
 
 import { doctrineApi } from '../../api/client'
+import type { AggregatedStockpileRow, StockpileRow } from '../../api/types'
+import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { qty } from '../../format'
 
 const SEVERITY_COLOR: Record<string, string> = { critical: 'danger', tolerable: 'warn' }
+
+function severityBadge(value: unknown) {
+  const severity = value as string | null
+  return severity ? <Badge size="xs" color={SEVERITY_COLOR[severity] ?? 'dimmed'} variant="light">{severity}</Badge> : null
+}
 
 export default function Stockpile() {
   const { data, isLoading } = useQuery({ queryKey: ['doctrine', 'stockpile'], queryFn: () => doctrineApi.stockpile() })
@@ -16,6 +25,34 @@ export default function Stockpile() {
   for (const r of rows) {
     (byDoctrine[r.doctrine_id] ??= []).push(r)
   }
+
+  const aggregatedColumns = useMemo<ColumnDef<AggregatedStockpileRow, any>[]>(() => [
+    { header: 'Type', accessorKey: 'type_name', size: 220 },
+    { header: 'Required', accessorKey: 'required_total', size: 110, cell: (i) => qty(i.getValue()) },
+    { header: 'Available', accessorKey: 'available', size: 110, cell: (i) => qty(i.getValue()) },
+    {
+      header: 'Shortfall', accessorKey: 'shortfall', size: 110,
+      cell: (i) => (i.getValue() > 0 ? qty(i.getValue()) : '–'),
+    },
+    {
+      header: 'Used in', accessorKey: 'fitting_count', size: 130,
+      cell: (i) => `${i.getValue()} fitting${i.getValue() === 1 ? '' : 's'}`,
+    },
+    { header: 'Severity', accessorKey: 'severity', size: 110, cell: (i) => severityBadge(i.getValue()) },
+  ], [])
+
+  const doctrineColumns = useMemo<ColumnDef<StockpileRow, any>[]>(() => [
+    { header: 'Fitting', accessorKey: 'fitting_name', size: 200 },
+    { header: 'Type', accessorKey: 'type_name', size: 200 },
+    { header: 'Section', accessorKey: 'slot_section', size: 110 },
+    { header: 'Required', accessorKey: 'required_total', size: 110, cell: (i) => qty(i.getValue()) },
+    { header: 'Available', accessorKey: 'available', size: 110, cell: (i) => qty(i.getValue()) },
+    {
+      header: 'Shortfall', accessorKey: 'shortfall', size: 110,
+      cell: (i) => (i.getValue() > 0 ? qty(i.getValue()) : '–'),
+    },
+    { header: 'Severity', accessorKey: 'severity', size: 110, cell: (i) => severityBadge(i.getValue()) },
+  ], [])
 
   return (
     <Stack>
@@ -32,39 +69,19 @@ export default function Stockpile() {
         <Text c="dimmed">No stockpile targets configured (every fitting's stockpile target is 0).</Text>
       )}
 
-      {aggregatedRows.length > 0 && (
+      {(isLoading || aggregatedRows.length > 0) && (
         <div>
           <Title order={6} c="dimmed" tt="uppercase" mb="xs">
             Combined Shortfall (across every doctrine/fitting)
           </Title>
-          <Table striped highlightOnHover fz="sm">
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Type</Table.Th>
-                <Table.Th>Required</Table.Th>
-                <Table.Th>Available</Table.Th>
-                <Table.Th>Shortfall</Table.Th>
-                <Table.Th>Used in</Table.Th>
-                <Table.Th />
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {aggregatedRows.map((r) => (
-                <Table.Tr key={r.type_id}>
-                  <Table.Td>{r.type_name}</Table.Td>
-                  <Table.Td>{qty(r.required_total)}</Table.Td>
-                  <Table.Td>{qty(r.available)}</Table.Td>
-                  <Table.Td>{r.shortfall > 0 ? qty(r.shortfall) : '–'}</Table.Td>
-                  <Table.Td>{r.fitting_count} fitting{r.fitting_count === 1 ? '' : 's'}</Table.Td>
-                  <Table.Td>
-                    {r.severity && (
-                      <Badge size="xs" color={SEVERITY_COLOR[r.severity] ?? 'dimmed'} variant="light">{r.severity}</Badge>
-                    )}
-                  </Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
+          <DataTable
+            data={aggregatedRows}
+            columns={aggregatedColumns}
+            tableId="doctrine-stockpile-aggregated"
+            exportFilename="doctrine-stockpile-aggregated"
+            getRowId={(r) => String(r.type_id)}
+            isLoading={isLoading}
+          />
         </div>
       )}
 
@@ -73,36 +90,13 @@ export default function Stockpile() {
       {Object.entries(byDoctrine).map(([doctrineId, doctrineRows]) => (
         <div key={doctrineId}>
           <Title order={6} c="dimmed" tt="uppercase" mb="xs">{doctrineRows[0]?.doctrine_name}</Title>
-          <Table striped highlightOnHover fz="sm">
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Fitting</Table.Th>
-                <Table.Th>Type</Table.Th>
-                <Table.Th>Section</Table.Th>
-                <Table.Th>Required</Table.Th>
-                <Table.Th>Available</Table.Th>
-                <Table.Th>Shortfall</Table.Th>
-                <Table.Th />
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {doctrineRows.map((r) => (
-                <Table.Tr key={`${r.fitting_id}-${r.type_id}`}>
-                  <Table.Td>{r.fitting_name}</Table.Td>
-                  <Table.Td>{r.type_name}</Table.Td>
-                  <Table.Td>{r.slot_section}</Table.Td>
-                  <Table.Td>{qty(r.required_total)}</Table.Td>
-                  <Table.Td>{qty(r.available)}</Table.Td>
-                  <Table.Td>{r.shortfall > 0 ? qty(r.shortfall) : '–'}</Table.Td>
-                  <Table.Td>
-                    {r.severity && (
-                      <Badge size="xs" color={SEVERITY_COLOR[r.severity] ?? 'dimmed'} variant="light">{r.severity}</Badge>
-                    )}
-                  </Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
+          <DataTable
+            data={doctrineRows}
+            columns={doctrineColumns}
+            tableId={`doctrine-stockpile-${doctrineId}`}
+            exportFilename={`doctrine-stockpile-${doctrineRows[0]?.doctrine_name ?? doctrineId}`}
+            getRowId={(r) => `${r.fitting_id}-${r.type_id}`}
+          />
         </div>
       ))}
     </Stack>
