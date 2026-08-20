@@ -172,6 +172,7 @@ def do_recategorize_shortlist() -> dict:
     items = storage.load_shortlist()
     category_names = storage.load_sde_category_names()
     changed = 0
+    changed_categories: dict[int, str] = {}
     for item in items:
         new_category = candidate_discovery.guess_category(
             "", item.item, item.volume_m3, storage.get_type_category(item.item_id), category_names,
@@ -179,7 +180,13 @@ def do_recategorize_shortlist() -> dict:
         if new_category != item.category:
             item.category = new_category
             changed += 1
+            if item.item_id is not None:
+                changed_categories[item.item_id] = new_category
     storage.upsert_shortlist(items)
+    # Also patch the already-persisted snapshot the Shortlist page actually
+    # renders (storage.latest_snapshot) - otherwise this fix is invisible
+    # until the next full do_refresh_shortlist run (GitHub issue #5).
+    storage.update_snapshot_categories(changed_categories)
     return {"checked": len(items), "recategorized": changed}
 
 

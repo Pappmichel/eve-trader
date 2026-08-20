@@ -638,6 +638,28 @@ def save_shortlist_snapshot(rows: list[ShortlistRow], run_ts: str) -> None:
         )
 
 
+def update_snapshot_categories(categories: dict[int, str]) -> None:
+    """Patches `category` on the *latest* shortlist_snapshot row for each
+    item_id in `categories` (GitHub issue #5). The Shortlist page renders
+    latest_snapshot(), a frozen copy taken at the last do_refresh_shortlist
+    run - shortlist.category (the live, editable value do_recategorize_
+    shortlist actually updates) isn't what's on screen. Without this, a
+    category fix is invisible until the next full ESI refresh, which needs a
+    logged-in seller character and can be hours away - confirmed real cause
+    of issue #5 reopening twice after the categorization logic itself was
+    already fixed (commit f92b5b8)."""
+    if not categories:
+        return
+    with connect() as conn:
+        run_ts = conn.execute("SELECT MAX(run_ts) FROM shortlist_snapshot").fetchone()[0]
+        if not run_ts:
+            return
+        conn.executemany(
+            "UPDATE shortlist_snapshot SET category = ? WHERE run_ts = ? AND item_id = ?",
+            [(category, run_ts, item_id) for item_id, category in categories.items()],
+        )
+
+
 def save_candidate_universe(candidates: list[Candidate], run_ts: str, table: str = "candidate_universe") -> None:
     # These tables are read in full (storage.read_table, no run_ts filter) as
     # a "current state" snapshot, not as append-only history - replace the

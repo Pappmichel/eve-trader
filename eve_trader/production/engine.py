@@ -2280,7 +2280,11 @@ def invention_logistics(invention_list: list[InventionNeedRow],
         t1_blueprint_type_ids.add(need.t1_blueprint_type_id)
 
         decryptor = DECRYPTORS.get(need.decryptor)
-        if decryptor is not None:
+        # decryptor.type_id == 0 is the "None" entry's own sentinel (no
+        # decryptor used) - not a real EVE item. SDE type_id 0 happens to be
+        # named "#System", so without this guard it showed up as a bogus
+        # demand row (GitHub issue #13).
+        if decryptor is not None and decryptor.type_id != 0:
             demand[decryptor.type_id] = demand.get(decryptor.type_id, 0.0) + need.recommended_invention_runs
 
         recipe = storage.get_invention_recipe(need.t1_blueprint_type_id)
