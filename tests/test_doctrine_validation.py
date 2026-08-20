@@ -25,6 +25,20 @@ def test_build_contract_soll_excludes_hull_and_splits_classes():
     assert consume == {300: 10.0, 400: 1.0}
 
 
+def test_build_contract_soll_fuelbay_and_ship_maintenance_bay_are_consume_tolerant(monkeypatch):
+    # GitHub issue #18: Fuel Bay / Ship Maintenance Bay contents are
+    # quantity-flexible like cargo/drones, not an exact-match position -
+    # a seller doesn't necessarily fill a capital's fuel bay to the exact
+    # reference level.
+    items = [
+        FittingItem("f1", 1, "fuelbay", 500, 2500),
+        FittingItem("f1", 2, "shipmaintenancebay", 600, 1),
+    ]
+    exact, consume = v.build_contract_soll(items)
+    assert exact == {}
+    assert consume == {500: 2500.0, 600: 1.0}
+
+
 def test_charge_merges_with_existing_cargo_quantity_not_additive():
     items = [FittingItem("f1", 1, "cargo", 300, 5), FittingItem("f1", 2, "charge", 300, 1)]
     _exact, consume = v.build_contract_soll(items)
@@ -67,6 +81,24 @@ def test_build_contract_ist_excludes_hull_and_non_included_items():
     ]
     ist = v.build_contract_ist(items, HULL)
     assert ist == {100: 1.0}
+
+
+def test_build_contract_ist_sums_separately_stacked_charges_regardless_of_damage():
+    # GitHub issue #18 - "ammunition of fitted ships might be damaged, that
+    # should be ignored": a real capital contract's item list has several
+    # separate 1-unit stacks of the same charge type_id (each at a different
+    # damage %, shown as its own line in the contract window) plus one
+    # undamaged bulk stack - ESI's contract-items response has no damage
+    # field at all (see build_contract_ist's own docstring), so every stack
+    # of the same type_id must sum together the same way regardless.
+    items = [
+        ContractItemRow(1, 0, HULL, 1, True, True),
+        ContractItemRow(1, 1, 400, 1, True, False),   # "55% damaged" in-game, invisible to ESI
+        ContractItemRow(1, 2, 400, 1, True, False),   # "50% damaged"
+        ContractItemRow(1, 3, 400, 16, True, False),  # undamaged bulk stack
+    ]
+    ist = v.build_contract_ist(items, HULL)
+    assert ist == {400: 18.0}
 
 
 # --------------------------------------------------------------- deviations (B.4)

@@ -65,6 +65,11 @@ class Fitting:
     active: bool = True
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    # GitHub issue #18 - raw plain-text Fuel Bay / Ship Maintenance Bay item
+    # lists (see parser.parse_bay_items), stored verbatim like raw_eft so
+    # they can be redisplayed/re-edited. None for a non-capital fit.
+    fuel_bay_text: Optional[str] = None
+    ship_maintenance_bay_text: Optional[str] = None
 
 
 @dataclass

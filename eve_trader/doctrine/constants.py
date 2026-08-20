@@ -21,14 +21,29 @@ from __future__ import annotations
 # 1:1 (both ultimately come from the same dgmTypeEffects.csv-derived slot
 # names); "drone"/"cargo"/"charge" have no SDE slot effect at all and are
 # classified by SDE *category* instead (see doctrine/parser.py).
-SLOT_SECTIONS = ("low", "med", "high", "rig", "subsystem", "service", "drone", "cargo", "charge")
+#
+# "fuelbay"/"shipmaintenancebay" (GitHub issue #18) are a deliberate
+# addition on top of the original nine: a capital ship's Fuel Bay and Ship
+# Maintenance Bay contents have no representation in standard EFT export
+# text at all (CCP's Fitting Formats spec only covers slots/drones/cargo),
+# so they're entered separately (doctrine/parser.py's parse_bay_items, wired
+# up in EftFittingForm.tsx as two extra plain-text lists next to the EFT
+# paste) rather than through the main grammar above. Fleet Hangar contents
+# are deliberately NOT a separate section - confirmed with the user
+# (2026-08-20): they read as ordinary Cargo Hold in a contract paste anyway,
+# so bucketing them with "cargo" is already correct, nothing to add.
+SLOT_SECTIONS = ("low", "med", "high", "rig", "subsystem", "service", "drone", "cargo", "charge",
+                  "fuelbay", "shipmaintenancebay")
 
 # Exact-match critical positions (Phase 3 spec B.2/D.2) - Hull is handled
 # separately as the matching gate (B.2), not part of this set.
 EXACT_SECTIONS = frozenset({"low", "med", "high", "rig", "subsystem", "service"})
 
-# Tolerance-eligible consumable positions (Phase 3 spec B.2/D.2).
-CONSUME_SECTIONS = frozenset({"drone", "cargo", "charge"})
+# Tolerance-eligible consumable positions (Phase 3 spec B.2/D.2). Fuel Bay/
+# Ship Maintenance Bay content is quantity-flexible for the same reason
+# cargo/charges already are - a seller doesn't necessarily fill a capital's
+# fuel bay to the exact same level shown in a reference fit (GitHub #18).
+CONSUME_SECTIONS = frozenset({"drone", "cargo", "charge", "fuelbay", "shipmaintenancebay"})
 
 # ---------------------------------------------------------------- SDE category IDs
 # Confirmed against this project's existing production/constants.py
