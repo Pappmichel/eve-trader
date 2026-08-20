@@ -1858,16 +1858,48 @@ def test_invention_logistics_needs_bpcs_decryptors_and_datacores(monkeypatch):
     monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id: {"datacores": [(300, 2), (301, 2)]})
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: 0.0)
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id: 0.0)
 
     rows = engine.invention_logistics([need], cfg)
 
     by_type = {r.type_id: r for r in rows}
-    assert by_type[200].needed == 5.0  # bpcs_needed T1 copies, not recommended_invention_runs
+    # GitHub issue #14: every attempt (successful or not) fully consumes one
+    # T1 copy, so demand must track recommended_invention_runs (attempts),
+    # not bpcs_needed (successful inventions only) - bpcs_needed undercounts
+    # real consumption since failed attempts burn a copy too.
+    assert by_type[200].needed == 6.0  # recommended_invention_runs T1 copies, not bpcs_needed
     from eve_trader.production.constants import DECRYPTORS
     parity_type_id = DECRYPTORS["Parity"].type_id
     assert by_type[parity_type_id].needed == 6.0  # one decryptor per attempt
     assert by_type[300].needed == 12.0  # 2 per attempt * 6 attempts
     assert by_type[301].needed == 12.0
+
+
+def test_invention_logistics_t1_blueprint_availability_uses_copy_count_not_generic_stock(monkeypatch):
+    # GitHub issue #14: a T1 blueprint's BPO and BPC share the same type_id -
+    # the T1 blueprint row must go through available_blueprint_copies (which
+    # excludes BPOs), never the generic esi_stock_at_location every other
+    # row uses, or an owned BPO would be miscounted as an available invention
+    # input.
+    from eve_trader.production.models import InventionNeedRow
+    cfg = ProductionConfig(invention_location_id=5000)
+    need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
+                             t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
+                             output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
+    monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id: {"datacores": []})
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+
+    def _esi_stock_at_location(type_id, location_id):
+        assert type_id != 200, "must not call esi_stock_at_location for a T1 blueprint type_id"
+        return 0.0
+    monkeypatch.setattr(storage, "esi_stock_at_location", _esi_stock_at_location)
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id: 4.0)
+
+    rows = engine.invention_logistics([need], cfg)
+
+    by_type = {r.type_id: r for r in rows}
+    assert by_type[200].available == 4.0
+    assert by_type[200].missing == 2.0  # 6 needed - 4 available copies
 
 
 def test_invention_logistics_none_decryptor_does_not_demand_type_zero(monkeypatch):
@@ -1882,6 +1914,7 @@ def test_invention_logistics_none_decryptor_does_not_demand_type_zero(monkeypatc
     monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id: {"datacores": []})
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: 0.0)
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id: 0.0)
 
     rows = engine.invention_logistics([need], cfg)
 

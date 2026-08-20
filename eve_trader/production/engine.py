@@ -2239,21 +2239,45 @@ def invention_logistics(invention_list: list[InventionNeedRow],
     """Datacores/decryptors/T1 BPC copies needed vs. what's sitting at the
     configured invention station (cfg.invention_location_id - GitHub issue
     #9), reusing LogisticsRow's existing "needed vs available at one
-    location" shape. Needs bpcs_needed (not recommended_invention_runs)
-    copies of the T1 blueprint itself - a BPC copy is consumed once
-    attempted, successful or not, but "enough copies queued" means enough to
-    cover every planned attempt at bpcs_needed's own 1-BPC-per-manufacturing-
-    run rate, not the *expected* (probability-adjusted) attempt count.
-    Decryptor/datacore *attempts* do scale with recommended_invention_runs
-    though, since each attempt consumes one of each regardless of outcome."""
+    location" shape. Needs recommended_invention_runs (not bpcs_needed)
+    copies of the T1 blueprint itself (GitHub issue #14, previously
+    reversed): a T1 blueprint copy is entirely consumed by ONE invention
+    attempt regardless of outcome (success or fail) *and* regardless of how
+    many manufacturing runs that specific copy itself holds - a max-run copy
+    is worth exactly the same as a 1-run copy here, which is exactly why
+    players don't always keep max-run copies on hand for this (the report
+    that caught this: "not always are max run copies used"). bpcs_needed
+    (ceil(runs_needed / output_runs), the number of *successful* inventions
+    needed) undercounts real T1-copy consumption, since every failed attempt
+    burns a copy too without producing anything - recommended_invention_runs
+    (ceil(bpcs_needed / probability), the full attempt count) is the number
+    already shown on the Invention tab as "recommended attempts", so this
+    now matches that number exactly (plus whatever overbuild the user has
+    already baked into it upstream).
+
+    Availability for the T1 blueprint itself goes through
+    storage.available_blueprint_copies, not the generic esi_stock_at_location
+    every other row here uses - a T1 blueprint's BPO and BPC share the exact
+    same type_id in EVE's data model (only ever distinguished by which
+    ESI/asset field they come from), so a plain esi_stock_at_location call
+    would count an owned BPO as if it were a usable invention input too.
+    available_blueprint_copies filters to actual copies only (character_
+    blueprints/corp_blueprints' own quantity == -2 sentinel).
+
+    Decryptor/datacore demand was already right - each attempt consumes one
+    of each regardless of outcome, so it already scaled with
+    recommended_invention_runs. Those stay on esi_stock_at_location - plain
+    items, no BPO/BPC ambiguity to worry about."""
     if cfg.invention_location_id is None:
         return []
 
     demand: dict[int, float] = {}
+    t1_blueprint_type_ids: set[int] = set()
     for need in invention_list:
         if need.recommended_invention_runs <= 0:
             continue
-        demand[need.t1_blueprint_type_id] = demand.get(need.t1_blueprint_type_id, 0.0) + need.bpcs_needed
+        demand[need.t1_blueprint_type_id] = demand.get(need.t1_blueprint_type_id, 0.0) + need.recommended_invention_runs
+        t1_blueprint_type_ids.add(need.t1_blueprint_type_id)
 
         decryptor = DECRYPTORS.get(need.decryptor)
         # decryptor.type_id == 0 is the "None" entry's own sentinel (no
@@ -2269,7 +2293,10 @@ def invention_logistics(invention_list: list[InventionNeedRow],
 
     rows = []
     for type_id, needed in demand.items():
-        available = storage.esi_stock_at_location(type_id, cfg.invention_location_id)
+        if type_id in t1_blueprint_type_ids:
+            available = storage.available_blueprint_copies(type_id, cfg.invention_location_id)
+        else:
+            available = storage.esi_stock_at_location(type_id, cfg.invention_location_id)
         sde_type = storage.get_sde_type(type_id)
         name = sde_type[2] if sde_type else str(type_id)
         rows.append(LogisticsRow(
