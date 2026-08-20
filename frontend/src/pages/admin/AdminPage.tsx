@@ -1,15 +1,17 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import {
-  Container, Title, Text, Group, Stack, Button, Table, TextInput, Checkbox, ActionIcon, Divider,
+  Container, Title, Text, Group, Stack, Button, TextInput, Checkbox, ActionIcon, Divider,
 } from '@mantine/core'
 import { IconArrowLeft, IconTrash } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
+import type { ColumnDef } from '@tanstack/react-table'
 
 import { adminApi } from '../../api/client'
 import { useAction } from '../../hooks/useAction'
 import { dateTime } from '../../format'
-import type { AdminUser } from '../../api/types'
+import type { AdminTenant, AdminUser } from '../../api/types'
+import { DataTable } from '../../components/DataTable'
 
 // Mirrors access_gate.ALL_TOOL_KEYS (eve_trader/access_gate.py) - kept in
 // sync by hand, same as every other small fixed-vocabulary list already
@@ -22,29 +24,25 @@ const ALL_TOOL_KEYS = ['trading', 'production', 'doctrine', 'portfolio', 'admin'
 // left behind by a removed user (do_remove_user intentionally leaves the
 // tenant and its data in place).
 function TenantSection() {
-  const { data: tenants } = useQuery({ queryKey: ['admin', 'tenants'], queryFn: adminApi.tenants })
+  const { data: tenants, isLoading } = useQuery({ queryKey: ['admin', 'tenants'], queryFn: adminApi.tenants })
+
+  const columns = useMemo<ColumnDef<AdminTenant, any>[]>(() => [
+    { header: 'Name', accessorKey: 'name', size: 220 },
+    { header: 'Tenant ID', accessorKey: 'tenant_id', size: 300 },
+    { header: 'Created', accessorKey: 'created_at', size: 180, cell: (i) => dateTime(i.getValue()) },
+  ], [])
 
   return (
     <div>
       <Title order={4} mb="xs">Tenants</Title>
-      <Table striped highlightOnHover fz="sm" mb="sm">
-        <Table.Thead>
-          <Table.Tr>
-            <Table.Th>Name</Table.Th>
-            <Table.Th>Tenant ID</Table.Th>
-            <Table.Th>Created</Table.Th>
-          </Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>
-          {(tenants ?? []).map((t) => (
-            <Table.Tr key={t.tenant_id}>
-              <Table.Td>{t.name}</Table.Td>
-              <Table.Td>{t.tenant_id}</Table.Td>
-              <Table.Td>{dateTime(t.created_at)}</Table.Td>
-            </Table.Tr>
-          ))}
-        </Table.Tbody>
-      </Table>
+      <DataTable
+        data={tenants ?? []}
+        columns={columns}
+        tableId="admin-tenants"
+        exportFilename="tenants"
+        getRowId={(t) => t.tenant_id}
+        isLoading={isLoading}
+      />
     </div>
   )
 }
@@ -80,40 +78,41 @@ function UsersSection() {
     [['admin', 'users'], ['admin', 'tenants']])
   const removeUser = useAction('Remove User', adminApi.removeUser, [['admin', 'users']])
 
+  const columns = useMemo<ColumnDef<AdminUser, any>[]>(() => [
+    { header: 'Character', accessorKey: 'character_name', size: 180, cell: (i) => i.getValue() ?? '—' },
+    { header: 'ID', accessorKey: 'character_id', size: 130 },
+    { header: 'Tenant', accessorKey: 'tenant_name', size: 180 },
+    {
+      header: 'Tools', id: 'tools', size: 260, enableSorting: false,
+      cell: (i) => <UserToolCheckboxes user={i.row.original} />,
+    },
+    {
+      header: '', id: 'actions', size: 60, enableSorting: false,
+      cell: (i) => (
+        <ActionIcon size="sm" variant="subtle" color="danger"
+          onClick={() => removeUser.mutate(i.row.original.character_id)} loading={removeUser.isPending}>
+          <IconTrash size={14} />
+        </ActionIcon>
+      ),
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ], [removeUser])
+
   return (
     <div>
       <Title order={4} mb="xs">Users</Title>
       {!isLoading && (users ?? []).length === 0 && <Text c="dimmed" size="sm" mb="sm">No users registered yet.</Text>}
-      {(users ?? []).length > 0 && (
-        <Table striped highlightOnHover fz="sm" mb="sm">
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th>Character</Table.Th>
-              <Table.Th>ID</Table.Th>
-              <Table.Th>Tenant</Table.Th>
-              <Table.Th>Tools</Table.Th>
-              <Table.Th />
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {(users ?? []).map((u) => (
-              <Table.Tr key={u.character_id}>
-                <Table.Td>{u.character_name ?? '—'}</Table.Td>
-                <Table.Td>{u.character_id}</Table.Td>
-                <Table.Td>{u.tenant_name}</Table.Td>
-                <Table.Td><UserToolCheckboxes user={u} /></Table.Td>
-                <Table.Td>
-                  <ActionIcon size="sm" variant="subtle" color="danger"
-                    onClick={() => removeUser.mutate(u.character_id)} loading={removeUser.isPending}>
-                    <IconTrash size={14} />
-                  </ActionIcon>
-                </Table.Td>
-              </Table.Tr>
-            ))}
-          </Table.Tbody>
-        </Table>
+      {(isLoading || (users ?? []).length > 0) && (
+        <DataTable
+          data={users ?? []}
+          columns={columns}
+          tableId="admin-users"
+          exportFilename="users"
+          getRowId={(u) => String(u.character_id)}
+          isLoading={isLoading}
+        />
       )}
-      <Group>
+      <Group mt="sm">
         <TextInput placeholder="Character name" value={characterName}
           onChange={(e) => setCharacterName(e.currentTarget.value)} w={220} />
         <Button size="xs" disabled={!characterName.trim()} loading={addUser.isPending}
