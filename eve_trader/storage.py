@@ -1437,6 +1437,31 @@ def get_owned_bpo_best_me_te(blueprint_type_id: int) -> Optional[tuple[int, int]
     return (best_me, best_te)
 
 
+def available_blueprint_copies(type_id: int, location_id: Optional[int],
+                                tables: tuple[str, str] = ("character_blueprints", "corp_blueprints")) -> float:
+    """Counts owned blueprint *copies* (quantity == -2 in ESI's blueprint
+    model - see get_owned_bpo_best_me_te's own runs == -1 check for the BPO
+    side of this same sentinel) of `type_id` sitting at `location_id`,
+    filtered on resolved_location_id (see replace_blueprints) the same way
+    esi_stock_at_location filters on it.
+
+    Used by production/engine.py's invention_logistics (GitHub issue #14)
+    instead of the generic esi_stock_at_location: a T1 blueprint's BPO and
+    BPC share the exact same type_id in EVE's data model, so a plain
+    esi_stock_at_location call against character_assets/corp_assets (which
+    has no is_blueprint_copy filter of its own) would count an owned BPO as
+    if it were a usable invention input too - only copies actually are."""
+    with connect() as conn:
+        total = 0.0
+        for table in tables:
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE type_id = ? AND resolved_location_id = ? AND quantity = -2",
+                (type_id, location_id),
+            ).fetchone()
+            total += row[0]
+    return total
+
+
 # ---------------------------------------------------------------------- reads
 def read_table(table: str) -> pd.DataFrame:
     with connect() as conn:
