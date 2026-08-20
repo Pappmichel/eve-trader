@@ -11,22 +11,29 @@ import { useAction } from '../../hooks/useAction'
 import { isk, dateTime } from '../../format'
 import { EftFittingForm } from './EftFittingForm'
 
-function EditFittingModal({ fittingId, initialRawEft, opened, onClose }: {
+function EditFittingModal({ fittingId, initialRawEft, initialFuelBayText, initialShipMaintenanceBayText,
+  opened, onClose }: {
   fittingId: string
   initialRawEft: string
+  initialFuelBayText: string
+  initialShipMaintenanceBayText: string
   opened: boolean
   onClose: () => void
 }) {
-  const save = useAction('Save Fitting', (rawEft: string) => doctrineApi.updateFitting(fittingId, { raw_eft: rawEft }), [
-    ['doctrine', 'status'], ['doctrine', 'fitting-detail', fittingId],
-  ])
+  const save = useAction('Save Fitting', (args: { rawEft: string; fuelBayText: string; shipMaintenanceBayText: string }) =>
+    doctrineApi.updateFitting(fittingId, {
+      raw_eft: args.rawEft, fuel_bay_text: args.fuelBayText || null,
+      ship_maintenance_bay_text: args.shipMaintenanceBayText || null,
+    }), [['doctrine', 'status'], ['doctrine', 'fitting-detail', fittingId]])
 
   return (
     <Modal opened={opened} onClose={onClose} title="Edit Fitting" size="lg">
       {/* key=opened resets EftFittingForm's own internal state each time the modal reopens */}
-      <EftFittingForm key={String(opened)} initialRawEft={initialRawEft}>
-        {({ rawEft }) => (
-          <Button onClick={() => save.mutate(rawEft, { onSuccess: () => onClose() })} loading={save.isPending}>
+      <EftFittingForm key={String(opened)} initialRawEft={initialRawEft} initialFuelBayText={initialFuelBayText}
+        initialShipMaintenanceBayText={initialShipMaintenanceBayText}>
+        {({ rawEft, fuelBayText, shipMaintenanceBayText }) => (
+          <Button onClick={() => save.mutate({ rawEft, fuelBayText, shipMaintenanceBayText },
+            { onSuccess: () => onClose() })} loading={save.isPending}>
             Save Changes
           </Button>
         )}
@@ -38,10 +45,12 @@ function EditFittingModal({ fittingId, initialRawEft, opened, onClose }: {
 const SEVERITY_COLOR: Record<string, string> = { critical: 'danger', tolerable: 'warn', info: 'dimmed' }
 const AMPEL_COLOR: Record<string, string> = { green: 'accent', yellow: 'warn', red: 'danger', gray: 'dimmed' }
 
-const SECTION_ORDER = ['low', 'med', 'high', 'rig', 'subsystem', 'service', 'drone', 'cargo', 'charge']
+const SECTION_ORDER = ['low', 'med', 'high', 'rig', 'subsystem', 'service', 'drone', 'cargo', 'charge',
+  'fuelbay', 'shipmaintenancebay']
 const SECTION_LABEL: Record<string, string> = {
   low: 'Low Slots', med: 'Mid Slots', high: 'High Slots', rig: 'Rigs', subsystem: 'Subsystems',
   service: 'Services', drone: 'Drones', cargo: 'Cargo', charge: 'Charges (loaded)',
+  fuelbay: 'Fuel Bay', shipmaintenancebay: 'Ship Maintenance Bay',
 }
 
 export default function FittingDetail() {
@@ -92,8 +101,9 @@ export default function FittingDetail() {
         </Group>
       </Group>
 
-      <EditFittingModal fittingId={fittingId} initialRawEft={fitting.raw_eft} opened={editOpen}
-        onClose={() => setEditOpen(false)} />
+      <EditFittingModal fittingId={fittingId} initialRawEft={fitting.raw_eft}
+        initialFuelBayText={fitting.fuel_bay_text ?? ''} initialShipMaintenanceBayText={fitting.ship_maintenance_bay_text ?? ''}
+        opened={editOpen} onClose={() => setEditOpen(false)} />
 
       <Group>
         <NumberInput label="Contract target" defaultValue={fitting.contract_target} min={0}

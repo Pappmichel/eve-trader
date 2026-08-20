@@ -327,3 +327,49 @@ def parse_fitting(raw_text: str, resolve_name: NameResolver, resolve_slot: SlotR
 
     return ParsedFitting(hull_type_id=hull.type_id, hull_name=hull.type_name, fit_name=fit_name,
                           items=items, issues=issues)
+
+
+def parse_bay_items(text: str, resolve_name: NameResolver, slot_section: str,
+                     line_no_start: int = 1) -> tuple[list[ParsedItem], list[ParsedIssue]]:
+    """GitHub issue #18 - Fuel Bay / Ship Maintenance Bay contents, entered
+    as a separate plain-text list rather than through parse_fitting's own
+    EFT grammar above (which has no syntax for either bay at all - CCP's
+    Fitting Formats spec only covers slots/drones/cargo). One item per line:
+    plain "Item Name" (qty 1) or "Item Name xN" - the same qty-suffix
+    grammar parse_fitting's own body lines use, just without any slot/
+    section classification, since every resolved line here becomes exactly
+    `slot_section` (the caller passes "fuelbay" or "shipmaintenancebay").
+
+    Deliberately no comma/charge-pairing logic (Ship Maintenance Bay holds
+    plain ships/haulers, Fuel Bay holds a single fuel material - neither
+    ever pairs a module with a loaded charge the way a fitted slot can) and
+    no offline-suffix handling (bay contents are never "/offline", that
+    only applies to fitted modules). `line_no_start` lets the caller number
+    these continuing on from wherever parse_fitting's own item line numbers
+    left off, so a bay-content issue's line_no never collides with a main
+    EFT body issue's."""
+    items: list[ParsedItem] = []
+    issues: list[ParsedIssue] = []
+    line_no = line_no_start
+    for raw_line in _normalize(text):
+        if not raw_line:
+            continue
+        remainder = raw_line
+        has_qty = False
+        qty = 1
+        qty_match = _QTY_SUFFIX_RE.search(remainder)
+        if qty_match:
+            qty = int(qty_match.group(1))
+            if qty >= 1:
+                remainder = _QTY_SUFFIX_RE.sub("", remainder)
+                has_qty = True
+        remainder = remainder.strip()
+        resolved = resolve_name(remainder) if remainder else None
+        if resolved is None:
+            issues.append(ParsedIssue(line_no, raw_line, ISSUE_KIND_UNRESOLVED_NAME,
+                                       f"Unbekanntes Item: '{remainder}'."))
+        else:
+            items.append(ParsedItem(line_no=line_no, slot_section=slot_section, type_id=resolved.type_id,
+                                     quantity=float(qty if has_qty else 1), is_offline=False))
+        line_no += 1
+    return items, issues

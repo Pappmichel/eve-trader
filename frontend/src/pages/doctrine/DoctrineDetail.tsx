@@ -23,9 +23,11 @@ function AddFittingModal({ doctrineId, opened, onClose }: { doctrineId: string; 
   const [contractTarget, setContractTarget] = useState(0)
   const [stockpileTarget, setStockpileTarget] = useState(0)
 
-  const add = useAction('Add Fitting', (rawEft: string) => doctrineApi.addFitting(doctrineId, {
-    raw_eft: rawEft, contract_target: contractTarget, stockpile_target: stockpileTarget,
-  }), [['doctrine', 'status'], ['doctrine', 'doctrine-detail', doctrineId]])
+  const add = useAction('Add Fitting', (args: { rawEft: string; fuelBayText: string; shipMaintenanceBayText: string }) =>
+    doctrineApi.addFitting(doctrineId, {
+      raw_eft: args.rawEft, contract_target: contractTarget, stockpile_target: stockpileTarget,
+      fuel_bay_text: args.fuelBayText || null, ship_maintenance_bay_text: args.shipMaintenanceBayText || null,
+    }), [['doctrine', 'status'], ['doctrine', 'doctrine-detail', doctrineId]])
 
   const reset = () => { setContractTarget(0); setStockpileTarget(0) }
 
@@ -33,13 +35,14 @@ function AddFittingModal({ doctrineId, opened, onClose }: { doctrineId: string; 
     <Modal opened={opened} onClose={() => { onClose(); reset() }} title="New Fitting" size="lg">
       {/* key=opened resets EftFittingForm's own internal state each time the modal reopens */}
       <EftFittingForm key={String(opened)}>
-        {({ rawEft }) => (
+        {({ rawEft, fuelBayText, shipMaintenanceBayText }) => (
           <>
             <Group grow>
               <NumberInput label="Contract target" value={contractTarget} min={0} onChange={(v) => setContractTarget(Number(v))} />
               <NumberInput label="Stockpile target (sets)" value={stockpileTarget} min={0} onChange={(v) => setStockpileTarget(Number(v))} />
             </Group>
-            <Button onClick={() => add.mutate(rawEft, { onSuccess: () => { onClose(); reset() } })} loading={add.isPending}>
+            <Button onClick={() => add.mutate({ rawEft, fuelBayText, shipMaintenanceBayText },
+              { onSuccess: () => { onClose(); reset() } })} loading={add.isPending}>
               Save Fitting
             </Button>
           </>
