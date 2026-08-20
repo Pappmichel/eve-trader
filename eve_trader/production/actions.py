@@ -173,6 +173,33 @@ def do_add_stock_target(type_name: str, backup_stock: float = 0,
             "home_market_stock": home_market_stock, "jita_market_stock": jita_market_stock}
 
 
+def do_update_stock_target(type_id: int, backup_stock: float | None = None,
+                            home_market_stock: float | None = None, jita_market_stock: float | None = None) -> dict:
+    """Edits an *existing* stock target's numeric fields in place (GitHub
+    issue #16 - "should be able to change the targets directly in the table,
+    like the targets on the doctrine table"). Unlike do_add_stock_target,
+    takes type_id directly (the row already exists - no name lookup/exact-
+    match ambiguity to resolve) and each field is genuinely optional:
+    storage.upsert_stock_target already treats None as "leave this field
+    alone" (see its own docstring), so editing just one column in the table
+    doesn't require also resending the other two's current values.
+
+    Doesn't invalidate the discover-build-candidates cache (unlike add/
+    remove) - editing an existing target's numbers doesn't change *which*
+    items count as "already tracked" (the only thing that cache depends
+    on), only add/remove/SDE-refresh/decryptor-change do."""
+    if (backup_stock is not None and backup_stock < 0) or (home_market_stock is not None and home_market_stock < 0) \
+            or (jita_market_stock is not None and jita_market_stock < 0):
+        raise ActionError("Stock targets cannot be negative.")
+    sde_type = storage.get_sde_type(type_id)
+    if sde_type is None:
+        raise ActionError(f"Unknown type_id {type_id} - refresh SDE first?")
+    type_name = sde_type[2]
+    storage.upsert_stock_target(type_id, type_name, backup_stock, home_market_stock, jita_market_stock)
+    return {"type_id": type_id, "type_name": type_name, "backup_stock": backup_stock,
+            "home_market_stock": home_market_stock, "jita_market_stock": jita_market_stock}
+
+
 def do_remove_stock_target(type_id: int) -> dict:
     storage.delete_stock_target(type_id)
     invalidate_discover_cache()  # this item is eligible for discovery again
