@@ -1,12 +1,14 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Stack, Title, Text, Table, Badge, Button, Group, Modal, TextInput, Textarea } from '@mantine/core'
+import { Stack, Title, Text, Badge, Button, Group, Modal, TextInput, Textarea } from '@mantine/core'
 import { Link } from 'react-router-dom'
+import type { ColumnDef } from '@tanstack/react-table'
 
 import { doctrineApi } from '../../api/client'
 import type { DoctrineStatus } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { HintCard } from '../../components/HintCard'
+import { DataTable } from '../../components/DataTable'
 
 const AMPEL_COLOR: Record<string, string> = { green: 'accent', yellow: 'warn', red: 'danger', gray: 'dimmed' }
 
@@ -35,29 +37,35 @@ function CreateDoctrineModal({ opened, onClose }: { opened: boolean; onClose: ()
   )
 }
 
-function DoctrineRow({ d }: { d: DoctrineStatus }) {
-  const validSum = d.fittings.reduce((acc, f) => acc + f.valid_contracts, 0)
-  const targetSum = d.fittings.reduce((acc, f) => acc + f.contract_target, 0)
-  return (
-    <Table.Tr>
-      <Table.Td>
-        <Link to={`/doctrine/${d.doctrine_id}`}>{d.doctrine_name}</Link>
-      </Table.Td>
-      <Table.Td>{d.fittings.length}</Table.Td>
-      <Table.Td>
-        <Group gap="xs" wrap="nowrap">
-          <AmpelBadge status={d.contract_rollup} label={`${validSum}/${targetSum}`} />
-        </Group>
-      </Table.Td>
-      <Table.Td><AmpelBadge status={d.stockpile_rollup} label={d.stockpile_rollup} /></Table.Td>
-      <Table.Td><AmpelBadge status={d.overall} label={d.overall} /></Table.Td>
-    </Table.Tr>
-  )
-}
-
 export default function Doctrines() {
   const { data, isLoading } = useQuery({ queryKey: ['doctrine', 'status'], queryFn: doctrineApi.listDoctrines })
   const [modalOpen, setModalOpen] = useState(false)
+
+  const columns = useMemo<ColumnDef<DoctrineStatus, any>[]>(() => [
+    {
+      header: 'Name', accessorKey: 'doctrine_name', size: 220,
+      cell: (i) => <Link to={`/doctrine/${i.row.original.doctrine_id}`}>{i.getValue()}</Link>,
+    },
+    { header: 'Fittings', accessorFn: (d) => d.fittings.length, id: 'fittings_count', size: 100 },
+    {
+      header: 'Contracts', id: 'contracts', size: 130,
+      accessorFn: (d) => d.fittings.reduce((acc, f) => acc + f.valid_contracts, 0),
+      cell: (i) => {
+        const d = i.row.original
+        const validSum = d.fittings.reduce((acc, f) => acc + f.valid_contracts, 0)
+        const targetSum = d.fittings.reduce((acc, f) => acc + f.contract_target, 0)
+        return <AmpelBadge status={d.contract_rollup} label={`${validSum}/${targetSum}`} />
+      },
+    },
+    {
+      header: 'Stockpile', accessorKey: 'stockpile_rollup', size: 120,
+      cell: (i) => <AmpelBadge status={i.getValue()} label={i.getValue()} />,
+    },
+    {
+      header: 'Overall', accessorKey: 'overall', size: 120,
+      cell: (i) => <AmpelBadge status={i.getValue()} label={i.getValue()} />,
+    },
+  ], [])
 
   return (
     <Stack>
@@ -71,24 +79,17 @@ export default function Doctrines() {
         contracts/stock, gray = no data yet (never synced, or no asset-scanning character has synced yet).
       </HintCard>
 
-      {isLoading && <Text c="dimmed">Loading…</Text>}
       {!isLoading && (data?.length ?? 0) === 0 && <Text c="dimmed">No doctrines yet - create one to get started.</Text>}
 
-      {(data?.length ?? 0) > 0 && (
-        <Table striped highlightOnHover>
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th>Name</Table.Th>
-              <Table.Th>Fittings</Table.Th>
-              <Table.Th>Contracts</Table.Th>
-              <Table.Th>Stockpile</Table.Th>
-              <Table.Th>Overall</Table.Th>
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {data!.map((d) => <DoctrineRow key={d.doctrine_id} d={d} />)}
-          </Table.Tbody>
-        </Table>
+      {(isLoading || (data?.length ?? 0) > 0) && (
+        <DataTable
+          data={data ?? []}
+          columns={columns}
+          tableId="doctrine-doctrines"
+          exportFilename="doctrines"
+          getRowId={(d) => d.doctrine_id}
+          isLoading={isLoading}
+        />
       )}
 
       <CreateDoctrineModal opened={modalOpen} onClose={() => setModalOpen(false)} />

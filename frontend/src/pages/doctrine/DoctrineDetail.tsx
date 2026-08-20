@@ -1,15 +1,17 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
-  Stack, Title, Text, Table, Badge, Button, Group, Modal, NumberInput, ActionIcon,
+  Stack, Title, Text, Badge, Button, Group, Modal, NumberInput, ActionIcon,
 } from '@mantine/core'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { IconCheck, IconTrash } from '@tabler/icons-react'
+import type { ColumnDef } from '@tanstack/react-table'
 
 import { doctrineApi } from '../../api/client'
 import type { FittingStatus } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { HintCard } from '../../components/HintCard'
+import { DataTable } from '../../components/DataTable'
 import { isk } from '../../format'
 import { EftFittingForm } from './EftFittingForm'
 
@@ -87,39 +89,6 @@ function TargetEditor({ fittingId, contractTarget, stockpileTarget, doctrineId }
   )
 }
 
-function FittingRow({ f, onDelete }: { f: FittingStatus; onDelete: (id: string) => void }) {
-  return (
-    <Table.Tr>
-      <Table.Td><Link to={`/doctrine/fittings/${f.fitting_id}`}>{f.fitting_name}</Link></Table.Td>
-      <Table.Td>{f.hull_name}</Table.Td>
-      <Table.Td>
-        {f.last_synced_at ? (
-          <AmpelBadge status={f.contract_status} label={`${f.valid_contracts}/${f.contract_target}`} />
-        ) : (
-          <Badge color="dimmed" variant="light">not synced yet</Badge>
-        )}
-      </Table.Td>
-      <Table.Td>
-        {f.assets_available ? (
-          <AmpelBadge status={f.stockpile_status} label={f.stockpile_status} />
-        ) : (
-          <Badge color="dimmed" variant="light">no asset data</Badge>
-        )}
-      </Table.Td>
-      <Table.Td>
-        <TargetEditor fittingId={f.fitting_id} contractTarget={f.contract_target}
-          stockpileTarget={f.stockpile_target} doctrineId={f.doctrine_id} />
-      </Table.Td>
-      <Table.Td>{f.multibuy_cost != null ? isk(f.multibuy_cost) : '–'}</Table.Td>
-      <Table.Td>
-        <ActionIcon size="sm" variant="subtle" color="danger" onClick={() => onDelete(f.fitting_id)}>
-          <IconTrash size={14} />
-        </ActionIcon>
-      </Table.Td>
-    </Table.Tr>
-  )
-}
-
 export default function DoctrineDetail() {
   const { doctrineId } = useParams<{ doctrineId: string }>()
   const navigate = useNavigate()
@@ -136,6 +105,56 @@ export default function DoctrineDetail() {
   const deleteFitting = useAction('Delete Fitting', doctrineApi.deleteFitting, [
     ['doctrine', 'status'], ['doctrine', 'doctrine-detail', doctrineId ?? ''],
   ])
+
+  const columns = useMemo<ColumnDef<FittingStatus, any>[]>(() => [
+    {
+      header: 'Fitting', accessorKey: 'fitting_name', size: 200,
+      cell: (i) => <Link to={`/doctrine/fittings/${i.row.original.fitting_id}`}>{i.getValue()}</Link>,
+    },
+    { header: 'Hull', accessorKey: 'hull_name', size: 160 },
+    {
+      header: 'Contracts', id: 'contracts', size: 150,
+      accessorFn: (f) => f.valid_contracts,
+      cell: (i) => {
+        const f = i.row.original
+        return f.last_synced_at
+          ? <AmpelBadge status={f.contract_status} label={`${f.valid_contracts}/${f.contract_target}`} />
+          : <Badge color="dimmed" variant="light">not synced yet</Badge>
+      },
+    },
+    {
+      header: 'Stockpile', accessorKey: 'stockpile_status', size: 150,
+      cell: (i) => {
+        const f = i.row.original
+        return f.assets_available
+          ? <AmpelBadge status={f.stockpile_status} label={f.stockpile_status} />
+          : <Badge color="dimmed" variant="light">no asset data</Badge>
+      },
+    },
+    {
+      header: 'Targets (Contract / Stockpile)', id: 'targets', size: 190,
+      cell: (i) => {
+        const f = i.row.original
+        return (
+          <TargetEditor fittingId={f.fitting_id} contractTarget={f.contract_target}
+            stockpileTarget={f.stockpile_target} doctrineId={f.doctrine_id} />
+        )
+      },
+    },
+    {
+      header: 'Multibuy', accessorKey: 'multibuy_cost', size: 130,
+      cell: (i) => (i.getValue() != null ? isk(i.getValue()) : '–'),
+    },
+    {
+      header: '', id: 'actions', size: 60, enableSorting: false,
+      cell: (i) => (
+        <ActionIcon size="sm" variant="subtle" color="danger" onClick={() => deleteFitting.mutate(i.row.original.fitting_id)}>
+          <IconTrash size={14} />
+        </ActionIcon>
+      ),
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ], [deleteFitting])
 
   if (!doctrineId) return null
   if (isLoading) return <Text c="dimmed">Loading…</Text>
@@ -160,24 +179,13 @@ export default function DoctrineDetail() {
       {doctrine.fittings.length === 0 && <HintCard>No fittings yet - click "Add Fitting" to paste an EFT export.</HintCard>}
 
       {doctrine.fittings.length > 0 && (
-        <Table striped highlightOnHover>
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th>Fitting</Table.Th>
-              <Table.Th>Hull</Table.Th>
-              <Table.Th>Contracts</Table.Th>
-              <Table.Th>Stockpile</Table.Th>
-              <Table.Th>Targets (Contract / Stockpile)</Table.Th>
-              <Table.Th>Multibuy</Table.Th>
-              <Table.Th />
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {doctrine.fittings.map((f) => (
-              <FittingRow key={f.fitting_id} f={f} onDelete={(id) => deleteFitting.mutate(id)} />
-            ))}
-          </Table.Tbody>
-        </Table>
+        <DataTable
+          data={doctrine.fittings}
+          columns={columns}
+          tableId="doctrine-detail-fittings"
+          exportFilename={`doctrine-${doctrine.doctrine_name}-fittings`}
+          getRowId={(f) => f.fitting_id}
+        />
       )}
 
       <AddFittingModal doctrineId={doctrineId} opened={modalOpen} onClose={() => setModalOpen(false)} />
