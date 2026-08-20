@@ -77,6 +77,42 @@ def test_replace_blueprints_resolves_location_through_a_container(tenant):
     assert row[0] == LOCATION_ID
 
 
+def test_available_blueprint_copies_excludes_bpos(tenant):
+    # GitHub issue #14: a T1 blueprint's BPO and BPC share the same type_id -
+    # available_blueprint_copies must only count actual copies (quantity ==
+    # -2), never an owned BPO (quantity == -1) of the same type_id, or the
+    # Invention Logistics tab would report a BPO as if it were a usable
+    # invention input.
+    storage.replace_blueprints("character_blueprints", [
+        _bp_row(1, TYPE_ID, me=10, te=20, runs=-1, location_id=LOCATION_ID),  # BPO - must not count
+        _bp_row(2, TYPE_ID, me=0, te=0, runs=3, location_id=LOCATION_ID, quantity=-2),  # BPC
+        _bp_row(3, TYPE_ID, me=0, te=0, runs=1, location_id=LOCATION_ID, quantity=-2),  # BPC
+    ])
+
+    assert storage.available_blueprint_copies(TYPE_ID, LOCATION_ID) == 2
+
+
+def test_available_blueprint_copies_sums_character_and_corp_tables(tenant):
+    storage.replace_blueprints("character_blueprints", [
+        _bp_row(1, TYPE_ID, me=0, te=0, runs=1, location_id=LOCATION_ID, quantity=-2),
+    ])
+    storage.replace_blueprints("corp_blueprints", [
+        _bp_row(2, TYPE_ID, me=0, te=0, runs=1, location_id=LOCATION_ID, quantity=-2),
+    ])
+
+    assert storage.available_blueprint_copies(TYPE_ID, LOCATION_ID) == 2
+
+
+def test_available_blueprint_copies_filters_to_location(tenant):
+    other_location = 1000000000002
+    storage.replace_blueprints("character_blueprints", [
+        _bp_row(1, TYPE_ID, me=0, te=0, runs=1, location_id=LOCATION_ID, quantity=-2),
+        _bp_row(2, TYPE_ID, me=0, te=0, runs=1, location_id=other_location, quantity=-2),
+    ])
+
+    assert storage.available_blueprint_copies(TYPE_ID, LOCATION_ID) == 1
+
+
 def test_replace_blueprints_without_matching_asset_row_keeps_own_location(tenant):
     # No corresponding character_assets row for the container - falls back
     # to the blueprint's own (unwrapped) location_id rather than erroring or
