@@ -159,3 +159,37 @@ def test_get_cached_structure_names_batches_and_preserves_was_cached_semantics(t
 
 def test_get_cached_structure_names_empty_input_returns_empty_dict(tenant):
     assert storage.get_cached_structure_names([]) == {}
+
+
+def test_set_cached_structure_name_stores_solar_system_id(tenant):
+    storage.set_cached_structure_name(LOCATION_ID, "C-J Keepstar", solar_system_id=30000142)
+
+    assert storage.get_structure_system_id(LOCATION_ID) == 30000142
+
+
+def test_set_cached_structure_name_never_overwrites_system_id_with_none(tenant):
+    # GitHub issue #12: a later best-effort resolve (e.g. force=True retried
+    # through docking-history fallback, which happened to not return
+    # solar_system_id this time) must not blow away a value an earlier
+    # successful resolve already captured.
+    storage.set_cached_structure_name(LOCATION_ID, "C-J Keepstar", solar_system_id=30000142)
+    storage.set_cached_structure_name(LOCATION_ID, "C-J Keepstar (renamed)", solar_system_id=None)
+
+    assert storage.get_structure_system_id(LOCATION_ID) == 30000142
+
+
+def test_get_structure_system_id_none_when_never_resolved(tenant):
+    assert storage.get_structure_system_id(LOCATION_ID) is None
+
+
+def test_load_category_system_ids_joins_category_locations_and_structure_names(tenant):
+    storage.upsert_category_location("Reactions", LOCATION_ID)
+    storage.set_cached_structure_name(LOCATION_ID, "C-J Keepstar", solar_system_id=30000142)
+    other_location = 1000000000002
+    storage.upsert_category_location("Capital Components", other_location)
+    # Never resolved - must be absent from the result, not present with None.
+    storage.upsert_category_location("Advanced Components", 1000000000003)
+
+    result = storage.load_category_system_ids()
+
+    assert result == {"Reactions": 30000142}

@@ -276,18 +276,21 @@ class ESIClient:
         return self._get_all_pages(f"/corporations/{corporation_id}/structures/",
                                     params={"datasource": "tranquility"}, auth_role=auth_role)
 
-    def get_structure_name(self, structure_id: int, auth_role: str) -> Optional[str]:
-        """Resolves a player-owned Upwell structure's name (never in the SDE,
+    def get_structure_name(self, structure_id: int, auth_role: str) -> dict:
+        """Resolves a player-owned Upwell structure's info (never in the SDE,
         unlike NPC stations) - requires esi-universe.read_structures.v1 and a
         character that can actually "see" the structure (has docking rights/
         has been there), so a 403 from a character without access isn't
         necessarily fatal - caller should retry with a different producer
         character before giving up (see production/actions.py
         do_resolve_structure_name, same fallback pattern esi_sync.py uses for
-        corp-level calls)."""
-        info = self._get(f"/universe/structures/{structure_id}/",
+        corp-level calls). Returns the raw ESI dict (at least `name`, usually
+        also `solar_system_id` - GitHub issue #12 needs the latter too, not
+        just the name this used to return alone) rather than unpacking it
+        here, so a caller needing more of the response later doesn't need
+        another round trip."""
+        return self._get(f"/universe/structures/{structure_id}/",
                           params={"datasource": "tranquility"}, auth_role=auth_role)
-        return info.get("name")
 
     # -------------------------------------------------------------- markets
     def region_order_stats(self, region_id: int, type_id: int) -> OrderStats:
