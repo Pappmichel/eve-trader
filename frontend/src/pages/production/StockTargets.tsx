@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Title, Text, Group, TextInput, NumberInput, Button, Select, Stack } from '@mantine/core'
+import { Card, Title, Text, Group, TextInput, NumberInput, Button, Select, Stack, ActionIcon, Tooltip } from '@mantine/core'
+import { IconCheck, IconAlertTriangle } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
@@ -14,26 +15,70 @@ const STOCK_KEYS = [
   ['production', 'stock-targets'],
   ['production', 'plan'],
 ]
+const MANUAL_STOCK_KEYS = [
+  ['production', 'manual-stock'],
+  ['production', 'stock-value'],
+]
 
-// Uncontrolled NumberInput (defaultValue, mutate()-per-keystroke) reused
-// across every selected item - confirmed real bug: without a `key` forcing a
-// remount, switching the "Item" Select kept showing the *previous* item's
-// value (React reuses the same DOM node, defaultValue only applies on first
-// mount), so an edit right after switching items silently saved a stale
-// number against the *new* type_id. Local controlled state + `key={typeId}`
-// (remounts on selection change, giving each item its own fresh draft) +
-// commit on blur instead of every keystroke (was firing a POST + toast per
-// digit typed) fixes both at once.
-function CurrentStockInput({ initial, onCommit }: { initial: number; onCommit: (count: number) => void }) {
-  const [value, setValue] = useState<number | ''>(initial)
+// A manual-stock override this many times larger than everything the item's
+// own targets add up to is almost certainly a stray/mistyped value, not real
+// inventory (GitHub issue #17 - confirmed real case: Small Shield Extender
+// II showing 987,654 units in manual stock). Ratio-based against the item's
+// own targets rather than a flat number, since a raw material's legitimate
+// stock can easily run into the hundreds of thousands on its own.
+const MANUAL_STOCK_OUTLIER_MULTIPLIER = 50
+
+function isManualStockOutlier(manual: number, target: StockTarget): boolean {
+  const targetSum = target.backup_stock + (target.home_market_stock ?? 0) + (target.jita_market_stock ?? 0)
+  return targetSum > 0 && manual > targetSum * MANUAL_STOCK_OUTLIER_MULTIPLIER
+}
+
+// Inline cell editor (GitHub issue #16 - "should be able to change the
+// targets directly in the table, like the targets on the doctrine table")
+// - same "local draft state, checkmark appears once it differs from the
+// saved value, click to save" pattern as doctrine/DoctrineDetail.tsx's own
+// TargetEditor. Safe to key state purely off the initial `value` prop
+// (no resync effect needed) for the same reason that component doesn't need
+// one either: a successful save's own draft value becomes the next `value`
+// this cell receives, so draft and value naturally converge without one -
+// see DataTable's `getRowId` prop (used below) for what actually *would*
+// break this if it were missing: without a stable per-row identity, sorting
+// or filtering could hand this same mounted component a *different* row's
+// data on cell state, silently saving one item's edit against another's
+// type_id (the exact bug StockTargets.tsx's old CurrentStockInput hit once,
+// documented in that component's own history).
+function EditableNumberCell({ value, ariaLabel, isPending, onSave, flagged }: {
+  value: number
+  ariaLabel: string
+  isPending: boolean
+  onSave: (value: number) => void
+  flagged?: boolean
+}) {
+  const [draft, setDraft] = useState(value)
+  const dirty = draft !== value
   return (
-    <NumberInput
-      label="Current stock"
-      value={value}
-      onChange={(v) => setValue(v === '' ? '' : Number(v))}
-      onBlur={() => onCommit(value === '' ? 0 : Number(value))}
-      min={0}
-    />
+    <Group gap={4} wrap="nowrap">
+      <NumberInput
+        value={draft}
+        onChange={(v) => setDraft(v === '' ? 0 : Number(v))}
+        min={0}
+        size="xs"
+        w={90}
+        aria-label={ariaLabel}
+        styles={flagged ? { input: { borderColor: 'var(--mantine-color-danger-5)' } } : undefined}
+      />
+      {flagged && !dirty && (
+        <Tooltip label="Far larger than every target set for this item - likely a stray value. Edit and save to fix.">
+          <IconAlertTriangle size={14} color="var(--mantine-color-danger-5)" />
+        </Tooltip>
+      )}
+      {dirty && (
+        <ActionIcon size="sm" variant="filled" color="accent" aria-label={`Save ${ariaLabel}`}
+          onClick={() => onSave(draft)} loading={isPending}>
+          <IconCheck size={14} />
+        </ActionIcon>
+      )}
+    </Group>
   )
 }
 
@@ -59,9 +104,13 @@ export default function StockTargets() {
 
   const addTarget = useAction('Add Stock Target', productionApi.addStockTarget, STOCK_KEYS)
   const removeTarget = useAction('Remove Stock Target', productionApi.removeStockTarget, STOCK_KEYS)
+  const updateTarget = useAction('Save Target', (args: {
+    typeId: number
+    field: 'backup_stock' | 'home_market_stock' | 'jita_market_stock'
+    value: number
+  }) => productionApi.updateStockTarget(args.typeId, { [args.field]: args.value }), STOCK_KEYS)
   const setManualStockAction = useAction('Save Current Stock', (args: { typeId: number; count: number }) =>
-    productionApi.setManualStock(args.typeId, args.count),
-    [['production', 'manual-stock'], ['production', 'stock-value']])
+    productionApi.setManualStock(args.typeId, args.count), MANUAL_STOCK_KEYS)
   const setOverride = useAction('Save Override', (args: { typeId: number; decision: string }) =>
     productionApi.setManualBuildBuy(args.typeId, args.decision), [['production', 'manual-build-buy']])
   const clearOverride = useAction('Save Override', productionApi.clearManualBuildBuy, [['production', 'manual-build-buy']])
@@ -79,21 +128,59 @@ export default function StockTargets() {
   const columns = useMemo<ColumnDef<StockTarget, any>[]>(() => [
     { header: 'TypeID', accessorKey: 'type_id', size: 90 },
     { header: 'Item', accessorKey: 'type_name', size: 220 },
-    { header: 'Backup Target', accessorKey: 'backup_stock', size: 130, cell: (i) => qty(i.getValue()) },
     {
-      header: 'Current Stock (manual)', id: 'manual', size: 150, accessorFn: (r) => manualStock?.[r.type_id] ?? 0,
-      cell: (i) => qty(i.getValue()),
+      header: 'Backup Target', accessorKey: 'backup_stock', size: 140,
+      cell: (i) => (
+        <EditableNumberCell
+          value={i.getValue()}
+          ariaLabel={`Backup target for ${i.row.original.type_name}`}
+          isPending={updateTarget.isPending}
+          onSave={(value) => updateTarget.mutate({ typeId: i.row.original.type_id, field: 'backup_stock', value })}
+        />
+      ),
     },
     {
-      header: 'Current Stock (incl. ESI)', id: 'computed', size: 160, accessorFn: (r) => computedStock.get(r.type_id) ?? null,
+      header: 'Current Stock (manual)', id: 'manual', size: 170, accessorFn: (r) => manualStock?.[r.type_id] ?? 0,
+      cell: (i) => (
+        <EditableNumberCell
+          value={i.getValue()}
+          ariaLabel={`Manual current stock for ${i.row.original.type_name}`}
+          isPending={setManualStockAction.isPending}
+          flagged={isManualStockOutlier(i.getValue(), i.row.original)}
+          onSave={(value) => setManualStockAction.mutate({ typeId: i.row.original.type_id, count: value })}
+        />
+      ),
+    },
+    {
+      header: 'Current Stock (incl. ESI)', id: 'computed', size: 180, accessorFn: (r) => computedStock.get(r.type_id) ?? null,
       cell: (i) => (i.getValue() === null ? '–' : qty(i.getValue())),
     },
-    { header: 'Home Market Target', accessorKey: 'home_market_stock', size: 150, cell: (i) => qty(i.getValue()) },
-    { header: 'Jita Market Target', accessorKey: 'jita_market_stock', size: 140, cell: (i) => qty(i.getValue()) },
+    {
+      header: 'Home Market Target', accessorKey: 'home_market_stock', size: 170,
+      cell: (i) => (
+        <EditableNumberCell
+          value={i.getValue() ?? 0}
+          ariaLabel={`Home market target for ${i.row.original.type_name}`}
+          isPending={updateTarget.isPending}
+          onSave={(value) => updateTarget.mutate({ typeId: i.row.original.type_id, field: 'home_market_stock', value })}
+        />
+      ),
+    },
+    {
+      header: 'Jita Market Target', accessorKey: 'jita_market_stock', size: 160,
+      cell: (i) => (
+        <EditableNumberCell
+          value={i.getValue() ?? 0}
+          ariaLabel={`Jita market target for ${i.row.original.type_name}`}
+          isPending={updateTarget.isPending}
+          onSave={(value) => updateTarget.mutate({ typeId: i.row.original.type_id, field: 'jita_market_stock', value })}
+        />
+      ),
+    },
     {
       header: 'Build/Buy Override', id: 'override', size: 150, accessorFn: (r) => overrides?.[r.type_id] ?? 'Auto',
     },
-  ], [manualStock, computedStock, overrides])
+  ], [manualStock, computedStock, overrides, updateTarget, setManualStockAction])
 
   return (
     <Stack>
@@ -114,6 +201,7 @@ export default function StockTargets() {
         <Title order={6} c="dimmed" tt="uppercase" mb="xs">New Stock Target</Title>
         <Text size="xs" c="dimmed" mb="sm">
           Backup stock = personal component/raw material buffer. Home/Jita market stock = how many should be permanently listed.
+          Targets, current stock, and Backup/Home/Jita columns are editable directly in the table below once added.
         </Text>
         <Group grow align="flex-end">
           <TextInput label="Item name (exact)" value={newName} onChange={(e) => setNewName(e.currentTarget.value)} />
@@ -135,18 +223,20 @@ export default function StockTargets() {
         <HintCard>No stock targets configured yet.</HintCard>
       ) : (
         <>
-          <DataTable data={targets} columns={columns} maxHeight={480} />
+          <DataTable
+            data={targets}
+            columns={columns}
+            maxHeight={480}
+            tableId="stock-targets"
+            exportFilename="stock-targets"
+            getRowId={(row) => String(row.type_id)}
+          />
 
-          <Title order={6} c="dimmed" tt="uppercase" mt="lg">Manage Current Stock / Override</Title>
+          <Title order={6} c="dimmed" tt="uppercase" mt="lg">Manage Override / Decryptor</Title>
           <Select data={options} value={chosenId} onChange={setChosenId} searchable label="Item" w={400} />
 
           {chosen && (
             <Group grow align="flex-end" mt="sm">
-              <CurrentStockInput
-                key={chosen.type_id}
-                initial={manualStock?.[chosen.type_id] ?? 0}
-                onCommit={(count) => setManualStockAction.mutate({ typeId: chosen.type_id, count })}
-              />
               <Select
                 label="Override"
                 data={['Auto', 'Build', 'Buy']}

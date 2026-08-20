@@ -143,7 +143,11 @@ from .models import (
 
 MAX_DEPTH = 10
 
-CostIndices = dict[str, dict[str, float]]  # {"component"|"manufacturing": {"manufacturing"|"reaction": rate}}
+CostIndices = dict[str, dict[str, float]]
+# {"component"|"manufacturing": {"manufacturing"|"reaction": rate}} - plus,
+# per job_category actually configured with a resolved-system structure in
+# Logistik (GitHub issue #12), a "category:<name>" entry of the same shape -
+# see _job_cost_rate/_PlanContext.
 
 
 def _material_qty(base_qty: float, material_mult: float, runs: float) -> float:
@@ -318,12 +322,39 @@ def _job_cost_rate(activity: str, type_id: int, cfg: ProductionConfig, cost_indi
     bug: every job/build cost estimate understated the true ISK fee by the
     whole facility-tax + surcharge amount, at least ~4.25% of EIV at the NPC
     defaults). SCC surcharge is a fixed CCP-wide rate (not configurable, unlike
-    facility_tax_rate which a player structure's owner can change)."""
+    facility_tax_rate which a player structure's owner can change).
+
+    GitHub issue #12: prefers the cost index of the system `type_id`'s own
+    job_category is actually configured to build in (Logistik's per-category
+    structure assignment, resolved to a system by storage.
+    load_category_system_ids and stashed into cost_indices under a
+    "category:<name>" key by _PlanContext - see CostIndices' own comment)
+    over the flat component/manufacturing 2-way split, since a real account
+    can easily have build categories split across more than two systems.
+    Falls back to that flat split when the category has no assigned
+    structure, or its system hasn't been resolved yet - so this is a
+    strict refinement, never a regression, for anyone not using Logistik at
+    all. The job_category(type_id) lookup itself (re-derives classify_
+    activity - a real storage/tenant-scoped call, unlike everything else in
+    this function) is only made at all when cost_indices actually carries at
+    least one "category:" entry - the overwhelming majority of call sites
+    (every _activity_mods call whose job_cost_rate is immediately discarded,
+    material_mult/time_mult-only formula tests included) pass a plain
+    component/manufacturing dict or {} and must stay exactly as cheap and
+    storage-independent as before."""
     structure_type, rig_tier = _structure_rig(_structure_profile(activity, type_id), cfg)
     cost_mult, _, _ = structure_rig_multiplier(structure_type, rig_tier)
-    system_profile = "component" if (activity == "Reaction" or _is_component(type_id)) else "manufacturing"
     esi_activity = "reaction" if activity == "Reaction" else "manufacturing"
-    index = cost_indices.get(system_profile, {}).get(esi_activity)
+
+    index = None
+    if any(key.startswith("category:") for key in cost_indices):
+        category = job_category(type_id)
+        if category is not None:
+            index = cost_indices.get(f"category:{category}", {}).get(esi_activity)
+    if index is None:
+        system_profile = "component" if (activity == "Reaction" or _is_component(type_id)) else "manufacturing"
+        index = cost_indices.get(system_profile, {}).get(esi_activity)
+
     index_rate = ACTIVITY_MODS[activity].job_cost_rate if index is None else index
     return index_rate * cost_mult + cfg.facility_tax_rate + SCC_SURCHARGE_RATE
 
@@ -1017,6 +1048,18 @@ class _PlanContext:
             "component": pricing.system_cost_indices_for(esi_client, cfg.component_system_id),
             "manufacturing": pricing.system_cost_indices_for(esi_client, cfg.manufacturing_system_id),
         }
+        # GitHub issue #12: also fetch cost indices for whichever solar
+        # systems the user's own Logistik (per-category structure)
+        # assignments actually resolve to - _job_cost_rate prefers these
+        # "category:<name>" entries over the flat component/manufacturing
+        # split above whenever the specific category being built has one.
+        # One ESI call per *distinct* system (categories sharing a system
+        # share the fetch, via system_indices_by_id's cache-by-system-id).
+        system_indices_by_id: dict[int, dict[str, float]] = {}
+        for category, system_id in storage.load_category_system_ids().items():
+            if system_id not in system_indices_by_id:
+                system_indices_by_id[system_id] = pricing.system_cost_indices_for(esi_client, system_id)
+            self.cost_indices[f"category:{category}"] = system_indices_by_id[system_id]
         try:
             self.adjusted_prices = esi_client.get_adjusted_prices()
         except Exception:  # noqa: BLE001 - best-effort; falls back to 0 (job_cost=0), not a guess
@@ -2239,24 +2282,52 @@ def invention_logistics(invention_list: list[InventionNeedRow],
     """Datacores/decryptors/T1 BPC copies needed vs. what's sitting at the
     configured invention station (cfg.invention_location_id - GitHub issue
     #9), reusing LogisticsRow's existing "needed vs available at one
-    location" shape. Needs bpcs_needed (not recommended_invention_runs)
-    copies of the T1 blueprint itself - a BPC copy is consumed once
-    attempted, successful or not, but "enough copies queued" means enough to
-    cover every planned attempt at bpcs_needed's own 1-BPC-per-manufacturing-
-    run rate, not the *expected* (probability-adjusted) attempt count.
-    Decryptor/datacore *attempts* do scale with recommended_invention_runs
-    though, since each attempt consumes one of each regardless of outcome."""
+    location" shape. Needs recommended_invention_runs (not bpcs_needed)
+    copies of the T1 blueprint itself (GitHub issue #14, previously
+    reversed): a T1 blueprint copy is entirely consumed by ONE invention
+    attempt regardless of outcome (success or fail) *and* regardless of how
+    many manufacturing runs that specific copy itself holds - a max-run copy
+    is worth exactly the same as a 1-run copy here, which is exactly why
+    players don't always keep max-run copies on hand for this (the report
+    that caught this: "not always are max run copies used"). bpcs_needed
+    (ceil(runs_needed / output_runs), the number of *successful* inventions
+    needed) undercounts real T1-copy consumption, since every failed attempt
+    burns a copy too without producing anything - recommended_invention_runs
+    (ceil(bpcs_needed / probability), the full attempt count) is the number
+    already shown on the Invention tab as "recommended attempts", so this
+    now matches that number exactly (plus whatever overbuild the user has
+    already baked into it upstream).
+
+    Availability for the T1 blueprint itself goes through
+    storage.available_blueprint_copies, not the generic esi_stock_at_location
+    every other row here uses - a T1 blueprint's BPO and BPC share the exact
+    same type_id in EVE's data model (only ever distinguished by which
+    ESI/asset field they come from), so a plain esi_stock_at_location call
+    would count an owned BPO as if it were a usable invention input too.
+    available_blueprint_copies filters to actual copies only (character_
+    blueprints/corp_blueprints' own quantity == -2 sentinel).
+
+    Decryptor/datacore demand was already right - each attempt consumes one
+    of each regardless of outcome, so it already scaled with
+    recommended_invention_runs. Those stay on esi_stock_at_location - plain
+    items, no BPO/BPC ambiguity to worry about."""
     if cfg.invention_location_id is None:
         return []
 
     demand: dict[int, float] = {}
+    t1_blueprint_type_ids: set[int] = set()
     for need in invention_list:
         if need.recommended_invention_runs <= 0:
             continue
-        demand[need.t1_blueprint_type_id] = demand.get(need.t1_blueprint_type_id, 0.0) + need.bpcs_needed
+        demand[need.t1_blueprint_type_id] = demand.get(need.t1_blueprint_type_id, 0.0) + need.recommended_invention_runs
+        t1_blueprint_type_ids.add(need.t1_blueprint_type_id)
 
         decryptor = DECRYPTORS.get(need.decryptor)
-        if decryptor is not None:
+        # decryptor.type_id == 0 is the "None" entry's own sentinel (no
+        # decryptor used) - not a real EVE item. SDE type_id 0 happens to be
+        # named "#System", so without this guard it showed up as a bogus
+        # demand row (GitHub issue #13).
+        if decryptor is not None and decryptor.type_id != 0:
             demand[decryptor.type_id] = demand.get(decryptor.type_id, 0.0) + need.recommended_invention_runs
 
         recipe = storage.get_invention_recipe(need.t1_blueprint_type_id)
@@ -2265,7 +2336,10 @@ def invention_logistics(invention_list: list[InventionNeedRow],
 
     rows = []
     for type_id, needed in demand.items():
-        available = storage.esi_stock_at_location(type_id, cfg.invention_location_id)
+        if type_id in t1_blueprint_type_ids:
+            available = storage.available_blueprint_copies(type_id, cfg.invention_location_id)
+        else:
+            available = storage.esi_stock_at_location(type_id, cfg.invention_location_id)
         sde_type = storage.get_sde_type(type_id)
         name = sde_type[2] if sde_type else str(type_id)
         rows.append(LogisticsRow(

@@ -420,6 +420,96 @@ def test_job_cost_rate_includes_facility_tax_and_scc_surcharge(monkeypatch, tena
     assert job_cost_rate > ACTIVITY_MODS["Tech I"].job_cost_rate
 
 
+def test_job_cost_rate_prefers_category_system_index_over_flat_split(monkeypatch):
+    # GitHub issue #12: a category-specific system index (from Logistik's
+    # own per-category structure assignment) must win over the flat
+    # component/manufacturing 2-way split when both are present.
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (500, 11, 1.0))  # activity_id 11 = Reaction
+    cfg = ProductionConfig()
+    cost_indices = {
+        "component": {"reaction": 0.05},  # flat split - must be ignored, not used
+        "category:Reactions": {"reaction": 0.20},
+    }
+
+    _, _, job_cost_rate = _activity_mods("Reaction", type_id=1, cfg=cfg, cost_indices=cost_indices, blueprint_id=2)
+
+    expected = 0.20 * 1.0 + cfg.facility_tax_rate + SCC_SURCHARGE_RATE  # cost_mult=1.0, default "Citadel" structure
+    assert round(job_cost_rate, 6) == round(expected, 6)
+
+
+def test_job_cost_rate_falls_back_to_flat_split_when_category_has_no_index(monkeypatch):
+    # cost_indices carries *some* "category:" entry (so the lookup fires),
+    # but not one for *this* item's own category - must still fall back to
+    # the flat component/manufacturing split, not silently drop to the
+    # ACTIVITY_MODS default while a perfectly good flat index sits right there.
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (500, 11, 1.0))
+    cfg = ProductionConfig()
+    cost_indices = {
+        "component": {"reaction": 0.05},
+        "category:Capital Components": {"manufacturing": 0.30},  # a different category
+    }
+
+    _, _, job_cost_rate = _activity_mods("Reaction", type_id=1, cfg=cfg, cost_indices=cost_indices, blueprint_id=2)
+
+    expected = 0.05 * 1.0 + cfg.facility_tax_rate + SCC_SURCHARGE_RATE
+    assert round(job_cost_rate, 6) == round(expected, 6)
+
+
+def test_job_cost_rate_skips_job_category_lookup_when_no_category_entries_present(monkeypatch):
+    # Efficiency/tenant-safety guard: job_category(type_id) re-derives
+    # classify_activity, a real storage-backed call - must not even be
+    # attempted when cost_indices has no "category:" entries at all (the
+    # overwhelming majority of call sites, including every test in this file
+    # that passes cost_indices={} with no tenant context set up).
+    def _boom(type_id):
+        raise AssertionError("must not call storage.get_blueprint_for_product when no category entries exist")
+    monkeypatch.setattr(storage, "get_blueprint_for_product", _boom)
+    cfg = ProductionConfig()
+
+    material_mult, time_mult, job_cost_rate = _activity_mods(
+        "Reaction", type_id=1, cfg=cfg, cost_indices={"component": {"reaction": 0.05}}, blueprint_id=2)
+
+    expected = 0.05 * 1.0 + cfg.facility_tax_rate + SCC_SURCHARGE_RATE
+    assert round(job_cost_rate, 6) == round(expected, 6)
+
+
+def test_plan_context_populates_category_cost_indices_sharing_fetches_by_system(monkeypatch):
+    # GitHub issue #12: _PlanContext.cost_indices gains one "category:<name>"
+    # entry per Logistik category with a resolved system - two categories
+    # sharing the same system must only trigger one ESI fetch for it.
+    from eve_trader import esi_client as esi_client_module
+    from eve_trader import goonmetrics_client as goonmetrics_client_module
+    from eve_trader.production import pricing as pricing_module
+
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
+    monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
+    monkeypatch.setattr(storage, "load_manual_build_buy", lambda: {})
+    monkeypatch.setattr(storage, "load_selected_decryptors", lambda: {})
+    monkeypatch.setattr(storage, "load_category_system_ids",
+                         lambda: {"Reactions": 30000142, "Capital Components": 30000142, "Equipment": 30000144})
+    monkeypatch.setattr(pricing_module, "home_prices", lambda gm_client, cfg: {})
+    monkeypatch.setattr(pricing_module, "jita_prices", lambda gm_client: {})
+    monkeypatch.setattr(goonmetrics_client_module.GoonmetricsClient, "__init__", lambda self: None)
+    monkeypatch.setattr(esi_client_module.ESIClient, "__init__", lambda self: None)
+    monkeypatch.setattr(esi_client_module.ESIClient, "get_adjusted_prices", lambda self: {})
+
+    fetch_calls = []
+    def fake_indices_for(client, system_id):
+        fetch_calls.append(system_id)
+        if system_id is None:
+            return {}
+        return {"manufacturing": 0.10 * system_id / 30000142, "reaction": 0.05}
+    monkeypatch.setattr(pricing_module, "system_cost_indices_for", fake_indices_for)
+
+    cfg = ProductionConfig(component_system_id=None, manufacturing_system_id=None)
+    ctx = engine._PlanContext(cfg)
+
+    real_system_fetches = sorted(s for s in fetch_calls if s is not None)
+    assert real_system_fetches == [30000142, 30000144]  # one fetch per distinct system, not per category
+    assert ctx.cost_indices["category:Reactions"] == ctx.cost_indices["category:Capital Components"]
+    assert ctx.cost_indices["category:Equipment"] != ctx.cost_indices["category:Reactions"]
+
+
 def test_reaction_te_rig_applies(monkeypatch):
     # Confirmed real bug: reactor Time Efficiency rigs are a real EVE item
     # (e.g. "Standup M-Set Composite Reactor Time Efficiency I/II") - this
@@ -1858,16 +1948,67 @@ def test_invention_logistics_needs_bpcs_decryptors_and_datacores(monkeypatch):
     monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id: {"datacores": [(300, 2), (301, 2)]})
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: 0.0)
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id: 0.0)
 
     rows = engine.invention_logistics([need], cfg)
 
     by_type = {r.type_id: r for r in rows}
-    assert by_type[200].needed == 5.0  # bpcs_needed T1 copies, not recommended_invention_runs
+    # GitHub issue #14: every attempt (successful or not) fully consumes one
+    # T1 copy, so demand must track recommended_invention_runs (attempts),
+    # not bpcs_needed (successful inventions only) - bpcs_needed undercounts
+    # real consumption since failed attempts burn a copy too.
+    assert by_type[200].needed == 6.0  # recommended_invention_runs T1 copies, not bpcs_needed
     from eve_trader.production.constants import DECRYPTORS
     parity_type_id = DECRYPTORS["Parity"].type_id
     assert by_type[parity_type_id].needed == 6.0  # one decryptor per attempt
     assert by_type[300].needed == 12.0  # 2 per attempt * 6 attempts
     assert by_type[301].needed == 12.0
+
+
+def test_invention_logistics_t1_blueprint_availability_uses_copy_count_not_generic_stock(monkeypatch):
+    # GitHub issue #14: a T1 blueprint's BPO and BPC share the same type_id -
+    # the T1 blueprint row must go through available_blueprint_copies (which
+    # excludes BPOs), never the generic esi_stock_at_location every other
+    # row uses, or an owned BPO would be miscounted as an available invention
+    # input.
+    from eve_trader.production.models import InventionNeedRow
+    cfg = ProductionConfig(invention_location_id=5000)
+    need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
+                             t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
+                             output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
+    monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id: {"datacores": []})
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+
+    def _esi_stock_at_location(type_id, location_id):
+        assert type_id != 200, "must not call esi_stock_at_location for a T1 blueprint type_id"
+        return 0.0
+    monkeypatch.setattr(storage, "esi_stock_at_location", _esi_stock_at_location)
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id: 4.0)
+
+    rows = engine.invention_logistics([need], cfg)
+
+    by_type = {r.type_id: r for r in rows}
+    assert by_type[200].available == 4.0
+    assert by_type[200].missing == 2.0  # 6 needed - 4 available copies
+
+
+def test_invention_logistics_none_decryptor_does_not_demand_type_zero(monkeypatch):
+    # GitHub issue #13: DECRYPTORS["None"].type_id is 0 (no real decryptor
+    # used) - SDE type_id 0 happens to be named "#System", so a need with no
+    # decryptor selected must never add a demand row for type_id 0.
+    from eve_trader.production.models import InventionNeedRow
+    cfg = ProductionConfig(invention_location_id=5000)
+    need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
+                             t1_blueprint_name="Widget Blueprint", decryptor="None", probability=0.5,
+                             output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
+    monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id: {"datacores": []})
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: 0.0)
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id: 0.0)
+
+    rows = engine.invention_logistics([need], cfg)
+
+    assert 0 not in {r.type_id for r in rows}
 
 
 def test_invention_logistics_empty_without_location_configured(monkeypatch):

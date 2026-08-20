@@ -398,6 +398,22 @@ class ContractRow(_Base):
     hull_name: Optional[str] = None
 
 
+class ContractHistoryRow(_Base):
+    contract_id: int
+    source_role: str
+    fitting_id: Optional[str] = None
+    fitting_name: Optional[str] = None
+    hull_type_id: Optional[int] = None
+    hull_name: Optional[str] = None
+    title: Optional[str] = None
+    price: Optional[float] = None
+    acceptor_id: Optional[int] = None
+    acceptor_name: Optional[str] = None
+    date_issued: Optional[str] = None
+    date_completed: Optional[str] = None
+    source_character_name: Optional[str] = None
+
+
 class StockpileRow(_Base):
     fitting_id: str
     fitting_name: str

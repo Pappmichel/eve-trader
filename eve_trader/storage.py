@@ -638,6 +638,28 @@ def save_shortlist_snapshot(rows: list[ShortlistRow], run_ts: str) -> None:
         )
 
 
+def update_snapshot_categories(categories: dict[int, str]) -> None:
+    """Patches `category` on the *latest* shortlist_snapshot row for each
+    item_id in `categories` (GitHub issue #5). The Shortlist page renders
+    latest_snapshot(), a frozen copy taken at the last do_refresh_shortlist
+    run - shortlist.category (the live, editable value do_recategorize_
+    shortlist actually updates) isn't what's on screen. Without this, a
+    category fix is invisible until the next full ESI refresh, which needs a
+    logged-in seller character and can be hours away - confirmed real cause
+    of issue #5 reopening twice after the categorization logic itself was
+    already fixed (commit f92b5b8)."""
+    if not categories:
+        return
+    with connect() as conn:
+        run_ts = conn.execute("SELECT MAX(run_ts) FROM shortlist_snapshot").fetchone()[0]
+        if not run_ts:
+            return
+        conn.executemany(
+            "UPDATE shortlist_snapshot SET category = ? WHERE run_ts = ? AND item_id = ?",
+            [(category, run_ts, item_id) for item_id, category in categories.items()],
+        )
+
+
 def save_candidate_universe(candidates: list[Candidate], run_ts: str, table: str = "candidate_universe") -> None:
     # These tables are read in full (storage.read_table, no run_ts filter) as
     # a "current state" snapshot, not as append-only history - replace the
@@ -1051,24 +1073,100 @@ def get_cached_structure_names(location_ids: list[int]) -> dict[int, tuple[bool,
     return True, row[0]
 
 
-def set_cached_structure_name(location_id: int, name: Optional[str]) -> None:
+def set_cached_structure_name(location_id: int, name: Optional[str], solar_system_id: Optional[int] = None) -> None:
+    """solar_system_id (GitHub issue #12) is best-effort - do_resolve_
+    structure_name passes it whenever the ESI response it just resolved
+    `name` from happened to include one; a resolution failure (name=None)
+    never has one. Only ever overwritten with a non-None value (COALESCE)
+    so a later best-effort call with solar_system_id=None (or a caller that
+    predates this parameter) can't blow away a value an earlier call already
+    captured."""
     with connect() as conn:
         conn.execute(
-            "INSERT INTO structure_names (location_id, name) VALUES (?, ?) "
-            "ON CONFLICT(tenant_id, location_id) DO UPDATE SET name=excluded.name",
-            (location_id, name),
+            "INSERT INTO structure_names (location_id, name, solar_system_id) VALUES (?, ?, ?) "
+            "ON CONFLICT(tenant_id, location_id) DO UPDATE SET name=excluded.name, "
+            "solar_system_id=COALESCE(excluded.solar_system_id, structure_names.solar_system_id)",
+            (location_id, name, solar_system_id),
         )
+
+
+def get_structure_system_id(location_id: int) -> Optional[int]:
+    """solar_system_id cached for `location_id` (see set_cached_structure_name),
+    None if never resolved with one. Used by production/engine.py's
+    _job_cost_rate (GitHub issue #12) via load_category_system_ids below,
+    not called per-item directly - system security likewise stays on
+    get_system_security's own separate sde_solar_systems lookup, unrelated
+    to this cache."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT solar_system_id FROM structure_names WHERE location_id = ?", (location_id,)
+        ).fetchone()
+    return row[0] if row else None
+
+
+def load_category_system_ids() -> dict[str, int]:
+    """{job_category: solar_system_id} for every job_category_locations entry
+    whose structure's solar_system_id has actually been resolved (see
+    set_cached_structure_name) - categories with no assigned structure, or
+    one whose name/system hasn't been resolved yet, are simply absent (the
+    caller, production/engine.py's _PlanContext, falls back to the existing
+    flat component/manufacturing system split for those). GitHub issue #12:
+    "the cost index should be calculated by the system where the specific
+    item is being built... can use the systems that are specified in
+    logistics" - this is that lookup, one query instead of N."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT jcl.category, sn.solar_system_id FROM job_category_locations jcl "
+            "JOIN structure_names sn ON sn.location_id = jcl.location_id "
+            "WHERE sn.solar_system_id IS NOT NULL"
+        ).fetchall()
+    return {category: system_id for category, system_id in rows}
+
+
+def _resolve_locations(rows: list[tuple], location_index: int = 2) -> list[int]:
+    """For each row, walks its own location_id (at `location_index`) up
+    through however many nested containers (ship cargo, corp Office,
+    personal/station container, ...) it's parented under, to the outermost
+    station/structure id - the general fix for GitHub issues #4/#20 (stock
+    at a resolved-one-level-only location_id, e.g. a container inside a corp
+    hangar, used to read as invisible). `rows` supplies its own parent map
+    (item_id at index 0 -> location_id at `location_index`) - correct as
+    long as every container a row could be nested under is itself present in
+    `rows`, true for character_assets/corp_assets (containers are ordinary
+    assets in the same per-owner table) but not for blueprints, whose
+    immediate container lives in the *asset* table instead (see
+    replace_blueprints, which builds parent_of from there instead).
+
+    Capped at 10 hops as a defensive bound against a cyclical edge case, not
+    a realistic EVE nesting depth (mirrors the walk this replaces, formerly
+    duplicated per-query in esi_stock_at_location/search_item_stock_locations)."""
+    parent_of = {row[0]: row[location_index] for row in rows}
+    resolved = []
+    for row in rows:
+        root = row[location_index]
+        hops = 0
+        while root in parent_of and hops < 10:
+            root = parent_of[root]
+            hops += 1
+        resolved.append(root)
+    return resolved
 
 
 # --------------------------------------------------- Production: ESI-derived stock
 def replace_assets(table: str, rows: list[tuple]) -> None:
+    """`rows`: (item_id, type_id, location_id, location_flag, quantity,
+    is_blueprint_copy, owner_name) - resolved_location_id (GitHub issue #4/
+    #20) is computed here, not by the caller, so every existing/future
+    caller (esi_sync.py, doctrine/esi_sync.py, tests) gets it automatically
+    just by going through this one function - see _resolve_locations."""
     assert table in ("character_assets", "corp_assets", "doctrine_character_assets", "doctrine_corp_assets")
+    resolved = _resolve_locations(rows, location_index=2)
     with connect() as conn:
         conn.execute(f"DELETE FROM {table}")
         conn.executemany(
             f"INSERT INTO {table} (item_id, type_id, location_id, location_flag, quantity, "
-            "is_blueprint_copy, owner_name) VALUES (?,?,?,?,?,?,?)",
-            rows,
+            "is_blueprint_copy, owner_name, resolved_location_id) VALUES (?,?,?,?,?,?,?,?)",
+            [row + (root,) for row, root in zip(rows, resolved)],
         )
 
 
@@ -1132,13 +1230,37 @@ def list_industry_jobs() -> list[tuple]:
 
 
 def replace_blueprints(table: str, rows: list[tuple]) -> None:
+    """`rows`: (item_id, type_id, location_id, location_flag, quantity,
+    material_efficiency, time_efficiency, runs). resolved_location_id
+    (GitHub issue #20 - a BPC sitting inside a container read as "missing"
+    from Invention Logistics, since only the container's own item_id was
+    stored) is resolved against the *matching asset table*
+    (character_assets for character_blueprints, corp_assets for
+    corp_blueprints) - a blueprint's immediate container is always a
+    regular asset there, never another blueprint. Depends on that asset
+    table already being synced for this run; production/esi_sync.py's
+    sync_esi already calls replace_assets before replace_blueprints for
+    each of character/corp, so this is always fresh, not stale, in the one
+    real caller. If the matching asset table is empty (e.g. this function
+    called standalone, as in tests), every row simply resolves to its own
+    unwrapped location_id - never worse than the pre-fix behavior."""
     assert table in ("character_blueprints", "corp_blueprints")
+    asset_table = "character_assets" if table == "character_blueprints" else "corp_assets"
     with connect() as conn:
+        parent_of = dict(conn.execute(f"SELECT item_id, location_id FROM {asset_table}").fetchall())
         conn.execute(f"DELETE FROM {table}")
+        resolved_rows = []
+        for row in rows:
+            root = row[2]  # location_id
+            hops = 0
+            while root in parent_of and hops < 10:
+                root = parent_of[root]
+                hops += 1
+            resolved_rows.append(row + (root,))
         conn.executemany(
             f"INSERT INTO {table} (item_id, type_id, location_id, location_flag, quantity, "
-            "material_efficiency, time_efficiency, runs) VALUES (?,?,?,?,?,?,?,?)",
-            rows,
+            "material_efficiency, time_efficiency, runs, resolved_location_id) VALUES (?,?,?,?,?,?,?,?,?)",
+            resolved_rows,
         )
 
 
@@ -1172,7 +1294,9 @@ def sell_order_qty_in_region(type_id: int, region_id: int) -> float:
     return row[0]
 
 
-OFFICE_TYPE_ID = 27  # generic "Office" item - see esi_stock_at_location
+OFFICE_TYPE_ID = 27  # generic "Office" item - a corp's rented hangar container,
+# just one example of the arbitrary-depth nesting _resolve_locations walks
+# through (no longer special-cased on its own - see esi_stock_at_location)
 
 # location_flag values that share a hangar/office's location_id in ESI's
 # asset model but are NOT usable stock sitting in that hangar:
@@ -1196,20 +1320,18 @@ def esi_stock_at_location(type_id: int, location_id: Optional[int],
     `tables` defaults to Production's own ESI-synced asset tables - pass
     `("doctrine_character_assets", "doctrine_corp_assets")` for Doctrine's
     own independent asset sync (doctrine/esi_sync.py's sync_assets) instead;
-    same column shape, same Office-nesting/NON_STOCK_LOCATION_FLAGS logic
-    either way, just a different source table pair - not worth duplicating
-    this function's own (non-trivial) location-resolution logic for.
+    same column shape either way, just a different source table pair.
 
-    Corp hangar contents are *not* flat under the station/structure's own
-    location_id in ESI's asset model - they sit one level deeper, nested
-    under the corp's rented Office item (type_id 27) at that location, which
-    itself has location_id = the station/structure (confirmed empirically:
-    a structure holding 151M+ units of real corp hangar stock showed only
-    the Office item itself at the structure's own location_id - the actual
-    stock was all nested under the Office's own item_id). So a location_id
-    lookup also has to include whatever's nested under any Office item(s)
-    the corp holds *at* that location, or corp hangar stock silently reads
-    as zero everywhere."""
+    Filters on resolved_location_id (GitHub issue #4/#20), not the raw
+    location_id column - replace_assets computes that once at sync time by
+    walking each item up through however many nested containers (a corp's
+    rented Office, a station container, a ship's cargo, any depth/combination
+    of those) it takes to reach the outermost station/structure id, so this
+    query no longer needs its own location-resolution logic (formerly a
+    single hardcoded Office-nesting special case here, which silently
+    under-counted anything nested one level deeper than that, e.g. a
+    container sitting inside a corp hangar - confirmed real cause of a
+    "300M tritanium sitting at C-J invisible to Distribution" bug report)."""
     flag_placeholders = ",".join("?" * len(NON_STOCK_LOCATION_FLAGS))
     with connect() as conn:
         total = 0.0
@@ -1223,34 +1345,21 @@ def esi_stock_at_location(type_id: int, location_id: Optional[int],
                 total += row[0]
                 continue
             row = conn.execute(
-                f"SELECT COALESCE(SUM(quantity), 0) FROM {table} WHERE type_id = ? AND location_id = ? "
+                f"SELECT COALESCE(SUM(quantity), 0) FROM {table} WHERE type_id = ? AND resolved_location_id = ? "
                 f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))",
                 (type_id, location_id, *NON_STOCK_LOCATION_FLAGS),
             ).fetchone()
             total += row[0]
-            office_item_ids = conn.execute(
-                f"SELECT item_id FROM {table} WHERE type_id = ? AND location_id = ?",
-                (OFFICE_TYPE_ID, location_id),
-            ).fetchall()
-            for (office_item_id,) in office_item_ids:
-                row = conn.execute(
-                    f"SELECT COALESCE(SUM(quantity), 0) FROM {table} WHERE type_id = ? AND location_id = ? "
-                    f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))",
-                    (type_id, office_item_id, *NON_STOCK_LOCATION_FLAGS),
-                ).fetchone()
-                total += row[0]
     return total
 
 
 def search_item_stock_locations(type_id: int) -> list[tuple[int, Optional[str], str, float]]:
     """For `type_id`, every character/corp asset (excluding
-    NON_STOCK_LOCATION_FLAGS - see esi_stock_at_location above), resolved up
-    through any nested containers (ship cargo, corp Office, personal
-    container, ...) to the outermost station/structure location_id -
-    generalizes esi_stock_at_location's single-level Office-nesting case into
-    an arbitrary-depth walk (item_id -> location_id, capped at 10 hops as a
-    defensive bound against a cyclical edge case, not a realistic EVE nesting
-    depth) - then grouped by (resolved location, owner) summing quantity.
+    NON_STOCK_LOCATION_FLAGS - see esi_stock_at_location above), grouped by
+    (resolved_location_id, owner) summing quantity - resolved_location_id is
+    already the outermost station/structure id (see replace_assets), so this
+    no longer needs its own item_id -> location_id walk (formerly duplicated
+    here and in esi_stock_at_location's old Office-only special case).
 
     Returns [(location_id, location_name, owner_name, quantity), ...] sorted
     by quantity descending. location_name comes from the structure_names
@@ -1261,30 +1370,17 @@ def search_item_stock_locations(type_id: int) -> list[tuple[int, Optional[str], 
     before owner_name existed (Sync ESI Data again to backfill)."""
     flag_placeholders = ",".join("?" * len(NON_STOCK_LOCATION_FLAGS))
     with connect() as conn:
-        # item_id -> location_id for *every* asset (any type_id) - needed to
-        # walk a matching item's own location_id up through nested
-        # containers, regardless of what the container itself is.
-        parent_of: dict[int, int] = {}
-        for table in ("character_assets", "corp_assets"):
-            for item_id, location_id in conn.execute(f"SELECT item_id, location_id FROM {table}"):
-                parent_of[item_id] = location_id
-
-        raw_rows: list[tuple[int, str, float]] = []  # (location_id, owner_name, quantity)
+        raw_rows: list[tuple[int, str, float]] = []  # (resolved_location_id, owner_name, quantity)
         for table in ("character_assets", "corp_assets"):
             raw_rows.extend(conn.execute(
-                f"SELECT location_id, owner_name, quantity FROM {table} "
+                f"SELECT resolved_location_id, owner_name, quantity FROM {table} "
                 f"WHERE type_id = ? AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))",
                 (type_id, *NON_STOCK_LOCATION_FLAGS),
             ).fetchall())
 
         grouped: dict[tuple[int, str], float] = {}
         for location_id, owner_name, quantity in raw_rows:
-            root = location_id
-            hops = 0
-            while root in parent_of and hops < 10:
-                root = parent_of[root]
-                hops += 1
-            key = (root, owner_name or "?")
+            key = (location_id, owner_name or "?")
             grouped[key] = grouped.get(key, 0.0) + quantity
 
         results: list[tuple[int, Optional[str], str, float]] = []
@@ -1402,6 +1498,31 @@ def get_owned_bpo_best_me_te(blueprint_type_id: int) -> Optional[tuple[int, int]
     if best_me is None or best_te is None:
         return None
     return (best_me, best_te)
+
+
+def available_blueprint_copies(type_id: int, location_id: Optional[int],
+                                tables: tuple[str, str] = ("character_blueprints", "corp_blueprints")) -> float:
+    """Counts owned blueprint *copies* (quantity == -2 in ESI's blueprint
+    model - see get_owned_bpo_best_me_te's own runs == -1 check for the BPO
+    side of this same sentinel) of `type_id` sitting at `location_id`,
+    filtered on resolved_location_id (see replace_blueprints) the same way
+    esi_stock_at_location filters on it.
+
+    Used by production/engine.py's invention_logistics (GitHub issue #14)
+    instead of the generic esi_stock_at_location: a T1 blueprint's BPO and
+    BPC share the exact same type_id in EVE's data model, so a plain
+    esi_stock_at_location call against character_assets/corp_assets (which
+    has no is_blueprint_copy filter of its own) would count an owned BPO as
+    if it were a usable invention input too - only copies actually are."""
+    with connect() as conn:
+        total = 0.0
+        for table in tables:
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE type_id = ? AND resolved_location_id = ? AND quantity = -2",
+                (type_id, location_id),
+            ).fetchone()
+            total += row[0]
+    return total
 
 
 # ---------------------------------------------------------------------- reads
@@ -1927,6 +2048,42 @@ def list_doctrine_contracts(fitting_id: Optional[str] = None, status: Optional[s
     query += " ORDER BY synced_at DESC"
     with connect() as conn:
         return conn.execute(query, params).fetchall()
+
+
+_CONTRACT_HISTORY_COLUMNS = ("contract_id", "source_role", "fitting_id", "fitting_name", "hull_type_id",
+                             "title", "price", "acceptor_id", "acceptor_name", "date_issued", "date_completed")
+
+
+def upsert_doctrine_contract_history(rows: list[tuple]) -> None:
+    """GitHub issue #19 - rows matching _CONTRACT_HISTORY_COLUMNS. Upserted
+    (never wholesale-replaced, unlike doctrine_contracts' own snapshot) -
+    this table is permanent, append-only history: a contract only reaches a
+    FINISHED_CONTRACT_STATUSES status once, but ON CONFLICT still updates
+    rather than doing nothing, since a later sync might resolve an
+    acceptor_name that failed to resolve (e.g. a transient ESI error) the
+    first time it was recorded."""
+    if not rows:
+        return
+    set_clause = ", ".join(f"{c}=excluded.{c}" for c in _CONTRACT_HISTORY_COLUMNS if c != "contract_id")
+    with connect() as conn:
+        conn.executemany(
+            f"INSERT INTO doctrine_contract_history ({', '.join(_CONTRACT_HISTORY_COLUMNS)}) "
+            f"VALUES ({', '.join('?' for _ in _CONTRACT_HISTORY_COLUMNS)}) "
+            f"ON CONFLICT(tenant_id, contract_id) DO UPDATE SET {set_clause}",
+            rows,
+        )
+
+
+def load_doctrine_contract_history() -> list[tuple]:
+    """Most-recently-completed first; a history row with no date_completed
+    at all (shouldn't normally happen - ESI sets it the moment a contract
+    finishes - but the field is nullable in ESI's own model) sorts last
+    rather than first."""
+    with connect() as conn:
+        return conn.execute(
+            f"SELECT {', '.join(_CONTRACT_HISTORY_COLUMNS)} FROM doctrine_contract_history "
+            "ORDER BY date_completed DESC NULLS LAST"
+        ).fetchall()
 
 
 def resolve_sde_type_by_name(name: str) -> Optional[tuple]:

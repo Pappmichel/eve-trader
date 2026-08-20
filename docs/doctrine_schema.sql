@@ -187,6 +187,44 @@ CREATE POLICY tenant_isolation ON doctrine_contract_deviations
     USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 
+-- ==================================================== per-tenant: contract history
+-- GitHub issue #19 - "the doctrine tool should have a page giving history:
+-- which contracts were sold to who and when". Separate, append-only table
+-- from doctrine_contracts above (which stays a wholesale-replaced *active*
+-- snapshot, see its own docstring - a finished contract simply isn't in the
+-- next sync's list anymore, and used to just vanish with no trace at all).
+-- fitting_name/hull_type_id are captured (denormalized) at record time,
+-- deliberately not resolved live via matched_fitting_id the way doctrine_
+-- contracts' own reads do - a fitting can be edited/deactivated/deleted
+-- long after a contract that references it finished, and a *history* row
+-- should stay meaningful regardless (unlike the *active* table, where an
+-- unmatched/stale fitting_id genuinely should stop resolving to anything).
+-- Same composite-PK reasoning as doctrine_contracts - contract_id isn't
+-- tenant-unique.
+CREATE TABLE IF NOT EXISTS doctrine_contract_history (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    contract_id BIGINT NOT NULL,
+    source_role TEXT NOT NULL,
+    fitting_id UUID,
+    fitting_name TEXT,
+    hull_type_id INTEGER,
+    title TEXT,
+    price REAL,
+    acceptor_id BIGINT,
+    acceptor_name TEXT,
+    date_issued TIMESTAMPTZ,
+    date_completed TIMESTAMPTZ,
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, contract_id)
+);
+CREATE INDEX IF NOT EXISTS idx_doctrine_contract_history_fitting
+    ON doctrine_contract_history (tenant_id, fitting_id);
+ALTER TABLE doctrine_contract_history ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON doctrine_contract_history;
+CREATE POLICY tenant_isolation ON doctrine_contract_history
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
 -- ================================================== per-tenant: own asset sync
 -- Doctrine's own ESI-synced asset cache - deliberately NOT a read of
 -- Production's character_assets/corp_assets (an earlier design decision,
@@ -206,10 +244,17 @@ CREATE TABLE IF NOT EXISTS doctrine_character_assets (
     location_flag TEXT,
     quantity INTEGER,
     is_blueprint_copy INTEGER,
-    owner_name TEXT
+    owner_name TEXT,
+    resolved_location_id BIGINT
 );
-CREATE INDEX IF NOT EXISTS idx_doctrine_character_assets_type_location
-    ON doctrine_character_assets (type_id, location_id);
+-- Same resolved_location_id shape as phase1_schema.sql's character_assets/
+-- corp_assets (GitHub issue #4/#20) - both go through storage.replace_assets,
+-- which computes this the same way regardless of which pair of tables it's
+-- called for.
+ALTER TABLE doctrine_character_assets ADD COLUMN IF NOT EXISTS resolved_location_id BIGINT;
+DROP INDEX IF EXISTS idx_doctrine_character_assets_type_location;
+CREATE INDEX IF NOT EXISTS idx_doctrine_character_assets_type_resolved_location
+    ON doctrine_character_assets (type_id, resolved_location_id);
 ALTER TABLE doctrine_character_assets ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON doctrine_character_assets;
 CREATE POLICY tenant_isolation ON doctrine_character_assets
@@ -224,10 +269,13 @@ CREATE TABLE IF NOT EXISTS doctrine_corp_assets (
     location_flag TEXT,
     quantity INTEGER,
     is_blueprint_copy INTEGER,
-    owner_name TEXT
+    owner_name TEXT,
+    resolved_location_id BIGINT
 );
-CREATE INDEX IF NOT EXISTS idx_doctrine_corp_assets_type_location
-    ON doctrine_corp_assets (type_id, location_id);
+ALTER TABLE doctrine_corp_assets ADD COLUMN IF NOT EXISTS resolved_location_id BIGINT;
+DROP INDEX IF EXISTS idx_doctrine_corp_assets_type_location;
+CREATE INDEX IF NOT EXISTS idx_doctrine_corp_assets_type_resolved_location
+    ON doctrine_corp_assets (type_id, resolved_location_id);
 ALTER TABLE doctrine_corp_assets ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON doctrine_corp_assets;
 CREATE POLICY tenant_isolation ON doctrine_corp_assets
@@ -237,5 +285,6 @@ CREATE POLICY tenant_isolation ON doctrine_corp_assets
 GRANT SELECT, INSERT, UPDATE, DELETE ON
     sde_type_slots, doctrines, doctrine_fittings, doctrine_fitting_items,
     doctrine_fitting_parse_issues, doctrine_contracts, doctrine_contract_items,
-    doctrine_contract_deviations, doctrine_character_assets, doctrine_corp_assets
+    doctrine_contract_deviations, doctrine_character_assets, doctrine_corp_assets,
+    doctrine_contract_history
     TO eve_trader_app;
