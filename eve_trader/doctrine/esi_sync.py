@@ -33,7 +33,7 @@ from ..config import OAUTH_CONFIG
 from ..esi_client import ESIClient, ESIError
 from . import engine
 from .config import DOCTRINE_CONFIG, DoctrineConfig
-from .constants import CONTRACT_TYPE_ITEM_EXCHANGE, SYNCABLE_CONTRACT_STATUSES
+from .constants import CONTRACT_TYPE_ITEM_EXCHANGE, FINISHED_CONTRACT_STATUSES, SYNCABLE_CONTRACT_STATUSES
 from .models import ContractItemRow
 
 log = logging.getLogger("eve_trader.doctrine.esi_sync")
@@ -68,6 +68,22 @@ def list_doctrine_characters(tm: Optional[TokenManager] = None) -> list[tuple[st
         if record is not None:
             out.append((role, record.character_id, record.character_name))
     return out
+
+
+def _passes_history_filter(contract: dict, structure_id: Optional[int]) -> bool:
+    """Same shape as _passes_prefilter below, for FINISHED_CONTRACT_STATUSES
+    instead of SYNCABLE_CONTRACT_STATUSES (GitHub issue #19) - a finished
+    contract is about to drop out of the *active* snapshot (see
+    _passes_prefilter's own SYNCABLE_CONTRACT_STATUSES, which doesn't
+    include "finished"), so this is checked separately, over the same
+    already-fetched raw contract list, to catch it for doctrine_contract_
+    history before that happens."""
+    return (
+        contract.get("type") == CONTRACT_TYPE_ITEM_EXCHANGE
+        and contract.get("status") in FINISHED_CONTRACT_STATUSES
+        and structure_id is not None
+        and contract.get("start_location_id") == structure_id
+    )
 
 
 def _passes_prefilter(contract: dict, structure_id: Optional[int]) -> bool:
@@ -142,6 +158,15 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
     seen_contract_ids: set[int] = set()
     corp_contracts_done: dict[int, list[dict]] = {}
     corp_error_by_id: dict[int, str] = {}
+    # (raw_contract, source_role) for contracts that just finished (GitHub
+    # issue #19) - collected from the same already-fetched raw contract
+    # lists as all_contracts above, no extra ESI calls. Deliberately its own
+    # seen-set, not shared with seen_contract_ids: a contract could in
+    # principle show up as "outstanding" via one character's view and
+    # "finished" via another's in the same sync (a small race on ESI's own
+    # side), and both sets independently dedupe against themselves only.
+    all_history_contracts: list[tuple[dict, str]] = []
+    seen_history_ids: set[int] = set()
 
     for role, character_id, character_name in characters:
         result = _fetch_character_contracts(client, role, character_id)
@@ -155,6 +180,12 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
             if c["contract_id"] not in seen_contract_ids:
                 seen_contract_ids.add(c["contract_id"])
                 all_contracts.append((c, role, False, None))
+        for c in result["contracts"]:
+            if (_passes_history_filter(c, structure_id)
+                    and _issued_by_own_identity(c, character_id, result["corporation_id"])
+                    and c["contract_id"] not in seen_history_ids):
+                seen_history_ids.add(c["contract_id"])
+                all_history_contracts.append((c, role))
         per_character[character_name] = {"contracts_seen": len(result["contracts"]),
                                           "contracts_matched_filter": len(char_contracts)}
 
@@ -174,6 +205,12 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
             if c["contract_id"] not in seen_contract_ids:
                 seen_contract_ids.add(c["contract_id"])
                 all_contracts.append((c, role, True, corporation_id))
+        for c in corp_raw:
+            if (_passes_history_filter(c, structure_id)
+                    and _issued_by_own_identity(c, character_id, corporation_id)
+                    and c["contract_id"] not in seen_history_ids):
+                seen_history_ids.add(c["contract_id"])
+                all_history_contracts.append((c, role))
 
     if not all_contracts and not per_character:
         raise ActionError("No doctrine character's contracts could be fetched - check tokens/scopes.")
@@ -262,8 +299,38 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
         for d in deviations:
             deviation_rows.append((cid, d.type_id, d.kind, d.expected_qty, d.actual_qty, d.severity))
 
+    # GitHub issue #19: record every newly-finished contract into permanent
+    # history before replace_doctrine_sync_snapshot below drops it from the
+    # active table - reuses whichever fitting this contract was already
+    # matched against while it was still outstanding (existing_by_id, loaded
+    # above from the *previous* sync's snapshot) rather than re-fetching/
+    # re-matching its items, which are immutable now anyway. fitting_name/
+    # hull_type_id are denormalized here (captured once, from whatever the
+    # fitting looks like right now) rather than resolved live at read time -
+    # see doctrine_contract_history's own schema comment for why.
+    acceptor_ids = {c.get("acceptor_id") for c, _role in all_history_contracts if c.get("acceptor_id")}
+    acceptor_names = client.resolve_names(list(acceptor_ids)) if acceptor_ids else {}
+    history_rows: list[tuple] = []
+    for raw, role in all_history_contracts:
+        cid = raw["contract_id"]
+        existing = existing_by_id.get(cid)
+        fitting_id = existing[9] if existing is not None else None  # _CONTRACT_COLUMNS' matched_fitting_id
+        fitting_name = None
+        hull_type_id = None
+        if fitting_id is not None:
+            fitting_row = storage.get_fitting(fitting_id)
+            if fitting_row is not None:
+                fitting_name, hull_type_id = fitting_row[2], fitting_row[4]  # _FITTING_COLUMNS' name/hull_type_id
+        acceptor_id = raw.get("acceptor_id")
+        history_rows.append((
+            cid, role, fitting_id, fitting_name, hull_type_id, raw.get("title"), raw.get("price"),
+            acceptor_id, acceptor_names.get(acceptor_id) if acceptor_id is not None else None,
+            raw.get("date_issued"), raw.get("date_completed"),
+        ))
+
     with storage.batch_session():
         storage.replace_doctrine_sync_snapshot(contract_rows, item_rows, deviation_rows)
+        storage.upsert_doctrine_contract_history(history_rows)
         storage.set_esi_sync_time("doctrine", synced_at)
 
     return {

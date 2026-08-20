@@ -11,6 +11,7 @@ import { dateTime } from '../../format'
 const TABS = [
   { path: '/doctrine', label: 'Doctrines' },
   { path: '/doctrine/contracts', label: 'Contracts' },
+  { path: '/doctrine/contracts/history', label: 'History' },
   { path: '/doctrine/stockpile', label: 'Stockpile' },
   { path: '/doctrine/shopping-list', label: 'Shopping List' },
   { path: '/doctrine/settings', label: 'Settings' },
@@ -19,8 +20,10 @@ const TABS = [
 // A fitting/detail sub-page (path has extra segments beyond a known tab)
 // still highlights its parent tab - Tabs.value requires an exact match
 // otherwise none of the TABS above would show as active while viewing a
-// single doctrine or fitting.
+// single doctrine or fitting. History is checked before the plain Contracts
+// prefix it would otherwise also match.
 function activeTab(pathname: string): string {
+  if (pathname.startsWith('/doctrine/contracts/history')) return '/doctrine/contracts/history'
   if (pathname.startsWith('/doctrine/contracts')) return '/doctrine/contracts'
   if (pathname.startsWith('/doctrine/stockpile')) return '/doctrine/stockpile'
   if (pathname.startsWith('/doctrine/shopping-list')) return '/doctrine/shopping-list'
@@ -85,7 +88,7 @@ export default function DoctrineLayout() {
 
   const { data: syncTime } = useQuery({ queryKey: ['doctrine', 'sync-time'], queryFn: doctrineApi.syncTime })
   const sync = useAction('Sync Contracts', doctrineApi.syncContracts, [
-    ['doctrine', 'status'], ['doctrine', 'contracts'], ['doctrine', 'sync-time'],
+    ['doctrine', 'status'], ['doctrine', 'contracts'], ['doctrine', 'contract-history'], ['doctrine', 'sync-time'],
   ])
 
   const { data: assetSyncTime } = useQuery({ queryKey: ['doctrine', 'asset-sync-time'], queryFn: doctrineApi.assetSyncTime })
