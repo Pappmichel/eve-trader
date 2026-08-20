@@ -112,6 +112,18 @@ AMPEL_SEVERITY_ORDER = (AMPEL_GREEN, AMPEL_YELLOW, AMPEL_RED)
 CONTRACT_TYPE_ITEM_EXCHANGE = "item_exchange"
 SYNCABLE_CONTRACT_STATUSES = ("outstanding", "expired")
 
+# GitHub issue #19: statuses that mean "this contract was actually accepted/
+# sold" (ESI's own contract-status vocabulary - a completed item_exchange
+# contract reports one of these three depending on which side's view the
+# call came from). Deliberately a separate set from SYNCABLE_CONTRACT_
+# STATUSES above, not merged into it - once a contract reaches one of these
+# it's immutable (no more deviations/matching against it makes sense, its
+# items are fixed history now), so esi_sync.sync_contracts records it once
+# into doctrine_contract_history and lets it drop out of the *active*
+# doctrine_contracts snapshot as before (see that table's own "no separate
+# cleanup step needed" docstring) instead of keeping it in both places.
+FINISHED_CONTRACT_STATUSES = ("finished", "finished_issuer", "finished_contractor")
+
 # ---------------------------------------------------------------- matching (Phase 3 B.5)
 MATCH_WEIGHT_EXACT = 0.8
 MATCH_WEIGHT_CONSUME = 0.2

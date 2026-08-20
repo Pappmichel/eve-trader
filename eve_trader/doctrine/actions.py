@@ -17,7 +17,7 @@ from ..auth import TokenManager
 from ..config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
 from . import engine, esi_sync
 from .config import DOCTRINE_CONFIG, DoctrineConfig
-from .models import ContractItemRow, ParsedFitting
+from .models import ContractHistoryRow, ContractItemRow, ParsedFitting
 from .parser import FittingParseError
 
 
@@ -360,6 +360,44 @@ def do_list_contracts(fitting_id: Optional[str] = None, status: Optional[str] = 
         rows.append({**asdict(c), "source_character_name": character_names.get(c.source_role),
                      "hull_type_id": hull_type_id, "hull_name": hull_name})
     return {"rows": rows}
+
+
+def _iso(value) -> Optional[str]:
+    """storage.load_doctrine_contract_history's date_issued/date_completed
+    come back from Postgres as tz-aware datetime objects (TIMESTAMPTZ
+    columns), not the ISO strings every other timestamp in this app is
+    already a string by the time storage returns it (see e.g. esi_sync.py's
+    own `datetime.now(timezone.utc).isoformat()` calls, which store the
+    string form up front) - confirmed real bug caught live: the API layer's
+    ContractHistoryRow schema declares these `Optional[str]`, and FastAPI's
+    response validation rejects a raw datetime outright (500, not a silent
+    wrong value)."""
+    if value is None or isinstance(value, str):
+        return value
+    return value.isoformat()
+
+
+def do_contract_history() -> dict:
+    """GitHub issue #19 - "which contracts were sold to who and when".
+    fitting_name/hull_type_id are already denormalized on the stored row
+    (see storage.upsert_doctrine_contract_history's own docstring) - only
+    hull_name (SDE type names, stable reference data - unlike a tenant's own
+    fittings, never edited/deleted out from under a history row) and
+    source_character_name (same role-key resolution do_list_contracts above
+    already does) need resolving here."""
+    rows = storage.load_doctrine_contract_history()
+    character_names = {role_key: name for role_key, _character_id, name in esi_sync.list_doctrine_characters()}
+    result = []
+    for (contract_id, source_role, fitting_id, fitting_name, hull_type_id, title, price, acceptor_id,
+         acceptor_name, date_issued, date_completed) in rows:
+        result.append(ContractHistoryRow(
+            contract_id=contract_id, source_role=source_role, fitting_id=fitting_id, fitting_name=fitting_name,
+            hull_type_id=hull_type_id, hull_name=_type_name(hull_type_id) if hull_type_id is not None else None,
+            title=title, price=price, acceptor_id=acceptor_id, acceptor_name=acceptor_name,
+            date_issued=_iso(date_issued), date_completed=_iso(date_completed),
+            source_character_name=character_names.get(source_role),
+        ))
+    return {"rows": [asdict(r) for r in result]}
 
 
 def do_get_esi_sync_time() -> dict:

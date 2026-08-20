@@ -45,6 +45,40 @@ def test_passes_prefilter_rejects_when_structure_not_configured():
     assert esi_sync._passes_prefilter(_contract(), None) is False
 
 
+# ------------------------------------------------------------- _passes_history_filter
+def test_passes_history_filter_accepts_finished_item_exchange_at_structure():
+    # GitHub issue #19 - the whole point of this filter existing separately
+    # from _passes_prefilter: "finished" is deliberately excluded from
+    # SYNCABLE_CONTRACT_STATUSES (a finished contract has nothing left to
+    # validate/match against), but must still be caught here before it drops
+    # out of the active snapshot with no record left anywhere.
+    assert esi_sync._passes_history_filter(_contract(status="finished"), STRUCTURE_ID) is True
+
+
+def test_passes_history_filter_accepts_finished_issuer_and_contractor_variants():
+    assert esi_sync._passes_history_filter(_contract(status="finished_issuer"), STRUCTURE_ID) is True
+    assert esi_sync._passes_history_filter(_contract(status="finished_contractor"), STRUCTURE_ID) is True
+
+
+def test_passes_history_filter_rejects_still_outstanding():
+    # The inverse of _passes_prefilter's own acceptance of "outstanding" -
+    # an outstanding contract isn't history yet, it's still active.
+    assert esi_sync._passes_history_filter(_contract(status="outstanding"), STRUCTURE_ID) is False
+
+
+def test_passes_history_filter_rejects_wrong_type():
+    assert esi_sync._passes_history_filter(_contract(type="courier", status="finished"), STRUCTURE_ID) is False
+
+
+def test_passes_history_filter_rejects_wrong_location():
+    assert esi_sync._passes_history_filter(
+        _contract(status="finished", start_location_id=999), STRUCTURE_ID) is False
+
+
+def test_passes_history_filter_rejects_when_structure_not_configured():
+    assert esi_sync._passes_history_filter(_contract(status="finished"), None) is False
+
+
 # ------------------------------------------------------------- _issued_by_own_identity
 def test_issued_by_own_identity_matches_on_issuer_character_id():
     contract = _contract(issuer_id=42, issuer_corporation_id=999)

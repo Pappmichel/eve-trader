@@ -52,6 +52,26 @@ def test_esi_stock_at_location_still_unwraps_corp_office(tenant):
     assert storage.esi_stock_at_location(TYPE_ID, LOCATION_ID) == 300
 
 
+def test_esi_stock_at_location_sees_stock_inside_a_container_in_corp_hangar(tenant):
+    # GitHub issue #4: esi_stock_at_location used to resolve nesting only one
+    # level deep (a hardcoded Office special-case) - a Station Container
+    # sitting inside the corp Office (two hops: container -> Office ->
+    # structure) read as completely invisible stock. Confirmed real report:
+    # ~300M tritanium sitting in a container at C-J never showed up as
+    # available to Distribution, which kept recommending pulling it from
+    # other production facilities instead of the (actually well-stocked)
+    # warehouse.
+    office_item_id = 900
+    container_item_id = 901
+    storage.replace_assets("corp_assets", [
+        (office_item_id, storage.OFFICE_TYPE_ID, LOCATION_ID, "OfficeFolder", 1, 0, "My Corp (corp)"),
+        (container_item_id, 649, office_item_id, "CorpSAG1", 1, 0, "My Corp (corp)"),  # a Station Container
+        (2, TYPE_ID, container_item_id, "Unlocked", 300000000, 0, "My Corp (corp)"),  # tritanium inside it
+    ])
+
+    assert storage.esi_stock_at_location(TYPE_ID, LOCATION_ID) == 300000000
+
+
 def test_search_item_stock_locations_groups_by_location_and_owner(tenant):
     other_location = 1000000000002
     storage.replace_assets("character_assets", [
@@ -159,3 +179,37 @@ def test_get_cached_structure_names_batches_and_preserves_was_cached_semantics(t
 
 def test_get_cached_structure_names_empty_input_returns_empty_dict(tenant):
     assert storage.get_cached_structure_names([]) == {}
+
+
+def test_set_cached_structure_name_stores_solar_system_id(tenant):
+    storage.set_cached_structure_name(LOCATION_ID, "C-J Keepstar", solar_system_id=30000142)
+
+    assert storage.get_structure_system_id(LOCATION_ID) == 30000142
+
+
+def test_set_cached_structure_name_never_overwrites_system_id_with_none(tenant):
+    # GitHub issue #12: a later best-effort resolve (e.g. force=True retried
+    # through docking-history fallback, which happened to not return
+    # solar_system_id this time) must not blow away a value an earlier
+    # successful resolve already captured.
+    storage.set_cached_structure_name(LOCATION_ID, "C-J Keepstar", solar_system_id=30000142)
+    storage.set_cached_structure_name(LOCATION_ID, "C-J Keepstar (renamed)", solar_system_id=None)
+
+    assert storage.get_structure_system_id(LOCATION_ID) == 30000142
+
+
+def test_get_structure_system_id_none_when_never_resolved(tenant):
+    assert storage.get_structure_system_id(LOCATION_ID) is None
+
+
+def test_load_category_system_ids_joins_category_locations_and_structure_names(tenant):
+    storage.upsert_category_location("Reactions", LOCATION_ID)
+    storage.set_cached_structure_name(LOCATION_ID, "C-J Keepstar", solar_system_id=30000142)
+    other_location = 1000000000002
+    storage.upsert_category_location("Capital Components", other_location)
+    # Never resolved - must be absent from the result, not present with None.
+    storage.upsert_category_location("Advanced Components", 1000000000003)
+
+    result = storage.load_category_system_ids()
+
+    assert result == {"Reactions": 30000142}

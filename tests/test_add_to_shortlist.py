@@ -47,6 +47,8 @@ def test_do_recategorize_shortlist_fixes_stale_booster_labels(monkeypatch):
 
     captured = {}
     monkeypatch.setattr(storage, "upsert_shortlist", lambda items: captured.setdefault("items", items))
+    monkeypatch.setattr(storage, "update_snapshot_categories",
+                         lambda categories: captured.setdefault("snapshot_categories", categories))
 
     result = actions.do_recategorize_shortlist()
 
@@ -54,6 +56,9 @@ def test_do_recategorize_shortlist_fixes_stale_booster_labels(monkeypatch):
     by_id = {i.item_id: i for i in captured["items"]}
     assert by_id[44].category == "Drugs"
     assert by_id[45].category == "Skill"
+    # GitHub issue #5: the already-persisted snapshot the Shortlist page
+    # renders must be patched too, not just the live shortlist table.
+    assert captured["snapshot_categories"] == {44: "Drugs"}
 
 
 def test_do_recategorize_shortlist_falls_back_to_esi_for_a_missing_sde_row(monkeypatch):
@@ -76,11 +81,14 @@ def test_do_recategorize_shortlist_falls_back_to_esi_for_a_missing_sde_row(monke
 
     captured = {}
     monkeypatch.setattr(storage, "upsert_shortlist", lambda items: captured.setdefault("items", items))
+    monkeypatch.setattr(storage, "update_snapshot_categories",
+                         lambda categories: captured.setdefault("snapshot_categories", categories))
 
     result = actions.do_recategorize_shortlist()
 
     assert result == {"checked": 1, "recategorized": 1}
     assert captured["items"][0].category == "Drugs"
+    assert captured["snapshot_categories"] == {28672: "Drugs"}
 
 
 def test_do_recategorize_shortlist_stays_implant_when_esi_lookup_also_fails(monkeypatch):
@@ -99,8 +107,11 @@ def test_do_recategorize_shortlist_stays_implant_when_esi_lookup_also_fails(monk
 
     captured = {}
     monkeypatch.setattr(storage, "upsert_shortlist", lambda items: captured.setdefault("items", items))
+    monkeypatch.setattr(storage, "update_snapshot_categories",
+                         lambda categories: captured.setdefault("snapshot_categories", categories))
 
     result = actions.do_recategorize_shortlist()
 
     assert result == {"checked": 1, "recategorized": 0}
     assert captured["items"][0].category == "Implant"
+    assert captured["snapshot_categories"] == {}
