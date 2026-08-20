@@ -34,17 +34,21 @@ def _merge_charges_into_consume(consume: dict[int, float], charge_type_ids: set[
 def build_contract_soll(items: list[FittingItem]) -> tuple[dict[int, float], dict[int, float]]:
     """Returns (exact_soll, consume_soll) for contract validation - the hull
     is deliberately NOT included (B.2: it's the matching gate, checked
-    separately by hull_gate_satisfied, not a multiset position)."""
+    separately by hull_gate_satisfied, not a multiset position). "charge" is
+    checked before CONSUME_SECTIONS (GitHub issue #18: that set now also
+    includes "fuelbay"/"shipmaintenancebay", which get summed like drone/
+    cargo below) since charges get their own floor-of-1 merge semantics
+    instead of straight summing - see _merge_charges_into_consume."""
     exact: dict[int, float] = defaultdict(float)
     consume: dict[int, float] = defaultdict(float)
     charge_type_ids: set[int] = set()
     for item in items:
         if item.slot_section in EXACT_SECTIONS:
             exact[item.type_id] += item.quantity
-        elif item.slot_section in ("drone", "cargo"):
-            consume[item.type_id] += item.quantity
         elif item.slot_section == "charge":
             charge_type_ids.add(item.type_id)
+        elif item.slot_section in CONSUME_SECTIONS:
+            consume[item.type_id] += item.quantity
     _merge_charges_into_consume(consume, charge_type_ids)
     return dict(exact), dict(consume)
 
@@ -82,7 +86,17 @@ def hull_gate_satisfied(contract_items: list[ContractItemRow], hull_type_id: int
 
 
 def build_contract_ist(contract_items: list[ContractItemRow], hull_type_id: int) -> dict[int, float]:
-    """B.3: Ist multiset from is_included=True items, hull removed."""
+    """B.3: Ist multiset from is_included=True items, hull removed.
+
+    GitHub issue #18's "ignore damaged ammunition": already true by
+    construction, nothing to special-case here - ESI's /contracts/{id}/
+    items/ response has no damage/durability field at all (confirmed
+    against ESI's own contract-item schema: record_id, type_id, quantity,
+    raw_quantity, is_blueprint_copy, is_included - the "NN% damaged" label
+    is a display-only artifact of the in-game contract window, never part
+    of the API data), so a damaged charge already just counts as one more
+    unit of its own type_id here, same as an undamaged one - there's
+    nothing for this function to filter out."""
     ist: dict[int, float] = defaultdict(float)
     for ci in contract_items:
         if ci.is_included and ci.type_id != hull_type_id:

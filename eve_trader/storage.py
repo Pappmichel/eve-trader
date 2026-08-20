@@ -1707,21 +1707,22 @@ def delete_doctrine(doctrine_id: str) -> None:
 
 def create_fitting(doctrine_id: str, name: str, hull_type_id: int, raw_eft: str,
                     variant_label: Optional[str], contract_target: int, stockpile_target: int,
-                    cargo_tolerance_pct: Optional[float]) -> str:
+                    cargo_tolerance_pct: Optional[float], fuel_bay_text: Optional[str] = None,
+                    ship_maintenance_bay_text: Optional[str] = None) -> str:
     with connect() as conn:
         row = conn.execute(
             "INSERT INTO doctrine_fittings (doctrine_id, name, hull_type_id, raw_eft, variant_label, "
-            "contract_target, stockpile_target, cargo_tolerance_pct) VALUES (?,?,?,?,?,?,?,?) "
-            "RETURNING fitting_id",
+            "contract_target, stockpile_target, cargo_tolerance_pct, fuel_bay_text, "
+            "ship_maintenance_bay_text) VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING fitting_id",
             (doctrine_id, name, hull_type_id, raw_eft, variant_label, contract_target, stockpile_target,
-             cargo_tolerance_pct),
+             cargo_tolerance_pct, fuel_bay_text, ship_maintenance_bay_text),
         ).fetchone()
     return str(row[0])
 
 
 _FITTING_COLUMNS = ("fitting_id", "doctrine_id", "name", "variant_label", "hull_type_id", "raw_eft",
                      "contract_target", "stockpile_target", "cargo_tolerance_pct", "active",
-                     "created_at", "updated_at")
+                     "created_at", "updated_at", "fuel_bay_text", "ship_maintenance_bay_text")
 
 
 def get_fitting(fitting_id: str) -> Optional[tuple]:

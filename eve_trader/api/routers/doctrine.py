@@ -73,6 +73,8 @@ class AddFittingRequest(BaseModel):
     contract_target: int = 0
     stockpile_target: int = 0
     cargo_tolerance_pct: Optional[float] = None
+    fuel_bay_text: Optional[str] = None
+    ship_maintenance_bay_text: Optional[str] = None
 
 
 @router.post("/doctrines/{doctrine_id}/fittings")
@@ -88,6 +90,8 @@ class UpdateFittingRequest(BaseModel):
     stockpile_target: Optional[int] = None
     cargo_tolerance_pct: Optional[float] = None
     active: Optional[bool] = None
+    fuel_bay_text: Optional[str] = None
+    ship_maintenance_bay_text: Optional[str] = None
 
 
 @router.patch("/fittings/{fitting_id}")
