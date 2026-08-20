@@ -1870,6 +1870,24 @@ def test_invention_logistics_needs_bpcs_decryptors_and_datacores(monkeypatch):
     assert by_type[301].needed == 12.0
 
 
+def test_invention_logistics_none_decryptor_does_not_demand_type_zero(monkeypatch):
+    # GitHub issue #13: DECRYPTORS["None"].type_id is 0 (no real decryptor
+    # used) - SDE type_id 0 happens to be named "#System", so a need with no
+    # decryptor selected must never add a demand row for type_id 0.
+    from eve_trader.production.models import InventionNeedRow
+    cfg = ProductionConfig(invention_location_id=5000)
+    need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
+                             t1_blueprint_name="Widget Blueprint", decryptor="None", probability=0.5,
+                             output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
+    monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id: {"datacores": []})
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: 0.0)
+
+    rows = engine.invention_logistics([need], cfg)
+
+    assert 0 not in {r.type_id for r in rows}
+
+
 def test_invention_logistics_empty_without_location_configured(monkeypatch):
     from eve_trader.production.models import InventionNeedRow
     cfg = ProductionConfig(invention_location_id=None)
