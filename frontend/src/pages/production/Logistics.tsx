@@ -37,15 +37,37 @@ export default function Logistics() {
 
   const saveDistributionSource = useAction('Distribution Source Saved', async () => {
     if (!settings) return
-    return productionApi.updateSettings({
-      ...settings, distribution_source_location_id: sourceDraft ? Number(sourceDraft) : null,
+    const locationId = sourceDraft ? Number(sourceDraft) : null
+    const result = await productionApi.updateSettings({
+      ...settings, distribution_source_location_id: locationId,
     })
-  }, [['production', 'settings'], ['production', 'logistics', 'distribution']])
+    // Same best-effort resolve-after-save pattern as saveLocation below
+    // (GitHub issue #21 - this used to never be called at all for the
+    // distribution source/home station, so its name never showed up no
+    // matter how many times a *category* location got resolved).
+    if (locationId != null) {
+      try {
+        await productionApi.resolveStructureName(locationId)
+      } catch {
+        // best-effort - the source save above already succeeded
+      }
+    }
+    return result
+  }, [['production', 'settings'], ['production', 'logistics', 'distribution'], ['production', 'structure-names']])
 
   const saveInventionLocation = useAction('Invention Station Saved', async () => {
     if (!settings) return
-    return productionApi.updateSettings({ ...settings, invention_location_id: inventionDraft ? Number(inventionDraft) : null })
-  }, [['production', 'settings'], ['production', 'logistics', 'invention']])
+    const locationId = inventionDraft ? Number(inventionDraft) : null
+    const result = await productionApi.updateSettings({ ...settings, invention_location_id: locationId })
+    if (locationId != null) {
+      try {
+        await productionApi.resolveStructureName(locationId)
+      } catch {
+        // best-effort - the invention station save above already succeeded
+      }
+    }
+    return result
+  }, [['production', 'settings'], ['production', 'logistics', 'invention'], ['production', 'structure-names']])
 
   const [draft, setDraft] = useState<Record<string, string>>({})
   // Only fills in categories *missing* from draft (a first load, or a newly
