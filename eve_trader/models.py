@@ -86,12 +86,18 @@ class RealizedTrade:
 @dataclass
 class UnlistedStockRow:
     """Stock physically sitting at the structure that isn't (fully) covered
-    by an open sell order - see own_orders.fetch_seller_stock_without_order."""
+    by an open sell order - see own_orders.fetch_seller_stock_without_order.
+    sell_volume/margin mirror ShortlistRow's own fields (same
+    shortlist.evaluate_shortlist_item formula) - None when the item has no
+    Jita/C-J order-book data at all (e.g. never priced through the
+    shortlist)."""
     type_id: int
     item: str
     asset_quantity: float
     sell_order_remaining: float
     unlisted_quantity: float
+    sell_volume: Optional[float] = None
+    margin: Optional[float] = None
 
 
 @dataclass

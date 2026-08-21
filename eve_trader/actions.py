@@ -365,13 +365,44 @@ def do_check_seller_unlisted_stock(cfg: TradingConfig = TRADING_CONFIG,
             "esi-assets.read_assets.v1 existed: log in via 'Login Seller' again once."
         ) from e
 
+    unlisted_type_ids = [entry["type_id"] for entry in unlisted]
+    # Same margin/sell_volume math as the shortlist itself (issue #45: these
+    # pages showed a bare quantity only).
+    structure_stats_by_item: dict = {}
+    jita_stats_by_item: dict = {}
+    if unlisted_type_ids:
+        try:
+            structure_stats_by_item = client.structure_order_stats_bulk(
+                cfg.structure_id, unlisted_type_ids, auth_role="seller")
+        except ESIError as e:
+            raise ActionError(f"Could not fetch the structure's order book ({e}). "
+                               f"Does the seller character still have docking access?") from e
+        jita_stats_by_item = client.region_order_stats_bulk(cfg.jita_region_id, unlisted_type_ids)
+
     rows = []
     for entry in unlisted:
-        sde_type = storage.get_sde_type(entry["type_id"])
-        name = sde_type[2] if sde_type else str(entry["type_id"])
+        type_id = entry["type_id"]
+        sde_type = storage.get_sde_type(type_id)
+        name = sde_type[2] if sde_type else str(type_id)
+        volume_m3 = sde_type[3] if sde_type and sde_type[3] else None
+
+        jita_stats = jita_stats_by_item.get(type_id)
+        structure_stats = structure_stats_by_item.get(type_id)
+        jita_sell = jita_stats.sell_percentile if jita_stats else None
+        net_sell = (structure_stats.sell_percentile * cfg.structure_sell_haircut) \
+            if structure_stats and structure_stats.sell_percentile is not None else None
+        sell_volume = structure_stats.sell_volume if structure_stats else None
+        margin = None
+        if jita_sell is not None and volume_m3 is not None and net_sell is not None:
+            import_cost = volume_m3 * cfg.import_cost_per_m3
+            landed_cost = jita_sell * (1 + cfg.jita_buy_broker_fee) + import_cost
+            if landed_cost:
+                margin = (net_sell - landed_cost) / landed_cost
+
         rows.append(UnlistedStockRow(
-            type_id=entry["type_id"], item=name, asset_quantity=entry["asset_quantity"],
+            type_id=type_id, item=name, asset_quantity=entry["asset_quantity"],
             sell_order_remaining=entry["sell_order_remaining"], unlisted_quantity=entry["unlisted_quantity"],
+            sell_volume=sell_volume, margin=margin,
         ))
     rows.sort(key=lambda r: r.unlisted_quantity, reverse=True)
     return {"rows": rows}
