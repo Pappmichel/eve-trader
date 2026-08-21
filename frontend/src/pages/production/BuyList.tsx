@@ -11,7 +11,7 @@ import { useAction } from '../../hooks/useAction'
 import { isk, qty } from '../../format'
 
 export default function BuyList() {
-  const { data: plan, isLoading } = useQuery({ queryKey: ['production', 'plan'], queryFn: productionApi.plan })
+  const { data: plan, isLoading, dataUpdatedAt } = useQuery({ queryKey: ['production', 'plan'], queryFn: productionApi.plan })
   const buyList = plan?.buy_list ?? []
 
   const refreshPlan = useAction('Refresh Production', productionApi.refreshPlan, [
@@ -66,7 +66,7 @@ export default function BuyList() {
           Recompute
         </Button>
       </Group>
-      <DataTable data={buyList} columns={columns} maxHeight={560} />
+      <DataTable data={buyList} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
     </Stack>
   )
 }

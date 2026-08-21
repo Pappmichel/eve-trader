@@ -38,7 +38,7 @@ function CreateDoctrineModal({ opened, onClose }: { opened: boolean; onClose: ()
 }
 
 export default function Doctrines() {
-  const { data, isLoading } = useQuery({ queryKey: ['doctrine', 'status'], queryFn: doctrineApi.listDoctrines })
+  const { data, isLoading, dataUpdatedAt } = useQuery({ queryKey: ['doctrine', 'status'], queryFn: doctrineApi.listDoctrines })
   const [modalOpen, setModalOpen] = useState(false)
 
   const columns = useMemo<ColumnDef<DoctrineStatus, any>[]>(() => [
@@ -89,6 +89,7 @@ export default function Doctrines() {
           exportFilename="doctrines"
           getRowId={(d) => d.doctrine_id}
           isLoading={isLoading}
+          dataUpdatedAt={dataUpdatedAt}
         />
       )}
 

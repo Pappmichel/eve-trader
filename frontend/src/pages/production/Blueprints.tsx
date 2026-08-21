@@ -14,7 +14,7 @@ import { isk, qty } from '../../format'
 const MANUAL_COPY_COSTS_KEY = [['production', 'manual-blueprint-copy-costs']]
 
 function ManualBlueprintCopyCostsSection() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, dataUpdatedAt } = useQuery({
     queryKey: ['production', 'manual-blueprint-copy-costs'], queryFn: productionApi.manualBlueprintCopyCosts,
   })
   const addCost = useAction(
@@ -81,14 +81,15 @@ function ManualBlueprintCopyCostsSection() {
         <Text c="dimmed" size="sm">None registered yet.</Text>
       ) : (
         <DataTable data={data} columns={columns} tableId="manual-blueprint-copy-costs"
-          exportFilename="manual-blueprint-copy-costs" getRowId={(r) => String(r.type_id)} maxHeight={300} />
+          exportFilename="manual-blueprint-copy-costs" getRowId={(r) => String(r.type_id)} maxHeight={300}
+          dataUpdatedAt={dataUpdatedAt} />
       )}
     </div>
   )
 }
 
 export default function Blueprints() {
-  const { data, isLoading } = useQuery({ queryKey: ['production', 'blueprints'], queryFn: productionApi.ownedBlueprints })
+  const { data, isLoading, dataUpdatedAt } = useQuery({ queryKey: ['production', 'blueprints'], queryFn: productionApi.ownedBlueprints })
 
   const columns = useMemo<ColumnDef<OwnedBlueprintRow, any>[]>(() => [
     { header: 'Item', accessorKey: 'type_name', size: 260 },
@@ -109,7 +110,7 @@ export default function Blueprints() {
       ) : !data || data.length === 0 ? (
         <HintCard>No blueprints found - or not synced yet ('Sync ESI Data' in the sidebar).</HintCard>
       ) : (
-        <DataTable data={data} columns={columns} maxHeight={560} />
+        <DataTable data={data} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
       )}
 
       <Divider />

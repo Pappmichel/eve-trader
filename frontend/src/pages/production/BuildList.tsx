@@ -13,7 +13,7 @@ import { isk, pct, qty } from '../../format'
 const CATEGORY_UNKNOWN = 'no category'
 
 export default function BuildList() {
-  const { data: plan, isLoading } = useQuery({ queryKey: ['production', 'plan'], queryFn: productionApi.plan })
+  const { data: plan, isLoading, dataUpdatedAt } = useQuery({ queryKey: ['production', 'plan'], queryFn: productionApi.plan })
   const buildList = plan?.build_list ?? []
 
   const refreshPlan = useAction('Refresh Production', productionApi.refreshPlan, [
@@ -83,7 +83,7 @@ export default function BuildList() {
       {filtered.length === 0 ? (
         <HintCard>No jobs in the selected categories.</HintCard>
       ) : (
-        <DataTable data={filtered} columns={columns} maxHeight={560} />
+        <DataTable data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
       )}
       <Text size="xs" c="dimmed">
         Decryptor 'None' means: no decryptor is the best choice (not 'no computation'). '–' = Tech I/Reaction

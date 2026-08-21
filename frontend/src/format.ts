@@ -37,6 +37,24 @@ export function dateTime(isoUtc: string | null | undefined): string {
   return dtf.format(new Date(hasOffset ? isoUtc : `${isoUtc}Z`))
 }
 
+// GitHub issue #78: "how fresh is what I'm looking at" - react-query already
+// tracks dataUpdatedAt per query, this just renders it as a short relative
+// label instead of a raw timestamp (dateTime() above is for real EVE-side
+// timestamps like sync/job times, not "when did my own browser last fetch
+// this").
+export function relativeTime(epochMs: number | null | undefined): string {
+  if (!epochMs) return ''
+  const seconds = Math.max(0, Math.round((Date.now() - epochMs) / 1000))
+  if (seconds < 5) return 'just now'
+  if (seconds < 60) return `${seconds}s ago`
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.round(hours / 24)
+  return `${days}d ago`
+}
+
 export function duration(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined || Number.isNaN(seconds)) return '–'
   if (seconds <= 0) return 'done'
