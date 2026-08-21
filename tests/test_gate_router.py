@@ -329,8 +329,10 @@ def test_callback_buyer_branch_persists_the_token_under_the_correct_tenant(
     resp = client.get("/api/auth/callback", params={"code": "abc", "state": state}, follow_redirects=False)
 
     assert "auth=success" in resp.headers["location"]
+    # GitHub issue #46: buyer/seller are multi-character now - the token
+    # lands under "buyer:<char_id>", not a single fixed "buyer" key.
     with storage.tenant_context(tenant_a):
-        record = TokenManager().get_record("buyer")
+        record = TokenManager().get_record("buyer:42")
         assert record is not None and record.character_id == 42
     with storage.tenant_context(tenant_b):
-        assert TokenManager().get_record("buyer") is None
+        assert TokenManager().get_record("buyer:42") is None
