@@ -77,6 +77,8 @@ export interface UnlistedStockRow {
   asset_quantity: number
   sell_order_remaining: number
   unlisted_quantity: number
+  sell_volume: number | null
+  margin: number | null
 }
 
 export interface UndercutRow {
@@ -347,6 +349,8 @@ export interface ProductionUnlistedStockRow {
   type_id: number
   type_name: string
   stock_quantity: number
+  sell_volume: number | null
+  margin: number | null
 }
 
 export interface PortfolioOverview {
