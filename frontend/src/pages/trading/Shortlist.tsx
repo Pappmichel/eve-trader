@@ -75,10 +75,14 @@ export default function Shortlist() {
     })
   }, [data, effectiveCategories, selDecisions, effectiveMeta, search, minMarginPct])
 
+  // GitHub issue #51: computed from avg_daily_sold (real observed sales,
+  // from the last Reconcile Trades run) - NOT sell_volume/order-book depth,
+  // which used to make a never-actually-sold item with a big listed
+  // quantity show a wildly inflated "Profit / Day".
   const topImports = useMemo(() => {
     return filtered
-      .filter((r) => r.profit_per_unit !== null && r.sell_volume !== null)
-      .map((r) => ({ item: r.item, maxProfitPerDay: (r.profit_per_unit ?? 0) * (r.sell_volume ?? 0) }))
+      .filter((r) => r.profit_per_unit !== null && r.avg_daily_sold !== null)
+      .map((r) => ({ item: r.item, maxProfitPerDay: (r.profit_per_unit ?? 0) * (r.avg_daily_sold ?? 0) }))
       .sort((a, b) => b.maxProfitPerDay - a.maxProfitPerDay)
       .slice(0, 15)
   }, [filtered])
@@ -126,8 +130,12 @@ export default function Shortlist() {
     },
     { header: 'Profit / Unit', accessorKey: 'profit_per_unit', size: 120, cell: (i) => isk(i.getValue()) },
     {
-      header: 'Profit / Day (theoretical)', id: 'maxProfitPerDay', size: 160,
-      accessorFn: (r) => (r.profit_per_unit !== null && r.sell_volume !== null) ? r.profit_per_unit * r.sell_volume : null,
+      // GitHub issue #51: profit_per_unit x avg_daily_sold (real observed
+      // sales from the last Reconcile Trades run), not sell_volume/
+      // order-book depth - "–" means no real sale has been matched for this
+      // item yet, not a guess derived from listed quantity.
+      header: 'Profit / Day (avg. sold)', id: 'maxProfitPerDay', size: 160,
+      accessorFn: (r) => (r.profit_per_unit !== null && r.avg_daily_sold !== null) ? r.profit_per_unit * r.avg_daily_sold : null,
       cell: (i) => isk(i.getValue()),
       meta: { mobileHide: true },
     },
