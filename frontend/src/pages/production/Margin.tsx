@@ -92,7 +92,7 @@ export default function Margin() {
       <ItemSearch />
 
       {isLoading && <Text c="dimmed" size="sm">Loading…</Text>}
-      {data && data.length === 0 && <HintCard>No ships found - Refresh SDE first?</HintCard>}
+      {data && data.length === 0 && <HintCard>No ships found - Refresh SDE (Admin tool) first?</HintCard>}
       {data && data.length > 0 && <DataTable data={data} columns={columns} maxHeight={560} />}
     </Stack>
   )

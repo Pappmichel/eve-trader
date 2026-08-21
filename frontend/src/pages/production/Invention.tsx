@@ -56,7 +56,7 @@ export default function Invention() {
   ], [])
 
   if (sdeLoading) return <DataTable data={[]} columns={needsColumns} isLoading maxHeight={360} />
-  if (!sdeReady) return <HintCard>SDE cache is empty. Click <b>Refresh SDE</b> on the left.</HintCard>
+  if (!sdeReady) return <HintCard>SDE cache is empty. Click <b>Refresh SDE</b> in the Admin tool.</HintCard>
 
   const best = results?.[0]
 

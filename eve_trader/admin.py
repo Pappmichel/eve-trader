@@ -13,9 +13,13 @@ do_* functions, no logic duplicated in the router.
 """
 from __future__ import annotations
 
+import requests
+
 from . import access_gate, storage
 from .actions import ActionError
 from .esi_client import ESIError
+from .production import sde
+from .production.engine import invalidate_discover_cache, invalidate_ship_margin_cache
 
 
 def do_list_tenants() -> list[dict]:
@@ -67,6 +71,30 @@ def do_remove_user(character_id: int) -> dict:
     storage.remove_tenant_registry_entry(character_id)
     storage.revoke_all_tool_grants(character_id)
     return {"removed": character_id}
+
+
+def do_refresh_sde() -> dict:
+    """Downloads and caches the current Fuzzwork SDE export - moved here from
+    production/actions.py (GitHub issue #34): the SDE cache (sde_types/
+    sde_blueprint_materials/etc.) is global, shared data, not per-tenant, so
+    triggering a refresh affects every tenant's Production/Trading data at
+    once - a cross-tenant-impacting action that belongs in this module's
+    superadmin surface, not exposed to every Production tenant individually.
+    production/actions.py's do_check_sde_freshness (read-only) stays there,
+    unaffected - it still legitimately informs Production's/Trading's own
+    per-tenant sidebars."""
+    try:
+        result = sde.refresh_sde()
+    except requests.RequestException as e:
+        # Confirmed real gap (see the original do_refresh_sde in production/
+        # actions.py this was moved from): sde.refresh_sde()'s network errors
+        # used to reach the router unconverted - a raw 500 instead of the
+        # ActionError every other ESI/Goonmetrics-touching action converts a
+        # network failure to.
+        raise ActionError(f"SDE refresh failed: {e}") from e
+    invalidate_discover_cache()  # the item/blueprint universe itself may have changed
+    invalidate_ship_margin_cache()
+    return result
 
 
 def do_set_tool_grants(character_id: int, tool_keys: list[str]) -> dict:
