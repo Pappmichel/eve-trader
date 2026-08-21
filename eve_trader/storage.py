@@ -1506,7 +1506,11 @@ def available_blueprint_copies(type_id: int, location_id: Optional[int],
     model - see get_owned_bpo_best_me_te's own runs == -1 check for the BPO
     side of this same sentinel) of `type_id` sitting at `location_id`,
     filtered on resolved_location_id (see replace_blueprints) the same way
-    esi_stock_at_location filters on it.
+    esi_stock_at_location filters on it. Also excludes
+    NON_STOCK_LOCATION_FLAGS (GitHub issue #32) the same way
+    esi_stock_at_location does - a BPC sitting in Asset Safety requires its
+    own retrieval trip/fee, so it isn't actually usable for invention right
+    now even though it shares this location's resolved_location_id.
 
     Used by production/engine.py's invention_logistics (GitHub issue #14)
     instead of the generic esi_stock_at_location: a T1 blueprint's BPO and
@@ -1514,12 +1518,14 @@ def available_blueprint_copies(type_id: int, location_id: Optional[int],
     esi_stock_at_location call against character_assets/corp_assets (which
     has no is_blueprint_copy filter of its own) would count an owned BPO as
     if it were a usable invention input too - only copies actually are."""
+    flag_placeholders = ",".join("?" * len(NON_STOCK_LOCATION_FLAGS))
     with connect() as conn:
         total = 0.0
         for table in tables:
             row = conn.execute(
-                f"SELECT COUNT(*) FROM {table} WHERE type_id = ? AND resolved_location_id = ? AND quantity = -2",
-                (type_id, location_id),
+                f"SELECT COUNT(*) FROM {table} WHERE type_id = ? AND resolved_location_id = ? AND quantity = -2 "
+                f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))",
+                (type_id, location_id, *NON_STOCK_LOCATION_FLAGS),
             ).fetchone()
             total += row[0]
     return total
