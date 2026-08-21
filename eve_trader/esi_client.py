@@ -39,6 +39,66 @@ def extract_meta_level(type_info: dict) -> Optional[int]:
     return None
 
 
+# SDE category_id constants for the packaged-volume quirk below - duplicated
+# from production/constants.py's SHIP_CATEGORY_ID/MODULE_CATEGORY_ID rather
+# than imported (this module is shared by all three tools, see the module
+# docstring above - it shouldn't gain a dependency on any one tool's own
+# constants module).
+_SHIP_CATEGORY_ID = 6
+_MODULE_CATEGORY_ID = 7
+
+
+def resolve_effective_volume(type_id: int, sde_volume: Optional[float],
+                              category_id: Optional[int] = None) -> Optional[float]:
+    """The volume to actually use for freight/haul-cost math - the *packaged*
+    volume for ships and capital-sized modules, which can be drastically
+    smaller than the flight/assembled volume in sde_types.volume. Originally
+    Production-only (production/engine.py's _haul_volume, GitHub issue #11);
+    moved here so Trading's candidate_discovery can share the exact same
+    lookup+cache logic instead of the two tools' own copies drifting apart
+    (GitHub issue #73 - Trading's SDE-crawl path used the raw, un-packaged
+    volume for capital modules, overstating import-cost/margin math the same
+    way issue #11 found for Production's haul cost).
+
+    There's no clean SDE-only signal for exactly which modules this applies
+    to (confirmed live via ESI: Capital Shield Booster I lists volume=4000
+    but packaged_volume=1000, while an ordinary Large Shield Booster I or a
+    Capital Trimark Armor Pump rig comes back with packaged == flight) - so
+    every Ship/Module-category type_id goes through the same ESI
+    lookup+cache path, cached once in storage.type_packaged_volume (a
+    shared, non-tenant-scoped table - see MULTI_TENANT_PLAN.md, so the cost
+    is paid at most once per type_id across the whole deployment, not once
+    per tenant) since it's effectively a static game constant. Every other
+    category returns its plain SDE volume unchanged.
+
+    `category_id` is optional - pass it when the caller already has it (e.g.
+    candidate_discovery's SDE-backed path, which reads it straight out of
+    its own sde_types tuple) to skip storage.get_type_category's extra
+    lookup; omit it (as production/engine.py's _haul_volume does) to have it
+    resolved here instead."""
+    if sde_volume is None:
+        return None
+    if category_id is None:
+        category_id = storage.get_type_category(type_id)
+    if category_id not in (_SHIP_CATEGORY_ID, _MODULE_CATEGORY_ID):
+        return sde_volume
+    cached = storage.get_cached_packaged_volume(type_id)
+    if cached is not None:
+        return cached
+    try:
+        packaged = ESIClient().get_packaged_volume(type_id)
+    except Exception:  # noqa: BLE001 - best-effort; a transient ESI hiccup shouldn't block callers
+        packaged = None
+    if packaged is not None:
+        # Only cache a real ESI answer, never the sde_volume fallback below -
+        # caching a transient-failure fallback as if it were the real
+        # packaged volume would permanently poison it (same bug/fix as
+        # production/engine.py's _haul_volume already documents).
+        storage.set_cached_packaged_volume(type_id, packaged)
+        return packaged
+    return sde_volume
+
+
 @dataclass
 class OrderStats:
     """Summary stats for one side (buy/sell) of an order book - a robust
