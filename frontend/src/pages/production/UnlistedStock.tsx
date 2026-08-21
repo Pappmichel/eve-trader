@@ -16,7 +16,7 @@ export default function UnlistedStock() {
   const columns = useMemo<ColumnDef<ProductionUnlistedStockRow, any>[]>(() => [
     { header: 'Item', accessorKey: 'type_name', size: 260 },
     { header: 'Stock in C-J Hangar', accessorKey: 'stock_quantity', size: 170, cell: (i) => qty(i.getValue()) },
-    { header: 'Sell Volume', accessorKey: 'sell_volume', size: 110, cell: (i) => qty(i.getValue()) },
+    { header: 'Listed Qty (C-J)', accessorKey: 'sell_volume', size: 130, cell: (i) => qty(i.getValue()) },
     { header: 'Margin (Home)', accessorKey: 'margin', size: 110, cell: (i) => pct(i.getValue()) },
   ], [])
 
