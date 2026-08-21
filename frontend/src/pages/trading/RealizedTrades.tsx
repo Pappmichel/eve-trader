@@ -23,7 +23,7 @@ interface ItemSummary {
 }
 
 export default function RealizedTrades() {
-  const { data, isLoading } = useQuery({ queryKey: ['trading', 'trades', 'realized'], queryFn: tradingApi.realizedTrades })
+  const { data, isLoading, dataUpdatedAt } = useQuery({ queryKey: ['trading', 'trades', 'realized'], queryFn: tradingApi.realizedTrades })
   const total = useMemo(() => (data ?? []).reduce((sum, t) => sum + t.realized_profit, 0), [data])
 
   // One row per item (not per trade) - price/margin columns are the average
@@ -87,7 +87,7 @@ export default function RealizedTrades() {
 
       <Text size="sm" c="dimmed">{byItem.length} items, {data.length} trades total</Text>
 
-      <DataTable data={byItem} columns={columns} maxHeight={480} />
+      <DataTable data={byItem} columns={columns} maxHeight={480} dataUpdatedAt={dataUpdatedAt} />
 
       <Title order={6} c="dimmed" tt="uppercase" mt="lg">Cumulative Profit Over Time</Title>
       <ResponsiveContainer width="100%" height={300}>

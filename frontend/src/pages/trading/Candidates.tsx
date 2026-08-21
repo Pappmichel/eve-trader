@@ -10,11 +10,14 @@ import { HintCard } from '../../components/HintCard'
 import { qty } from '../../format'
 
 export default function Candidates() {
-  const { data: universe, isLoading: universeLoading } = useQuery({ queryKey: ['trading', 'candidates', 'universe'], queryFn: tradingApi.candidateUniverse })
-  const { data: focused, isLoading: focusedLoading } = useQuery({ queryKey: ['trading', 'candidates', 'focused'], queryFn: tradingApi.focusedCandidates })
+  const { data: universe, isLoading: universeLoading, dataUpdatedAt: universeUpdatedAt } =
+    useQuery({ queryKey: ['trading', 'candidates', 'universe'], queryFn: tradingApi.candidateUniverse })
+  const { data: focused, isLoading: focusedLoading, dataUpdatedAt: focusedUpdatedAt } =
+    useQuery({ queryKey: ['trading', 'candidates', 'focused'], queryFn: tradingApi.focusedCandidates })
   const isLoading = universeLoading || focusedLoading
 
   const display = focused && focused.length > 0 ? focused : universe ?? []
+  const displayUpdatedAt = focused && focused.length > 0 ? focusedUpdatedAt : universeUpdatedAt
 
   const columns = useMemo<ColumnDef<Candidate, any>[]>(() => [
     { header: 'Item', accessorKey: 'item', size: 220 },
@@ -42,7 +45,7 @@ export default function Candidates() {
       ) : display.length === 0 ? (
         <HintCard>No candidates loaded yet. Click <b>Load Market Groups</b> on the left, then <b>Filter Candidates</b>.</HintCard>
       ) : (
-        <DataTable data={display} columns={columns} maxHeight={560} />
+        <DataTable data={display} columns={columns} maxHeight={560} dataUpdatedAt={displayUpdatedAt} />
       )}
     </>
   )
