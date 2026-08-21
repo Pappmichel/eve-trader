@@ -23,7 +23,12 @@ def _wrap(fn, **kwargs):
 
 @router.get("/overview", response_model=schemas.PortfolioOverview)
 def get_portfolio_overview():
-    return portfolio.portfolio_overview()
+    # GitHub issue #65 (found in a full-codebase audit 2026-08-21): now
+    # goes through _wrap like every other read endpoint, for consistency -
+    # neither this nor do_list_backups below currently raises ActionError,
+    # but a future change to either that starts raising one would otherwise
+    # silently regress to a raw 500 instead of a clean 400.
+    return _wrap(portfolio.portfolio_overview)
 
 
 @router.get("/scheduler-status")
@@ -33,7 +38,7 @@ def get_scheduler_status():
 
 @router.get("/backups")
 def get_backups():
-    return actions.do_list_backups()["rows"]
+    return _wrap(actions.do_list_backups)["rows"]
 
 
 @router.post("/backups")
