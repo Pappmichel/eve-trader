@@ -9,7 +9,7 @@ from eve_trader.production.engine import _activity_mods, _material_qty, _tech_ii
 from eve_trader.production.models import CharacterSlotRow
 
 from . import pg_helpers
-from .pg_helpers import _apply_phase1_schema, tenant  # noqa: F401
+from .pg_helpers import _apply_phase1_schema, tenant, tenant_pair  # noqa: F401
 
 # Only the plan_asset_optimized/plan_production tests below need `tenant` +
 # postgres_required() - everything else in this file monkeypatches
@@ -991,6 +991,49 @@ def test_discover_build_candidates_concurrent_calls_do_not_double_scan(monkeypat
 
     assert scan_calls == [1]  # only one thread actually performed the scan
     assert results[0] == results[1]
+
+
+@pg_helpers.postgres_required()
+def test_discover_build_candidates_cache_is_isolated_per_tenant(monkeypatch, tenant_pair):
+    # GitHub issue #54 (real cross-tenant data leak, found in a
+    # full-codebase audit 2026-08-21): _discover_cache used to be a single
+    # process-global value shared by every tenant - the first tenant to call
+    # discover_build_candidates got their scan served to every other tenant
+    # for up to _DISCOVER_CACHE_TTL seconds. Two different tenants calling
+    # within that window must each get their own scan, never the other's.
+    tenant_a, tenant_b = tenant_pair
+    monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
+    scan_calls = []
+
+    def load_sde_types():
+        scan_calls.append(1)
+        # A different type_name each call, so the two tenants' results are
+        # trivially distinguishable - if the cache leaked, tenant B would
+        # see tenant A's "Tenant A Widget" instead of its own scan.
+        name = f"Tenant {'A' if len(scan_calls) == 1 else 'B'} Widget"
+        return [(2, name, 1.0, 100, None, 7)]
+
+    monkeypatch.setattr(storage, "load_sde_types_with_market_group", load_sde_types)
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (999, 1, 1.0)))
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: 0.5)
+    cfg = ProductionConfig(min_margin=0.15)
+
+    with storage.tenant_context(tenant_a):
+        result_a = engine.discover_build_candidates(cfg, client=_FakeGmClient())
+    with storage.tenant_context(tenant_b):
+        result_b = engine.discover_build_candidates(cfg, client=_FakeGmClient())
+
+    assert scan_calls == [1, 1]  # each tenant triggered its own scan, neither reused the other's
+    assert result_a[0]["type_name"] == "Tenant A Widget"
+    assert result_b[0]["type_name"] == "Tenant B Widget"
+
+    # Re-calling within the TTL window still correctly reuses each tenant's
+    # own cache (the fix isn't "never cache", just "cache per tenant").
+    with storage.tenant_context(tenant_a):
+        result_a_again = engine.discover_build_candidates(cfg, client=_FakeGmClient())
+    assert scan_calls == [1, 1]  # no third scan - tenant A's own cache was reused
+    assert result_a_again == result_a
 
 
 # ---------------------------------------------------------------------- _haul_volume
