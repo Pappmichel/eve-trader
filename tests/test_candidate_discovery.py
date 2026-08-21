@@ -1,6 +1,7 @@
+from eve_trader import storage
 from eve_trader.candidate_discovery import (
-    BOOSTER_GROUP_ID, IMPLANT_CATEGORY_ID, MODULE_CATEGORY_ID, build_focused_candidate_universe, guess_category,
-    is_wanted_market_path,
+    BOOSTER_GROUP_ID, IMPLANT_CATEGORY_ID, MODULE_CATEGORY_ID, _build_candidate_universe_from_sde,
+    build_focused_candidate_universe, guess_category, is_wanted_market_path,
 )
 from eve_trader.config import TradingConfig
 from eve_trader.models import Candidate
@@ -80,6 +81,54 @@ def test_is_wanted_market_path_no_longer_requires_an_allowlist_match():
     assert is_wanted_market_path("Skills > Spaceship Command", cfg) is True
     assert is_wanted_market_path("Manufacture & Research > Materials > Ice Products", cfg) is True
     assert is_wanted_market_path("Some Brand New Category CCP Adds Later", cfg) is True
+
+
+def test_build_candidate_universe_from_sde_uses_packaged_volume_for_capital_modules(monkeypatch):
+    # GitHub issue #73: the SDE-backed candidate universe (the normal path -
+    # used whenever Production's SDE refresh has been run) used to set
+    # Candidate.volume_m3 straight from the raw SDE `volume` column, which
+    # badly overstates freight cost for capital-sized modules (confirmed live
+    # via ESI, same quirk as production/engine.py's _haul_volume/issue #11:
+    # Capital Shield Booster I lists volume=4000 but packaged_volume=1000).
+    # Ships have the identical quirk but are excluded from candidates
+    # entirely (excluded_path_prefixes), so only capital modules hit this.
+    monkeypatch.setattr(storage, "get_cached_packaged_volume", lambda type_id: 1000.0)
+
+    market_groups = [(1, None, "Ship Equipment")]
+    sde_types = [
+        # (type_id, type_name, volume, market_group_id, meta_level, category_id)
+        (20703, "Capital Shield Booster I", 4000.0, 1, 0, MODULE_CATEGORY_ID),
+    ]
+    candidates = _build_candidate_universe_from_sde(market_groups, sde_types, TradingConfig())
+
+    assert len(candidates) == 1
+    assert candidates[0].volume_m3 == 1000.0
+
+
+def test_build_candidate_universe_from_sde_leaves_ordinary_modules_unchanged(monkeypatch):
+    # An ordinary (non-capital) module has packaged == flight volume - the
+    # cache lookup still runs (no clean SDE-only signal for which modules
+    # differ, same as production/engine.py's own _haul_volume), but returns
+    # the same value candidate_universe already had.
+    monkeypatch.setattr(storage, "get_cached_packaged_volume", lambda type_id: 5.0)
+
+    market_groups = [(1, None, "Ship Equipment")]
+    sde_types = [(1234, "Large Shield Booster I", 5.0, 1, 0, MODULE_CATEGORY_ID)]
+    candidates = _build_candidate_universe_from_sde(market_groups, sde_types, TradingConfig())
+
+    assert candidates[0].volume_m3 == 5.0
+
+
+def test_build_candidate_universe_from_sde_leaves_non_module_categories_unchanged():
+    # Materials/etc. never hit the packaged-volume lookup at all (no
+    # storage.get_cached_packaged_volume monkeypatch here - a real call would
+    # error under the test DB, proving resolve_effective_volume short-circuits
+    # before reaching it for non-Ship/Module categories).
+    market_groups = [(1, None, "Materials")]
+    sde_types = [(34, "Tritanium", 0.01, 1, 0, 4)]  # category_id 4 = Material
+    candidates = _build_candidate_universe_from_sde(market_groups, sde_types, TradingConfig())
+
+    assert candidates[0].volume_m3 == 0.01
 
 
 def test_build_focused_candidate_universe_is_a_pass_through():
