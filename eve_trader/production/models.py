@@ -274,6 +274,19 @@ class OwnedBlueprintRow:
 
 
 @dataclass
+class ManualBlueprintCopyCostRow:
+    """One manually-registered blueprint-copy purchase cost (GitHub issue
+    #40) - the Blueprints page's second table. `type_id` is the *product*
+    built from the copy, not the blueprint's own type_id (see
+    docs/phase1_schema.sql's manual_blueprint_copy_costs schema comment)."""
+    type_id: int
+    type_name: str
+    purchase_cost: float
+    runs: int
+    cost_per_run: float  # purchase_cost / runs, computed for display convenience
+
+
+@dataclass
 class UnlistedStockRow:
     """A stock target with physical stock at cfg.home_location_id (C-J) but
     NO open sell order there at all - see production/actions.py do_unlisted_stock."""

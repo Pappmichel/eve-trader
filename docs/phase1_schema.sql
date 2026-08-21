@@ -189,6 +189,29 @@ CREATE POLICY tenant_isolation ON selected_decryptors
     USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 
+-- GitHub issue #40: manually-registered purchase cost + included run count
+-- for a blueprint *copy* that must be bought outright (never owned as a
+-- BPO, not inventable) - e.g. a faction/officer BPC only obtainable from an
+-- LP store or the market. type_id is the *product* built from that BPC
+-- (matches how the Blueprints page's second table lets a user pick it), not
+-- the blueprint's own type_id - a blueprint's product is a stable 1:1
+-- lookup (storage.get_blueprint_for_product) so this is unambiguous either
+-- way, and product_type_id is what _unit_cost already keys everything else
+-- on.
+CREATE TABLE IF NOT EXISTS manual_blueprint_copy_costs (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    type_id INTEGER NOT NULL,
+    type_name TEXT NOT NULL,
+    purchase_cost REAL NOT NULL,
+    runs INTEGER NOT NULL,
+    PRIMARY KEY (tenant_id, type_id)
+);
+ALTER TABLE manual_blueprint_copy_costs ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON manual_blueprint_copy_costs;
+CREATE POLICY tenant_isolation ON manual_blueprint_copy_costs
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
 CREATE TABLE IF NOT EXISTS shortlist (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
     item_id INTEGER NOT NULL,

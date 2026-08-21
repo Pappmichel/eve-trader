@@ -122,6 +122,62 @@ def test_get_owned_blueprints(monkeypatch):
     assert resp.json()[0]["runs"] is None
 
 
+def test_get_manual_blueprint_copy_costs(monkeypatch):
+    # GitHub issue #40.
+    from eve_trader.production.models import ManualBlueprintCopyCostRow
+    monkeypatch.setattr(production_actions, "do_list_manual_blueprint_copy_costs", lambda: {"rows": [
+        ManualBlueprintCopyCostRow(type_id=34, type_name="Tritanium", purchase_cost=1_000_000.0,
+                                    runs=10, cost_per_run=100_000.0),
+    ]})
+    resp = client.get("/api/production/blueprints/manual-copy-costs")
+    assert resp.status_code == 200
+    assert resp.json() == [{
+        "type_id": 34, "type_name": "Tritanium", "purchase_cost": 1_000_000.0,
+        "runs": 10, "cost_per_run": 100_000.0,
+    }]
+
+
+def test_add_manual_blueprint_copy_cost_passes_body_fields(monkeypatch):
+    captured = {}
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        return {"type_id": 34, "type_name": "Tritanium", "purchase_cost": kwargs["purchase_cost"], "runs": kwargs["runs"]}
+    monkeypatch.setattr(production_actions, "do_add_manual_blueprint_copy_cost", _capture)
+
+    resp = client.post("/api/production/blueprints/manual-copy-costs",
+                        json={"item_name": "Tritanium", "purchase_cost": 1_000_000.0, "runs": 10})
+
+    assert resp.status_code == 200
+    assert captured == {"item_name": "Tritanium", "purchase_cost": 1_000_000.0, "runs": 10}
+
+
+def test_add_manual_blueprint_copy_cost_action_error_maps_to_400(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise ActionError("No exact match for 'Nowhere'. Did you mean: Somewhere?")
+    monkeypatch.setattr(production_actions, "do_add_manual_blueprint_copy_cost", _raise)
+
+    resp = client.post("/api/production/blueprints/manual-copy-costs",
+                        json={"item_name": "Nowhere", "purchase_cost": 1.0, "runs": 1})
+
+    assert resp.status_code == 400
+    assert "Nowhere" in resp.json()["detail"]
+
+
+def test_remove_manual_blueprint_copy_cost_passes_type_id(monkeypatch):
+    captured = {}
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        return {"removed": kwargs["type_id"]}
+    monkeypatch.setattr(production_actions, "do_remove_manual_blueprint_copy_cost", _capture)
+
+    resp = client.delete("/api/production/blueprints/manual-copy-costs/34")
+
+    assert resp.status_code == 200
+    assert captured == {"type_id": 34}
+
+
 def test_set_system_action_error_maps_to_400(monkeypatch):
     def _raise(*args, **kwargs):
         raise ActionError("Solarsystem 'Nowhere' nicht gefunden. Exakter Name?")

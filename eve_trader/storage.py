@@ -1006,6 +1006,47 @@ def delete_selected_decryptor(type_id: int) -> None:
         conn.execute("DELETE FROM selected_decryptors WHERE type_id = ?", (type_id,))
 
 
+def upsert_manual_blueprint_copy_cost(type_id: int, type_name: str, purchase_cost: float, runs: int) -> None:
+    """GitHub issue #40 - registers/updates the purchase cost + included run
+    count for a blueprint copy that must be bought outright (see
+    manual_blueprint_copy_costs' own schema comment). `type_id` is the
+    *product* built from that BPC, not the blueprint's own type_id."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO manual_blueprint_copy_costs (type_id, type_name, purchase_cost, runs) VALUES (?,?,?,?) "
+            "ON CONFLICT(tenant_id, type_id) DO UPDATE SET "
+            "type_name=excluded.type_name, purchase_cost=excluded.purchase_cost, runs=excluded.runs",
+            (type_id, type_name, purchase_cost, runs),
+        )
+
+
+def load_manual_blueprint_copy_costs() -> list[tuple]:
+    """Returns [(type_id, type_name, purchase_cost, runs), ...]."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT type_id, type_name, purchase_cost, runs FROM manual_blueprint_copy_costs ORDER BY type_name"
+        ).fetchall()
+
+
+def delete_manual_blueprint_copy_cost(type_id: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM manual_blueprint_copy_costs WHERE type_id = ?", (type_id,))
+
+
+def get_manual_blueprint_copy_cost_per_run(type_id: int) -> Optional[float]:
+    """GitHub issue #40 - amortized cost per run (purchase_cost / runs) for
+    `type_id` if a manual BPC cost is registered, else None. Used by
+    production/engine.py's _unit_cost to fold a bought-copy's cost into the
+    modeled build cost for anyone building from it."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT purchase_cost, runs FROM manual_blueprint_copy_costs WHERE type_id = ?", (type_id,)
+        ).fetchone()
+    if row is None or not row[1]:
+        return None
+    return row[0] / row[1]
+
+
 def upsert_category_location(category: str, location_id: int) -> None:
     with connect() as conn:
         conn.execute(
