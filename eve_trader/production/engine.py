@@ -1614,10 +1614,18 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 def market_status(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[MarketStatusRow]:
     """Personal stock vs. backup target, and home/Jita market-listed stock
     (open sell order volume) vs. their own targets - see storage.stock_targets'
-    home_market_stock/jita_market_stock columns and character_sell_orders."""
+    home_market_stock/jita_market_stock columns and character_sell_orders.
+
+    GitHub issue #33: a stock target with neither a home nor a Jita market
+    target configured (both NULL - pure backup/component stock, never meant
+    to be listed anywhere) isn't a market-status concern at all and is
+    skipped here, rather than showing up with two permanently-empty target
+    columns."""
     manual_stock = storage.load_manual_stock()
     rows = []
     for type_id, type_name, backup_target, home_target, jita_target in storage.load_stock_targets():
+        if home_target is None and jita_target is None:
+            continue
         _, bp = classify_activity(type_id)
         backup_current = _current_stock(type_id, manual_stock, cfg, bp)
         home_listed = (
