@@ -1,3 +1,57 @@
+# HANDOFF — Issues #45, #46, #51, #52 implementation plan
+
+Written 2026-08-21 (new session, separate remote container — none of the
+Tier 1-3 branches described further below exist here; `git branch` in this
+session shows only `main` and `claude/issues-plan-8ovgwo`). This section is
+the current, active plan. The original "#32–#41 triage plan" content below
+is kept for history/cross-machine continuation on that separate, still-open
+thread (Tier 3 branches only exist on the original machine) — don't conflate
+the two; they're unrelated issue batches.
+
+## Current plan: #45, #46, #51, #52 (2026-08-21)
+
+Working branch: `claude/issues-plan-8ovgwo`. Order agreed with the user:
+**#45 → #51 (label/doc fix only) → #52 → #46**, implementing one at a time,
+committing after each. Plan comments were posted to all four issues before
+starting code.
+
+- **#45** "Volume and margin in unlisted stock" — smallest, self-contained.
+  Both Trading (`do_check_seller_unlisted_stock` in `actions.py`,
+  `UnlistedStockRow` in `models.py`, `pages/trading/UnlistedStock.tsx`) and
+  Production (`do_unlisted_stock` in `production/actions.py`,
+  `production/models.py`, `pages/production/UnlistedStock.tsx`) unlisted
+  stock pages need margin + sell-volume columns added, computed the same way
+  `shortlist.evaluate_shortlist_item`/`production/Margin.tsx` already do.
+
+- **#51** "Sell volume in shortlist looks very high" — investigation already
+  done: it is NOT a Jita-vs-C-J mixup (already sourced from C-J structure
+  stats correctly). The real issue is that `esi_client.py`'s `sell_volume`
+  is open-order-book remaining quantity, not actual daily turnover, while
+  the UI/CLAUDE.md describe it as a daily figure. Planned fix: relabel/
+  redocument only (not a data-source change) — pending confirmation with the
+  user on whether the bigger "real turnover from history" rework is wanted
+  too (flagged as optional/ask-first in the plan comment).
+
+- **#52** "mobile version" — nav/shell already partially responsive
+  (Mantine `AppShell` + `Burger`). Real scope is `DataTable.tsx`'s
+  fixed-width columns needing a mobile column-visibility strategy across
+  every table page, plus `Container size="xl"` shrinking on small
+  viewports.
+
+- **#46** "multiple buyer/seller in trading tool" — largest/architectural,
+  done last. Reuse the existing multi-character pattern already used for
+  Production (`get_token_interactive_multi`/`list_roles("producer")` in
+  `auth.py`) for Trading's buyer/seller roles instead of the current
+  single-fixed-role-key assumption; rework every `tm.get_token("seller")`/
+  `("buyer")` call site in `actions.py` to iterate across all registered
+  characters per role.
+
+Update this section (or delete it once all four issues are implemented,
+pushed, and confirmed live by the user) — don't let it go stale the way the
+section below did.
+
+---
+
 # HANDOFF — Issue #32–#41 triage plan
 
 Written 2026-08-21. Read this first if you're picking up this repo in a new
