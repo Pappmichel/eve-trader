@@ -1,3 +1,95 @@
+# HANDOFF — Full codebase audit (2026-08-21): issues #54-#69
+
+Written 2026-08-21, same session as the #45/#46/#51/#52 work below (PR #53).
+The user asked for a full check-only audit of the entire project ("erstell
+ein vollständiges audit... zunächst nur prüfen nicht ändern"), then to save
+the plan and file an issue for every finding. **No code was changed for any
+of these** - every issue below is report-only, exactly as requested. Don't
+start fixing any of them without being asked - the user hasn't decided an
+order yet.
+
+## How the audit was run
+
+Five parallel read-only Explore agents, each scoped to one area, running in
+isolated git worktrees (no risk of accidental edits leaking into the working
+tree):
+1. Trading core backend (actions.py, storage.py, shortlist.py, own_orders.py,
+   trade_reconciliation.py, esi_client.py, goonmetrics_client.py, auth.py,
+   config.py, backup.py, scheduler.py, history_backtest.py,
+   candidate_discovery.py, models.py)
+2. Production backend (everything under production/)
+3. API routers + auth + admin + doctrine (api/, admin.py, access_gate.py,
+   tenant_scope.py, doctrine/, portfolio.py)
+4. Frontend (everything under frontend/src/)
+5. Tests + schema + docs/deployment consistency (tests/, docs/*.sql,
+   sqlite_migration.py, deploy/, CLAUDE.md-vs-code drift, dependencies)
+
+Each agent was told to report only findings it was actually confident were
+real problems (not speculative hedging), with file:line + concrete failure
+scenario + severity, and to separate real bugs/security from minor nits -
+same bar as a normal code review, not a padded checklist. One additional
+finding (issue #56) was found and verified directly by the orchestrating
+session after the frontend agent flagged it, since it touched the #45 work
+from earlier in this same session.
+
+## All 16 findings, filed as issues, by severity
+
+**Critical**
+- **#54** Cross-tenant data leak via Production's `_discover_cache`/
+  `_ship_margin_cache` (`production/engine.py`) - process-global, not keyed
+  by tenant, despite caching tenant-scoped build-cost/margin data. Fix first.
+
+**High**
+- **#55** `deploy/README.md` never applies `admin_schema.sql`/
+  `doctrine_schema.sql` - breaks gate-enabled deployments and all of
+  Doctrine on any deployment that followed only the documented steps.
+- **#56** `api/schemas.py`'s `UnlistedStockRow`/`ProductionUnlistedStockRow`
+  were never updated when #45 added `sell_volume`/`margin` to the
+  underlying dataclasses - FastAPI's `response_model` silently strips both
+  fields, so the #45 feature (already merged, PR #53) is currently
+  non-functional end-to-end. Quick, well-understood fix.
+
+**Medium**
+- **#57** `/api/auth/{role_prefix}/start` isn't tool-gated - a character
+  without a tool grant can still register an ESI token for that tool.
+- **#58** `esi_client.region_order_stats_bulk`'s `ThreadPoolExecutor`
+  doesn't wrap calls in `storage.with_current_tenant` (dormant, matches an
+  already-fixed-twice bug class).
+- **#59** Shared-mutation `.isPending` reused for per-row loading state in
+  `DoctrineLayout.tsx` (×2), `AdminPage.tsx`, `Blueprints.tsx` - reintroduces
+  a bug already fixed in `ProductionLayout.tsx`/`Logistics.tsx`/
+  `TradingLayout.tsx`.
+- **#60** `sqlite_migration.py`'s `_PER_TENANT_TABLES` list is stale (13
+  tables missing vs. the real schema) - confirms a risk CLAUDE.md itself
+  already flagged as unverified.
+- **#61** `DataTable.tsx`'s sortable column headers aren't keyboard
+  accessible (no tabIndex/onKeyDown/aria-sort) - affects ~25 pages.
+
+**Low**
+- **#62** Dead/unreachable code in `storage.get_cached_structure_names`.
+- **#63** Duplicate `import_cost_per_m3` entry in `config._FIELD_RANGES`.
+- **#64** Production's `/logistics` endpoints bypass the `actions.py`
+  entry-point convention.
+- **#65** `portfolio.py` router's two GET endpoints skip `_wrap`.
+- **#66** Redundant boolean condition in `doctrine/validation.py`'s
+  `contract_ampel` (dead logic, not a behavior bug).
+- **#67** Zero router-level test coverage for any of the 23 Doctrine API
+  endpoints.
+- **#68** `docs/MULTI_TENANT_PLAN.md` describes a stale `resolve_tenant_id`
+  signature (low severity - that file is explicitly a historical-snapshot
+  doc, not a living reference).
+- **#69** Duplicated "character list with Add/Remove" component across
+  `TradingLayout.tsx`/`ProductionLayout.tsx`/`DoctrineLayout.tsx` - root
+  cause enabling #59 to happen (only 2 of 3 copies got that fix).
+
+## Suggested order if/when the user asks to start fixing
+
+#54 (critical, real data leak) → #56 (quick, unblocks the already-merged #45
+feature) → #55 (blocks real deployment) → the rest of Medium → Low, roughly
+in the order above. Not confirmed with the user yet - ask before starting.
+
+---
+
 # HANDOFF — Issues #45, #46, #51, #52 implementation plan
 
 Written 2026-08-21 (new session, separate remote container — none of the
