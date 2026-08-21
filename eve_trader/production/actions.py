@@ -7,8 +7,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import requests
-
 from .. import storage
 from ..actions import ActionError
 from ..auth import TokenManager
@@ -70,23 +68,16 @@ def do_set_system(profile: str, system_name: str, cfg: ProductionConfig = PRODUC
     return {f"{profile}_system_name": system_name, f"{profile}_system_id": system_id}
 
 
-def do_refresh_sde() -> dict:
-    """Downloads and caches the current Fuzzwork SDE export."""
-    try:
-        result = sde.refresh_sde()
-    except requests.RequestException as e:
-        # Confirmed real gap: sde.refresh_sde()'s network errors used to
-        # reach the router unconverted - a raw 500 from POST /sde/refresh
-        # instead of the ActionError every other ESI/Goonmetrics-touching
-        # action in this module converts a network failure to.
-        raise ActionError(f"SDE refresh failed: {e}") from e
-    invalidate_discover_cache()  # the item/blueprint universe itself may have changed
-    invalidate_ship_margin_cache()
-    return result
-
-
 def do_check_sde_freshness(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
-    """Two independent staleness checks, both read-only/no-op (neither ever
+    """Read-only - the actual refresh action (do_refresh_sde) moved to
+    admin.py (GitHub issue #34): the SDE cache is global/shared data, not
+    per-tenant, so triggering a refresh is a cross-tenant-impacting action
+    that belongs in the Admin tool's superadmin surface, not exposed to
+    every Production tenant. This staleness check stays here since it's
+    read-only and still legitimately informs both Production's and
+    Trading's own sidebars.
+
+    Two independent staleness checks, both read-only/no-op (neither ever
     auto-refreshes anything):
 
     1. newer_sde_available - is there a newer Fuzzwork dump than the one
@@ -627,6 +618,21 @@ def do_character_slot_overview() -> dict:
     """Total/used/free industry job slots per registered character, for the
     Charakter-Slots tab."""
     return {"rows": jobs.character_slot_overview()}
+
+
+def do_set_character_slot_excluded(character_name: str, excluded: bool) -> dict:
+    """GitHub issue #39: excludes/includes `character_name` from the shared
+    free-slot pool (_free_slots_by_category) and therefore the asset-
+    optimized build list's slot-splitting - e.g. an alt kept registered for
+    ESI sync/asset visibility but not actually meant to run production jobs.
+    Persisted (storage.set_character_slot_excluded), survives the next ESI
+    re-sync (replace_character_slots is now an UPSERT, not delete+reinsert).
+    No cache to invalidate here - plan_asset_optimized has no cache of its
+    own (api/routers/production.py's _last_asset_plan is only ever
+    refreshed by its own explicit "Refresh" button, same as every other
+    settings change that affects the asset-optimized plan)."""
+    storage.set_character_slot_excluded(character_name, excluded)
+    return {"character_name": character_name, "excluded": excluded}
 
 
 def do_list_owned_blueprints() -> dict:

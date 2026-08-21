@@ -88,7 +88,7 @@ def character_slot_overview() -> list[CharacterSlotRow]:
         used[key] = used.get(key, 0) + 1
 
     rows = []
-    for character_name, manufacturing_slots, reaction_slots, science_slots in storage.load_character_slots():
+    for character_name, manufacturing_slots, reaction_slots, science_slots, excluded in storage.load_character_slots():
         for category, total in (
             ("manufacturing", manufacturing_slots),
             ("reaction", reaction_slots),
@@ -101,5 +101,6 @@ def character_slot_overview() -> list[CharacterSlotRow]:
                 total_slots=total,
                 used_slots=used_count,
                 free_slots=max(0, total - used_count),
+                excluded_from_planning=excluded,
             ))
     return rows

@@ -21,8 +21,10 @@ def _wipe():
     # across different tenants, so a fresh tenant_id alone doesn't prevent a
     # PK collision with a previous test's row. sde_stations is a genuinely
     # shared table (no tenant_id at all) and two tests below insert the same
-    # fake station_id into it.
-    pg_helpers.wipe_tables("character_assets", "corp_assets", "sde_stations")
+    # fake station_id into it. character_slots is the same column-only-bucket
+    # shape (PK = character_name alone) and the tests added for GitHub issue
+    # #39 below reuse small hardcoded names ("Alice"/"Bob") too.
+    pg_helpers.wipe_tables("character_assets", "corp_assets", "sde_stations", "character_slots")
     yield
 
 
@@ -249,3 +251,43 @@ def test_get_manual_blueprint_copy_cost_per_run_amortizes(tenant):
 
 def test_get_manual_blueprint_copy_cost_per_run_none_when_not_registered(tenant):
     assert storage.get_manual_blueprint_copy_cost_per_run(TYPE_ID) is None
+
+
+def test_replace_character_slots_preserves_excluded_flag_across_resync(tenant):
+    # GitHub issue #39: replace_character_slots is an UPSERT, not
+    # delete+reinsert - a character's excluded_from_planning flag must
+    # survive the next ESI re-sync instead of resetting to the column
+    # default every time.
+    storage.replace_character_slots([("Alice", 5, 3, 2), ("Bob", 5, 3, 2)])
+    storage.set_character_slot_excluded("Alice", True)
+
+    storage.replace_character_slots([("Alice", 6, 3, 2), ("Bob", 5, 3, 2)])  # simulates a re-sync
+
+    rows = {r[0]: r for r in storage.load_character_slots()}
+    assert rows["Alice"][1] == 6  # manufacturing_slots updated
+    assert rows["Alice"][4] is True  # excluded_from_planning preserved
+    assert rows["Bob"][4] is False
+
+
+def test_replace_character_slots_removes_deregistered_characters(tenant):
+    storage.replace_character_slots([("Alice", 5, 3, 2), ("Bob", 5, 3, 2)])
+
+    storage.replace_character_slots([("Alice", 5, 3, 2)])  # Bob no longer registered
+
+    names = {r[0] for r in storage.load_character_slots()}
+    assert names == {"Alice"}
+
+
+def test_set_character_slot_excluded_toggles_flag(tenant):
+    storage.replace_character_slots([("Alice", 5, 3, 2)])
+
+    storage.set_character_slot_excluded("Alice", True)
+    assert storage.load_character_slots()[0][4] is True
+
+    storage.set_character_slot_excluded("Alice", False)
+    assert storage.load_character_slots()[0][4] is False
+
+
+def test_set_character_slot_excluded_is_a_noop_for_unknown_character(tenant):
+    storage.set_character_slot_excluded("Nobody", True)  # doesn't raise
+    assert storage.load_character_slots() == []

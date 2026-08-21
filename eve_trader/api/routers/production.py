@@ -95,6 +95,17 @@ def get_character_slots():
     return actions.do_character_slot_overview()["rows"]
 
 
+class SetCharacterSlotExcludedRequest(BaseModel):
+    excluded: bool
+
+
+# GitHub issue #39: excludes/includes a character from the shared free-slot
+# pool and the asset-optimized build list's slot-splitting.
+@router.put("/slots/{character_name}/excluded")
+def set_character_slot_excluded(character_name: str, req: SetCharacterSlotExcludedRequest):
+    return _wrap(actions.do_set_character_slot_excluded, character_name=character_name, excluded=req.excluded)
+
+
 @router.get("/blueprints", response_model=list[schemas.OwnedBlueprintRow])
 def get_owned_blueprints():
     return actions.do_list_owned_blueprints()["rows"]
@@ -267,9 +278,11 @@ def resolve_structure_name(req: ResolveStructureNameRequest):
 
 
 # ------------------------------------------------------------------ actions
-@router.post("/sde/refresh")
-def refresh_sde():
-    return _wrap(actions.do_refresh_sde)
+# POST /sde/refresh moved to /api/admin/sde/refresh (GitHub issue #34) - the
+# SDE cache is global/shared, not per-tenant, so triggering a refresh is a
+# cross-tenant-impacting action that belongs in the Admin tool. GET
+# /sde/counts and /sde/freshness (above) stay here - read-only, still
+# legitimately informs this tenant's own Production/Trading sidebars.
 
 
 @router.delete("/auth/character/{role_key}")
