@@ -7,22 +7,50 @@ plan the user asked to have saved for exactly that case. Delete this file
 once the plan below is fully executed (merged + deployed) and confirmed with
 the user, per this repo's own HANDOFF.md convention (see CLAUDE.md).
 
-## Status (updated 2026-08-21, after Tier 1)
+## Status (updated 2026-08-21, after Tier 1 + Tier 2)
 
 **Tier 1 is done and deployed**: #37, #32, #33 were fixed in one bundled
 branch/PR (#42, merged to `dev`, fast-forwarded to `main`, deployed to the
-real production server, service restarted and verified via `curl`). Their
-GitHub issues auto-closed (PR title contained "Fix #37, #32, #33" - each
-number after the first closing keyword may or may not auto-close depending
-on GitHub's keyword parser, see the "known gotcha" note below - check issue
-state before assuming). The feature branch was deleted (local + remote)
-after merging, per this repo's convention. **Not yet live-verified with the
-user** - next step in a fresh session, if picking this up mid-way, is either
-to confirm Tier 1's live behavior with the user, or proceed straight to
-Tier 2 if the user already confirmed it in a session this file can't see.
+real production server, service restarted and verified via `curl`).
 
-Tier 2 and Tier 3 are still fully unstarted - nothing below this point has
-changed. Labels and existing milestones were applied on GitHub to all ten
+**Tier 2 is also done and deployed**: the user answered all three questions,
+each with real live-data investigation behind it first (not blind
+assumptions):
+- **#35**: root cause turned out different from the original hypothesis -
+  it's not that low-liquidity items are unfairly caught by the skip-streak,
+  it's that `shortlist._decision` short-circuits to "Inactive" forever once
+  `active=False`, with **no path back to active ever**, even once an item's
+  real numbers (still computed regardless of active state, issue #6)
+  recover. Confirmed live with concrete examples (Standard Crash Booster:
+  132% margin, still Inactive). User confirmed the fix: immediate
+  reactivation once an inactive item clears the same Import-bar gate used to
+  deactivate it. Implemented in PR #43 (new `_items_to_reactivate` in
+  `actions.py`, new `storage.activate_shortlist_items`).
+- **#36**: user confirmed additive formula (`stockpile_target + max(0,
+  contract_target - valid_contracts)`, not `max()`). Implemented in PR #43
+  (`doctrine/validation.py`'s `build_stockpile_soll` gained two new optional
+  params; `doctrine/engine.py`'s `stockpile_rows_for_doctrine` computes each
+  fitting's `valid_contracts` and passes it through).
+- **#41**: user said defer for now - **no code change**, just an
+  investigation comment left on the issue (the live Ferox example showing
+  `margin_jita` already deducts ~13.5M ISK export haul cost). Issue stays
+  open, not being worked on unless the user revisits it.
+
+PR #43 merged to `dev`, fast-forwarded to `main`, deployed to production,
+verified via `curl`. Feature branches from both Tier 1 and Tier 2 were
+deleted (local + remote) after merging. Issues #37, #32, #33, #35, #36 are
+closed; #41 stays open (deferred, see above) - GitHub's closing-keyword
+quirk (see below) meant #32/#33/#36 needed a manual `gh issue close` with an
+explanatory comment since only the first number in a combined PR title
+auto-closes.
+
+**Not yet live-verified online by the user** for either Tier 1 or Tier 2 -
+next step in a fresh session, if picking this up mid-way, is to confirm both
+tiers' live behavior with the user (see each PR's own "Live-verify after
+deploy" checklist), then move to Tier 3.
+
+Tier 3 is still fully unstarted - nothing below this point has changed.
+Labels and existing milestones were applied on GitHub to all ten
 issues as part of the original triage. The previous
 batch (issues #4, #5, #12, #13, #14, #15, #16, #17, #18, #19, #20, #21) is
 already fully merged, deployed to the real production server, and closed —
@@ -93,42 +121,22 @@ confidence, not topology. Two *soft* sequencing notes only: do #40 before
   just an internal backup-stock item) still show up. Fix: only include rows
   where `home_target` or `jita_target` is actually set.
 
-### Tier 2 — need a quick clarification/live-check before writing code
+### Tier 2 — DONE (see Status section above for the full resolution)
 
-- **#35** "inactive state on shortlist" (`bug, data-integrity`). Likely
-  cause: the 30-day skip-grace-period auto-deactivation
-  (`SKIP_STREAK_DECISIONS` in `eve_trader/actions.py`, ~line 409-514) —
-  low-liquidity categories (drugs/boosters) may repeatedly read "No market
-  data"/"Skip" from the live ESI order-book stats (thin books, not the same
-  thing as "not profitable") and get auto-deactivated even though they're
-  genuinely still worth trading less frequently. **Before writing any
-  fix**: query `shortlist_skip_streak` + `shortlist` for a concrete affected
-  item (e.g. a specific booster/drug the user named) to confirm this really
-  is the mechanism, then decide with the user whether the fix is a longer
-  grace period for certain categories, a different threshold, or excluding
-  some categories from the cap entirely.
+- **#35** "inactive state on shortlist" — **closed, fixed in PR #43.** The
+  original hypothesis in this section (thin order books on low-liquidity
+  categories) turned out to be wrong - live investigation found the real
+  cause was `shortlist._decision` never re-checking an already-inactive
+  item's real numbers at all. See Status above for the fix.
 
-- **#36** "stockpile in doctrine" (`bug, data-integrity`, milestone
-  "Doctrine Tool"). `doctrine/validation.py`'s `build_stockpile_soll`
-  (~line 56-70) multiplies required quantities only by `stockpile_target`
-  — it has no awareness of `contract_target`/`valid_contracts` at all, so
-  items needed to *create more outstanding contracts* (not just top up the
-  spare-stock buffer) never show as required in the Stockpile page. **Ask
-  the user for the exact desired formula** before implementing — plausible
-  candidate: `required = stockpile_target + max(0, contract_target −
-  valid_contracts)`, but confirm rather than assume.
+- **#36** "stockpile in doctrine" — **closed, fixed in PR #43.** User
+  confirmed the additive formula (`stockpile_target + max(0, contract_target
+  − valid_contracts)`). See Status above.
 
-- **#41** "no export costs in margin" (`bug, data-integrity`). Surprising
-  finding: `production/engine.py`'s `margin_jita` (~line 595-605) **already**
-  subtracts `cfg.haul_cost_per_m3 × packaged_volume` as an export cost, and
-  both `discover_ship_margins`/`_scan_ship_margins` (list view) and
-  `item_margin_detail` (single-item search) call it — so the obvious fix
-  already appears to be implemented in current code. Before touching
-  anything: sit down with the user and a concrete item (ship name + the
-  number they see on the Margin page vs. what they expect), to figure out
-  whether this is (a) already fixed and the issue is stale, (b) a different
-  cost component actually meant (e.g. a Jita broker fee, not haul cost), or
-  (c) some other gap not yet found by reading the code alone.
+- **#41** "no export costs in margin" — **left open, deferred by the user.**
+  The finding in this section (margin_jita already subtracts haul cost) was
+  confirmed live with a concrete Ferox example and posted as an issue
+  comment. No code change - user said to revisit later, not now.
 
 ### Tier 3 — larger, independent feature/architecture work
 
@@ -201,10 +209,18 @@ confidence, not topology. Two *soft* sequencing notes only: do #40 before
 
 The user asked to categorize + plan, then to save this plan for later/
 cross-machine continuation, then said "Starte mit tier 1. wenn fertig
-deploy" - Tier 1 is now merged + deployed (see Status above). **No Tier 2
-answers have been collected yet.** The very next action in a fresh session
-should be: tell the user Tier 1 is live and ask them to verify it online
-(Doctrine Contract History only shows fitting-matched contracts; Invention
-Logistics doesn't count Asset-Safety BPCs as available; Market Status no
-longer lists no-target items), then once confirmed, move to the Tier 2
-questions (#35, #36, #41) before writing any more code.
+deploy" (Tier 1 merged + deployed), then "tier 2 rückfragen" (asked for the
+Tier 2 questions). All three Tier 2 questions were answered:
+- #35: user pushed back on the original 3 options with a question of their
+  own ("was war der Grund sie überhaupt inaktiv zu setzen, und ist das noch
+  sinnvoll?") - this led to the real root-cause finding (no reactivation
+  path exists at all), which was then confirmed as the fix to implement.
+- #36: "Addieren" (additive formula) - confirmed directly.
+- #41: "erstmal zurückstellen" (defer for now) - confirmed, no fix.
+
+Tier 2 is now fully implemented, merged, and deployed (see Status above).
+**Not yet live-verified online by the user for either Tier 1 or Tier 2.**
+The very next action in a fresh session should be: tell the user both tiers
+are live and ask them to verify online (see each PR's own "Live-verify after
+deploy" checklist in its description, or the Status section above), then
+once confirmed, move to Tier 3 (#34 → #39 → #40 → #38).
