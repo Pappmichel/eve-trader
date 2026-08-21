@@ -1752,27 +1752,45 @@ MAX_PLAUSIBLE_BUILD_MARGIN = 3.0  # 300%
 # invalidated explicitly (invalidate_discover_cache, called from actions.py)
 # rather than left to expire on its own.
 _DISCOVER_CACHE_TTL = 600  # seconds
-_discover_cache: Optional[list[dict]] = None
-_discover_cache_at: float = 0.0
-# Guards both the cache itself and the scan that fills it (see
+# GitHub issue #54 (confirmed real cross-tenant data leak, found in a
+# full-codebase audit 2026-08-21): this used to be a single scalar
+# (Optional[list[dict]]) shared by every tenant in the process, even though
+# every input that feeds the scan (ProductionConfig, stock targets, selected
+# decryptors) is tenant-scoped. The first tenant to call this within the TTL
+# window got their scan served to every other tenant hitting the same
+# process afterwards - wrong build costs/margins, and a wrong "not already
+# tracked" exclusion set. Now keyed by tenant_id (storage.get_current_tenant())
+# so each tenant gets their own cache entry; a call with no ambient tenant
+# set (shouldn't normally happen - see storage.py's own "fail closed on no
+# tenant" philosophy) just skips caching entirely rather than risk sharing
+# across an unknown boundary.
+_discover_cache: dict[str, list[dict]] = {}
+_discover_cache_at: dict[str, float] = {}
+# Guards both the cache dict itself and the scan that fills it (see
 # discover_build_candidates) - held for the whole scan, not just the cache
 # read/write, so two callers racing on a cold cache (e.g. the background
 # scheduler and a user's own browser request both landing at once) serialize
 # instead of one thread's slow, redundant scan clobbering the other's -
 # whichever thread loses the race just waits, then gets the winner's
 # now-cached result for free instead of independently re-scanning ~19,400
-# SDE items a second time.
+# SDE items a second time. One lock shared across all tenants' entries is
+# fine here (the scan itself, not lock contention, dominates cost) - two
+# different tenants scanning concurrently just serialize on this lock too,
+# not ideal but simple and correct; revisit only if that's ever a measured
+# problem.
 _discover_cache_lock = threading.Lock()
 
 
 def invalidate_discover_cache() -> None:
-    """Forces the next discover_build_candidates call to re-scan instead of
-    reusing a cached result - call after anything that changes the result set
-    (stock target add/remove, Settings save, SDE refresh)."""
+    """Forces the next discover_build_candidates call (for the *current*
+    tenant only - see the cache's own comment) to re-scan instead of reusing
+    a cached result - call after anything that changes the result set (stock
+    target add/remove, Settings save, SDE refresh)."""
     global _discover_cache, _discover_cache_at
+    tenant_id = storage.get_current_tenant()
     with _discover_cache_lock:
-        _discover_cache = None
-        _discover_cache_at = 0.0
+        _discover_cache.pop(tenant_id, None)
+        _discover_cache_at.pop(tenant_id, None)
 
 
 def discover_build_candidates(cfg: ProductionConfig = PRODUCTION_CONFIG, top_n: int = 200,
@@ -1847,14 +1865,19 @@ def discover_build_candidates(cfg: ProductionConfig = PRODUCTION_CONFIG, top_n: 
     a different `top_n` (e.g. the Build Candidates page's "Results to fetch"
     field) reuse the same scan instead of re-triggering it. The scan itself
     runs under _discover_cache_lock (see its comment) - two callers racing on
-    a cold cache serialize instead of redundantly scanning twice."""
+    a cold cache serialize instead of redundantly scanning twice. Cached per
+    tenant (GitHub issue #54) - see the cache's own module-level comment."""
     global _discover_cache, _discover_cache_at
+    tenant_id = storage.get_current_tenant()
     with _discover_cache_lock:
-        if _discover_cache is not None and (time.time() - _discover_cache_at) < _DISCOVER_CACHE_TTL:
-            return _discover_cache[:top_n]
+        cached_at = _discover_cache_at.get(tenant_id, 0.0)
+        if tenant_id is not None and tenant_id in _discover_cache \
+                and (time.time() - cached_at) < _DISCOVER_CACHE_TTL:
+            return _discover_cache[tenant_id][:top_n]
         results = _scan_build_candidates(cfg, client)
-        _discover_cache = results
-        _discover_cache_at = time.time()
+        if tenant_id is not None:
+            _discover_cache[tenant_id] = results
+            _discover_cache_at[tenant_id] = time.time()
         return results[:top_n]
 
 
@@ -1928,21 +1951,23 @@ def _scan_build_candidates(cfg: ProductionConfig, client: Optional["GoonmetricsC
 # staleness window rather than sharing one cache key for two different
 # questions. Invalidated at the exact same call sites as
 # invalidate_discover_cache (see production/actions.py) - anything that
-# changes build_cost/margin inputs invalidates both.
+# changes build_cost/margin inputs invalidates both. Keyed per tenant, same
+# GitHub issue #54 fix and same reasoning as _discover_cache above.
 _SHIP_MARGIN_CACHE_TTL = 600  # seconds
-_ship_margin_cache: Optional[list[dict]] = None
-_ship_margin_cache_at: float = 0.0
+_ship_margin_cache: dict[str, list[dict]] = {}
+_ship_margin_cache_at: dict[str, float] = {}
 _ship_margin_cache_lock = threading.Lock()
 
 
 def invalidate_ship_margin_cache() -> None:
-    """Forces the next discover_ship_margins call to re-scan - call
-    alongside invalidate_discover_cache (see that function's own call
-    sites in production/actions.py)."""
+    """Forces the next discover_ship_margins call (for the *current* tenant
+    only) to re-scan - call alongside invalidate_discover_cache (see that
+    function's own call sites in production/actions.py)."""
     global _ship_margin_cache, _ship_margin_cache_at
+    tenant_id = storage.get_current_tenant()
     with _ship_margin_cache_lock:
-        _ship_margin_cache = None
-        _ship_margin_cache_at = 0.0
+        _ship_margin_cache.pop(tenant_id, None)
+        _ship_margin_cache_at.pop(tenant_id, None)
 
 
 def discover_ship_margins(cfg: ProductionConfig = PRODUCTION_CONFIG,
@@ -1959,17 +1984,21 @@ def discover_ship_margins(cfg: ProductionConfig = PRODUCTION_CONFIG,
     "gray = no data yet" convention rather than silently hiding rows).
 
     Cached the same way discover_build_candidates is (_SHIP_MARGIN_CACHE_TTL,
-    _ship_margin_cache_lock) - `client` param only exists for tests to
-    inject a fake Goonmetrics client the same way discover_build_candidates
-    accepts one, though this function never actually calls it (no movement
-    lookup needed here)."""
+    _ship_margin_cache_lock), per tenant (GitHub issue #54) - `client` param
+    only exists for tests to inject a fake Goonmetrics client the same way
+    discover_build_candidates accepts one, though this function never
+    actually calls it (no movement lookup needed here)."""
     global _ship_margin_cache, _ship_margin_cache_at
+    tenant_id = storage.get_current_tenant()
     with _ship_margin_cache_lock:
-        if _ship_margin_cache is not None and (time.time() - _ship_margin_cache_at) < _SHIP_MARGIN_CACHE_TTL:
-            return _ship_margin_cache
+        cached_at = _ship_margin_cache_at.get(tenant_id, 0.0)
+        if tenant_id is not None and tenant_id in _ship_margin_cache \
+                and (time.time() - cached_at) < _SHIP_MARGIN_CACHE_TTL:
+            return _ship_margin_cache[tenant_id]
         results = _scan_ship_margins(cfg)
-        _ship_margin_cache = results
-        _ship_margin_cache_at = time.time()
+        if tenant_id is not None:
+            _ship_margin_cache[tenant_id] = results
+            _ship_margin_cache_at[tenant_id] = time.time()
         return results
 
 
