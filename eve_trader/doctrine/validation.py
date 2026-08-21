@@ -286,7 +286,13 @@ def contract_ampel(last_synced_at: Optional[str], contract_target: int,
         return AMPEL_GRAY
     if valid_contracts >= contract_target:
         return AMPEL_GREEN
-    if valid_contracts + tolerable_contracts >= contract_target or (valid_contracts + tolerable_contracts) > 0:
+    # GitHub issue #66 (found in a full-codebase audit 2026-08-21): the
+    # `>= contract_target` disjunct was redundant - contract_target is
+    # already >= 1 here (the ==0 case returned above) and the green branch
+    # above already excluded valid_contracts >= contract_target on its own,
+    # so ">= contract_target" always implies "> 0" wherever this line is
+    # even reached. Simplified to what it was actually equivalent to.
+    if (valid_contracts + tolerable_contracts) > 0:
         return AMPEL_YELLOW
     return AMPEL_RED
 
