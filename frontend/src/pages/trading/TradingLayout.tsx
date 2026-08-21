@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { AppShell, Burger, Stack, Title, Text, Button, Group, Badge, Tabs, Container, Divider } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
@@ -7,8 +6,9 @@ import {
   IconArrowLeft, IconBolt, IconCircleNumber1, IconCircleNumber2, IconPlayerPlay, IconSearch,
 } from '@tabler/icons-react'
 
-import { authApi, productionApi, tradingApi } from '../../api/client'
+import { productionApi, tradingApi } from '../../api/client'
 import { useAction } from '../../hooks/useAction'
+import { useRoleCharacters } from '../../hooks/useRoleCharacters'
 import { dateTime } from '../../format'
 
 const TABS = [
@@ -28,38 +28,29 @@ const TABS = [
 // button, plus an "Add Character" login button, same shape
 // ProductionLayout.tsx already uses for producer characters.
 function RoleCharacters({ role, label }: { role: 'buyer' | 'seller'; label: string }) {
-  const queryKey = ['trading', 'characters', role]
   const fetchCharacters = role === 'buyer' ? tradingApi.buyerCharacters : tradingApi.sellerCharacters
-  const { data: characters } = useQuery({ queryKey, queryFn: fetchCharacters })
-  const login = useAction('Login', async () => {
-    const { url } = await authApi.start(role)
-    window.location.href = url
-  })
-  const removeCharacter = useAction('Remove Character', tradingApi.removeCharacter, [queryKey])
-  // One shared mutation instance reused across every character's Remove
-  // button - same "which one is actually loading" fix ProductionLayout.tsx's
-  // own removeCharacter/pendingRoleKey already applies.
-  const [pendingRoleKey, setPendingRoleKey] = useState<string | null>(null)
+  const { characters, addCharacter, removeCharacter, isRemoving } = useRoleCharacters(
+    ['trading', 'characters', role], fetchCharacters, tradingApi.removeCharacter, role,
+  )
 
   return (
     <div>
       <Title order={6} c="dimmed" tt="uppercase" mb="xs">{label}</Title>
-      {(characters ?? []).length === 0 && (
+      {characters.length === 0 && (
         <Badge color="danger" variant="light" mb="xs">not logged in</Badge>
       )}
       <Stack gap={4} mb="xs">
-        {(characters ?? []).map((c) => (
+        {characters.map((c) => (
           <Group key={c.role_key} justify="space-between" wrap="nowrap">
             <Text size="sm" fw={600}>{c.character_name}</Text>
             <Button size="xs" variant="subtle" color="danger"
-              onClick={() => { setPendingRoleKey(c.role_key); removeCharacter.mutate(c.role_key) }}
-              loading={removeCharacter.isPending && pendingRoleKey === c.role_key}>
+              onClick={() => removeCharacter(c.role_key)} loading={isRemoving(c.role_key)}>
               Remove
             </Button>
           </Group>
         ))}
       </Stack>
-      <Button size="xs" variant="default" onClick={() => login.mutate()} loading={login.isPending}>
+      <Button size="xs" variant="default" onClick={() => addCharacter.mutate()} loading={addCharacter.isPending}>
         Add {label}
       </Button>
     </div>
