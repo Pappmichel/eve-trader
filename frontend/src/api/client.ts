@@ -195,7 +195,9 @@ export const productionApi = {
       '/api/production/logistics/resolve-structure-name', { location_id: locationId, force },
     ),
 
-  refreshSde: () => post<Record<string, number>>('/api/production/sde/refresh'),
+  // No refreshSde() here, deliberately - moved to adminApi below (GitHub
+  // issue #34): the SDE cache is global/shared, not per-tenant, so
+  // triggering a refresh is a cross-tenant-impacting action.
   // No addCharacter() here, deliberately - Add Character uses the same
   // redirect-based EVE SSO flow buyer/seller login does (see
   // ProductionLayout.tsx: authApi.start('producer')), not a POST action.
@@ -336,4 +338,8 @@ export const adminApi = {
     put<{ character_id: number; tool_keys: string[] }>(
       `/api/admin/users/${characterId}/tools`, { tool_keys: toolKeys },
     ),
+  // GitHub issue #34: moved here from productionApi - the SDE cache is
+  // global/shared across every tenant, so triggering a refresh is a
+  // cross-tenant-impacting action, not a per-tenant Production one.
+  refreshSde: () => post<Record<string, number>>('/api/admin/sde/refresh'),
 }

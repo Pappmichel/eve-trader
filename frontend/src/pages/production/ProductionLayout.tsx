@@ -41,8 +41,12 @@ export default function ProductionLayout() {
   const { data: characters } = useQuery({ queryKey: ['production', 'characters'], queryFn: productionApi.producerCharacters })
   const { data: syncTime } = useQuery({ queryKey: ['production', 'esi-sync-time'], queryFn: productionApi.esiSyncTime })
 
-  const refreshSde = useAction('Refresh SDE', productionApi.refreshSde,
-    [['production', 'sde', 'counts'], ['production', 'sde-freshness']])
+  // No "Refresh SDE" action/button here anymore - moved to the Admin tool
+  // (GitHub issue #34: the SDE cache is global/shared across every tenant,
+  // so triggering a refresh is a cross-tenant-impacting action). The
+  // freshness/counts info below stays - still legitimately informs this
+  // tenant's own Production sidebar, just no longer paired with a button
+  // that would refresh it for every tenant at once.
   // Same redirect-based EVE SSO flow trading's buyer/seller login uses (see
   // TradingLayout.tsx's LoginButton) - navigates the whole page to EVE SSO
   // and back, rather than the old server-side webbrowser.open() +
@@ -112,9 +116,7 @@ export default function ProductionLayout() {
               {sdeCounts && Object.entries(sdeCounts).map(([table, count]) => (
                 <Text size="xs" c="dimmed" key={table}>{table}: {count.toLocaleString('en-US')}</Text>
               ))}
-              <Button size="xs" variant="default" mt="xs" fullWidth onClick={() => refreshSde.mutate()} loading={refreshSde.isPending}>
-                Refresh SDE
-              </Button>
+              <Text size="xs" c="dimmed" mt="xs">Refresh via Admin → SDE Data.</Text>
             </div>
 
             <Divider />
