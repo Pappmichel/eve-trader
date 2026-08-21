@@ -159,6 +159,10 @@ export const productionApi = {
     post<T.AssetLocationSearchResult>('/api/production/asset-locations', { item_name: itemName }),
   jobs: () => get<T.IndustryJobRow[]>('/api/production/jobs'),
   slots: () => get<T.CharacterSlotRow[]>('/api/production/slots'),
+  setCharacterSlotExcluded: (characterName: string, excluded: boolean) =>
+    put<{ character_name: string; excluded: boolean }>(
+      `/api/production/slots/${encodeURIComponent(characterName)}/excluded`, { excluded },
+    ),
   producerCharacters: () => get<T.ProducerCharacter[]>('/api/production/producer-characters'),
   ownedBlueprints: () => get<T.OwnedBlueprintRow[]>('/api/production/blueprints'),
   settings: () => get<T.ProductionSettings>('/api/production/settings'),

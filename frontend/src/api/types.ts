@@ -275,6 +275,7 @@ export interface CharacterSlotRow {
   total_slots: number
   used_slots: number
   free_slots: number
+  excluded_from_planning: boolean
 }
 
 export interface OwnedBlueprintRow {
