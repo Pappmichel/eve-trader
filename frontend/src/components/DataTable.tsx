@@ -308,13 +308,31 @@ export function DataTable<T>({
               <Table.Tr key={hg.id}>
                 {hg.headers.filter((h) => !(isMobile && h.column.columnDef.meta?.mobileHide)).map((h) => {
                   const sorted = h.column.getIsSorted()
+                  const canSort = h.column.getCanSort()
+                  const toggleSort = h.column.getToggleSortingHandler()
+                  // GitHub issue #61 (found in a full-codebase audit
+                  // 2026-08-21): sortable headers were mouse-only - no
+                  // tabIndex/onKeyDown/aria-sort - unreachable for a
+                  // keyboard-only user, app-wide (every page uses this one
+                  // shared component). tabIndex/onKeyDown only apply to
+                  // actually-sortable columns, matching the existing
+                  // cursor:pointer-only-when-sortable convention below.
                   return (
                     <Table.Th
                       key={h.id}
-                      onClick={h.column.getToggleSortingHandler()}
+                      onClick={toggleSort}
+                      tabIndex={canSort ? 0 : undefined}
+                      role={canSort ? 'button' : undefined}
+                      aria-sort={sorted === 'asc' ? 'ascending' : sorted === 'desc' ? 'descending' : canSort ? 'none' : undefined}
+                      onKeyDown={canSort ? (e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          toggleSort?.(e)
+                        }
+                      } : undefined}
                       title={columnLabel(h.column.columnDef.header, h.column.id)}
                       style={{
-                        cursor: h.column.getCanSort() ? 'pointer' : undefined, userSelect: 'none',
+                        cursor: canSort ? 'pointer' : undefined, userSelect: 'none',
                         whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                       }}
                     >
