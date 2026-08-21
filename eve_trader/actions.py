@@ -18,7 +18,7 @@ from .config import OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, Trad
 from .esi_client import ESIClient, ESIError
 from .goonmetrics_client import GoonmetricsClient
 from .models import Candidate, ShortlistItem, UndercutRow, UnlistedStockRow
-from .shortlist import (NO_MARKET_DATA_DECISION, SKIP_DECISION, audit_shortlist, evaluate_shortlist,
+from .shortlist import (NO_MARKET_DATA_DECISION, SKIP_DECISION, _decision, audit_shortlist, evaluate_shortlist,
                          summary_counts, top_imports_by_daily_profit)
 from .trade_reconciliation import reconcile_realized_trades, summarize_realized
 
@@ -460,6 +460,29 @@ def _items_beyond_rank(rows: list, max_active_items: int) -> list[tuple[int, str
     return [(r.item_id, r.item) for r in ranked[max_active_items:] if r.item_id]
 
 
+def _items_to_reactivate(rows: list, cfg: TradingConfig) -> list[tuple[int, str]]:
+    """GitHub issue #35: an inactive item never gets a second look once
+    deactivated - shortlist._decision short-circuits to "Inactive" whenever
+    active=False, without ever re-checking whether the item's real numbers
+    (already computed for every item regardless of active state, see issue
+    #6/_refresh_shortlist_rows' own comment) would now clear the Import bar
+    again. This is do_refresh_and_prune_candidates' deactivation gate
+    (shortlist._decision's own Import-clearing condition) mirrored in
+    reverse: any currently-inactive row that clears it gets reactivated
+    immediately, symmetric to how deactivation already works. Confirmed live
+    (2026-08-21): several Booster/Drugs items sat inactive with 100%+
+    margins and real daily sell volume, with no path back to active."""
+    due = []
+    for r in rows:
+        if r.active or not r.item_id:
+            continue
+        if (r.sell_volume is not None and r.sell_volume > 0
+                and r.profit_per_unit is not None and r.profit_per_unit > cfg.min_profit_threshold
+                and r.margin is not None and r.margin >= cfg.min_margin_threshold):
+            due.append((r.item_id, r.item))
+    return due
+
+
 def do_refresh_and_prune_candidates(safe: bool = True, cfg: TradingConfig = TRADING_CONFIG,
                                      oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
     """One-button candidate maintenance, combining three of the manual steps
@@ -485,12 +508,34 @@ def do_refresh_and_prune_candidates(safe: bool = True, cfg: TradingConfig = TRAD
        off by default): whichever *remaining* active items (after #1) rank
        beyond cfg.max_active_shortlist_items by max daily profit - see
        _items_beyond_rank. Applied on top of, not instead of, #1.
+
+    Also reactivates (active=True) any currently-inactive item whose
+    real numbers (already computed for every item regardless of active
+    state, see #6) now clear the same Import bar deactivation checks
+    against - see _items_to_reactivate (GitHub issue #35, the reverse of
+    #1/#2 above: before this existed, a deactivated item had no path back
+    to active even once its economics recovered).
     """
     find_result = do_find_new_candidates(safe=safe, cfg=cfg)
     add_result = do_add_to_shortlist()
 
     items, rows, extra = _refresh_shortlist_rows(cfg, oauth_cfg)
     run_ts = now_ts()
+
+    to_reactivate = _items_to_reactivate(rows, cfg)
+    if to_reactivate:
+        reactivated_ids = [item_id for item_id, _ in to_reactivate]
+        storage.activate_shortlist_items(reactivated_ids)
+        reactivated_id_set = set(reactivated_ids)
+        for r in rows:
+            if r.item_id in reactivated_id_set:
+                r.active = True
+                # buyer_already_covered isn't available here (only known
+                # inside _refresh_shortlist_rows) - worst case this shows
+                # "Import" for one refresh cycle where "Already ordered"
+                # would've been more precise, self-corrects next refresh.
+                r.decision = _decision(True, r.item_id, r.sell_volume, r.profit_per_unit, r.margin,
+                                        r.own_orders_remaining, buyer_already_covered=False, cfg=cfg)
 
     skip_since = storage.get_shortlist_skip_since()
     skip_deactivate = _items_past_skip_grace_period(rows, skip_since, cfg.skip_grace_period_days,
@@ -537,6 +582,8 @@ def do_refresh_and_prune_candidates(safe: bool = True, cfg: TradingConfig = TRAD
         "deactivated_count": len(to_deactivate),
         "deactivated_items": [item for _, item in to_deactivate],
         "cap_deactivated_count": len(cap_deactivate),
+        "reactivated_count": len(to_reactivate),
+        "reactivated_items": [item for _, item in to_reactivate],
     }
 
 

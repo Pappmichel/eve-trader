@@ -54,19 +54,30 @@ def build_contract_soll(items: list[FittingItem]) -> tuple[dict[int, float], dic
 
 
 def build_stockpile_soll(items: list[FittingItem], hull_type_id: int,
-                          stockpile_target: int) -> dict[int, tuple[float, str]]:
+                          stockpile_target: int, contract_target: int = 0,
+                          valid_contracts: int = 0) -> dict[int, tuple[float, str]]:
     """Returns {type_id: (required_total, item_class)} for stockpile
     validation - item_class is "exact" or "consume" (drives C.3's severity
     rule). Unlike build_contract_soll, the hull IS a normal position here
-    (Phase 2 A.3/C.1: v1 counts type quantities, no fitted-ship detection),
-    and everything is multiplied by stockpile_target (C.1)."""
+    (Phase 2 A.3/C.1: v1 counts type quantities, no fitted-ship detection).
+
+    GitHub issue #36: everything is multiplied by stockpile_target *plus*
+    however many more outstanding contracts are still needed to reach
+    contract_target (max(0, contract_target - valid_contracts)) - confirmed
+    with the user (additive, not a max()): the spare-stock buffer
+    (stockpile_target) and the materials still needed to actually create
+    more contracts are both real, simultaneous demand, not alternatives to
+    each other. Before this, an empty/low stockpile_target with a large
+    contract shortfall showed as "nothing needed" even though real material
+    was required to close that gap."""
+    total_sets = stockpile_target + max(0, contract_target - valid_contracts)
     exact, consume = build_contract_soll(items)
     exact[hull_type_id] = exact.get(hull_type_id, 0.0) + 1.0
     result: dict[int, tuple[float, str]] = {}
     for type_id, qty in exact.items():
-        result[type_id] = (qty * stockpile_target, "exact")
+        result[type_id] = (qty * total_sets, "exact")
     for type_id, qty in consume.items():
-        result[type_id] = (qty * stockpile_target, "consume")
+        result[type_id] = (qty * total_sets, "consume")
     return result
 
 

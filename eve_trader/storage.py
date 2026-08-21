@@ -574,6 +574,22 @@ def deactivate_shortlist_items(item_ids: Iterable[int]) -> None:
         conn.executemany("UPDATE shortlist SET active = 0 WHERE item_id = ?", [(i,) for i in item_ids])
 
 
+def activate_shortlist_items(item_ids: Iterable[int]) -> None:
+    """Sets active=1 for the given item_ids - GitHub issue #35's
+    reactivation counterpart to deactivate_shortlist_items above. Before
+    this existed, an item deactivated once (skip-streak grace period, or
+    the shortlist-size cap) stayed inactive forever even if its economics
+    later recovered: shortlist._decision short-circuits to "Inactive"
+    whenever active=False, without ever re-checking the real numbers -
+    confirmed live (2026-08-21) against several Booster/Drugs items sitting
+    inactive with 100%+ margins."""
+    item_ids = list(item_ids)
+    if not item_ids:
+        return
+    with connect() as conn:
+        conn.executemany("UPDATE shortlist SET active = 1 WHERE item_id = ?", [(i,) for i in item_ids])
+
+
 def get_shortlist_skip_since() -> dict[int, str]:
     """Returns {item_id: skip_since (ISO timestamp of when its current
     unbroken Skip streak started)} for every item currently mid-streak."""
