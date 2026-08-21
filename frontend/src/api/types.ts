@@ -407,10 +407,10 @@ export interface SdeFreshness {
   trading_universe_built_at: string | null
 }
 
-export interface AuthStatus {
-  buyer: string | null
-  seller: string | null
-}
+// GitHub issue #46: buyer/seller are multi-character now (see
+// ProducerCharacter above, same shape) - AuthStatus's old single
+// buyer/seller-name-or-null shape is gone.
+export type TradingCharacter = ProducerCharacter
 
 export interface GateStatus {
   enabled: boolean
