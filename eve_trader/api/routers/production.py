@@ -95,6 +95,17 @@ def get_character_slots():
     return actions.do_character_slot_overview()["rows"]
 
 
+class SetCharacterSlotExcludedRequest(BaseModel):
+    excluded: bool
+
+
+# GitHub issue #39: excludes/includes a character from the shared free-slot
+# pool and the asset-optimized build list's slot-splitting.
+@router.put("/slots/{character_name}/excluded")
+def set_character_slot_excluded(character_name: str, req: SetCharacterSlotExcludedRequest):
+    return _wrap(actions.do_set_character_slot_excluded, character_name=character_name, excluded=req.excluded)
+
+
 @router.get("/blueprints", response_model=list[schemas.OwnedBlueprintRow])
 def get_owned_blueprints():
     return actions.do_list_owned_blueprints()["rows"]

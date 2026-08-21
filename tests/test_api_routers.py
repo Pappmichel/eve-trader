@@ -110,6 +110,22 @@ def test_get_stock_value_action_error_maps_to_400(monkeypatch):
     assert resp.json() == {"detail": "Keine Stock-Ziele konfiguriert."}
 
 
+def test_set_character_slot_excluded_passes_path_and_body(monkeypatch):
+    # GitHub issue #39.
+    captured = {}
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        return {"character_name": kwargs["character_name"], "excluded": kwargs["excluded"]}
+    monkeypatch.setattr(production_actions, "do_set_character_slot_excluded", _capture)
+
+    resp = client.put("/api/production/slots/Some%20Character/excluded", json={"excluded": True})
+
+    assert resp.status_code == 200
+    assert captured == {"character_name": "Some Character", "excluded": True}
+    assert resp.json() == {"character_name": "Some Character", "excluded": True}
+
+
 def test_get_owned_blueprints(monkeypatch):
     from eve_trader.production.models import OwnedBlueprintRow
     monkeypatch.setattr(production_actions, "do_list_owned_blueprints", lambda: {"rows": [
