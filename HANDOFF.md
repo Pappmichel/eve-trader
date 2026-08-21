@@ -8,12 +8,25 @@ is kept for history/cross-machine continuation on that separate, still-open
 thread (Tier 3 branches only exist on the original machine) — don't conflate
 the two; they're unrelated issue batches.
 
-## Current plan: #45, #46, #51, #52 (2026-08-21)
+## Status: all four implemented, committed, and pushed (2026-08-21)
 
-Working branch: `claude/issues-plan-8ovgwo`. Order agreed with the user:
-**#45 → #51 (label/doc fix only) → #52 → #46**, implementing one at a time,
-committing after each. Plan comments were posted to all four issues before
-starting code.
+Working branch: `claude/issues-plan-8ovgwo`, pushed to `origin`. Order
+agreed with the user: **#45 → #51 (label/doc fix only) → #52 → #46**,
+implemented one at a time, each with its own commit (`pytest`/`tsc`/`npm
+run build` green before every commit). Plan comments were posted to all
+four issues before starting code - see each issue's own comment for the
+exact write-up.
+
+**Not yet reviewed, merged, or deployed** - per this repo's normal workflow
+(see "Standing constraints" below), the next step is showing the user the
+branch/diff and getting a go-ahead before push → PR → merge → deploy for
+real. No live-verify against the real running app was possible this session
+(no Postgres available in this sandbox) - `pytest`/`tsc`/build are green,
+and a throwaway Playwright check confirmed the #52 landing-page fix visually
+at a 375px viewport, but the data-populated table pages (#45/#46) were not
+seen rendering live. Flag this explicitly when handing back to the user.
+
+Original plan (kept below for reference, all four are now done):
 
 - **#45** "Volume and margin in unlisted stock" — smallest, self-contained.
   Both Trading (`do_check_seller_unlisted_stock` in `actions.py`,
