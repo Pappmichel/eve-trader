@@ -157,7 +157,12 @@ def summary_counts(rows: list[ShortlistRow]) -> dict[str, float]:
 
 def top_imports_by_daily_profit(rows: list[ShortlistRow], top_n: int = 10) -> list[dict]:
     """Equivalent of the J:N 'Top Imports: Max. Gewinn / Tag' block:
-    Max Gewinn / Tag = Profit / Unit x C-J Sell Volume / Tag.
+    Max Gewinn / Tag = Profit / Unit x C-J Sell Volume. A theoretical
+    ceiling, not a real daily-turnover estimate - `sell_volume` is the
+    structure's currently-listed sell-order quantity (order-book depth), not
+    actual daily traded volume (see esi_client.OrderStats / GitHub issue
+    #51). Don't read the result as "you could realistically make this much
+    per day."
     """
     out = []
     for r in rows:
