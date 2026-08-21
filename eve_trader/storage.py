@@ -1129,7 +1129,6 @@ def get_cached_structure_names(location_ids: list[int]) -> dict[int, tuple[bool,
         ).fetchall()
     found = dict(rows)
     return {loc_id: (loc_id in found, found.get(loc_id)) for loc_id in location_ids}
-    return True, row[0]
 
 
 def set_cached_structure_name(location_id: int, name: Optional[str], solar_system_id: Optional[int] = None) -> None:
