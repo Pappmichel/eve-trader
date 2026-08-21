@@ -14,7 +14,7 @@ import { isk, qty } from '../../format'
 const MANUAL_COPY_COSTS_KEY = [['production', 'manual-blueprint-copy-costs']]
 
 function ManualBlueprintCopyCostsSection() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['production', 'manual-blueprint-copy-costs'], queryFn: productionApi.manualBlueprintCopyCosts,
   })
   const addCost = useAction(
@@ -77,6 +77,8 @@ function ManualBlueprintCopyCostsSection() {
 
       {isLoading ? (
         <DataTable data={[]} columns={columns} isLoading maxHeight={300} />
+      ) : isError ? (
+        <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={300} />
       ) : !data || data.length === 0 ? (
         <Text c="dimmed" size="sm">None registered yet.</Text>
       ) : (
@@ -88,7 +90,7 @@ function ManualBlueprintCopyCostsSection() {
 }
 
 export default function Blueprints() {
-  const { data, isLoading } = useQuery({ queryKey: ['production', 'blueprints'], queryFn: productionApi.ownedBlueprints })
+  const { data, isLoading, isError, refetch } = useQuery({ queryKey: ['production', 'blueprints'], queryFn: productionApi.ownedBlueprints })
 
   const columns = useMemo<ColumnDef<OwnedBlueprintRow, any>[]>(() => [
     { header: 'Item', accessorKey: 'type_name', size: 260 },
@@ -106,6 +108,8 @@ export default function Blueprints() {
     <Stack>
       {isLoading ? (
         <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
+      ) : isError ? (
+        <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />
       ) : !data || data.length === 0 ? (
         <HintCard>No blueprints found - or not synced yet ('Sync ESI Data' in the sidebar).</HintCard>
       ) : (

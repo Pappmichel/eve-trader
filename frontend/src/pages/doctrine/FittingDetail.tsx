@@ -58,7 +58,7 @@ export default function FittingDetail() {
   const [showRaw, setShowRaw] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
 
-  const { data, isLoading, refetch } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['doctrine', 'fitting-detail', fittingId],
     queryFn: () => doctrineApi.fittingDetail(fittingId!),
     enabled: !!fittingId,
@@ -72,6 +72,12 @@ export default function FittingDetail() {
 
   if (!fittingId) return null
   if (isLoading) return <Text c="dimmed">Loading…</Text>
+  if (isError) return (
+    <Stack align="flex-start" gap="xs">
+      <Text c="dimmed">Failed to load this fitting.</Text>
+      <Button size="xs" variant="default" onClick={() => refetch()}>Retry</Button>
+    </Stack>
+  )
   if (!data) return <Text c="dimmed">Fitting not found.</Text>
 
   const { fitting, items, issues, contracts, status } = data
