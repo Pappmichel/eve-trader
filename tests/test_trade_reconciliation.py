@@ -39,7 +39,7 @@ def test_reconcile_includes_buy_broker_fee(monkeypatch):
     client = FakeClient(buys, sells)
 
     trades = reconcile_realized_trades(
-        buyer_character_id=1, seller_character_id=2, buyer_role="buyer", seller_role="seller",
+        buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
         client=client, item_names={100: "Widget"}, item_volumes={100: 0.0}, cfg=cfg,
     )
 
@@ -66,7 +66,7 @@ def test_reconcile_ignores_buys_outside_the_forge(monkeypatch):
     client = FakeClient(buys, sells)
 
     trades = reconcile_realized_trades(
-        buyer_character_id=1, seller_character_id=2, buyer_role="buyer", seller_role="seller",
+        buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
         client=client, item_names={100: "Widget"}, item_volumes={100: 0.0}, cfg=cfg,
     )
 
@@ -88,7 +88,7 @@ def test_reconcile_accepts_buys_anywhere_in_the_forge_not_just_jita_itself(monke
     client = FakeClient(buys, sells)
 
     trades = reconcile_realized_trades(
-        buyer_character_id=1, seller_character_id=2, buyer_role="buyer", seller_role="seller",
+        buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
         client=client, item_names={100: "Widget"}, item_volumes={100: 0.0}, cfg=cfg,
     )
 
