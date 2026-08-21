@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Card, Title, Text, Group, TextInput, NumberInput, Button, Select, Stack, ActionIcon, Tooltip } from '@mantine/core'
+import { modals } from '@mantine/modals'
 import { IconCheck, IconAlertTriangle } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
@@ -255,7 +256,13 @@ export default function StockTargets() {
                   else setDecryptor.mutate({ typeId: chosen.type_id, decryptor: v })
                 }}
               />
-              <Button color="danger" variant="outline" onClick={() => removeTarget.mutate(chosen.type_id)} loading={removeTarget.isPending}>
+              <Button color="danger" variant="outline" onClick={() => modals.openConfirmModal({
+                title: 'Remove stock target',
+                children: <Text size="sm">Remove the stock target for {chosen.type_name}? Its targets, manual stock, and overrides are all deleted.</Text>,
+                labels: { confirm: 'Remove', cancel: 'Cancel' },
+                confirmProps: { color: 'danger' },
+                onConfirm: () => removeTarget.mutate(chosen.type_id),
+              })} loading={removeTarget.isPending}>
                 Remove Stock Target
               </Button>
             </Group>
