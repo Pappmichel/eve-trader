@@ -1449,6 +1449,21 @@ def test_plan_asset_optimized_recommends_slot_split_for_eligible_categories_only
     assert jobs_by_id[2].recommended_slots is None  # Equipment - not an eligible category
 
 
+def test_free_slots_by_category_excludes_flagged_characters(monkeypatch):
+    # GitHub issue #39: a character flagged excluded_from_planning (e.g. an
+    # alt kept registered for ESI sync/asset visibility but not meant to run
+    # production jobs) must not contribute to the shared free-slot pool.
+    monkeypatch.setattr(engine, "character_slot_overview", lambda: [
+        CharacterSlotRow(character_name="Alice", job_type="Reactions", total_slots=3, used_slots=0, free_slots=3),
+        CharacterSlotRow(character_name="Bob", job_type="Reactions", total_slots=5, used_slots=0, free_slots=5,
+                          excluded_from_planning=True),
+    ])
+
+    totals = engine._free_slots_by_category()
+
+    assert totals == {"Reactions": 3}  # Bob's 5 free slots excluded entirely
+
+
 def test_allocate_slots_proportionally_splits_by_relative_size_with_no_remainder():
     # weight == cap here (no time-vs-run-count distinction being tested).
     result = engine._allocate_slots_proportionally([(1, 10.0, 10), (2, 20.0, 20), (3, 70.0, 70)], available=10)

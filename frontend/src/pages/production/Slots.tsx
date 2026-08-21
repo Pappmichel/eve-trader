@@ -1,8 +1,9 @@
 import { Fragment, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Table, Text, Stack } from '@mantine/core'
+import { Table, Text, Stack, Checkbox } from '@mantine/core'
 
 import { productionApi } from '../../api/client'
+import { useAction } from '../../hooks/useAction'
 import { HintCard } from '../../components/HintCard'
 import { qty } from '../../format'
 
@@ -10,11 +11,21 @@ const JOB_TYPES = ['Manufacturing', 'Reactions', 'Science']
 
 interface PivotedRow {
   character_name: string
+  excluded: boolean
   byJobType: Record<string, { total: number; used: number; free: number }>
 }
 
 export default function Slots() {
   const { data, isLoading } = useQuery({ queryKey: ['production', 'slots'], queryFn: productionApi.slots })
+  // GitHub issue #39 - exclude a character from the shared free-slot pool
+  // (and therefore the asset-optimized build list's slot-splitting) without
+  // un-registering their ESI sync entirely.
+  const setExcluded = useAction(
+    'Set Character Excluded',
+    (args: { characterName: string; excluded: boolean }) =>
+      productionApi.setCharacterSlotExcluded(args.characterName, args.excluded),
+    [['production', 'slots']],
+  )
 
   // One row per character (GitHub issue #8 - the flat one-row-per-(character,
   // job_type) shape from the backend is still needed elsewhere (the
@@ -25,7 +36,7 @@ export default function Slots() {
     for (const r of data ?? []) {
       let row = byCharacter.get(r.character_name)
       if (!row) {
-        row = { character_name: r.character_name, byJobType: {} }
+        row = { character_name: r.character_name, excluded: r.excluded_from_planning, byJobType: {} }
         byCharacter.set(r.character_name, row)
       }
       row.byJobType[r.job_type] = { total: r.total_slots, used: r.used_slots, free: r.free_slots }
@@ -49,6 +60,7 @@ export default function Slots() {
         <Table.Thead>
           <Table.Tr>
             <Table.Th rowSpan={2}>Character</Table.Th>
+            <Table.Th rowSpan={2}>Excluded</Table.Th>
             {JOB_TYPES.map((jt) => (
               <Table.Th key={jt} colSpan={3} style={{ textAlign: 'center' }}>{jt}</Table.Th>
             ))}
@@ -65,8 +77,16 @@ export default function Slots() {
         </Table.Thead>
         <Table.Tbody>
           {rows.map((row) => (
-            <Table.Tr key={row.character_name}>
+            <Table.Tr key={row.character_name} style={row.excluded ? { opacity: 0.5 } : undefined}>
               <Table.Td>{row.character_name}</Table.Td>
+              <Table.Td>
+                <Checkbox
+                  aria-label={`Exclude ${row.character_name} from planning`}
+                  checked={row.excluded}
+                  disabled={setExcluded.isPending}
+                  onChange={(e) => setExcluded.mutate({ characterName: row.character_name, excluded: e.currentTarget.checked })}
+                />
+              </Table.Td>
               {JOB_TYPES.map((jt) => {
                 const cell = row.byJobType[jt]
                 return (
@@ -85,6 +105,11 @@ export default function Slots() {
         Manufacturing: Mass Production + Advanced Mass Production. Reactions: Mass Reactions + Advanced Mass Reactions.
         Science (ME/TE research, copying, invention): Laboratory Operation + Advanced Laboratory Operation.
         +1 slot per skill level, base 1.
+      </Text>
+      <Text size="xs" c="dimmed">
+        Excluded characters' slots don't count toward the shared free-slot pool used by the asset-optimized build
+        list's slot-splitting - useful for an alt kept registered for ESI sync/asset visibility but not actually
+        meant to run production jobs.
       </Text>
     </Stack>
   )
