@@ -169,6 +169,7 @@ export interface BuildJobEntry {
   unit_build_cost: number | null
   decryptor: string | null
   job_category: string | null
+  margin: number | null
 }
 
 export interface LogisticsRow {
@@ -234,6 +235,7 @@ export interface AssetPlanJob {
   unit_build_cost: number | null
   decryptor: string | null
   job_category: string | null
+  margin: number | null
   stock_coverage: number | null
   recommended_slots: number | null
 }

@@ -1230,6 +1230,12 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             activity=activity_label, quantity=runs * product_qty, job_runs=runs,
             job_time_seconds=job_time, unit_build_cost=unit_cost, decryptor=decryptor_name,
             job_category=job_category(product_type_id),
+            # GitHub issue #38: margin_home, not margin_jita - Production
+            # sells only at C-J, never Jita (see CLAUDE.md), so the
+            # Bauliste's own margin must be the real C-J one, not the
+            # informational Jita comparison the standalone Margin page also
+            # shows.
+            margin=margin_home(product_type_id, unit_cost, home, cfg),
         ))
     build_list.sort(key=lambda e: e.job_time_seconds, reverse=True)
 
@@ -1590,6 +1596,9 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                     unit_build_cost=cost_memo.get(type_id), decryptor=decryptor_name,
                     job_category=job_category(type_id),
                     stock_coverage=stock_coverage_by_id.get(type_id),
+                    # GitHub issue #38: margin_home, not margin_jita - see
+                    # plan_production's BuildJobEntry construction for why.
+                    margin=margin_home(type_id, cost_memo.get(type_id), home, cfg),
                 )
             else:
                 # Same item is a job in more than one round (needed at two
