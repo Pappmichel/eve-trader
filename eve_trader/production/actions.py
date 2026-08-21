@@ -7,8 +7,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import requests
-
 from .. import storage
 from ..actions import ActionError
 from ..auth import TokenManager
@@ -68,23 +66,16 @@ def do_set_system(profile: str, system_name: str, cfg: ProductionConfig = PRODUC
     return {f"{profile}_system_name": system_name, f"{profile}_system_id": system_id}
 
 
-def do_refresh_sde() -> dict:
-    """Downloads and caches the current Fuzzwork SDE export."""
-    try:
-        result = sde.refresh_sde()
-    except requests.RequestException as e:
-        # Confirmed real gap: sde.refresh_sde()'s network errors used to
-        # reach the router unconverted - a raw 500 from POST /sde/refresh
-        # instead of the ActionError every other ESI/Goonmetrics-touching
-        # action in this module converts a network failure to.
-        raise ActionError(f"SDE refresh failed: {e}") from e
-    invalidate_discover_cache()  # the item/blueprint universe itself may have changed
-    invalidate_ship_margin_cache()
-    return result
-
-
 def do_check_sde_freshness(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
-    """Two independent staleness checks, both read-only/no-op (neither ever
+    """Read-only - the actual refresh action (do_refresh_sde) moved to
+    admin.py (GitHub issue #34): the SDE cache is global/shared data, not
+    per-tenant, so triggering a refresh is a cross-tenant-impacting action
+    that belongs in the Admin tool's superadmin surface, not exposed to
+    every Production tenant. This staleness check stays here since it's
+    read-only and still legitimately informs both Production's and
+    Trading's own sidebars.
+
+    Two independent staleness checks, both read-only/no-op (neither ever
     auto-refreshes anything):
 
     1. newer_sde_available - is there a newer Fuzzwork dump than the one

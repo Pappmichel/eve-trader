@@ -245,9 +245,11 @@ def resolve_structure_name(req: ResolveStructureNameRequest):
 
 
 # ------------------------------------------------------------------ actions
-@router.post("/sde/refresh")
-def refresh_sde():
-    return _wrap(actions.do_refresh_sde)
+# POST /sde/refresh moved to /api/admin/sde/refresh (GitHub issue #34) - the
+# SDE cache is global/shared, not per-tenant, so triggering a refresh is a
+# cross-tenant-impacting action that belongs in the Admin tool. GET
+# /sde/counts and /sde/freshness (above) stay here - read-only, still
+# legitimately informs this tenant's own Production/Trading sidebars.
 
 
 @router.delete("/auth/character/{role_key}")

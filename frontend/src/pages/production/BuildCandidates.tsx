@@ -67,7 +67,7 @@ export default function BuildCandidates() {
         buying right now (same buy-vs-build margin gate the Bauliste itself uses) - Production's equivalent of the
         Trading tool's candidate discovery, for things you haven't thought to track yet. Prices at the C-J (home)
         sell quote - this tool is for building for the local C-J market, not freighting finished goods to Jita to
-        sell. Needs the SDE cache populated (Refresh SDE in the sidebar) and can take a while - it walks every
+        sell. Needs the SDE cache populated (Refresh SDE in the Admin tool) and can take a while - it walks every
         market-listed item, not just your existing stock targets.
         <br /><br />
         Sorted by <b>Potential Daily Profit (theoretical)</b>, not Margin - a huge margin on an item nobody actually
