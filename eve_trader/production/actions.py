@@ -618,6 +618,21 @@ def do_character_slot_overview() -> dict:
     return {"rows": jobs.character_slot_overview()}
 
 
+def do_set_character_slot_excluded(character_name: str, excluded: bool) -> dict:
+    """GitHub issue #39: excludes/includes `character_name` from the shared
+    free-slot pool (_free_slots_by_category) and therefore the asset-
+    optimized build list's slot-splitting - e.g. an alt kept registered for
+    ESI sync/asset visibility but not actually meant to run production jobs.
+    Persisted (storage.set_character_slot_excluded), survives the next ESI
+    re-sync (replace_character_slots is now an UPSERT, not delete+reinsert).
+    No cache to invalidate here - plan_asset_optimized has no cache of its
+    own (api/routers/production.py's _last_asset_plan is only ever
+    refreshed by its own explicit "Refresh" button, same as every other
+    settings change that affects the asset-optimized plan)."""
+    storage.set_character_slot_excluded(character_name, excluded)
+    return {"character_name": character_name, "excluded": excluded}
+
+
 def do_list_owned_blueprints() -> dict:
     """Every owned blueprint (character + corp), aggregated across identical
     (type_id, is_original, ME, TE, runs) groups, for the Blueprints tab -

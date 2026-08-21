@@ -386,6 +386,12 @@ CREATE TABLE IF NOT EXISTS character_slots (
     reaction_slots INTEGER,
     science_slots INTEGER
 );
+-- GitHub issue #39: lets a character be excluded from the free-slot pool
+-- (character_slot_overview/_free_slots_by_category) and the asset-optimized
+-- build list's slot-splitting, without un-registering their ESI sync
+-- entirely. Not wiped by replace_character_slots' own re-sync (see that
+-- function's own comment for why it's an UPSERT, not delete+reinsert).
+ALTER TABLE character_slots ADD COLUMN IF NOT EXISTS excluded_from_planning BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE character_slots ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON character_slots;
 CREATE POLICY tenant_isolation ON character_slots
