@@ -77,6 +77,12 @@ def test_live_fetches_assets_and_orders_and_flags_unlisted_stock(monkeypatch, te
     monkeypatch.setattr(ESIClient, "character_public_info", fake_character_public_info)
     monkeypatch.setattr(ESIClient, "corporation_assets", fake_corporation_assets)
     monkeypatch.setattr(ESIClient, "corporation_orders", fake_corporation_orders)
+    # GitHub issue #45: do_unlisted_stock now also fetches structure order
+    # stats/margin for each unlisted row - not this test's concern, so
+    # stub both out rather than let them hit the real ESI/Goonmetrics network.
+    monkeypatch.setattr(ESIClient, "structure_order_stats_bulk",
+                         lambda self, structure_id, type_ids, auth_role: {})
+    monkeypatch.setattr(actions, "item_margin_detail", lambda type_id, name, cfg: {"margin_home": None})
 
     result = actions.do_unlisted_stock(cfg)
 
@@ -160,6 +166,11 @@ def test_corp_order_role_failure_does_not_block_corp_asset_role_success(monkeypa
     def fail_corporation_orders(self, corporation_id, auth_role):
         raise ESIError("missing Accountant/Trader role")
     monkeypatch.setattr(ESIClient, "corporation_orders", fail_corporation_orders)
+    # GitHub issue #45: same stub as the other live-fetch test above - not
+    # this test's concern.
+    monkeypatch.setattr(ESIClient, "structure_order_stats_bulk",
+                         lambda self, structure_id, type_ids, auth_role: {})
+    monkeypatch.setattr(actions, "item_margin_detail", lambda type_id, name, cfg: {"margin_home": None})
 
     result = actions.do_unlisted_stock(cfg)
 
