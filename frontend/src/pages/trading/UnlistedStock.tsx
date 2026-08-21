@@ -7,7 +7,7 @@ import type { UnlistedStockRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
-import { qty } from '../../format'
+import { pct, qty } from '../../format'
 
 export default function UnlistedStock() {
   const check = useAction('Check Structure Stock Without Order', tradingApi.checkSellerUnlistedStock)
@@ -16,6 +16,8 @@ export default function UnlistedStock() {
   const columns = useMemo<ColumnDef<UnlistedStockRow, any>[]>(() => [
     { header: 'Item', accessorKey: 'item', size: 260 },
     { header: 'Stock on Hand', accessorKey: 'asset_quantity', size: 140, cell: (i) => qty(i.getValue()) },
+    { header: 'Sell Volume', accessorKey: 'sell_volume', size: 110, cell: (i) => qty(i.getValue()) },
+    { header: 'Margin', accessorKey: 'margin', size: 90, cell: (i) => pct(i.getValue()) },
   ], [])
 
   return (

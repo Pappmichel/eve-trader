@@ -597,14 +597,39 @@ def do_unlisted_stock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     # (confirmed real bug: e.g. every Decryptor here is backup-only, yet all
     # of them showed up as "unlisted" yielding a useless, noisy list).
     listed_target_ids = {t[0] for t in stock_targets if (t[3] or 0) > 0 or (t[4] or 0) > 0}
-    rows = []
+    unlisted: list[tuple[int, str, float]] = []
     for type_id, qty in stock_qty.items():
         if type_id not in listed_target_ids or qty <= 0:
             continue
         if sell_qty.get(type_id, 0.0) <= 0:
             sde_type = storage.get_sde_type(type_id)
             name = sde_type[2] if sde_type else str(type_id)
-            rows.append(UnlistedStockRow(type_id=type_id, type_name=name, stock_quantity=qty))
+            unlisted.append((type_id, name, qty))
+
+    # GitHub issue #45: also show the structure's own current sell volume
+    # (everyone's listed quantity at C-J, same ESI call the Trading
+    # shortlist uses) and margin_home (see engine.margin_home) - best-effort,
+    # degrades to None rather than blocking the whole page (matches this
+    # function's existing per-character ESIError tolerance above).
+    structure_stats_by_item = {}
+    if unlisted:
+        first_role = characters[0][0]
+        try:
+            structure_stats_by_item = client.structure_order_stats_bulk(
+                cfg.home_location_id, [type_id for type_id, _name, _qty in unlisted], auth_role=first_role)
+        except ESIError:
+            pass
+
+    rows = []
+    for type_id, name, qty in unlisted:
+        structure_stats = structure_stats_by_item.get(type_id)
+        sell_volume = structure_stats.sell_volume if structure_stats else None
+        try:
+            margin = item_margin_detail(type_id, name, cfg).get("margin_home")
+        except ESIError:
+            margin = None
+        rows.append(UnlistedStockRow(type_id=type_id, type_name=name, stock_quantity=qty,
+                                      sell_volume=sell_volume, margin=margin))
     rows.sort(key=lambda r: r.stock_quantity, reverse=True)
     return {"rows": rows}
 
