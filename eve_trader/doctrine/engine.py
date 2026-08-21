@@ -209,7 +209,15 @@ def stockpile_rows_for_doctrine(doctrine_id: Optional[str] = None,
 
     ordered_soll: list[tuple[str, dict[int, tuple[float, str]]]] = []
     for c in candidates:
-        soll = validation.build_stockpile_soll(c.items, c.fitting.hull_type_id, c.fitting.stockpile_target)
+        # GitHub issue #36: same valid-contract count fitting_status computes
+        # (contract_ampel's own "valid" count) - a fitting still short of its
+        # contract_target needs the materials for those extra contracts too,
+        # not just its separate stockpile_target buffer.
+        contracts = contract_rows_from_db(storage.list_doctrine_contracts(fitting_id=c.fitting.fitting_id))
+        valid_contracts = sum(1 for ct in contracts if ct.validation_status == "valid" and ct.status != "expired")
+        soll = validation.build_stockpile_soll(c.items, c.fitting.hull_type_id, c.fitting.stockpile_target,
+                                                contract_target=c.fitting.contract_target,
+                                                valid_contracts=valid_contracts)
         ordered_soll.append((c.fitting.fitting_id, soll))
 
     type_ids = {t for _fid, soll in ordered_soll for t in soll}
