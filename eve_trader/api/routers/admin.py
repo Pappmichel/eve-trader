@@ -59,3 +59,11 @@ class SetToolGrantsRequest(BaseModel):
 @router.put("/users/{character_id}/tools")
 def set_tool_grants(character_id: int, req: SetToolGrantsRequest):
     return _wrap(admin.do_set_tool_grants, character_id=character_id, tool_keys=req.tool_keys)
+
+
+# GitHub issue #34: moved here from /api/production/sde/refresh - the SDE
+# cache is global/shared across every tenant, so triggering a refresh is a
+# cross-tenant-impacting action, not a per-tenant Production one.
+@router.post("/sde/refresh")
+def refresh_sde():
+    return _wrap(admin.do_refresh_sde)
