@@ -7,11 +7,25 @@ plan the user asked to have saved for exactly that case. Delete this file
 once the plan below is fully executed (merged + deployed) and confirmed with
 the user, per this repo's own HANDOFF.md convention (see CLAUDE.md).
 
-## Status (updated 2026-08-21, after Tier 1 + Tier 2)
+## Status (updated 2026-08-21, after Tier 1 + Tier 2, both user-verified live)
 
-**Tier 1 is done and deployed**: #37, #32, #33 were fixed in one bundled
-branch/PR (#42, merged to `dev`, fast-forwarded to `main`, deployed to the
-real production server, service restarted and verified via `curl`).
+**Tier 1 is done, deployed, and confirmed working by the user.** #37, #32,
+#33 were fixed in one bundled branch/PR (#42, merged to `dev`, fast-forwarded
+to `main`, deployed to the real production server, service restarted and
+verified via `curl`). The user then found a real follow-up bug in #33 while
+verifying live: Market Status still showed items with an explicit `0` market
+target (not just `NULL`) - e.g. the Griffin (`home_market_stock=0`,
+`jita_market_stock=NULL`). Fixed in a second PR (#44): `market_status()` now
+treats `0` the same as `NULL` (`not home_target and not jita_target`
+instead of `is None`/`is None`). Live-verified directly against the
+production DB afterward (Griffin no longer in the 217 remaining rows).
+**Lesson for future similar filters**: a "was this ever configured" check on
+a nullable numeric column needs to consider 0 as "not configured" too, not
+just NULL - don't assume NULL is the only empty-state sentinel without
+checking real data first.
+
+**Tier 2 is done, deployed, and confirmed working by the user** (no
+follow-up issues reported for #35/#36).
 
 **Tier 2 is also done and deployed**: the user answered all three questions,
 each with real live-data investigation behind it first (not blind
@@ -44,10 +58,9 @@ quirk (see below) meant #32/#33/#36 needed a manual `gh issue close` with an
 explanatory comment since only the first number in a combined PR title
 auto-closes.
 
-**Not yet live-verified online by the user** for either Tier 1 or Tier 2 -
-next step in a fresh session, if picking this up mid-way, is to confirm both
-tiers' live behavior with the user (see each PR's own "Live-verify after
-deploy" checklist), then move to Tier 3.
+**Both tiers are now live-verified by the user** (including the #33
+follow-up above). Next step in a fresh session: move straight to Tier 3
+(#34 → #39 → #40 → #38) - no outstanding confirmation needed from Tier 1/2.
 
 Tier 3 is still fully unstarted - nothing below this point has changed.
 Labels and existing milestones were applied on GitHub to all ten
@@ -218,9 +231,10 @@ Tier 2 questions). All three Tier 2 questions were answered:
 - #36: "Addieren" (additive formula) - confirmed directly.
 - #41: "erstmal zurückstellen" (defer for now) - confirmed, no fix.
 
-Tier 2 is now fully implemented, merged, and deployed (see Status above).
-**Not yet live-verified online by the user for either Tier 1 or Tier 2.**
-The very next action in a fresh session should be: tell the user both tiers
-are live and ask them to verify online (see each PR's own "Live-verify after
-deploy" checklist in its description, or the Status section above), then
-once confirmed, move to Tier 3 (#34 → #39 → #40 → #38).
+Tier 2 is fully implemented, merged, deployed, and the user confirmed both
+#35 and #36 work online ("Beides funktioniert"). The user then went back to
+Tier 1 and reported a real follow-up bug in #33 (Griffin still showing with
+a 0-not-NULL target) - fixed in PR #44, deployed, live-verified directly
+against the production DB. **Both tiers are now fully done and confirmed.**
+The very next action in a fresh session should be: move straight to Tier 3
+(#34 → #39 → #40 → #38), starting with #34.
