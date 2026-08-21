@@ -1617,14 +1617,17 @@ def market_status(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[MarketStatu
     home_market_stock/jita_market_stock columns and character_sell_orders.
 
     GitHub issue #33: a stock target with neither a home nor a Jita market
-    target configured (both NULL - pure backup/component stock, never meant
-    to be listed anywhere) isn't a market-status concern at all and is
+    target configured (both NULL/0 - pure backup/component stock, never
+    meant to be listed anywhere) isn't a market-status concern at all and is
     skipped here, rather than showing up with two permanently-empty target
-    columns."""
+    columns. Treats 0 the same as NULL (confirmed live: Griffin had
+    home_market_stock=0, jita_market_stock=NULL and still showed up when
+    only NULL was checked - a 0 target is never a real, deliberately-set
+    market target in practice)."""
     manual_stock = storage.load_manual_stock()
     rows = []
     for type_id, type_name, backup_target, home_target, jita_target in storage.load_stock_targets():
-        if home_target is None and jita_target is None:
+        if not home_target and not jita_target:
             continue
         _, bp = classify_activity(type_id)
         backup_current = _current_stock(type_id, manual_stock, cfg, bp)
