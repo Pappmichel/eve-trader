@@ -391,6 +391,7 @@ def test_unit_cost_detail_returns_build_cost_and_buy_price_separately(monkeypatc
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 99)  # not a ship - plain SDE volume path
     monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id: None)
     monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [])
+    monkeypatch.setattr(storage, "get_manual_blueprint_copy_cost_per_run", lambda type_id: None)
 
     cfg = ProductionConfig()
     home = {100: _fake_quote(100, sell=500.0)}
@@ -401,6 +402,29 @@ def test_unit_cost_detail_returns_build_cost_and_buy_price_separately(monkeypatc
     assert buy_price == pytest.approx(500.0 * (1 + cfg.jita_buy_broker_fee))
     assert build_cost == 0.0  # no materials, no job cost (adjusted_prices empty -> eiv=0)
     assert best == 0.0  # min(buy, 0.0) - build wins
+
+
+def test_unit_cost_detail_adds_amortized_manual_bpc_cost_per_unit(monkeypatch):
+    # GitHub issue #40: a blueprint copy that must be bought outright adds
+    # its purchase cost, amortized over its included runs, to the per-unit
+    # build cost - on top of materials/job cost.
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (200, 1, 2.0))  # 2 units/run
+    monkeypatch.setattr(storage, "find_invention_recipe_by_product_type_id", lambda blueprint_id: None)
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (100, 958, "Plain Tech I Thing", 40.0, 1, 1125, 0, None))
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 99)
+    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id: None)
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [])
+    # 1,000,000 ISK copy good for 10 runs -> 100,000 ISK/run -> 50,000 ISK/unit (2 units/run)
+    monkeypatch.setattr(storage, "get_manual_blueprint_copy_cost_per_run", lambda type_id: 1_000_000.0 / 10)
+
+    cfg = ProductionConfig()
+    home = {100: _fake_quote(100, sell=500.0)}
+
+    best, build_cost, buy_price = engine.unit_cost_detail(
+        100, cfg, home, {}, memo={}, selected_decryptors={}, t2_memo={}, cost_indices={}, adjusted_prices={})
+
+    assert build_cost == pytest.approx(50_000.0)
+    assert best == pytest.approx(min(buy_price, 50_000.0))
 
 
 def test_unit_cost_detail_returns_buy_only_when_not_buildable(monkeypatch):

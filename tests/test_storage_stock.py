@@ -213,3 +213,39 @@ def test_load_category_system_ids_joins_category_locations_and_structure_names(t
     result = storage.load_category_system_ids()
 
     assert result == {"Reactions": 30000142}
+
+
+def test_manual_blueprint_copy_cost_round_trips(tenant):
+    # GitHub issue #40.
+    storage.upsert_manual_blueprint_copy_cost(TYPE_ID, "Tritanium", purchase_cost=1_000_000.0, runs=10)
+
+    rows = storage.load_manual_blueprint_copy_costs()
+
+    assert rows == [(TYPE_ID, "Tritanium", 1_000_000.0, 10)]
+
+
+def test_manual_blueprint_copy_cost_upsert_updates_existing_row(tenant):
+    storage.upsert_manual_blueprint_copy_cost(TYPE_ID, "Tritanium", purchase_cost=1_000_000.0, runs=10)
+    storage.upsert_manual_blueprint_copy_cost(TYPE_ID, "Tritanium", purchase_cost=2_000_000.0, runs=5)
+
+    rows = storage.load_manual_blueprint_copy_costs()
+
+    assert rows == [(TYPE_ID, "Tritanium", 2_000_000.0, 5)]
+
+
+def test_manual_blueprint_copy_cost_delete(tenant):
+    storage.upsert_manual_blueprint_copy_cost(TYPE_ID, "Tritanium", purchase_cost=1_000_000.0, runs=10)
+
+    storage.delete_manual_blueprint_copy_cost(TYPE_ID)
+
+    assert storage.load_manual_blueprint_copy_costs() == []
+
+
+def test_get_manual_blueprint_copy_cost_per_run_amortizes(tenant):
+    storage.upsert_manual_blueprint_copy_cost(TYPE_ID, "Tritanium", purchase_cost=1_000_000.0, runs=10)
+
+    assert storage.get_manual_blueprint_copy_cost_per_run(TYPE_ID) == pytest.approx(100_000.0)
+
+
+def test_get_manual_blueprint_copy_cost_per_run_none_when_not_registered(tenant):
+    assert storage.get_manual_blueprint_copy_cost_per_run(TYPE_ID) is None

@@ -100,6 +100,28 @@ def get_owned_blueprints():
     return actions.do_list_owned_blueprints()["rows"]
 
 
+@router.get("/blueprints/manual-copy-costs", response_model=list[schemas.ManualBlueprintCopyCostRow])
+def get_manual_blueprint_copy_costs():
+    return actions.do_list_manual_blueprint_copy_costs()["rows"]
+
+
+class AddManualBlueprintCopyCostRequest(BaseModel):
+    item_name: str
+    purchase_cost: float
+    runs: int
+
+
+@router.post("/blueprints/manual-copy-costs")
+def add_manual_blueprint_copy_cost(req: AddManualBlueprintCopyCostRequest):
+    return _wrap(actions.do_add_manual_blueprint_copy_cost, item_name=req.item_name,
+                 purchase_cost=req.purchase_cost, runs=req.runs)
+
+
+@router.delete("/blueprints/manual-copy-costs/{type_id}")
+def remove_manual_blueprint_copy_cost(type_id: int):
+    return _wrap(actions.do_remove_manual_blueprint_copy_cost, type_id=type_id)
+
+
 @router.get("/producer-characters")
 def get_producer_characters():
     return [

@@ -283,6 +283,14 @@ class OwnedBlueprintRow(_Base):
     runs: Optional[int]
 
 
+class ManualBlueprintCopyCostRow(_Base):
+    type_id: int
+    type_name: str
+    purchase_cost: float
+    runs: int
+    cost_per_run: float
+
+
 class ProductionUnlistedStockRow(_Base):
     """Distinct name from the Trading tool's UnlistedStockRow (same file,
     both schemas live here) - see production/models.py's UnlistedStockRow."""

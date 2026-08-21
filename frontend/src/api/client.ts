@@ -161,6 +161,13 @@ export const productionApi = {
   slots: () => get<T.CharacterSlotRow[]>('/api/production/slots'),
   producerCharacters: () => get<T.ProducerCharacter[]>('/api/production/producer-characters'),
   ownedBlueprints: () => get<T.OwnedBlueprintRow[]>('/api/production/blueprints'),
+  manualBlueprintCopyCosts: () => get<T.ManualBlueprintCopyCostRow[]>('/api/production/blueprints/manual-copy-costs'),
+  addManualBlueprintCopyCost: (itemName: string, purchaseCost: number, runs: number) =>
+    post<{ type_id: number; type_name: string; purchase_cost: number; runs: number }>(
+      '/api/production/blueprints/manual-copy-costs', { item_name: itemName, purchase_cost: purchaseCost, runs },
+    ),
+  removeManualBlueprintCopyCost: (typeId: number) =>
+    del(`/api/production/blueprints/manual-copy-costs/${typeId}`),
   settings: () => get<T.ProductionSettings>('/api/production/settings'),
   updateSettings: (s: T.ProductionSettings) => post<T.ProductionSettings>('/api/production/settings', s),
   structureOptions: () => get<{ structure_types: string[]; rig_tiers: string[] }>(

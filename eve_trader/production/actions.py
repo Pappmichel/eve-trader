@@ -23,7 +23,9 @@ from .engine import (
     invalidate_discover_cache, invalidate_ship_margin_cache,
     invalidate_production_locations_cache, market_status, plan_asset_optimized, plan_production, stock_value,
 )
-from .models import AssetLocationRow, BuildCandidate, OwnedBlueprintRow, ShipMarginRow, UnlistedStockRow
+from .models import (
+    AssetLocationRow, BuildCandidate, ManualBlueprintCopyCostRow, OwnedBlueprintRow, ShipMarginRow, UnlistedStockRow,
+)
 
 
 def do_update_settings(updates: dict, cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
@@ -654,3 +656,48 @@ def do_list_owned_blueprints() -> dict:
         ))
     rows.sort(key=lambda r: r.type_name)
     return {"rows": rows}
+
+
+def do_list_manual_blueprint_copy_costs() -> dict:
+    """GitHub issue #40 - the Blueprints page's second table: purchase cost +
+    included run count for blueprint copies that must be bought outright
+    (never owned as a BPO, not inventable)."""
+    rows = [
+        ManualBlueprintCopyCostRow(
+            type_id=type_id, type_name=type_name, purchase_cost=purchase_cost, runs=runs,
+            cost_per_run=purchase_cost / runs,
+        )
+        for type_id, type_name, purchase_cost, runs in storage.load_manual_blueprint_copy_costs()
+    ]
+    return {"rows": rows}
+
+
+def do_add_manual_blueprint_copy_cost(item_name: str, purchase_cost: float, runs: int) -> dict:
+    """Resolves `item_name` (exact match, same lookup do_get_item_margin/
+    do_build_material_tree use) to a type_id and registers/updates its
+    manual BPC cost. `item_name` is the *product* built from the copy, not
+    the blueprint's own name (matches manual_blueprint_copy_costs' own
+    schema - a blueprint's product is a stable 1:1 lookup either way)."""
+    if purchase_cost <= 0:
+        raise ActionError("Purchase cost must be a positive number.")
+    if runs <= 0:
+        raise ActionError("Runs must be a positive integer.")
+    matches = storage.search_sde_types(item_name, limit=2)
+    exact = [m for m in matches if m[1].lower() == item_name.strip().lower()]
+    if not exact:
+        if not matches:
+            raise ActionError(f"No type found for '{item_name}'. Refresh SDE first?")
+        raise ActionError(f"No exact match for '{item_name}'. Did you mean: {matches[0][1]}?")
+    type_id, resolved_name = exact[0]
+
+    storage.upsert_manual_blueprint_copy_cost(type_id, resolved_name, purchase_cost, runs)
+    invalidate_discover_cache()  # build cost feeds directly into build-vs-buy decisions
+    invalidate_ship_margin_cache()
+    return {"type_id": type_id, "type_name": resolved_name, "purchase_cost": purchase_cost, "runs": runs}
+
+
+def do_remove_manual_blueprint_copy_cost(type_id: int) -> dict:
+    storage.delete_manual_blueprint_copy_cost(type_id)
+    invalidate_discover_cache()
+    invalidate_ship_margin_cache()
+    return {"removed": type_id}
