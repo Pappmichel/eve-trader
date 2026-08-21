@@ -79,7 +79,7 @@ export default function Landing() {
       <Title order={1} mb="lg">EVE Trader</Title>
       <Text c="dimmed" mb="xl">Margins, buy/build decisions and live market data in one place.</Text>
 
-      <SimpleGrid cols={3} spacing="md">
+      <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }} spacing="md">
         <ToolCard tools={tools} toolKey="trading" to="/trading" title="Trading"
           description="C-J import trading: candidate search, shortlist, margins, trade reconciliation." />
         <ToolCard tools={tools} toolKey="production" to="/production" title="Production"
@@ -88,7 +88,7 @@ export default function Landing() {
           description="Fleet doctrine fittings, contract validation against C-J stock contracts, stockpile tracking." />
       </SimpleGrid>
 
-      <SimpleGrid cols={2} spacing="md" mt="md">
+      <SimpleGrid cols={{ base: 1, xs: 2 }} spacing="md" mt="md">
         <ToolCard tools={tools} toolKey="portfolio" to="/portfolio" title="Portfolio Overview"
           description="Combined read-only snapshot of Trading realized profit and Production stock value." />
         <ToolCard tools={tools} toolKey="admin" to="/admin" title="Admin"
