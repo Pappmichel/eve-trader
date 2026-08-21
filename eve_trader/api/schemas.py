@@ -162,6 +162,7 @@ class BuildJobEntry(_Base):
     unit_build_cost: Optional[float]
     decryptor: Optional[str] = None
     job_category: Optional[str] = None
+    margin: Optional[float] = None
 
 
 class LogisticsRow(_Base):
@@ -234,6 +235,7 @@ class AssetPlanJob(_Base):
     unit_build_cost: Optional[float]
     decryptor: Optional[str] = None
     job_category: Optional[str] = None
+    margin: Optional[float] = None
     stock_coverage: Optional[float] = None
     recommended_slots: Optional[int] = None
 
