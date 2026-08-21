@@ -1,12 +1,41 @@
-# HANDOFF — Full codebase audit (2026-08-21): issues #54-#69
+# HANDOFF — Full codebase audit (2026-08-21): issues #54-#69, ALL FIXED
 
 Written 2026-08-21, same session as the #45/#46/#51/#52 work below (PR #53).
 The user asked for a full check-only audit of the entire project ("erstell
-ein vollständiges audit... zunächst nur prüfen nicht ändern"), then to save
-the plan and file an issue for every finding. **No code was changed for any
-of these** - every issue below is report-only, exactly as requested. Don't
-start fixing any of them without being asked - the user hasn't decided an
-order yet.
+ein vollständiges audit... zunächst nur prüfen nicht ändern"), got the plan
+saved + one issue filed per finding (#54-#69), then said "arbeite die
+issues in empfohlener Reihenfolge ab" - all 16 are now implemented,
+committed, and pushed to `claude/issues-plan-8ovgwo` (same branch/PR #53 as
+the earlier #45/#46/#51/#52 work), in the exact suggested order
+(#54→#56→#55→#57→#58→#59→#60→#61→#62→#63→#64→#65→#66→#67→#68→#69), one
+commit per issue.
+
+**A real local Postgres instance became available partway through this
+work** (installed but not started in this sandbox - `service postgresql
+start` + a password/database setup got it running) - every fix from #54
+onward was verified against real Postgres, not just mocked unit tests,
+including two #59-adjacent frontend fixes verified live via Playwright
+against the actual running app (backend + Vite dev server + Postgres, all
+started fresh in this session). This also surfaced and fixed 3 real
+pre-existing test bugs that every previous session's `pytest` run had
+silently skipped (no Postgres = ~200 tests never ran): two in
+`test_production_unlisted_stock.py` (never mocked the ESI/pricing calls
+issue #45 added) and one in `test_gate_router.py` (still asserted the
+pre-#46 single-fixed-key "buyer" role). Full suite is 681 passed, 0 failed,
+0 skipped as of the last commit.
+
+**Local Postgres setup for a fresh session on this same machine** (if
+picking this up again with a cold container): `service postgresql start`,
+then `sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'devpassword';"`
++ `sudo -u postgres psql -c "CREATE DATABASE eve_trader;"` (matches
+`tests/pg_helpers.py`'s `OWNER_DSN` default) - `pytest` then applies
+phase1-3/admin schema itself via session-scoped fixtures. For a real
+end-to-end live check (not just `pytest`), also apply
+`docs/doctrine_schema.sql` by hand (not covered by the pytest fixtures
+outside `test_doctrine_storage.py`'s own local one - see issue #67's notes),
+create a throwaway `.env`/`config.yaml` (gitignored, not committed - see
+`.env.example`/`config.example.yaml`), and start `uvicorn
+eve_trader.api.main:app --port 8000` + `npm run dev` in `frontend/`.
 
 ## How the audit was run
 
@@ -82,11 +111,19 @@ from earlier in this same session.
   `TradingLayout.tsx`/`ProductionLayout.tsx`/`DoctrineLayout.tsx` - root
   cause enabling #59 to happen (only 2 of 3 copies got that fix).
 
-## Suggested order if/when the user asks to start fixing
+## Status: all 16 fixed (2026-08-21)
 
-#54 (critical, real data leak) → #56 (quick, unblocks the already-merged #45
-feature) → #55 (blocks real deployment) → the rest of Medium → Low, roughly
-in the order above. Not confirmed with the user yet - ask before starting.
+Every issue above got its own commit with a regression test (confirmed to
+fail against the pre-fix code first, wherever practical) - see each
+commit's own message for specifics, or each issue's GitHub page (comments
+weren't posted per-issue this round, only the plan/audit comment from the
+initial triage - the fixes are visible via the branch/PR #53 diff and this
+file). Not yet merged/deployed - same "show the user the diff, get a
+go-ahead before push→PR→merge→deploy" caveat as the #45/#46/#51/#52 section
+below, plus **the #55 fix (deploy docs) still needs the actual real
+deployment's Postgres to have admin_schema.sql/doctrine_schema.sql applied
+by hand** (this fix only corrects the documentation - it doesn't touch a
+live deployment).
 
 ---
 
