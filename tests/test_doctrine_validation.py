@@ -60,6 +60,34 @@ def test_build_stockpile_soll_includes_hull_and_multiplies_by_target():
     assert soll[400] == (3.0, "consume")
 
 
+def test_build_stockpile_soll_adds_contract_shortfall_to_stockpile_target():
+    # GitHub issue #36: materials needed to create more outstanding
+    # contracts (contract_target - valid_contracts) are real, simultaneous
+    # demand on top of the separate spare-stock buffer (stockpile_target),
+    # confirmed additive (not max()) with the user.
+    soll = v.build_stockpile_soll(_fitting_items(), hull_type_id=HULL, stockpile_target=1,
+                                   contract_target=5, valid_contracts=2)
+    # total_sets = 1 (stockpile_target) + max(0, 5 - 2) = 4
+    assert soll[HULL] == (4.0, "exact")
+    assert soll[300] == (40.0, "consume")
+
+
+def test_build_stockpile_soll_contract_shortfall_floors_at_zero_when_already_met():
+    # valid_contracts already meets/exceeds contract_target - no extra
+    # demand on top of stockpile_target, not a negative subtraction.
+    soll = v.build_stockpile_soll(_fitting_items(), hull_type_id=HULL, stockpile_target=2,
+                                   contract_target=3, valid_contracts=5)
+    assert soll[HULL] == (2.0, "exact")
+
+
+def test_build_stockpile_soll_defaults_to_stockpile_target_only():
+    # contract_target/valid_contracts default to 0 - callers that don't pass
+    # them (or a fitting with no contract_target at all) keep the exact
+    # pre-issue-#36 behavior.
+    soll = v.build_stockpile_soll(_fitting_items(), hull_type_id=HULL, stockpile_target=3)
+    assert soll[HULL] == (3.0, "exact")
+
+
 # --------------------------------------------------------------- hull gate / Ist
 def test_hull_gate_requires_included_only_not_singleton():
     # Confirmed live (2026-08-19) against a real contract: a genuinely
