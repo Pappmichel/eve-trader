@@ -92,8 +92,10 @@ def _no_listings(monkeypatch):
 def test_market_status_skips_items_with_no_market_target(monkeypatch):
     # GitHub issue #33: a stock target that's purely backup/component stock
     # (never meant to be listed anywhere) has home_market_stock and
-    # jita_market_stock both NULL - it shouldn't clutter the Market Status
-    # tab with two permanently-empty target columns.
+    # jita_market_stock both NULL/0 - it shouldn't clutter the Market Status
+    # tab with two permanently-empty target columns. Confirmed live: Griffin
+    # had home_market_stock=0 (not NULL) and still showed up before 0 was
+    # treated the same as NULL.
     cfg = ProductionConfig(home_location_id=1000000000001)
     _no_listings(monkeypatch)
     monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
@@ -104,6 +106,8 @@ def test_market_status_skips_items_with_no_market_target(monkeypatch):
         (1, "No Market Target", 10.0, None, None),
         (2, "Home Target Only", 0.0, 20.0, None),
         (3, "Jita Target Only", 0.0, None, 20.0),
+        (4, "Griffin", 0.0, 0.0, None),
+        (5, "Zero Both", 0.0, 0.0, 0.0),
     ])
 
     rows = engine.market_status(cfg)
