@@ -89,6 +89,28 @@ def _no_listings(monkeypatch):
     monkeypatch.setattr(storage, "sell_order_qty_in_region", lambda type_id, region_id: 0.0)
 
 
+def test_market_status_skips_items_with_no_market_target(monkeypatch):
+    # GitHub issue #33: a stock target that's purely backup/component stock
+    # (never meant to be listed anywhere) has home_market_stock and
+    # jita_market_stock both NULL - it shouldn't clutter the Market Status
+    # tab with two permanently-empty target columns.
+    cfg = ProductionConfig(home_location_id=1000000000001)
+    _no_listings(monkeypatch)
+    monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: 0.0)
+    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id: {"runs": 0, "jobs": 0})
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [
+        (1, "No Market Target", 10.0, None, None),
+        (2, "Home Target Only", 0.0, 20.0, None),
+        (3, "Jita Target Only", 0.0, None, 20.0),
+    ])
+
+    rows = engine.market_status(cfg)
+
+    assert [r.type_id for r in rows] == [2, 3]
+
+
 def test_total_missing_owned_stock_beyond_backup_covers_market_targets(monkeypatch):
     # Real bug found via a user report ("Buy List zeigt was ich insgesamt
     # brauche, nicht was ich kaufen muss") - live example: Sentinel had
