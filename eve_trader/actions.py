@@ -20,7 +20,7 @@ from .goonmetrics_client import GoonmetricsClient
 from .models import Candidate, ShortlistItem, UndercutRow, UnlistedStockRow
 from .shortlist import (NO_MARKET_DATA_DECISION, SKIP_DECISION, _decision, audit_shortlist, evaluate_shortlist,
                          summary_counts, top_imports_by_daily_profit)
-from .trade_reconciliation import reconcile_realized_trades, summarize_realized
+from .trade_reconciliation import average_daily_sold_by_type, reconcile_realized_trades, summarize_realized
 
 log = logging.getLogger("eve_trader.actions")
 
@@ -351,8 +351,15 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
                            f"Does the seller character still have docking access?") from e
     jita_stats_by_item = client.region_order_stats_bulk(cfg.jita_region_id, priced_item_ids)
 
+    # Real observed sales velocity (GitHub issue #51), not order-book depth -
+    # see trade_reconciliation.average_daily_sold_by_type's own docstring.
+    # Pure local read (last Reconcile Trades run's already-persisted
+    # realized_trades), no extra ESI/network calls.
+    avg_daily_sold_by_item = average_daily_sold_by_type(cfg)
+
     rows = evaluate_shortlist(items, own_remaining, jita_stats_by_item, structure_stats_by_item, cfg=cfg,
-                               buyer_already_covered_ids=buyer_already_covered_ids)
+                               buyer_already_covered_ids=buyer_already_covered_ids,
+                               avg_daily_sold_by_item=avg_daily_sold_by_item)
     extra = {
         "own_sell_orders_found": sum(1 for v in own_remaining.values() if v > 0),
         "buyer_already_covered_found": len(buyer_already_covered_ids),

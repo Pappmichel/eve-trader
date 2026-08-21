@@ -185,3 +185,32 @@ def summarize_realized(trades: list[RealizedTrade]) -> dict:
         "average_margin": avg_margin,
         "top3_items_by_profit": top3,
     }
+
+
+def average_daily_sold_by_type(cfg: TradingConfig = TRADING_CONFIG) -> dict[int, float]:
+    """Real average daily *sold* quantity per type_id, computed from the last
+    Reconcile Trades run's realized_trades rows (storage.save_realized_trades
+    wholesale-replaces that table every run with exactly one
+    cfg.lookback_days window's worth of matched sells, not an accumulating
+    log - see that function's own comment). Sums `matched_qty` (the actual
+    FIFO-matched sale amount, not the original transaction's full
+    buy_qty/sell_qty, which can span multiple matches) per type_id and
+    divides by cfg.lookback_days.
+
+    GitHub issue #51: this - not the structure's live order-book remaining
+    quantity (esi_client.OrderStats.sell_volume, "how much is listed right
+    now") - is what the Shortlist's "Profit / Day" figure is computed from.
+    An item never actually sold (e.g. a fresh candidate with a large order
+    book from a single seller) is simply absent here, not estimated from
+    listed quantity - see shortlist.evaluate_shortlist_item's
+    avg_daily_sold parameter.
+
+    Returns {} if Reconcile Trades has never been run (or found nothing to
+    match) - every item's avg_daily_sold then stays None, an honest "no real
+    sales data yet" rather than a number derived from something else."""
+    df = storage.read_table("realized_trades")
+    if df.empty or cfg.lookback_days <= 0:
+        return {}
+    latest = df[df["run_ts"] == df["run_ts"].max()]
+    sold = latest.groupby("type_id")["matched_qty"].sum()
+    return {int(type_id): float(qty) / cfg.lookback_days for type_id, qty in sold.items()}

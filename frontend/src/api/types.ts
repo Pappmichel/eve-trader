@@ -37,6 +37,10 @@ export interface ShortlistRow {
   import_cost: number | null
   meta_level: number | null
   days_until_deactivation: number | null
+  // Real average daily sold quantity (GitHub issue #51) - what "Profit / Day"
+  // is actually computed from, NOT sell_volume (order-book depth). null
+  // means Reconcile Trades has never matched a real sale for this item.
+  avg_daily_sold: number | null
 }
 
 export interface NewCandidateResult {
