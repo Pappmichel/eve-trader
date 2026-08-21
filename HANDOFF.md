@@ -7,7 +7,40 @@ plan the user asked to have saved for exactly that case. Delete this file
 once the plan below is fully executed (merged + deployed) and confirmed with
 the user, per this repo's own HANDOFF.md convention (see CLAUDE.md).
 
-## Status (updated 2026-08-21, after Tier 1 + Tier 2, both user-verified live)
+## Status (updated 2026-08-21, after Tier 1 + Tier 2 + Tier 3 — ALL MERGED AND DEPLOYED)
+
+**Tier 3 is now also fully merged and deployed** (PRs #47/#34, #48/#39,
+#49/#40, #50/#38, in that order - #49 needed a small additive merge-conflict
+resolution in `tests/test_storage_stock.py` against #39's own test additions,
+same file-both-appended-at-the-end pattern as every other conflict this
+session). All four issues are closed. All four feature branches were
+deleted (local + remote) after merging - `git branch` should show only
+`main`/`dev` now, matching this repo's normal convention.
+
+**Not yet live-verified online by the user** - this was done in one
+continuous run per explicit instruction ("weiter bis einschließlich
+deploy... sofern keine Fragen oder Probleme aufgetaucht sind"), so unlike
+Tier 1/2 there was no per-PR pause for online confirmation. Next step in a
+fresh session: ask the user to verify all four online (Admin tool's new SDE
+section; Production → Character Slots' new Excluded checkbox; Blueprints
+page's new second table; Build List/Build List (Asset-Optimized) both
+showing a Margin column).
+
+**All ten original issues (#32-#41) from this triage plan are now closed**
+except **#41, deliberately deferred** (see its own section below - stays
+open, not being worked on). Once the user confirms Tier 3 live, this
+HANDOFF.md's own job is done and it can be deleted per its own instruction
+at the top of this file (only delete once the user has actually confirmed,
+not preemptively).
+
+**Two new issues appeared during this session, NOT part of this plan**:
+#45 ("Volume and margin in unlisted stock") and #46 ("multiple buyer/seller
+in trading tool"), both still open/untriaged. Don't confuse them with the
+#32-#41 batch this file tracks - if picking this up fresh, ask the user
+whether they want a new triage pass for these two before assuming they're
+covered by anything above.
+
+## Status (superseded, kept for history — was: "after Tier 1 + Tier 2, both user-verified live")
 
 **Tier 1 is done, deployed, and confirmed working by the user.** #37, #32,
 #33 were fixed in one bundled branch/PR (#42, merged to `dev`, fast-forwarded
