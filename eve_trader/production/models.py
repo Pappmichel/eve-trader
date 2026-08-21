@@ -64,6 +64,11 @@ class BuildJobEntry:
     unit_build_cost: Optional[float]  # materials + facility fee, per unit - not the raw facility fee alone (see engine.py's own job_cost local var)
     decryptor: Optional[str] = None  # Tech II only: which decryptor's ME/TE was assumed
     job_category: Optional[str] = None  # "where do I start this" grouping - see engine.job_category
+    # GitHub issue #38: margin if built and sold at the C-J (home) sell quote
+    # right now (engine.margin_home) - deliberately not margin_jita,
+    # Production sells only at C-J (see CLAUDE.md). None if there's no C-J
+    # sell quote to check against, same convention as unit_build_cost.
+    margin: Optional[float] = None
 
 
 @dataclass
@@ -102,6 +107,10 @@ class AssetPlanJob:
     unit_build_cost: Optional[float]  # materials + facility fee, per unit - not the raw facility fee alone (see engine.py's own job_cost local var)
     decryptor: Optional[str] = None
     job_category: Optional[str] = None  # "where do I start this" grouping - see engine.job_category
+    # GitHub issue #38: margin if built and sold at the C-J (home) sell quote
+    # right now (engine.margin_home) - see BuildJobEntry's own field comment
+    # for why margin_home, not margin_jita.
+    margin: Optional[float] = None
     # How much of this item's own current demand is already covered by owned
     # stock - 0 (nothing on hand) to 1 (fully covered) - see
     # engine.plan_asset_optimized's stock_coverage_by_id docstring for the
