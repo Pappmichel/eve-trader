@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { AppShell, Burger, Stack, Title, Text, Button, Group, Tabs, Container, Divider, ActionIcon } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
@@ -59,6 +60,13 @@ function CharacterGroup({ title, queryKey, listFn, ssoRolePrefix, removeFn }: {
     window.location.href = url
   })
   const removeCharacter = useAction('Remove Character', removeFn, [queryKey])
+  // GitHub issue #59 (found in a full-codebase audit 2026-08-21): one shared
+  // mutation instance reused across every character's Remove button -
+  // without tracking which row is actually pending, clicking Remove for one
+  // character put *every* character's button into the loading/disabled
+  // state, not just the one being removed (same bug ProductionLayout.tsx's
+  // own removeCharacter/pendingRoleKey comment already documents and fixes).
+  const [pendingRoleKey, setPendingRoleKey] = useState<string | null>(null)
 
   return (
     <div>
@@ -68,7 +76,8 @@ function CharacterGroup({ title, queryKey, listFn, ssoRolePrefix, removeFn }: {
           <Group key={c.role_key} justify="space-between" wrap="nowrap">
             <Text size="sm">{c.character_name}</Text>
             <ActionIcon size="sm" variant="subtle" color="danger"
-              onClick={() => removeCharacter.mutate(c.role_key)} loading={removeCharacter.isPending}>
+              onClick={() => { setPendingRoleKey(c.role_key); removeCharacter.mutate(c.role_key) }}
+              loading={removeCharacter.isPending && pendingRoleKey === c.role_key}>
               <IconTrash size={14} />
             </ActionIcon>
           </Group>
