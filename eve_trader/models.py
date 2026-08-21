@@ -49,6 +49,15 @@ class ShortlistRow:
     jita_sell: Optional[float]
     import_cost: Optional[float]
     meta_level: Optional[int] = None
+    # Real average daily *sold* quantity (matched_qty from the last
+    # Reconcile Trades run, over cfg.lookback_days - see
+    # trade_reconciliation.average_daily_sold_by_type), NOT derived from
+    # sell_volume/order-book depth. None until Reconcile Trades has actually
+    # matched a sale for this item - GitHub issue #51: this field (not
+    # sell_volume) is what "Profit / Day" is computed from, so a
+    # never-actually-sold item with a big order book no longer produces an
+    # inflated theoretical number.
+    avg_daily_sold: Optional[float] = None
 
 
 @dataclass

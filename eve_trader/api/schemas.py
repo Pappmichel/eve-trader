@@ -61,6 +61,9 @@ class ShortlistRow(_Base):
     jita_sell: Optional[float]
     import_cost: Optional[float]
     meta_level: Optional[int] = None
+    # Real average daily sold quantity (GitHub issue #51) - see
+    # trade_reconciliation.average_daily_sold_by_type / models.ShortlistRow.
+    avg_daily_sold: Optional[float] = None
     # Not part of the underlying shortlist_snapshot row - computed by the
     # router from storage.get_shortlist_skip_since() +
     # TradingConfig.skip_grace_period_days. None unless this item is
