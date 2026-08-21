@@ -271,6 +271,7 @@ class CharacterSlotRow(_Base):
     total_slots: int
     used_slots: int
     free_slots: int
+    excluded_from_planning: bool = False
 
 
 class OwnedBlueprintRow(_Base):

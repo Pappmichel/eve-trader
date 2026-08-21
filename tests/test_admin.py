@@ -1,11 +1,13 @@
 """Tests for admin.py's do_* actions - see that module's own docstring for
 why they're a deliberate cross-tenant superadmin surface (unscoped storage
 reads/writes across every tenant, not RLS'd)."""
+import requests
 import pytest
 
 from eve_trader import admin, storage
 from eve_trader.actions import ActionError
 from eve_trader.esi_client import ESIClient, ESIError
+from eve_trader.production import sde
 
 from . import pg_helpers
 from .pg_helpers import _apply_admin_schema, _apply_phase1_schema, _apply_phase2_schema, _apply_phase3_schema  # noqa: F401
@@ -112,3 +114,26 @@ def test_do_set_tool_grants_rejects_unknown_tool_key(monkeypatch):
 def test_do_set_tool_grants_rejects_unregistered_character():
     with pytest.raises(ActionError, match="isn't a registered user"):
         admin.do_set_tool_grants(999999, ["trading"])
+
+
+def test_do_refresh_sde_downloads_and_invalidates_caches(monkeypatch):
+    # GitHub issue #34: moved here from production/actions.py - the SDE
+    # cache is global/shared, not per-tenant, so this is a superadmin action.
+    invalidated = []
+    monkeypatch.setattr(sde, "refresh_sde", lambda: {"sde_types": 100})
+    monkeypatch.setattr(admin, "invalidate_discover_cache", lambda: invalidated.append("discover"))
+    monkeypatch.setattr(admin, "invalidate_ship_margin_cache", lambda: invalidated.append("ship_margin"))
+
+    result = admin.do_refresh_sde()
+
+    assert result == {"sde_types": 100}
+    assert invalidated == ["discover", "ship_margin"]
+
+
+def test_do_refresh_sde_wraps_network_error():
+    def _raise():
+        raise requests.RequestException("connection refused")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(sde, "refresh_sde", _raise)
+        with pytest.raises(ActionError, match="SDE refresh failed"):
+            admin.do_refresh_sde()

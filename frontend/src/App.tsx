@@ -130,7 +130,7 @@ function SdeFreshnessChecker() {
         id: 'sde-newer-available',
         title: 'Newer SDE available',
         message: "CCP/Fuzzwork have published a newer Static Data Export than the one currently cached. "
-          + "Click Refresh SDE (Production sidebar) to pick up new/changed items.",
+          + "Click Refresh SDE in the Admin tool to pick up new/changed items.",
         color: 'warn',
         autoClose: false,
       })

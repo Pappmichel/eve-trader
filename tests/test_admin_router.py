@@ -100,3 +100,24 @@ def test_set_tool_grants_action_error_maps_to_400(monkeypatch):
 
     assert resp.status_code == 400
     assert resp.json() == {"detail": "Unknown tool_key(s): bogus"}
+
+
+def test_refresh_sde_serializes_action_result(monkeypatch):
+    # GitHub issue #34: moved here from /api/production/sde/refresh.
+    monkeypatch.setattr(admin, "do_refresh_sde", lambda: {"sde_types": 100})
+
+    resp = client.post("/api/admin/sde/refresh")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"sde_types": 100}
+
+
+def test_refresh_sde_action_error_maps_to_400(monkeypatch):
+    def _raise():
+        raise ActionError("SDE refresh failed: connection refused")
+    monkeypatch.setattr(admin, "do_refresh_sde", _raise)
+
+    resp = client.post("/api/admin/sde/refresh")
+
+    assert resp.status_code == 400
+    assert resp.json() == {"detail": "SDE refresh failed: connection refused"}

@@ -1240,23 +1240,54 @@ def replace_industry_jobs(table: str, rows: list[tuple]) -> None:
 
 
 def replace_character_slots(rows: list[tuple]) -> None:
-    """rows: [(character_name, manufacturing_slots, reaction_slots, science_slots), ...]."""
+    """rows: [(character_name, manufacturing_slots, reaction_slots, science_slots), ...].
+
+    GitHub issue #39: UPSERT instead of the old delete-then-reinsert, so a
+    character's excluded_from_planning flag (see set_character_slot_excluded
+    below) survives every ESI re-sync instead of silently resetting to the
+    column default each time - delete+reinsert would otherwise blow the flag
+    away, the same bug class resolved_location_id/solar_system_id already
+    hit for other synced tables. Still removes rows for characters no
+    longer registered (same end result delete+reinsert had for anyone not
+    in `rows`), just via an explicit NOT IN delete instead of wiping
+    everything first."""
     with connect() as conn:
-        conn.execute("DELETE FROM character_slots")
+        names = [r[0] for r in rows]
+        if names:
+            placeholders = ",".join("?" * len(names))
+            conn.execute(f"DELETE FROM character_slots WHERE character_name NOT IN ({placeholders})", names)
+        else:
+            conn.execute("DELETE FROM character_slots")
         conn.executemany(
             "INSERT INTO character_slots (character_name, manufacturing_slots, reaction_slots, science_slots) "
-            "VALUES (?,?,?,?)",
+            "VALUES (?,?,?,?) "
+            "ON CONFLICT (character_name) DO UPDATE SET "
+            "manufacturing_slots=excluded.manufacturing_slots, reaction_slots=excluded.reaction_slots, "
+            "science_slots=excluded.science_slots",
             rows,
         )
 
 
 def load_character_slots() -> list[tuple]:
-    """Returns [(character_name, manufacturing_slots, reaction_slots, science_slots), ...]."""
+    """Returns [(character_name, manufacturing_slots, reaction_slots, science_slots,
+    excluded_from_planning), ...]."""
     with connect() as conn:
         return conn.execute(
-            "SELECT character_name, manufacturing_slots, reaction_slots, science_slots "
+            "SELECT character_name, manufacturing_slots, reaction_slots, science_slots, excluded_from_planning "
             "FROM character_slots ORDER BY character_name"
         ).fetchall()
+
+
+def set_character_slot_excluded(character_name: str, excluded: bool) -> None:
+    """Toggles GitHub issue #39's per-character exclusion flag - a no-op if
+    `character_name` isn't a currently-synced producer character (matches
+    this app's general preference for idempotent, non-raising toggles over
+    an ActionError for a purely cosmetic "nothing to update" case)."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE character_slots SET excluded_from_planning = ? WHERE character_name = ?",
+            (excluded, character_name),
+        )
 
 
 def get_product_quantity(blueprint_type_id: int, activity_id: int, product_type_id: int) -> Optional[float]:

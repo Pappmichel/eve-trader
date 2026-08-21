@@ -1,17 +1,62 @@
 import { useMemo, useState } from 'react'
 import {
-  Container, Title, Text, Group, Stack, Button, TextInput, Checkbox, ActionIcon, Divider,
+  Container, Title, Text, Group, Stack, Button, TextInput, Checkbox, ActionIcon, Divider, Badge,
 } from '@mantine/core'
 import { IconArrowLeft, IconTrash } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { adminApi } from '../../api/client'
+import { adminApi, productionApi } from '../../api/client'
 import { useAction } from '../../hooks/useAction'
 import { dateTime } from '../../format'
 import type { AdminTenant, AdminUser } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
+
+// GitHub issue #34: the SDE cache is global/shared across every tenant, so
+// refreshing it is a cross-tenant-impacting action - moved here from
+// Production's own sidebar, which only ever exposed it per-tenant. The
+// read-only freshness/counts queries stay on productionApi (still real
+// per-request reads, just happen to reflect global data), only the mutating
+// refresh action itself lives under adminApi.
+function SdeDataSection() {
+  const { data: sdeCounts } = useQuery({ queryKey: ['production', 'sde', 'counts'], queryFn: productionApi.sdeCounts })
+  const { data: sdeFreshness } = useQuery({
+    queryKey: ['production', 'sde-freshness'], queryFn: productionApi.sdeFreshness,
+    staleTime: Infinity, refetchOnWindowFocus: false, retry: false,
+  })
+  const refreshSde = useAction('Refresh SDE', adminApi.refreshSde,
+    [['production', 'sde', 'counts'], ['production', 'sde-freshness']])
+
+  return (
+    <div>
+      <Group justify="space-between" mb="xs" wrap="nowrap">
+        <Title order={4}>SDE Data</Title>
+        {sdeFreshness && (
+          sdeFreshness.newer_sde_available ? (
+            <Badge size="xs" color="warn" variant="light">Update available</Badge>
+          ) : sdeFreshness.remote_check_succeeded ? (
+            <Badge size="xs" color="accent" variant="light">Up to date</Badge>
+          ) : (
+            <Badge size="xs" color="gray" variant="light">Check failed</Badge>
+          )
+        )}
+      </Group>
+      <Text size="sm" c="dimmed" mb="xs">Blueprint materials/products/times from Fuzzwork - shared across every tenant.</Text>
+      <Text size="sm" c="dimmed">Refreshed: {dateTime(sdeFreshness?.local_refreshed_at)}</Text>
+      {sdeCounts && (
+        <Group gap="md" mb="sm">
+          {Object.entries(sdeCounts).map(([table, count]) => (
+            <Text size="xs" c="dimmed" key={table}>{table}: {count.toLocaleString('en-US')}</Text>
+          ))}
+        </Group>
+      )}
+      <Button size="xs" variant="default" onClick={() => refreshSde.mutate()} loading={refreshSde.isPending}>
+        Refresh SDE
+      </Button>
+    </div>
+  )
+}
 
 // Mirrors access_gate.ALL_TOOL_KEYS (eve_trader/access_gate.py) - kept in
 // sync by hand, same as every other small fixed-vocabulary list already
@@ -136,6 +181,8 @@ export default function AdminPage() {
       </Group>
 
       <Stack gap="xl">
+        <SdeDataSection />
+        <Divider />
         <TenantSection />
         <Divider />
         <UsersSection />

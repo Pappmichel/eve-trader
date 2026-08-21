@@ -258,6 +258,11 @@ class CharacterSlotRow:
     total_slots: int
     used_slots: int
     free_slots: int
+    # GitHub issue #39: excluded from _free_slots_by_category's pool (and
+    # therefore plan_asset_optimized's slot-splitting) when True - still
+    # returned here (not filtered out) so Slots.tsx can display and toggle
+    # the exclusion per character.
+    excluded_from_planning: bool = False
 
 
 @dataclass

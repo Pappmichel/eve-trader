@@ -1251,9 +1251,16 @@ def _free_slots_by_category() -> dict[str, int]:
     "Science") - feeds AssetPlanJob.recommended_slots below. A shared, finite
     pool across every job in that category - this only computes the pool
     size, doesn't partition it between competing jobs (see
-    recommended_slots' own docstring for that simplification)."""
+    recommended_slots' own docstring for that simplification).
+
+    GitHub issue #39: skips any character flagged excluded_from_planning
+    (e.g. an alt kept registered for ESI sync/asset visibility but not
+    actually meant to run production jobs) - their slots never enter this
+    pool or the asset-optimized split below."""
     totals: dict[str, int] = {}
     for row in character_slot_overview():
+        if row.excluded_from_planning:
+            continue
         totals[row.job_type] = totals.get(row.job_type, 0) + row.free_slots
     return totals
 
