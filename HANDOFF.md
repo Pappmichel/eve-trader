@@ -7,11 +7,23 @@ plan the user asked to have saved for exactly that case. Delete this file
 once the plan below is fully executed (merged + deployed) and confirmed with
 the user, per this repo's own HANDOFF.md convention (see CLAUDE.md).
 
-## Status as of writing
+## Status (updated 2026-08-21, after Tier 1)
 
-Labels and existing milestones have already been applied on GitHub to all
-ten issues (see table below) as part of triage. **No code has been changed
-yet** — this file is the plan, not a record of work done. The previous
+**Tier 1 is done and deployed**: #37, #32, #33 were fixed in one bundled
+branch/PR (#42, merged to `dev`, fast-forwarded to `main`, deployed to the
+real production server, service restarted and verified via `curl`). Their
+GitHub issues auto-closed (PR title contained "Fix #37, #32, #33" - each
+number after the first closing keyword may or may not auto-close depending
+on GitHub's keyword parser, see the "known gotcha" note below - check issue
+state before assuming). The feature branch was deleted (local + remote)
+after merging, per this repo's convention. **Not yet live-verified with the
+user** - next step in a fresh session, if picking this up mid-way, is either
+to confirm Tier 1's live behavior with the user, or proceed straight to
+Tier 2 if the user already confirmed it in a session this file can't see.
+
+Tier 2 and Tier 3 are still fully unstarted - nothing below this point has
+changed. Labels and existing milestones were applied on GitHub to all ten
+issues as part of the original triage. The previous
 batch (issues #4, #5, #12, #13, #14, #15, #16, #17, #18, #19, #20, #21) is
 already fully merged, deployed to the real production server, and closed —
 unrelated to this file, don't re-do it.
@@ -187,8 +199,12 @@ confidence, not topology. Two *soft* sequencing notes only: do #40 before
 
 ## What's already been asked of the user / answered
 
-Nothing yet — the user asked to categorize + plan, then asked to save this
-plan for later/cross-machine continuation. No Tier 2 answers have been
-collected yet. No Tier 1 branch has been started yet. The very next action
-in a fresh session should be: confirm with the user whether to start Tier 1
-immediately, or address the Tier 2 questions first.
+The user asked to categorize + plan, then to save this plan for later/
+cross-machine continuation, then said "Starte mit tier 1. wenn fertig
+deploy" - Tier 1 is now merged + deployed (see Status above). **No Tier 2
+answers have been collected yet.** The very next action in a fresh session
+should be: tell the user Tier 1 is live and ask them to verify it online
+(Doctrine Contract History only shows fitting-matched contracts; Invention
+Logistics doesn't count Asset-Safety BPCs as available; Market Status no
+longer lists no-target items), then once confirmed, move to the Tier 2
+questions (#35, #36, #41) before writing any more code.
