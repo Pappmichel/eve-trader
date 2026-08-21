@@ -1328,6 +1328,29 @@ def test_plan_asset_optimized_applies_the_same_overbuild_buffer_as_expand_all(mo
 
 
 @pg_helpers.postgres_required()
+def test_plan_asset_optimized_jobs_include_margin_home(monkeypatch, _expand_all_bom, tenant):
+    # GitHub issue #38: AssetPlanJob.margin comes from margin_home, never
+    # margin_jita - see plan_production's own equivalent test for why
+    # margin_home itself is mocked rather than exercised end-to-end here.
+    stock_targets = [(1, "ItemA", 1, 0, 0), (2, "ItemB", 1, 0, 0)]
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_plan_context(stock_targets))
+    monkeypatch.setattr(engine, "_buy_or_build_decision",
+                         lambda type_id, cfg, home, jita, manual_overrides, cost_memo, bp, depth=0:
+                         "Buy" if bp is None else "Build")
+    monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: None)
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "get_blueprint_time", lambda blueprint_id, activity_id: 100.0)
+    monkeypatch.setattr(engine, "job_category", lambda type_id: None)
+    monkeypatch.setattr(engine, "margin_home", lambda type_id, *a, **k: 0.42 if type_id == 3 else None)
+
+    cfg = ProductionConfig(component_overbuild=0.5)
+    result = engine.plan_asset_optimized(cfg)
+
+    jobs_by_id = {job.type_id: job for job in result["jobs"]}
+    assert jobs_by_id[3].margin == pytest.approx(0.42)
+
+
+@pg_helpers.postgres_required()
 def test_plan_asset_optimized_pools_without_a_buffer_when_overbuild_is_zero(monkeypatch, _expand_all_bom, tenant):
     # Control case (component_overbuild=0.0) isolating pooling from the
     # buffer math, mirroring
@@ -1664,6 +1687,30 @@ def test_plan_production_drops_demand_entirely_when_build_margin_fails_min_margi
     # (InventoryRow/total_missing) - only the buy/build recommendation is gated.
     inventory_by_id = {row.type_id: row for row in result["inventory"]}
     assert inventory_by_id[20].total_missing == 1.0
+
+
+@pg_helpers.postgres_required()
+def test_plan_production_build_list_includes_margin_home(monkeypatch, tenant):
+    # GitHub issue #38: BuildJobEntry.margin comes from margin_home, never
+    # margin_jita - Production sells only at C-J. margin_home itself is
+    # mocked here (its own pricing math has its own dedicated tests) - this
+    # only confirms plan_production's BuildJobEntry construction actually
+    # wires the field through with the right type_id/home/cfg.
+    stock_targets = [(10, "Widget", 1, 0, 0)]
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_plan_context(stock_targets))
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (110, 1, 1.0)))
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [])
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_buy_or_build_decision", lambda *a, **k: "Build")
+    monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: 1.0)  # clears the min_margin gate
+    monkeypatch.setattr(engine, "margin_home", lambda type_id, *a, **k: 0.9 if type_id == 10 else None)
+
+    cfg = ProductionConfig(min_margin=0.0)
+    result = engine.plan_production(cfg)
+
+    build_by_id = {row.type_id: row for row in result["build_list"]}
+    assert build_by_id[10].margin == pytest.approx(0.9)
 
 
 @pg_helpers.postgres_required()

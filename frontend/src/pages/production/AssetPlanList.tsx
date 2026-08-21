@@ -8,7 +8,7 @@ import type { AssetPlanJob } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
-import { isk, qty } from '../../format'
+import { isk, pct, qty } from '../../format'
 
 const CATEGORY_UNKNOWN = 'no category'
 
@@ -70,6 +70,13 @@ export default function AssetPlanList() {
     { header: 'Quantity (Output)', accessorKey: 'quantity', size: 140, cell: (i) => qty(i.getValue()) },
     { header: 'Job Time (h, total)', id: 'hours', size: 140, accessorFn: (r) => r.job_time_seconds / 3600, cell: (i) => (i.getValue() as number).toFixed(2) },
     { header: 'Modeled Unit Cost', accessorKey: 'unit_build_cost', size: 150, cell: (i) => isk(i.getValue()) },
+    {
+      header: 'Margin', accessorKey: 'margin', size: 110,
+      cell: (i) => {
+        const v = i.getValue()
+        return v === null ? '–' : <Text c={v > 0 ? 'accent' : undefined}>{pct(v)}</Text>
+      },
+    },
     { header: 'Decryptor', accessorKey: 'decryptor', size: 130, cell: (i) => i.getValue() ?? '–' },
   ], [])
 
