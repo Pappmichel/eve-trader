@@ -522,7 +522,13 @@ def _unit_cost(type_id: int, cfg: ProductionConfig, home: dict, jita: dict,
         eiv += base_qty * adjusted_prices.get(material_id, 0.0)
 
     job_cost = eiv * job_cost_rate
-    build_cost = (material_cost + job_cost) / product_qty
+    # GitHub issue #40: some items can only be built from a blueprint *copy*
+    # that must be bought outright (never owned as a BPO, not inventable) -
+    # its purchase cost, amortized over however many runs it came with, is a
+    # real per-run cost of building this item, on top of materials/job fee.
+    bpc_cost_per_run = storage.get_manual_blueprint_copy_cost_per_run(type_id)
+    bpc_cost_per_unit = (bpc_cost_per_run / product_qty) if bpc_cost_per_run is not None else 0.0
+    build_cost = (material_cost + job_cost) / product_qty + bpc_cost_per_unit
     best = build_cost if buy is None else min(buy, build_cost)
     memo[type_id] = best
     return best
@@ -566,7 +572,10 @@ def unit_cost_detail(type_id: int, cfg: ProductionConfig, home: dict, jita: dict
         material_cost += _material_qty(base_qty, material_mult, 1) * m_cost
         eiv += base_qty * adjusted_prices.get(material_id, 0.0)
     job_cost = eiv * job_cost_rate
-    build_cost = (material_cost + job_cost) / product_qty
+    # GitHub issue #40 - see _unit_cost's own comment on this same line.
+    bpc_cost_per_run = storage.get_manual_blueprint_copy_cost_per_run(type_id)
+    bpc_cost_per_unit = (bpc_cost_per_run / product_qty) if bpc_cost_per_run is not None else 0.0
+    build_cost = (material_cost + job_cost) / product_qty + bpc_cost_per_unit
     best = build_cost if buy is None else min(buy, build_cost)
     return best, build_cost, buy
 

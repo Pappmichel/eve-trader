@@ -288,6 +288,14 @@ export interface OwnedBlueprintRow {
   runs: number | null
 }
 
+export interface ManualBlueprintCopyCostRow {
+  type_id: number
+  type_name: string
+  purchase_cost: number
+  runs: number
+  cost_per_run: number
+}
+
 export interface BuildCandidate {
   type_id: number
   type_name: string
