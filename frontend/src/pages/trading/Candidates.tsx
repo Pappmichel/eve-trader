@@ -10,9 +10,13 @@ import { HintCard } from '../../components/HintCard'
 import { qty } from '../../format'
 
 export default function Candidates() {
-  const { data: universe, isLoading: universeLoading } = useQuery({ queryKey: ['trading', 'candidates', 'universe'], queryFn: tradingApi.candidateUniverse })
-  const { data: focused, isLoading: focusedLoading } = useQuery({ queryKey: ['trading', 'candidates', 'focused'], queryFn: tradingApi.focusedCandidates })
+  const { data: universe, isLoading: universeLoading, isError: universeError, refetch: refetchUniverse } =
+    useQuery({ queryKey: ['trading', 'candidates', 'universe'], queryFn: tradingApi.candidateUniverse })
+  const { data: focused, isLoading: focusedLoading, isError: focusedError, refetch: refetchFocused } =
+    useQuery({ queryKey: ['trading', 'candidates', 'focused'], queryFn: tradingApi.focusedCandidates })
   const isLoading = universeLoading || focusedLoading
+  const isError = universeError || focusedError
+  const refetch = () => { refetchUniverse(); refetchFocused() }
 
   const display = focused && focused.length > 0 ? focused : universe ?? []
 
@@ -39,6 +43,8 @@ export default function Candidates() {
 
       {isLoading ? (
         <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
+      ) : isError ? (
+        <DataTable data={[]} columns={columns} isError onRetry={refetch} maxHeight={560} />
       ) : display.length === 0 ? (
         <HintCard>No candidates loaded yet. Click <b>Load Market Groups</b> on the left, then <b>Filter Candidates</b>.</HintCard>
       ) : (

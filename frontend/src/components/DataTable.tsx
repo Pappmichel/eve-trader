@@ -10,8 +10,8 @@ import {
   type VisibilityState,
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon } from '@mantine/core'
-import { IconSearch, IconDownload, IconColumns, IconX } from '@tabler/icons-react'
+import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon, Stack } from '@mantine/core'
+import { IconSearch, IconDownload, IconColumns, IconX, IconAlertTriangle, IconRefresh } from '@tabler/icons-react'
 
 // Generic sortable, row-virtualized table.
 //
@@ -45,6 +45,15 @@ import { IconSearch, IconDownload, IconColumns, IconX } from '@tabler/icons-reac
 // three for free, same as sorting already worked. `tableId` (optional)
 // persists column visibility to localStorage per table; omit it and
 // visibility still works, just doesn't survive a remount/reload.
+//
+// GitHub issue #76: `isError`/`onRetry` are the read-side equivalent of
+// useAction's own error toast for writes - before this, a failed useQuery
+// left `data` as `[]`/undefined and every page just fell through to the
+// ordinary "no data yet" empty state, completely silent about the fact
+// that a fetch actually failed (confirmed: only 1 of 37 pages checked
+// `isError` at all, and there was nowhere to render it even if they did).
+// Optional and additive - a page that doesn't pass `isError` behaves
+// exactly as before.
 interface DataTableProps<T> {
   data: T[]
   columns: ColumnDef<T, any>[]
@@ -52,6 +61,9 @@ interface DataTableProps<T> {
   emptyLabel?: string
   rowHeight?: number
   isLoading?: boolean
+  isError?: boolean
+  errorMessage?: string
+  onRetry?: () => void
   tableId?: string
   exportFilename?: string
   // Without this, tanstack-table's default row.id is the row's *index* in
@@ -105,6 +117,9 @@ export function DataTable<T>({
   emptyLabel = 'No data.',
   rowHeight = 36,
   isLoading = false,
+  isError = false,
+  errorMessage,
+  onRetry,
   tableId,
   exportFilename = 'export',
   getRowId,
@@ -177,6 +192,25 @@ export function DataTable<T>({
   // "still loading" and "genuinely empty" cases - confirmed real bug, e.g.
   // Jobs.tsx's "No active industry jobs" message flashed on every page load
   // even when jobs were about to show up a moment later.
+  // Checked before isLoading - react-query settles a failed query to
+  // isLoading=false/isError=true, so this never fights the skeleton state
+  // below; it can still be true during a background refetch of already-
+  // loaded data, which is fine, that's an even stronger "something's wrong"
+  // signal than the initial-load case.
+  if (isError) {
+    return (
+      <Stack align="center" gap="xs" py="xl">
+        <IconAlertTriangle size={28} color="var(--mantine-color-danger-5)" />
+        <Text size="sm" c="dimmed">{errorMessage ?? 'Failed to load data.'}</Text>
+        {onRetry && (
+          <Button size="xs" variant="default" leftSection={<IconRefresh size={14} />} onClick={onRetry}>
+            Retry
+          </Button>
+        )}
+      </Stack>
+    )
+  }
+
   if (isLoading) {
     return (
       <ScrollArea h={maxHeight} type="auto">
