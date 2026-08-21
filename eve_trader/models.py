@@ -33,6 +33,10 @@ class ShortlistRow:
     category: str
     landed_cost: Optional[float]
     net_sell: Optional[float]
+    # Currently-listed sell-order quantity at the structure (order-book
+    # depth right now), NOT actual daily traded volume - see GitHub issue
+    # #51 / esi_client.OrderStats and CLAUDE.md's "Theoretical ceiling"
+    # section.
     sell_volume: Optional[float]
     own_orders_remaining: float
     profit_per_unit: Optional[float]
