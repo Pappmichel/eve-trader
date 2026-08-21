@@ -315,12 +315,18 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
         cid = raw["contract_id"]
         existing = existing_by_id.get(cid)
         fitting_id = existing[9] if existing is not None else None  # _CONTRACT_COLUMNS' matched_fitting_id
-        fitting_name = None
-        hull_type_id = None
-        if fitting_id is not None:
-            fitting_row = storage.get_fitting(fitting_id)
-            if fitting_row is not None:
-                fitting_name, hull_type_id = fitting_row[2], fitting_row[4]  # _FITTING_COLUMNS' name/hull_type_id
+        if fitting_id is None:
+            # GitHub issue #37: _passes_history_filter only checks finished +
+            # Item Exchange + our own structure - a contract that never
+            # matched any doctrine fitting (someone else's unrelated item
+            # sale at the same structure, or a doctrine sale that was already
+            # finished the very first time we ever saw it) isn't a doctrine
+            # contract at all and shouldn't clutter permanent history.
+            continue
+        fitting_row = storage.get_fitting(fitting_id)
+        if fitting_row is None:
+            continue
+        fitting_name, hull_type_id = fitting_row[2], fitting_row[4]  # _FITTING_COLUMNS' name/hull_type_id
         acceptor_id = raw.get("acceptor_id")
         history_rows.append((
             cid, role, fitting_id, fitting_name, hull_type_id, raw.get("title"), raw.get("price"),

@@ -92,6 +92,20 @@ def test_available_blueprint_copies_excludes_bpos(tenant):
     assert storage.available_blueprint_copies(TYPE_ID, LOCATION_ID) == 2
 
 
+def test_available_blueprint_copies_excludes_asset_safety(tenant):
+    # GitHub issue #32: a BPC recovered into Asset Safety (after the
+    # structure it sat in was unanchored/lost) requires a separate retrieval
+    # trip/fee - it isn't actually usable for invention right now even
+    # though it shares resolved_location_id with real hangar stock. Must be
+    # excluded the same way esi_stock_at_location already excludes it.
+    storage.replace_blueprints("character_blueprints", [
+        _bp_row(1, TYPE_ID, me=0, te=0, runs=1, location_id=LOCATION_ID, quantity=-2, location_flag="AssetSafety"),
+        _bp_row(2, TYPE_ID, me=0, te=0, runs=1, location_id=LOCATION_ID, quantity=-2, location_flag="Hangar"),
+    ])
+
+    assert storage.available_blueprint_copies(TYPE_ID, LOCATION_ID) == 1
+
+
 def test_available_blueprint_copies_sums_character_and_corp_tables(tenant):
     storage.replace_blueprints("character_blueprints", [
         _bp_row(1, TYPE_ID, me=0, te=0, runs=1, location_id=LOCATION_ID, quantity=-2),
