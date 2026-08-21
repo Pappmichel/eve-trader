@@ -1,17 +1,19 @@
 import datetime as dt
 
 from eve_trader import actions, storage
-from eve_trader.actions import NO_MARKET_DATA_DECISION, SKIP_DECISION, _items_beyond_rank, _items_past_skip_grace_period
+from eve_trader.actions import (NO_MARKET_DATA_DECISION, SKIP_DECISION, _items_beyond_rank,
+                                 _items_past_skip_grace_period, _items_to_reactivate)
 from eve_trader.config import TradingConfig
 from eve_trader.models import ShortlistRow
 
 NOW = dt.datetime(2026, 7, 15, 12, 0, 0)
 
 
-def _row(item_id: int, item: str, decision: str, profit_per_unit=None, sell_volume=None, active=True) -> ShortlistRow:
+def _row(item_id: int, item: str, decision: str, profit_per_unit=None, sell_volume=None, active=True,
+         margin=None) -> ShortlistRow:
     return ShortlistRow(
         item=item, category="Material", landed_cost=None, net_sell=None, sell_volume=sell_volume,
-        own_orders_remaining=0.0, profit_per_unit=profit_per_unit, margin=None, profit_per_m3=None,
+        own_orders_remaining=0.0, profit_per_unit=profit_per_unit, margin=margin, profit_per_m3=None,
         decision=decision, active=active, item_id=item_id, volume_m3=1.0, jita_sell=None, import_cost=None,
     )
 
@@ -115,3 +117,38 @@ def test_items_beyond_rank_sorts_missing_data_last():
     ]
     beyond = _items_beyond_rank(rows, max_active_items=1)
     assert {item_id for item_id, _ in beyond} == {2, 3}
+
+
+# ------------------------------------------------------------- reactivation (GitHub issue #35)
+def test_reactivates_inactive_item_that_now_clears_the_import_bar():
+    # Confirmed live (2026-08-21): several Booster/Drugs items sat inactive
+    # with 100%+ margins and real daily sell volume, with no path back to
+    # active - _decision short-circuits to "Inactive" whenever active=False,
+    # regardless of the real (still-computed, see issue #6) numbers.
+    cfg = TradingConfig(min_profit_threshold=0, min_margin_threshold=0.1)
+    rows = [_row(1, "Recovered Booster", "Inactive", profit_per_unit=100, sell_volume=10, margin=1.15, active=False)]
+    assert _items_to_reactivate(rows, cfg) == [(1, "Recovered Booster")]
+
+
+def test_does_not_reactivate_already_active_items():
+    cfg = TradingConfig(min_profit_threshold=0, min_margin_threshold=0.1)
+    rows = [_row(1, "Already Active", "Import", profit_per_unit=100, sell_volume=10, margin=1.15, active=True)]
+    assert _items_to_reactivate(rows, cfg) == []
+
+
+def test_does_not_reactivate_inactive_item_still_below_margin_threshold():
+    cfg = TradingConfig(min_profit_threshold=0, min_margin_threshold=0.5)
+    rows = [_row(1, "Still Weak", "Inactive", profit_per_unit=100, sell_volume=10, margin=0.2, active=False)]
+    assert _items_to_reactivate(rows, cfg) == []
+
+
+def test_does_not_reactivate_inactive_item_with_no_sell_volume():
+    cfg = TradingConfig(min_profit_threshold=0, min_margin_threshold=0.1)
+    rows = [_row(1, "No Volume", "Inactive", profit_per_unit=100, sell_volume=0, margin=1.15, active=False)]
+    assert _items_to_reactivate(rows, cfg) == []
+
+
+def test_does_not_reactivate_inactive_item_with_missing_data():
+    cfg = TradingConfig(min_profit_threshold=0, min_margin_threshold=0.1)
+    rows = [_row(1, "No Data", "Inactive", profit_per_unit=None, sell_volume=None, margin=None, active=False)]
+    assert _items_to_reactivate(rows, cfg) == []
