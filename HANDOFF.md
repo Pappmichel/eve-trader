@@ -62,7 +62,45 @@ auto-closes.
 follow-up above). Next step in a fresh session: move straight to Tier 3
 (#34 → #39 → #40 → #38) - no outstanding confirmation needed from Tier 1/2.
 
-Tier 3 is still fully unstarted - nothing below this point has changed.
+**Tier 3 is fully implemented (all four issues) and committed - but
+deliberately NOT pushed, NOT merged, NOT deployed yet.** The user explicitly
+asked (2026-08-21, "nun tier 3 aber diesmal einzeln und jeweils nur bis zum
+commit ohne nachfrage" - "now Tier 3 but this time individually and each
+time only up to the commit, without asking") for a different workflow than
+Tier 1/2: implement each of the four issues on its own separate local
+branch, run its own full test suite + `tsc`/`npm run build`, commit locally,
+then move to the next one immediately - no push, no PR, no merge, no
+deploy, no waiting for a go-ahead between them. All four are done:
+
+- `feature/34-sde-refresh-in-admin` (commit `a8e9d26`) - #34, SDE refresh
+  moved from `production/actions.py`/`ProductionLayout.tsx` to
+  `admin.py`/`AdminPage.tsx`'s new `SdeDataSection`.
+- `feature/39-exclude-character-slots` (commit `b5a8aea`) - #39,
+  `excluded_from_planning` column + UPSERT-preserving `replace_character_
+  slots` + checkbox on `Slots.tsx`.
+- `feature/40-manual-blueprint-copy-costs` (commit `5b3bacb`) - #40, new
+  `manual_blueprint_copy_costs` table + second table on `Blueprints.tsx` +
+  amortized-cost wiring into `_unit_cost`/`unit_cost_detail`.
+- `feature/38-margin-in-buildlists` (commit `47be993`) - #38, `margin` field
+  (via `margin_home`, not `margin_jita`) on `BuildJobEntry`/`AssetPlanJob` +
+  new column on `BuildList.tsx`/`AssetPlanList.tsx`.
+
+**Important if picking this up on a different machine**: these four
+branches only exist in this machine's local git repo - they were never
+pushed to `origin`, so a fresh `git clone`/`git pull` elsewhere will NOT
+have them. If you're on a different machine, you need either to get back to
+this one, or ask the user whether to push the branches over first. If
+you're on *this* machine, `git branch` will show all four still present
+locally, each with exactly one commit ahead of `dev` at the point it
+branched (`4317735`).
+
+**Not yet reviewed by the user at all** - the next step is to show the user
+each branch's diff/commit (or however they want to review four
+uncommunicated branches at once) and get their go-ahead before any of the
+normal push → PR → merge → deploy sequence starts. Don't push/merge/deploy
+any of these four without that explicit go-ahead - this is a deliberate
+deviation from the Tier 1/2 workflow, not an oversight.
+
 Labels and existing milestones were applied on GitHub to all ten
 issues as part of the original triage. The previous
 batch (issues #4, #5, #12, #13, #14, #15, #16, #17, #18, #19, #20, #21) is
@@ -236,5 +274,13 @@ Tier 2 is fully implemented, merged, deployed, and the user confirmed both
 Tier 1 and reported a real follow-up bug in #33 (Griffin still showing with
 a 0-not-NULL target) - fixed in PR #44, deployed, live-verified directly
 against the production DB. **Both tiers are now fully done and confirmed.**
-The very next action in a fresh session should be: move straight to Tier 3
-(#34 → #39 → #40 → #38), starting with #34.
+
+The user then said "nun tier 3 aber diesmal einzeln und jeweils nur bis zum
+commit ohne nachfrage" - explicitly a different, one-shot workflow from
+Tier 1/2 (see the Status section above for the four branch names/commit
+hashes). All four Tier 3 issues are implemented and locally committed, each
+on its own branch, none pushed/merged/deployed. **The very next action in a
+fresh session should be: tell the user all four are committed locally and
+ask how they'd like to review them (diffs? one at a time?) before starting
+the normal push → PR → merge → deploy sequence for each - do not push or
+merge any of them without that explicit go-ahead first.**
