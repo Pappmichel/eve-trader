@@ -54,16 +54,24 @@ def fetch_recent_transactions(character_id: int, auth_role: str, client: ESIClie
     return [t for t in all_txns if _parse_iso(t["date"]) >= cutoff]
 
 
-def reconcile_realized_trades(buyer_character_id: int, seller_character_id: int,
-                               buyer_role: str, seller_role: str,
+def reconcile_realized_trades(buyer_characters: list[tuple[int, str]], seller_characters: list[tuple[int, str]],
                                client: ESIClient, item_names: dict[int, str],
                                item_volumes: dict[int, float],
                                cfg: TradingConfig = TRADING_CONFIG) -> list[RealizedTrade]:
-    """Matches buyer's Jita buy transactions against seller's structure sell
-    transactions per type_id, FIFO, within cfg.lookback_days.
+    """Matches every buyer character's Jita buy transactions against every
+    seller character's structure sell transactions per type_id, FIFO, within
+    cfg.lookback_days. `buyer_characters`/`seller_characters` are lists of
+    (character_id, auth_role) pairs - GitHub issue #46: multiple buyer/seller
+    characters are pooled together (every buyer's buys vs. every seller's
+    sells, not paired 1:1 by character), matching how the shortlist's own
+    "own orders remaining"/undercut checks already pool across characters.
     """
-    buys = fetch_recent_transactions(buyer_character_id, buyer_role, client, cfg.lookback_days)
-    sells = fetch_recent_transactions(seller_character_id, seller_role, client, cfg.lookback_days)
+    buys = []
+    for character_id, role in buyer_characters:
+        buys.extend(fetch_recent_transactions(character_id, role, client, cfg.lookback_days))
+    sells = []
+    for character_id, role in seller_characters:
+        sells.extend(fetch_recent_transactions(character_id, role, client, cfg.lookback_days))
 
     # Confirmed real bug: unlike `sells` (correctly scoped to cfg.structure_id
     # below), `buys` had no location filter at all - any wallet transaction
