@@ -124,7 +124,13 @@ def evaluate_ore_item(candidate: OreCandidate, active: bool,
     margin = profit_per_portion / landed_cost_per_portion if landed_cost_per_portion else None
     profit_per_m3 = (profit_per_unit / candidate.volume_m3) if candidate.volume_m3 else None
 
-    decision = _decision(active, True, profit_per_portion, margin, trading_cfg)
+    # min_profit_threshold is a per-unit figure (matches shortlist.py's own
+    # Trading usage) - profit_per_portion would make the Import threshold
+    # ~portion_size times too lenient (e.g. Veldspar's 100), confirmed real
+    # bug found in code review: an ore worth only 15 ISK/unit profit (below a
+    # real 1000 ISK/unit threshold) would show profit_per_portion=1500 and
+    # wrongly clear the bar.
+    decision = _decision(active, True, profit_per_unit, margin, trading_cfg)
 
     return OreShortlistRow(
         item_id=candidate.type_id, item=candidate.item, family=candidate.family, is_ice=candidate.is_ice,
