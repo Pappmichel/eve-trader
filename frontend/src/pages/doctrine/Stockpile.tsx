@@ -17,7 +17,7 @@ function severityBadge(value: unknown) {
 }
 
 export default function Stockpile() {
-  const { data, isLoading } = useQuery({ queryKey: ['doctrine', 'stockpile'], queryFn: () => doctrineApi.stockpile() })
+  const { data, isLoading, isError, refetch } = useQuery({ queryKey: ['doctrine', 'stockpile'], queryFn: () => doctrineApi.stockpile() })
 
   const rows = data?.rows ?? []
   const aggregatedRows = data?.aggregated_rows ?? []
@@ -57,6 +57,15 @@ export default function Stockpile() {
   return (
     <Stack>
       <Title order={4}>Stockpile</Title>
+
+      {isError && (
+        <DataTable
+          data={[]}
+          columns={aggregatedColumns}
+          isError
+          onRetry={() => refetch()}
+        />
+      )}
 
       {!isLoading && data && !data.assets_available && (
         <HintCard>

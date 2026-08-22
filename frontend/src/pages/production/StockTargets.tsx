@@ -84,7 +84,8 @@ function EditableNumberCell({ value, ariaLabel, isPending, onSave, flagged }: {
 }
 
 export default function StockTargets() {
-  const { data: targets, isLoading: targetsLoading } = useQuery({ queryKey: ['production', 'stock-targets'], queryFn: productionApi.stockTargets })
+  const { data: targets, isLoading: targetsLoading, isError: targetsError, refetch: refetchTargets } =
+    useQuery({ queryKey: ['production', 'stock-targets'], queryFn: productionApi.stockTargets })
   const { data: manualStock } = useQuery({ queryKey: ['production', 'manual-stock'], queryFn: productionApi.manualStock })
   const { data: overrides } = useQuery({ queryKey: ['production', 'manual-build-buy'], queryFn: productionApi.manualBuildBuy })
   const { data: decryptorOverrides } = useQuery({ queryKey: ['production', 'selected-decryptors'], queryFn: productionApi.selectedDecryptors })
@@ -220,6 +221,8 @@ export default function StockTargets() {
 
       {targetsLoading ? (
         <DataTable data={[]} columns={columns} isLoading maxHeight={480} />
+      ) : targetsError ? (
+        <DataTable data={[]} columns={columns} isError onRetry={() => refetchTargets()} maxHeight={480} />
       ) : !targets || targets.length === 0 ? (
         <HintCard>No stock targets configured yet.</HintCard>
       ) : (

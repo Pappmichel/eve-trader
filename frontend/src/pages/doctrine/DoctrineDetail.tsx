@@ -95,7 +95,7 @@ export default function DoctrineDetail() {
   const navigate = useNavigate()
   const [modalOpen, setModalOpen] = useState(false)
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['doctrine', 'doctrine-detail', doctrineId],
     queryFn: () => doctrineApi.status(doctrineId),
     enabled: !!doctrineId,
@@ -165,6 +165,12 @@ export default function DoctrineDetail() {
 
   if (!doctrineId) return null
   if (isLoading) return <Text c="dimmed">Loading…</Text>
+  if (isError) return (
+    <Stack align="flex-start" gap="xs">
+      <Text c="dimmed">Failed to load this doctrine.</Text>
+      <Button size="xs" variant="default" onClick={() => refetch()}>Retry</Button>
+    </Stack>
+  )
   if (!doctrine) return <Text c="dimmed">Doctrine not found.</Text>
 
   return (
