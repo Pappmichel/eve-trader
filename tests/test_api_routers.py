@@ -237,6 +237,45 @@ def test_check_undercut_action_error_maps_to_400(monkeypatch):
     assert "Seller" in resp.json()["detail"]
 
 
+def test_check_seller_unlisted_stock_includes_sell_volume_and_margin(monkeypatch):
+    # GitHub issue #56: sell_volume/margin were added to the underlying
+    # dataclass and actions.py by issue #45, but never added to
+    # schemas.UnlistedStockRow - FastAPI's response_model silently stripped
+    # both fields from the real JSON response even though every layer below
+    # the router computed them correctly. This test exercises the actual
+    # response_model serialization path (unlike test_check_seller_unlisted_
+    # stock_* tests calling do_check_seller_unlisted_stock directly), so it
+    # would have caught the regression.
+    from eve_trader.models import UnlistedStockRow
+    monkeypatch.setattr(actions, "do_check_seller_unlisted_stock", lambda: {"rows": [
+        UnlistedStockRow(type_id=205, item="Nova Cruise Missile", asset_quantity=50.0,
+                          sell_order_remaining=0.0, unlisted_quantity=50.0,
+                          sell_volume=12.0, margin=0.25),
+    ]})
+    resp = client.post("/api/trading/seller/unlisted-stock")
+    assert resp.status_code == 200
+    assert resp.json() == [{
+        "type_id": 205, "item": "Nova Cruise Missile", "asset_quantity": 50.0,
+        "sell_order_remaining": 0.0, "unlisted_quantity": 50.0,
+        "sell_volume": 12.0, "margin": 0.25,
+    }]
+
+
+def test_production_unlisted_stock_includes_sell_volume_and_margin(monkeypatch):
+    # GitHub issue #56 - same regression, Production side.
+    from eve_trader.production.models import UnlistedStockRow as ProductionUnlistedStockRow
+    monkeypatch.setattr(production_actions, "do_unlisted_stock", lambda: {"rows": [
+        ProductionUnlistedStockRow(type_id=205, type_name="Nova Cruise Missile", stock_quantity=50.0,
+                                    sell_volume=12.0, margin=0.25),
+    ]})
+    resp = client.post("/api/production/unlisted-stock/check")
+    assert resp.status_code == 200
+    assert resp.json() == [{
+        "type_id": 205, "type_name": "Nova Cruise Missile", "stock_quantity": 50.0,
+        "sell_volume": 12.0, "margin": 0.25,
+    }]
+
+
 def test_get_sde_freshness(monkeypatch):
     monkeypatch.setattr(production_actions, "do_check_sde_freshness", lambda: {
         "local_refreshed_at": "2026-07-17T07:56:26.701476+00:00",

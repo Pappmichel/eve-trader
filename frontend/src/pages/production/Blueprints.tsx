@@ -14,7 +14,7 @@ import { isk, qty } from '../../format'
 const MANUAL_COPY_COSTS_KEY = [['production', 'manual-blueprint-copy-costs']]
 
 function ManualBlueprintCopyCostsSection() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['production', 'manual-blueprint-copy-costs'], queryFn: productionApi.manualBlueprintCopyCosts,
   })
   const addCost = useAction(
@@ -24,6 +24,13 @@ function ManualBlueprintCopyCostsSection() {
     MANUAL_COPY_COSTS_KEY,
   )
   const removeCost = useAction('Remove Blueprint Copy Cost', productionApi.removeManualBlueprintCopyCost, MANUAL_COPY_COSTS_KEY)
+  // GitHub issue #59 (found in a full-codebase audit 2026-08-21): one shared
+  // mutation instance reused across every row's Remove button - without
+  // tracking which row is actually pending, clicking Remove for one row put
+  // *every* row's button into the loading/disabled state, not just the one
+  // being removed (same bug ProductionLayout.tsx's own removeCharacter/
+  // pendingRoleKey comment already documents and fixes).
+  const [pendingTypeId, setPendingTypeId] = useState<number | null>(null)
 
   const [itemName, setItemName] = useState('')
   const [purchaseCost, setPurchaseCost] = useState<number | ''>('')
@@ -38,13 +45,14 @@ function ManualBlueprintCopyCostsSection() {
       header: '', id: 'actions', size: 60, enableSorting: false,
       cell: (i) => (
         <ActionIcon size="sm" variant="subtle" color="danger"
-          onClick={() => removeCost.mutate(i.row.original.type_id)} loading={removeCost.isPending}>
+          onClick={() => { setPendingTypeId(i.row.original.type_id); removeCost.mutate(i.row.original.type_id) }}
+          loading={removeCost.isPending && pendingTypeId === i.row.original.type_id}>
           <IconTrash size={14} />
         </ActionIcon>
       ),
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  ], [removeCost])
+  ], [removeCost, pendingTypeId])
 
   return (
     <div>
@@ -77,6 +85,8 @@ function ManualBlueprintCopyCostsSection() {
 
       {isLoading ? (
         <DataTable data={[]} columns={columns} isLoading maxHeight={300} />
+      ) : isError ? (
+        <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={300} />
       ) : !data || data.length === 0 ? (
         <Text c="dimmed" size="sm">None registered yet.</Text>
       ) : (
@@ -88,7 +98,7 @@ function ManualBlueprintCopyCostsSection() {
 }
 
 export default function Blueprints() {
-  const { data, isLoading } = useQuery({ queryKey: ['production', 'blueprints'], queryFn: productionApi.ownedBlueprints })
+  const { data, isLoading, isError, refetch } = useQuery({ queryKey: ['production', 'blueprints'], queryFn: productionApi.ownedBlueprints })
 
   const columns = useMemo<ColumnDef<OwnedBlueprintRow, any>[]>(() => [
     { header: 'Item', accessorKey: 'type_name', size: 260 },
@@ -106,6 +116,8 @@ export default function Blueprints() {
     <Stack>
       {isLoading ? (
         <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
+      ) : isError ? (
+        <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />
       ) : !data || data.length === 0 ? (
         <HintCard>No blueprints found - or not synced yet ('Sync ESI Data' in the sidebar).</HintCard>
       ) : (

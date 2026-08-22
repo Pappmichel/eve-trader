@@ -12,7 +12,7 @@ import { pct, qty } from '../../format'
 import { COLORS } from '../../theme'
 
 export default function NewCandidates() {
-  const { data, isLoading } = useQuery({ queryKey: ['trading', 'candidates', 'new'], queryFn: tradingApi.newCandidates })
+  const { data, isLoading, isError, refetch } = useQuery({ queryKey: ['trading', 'candidates', 'new'], queryFn: tradingApi.newCandidates })
   const sorted = useMemo(() => [...(data ?? [])].sort((a, b) => b.score - a.score), [data])
 
   const columns = useMemo<ColumnDef<NewCandidateResult, any>[]>(() => [
@@ -31,6 +31,7 @@ export default function NewCandidates() {
   ], [])
 
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={480} />
+  if (isError) return <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={480} />
   if (!data || data.length === 0) {
     return <HintCard>No run yet. Click <b>Search + Add + Clean Up</b> on the left to backtest candidates against price history.</HintCard>
   }

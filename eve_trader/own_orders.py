@@ -34,14 +34,17 @@ def fetch_own_sell_orders(character_id: int, auth_role: str, client: ESIClient,
     return dict(remaining)
 
 
-def check_undercut(character_id: int, auth_role: str, client: ESIClient,
-                    cfg: TradingConfig = TRADING_CONFIG) -> list[dict]:
-    """For every open sell order the seller has at cfg.structure_id, checks
-    whether a *different* seller is currently offering the same type_id
-    cheaper - real EVE mechanic: nothing stops another player from listing
-    below your price, and ESI has no "you got undercut" notification, so this
-    can only be found by comparing your own order price against the live
-    order book each time.
+def check_undercut_pooled(sellers: list[tuple[int, str]], client: ESIClient,
+                           cfg: TradingConfig = TRADING_CONFIG) -> list[dict]:
+    """Same idea as check_undercut, but pools every registered seller
+    character's own orders together (GitHub issue #46: multiple seller
+    characters share the same structure's order slots) - `sellers` is a list
+    of (character_id, auth_role) pairs. A cheaper order from one of *your
+    own* other seller characters must not itself count as "undercut", only a
+    genuinely different market participant's order should - my_order_ids
+    below is the union across every seller passed in, so it excludes all of
+    them from the competitor comparison, not just whichever one happened to
+    be checked.
 
     ESI's structure order book (structure_orders_raw) has no owning-character
     field on each order (a real ESI limitation, confirmed against the
@@ -58,8 +61,12 @@ def check_undercut(character_id: int, auth_role: str, client: ESIClient,
     shape as fetch_seller_stock_without_order. Item names aren't resolved
     here (callers already have an SDE-backed name lookup, see actions.py
     do_check_undercut)."""
-    my_orders = [o for o in client.character_orders(character_id, auth_role=auth_role)
-                 if not o.get("is_buy_order") and o.get("location_id") == cfg.structure_id]
+    my_orders = []
+    for character_id, auth_role in sellers:
+        my_orders.extend(
+            o for o in client.character_orders(character_id, auth_role=auth_role)
+            if not o.get("is_buy_order") and o.get("location_id") == cfg.structure_id
+        )
     if not my_orders:
         return []
     my_order_ids = {o["order_id"] for o in my_orders}
@@ -69,7 +76,11 @@ def check_undercut(character_id: int, auth_role: str, client: ESIClient,
         if type_id not in my_best_price or o["price"] < my_best_price[type_id]:
             my_best_price[type_id] = o["price"]
 
-    all_orders = client.structure_orders_raw(cfg.structure_id, auth_role=auth_role)
+    # The structure's order book is one shared/global fetch - any one of the
+    # registered sellers with docking access can retrieve it, so the first
+    # one passed in is enough (matches structure_order_stats_bulk's own
+    # "pick any one seller" reasoning in actions.py).
+    all_orders = client.structure_orders_raw(cfg.structure_id, auth_role=sellers[0][1])
     competitor_best: dict[int, float] = {}
     for o in all_orders:
         if o.get("is_buy_order") or o.get("order_id") in my_order_ids:
@@ -91,6 +102,54 @@ def check_undercut(character_id: int, auth_role: str, client: ESIClient,
             })
     results.sort(key=lambda r: r["difference"], reverse=True)
     return results
+
+
+def check_undercut(character_id: int, auth_role: str, client: ESIClient,
+                    cfg: TradingConfig = TRADING_CONFIG) -> list[dict]:
+    """Single-seller convenience wrapper around check_undercut_pooled - see
+    that function's docstring for the real logic."""
+    return check_undercut_pooled([(character_id, auth_role)], client, cfg)
+
+
+def fetch_seller_stock_without_order_pooled(sellers: list[tuple[int, str]], client: ESIClient,
+                                             shortlist_item_ids: set[int],
+                                             cfg: TradingConfig = TRADING_CONFIG) -> list[dict]:
+    """Same idea as fetch_seller_stock_without_order, but pools physical
+    stock and sell-order coverage across every registered seller character
+    (GitHub issue #46) - `sellers` is a list of (character_id, auth_role)
+    pairs. "No sell order at all" now means none of the registered sellers'
+    own orders cover it, not just one particular character's - and
+    asset_quantity is the combined total across every seller's own hangar,
+    since the structure's hangar/assets are shared regardless of which
+    character happens to hold them.
+
+    See fetch_seller_stock_without_order's own docstring for the scope/scope
+    caveats (shortlist-only, complete-absence-only, ESI scope requirement,
+    one-level-flat asset limitation) - unchanged here, just pooled."""
+    asset_qty: dict[int, float] = defaultdict(float)
+    sell_remaining: dict[int, float] = defaultdict(float)
+    for character_id, auth_role in sellers:
+        assets = client.character_assets(character_id, auth_role=auth_role)
+        for a in assets:
+            type_id = a.get("type_id")
+            if type_id not in shortlist_item_ids:
+                continue
+            if a.get("location_id") != cfg.structure_id:
+                continue
+            if a.get("location_flag") in storage.NON_STOCK_LOCATION_FLAGS:
+                continue
+            asset_qty[type_id] += a.get("quantity", 0)
+        for type_id, remaining in fetch_own_sell_orders(character_id, auth_role, client, cfg).items():
+            sell_remaining[type_id] += remaining
+
+    rows = []
+    for type_id, qty in asset_qty.items():
+        if sell_remaining.get(type_id, 0.0) <= 0:
+            rows.append({
+                "type_id": type_id, "asset_quantity": qty,
+                "sell_order_remaining": 0.0, "unlisted_quantity": qty,
+            })
+    return rows
 
 
 def fetch_seller_stock_without_order(character_id: int, auth_role: str, client: ESIClient,
@@ -119,29 +178,12 @@ def fetch_seller_stock_without_order(character_id: int, auth_role: str, client: 
     ship at the structure have their own location_id (the container's/ship's
     item_id), same one-level-flat limitation fetch_own_sell_orders has, and
     unlike storage.esi_stock_at_location's corp-office unwrap (this fetches a
-    personal seller's assets, not a corp's, so there's no office to unwrap)."""
-    assets = client.character_assets(character_id, auth_role=auth_role)
-    asset_qty: dict[int, float] = defaultdict(float)
-    for a in assets:
-        type_id = a.get("type_id")
-        if type_id not in shortlist_item_ids:
-            continue
-        if a.get("location_id") != cfg.structure_id:
-            continue
-        if a.get("location_flag") in storage.NON_STOCK_LOCATION_FLAGS:
-            continue
-        asset_qty[type_id] += a.get("quantity", 0)
+    personal seller's assets, not a corp's, so there's no office to unwrap).
 
-    sell_remaining = fetch_own_sell_orders(character_id, auth_role, client, cfg)
-
-    rows = []
-    for type_id, qty in asset_qty.items():
-        if sell_remaining.get(type_id, 0.0) <= 0:
-            rows.append({
-                "type_id": type_id, "asset_quantity": qty,
-                "sell_order_remaining": 0.0, "unlisted_quantity": qty,
-            })
-    return rows
+    Single-seller convenience wrapper around
+    fetch_seller_stock_without_order_pooled - see that function's docstring
+    for the multi-character logic."""
+    return fetch_seller_stock_without_order_pooled([(character_id, auth_role)], client, shortlist_item_ids, cfg)
 
 
 def fetch_buyer_already_covered(character_id: int, auth_role: str, client: ESIClient,

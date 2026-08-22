@@ -97,19 +97,22 @@ def test_do_check_seller_unlisted_stock_includes_deactivated_shortlist_items(mon
         ShortlistItem(item="Active Item", item_id=1, category="Material", volume_m3=1.0, active=True),
         ShortlistItem(item="Deactivated Item", item_id=2, category="Material", volume_m3=1.0, active=False),
     ])
+    seller_record = TokenRecord(
+        role="seller:99", character_id=99, character_name="Seller", access_token="x",
+        refresh_token="y", expires_at=0.0, scopes="",
+    )
     monkeypatch.setattr(TokenManager, "__init__", lambda self, cfg=None: setattr(self, "cfg", cfg))
     monkeypatch.setattr(TokenManager, "has_token", lambda self, role: True)
-    monkeypatch.setattr(TokenManager, "get_token", lambda self, role: TokenRecord(
-        role=role, character_id=99, character_name="Seller", access_token="x",
-        refresh_token="y", expires_at=0.0, scopes="",
-    ))
+    monkeypatch.setattr(TokenManager, "list_roles", lambda self, prefix: ["seller:99"] if prefix == "seller" else [])
+    monkeypatch.setattr(TokenManager, "get_record", lambda self, role: seller_record if role == "seller:99" else None)
+    monkeypatch.setattr(TokenManager, "get_token", lambda self, role: seller_record)
 
     captured = {}
 
-    def fake_fetch(character_id, auth_role, client, shortlist_item_ids, cfg):
+    def fake_fetch(sellers, client, shortlist_item_ids, cfg):
         captured["ids"] = shortlist_item_ids
         return []
-    monkeypatch.setattr(actions.own_orders, "fetch_seller_stock_without_order", fake_fetch)
+    monkeypatch.setattr(actions.own_orders, "fetch_seller_stock_without_order_pooled", fake_fetch)
 
     actions.do_check_seller_unlisted_stock()
 

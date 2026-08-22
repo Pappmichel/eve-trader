@@ -24,6 +24,9 @@ class _FakeTokens:
     def has_token(self, role):
         return False  # no seller token in these lightweight tests - C-J leg stays unverified
 
+    def list_roles(self, prefix):
+        return []  # no multi-character seller tokens either (GitHub issue #46)
+
 
 class _FakeESIClient:
     """Stand-in for ESIClient in shopping_list_rows tests - no seller token
