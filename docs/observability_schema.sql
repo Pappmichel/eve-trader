@@ -29,5 +29,8 @@ CREATE TABLE IF NOT EXISTS error_log (
 
 CREATE INDEX IF NOT EXISTS error_log_created_at_idx ON error_log (created_at DESC);
 
-GRANT SELECT, INSERT ON error_log TO eve_trader_app;
+-- DELETE is needed by storage.log_error's own retention pruning (caps
+-- error_log at MAX_ERROR_LOG_ROWS after every insert) - SELECT/INSERT
+-- alone were sufficient before that existed.
+GRANT SELECT, INSERT, DELETE ON error_log TO eve_trader_app;
 GRANT USAGE, SELECT ON SEQUENCE error_log_id_seq TO eve_trader_app;
