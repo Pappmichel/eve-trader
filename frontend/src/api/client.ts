@@ -353,4 +353,17 @@ export const adminApi = {
   // global/shared across every tenant, so triggering a refresh is a
   // cross-tenant-impacting action, not a per-tenant Production one.
   refreshSde: () => post<Record<string, number>>('/api/admin/sde/refresh'),
+  // GitHub issue #88 - cross-tenant, same reasoning as everything else here.
+  errors: (limit = 200) => get<T.ErrorLogRow[]>(`/api/admin/errors?limit=${limit}`),
+}
+
+// ------------------------------------------------------------------ errors
+// GitHub issue #88 - self-hosted error tracking. Deliberately its own tiny
+// export (not folded into adminApi above) since report() is called from
+// ErrorBoundary.tsx/main.tsx's global error listeners on every page, for
+// every tenant - unlike adminApi.errors (the list view), it needs no
+// "admin" tool grant (see api/routers/errors.py's own docstring).
+export const errorsApi = {
+  report: (source: string, message: string, detail?: string, path?: string) =>
+    post<{ recorded: boolean }>('/api/errors', { source, message, detail, path }),
 }
