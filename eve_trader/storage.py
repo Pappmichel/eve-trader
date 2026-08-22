@@ -647,10 +647,12 @@ def save_shortlist_snapshot(rows: list[ShortlistRow], run_ts: str) -> None:
         conn.executemany(
             "INSERT INTO shortlist_snapshot (run_ts, item_id, item, category, landed_cost, net_sell, "
             "sell_volume, own_orders_remaining, profit_per_unit, margin, profit_per_m3, decision, active, "
-            "volume_m3, jita_sell, import_cost, meta_level) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "volume_m3, jita_sell, import_cost, meta_level, avg_daily_sold) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [(run_ts, r.item_id, r.item, r.category, r.landed_cost, r.net_sell, r.sell_volume,
               r.own_orders_remaining, r.profit_per_unit, r.margin, r.profit_per_m3, r.decision,
-              int(r.active), r.volume_m3, r.jita_sell, r.import_cost, r.meta_level) for r in rows],
+              int(r.active), r.volume_m3, r.jita_sell, r.import_cost, r.meta_level,
+              r.avg_daily_sold) for r in rows],
         )
 
 

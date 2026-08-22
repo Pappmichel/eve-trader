@@ -1,7 +1,7 @@
 from eve_trader.config import TradingConfig
 from eve_trader.esi_client import OrderStats
 from eve_trader.models import ShortlistItem
-from eve_trader.shortlist import audit_shortlist, evaluate_shortlist_item, summary_counts
+from eve_trader.shortlist import audit_shortlist, evaluate_shortlist_item, summary_counts, top_imports_by_daily_profit
 
 
 def test_profitable_item_is_recommended_for_import():
@@ -107,6 +107,61 @@ def test_priced_but_unprofitable_item_is_skip():
     row = evaluate_shortlist_item(item, own_orders_remaining=0.0,
                                    jita_stats=jita, structure_stats=structure, cfg=cfg)
     assert row.decision == "Skip"
+
+
+def test_avg_daily_sold_flows_through_to_the_row():
+    cfg = TradingConfig(import_cost_per_m3=900.0, structure_sell_haircut=0.95, jita_buy_broker_fee=0.0)
+    item = ShortlistItem(item="Test Widget", item_id=123, category="Module/Rig", volume_m3=0.1, active=True)
+    jita = OrderStats(sell_percentile=1000.0, sell_volume=500, buy_percentile=900.0, buy_volume=300)
+    structure = OrderStats(sell_percentile=2000.0, sell_volume=50, buy_percentile=1800.0, buy_volume=10)
+
+    row = evaluate_shortlist_item(item, own_orders_remaining=0.0, jita_stats=jita, structure_stats=structure,
+                                   cfg=cfg, avg_daily_sold=3.5)
+    assert row.avg_daily_sold == 3.5
+
+
+def test_avg_daily_sold_defaults_to_none_when_not_supplied():
+    # GitHub issue #51: no real sale ever matched for this item - must stay
+    # None, not silently fall back to sell_volume/order-book depth.
+    cfg = TradingConfig()
+    item = ShortlistItem(item="Test Widget", item_id=123, category="Module/Rig", volume_m3=0.1, active=True)
+    jita = OrderStats(sell_percentile=1000.0, sell_volume=500, buy_percentile=900.0, buy_volume=300)
+    structure = OrderStats(sell_percentile=2000.0, sell_volume=999999.0, buy_percentile=1800.0, buy_volume=10)
+
+    row = evaluate_shortlist_item(item, own_orders_remaining=0.0, jita_stats=jita, structure_stats=structure, cfg=cfg)
+    assert row.sell_volume == 999999.0  # a huge listed quantity...
+    assert row.avg_daily_sold is None   # ...must not leak into the real-sales figure
+
+
+def test_top_imports_excludes_items_with_no_real_sales_data():
+    # GitHub issue #51 (real bug, not just a labeling issue): a
+    # never-actually-sold item with a huge order book used to show a wildly
+    # inflated "Profit / Day" because that was computed from sell_volume.
+    # Now it's excluded entirely when avg_daily_sold is None, rather than
+    # estimated from listed quantity.
+    cfg = TradingConfig(import_cost_per_m3=900.0, structure_sell_haircut=0.95, jita_buy_broker_fee=0.0)
+    item = ShortlistItem(item="Never Sold", item_id=123, category="Module/Rig", volume_m3=0.1, active=True)
+    jita = OrderStats(sell_percentile=1000.0, sell_volume=500, buy_percentile=900.0, buy_volume=300)
+    structure = OrderStats(sell_percentile=2000.0, sell_volume=999999.0, buy_percentile=1800.0, buy_volume=10)
+    row = evaluate_shortlist_item(item, own_orders_remaining=0.0, jita_stats=jita, structure_stats=structure, cfg=cfg)
+
+    assert top_imports_by_daily_profit([row]) == []
+
+
+def test_top_imports_uses_avg_daily_sold_not_sell_volume():
+    cfg = TradingConfig(import_cost_per_m3=900.0, structure_sell_haircut=0.95, jita_buy_broker_fee=0.0)
+    item = ShortlistItem(item="Real Seller", item_id=123, category="Module/Rig", volume_m3=0.1, active=True)
+    jita = OrderStats(sell_percentile=1000.0, sell_volume=500, buy_percentile=900.0, buy_volume=300)
+    # A small listed order-book quantity (5) but real observed daily sales of 20 -
+    # the result must be driven by the latter, not the former.
+    structure = OrderStats(sell_percentile=2000.0, sell_volume=5, buy_percentile=1800.0, buy_volume=10)
+    row = evaluate_shortlist_item(item, own_orders_remaining=0.0, jita_stats=jita, structure_stats=structure,
+                                   cfg=cfg, avg_daily_sold=20.0)
+
+    result = top_imports_by_daily_profit([row])
+    assert len(result) == 1
+    # profit_per_unit = 1900 - 1090 = 810 ; 810 * 20 = 16200 (not 810 * 5 = 4050)
+    assert round(result[0]["max_profit_per_day"], 2) == 16200.0
 
 
 def test_summary_counts_and_audit():

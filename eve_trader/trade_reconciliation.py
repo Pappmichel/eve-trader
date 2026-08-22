@@ -54,16 +54,24 @@ def fetch_recent_transactions(character_id: int, auth_role: str, client: ESIClie
     return [t for t in all_txns if _parse_iso(t["date"]) >= cutoff]
 
 
-def reconcile_realized_trades(buyer_character_id: int, seller_character_id: int,
-                               buyer_role: str, seller_role: str,
+def reconcile_realized_trades(buyer_characters: list[tuple[int, str]], seller_characters: list[tuple[int, str]],
                                client: ESIClient, item_names: dict[int, str],
                                item_volumes: dict[int, float],
                                cfg: TradingConfig = TRADING_CONFIG) -> list[RealizedTrade]:
-    """Matches buyer's Jita buy transactions against seller's structure sell
-    transactions per type_id, FIFO, within cfg.lookback_days.
+    """Matches every buyer character's Jita buy transactions against every
+    seller character's structure sell transactions per type_id, FIFO, within
+    cfg.lookback_days. `buyer_characters`/`seller_characters` are lists of
+    (character_id, auth_role) pairs - GitHub issue #46: multiple buyer/seller
+    characters are pooled together (every buyer's buys vs. every seller's
+    sells, not paired 1:1 by character), matching how the shortlist's own
+    "own orders remaining"/undercut checks already pool across characters.
     """
-    buys = fetch_recent_transactions(buyer_character_id, buyer_role, client, cfg.lookback_days)
-    sells = fetch_recent_transactions(seller_character_id, seller_role, client, cfg.lookback_days)
+    buys = []
+    for character_id, role in buyer_characters:
+        buys.extend(fetch_recent_transactions(character_id, role, client, cfg.lookback_days))
+    sells = []
+    for character_id, role in seller_characters:
+        sells.extend(fetch_recent_transactions(character_id, role, client, cfg.lookback_days))
 
     # Confirmed real bug: unlike `sells` (correctly scoped to cfg.structure_id
     # below), `buys` had no location filter at all - any wallet transaction
@@ -177,3 +185,32 @@ def summarize_realized(trades: list[RealizedTrade]) -> dict:
         "average_margin": avg_margin,
         "top3_items_by_profit": top3,
     }
+
+
+def average_daily_sold_by_type(cfg: TradingConfig = TRADING_CONFIG) -> dict[int, float]:
+    """Real average daily *sold* quantity per type_id, computed from the last
+    Reconcile Trades run's realized_trades rows (storage.save_realized_trades
+    wholesale-replaces that table every run with exactly one
+    cfg.lookback_days window's worth of matched sells, not an accumulating
+    log - see that function's own comment). Sums `matched_qty` (the actual
+    FIFO-matched sale amount, not the original transaction's full
+    buy_qty/sell_qty, which can span multiple matches) per type_id and
+    divides by cfg.lookback_days.
+
+    GitHub issue #51: this - not the structure's live order-book remaining
+    quantity (esi_client.OrderStats.sell_volume, "how much is listed right
+    now") - is what the Shortlist's "Profit / Day" figure is computed from.
+    An item never actually sold (e.g. a fresh candidate with a large order
+    book from a single seller) is simply absent here, not estimated from
+    listed quantity - see shortlist.evaluate_shortlist_item's
+    avg_daily_sold parameter.
+
+    Returns {} if Reconcile Trades has never been run (or found nothing to
+    match) - every item's avg_daily_sold then stays None, an honest "no real
+    sales data yet" rather than a number derived from something else."""
+    df = storage.read_table("realized_trades")
+    if df.empty or cfg.lookback_days <= 0:
+        return {}
+    latest = df[df["run_ts"] == df["run_ts"].max()]
+    sold = latest.groupby("type_id")["matched_qty"].sum()
+    return {int(type_id): float(qty) / cfg.lookback_days for type_id, qty in sold.items()}

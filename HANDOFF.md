@@ -1,3 +1,88 @@
+# HANDOFF — Issues #45, #46, #51, #52 implementation plan
+
+Written 2026-08-21 (new session, separate remote container — none of the
+Tier 1-3 branches described further below exist here; `git branch` in this
+session shows only `main` and `claude/issues-plan-8ovgwo`). This section is
+the current, active plan. The original "#32–#41 triage plan" content below
+is kept for history/cross-machine continuation on that separate, still-open
+thread (Tier 3 branches only exist on the original machine) — don't conflate
+the two; they're unrelated issue batches.
+
+## Status: all four implemented, committed, and pushed (2026-08-21)
+
+Working branch: `claude/issues-plan-8ovgwo`, pushed to `origin`. Order
+agreed with the user: **#45 → #51 → #52 → #46**, implemented one at a time,
+each with its own commit (`pytest`/`tsc`/`npm run build` green before every
+commit). Plan comments were posted to all four issues before starting code
+- see each issue's own comment for the exact write-up.
+
+**#51 update**: the initial commit was a relabel/docs-only fix. The user
+then pushed back ("umlabeln reicht nicht, dies ist ein echter bug da es
+auch die profit/day berechnung zerschießt") - correct: `sell_volume`
+(order-book depth) was feeding the actual "Profit / Day" multiplication,
+not just a mislabeled column. Follow-up commit fixed it for real: new
+`ShortlistRow.avg_daily_sold`, computed by
+`trade_reconciliation.average_daily_sold_by_type` from the last Reconcile
+Trades run's `realized_trades.matched_qty` (real matched sales) over
+`cfg.lookback_days` - "Profit / Day" now multiplies by *that*, not
+`sell_volume`. An item with no real sale ever matched shows "–" instead of
+an estimate. **This needs a schema migration applied to the real deployed
+Postgres DB before it ships** - `docs/phase1_schema.sql` has a new
+`ALTER TABLE shortlist_snapshot ADD COLUMN IF NOT EXISTS avg_daily_sold
+REAL;` (idempotent, safe to re-run the whole file) - without it,
+`do_refresh_shortlist`'s `save_shortlist_snapshot` INSERT will fail once
+deployed. Don't forget this step during deploy.
+
+**Not yet reviewed, merged, or deployed** - per this repo's normal workflow
+(see "Standing constraints" below), the next step is showing the user the
+branch/diff and getting a go-ahead before push → PR → merge → deploy for
+real (with the schema migration applied as part of that, see above). No
+live-verify against the real running app was possible this session (no
+Postgres available in this sandbox) - `pytest`/`tsc`/build are green, and a
+throwaway Playwright check confirmed the #52 landing-page fix visually at a
+375px viewport, but the data-populated table pages (#45/#46/#51's new
+avg_daily_sold column) were not seen rendering live. Flag this explicitly
+when handing back to the user.
+
+Original plan (kept below for reference, all four are now done):
+
+- **#45** "Volume and margin in unlisted stock" — smallest, self-contained.
+  Both Trading (`do_check_seller_unlisted_stock` in `actions.py`,
+  `UnlistedStockRow` in `models.py`, `pages/trading/UnlistedStock.tsx`) and
+  Production (`do_unlisted_stock` in `production/actions.py`,
+  `production/models.py`, `pages/production/UnlistedStock.tsx`) unlisted
+  stock pages need margin + sell-volume columns added, computed the same way
+  `shortlist.evaluate_shortlist_item`/`production/Margin.tsx` already do.
+
+- **#51** "Sell volume in shortlist looks very high" — investigation already
+  done: it is NOT a Jita-vs-C-J mixup (already sourced from C-J structure
+  stats correctly). The real issue is that `esi_client.py`'s `sell_volume`
+  is open-order-book remaining quantity, not actual daily turnover, while
+  the UI/CLAUDE.md describe it as a daily figure. Planned fix: relabel/
+  redocument only (not a data-source change) — pending confirmation with the
+  user on whether the bigger "real turnover from history" rework is wanted
+  too (flagged as optional/ask-first in the plan comment).
+
+- **#52** "mobile version" — nav/shell already partially responsive
+  (Mantine `AppShell` + `Burger`). Real scope is `DataTable.tsx`'s
+  fixed-width columns needing a mobile column-visibility strategy across
+  every table page, plus `Container size="xl"` shrinking on small
+  viewports.
+
+- **#46** "multiple buyer/seller in trading tool" — largest/architectural,
+  done last. Reuse the existing multi-character pattern already used for
+  Production (`get_token_interactive_multi`/`list_roles("producer")` in
+  `auth.py`) for Trading's buyer/seller roles instead of the current
+  single-fixed-role-key assumption; rework every `tm.get_token("seller")`/
+  `("buyer")` call site in `actions.py` to iterate across all registered
+  characters per role.
+
+Update this section (or delete it once all four issues are implemented,
+pushed, and confirmed live by the user) — don't let it go stale the way the
+section below did.
+
+---
+
 # HANDOFF — Issue #32–#41 triage plan
 
 Written 2026-08-21. Read this first if you're picking up this repo in a new
