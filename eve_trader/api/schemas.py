@@ -405,6 +405,60 @@ class ReprocessingQuoteResult(_Base):
     totals: ReprocessingQuoteTotals
 
 
+class MineralRequirement(_Base):
+    type_id: int
+    name: Optional[str] = None
+    required_qty: float
+
+
+class OrePurchase(_Base):
+    type_id: int
+    item: str
+    family: str
+    is_ice: bool
+    portions: int
+    units: int
+    volume_m3: float
+    landed_cost_per_unit: float
+    total_cost: float
+
+
+class DirectMineralPurchase(_Base):
+    type_id: int
+    name: str
+    quantity: int
+    landed_cost_per_unit: float
+    total_cost: float
+
+
+class MineralCoverage(_Base):
+    type_id: int
+    name: str
+    required: float
+    from_ore: int
+    from_direct: int
+    delivered: int
+    surplus: float
+
+
+class ShoppingListPlan(_Base):
+    ore_purchases: list[OrePurchase]
+    direct_purchases: list[DirectMineralPurchase]
+    coverage: list[MineralCoverage]
+    ore_cost: float
+    direct_cost: float
+    total_cost: float
+    lp_cost: float
+    all_direct_cost: Optional[float]
+    savings_vs_all_direct: Optional[float]
+    total_volume_m3: float
+
+
+class RefinableMineral(_Base):
+    type_id: int
+    name: str
+
+
 class RefiningSettings(_Base):
     structure_type: str
     rig_tier: str

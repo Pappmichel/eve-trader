@@ -679,6 +679,60 @@ export interface OreShortlistRow {
   decision: string
 }
 
+export interface RefinableMineral {
+  type_id: number
+  name: string
+}
+
+export interface MineralRequirement {
+  type_id: number
+  name: string | null
+  required_qty: number
+}
+
+export interface OrePurchase {
+  type_id: number
+  item: string
+  family: string
+  is_ice: boolean
+  portions: number
+  units: number
+  volume_m3: number
+  landed_cost_per_unit: number
+  total_cost: number
+}
+
+export interface DirectMineralPurchase {
+  type_id: number
+  name: string
+  quantity: number
+  landed_cost_per_unit: number
+  total_cost: number
+}
+
+export interface MineralCoverage {
+  type_id: number
+  name: string
+  required: number
+  from_ore: number
+  from_direct: number
+  delivered: number
+  surplus: number
+}
+
+export interface ShoppingListPlan {
+  ore_purchases: OrePurchase[]
+  direct_purchases: DirectMineralPurchase[]
+  coverage: MineralCoverage[]
+  ore_cost: number
+  direct_cost: number
+  total_cost: number
+  lp_cost: number
+  all_direct_cost: number | null
+  savings_vs_all_direct: number | null
+  total_volume_m3: number
+}
+
 export interface RefiningSettings {
   structure_type: string
   rig_tier: string

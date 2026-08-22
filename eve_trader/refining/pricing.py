@@ -35,6 +35,20 @@ IMPORT_DECISION = "Import"
 ALL_DECISIONS = ["Inactive", NO_MARKET_DATA_DECISION, SKIP_DECISION, IMPORT_DECISION]
 
 
+def landed_cost_per_unit(jita_sell: Optional[float], volume_m3: float,
+                          trading_cfg: TradingConfig = TRADING_CONFIG) -> Optional[float]:
+    """The one definition of "what one unit really costs me, sitting in C-J":
+    Jita's sell percentile plus the buy-side broker fee, plus this app's flat
+    per-m3 haul charge. Extracted from evaluate_ore_item (unchanged formula)
+    when GitHub issue #93's Mineral Shopping List needed the exact same figure
+    for both compressed ore/ice *and* minerals bought outright - two callers,
+    one formula, deliberately not re-derived in the optimizer. None in means
+    None out (nothing listed in Jita right now)."""
+    if jita_sell is None:
+        return None
+    return jita_sell * (1 + trading_cfg.jita_buy_broker_fee) + volume_m3 * trading_cfg.import_cost_per_m3
+
+
 def mineral_type_ids_for(candidates: list[OreCandidate]) -> list[int]:
     """Every distinct material_type_id any candidate's portion-size batch
     reprocesses into - a small, shared set (~15-20 minerals/ice products
@@ -79,8 +93,8 @@ def evaluate_ore_item(candidate: OreCandidate, active: bool,
             profit_per_m3=None, decision=_decision(active, False, None, None, trading_cfg),
         )
 
-    landed_cost_per_unit = jita_sell * (1 + trading_cfg.jita_buy_broker_fee) + candidate.volume_m3 * trading_cfg.import_cost_per_m3
-    landed_cost_per_portion = landed_cost_per_unit * portion_size
+    unit_landed_cost = landed_cost_per_unit(jita_sell, candidate.volume_m3, trading_cfg)
+    landed_cost_per_portion = unit_landed_cost * portion_size
 
     yield_pct = ore_ice_yield(refining_cfg, candidate.family)
     minerals = apply_reprocessing_yield(candidate.type_id, portion_size, yield_pct)
@@ -97,7 +111,7 @@ def evaluate_ore_item(candidate: OreCandidate, active: bool,
     if not have_full_mineral_data:
         return OreShortlistRow(
             item_id=candidate.type_id, item=candidate.item, family=candidate.family, is_ice=candidate.is_ice,
-            active=active, volume_m3=candidate.volume_m3, landed_cost=landed_cost_per_unit, yield_pct=yield_pct,
+            active=active, volume_m3=candidate.volume_m3, landed_cost=unit_landed_cost, yield_pct=yield_pct,
             mineral_value=None, refining_tax=None, net_sell=None, sell_listed_qty=sell_listed_qty,
             profit_per_unit=None, margin=None, profit_per_m3=None,
             decision=_decision(active, False, None, None, trading_cfg),
@@ -114,7 +128,7 @@ def evaluate_ore_item(candidate: OreCandidate, active: bool,
 
     return OreShortlistRow(
         item_id=candidate.type_id, item=candidate.item, family=candidate.family, is_ice=candidate.is_ice,
-        active=active, volume_m3=candidate.volume_m3, landed_cost=landed_cost_per_unit, yield_pct=yield_pct,
+        active=active, volume_m3=candidate.volume_m3, landed_cost=unit_landed_cost, yield_pct=yield_pct,
         mineral_value=mineral_value, refining_tax=refining_tax, net_sell=net_sell,
         sell_listed_qty=sell_listed_qty, profit_per_unit=profit_per_unit, margin=margin,
         profit_per_m3=profit_per_m3, decision=decision,

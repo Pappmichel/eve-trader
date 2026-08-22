@@ -8,6 +8,8 @@ import datetime as dt
 import logging
 from typing import Optional
 
+import requests
+
 from .. import storage
 from ..actions import ActionError
 from ..auth import TokenManager
@@ -15,9 +17,11 @@ from ..config import OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, Tra
 from ..esi_client import ESIClient, ESIError
 from .candidate_discovery import build_ore_candidate_universe
 from .config import REFINING_CONFIG, RefiningConfig, validate_refining_overrides
-from .models import OreShortlistRow
+from .engine import apply_reprocessing_yield, ore_ice_yield
+from .models import MineralOption, MineralRequirement, OreOption, OreShortlistRow, ShoppingListPlan
+from .optimizer import OptimizationError, optimize_shopping_list
 from .paste_parser import merge_duplicate_stacks, parse_paste
-from .pricing import evaluate_ore_shortlist, mineral_type_ids_for
+from .pricing import evaluate_ore_shortlist, landed_cost_per_unit, mineral_type_ids_for
 from .reprocessing import (
     REPROCESS_DECISION, ReprocessingQuoteRow, evaluate_reprocessing_line, mineral_type_ids_for_lines,
     resolve_type_id,
@@ -169,6 +173,157 @@ def _reprocessing_row_to_dict(r: ReprocessingQuoteRow) -> dict:
         "name": r.name, "quantity": r.quantity, "type_id": r.type_id, "category": r.category,
         "sell_as_is_value": r.sell_as_is_value, "refined_value": r.refined_value, "mineral_value": r.mineral_value,
         "refining_tax": r.refining_tax, "decision": r.decision, "error": r.error,
+    }
+
+
+# ------------------------------------------ Mineral Shopping List (issue #93)
+def do_list_refinable_minerals() -> list[dict]:
+    """Every distinct mineral/ice product the compressed ore/ice universe can
+    actually refine into, name-resolved - what the Mineral Shopping List's
+    "add a mineral" picker offers. Derived from real SDE material rows (see
+    CLAUDE.md's "Real SDE data drives classification"), not a hardcoded list
+    of the eight classic minerals, so ice products and any future ore
+    material come along for free."""
+    candidates = build_ore_candidate_universe()
+    minerals = []
+    for type_id in mineral_type_ids_for(candidates):
+        row = storage.get_sde_type(type_id)
+        if row:
+            minerals.append({"type_id": type_id, "name": row[2]})
+    minerals.sort(key=lambda m: m["name"])
+    return minerals
+
+
+def do_load_mineral_requirements() -> list[dict]:
+    return [{"type_id": type_id, "name": name, "required_qty": qty}
+            for type_id, name, qty in storage.load_mineral_requirements()]
+
+
+def do_save_mineral_requirements(requirements: list[dict]) -> dict:
+    """Replaces the whole saved requirement list (see storage.
+    replace_mineral_requirements for why replace-all, not upsert). Each entry
+    needs a `type_id` that really exists in the SDE cache and a positive
+    `required_qty`; the name is always re-resolved from the SDE rather than
+    trusted from the caller, so a stale/renamed client can't persist a wrong
+    label next to a right type_id."""
+    rows = []
+    seen: set[int] = set()
+    for entry in requirements:
+        try:
+            type_id = int(entry["type_id"])
+            qty = float(entry["required_qty"])
+        except (KeyError, TypeError, ValueError) as e:
+            raise ActionError(f"Each requirement needs a numeric type_id and required_qty ({entry!r}).") from e
+        if qty <= 0:
+            raise ActionError(f"Required quantity for type {type_id} must be greater than 0.")
+        if type_id in seen:
+            raise ActionError(f"Type {type_id} is listed twice - each mineral can only have one required quantity.")
+        sde_row = storage.get_sde_type(type_id)
+        if not sde_row:
+            raise ActionError(f"Type {type_id} isn't in the SDE cache - run Refresh SDE first.")
+        seen.add(type_id)
+        rows.append((type_id, sde_row[2], qty))
+    storage.replace_mineral_requirements(rows)
+    return {"saved": len(rows)}
+
+
+def _ore_option(candidate, jita_stats, refining_cfg: RefiningConfig,
+                 trading_cfg: TradingConfig) -> Optional[OreOption]:
+    """Prices one compressed ore/ice candidate and pre-refines one whole
+    portion of it, producing a single LP column. Returns None when the type
+    can't be used at all (not listed in Jita right now, no SDE portion size,
+    or nothing to refine into)."""
+    portion_size = storage.get_portion_size(candidate.type_id)
+    jita_sell = jita_stats.sell_percentile if jita_stats else None
+    unit_cost = landed_cost_per_unit(jita_sell, candidate.volume_m3, trading_cfg)
+    if unit_cost is None or not portion_size:
+        return None
+    # The structure's reprocessing tax is taken out of the refined materials
+    # in-game, so it belongs in the yield here, not as a separate ISK fee -
+    # see optimizer.py's module docstring (modelling decision 2).
+    effective_yield = ore_ice_yield(refining_cfg, candidate.family) * (1 - refining_cfg.refining_tax_rate)
+    yield_per_portion = apply_reprocessing_yield(candidate.type_id, portion_size, effective_yield)
+    if not yield_per_portion:
+        return None
+    return OreOption(type_id=candidate.type_id, item=candidate.item, family=candidate.family,
+                      is_ice=candidate.is_ice, volume_m3=candidate.volume_m3, portion_size=portion_size,
+                      landed_cost_per_unit=unit_cost, yield_per_portion=yield_per_portion)
+
+
+def do_optimize_mineral_shopping_list(requirements: Optional[list[dict]] = None,
+                                       trading_cfg: TradingConfig = TRADING_CONFIG,
+                                       refining_cfg: RefiningConfig = REFINING_CONFIG,
+                                       oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
+    """GitHub issue #93: solves "cheapest way to acquire these minerals" across
+    every compressed ore/ice type at once (see refining/optimizer.py for the LP
+    itself). `requirements` defaults to the saved list; passing one solves an
+    ad-hoc list without persisting it.
+
+    Unlike do_refresh_ore_shortlist/do_quote_reprocessing this needs NO logged-in
+    character: every price it reads is a *buy* price from Jita's public
+    regional order book (both the ore and the direct-mineral alternative are
+    bought there), never C-J's authenticated structure order book - nothing is
+    sold in this workflow, the minerals are consumed by Production. The ore
+    universe is the full SDE-derived one (build_ore_candidate_universe), not
+    the Ore Shortlist's active rows: the shortlist is a *profit-tracking*
+    selection for the import-and-sell business, and excluding an ore from it
+    shouldn't quietly make a build list more expensive."""
+    entries = requirements if requirements is not None else do_load_mineral_requirements()
+    wanted: list[MineralRequirement] = []
+    for entry in entries:
+        type_id, qty = int(entry["type_id"]), float(entry["required_qty"])
+        if qty <= 0:
+            continue
+        sde_row = storage.get_sde_type(type_id)
+        wanted.append(MineralRequirement(type_id=type_id,
+                                          name=entry.get("name") or (sde_row[2] if sde_row else str(type_id)),
+                                          required_qty=qty))
+    if not wanted:
+        raise ActionError("No mineral requirements yet - add at least one mineral and quantity first.")
+
+    candidates = build_ore_candidate_universe()
+    if not candidates:
+        raise ActionError("No compressed ore/ice types found in the SDE cache - run Refresh SDE first.")
+
+    client = ESIClient(trading_cfg, TokenManager(oauth_cfg))
+    ore_ids = [c.type_id for c in candidates]
+    mineral_ids = [r.type_id for r in wanted]
+    try:
+        stats_by_id = client.region_order_stats_bulk(trading_cfg.jita_region_id, sorted(set(ore_ids + mineral_ids)))
+    except (ESIError, requests.RequestException) as e:
+        # region_order_stats_bulk swallows a per-type_id ESI *error response*
+        # but not a transport-level failure (ESI down, no route out) - that
+        # propagates out of the thread pool, and without this would surface as
+        # a bare 500 instead of the app's one user-facing error type.
+        raise ActionError(f"Could not fetch Jita's order book ({e}).") from e
+
+    ore_options = [o for o in (_ore_option(c, stats_by_id.get(c.type_id), refining_cfg, trading_cfg)
+                               for c in candidates) if o is not None]
+    mineral_options = {}
+    for req in wanted:
+        sde_row = storage.get_sde_type(req.type_id)
+        volume = sde_row[3] if sde_row and sde_row[3] else 0.0
+        stats = stats_by_id.get(req.type_id)
+        mineral_options[req.type_id] = MineralOption(
+            type_id=req.type_id, name=req.name,
+            landed_cost_per_unit=landed_cost_per_unit(stats.sell_percentile if stats else None, volume, trading_cfg),
+        )
+
+    try:
+        plan = optimize_shopping_list(wanted, ore_options, mineral_options)
+    except OptimizationError as e:
+        raise ActionError(str(e)) from e
+    return _plan_to_dict(plan)
+
+
+def _plan_to_dict(plan: ShoppingListPlan) -> dict:
+    return {
+        "ore_purchases": [vars(p) for p in plan.ore_purchases],
+        "direct_purchases": [vars(p) for p in plan.direct_purchases],
+        "coverage": [vars(c) for c in plan.coverage],
+        "ore_cost": plan.ore_cost, "direct_cost": plan.direct_cost, "total_cost": plan.total_cost,
+        "lp_cost": plan.lp_cost, "all_direct_cost": plan.all_direct_cost,
+        "savings_vs_all_direct": plan.savings_vs_all_direct, "total_volume_m3": plan.total_volume_m3,
     }
 
 
