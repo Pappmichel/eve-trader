@@ -361,13 +361,34 @@ scheduler's own global backup job (see above, opt-in via
 ## "Theoretical ceiling" figures - not bugs
 
 `potential_daily_profit` (Production's Build Candidates) and "Profit / Day"
-(Trading's Shortlist) are deliberately `profit_per_unit x total daily
-sell_volume` - the value of an item's *entire* day of market turnover, not a
-claim about what one seller could personally capture. A tiny-volume,
-huge-per-unit item (a capital hull, a faction module) can show an enormous
-number - that's mathematically correct for "what's the whole market worth,"
-confirmed deliberate with the user after live-testing surfaced exactly this
-case. Don't cap, filter, or "fix" these values without asking first.
+(Trading's Shortlist) are deliberately `profit_per_unit x <a volume figure>`
+- not a claim about what one seller could personally capture in a day. A
+tiny-volume, huge-per-unit item (a capital hull, a faction module) can show
+an enormous number - that's mathematically correct for "what's the whole
+market worth," confirmed deliberate with the user after live-testing
+surfaced exactly this case. Don't cap, filter, or "fix" the multiplication
+itself without asking first.
+
+**The volume figure must be a real turnover estimate, never order-book
+depth** - GitHub issue #51 (2026-08-21, real bug, not just a labeling
+issue): Trading's Shortlist "Profit / Day" used to be `profit_per_unit x
+sell_volume`, where `sell_volume` (`esi_client._summarize_orders`) is the
+sum of `volume_remain` across every currently open sell order at the
+structure - i.e. "how much is listed for sale right now," a live
+order-book-depth snapshot, not actual daily traded volume. A single seller
+parking a large batch of a never-actually-sold item produced a wildly
+inflated "Profit / Day" purely from that listed quantity. Fixed by switching
+to `ShortlistRow.avg_daily_sold` - real average daily *sold* quantity,
+computed by `trade_reconciliation.average_daily_sold_by_type` from the last
+Reconcile Trades run's matched sales (`realized_trades.matched_qty`,
+summed per type_id and divided by `cfg.lookback_days`) - `None` (shown as
+"–", excluded from Top Imports) until a real sale has actually been matched
+for that item, rather than estimated from something else. The `sell_volume`
+field itself is unchanged and still legitimately shown as "Listed Qty" (own
+column) - it's just no longer used for the Profit/Day multiplication.
+Production's `potential_daily_profit` was never affected by this bug - it
+already used real Goonmetrics `movement` (units/day) history
+(`production/engine.py`'s `daily_movement`), not order-book depth.
 
 ## Real SDE data drives classification, not heuristics
 
@@ -416,25 +437,18 @@ without asking first.
 A full codebase audit (2026-08-18) turned up four more low-priority items,
 deliberately left unfixed at the time (everything else the audit found -
 critical/important bugs, nice-to-haves, architecture docs, EVE-mechanic
-corrections, README - was fixed and deployed the same day):
-- `portfolio.py`'s `portfolio_overview` re-pulls Goonmetrics' ~11MB Jita
-  price dump on every call (already has a 60s cache, so impact is limited -
-  a real fix would mean a more targeted/paginated fetch).
-- `candidate_discovery.py`'s SDE-crawl path uses flight volume while its
-  ESI-crawl path (`_build_candidate_universe_from_esi`) uses
-  `packaged_volume` - inconsistent, but practically harmless since ships
-  (where the two differ) are excluded from candidates anyway.
-- Invention probability (`production/invention.py`) assumes one global
-  datacore-skill level pair (`cfg.datacore_skill_1_level`/`_2_level`) for
-  every item, when real datacore/science skill *pairs* differ per
-  blueprint - a pragmatic simplification, not a bug.
-- A drift-guard test for `sqlite_migration.py`'s `_PER_TENANT_TABLES` list
-  (catching a newly-added RLS-enabled table that never got added to the
-  migration list) would need live Postgres introspection against
-  `information_schema`/`pg_policies` - lower urgency since the one-time
-  live cutover this list exists for is already done; only matters again for
-  a hypothetical future disaster-recovery migration from an old SQLite
-  backup.
+corrections, README - was fixed and deployed the same day). All four were
+later closed out: `candidate_discovery.py`'s SDE-crawl path using raw flight
+volume for capital-sized modules turned out to be a real bug, not
+"practically harmless" (fixed, GitHub issue #73); the `sqlite_migration.py`
+drift-guard test was implemented as part of GitHub issue #60; the other two
+(a Goonmetrics full-market-dump re-fetch in `portfolio.py`'s
+`portfolio_overview`, and `production/invention.py` assuming one global
+datacore-skill pair instead of per-blueprint pairs) were reviewed again and
+confirmed to have no actionable fix worth tracking here - the former has no
+alternative Goonmetrics endpoint to switch to, the latter would need new SDE
+skill-requirement data plus a live ESI character-skills pull, real new
+feature scope rather than a bug.
 
 ## Windows packaging lives in a sibling repo
 

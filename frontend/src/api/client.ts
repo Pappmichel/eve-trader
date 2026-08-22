@@ -94,7 +94,6 @@ const del = <TResp>(path: string) => request<TResp>(path, { method: 'DELETE' })
 // ------------------------------------------------------------------- auth
 export const authApi = {
   start: (rolePrefix: string) => get<{ url: string }>(`/api/auth/${rolePrefix}/start`),
-  status: () => get<T.AuthStatus>('/api/auth/status'),
 }
 
 // -------------------------------------------------------------- access gate
@@ -135,6 +134,12 @@ export const tradingApi = {
     ),
   checkSellerUnlistedStock: () => post<T.UnlistedStockRow[]>('/api/trading/seller/unlisted-stock'),
   checkUndercut: () => post<T.UndercutRow[]>('/api/trading/seller/undercut'),
+
+  // GitHub issue #46: buyer/seller are multi-character now, same pattern as
+  // productionApi.producerCharacters/removeCharacter below.
+  buyerCharacters: () => get<T.TradingCharacter[]>('/api/trading/buyer-characters'),
+  sellerCharacters: () => get<T.TradingCharacter[]>('/api/trading/seller-characters'),
+  removeCharacter: (roleKey: string) => del(`/api/trading/auth/character/${roleKey}`),
 }
 
 // ------------------------------------------------------------- production

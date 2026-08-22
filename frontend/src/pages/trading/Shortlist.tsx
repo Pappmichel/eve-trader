@@ -75,18 +75,26 @@ export default function Shortlist() {
     })
   }, [data, effectiveCategories, selDecisions, effectiveMeta, search, minMarginPct])
 
+  // GitHub issue #51: computed from avg_daily_sold (real observed sales,
+  // from the last Reconcile Trades run) - NOT sell_volume/order-book depth,
+  // which used to make a never-actually-sold item with a big listed
+  // quantity show a wildly inflated "Profit / Day".
   const topImports = useMemo(() => {
     return filtered
-      .filter((r) => r.profit_per_unit !== null && r.sell_volume !== null)
-      .map((r) => ({ item: r.item, maxProfitPerDay: (r.profit_per_unit ?? 0) * (r.sell_volume ?? 0) }))
+      .filter((r) => r.profit_per_unit !== null && r.avg_daily_sold !== null)
+      .map((r) => ({ item: r.item, maxProfitPerDay: (r.profit_per_unit ?? 0) * (r.avg_daily_sold ?? 0) }))
       .sort((a, b) => b.maxProfitPerDay - a.maxProfitPerDay)
       .slice(0, 15)
   }, [filtered])
 
+  // GitHub issue #52: meta.mobileHide marks columns DataTable force-hides
+  // below the `sm` breakpoint - keeps Item/Status/Margin/Profit-per-Unit
+  // visible (the columns needed to judge a row at a glance on a phone),
+  // hides the rest (still reachable via the Columns menu or a wider screen).
   const columns = useMemo<ColumnDef<ShortlistRow, any>[]>(() => [
     { header: 'Item', accessorKey: 'item', size: 220 },
-    { header: 'Category', accessorKey: 'category', size: 110 },
-    { header: 'Meta Level', accessorKey: 'meta_level', size: 90, cell: (i) => i.getValue() ?? '–' },
+    { header: 'Category', accessorKey: 'category', size: 110, meta: { mobileHide: true } },
+    { header: 'Meta Level', accessorKey: 'meta_level', size: 90, cell: (i) => i.getValue() ?? '–', meta: { mobileHide: true } },
     {
       header: 'Status', accessorKey: 'decision', size: 170,
       cell: (i) => <Badge color={DECISION_COLOR[i.getValue() as string] ?? 'gray'} variant="light">{i.getValue()}</Badge>,
@@ -98,6 +106,7 @@ export default function Shortlist() {
         if (days === null) return '–'
         return <Text size="sm" c={days <= 5 ? 'danger' : undefined}>{days}</Text>
       },
+      meta: { mobileHide: true },
     },
     { header: 'Margin', accessorKey: 'margin', size: 90, cell: (i) => pct(i.getValue()) },
     {
@@ -117,18 +126,24 @@ export default function Shortlist() {
           </Group>
         )
       },
+      meta: { mobileHide: true },
     },
     { header: 'Profit / Unit', accessorKey: 'profit_per_unit', size: 120, cell: (i) => isk(i.getValue()) },
     {
-      header: 'Profit / Day (theoretical)', id: 'maxProfitPerDay', size: 160,
-      accessorFn: (r) => (r.profit_per_unit !== null && r.sell_volume !== null) ? r.profit_per_unit * r.sell_volume : null,
+      // GitHub issue #51: profit_per_unit x avg_daily_sold (real observed
+      // sales from the last Reconcile Trades run), not sell_volume/
+      // order-book depth - "–" means no real sale has been matched for this
+      // item yet, not a guess derived from listed quantity.
+      header: 'Profit / Day (avg. sold)', id: 'maxProfitPerDay', size: 160,
+      accessorFn: (r) => (r.profit_per_unit !== null && r.avg_daily_sold !== null) ? r.profit_per_unit * r.avg_daily_sold : null,
       cell: (i) => isk(i.getValue()),
+      meta: { mobileHide: true },
     },
-    { header: 'Profit / m³', accessorKey: 'profit_per_m3', size: 110, cell: (i) => qty(i.getValue()) },
-    { header: 'Cost (Jita)', accessorKey: 'landed_cost', size: 120, cell: (i) => isk(i.getValue()) },
-    { header: 'Sale (Structure)', accessorKey: 'net_sell', size: 140, cell: (i) => isk(i.getValue()) },
-    { header: 'Sell Volume', accessorKey: 'sell_volume', size: 110, cell: (i) => qty(i.getValue()) },
-    { header: 'Own Orders', accessorKey: 'own_orders_remaining', size: 110, cell: (i) => qty(i.getValue()) },
+    { header: 'Profit / m³', accessorKey: 'profit_per_m3', size: 110, cell: (i) => qty(i.getValue()), meta: { mobileHide: true } },
+    { header: 'Cost (Jita)', accessorKey: 'landed_cost', size: 120, cell: (i) => isk(i.getValue()), meta: { mobileHide: true } },
+    { header: 'Sale (Structure)', accessorKey: 'net_sell', size: 140, cell: (i) => isk(i.getValue()), meta: { mobileHide: true } },
+    { header: 'Listed Qty (Structure)', accessorKey: 'sell_volume', size: 150, cell: (i) => qty(i.getValue()), meta: { mobileHide: true } },
+    { header: 'Own Orders', accessorKey: 'own_orders_remaining', size: 110, cell: (i) => qty(i.getValue()), meta: { mobileHide: true } },
   ], [trends])
 
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={560} />

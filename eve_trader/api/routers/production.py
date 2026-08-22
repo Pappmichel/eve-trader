@@ -221,16 +221,14 @@ def get_category_locations():
 def get_logistics_status():
     if not _last_plan or not _last_plan.get("build_list"):
         raise HTTPException(status_code=400, detail="No build list computed yet. Run 'Compute Buy/Build List' first.")
-    from ...production.engine import logistics_status
-    return logistics_status(_last_plan["build_list"])
+    return _wrap(actions.do_get_logistics_status, build_list=_last_plan["build_list"])
 
 
 @router.get("/logistics/distribution", response_model=list[schemas.DistributionRow])
 def get_distribution_recommendations():
     if not _last_plan or not _last_plan.get("build_list"):
         raise HTTPException(status_code=400, detail="No build list computed yet. Run 'Compute Buy/Build List' first.")
-    from ...production.engine import distribution_recommendations
-    return distribution_recommendations(_last_plan["build_list"])
+    return _wrap(actions.do_get_distribution_recommendations, build_list=_last_plan["build_list"])
 
 
 @router.get("/logistics/invention", response_model=list[schemas.LogisticsRow])
@@ -241,8 +239,7 @@ def get_invention_logistics():
     # state (no Tech II stock targets configured), not an error.
     if _last_plan is None:
         raise HTTPException(status_code=400, detail="No build list computed yet. Run 'Compute Buy/Build List' first.")
-    from ...production.engine import invention_logistics
-    return invention_logistics(_last_plan.get("invention_list") or [])
+    return _wrap(actions.do_get_invention_logistics, invention_list=_last_plan.get("invention_list") or [])
 
 
 @router.get("/logistics/structure-names")
