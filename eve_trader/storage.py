@@ -497,6 +497,13 @@ def list_users_with_grants() -> list[dict]:
 
 
 # --------------------------------------------------------------- error log
+# Caps unbounded growth (nothing else ever deletes from error_log - see
+# test_storage_error_log.py's own comment) - same "prune down to a fixed
+# count" shape as backup.py's MAX_BACKUPS, just row-count-based here since
+# there's no natural per-item identity to dedupe on beyond raw volume.
+MAX_ERROR_LOG_ROWS = 5000
+
+
 def log_error(source: str, message: str, detail: Optional[str], path: Optional[str]) -> None:
     """Records one frontend-reported (or backend-caught) error - unscoped,
     same reasoning as tool_grants/tenants (see docs/observability_schema.sql's
@@ -511,6 +518,11 @@ def log_error(source: str, message: str, detail: Optional[str], path: Optional[s
         conn.execute(
             "INSERT INTO error_log (tenant_id, source, message, detail, path) VALUES (?, ?, ?, ?, ?)",
             (get_current_tenant(), source, message, detail, path),
+        )
+        conn.execute(
+            "DELETE FROM error_log WHERE id NOT IN "
+            "(SELECT id FROM error_log ORDER BY created_at DESC LIMIT ?)",
+            (MAX_ERROR_LOG_ROWS,),
         )
 
 
