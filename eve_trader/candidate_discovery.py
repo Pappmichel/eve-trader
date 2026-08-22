@@ -20,7 +20,7 @@ from typing import Iterable, Optional
 
 from . import storage
 from .config import TRADING_CONFIG, TradingConfig
-from .esi_client import ESIClient, extract_meta_level, resolve_effective_volume
+from .esi_client import ESIClient, extract_meta_level, resolve_effective_volume_bulk
 from .models import Candidate
 
 log = logging.getLogger(__name__)
@@ -134,23 +134,32 @@ def _build_candidate_universe_from_sde(market_groups: list[tuple[int, int, str]]
         if is_wanted_market_path(path := _market_group_path(gid, names, parents), cfg)
     }
 
-    candidates: list[Candidate] = []
+    rows = []
     for type_id, type_name, volume, market_group_id, meta_level, category_id in sde_types:
         path = wanted_paths.get(market_group_id)
         if path is None or not type_name or not volume or volume <= 0:
             continue
-        # GitHub issue #73: capital-sized modules (category_id=MODULE_CATEGORY_ID)
-        # have a much smaller *packaged* volume than the raw SDE `volume`
-        # used above, the same quirk already fixed for Production's own haul
-        # cost in issue #11 (production/engine.py's _haul_volume, now a thin
-        # wrapper around this same resolve_effective_volume). Ships have the
-        # identical quirk but are already excluded via is_wanted_market_path
-        # above (excluded_path_prefixes), so they never reach this call -
-        # only Module-category types actually trigger the ESI lookup here.
-        # Passing category_id (already in hand from this loop's own tuple)
-        # skips resolve_effective_volume's own storage.get_type_category
-        # lookup.
-        effective_volume = resolve_effective_volume(type_id, volume, category_id)
+        rows.append((type_id, type_name, volume, meta_level, category_id, path))
+
+    # GitHub issue #73: capital-sized modules (category_id=MODULE_CATEGORY_ID)
+    # have a much smaller *packaged* volume than the raw SDE `volume` above,
+    # the same quirk already fixed for Production's own haul cost in issue
+    # #11. Ships have the identical quirk but are already excluded via
+    # is_wanted_market_path above (excluded_path_prefixes), so only
+    # Module-category types actually need the ESI lookup. Resolved in one
+    # bulk, concurrent pass (not per-type_id inside this loop) - GitHub
+    # issue #96: on a deploy where type_packaged_volume hasn't been fully
+    # backfilled yet, doing this one type_id at a time meant hundreds of
+    # sequential live ESI calls in a single request, timing out well before
+    # nginx's default 60s proxy_read_timeout (see resolve_effective_volume_
+    # bulk's own docstring).
+    effective_volumes = resolve_effective_volume_bulk(
+        [(type_id, volume, category_id) for type_id, _type_name, volume, _meta, category_id, _path in rows]
+    )
+
+    candidates: list[Candidate] = []
+    for type_id, type_name, volume, meta_level, category_id, path in rows:
+        effective_volume = effective_volumes.get(type_id, volume)
         candidates.append(Candidate(
             item=type_name, type_id=type_id, volume_m3=effective_volume,
             category=guess_category(path, type_name, volume, category_id, category_names,

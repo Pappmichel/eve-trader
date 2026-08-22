@@ -47,8 +47,11 @@ class RefiningConfig:
     # {ore/ice family name: skill level} - one skill per ore/ice *family*
     # (e.g. "Veldspar" covers Veldspar/Concentrated Veldspar/Dense Veldspar,
     # confirmed with the user during planning), not per exact type_id. A
-    # family missing from this dict is treated as level 0 (unskilled), not an
-    # error - see refining/engine.py's ore_ice_yield.
+    # family missing from this dict is treated as level 5 (maxed), not an
+    # error and not unskilled - see refining/engine.py's ore_ice_yield's own
+    # docstring for why (these are cheap skills almost every active player
+    # has trained to 5; defaulting to 0 would understate every
+    # not-yet-configured family's profit).
     ore_family_skill_levels: dict[str, int] = field(default_factory=dict)
 
     # -- Scrapmetal path (independent of everything above - see constants.py's

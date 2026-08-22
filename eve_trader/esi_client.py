@@ -99,6 +99,64 @@ def resolve_effective_volume(type_id: int, sde_volume: Optional[float],
     return sde_volume
 
 
+def resolve_effective_volume_bulk(items: list[tuple[int, Optional[float], Optional[int]]],
+                                   max_workers: int = 10) -> dict[int, Optional[float]]:
+    """Same as resolve_effective_volume, but for many (type_id, sde_volume,
+    category_id) triples concurrently - candidate_discovery's SDE-backed
+    candidate universe (_build_candidate_universe_from_sde) used to call
+    resolve_effective_volume once per Ship/Module-category type inside its
+    own for-loop, each cache miss triggering its own live, sequential ESI
+    call. On a deploy where type_packaged_volume hasn't been fully
+    backfilled yet, that's easily several hundred type_ids in one "Load
+    Market Groups" request - confirmed real 2026-08-23: enough sequential
+    ESI round-trips to blow past nginx's default 60s proxy_read_timeout,
+    reported as "Load Market Groups gives a timeout". Same ThreadPoolExecutor
+    + storage.with_current_tenant pattern as region_order_stats_bulk (see
+    that method's own docstring for why with_current_tenant is required -
+    worker threads don't inherit the submitting thread's ambient tenant)."""
+    results: dict[int, Optional[float]] = {}
+    sde_volume_by_id: dict[int, Optional[float]] = {}
+    to_fetch: list[int] = []
+    for type_id, sde_volume, category_id in items:
+        sde_volume_by_id[type_id] = sde_volume
+        if sde_volume is None:
+            results[type_id] = None
+            continue
+        if category_id is None:
+            category_id = storage.get_type_category(type_id)
+        if category_id not in (_SHIP_CATEGORY_ID, _MODULE_CATEGORY_ID):
+            results[type_id] = sde_volume
+            continue
+        cached = storage.get_cached_packaged_volume(type_id)
+        if cached is not None:
+            results[type_id] = cached
+            continue
+        to_fetch.append(type_id)
+
+    if not to_fetch:
+        return results
+
+    client = ESIClient()
+
+    def _fetch(type_id: int) -> Optional[float]:
+        try:
+            return client.get_packaged_volume(type_id)
+        except Exception:  # noqa: BLE001 - best-effort; a transient ESI hiccup shouldn't block the whole batch
+            return None
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(storage.with_current_tenant(_fetch), tid): tid for tid in to_fetch}
+        for future in as_completed(futures):
+            tid = futures[future]
+            packaged = future.result()
+            if packaged is not None:
+                storage.set_cached_packaged_volume(tid, packaged)
+                results[tid] = packaged
+            else:
+                results[tid] = sde_volume_by_id[tid]
+    return results
+
+
 @dataclass
 class OrderStats:
     """Summary stats for one side (buy/sell) of an order book - a robust
