@@ -188,6 +188,12 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "doctrine_structure_id": (1, None),
     "stockpile_location_id": (1, None),
     "cargo_tolerance_pct": (0, 1),
+    # -- Ore & Minerals / "refining" tool (see refining/config.py's RefiningConfig) --
+    "security_status": (-1, 1),
+    "reprocessing_skill_level": (0, 5),
+    "reprocessing_efficiency_skill_level": (0, 5),
+    "scrapmetal_processing_skill_level": (0, 5),
+    "refining_tax_rate": (0, 1),
 }
 
 

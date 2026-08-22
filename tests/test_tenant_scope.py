@@ -6,9 +6,28 @@ docs/MULTI_TENANT_PLAN.md.
 from eve_trader import storage, tenant_scope
 from eve_trader.config import TRADING_CONFIG
 from eve_trader.production.config import PRODUCTION_CONFIG
+from eve_trader.refining.config import REFINING_CONFIG
+
+from pathlib import Path
+
+import pytest
 
 from . import pg_helpers
 from .pg_helpers import _apply_phase1_schema, _apply_phase2_schema, tenant, tenant_pair  # noqa: F401
+
+_REFINING_SCHEMA_SQL = Path(__file__).resolve().parent.parent / "docs" / "refining_schema.sql"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _apply_refining_schema(_apply_phase1_schema, _apply_phase2_schema):
+    """Widens tenant_settings' scope CHECK to allow 'refining' - see
+    test_storage_refining.py's own copy of this fixture for the full
+    reasoning. Needed here too since test_enter_tenant_resolves_saved_
+    refining_overrides below saves a real "refining"-scope row."""
+    if not pg_helpers._postgres_available():
+        return
+    with pg_helpers.psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
+        conn.execute(_REFINING_SCHEMA_SQL.read_text(encoding="utf-8"))
 
 
 @pg_helpers.postgres_required()
@@ -61,3 +80,11 @@ def test_enter_tenant_isolates_two_tenants_configs(tenant_pair):
 
     with tenant_scope.enter_tenant(tenant_b):
         assert TRADING_CONFIG.min_hit_rate == 0.99
+
+
+@pg_helpers.postgres_required()
+def test_enter_tenant_resolves_saved_refining_overrides(tenant):
+    storage.save_tenant_settings("refining", {"reprocessing_skill_level": 5})
+
+    with tenant_scope.enter_tenant(tenant):
+        assert REFINING_CONFIG.reprocessing_skill_level == 5

@@ -15,9 +15,22 @@
 -- own file, never editing phase2_schema.sql itself) so
 -- save_tenant_config_overrides("doctrine", ...) can persist Doctrine
 -- Settings-page saves the same way Trading/Production already do.
+--
+-- Kept in sync with docs/refining_schema.sql's own copy of this same ALTER
+-- (GitHub issue #90) - each new tool's schema file must restate the FULL
+-- current scope list, not just its own addition: DROP+ADD CONSTRAINT
+-- replaces the whole check, so a re-run of this file *after*
+-- refining_schema.sql has already run (both are individually documented as
+-- "idempotent, safe to re-run" - deploy/README.md doesn't forbid re-running
+-- an earlier one) would otherwise silently narrow the constraint back down
+-- and CheckViolation on any already-saved 'refining'-scope row. Confirmed
+-- real during this feature's own test suite (two schema files' session
+-- fixtures reapplying their ALTERs in a different order than the
+-- documented deploy sequence). If a sixth tool adds a scope, its own schema
+-- file needs the same treatment - add its name here too, not just there.
 ALTER TABLE tenant_settings DROP CONSTRAINT IF EXISTS tenant_settings_scope_check;
 ALTER TABLE tenant_settings ADD CONSTRAINT tenant_settings_scope_check
-    CHECK (scope IN ('trading', 'production', 'doctrine'));
+    CHECK (scope IN ('trading', 'production', 'doctrine', 'refining'));
 
 -- ============================================================== shared table
 -- typeID -> fitting slot (see production/sde.py's refresh_sde, storage.
