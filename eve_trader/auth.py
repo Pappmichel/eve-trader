@@ -1,18 +1,23 @@
 """EVE SSO OAuth2 (Authorization Code + PKCE) handling.
 
-Two characters need to authorize (buyer in Jita, seller in the structure) so
-that CHARACTER_ORDERS, WALLET_TRANSACTIONS and STRUCTURE_MARKETS calls work
-for both. Tokens are cached per-character in the tenant_tokens Postgres
-table (see storage.py) and refreshed automatically when expired -
-data/tokens.json was the store before the multi-tenant migration's Phase 3b;
-import_tokens_file() below is the one-time cutover helper that moved a real
-file's contents into Postgres.
+At least one buyer (Jita) and one seller (the structure) character need to
+authorize so that CHARACTER_ORDERS, WALLET_TRANSACTIONS and
+STRUCTURE_MARKETS calls work for both roles - GitHub issue #46: more than
+one of either is supported too (more registered sellers/buyers means more
+available order slots), stored per-character as "buyer:<char_id>"/
+"seller:<char_id>" via get_token_interactive_multi, same scheme already used
+for "producer" characters - not a single fixed "buyer"/"seller" key anymore.
+Tokens are cached per-character in the tenant_tokens Postgres table (see
+storage.py) and refreshed automatically when expired - data/tokens.json was
+the store before the multi-tenant migration's Phase 3b; import_tokens_file()
+below is the one-time cutover helper that moved a real file's contents into
+Postgres.
 
 Usage:
     from eve_trader.auth import TokenManager
     tm = TokenManager()
-    token = tm.get_token_interactive("buyer")   # opens a browser once
-    token = tm.get_token("buyer")               # reuses/refreshes silently afterwards
+    token = tm.get_token_interactive_multi("buyer", scopes)  # opens a browser once
+    token = tm.get_token(token.role)                         # reuses/refreshes silently afterwards
 """
 from __future__ import annotations
 

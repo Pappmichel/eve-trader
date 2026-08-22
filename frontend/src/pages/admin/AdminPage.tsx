@@ -124,6 +124,13 @@ function UsersSection() {
   const addUser = useAction('Add User', () => adminApi.addUser(characterName),
     [['admin', 'users'], ['admin', 'tenants']])
   const removeUser = useAction('Remove User', adminApi.removeUser, [['admin', 'users']])
+  // GitHub issue #59 (found in a full-codebase audit 2026-08-21): one shared
+  // mutation instance reused across every user's Remove button - without
+  // tracking which row is actually pending, clicking Remove for one user put
+  // *every* user's button into the loading/disabled state, not just the one
+  // being removed (same bug ProductionLayout.tsx's own removeCharacter/
+  // pendingRoleKey comment already documents and fixes).
+  const [pendingCharacterId, setPendingCharacterId] = useState<number | null>(null)
 
   const columns = useMemo<ColumnDef<AdminUser, any>[]>(() => [
     { header: 'Character', accessorKey: 'character_name', size: 180, cell: (i) => i.getValue() ?? '—' },
@@ -137,13 +144,14 @@ function UsersSection() {
       header: '', id: 'actions', size: 60, enableSorting: false,
       cell: (i) => (
         <ActionIcon size="sm" variant="subtle" color="danger"
-          onClick={() => removeUser.mutate(i.row.original.character_id)} loading={removeUser.isPending}>
+          onClick={() => { setPendingCharacterId(i.row.original.character_id); removeUser.mutate(i.row.original.character_id) }}
+          loading={removeUser.isPending && pendingCharacterId === i.row.original.character_id}>
           <IconTrash size={14} />
         </ActionIcon>
       ),
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  ], [removeUser])
+  ], [removeUser, pendingCharacterId])
 
   return (
     <div>
