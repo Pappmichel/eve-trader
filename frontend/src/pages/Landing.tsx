@@ -86,6 +86,8 @@ export default function Landing() {
           description="Stock targets, buy-vs-build decisions, buy/build lists for T2 manufacturing." />
         <ToolCard tools={tools} toolKey="doctrine" to="/doctrine" title="Doctrine"
           description="Fleet doctrine fittings, contract validation against C-J stock contracts, stockpile tracking." />
+        <ToolCard tools={tools} toolKey="refining" to="/ore" title="Ore &amp; Minerals"
+          description="Import compressed ore/ice, refine at C-J, sell minerals for profit." />
       </SimpleGrid>
 
       <SimpleGrid cols={{ base: 1, xs: 2 }} spacing="md" mt="md">

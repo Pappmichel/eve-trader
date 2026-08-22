@@ -341,6 +341,20 @@ export const doctrineApi = {
   updateSettings: (s: T.DoctrineSettings) => post<T.DoctrineSettings>('/api/doctrine/settings', s),
 }
 
+// ------------------------------------------------------------- ore & minerals
+export const refiningApi = {
+  shortlistSnapshot: () => get<T.OreShortlistRow[]>('/api/refining/shortlist/snapshot'),
+  shortlistItems: () => get<T.OreShortlistItem[]>('/api/refining/shortlist/items'),
+  addCandidates: () => post<{ added: number; already_tracked: number }>('/api/refining/shortlist/add-candidates'),
+  refreshShortlist: () => post<Record<string, unknown>>('/api/refining/shortlist/refresh'),
+  settings: () => get<T.RefiningSettings>('/api/refining/settings'),
+  updateSettings: (s: T.RefiningSettings) => post<T.RefiningSettings>('/api/refining/settings', s),
+  settingsOptions: () => get<{ structure_types: string[]; rig_tiers: string[]; implants: string[] }>(
+    '/api/refining/settings/options',
+  ),
+  esiSyncTime: () => get<{ synced_at: string | null }>('/api/refining/esi/sync-time'),
+}
+
 // ------------------------------------------------------------------- admin
 export const adminApi = {
   tenants: () => get<T.AdminTenant[]>('/api/admin/tenants'),

@@ -112,6 +112,8 @@ KNOWN_NON_MIGRATED_TABLES: dict[str, str] = {
     "doctrine_contract_history": "Postgres-native (never existed in the pre-migration SQLite schema)",
     "doctrine_character_assets": "Postgres-native (never existed in the pre-migration SQLite schema)",
     "doctrine_corp_assets": "Postgres-native (never existed in the pre-migration SQLite schema)",
+    "ore_shortlist": "Postgres-native (GitHub issue #91 - never existed in the pre-migration SQLite schema)",
+    "ore_shortlist_snapshot": "Postgres-native (GitHub issue #91 - never existed in the pre-migration SQLite schema)",
 }
 
 

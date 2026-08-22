@@ -1667,6 +1667,84 @@ def latest_snapshot() -> pd.DataFrame:
         return pd.DataFrame(cur.fetchall(), columns=columns)
 
 
+# --------------------------------------------------- Ore & Minerals: Ore Shortlist
+# GitHub issue #91. Same two-table shape as the writes-section shortlist/
+# shortlist_snapshot functions above (composite-PK live list + no-PK append
+# snapshot). Deliberately raw tuples in/out, not eve_trader.refining.models
+# dataclasses - storage.py never imports a submodule's own models (see
+# get_owned_bpo_best_me_te and friends for the same "doctrine.models gets
+# built by doctrine/engine.py, not here" precedent) - refining/candidate_
+# discovery.py and refining/actions.py do that wrapping.
+def upsert_ore_shortlist(rows: Iterable[tuple[int, str, str, bool, bool]]) -> None:
+    """rows: (item_id, item, family, is_ice, active)."""
+    with connect() as conn:
+        conn.executemany(
+            "INSERT INTO ore_shortlist (item_id, item, family, is_ice, active) VALUES (?,?,?,?,?) "
+            "ON CONFLICT(tenant_id, item_id) DO UPDATE SET item=excluded.item, family=excluded.family, "
+            "is_ice=excluded.is_ice, active=excluded.active",
+            [(item_id, item, family, bool(is_ice), bool(active)) for item_id, item, family, is_ice, active in rows],
+        )
+
+
+def load_ore_shortlist() -> list[tuple[int, str, str, bool, bool]]:
+    """Returns (item_id, item, family, is_ice, active) rows."""
+    with connect() as conn:
+        return conn.execute("SELECT item_id, item, family, is_ice, active FROM ore_shortlist").fetchall()
+
+
+def deactivate_ore_shortlist_items(item_ids: Iterable[int]) -> None:
+    item_ids = list(item_ids)
+    if not item_ids:
+        return
+    with connect() as conn:
+        conn.executemany("UPDATE ore_shortlist SET active = false WHERE item_id = ?", [(i,) for i in item_ids])
+
+
+def save_ore_shortlist_snapshot(rows: list[tuple], run_ts: str) -> None:
+    """rows: (item_id, item, family, is_ice, active, volume_m3, landed_cost,
+    yield_pct, mineral_value, refining_tax, net_sell, sell_listed_qty,
+    profit_per_unit, margin, profit_per_m3, decision) - see refining/models.py's
+    OreShortlistRow for field meanings."""
+    with connect() as conn:
+        conn.executemany(
+            "INSERT INTO ore_shortlist_snapshot (run_ts, item_id, item, family, is_ice, active, volume_m3, "
+            "landed_cost, yield_pct, mineral_value, refining_tax, net_sell, sell_listed_qty, profit_per_unit, "
+            "margin, profit_per_m3, decision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [(run_ts, *row) for row in rows],
+        )
+
+
+def latest_ore_snapshot() -> pd.DataFrame:
+    """Same pattern as latest_snapshot() (Trading's own shortlist_snapshot read) -
+    the most recent run_ts's rows only, as a DataFrame the router converts via
+    schemas.records()."""
+    with connect() as conn:
+        run_ts = conn.execute("SELECT MAX(run_ts) FROM ore_shortlist_snapshot").fetchone()[0]
+        if not run_ts:
+            return pd.DataFrame()
+        cur = conn.execute("SELECT * FROM ore_shortlist_snapshot WHERE run_ts = ?", (run_ts,))
+        columns = [d[0] for d in cur.description]
+        return pd.DataFrame(cur.fetchall(), columns=columns)
+
+
+def load_ore_ice_candidate_types() -> list[tuple[int, str, float, str]]:
+    """Returns (type_id, type_name, volume, group_name) for every published
+    compressed ore/ice type - GitHub issue #91's fixed, SDE-derived candidate
+    universe (real SDE group taxonomy, not a per-type-name heuristic - see
+    CLAUDE.md's "Real SDE data drives classification" section). category_id
+    25 is Ore (mirrors refining.constants.ORE_ICE_CATEGORY_ID as a bare
+    literal here - storage.py doesn't import a submodule's own constants,
+    same reasoning as the models note above). group_name LIKE 'Compressed%'
+    is CCP's own real group naming (every compressed ore/ice type lives in a
+    dedicated "Compressed <Family>"/"Compressed Ice" group), not a guess."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT t.type_id, t.type_name, t.volume, g.group_name FROM sde_types t "
+            "JOIN sde_groups g ON g.group_id = t.group_id "
+            "WHERE g.category_id = 25 AND g.group_name LIKE 'Compressed%' AND t.published = 1"
+        ).fetchall()
+
+
 # ------------------------------------------------------------- Production: SDE reads
 def search_sde_types(query: str, limit: int = 20) -> list[tuple[int, str]]:
     """Type-ahead lookup for the Stock Targets editor. An exact (case-insensitive)

@@ -36,10 +36,14 @@ def _apply_refining_schema(_apply_phase1_schema, _apply_phase2_schema):
 
 @pytest.fixture(autouse=True)
 def _wipe():
-    # sde_types/sde_type_materials are shared tables (no tenant_id at all) -
-    # wipe before each test so a leftover row from an earlier test can never
-    # affect this one, regardless of which ids happen to be reused.
-    pg_helpers.wipe_tables("sde_types", "sde_type_materials")
+    # sde_types/sde_type_materials/sde_groups are shared tables (no tenant_id
+    # at all) - wipe before each test so a leftover row from an earlier test
+    # can never affect this one, regardless of which ids happen to be reused.
+    # ore_shortlist/ore_shortlist_snapshot ARE tenant-scoped (composite-PK/
+    # no-PK buckets respectively, see refining_schema.sql) - the `tenant`
+    # fixture already isolates those per-test via a fresh random tenant_id,
+    # no wipe needed for them.
+    pg_helpers.wipe_tables("sde_types", "sde_type_materials", "sde_groups")
     storage.get_sde_type.cache_clear()
     storage.get_type_materials.cache_clear()
     yield
@@ -51,6 +55,14 @@ def _insert_type(type_id, name="Test Type", portion_size=None, group_id=1):
             "INSERT INTO sde_types (type_id, group_id, type_name, volume, published, market_group_id, "
             "meta_level, meta_group_id, portion_size) VALUES (?, ?, ?, 1.0, 1, NULL, NULL, NULL, ?)",
             (type_id, group_id, name, portion_size),
+        )
+
+
+def _insert_group(group_id, category_id, group_name):
+    with storage.connect() as conn:
+        conn.execute(
+            "INSERT INTO sde_groups (group_id, category_id, group_name) VALUES (?, ?, ?)",
+            (group_id, category_id, group_name),
         )
 
 
@@ -141,3 +153,91 @@ def test_sde_row_counts_includes_type_materials(tenant):
     counts = storage.sde_row_counts()
 
     assert counts["sde_type_materials"] == 1
+
+
+# ------------------------------------------------ Ore Shortlist (GitHub issue #91)
+def test_load_ore_ice_candidate_types_filters_to_compressed_ore_groups(tenant):
+    _insert_group(1000, 25, "Compressed Veldspar")
+    _insert_group(1001, 25, "Veldspar")  # raw ore - must NOT be included
+    _insert_group(1002, 7, "Compressed Something")  # wrong category (Module, not Ore) - must NOT be included
+    _insert_type(34, "Compressed Veldspar", portion_size=100, group_id=1000)
+    _insert_type(1230, "Veldspar", portion_size=100, group_id=1001)
+    _insert_type(9999, "Compressed Something", portion_size=1, group_id=1002)
+
+    rows = storage.load_ore_ice_candidate_types()
+
+    assert [r[0] for r in rows] == [34]
+    assert rows[0][1] == "Compressed Veldspar"
+    assert rows[0][3] == "Compressed Veldspar"
+
+
+def test_load_ore_ice_candidate_types_excludes_unpublished(tenant):
+    _insert_group(1000, 25, "Compressed Veldspar")
+    with storage.connect() as conn:
+        conn.execute(
+            "INSERT INTO sde_types (type_id, group_id, type_name, volume, published, market_group_id, "
+            "meta_level, meta_group_id, portion_size) VALUES (34, 1000, 'Compressed Veldspar', 0.01, 0, "
+            "NULL, NULL, NULL, 100)",
+        )
+    assert storage.load_ore_ice_candidate_types() == []
+
+
+def test_upsert_and_load_ore_shortlist_round_trips(tenant):
+    storage.upsert_ore_shortlist([(34, "Compressed Veldspar", "Veldspar", False, True)])
+
+    rows = storage.load_ore_shortlist()
+
+    assert rows == [(34, "Compressed Veldspar", "Veldspar", False, True)]
+
+
+def test_upsert_ore_shortlist_updates_existing_row_on_conflict(tenant):
+    storage.upsert_ore_shortlist([(34, "Compressed Veldspar", "Veldspar", False, True)])
+    storage.upsert_ore_shortlist([(34, "Compressed Veldspar", "Veldspar", False, False)])
+
+    rows = storage.load_ore_shortlist()
+
+    assert rows == [(34, "Compressed Veldspar", "Veldspar", False, False)]
+
+
+def test_deactivate_ore_shortlist_items(tenant):
+    storage.upsert_ore_shortlist([(34, "Compressed Veldspar", "Veldspar", False, True)])
+
+    storage.deactivate_ore_shortlist_items([34])
+
+    assert storage.load_ore_shortlist() == [(34, "Compressed Veldspar", "Veldspar", False, False)]
+
+
+def test_deactivate_ore_shortlist_items_empty_list_is_a_no_op(tenant):
+    storage.deactivate_ore_shortlist_items([])  # must not raise
+
+
+def test_save_and_read_latest_ore_snapshot(tenant):
+    row = (34, "Compressed Veldspar", "Veldspar", False, True, 0.01, 1.9, 0.5, 1958.8, 0.0, 1958.8, 5000.0,
+           17.67, 9.23, 1767.0, "Import")
+    storage.save_ore_shortlist_snapshot([row], "2026-08-22T00:00:00")
+
+    df = storage.latest_ore_snapshot()
+
+    assert len(df) == 1
+    assert df.iloc[0]["item"] == "Compressed Veldspar"
+    assert df.iloc[0]["decision"] == "Import"
+
+
+def test_latest_ore_snapshot_only_returns_the_newest_run(tenant):
+    old_row = (34, "Compressed Veldspar", "Veldspar", False, True, 0.01, 1.9, 0.5, 1958.8, 0.0, 1958.8, 5000.0,
+               17.67, 9.23, 1767.0, "Skip")
+    new_row = (34, "Compressed Veldspar", "Veldspar", False, True, 0.01, 1.9, 0.5, 1958.8, 0.0, 1958.8, 5000.0,
+               17.67, 9.23, 1767.0, "Import")
+    storage.save_ore_shortlist_snapshot([old_row], "2026-08-22T00:00:00")
+    storage.save_ore_shortlist_snapshot([new_row], "2026-08-22T01:00:00")
+
+    df = storage.latest_ore_snapshot()
+
+    assert len(df) == 1
+    assert df.iloc[0]["decision"] == "Import"
+
+
+def test_latest_ore_snapshot_empty_before_any_run(tenant):
+    import pandas as pd
+    assert storage.latest_ore_snapshot().empty
+    assert isinstance(storage.latest_ore_snapshot(), pd.DataFrame)

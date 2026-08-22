@@ -650,3 +650,43 @@ export interface DoctrineCharacter {
   character_id: number
   character_name: string
 }
+
+// --------------------------------------------------------- ore & minerals
+export interface OreShortlistItem {
+  item_id: number
+  item: string
+  family: string
+  is_ice: boolean
+  active: boolean
+}
+
+export interface OreShortlistRow {
+  item_id: number
+  item: string
+  family: string
+  is_ice: boolean
+  active: boolean
+  volume_m3: number | null
+  landed_cost: number | null
+  yield_pct: number | null
+  mineral_value: number | null
+  refining_tax: number | null
+  net_sell: number | null
+  sell_listed_qty: number | null
+  profit_per_unit: number | null
+  margin: number | null
+  profit_per_m3: number | null
+  decision: string
+}
+
+export interface RefiningSettings {
+  structure_type: string
+  rig_tier: string
+  security_status: number
+  implant: string
+  reprocessing_skill_level: number
+  reprocessing_efficiency_skill_level: number
+  ore_family_skill_levels: Record<string, number>
+  scrapmetal_processing_skill_level: number
+  refining_tax_rate: number
+}
