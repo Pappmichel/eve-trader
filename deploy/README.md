@@ -158,14 +158,16 @@ sudo systemctl restart postgresql
 (the app's own connection pool never opens more than 10 - see
 `storage._get_pool()` - 20 leaves headroom for a manual `psql` session too.)
 
-Apply the schema (idempotent - safe to re-run), owner role only. All five
+Apply the schema (idempotent - safe to re-run), owner role only. All six
 files, not just phase1-3 - `admin_schema.sql` creates the `tool_grants`
 table the access gate needs (see "3. Configure" below - skipping this makes
 every gated request 500 with `relation "tool_grants" does not exist` the
-moment `access_gate_enabled: true` is set), and `doctrine_schema.sql`
+moment `access_gate_enabled: true` is set), `doctrine_schema.sql`
 creates every `doctrine_*` table the Doctrine tool needs (skipping this
 makes all 23 `/api/doctrine/*` endpoints fail the same way, since the
-backend registers that router unconditionally):
+backend registers that router unconditionally), and `refining_schema.sql`
+creates the `sde_type_materials` table + `sde_types.portion_size` column the
+"Ore & Minerals" tool needs (GitHub issue #90):
 ```bash
 cd ~/eve-trader
 sudo -u postgres psql -c "CREATE DATABASE eve_trader;"
@@ -174,6 +176,7 @@ sudo -u postgres psql -d eve_trader -f docs/phase2_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/phase3_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/admin_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/doctrine_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/refining_schema.sql
 ```
 `phase1_schema.sql` creates the `eve_trader_app` role with the **checked-in
 dev password** (`app_devpassword`) - fine for local dev, not for a real

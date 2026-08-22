@@ -745,10 +745,19 @@ def replace_sde_data(
     blueprint_time: list[tuple], blueprint_materials: list[tuple], blueprint_products: list[tuple],
     invention_probability: list[tuple] = (), solar_systems: list[tuple] = (),
     stations: list[tuple] = (), categories: list[tuple] = (), type_slots: list[tuple] = (),
+    type_materials: list[tuple] = (),
 ) -> None:
     """Wholesale-replaces the SDE cache tables (each refresh reflects one Fuzzwork
     dump snapshot, not an incremental merge - stale rows from a previous CCP
-    patch would otherwise linger)."""
+    patch would otherwise linger).
+
+    `type_materials` is `invTypeMaterials.csv` (type_id, material_type_id,
+    quantity-per-portion) - GitHub issue #90's "Ore & Minerals" feature,
+    serves both the ore/ice reprocessing path and the scrapmetal path (both
+    are "type -> material yield" lookups against this same SDE table, see
+    eve_trader/refining/engine.py). `types` rows now carry a 9th
+    `portion_size` element (same issue - exact whole-portion reprocessing
+    rounding, not a continuous approximation)."""
     with connect() as conn:
         conn.execute("DELETE FROM sde_types")
         conn.execute("DELETE FROM sde_groups")
@@ -761,7 +770,8 @@ def replace_sde_data(
         conn.execute("DELETE FROM sde_stations")
         conn.execute("DELETE FROM sde_categories")
         conn.execute("DELETE FROM sde_type_slots")
-        conn.executemany("INSERT INTO sde_types VALUES (?,?,?,?,?,?,?,?)", types)
+        conn.execute("DELETE FROM sde_type_materials")
+        conn.executemany("INSERT INTO sde_types VALUES (?,?,?,?,?,?,?,?,?)", types)
         conn.executemany("INSERT INTO sde_groups VALUES (?,?,?)", groups)
         conn.executemany("INSERT INTO sde_market_groups VALUES (?,?,?)", market_groups)
         conn.executemany("INSERT INTO sde_blueprint_time VALUES (?,?,?)", blueprint_time)
@@ -772,6 +782,7 @@ def replace_sde_data(
         conn.executemany("INSERT INTO sde_stations VALUES (?,?,?)", stations)
         conn.executemany("INSERT INTO sde_categories VALUES (?,?)", categories)
         conn.executemany("INSERT INTO sde_type_slots VALUES (?,?)", type_slots)
+        conn.executemany("INSERT INTO sde_type_materials VALUES (?,?,?)", type_materials)
     get_system_security.cache_clear()
     get_sde_type.cache_clear()
     get_type_category.cache_clear()
@@ -782,12 +793,14 @@ def replace_sde_data(
     get_station_ids_in_system.cache_clear()
     get_station_ids_in_region.cache_clear()
     get_type_slot.cache_clear()
+    get_type_materials.cache_clear()
 
 
 def sde_row_counts() -> dict[str, int]:
     tables = ["sde_types", "sde_groups", "sde_market_groups", "sde_blueprint_time",
               "sde_blueprint_materials", "sde_blueprint_products", "sde_invention_probability",
-              "sde_solar_systems", "sde_stations", "sde_categories", "sde_type_slots"]
+              "sde_solar_systems", "sde_stations", "sde_categories", "sde_type_slots",
+              "sde_type_materials"]
     with connect() as conn:
         return {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables}
 
@@ -1684,9 +1697,22 @@ def get_sde_type(type_id: int) -> Optional[tuple]:
     field was added (Refresh SDE to populate it). Cached: static SDE data,
     called for the same type_ids repeatedly across a recursive BOM traversal
     (production/engine.py) - invalidated on replace_sde_data()
-    (do_refresh_sde())."""
+    (do_refresh_sde()). A 9th element, `portion_size` (SDE's invTypes.csv
+    `portionSize` - reprocessing's whole-batch rounding unit, e.g.
+    Veldspar=100, GitHub issue #90), was appended after the other 8 - existing
+    positional readers (`sde_type[0]`..`sde_type[7]`) are unaffected; use
+    get_portion_size(type_id) rather than indexing [8] directly."""
     with connect() as conn:
         return conn.execute("SELECT * FROM sde_types WHERE type_id = ?", (type_id,)).fetchone()
+
+
+def get_portion_size(type_id: int) -> Optional[int]:
+    """The SDE's `portionSize` for `type_id` (GitHub issue #90) - reprocessing
+    rounds down to whole portions before applying yield% (see refining/
+    engine.py's apply_reprocessing_yield), not a continuous approximation.
+    None if the type isn't in the SDE cache or predates this field."""
+    row = get_sde_type(type_id)
+    return row[8] if row else None
 
 
 @lru_cache(maxsize=None)
@@ -1772,6 +1798,26 @@ def get_blueprint_materials(blueprint_type_id: int, activity_id: int) -> list[tu
             "SELECT material_type_id, quantity FROM sde_blueprint_materials "
             "WHERE blueprint_type_id = ? AND activity_id = ?",
             (blueprint_type_id, activity_id),
+        ).fetchall()
+
+
+@lru_cache(maxsize=None)
+def get_type_materials(type_id: int) -> list[tuple[int, float]]:
+    """Returns [(material_type_id, quantity_per_portion), ...] from the SDE's
+    invTypeMaterials.csv - GitHub issue #90's "Ore & Minerals" feature. Used
+    by both the ore/ice and scrapmetal reprocessing paths (eve_trader/
+    refining/engine.py) - both are "type -> material yield" lookups against
+    this same table, unlike get_blueprint_materials (manufacturing/reaction
+    only). `quantity_per_portion` is the raw SDE quantity, before any yield%
+    or portion-size-batch rounding is applied (see refining/engine.py's
+    apply_reprocessing_yield). Cached - see get_sde_type. The returned list
+    is shared across callers (lru_cache returns the same object every time) -
+    callers must treat it as read-only."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT material_type_id, quantity FROM sde_type_materials WHERE type_id = ? "
+            "ORDER BY material_type_id",
+            (type_id,),
         ).fetchall()
 
 
