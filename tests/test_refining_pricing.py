@@ -69,6 +69,26 @@ def test_evaluate_ore_item_profitable_is_import(monkeypatch, trading_cfg, refini
     assert row.margin is not None and row.margin > trading_cfg.min_margin_threshold
 
 
+def test_evaluate_ore_item_min_profit_threshold_is_compared_per_unit_not_per_portion(monkeypatch, refining_cfg):
+    # Real bug found in code review: _decision used to receive profit_per_
+    # PORTION (~17.67 x 100 = 1767.33 here) instead of profit_per_unit
+    # (~17.67), making a per-unit threshold ~portion_size times too lenient.
+    # min_profit_threshold=100 (per-unit): the real per-unit profit (~17.67)
+    # is below it, so this must be "Skip", not "Import" - it would wrongly
+    # pass as "Import" if compared against the per-portion figure instead.
+    trading_cfg = TradingConfig(jita_buy_broker_fee=0.0147, structure_sell_haircut=0.9463, import_cost_per_m3=900.0,
+                                 min_profit_threshold=100.0, min_margin_threshold=0.05)
+    monkeypatch.setattr(storage, "get_portion_size", lambda type_id: 100)
+    monkeypatch.setattr(storage, "get_type_materials", lambda type_id: [(35, 415.0)])
+    jita = OrderStats(sell_percentile=1.0, sell_volume=5000.0, buy_percentile=None, buy_volume=0.0)
+    tritanium = OrderStats(sell_percentile=10.0, sell_volume=1_000_000.0, buy_percentile=None, buy_volume=0.0)
+
+    row = evaluate_ore_item(_candidate(volume_m3=0.001), True, jita, {35: tritanium}, trading_cfg, refining_cfg)
+
+    assert row.profit_per_unit == pytest.approx(17.6733, abs=0.001)
+    assert row.decision == "Skip"
+
+
 def test_evaluate_ore_item_unprofitable_is_skip(monkeypatch, trading_cfg, refining_cfg):
     monkeypatch.setattr(storage, "get_portion_size", lambda type_id: 100)
     monkeypatch.setattr(storage, "get_type_materials", lambda type_id: [(35, 415.0)])
