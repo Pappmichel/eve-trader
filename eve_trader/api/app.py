@@ -63,8 +63,10 @@ _GATE_EXEMPT_PATHS = {
 
 # Path prefix -> the tool_key a request under it requires (see access_gate.
 # tools_for). Only enforced while the gate is enabled - see dispatch() below;
-# a path with no matching prefix (e.g. /api/auth/*, /api/gate/*) is never
-# tool-gated, only session-gated.
+# a path with no matching prefix (e.g. /api/gate/*) is never tool-gated, only
+# session-gated. /api/auth/{role_prefix}/start is handled separately below
+# (GitHub issue #57) - it doesn't share one fixed prefix per tool the way
+# these do, since the tool depends on the path's own role_prefix segment.
 _TOOL_PATH_PREFIXES = {
     "/api/trading/": "trading",
     "/api/production/": "production",
@@ -73,11 +75,28 @@ _TOOL_PATH_PREFIXES = {
     "/api/admin/": "admin",
 }
 
+_AUTH_START_PREFIX = "/api/auth/"
+_AUTH_START_SUFFIX = "/start"
+
 
 def _required_tool_for_path(path: str) -> Optional[str]:
     for prefix, tool_key in _TOOL_PATH_PREFIXES.items():
         if path.startswith(prefix):
             return tool_key
+    # GitHub issue #57 (found in a full-codebase audit 2026-08-21, confirmed
+    # real gap): /api/auth/{role_prefix}/start used to be reachable by any
+    # character with a valid gate session regardless of tool grants - e.g. a
+    # character granted only "trading" could still call
+    # /api/auth/producer/start and register a live ESI token for
+    # Production. ROLE_PREFIX_TOOL (auth.py) is the single source of truth
+    # for which tool each role_prefix belongs to - "gate" maps to None
+    # (identity-only, and already fully exempt via _GATE_EXEMPT_PATHS
+    # before this function is ever reached for it) and an unrecognized
+    # role_prefix also maps to None here (the route handler itself rejects
+    # it with a 400 - see auth.start_login), never silently granted access.
+    if path.startswith(_AUTH_START_PREFIX) and path.endswith(_AUTH_START_SUFFIX):
+        role_prefix = path[len(_AUTH_START_PREFIX):-len(_AUTH_START_SUFFIX)]
+        return auth.ROLE_PREFIX_TOOL.get(role_prefix)
     return None
 
 

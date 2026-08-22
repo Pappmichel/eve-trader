@@ -313,10 +313,23 @@ class ESIClient:
         pool cuts wall-clock time roughly by max_workers vs. one-by-one, since
         the cost here is almost entirely network round-trip latency, not
         local computation. A failed lookup for one type_id doesn't affect the
-        others (falls back to an empty OrderStats)."""
+        others (falls back to an empty OrderStats).
+
+        GitHub issue #58 (found in a full-codebase audit 2026-08-21): wraps
+        the submitted call in storage.with_current_tenant - ThreadPoolExecutor
+        worker threads don't inherit contextvars from the submitting thread
+        (see that function's own docstring), so without this, anything on
+        this path that transitively touches storage.py (e.g. TokenManager
+        refreshing an expired token if auth_role is ever added here) would
+        run with no ambient tenant set on the worker thread - dormant today
+        since region_order_stats never sets auth_role (public endpoint), but
+        the same bug class this codebase has already fixed twice elsewhere
+        (esi_client._get_all_pages's own internal use, production/esi_sync.py's
+        sync_esi)."""
         results: dict[int, OrderStats] = {}
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(self.region_order_stats, region_id, tid): tid for tid in type_ids}
+            futures = {pool.submit(storage.with_current_tenant(self.region_order_stats), region_id, tid): tid
+                       for tid in type_ids}
             for future in as_completed(futures):
                 tid = futures[future]
                 try:

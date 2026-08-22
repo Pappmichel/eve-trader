@@ -19,9 +19,10 @@ from . import esi_sync, invention, jobs, pricing, sde
 from .config import PRODUCTION_CONFIG, ProductionConfig, validate_production_overrides
 from .constants import DECRYPTORS, JOB_CATEGORIES
 from .engine import (
-    build_material_tree, discover_build_candidates, discover_ship_margins, item_margin_detail,
-    invalidate_discover_cache, invalidate_ship_margin_cache,
-    invalidate_production_locations_cache, market_status, plan_asset_optimized, plan_production, stock_value,
+    build_material_tree, discover_build_candidates, discover_ship_margins, distribution_recommendations,
+    invention_logistics, item_margin_detail, invalidate_discover_cache, invalidate_ship_margin_cache,
+    invalidate_production_locations_cache, logistics_status, market_status, plan_asset_optimized,
+    plan_production, stock_value,
 )
 from .models import (
     AssetLocationRow, BuildCandidate, ManualBlueprintCopyCostRow, OwnedBlueprintRow, ShipMarginRow, UnlistedStockRow,
@@ -393,6 +394,28 @@ def do_refresh_asset_plan(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         raise ActionError("No stock targets configured.")
     plan = plan_asset_optimized(cfg)
     return {"jobs": len(plan["jobs"]), "plan": plan}
+
+
+# GitHub issue #64 (found in a full-codebase audit 2026-08-21): the three
+# Logistics-tab reads used to call engine.py directly from
+# api/routers/production.py, bypassing this module - the only architectural
+# exception to "actions.py is the one entry point" outside the small,
+# deliberate list CLAUDE.md documents (portfolio.py/scheduler.py). Thin
+# wrappers, same shape as every other do_* here - the router still owns
+# `_last_plan` itself (transient, router-local in-memory state with no CLI
+# equivalent to keep in sync, unlike everything else in this module) and its
+# own "was a plan computed yet" precondition check, since that's about the
+# router's own state, not something a do_* action can meaningfully own.
+def do_get_logistics_status(build_list: list) -> list:
+    return logistics_status(build_list)
+
+
+def do_get_distribution_recommendations(build_list: list) -> list:
+    return distribution_recommendations(build_list)
+
+
+def do_get_invention_logistics(invention_list: list) -> list:
+    return invention_logistics(invention_list)
 
 
 def do_market_status(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
