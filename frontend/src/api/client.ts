@@ -347,6 +347,10 @@ export const refiningApi = {
   shortlistItems: () => get<T.OreShortlistItem[]>('/api/refining/shortlist/items'),
   addCandidates: () => post<{ added: number; already_tracked: number }>('/api/refining/shortlist/add-candidates'),
   refreshShortlist: () => post<Record<string, unknown>>('/api/refining/shortlist/refresh'),
+  deactivateShortlistItems: (itemIds: number[]) =>
+    post<{ deactivated: number }>('/api/refining/shortlist/deactivate', { item_ids: itemIds }),
+  activateShortlistItems: (itemIds: number[]) =>
+    post<{ activated: number }>('/api/refining/shortlist/activate', { item_ids: itemIds }),
   settings: () => get<T.RefiningSettings>('/api/refining/settings'),
   updateSettings: (s: T.RefiningSettings) => post<T.RefiningSettings>('/api/refining/settings', s),
   settingsOptions: () => get<{ structure_types: string[]; rig_tiers: string[]; implants: string[] }>(

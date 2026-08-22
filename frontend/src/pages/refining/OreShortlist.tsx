@@ -1,12 +1,14 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Badge, Group, MultiSelect, Stack, Text, TextInput } from '@mantine/core'
+import { ActionIcon, Badge, Group, MultiSelect, Stack, Text, TextInput, Tooltip } from '@mantine/core'
+import { IconBan, IconRotateClockwise } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { refiningApi } from '../../api/client'
 import type { OreShortlistRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
+import { useAction } from '../../hooks/useAction'
 import { isk, pct, qty } from '../../format'
 
 const ALL_DECISIONS = ['Inactive', 'No market data', 'Skip', 'Import']
@@ -21,6 +23,16 @@ export default function OreShortlist() {
   const { data, isLoading } = useQuery({
     queryKey: ['refining', 'shortlist', 'snapshot'], queryFn: refiningApi.shortlistSnapshot,
   })
+
+  // Reversible (activate below undoes it), so no confirmation prompt - same
+  // "not truly destructive" reasoning already applied elsewhere in this app
+  // to reversible toggles.
+  const deactivate = useAction('Deactivate', (itemId: number) => refiningApi.deactivateShortlistItems([itemId]), [
+    ['refining', 'shortlist', 'snapshot'],
+  ])
+  const activate = useAction('Activate', (itemId: number) => refiningApi.activateShortlistItems([itemId]), [
+    ['refining', 'shortlist', 'snapshot'],
+  ])
 
   const [selFamilies, setSelFamilies] = useState<string[]>([])
   const [selDecisions, setSelDecisions] = useState<string[]>(ALL_DECISIONS)
@@ -57,7 +69,29 @@ export default function OreShortlist() {
     { header: 'Mineral Value (C-J)', accessorKey: 'net_sell', size: 150, cell: (i) => isk(i.getValue()), meta: { mobileHide: true } },
     { header: 'Refining Tax', accessorKey: 'refining_tax', size: 110, cell: (i) => isk(i.getValue()), meta: { mobileHide: true } },
     { header: 'Jita Listed Qty', accessorKey: 'sell_listed_qty', size: 130, cell: (i) => qty(i.getValue()), meta: { mobileHide: true } },
-  ], [])
+    {
+      header: '', id: 'actions', size: 50, enableSorting: false,
+      cell: (i) => {
+        const row = i.row.original
+        return row.active ? (
+          <Tooltip label="Deactivate">
+            <ActionIcon size="sm" variant="subtle" color="danger" aria-label={`Deactivate ${row.item}`}
+              onClick={() => deactivate.mutate(row.item_id)} loading={deactivate.isPending}>
+              <IconBan size={14} />
+            </ActionIcon>
+          </Tooltip>
+        ) : (
+          <Tooltip label="Activate">
+            <ActionIcon size="sm" variant="subtle" color="accent" aria-label={`Activate ${row.item}`}
+              onClick={() => activate.mutate(row.item_id)} loading={activate.isPending}>
+              <IconRotateClockwise size={14} />
+            </ActionIcon>
+          </Tooltip>
+        )
+      },
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ], [activate, deactivate])
 
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
   if (!data || data.length === 0) {

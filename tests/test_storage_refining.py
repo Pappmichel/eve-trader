@@ -211,6 +211,18 @@ def test_deactivate_ore_shortlist_items_empty_list_is_a_no_op(tenant):
     storage.deactivate_ore_shortlist_items([])  # must not raise
 
 
+def test_activate_ore_shortlist_items(tenant):
+    storage.upsert_ore_shortlist([(34, "Compressed Veldspar", "Veldspar", False, False)])
+
+    storage.activate_ore_shortlist_items([34])
+
+    assert storage.load_ore_shortlist() == [(34, "Compressed Veldspar", "Veldspar", False, True)]
+
+
+def test_activate_ore_shortlist_items_empty_list_is_a_no_op(tenant):
+    storage.activate_ore_shortlist_items([])  # must not raise
+
+
 def test_save_and_read_latest_ore_snapshot(tenant):
     row = (34, "Compressed Veldspar", "Veldspar", False, True, 0.01, 1.9, 0.5, 1958.8, 0.0, 1958.8, 5000.0,
            17.67, 9.23, 1767.0, "Import")
