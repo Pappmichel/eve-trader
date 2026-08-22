@@ -91,6 +91,42 @@ def test_live_fetches_assets_and_orders_and_flags_unlisted_stock(monkeypatch, te
     assert result["rows"][0].stock_quantity == 100.0
 
 
+@pg_helpers.postgres_required()
+def test_margin_lookup_goonmetrics_failure_degrades_to_none_not_500(monkeypatch, tenant):
+    # Found in code review of PR #71: item_margin_detail's _PlanContext build
+    # also calls Goonmetrics directly (unlike every other ESI call in this
+    # function, whose own client wraps transport failures into ESIError) - a
+    # requests.RequestException from Goonmetrics used to propagate uncaught
+    # past this best-effort degrade, turning "margin unknown for this one
+    # row" into a 500 for the whole page.
+    import requests
+
+    cfg = ProductionConfig(home_location_id=HOME_LOCATION_ID)
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(1, "No Order At All", 0, 50, None)])
+    monkeypatch.setattr(actions.esi_sync, "list_producer_characters",
+                         lambda: [("producer:1", 1, "TestChar")])
+    monkeypatch.setattr(TokenManager, "__init__", lambda self, *a, **kw: None)
+    monkeypatch.setattr(ESIClient, "character_assets", lambda self, character_id, auth_role: [
+        _asset(1, 1, 100, HOME_LOCATION_ID),
+    ])
+    monkeypatch.setattr(ESIClient, "character_orders", lambda self, character_id, auth_role: [])
+    monkeypatch.setattr(ESIClient, "character_public_info",
+                         lambda self, character_id: {"corporation_id": 500})
+    monkeypatch.setattr(ESIClient, "corporation_assets", lambda self, corporation_id, auth_role: [])
+    monkeypatch.setattr(ESIClient, "corporation_orders", lambda self, corporation_id, auth_role: [])
+    monkeypatch.setattr(ESIClient, "structure_order_stats_bulk",
+                         lambda self, structure_id, type_ids, auth_role: {})
+
+    def _raise(type_id, name, cfg):
+        raise requests.exceptions.ConnectionError("Goonmetrics unreachable")
+    monkeypatch.setattr(actions, "item_margin_detail", _raise)
+
+    result = actions.do_unlisted_stock(cfg)  # must not raise
+
+    assert len(result["rows"]) == 1
+    assert result["rows"][0].margin is None
+
+
 def test_corp_hangar_stock_with_only_a_corp_order_is_not_flagged_unlisted(monkeypatch):
     # Confirmed real bug: stock sitting in a corp hangar is often listed via
     # a *corp* sell order (funded by the corp wallet), not a personal one -
