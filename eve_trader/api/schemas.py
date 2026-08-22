@@ -352,6 +352,125 @@ class MaterialTreeNode(_Base):
 MaterialTreeNode.model_rebuild()
 
 
+# --------------------------------------------------------------- ore & minerals
+class OreShortlistItem(_Base):
+    item_id: int
+    item: str
+    family: str
+    is_ice: bool
+    active: bool = True
+
+
+class OreShortlistRow(_Base):
+    item_id: int
+    item: str
+    family: str
+    is_ice: bool
+    active: bool
+    volume_m3: Optional[float]
+    landed_cost: Optional[float]
+    yield_pct: Optional[float]
+    mineral_value: Optional[float]
+    refining_tax: Optional[float]
+    net_sell: Optional[float]
+    sell_listed_qty: Optional[float]
+    profit_per_unit: Optional[float]
+    margin: Optional[float]
+    profit_per_m3: Optional[float]
+    decision: str
+
+
+class ReprocessingQuoteRow(_Base):
+    name: str
+    quantity: int
+    type_id: Optional[int]
+    category: str
+    sell_as_is_value: Optional[float]
+    refined_value: Optional[float]
+    mineral_value: Optional[float]
+    refining_tax: Optional[float]
+    decision: str
+    error: Optional[str] = None
+
+
+class ReprocessingQuoteTotals(_Base):
+    reprocess_count: int
+    total_mineral_value: float
+    total_refined_value: float
+    total_sell_as_is_value: float
+
+
+class ReprocessingQuoteResult(_Base):
+    rows: list[ReprocessingQuoteRow]
+    totals: ReprocessingQuoteTotals
+
+
+class MineralRequirement(_Base):
+    type_id: int
+    name: Optional[str] = None
+    required_qty: float
+
+
+class OrePurchase(_Base):
+    type_id: int
+    item: str
+    family: str
+    is_ice: bool
+    portions: int
+    units: int
+    volume_m3: float
+    landed_cost_per_unit: float
+    total_cost: float
+
+
+class DirectMineralPurchase(_Base):
+    type_id: int
+    name: str
+    quantity: int
+    landed_cost_per_unit: float
+    total_cost: float
+
+
+class MineralCoverage(_Base):
+    type_id: int
+    name: str
+    required: float
+    from_ore: int
+    from_direct: int
+    delivered: int
+    surplus: float
+
+
+class ShoppingListPlan(_Base):
+    ore_purchases: list[OrePurchase]
+    direct_purchases: list[DirectMineralPurchase]
+    coverage: list[MineralCoverage]
+    ore_cost: float
+    direct_cost: float
+    total_cost: float
+    lp_cost: float
+    all_direct_cost: Optional[float]
+    savings_vs_all_direct: Optional[float]
+    total_volume_m3: float
+
+
+class RefinableMineral(_Base):
+    type_id: int
+    name: str
+
+
+class RefiningSettings(_Base):
+    structure_type: str
+    rig_tier: str
+    security_status: float
+    implant: str
+    reprocessing_skill_level: int
+    reprocessing_efficiency_skill_level: int
+    ore_family_skill_levels: dict[str, int]
+    scrapmetal_processing_skill_level: int
+    refining_tax_rate: float
+
+
 # ------------------------------------------------------------------ portfolio
 class Doctrine(_Base):
     doctrine_id: str

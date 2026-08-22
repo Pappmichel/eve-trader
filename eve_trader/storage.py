@@ -794,10 +794,19 @@ def replace_sde_data(
     blueprint_time: list[tuple], blueprint_materials: list[tuple], blueprint_products: list[tuple],
     invention_probability: list[tuple] = (), solar_systems: list[tuple] = (),
     stations: list[tuple] = (), categories: list[tuple] = (), type_slots: list[tuple] = (),
+    type_materials: list[tuple] = (),
 ) -> None:
     """Wholesale-replaces the SDE cache tables (each refresh reflects one Fuzzwork
     dump snapshot, not an incremental merge - stale rows from a previous CCP
-    patch would otherwise linger)."""
+    patch would otherwise linger).
+
+    `type_materials` is `invTypeMaterials.csv` (type_id, material_type_id,
+    quantity-per-portion) - GitHub issue #90's "Ore & Minerals" feature,
+    serves both the ore/ice reprocessing path and the scrapmetal path (both
+    are "type -> material yield" lookups against this same SDE table, see
+    eve_trader/refining/engine.py). `types` rows now carry a 9th
+    `portion_size` element (same issue - exact whole-portion reprocessing
+    rounding, not a continuous approximation)."""
     with connect() as conn:
         conn.execute("DELETE FROM sde_types")
         conn.execute("DELETE FROM sde_groups")
@@ -810,7 +819,8 @@ def replace_sde_data(
         conn.execute("DELETE FROM sde_stations")
         conn.execute("DELETE FROM sde_categories")
         conn.execute("DELETE FROM sde_type_slots")
-        conn.executemany("INSERT INTO sde_types VALUES (?,?,?,?,?,?,?,?)", types)
+        conn.execute("DELETE FROM sde_type_materials")
+        conn.executemany("INSERT INTO sde_types VALUES (?,?,?,?,?,?,?,?,?)", types)
         conn.executemany("INSERT INTO sde_groups VALUES (?,?,?)", groups)
         conn.executemany("INSERT INTO sde_market_groups VALUES (?,?,?)", market_groups)
         conn.executemany("INSERT INTO sde_blueprint_time VALUES (?,?,?)", blueprint_time)
@@ -821,6 +831,7 @@ def replace_sde_data(
         conn.executemany("INSERT INTO sde_stations VALUES (?,?,?)", stations)
         conn.executemany("INSERT INTO sde_categories VALUES (?,?)", categories)
         conn.executemany("INSERT INTO sde_type_slots VALUES (?,?)", type_slots)
+        conn.executemany("INSERT INTO sde_type_materials VALUES (?,?,?)", type_materials)
     get_system_security.cache_clear()
     get_sde_type.cache_clear()
     get_type_category.cache_clear()
@@ -831,12 +842,14 @@ def replace_sde_data(
     get_station_ids_in_system.cache_clear()
     get_station_ids_in_region.cache_clear()
     get_type_slot.cache_clear()
+    get_type_materials.cache_clear()
 
 
 def sde_row_counts() -> dict[str, int]:
     tables = ["sde_types", "sde_groups", "sde_market_groups", "sde_blueprint_time",
               "sde_blueprint_materials", "sde_blueprint_products", "sde_invention_probability",
-              "sde_solar_systems", "sde_stations", "sde_categories", "sde_type_slots"]
+              "sde_solar_systems", "sde_stations", "sde_categories", "sde_type_slots",
+              "sde_type_materials"]
     with connect() as conn:
         return {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables}
 
@@ -1703,6 +1716,129 @@ def latest_snapshot() -> pd.DataFrame:
         return pd.DataFrame(cur.fetchall(), columns=columns)
 
 
+# --------------------------------------------------- Ore & Minerals: Ore Shortlist
+# GitHub issue #91. Same two-table shape as the writes-section shortlist/
+# shortlist_snapshot functions above (composite-PK live list + no-PK append
+# snapshot). Deliberately raw tuples in/out, not eve_trader.refining.models
+# dataclasses - storage.py never imports a submodule's own models (see
+# get_owned_bpo_best_me_te and friends for the same "doctrine.models gets
+# built by doctrine/engine.py, not here" precedent) - refining/candidate_
+# discovery.py and refining/actions.py do that wrapping.
+def upsert_ore_shortlist(rows: Iterable[tuple[int, str, str, bool, bool]]) -> None:
+    """rows: (item_id, item, family, is_ice, active)."""
+    with connect() as conn:
+        conn.executemany(
+            "INSERT INTO ore_shortlist (item_id, item, family, is_ice, active) VALUES (?,?,?,?,?) "
+            "ON CONFLICT(tenant_id, item_id) DO UPDATE SET item=excluded.item, family=excluded.family, "
+            "is_ice=excluded.is_ice, active=excluded.active",
+            [(item_id, item, family, bool(is_ice), bool(active)) for item_id, item, family, is_ice, active in rows],
+        )
+
+
+def load_ore_shortlist() -> list[tuple[int, str, str, bool, bool]]:
+    """Returns (item_id, item, family, is_ice, active) rows."""
+    with connect() as conn:
+        return conn.execute("SELECT item_id, item, family, is_ice, active FROM ore_shortlist").fetchall()
+
+
+def deactivate_ore_shortlist_items(item_ids: Iterable[int]) -> None:
+    item_ids = list(item_ids)
+    if not item_ids:
+        return
+    with connect() as conn:
+        conn.executemany("UPDATE ore_shortlist SET active = false WHERE item_id = ?", [(i,) for i in item_ids])
+
+
+def activate_ore_shortlist_items(item_ids: Iterable[int]) -> None:
+    """Reactivation counterpart to deactivate_ore_shortlist_items above -
+    same reasoning as Trading's own activate_shortlist_items (GitHub issue
+    #35): without this, an item deactivated once stayed inactive forever
+    even if its economics later recovered, since evaluate_ore_item's
+    _decision short-circuits to "Inactive" whenever active=False."""
+    item_ids = list(item_ids)
+    if not item_ids:
+        return
+    with connect() as conn:
+        conn.executemany("UPDATE ore_shortlist SET active = true WHERE item_id = ?", [(i,) for i in item_ids])
+
+
+def save_ore_shortlist_snapshot(rows: list[tuple], run_ts: str) -> None:
+    """rows: (item_id, item, family, is_ice, active, volume_m3, landed_cost,
+    yield_pct, mineral_value, refining_tax, net_sell, sell_listed_qty,
+    profit_per_unit, margin, profit_per_m3, decision) - see refining/models.py's
+    OreShortlistRow for field meanings."""
+    with connect() as conn:
+        conn.executemany(
+            "INSERT INTO ore_shortlist_snapshot (run_ts, item_id, item, family, is_ice, active, volume_m3, "
+            "landed_cost, yield_pct, mineral_value, refining_tax, net_sell, sell_listed_qty, profit_per_unit, "
+            "margin, profit_per_m3, decision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [(run_ts, *row) for row in rows],
+        )
+
+
+def latest_ore_snapshot() -> pd.DataFrame:
+    """Same pattern as latest_snapshot() (Trading's own shortlist_snapshot read) -
+    the most recent run_ts's rows only, as a DataFrame the router converts via
+    schemas.records()."""
+    with connect() as conn:
+        run_ts = conn.execute("SELECT MAX(run_ts) FROM ore_shortlist_snapshot").fetchone()[0]
+        if not run_ts:
+            return pd.DataFrame()
+        cur = conn.execute("SELECT * FROM ore_shortlist_snapshot WHERE run_ts = ?", (run_ts,))
+        columns = [d[0] for d in cur.description]
+        return pd.DataFrame(cur.fetchall(), columns=columns)
+
+
+def load_ore_ice_candidate_types() -> list[tuple[int, str, float, str]]:
+    """Returns (type_id, type_name, volume, group_name) for every published
+    compressed ore/ice type - GitHub issue #91's fixed, SDE-derived candidate
+    universe (real SDE group taxonomy, not a per-type-name heuristic - see
+    CLAUDE.md's "Real SDE data drives classification" section). category_id
+    25 is Ore (mirrors refining.constants.ORE_ICE_CATEGORY_ID as a bare
+    literal here - storage.py doesn't import a submodule's own constants,
+    same reasoning as the models note above). group_name LIKE 'Compressed%'
+    is CCP's own real group naming (every compressed ore/ice type lives in a
+    dedicated "Compressed <Family>"/"Compressed Ice" group), not a guess."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT t.type_id, t.type_name, t.volume, g.group_name FROM sde_types t "
+            "JOIN sde_groups g ON g.group_id = t.group_id "
+            "WHERE g.category_id = 25 AND g.group_name LIKE 'Compressed%' AND t.published = 1"
+        ).fetchall()
+
+
+# ---------------------------------------- Ore & Minerals: Mineral Shopping List
+# GitHub issue #93. Same simple composite-PK key-value shape as stock_targets
+# (docs/refining_schema.sql) - raw tuples in/out, not eve_trader.refining.models
+# dataclasses, for the same reason spelled out above the Ore Shortlist section.
+def replace_mineral_requirements(rows: Iterable[tuple[int, str, float]]) -> None:
+    """rows: (mineral_type_id, mineral_name, required_qty). Replace-all, not
+    upsert-only: the Mineral Shopping List's editor always submits the whole
+    list (and #94's "Aus Production laden" overwrites it wholesale), so a
+    mineral removed in the editor has to actually disappear here - an
+    upsert-only write would silently keep it, and the optimizer would keep
+    solving for a requirement the user already deleted. The DELETE is
+    tenant-scoped by RLS like every other statement on this connection, so it
+    can only ever clear this tenant's own rows."""
+    rows = [(int(type_id), name, float(qty)) for type_id, name, qty in rows]
+    with connect() as conn:
+        conn.execute("DELETE FROM mineral_requirements")
+        if rows:
+            conn.executemany(
+                "INSERT INTO mineral_requirements (mineral_type_id, mineral_name, required_qty) VALUES (?,?,?)",
+                rows,
+            )
+
+
+def load_mineral_requirements() -> list[tuple[int, str, float]]:
+    """Returns (mineral_type_id, mineral_name, required_qty) rows, name-ordered
+    so the editor and the optimizer's output always list minerals the same way."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT mineral_type_id, mineral_name, required_qty FROM mineral_requirements ORDER BY mineral_name"
+        ).fetchall()
+
+
 # ------------------------------------------------------------- Production: SDE reads
 def search_sde_types(query: str, limit: int = 20) -> list[tuple[int, str]]:
     """Type-ahead lookup for the Stock Targets editor. An exact (case-insensitive)
@@ -1733,9 +1869,22 @@ def get_sde_type(type_id: int) -> Optional[tuple]:
     field was added (Refresh SDE to populate it). Cached: static SDE data,
     called for the same type_ids repeatedly across a recursive BOM traversal
     (production/engine.py) - invalidated on replace_sde_data()
-    (do_refresh_sde())."""
+    (do_refresh_sde()). A 9th element, `portion_size` (SDE's invTypes.csv
+    `portionSize` - reprocessing's whole-batch rounding unit, e.g.
+    Veldspar=100, GitHub issue #90), was appended after the other 8 - existing
+    positional readers (`sde_type[0]`..`sde_type[7]`) are unaffected; use
+    get_portion_size(type_id) rather than indexing [8] directly."""
     with connect() as conn:
         return conn.execute("SELECT * FROM sde_types WHERE type_id = ?", (type_id,)).fetchone()
+
+
+def get_portion_size(type_id: int) -> Optional[int]:
+    """The SDE's `portionSize` for `type_id` (GitHub issue #90) - reprocessing
+    rounds down to whole portions before applying yield% (see refining/
+    engine.py's apply_reprocessing_yield), not a continuous approximation.
+    None if the type isn't in the SDE cache or predates this field."""
+    row = get_sde_type(type_id)
+    return row[8] if row else None
 
 
 @lru_cache(maxsize=None)
@@ -1821,6 +1970,26 @@ def get_blueprint_materials(blueprint_type_id: int, activity_id: int) -> list[tu
             "SELECT material_type_id, quantity FROM sde_blueprint_materials "
             "WHERE blueprint_type_id = ? AND activity_id = ?",
             (blueprint_type_id, activity_id),
+        ).fetchall()
+
+
+@lru_cache(maxsize=None)
+def get_type_materials(type_id: int) -> list[tuple[int, float]]:
+    """Returns [(material_type_id, quantity_per_portion), ...] from the SDE's
+    invTypeMaterials.csv - GitHub issue #90's "Ore & Minerals" feature. Used
+    by both the ore/ice and scrapmetal reprocessing paths (eve_trader/
+    refining/engine.py) - both are "type -> material yield" lookups against
+    this same table, unlike get_blueprint_materials (manufacturing/reaction
+    only). `quantity_per_portion` is the raw SDE quantity, before any yield%
+    or portion-size-batch rounding is applied (see refining/engine.py's
+    apply_reprocessing_yield). Cached - see get_sde_type. The returned list
+    is shared across callers (lru_cache returns the same object every time) -
+    callers must treat it as read-only."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT material_type_id, quantity FROM sde_type_materials WHERE type_id = ? "
+            "ORDER BY material_type_id",
+            (type_id,),
         ).fetchall()
 
 

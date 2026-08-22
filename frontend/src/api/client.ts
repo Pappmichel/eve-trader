@@ -341,6 +341,33 @@ export const doctrineApi = {
   updateSettings: (s: T.DoctrineSettings) => post<T.DoctrineSettings>('/api/doctrine/settings', s),
 }
 
+// ------------------------------------------------------------- ore & minerals
+export const refiningApi = {
+  shortlistSnapshot: () => get<T.OreShortlistRow[]>('/api/refining/shortlist/snapshot'),
+  shortlistItems: () => get<T.OreShortlistItem[]>('/api/refining/shortlist/items'),
+  addCandidates: () => post<{ added: number; already_tracked: number }>('/api/refining/shortlist/add-candidates'),
+  refreshShortlist: () => post<Record<string, unknown>>('/api/refining/shortlist/refresh'),
+  deactivateShortlistItems: (itemIds: number[]) =>
+    post<{ deactivated: number }>('/api/refining/shortlist/deactivate', { item_ids: itemIds }),
+  activateShortlistItems: (itemIds: number[]) =>
+    post<{ activated: number }>('/api/refining/shortlist/activate', { item_ids: itemIds }),
+  settings: () => get<T.RefiningSettings>('/api/refining/settings'),
+  updateSettings: (s: T.RefiningSettings) => post<T.RefiningSettings>('/api/refining/settings', s),
+  settingsOptions: () => get<{ structure_types: string[]; rig_tiers: string[]; implants: string[] }>(
+    '/api/refining/settings/options',
+  ),
+  esiSyncTime: () => get<{ synced_at: string | null }>('/api/refining/esi/sync-time'),
+  quoteReprocessing: (paste: string) =>
+    post<T.ReprocessingQuoteResult>('/api/refining/reprocessing/quote', { paste }),
+  // Mineral Shopping List (GitHub issue #93)
+  refinableMinerals: () => get<T.RefinableMineral[]>('/api/refining/shopping-list/minerals'),
+  mineralRequirements: () => get<T.MineralRequirement[]>('/api/refining/shopping-list/requirements'),
+  saveMineralRequirements: (requirements: T.MineralRequirement[]) =>
+    post<{ saved: number }>('/api/refining/shopping-list/requirements', { requirements }),
+  optimizeShoppingList: (requirements?: T.MineralRequirement[]) =>
+    post<T.ShoppingListPlan>('/api/refining/shopping-list/optimize', { requirements: requirements ?? null }),
+}
+
 // ------------------------------------------------------------------- admin
 export const adminApi = {
   tenants: () => get<T.AdminTenant[]>('/api/admin/tenants'),
