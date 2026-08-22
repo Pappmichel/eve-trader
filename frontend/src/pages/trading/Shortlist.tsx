@@ -130,6 +130,16 @@ export default function Shortlist() {
     },
     { header: 'Profit / Unit', accessorKey: 'profit_per_unit', size: 120, cell: (i) => isk(i.getValue()) },
     {
+      // GitHub issue #51/#99: real observed average daily sold quantity
+      // (from the last Reconcile Trades run), not sell_volume/order-book
+      // depth - "–" means no real sale has been matched for this item yet.
+      // Shown as its own column so it's visible independent of Profit/Day,
+      // which just multiplies this by Profit/Unit.
+      header: 'Volume Sold (avg/day)', accessorKey: 'avg_daily_sold', size: 150,
+      cell: (i) => qty(i.getValue()),
+      meta: { mobileHide: true },
+    },
+    {
       // GitHub issue #51: profit_per_unit x avg_daily_sold (real observed
       // sales from the last Reconcile Trades run), not sell_volume/
       // order-book depth - "–" means no real sale has been matched for this
