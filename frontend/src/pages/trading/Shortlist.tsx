@@ -25,7 +25,7 @@ const DECISION_COLOR: Record<string, string> = {
 const META_UNKNOWN = 'unknown'
 
 export default function Shortlist() {
-  const { data, isLoading } = useQuery({ queryKey: ['trading', 'shortlist', 'snapshot'], queryFn: tradingApi.shortlistSnapshot })
+  const { data, isLoading, isError, refetch } = useQuery({ queryKey: ['trading', 'shortlist', 'snapshot'], queryFn: tradingApi.shortlistSnapshot })
   const { data: settings } = useQuery({ queryKey: ['trading', 'settings'], queryFn: tradingApi.settings })
   // Zero-network-cost signal (pure local computation over already-persisted
   // Goonmetrics history, see history_backtest.compute_margin_trends) - safe
@@ -147,6 +147,7 @@ export default function Shortlist() {
   ], [trends])
 
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
+  if (isError) return <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />
   if (!data || data.length === 0) {
     return <HintCard>No run yet. Click <b>Refresh Shortlist</b> on the left to compute margins and buy recommendations for your shortlist.</HintCard>
   }

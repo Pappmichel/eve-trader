@@ -49,7 +49,9 @@ describe('DataTable', () => {
     const user = userEvent.setup()
     renderTable()
 
-    await user.click(screen.getByRole('columnheader', { name: /Amount/ }))
+    // Sortable headers carry role="button" (GitHub issue #61 - keyboard
+    // accessibility), not the <th> element's implicit "columnheader" role.
+    await user.click(screen.getByRole('button', { name: /Amount/ }))
     let cells = bodyRows().map((r) => within(r).getAllByRole('cell')[0].textContent)
     // Descending by real numeric value (1,000,000 > 50 > 5) - if this sorted
     // the *formatted* strings instead, "1,000,000" would sort before "50"
@@ -59,7 +61,9 @@ describe('DataTable', () => {
     // lexicographically).
     expect(cells).toEqual(['Alpha Ore', 'Mid Ore', 'Zebra Ore'])
 
-    await user.click(screen.getByRole('columnheader', { name: /Amount/ }))
+    // Sortable headers carry role="button" (GitHub issue #61 - keyboard
+    // accessibility), not the <th> element's implicit "columnheader" role.
+    await user.click(screen.getByRole('button', { name: /Amount/ }))
     cells = bodyRows().map((r) => within(r).getAllByRole('cell')[0].textContent)
     expect(cells).toEqual(['Zebra Ore', 'Mid Ore', 'Alpha Ore'])
   })
