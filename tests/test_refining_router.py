@@ -49,6 +49,36 @@ def test_add_candidates_calls_action(monkeypatch):
     assert resp.json() == {"added": 3, "already_tracked": 12}
 
 
+def test_deactivate_shortlist_items_passes_item_ids_to_action(monkeypatch):
+    captured = {}
+
+    def _deactivate(item_ids):
+        captured["item_ids"] = item_ids
+        return {"deactivated": len(item_ids)}
+    monkeypatch.setattr(refining_actions, "do_deactivate_ore_shortlist_items", _deactivate)
+
+    resp = client.post("/api/refining/shortlist/deactivate", json={"item_ids": [34, 35]})
+
+    assert resp.status_code == 200
+    assert captured["item_ids"] == [34, 35]
+    assert resp.json() == {"deactivated": 2}
+
+
+def test_activate_shortlist_items_passes_item_ids_to_action(monkeypatch):
+    captured = {}
+
+    def _activate(item_ids):
+        captured["item_ids"] = item_ids
+        return {"activated": len(item_ids)}
+    monkeypatch.setattr(refining_actions, "do_activate_ore_shortlist_items", _activate)
+
+    resp = client.post("/api/refining/shortlist/activate", json={"item_ids": [34]})
+
+    assert resp.status_code == 200
+    assert captured["item_ids"] == [34]
+    assert resp.json() == {"activated": 1}
+
+
 def test_refresh_shortlist_action_error_maps_to_400(monkeypatch):
     def _raise(**kwargs):
         raise ActionError("Ore Shortlist is empty - click 'Add Candidates' first.")

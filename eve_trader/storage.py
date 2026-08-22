@@ -1700,6 +1700,19 @@ def deactivate_ore_shortlist_items(item_ids: Iterable[int]) -> None:
         conn.executemany("UPDATE ore_shortlist SET active = false WHERE item_id = ?", [(i,) for i in item_ids])
 
 
+def activate_ore_shortlist_items(item_ids: Iterable[int]) -> None:
+    """Reactivation counterpart to deactivate_ore_shortlist_items above -
+    same reasoning as Trading's own activate_shortlist_items (GitHub issue
+    #35): without this, an item deactivated once stayed inactive forever
+    even if its economics later recovered, since evaluate_ore_item's
+    _decision short-circuits to "Inactive" whenever active=False."""
+    item_ids = list(item_ids)
+    if not item_ids:
+        return
+    with connect() as conn:
+        conn.executemany("UPDATE ore_shortlist SET active = true WHERE item_id = ?", [(i,) for i in item_ids])
+
+
 def save_ore_shortlist_snapshot(rows: list[tuple], run_ts: str) -> None:
     """rows: (item_id, item, family, is_ice, active, volume_m3, landed_cost,
     yield_pct, mineral_value, refining_tax, net_sell, sell_listed_qty,

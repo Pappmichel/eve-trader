@@ -77,6 +77,20 @@ def refresh_ore_shortlist():
     return _wrap(actions.do_refresh_ore_shortlist)
 
 
+class ShortlistItemIdsBody(BaseModel):
+    item_ids: list[int]
+
+
+@router.post("/shortlist/deactivate")
+def deactivate_ore_shortlist_items(body: ShortlistItemIdsBody):
+    return _wrap(actions.do_deactivate_ore_shortlist_items, item_ids=body.item_ids)
+
+
+@router.post("/shortlist/activate")
+def activate_ore_shortlist_items(body: ShortlistItemIdsBody):
+    return _wrap(actions.do_activate_ore_shortlist_items, item_ids=body.item_ids)
+
+
 @router.post("/settings")
 def update_settings(updates: schemas.RefiningSettings):
     return _wrap(actions.do_update_settings, updates=updates.model_dump())

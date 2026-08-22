@@ -113,6 +113,11 @@ def do_deactivate_ore_shortlist_items(item_ids: list[int]) -> dict:
     return {"deactivated": len(item_ids)}
 
 
+def do_activate_ore_shortlist_items(item_ids: list[int]) -> dict:
+    storage.activate_ore_shortlist_items(item_ids)
+    return {"activated": len(item_ids)}
+
+
 def do_quote_reprocessing(paste_text: str, trading_cfg: TradingConfig = TRADING_CONFIG,
                            refining_cfg: RefiningConfig = REFINING_CONFIG,
                            oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
