@@ -8,7 +8,11 @@ not this module's own router).
 """
 from __future__ import annotations
 
+import logging
+
 from . import storage
+
+logger = logging.getLogger(__name__)
 
 # Bounds how much a single report can write - a render-crash stack trace or
 # a long error message is exactly the kind of thing that's unbounded in
@@ -26,12 +30,21 @@ def _truncate(value: str, max_length: int) -> str:
 
 
 def do_report_error(source: str, message: str, detail: str | None = None, path: str | None = None) -> dict:
-    storage.log_error(
-        source=_truncate(source, 50),
-        message=_truncate(message, _MAX_MESSAGE_LENGTH),
-        detail=_truncate(detail, _MAX_DETAIL_LENGTH) if detail else None,
-        path=_truncate(path, _MAX_PATH_LENGTH) if path else None,
-    )
+    # api/routers/errors.py deliberately doesn't _wrap this endpoint - error
+    # reporting must not itself raise a user-visible error - so that
+    # guarantee has to hold here too: a Postgres failure while trying to
+    # record an error must degrade to {"recorded": False}, not propagate as
+    # a raw 500 out of what's meant to be a best-effort diagnostic aid.
+    try:
+        storage.log_error(
+            source=_truncate(source, 50),
+            message=_truncate(message, _MAX_MESSAGE_LENGTH),
+            detail=_truncate(detail, _MAX_DETAIL_LENGTH) if detail else None,
+            path=_truncate(path, _MAX_PATH_LENGTH) if path else None,
+        )
+    except Exception:
+        logger.exception("Failed to record frontend/backend error report")
+        return {"recorded": False}
     return {"recorded": True}
 
 
