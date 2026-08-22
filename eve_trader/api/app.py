@@ -21,7 +21,7 @@ from ..access_gate import SESSION_COOKIE_NAME, read_session_token, tools_for
 from ..config import ACCESS_CONFIG, TRADING_CONFIG, apply_config_overrides
 from ..doctrine.config import DOCTRINE_CONFIG
 from ..production.config import PRODUCTION_CONFIG
-from .routers import admin, auth, doctrine, gate, portfolio, production, trading
+from .routers import admin, auth, doctrine, errors, gate, portfolio, production, trading
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 
@@ -241,6 +241,7 @@ def create_app() -> FastAPI:
     app.include_router(portfolio.router, prefix="/api/portfolio", tags=["portfolio"])
     app.include_router(doctrine.router, prefix="/api/doctrine", tags=["doctrine"])
     app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
+    app.include_router(errors.router, prefix="/api/errors", tags=["errors"])
 
     if FRONTEND_DIST.exists():
         app.mount("/", SPAStaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")

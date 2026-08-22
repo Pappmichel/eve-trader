@@ -496,6 +496,55 @@ def list_users_with_grants() -> list[dict]:
     ]
 
 
+# --------------------------------------------------------------- error log
+# Caps unbounded growth (nothing else ever deletes from error_log - see
+# test_storage_error_log.py's own comment) - same "prune down to a fixed
+# count" shape as backup.py's MAX_BACKUPS, just row-count-based here since
+# there's no natural per-item identity to dedupe on beyond raw volume.
+MAX_ERROR_LOG_ROWS = 5000
+
+
+def log_error(source: str, message: str, detail: Optional[str], path: Optional[str]) -> None:
+    """Records one frontend-reported (or backend-caught) error - unscoped,
+    same reasoning as tool_grants/tenants (see docs/observability_schema.sql's
+    own comment): this is inherently a cross-tenant operator concern (the
+    Admin tool's own "Recent Errors" section reads across every tenant), not
+    a per-tenant record. Tags the *current* ambient tenant_id (whichever
+    tenant's request this happened during) as a plain informational column,
+    not an RLS-scoping one - get_current_tenant() returns None outside any
+    request context (shouldn't happen in practice, but never raise over a
+    missing tenant while trying to log an unrelated error)."""
+    with connect_unscoped() as conn:
+        conn.execute(
+            "INSERT INTO error_log (tenant_id, source, message, detail, path) VALUES (?, ?, ?, ?, ?)",
+            (get_current_tenant(), source, message, detail, path),
+        )
+        conn.execute(
+            "DELETE FROM error_log WHERE id NOT IN "
+            "(SELECT id FROM error_log ORDER BY created_at DESC LIMIT ?)",
+            (MAX_ERROR_LOG_ROWS,),
+        )
+
+
+def list_errors(limit: int = 200) -> list[dict]:
+    """Most recent errors first, across every tenant - Admin-UI-only (cross-
+    tenant superadmin, same as list_users_with_grants)."""
+    with connect_unscoped() as conn:
+        rows = conn.execute(
+            "SELECT id, tenant_id, source, message, detail, path, created_at FROM error_log "
+            "ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [
+        {
+            "id": row_id, "tenant_id": str(tenant_id) if tenant_id else None,
+            "source": source, "message": message, "detail": detail, "path": path,
+            "created_at": str(created_at) if created_at else None,
+        }
+        for row_id, tenant_id, source, message, detail, path, created_at in rows
+    ]
+
+
 # ------------------------------------------------------------ tenant settings
 def save_tenant_settings(scope: str, updates: dict) -> None:
     """Merges `updates` into the current tenant's stored overrides for
