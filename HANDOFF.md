@@ -1,3 +1,149 @@
+# HANDOFF — Full codebase audit (2026-08-21): issues #54-#69, ALL FIXED
+
+Written 2026-08-21, same session as the #45/#46/#51/#52 work below (PR #71).
+The user asked for a full check-only audit of the entire project ("erstell
+ein vollständiges audit... zunächst nur prüfen nicht ändern"), got the plan
+saved + one issue filed per finding (#54-#69), then said "arbeite die
+issues in empfohlener Reihenfolge ab" - all 16 are now implemented,
+committed, and pushed to `fix/audit-remaining-55-57-to-69` (PR #72, stacked
+on top of PR #71's branch - see "Split into 3 PRs" below), in the exact
+suggested order
+(#54→#56→#55→#57→#58→#59→#60→#61→#62→#63→#64→#65→#66→#67→#68→#69), one
+commit per issue.
+
+**A real local Postgres instance became available partway through this
+work** (installed but not started in this sandbox - `service postgresql
+start` + a password/database setup got it running) - every fix from #54
+onward was verified against real Postgres, not just mocked unit tests,
+including two #59-adjacent frontend fixes verified live via Playwright
+against the actual running app (backend + Vite dev server + Postgres, all
+started fresh in this session). This also surfaced and fixed 3 real
+pre-existing test bugs that every previous session's `pytest` run had
+silently skipped (no Postgres = ~200 tests never ran): two in
+`test_production_unlisted_stock.py` (never mocked the ESI/pricing calls
+issue #45 added) and one in `test_gate_router.py` (still asserted the
+pre-#46 single-fixed-key "buyer" role). Full suite is 681 passed, 0 failed,
+0 skipped as of the last commit.
+
+**Local Postgres setup for a fresh session on this same machine** (if
+picking this up again with a cold container): `service postgresql start`,
+then `sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'devpassword';"`
++ `sudo -u postgres psql -c "CREATE DATABASE eve_trader;"` (matches
+`tests/pg_helpers.py`'s `OWNER_DSN` default) - `pytest` then applies
+phase1-3/admin schema itself via session-scoped fixtures. For a real
+end-to-end live check (not just `pytest`), also apply
+`docs/doctrine_schema.sql` by hand (not covered by the pytest fixtures
+outside `test_doctrine_storage.py`'s own local one - see issue #67's notes),
+create a throwaway `.env`/`config.yaml` (gitignored, not committed - see
+`.env.example`/`config.example.yaml`), and start `uvicorn
+eve_trader.api.main:app --port 8000` + `npm run dev` in `frontend/`.
+
+## How the audit was run
+
+Five parallel read-only Explore agents, each scoped to one area, running in
+isolated git worktrees (no risk of accidental edits leaking into the working
+tree):
+1. Trading core backend (actions.py, storage.py, shortlist.py, own_orders.py,
+   trade_reconciliation.py, esi_client.py, goonmetrics_client.py, auth.py,
+   config.py, backup.py, scheduler.py, history_backtest.py,
+   candidate_discovery.py, models.py)
+2. Production backend (everything under production/)
+3. API routers + auth + admin + doctrine (api/, admin.py, access_gate.py,
+   tenant_scope.py, doctrine/, portfolio.py)
+4. Frontend (everything under frontend/src/)
+5. Tests + schema + docs/deployment consistency (tests/, docs/*.sql,
+   sqlite_migration.py, deploy/, CLAUDE.md-vs-code drift, dependencies)
+
+Each agent was told to report only findings it was actually confident were
+real problems (not speculative hedging), with file:line + concrete failure
+scenario + severity, and to separate real bugs/security from minor nits -
+same bar as a normal code review, not a padded checklist. One additional
+finding (issue #56) was found and verified directly by the orchestrating
+session after the frontend agent flagged it, since it touched the #45 work
+from earlier in this same session.
+
+## All 16 findings, filed as issues, by severity
+
+**Critical**
+- **#54** Cross-tenant data leak via Production's `_discover_cache`/
+  `_ship_margin_cache` (`production/engine.py`) - process-global, not keyed
+  by tenant, despite caching tenant-scoped build-cost/margin data. Fix first.
+
+**High**
+- **#55** `deploy/README.md` never applies `admin_schema.sql`/
+  `doctrine_schema.sql` - breaks gate-enabled deployments and all of
+  Doctrine on any deployment that followed only the documented steps.
+- **#56** `api/schemas.py`'s `UnlistedStockRow`/`ProductionUnlistedStockRow`
+  were never updated when #45 added `sell_volume`/`margin` to the
+  underlying dataclasses - FastAPI's `response_model` silently strips both
+  fields, so the #45 feature (PR #71) is currently non-functional
+  end-to-end. Quick, well-understood fix.
+
+**Medium**
+- **#57** `/api/auth/{role_prefix}/start` isn't tool-gated - a character
+  without a tool grant can still register an ESI token for that tool.
+- **#58** `esi_client.region_order_stats_bulk`'s `ThreadPoolExecutor`
+  doesn't wrap calls in `storage.with_current_tenant` (dormant, matches an
+  already-fixed-twice bug class).
+- **#59** Shared-mutation `.isPending` reused for per-row loading state in
+  `DoctrineLayout.tsx` (×2), `AdminPage.tsx`, `Blueprints.tsx` - reintroduces
+  a bug already fixed in `ProductionLayout.tsx`/`Logistics.tsx`/
+  `TradingLayout.tsx`.
+- **#60** `sqlite_migration.py`'s `_PER_TENANT_TABLES` list is stale (13
+  tables missing vs. the real schema) - confirms a risk CLAUDE.md itself
+  already flagged as unverified.
+- **#61** `DataTable.tsx`'s sortable column headers aren't keyboard
+  accessible (no tabIndex/onKeyDown/aria-sort) - affects ~25 pages.
+
+**Low**
+- **#62** Dead/unreachable code in `storage.get_cached_structure_names`.
+- **#63** Duplicate `import_cost_per_m3` entry in `config._FIELD_RANGES`.
+- **#64** Production's `/logistics` endpoints bypass the `actions.py`
+  entry-point convention.
+- **#65** `portfolio.py` router's two GET endpoints skip `_wrap`.
+- **#66** Redundant boolean condition in `doctrine/validation.py`'s
+  `contract_ampel` (dead logic, not a behavior bug).
+- **#67** Zero router-level test coverage for any of the 23 Doctrine API
+  endpoints.
+- **#68** `docs/MULTI_TENANT_PLAN.md` describes a stale `resolve_tenant_id`
+  signature (low severity - that file is explicitly a historical-snapshot
+  doc, not a living reference).
+- **#69** Duplicated "character list with Add/Remove" component across
+  `TradingLayout.tsx`/`ProductionLayout.tsx`/`DoctrineLayout.tsx` - root
+  cause enabling #59 to happen (only 2 of 3 copies got that fix).
+
+## Status: all 16 fixed (2026-08-21), split into 3 PRs
+
+Every issue above got its own commit with a regression test (confirmed to
+fail against the pre-fix code first, wherever practical) - see each
+commit's own message for specifics.
+
+Originally all pushed to one branch/PR (#53), then split into 3 smaller
+PRs per the user's own request ("ist jetzt alles von dieser session in
+einem pr? ist das sinnvoll?" → "b" = split) - #53 was closed in favor of:
+- **#70** (`fix/critical-54-tenant-cache-leak`, base `main`) - just #54,
+  isolated so the critical fix can be reviewed/merged fast on its own.
+- **#71** (`fix/features-45-51-52-46`, base `main`) - the original 4
+  feature issues (#45, #51, #52, #46), plus #56 (fixes a schema gap in
+  #45) and 2 pre-existing test-double bugs in #45/#46's own tests.
+- **#72** (`fix/audit-remaining-55-57-to-69`, base `fix/features-45-51-52-46`
+  - **stacked on #71**, not `main`, since #69's refactor touches
+  `TradingLayout.tsx` code #46 introduces) - everything else (#55,
+  #57-#69).
+
+**Merge order matters**: #70 and #71 can merge independently/in either
+order (both target `main`, no overlap). #72 must wait for #71 to merge
+first, then rebase onto `main` before merging (it's currently based on
+#71's branch tip, not `main` - its diff will look inflated with #71's own
+changes until that rebase happens). Not yet merged/deployed - same "show
+the user the diff, get a go-ahead before push→PR→merge→deploy" caveat as
+the #45/#46/#51/#52 section below, plus **the #55 fix (deploy docs, in
+#72) still needs the actual real deployment's Postgres to have
+admin_schema.sql/doctrine_schema.sql applied by hand** (that fix only
+corrects the documentation - it doesn't touch a live deployment).
+
+---
+
 # HANDOFF — Issues #45, #46, #51, #52 implementation plan
 
 Written 2026-08-21 (new session, separate remote container — none of the

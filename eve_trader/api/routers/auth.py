@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import time
 import urllib.parse
+from typing import Optional
 
 import requests
 from fastapi import APIRouter, HTTPException
@@ -57,12 +58,34 @@ def _scopes_for(role_prefix: str) -> list[str]:
     return list(OAUTH_CONFIG.scopes)
 
 
+# GitHub issue #57 (found in a full-codebase audit 2026-08-21): the tool_key
+# a /api/auth/{role_prefix}/start login requires - both the allowlist of
+# valid role_prefix values (start_login below rejects anything else, rather
+# than letting an arbitrary string become a permanent TokenManager role key)
+# and what api/app.py's AccessGateMiddleware checks a session's tool grants
+# against for this path, since /api/auth/ isn't covered by
+# _TOOL_PATH_PREFIXES's plain prefix match. "gate" maps to None - it's
+# identity-only and already fully exempt from the gate check via
+# api/app.py's _GATE_EXEMPT_PATHS, never reaching this mapping at all in
+# practice, but listed here so it's still a recognized/allowed role_prefix.
+ROLE_PREFIX_TOOL: dict[str, Optional[str]] = {
+    "buyer": "trading",
+    "seller": "trading",
+    "producer": "production",
+    "doctrine": "doctrine",
+    "doctrine-assets": "doctrine",
+    "gate": None,
+}
+
+
 @router.get("/{role_prefix}/start")
 def start_login(role_prefix: str):
     """role_prefix: "buyer" | "seller" | "producer" | ... - every one of
     these is multi-character (GitHub issue #46: buyer/seller used to be a
     single fixed role each, now they follow the same "producer" scheme) -
     the final role is resolved after login as f"{role_prefix}:<char_id>"."""
+    if role_prefix not in ROLE_PREFIX_TOOL:
+        raise HTTPException(400, f"Unknown role_prefix '{role_prefix}'.")
     if not OAUTH_CONFIG.client_id:
         raise HTTPException(500, "EVE_SSO_CLIENT_ID is not set (.env).")
     _prune_pending()

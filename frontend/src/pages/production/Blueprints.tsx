@@ -24,6 +24,13 @@ function ManualBlueprintCopyCostsSection() {
     MANUAL_COPY_COSTS_KEY,
   )
   const removeCost = useAction('Remove Blueprint Copy Cost', productionApi.removeManualBlueprintCopyCost, MANUAL_COPY_COSTS_KEY)
+  // GitHub issue #59 (found in a full-codebase audit 2026-08-21): one shared
+  // mutation instance reused across every row's Remove button - without
+  // tracking which row is actually pending, clicking Remove for one row put
+  // *every* row's button into the loading/disabled state, not just the one
+  // being removed (same bug ProductionLayout.tsx's own removeCharacter/
+  // pendingRoleKey comment already documents and fixes).
+  const [pendingTypeId, setPendingTypeId] = useState<number | null>(null)
 
   const [itemName, setItemName] = useState('')
   const [purchaseCost, setPurchaseCost] = useState<number | ''>('')
@@ -38,13 +45,14 @@ function ManualBlueprintCopyCostsSection() {
       header: '', id: 'actions', size: 60, enableSorting: false,
       cell: (i) => (
         <ActionIcon size="sm" variant="subtle" color="danger"
-          onClick={() => removeCost.mutate(i.row.original.type_id)} loading={removeCost.isPending}>
+          onClick={() => { setPendingTypeId(i.row.original.type_id); removeCost.mutate(i.row.original.type_id) }}
+          loading={removeCost.isPending && pendingTypeId === i.row.original.type_id}>
           <IconTrash size={14} />
         </ActionIcon>
       ),
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  ], [removeCost])
+  ], [removeCost, pendingTypeId])
 
   return (
     <div>
