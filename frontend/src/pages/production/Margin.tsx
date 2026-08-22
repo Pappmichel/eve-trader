@@ -68,7 +68,7 @@ function ItemSearch() {
 }
 
 export default function Margin() {
-  const { data, isLoading, isError, refetch } = useQuery({ queryKey: ['production', 'margins'], queryFn: productionApi.shipMargins })
+  const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['production', 'margins'], queryFn: productionApi.shipMargins })
 
   const columns = useMemo<ColumnDef<ShipMarginRow, any>[]>(() => [
     { header: 'Ship', accessorKey: 'type_name', size: 240 },
@@ -94,7 +94,7 @@ export default function Margin() {
       {isLoading && <Text c="dimmed" size="sm">Loading…</Text>}
       {isError && <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />}
       {data && data.length === 0 && <HintCard>No ships found - Refresh SDE (Admin tool) first?</HintCard>}
-      {data && data.length > 0 && <DataTable data={data} columns={columns} maxHeight={560} />}
+      {data && data.length > 0 && <DataTable data={data} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />}
     </Stack>
   )
 }

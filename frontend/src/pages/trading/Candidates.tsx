@@ -10,9 +10,9 @@ import { HintCard } from '../../components/HintCard'
 import { qty } from '../../format'
 
 export default function Candidates() {
-  const { data: universe, isLoading: universeLoading, isError: universeError, refetch: refetchUniverse } =
+  const { data: universe, isLoading: universeLoading, isError: universeError, refetch: refetchUniverse, dataUpdatedAt: universeUpdatedAt } =
     useQuery({ queryKey: ['trading', 'candidates', 'universe'], queryFn: tradingApi.candidateUniverse })
-  const { data: focused, isLoading: focusedLoading, isError: focusedError, refetch: refetchFocused } =
+  const { data: focused, isLoading: focusedLoading, isError: focusedError, refetch: refetchFocused, dataUpdatedAt: focusedUpdatedAt } =
     useQuery({ queryKey: ['trading', 'candidates', 'focused'], queryFn: tradingApi.focusedCandidates })
   const isLoading = universeLoading || focusedLoading
   // Both must fail before showing the full-page error - these are two
@@ -26,6 +26,7 @@ export default function Candidates() {
   const refetch = () => { refetchUniverse(); refetchFocused() }
 
   const display = focused && focused.length > 0 ? focused : universe ?? []
+  const displayUpdatedAt = focused && focused.length > 0 ? focusedUpdatedAt : universeUpdatedAt
 
   const columns = useMemo<ColumnDef<Candidate, any>[]>(() => [
     { header: 'Item', accessorKey: 'item', size: 220 },
@@ -55,7 +56,7 @@ export default function Candidates() {
       ) : display.length === 0 ? (
         <HintCard>No candidates loaded yet. Click <b>Load Market Groups</b> on the left, then <b>Filter Candidates</b>.</HintCard>
       ) : (
-        <DataTable data={display} columns={columns} maxHeight={560} />
+        <DataTable data={display} columns={columns} maxHeight={560} dataUpdatedAt={displayUpdatedAt} />
       )}
     </>
   )
