@@ -165,6 +165,7 @@ sudo -u postgres psql -c "CREATE DATABASE eve_trader;"
 sudo -u postgres psql -d eve_trader -f docs/phase1_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/phase2_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/phase3_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/observability_schema.sql
 ```
 `phase1_schema.sql` creates the `eve_trader_app` role with the **checked-in
 dev password** (`app_devpassword`) - fine for local dev, not for a real
