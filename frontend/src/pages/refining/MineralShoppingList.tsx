@@ -7,7 +7,7 @@ import {
 import { IconCalculator, IconDeviceFloppy, IconDownload, IconPlus, IconTrash } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { refiningApi } from '../../api/client'
+import { productionApi, refiningApi } from '../../api/client'
 import type { DirectMineralPurchase, MineralCoverage, MineralRequirement, OrePurchase, ShoppingListPlan } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
@@ -31,6 +31,29 @@ export default function MineralShoppingList() {
   // Solved from the on-screen list rather than the saved one, so the button
   // always reflects what the user is looking at - no "save first" step.
   const optimize = useAction('Optimize', (r: MineralRequirement[]) => refiningApi.optimizeShoppingList(r))
+
+  // GitHub issue #94: manual, one-directional pull of Production's
+  // already-computed buy-list shortfall - reads GET /api/production/plan
+  // (the same numbers the Buy List page shows, set by Production's own
+  // "Refresh Production" button), never recomputes anything here. Filters
+  // to type_ids the refinable-minerals universe already covers (#93's
+  // do_list_refinable_minerals) - Production's Buy List also lists
+  // components/modules/ships, which don't belong on a mineral shopping
+  // list. Fully replaces the on-screen rows (not merged) - the user still
+  // has to click Save List/Optimize afterward, nothing is persisted or
+  // solved automatically by this pull itself.
+  const loadFromProduction = useAction('Aus Production laden', async () => {
+    const plan = await productionApi.plan()
+    if (!plan) {
+      throw new Error("Production hat noch keinen Plan - zuerst in Production auf 'Refresh Production' klicken.")
+    }
+    const mineralIds = new Set((minerals ?? []).map((m) => m.type_id))
+    const shortfall = plan.buy_list.filter((e) => mineralIds.has(e.type_id) && e.quantity > 0)
+    if (shortfall.length === 0) {
+      throw new Error("Production's Buy List enthält aktuell keine Mineralien.")
+    }
+    return shortfall.map((e) => ({ type_id: e.type_id, name: e.type_name, required_qty: e.quantity }))
+  })
 
   const usedIds = new Set(rows.map((r) => r.type_id))
   const options = (minerals ?? [])
@@ -96,14 +119,12 @@ export default function MineralShoppingList() {
           disabled={!newMineral || !newQty}>
           Add
         </Button>
-        <Tooltip label="Coming in #94 - pulls the shortfall straight from Production's buy list">
-          {/* Wrapped: a disabled Mantine Button swallows pointer events, so the
-              tooltip would never show on the button itself. */}
-          <span>
-            <Button variant="subtle" leftSection={<IconDownload size={14} />} disabled>
-              Aus Production laden
-            </Button>
-          </span>
+        <Tooltip label="Ersetzt die aktuelle Liste durch Production's Buy-List-Fehlmenge (nur Mineralien)">
+          <Button variant="subtle" leftSection={<IconDownload size={14} />}
+            loading={loadFromProduction.isPending}
+            onClick={() => loadFromProduction.mutate(undefined, { onSuccess: (r) => setRows(r) })}>
+            Aus Production laden
+          </Button>
         </Tooltip>
       </Group>
 
