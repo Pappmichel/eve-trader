@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import requests
+
 from .. import storage
 from ..actions import ActionError
 from ..auth import TokenManager
@@ -17,9 +19,10 @@ from . import esi_sync, invention, jobs, pricing, sde
 from .config import PRODUCTION_CONFIG, ProductionConfig, validate_production_overrides
 from .constants import DECRYPTORS, JOB_CATEGORIES
 from .engine import (
-    build_material_tree, discover_build_candidates, discover_ship_margins, item_margin_detail,
-    invalidate_discover_cache, invalidate_ship_margin_cache,
-    invalidate_production_locations_cache, market_status, plan_asset_optimized, plan_production, stock_value,
+    build_material_tree, discover_build_candidates, discover_ship_margins, distribution_recommendations,
+    invention_logistics, item_margin_detail, invalidate_discover_cache, invalidate_ship_margin_cache,
+    invalidate_production_locations_cache, logistics_status, market_status, plan_asset_optimized,
+    plan_production, stock_value,
 )
 from .models import (
     AssetLocationRow, BuildCandidate, ManualBlueprintCopyCostRow, OwnedBlueprintRow, ShipMarginRow, UnlistedStockRow,
@@ -393,6 +396,28 @@ def do_refresh_asset_plan(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     return {"jobs": len(plan["jobs"]), "plan": plan}
 
 
+# GitHub issue #64 (found in a full-codebase audit 2026-08-21): the three
+# Logistics-tab reads used to call engine.py directly from
+# api/routers/production.py, bypassing this module - the only architectural
+# exception to "actions.py is the one entry point" outside the small,
+# deliberate list CLAUDE.md documents (portfolio.py/scheduler.py). Thin
+# wrappers, same shape as every other do_* here - the router still owns
+# `_last_plan` itself (transient, router-local in-memory state with no CLI
+# equivalent to keep in sync, unlike everything else in this module) and its
+# own "was a plan computed yet" precondition check, since that's about the
+# router's own state, not something a do_* action can meaningfully own.
+def do_get_logistics_status(build_list: list) -> list:
+    return logistics_status(build_list)
+
+
+def do_get_distribution_recommendations(build_list: list) -> list:
+    return distribution_recommendations(build_list)
+
+
+def do_get_invention_logistics(invention_list: list) -> list:
+    return invention_logistics(invention_list)
+
+
 def do_market_status(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     """Personal stock vs. backup target, and home/Jita market-listed stock vs.
     their own targets, for the Marktstatus tab."""
@@ -597,14 +622,48 @@ def do_unlisted_stock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     # (confirmed real bug: e.g. every Decryptor here is backup-only, yet all
     # of them showed up as "unlisted" yielding a useless, noisy list).
     listed_target_ids = {t[0] for t in stock_targets if (t[3] or 0) > 0 or (t[4] or 0) > 0}
-    rows = []
+    unlisted: list[tuple[int, str, float]] = []
     for type_id, qty in stock_qty.items():
         if type_id not in listed_target_ids or qty <= 0:
             continue
         if sell_qty.get(type_id, 0.0) <= 0:
             sde_type = storage.get_sde_type(type_id)
             name = sde_type[2] if sde_type else str(type_id)
-            rows.append(UnlistedStockRow(type_id=type_id, type_name=name, stock_quantity=qty))
+            unlisted.append((type_id, name, qty))
+
+    # GitHub issue #45: also show the structure's own current sell volume
+    # (everyone's listed quantity at C-J, same ESI call the Trading
+    # shortlist uses) and margin_home (see engine.margin_home) - best-effort,
+    # degrades to None rather than blocking the whole page (matches this
+    # function's existing per-character ESIError tolerance above).
+    structure_stats_by_item = {}
+    if unlisted:
+        first_role = characters[0][0]
+        try:
+            structure_stats_by_item = client.structure_order_stats_bulk(
+                cfg.home_location_id, [type_id for type_id, _name, _qty in unlisted], auth_role=first_role)
+        except ESIError:
+            pass
+
+    rows = []
+    for type_id, name, qty in unlisted:
+        structure_stats = structure_stats_by_item.get(type_id)
+        sell_volume = structure_stats.sell_volume if structure_stats else None
+        try:
+            margin = item_margin_detail(type_id, name, cfg).get("margin_home")
+        except (ESIError, requests.RequestException):
+            # Found in code review: unlike every other try/except in this
+            # function (pure ESI calls, whose own client already wraps
+            # transport failures into ESIError), item_margin_detail's
+            # _PlanContext build also calls Goonmetrics directly
+            # (pricing.jita_prices/home_prices) - a Goonmetrics outage
+            # (confirmed unreliable elsewhere in this codebase even after
+            # retries) used to propagate uncaught past this best-effort
+            # degrade, turning "margin unknown for this one row" into a 500
+            # for the whole Unlisted Stock page.
+            margin = None
+        rows.append(UnlistedStockRow(type_id=type_id, type_name=name, stock_quantity=qty,
+                                      sell_volume=sell_volume, margin=margin))
     rows.sort(key=lambda r: r.stock_quantity, reverse=True)
     return {"rows": rows}
 

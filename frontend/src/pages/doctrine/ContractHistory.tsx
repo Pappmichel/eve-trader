@@ -16,7 +16,7 @@ import { isk, dateTime } from '../../format'
 // this reads the independent, append-only doctrine_contract_history table
 // instead, populated by the same Sync Contracts action in the sidebar.
 export default function ContractHistory() {
-  const { data, isLoading, dataUpdatedAt } = useQuery({ queryKey: ['doctrine', 'contract-history'], queryFn: doctrineApi.contractHistory })
+  const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['doctrine', 'contract-history'], queryFn: doctrineApi.contractHistory })
 
   const columns = useMemo<ColumnDef<ContractHistoryRow, any>[]>(() => [
     { header: 'Contract', accessorKey: 'title', size: 220, cell: (i) => i.getValue() ?? `#${i.row.original.contract_id}` },
@@ -43,6 +43,8 @@ export default function ContractHistory() {
       </Text>
       {isLoading ? (
         <DataTable data={[]} columns={columns} isLoading maxHeight={640} />
+      ) : isError ? (
+        <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={640} />
       ) : !data || data.length === 0 ? (
         <HintCard>No completed contracts recorded yet - they're added automatically the next time Sync Contracts runs after one finishes.</HintCard>
       ) : (

@@ -300,7 +300,12 @@ and 5 tenant-registry functions built on it: `create_tenant`,
 tenant is a legitimate re-provisioning operation, not an error),
 `resolve_tenant_id(character_id, corporation_id, alliance_id)` (character
 checked first, then corp, then alliance - same "any wins" order the old
-`AccessConfig` allowlist used), `list_tenants`, `list_tenant_registry_entries`.
+`AccessConfig` allowlist used; **superseded** - `resolve_tenant_id` is
+`character_id`-only today, see CLAUDE.md's "Tool permissions & Admin"
+section for why corp/alliance registry entries were retired - this
+historical-snapshot section is kept as-written per this document's own
+"permanent design-history record" note below, not updated in place),
+`list_tenants`, `list_tenant_registry_entries`.
 
 `access_gate.py`'s session cookie now signs `tenant_id` alongside
 `character_id`/`character_name`; `is_allowed()` and `AccessConfig`'s three
