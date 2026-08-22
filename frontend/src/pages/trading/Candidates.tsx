@@ -15,7 +15,14 @@ export default function Candidates() {
   const { data: focused, isLoading: focusedLoading, isError: focusedError, refetch: refetchFocused } =
     useQuery({ queryKey: ['trading', 'candidates', 'focused'], queryFn: tradingApi.focusedCandidates })
   const isLoading = universeLoading || focusedLoading
-  const isError = universeError || focusedError
+  // Both must fail before showing the full-page error - these are two
+  // independent sources with a graceful one-way fallback (`display` below):
+  // if only `focused` fails, `universe` still renders fine (and vice versa).
+  // OR-ing the two error flags together used to hide a successfully-loaded
+  // source's data behind the error state the moment the *other* source
+  // failed - a real regression, not just an incomplete fix (confirmed in
+  // code review).
+  const isError = universeError && focusedError
   const refetch = () => { refetchUniverse(); refetchFocused() }
 
   const display = focused && focused.length > 0 ? focused : universe ?? []
