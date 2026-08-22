@@ -13,7 +13,7 @@ import { isk, pct, qty } from '../../format'
 const CATEGORY_UNKNOWN = 'no category'
 
 export default function BuildList() {
-  const { data: plan, isLoading } = useQuery({ queryKey: ['production', 'plan'], queryFn: productionApi.plan })
+  const { data: plan, isLoading, isError, refetch } = useQuery({ queryKey: ['production', 'plan'], queryFn: productionApi.plan })
   const buildList = plan?.build_list ?? []
 
   const refreshPlan = useAction('Refresh Production', productionApi.refreshPlan, [
@@ -50,6 +50,7 @@ export default function BuildList() {
   ], [])
 
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
+  if (isError) return <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />
   if (!plan) {
     return (
       <Stack align="flex-start">
