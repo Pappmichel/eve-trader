@@ -83,7 +83,7 @@ function EditableNumberCell({ value, ariaLabel, isPending, onSave, flagged }: {
 }
 
 export default function StockTargets() {
-  const { data: targets, isLoading: targetsLoading, isError: targetsError, refetch: refetchTargets } =
+  const { data: targets, isLoading: targetsLoading, isError: targetsError, refetch: refetchTargets, dataUpdatedAt: targetsUpdatedAt } =
     useQuery({ queryKey: ['production', 'stock-targets'], queryFn: productionApi.stockTargets })
   const { data: manualStock } = useQuery({ queryKey: ['production', 'manual-stock'], queryFn: productionApi.manualStock })
   const { data: overrides } = useQuery({ queryKey: ['production', 'manual-build-buy'], queryFn: productionApi.manualBuildBuy })
@@ -233,6 +233,7 @@ export default function StockTargets() {
             tableId="stock-targets"
             exportFilename="stock-targets"
             getRowId={(row) => String(row.type_id)}
+            dataUpdatedAt={targetsUpdatedAt}
           />
 
           <Title order={6} c="dimmed" tt="uppercase" mt="lg">Manage Override / Decryptor</Title>

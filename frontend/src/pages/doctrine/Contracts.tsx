@@ -13,7 +13,7 @@ const STATUS_COLOR: Record<string, string> = { valid: 'accent', tolerable: 'warn
 
 export default function Contracts() {
   const [status, setStatus] = useState<string | null>(null)
-  const { data, isLoading, isError, refetch } = useQuery({
+  const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({
     queryKey: ['doctrine', 'contracts', status],
     queryFn: () => doctrineApi.contracts(undefined, status ?? undefined),
   })
@@ -49,7 +49,7 @@ export default function Contracts() {
         <Title order={4}>Contracts</Title>
         <Select placeholder="All statuses" data={STATUS_OPTIONS} value={status} onChange={setStatus} clearable w={200} />
       </Group>
-      <DataTable data={data ?? []} columns={columns} isLoading={isLoading} isError={isError} onRetry={() => refetch()} maxHeight={640} />
+      <DataTable data={data ?? []} columns={columns} isLoading={isLoading} isError={isError} onRetry={() => refetch()} maxHeight={640} dataUpdatedAt={dataUpdatedAt} />
     </Stack>
   )
 }

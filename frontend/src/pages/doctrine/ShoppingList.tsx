@@ -11,7 +11,7 @@ import { qty, isk } from '../../format'
 const SOURCE_COLOR: Record<string, string> = { Build: 'accent', 'C-J': 'warn', Jita: 'dimmed' }
 
 export default function ShoppingList() {
-  const { data, isLoading, isError, refetch } = useQuery({
+  const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({
     queryKey: ['doctrine', 'shopping-list'], queryFn: () => doctrineApi.shoppingList(),
   })
   const rows = data?.rows ?? []
@@ -55,6 +55,7 @@ export default function ShoppingList() {
           isLoading={isLoading}
           isError={isError}
           onRetry={() => refetch()}
+          dataUpdatedAt={dataUpdatedAt}
         />
       )}
     </Stack>

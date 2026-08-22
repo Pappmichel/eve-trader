@@ -25,7 +25,7 @@ const DECISION_COLOR: Record<string, string> = {
 const META_UNKNOWN = 'unknown'
 
 export default function Shortlist() {
-  const { data, isLoading, isError, refetch } = useQuery({ queryKey: ['trading', 'shortlist', 'snapshot'], queryFn: tradingApi.shortlistSnapshot })
+  const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['trading', 'shortlist', 'snapshot'], queryFn: tradingApi.shortlistSnapshot })
   const { data: settings } = useQuery({ queryKey: ['trading', 'settings'], queryFn: tradingApi.settings })
   // Zero-network-cost signal (pure local computation over already-persisted
   // Goonmetrics history, see history_backtest.compute_margin_trends) - safe
@@ -200,7 +200,7 @@ export default function Shortlist() {
       {filtered.length === 0 ? (
         <HintCard>No items match the current filters.</HintCard>
       ) : (
-        <DataTable data={filtered} columns={columns} maxHeight={560} />
+        <DataTable data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
       )}
 
       {topImports.length > 0 && (

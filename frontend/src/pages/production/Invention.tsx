@@ -15,7 +15,7 @@ export default function Invention() {
     useQuery({ queryKey: ['production', 'sde', 'counts'], queryFn: productionApi.sdeCounts })
   const { data: decryptors } = useQuery({ queryKey: ['production', 'decryptors'], queryFn: productionApi.decryptors })
   const { data: settings } = useQuery({ queryKey: ['production', 'settings'], queryFn: productionApi.settings })
-  const { data: plan, isLoading: planLoading, isError: planError, refetch: refetchPlan } =
+  const { data: plan, isLoading: planLoading, isError: planError, refetch: refetchPlan, dataUpdatedAt: planUpdatedAt } =
     useQuery({ queryKey: ['production', 'plan'], queryFn: productionApi.plan })
   const inventionNeeds = plan?.invention_list ?? []
 
@@ -89,7 +89,7 @@ export default function Invention() {
           <HintCard>No Tech II stock target with an invention recipe is configured.</HintCard>
         ) : (
           <>
-            <DataTable data={inventionNeeds} columns={needsColumns} maxHeight={360} />
+            <DataTable data={inventionNeeds} columns={needsColumns} maxHeight={360} dataUpdatedAt={planUpdatedAt} />
             <Text size="xs" c="dimmed" mt="xs">
               Covers <b>all</b> Tech II items set up as stock targets, not just the current build list - including
               ones that are currently fully stocked (0 runs) or where the market is currently cheaper than building

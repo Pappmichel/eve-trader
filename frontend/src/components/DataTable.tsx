@@ -13,6 +13,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon, Stack } from '@mantine/core'
 import { useMediaQuery } from '@mantine/hooks'
 import { IconSearch, IconDownload, IconColumns, IconX, IconAlertTriangle, IconRefresh } from '@tabler/icons-react'
+import { relativeTime } from '../format'
 
 // A column can opt into `meta: { mobileHide: true }` (see Shortlist.tsx/
 // Margin.tsx for real examples) - GitHub issue #52: below Mantine's `sm`
@@ -85,6 +86,11 @@ interface DataTableProps<T> {
   onRetry?: () => void
   tableId?: string
   exportFilename?: string
+  // GitHub issue #78: how fresh is this table's data - pass a query's own
+  // `dataUpdatedAt` (react-query already tracks this per query, nothing new
+  // to compute) to show a small relative-time label in the toolbar.
+  // Optional/opt-in - a page that doesn't pass it renders exactly as before.
+  dataUpdatedAt?: number
   // Without this, tanstack-table's default row.id is the row's *index* in
   // the current (sorted/filtered) data array - stable enough for read-only
   // display, but not for a cell that owns its own editing state (a
@@ -142,6 +148,7 @@ export function DataTable<T>({
   tableId,
   exportFilename = 'export',
   getRowId,
+  dataUpdatedAt,
 }: DataTableProps<T>) {
   const [sorting, setSorting] = useState<SortingState>([])
   const [globalFilter, setGlobalFilter] = useState('')
@@ -150,6 +157,16 @@ export function DataTable<T>({
   // collapse already uses (see TradingLayout.tsx/ProductionLayout.tsx), so
   // "mobile" means the same viewport width everywhere in the app.
   const isMobile = useMediaQuery('(max-width: 48em)')
+
+  // Ticks every 30s so the relative-time label below ("2m ago" -> "3m ago")
+  // stays live without a full data refetch - cheap (one re-render, no
+  // network) and only runs at all when a page actually opts in.
+  const [, forceTick] = useState(0)
+  useEffect(() => {
+    if (!dataUpdatedAt) return
+    const id = setInterval(() => forceTick((n) => n + 1), 30_000)
+    return () => clearInterval(id)
+  }, [dataUpdatedAt])
 
   // Re-derive from localStorage (or reset to "everything visible") whenever
   // this instance switches to a *different* tableId - without this, a page
@@ -305,6 +322,11 @@ export function DataTable<T>({
           style={{ flex: 1, maxWidth: 280 }}
         />
         <Group gap="xs" wrap="nowrap">
+          {dataUpdatedAt && (
+            <Text size="xs" c="dimmed" title={new Date(dataUpdatedAt).toLocaleString()}>
+              Updated {relativeTime(dataUpdatedAt)}
+            </Text>
+          )}
           <Menu shadow="md" closeOnItemClick={false}>
             <Menu.Target>
               <Button size="xs" variant="default" leftSection={<IconColumns size={14} />}>

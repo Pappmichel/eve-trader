@@ -69,7 +69,7 @@ const ALL_TOOL_KEYS = ['trading', 'production', 'doctrine', 'portfolio', 'admin'
 // left behind by a removed user (do_remove_user intentionally leaves the
 // tenant and its data in place).
 function TenantSection() {
-  const { data: tenants, isLoading, isError, refetch } = useQuery({ queryKey: ['admin', 'tenants'], queryFn: adminApi.tenants })
+  const { data: tenants, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['admin', 'tenants'], queryFn: adminApi.tenants })
 
   const columns = useMemo<ColumnDef<AdminTenant, any>[]>(() => [
     { header: 'Name', accessorKey: 'name', size: 220 },
@@ -89,6 +89,7 @@ function TenantSection() {
         isLoading={isLoading}
         isError={isError}
         onRetry={() => refetch()}
+        dataUpdatedAt={dataUpdatedAt}
       />
     </div>
   )
@@ -119,7 +120,7 @@ function UserToolCheckboxes({ user }: { user: AdminUser }) {
 }
 
 function UsersSection() {
-  const { data: users, isLoading, isError, refetch } = useQuery({ queryKey: ['admin', 'users'], queryFn: adminApi.users })
+  const { data: users, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['admin', 'users'], queryFn: adminApi.users })
   const [characterName, setCharacterName] = useState('')
   const addUser = useAction('Add User', () => adminApi.addUser(characterName),
     [['admin', 'users'], ['admin', 'tenants']])
@@ -167,6 +168,7 @@ function UsersSection() {
           isLoading={isLoading}
           isError={isError}
           onRetry={() => refetch()}
+          dataUpdatedAt={dataUpdatedAt}
         />
       )}
       <Group mt="sm">
