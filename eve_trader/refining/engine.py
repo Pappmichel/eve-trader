@@ -15,34 +15,36 @@ import math
 from typing import Optional
 
 from .. import storage
-from ..production.constants import rig_security_multiplier
 from .config import RefiningConfig
 from .constants import (
+    BASE_YIELD_POINTS,
     ORE_FAMILY_SKILL_BONUS_PER_LEVEL,
     REPROCESSING_EFFICIENCY_SKILL_BONUS_PER_LEVEL,
     REPROCESSING_IMPLANT_BONUS,
     REPROCESSING_SKILL_BONUS_PER_LEVEL,
-    RIG_BASE_YIELD_BONUS,
+    RIG_YIELD_BONUS_POINTS,
     SCRAPMETAL_BASE_YIELD,
     SCRAPMETAL_SKILL_BONUS_PER_LEVEL,
-    STRUCTURE_BASE_YIELD,
+    STRUCTURE_YIELD_MODIFIER,
     clamp_skill_level,
+    security_yield_modifier,
 )
 
 
 def ore_ice_base_yield(cfg: RefiningConfig) -> float:
-    """Base(structure, rig, security) - the one component of the ore/ice
-    formula that isn't a flat per-level skill/implant bonus (see constants.py's
-    module docstring for how this was derived/confirmed). Rig bonus is scaled
-    by security status using the same Engineering-Complex-style 1x/1.9x/2.1x
-    table production/constants.py's rig_security_multiplier already applies
-    to ME/TE rigs (reprocessing rigs aren't reaction-only, so the reactor-only
-    1x/1.1x table doesn't apply here - see RIG_BASE_YIELD_BONUS's own
+    """(50 + Rig points) x (1 + Security modifier) x (1 + Structure modifier)
+    - the one component of the real reprocessing formula that isn't a flat
+    per-level skill/implant bonus (see constants.py's module docstring for
+    the full formula and how this was confirmed live). The security modifier
+    applies to the *whole* (50 + rig points) sum in one multiplicative step,
+    not just to the rig's own points - a different mechanic from production/
+    constants.py's rig_security_multiplier, which only scales an Engineering
+    Complex's own ME/TE rig bonus (see security_yield_modifier's own
     docstring)."""
-    structure_base = STRUCTURE_BASE_YIELD[cfg.structure_type]
-    rig_base = RIG_BASE_YIELD_BONUS[cfg.rig_tier]
-    sec_multiplier = rig_security_multiplier(cfg.security_status, is_reaction=False)
-    return structure_base + rig_base * sec_multiplier
+    base_points = BASE_YIELD_POINTS + RIG_YIELD_BONUS_POINTS[cfg.rig_tier]
+    sec_modifier = security_yield_modifier(cfg.security_status)
+    structure_modifier = STRUCTURE_YIELD_MODIFIER[cfg.structure_type]
+    return (base_points / 100) * (1 + sec_modifier) * (1 + structure_modifier)
 
 
 def ore_ice_yield(cfg: RefiningConfig, ore_family: Optional[str] = None) -> float:

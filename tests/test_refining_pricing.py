@@ -73,7 +73,7 @@ def test_evaluate_ore_item_min_profit_threshold_is_compared_per_unit_not_per_por
     # Real bug found in code review: _decision used to receive profit_per_
     # PORTION instead of profit_per_unit, making a per-unit threshold
     # ~portion_size times too lenient. min_profit_threshold=100 (per-unit):
-    # the real per-unit profit (~19.66 - "Veldspar" isn't in refining_cfg's
+    # the real per-unit profit (~22.22 - "Veldspar" isn't in refining_cfg's
     # empty ore_family_skill_levels, so it's assumed maxed at level 5, see
     # engine.py's ore_ice_yield) is below it, so this must be "Skip", not
     # "Import" - it would wrongly pass as "Import" if compared against the
@@ -87,7 +87,7 @@ def test_evaluate_ore_item_min_profit_threshold_is_compared_per_unit_not_per_por
 
     row = evaluate_ore_item(_candidate(volume_m3=0.001), True, jita, {35: tritanium}, trading_cfg, refining_cfg)
 
-    assert row.profit_per_unit == pytest.approx(19.6609, abs=0.001)
+    assert row.profit_per_unit == pytest.approx(22.2160, abs=0.001)
     assert row.decision == "Skip"
 
 
