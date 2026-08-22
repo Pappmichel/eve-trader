@@ -449,25 +449,18 @@ without asking first.
 A full codebase audit (2026-08-18) turned up four more low-priority items,
 deliberately left unfixed at the time (everything else the audit found -
 critical/important bugs, nice-to-haves, architecture docs, EVE-mechanic
-corrections, README - was fixed and deployed the same day):
-- `portfolio.py`'s `portfolio_overview` re-pulls Goonmetrics' ~11MB Jita
-  price dump on every call (already has a 60s cache, so impact is limited -
-  a real fix would mean a more targeted/paginated fetch).
-- `candidate_discovery.py`'s SDE-crawl path uses flight volume while its
-  ESI-crawl path (`_build_candidate_universe_from_esi`) uses
-  `packaged_volume` - inconsistent, but practically harmless since ships
-  (where the two differ) are excluded from candidates anyway.
-- Invention probability (`production/invention.py`) assumes one global
-  datacore-skill level pair (`cfg.datacore_skill_1_level`/`_2_level`) for
-  every item, when real datacore/science skill *pairs* differ per
-  blueprint - a pragmatic simplification, not a bug.
-- A drift-guard test for `sqlite_migration.py`'s `_PER_TENANT_TABLES` list
-  (catching a newly-added RLS-enabled table that never got added to the
-  migration list) would need live Postgres introspection against
-  `information_schema`/`pg_policies` - lower urgency since the one-time
-  live cutover this list exists for is already done; only matters again for
-  a hypothetical future disaster-recovery migration from an old SQLite
-  backup.
+corrections, README - was fixed and deployed the same day). All four were
+later closed out: `candidate_discovery.py`'s SDE-crawl path using raw flight
+volume for capital-sized modules turned out to be a real bug, not
+"practically harmless" (fixed, GitHub issue #73); the `sqlite_migration.py`
+drift-guard test was implemented as part of GitHub issue #60; the other two
+(a Goonmetrics full-market-dump re-fetch in `portfolio.py`'s
+`portfolio_overview`, and `production/invention.py` assuming one global
+datacore-skill pair instead of per-blueprint pairs) were reviewed again and
+confirmed to have no actionable fix worth tracking here - the former has no
+alternative Goonmetrics endpoint to switch to, the latter would need new SDE
+skill-requirement data plus a live ESI character-skills pull, real new
+feature scope rather than a bug.
 
 ## Windows packaging lives in a sibling repo
 

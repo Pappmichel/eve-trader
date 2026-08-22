@@ -2,7 +2,9 @@ import { AppShell, Burger, Stack, Title, Text, Button, Group, Tabs, Container, D
 import { useDisclosure } from '@mantine/hooks'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { IconArrowLeft, IconRefresh, IconTrash } from '@tabler/icons-react'
+import { modals } from '@mantine/modals'
+import { spotlight } from '@mantine/spotlight'
+import { IconArrowLeft, IconRefresh, IconSearch, IconTrash } from '@tabler/icons-react'
 
 import { doctrineApi } from '../../api/client'
 import { useAction } from '../../hooks/useAction'
@@ -56,7 +58,14 @@ function CharacterGroup({ title, queryKey, listFn, ssoRolePrefix, removeFn }: {
           <Group key={c.role_key} justify="space-between" wrap="nowrap">
             <Text size="sm">{c.character_name}</Text>
             <ActionIcon size="sm" variant="subtle" color="danger"
-              onClick={() => removeCharacter(c.role_key)} loading={isRemoving(c.role_key)}>
+              onClick={() => modals.openConfirmModal({
+                title: 'Remove character',
+                children: <Text size="sm">Remove {c.character_name} from {title}? You can log them back in any time.</Text>,
+                labels: { confirm: 'Remove', cancel: 'Cancel' },
+                confirmProps: { color: 'danger' },
+                onConfirm: () => removeCharacter(c.role_key),
+              })}
+              loading={isRemoving(c.role_key)}>
               <IconTrash size={14} />
             </ActionIcon>
           </Group>
@@ -92,7 +101,12 @@ export default function DoctrineLayout() {
             <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" aria-label="Toggle navigation" />
             <Text fw={700} tt="uppercase" lts={1}>EVE Trader — Doctrine</Text>
           </Group>
-          <Button variant="subtle" size="xs" leftSection={<IconArrowLeft size={14} />} onClick={() => navigate('/')}>Tools</Button>
+          <Group gap="xs">
+            <Button variant="subtle" size="xs" leftSection={<IconSearch size={14} />} onClick={() => spotlight.open()}>
+              Jump to... (⌘K)
+            </Button>
+            <Button variant="subtle" size="xs" leftSection={<IconArrowLeft size={14} />} onClick={() => navigate('/')}>Tools</Button>
+          </Group>
         </Group>
       </AppShell.Header>
 

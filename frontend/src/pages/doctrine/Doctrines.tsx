@@ -38,7 +38,7 @@ function CreateDoctrineModal({ opened, onClose }: { opened: boolean; onClose: ()
 }
 
 export default function Doctrines() {
-  const { data, isLoading } = useQuery({ queryKey: ['doctrine', 'status'], queryFn: doctrineApi.listDoctrines })
+  const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['doctrine', 'status'], queryFn: doctrineApi.listDoctrines })
   const [modalOpen, setModalOpen] = useState(false)
 
   const columns = useMemo<ColumnDef<DoctrineStatus, any>[]>(() => [
@@ -79,16 +79,19 @@ export default function Doctrines() {
         contracts/stock, gray = no data yet (never synced, or no asset-scanning character has synced yet).
       </HintCard>
 
-      {!isLoading && (data?.length ?? 0) === 0 && <Text c="dimmed">No doctrines yet - create one to get started.</Text>}
+      {!isLoading && !isError && (data?.length ?? 0) === 0 && <Text c="dimmed">No doctrines yet - create one to get started.</Text>}
 
-      {(isLoading || (data?.length ?? 0) > 0) && (
+      {(isLoading || isError || (data?.length ?? 0) > 0) && (
         <DataTable
           data={data ?? []}
           columns={columns}
+          isError={isError}
+          onRetry={() => refetch()}
           tableId="doctrine-doctrines"
           exportFilename="doctrines"
           getRowId={(d) => d.doctrine_id}
           isLoading={isLoading}
+          dataUpdatedAt={dataUpdatedAt}
         />
       )}
 

@@ -10,7 +10,7 @@ import { HintCard } from '../../components/HintCard'
 import { qty } from '../../format'
 
 export default function MarketStatus() {
-  const { data, isLoading } = useQuery({ queryKey: ['production', 'market-status'], queryFn: productionApi.marketStatus })
+  const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['production', 'market-status'], queryFn: productionApi.marketStatus })
 
   const columns = useMemo<ColumnDef<MarketStatusRow, any>[]>(() => [
     { header: 'Item', accessorKey: 'type_name', size: 220 },
@@ -23,11 +23,12 @@ export default function MarketStatus() {
   ], [])
 
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
+  if (isError) return <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />
   if (!data || data.length === 0) return <HintCard>No stock targets configured yet.</HintCard>
 
   return (
     <Stack>
-      <DataTable data={data} columns={columns} maxHeight={560} />
+      <DataTable data={data} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
       <Text size="xs" c="dimmed">
         'Current'/'listed' come from the last 'Sync ESI Data' run (assets + personal and corp sell orders); without a sync they stay at 0.
       </Text>

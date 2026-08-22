@@ -950,6 +950,48 @@ def test_invalidate_discover_cache_forces_a_rescan(monkeypatch, tenant):
 
 
 @pg_helpers.postgres_required()
+def test_invalidate_discover_cache_default_only_clears_the_current_tenant(tenant_pair):
+    tenant_a, tenant_b = tenant_pair
+    engine._discover_cache[tenant_a] = [{"item": "a"}]
+    engine._discover_cache[tenant_b] = [{"item": "b"}]
+
+    with storage.tenant_context(tenant_a):
+        engine.invalidate_discover_cache()
+
+    assert tenant_a not in engine._discover_cache
+    assert tenant_b in engine._discover_cache  # untouched
+
+
+@pg_helpers.postgres_required()
+def test_invalidate_discover_cache_all_tenants_clears_every_tenant(tenant_pair):
+    # GitHub issue #54's own follow-up bug (found in code review of PR #70):
+    # admin.do_refresh_sde() is a global, cross-tenant action - the SDE
+    # blueprint/material data every tenant's cache was built from can change,
+    # not just the calling admin's own. Confirmed real gap: before this,
+    # invalidate_discover_cache() had no way to clear anything but the
+    # calling tenant's own entry, so every other tenant kept serving stale
+    # discover results for up to the full cache TTL after a global refresh.
+    tenant_a, tenant_b = tenant_pair
+    engine._discover_cache[tenant_a] = [{"item": "a"}]
+    engine._discover_cache[tenant_b] = [{"item": "b"}]
+
+    engine.invalidate_discover_cache(all_tenants=True)
+
+    assert engine._discover_cache == {}
+
+
+@pg_helpers.postgres_required()
+def test_invalidate_ship_margin_cache_all_tenants_clears_every_tenant(tenant_pair):
+    tenant_a, tenant_b = tenant_pair
+    engine._ship_margin_cache[tenant_a] = [{"item": "a"}]
+    engine._ship_margin_cache[tenant_b] = [{"item": "b"}]
+
+    engine.invalidate_ship_margin_cache(all_tenants=True)
+
+    assert engine._ship_margin_cache == {}
+
+
+@pg_helpers.postgres_required()
 def test_discover_build_candidates_concurrent_calls_do_not_double_scan(monkeypatch, tenant):
     # A cold cache hit by two threads at once (e.g. the background scheduler
     # and a user's own browser request landing together) must serialize on

@@ -982,55 +982,21 @@ def _total_missing(type_id: int, backup_stock: float, home_market_stock: Optiona
 
 def _haul_volume(type_id: int, cfg: ProductionConfig) -> Optional[float]:
     """Volume to use for haul-cost math (cfg.haul_cost_per_m3 x this) - the
-    *packaged* volume for ships, which can be drastically smaller than the
-    flight volume in sde_types.volume (confirmed real bug risk: using the
-    unpackaged flight volume would badly overstate haul cost for ships,
-    especially Logistics Frigates and Command Destroyers, which shrink a lot
-    when packaged).
+    *packaged* volume for ships and capital-sized modules (GitHub issue #11:
+    e.g. Capital Shield Booster I lists volume=4000 in the SDE but
+    packaged_volume=1000), which can be drastically smaller than the flight/
+    assembled volume in sde_types.volume.
 
-    GitHub issue #11: capital-sized *modules* (category_id 7, e.g. Capital
-    Shield Booster I/II, Capital Remote Armor Repairer, Capital Energy
-    Neutralizer, Capital Micro Jump Drive) have the exact same quirk -
-    confirmed live via ESI (2026-08-19) that e.g. Capital Shield Booster I
-    lists volume=4000 in the SDE but packaged_volume=1000. There's no clean
-    SDE-only signal for exactly *which* modules this applies to (it's not
-    tied to a single market group or group_id the way the "Special Edition
-    Ships" filter in _scan_ship_margins is - a Capital Micro Jump Drive has
-    the same quirk despite living in an entirely differently-named market
-    group than the other capital modules tested), so both ships and
-    ordinary-sized modules go through the same ESI lookup+cache path below;
-    ordinary modules just come back with packaged == flight (confirmed for
-    a plain Large Shield Booster I and a Capital Trimark Armor Pump rig) and
-    cache that once, same as any other type_id.
-
-    Plain SDE volume for every other category - packaged == unpackaged
-    there. Looked up once per type_id via ESI (Fuzzwork's SDE CSVs don't
-    carry packaged volume at all) and cached in storage.type_packaged_volume
-    from then on, since it's effectively a static game constant."""
+    Thin wrapper around esi_client.resolve_effective_volume - GitHub issue
+    #73 moved the actual lookup+cache logic there so Trading's
+    candidate_discovery could share the identical implementation instead of
+    keeping its own copy that could drift out of sync; see that function's
+    own docstring for the full ESI-lookup/cache/fallback behavior."""
     sde_type = storage.get_sde_type(type_id)
     if sde_type is None:
         return None
-    volume = sde_type[3]
-    if storage.get_type_category(type_id) not in (SHIP_CATEGORY_ID, MODULE_CATEGORY_ID):
-        return volume
-    cached = storage.get_cached_packaged_volume(type_id)
-    if cached is not None:
-        return cached
-    from ..esi_client import ESIClient  # local import: keeps this a rare, lazy call
-    try:
-        packaged = ESIClient().get_packaged_volume(type_id)
-    except Exception:  # noqa: BLE001 - best-effort; a transient ESI hiccup shouldn't block pricing
-        packaged = None
-    if packaged is not None:
-        # Confirmed real bug: this used to cache the flight-volume fallback
-        # too, permanently poisoning it as if it were the real packaged
-        # volume (storage.get_cached_packaged_volume's own docstring: "None
-        # means never looked up yet") - a transient ESI hiccup would silently
-        # and permanently break haul-cost math for that ship type. Only cache
-        # a real ESI answer; an unset cache lets the next call retry.
-        storage.set_cached_packaged_volume(type_id, packaged)
-        return packaged
-    return volume
+    from ..esi_client import resolve_effective_volume  # local import: keeps this a rare, lazy call
+    return resolve_effective_volume(type_id, sde_type[3])
 
 
 class _PlanContext:
@@ -1781,14 +1747,26 @@ _discover_cache_at: dict[str, float] = {}
 _discover_cache_lock = threading.Lock()
 
 
-def invalidate_discover_cache() -> None:
-    """Forces the next discover_build_candidates call (for the *current*
-    tenant only - see the cache's own comment) to re-scan instead of reusing
-    a cached result - call after anything that changes the result set (stock
-    target add/remove, Settings save, SDE refresh)."""
+def invalidate_discover_cache(all_tenants: bool = False) -> None:
+    """Forces the next discover_build_candidates call to re-scan instead of
+    reusing a cached result. Defaults to the *current* tenant only (see the
+    cache's own comment) - call after anything that changes just that
+    tenant's own result set (stock target add/remove, Settings save,
+    decryptor change). `all_tenants=True` clears every tenant's entry - the
+    only correct choice for a genuinely global change, e.g. admin.
+    do_refresh_sde()'s SDE refresh (blueprint/material data every tenant's
+    cache was built from, not just the calling admin's own). Confirmed real
+    gap (GitHub issue #54's own cross-tenant-cache-key fix): a per-tenant-
+    only invalidation left every *other* tenant serving stale discover/
+    margin results for up to the full TTL after a global SDE refresh, since
+    only the calling tenant's own entry was ever cleared."""
     global _discover_cache, _discover_cache_at
-    tenant_id = storage.get_current_tenant()
     with _discover_cache_lock:
+        if all_tenants:
+            _discover_cache.clear()
+            _discover_cache_at.clear()
+            return
+        tenant_id = storage.get_current_tenant()
         _discover_cache.pop(tenant_id, None)
         _discover_cache_at.pop(tenant_id, None)
 
@@ -1959,13 +1937,18 @@ _ship_margin_cache_at: dict[str, float] = {}
 _ship_margin_cache_lock = threading.Lock()
 
 
-def invalidate_ship_margin_cache() -> None:
-    """Forces the next discover_ship_margins call (for the *current* tenant
-    only) to re-scan - call alongside invalidate_discover_cache (see that
-    function's own call sites in production/actions.py)."""
+def invalidate_ship_margin_cache(all_tenants: bool = False) -> None:
+    """Forces the next discover_ship_margins call to re-scan - call alongside
+    invalidate_discover_cache (see that function's own call sites in
+    production/actions.py and its own `all_tenants` docstring for when to
+    pass it here too)."""
     global _ship_margin_cache, _ship_margin_cache_at
-    tenant_id = storage.get_current_tenant()
     with _ship_margin_cache_lock:
+        if all_tenants:
+            _ship_margin_cache.clear()
+            _ship_margin_cache_at.clear()
+            return
+        tenant_id = storage.get_current_tenant()
         _ship_margin_cache.pop(tenant_id, None)
         _ship_margin_cache_at.pop(tenant_id, None)
 

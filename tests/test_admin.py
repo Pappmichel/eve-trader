@@ -119,15 +119,26 @@ def test_do_set_tool_grants_rejects_unregistered_character():
 def test_do_refresh_sde_downloads_and_invalidates_caches(monkeypatch):
     # GitHub issue #34: moved here from production/actions.py - the SDE
     # cache is global/shared, not per-tenant, so this is a superadmin action.
+    #
+    # GitHub issue #54's own follow-up bug (found in code review of this PR):
+    # invalidate_discover_cache/invalidate_ship_margin_cache became per-tenant
+    # by default once their caches were keyed by tenant - a refresh here MUST
+    # pass all_tenants=True (every tenant's discover/margin results can be
+    # affected by a global SDE change, not just the calling admin's own),
+    # or every other tenant keeps serving stale results for up to the full
+    # cache TTL. Asserting only that the functions were *called* (the
+    # original version of this test) let exactly that regression pass.
     invalidated = []
     monkeypatch.setattr(sde, "refresh_sde", lambda: {"sde_types": 100})
-    monkeypatch.setattr(admin, "invalidate_discover_cache", lambda: invalidated.append("discover"))
-    monkeypatch.setattr(admin, "invalidate_ship_margin_cache", lambda: invalidated.append("ship_margin"))
+    monkeypatch.setattr(admin, "invalidate_discover_cache",
+                         lambda all_tenants=False: invalidated.append(("discover", all_tenants)))
+    monkeypatch.setattr(admin, "invalidate_ship_margin_cache",
+                         lambda all_tenants=False: invalidated.append(("ship_margin", all_tenants)))
 
     result = admin.do_refresh_sde()
 
     assert result == {"sde_types": 100}
-    assert invalidated == ["discover", "ship_margin"]
+    assert invalidated == [("discover", True), ("ship_margin", True)]
 
 
 def test_do_refresh_sde_wraps_network_error():

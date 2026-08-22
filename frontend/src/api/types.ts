@@ -437,6 +437,16 @@ export interface AdminUser {
   tool_keys: string[]
 }
 
+export interface ErrorLogRow {
+  id: number
+  tenant_id: string | null
+  source: string
+  message: string
+  detail: string | null
+  path: string | null
+  created_at: string | null
+}
+
 export interface SchedulerJobStatus {
   interval_hours: number
   last_run_at: string | null

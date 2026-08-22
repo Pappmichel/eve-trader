@@ -5,12 +5,13 @@ import {
 import { IconArrowLeft, IconTrash } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
+import { modals } from '@mantine/modals'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { adminApi, productionApi } from '../../api/client'
 import { useAction } from '../../hooks/useAction'
 import { dateTime } from '../../format'
-import type { AdminTenant, AdminUser } from '../../api/types'
+import type { AdminTenant, AdminUser, ErrorLogRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 
 // GitHub issue #34: the SDE cache is global/shared across every tenant, so
@@ -69,7 +70,7 @@ const ALL_TOOL_KEYS = ['trading', 'production', 'doctrine', 'refining', 'portfol
 // left behind by a removed user (do_remove_user intentionally leaves the
 // tenant and its data in place).
 function TenantSection() {
-  const { data: tenants, isLoading } = useQuery({ queryKey: ['admin', 'tenants'], queryFn: adminApi.tenants })
+  const { data: tenants, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['admin', 'tenants'], queryFn: adminApi.tenants })
 
   const columns = useMemo<ColumnDef<AdminTenant, any>[]>(() => [
     { header: 'Name', accessorKey: 'name', size: 220 },
@@ -87,6 +88,9 @@ function TenantSection() {
         exportFilename="tenants"
         getRowId={(t) => t.tenant_id}
         isLoading={isLoading}
+        isError={isError}
+        onRetry={() => refetch()}
+        dataUpdatedAt={dataUpdatedAt}
       />
     </div>
   )
@@ -117,7 +121,7 @@ function UserToolCheckboxes({ user }: { user: AdminUser }) {
 }
 
 function UsersSection() {
-  const { data: users, isLoading } = useQuery({ queryKey: ['admin', 'users'], queryFn: adminApi.users })
+  const { data: users, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['admin', 'users'], queryFn: adminApi.users })
   const [characterName, setCharacterName] = useState('')
   const addUser = useAction('Add User', () => adminApi.addUser(characterName),
     [['admin', 'users'], ['admin', 'tenants']])
@@ -142,7 +146,16 @@ function UsersSection() {
       header: '', id: 'actions', size: 60, enableSorting: false,
       cell: (i) => (
         <ActionIcon size="sm" variant="subtle" color="danger"
-          onClick={() => { setPendingCharacterId(i.row.original.character_id); removeUser.mutate(i.row.original.character_id) }}
+          onClick={() => modals.openConfirmModal({
+            title: 'Remove user',
+            children: <Text size="sm">
+              Remove {i.row.original.character_name ?? `#${i.row.original.character_id}`} from Admin?
+              Their tenant and its data stay intact - they just lose access until re-added.
+            </Text>,
+            labels: { confirm: 'Remove', cancel: 'Cancel' },
+            confirmProps: { color: 'danger' },
+            onConfirm: () => { setPendingCharacterId(i.row.original.character_id); removeUser.mutate(i.row.original.character_id) },
+          })}
           loading={removeUser.isPending && pendingCharacterId === i.row.original.character_id}>
           <IconTrash size={14} />
         </ActionIcon>
@@ -154,8 +167,8 @@ function UsersSection() {
   return (
     <div>
       <Title order={4} mb="xs">Users</Title>
-      {!isLoading && (users ?? []).length === 0 && <Text c="dimmed" size="sm" mb="sm">No users registered yet.</Text>}
-      {(isLoading || (users ?? []).length > 0) && (
+      {!isLoading && !isError && (users ?? []).length === 0 && <Text c="dimmed" size="sm" mb="sm">No users registered yet.</Text>}
+      {(isLoading || isError || (users ?? []).length > 0) && (
         <DataTable
           data={users ?? []}
           columns={columns}
@@ -163,6 +176,9 @@ function UsersSection() {
           exportFilename="users"
           getRowId={(u) => String(u.character_id)}
           isLoading={isLoading}
+          isError={isError}
+          onRetry={() => refetch()}
+          dataUpdatedAt={dataUpdatedAt}
         />
       )}
       <Group mt="sm">
@@ -173,6 +189,45 @@ function UsersSection() {
           Add User
         </Button>
       </Group>
+    </div>
+  )
+}
+
+// GitHub issue #88: self-hosted error tracking - ErrorBoundary.tsx and
+// main.tsx's global error/unhandledrejection listeners report here, this
+// is the only place that ever reads it back out. Cross-tenant (error_log
+// is deliberately unscoped, see docs/observability_schema.sql), same
+// pattern as TenantSection/UsersSection above.
+function ErrorsSection() {
+  const { data: errorRows, isLoading } = useQuery({ queryKey: ['admin', 'errors'], queryFn: () => adminApi.errors() })
+
+  const columns = useMemo<ColumnDef<ErrorLogRow, any>[]>(() => [
+    { header: 'When', accessorKey: 'created_at', size: 170, cell: (i) => dateTime(i.getValue()) },
+    { header: 'Source', accessorKey: 'source', size: 170 },
+    { header: 'Message', accessorKey: 'message', size: 360 },
+    { header: 'Page', accessorKey: 'path', size: 200, cell: (i) => i.getValue() ?? '—' },
+    { header: 'Tenant', accessorKey: 'tenant_id', size: 280, cell: (i) => i.getValue() ?? '—' },
+  ], [])
+
+  return (
+    <div>
+      <Title order={4} mb="xs">Recent Errors</Title>
+      <Text size="sm" c="dimmed" mb="sm">
+        The last 200 frontend errors reported across every tenant (a render crash, an uncaught exception, or an
+        unhandled promise rejection) - best-effort, never blocks the page that hit the error.
+      </Text>
+      {!isLoading && (errorRows ?? []).length === 0 && <Text c="dimmed" size="sm">No errors reported yet.</Text>}
+      {(isLoading || (errorRows ?? []).length > 0) && (
+        <DataTable
+          data={errorRows ?? []}
+          columns={columns}
+          tableId="admin-errors"
+          exportFilename="errors"
+          getRowId={(r) => String(r.id)}
+          isLoading={isLoading}
+          maxHeight={400}
+        />
+      )}
     </div>
   )
 }
@@ -194,6 +249,8 @@ export default function AdminPage() {
         <TenantSection />
         <Divider />
         <UsersSection />
+        <Divider />
+        <ErrorsSection />
       </Stack>
     </Container>
   )

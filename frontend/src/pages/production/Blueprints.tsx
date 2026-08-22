@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Badge, Stack, Card, Title, Text, Group, TextInput, NumberInput, Button, ActionIcon, Divider } from '@mantine/core'
+import { modals } from '@mantine/modals'
 import { IconTrash } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
@@ -14,7 +15,7 @@ import { isk, qty } from '../../format'
 const MANUAL_COPY_COSTS_KEY = [['production', 'manual-blueprint-copy-costs']]
 
 function ManualBlueprintCopyCostsSection() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({
     queryKey: ['production', 'manual-blueprint-copy-costs'], queryFn: productionApi.manualBlueprintCopyCosts,
   })
   const addCost = useAction(
@@ -45,7 +46,13 @@ function ManualBlueprintCopyCostsSection() {
       header: '', id: 'actions', size: 60, enableSorting: false,
       cell: (i) => (
         <ActionIcon size="sm" variant="subtle" color="danger"
-          onClick={() => { setPendingTypeId(i.row.original.type_id); removeCost.mutate(i.row.original.type_id) }}
+          onClick={() => modals.openConfirmModal({
+            title: 'Remove blueprint copy cost',
+            children: <Text size="sm">Remove the registered copy cost for {i.row.original.type_name}?</Text>,
+            labels: { confirm: 'Remove', cancel: 'Cancel' },
+            confirmProps: { color: 'danger' },
+            onConfirm: () => { setPendingTypeId(i.row.original.type_id); removeCost.mutate(i.row.original.type_id) },
+          })}
           loading={removeCost.isPending && pendingTypeId === i.row.original.type_id}>
           <IconTrash size={14} />
         </ActionIcon>
@@ -85,18 +92,21 @@ function ManualBlueprintCopyCostsSection() {
 
       {isLoading ? (
         <DataTable data={[]} columns={columns} isLoading maxHeight={300} />
+      ) : isError ? (
+        <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={300} />
       ) : !data || data.length === 0 ? (
         <Text c="dimmed" size="sm">None registered yet.</Text>
       ) : (
         <DataTable data={data} columns={columns} tableId="manual-blueprint-copy-costs"
-          exportFilename="manual-blueprint-copy-costs" getRowId={(r) => String(r.type_id)} maxHeight={300} />
+          exportFilename="manual-blueprint-copy-costs" getRowId={(r) => String(r.type_id)} maxHeight={300}
+          dataUpdatedAt={dataUpdatedAt} />
       )}
     </div>
   )
 }
 
 export default function Blueprints() {
-  const { data, isLoading } = useQuery({ queryKey: ['production', 'blueprints'], queryFn: productionApi.ownedBlueprints })
+  const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['production', 'blueprints'], queryFn: productionApi.ownedBlueprints })
 
   const columns = useMemo<ColumnDef<OwnedBlueprintRow, any>[]>(() => [
     { header: 'Item', accessorKey: 'type_name', size: 260 },
@@ -114,10 +124,12 @@ export default function Blueprints() {
     <Stack>
       {isLoading ? (
         <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
+      ) : isError ? (
+        <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />
       ) : !data || data.length === 0 ? (
         <HintCard>No blueprints found - or not synced yet ('Sync ESI Data' in the sidebar).</HintCard>
       ) : (
-        <DataTable data={data} columns={columns} maxHeight={560} />
+        <DataTable data={data} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
       )}
 
       <Divider />

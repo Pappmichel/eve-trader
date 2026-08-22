@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { Box, Button, Container, Group, Stack, Text, Title } from '@mantine/core'
+import { errorsApi } from '../api/client'
 import { COLORS } from '../theme'
 
 // React error boundaries must be class components - there is still no hook
@@ -23,10 +24,16 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    // No backend log-shipping for frontend errors exists (out of scope here) -
-    // at minimum this must not vanish silently in production, where there's
-    // no browser dev tools tab open to catch a plain console.error.
+    // Still logged locally (console.error) in case devtools happens to be
+    // open, but GitHub issue #88 added the durable side: best-effort report
+    // to the backend's self-hosted error_log, so a render crash a real user
+    // hits is visible in Admin -> Recent Errors even with nobody watching a
+    // console at the time. .catch(() => {}) - a failed error *report*
+    // (e.g. the backend itself is down) must never throw a second error out
+    // of this already-failing path.
     console.error('Unhandled render error:', error, info.componentStack)
+    errorsApi.report('frontend-render', error.message, info.componentStack ?? undefined, window.location.pathname)
+      .catch(() => {})
   }
 
   render() {

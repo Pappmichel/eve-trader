@@ -23,7 +23,7 @@ function sumValue(jobs: IndustryJobRow[], activity: string): number {
 }
 
 export default function Jobs() {
-  const { data, isLoading } = useQuery({ queryKey: ['production', 'jobs'], queryFn: productionApi.jobs })
+  const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['production', 'jobs'], queryFn: productionApi.jobs })
   const jobs = data ?? []
 
   const activities = useMemo(() => [...new Set(jobs.map((j) => j.activity))].sort(), [jobs])
@@ -63,6 +63,7 @@ export default function Jobs() {
   ], [])
 
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
+  if (isError) return <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />
   if (!data || data.length === 0) {
     return <HintCard>No active industry jobs - or not synced yet ('Sync ESI Data' in the sidebar).</HintCard>
   }
@@ -99,7 +100,7 @@ export default function Jobs() {
       {filtered.length === 0 ? (
         <HintCard>No jobs match the selected activity.</HintCard>
       ) : (
-        <DataTable data={filtered} columns={columns} maxHeight={560} />
+        <DataTable data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
       )}
       <Text size="xs" c="dimmed">
         Every job shown individually, even if several jobs build the same item - sorted by 'finishes next'.
