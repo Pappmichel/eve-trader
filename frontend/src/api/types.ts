@@ -37,6 +37,10 @@ export interface ShortlistRow {
   import_cost: number | null
   meta_level: number | null
   days_until_deactivation: number | null
+  // Real average daily sold quantity (GitHub issue #51) - what "Profit / Day"
+  // is actually computed from, NOT sell_volume (order-book depth). null
+  // means Reconcile Trades has never matched a real sale for this item.
+  avg_daily_sold: number | null
 }
 
 export interface NewCandidateResult {
@@ -77,6 +81,8 @@ export interface UnlistedStockRow {
   asset_quantity: number
   sell_order_remaining: number
   unlisted_quantity: number
+  sell_volume: number | null
+  margin: number | null
 }
 
 export interface UndercutRow {
@@ -347,6 +353,8 @@ export interface ProductionUnlistedStockRow {
   type_id: number
   type_name: string
   stock_quantity: number
+  sell_volume: number | null
+  margin: number | null
 }
 
 export interface PortfolioOverview {
@@ -403,10 +411,10 @@ export interface SdeFreshness {
   trading_universe_built_at: string | null
 }
 
-export interface AuthStatus {
-  buyer: string | null
-  seller: string | null
-}
+// GitHub issue #46: buyer/seller are multi-character now (see
+// ProducerCharacter above, same shape) - AuthStatus's old single
+// buyer/seller-name-or-null shape is gone.
+export type TradingCharacter = ProducerCharacter
 
 export interface GateStatus {
   enabled: boolean

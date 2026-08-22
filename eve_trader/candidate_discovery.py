@@ -20,7 +20,7 @@ from typing import Iterable, Optional
 
 from . import storage
 from .config import TRADING_CONFIG, TradingConfig
-from .esi_client import ESIClient, extract_meta_level
+from .esi_client import ESIClient, extract_meta_level, resolve_effective_volume
 from .models import Candidate
 
 log = logging.getLogger(__name__)
@@ -139,8 +139,20 @@ def _build_candidate_universe_from_sde(market_groups: list[tuple[int, int, str]]
         path = wanted_paths.get(market_group_id)
         if path is None or not type_name or not volume or volume <= 0:
             continue
+        # GitHub issue #73: capital-sized modules (category_id=MODULE_CATEGORY_ID)
+        # have a much smaller *packaged* volume than the raw SDE `volume`
+        # used above, the same quirk already fixed for Production's own haul
+        # cost in issue #11 (production/engine.py's _haul_volume, now a thin
+        # wrapper around this same resolve_effective_volume). Ships have the
+        # identical quirk but are already excluded via is_wanted_market_path
+        # above (excluded_path_prefixes), so they never reach this call -
+        # only Module-category types actually trigger the ESI lookup here.
+        # Passing category_id (already in hand from this loop's own tuple)
+        # skips resolve_effective_volume's own storage.get_type_category
+        # lookup.
+        effective_volume = resolve_effective_volume(type_id, volume, category_id)
         candidates.append(Candidate(
-            item=type_name, type_id=type_id, volume_m3=volume,
+            item=type_name, type_id=type_id, volume_m3=effective_volume,
             category=guess_category(path, type_name, volume, category_id, category_names,
                                      (type_groups or {}).get(type_id)),
             market_group_path=path, meta_level=meta_level,

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import time
 import urllib.parse
+from typing import Optional
 
 import requests
 from fastapi import APIRouter, HTTPException
@@ -57,10 +58,34 @@ def _scopes_for(role_prefix: str) -> list[str]:
     return list(OAUTH_CONFIG.scopes)
 
 
+# GitHub issue #57 (found in a full-codebase audit 2026-08-21): the tool_key
+# a /api/auth/{role_prefix}/start login requires - both the allowlist of
+# valid role_prefix values (start_login below rejects anything else, rather
+# than letting an arbitrary string become a permanent TokenManager role key)
+# and what api/app.py's AccessGateMiddleware checks a session's tool grants
+# against for this path, since /api/auth/ isn't covered by
+# _TOOL_PATH_PREFIXES's plain prefix match. "gate" maps to None - it's
+# identity-only and already fully exempt from the gate check via
+# api/app.py's _GATE_EXEMPT_PATHS, never reaching this mapping at all in
+# practice, but listed here so it's still a recognized/allowed role_prefix.
+ROLE_PREFIX_TOOL: dict[str, Optional[str]] = {
+    "buyer": "trading",
+    "seller": "trading",
+    "producer": "production",
+    "doctrine": "doctrine",
+    "doctrine-assets": "doctrine",
+    "gate": None,
+}
+
+
 @router.get("/{role_prefix}/start")
 def start_login(role_prefix: str):
-    """role_prefix: "buyer" | "seller" (single, fixed role) or "producer"
-    (multi-character - final role resolved after login as "producer:<id>")."""
+    """role_prefix: "buyer" | "seller" | "producer" | ... - every one of
+    these is multi-character (GitHub issue #46: buyer/seller used to be a
+    single fixed role each, now they follow the same "producer" scheme) -
+    the final role is resolved after login as f"{role_prefix}:<char_id>"."""
+    if role_prefix not in ROLE_PREFIX_TOOL:
+        raise HTTPException(400, f"Unknown role_prefix '{role_prefix}'.")
     if not OAUTH_CONFIG.client_id:
         raise HTTPException(500, "EVE_SSO_CLIENT_ID is not set (.env).")
     _prune_pending()
@@ -141,7 +166,13 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
         set_session_cookie(resp, character_id, character_name, tenant_id)
         return resp
 
-    final_role = role_prefix if role_prefix in ("buyer", "seller") else f"{role_prefix}:{character_id}"
+    # GitHub issue #46: buyer/seller used to be stored under a single fixed
+    # role key (a second login for the same role silently overwrote the
+    # first) - now every role_prefix (including buyer/seller) resolves to
+    # f"{role_prefix}:{character_id}", same multi-character scheme "producer"
+    # already used, so multiple buyer/seller characters can be registered
+    # independently.
+    final_role = f"{role_prefix}:{character_id}"
     # /callback is AccessGateMiddleware-exempt, so no ambient tenant is set
     # automatically here - use the one /start captured before redirecting to
     # EVE SSO (falling back to DEFAULT_TENANT_ID for a hand-constructed
@@ -156,17 +187,8 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
                              f"&character={urllib.parse.quote(character_name)}")
 
 
-@router.get("/status")
-def auth_status():
-    tm = TokenManager(OAUTH_CONFIG)
-    status = {}
-    for role in ("buyer", "seller"):
-        if tm.has_token(role):
-            try:
-                rec = tm.get_token(role)
-                status[role] = f"{rec.character_name} ({rec.character_id})"
-            except Exception as e:  # noqa: BLE001
-                status[role] = f"Token error: {e}"
-        else:
-            status[role] = None
-    return status
+# No more /status route: buyer/seller stopped being a single fixed role each
+# (GitHub issue #46), so "logged in y/n" is no longer a meaningful answer -
+# the Trading router's own /buyer-characters and /seller-characters (mirrors
+# Production's /producer-characters) list every registered character per
+# role instead. See TradingLayout.tsx's LoginButton for the frontend side.

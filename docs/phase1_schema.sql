@@ -512,6 +512,13 @@ CREATE TABLE IF NOT EXISTS shortlist_snapshot (
     import_cost REAL,
     meta_level INTEGER
 );
+-- GitHub issue #51: "Profit / Day" used to be computed from sell_volume
+-- (order-book depth, "how much is listed right now") - a never-actually-sold
+-- item with a large order book produced a wildly inflated number. Real
+-- observed average daily sold quantity instead (see
+-- trade_reconciliation.average_daily_sold_by_type) - NULL until Reconcile
+-- Trades has matched a real sale for this item.
+ALTER TABLE shortlist_snapshot ADD COLUMN IF NOT EXISTS avg_daily_sold REAL;
 CREATE INDEX IF NOT EXISTS idx_shortlist_snapshot_tenant ON shortlist_snapshot (tenant_id);
 ALTER TABLE shortlist_snapshot ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON shortlist_snapshot;

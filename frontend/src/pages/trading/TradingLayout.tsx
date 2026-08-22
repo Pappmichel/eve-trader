@@ -6,8 +6,9 @@ import {
   IconArrowLeft, IconBolt, IconCircleNumber1, IconCircleNumber2, IconPlayerPlay, IconSearch,
 } from '@tabler/icons-react'
 
-import { authApi, productionApi, tradingApi } from '../../api/client'
+import { productionApi, tradingApi } from '../../api/client'
 import { useAction } from '../../hooks/useAction'
+import { useRoleCharacters } from '../../hooks/useRoleCharacters'
 import { dateTime } from '../../format'
 
 const TABS = [
@@ -21,23 +22,38 @@ const TABS = [
   { path: '/trading/settings', label: 'Settings' },
 ]
 
-function LoginButton({ role, label }: { role: 'buyer' | 'seller'; label: string }) {
-  const { data: status } = useQuery({ queryKey: ['auth', 'status'], queryFn: authApi.status })
-  const connected = role === 'buyer' ? status?.buyer : status?.seller
-  const login = useAction('Login', async () => {
-    const { url } = await authApi.start(role)
-    window.location.href = url
-  })
+// GitHub issue #46: buyer/seller support multiple characters now (more
+// registered characters = more available order slots), not one fixed
+// role each - lists every registered character for `role` with a Remove
+// button, plus an "Add Character" login button, same shape
+// ProductionLayout.tsx already uses for producer characters.
+function RoleCharacters({ role, label }: { role: 'buyer' | 'seller'; label: string }) {
+  const fetchCharacters = role === 'buyer' ? tradingApi.buyerCharacters : tradingApi.sellerCharacters
+  const { characters, addCharacter, removeCharacter, isRemoving } = useRoleCharacters(
+    ['trading', 'characters', role], fetchCharacters, tradingApi.removeCharacter, role,
+  )
 
   return (
-    <Group justify="space-between" wrap="nowrap">
-      <Badge color={connected ? 'accent' : 'danger'} variant="light">
-        {connected ?? 'not logged in'}
-      </Badge>
-      <Button size="xs" variant="default" onClick={() => login.mutate()} loading={login.isPending}>
-        {label}
+    <div>
+      <Title order={6} c="dimmed" tt="uppercase" mb="xs">{label}</Title>
+      {characters.length === 0 && (
+        <Badge color="danger" variant="light" mb="xs">not logged in</Badge>
+      )}
+      <Stack gap={4} mb="xs">
+        {characters.map((c) => (
+          <Group key={c.role_key} justify="space-between" wrap="nowrap">
+            <Text size="sm" fw={600}>{c.character_name}</Text>
+            <Button size="xs" variant="subtle" color="danger"
+              onClick={() => removeCharacter(c.role_key)} loading={isRemoving(c.role_key)}>
+              Remove
+            </Button>
+          </Group>
+        ))}
+      </Stack>
+      <Button size="xs" variant="default" onClick={() => addCharacter.mutate()} loading={addCharacter.isPending}>
+        Add {label}
       </Button>
-    </Group>
+    </div>
   )
 }
 
@@ -91,7 +107,7 @@ export default function TradingLayout() {
   ])
 
   return (
-    <AppShell header={{ height: 56 }} navbar={{ width: 280, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding="md">
+    <AppShell header={{ height: 56 }} navbar={{ width: 280, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding={{ base: 'xs', sm: 'md' }}>
       <AppShell.Header>
         <Group h="100%" px="md" justify="space-between">
           <Group>
@@ -104,13 +120,8 @@ export default function TradingLayout() {
 
       <AppShell.Navbar p="md">
         <Stack gap="md">
-          <div>
-            <Title order={6} c="dimmed" tt="uppercase" mb="xs">Login</Title>
-            <Stack gap="xs">
-              <LoginButton role="buyer" label="Login Buyer" />
-              <LoginButton role="seller" label="Login Seller" />
-            </Stack>
-          </div>
+          <RoleCharacters role="buyer" label="Buyer" />
+          <RoleCharacters role="seller" label="Seller" />
 
           <Divider />
 
