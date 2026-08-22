@@ -2,6 +2,7 @@ import { AppShell, Burger, Stack, Title, Text, Button, Group, Badge, Tabs, Conta
 import { useDisclosure } from '@mantine/hooks'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
+import { spotlight } from '@mantine/spotlight'
 import {
   IconArrowLeft, IconBolt, IconCircleNumber1, IconCircleNumber2, IconPlayerPlay, IconSearch,
 } from '@tabler/icons-react'
@@ -114,7 +115,12 @@ export default function TradingLayout() {
             <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" aria-label="Toggle navigation" />
             <Text fw={700} tt="uppercase" lts={1}>EVE Trader — Trading</Text>
           </Group>
-          <Button variant="subtle" size="xs" leftSection={<IconArrowLeft size={14} />} onClick={() => navigate('/')}>Tools</Button>
+          <Group gap="xs">
+            <Button variant="subtle" size="xs" leftSection={<IconSearch size={14} />} onClick={() => spotlight.open()}>
+              Jump to... (⌘K)
+            </Button>
+            <Button variant="subtle" size="xs" leftSection={<IconArrowLeft size={14} />} onClick={() => navigate('/')}>Tools</Button>
+          </Group>
         </Group>
       </AppShell.Header>
 
