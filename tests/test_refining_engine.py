@@ -24,19 +24,20 @@ def _max_ore_config() -> RefiningConfig:
 
 
 def test_ore_ice_yield_at_max_setup_is_close_to_the_confirmed_90_6_percent_ceiling():
-    # Base(Tatara, T2-Rig, null-sec) = 52% + 5% x 2.1 = 62.5% (back-solved
-    # from - and confirmed against - the real 90.6% ceiling, see
-    # constants.py's module docstring) x 1.15 x 1.10 x 1.10 x 1.04 = 90.4475%.
-    # Not byte-exact to the real 90.6% (a ~0.15pp gap, plausibly per-step
-    # rounding in the real game client) - approximated Base constants,
-    # confirmed acceptable with the user rather than the exact live formula.
+    # (50 + 3) x 1.12 (null-sec Sec) x 1.055 (Tatara Sm) x 1.15 x 1.10 x 1.10
+    # x 1.04 = 90.628% - byte-exact to the real, confirmed 90.6% ceiling (see
+    # constants.py's module docstring, confirmed live against
+    # wiki.eveuniversity.org/Reprocessing 2026-08-23).
     cfg = _max_ore_config()
-    assert ore_ice_yield(cfg, "Veldspar") == pytest.approx(0.9045, abs=0.0005)
-    assert ore_ice_yield(cfg, "Veldspar") == pytest.approx(0.906, abs=0.002)
+    assert ore_ice_yield(cfg, "Veldspar") == pytest.approx(0.9063, abs=0.0005)
 
 
 def test_ore_ice_yield_zero_skills_and_no_bonuses_equals_bare_structure_base():
-    cfg = RefiningConfig()  # every default: Citadel, No Rig, no implant, no skills
+    # security_status=1.0 (highsec, Sec=0.00) explicitly - RefiningConfig's
+    # own security_status default (0.0) means null-sec (Sec=0.12), a
+    # deliberate default, not "off"/no-op (see its own docstring), so a
+    # genuinely bare 50% baseline needs highsec spelled out here.
+    cfg = RefiningConfig(security_status=1.0)  # Citadel, No Rig, no implant, no skills
     assert ore_ice_yield(cfg, None) == pytest.approx(0.50)
 
 
@@ -62,10 +63,18 @@ def test_ore_ice_yield_no_family_at_all_is_treated_as_unskilled():
     assert ore_ice_yield(cfg, None) < ore_ice_yield(cfg, "Veldspar")
 
 
-def test_ore_ice_base_yield_rig_bonus_is_scaled_by_security():
+def test_ore_ice_base_yield_whole_base_is_scaled_by_security():
+    # The real formula's security modifier multiplies the *whole*
+    # (50 + rig points) sum, not just the rig's own points - even a bare
+    # Citadel with No Rig gets a nullsec bonus over highsec (see
+    # security_yield_modifier's own docstring).
     highsec = RefiningConfig(structure_type="Tatara (L Refinery)", rig_tier="T2-Rig", security_status=0.9)
     nullsec = RefiningConfig(structure_type="Tatara (L Refinery)", rig_tier="T2-Rig", security_status=-1.0)
     assert ore_ice_base_yield(nullsec) > ore_ice_base_yield(highsec)
+
+    highsec_no_rig = RefiningConfig(rig_tier="No Rig", security_status=0.9)
+    nullsec_no_rig = RefiningConfig(rig_tier="No Rig", security_status=-1.0)
+    assert ore_ice_base_yield(nullsec_no_rig) > ore_ice_base_yield(highsec_no_rig)
 
 
 def test_scrapmetal_yield_hits_confirmed_maximum_of_55_percent():

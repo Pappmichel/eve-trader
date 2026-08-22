@@ -17,7 +17,7 @@ from ..config import (
     ConfigError, ConfigProxy, DEFAULT_CONFIG_PATH, apply_config_overrides, validate_config_overrides,
 )
 from .constants import (
-    REPROCESSING_IMPLANT_BONUS, RIG_BASE_YIELD_BONUS, STRUCTURE_BASE_YIELD,
+    REPROCESSING_IMPLANT_BONUS, RIG_YIELD_BONUS_POINTS, STRUCTURE_YIELD_MODIFIER,
 )
 
 
@@ -71,18 +71,18 @@ def validate_refining_overrides(overrides: dict) -> None:
     """Beyond the generic type checks (validate_config_overrides), structure_
     type/rig_tier/implant are only meaningful if they're one of the specific
     named options the yield engine actually knows how to price (constants.py's
-    STRUCTURE_BASE_YIELD/RIG_BASE_YIELD_BONUS/REPROCESSING_IMPLANT_BONUS - the
-    same dicts the Settings page's dropdowns will be built from) - mirrors
-    production/config.py's validate_production_overrides for the same
+    STRUCTURE_YIELD_MODIFIER/RIG_YIELD_BONUS_POINTS/REPROCESSING_IMPLANT_BONUS
+    - the same dicts the Settings page's dropdowns will be built from) -
+    mirrors production/config.py's validate_production_overrides for the same
     reasoning (a config.yaml hand-edit bypasses the dropdown, so a typo'd
     name would otherwise pass the plain string-type check and only fail
     later with a bare KeyError deep in the yield engine)."""
-    if "structure_type" in overrides and overrides["structure_type"] not in STRUCTURE_BASE_YIELD:
+    if "structure_type" in overrides and overrides["structure_type"] not in STRUCTURE_YIELD_MODIFIER:
         raise ConfigError(f"structure_type: {overrides['structure_type']!r} is not a known structure type. "
-                           f"Options: {', '.join(STRUCTURE_BASE_YIELD)}")
-    if "rig_tier" in overrides and overrides["rig_tier"] not in RIG_BASE_YIELD_BONUS:
+                           f"Options: {', '.join(STRUCTURE_YIELD_MODIFIER)}")
+    if "rig_tier" in overrides and overrides["rig_tier"] not in RIG_YIELD_BONUS_POINTS:
         raise ConfigError(f"rig_tier: {overrides['rig_tier']!r} is not a known rig tier. "
-                           f"Options: {', '.join(RIG_BASE_YIELD_BONUS)}")
+                           f"Options: {', '.join(RIG_YIELD_BONUS_POINTS)}")
     if "implant" in overrides and overrides["implant"] not in REPROCESSING_IMPLANT_BONUS:
         raise ConfigError(f"implant: {overrides['implant']!r} is not a known implant. "
                            f"Options: {', '.join(REPROCESSING_IMPLANT_BONUS)}")
