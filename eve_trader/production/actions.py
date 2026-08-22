@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import requests
+
 from .. import storage
 from ..actions import ActionError
 from ..auth import TokenManager
@@ -626,7 +628,16 @@ def do_unlisted_stock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         sell_volume = structure_stats.sell_volume if structure_stats else None
         try:
             margin = item_margin_detail(type_id, name, cfg).get("margin_home")
-        except ESIError:
+        except (ESIError, requests.RequestException):
+            # Found in code review: unlike every other try/except in this
+            # function (pure ESI calls, whose own client already wraps
+            # transport failures into ESIError), item_margin_detail's
+            # _PlanContext build also calls Goonmetrics directly
+            # (pricing.jita_prices/home_prices) - a Goonmetrics outage
+            # (confirmed unreliable elsewhere in this codebase even after
+            # retries) used to propagate uncaught past this best-effort
+            # degrade, turning "margin unknown for this one row" into a 500
+            # for the whole Unlisted Stock page.
             margin = None
         rows.append(UnlistedStockRow(type_id=type_id, type_name=name, stock_quantity=qty,
                                       sell_volume=sell_volume, margin=margin))
