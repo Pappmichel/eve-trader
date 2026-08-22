@@ -4,6 +4,7 @@ same pattern as api/routers/trading.py - no business logic here."""
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from .. import schemas
 from ...actions import ActionError
@@ -67,3 +68,12 @@ def refresh_ore_shortlist():
 @router.post("/settings")
 def update_settings(updates: schemas.RefiningSettings):
     return _wrap(actions.do_update_settings, updates=updates.model_dump())
+
+
+class ReprocessingPasteBody(BaseModel):
+    paste: str
+
+
+@router.post("/reprocessing/quote", response_model=schemas.ReprocessingQuoteResult)
+def quote_reprocessing(body: ReprocessingPasteBody):
+    return _wrap(actions.do_quote_reprocessing, paste_text=body.paste)

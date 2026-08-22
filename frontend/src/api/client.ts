@@ -353,6 +353,8 @@ export const refiningApi = {
     '/api/refining/settings/options',
   ),
   esiSyncTime: () => get<{ synced_at: string | null }>('/api/refining/esi/sync-time'),
+  quoteReprocessing: (paste: string) =>
+    post<T.ReprocessingQuoteResult>('/api/refining/reprocessing/quote', { paste }),
 }
 
 // ------------------------------------------------------------------- admin

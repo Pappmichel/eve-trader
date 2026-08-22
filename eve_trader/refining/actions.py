@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from typing import Optional
 
 from .. import storage
 from ..actions import ActionError
@@ -15,13 +16,27 @@ from ..esi_client import ESIClient, ESIError
 from .candidate_discovery import build_ore_candidate_universe
 from .config import REFINING_CONFIG, RefiningConfig, validate_refining_overrides
 from .models import OreShortlistRow
+from .paste_parser import merge_duplicate_stacks, parse_paste
 from .pricing import evaluate_ore_shortlist, mineral_type_ids_for
+from .reprocessing import (
+    REPROCESS_DECISION, ReprocessingQuoteRow, evaluate_reprocessing_line, mineral_type_ids_for_lines,
+    resolve_type_id,
+)
 
 log = logging.getLogger("eve_trader.refining.actions")
 
 
 def now_ts() -> str:
     return dt.datetime.utcnow().isoformat(timespec="seconds")
+
+
+def _seller_role(tm: TokenManager) -> Optional[str]:
+    """Reuses Trading's own seller role/token - no Ore-specific login (see
+    module docstring). Any one registered seller with docking access is
+    enough (GitHub issue #46's own multi-character precedent) - falls back
+    to the legacy fixed "seller" key for a not-yet-re-logged-in setup, same
+    fallback doctrine/engine.py's own seller-role lookup uses."""
+    return next(iter(tm.list_roles("seller")), None) or ("seller" if tm.has_token("seller") else None)
 
 
 def do_add_ore_to_shortlist() -> dict:
@@ -57,12 +72,7 @@ def do_refresh_ore_shortlist(trading_cfg: TradingConfig = TRADING_CONFIG,
     tracked_candidates = [c for c in candidates if c.type_id in tracked_ids]
 
     tm = TokenManager(oauth_cfg)
-    # Reuses Trading's own seller role/token - no Ore-specific login (see
-    # module docstring). Any one registered seller with docking access is
-    # enough (GitHub issue #46's own multi-character precedent) - falls back
-    # to the legacy fixed "seller" key for a not-yet-re-logged-in setup, same
-    # fallback doctrine/engine.py's own seller-role lookup uses.
-    seller_role = next(iter(tm.list_roles("seller")), None) or ("seller" if tm.has_token("seller") else None)
+    seller_role = _seller_role(tm)
     if seller_role is None:
         raise ActionError("Seller character isn't logged in yet (Trading -> Login -> Seller).")
     client = ESIClient(trading_cfg, tm)
@@ -97,6 +107,69 @@ def _row_to_tuple(r: OreShortlistRow) -> tuple:
 def do_deactivate_ore_shortlist_items(item_ids: list[int]) -> dict:
     storage.deactivate_ore_shortlist_items(item_ids)
     return {"deactivated": len(item_ids)}
+
+
+def do_quote_reprocessing(paste_text: str, trading_cfg: TradingConfig = TRADING_CONFIG,
+                           refining_cfg: RefiningConfig = REFINING_CONFIG,
+                           oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
+    """GitHub issue #92: parses an EVE inventory "Copy As" paste, quotes each
+    item (sell-as-is vs. scrapmetal-reprocessed), and returns both the
+    per-item rows and a totals summary. Reuses Trading's own seller
+    character/C-J structure, same as do_refresh_ore_shortlist - both the
+    item's own sell price and its mineral yield's sell price are C-J-only
+    (consistent with #91 and Production's established rule)."""
+    if not paste_text or not paste_text.strip():
+        raise ActionError("Paste is empty - copy items from an Inventory window's list view first.")
+
+    all_lines = parse_paste(paste_text)
+    error_lines = [line for line in all_lines if line.error]
+    parsed = merge_duplicate_stacks(all_lines)
+    if not parsed and not error_lines:
+        raise ActionError("Could not parse any items from the paste.")
+
+    tm = TokenManager(oauth_cfg)
+    seller_role = _seller_role(tm)
+    if seller_role is None:
+        raise ActionError("Seller character isn't logged in yet (Trading -> Login -> Seller).")
+    client = ESIClient(trading_cfg, tm)
+
+    type_ids = [tid for tid in (resolve_type_id(line.name) for line in parsed) if tid is not None]
+    mineral_ids = mineral_type_ids_for_lines(type_ids)
+    all_ids = sorted(set(type_ids) | set(mineral_ids))
+    try:
+        stats_by_id = client.structure_order_stats_bulk(trading_cfg.structure_id, all_ids, auth_role=seller_role)
+    except ESIError as e:
+        raise ActionError(f"Could not fetch the structure's order book ({e}). "
+                           f"Does the seller character still have docking access?") from e
+
+    rows = [error_line_to_row(line) for line in error_lines]
+    for line in parsed:
+        type_id = resolve_type_id(line.name)
+        item_stats = stats_by_id.get(type_id) if type_id is not None else None
+        rows.append(evaluate_reprocessing_line(line, item_stats, stats_by_id, trading_cfg, refining_cfg))
+
+    reprocess_rows = [r for r in rows if r.decision == REPROCESS_DECISION]
+    totals = {
+        "reprocess_count": len(reprocess_rows),
+        "total_mineral_value": sum(r.mineral_value or 0.0 for r in reprocess_rows),
+        "total_refined_value": sum(r.refined_value or 0.0 for r in reprocess_rows),
+        "total_sell_as_is_value": sum(r.sell_as_is_value or 0.0 for r in rows if r.sell_as_is_value is not None),
+    }
+    return {"rows": [_reprocessing_row_to_dict(r) for r in rows], "totals": totals}
+
+
+def error_line_to_row(line) -> ReprocessingQuoteRow:
+    return ReprocessingQuoteRow(name=line.name, quantity=line.quantity, type_id=None, category=line.category,
+                                 sell_as_is_value=None, refined_value=None, mineral_value=None, refining_tax=None,
+                                 decision="Unknown item", error=line.error)
+
+
+def _reprocessing_row_to_dict(r: ReprocessingQuoteRow) -> dict:
+    return {
+        "name": r.name, "quantity": r.quantity, "type_id": r.type_id, "category": r.category,
+        "sell_as_is_value": r.sell_as_is_value, "refined_value": r.refined_value, "mineral_value": r.mineral_value,
+        "refining_tax": r.refining_tax, "decision": r.decision, "error": r.error,
+    }
 
 
 def do_update_settings(updates: dict, cfg: RefiningConfig = REFINING_CONFIG) -> dict:
