@@ -1781,14 +1781,26 @@ _discover_cache_at: dict[str, float] = {}
 _discover_cache_lock = threading.Lock()
 
 
-def invalidate_discover_cache() -> None:
-    """Forces the next discover_build_candidates call (for the *current*
-    tenant only - see the cache's own comment) to re-scan instead of reusing
-    a cached result - call after anything that changes the result set (stock
-    target add/remove, Settings save, SDE refresh)."""
+def invalidate_discover_cache(all_tenants: bool = False) -> None:
+    """Forces the next discover_build_candidates call to re-scan instead of
+    reusing a cached result. Defaults to the *current* tenant only (see the
+    cache's own comment) - call after anything that changes just that
+    tenant's own result set (stock target add/remove, Settings save,
+    decryptor change). `all_tenants=True` clears every tenant's entry - the
+    only correct choice for a genuinely global change, e.g. admin.
+    do_refresh_sde()'s SDE refresh (blueprint/material data every tenant's
+    cache was built from, not just the calling admin's own). Confirmed real
+    gap (GitHub issue #54's own cross-tenant-cache-key fix): a per-tenant-
+    only invalidation left every *other* tenant serving stale discover/
+    margin results for up to the full TTL after a global SDE refresh, since
+    only the calling tenant's own entry was ever cleared."""
     global _discover_cache, _discover_cache_at
-    tenant_id = storage.get_current_tenant()
     with _discover_cache_lock:
+        if all_tenants:
+            _discover_cache.clear()
+            _discover_cache_at.clear()
+            return
+        tenant_id = storage.get_current_tenant()
         _discover_cache.pop(tenant_id, None)
         _discover_cache_at.pop(tenant_id, None)
 
@@ -1959,13 +1971,18 @@ _ship_margin_cache_at: dict[str, float] = {}
 _ship_margin_cache_lock = threading.Lock()
 
 
-def invalidate_ship_margin_cache() -> None:
-    """Forces the next discover_ship_margins call (for the *current* tenant
-    only) to re-scan - call alongside invalidate_discover_cache (see that
-    function's own call sites in production/actions.py)."""
+def invalidate_ship_margin_cache(all_tenants: bool = False) -> None:
+    """Forces the next discover_ship_margins call to re-scan - call alongside
+    invalidate_discover_cache (see that function's own call sites in
+    production/actions.py and its own `all_tenants` docstring for when to
+    pass it here too)."""
     global _ship_margin_cache, _ship_margin_cache_at
-    tenant_id = storage.get_current_tenant()
     with _ship_margin_cache_lock:
+        if all_tenants:
+            _ship_margin_cache.clear()
+            _ship_margin_cache_at.clear()
+            return
+        tenant_id = storage.get_current_tenant()
         _ship_margin_cache.pop(tenant_id, None)
         _ship_margin_cache_at.pop(tenant_id, None)
 
