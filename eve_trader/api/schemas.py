@@ -352,6 +352,46 @@ class MaterialTreeNode(_Base):
 MaterialTreeNode.model_rebuild()
 
 
+# --------------------------------------------------------------- ore & minerals
+class OreShortlistItem(_Base):
+    item_id: int
+    item: str
+    family: str
+    is_ice: bool
+    active: bool = True
+
+
+class OreShortlistRow(_Base):
+    item_id: int
+    item: str
+    family: str
+    is_ice: bool
+    active: bool
+    volume_m3: Optional[float]
+    landed_cost: Optional[float]
+    yield_pct: Optional[float]
+    mineral_value: Optional[float]
+    refining_tax: Optional[float]
+    net_sell: Optional[float]
+    sell_listed_qty: Optional[float]
+    profit_per_unit: Optional[float]
+    margin: Optional[float]
+    profit_per_m3: Optional[float]
+    decision: str
+
+
+class RefiningSettings(_Base):
+    structure_type: str
+    rig_tier: str
+    security_status: float
+    implant: str
+    reprocessing_skill_level: int
+    reprocessing_efficiency_skill_level: int
+    ore_family_skill_levels: dict[str, int]
+    scrapmetal_processing_skill_level: int
+    refining_tax_rate: float
+
+
 # ------------------------------------------------------------------ portfolio
 class Doctrine(_Base):
     doctrine_id: str

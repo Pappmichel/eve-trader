@@ -50,3 +50,58 @@ CREATE INDEX IF NOT EXISTS idx_sde_type_materials_by_type ON sde_type_materials 
 -- (populated by refresh_sde(), read by every tenant) and on the widened
 -- tenant_settings constraint's underlying table.
 GRANT SELECT, INSERT, UPDATE, DELETE ON sde_type_materials TO eve_trader_app;
+
+-- ====================================================== per-tenant: Ore Shortlist
+-- GitHub issue #91 ("Ore Shortlist" - phase 2/5). Same two-table shape as
+-- Trading's own shortlist/shortlist_snapshot (docs/phase1_schema.sql) -
+-- composite-PK "live list" bucket + no-PK append/history snapshot bucket -
+-- see that file's own section banners for the reasoning behind each shape.
+
+CREATE TABLE IF NOT EXISTS ore_shortlist (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    item_id INTEGER NOT NULL,
+    item TEXT NOT NULL,
+    -- Ore/ice family name (e.g. "Veldspar") - the RefiningConfig.
+    -- ore_family_skill_levels lookup key (see refining/engine.py's
+    -- ore_ice_yield). Derived once at candidate-build time from the
+    -- compressed type's own name (see refining/candidate_discovery.py) and
+    -- stored here rather than re-derived on every refresh.
+    family TEXT NOT NULL,
+    is_ice BOOLEAN NOT NULL DEFAULT false,
+    active BOOLEAN NOT NULL DEFAULT true,
+    PRIMARY KEY (tenant_id, item_id)
+);
+ALTER TABLE ore_shortlist ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON ore_shortlist;
+CREATE POLICY tenant_isolation ON ore_shortlist
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
+CREATE TABLE IF NOT EXISTS ore_shortlist_snapshot (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    run_ts TEXT NOT NULL,
+    item_id INTEGER NOT NULL,
+    item TEXT NOT NULL,
+    family TEXT NOT NULL,
+    is_ice BOOLEAN NOT NULL,
+    active BOOLEAN NOT NULL,
+    volume_m3 REAL,
+    landed_cost DOUBLE PRECISION,
+    yield_pct DOUBLE PRECISION,
+    mineral_value DOUBLE PRECISION,
+    refining_tax DOUBLE PRECISION,
+    net_sell DOUBLE PRECISION,
+    sell_listed_qty DOUBLE PRECISION,
+    profit_per_unit DOUBLE PRECISION,
+    margin DOUBLE PRECISION,
+    profit_per_m3 DOUBLE PRECISION,
+    decision TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ore_shortlist_snapshot_tenant ON ore_shortlist_snapshot (tenant_id);
+ALTER TABLE ore_shortlist_snapshot ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON ore_shortlist_snapshot;
+CREATE POLICY tenant_isolation ON ore_shortlist_snapshot
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON ore_shortlist, ore_shortlist_snapshot TO eve_trader_app;
