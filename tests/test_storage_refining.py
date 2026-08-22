@@ -241,3 +241,44 @@ def test_latest_ore_snapshot_empty_before_any_run(tenant):
     import pandas as pd
     assert storage.latest_ore_snapshot().empty
     assert isinstance(storage.latest_ore_snapshot(), pd.DataFrame)
+
+
+# --------------------------------------- Mineral Shopping List (GitHub issue #93)
+def test_mineral_requirements_round_trip(tenant):
+    storage.replace_mineral_requirements([(34, "Tritanium", 1_000_000.0), (35, "Pyerite", 250_000.5)])
+
+    rows = storage.load_mineral_requirements()
+
+    # Name-ordered, so Pyerite comes first regardless of insert order.
+    assert rows == [(35, "Pyerite", 250_000.5), (34, "Tritanium", 1_000_000.0)]
+
+
+def test_replace_mineral_requirements_drops_rows_no_longer_in_the_list(tenant):
+    storage.replace_mineral_requirements([(34, "Tritanium", 100.0), (35, "Pyerite", 200.0)])
+
+    storage.replace_mineral_requirements([(34, "Tritanium", 150.0)])
+
+    assert storage.load_mineral_requirements() == [(34, "Tritanium", 150.0)]
+
+
+def test_replace_mineral_requirements_with_an_empty_list_clears_everything(tenant):
+    storage.replace_mineral_requirements([(34, "Tritanium", 100.0)])
+
+    storage.replace_mineral_requirements([])
+
+    assert storage.load_mineral_requirements() == []
+
+
+def test_load_mineral_requirements_empty_before_anything_is_saved(tenant):
+    assert storage.load_mineral_requirements() == []
+
+
+def test_mineral_requirements_are_tenant_isolated(tenant):
+    import uuid
+    storage.replace_mineral_requirements([(34, "Tritanium", 100.0)])
+
+    with storage.tenant_context(str(uuid.uuid4())):
+        assert storage.load_mineral_requirements() == []
+        storage.replace_mineral_requirements([(35, "Pyerite", 7.0)])
+
+    assert storage.load_mineral_requirements() == [(34, "Tritanium", 100.0)]

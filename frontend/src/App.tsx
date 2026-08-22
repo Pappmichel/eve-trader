@@ -58,6 +58,7 @@ const DoctrineSettings = lazy(() => import('./pages/doctrine/DoctrineSettings'))
 const OreLayout = lazy(() => import('./pages/refining/OreLayout'))
 const OreShortlist = lazy(() => import('./pages/refining/OreShortlist'))
 const ReprocessingQuote = lazy(() => import('./pages/refining/ReprocessingQuote'))
+const MineralShoppingList = lazy(() => import('./pages/refining/MineralShoppingList'))
 const OreSettings = lazy(() => import('./pages/refining/OreSettings'))
 
 const AdminPage = lazy(() => import('./pages/admin/AdminPage'))
@@ -211,6 +212,7 @@ function App() {
             <Route path="/ore" element={<OreLayout />}>
               <Route index element={<OreShortlist />} />
               <Route path="reprocessing" element={<ReprocessingQuote />} />
+              <Route path="shopping-list" element={<MineralShoppingList />} />
               <Route path="settings" element={<OreSettings />} />
             </Route>
           </Routes>

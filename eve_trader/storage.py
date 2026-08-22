@@ -1745,6 +1745,38 @@ def load_ore_ice_candidate_types() -> list[tuple[int, str, float, str]]:
         ).fetchall()
 
 
+# ---------------------------------------- Ore & Minerals: Mineral Shopping List
+# GitHub issue #93. Same simple composite-PK key-value shape as stock_targets
+# (docs/refining_schema.sql) - raw tuples in/out, not eve_trader.refining.models
+# dataclasses, for the same reason spelled out above the Ore Shortlist section.
+def replace_mineral_requirements(rows: Iterable[tuple[int, str, float]]) -> None:
+    """rows: (mineral_type_id, mineral_name, required_qty). Replace-all, not
+    upsert-only: the Mineral Shopping List's editor always submits the whole
+    list (and #94's "Aus Production laden" overwrites it wholesale), so a
+    mineral removed in the editor has to actually disappear here - an
+    upsert-only write would silently keep it, and the optimizer would keep
+    solving for a requirement the user already deleted. The DELETE is
+    tenant-scoped by RLS like every other statement on this connection, so it
+    can only ever clear this tenant's own rows."""
+    rows = [(int(type_id), name, float(qty)) for type_id, name, qty in rows]
+    with connect() as conn:
+        conn.execute("DELETE FROM mineral_requirements")
+        if rows:
+            conn.executemany(
+                "INSERT INTO mineral_requirements (mineral_type_id, mineral_name, required_qty) VALUES (?,?,?)",
+                rows,
+            )
+
+
+def load_mineral_requirements() -> list[tuple[int, str, float]]:
+    """Returns (mineral_type_id, mineral_name, required_qty) rows, name-ordered
+    so the editor and the optimizer's output always list minerals the same way."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT mineral_type_id, mineral_name, required_qty FROM mineral_requirements ORDER BY mineral_name"
+        ).fetchall()
+
+
 # ------------------------------------------------------------- Production: SDE reads
 def search_sde_types(query: str, limit: int = 20) -> list[tuple[int, str]]:
     """Type-ahead lookup for the Stock Targets editor. An exact (case-insensitive)

@@ -105,3 +105,35 @@ CREATE POLICY tenant_isolation ON ore_shortlist_snapshot
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON ore_shortlist, ore_shortlist_snapshot TO eve_trader_app;
+
+-- ============================================= per-tenant: Mineral Shopping List
+-- GitHub issue #93 ("Mineral Shopping List" - phase 4/5). The manually
+-- entered (or, from #94 on, Production-populated) "I need this many of this
+-- mineral" list the buy-vs-refine optimizer solves against. Same simple
+-- composite-PK key-value shape as stock_targets (docs/phase1_schema.sql's
+-- composite-PK bucket) - the natural key is an EVE type_id, reused verbatim
+-- across every tenant, so the PK is widened to (tenant_id, mineral_type_id).
+--
+-- The optimizer's *output* is deliberately NOT persisted: unlike the Ore
+-- Shortlist's snapshot table, a shopping-list plan is only meaningful against
+-- the live Jita order book it was solved from, and is recomputed on demand
+-- (see refining/actions.py's do_optimize_mineral_shopping_list) - a stored
+-- plan would go stale the moment prices moved, with nothing to signal it.
+CREATE TABLE IF NOT EXISTS mineral_requirements (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    mineral_type_id INTEGER NOT NULL,
+    mineral_name TEXT NOT NULL,
+    -- DOUBLE PRECISION rather than INTEGER: Production's own shortfall
+    -- figures (#94's future source for this list) are fractional per-run
+    -- quantities, and the LP itself is continuous - rounding to whole units
+    -- happens once, at the end, in the plan the user actually buys from.
+    required_qty DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY (tenant_id, mineral_type_id)
+);
+ALTER TABLE mineral_requirements ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON mineral_requirements;
+CREATE POLICY tenant_isolation ON mineral_requirements
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON mineral_requirements TO eve_trader_app;

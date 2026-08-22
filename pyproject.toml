@@ -9,6 +9,11 @@ requires-python = ">=3.10"
 dependencies = [
     "requests>=2.31",
     "pandas>=2.0",
+    # Ore & Minerals' Mineral Shopping List (GitHub issue #93) solves a real
+    # linear program (scipy.optimize.linprog/HiGHS) for the cheapest mix of
+    # ore-to-refine vs. minerals-bought-outright - see
+    # eve_trader/refining/optimizer.py for why a greedy ranking wasn't enough.
+    "scipy>=1.11",
     "PyYAML>=6.0",
     "ruamel.yaml>=0.18",
     "python-dotenv>=1.0",

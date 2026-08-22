@@ -355,6 +355,13 @@ export const refiningApi = {
   esiSyncTime: () => get<{ synced_at: string | null }>('/api/refining/esi/sync-time'),
   quoteReprocessing: (paste: string) =>
     post<T.ReprocessingQuoteResult>('/api/refining/reprocessing/quote', { paste }),
+  // Mineral Shopping List (GitHub issue #93)
+  refinableMinerals: () => get<T.RefinableMineral[]>('/api/refining/shopping-list/minerals'),
+  mineralRequirements: () => get<T.MineralRequirement[]>('/api/refining/shopping-list/requirements'),
+  saveMineralRequirements: (requirements: T.MineralRequirement[]) =>
+    post<{ saved: number }>('/api/refining/shopping-list/requirements', { requirements }),
+  optimizeShoppingList: (requirements?: T.MineralRequirement[]) =>
+    post<T.ShoppingListPlan>('/api/refining/shopping-list/optimize', { requirements: requirements ?? null }),
 }
 
 // ------------------------------------------------------------------- admin
