@@ -2,6 +2,7 @@ import { AppShell, Burger, Stack, Title, Text, Button, Group, Tabs, Container, D
 import { useDisclosure } from '@mantine/hooks'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
+import { modals } from '@mantine/modals'
 import { spotlight } from '@mantine/spotlight'
 import { IconArrowLeft, IconRefresh, IconSearch, IconTrash } from '@tabler/icons-react'
 
@@ -57,7 +58,14 @@ function CharacterGroup({ title, queryKey, listFn, ssoRolePrefix, removeFn }: {
           <Group key={c.role_key} justify="space-between" wrap="nowrap">
             <Text size="sm">{c.character_name}</Text>
             <ActionIcon size="sm" variant="subtle" color="danger"
-              onClick={() => removeCharacter(c.role_key)} loading={isRemoving(c.role_key)}>
+              onClick={() => modals.openConfirmModal({
+                title: 'Remove character',
+                children: <Text size="sm">Remove {c.character_name} from {title}? You can log them back in any time.</Text>,
+                labels: { confirm: 'Remove', cancel: 'Cancel' },
+                confirmProps: { color: 'danger' },
+                onConfirm: () => removeCharacter(c.role_key),
+              })}
+              loading={isRemoving(c.role_key)}>
               <IconTrash size={14} />
             </ActionIcon>
           </Group>

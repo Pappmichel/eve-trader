@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Stack, Title, Text, Badge, Button, Group, Modal, NumberInput, ActionIcon,
 } from '@mantine/core'
+import { modals } from '@mantine/modals'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { IconCheck, IconTrash } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
@@ -148,7 +149,13 @@ export default function DoctrineDetail() {
     {
       header: '', id: 'actions', size: 60, enableSorting: false,
       cell: (i) => (
-        <ActionIcon size="sm" variant="subtle" color="danger" onClick={() => deleteFitting.mutate(i.row.original.fitting_id)}>
+        <ActionIcon size="sm" variant="subtle" color="danger" onClick={() => modals.openConfirmModal({
+          title: 'Delete fitting',
+          children: <Text size="sm">Delete "{i.row.original.fitting_name}"? This can't be undone.</Text>,
+          labels: { confirm: 'Delete', cancel: 'Cancel' },
+          confirmProps: { color: 'danger' },
+          onConfirm: () => deleteFitting.mutate(i.row.original.fitting_id),
+        })}>
           <IconTrash size={14} />
         </ActionIcon>
       ),
@@ -174,8 +181,14 @@ export default function DoctrineDetail() {
         </div>
         <Group>
           <Button onClick={() => setModalOpen(true)}>Add Fitting</Button>
-          <Button variant="default" color="danger" onClick={() => deleteDoctrine.mutate(doctrineId, {
-            onSuccess: () => navigate('/doctrine'),
+          <Button variant="default" color="danger" onClick={() => modals.openConfirmModal({
+            title: 'Delete doctrine',
+            children: <Text size="sm">
+              Delete "{doctrine.doctrine_name}" and all {doctrine.fittings.length} of its fittings? This can't be undone.
+            </Text>,
+            labels: { confirm: 'Delete', cancel: 'Cancel' },
+            confirmProps: { color: 'danger' },
+            onConfirm: () => deleteDoctrine.mutate(doctrineId, { onSuccess: () => navigate('/doctrine') }),
           })} loading={deleteDoctrine.isPending}>
             Delete Doctrine
           </Button>

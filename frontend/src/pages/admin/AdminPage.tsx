@@ -5,6 +5,7 @@ import {
 import { IconArrowLeft, IconTrash } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
+import { modals } from '@mantine/modals'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { adminApi, productionApi } from '../../api/client'
@@ -145,7 +146,16 @@ function UsersSection() {
       header: '', id: 'actions', size: 60, enableSorting: false,
       cell: (i) => (
         <ActionIcon size="sm" variant="subtle" color="danger"
-          onClick={() => { setPendingCharacterId(i.row.original.character_id); removeUser.mutate(i.row.original.character_id) }}
+          onClick={() => modals.openConfirmModal({
+            title: 'Remove user',
+            children: <Text size="sm">
+              Remove {i.row.original.character_name ?? `#${i.row.original.character_id}`} from Admin?
+              Their tenant and its data stay intact - they just lose access until re-added.
+            </Text>,
+            labels: { confirm: 'Remove', cancel: 'Cancel' },
+            confirmProps: { color: 'danger' },
+            onConfirm: () => { setPendingCharacterId(i.row.original.character_id); removeUser.mutate(i.row.original.character_id) },
+          })}
           loading={removeUser.isPending && pendingCharacterId === i.row.original.character_id}>
           <IconTrash size={14} />
         </ActionIcon>

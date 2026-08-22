@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Badge, Stack, Card, Title, Text, Group, TextInput, NumberInput, Button, ActionIcon, Divider } from '@mantine/core'
+import { modals } from '@mantine/modals'
 import { IconTrash } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
@@ -45,7 +46,13 @@ function ManualBlueprintCopyCostsSection() {
       header: '', id: 'actions', size: 60, enableSorting: false,
       cell: (i) => (
         <ActionIcon size="sm" variant="subtle" color="danger"
-          onClick={() => { setPendingTypeId(i.row.original.type_id); removeCost.mutate(i.row.original.type_id) }}
+          onClick={() => modals.openConfirmModal({
+            title: 'Remove blueprint copy cost',
+            children: <Text size="sm">Remove the registered copy cost for {i.row.original.type_name}?</Text>,
+            labels: { confirm: 'Remove', cancel: 'Cancel' },
+            confirmProps: { color: 'danger' },
+            onConfirm: () => { setPendingTypeId(i.row.original.type_id); removeCost.mutate(i.row.original.type_id) },
+          })}
           loading={removeCost.isPending && pendingTypeId === i.row.original.type_id}>
           <IconTrash size={14} />
         </ActionIcon>

@@ -2,6 +2,7 @@ import { AppShell, Badge, Burger, Stack, Title, Text, Button, Group, Container, 
 import { useDisclosure } from '@mantine/hooks'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
+import { modals } from '@mantine/modals'
 import { spotlight } from '@mantine/spotlight'
 import { IconArrowLeft, IconSearch } from '@tabler/icons-react'
 
@@ -121,7 +122,14 @@ export default function ProductionLayout() {
                 <Group key={c.role_key} justify="space-between" mb={4}>
                   <Text size="sm" fw={600}>{c.character_name}</Text>
                   <Button size="xs" variant="subtle" color="danger"
-                    onClick={() => removeCharacter(c.role_key)} loading={isRemoving(c.role_key)}>
+                    onClick={() => modals.openConfirmModal({
+                      title: 'Remove character',
+                      children: <Text size="sm">Remove {c.character_name} from Production? You can log them back in any time.</Text>,
+                      labels: { confirm: 'Remove', cancel: 'Cancel' },
+                      confirmProps: { color: 'danger' },
+                      onConfirm: () => removeCharacter(c.role_key),
+                    })}
+                    loading={isRemoving(c.role_key)}>
                     Remove
                   </Button>
                 </Group>
