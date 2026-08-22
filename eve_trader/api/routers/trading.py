@@ -193,6 +193,29 @@ def reconcile_trades():
     return _wrap(actions.do_reconcile_trades)
 
 
+# GitHub issue #46: buyer/seller are multi-character now, same pattern as
+# Production's own /producer-characters + /auth/character/{role_key}.
+@router.get("/buyer-characters")
+def get_buyer_characters():
+    return [
+        {"role_key": role, "character_id": cid, "character_name": name}
+        for role, cid, name in actions.do_list_buyer_characters()
+    ]
+
+
+@router.get("/seller-characters")
+def get_seller_characters():
+    return [
+        {"role_key": role, "character_id": cid, "character_name": name}
+        for role, cid, name in actions.do_list_seller_characters()
+    ]
+
+
+@router.delete("/auth/character/{role_key}")
+def remove_trading_character(role_key: str):
+    return _wrap(actions.do_remove_trading_character, role_key=role_key)
+
+
 @router.post("/pipeline/run")
 def run_pipeline(safe: bool = True, rebuild_universe: bool = False):
     return _wrap(actions.do_pipeline, safe=safe, rebuild_universe=rebuild_universe)
