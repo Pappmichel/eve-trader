@@ -87,3 +87,31 @@ def test_settings_options_lists_real_constants():
     assert "Tatara (L Refinery)" in body["structure_types"]
     assert "T2-Rig" in body["rig_tiers"]
     assert "RX-804" in body["implants"]
+
+
+def test_quote_reprocessing_passes_paste_to_action(monkeypatch):
+    captured = {}
+
+    def _quote(paste_text):
+        captured["paste_text"] = paste_text
+        return {"rows": [], "totals": {"reprocess_count": 0, "total_mineral_value": 0.0,
+                                        "total_refined_value": 0.0, "total_sell_as_is_value": 0.0}}
+    monkeypatch.setattr(refining_actions, "do_quote_reprocessing", _quote)
+
+    resp = client.post("/api/refining/reprocessing/quote", json={"paste": "Tritanium\t100\tMineral\tMaterial\t\t\t0.01 m3\t\t"})
+
+    assert resp.status_code == 200
+    assert captured["paste_text"] == "Tritanium\t100\tMineral\tMaterial\t\t\t0.01 m3\t\t"
+    assert resp.json() == {"rows": [], "totals": {"reprocess_count": 0, "total_mineral_value": 0.0,
+                                                    "total_refined_value": 0.0, "total_sell_as_is_value": 0.0}}
+
+
+def test_quote_reprocessing_action_error_maps_to_400(monkeypatch):
+    def _raise(paste_text):
+        raise ActionError("Paste is empty - copy items from an Inventory window's list view first.")
+    monkeypatch.setattr(refining_actions, "do_quote_reprocessing", _raise)
+
+    resp = client.post("/api/refining/reprocessing/quote", json={"paste": ""})
+
+    assert resp.status_code == 400
+    assert "Paste is empty" in resp.json()["detail"]

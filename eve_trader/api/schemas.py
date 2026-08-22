@@ -380,6 +380,31 @@ class OreShortlistRow(_Base):
     decision: str
 
 
+class ReprocessingQuoteRow(_Base):
+    name: str
+    quantity: int
+    type_id: Optional[int]
+    category: str
+    sell_as_is_value: Optional[float]
+    refined_value: Optional[float]
+    mineral_value: Optional[float]
+    refining_tax: Optional[float]
+    decision: str
+    error: Optional[str] = None
+
+
+class ReprocessingQuoteTotals(_Base):
+    reprocess_count: int
+    total_mineral_value: float
+    total_refined_value: float
+    total_sell_as_is_value: float
+
+
+class ReprocessingQuoteResult(_Base):
+    rows: list[ReprocessingQuoteRow]
+    totals: ReprocessingQuoteTotals
+
+
 class RefiningSettings(_Base):
     structure_type: str
     rig_tier: str

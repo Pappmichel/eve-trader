@@ -10,6 +10,7 @@ import { dateTime } from '../../format'
 
 const TABS = [
   { path: '/ore', label: 'Ore Shortlist' },
+  { path: '/ore/reprocessing', label: 'Reprocessing' },
   { path: '/ore/settings', label: 'Settings' },
 ]
 

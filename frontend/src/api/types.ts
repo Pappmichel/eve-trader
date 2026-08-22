@@ -690,3 +690,28 @@ export interface RefiningSettings {
   scrapmetal_processing_skill_level: number
   refining_tax_rate: number
 }
+
+export interface ReprocessingQuoteRow {
+  name: string
+  quantity: number
+  type_id: number | null
+  category: string
+  sell_as_is_value: number | null
+  refined_value: number | null
+  mineral_value: number | null
+  refining_tax: number | null
+  decision: string
+  error: string | null
+}
+
+export interface ReprocessingQuoteTotals {
+  reprocess_count: number
+  total_mineral_value: number
+  total_refined_value: number
+  total_sell_as_is_value: number
+}
+
+export interface ReprocessingQuoteResult {
+  rows: ReprocessingQuoteRow[]
+  totals: ReprocessingQuoteTotals
+}
