@@ -40,12 +40,25 @@ def test_ore_ice_yield_zero_skills_and_no_bonuses_equals_bare_structure_base():
     assert ore_ice_yield(cfg, None) == pytest.approx(0.50)
 
 
-def test_ore_ice_yield_unknown_or_missing_ore_family_is_treated_as_unskilled():
+def test_ore_ice_yield_missing_ore_family_defaults_to_max_skill_level_5():
+    # A known family simply missing from ore_family_skill_levels (the user
+    # hasn't entered it in Settings yet) is assumed maxed (5), not unskilled
+    # - these are cheap skills almost every active player has trained to 5.
+    cfg = RefiningConfig(
+        structure_type="Tatara (L Refinery)", rig_tier="T2-Rig", security_status=-0.5,
+        implant="RX-804", reprocessing_skill_level=5, reprocessing_efficiency_skill_level=5,
+        ore_family_skill_levels={"Veldspar": 2},
+    )
+    # "Scordite" isn't in the dict at all -> assumed level 5, higher than
+    # "Veldspar"'s explicitly-configured, lower level 2.
+    assert ore_ice_yield(cfg, "Scordite") > ore_ice_yield(cfg, "Veldspar")
+
+
+def test_ore_ice_yield_no_family_at_all_is_treated_as_unskilled():
     cfg = _max_ore_config()
-    # "Veldspar" is the only family with a stored skill level - a different
-    # family (never entered) or None (item has no known family at all) must
-    # not silently borrow Veldspar's level 5.
-    assert ore_ice_yield(cfg, "Scordite") < ore_ice_yield(cfg, "Veldspar")
+    # ore_family=None (item has no known family at all, e.g. not a real
+    # ore/ice item) has no family skill to assume anything about - stays 0,
+    # unlike a real family simply missing from the dict.
     assert ore_ice_yield(cfg, None) < ore_ice_yield(cfg, "Veldspar")
 
 

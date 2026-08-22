@@ -48,8 +48,13 @@ def ore_ice_base_yield(cfg: RefiningConfig) -> float:
 def ore_ice_yield(cfg: RefiningConfig, ore_family: Optional[str] = None) -> float:
     """Effective reprocessing yield % for a compressed ore/ice item, given its
     family (e.g. "Veldspar" - see RefiningConfig.ore_family_skill_levels'
-    docstring for what a family is; None/unknown-family items are treated as
-    an unskilled 0, same as a family simply missing from the dict).
+    docstring for what a family is). A *known* family simply missing from the
+    dict (the user hasn't entered a skill level for it in Settings yet) is
+    assumed maxed (level 5), not unskilled - these are cheap skills almost
+    every active player has trained to 5, and defaulting to 0 would
+    understate every not-yet-configured family's profit; ore_family=None
+    itself (no family at all, e.g. a non-ore/ice item) still gets 0, there's
+    no family skill to assume anything about.
 
     Yield = Base(structure, rig, security) x (1 + Reprocessing skill)
                                             x (1 + Reprocessing Efficiency skill)
@@ -60,7 +65,7 @@ def ore_ice_yield(cfg: RefiningConfig, ore_family: Optional[str] = None) -> floa
     base = ore_ice_base_yield(cfg)
     reprocessing = clamp_skill_level(cfg.reprocessing_skill_level)
     efficiency = clamp_skill_level(cfg.reprocessing_efficiency_skill_level)
-    ore_family_level = clamp_skill_level(cfg.ore_family_skill_levels.get(ore_family, 0) if ore_family else 0)
+    ore_family_level = clamp_skill_level(cfg.ore_family_skill_levels.get(ore_family, 5) if ore_family else 0)
     implant_bonus = REPROCESSING_IMPLANT_BONUS[cfg.implant]
     return (
         base
