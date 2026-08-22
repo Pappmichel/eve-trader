@@ -266,14 +266,33 @@ class ESIClient:
             self._record_error_budget(resp)
             if resp.status_code == 200:
                 return resp
-            if resp.status_code == 420:  # ESI error-limited
-                time.sleep(min(2 ** attempt, 20))
+            if resp.status_code in (420, 429):  # ESI error-limited (420) or plain HTTP rate-limited (429)
+                time.sleep(self._retry_after_seconds(resp, attempt))
                 continue
             if resp.status_code in (500, 502, 503, 504) and attempt < retries:
                 time.sleep(attempt * 1.5)
                 continue
             raise ESIError(f"HTTP {resp.status_code} for {url}: {resp.text[:300]}")
         raise ESIError(f"Exhausted retries for {url}")
+
+    @staticmethod
+    def _retry_after_seconds(resp: requests.Response, attempt: int) -> float:
+        """How long to back off before retrying a 420/429 - prefers the
+        response's own Retry-After header (present on real 429s, confirmed
+        live 2026-08-22: a burst-rate limit distinct from ESI's own 420
+        error-limit mechanism, seen on the market-order endpoint group under
+        region_order_stats_bulk's concurrent load - X-Ratelimit-Limit:
+        12000/15m was nowhere near exhausted, so this is a separate,
+        shorter-window burst limiter) over the same blind exponential
+        backoff used when it's absent (420 responses don't reliably send
+        one)."""
+        retry_after = resp.headers.get("Retry-After")
+        if retry_after is not None:
+            try:
+                return float(retry_after)
+            except ValueError:
+                pass
+        return min(2 ** attempt, 20)
 
     def _get(self, path_or_url: str, params: Optional[dict] = None,
              auth_role: Optional[str] = None, retries: int = 3) -> Any:
@@ -282,7 +301,7 @@ class ESIClient:
     def _post_response(self, path: str, json_body: Any, params: Optional[dict] = None,
                         retries: int = 3) -> requests.Response:
         """POST counterpart to _get_response - same retry/backoff behavior
-        (420 error-limit, 500/502/503/504) and same ESIError on exhaustion.
+        (420/429 rate-limited, 500/502/503/504) and same ESIError on exhaustion.
         Confirmed real bug: _post_universe_ids/resolve_names used to do a bare
         self.session.post() with no retry at all and raised requests.HTTPError
         (not this codebase's ESIError) on failure - a transient error hit
@@ -298,8 +317,8 @@ class ESIClient:
             self._record_error_budget(resp)
             if resp.status_code == 200:
                 return resp
-            if resp.status_code == 420:
-                time.sleep(min(2 ** attempt, 20))
+            if resp.status_code in (420, 429):
+                time.sleep(self._retry_after_seconds(resp, attempt))
                 continue
             if resp.status_code in (500, 502, 503, 504) and attempt < retries:
                 time.sleep(attempt * 1.5)
