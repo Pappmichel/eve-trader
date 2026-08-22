@@ -1796,14 +1796,25 @@ def load_ore_ice_candidate_types() -> list[tuple[int, str, float, str]]:
     CLAUDE.md's "Real SDE data drives classification" section). category_id
     25 is Ore (mirrors refining.constants.ORE_ICE_CATEGORY_ID as a bare
     literal here - storage.py doesn't import a submodule's own constants,
-    same reasoning as the models note above). group_name LIKE 'Compressed%'
-    is CCP's own real group naming (every compressed ore/ice type lives in a
-    dedicated "Compressed <Family>"/"Compressed Ice" group), not a guess."""
+    same reasoning as the models note above).
+
+    Filters on t.type_name LIKE 'Compressed%', not group_name - confirmed
+    live against a real Fuzzwork-fetched SDE (2026-08-23) that a compressed
+    ore/ice type shares its *raw* ore's own group ("Compressed Veldspar"
+    lives in group "Veldspar", right alongside raw "Veldspar" itself, same
+    for every other family and for "Ice"/"Compressed Blue Ice") - there is
+    no dedicated "Compressed <Family>" group in the real data. An earlier
+    version of this query filtered on group_name LIKE 'Compressed%'
+    instead, based on an assumption that couldn't be live-verified at the
+    time (network egress blocked) - it matched essentially nothing in
+    production (only the unrelated "Ancient Compressed Ice" group), so
+    every "Refresh SDE" run silently produced an empty Ore Shortlist
+    candidate universe."""
     with connect() as conn:
         return conn.execute(
             "SELECT t.type_id, t.type_name, t.volume, g.group_name FROM sde_types t "
             "JOIN sde_groups g ON g.group_id = t.group_id "
-            "WHERE g.category_id = 25 AND g.group_name LIKE 'Compressed%' AND t.published = 1"
+            "WHERE g.category_id = 25 AND t.type_name LIKE 'Compressed%' AND t.published = 1"
         ).fetchall()
 
 
