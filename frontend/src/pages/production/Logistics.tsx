@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Card, Title, Text, Stack, Button, Group, NumberInput, Select, SimpleGrid, ActionIcon, UnstyledButton } from '@mantine/core'
+import { modals } from '@mantine/modals'
 import { IconX } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
@@ -222,15 +223,26 @@ export default function Logistics() {
                     <ActionIcon
                       size="lg" variant="subtle" color="danger" aria-label="Remove structure"
                       loading={clearLocation.isPending && pendingCategory === cat}
-                      onClick={() => {
-                        setPendingCategory(cat)
-                        setDraft((d) => {
-                          const next = { ...d }
-                          delete next[cat]
-                          return next
-                        })
-                        clearLocation.mutate(cat)
-                      }}
+                      onClick={() => modals.openConfirmModal({
+                        title: 'Remove structure',
+                        children: (
+                          <Text size="sm">
+                            Remove the assigned structure for {cat}{resolvedName ? ` (${resolvedName})` : ''}?
+                            You can set it again any time.
+                          </Text>
+                        ),
+                        labels: { confirm: 'Remove', cancel: 'Cancel' },
+                        confirmProps: { color: 'danger' },
+                        onConfirm: () => {
+                          setPendingCategory(cat)
+                          setDraft((d) => {
+                            const next = { ...d }
+                            delete next[cat]
+                            return next
+                          })
+                          clearLocation.mutate(cat)
+                        },
+                      })}
                     >
                       <IconX size={16} />
                     </ActionIcon>
