@@ -11,7 +11,7 @@ import { qty, isk } from '../../format'
 const SOURCE_COLOR: Record<string, string> = { Build: 'accent', 'C-J': 'warn', Jita: 'dimmed' }
 
 export default function ShoppingList() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({
     queryKey: ['doctrine', 'shopping-list'], queryFn: () => doctrineApi.shoppingList(),
   })
   const rows = data?.rows ?? []
@@ -43,9 +43,9 @@ export default function ShoppingList() {
         whichever of Build / buy at C-J / buy at Jita (landed, including import cost) is cheapest right now.
       </Text>
 
-      {!isLoading && rows.length === 0 && <Text c="dimmed">Nothing short right now.</Text>}
+      {!isLoading && !isError && rows.length === 0 && <Text c="dimmed">Nothing short right now.</Text>}
 
-      {(isLoading || rows.length > 0) && (
+      {(isLoading || isError || rows.length > 0) && (
         <DataTable
           data={rows}
           columns={columns}
@@ -53,6 +53,9 @@ export default function ShoppingList() {
           exportFilename="doctrine-shopping-list"
           getRowId={(r) => String(r.type_id)}
           isLoading={isLoading}
+          isError={isError}
+          onRetry={() => refetch()}
+          dataUpdatedAt={dataUpdatedAt}
         />
       )}
     </Stack>

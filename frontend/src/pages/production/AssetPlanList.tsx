@@ -13,7 +13,7 @@ import { isk, pct, qty } from '../../format'
 const CATEGORY_UNKNOWN = 'no category'
 
 export default function AssetPlanList() {
-  const { data: plan, isLoading } = useQuery({ queryKey: ['production', 'asset-plan'], queryFn: productionApi.assetPlan })
+  const { data: plan, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['production', 'asset-plan'], queryFn: productionApi.assetPlan })
   const jobs = plan?.jobs ?? []
 
   const refreshAssetPlan = useAction('Refresh Asset Build List', productionApi.refreshAssetPlan, [
@@ -81,6 +81,7 @@ export default function AssetPlanList() {
   ], [])
 
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
+  if (isError) return <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />
   if (!plan) {
     return (
       <Stack align="flex-start">
@@ -118,7 +119,7 @@ export default function AssetPlanList() {
       {filtered.length === 0 ? (
         <HintCard>No jobs in the selected categories.</HintCard>
       ) : (
-        <DataTable data={filtered} columns={columns} maxHeight={560} />
+        <DataTable data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
       )}
       <Text size="xs" c="dimmed">
         Unlike the regular build list, this one checks the actual asset stock at <b>every</b> level of the build

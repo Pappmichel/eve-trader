@@ -1,12 +1,13 @@
 # HANDOFF — Full codebase audit (2026-08-21): issues #54-#69, ALL FIXED
 
-Written 2026-08-21, same session as the #45/#46/#51/#52 work below (PR #53).
+Written 2026-08-21, same session as the #45/#46/#51/#52 work below (PR #71).
 The user asked for a full check-only audit of the entire project ("erstell
 ein vollständiges audit... zunächst nur prüfen nicht ändern"), got the plan
 saved + one issue filed per finding (#54-#69), then said "arbeite die
 issues in empfohlener Reihenfolge ab" - all 16 are now implemented,
-committed, and pushed to `claude/issues-plan-8ovgwo` (same branch/PR #53 as
-the earlier #45/#46/#51/#52 work), in the exact suggested order
+committed, and pushed to `fix/audit-remaining-55-57-to-69` (PR #72, stacked
+on top of PR #71's branch - see "Split into 3 PRs" below), in the exact
+suggested order
 (#54→#56→#55→#57→#58→#59→#60→#61→#62→#63→#64→#65→#66→#67→#68→#69), one
 commit per issue.
 
@@ -75,8 +76,8 @@ from earlier in this same session.
 - **#56** `api/schemas.py`'s `UnlistedStockRow`/`ProductionUnlistedStockRow`
   were never updated when #45 added `sell_volume`/`margin` to the
   underlying dataclasses - FastAPI's `response_model` silently strips both
-  fields, so the #45 feature (already merged, PR #53) is currently
-  non-functional end-to-end. Quick, well-understood fix.
+  fields, so the #45 feature (PR #71) is currently non-functional
+  end-to-end. Quick, well-understood fix.
 
 **Medium**
 - **#57** `/api/auth/{role_prefix}/start` isn't tool-gated - a character
@@ -111,19 +112,35 @@ from earlier in this same session.
   `TradingLayout.tsx`/`ProductionLayout.tsx`/`DoctrineLayout.tsx` - root
   cause enabling #59 to happen (only 2 of 3 copies got that fix).
 
-## Status: all 16 fixed (2026-08-21)
+## Status: all 16 fixed (2026-08-21), split into 3 PRs
 
 Every issue above got its own commit with a regression test (confirmed to
 fail against the pre-fix code first, wherever practical) - see each
-commit's own message for specifics, or each issue's GitHub page (comments
-weren't posted per-issue this round, only the plan/audit comment from the
-initial triage - the fixes are visible via the branch/PR #53 diff and this
-file). Not yet merged/deployed - same "show the user the diff, get a
-go-ahead before push→PR→merge→deploy" caveat as the #45/#46/#51/#52 section
-below, plus **the #55 fix (deploy docs) still needs the actual real
-deployment's Postgres to have admin_schema.sql/doctrine_schema.sql applied
-by hand** (this fix only corrects the documentation - it doesn't touch a
-live deployment).
+commit's own message for specifics.
+
+Originally all pushed to one branch/PR (#53), then split into 3 smaller
+PRs per the user's own request ("ist jetzt alles von dieser session in
+einem pr? ist das sinnvoll?" → "b" = split) - #53 was closed in favor of:
+- **#70** (`fix/critical-54-tenant-cache-leak`, base `main`) - just #54,
+  isolated so the critical fix can be reviewed/merged fast on its own.
+- **#71** (`fix/features-45-51-52-46`, base `main`) - the original 4
+  feature issues (#45, #51, #52, #46), plus #56 (fixes a schema gap in
+  #45) and 2 pre-existing test-double bugs in #45/#46's own tests.
+- **#72** (`fix/audit-remaining-55-57-to-69`, base `fix/features-45-51-52-46`
+  - **stacked on #71**, not `main`, since #69's refactor touches
+  `TradingLayout.tsx` code #46 introduces) - everything else (#55,
+  #57-#69).
+
+**Merge order matters**: #70 and #71 can merge independently/in either
+order (both target `main`, no overlap). #72 must wait for #71 to merge
+first, then rebase onto `main` before merging (it's currently based on
+#71's branch tip, not `main` - its diff will look inflated with #71's own
+changes until that rebase happens). Not yet merged/deployed - same "show
+the user the diff, get a go-ahead before push→PR→merge→deploy" caveat as
+the #45/#46/#51/#52 section below, plus **the #55 fix (deploy docs, in
+#72) still needs the actual real deployment's Postgres to have
+admin_schema.sql/doctrine_schema.sql applied by hand** (that fix only
+corrects the documentation - it doesn't touch a live deployment).
 
 ---
 

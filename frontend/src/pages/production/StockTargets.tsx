@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Card, Title, Text, Group, TextInput, NumberInput, Button, Select, Stack, ActionIcon, Tooltip } from '@mantine/core'
+import { modals } from '@mantine/modals'
 import { IconCheck, IconAlertTriangle } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
@@ -83,7 +84,8 @@ function EditableNumberCell({ value, ariaLabel, isPending, onSave, flagged }: {
 }
 
 export default function StockTargets() {
-  const { data: targets, isLoading: targetsLoading } = useQuery({ queryKey: ['production', 'stock-targets'], queryFn: productionApi.stockTargets })
+  const { data: targets, isLoading: targetsLoading, isError: targetsError, refetch: refetchTargets, dataUpdatedAt: targetsUpdatedAt } =
+    useQuery({ queryKey: ['production', 'stock-targets'], queryFn: productionApi.stockTargets })
   const { data: manualStock } = useQuery({ queryKey: ['production', 'manual-stock'], queryFn: productionApi.manualStock })
   const { data: overrides } = useQuery({ queryKey: ['production', 'manual-build-buy'], queryFn: productionApi.manualBuildBuy })
   const { data: decryptorOverrides } = useQuery({ queryKey: ['production', 'selected-decryptors'], queryFn: productionApi.selectedDecryptors })
@@ -219,6 +221,8 @@ export default function StockTargets() {
 
       {targetsLoading ? (
         <DataTable data={[]} columns={columns} isLoading maxHeight={480} />
+      ) : targetsError ? (
+        <DataTable data={[]} columns={columns} isError onRetry={() => refetchTargets()} maxHeight={480} />
       ) : !targets || targets.length === 0 ? (
         <HintCard>No stock targets configured yet.</HintCard>
       ) : (
@@ -230,6 +234,7 @@ export default function StockTargets() {
             tableId="stock-targets"
             exportFilename="stock-targets"
             getRowId={(row) => String(row.type_id)}
+            dataUpdatedAt={targetsUpdatedAt}
           />
 
           <Title order={6} c="dimmed" tt="uppercase" mt="lg">Manage Override / Decryptor</Title>
@@ -255,7 +260,13 @@ export default function StockTargets() {
                   else setDecryptor.mutate({ typeId: chosen.type_id, decryptor: v })
                 }}
               />
-              <Button color="danger" variant="outline" onClick={() => removeTarget.mutate(chosen.type_id)} loading={removeTarget.isPending}>
+              <Button color="danger" variant="outline" onClick={() => modals.openConfirmModal({
+                title: 'Remove stock target',
+                children: <Text size="sm">Remove the stock target for {chosen.type_name}? Its targets, manual stock, and overrides are all deleted.</Text>,
+                labels: { confirm: 'Remove', cancel: 'Cancel' },
+                confirmProps: { color: 'danger' },
+                onConfirm: () => removeTarget.mutate(chosen.type_id),
+              })} loading={removeTarget.isPending}>
                 Remove Stock Target
               </Button>
             </Group>

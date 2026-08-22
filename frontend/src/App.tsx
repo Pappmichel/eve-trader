@@ -7,6 +7,7 @@ import { Center, Loader } from '@mantine/core'
 import Landing from './pages/Landing'
 import { productionApi } from './api/client'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { QuickNav } from './components/QuickNav'
 
 const Portfolio = lazy(() => import('./pages/Portfolio'))
 
@@ -161,6 +162,7 @@ function App() {
     <>
       <AuthRedirectHandler />
       <SdeFreshnessChecker />
+      <QuickNav />
       <ErrorBoundary>
         <Suspense fallback={<RouteFallback />}>
           <Routes>

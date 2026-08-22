@@ -10,9 +10,10 @@ import {
   type VisibilityState,
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon } from '@mantine/core'
+import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon, Stack } from '@mantine/core'
 import { useMediaQuery } from '@mantine/hooks'
-import { IconSearch, IconDownload, IconColumns, IconX } from '@tabler/icons-react'
+import { IconSearch, IconDownload, IconColumns, IconX, IconAlertTriangle, IconRefresh } from '@tabler/icons-react'
+import { relativeTime } from '../format'
 
 // A column can opt into `meta: { mobileHide: true }` (see Shortlist.tsx/
 // Margin.tsx for real examples) - GitHub issue #52: below Mantine's `sm`
@@ -64,6 +65,15 @@ declare module '@tanstack/react-table' {
 // three for free, same as sorting already worked. `tableId` (optional)
 // persists column visibility to localStorage per table; omit it and
 // visibility still works, just doesn't survive a remount/reload.
+//
+// GitHub issue #76: `isError`/`onRetry` are the read-side equivalent of
+// useAction's own error toast for writes - before this, a failed useQuery
+// left `data` as `[]`/undefined and every page just fell through to the
+// ordinary "no data yet" empty state, completely silent about the fact
+// that a fetch actually failed (confirmed: only 1 of 37 pages checked
+// `isError` at all, and there was nowhere to render it even if they did).
+// Optional and additive - a page that doesn't pass `isError` behaves
+// exactly as before.
 interface DataTableProps<T> {
   data: T[]
   columns: ColumnDef<T, any>[]
@@ -71,8 +81,16 @@ interface DataTableProps<T> {
   emptyLabel?: string
   rowHeight?: number
   isLoading?: boolean
+  isError?: boolean
+  errorMessage?: string
+  onRetry?: () => void
   tableId?: string
   exportFilename?: string
+  // GitHub issue #78: how fresh is this table's data - pass a query's own
+  // `dataUpdatedAt` (react-query already tracks this per query, nothing new
+  // to compute) to show a small relative-time label in the toolbar.
+  // Optional/opt-in - a page that doesn't pass it renders exactly as before.
+  dataUpdatedAt?: number
   // Without this, tanstack-table's default row.id is the row's *index* in
   // the current (sorted/filtered) data array - stable enough for read-only
   // display, but not for a cell that owns its own editing state (a
@@ -124,9 +142,13 @@ export function DataTable<T>({
   emptyLabel = 'No data.',
   rowHeight = 36,
   isLoading = false,
+  isError = false,
+  errorMessage,
+  onRetry,
   tableId,
   exportFilename = 'export',
   getRowId,
+  dataUpdatedAt,
 }: DataTableProps<T>) {
   const [sorting, setSorting] = useState<SortingState>([])
   const [globalFilter, setGlobalFilter] = useState('')
@@ -135,6 +157,16 @@ export function DataTable<T>({
   // collapse already uses (see TradingLayout.tsx/ProductionLayout.tsx), so
   // "mobile" means the same viewport width everywhere in the app.
   const isMobile = useMediaQuery('(max-width: 48em)')
+
+  // Ticks every 30s so the relative-time label below ("2m ago" -> "3m ago")
+  // stays live without a full data refetch - cheap (one re-render, no
+  // network) and only runs at all when a page actually opts in.
+  const [, forceTick] = useState(0)
+  useEffect(() => {
+    if (!dataUpdatedAt) return
+    const id = setInterval(() => forceTick((n) => n + 1), 30_000)
+    return () => clearInterval(id)
+  }, [dataUpdatedAt])
 
   // Re-derive from localStorage (or reset to "everything visible") whenever
   // this instance switches to a *different* tableId - without this, a page
@@ -209,6 +241,25 @@ export function DataTable<T>({
   // "still loading" and "genuinely empty" cases - confirmed real bug, e.g.
   // Jobs.tsx's "No active industry jobs" message flashed on every page load
   // even when jobs were about to show up a moment later.
+  // Checked before isLoading - react-query settles a failed query to
+  // isLoading=false/isError=true, so this never fights the skeleton state
+  // below; it can still be true during a background refetch of already-
+  // loaded data, which is fine, that's an even stronger "something's wrong"
+  // signal than the initial-load case.
+  if (isError) {
+    return (
+      <Stack align="center" gap="xs" py="xl">
+        <IconAlertTriangle size={28} color="var(--mantine-color-danger-5)" />
+        <Text size="sm" c="dimmed">{errorMessage ?? 'Failed to load data.'}</Text>
+        {onRetry && (
+          <Button size="xs" variant="default" leftSection={<IconRefresh size={14} />} onClick={onRetry}>
+            Retry
+          </Button>
+        )}
+      </Stack>
+    )
+  }
+
   if (isLoading) {
     return (
       <ScrollArea h={maxHeight} type="auto">
@@ -271,6 +322,11 @@ export function DataTable<T>({
           style={{ flex: 1, maxWidth: 280 }}
         />
         <Group gap="xs" wrap="nowrap">
+          {dataUpdatedAt && (
+            <Text size="xs" c="dimmed" title={new Date(dataUpdatedAt).toLocaleString()}>
+              Updated {relativeTime(dataUpdatedAt)}
+            </Text>
+          )}
           <Menu shadow="md" closeOnItemClick={false}>
             <Menu.Target>
               <Button size="xs" variant="default" leftSection={<IconColumns size={14} />}>
