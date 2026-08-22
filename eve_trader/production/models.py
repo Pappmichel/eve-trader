@@ -303,10 +303,15 @@ class ManualBlueprintCopyCostRow:
 @dataclass
 class UnlistedStockRow:
     """A stock target with physical stock at cfg.home_location_id (C-J) but
-    NO open sell order there at all - see production/actions.py do_unlisted_stock."""
+    NO open sell order there at all - see production/actions.py do_unlisted_stock.
+    sell_volume/margin: the structure's own (everyone's) current sell-order
+    volume at C-J and margin_home (see engine.margin_home) - None when either
+    couldn't be fetched (e.g. no docking access, no home sell quote yet)."""
     type_id: int
     type_name: str
     stock_quantity: float
+    sell_volume: Optional[float] = None
+    margin: Optional[float] = None
 
 
 @dataclass

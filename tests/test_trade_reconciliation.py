@@ -1,8 +1,10 @@
 import datetime as dt
 
+import pandas as pd
+
 from eve_trader import trade_reconciliation
 from eve_trader.config import TradingConfig
-from eve_trader.trade_reconciliation import reconcile_realized_trades
+from eve_trader.trade_reconciliation import average_daily_sold_by_type, reconcile_realized_trades
 
 JITA_4_4_STATION_ID = 60003760  # real EVE station ID, used as the test's "Jita" location
 
@@ -39,7 +41,7 @@ def test_reconcile_includes_buy_broker_fee(monkeypatch):
     client = FakeClient(buys, sells)
 
     trades = reconcile_realized_trades(
-        buyer_character_id=1, seller_character_id=2, buyer_role="buyer", seller_role="seller",
+        buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
         client=client, item_names={100: "Widget"}, item_volumes={100: 0.0}, cfg=cfg,
     )
 
@@ -66,11 +68,54 @@ def test_reconcile_ignores_buys_outside_the_forge(monkeypatch):
     client = FakeClient(buys, sells)
 
     trades = reconcile_realized_trades(
-        buyer_character_id=1, seller_character_id=2, buyer_role="buyer", seller_role="seller",
+        buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
         client=client, item_names={100: "Widget"}, item_volumes={100: 0.0}, cfg=cfg,
     )
 
     assert trades == []
+
+
+def test_average_daily_sold_by_type_empty_table_returns_empty_dict(monkeypatch):
+    monkeypatch.setattr(trade_reconciliation.storage, "read_table", lambda table: pd.DataFrame())
+    assert average_daily_sold_by_type(TradingConfig(lookback_days=30)) == {}
+
+
+def test_average_daily_sold_by_type_sums_matched_qty_over_lookback_days(monkeypatch):
+    # GitHub issue #51: this - not sell_volume/order-book depth - is what
+    # "Profit / Day" is computed from. Two matched-sell rows for the same
+    # type_id (a sell split across two FIFO buy-lot matches) must sum, not
+    # overwrite each other.
+    df = pd.DataFrame([
+        {"run_ts": "2026-08-20T00:00:00", "type_id": 100, "matched_qty": 40},
+        {"run_ts": "2026-08-20T00:00:00", "type_id": 100, "matched_qty": 20},
+        {"run_ts": "2026-08-20T00:00:00", "type_id": 200, "matched_qty": 10},
+    ])
+    monkeypatch.setattr(trade_reconciliation.storage, "read_table", lambda table: df)
+
+    result = average_daily_sold_by_type(TradingConfig(lookback_days=30))
+
+    assert result == {100: 2.0, 200: 10.0 / 30}
+
+
+def test_average_daily_sold_by_type_only_considers_the_latest_run(monkeypatch):
+    # save_realized_trades wholesale-replaces the table every run, so this is
+    # mostly defensive - but a stale second run_ts must not be double-counted.
+    df = pd.DataFrame([
+        {"run_ts": "2026-08-01T00:00:00", "type_id": 100, "matched_qty": 999},
+        {"run_ts": "2026-08-20T00:00:00", "type_id": 100, "matched_qty": 30},
+    ])
+    monkeypatch.setattr(trade_reconciliation.storage, "read_table", lambda table: df)
+
+    result = average_daily_sold_by_type(TradingConfig(lookback_days=30))
+
+    assert result == {100: 1.0}
+
+
+def test_average_daily_sold_by_type_guards_against_zero_lookback_days(monkeypatch):
+    df = pd.DataFrame([{"run_ts": "2026-08-20T00:00:00", "type_id": 100, "matched_qty": 30}])
+    monkeypatch.setattr(trade_reconciliation.storage, "read_table", lambda table: df)
+
+    assert average_daily_sold_by_type(TradingConfig(lookback_days=0)) == {}
 
 
 def test_reconcile_accepts_buys_anywhere_in_the_forge_not_just_jita_itself(monkeypatch):
@@ -88,7 +133,7 @@ def test_reconcile_accepts_buys_anywhere_in_the_forge_not_just_jita_itself(monke
     client = FakeClient(buys, sells)
 
     trades = reconcile_realized_trades(
-        buyer_character_id=1, seller_character_id=2, buyer_role="buyer", seller_role="seller",
+        buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
         client=client, item_names={100: "Widget"}, item_volumes={100: 0.0}, cfg=cfg,
     )
 

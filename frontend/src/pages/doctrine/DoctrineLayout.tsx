@@ -5,8 +5,9 @@ import { useQuery } from '@tanstack/react-query'
 import { modals } from '@mantine/modals'
 import { IconArrowLeft, IconRefresh, IconTrash } from '@tabler/icons-react'
 
-import { authApi, doctrineApi } from '../../api/client'
+import { doctrineApi } from '../../api/client'
 import { useAction } from '../../hooks/useAction'
+import { useRoleCharacters, type RoleCharacter } from '../../hooks/useRoleCharacters'
 import { dateTime } from '../../format'
 
 const TABS = [
@@ -40,32 +41,19 @@ function activeTab(pathname: string): string {
 function CharacterGroup({ title, queryKey, listFn, ssoRolePrefix, removeFn }: {
   title: string
   queryKey: string[]
-  listFn: () => Promise<{ role_key: string; character_id: number; character_name: string }[]>
+  listFn: () => Promise<RoleCharacter[]>
   ssoRolePrefix: string
   removeFn: (roleKey: string) => Promise<unknown>
 }) {
-  const { data: characters } = useQuery({ queryKey, queryFn: listFn })
-  // Same redirect-based EVE SSO flow Trading's buyer/seller login and
-  // Production's own Add Character button use (see TradingLayout.tsx's
-  // LoginButton / ProductionLayout.tsx) - navigates the whole page to EVE
-  // SSO and back via api/routers/auth.py's /callback route, rather than the
-  // old server-side webbrowser.open() + blocking-local-HTTP-server flow
-  // (doctrine/actions.py's do_auth_doctrine/auth.py's
-  // get_token_interactive_multi). Confirmed real bug live: that old flow
-  // tries to bind its own HTTP server on the exact host:port the running
-  // backend already listens on - works by accident in local dev, always
-  // fails on a real deployment ("Cannot assign requested address").
-  const addCharacter = useAction('Login', async () => {
-    const { url } = await authApi.start(ssoRolePrefix)
-    window.location.href = url
-  })
-  const removeCharacter = useAction('Remove Character', removeFn, [queryKey])
+  const { characters, addCharacter, removeCharacter, isRemoving } = useRoleCharacters(
+    queryKey, listFn, removeFn, ssoRolePrefix,
+  )
 
   return (
     <div>
       <Title order={6} c="dimmed" tt="uppercase" mb="xs">{title}</Title>
       <Stack gap="xs">
-        {(characters ?? []).map((c) => (
+        {characters.map((c) => (
           <Group key={c.role_key} justify="space-between" wrap="nowrap">
             <Text size="sm">{c.character_name}</Text>
             <ActionIcon size="sm" variant="subtle" color="danger"
@@ -74,9 +62,9 @@ function CharacterGroup({ title, queryKey, listFn, ssoRolePrefix, removeFn }: {
                 children: <Text size="sm">Remove {c.character_name} from {title}? You can log them back in any time.</Text>,
                 labels: { confirm: 'Remove', cancel: 'Cancel' },
                 confirmProps: { color: 'danger' },
-                onConfirm: () => removeCharacter.mutate(c.role_key),
+                onConfirm: () => removeCharacter(c.role_key),
               })}
-              loading={removeCharacter.isPending}>
+              loading={isRemoving(c.role_key)}>
               <IconTrash size={14} />
             </ActionIcon>
           </Group>
@@ -105,7 +93,7 @@ export default function DoctrineLayout() {
   ])
 
   return (
-    <AppShell header={{ height: 56 }} navbar={{ width: 260, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding="md">
+    <AppShell header={{ height: 56 }} navbar={{ width: 260, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding={{ base: 'xs', sm: 'md' }}>
       <AppShell.Header>
         <Group h="100%" px="md" justify="space-between">
           <Group>

@@ -11,7 +11,26 @@ import {
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon } from '@mantine/core'
+import { useMediaQuery } from '@mantine/hooks'
 import { IconSearch, IconDownload, IconColumns, IconX } from '@tabler/icons-react'
+
+// A column can opt into `meta: { mobileHide: true }` (see Shortlist.tsx/
+// Margin.tsx for real examples) - GitHub issue #52: below Mantine's `sm`
+// breakpoint, these columns are force-hidden on top of whatever the user
+// picked in the Columns menu, so a dense desktop table (10+ fixed-width
+// columns, see this file's own header comment on why columns are fixed-
+// width) doesn't force horizontal scrolling on a phone screen for its own
+// sake. Purely a display default, not persisted - the user's own Columns
+// menu choice (localStorage) always still applies on top once they're back
+// above the breakpoint. Unmarked columns behave exactly as before (still
+// horizontally scrollable on mobile) - this is opt-in per page, not a
+// blanket behavior change.
+declare module '@tanstack/react-table' {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  interface ColumnMeta<TData, TValue> {
+    mobileHide?: boolean
+  }
+}
 
 // Generic sortable, row-virtualized table.
 //
@@ -112,6 +131,10 @@ export function DataTable<T>({
   const [sorting, setSorting] = useState<SortingState>([])
   const [globalFilter, setGlobalFilter] = useState('')
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(() => loadPersistedVisibility(tableId))
+  // Mantine's `sm` breakpoint (768px) - same threshold AppShell's own navbar
+  // collapse already uses (see TradingLayout.tsx/ProductionLayout.tsx), so
+  // "mobile" means the same viewport width everywhere in the app.
+  const isMobile = useMediaQuery('(max-width: 48em)')
 
   // Re-derive from localStorage (or reset to "everything visible") whenever
   // this instance switches to a *different* tableId - without this, a page
@@ -144,7 +167,11 @@ export function DataTable<T>({
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const rows = table.getRowModel().rows
+  // Mobile-hide is applied here, not folded into columnVisibility/localStorage
+  // - it must never overwrite the user's own persisted Columns-menu choice,
+  // and must stop applying the instant the viewport is wide enough again.
   const leafColumns = table.getVisibleLeafColumns()
+    .filter((col) => !(isMobile && col.columnDef.meta?.mobileHide))
   const allColumns = table.getAllLeafColumns()
 
   const virtualizer = useVirtualizer({
@@ -155,7 +182,12 @@ export function DataTable<T>({
   })
 
   const exportCsv = () => {
-    const header = leafColumns.map((col) => columnLabel(col.columnDef.header, col.id)).join(',')
+    // Deliberately table.getVisibleLeafColumns() (the user's real Columns-menu
+    // choice), not the mobile-filtered `leafColumns` below - exporting data
+    // shouldn't silently drop columns just because the viewport is narrow
+    // right now.
+    const exportColumns = table.getVisibleLeafColumns()
+    const header = exportColumns.map((col) => columnLabel(col.columnDef.header, col.id)).join(',')
     const body = rows
       .map((row) => row.getVisibleCells().map((cell) => csvField(cell.getValue())).join(','))
       .join('\r\n')
@@ -274,15 +306,33 @@ export function DataTable<T>({
           <Table.Thead>
             {table.getHeaderGroups().map((hg) => (
               <Table.Tr key={hg.id}>
-                {hg.headers.map((h) => {
+                {hg.headers.filter((h) => !(isMobile && h.column.columnDef.meta?.mobileHide)).map((h) => {
                   const sorted = h.column.getIsSorted()
+                  const canSort = h.column.getCanSort()
+                  const toggleSort = h.column.getToggleSortingHandler()
+                  // GitHub issue #61 (found in a full-codebase audit
+                  // 2026-08-21): sortable headers were mouse-only - no
+                  // tabIndex/onKeyDown/aria-sort - unreachable for a
+                  // keyboard-only user, app-wide (every page uses this one
+                  // shared component). tabIndex/onKeyDown only apply to
+                  // actually-sortable columns, matching the existing
+                  // cursor:pointer-only-when-sortable convention below.
                   return (
                     <Table.Th
                       key={h.id}
-                      onClick={h.column.getToggleSortingHandler()}
+                      onClick={toggleSort}
+                      tabIndex={canSort ? 0 : undefined}
+                      role={canSort ? 'button' : undefined}
+                      aria-sort={sorted === 'asc' ? 'ascending' : sorted === 'desc' ? 'descending' : canSort ? 'none' : undefined}
+                      onKeyDown={canSort ? (e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          toggleSort?.(e)
+                        }
+                      } : undefined}
                       title={columnLabel(h.column.columnDef.header, h.column.id)}
                       style={{
-                        cursor: h.column.getCanSort() ? 'pointer' : undefined, userSelect: 'none',
+                        cursor: canSort ? 'pointer' : undefined, userSelect: 'none',
                         whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                       }}
                     >
@@ -312,11 +362,13 @@ export function DataTable<T>({
                   const row = rows[vItem.index]
                   return (
                     <Table.Tr key={row.id}>
-                      {row.getVisibleCells().map((cell) => (
-                        <Table.Td key={cell.id} style={cellStyle} title={cellText(cell.getValue())}>
-                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                        </Table.Td>
-                      ))}
+                      {row.getVisibleCells()
+                        .filter((cell) => !(isMobile && cell.column.columnDef.meta?.mobileHide))
+                        .map((cell) => (
+                          <Table.Td key={cell.id} style={cellStyle} title={cellText(cell.getValue())}>
+                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                          </Table.Td>
+                        ))}
                     </Table.Tr>
                   )
                 })}
