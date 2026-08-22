@@ -156,23 +156,25 @@ def test_sde_row_counts_includes_type_materials(tenant):
 
 
 # ------------------------------------------------ Ore Shortlist (GitHub issue #91)
-def test_load_ore_ice_candidate_types_filters_to_compressed_ore_groups(tenant):
-    _insert_group(1000, 25, "Compressed Veldspar")
-    _insert_group(1001, 25, "Veldspar")  # raw ore - must NOT be included
-    _insert_group(1002, 7, "Compressed Something")  # wrong category (Module, not Ore) - must NOT be included
-    _insert_type(34, "Compressed Veldspar", portion_size=100, group_id=1000)
-    _insert_type(1230, "Veldspar", portion_size=100, group_id=1001)
+def test_load_ore_ice_candidate_types_filters_to_compressed_ore_types(tenant):
+    # Real SDE taxonomy (confirmed live 2026-08-23): a compressed ore type
+    # shares its raw ore's own group - there is no dedicated "Compressed
+    # <Family>" group. So the filter has to be on type_name, not group_name.
+    _insert_group(1001, 25, "Veldspar")
+    _insert_group(1002, 7, "Something")  # wrong category (Module, not Ore) - must NOT be included
+    _insert_type(34, "Compressed Veldspar", portion_size=100, group_id=1001)
+    _insert_type(1230, "Veldspar", portion_size=100, group_id=1001)  # raw ore - must NOT be included
     _insert_type(9999, "Compressed Something", portion_size=1, group_id=1002)
 
     rows = storage.load_ore_ice_candidate_types()
 
     assert [r[0] for r in rows] == [34]
     assert rows[0][1] == "Compressed Veldspar"
-    assert rows[0][3] == "Compressed Veldspar"
+    assert rows[0][3] == "Veldspar"
 
 
 def test_load_ore_ice_candidate_types_excludes_unpublished(tenant):
-    _insert_group(1000, 25, "Compressed Veldspar")
+    _insert_group(1000, 25, "Veldspar")
     with storage.connect() as conn:
         conn.execute(
             "INSERT INTO sde_types (type_id, group_id, type_name, volume, published, market_group_id, "
