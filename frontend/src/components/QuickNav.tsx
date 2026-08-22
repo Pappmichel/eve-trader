@@ -1,6 +1,9 @@
 import { useNavigate } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
 import { Spotlight, type SpotlightActionData } from '@mantine/spotlight'
 import { IconSearch } from '@tabler/icons-react'
+
+import { gateApi } from '../api/client'
 
 // GitHub issue #79: the only way to navigate was each tool's own sidebar -
 // no fast, cross-tool way to jump from e.g. "Trading > Shortlist" straight
@@ -72,9 +75,39 @@ const PATHS: Record<string, string> = {
   'doctrine-settings': '/doctrine/settings',
 }
 
+// id -> tool_key, same tool_keys as Landing.tsx's own ToolCard filtering
+// (`_TOOL_PATH_PREFIXES` on the backend). 'home' has no entry, since jumping
+// back to the tool picker is always allowed regardless of tool grants.
+const TOOL_KEYS: Record<string, string> = {
+  portfolio: 'portfolio', admin: 'admin',
+  trading: 'trading', 'trading-candidates': 'trading', 'trading-new-candidates': 'trading',
+  'trading-history': 'trading', 'trading-trades': 'trading', 'trading-unlisted-stock': 'trading',
+  'trading-undercut': 'trading', 'trading-settings': 'trading',
+  production: 'production', 'production-market': 'production', 'production-jobs': 'production',
+  'production-slots': 'production', 'production-buy': 'production', 'production-build': 'production',
+  'production-asset-plan': 'production', 'production-logistics': 'production',
+  'production-invention': 'production', 'production-blueprints': 'production',
+  'production-unlisted-stock': 'production', 'production-build-candidates': 'production',
+  'production-margin': 'production', 'production-material-tree': 'production',
+  'production-asset-search': 'production', 'production-settings': 'production',
+  doctrine: 'doctrine', 'doctrine-contracts': 'doctrine', 'doctrine-contracts-history': 'doctrine',
+  'doctrine-stockpile': 'doctrine', 'doctrine-shopping-list': 'doctrine', 'doctrine-settings': 'doctrine',
+}
+
 export function QuickNav() {
   const navigate = useNavigate()
-  const actions = ACTIONS.map((a) => ({ ...a, onClick: () => navigate(PATHS[a.id]) }))
+  // Same gate-status/tools source and "undefined -> not yet loaded, show
+  // everything" convention as Landing.tsx's own ToolCard - a per-character
+  // tool grant that hides a Landing card should hide its Quick-Nav entries
+  // too, not just the card.
+  const { data: gateStatus } = useQuery({ queryKey: ['gate', 'status'], queryFn: gateApi.status })
+  const tools = gateStatus?.tools
+  const visibleActions = ACTIONS.filter((a) => {
+    const toolKey = TOOL_KEYS[a.id]
+    if (!toolKey || tools === undefined) return true
+    return tools.includes(toolKey)
+  })
+  const actions = visibleActions.map((a) => ({ ...a, onClick: () => navigate(PATHS[a.id]) }))
 
   return (
     <Spotlight
