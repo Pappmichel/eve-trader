@@ -5,7 +5,7 @@ Postgres-backed coverage in test_admin.py.
 """
 from fastapi.testclient import TestClient
 
-from eve_trader import admin
+from eve_trader import admin, error_log
 from eve_trader.actions import ActionError
 from eve_trader.api.app import create_app
 
@@ -121,3 +121,36 @@ def test_refresh_sde_action_error_maps_to_400(monkeypatch):
 
     assert resp.status_code == 400
     assert resp.json() == {"detail": "SDE refresh failed: connection refused"}
+
+
+def test_list_errors_serializes_action_result(monkeypatch):
+    # GitHub issue #88 - error_log is its own module, not admin.py, since
+    # its report endpoint (api/routers/errors.py) must stay reachable
+    # without the "admin" tool grant every other route here requires - only
+    # this GET (list) endpoint lives under /api/admin/*.
+    monkeypatch.setattr(error_log, "do_list_errors", lambda limit: [
+        {"id": 1, "tenant_id": "t1", "source": "frontend", "message": "boom",
+         "detail": None, "path": "/trading", "created_at": "2026-08-18T00:00:00"},
+    ])
+
+    resp = client.get("/api/admin/errors")
+
+    assert resp.status_code == 200
+    assert resp.json() == [{
+        "id": 1, "tenant_id": "t1", "source": "frontend", "message": "boom",
+        "detail": None, "path": "/trading", "created_at": "2026-08-18T00:00:00",
+    }]
+
+
+def test_list_errors_passes_limit_query_param(monkeypatch):
+    captured = {}
+
+    def _capture(limit):
+        captured["limit"] = limit
+        return []
+    monkeypatch.setattr(error_log, "do_list_errors", _capture)
+
+    resp = client.get("/api/admin/errors?limit=50")
+
+    assert resp.status_code == 200
+    assert captured == {"limit": 50}

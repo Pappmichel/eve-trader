@@ -525,6 +525,16 @@ class AdminUser(_Base):
     tool_keys: list[str] = []
 
 
+class ErrorLogRow(_Base):
+    id: int
+    tenant_id: Optional[str] = None
+    source: str
+    message: str
+    detail: Optional[str] = None
+    path: Optional[str] = None
+    created_at: Optional[str] = None
+
+
 # ------------------------------------------------------------ plan payloads
 class ProductionPlan(BaseModel):
     inventory: list[InventoryRow]
