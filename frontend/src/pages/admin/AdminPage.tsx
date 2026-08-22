@@ -69,7 +69,7 @@ const ALL_TOOL_KEYS = ['trading', 'production', 'doctrine', 'portfolio', 'admin'
 // left behind by a removed user (do_remove_user intentionally leaves the
 // tenant and its data in place).
 function TenantSection() {
-  const { data: tenants, isLoading } = useQuery({ queryKey: ['admin', 'tenants'], queryFn: adminApi.tenants })
+  const { data: tenants, isLoading, isError, refetch } = useQuery({ queryKey: ['admin', 'tenants'], queryFn: adminApi.tenants })
 
   const columns = useMemo<ColumnDef<AdminTenant, any>[]>(() => [
     { header: 'Name', accessorKey: 'name', size: 220 },
@@ -87,6 +87,8 @@ function TenantSection() {
         exportFilename="tenants"
         getRowId={(t) => t.tenant_id}
         isLoading={isLoading}
+        isError={isError}
+        onRetry={() => refetch()}
       />
     </div>
   )
@@ -117,11 +119,18 @@ function UserToolCheckboxes({ user }: { user: AdminUser }) {
 }
 
 function UsersSection() {
-  const { data: users, isLoading } = useQuery({ queryKey: ['admin', 'users'], queryFn: adminApi.users })
+  const { data: users, isLoading, isError, refetch } = useQuery({ queryKey: ['admin', 'users'], queryFn: adminApi.users })
   const [characterName, setCharacterName] = useState('')
   const addUser = useAction('Add User', () => adminApi.addUser(characterName),
     [['admin', 'users'], ['admin', 'tenants']])
   const removeUser = useAction('Remove User', adminApi.removeUser, [['admin', 'users']])
+  // GitHub issue #59 (found in a full-codebase audit 2026-08-21): one shared
+  // mutation instance reused across every user's Remove button - without
+  // tracking which row is actually pending, clicking Remove for one user put
+  // *every* user's button into the loading/disabled state, not just the one
+  // being removed (same bug ProductionLayout.tsx's own removeCharacter/
+  // pendingRoleKey comment already documents and fixes).
+  const [pendingCharacterId, setPendingCharacterId] = useState<number | null>(null)
 
   const columns = useMemo<ColumnDef<AdminUser, any>[]>(() => [
     { header: 'Character', accessorKey: 'character_name', size: 180, cell: (i) => i.getValue() ?? '—' },
@@ -135,19 +144,20 @@ function UsersSection() {
       header: '', id: 'actions', size: 60, enableSorting: false,
       cell: (i) => (
         <ActionIcon size="sm" variant="subtle" color="danger"
-          onClick={() => removeUser.mutate(i.row.original.character_id)} loading={removeUser.isPending}>
+          onClick={() => { setPendingCharacterId(i.row.original.character_id); removeUser.mutate(i.row.original.character_id) }}
+          loading={removeUser.isPending && pendingCharacterId === i.row.original.character_id}>
           <IconTrash size={14} />
         </ActionIcon>
       ),
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  ], [removeUser])
+  ], [removeUser, pendingCharacterId])
 
   return (
     <div>
       <Title order={4} mb="xs">Users</Title>
-      {!isLoading && (users ?? []).length === 0 && <Text c="dimmed" size="sm" mb="sm">No users registered yet.</Text>}
-      {(isLoading || (users ?? []).length > 0) && (
+      {!isLoading && !isError && (users ?? []).length === 0 && <Text c="dimmed" size="sm" mb="sm">No users registered yet.</Text>}
+      {(isLoading || isError || (users ?? []).length > 0) && (
         <DataTable
           data={users ?? []}
           columns={columns}
@@ -155,6 +165,8 @@ function UsersSection() {
           exportFilename="users"
           getRowId={(u) => String(u.character_id)}
           isLoading={isLoading}
+          isError={isError}
+          onRetry={() => refetch()}
         />
       )}
       <Group mt="sm">

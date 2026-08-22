@@ -68,15 +68,15 @@ function ItemSearch() {
 }
 
 export default function Margin() {
-  const { data, isLoading } = useQuery({ queryKey: ['production', 'margins'], queryFn: productionApi.shipMargins })
+  const { data, isLoading, isError, refetch } = useQuery({ queryKey: ['production', 'margins'], queryFn: productionApi.shipMargins })
 
   const columns = useMemo<ColumnDef<ShipMarginRow, any>[]>(() => [
     { header: 'Ship', accessorKey: 'type_name', size: 240 },
-    { header: 'Home Price', accessorKey: 'home_price', size: 130, cell: (i) => i.getValue() === null ? '–' : isk(i.getValue()) },
-    { header: 'Jita Price', accessorKey: 'jita_price', size: 130, cell: (i) => i.getValue() === null ? '–' : isk(i.getValue()) },
-    { header: 'Build Cost', accessorKey: 'build_cost', size: 130, cell: (i) => i.getValue() === null ? '–' : isk(i.getValue()) },
+    { header: 'Home Price', accessorKey: 'home_price', size: 130, cell: (i) => i.getValue() === null ? '–' : isk(i.getValue()), meta: { mobileHide: true } },
+    { header: 'Jita Price', accessorKey: 'jita_price', size: 130, cell: (i) => i.getValue() === null ? '–' : isk(i.getValue()), meta: { mobileHide: true } },
+    { header: 'Build Cost', accessorKey: 'build_cost', size: 130, cell: (i) => i.getValue() === null ? '–' : isk(i.getValue()), meta: { mobileHide: true } },
     { header: 'Margin (Home)', accessorKey: 'margin_home', size: 130, cell: (i) => i.getValue() === null ? '–' : pct(i.getValue()) },
-    { header: 'Margin (Jita)', accessorKey: 'margin_jita', size: 130, cell: (i) => i.getValue() === null ? '–' : pct(i.getValue()) },
+    { header: 'Margin (Jita)', accessorKey: 'margin_jita', size: 130, cell: (i) => i.getValue() === null ? '–' : pct(i.getValue()), meta: { mobileHide: true } },
   ], [])
 
   return (
@@ -92,6 +92,7 @@ export default function Margin() {
       <ItemSearch />
 
       {isLoading && <Text c="dimmed" size="sm">Loading…</Text>}
+      {isError && <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />}
       {data && data.length === 0 && <HintCard>No ships found - Refresh SDE (Admin tool) first?</HintCard>}
       {data && data.length > 0 && <DataTable data={data} columns={columns} maxHeight={560} />}
     </Stack>

@@ -10,8 +10,27 @@ import {
   type VisibilityState,
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon } from '@mantine/core'
-import { IconSearch, IconDownload, IconColumns, IconX } from '@tabler/icons-react'
+import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon, Stack } from '@mantine/core'
+import { useMediaQuery } from '@mantine/hooks'
+import { IconSearch, IconDownload, IconColumns, IconX, IconAlertTriangle, IconRefresh } from '@tabler/icons-react'
+
+// A column can opt into `meta: { mobileHide: true }` (see Shortlist.tsx/
+// Margin.tsx for real examples) - GitHub issue #52: below Mantine's `sm`
+// breakpoint, these columns are force-hidden on top of whatever the user
+// picked in the Columns menu, so a dense desktop table (10+ fixed-width
+// columns, see this file's own header comment on why columns are fixed-
+// width) doesn't force horizontal scrolling on a phone screen for its own
+// sake. Purely a display default, not persisted - the user's own Columns
+// menu choice (localStorage) always still applies on top once they're back
+// above the breakpoint. Unmarked columns behave exactly as before (still
+// horizontally scrollable on mobile) - this is opt-in per page, not a
+// blanket behavior change.
+declare module '@tanstack/react-table' {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  interface ColumnMeta<TData, TValue> {
+    mobileHide?: boolean
+  }
+}
 
 // Generic sortable, row-virtualized table.
 //
@@ -45,6 +64,15 @@ import { IconSearch, IconDownload, IconColumns, IconX } from '@tabler/icons-reac
 // three for free, same as sorting already worked. `tableId` (optional)
 // persists column visibility to localStorage per table; omit it and
 // visibility still works, just doesn't survive a remount/reload.
+//
+// GitHub issue #76: `isError`/`onRetry` are the read-side equivalent of
+// useAction's own error toast for writes - before this, a failed useQuery
+// left `data` as `[]`/undefined and every page just fell through to the
+// ordinary "no data yet" empty state, completely silent about the fact
+// that a fetch actually failed (confirmed: only 1 of 37 pages checked
+// `isError` at all, and there was nowhere to render it even if they did).
+// Optional and additive - a page that doesn't pass `isError` behaves
+// exactly as before.
 interface DataTableProps<T> {
   data: T[]
   columns: ColumnDef<T, any>[]
@@ -52,6 +80,9 @@ interface DataTableProps<T> {
   emptyLabel?: string
   rowHeight?: number
   isLoading?: boolean
+  isError?: boolean
+  errorMessage?: string
+  onRetry?: () => void
   tableId?: string
   exportFilename?: string
   // Without this, tanstack-table's default row.id is the row's *index* in
@@ -105,6 +136,9 @@ export function DataTable<T>({
   emptyLabel = 'No data.',
   rowHeight = 36,
   isLoading = false,
+  isError = false,
+  errorMessage,
+  onRetry,
   tableId,
   exportFilename = 'export',
   getRowId,
@@ -112,6 +146,10 @@ export function DataTable<T>({
   const [sorting, setSorting] = useState<SortingState>([])
   const [globalFilter, setGlobalFilter] = useState('')
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(() => loadPersistedVisibility(tableId))
+  // Mantine's `sm` breakpoint (768px) - same threshold AppShell's own navbar
+  // collapse already uses (see TradingLayout.tsx/ProductionLayout.tsx), so
+  // "mobile" means the same viewport width everywhere in the app.
+  const isMobile = useMediaQuery('(max-width: 48em)')
 
   // Re-derive from localStorage (or reset to "everything visible") whenever
   // this instance switches to a *different* tableId - without this, a page
@@ -144,7 +182,11 @@ export function DataTable<T>({
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const rows = table.getRowModel().rows
+  // Mobile-hide is applied here, not folded into columnVisibility/localStorage
+  // - it must never overwrite the user's own persisted Columns-menu choice,
+  // and must stop applying the instant the viewport is wide enough again.
   const leafColumns = table.getVisibleLeafColumns()
+    .filter((col) => !(isMobile && col.columnDef.meta?.mobileHide))
   const allColumns = table.getAllLeafColumns()
 
   const virtualizer = useVirtualizer({
@@ -155,7 +197,12 @@ export function DataTable<T>({
   })
 
   const exportCsv = () => {
-    const header = leafColumns.map((col) => columnLabel(col.columnDef.header, col.id)).join(',')
+    // Deliberately table.getVisibleLeafColumns() (the user's real Columns-menu
+    // choice), not the mobile-filtered `leafColumns` below - exporting data
+    // shouldn't silently drop columns just because the viewport is narrow
+    // right now.
+    const exportColumns = table.getVisibleLeafColumns()
+    const header = exportColumns.map((col) => columnLabel(col.columnDef.header, col.id)).join(',')
     const body = rows
       .map((row) => row.getVisibleCells().map((cell) => csvField(cell.getValue())).join(','))
       .join('\r\n')
@@ -177,6 +224,25 @@ export function DataTable<T>({
   // "still loading" and "genuinely empty" cases - confirmed real bug, e.g.
   // Jobs.tsx's "No active industry jobs" message flashed on every page load
   // even when jobs were about to show up a moment later.
+  // Checked before isLoading - react-query settles a failed query to
+  // isLoading=false/isError=true, so this never fights the skeleton state
+  // below; it can still be true during a background refetch of already-
+  // loaded data, which is fine, that's an even stronger "something's wrong"
+  // signal than the initial-load case.
+  if (isError) {
+    return (
+      <Stack align="center" gap="xs" py="xl">
+        <IconAlertTriangle size={28} color="var(--mantine-color-danger-5)" />
+        <Text size="sm" c="dimmed">{errorMessage ?? 'Failed to load data.'}</Text>
+        {onRetry && (
+          <Button size="xs" variant="default" leftSection={<IconRefresh size={14} />} onClick={onRetry}>
+            Retry
+          </Button>
+        )}
+      </Stack>
+    )
+  }
+
   if (isLoading) {
     return (
       <ScrollArea h={maxHeight} type="auto">
@@ -274,15 +340,33 @@ export function DataTable<T>({
           <Table.Thead>
             {table.getHeaderGroups().map((hg) => (
               <Table.Tr key={hg.id}>
-                {hg.headers.map((h) => {
+                {hg.headers.filter((h) => !(isMobile && h.column.columnDef.meta?.mobileHide)).map((h) => {
                   const sorted = h.column.getIsSorted()
+                  const canSort = h.column.getCanSort()
+                  const toggleSort = h.column.getToggleSortingHandler()
+                  // GitHub issue #61 (found in a full-codebase audit
+                  // 2026-08-21): sortable headers were mouse-only - no
+                  // tabIndex/onKeyDown/aria-sort - unreachable for a
+                  // keyboard-only user, app-wide (every page uses this one
+                  // shared component). tabIndex/onKeyDown only apply to
+                  // actually-sortable columns, matching the existing
+                  // cursor:pointer-only-when-sortable convention below.
                   return (
                     <Table.Th
                       key={h.id}
-                      onClick={h.column.getToggleSortingHandler()}
+                      onClick={toggleSort}
+                      tabIndex={canSort ? 0 : undefined}
+                      role={canSort ? 'button' : undefined}
+                      aria-sort={sorted === 'asc' ? 'ascending' : sorted === 'desc' ? 'descending' : canSort ? 'none' : undefined}
+                      onKeyDown={canSort ? (e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          toggleSort?.(e)
+                        }
+                      } : undefined}
                       title={columnLabel(h.column.columnDef.header, h.column.id)}
                       style={{
-                        cursor: h.column.getCanSort() ? 'pointer' : undefined, userSelect: 'none',
+                        cursor: canSort ? 'pointer' : undefined, userSelect: 'none',
                         whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                       }}
                     >
@@ -312,11 +396,13 @@ export function DataTable<T>({
                   const row = rows[vItem.index]
                   return (
                     <Table.Tr key={row.id}>
-                      {row.getVisibleCells().map((cell) => (
-                        <Table.Td key={cell.id} style={cellStyle} title={cellText(cell.getValue())}>
-                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                        </Table.Td>
-                      ))}
+                      {row.getVisibleCells()
+                        .filter((cell) => !(isMobile && cell.column.columnDef.meta?.mobileHide))
+                        .map((cell) => (
+                          <Table.Td key={cell.id} style={cellStyle} title={cellText(cell.getValue())}>
+                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                          </Table.Td>
+                        ))}
                     </Table.Tr>
                   )
                 })}

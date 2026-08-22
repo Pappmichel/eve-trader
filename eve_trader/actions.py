@@ -20,7 +20,7 @@ from .goonmetrics_client import GoonmetricsClient
 from .models import Candidate, ShortlistItem, UndercutRow, UnlistedStockRow
 from .shortlist import (NO_MARKET_DATA_DECISION, SKIP_DECISION, _decision, audit_shortlist, evaluate_shortlist,
                          summary_counts, top_imports_by_daily_profit)
-from .trade_reconciliation import reconcile_realized_trades, summarize_realized
+from .trade_reconciliation import average_daily_sold_by_type, reconcile_realized_trades, summarize_realized
 
 log = logging.getLogger("eve_trader.actions")
 
@@ -64,10 +64,60 @@ def do_auth(role: str, scopes: list[str] | None = None, oauth_cfg: OAuthConfig =
     """`scopes` overrides oauth_cfg.scopes for this role only - lets a new role
     (e.g. "producer") request its own scope set without changing what buyer/
     seller request, so an unrelated role's re-auth can't suddenly ask for
-    scopes the EVE dev-portal app doesn't have enabled."""
+    scopes the EVE dev-portal app doesn't have enabled.
+
+    "buyer"/"seller" register via get_token_interactive_multi (GitHub issue
+    #46: multiple buyer/seller characters, stored as "buyer:<char_id>"/
+    "seller:<char_id>" - same scheme already used for "producer" characters)
+    instead of get_token_interactive's old single fixed-key storage, so
+    running `eve-trader auth --role buyer` twice registers a second buyer
+    character instead of silently overwriting the first one's token."""
     tm = TokenManager(oauth_cfg)
-    record = tm.get_token_interactive(role, scopes=scopes)
-    return {"role": role, "character_name": record.character_name, "character_id": record.character_id}
+    scopes = scopes or list(oauth_cfg.scopes)
+    if role in ("buyer", "seller"):
+        record = tm.get_token_interactive_multi(role, scopes)
+    else:
+        record = tm.get_token_interactive(role, scopes=scopes)
+    return {"role": record.role, "character_name": record.character_name, "character_id": record.character_id}
+
+
+def _list_role_characters(tm: TokenManager, prefix: str) -> list[tuple[str, int, str]]:
+    """Every character registered under f"{prefix}:<char_id>" (see
+    auth.get_token_interactive_multi), PLUS - for backward compatibility
+    with a token stored under the old fixed-key single-buyer/seller scheme
+    (pre-GitHub-issue-#46) - the legacy `prefix` key itself if still present
+    and not already superseded by a multi-key entry for the same character.
+    No live data migration needed: an old token just keeps working under its
+    original key until the user removes/re-adds it, at which point it's
+    naturally stored under the new f"{prefix}:<id>" scheme instead (see
+    api/routers/auth.py's callback, which no longer special-cases buyer/
+    seller into the single fixed key). Mirrors
+    production/esi_sync.list_producer_characters, plus the legacy fallback
+    producer never needed (it was multi-character from the start)."""
+    out = []
+    seen_ids = set()
+    for role in tm.list_roles(prefix):
+        record = tm.get_record(role)
+        if record is not None:
+            out.append((role, record.character_id, record.character_name))
+            seen_ids.add(record.character_id)
+    legacy = tm.get_record(prefix)
+    if legacy is not None and legacy.character_id not in seen_ids:
+        out.append((prefix, legacy.character_id, legacy.character_name))
+    return out
+
+
+def do_list_buyer_characters(oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> list[tuple[str, int, str]]:
+    return _list_role_characters(TokenManager(oauth_cfg), "buyer")
+
+
+def do_list_seller_characters(oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> list[tuple[str, int, str]]:
+    return _list_role_characters(TokenManager(oauth_cfg), "seller")
+
+
+def do_remove_trading_character(role_key: str, oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
+    TokenManager(oauth_cfg).remove_token(role_key)
+    return {"removed": role_key}
 
 
 def do_update_settings(updates: dict, cfg: TradingConfig = TRADING_CONFIG) -> dict:
@@ -235,27 +285,37 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
     if not items:
         raise ActionError("Shortlist is empty.")
     tm = TokenManager(oauth_cfg)
-    if not tm.has_token("seller"):
+    seller_characters = _list_role_characters(tm, "seller")
+    if not seller_characters:
         raise ActionError("Seller character isn't logged in yet (Login → Seller).")
     client = ESIClient(cfg, tm)
 
     meta_backfill = _backfill_meta_levels(items, client)
 
-    seller_character_id = tm.get_token("seller").character_id
-    own_remaining = own_orders.fetch_own_sell_orders(seller_character_id, "seller", client, cfg)
+    # Own sell orders pooled across every registered seller character (GitHub
+    # issue #46: multiple sellers share the structure's order slots) - "how
+    # much of this item do I already have listed" is a per-item total across
+    # all of them, not just one.
+    own_remaining: dict[int, float] = {}
+    for seller_role, seller_character_id, _name in seller_characters:
+        for item_id, remaining in own_orders.fetch_own_sell_orders(
+                seller_character_id, seller_role, client, cfg).items():
+            own_remaining[item_id] = own_remaining.get(item_id, 0.0) + remaining
 
+    buyer_characters = _list_role_characters(tm, "buyer")
     buyer_already_covered_ids: frozenset[int] = frozenset()
-    if tm.has_token("buyer"):
-        buyer_character_id = tm.get_token("buyer").character_id
-        try:
-            buyer_already_covered_ids = frozenset(
-                own_orders.fetch_buyer_already_covered(buyer_character_id, "buyer", client, cfg)
-            )
-        except ESIError as e:
-            # Separate scope (esi-assets.read_assets.v1) - a buyer added before
-            # this scope existed won't have it until re-added; degrade
-            # gracefully rather than block the whole refresh.
-            log.warning("Could not fetch buyer's Jita buy-orders/assets (%s) - re-add buyer character?", e)
+    if buyer_characters:
+        covered: set[int] = set()
+        for buyer_role, buyer_character_id, _name in buyer_characters:
+            try:
+                covered |= own_orders.fetch_buyer_already_covered(buyer_character_id, buyer_role, client, cfg)
+            except ESIError as e:
+                # Separate scope (esi-assets.read_assets.v1) - a buyer added
+                # before this scope existed won't have it until re-added;
+                # degrade gracefully (skip just this buyer) rather than
+                # block the whole refresh.
+                log.warning("Could not fetch buyer's Jita buy-orders/assets (%s) - re-add buyer character?", e)
+        buyer_already_covered_ids = frozenset(covered)
 
     # Deliberately every item with an item_id, not just active ones - an
     # inactive item still gets margin/trend/profit shown (GitHub issue #6,
@@ -272,8 +332,11 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
     # item. Jita's per-type_id calls are parallelized since ESI has no
     # multi-type_id batch endpoint for regional orders.
     try:
+        # The structure's order book is one shared/global fetch - any one
+        # registered seller with docking access can retrieve it, so the
+        # first one is enough (GitHub issue #46).
         structure_stats_by_item = client.structure_order_stats_bulk(
-            cfg.structure_id, priced_item_ids, auth_role="seller")
+            cfg.structure_id, priced_item_ids, auth_role=seller_characters[0][0])
     except ESIError as e:
         # esi-markets.structure_markets.v1 additionally requires the seller
         # character to actually have current docking access to the structure
@@ -288,8 +351,15 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
                            f"Does the seller character still have docking access?") from e
     jita_stats_by_item = client.region_order_stats_bulk(cfg.jita_region_id, priced_item_ids)
 
+    # Real observed sales velocity (GitHub issue #51), not order-book depth -
+    # see trade_reconciliation.average_daily_sold_by_type's own docstring.
+    # Pure local read (last Reconcile Trades run's already-persisted
+    # realized_trades), no extra ESI/network calls.
+    avg_daily_sold_by_item = average_daily_sold_by_type(cfg)
+
     rows = evaluate_shortlist(items, own_remaining, jita_stats_by_item, structure_stats_by_item, cfg=cfg,
-                               buyer_already_covered_ids=buyer_already_covered_ids)
+                               buyer_already_covered_ids=buyer_already_covered_ids,
+                               avg_daily_sold_by_item=avg_daily_sold_by_item)
     extra = {
         "own_sell_orders_found": sum(1 for v in own_remaining.values() if v > 0),
         "buyer_already_covered_found": len(buyer_already_covered_ids),
@@ -347,31 +417,66 @@ def do_check_seller_unlisted_stock(cfg: TradingConfig = TRADING_CONFIG,
     - always a fresh live read, since this is a lightweight one-shot check,
     not a recurring pipeline step."""
     tm = TokenManager(oauth_cfg)
-    if not tm.has_token("seller"):
+    seller_characters = _list_role_characters(tm, "seller")
+    if not seller_characters:
         raise ActionError("Seller character isn't logged in yet (Login → Seller).")
     client = ESIClient(cfg, tm)
-    seller_character_id = tm.get_token("seller").character_id
     shortlist_item_ids = {i.item_id for i in storage.load_shortlist() if i.item_id}
 
     try:
-        unlisted = own_orders.fetch_seller_stock_without_order(
-            seller_character_id, "seller", client, shortlist_item_ids, cfg)
+        # Pooled across every registered seller character (GitHub issue #46)
+        # - stock/coverage is combined, not checked per-character.
+        unlisted = own_orders.fetch_seller_stock_without_order_pooled(
+            [(cid, role) for role, cid, _name in seller_characters], client, shortlist_item_ids, cfg)
     except ESIError as e:
-        # Most likely cause: the seller was authorized before
+        # Most likely cause: a seller was authorized before
         # esi-assets.read_assets.v1 was added to the shared scope list -
         # surface a fixable message instead of a raw 401/500.
         raise ActionError(
-            f"ESI access failed ({e}). If the seller was logged in before "
+            f"ESI access failed ({e}). If a seller was logged in before "
             "esi-assets.read_assets.v1 existed: log in via 'Login Seller' again once."
         ) from e
 
+    unlisted_type_ids = [entry["type_id"] for entry in unlisted]
+    # Same margin/sell_volume math as the shortlist itself (issue #45: these
+    # pages showed a bare quantity only).
+    structure_stats_by_item: dict = {}
+    jita_stats_by_item: dict = {}
+    if unlisted_type_ids:
+        try:
+            # The structure's order book is a shared/global fetch - any one
+            # seller with docking access is enough (GitHub issue #46).
+            structure_stats_by_item = client.structure_order_stats_bulk(
+                cfg.structure_id, unlisted_type_ids, auth_role=seller_characters[0][0])
+        except ESIError as e:
+            raise ActionError(f"Could not fetch the structure's order book ({e}). "
+                               f"Does the seller character still have docking access?") from e
+        jita_stats_by_item = client.region_order_stats_bulk(cfg.jita_region_id, unlisted_type_ids)
+
     rows = []
     for entry in unlisted:
-        sde_type = storage.get_sde_type(entry["type_id"])
-        name = sde_type[2] if sde_type else str(entry["type_id"])
+        type_id = entry["type_id"]
+        sde_type = storage.get_sde_type(type_id)
+        name = sde_type[2] if sde_type else str(type_id)
+        volume_m3 = sde_type[3] if sde_type and sde_type[3] else None
+
+        jita_stats = jita_stats_by_item.get(type_id)
+        structure_stats = structure_stats_by_item.get(type_id)
+        jita_sell = jita_stats.sell_percentile if jita_stats else None
+        net_sell = (structure_stats.sell_percentile * cfg.structure_sell_haircut) \
+            if structure_stats and structure_stats.sell_percentile is not None else None
+        sell_volume = structure_stats.sell_volume if structure_stats else None
+        margin = None
+        if jita_sell is not None and volume_m3 is not None and net_sell is not None:
+            import_cost = volume_m3 * cfg.import_cost_per_m3
+            landed_cost = jita_sell * (1 + cfg.jita_buy_broker_fee) + import_cost
+            if landed_cost:
+                margin = (net_sell - landed_cost) / landed_cost
+
         rows.append(UnlistedStockRow(
-            type_id=entry["type_id"], item=name, asset_quantity=entry["asset_quantity"],
+            type_id=type_id, item=name, asset_quantity=entry["asset_quantity"],
             sell_order_remaining=entry["sell_order_remaining"], unlisted_quantity=entry["unlisted_quantity"],
+            sell_volume=sell_volume, margin=margin,
         ))
     rows.sort(key=lambda r: r.unlisted_quantity, reverse=True)
     return {"rows": rows}
@@ -385,13 +490,17 @@ def do_check_undercut(cfg: TradingConfig = TRADING_CONFIG, oauth_cfg: OAuthConfi
     fresh live check, same one-shot (not cached/persisted) shape as
     do_check_seller_unlisted_stock."""
     tm = TokenManager(oauth_cfg)
-    if not tm.has_token("seller"):
+    seller_characters = _list_role_characters(tm, "seller")
+    if not seller_characters:
         raise ActionError("Seller character isn't logged in yet (Login → Seller).")
     client = ESIClient(cfg, tm)
-    seller_character_id = tm.get_token("seller").character_id
 
     try:
-        undercut = own_orders.check_undercut(seller_character_id, "seller", client, cfg)
+        # Pooled across every registered seller character (GitHub issue #46)
+        # - a cheaper order from one of your own other seller characters
+        # doesn't count as "undercut".
+        undercut = own_orders.check_undercut_pooled(
+            [(cid, role) for role, cid, _name in seller_characters], client, cfg)
     except ESIError as e:
         raise ActionError(f"ESI access failed ({e}).") from e
 
@@ -605,18 +714,23 @@ def shortlist_skip_deactivation_days(cfg: TradingConfig = TRADING_CONFIG) -> dic
 def do_reconcile_trades(cfg: TradingConfig = TRADING_CONFIG,
                          oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
     tm = TokenManager(oauth_cfg)
-    if not (tm.has_token("buyer") and tm.has_token("seller")):
-        raise ActionError("Buyer and seller both need to be logged in.")
+    buyer_characters = _list_role_characters(tm, "buyer")
+    seller_characters = _list_role_characters(tm, "seller")
+    if not (buyer_characters and seller_characters):
+        raise ActionError("At least one buyer and one seller character need to be logged in.")
     client = ESIClient(cfg, tm)
-    buyer_id = tm.get_token("buyer").character_id
-    seller_id = tm.get_token("seller").character_id
 
     items = storage.load_shortlist()
     item_names = {i.item_id: i.item for i in items}
     item_volumes = {i.item_id: i.volume_m3 for i in items}
 
-    trades = reconcile_realized_trades(buyer_id, seller_id, "buyer", "seller", client,
-                                        item_names, item_volumes, cfg)
+    # Pooled across every registered buyer/seller character (GitHub issue
+    # #46) - every buyer's Jita buys are matched against every seller's
+    # structure sells, not paired 1:1 by character.
+    trades = reconcile_realized_trades(
+        [(cid, role) for role, cid, _name in buyer_characters],
+        [(cid, role) for role, cid, _name in seller_characters],
+        client, item_names, item_volumes, cfg)
     storage.save_realized_trades(trades, now_ts())
     summary = summarize_realized(trades)
     return {"matched_trades": len(trades), **summary}

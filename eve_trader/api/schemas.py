@@ -61,6 +61,9 @@ class ShortlistRow(_Base):
     jita_sell: Optional[float]
     import_cost: Optional[float]
     meta_level: Optional[int] = None
+    # Real average daily sold quantity (GitHub issue #51) - see
+    # trade_reconciliation.average_daily_sold_by_type / models.ShortlistRow.
+    avg_daily_sold: Optional[float] = None
     # Not part of the underlying shortlist_snapshot row - computed by the
     # router from storage.get_shortlist_skip_since() +
     # TradingConfig.skip_grace_period_days. None unless this item is
@@ -113,6 +116,13 @@ class UnlistedStockRow(_Base):
     asset_quantity: float
     sell_order_remaining: float
     unlisted_quantity: float
+    # GitHub issue #56: these were added to the underlying dataclass
+    # (models.UnlistedStockRow) and actions.py by issue #45, but never
+    # added here - FastAPI's response_model silently stripped both fields
+    # from the JSON response, so the #45 feature never actually reached the
+    # frontend. Keep in sync with models.UnlistedStockRow.
+    sell_volume: Optional[float] = None
+    margin: Optional[float] = None
 
 
 class UndercutRow(_Base):
@@ -300,6 +310,9 @@ class ProductionUnlistedStockRow(_Base):
     type_id: int
     type_name: str
     stock_quantity: float
+    # GitHub issue #56 - see the Trading UnlistedStockRow's own comment above.
+    sell_volume: Optional[float] = None
+    margin: Optional[float] = None
 
 
 class BuildCandidate(_Base):
