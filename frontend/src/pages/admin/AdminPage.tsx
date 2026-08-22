@@ -62,7 +62,7 @@ function SdeDataSection() {
 // Mirrors access_gate.ALL_TOOL_KEYS (eve_trader/access_gate.py) - kept in
 // sync by hand, same as every other small fixed-vocabulary list already
 // hardcoded on the frontend elsewhere in this app.
-const ALL_TOOL_KEYS = ['trading', 'production', 'doctrine', 'portfolio', 'admin']
+const ALL_TOOL_KEYS = ['trading', 'production', 'doctrine', 'refining', 'portfolio', 'admin']
 
 // Read-only - tenants are always created implicitly as part of "Add User"
 // below (one dedicated tenant per character, enforced at the DB level, see

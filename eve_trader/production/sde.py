@@ -126,6 +126,12 @@ def refresh_sde(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     # keeps the last match per typeID if that assumption is ever wrong for
     # some edge-case type, rather than crashing the whole refresh.
     type_effects = _fetch_csv(session, base, "dgmTypeEffects.csv")
+    # GitHub issue #90 ("Ore & Minerals"): reprocessing/manufacturing material
+    # yields - a table this codebase has never loaded before. Both the ore/ice
+    # and scrapmetal reprocessing paths are "type -> material yield" lookups
+    # against this one SDE table (see refining/engine.py, storage.
+    # get_type_materials).
+    inv_type_materials = _fetch_csv(session, base, "invTypeMaterials.csv")
 
     meta_group_by_type = {int(r["typeID"]): _int_or_none(r["metaGroupID"]) for r in inv_meta_types}
     types_rows = [
@@ -134,8 +140,17 @@ def refresh_sde(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             _float_or_none(r["volume"]), int(r["published"] == "1"),
             _int_or_none(r["marketGroupID"]), _int_or_none(r["metaLevel"]),
             meta_group_by_type.get(int(r["typeID"])),
+            # portionSize (GitHub issue #90): the whole-batch unit
+            # reprocessing rounds down to before applying yield% (e.g.
+            # Veldspar=100) - confirmed present in invTypes.csv already, no
+            # separate fetch needed.
+            _int_or_none(r["portionSize"]),
         )
         for r in inv_types
+    ]
+    type_materials_rows = [
+        (int(r["typeID"]), int(r["materialTypeID"]), float(r["quantity"]))
+        for r in inv_type_materials
     ]
     groups_rows = [
         (int(r["groupID"]), _int_or_none(r["categoryID"]), r["groupName"])
@@ -187,6 +202,7 @@ def refresh_sde(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         stations=station_rows,
         invention_probability=probability_rows, solar_systems=solar_system_rows,
         categories=category_rows, type_slots=type_slot_rows,
+        type_materials=type_materials_rows,
     )
     storage.set_sde_refresh_state(datetime.now(timezone.utc).isoformat(), dump_etag)
 

@@ -426,6 +426,18 @@ new heuristic; if the SDE doesn't already carry the field you need, extend
   `TradingConfig()`/`ProductionConfig()` instances, not the real file, and
   any live HTTP verification against `/settings` should restore/no-op the
   real values afterward.
+- **User preference (confirmed 2026-08-22): delegate to an Opus subagent
+  without asking first** whenever a task/sub-task is algorithmically heavy
+  (e.g. a real optimization/LP formulation, a tricky correctness-critical
+  calculation) rather than defaulting to whatever model the session itself
+  is running on - report the delegation after the fact, don't ask
+  permission each time. First applied to GitHub issue #93 (the Mineral
+  Shopping List's `scipy.optimize.linprog` solver). This is a
+  cross-session behavioral preference, not something specific to this
+  repo's own conventions - it's recorded here only because no
+  guaranteed-persistent cross-session memory mechanism was available
+  when this was confirmed; if a real one exists by the time you're
+  reading this, prefer that.
 
 ## Deferred, not rejected
 
