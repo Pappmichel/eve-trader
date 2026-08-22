@@ -33,6 +33,10 @@ class ShortlistRow:
     category: str
     landed_cost: Optional[float]
     net_sell: Optional[float]
+    # Currently-listed sell-order quantity at the structure (order-book
+    # depth right now), NOT actual daily traded volume - see GitHub issue
+    # #51 / esi_client.OrderStats and CLAUDE.md's "Theoretical ceiling"
+    # section.
     sell_volume: Optional[float]
     own_orders_remaining: float
     profit_per_unit: Optional[float]
@@ -45,6 +49,15 @@ class ShortlistRow:
     jita_sell: Optional[float]
     import_cost: Optional[float]
     meta_level: Optional[int] = None
+    # Real average daily *sold* quantity (matched_qty from the last
+    # Reconcile Trades run, over cfg.lookback_days - see
+    # trade_reconciliation.average_daily_sold_by_type), NOT derived from
+    # sell_volume/order-book depth. None until Reconcile Trades has actually
+    # matched a sale for this item - GitHub issue #51: this field (not
+    # sell_volume) is what "Profit / Day" is computed from, so a
+    # never-actually-sold item with a big order book no longer produces an
+    # inflated theoretical number.
+    avg_daily_sold: Optional[float] = None
 
 
 @dataclass
@@ -86,12 +99,18 @@ class RealizedTrade:
 @dataclass
 class UnlistedStockRow:
     """Stock physically sitting at the structure that isn't (fully) covered
-    by an open sell order - see own_orders.fetch_seller_stock_without_order."""
+    by an open sell order - see own_orders.fetch_seller_stock_without_order.
+    sell_volume/margin mirror ShortlistRow's own fields (same
+    shortlist.evaluate_shortlist_item formula) - None when the item has no
+    Jita/C-J order-book data at all (e.g. never priced through the
+    shortlist)."""
     type_id: int
     item: str
     asset_quantity: float
     sell_order_remaining: float
     unlisted_quantity: float
+    sell_volume: Optional[float] = None
+    margin: Optional[float] = None
 
 
 @dataclass

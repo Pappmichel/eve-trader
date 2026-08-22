@@ -350,9 +350,17 @@ def shopping_list_rows(doctrine_id: Optional[str] = None, cfg: DoctrineConfig = 
         jita_stats = {}
     home_stats: dict[int, OrderStats] = {}
     structure_id = cfg.effective_structure_id
-    if structure_id is not None and esi.tokens.has_token("seller"):
+    # GitHub issue #46: Trading's seller token is no longer a single fixed
+    # "seller" key - multiple seller characters can be registered as
+    # "seller:<char_id>". Any one with docking access is enough here, so
+    # just pick the first registered one (falling back to the legacy "seller"
+    # key for a not-yet-re-logged-in single-seller setup, same fallback
+    # actions.py's own _list_role_characters uses).
+    seller_role = next(iter(esi.tokens.list_roles("seller")), None) or (
+        "seller" if esi.tokens.has_token("seller") else None)
+    if structure_id is not None and seller_role is not None:
         try:
-            home_stats = esi.structure_order_stats_bulk(structure_id, type_ids, auth_role="seller")
+            home_stats = esi.structure_order_stats_bulk(structure_id, type_ids, auth_role=seller_role)
         except ESIError:
             home_stats = {}  # no docking access right now - degrade, don't break the page
 

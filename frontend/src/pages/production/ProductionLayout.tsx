@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { AppShell, Badge, Burger, Stack, Title, Text, Button, Group, Container, Tabs, ScrollArea, Divider } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
@@ -6,8 +5,9 @@ import { useQuery } from '@tanstack/react-query'
 import { modals } from '@mantine/modals'
 import { IconArrowLeft } from '@tabler/icons-react'
 
-import { authApi, productionApi } from '../../api/client'
+import { productionApi } from '../../api/client'
 import { useAction } from '../../hooks/useAction'
+import { useRoleCharacters } from '../../hooks/useRoleCharacters'
 import { dateTime } from '../../format'
 
 const TABS = [
@@ -39,7 +39,6 @@ export default function ProductionLayout() {
     queryKey: ['production', 'sde-freshness'], queryFn: productionApi.sdeFreshness,
     staleTime: Infinity, refetchOnWindowFocus: false, retry: false,
   })
-  const { data: characters } = useQuery({ queryKey: ['production', 'characters'], queryFn: productionApi.producerCharacters })
   const { data: syncTime } = useQuery({ queryKey: ['production', 'esi-sync-time'], queryFn: productionApi.esiSyncTime })
 
   // No "Refresh SDE" action/button here anymore - moved to the Admin tool
@@ -48,23 +47,9 @@ export default function ProductionLayout() {
   // freshness/counts info below stays - still legitimately informs this
   // tenant's own Production sidebar, just no longer paired with a button
   // that would refresh it for every tenant at once.
-  // Same redirect-based EVE SSO flow trading's buyer/seller login uses (see
-  // TradingLayout.tsx's LoginButton) - navigates the whole page to EVE SSO
-  // and back, rather than the old server-side webbrowser.open() +
-  // blocking-local-HTTP-server flow (production/actions.py's
-  // do_auth_add_producer_character/auth.py's get_token_interactive_multi),
-  // which only ever worked because the backend and browser happened to be
-  // on the same machine, and tied up the request thread for minutes.
-  const addCharacter = useAction('Login', async () => {
-    const { url } = await authApi.start('producer')
-    window.location.href = url
-  })
-  const removeCharacter = useAction('Remove Character', productionApi.removeCharacter, [['production', 'characters']])
-  // removeCharacter is one shared mutation instance reused across every
-  // character's Remove button (mapped below) - confirmed real bug: clicking
-  // Remove for one character put *every* character's Remove button into the
-  // loading/disabled state, not just the one actually being removed.
-  const [pendingRoleKey, setPendingRoleKey] = useState<string | null>(null)
+  const { characters, addCharacter, removeCharacter, isRemoving } = useRoleCharacters(
+    ['production', 'characters'], productionApi.producerCharacters, productionApi.removeCharacter, 'producer',
+  )
   const syncEsi = useAction('Sync ESI Data', productionApi.syncEsi, [
     ['production', 'jobs'], ['production', 'slots'], ['production', 'market-status'], ['production', 'esi-sync-time'],
     ['production', 'blueprints'], ['production', 'stock-value'],
@@ -74,7 +59,7 @@ export default function ProductionLayout() {
   ])
 
   return (
-    <AppShell header={{ height: 56 }} navbar={{ width: 300, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding="md">
+    <AppShell header={{ height: 56 }} navbar={{ width: 300, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding={{ base: 'xs', sm: 'md' }}>
       <AppShell.Header>
         <Group h="100%" px="md" justify="space-between">
           <Group>
@@ -127,7 +112,7 @@ export default function ProductionLayout() {
                 <Title order={6} c="dimmed" tt="uppercase">ESI Sync</Title>
                 <Text size="xs" c="dimmed">{dateTime(syncTime?.synced_at)}</Text>
               </Group>
-              {(characters ?? []).map((c) => (
+              {characters.map((c) => (
                 <Group key={c.role_key} justify="space-between" mb={4}>
                   <Text size="sm" fw={600}>{c.character_name}</Text>
                   <Button size="xs" variant="subtle" color="danger"
@@ -136,9 +121,9 @@ export default function ProductionLayout() {
                       children: <Text size="sm">Remove {c.character_name} from Production? You can log them back in any time.</Text>,
                       labels: { confirm: 'Remove', cancel: 'Cancel' },
                       confirmProps: { color: 'danger' },
-                      onConfirm: () => { setPendingRoleKey(c.role_key); removeCharacter.mutate(c.role_key) },
+                      onConfirm: () => removeCharacter(c.role_key),
                     })}
-                    loading={removeCharacter.isPending && pendingRoleKey === c.role_key}>
+                    loading={isRemoving(c.role_key)}>
                     Remove
                   </Button>
                 </Group>
@@ -147,7 +132,7 @@ export default function ProductionLayout() {
                 <Button size="xs" variant="default" onClick={() => addCharacter.mutate()} loading={addCharacter.isPending}>
                   Add Character
                 </Button>
-                <Button size="xs" variant="default" disabled={!characters || characters.length === 0}
+                <Button size="xs" variant="default" disabled={characters.length === 0}
                   onClick={() => syncEsi.mutate()} loading={syncEsi.isPending}>
                   Sync ESI Data
                 </Button>
