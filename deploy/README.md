@@ -340,10 +340,30 @@ for that part.
 ```bash
 cd eve-trader
 git pull                      # or re-rsync
+sudo -u postgres psql -d eve_trader -f docs/phase1_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/phase2_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/phase3_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/admin_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/doctrine_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/observability_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/refining_schema.sql
 .venv/bin/pip install -e .
 cd frontend && npm ci && npm run build && cd ..
 sudo systemctl restart eve-trader
 ```
+**Always re-run every schema file on every update, not just ones that look
+"new"** - confirmed real 2026-08-22: `docs/phase1_schema.sql` (an
+already-existing file from the initial setup, not a new one this round)
+picked up a genuinely new `ALTER TABLE shortlist_snapshot ADD COLUMN IF NOT
+EXISTS avg_daily_sold` mid-way through its own history (PR #51), which was
+missed on a deploy that only re-ran the schema files that were new *that*
+round (`observability_schema.sql`/`refining_schema.sql`) - broke "Refresh
+Shortlist" with a `psycopg.errors.UndefinedColumn` 500 and silently left the
+Trading Shortlist's Profit/Day column empty. Every file here is additive/
+idempotent (`IF NOT EXISTS` everywhere, role creation guarded against
+`duplicate_object`) - re-running one that has nothing new to add is a
+harmless no-op, so there's no reason to ever skip one on the assumption
+"that file hasn't changed."
 
 ## Logs
 
