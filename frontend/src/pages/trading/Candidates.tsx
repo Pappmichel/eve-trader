@@ -10,9 +10,20 @@ import { HintCard } from '../../components/HintCard'
 import { qty } from '../../format'
 
 export default function Candidates() {
-  const { data: universe, isLoading: universeLoading } = useQuery({ queryKey: ['trading', 'candidates', 'universe'], queryFn: tradingApi.candidateUniverse })
-  const { data: focused, isLoading: focusedLoading } = useQuery({ queryKey: ['trading', 'candidates', 'focused'], queryFn: tradingApi.focusedCandidates })
+  const { data: universe, isLoading: universeLoading, isError: universeError, refetch: refetchUniverse } =
+    useQuery({ queryKey: ['trading', 'candidates', 'universe'], queryFn: tradingApi.candidateUniverse })
+  const { data: focused, isLoading: focusedLoading, isError: focusedError, refetch: refetchFocused } =
+    useQuery({ queryKey: ['trading', 'candidates', 'focused'], queryFn: tradingApi.focusedCandidates })
   const isLoading = universeLoading || focusedLoading
+  // Both must fail before showing the full-page error - these are two
+  // independent sources with a graceful one-way fallback (`display` below):
+  // if only `focused` fails, `universe` still renders fine (and vice versa).
+  // OR-ing the two error flags together used to hide a successfully-loaded
+  // source's data behind the error state the moment the *other* source
+  // failed - a real regression, not just an incomplete fix (confirmed in
+  // code review).
+  const isError = universeError && focusedError
+  const refetch = () => { refetchUniverse(); refetchFocused() }
 
   const display = focused && focused.length > 0 ? focused : universe ?? []
 
@@ -39,6 +50,8 @@ export default function Candidates() {
 
       {isLoading ? (
         <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
+      ) : isError ? (
+        <DataTable data={[]} columns={columns} isError onRetry={refetch} maxHeight={560} />
       ) : display.length === 0 ? (
         <HintCard>No candidates loaded yet. Click <b>Load Market Groups</b> on the left, then <b>Filter Candidates</b>.</HintCard>
       ) : (

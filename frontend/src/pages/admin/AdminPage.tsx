@@ -70,7 +70,7 @@ const ALL_TOOL_KEYS = ['trading', 'production', 'doctrine', 'portfolio', 'admin'
 // left behind by a removed user (do_remove_user intentionally leaves the
 // tenant and its data in place).
 function TenantSection() {
-  const { data: tenants, isLoading } = useQuery({ queryKey: ['admin', 'tenants'], queryFn: adminApi.tenants })
+  const { data: tenants, isLoading, isError, refetch } = useQuery({ queryKey: ['admin', 'tenants'], queryFn: adminApi.tenants })
 
   const columns = useMemo<ColumnDef<AdminTenant, any>[]>(() => [
     { header: 'Name', accessorKey: 'name', size: 220 },
@@ -88,6 +88,8 @@ function TenantSection() {
         exportFilename="tenants"
         getRowId={(t) => t.tenant_id}
         isLoading={isLoading}
+        isError={isError}
+        onRetry={() => refetch()}
       />
     </div>
   )
@@ -118,7 +120,7 @@ function UserToolCheckboxes({ user }: { user: AdminUser }) {
 }
 
 function UsersSection() {
-  const { data: users, isLoading } = useQuery({ queryKey: ['admin', 'users'], queryFn: adminApi.users })
+  const { data: users, isLoading, isError, refetch } = useQuery({ queryKey: ['admin', 'users'], queryFn: adminApi.users })
   const [characterName, setCharacterName] = useState('')
   const addUser = useAction('Add User', () => adminApi.addUser(characterName),
     [['admin', 'users'], ['admin', 'tenants']])
@@ -164,8 +166,8 @@ function UsersSection() {
   return (
     <div>
       <Title order={4} mb="xs">Users</Title>
-      {!isLoading && (users ?? []).length === 0 && <Text c="dimmed" size="sm" mb="sm">No users registered yet.</Text>}
-      {(isLoading || (users ?? []).length > 0) && (
+      {!isLoading && !isError && (users ?? []).length === 0 && <Text c="dimmed" size="sm" mb="sm">No users registered yet.</Text>}
+      {(isLoading || isError || (users ?? []).length > 0) && (
         <DataTable
           data={users ?? []}
           columns={columns}
@@ -173,6 +175,8 @@ function UsersSection() {
           exportFilename="users"
           getRowId={(u) => String(u.character_id)}
           isLoading={isLoading}
+          isError={isError}
+          onRetry={() => refetch()}
         />
       )}
       <Group mt="sm">

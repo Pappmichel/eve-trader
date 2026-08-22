@@ -3,7 +3,8 @@ import { useDisclosure } from '@mantine/hooks'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { modals } from '@mantine/modals'
-import { IconArrowLeft, IconRefresh, IconTrash } from '@tabler/icons-react'
+import { spotlight } from '@mantine/spotlight'
+import { IconArrowLeft, IconRefresh, IconSearch, IconTrash } from '@tabler/icons-react'
 
 import { doctrineApi } from '../../api/client'
 import { useAction } from '../../hooks/useAction'
@@ -100,7 +101,12 @@ export default function DoctrineLayout() {
             <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" aria-label="Toggle navigation" />
             <Text fw={700} tt="uppercase" lts={1}>EVE Trader — Doctrine</Text>
           </Group>
-          <Button variant="subtle" size="xs" leftSection={<IconArrowLeft size={14} />} onClick={() => navigate('/')}>Tools</Button>
+          <Group gap="xs">
+            <Button variant="subtle" size="xs" leftSection={<IconSearch size={14} />} onClick={() => spotlight.open()}>
+              Jump to... (⌘K)
+            </Button>
+            <Button variant="subtle" size="xs" leftSection={<IconArrowLeft size={14} />} onClick={() => navigate('/')}>Tools</Button>
+          </Group>
         </Group>
       </AppShell.Header>
 
