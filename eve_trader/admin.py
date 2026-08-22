@@ -92,8 +92,13 @@ def do_refresh_sde() -> dict:
         # ActionError every other ESI/Goonmetrics-touching action converts a
         # network failure to.
         raise ActionError(f"SDE refresh failed: {e}") from e
-    invalidate_discover_cache()  # the item/blueprint universe itself may have changed
-    invalidate_ship_margin_cache()
+    # all_tenants=True: the SDE cache is global (this function's own
+    # docstring), so a refresh can change every tenant's discover/margin
+    # results, not just the calling admin's own - confirmed real gap (GitHub
+    # issue #54's own fix): the per-tenant-only default left every other
+    # tenant serving stale results for up to the full cache TTL.
+    invalidate_discover_cache(all_tenants=True)
+    invalidate_ship_margin_cache(all_tenants=True)
     return result
 
 
