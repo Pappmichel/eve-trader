@@ -16,5 +16,20 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        # nginx's own default (60s) is too short for Trading's heavier
+        # synchronous endpoints (Refresh Shortlist, Pipeline Run, Refresh +
+        # Prune Candidates) - each makes hundreds to thousands of live ESI
+        # calls, and GitHub issue #99's 429-retry backoff (needed so a
+        # rate-limited item degrades to a retry instead of silently losing
+        # its price) makes a real run legitimately take well over 60s under
+        # actual rate-limiting. Confirmed live 2026-08-23: "upstream timed
+        # out (110: Connection timed out)" in nginx's own error.log for both
+        # endpoints - the backend request itself kept running to completion
+        # and saved a good result, only the browser's response was lost, so
+        # this was a pure UX regression (a spurious Gateway Timeout on a
+        # request that actually succeeded), not a backend bug.
+        proxy_read_timeout 300s;
+        proxy_connect_timeout 300s;
+        proxy_send_timeout 300s;
     }
 }
