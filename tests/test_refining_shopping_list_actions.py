@@ -3,11 +3,14 @@ eve_trader/refining/actions.py. Storage and ESI are monkeypatched throughout -
 no Postgres, no network (same pattern as test_refining_pricing.py).
 """
 import pytest
+import requests
 
 from eve_trader import storage
 from eve_trader.actions import ActionError
 from eve_trader.config import TradingConfig
 from eve_trader.esi_client import OrderStats
+from eve_trader.goonmetrics_client import CurrentPrice
+from eve_trader.production.config import ProductionConfig
 from eve_trader.refining import actions
 from eve_trader.refining.config import RefiningConfig
 from eve_trader.refining.models import OreCandidate
@@ -225,3 +228,71 @@ def test_optimize_includes_haul_cost_in_both_ore_and_mineral_prices(monkeypatch,
         trading_cfg=trading_cfg, refining_cfg=refining_cfg)
     # Pyerite: 12 ISK + 0.01 m3 x 1000 ISK/m3 = 22 ISK landed.
     assert plan["direct_purchases"][0]["landed_cost_per_unit"] == pytest.approx(22.0)
+
+
+# --------------------------------------------------- home-market comparison
+def test_optimize_prefers_a_cheaper_home_market_price_over_jita(monkeypatch, sde, candidates, esi, cfgs):
+    """GitHub issue #102: the direct-mineral alternative used to check Jita
+    only, so a mineral already sitting cheaper at C-J (no haul needed) never
+    got recommended."""
+    trading_cfg, refining_cfg = cfgs
+    monkeypatch.setattr(actions, "GoonmetricsClient", lambda cfg: type(
+        "_GM", (), {"current_prices": staticmethod(lambda market: [CurrentPrice(type_id=PYE, updated="", buy=1.0, sell=3.0)])})())
+
+    plan = actions.do_optimize_mineral_shopping_list(
+        requirements=[{"type_id": PYE, "name": "Pyerite", "required_qty": 100}],
+        trading_cfg=trading_cfg, refining_cfg=refining_cfg,
+        production_cfg=ProductionConfig(home_market="c-j"))
+
+    # Home (3 ISK) beats Jita (12 ISK) - the plan must use it and say so.
+    assert plan["direct_purchases"][0]["landed_cost_per_unit"] == pytest.approx(3.0)
+    assert plan["direct_purchases"][0]["source"] == "Home"
+
+
+def test_optimize_falls_back_to_jita_when_home_market_has_no_listing(monkeypatch, sde, candidates, esi, cfgs):
+    trading_cfg, refining_cfg = cfgs
+    monkeypatch.setattr(actions, "GoonmetricsClient", lambda cfg: type(
+        "_GM", (), {"current_prices": staticmethod(lambda market: [])})())
+
+    plan = actions.do_optimize_mineral_shopping_list(
+        requirements=[{"type_id": PYE, "name": "Pyerite", "required_qty": 100}],
+        trading_cfg=trading_cfg, refining_cfg=refining_cfg,
+        production_cfg=ProductionConfig(home_market="c-j"))
+
+    assert plan["direct_purchases"][0]["landed_cost_per_unit"] == pytest.approx(12.0)
+    assert plan["direct_purchases"][0]["source"] == "Jita"
+
+
+def test_optimize_skips_the_home_market_check_when_unconfigured(monkeypatch, sde, candidates, esi, cfgs):
+    trading_cfg, refining_cfg = cfgs
+
+    def _must_not_be_called(cfg):
+        raise AssertionError("must not construct a GoonmetricsClient when home_market is unset")
+    monkeypatch.setattr(actions, "GoonmetricsClient", _must_not_be_called)
+
+    plan = actions.do_optimize_mineral_shopping_list(
+        requirements=[{"type_id": PYE, "name": "Pyerite", "required_qty": 100}],
+        trading_cfg=trading_cfg, refining_cfg=refining_cfg,
+        production_cfg=ProductionConfig(home_market=None))
+
+    assert plan["direct_purchases"][0]["source"] == "Jita"
+
+
+def test_optimize_degrades_to_jita_only_on_a_goonmetrics_failure(monkeypatch, sde, candidates, esi, cfgs):
+    """A Goonmetrics outage must not break the whole shopping list - only the
+    ESI order-book fetch (which the function genuinely can't proceed
+    without) is a hard failure; the home-market check is best-effort."""
+    trading_cfg, refining_cfg = cfgs
+
+    def _raise(market):
+        raise requests.exceptions.ConnectionError("boom")
+    monkeypatch.setattr(actions, "GoonmetricsClient",
+                        lambda cfg: type("_GM", (), {"current_prices": staticmethod(_raise)})())
+
+    plan = actions.do_optimize_mineral_shopping_list(
+        requirements=[{"type_id": PYE, "name": "Pyerite", "required_qty": 100}],
+        trading_cfg=trading_cfg, refining_cfg=refining_cfg,
+        production_cfg=ProductionConfig(home_market="c-j"))
+
+    assert plan["direct_purchases"][0]["landed_cost_per_unit"] == pytest.approx(12.0)
+    assert plan["direct_purchases"][0]["source"] == "Jita"

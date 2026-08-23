@@ -92,12 +92,16 @@ class OreOption:
 
 @dataclass
 class MineralOption:
-    """A required mineral's own direct-buy price (landed at C-J, same formula
-    as an ore's), or None when it simply isn't listed in Jita right now - in
-    which case the optimizer can only source it by refining ore."""
+    """A required mineral's own direct-buy price - the cheaper of importing
+    from Jita (landed at C-J, same formula as an ore's) or buying it right at
+    the C-J home market (no haul needed) - or None when neither market has it
+    listed right now, in which case the optimizer can only source it by
+    refining ore. `source` is "Jita" or "Home", matching whichever price won;
+    None when landed_cost_per_unit is None too."""
     type_id: int
     name: str
     landed_cost_per_unit: Optional[float]
+    source: Optional[str] = None
 
 
 @dataclass
@@ -118,12 +122,14 @@ class OrePurchase:
 @dataclass
 class DirectMineralPurchase:
     """One line of the final shopping list: buy this mineral outright rather
-    than refining it out of ore."""
+    than refining it out of ore. `source` is "Jita" or "Home" - see
+    MineralOption's own docstring."""
     type_id: int
     name: str
     quantity: int
     landed_cost_per_unit: float
     total_cost: float
+    source: Optional[str] = None
 
 
 @dataclass

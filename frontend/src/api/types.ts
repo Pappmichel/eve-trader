@@ -720,6 +720,7 @@ export interface DirectMineralPurchase {
   quantity: number
   landed_cost_per_unit: number
   total_cost: number
+  source: 'Jita' | 'Home' | null
 }
 
 export interface MineralCoverage {
