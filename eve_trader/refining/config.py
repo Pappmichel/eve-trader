@@ -25,9 +25,9 @@ from .constants import (
 class RefiningConfig:
     # -- Ore/ice path: structure/rig/security/implant --
     # Settings-page dropdowns, not pulled from ESI (confirmed with the user
-    # during planning: "stationsart, rig, skill und implant sollen als
-    # settings per auswahl eingestellt werden können. skills nicht via esi
-    # ziehen") - independent of TRADING_CONFIG.structure_id/production/
+    # during planning: "structure type, rig, skill, and implant should be
+    # configurable as settings via a dropdown. don't pull skills via ESI")
+    # - independent of TRADING_CONFIG.structure_id/production/
     # config.py's own structure_type fields, since the refining structure may
     # be a different one (a dedicated Refinery) than either tool's own.
     structure_type: str = "Citadel (no bonuses)"
