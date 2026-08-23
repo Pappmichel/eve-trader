@@ -158,7 +158,7 @@ sudo systemctl restart postgresql
 (the app's own connection pool never opens more than 10 - see
 `storage._get_pool()` - 20 leaves headroom for a manual `psql` session too.)
 
-Apply the schema (idempotent - safe to re-run), owner role only. All seven
+Apply the schema (idempotent - safe to re-run), owner role only. All eight
 files, not just phase1-3 - `admin_schema.sql` creates the `tool_grants`
 table the access gate needs (see "3. Configure" below - skipping this makes
 every gated request 500 with `relation "tool_grants" does not exist` the
@@ -169,9 +169,13 @@ backend registers that router unconditionally), `observability_schema.sql`
 creates `error_log` (skipping this doesn't break anything visibly -
 `do_report_error` degrades to `{"recorded": False}` on a storage failure
 rather than raising - but every frontend error report is silently lost
-until this is applied), and `refining_schema.sql` creates the
+until this is applied), `refining_schema.sql` creates the
 `sde_type_materials` table + `sde_types.portion_size` column the "Ore &
-Minerals" tool needs (GitHub issue #90):
+Minerals" tool needs (GitHub issue #90), and `role_consent_schema.sql`
+creates `tenant_role_consents` (skipping this makes every
+`/api/auth/{role_prefix}/consent` call - the first-login data-access
+confirmation - fail with `relation "tenant_role_consents" does not exist`,
+which the frontend's confirm modal has no fallback for):
 ```bash
 cd ~/eve-trader
 sudo -u postgres psql -c "CREATE DATABASE eve_trader;"
@@ -182,6 +186,7 @@ sudo -u postgres psql -d eve_trader -f docs/admin_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/doctrine_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/observability_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/refining_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/role_consent_schema.sql
 ```
 `phase1_schema.sql` creates the `eve_trader_app` role with the **checked-in
 dev password** (`app_devpassword`) - fine for local dev, not for a real

@@ -46,7 +46,7 @@ function CharacterGroup({ title, queryKey, listFn, ssoRolePrefix, removeFn }: {
   ssoRolePrefix: string
   removeFn: (roleKey: string) => Promise<unknown>
 }) {
-  const { characters, addCharacter, removeCharacter, isRemoving } = useRoleCharacters(
+  const { characters, addCharacter, startLogin, removeCharacter, isRemoving } = useRoleCharacters(
     queryKey, listFn, removeFn, ssoRolePrefix,
   )
 
@@ -70,7 +70,7 @@ function CharacterGroup({ title, queryKey, listFn, ssoRolePrefix, removeFn }: {
             </ActionIcon>
           </Group>
         ))}
-        <Button size="xs" variant="default" onClick={() => addCharacter.mutate()} loading={addCharacter.isPending}>
+        <Button size="xs" variant="default" onClick={() => startLogin()} loading={addCharacter.isPending}>
           Add Character
         </Button>
       </Stack>

@@ -115,6 +115,7 @@ KNOWN_NON_MIGRATED_TABLES: dict[str, str] = {
     "ore_shortlist": "Postgres-native (GitHub issue #91 - never existed in the pre-migration SQLite schema)",
     "ore_shortlist_snapshot": "Postgres-native (GitHub issue #91 - never existed in the pre-migration SQLite schema)",
     "mineral_requirements": "Postgres-native (GitHub issue #93 - never existed in the pre-migration SQLite schema)",
+    "tenant_role_consents": "added after the pre-migration SQLite schema was retired - nothing to migrate from",
 }
 
 

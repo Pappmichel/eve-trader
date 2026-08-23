@@ -94,6 +94,10 @@ const del = <TResp>(path: string) => request<TResp>(path, { method: 'DELETE' })
 // ------------------------------------------------------------------- auth
 export const authApi = {
   start: (rolePrefix: string) => get<{ url: string }>(`/api/auth/${rolePrefix}/start`),
+  // "gate" isn't valid here - its consent is tracked client-side (see
+  // Landing.tsx), never via these two - the backend itself 400s if asked.
+  consentStatus: (rolePrefix: string) => get<{ acknowledged: boolean }>(`/api/auth/${rolePrefix}/consent`),
+  acknowledgeConsent: (rolePrefix: string) => post<{ acknowledged: boolean }>(`/api/auth/${rolePrefix}/consent`),
 }
 
 // -------------------------------------------------------------- access gate

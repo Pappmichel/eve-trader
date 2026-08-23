@@ -599,6 +599,31 @@ def delete_tenant_token(role: str) -> None:
         conn.execute("DELETE FROM tenant_tokens WHERE role = ?", (role,))
 
 
+# ------------------------------------------------------- role login consent
+def has_role_consent(role_prefix: str) -> bool:
+    """Whether the current tenant has already acknowledged what ESI data a
+    given login role_prefix reads - api/routers/auth.py's /start route uses
+    this (via the frontend's confirm-before-redirect modal) to skip showing
+    the confirmation again once a tenant has seen it for that role."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM tenant_role_consents WHERE role_prefix = ?", (role_prefix,)
+        ).fetchone()
+    return row is not None
+
+
+def record_role_consent(role_prefix: str) -> None:
+    """Idempotent - re-acknowledging an already-recorded role_prefix is a
+    no-op (ON CONFLICT DO NOTHING), not an error or a timestamp bump; the
+    original acknowledged_at is what matters, not the most recent one."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO tenant_role_consents (role_prefix) VALUES (?) "
+            "ON CONFLICT (tenant_id, role_prefix) DO NOTHING",
+            (role_prefix,),
+        )
+
+
 # --------------------------------------------------------------------- writes
 def upsert_shortlist(items: Iterable[ShortlistItem]) -> None:
     with connect() as conn:
