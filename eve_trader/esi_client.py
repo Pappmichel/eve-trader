@@ -203,6 +203,34 @@ class ESIClient:
     _cost_indices_cache: Optional[dict[int, dict[str, float]]] = None
     _cost_indices_cache_at: float = 0.0
 
+    # Class-level, short-TTL caches for region_order_stats/structure_orders_raw
+    # (GitHub issue #103) - same real order-book data for anyone querying the
+    # same region_id/structure_id, so two near-simultaneous refreshes (two
+    # tenants sharing Jita as jita_region_id - near-universal - or the same
+    # structure_id; or even one tenant's own Refresh Shortlist followed
+    # shortly by Undercut Check, which independently re-downloads the whole
+    # structure book today) shouldn't each pay a full live ESI fetch for
+    # identical data. Per-key lock (own dict, not one shared lock), same
+    # "two callers racing on a cold cache should serialize on *that key*
+    # only, not block every other key too" reasoning goonmetrics_client.py's
+    # current_prices already uses - a single shared lock would make an
+    # in-flight Jita region fetch block a concurrent, unrelated structure
+    # fetch. 30s (not current_prices' 60s) - an order book moves faster than
+    # a market-wide price snapshot; still comfortably eliminates the
+    # back-to-back-refresh case this issue is about without serving stale
+    # numbers into an actual buy/sell decision. Raw ESI response data only
+    # (OrderStats/order dicts) - nothing tenant-specific (a config value, a
+    # computed number) ever goes into these caches, so sharing them across
+    # tenants can't reintroduce issue #54's cross-tenant leak class.
+    _ORDER_BOOK_CACHE_TTL = 30  # seconds
+    _region_order_stats_cache: dict[tuple[int, int], "OrderStats"] = {}
+    _region_order_stats_cache_at: dict[tuple[int, int], float] = {}
+    _region_order_stats_locks: dict[tuple[int, int], threading.Lock] = {}
+    _structure_book_cache: dict[int, list[dict]] = {}
+    _structure_book_cache_at: dict[int, float] = {}
+    _structure_book_locks: dict[int, threading.Lock] = {}
+    _order_book_locks_guard = threading.Lock()  # protects creation of a new per-key lock only, never held during a fetch
+
     def __init__(self, cfg: TradingConfig = TRADING_CONFIG, tokens: Optional[TokenManager] = None):
         self.cfg = cfg
         self.tokens = tokens or TokenManager()
@@ -220,6 +248,24 @@ class ESIClient:
             cls._adjusted_prices_cache_at = 0.0
             cls._cost_indices_cache = None
             cls._cost_indices_cache_at = 0.0
+
+    @classmethod
+    def clear_order_book_caches(cls) -> None:
+        """Forces the next region_order_stats/structure_orders_raw call (for
+        every region_id/structure_id - these caches are class-wide) to
+        re-fetch - exists for tests, same reason clear_price_caches does."""
+        with cls._order_book_locks_guard:
+            cls._region_order_stats_cache.clear()
+            cls._region_order_stats_cache_at.clear()
+            cls._structure_book_cache.clear()
+            cls._structure_book_cache_at.clear()
+
+    @classmethod
+    def _lock_for_key(cls, locks: dict, key) -> threading.Lock:
+        with cls._order_book_locks_guard:
+            if key not in locks:
+                locks[key] = threading.Lock()
+            return locks[key]
 
     # ------------------------------------------------------------- low level
     @classmethod
@@ -437,10 +483,24 @@ class ESIClient:
         filter applied - a single type_id in a normal region is very unlikely
         to exceed one page in practice, but nothing in the spec guarantees
         that, and every other pagination-capable endpoint in this file
-        already gets the same treatment."""
-        orders = self._get_all_pages(f"/markets/{region_id}/orders/",
-                                      params={"datasource": "tranquility", "type_id": type_id, "order_type": "all"})
-        return _summarize_orders(orders)
+        already gets the same treatment.
+
+        Cached class-wide for _ORDER_BOOK_CACHE_TTL seconds, keyed by
+        (region_id, type_id) - see that constant's own comment (GitHub issue
+        #103)."""
+        key = (region_id, type_id)
+        with self._lock_for_key(self._region_order_stats_locks, key):
+            cached_at = self._region_order_stats_cache_at.get(key, 0.0)
+            if key in self._region_order_stats_cache and (time.time() - cached_at) < self._ORDER_BOOK_CACHE_TTL:
+                return self._region_order_stats_cache[key]
+
+            orders = self._get_all_pages(
+                f"/markets/{region_id}/orders/",
+                params={"datasource": "tranquility", "type_id": type_id, "order_type": "all"})
+            stats = _summarize_orders(orders)
+            self._region_order_stats_cache[key] = stats
+            self._region_order_stats_cache_at[key] = time.time()
+            return stats
 
     def region_order_stats_bulk(self, region_id: int, type_ids: list[int], max_workers: int = 10) -> dict[int, OrderStats]:
         """Same as region_order_stats, but for many type_ids concurrently. ESI
@@ -495,9 +555,24 @@ class ESIClient:
         type_id) - shared raw fetch behind structure_order_stats_bulk and
         own_orders.check_undercut, both of which need the whole book anyway
         (ESI's /markets/structures/{id}/ endpoint has no type_id filter) and
-        would otherwise each re-download it separately."""
-        return self._get_all_pages(f"/markets/structures/{structure_id}/",
-                                    params={"datasource": "tranquility"}, auth_role=auth_role)
+        would otherwise each re-download it separately.
+
+        Cached class-wide for _ORDER_BOOK_CACHE_TTL seconds, keyed by
+        structure_id (GitHub issue #103) - the book itself is the same real
+        data regardless of which authorized character's token fetched it, so
+        this also covers structure_order_stats_bulk and check_undercut
+        calling back-to-back (or two tenants sharing the same structure_id)
+        without each paying a full re-download."""
+        with self._lock_for_key(self._structure_book_locks, structure_id):
+            cached_at = self._structure_book_cache_at.get(structure_id, 0.0)
+            if structure_id in self._structure_book_cache and (time.time() - cached_at) < self._ORDER_BOOK_CACHE_TTL:
+                return list(self._structure_book_cache[structure_id])
+
+            orders = self._get_all_pages(f"/markets/structures/{structure_id}/",
+                                          params={"datasource": "tranquility"}, auth_role=auth_role)
+            self._structure_book_cache[structure_id] = orders
+            self._structure_book_cache_at[structure_id] = time.time()
+            return list(orders)
 
     def structure_order_stats_bulk(self, structure_id: int, type_ids: list[int],
                                     auth_role: str) -> dict[int, OrderStats]:
