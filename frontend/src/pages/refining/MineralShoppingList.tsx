@@ -84,6 +84,10 @@ export default function MineralShoppingList() {
     { header: 'Quantity', accessorKey: 'quantity', size: 130, cell: (i) => qty(i.getValue()) },
     { header: 'Landed / Unit', accessorKey: 'landed_cost_per_unit', size: 130, cell: (i) => isk(i.getValue()) },
     { header: 'Total Cost', accessorKey: 'total_cost', size: 140, cell: (i) => isk(i.getValue()) },
+    {
+      header: 'Source', accessorKey: 'source', size: 100,
+      cell: (i) => <Badge size="sm" variant="light" color={i.getValue() === 'Home' ? 'accent' : 'gray'}>{i.getValue() ?? '–'}</Badge>,
+    },
   ], [])
 
   const coverageColumns = useMemo<ColumnDef<MineralCoverage, any>[]>(() => [
