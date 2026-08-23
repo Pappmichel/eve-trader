@@ -72,12 +72,17 @@ export default function Landing() {
 
   return (
     <Container size="md" py="xl">
-      <AccessGateStatus />
       <Text tt="uppercase" size="xs" c="dimmed" fw={600} lts={2}>
         C-J Import & Manufacturing
       </Text>
       <Title order={1} mb="lg">EVE Trader</Title>
       <Text c="dimmed" mb="xl">Margins, buy/build decisions and live market data in one place.</Text>
+
+      {/* GitHub issue #104: the login prompt used to render before any of the
+          explanation above, reading as a login wall rather than a real
+          landing page for a first-time visitor - now it comes after, once
+          they know what they'd be logging into. */}
+      <AccessGateStatus />
 
       <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }} spacing="md">
         <ToolCard tools={tools} toolKey="trading" to="/trading" title="Trading"
