@@ -42,15 +42,15 @@ export default function MineralShoppingList() {
   // list. Fully replaces the on-screen rows (not merged) - the user still
   // has to click Save List/Optimize afterward, nothing is persisted or
   // solved automatically by this pull itself.
-  const loadFromProduction = useAction('Aus Production laden', async () => {
+  const loadFromProduction = useAction('Load from Production', async () => {
     const plan = await productionApi.plan()
     if (!plan) {
-      throw new Error("Production hat noch keinen Plan - zuerst in Production auf 'Refresh Production' klicken.")
+      throw new Error("Production doesn't have a plan yet - click 'Refresh Production' in Production first.")
     }
     const mineralIds = new Set((minerals ?? []).map((m) => m.type_id))
     const shortfall = plan.buy_list.filter((e) => mineralIds.has(e.type_id) && e.quantity > 0)
     if (shortfall.length === 0) {
-      throw new Error("Production's Buy List enthält aktuell keine Mineralien.")
+      throw new Error("Production's Buy List doesn't currently contain any minerals.")
     }
     return shortfall.map((e) => ({ type_id: e.type_id, name: e.type_name, required_qty: e.quantity }))
   })
@@ -119,11 +119,11 @@ export default function MineralShoppingList() {
           disabled={!newMineral || !newQty}>
           Add
         </Button>
-        <Tooltip label="Ersetzt die aktuelle Liste durch Production's Buy-List-Fehlmenge (nur Mineralien)">
+        <Tooltip label="Replaces the current list with Production's Buy List shortfall (minerals only)">
           <Button variant="subtle" leftSection={<IconDownload size={14} />}
             loading={loadFromProduction.isPending}
             onClick={() => loadFromProduction.mutate(undefined, { onSuccess: (r) => setRows(r) })}>
-            Aus Production laden
+            Load from Production
           </Button>
         </Tooltip>
       </Group>

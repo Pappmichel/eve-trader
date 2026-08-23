@@ -185,7 +185,7 @@ export default function FittingDetail() {
                           <Table.Tr key={i}>
                             <Table.Td>{d.type_name}</Table.Td>
                             <Table.Td>{d.kind}</Table.Td>
-                            <Table.Td>{d.expected_qty} soll / {d.actual_qty} ist</Table.Td>
+                            <Table.Td>{d.expected_qty} expected / {d.actual_qty} actual</Table.Td>
                             <Table.Td><Badge size="xs" color={SEVERITY_COLOR[d.severity] ?? 'dimmed'} variant="light">{d.severity}</Badge></Table.Td>
                           </Table.Tr>
                         ))}
