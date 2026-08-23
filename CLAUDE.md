@@ -370,25 +370,37 @@ surfaced exactly this case. Don't cap, filter, or "fix" the multiplication
 itself without asking first.
 
 **The volume figure must be a real turnover estimate, never order-book
-depth** - GitHub issue #51 (2026-08-21, real bug, not just a labeling
-issue): Trading's Shortlist "Profit / Day" used to be `profit_per_unit x
-sell_volume`, where `sell_volume` (`esi_client._summarize_orders`) is the
-sum of `volume_remain` across every currently open sell order at the
-structure - i.e. "how much is listed for sale right now," a live
-order-book-depth snapshot, not actual daily traded volume. A single seller
-parking a large batch of a never-actually-sold item produced a wildly
-inflated "Profit / Day" purely from that listed quantity. Fixed by switching
-to `ShortlistRow.avg_daily_sold` - real average daily *sold* quantity,
-computed by `trade_reconciliation.average_daily_sold_by_type` from the last
-Reconcile Trades run's matched sales (`realized_trades.matched_qty`,
-summed per type_id and divided by `cfg.lookback_days`) - `None` (shown as
-"–", excluded from Top Imports) until a real sale has actually been matched
-for that item, rather than estimated from something else. The `sell_volume`
-field itself is unchanged and still legitimately shown as "Listed Qty" (own
-column) - it's just no longer used for the Profit/Day multiplication.
-Production's `potential_daily_profit` was never affected by this bug - it
-already used real Goonmetrics `movement` (units/day) history
-(`production/engine.py`'s `daily_movement`), not order-book depth.
+depth, and never scoped to just one trader's own sales** - two real bugs,
+not just a labeling issue:
+- GitHub issue #51 (2026-08-21): Trading's Shortlist "Profit / Day" used to
+  be `profit_per_unit x sell_volume`, where `sell_volume`
+  (`esi_client._summarize_orders`) is the sum of `volume_remain` across
+  every currently open sell order at the structure - i.e. "how much is
+  listed for sale right now," a live order-book-depth snapshot, not actual
+  daily traded volume. A single seller parking a large batch of a
+  never-actually-sold item produced a wildly inflated "Profit / Day" purely
+  from that listed quantity. #51 first fixed this by switching to the
+  trader's own realized-sales average (`trade_reconciliation.
+  average_daily_sold_by_type`, from the last Reconcile Trades run's
+  matched sales) - a real fix for the order-book-depth bug, but it
+  overcorrected: it left "Profit / Day" empty for every not-yet-sold-by-me
+  candidate, which is most of what a shortlist exists to evaluate.
+- GitHub issue #100 (2026-08-23): replaced that with `ShortlistRow.
+  avg_daily_volume` - real average daily *market-wide* traded quantity,
+  from Goonmetrics region history for `cfg.reference_region_id` (the real
+  region C-J's own solar system sits in, confirmed live via
+  `sde_solar_systems` - there's no ESI/Goonmetrics history endpoint for a
+  player structure's own market at all, so region-wide is the closest real
+  signal available), computed by `shortlist.average_market_daily_volume`
+  (averages `HistoryPoint.movement` over Goonmetrics' own ~28-day return
+  window) - `None` (shown as "–", excluded from Top Imports) until
+  Goonmetrics has history for that item in that region, rather than
+  estimated from something else. Exactly mirrors Production's own
+  `potential_daily_profit`/`daily_movement` (`production/engine.py`),
+  which already used this same `reference_region_id` + `price_history_
+  chunked` pattern and was never affected by either bug. The `sell_volume`
+  field itself is unchanged and still legitimately shown as "Listed Qty"
+  (own column) - it's just never used for the Profit/Day multiplication.
 
 ## Real SDE data drives classification, not heuristics
 
