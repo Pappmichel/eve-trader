@@ -15,12 +15,13 @@ TokenManager persistence, since a gate login is never stored there.
 """
 from __future__ import annotations
 
+import secrets
 import time
 import urllib.parse
 from typing import Optional
 
 import requests
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Cookie, HTTPException, Response
 from fastapi.responses import RedirectResponse
 
 from ... import storage
@@ -37,6 +38,24 @@ router = APIRouter()
 # assumption as the old approach's temporary HTTP server).
 _pending: dict[str, dict] = {}
 _PENDING_TTL = 600
+
+# Login-CSRF / session-fixation fix (found in a security audit 2026-08-23,
+# confirmed real gap): `state` above is only ever used as a server-side dict
+# key, never bound to the browser that actually initiated the login - PKCE's
+# `verifier` stops someone from stealing a *code* and completing the
+# exchange themselves, but it does nothing to stop the reverse: an attacker
+# completes their OWN login (their own real EVE character, so `tm._verify`
+# below has nothing to object to), then hands the resulting code+state pair
+# to a victim's browser (e.g. via a crafted link) to load /callback with.
+# The victim would silently end up logged into the *attacker's* tenant - and
+# if they then add their own trading/production character while unknowingly
+# inside it, that character's live ESI token lands in the attacker's tenant.
+# This cookie is the standard fix: a random nonce set on the *initiating*
+# browser at /start, echoed back and checked at /callback - an attacker's
+# own browser can complete their own login, but can't forge this cookie
+# inside a victim's browser, so a handed-off code+state pair now fails the
+# nonce check instead of silently authenticating the victim as the attacker.
+_OAUTH_NONCE_COOKIE = "eve_trader_oauth_nonce"
 
 
 def _prune_pending() -> None:
@@ -109,7 +128,7 @@ def acknowledge_consent(role_prefix: str):
 
 
 @router.get("/{role_prefix}/start")
-def start_login(role_prefix: str):
+def start_login(role_prefix: str, response: Response):
     """role_prefix: "buyer" | "seller" | "producer" | ... - every one of
     these is multi-character (GitHub issue #46: buyer/seller used to be a
     single fixed role each, now they follow the same "producer" scheme) -
@@ -122,6 +141,7 @@ def start_login(role_prefix: str):
     verifier, challenge = _make_pkce_pair()
     state = urllib.parse.quote(f"{role_prefix}-{time.time_ns()}")
     scopes = _scopes_for(role_prefix)
+    browser_nonce = secrets.token_urlsafe(32)
     _pending[state] = {
         "verifier": verifier, "role_prefix": role_prefix, "scopes": scopes, "created_at": time.time(),
         # Stashed for /callback (an AccessGateMiddleware-exempt path with no
@@ -132,7 +152,16 @@ def start_login(role_prefix: str):
         # (that one *is* exempt, by design - harmless, since the gate branch
         # of /callback resolves its own tenant fresh via the registry).
         "tenant_id": storage.get_current_tenant(),
+        "browser_nonce": browser_nonce,
     }
+    # See _OAUTH_NONCE_COOKIE's own comment above for why this exists - same
+    # secure-flag reasoning as access_gate.set_session_cookie (a bare-IP,
+    # no-domain-yet deployment is still plain HTTP, so Secure=True there
+    # would make the browser silently drop the cookie).
+    response.set_cookie(
+        _OAUTH_NONCE_COOKIE, browser_nonce, max_age=_PENDING_TTL, httponly=True,
+        secure=OAUTH_CONFIG.frontend_origin.startswith("https://"), samesite="lax", path="/api/auth",
+    )
     params = {
         "response_type": "code",
         "redirect_uri": OAUTH_CONFIG.redirect_uri,
@@ -146,16 +175,30 @@ def start_login(role_prefix: str):
 
 
 @router.get("/callback")
-def callback(code: str | None = None, state: str | None = None, error_description: str | None = None):
+def callback(code: str | None = None, state: str | None = None, error_description: str | None = None,
+             oauth_nonce: str | None = Cookie(default=None, alias=_OAUTH_NONCE_COOKIE)):
     """This route's full URL must be set as OAUTH_CONFIG.redirect_uri
     (EVE_SSO_CALLBACK_HOST/PORT env vars) and match the EVE dev-portal app's
     registered callback URL exactly."""
     if error_description or not code or not state:
-        return RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?auth=error&message={urllib.parse.quote(error_description or 'missing code/state')}")
+        resp = RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?auth=error&message={urllib.parse.quote(error_description or 'missing code/state')}")
+        resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
+        return resp
 
     pending = _pending.pop(state, None)
     if pending is None:
-        return RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?auth=error&message=state_expired_or_unknown")
+        resp = RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?auth=error&message=state_expired_or_unknown")
+        resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
+        return resp
+
+    # See _OAUTH_NONCE_COOKIE's own comment above - `oauth_nonce` must match
+    # what /start stashed for this exact `state`, proving this /callback
+    # request is arriving in the same browser that initiated the login,
+    # not one an attacker handed a completed code+state pair to.
+    if not oauth_nonce or not secrets.compare_digest(oauth_nonce, pending.get("browser_nonce") or ""):
+        resp = RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?auth=error&message=nonce_mismatch")
+        resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
+        return resp
 
     tm = TokenManager(OAUTH_CONFIG)
     try:
@@ -171,7 +214,9 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
         # defeating the whole point of this route (always redirect back to
         # the frontend, even on failure) with a raw FastAPI 500 in the
         # middle of the SSO redirect instead.
-        return RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?auth=error&message={urllib.parse.quote(str(e))}")
+        resp = RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?auth=error&message={urllib.parse.quote(str(e))}")
+        resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
+        return resp
 
     role_prefix = pending["role_prefix"]
 
@@ -185,7 +230,9 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
         # here anymore.
         tenant_id = storage.resolve_tenant_id(character_id)
         if tenant_id is None:
-            return RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?gate=denied")
+            resp = RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?gate=denied")
+            resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
+            return resp
         # Refresh the cached character_name (tenant_registry_entries' own
         # column, see docs/admin_schema.sql) with the name EVE SSO just
         # verified - keeps the Admin UI's user list current if a character
@@ -201,6 +248,7 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
             storage.record_role_consent("gate")
         resp = RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?gate=success&character={urllib.parse.quote(character_name)}")
         set_session_cookie(resp, character_id, character_name, tenant_id)
+        resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
         return resp
 
     # GitHub issue #46: buyer/seller used to be stored under a single fixed
@@ -220,8 +268,10 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
         tm._tokens[final_role] = record
         tm._save_record(final_role)
 
-    return RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?auth=success&role={urllib.parse.quote(final_role)}"
+    resp = RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?auth=success&role={urllib.parse.quote(final_role)}"
                              f"&character={urllib.parse.quote(character_name)}")
+    resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
+    return resp
 
 
 # No more /status route: buyer/seller stopped being a single fixed role each
