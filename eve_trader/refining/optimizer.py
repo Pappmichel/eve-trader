@@ -186,6 +186,7 @@ def optimize_shopping_list(requirements: list[MineralRequirement], ore_options: 
             type_id=mineral_id, name=names[mineral_id], quantity=quantity,
             landed_cost_per_unit=direct_price[mineral_id],
             total_cost=quantity * direct_price[mineral_id],
+            source=mineral_options[mineral_id].source if mineral_id in mineral_options else None,
         ))
     direct_purchases.sort(key=lambda p: -p.total_cost)
 

@@ -15,6 +15,9 @@ from ..actions import ActionError
 from ..auth import TokenManager
 from ..config import OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, TradingConfig, save_tenant_config_overrides
 from ..esi_client import ESIClient, ESIError
+from ..goonmetrics_client import GoonmetricsClient
+from ..production.config import PRODUCTION_CONFIG, ProductionConfig
+from ..production.pricing import home_prices
 from .candidate_discovery import build_ore_candidate_universe
 from .config import REFINING_CONFIG, RefiningConfig, validate_refining_overrides
 from .engine import apply_reprocessing_yield, ore_ice_yield
@@ -258,6 +261,7 @@ def _ore_option(candidate, jita_stats, refining_cfg: RefiningConfig,
 def do_optimize_mineral_shopping_list(requirements: Optional[list[dict]] = None,
                                        trading_cfg: TradingConfig = TRADING_CONFIG,
                                        refining_cfg: RefiningConfig = REFINING_CONFIG,
+                                       production_cfg: ProductionConfig = PRODUCTION_CONFIG,
                                        oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
     """GitHub issue #93: solves "cheapest way to acquire these minerals" across
     every compressed ore/ice type at once (see refining/optimizer.py for the LP
@@ -265,14 +269,24 @@ def do_optimize_mineral_shopping_list(requirements: Optional[list[dict]] = None,
     ad-hoc list without persisting it.
 
     Unlike do_refresh_ore_shortlist/do_quote_reprocessing this needs NO logged-in
-    character: every price it reads is a *buy* price from Jita's public
-    regional order book (both the ore and the direct-mineral alternative are
-    bought there), never C-J's authenticated structure order book - nothing is
-    sold in this workflow, the minerals are consumed by Production. The ore
-    universe is the full SDE-derived one (build_ore_candidate_universe), not
-    the Ore Shortlist's active rows: the shortlist is a *profit-tracking*
-    selection for the import-and-sell business, and excluding an ore from it
-    shouldn't quietly make a build list more expensive."""
+    character: every price it reads is either a *buy* price from Jita's public
+    regional order book, or (GitHub issue #102) an unauthenticated Goonmetrics
+    current-price quote for C-J's own home market - never C-J's authenticated
+    structure order book - nothing is sold in this workflow, the minerals are
+    consumed by Production. The ore universe is the full SDE-derived one
+    (build_ore_candidate_universe), not the Ore Shortlist's active rows: the
+    shortlist is a *profit-tracking* selection for the import-and-sell
+    business, and excluding an ore from it shouldn't quietly make a build
+    list more expensive.
+
+    The ore side always sources from Jita only (ore is imported and refined,
+    never bought at home - same as before #102). Only the *direct-mineral*
+    alternative (MineralOption.landed_cost_per_unit) now compares Jita-landed
+    against C-J's home-market price (GoonmetricsClient.current_prices(
+    production_cfg.home_market), the same unauthenticated source Production's
+    own home-market quotes already use) and picks whichever is cheaper - a
+    mineral already sitting at C-J from other players' reprocessing shouldn't
+    be recommended for import just because this function never looked."""
     entries = requirements if requirements is not None else do_load_mineral_requirements()
     wanted: list[MineralRequirement] = []
     for entry in entries:
@@ -304,14 +318,38 @@ def do_optimize_mineral_shopping_list(requirements: Optional[list[dict]] = None,
 
     ore_options = [o for o in (_ore_option(c, stats_by_id.get(c.type_id), refining_cfg, trading_cfg)
                                for c in candidates) if o is not None]
+
+    # Best-effort - a Goonmetrics outage shouldn't break the whole shopping
+    # list (Jita-only pricing, the pre-#102 behavior, is still a valid
+    # fallback), unlike the ESI order-book fetch above which the function's
+    # own ore pricing genuinely can't proceed without.
+    home_quotes = {}
+    if production_cfg.home_market:
+        try:
+            home_quotes = {p.type_id: p for p in GoonmetricsClient(trading_cfg).current_prices(production_cfg.home_market)}
+        except requests.RequestException:
+            log.warning("Goonmetrics home-market fetch failed - falling back to Jita-only mineral pricing.")
+
     mineral_options = {}
     for req in wanted:
         sde_row = storage.get_sde_type(req.type_id)
         volume = sde_row[3] if sde_row and sde_row[3] else 0.0
         stats = stats_by_id.get(req.type_id)
+        jita_cost = landed_cost_per_unit(stats.sell_percentile if stats else None, volume, trading_cfg)
+
+        home_quote = home_quotes.get(req.type_id)
+        home_cost = (home_quote.sell * (1 + trading_cfg.jita_buy_broker_fee)
+                     if home_quote and home_quote.sell > 0 else None)
+
+        if home_cost is not None and (jita_cost is None or home_cost < jita_cost):
+            cost, source = home_cost, "Home"
+        elif jita_cost is not None:
+            cost, source = jita_cost, "Jita"
+        else:
+            cost, source = None, None
+
         mineral_options[req.type_id] = MineralOption(
-            type_id=req.type_id, name=req.name,
-            landed_cost_per_unit=landed_cost_per_unit(stats.sell_percentile if stats else None, volume, trading_cfg),
+            type_id=req.type_id, name=req.name, landed_cost_per_unit=cost, source=source,
         )
 
     try:
