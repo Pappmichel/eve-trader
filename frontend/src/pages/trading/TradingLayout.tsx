@@ -30,7 +30,7 @@ const TABS = [
 // ProductionLayout.tsx already uses for producer characters.
 function RoleCharacters({ role, label }: { role: 'buyer' | 'seller'; label: string }) {
   const fetchCharacters = role === 'buyer' ? tradingApi.buyerCharacters : tradingApi.sellerCharacters
-  const { characters, addCharacter, removeCharacter, isRemoving } = useRoleCharacters(
+  const { characters, addCharacter, startLogin, removeCharacter, isRemoving } = useRoleCharacters(
     ['trading', 'characters', role], fetchCharacters, tradingApi.removeCharacter, role,
   )
 
@@ -51,7 +51,7 @@ function RoleCharacters({ role, label }: { role: 'buyer' | 'seller'; label: stri
           </Group>
         ))}
       </Stack>
-      <Button size="xs" variant="default" onClick={() => addCharacter.mutate()} loading={addCharacter.isPending}>
+      <Button size="xs" variant="default" onClick={() => startLogin()} loading={addCharacter.isPending}>
         Add {label}
       </Button>
     </div>

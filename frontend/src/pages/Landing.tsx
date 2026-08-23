@@ -5,6 +5,15 @@ import { useQuery } from '@tanstack/react-query'
 
 import { authApi, gateApi } from '../api/client'
 import { useAction } from '../hooks/useAction'
+import { openRoleAccessConfirmModal } from '../roleAccessDescriptions'
+
+// Browser-local, not the server-side per-tenant tracking every other role
+// uses (see docs/role_consent_schema.sql) - before a first gate login
+// there's no tenant yet to attach a server-side record to at all (that's
+// what this very login resolves). Purely a friction-reducer for repeat
+// explicit logins from the same browser; gate reads no game data at all,
+// so there's no real access being hidden if this is ever empty/cleared.
+const GATE_CONSENT_KEY = 'eve-trader:gate-consent-acknowledged'
 
 // Only rendered once gateStatus.enabled is true (see AccessConfig.
 // access_gate_enabled - off by default) - a local/dev install with the gate
@@ -21,6 +30,29 @@ function AccessGateStatus() {
     window.location.href = url
   })
 
+  const startLogin = () => {
+    let alreadyAcknowledged = false
+    try {
+      alreadyAcknowledged = localStorage.getItem(GATE_CONSENT_KEY) === '1'
+    } catch {
+      // Storage unavailable (private browsing, blocked cookies, ...) - fall
+      // through to showing the confirmation again rather than crashing.
+    }
+    if (alreadyAcknowledged) {
+      login.mutate()
+      return
+    }
+    openRoleAccessConfirmModal('gate', () => {
+      try {
+        localStorage.setItem(GATE_CONSENT_KEY, '1')
+      } catch {
+        // Best-effort - a failed write just means this shows again next
+        // time, not a reason to block the login itself.
+      }
+      login.mutate()
+    })
+  }
+
   if (!gateStatus?.enabled) return null
 
   return (
@@ -33,7 +65,7 @@ function AccessGateStatus() {
           </Button>
         </>
       ) : (
-        <Button size="xs" onClick={() => login.mutate()} loading={login.isPending}>
+        <Button size="xs" onClick={startLogin} loading={login.isPending}>
           Login with EVE Online
         </Button>
       )}

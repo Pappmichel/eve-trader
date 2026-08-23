@@ -64,9 +64,10 @@ _GATE_EXEMPT_PATHS = {
 # Path prefix -> the tool_key a request under it requires (see access_gate.
 # tools_for). Only enforced while the gate is enabled - see dispatch() below;
 # a path with no matching prefix (e.g. /api/gate/*) is never tool-gated, only
-# session-gated. /api/auth/{role_prefix}/start is handled separately below
-# (GitHub issue #57) - it doesn't share one fixed prefix per tool the way
-# these do, since the tool depends on the path's own role_prefix segment.
+# session-gated. /api/auth/{role_prefix}/(start|consent) is handled
+# separately below (GitHub issue #57) - it doesn't share one fixed prefix
+# per tool the way these do, since the tool depends on the path's own
+# role_prefix segment.
 _TOOL_PATH_PREFIXES = {
     "/api/trading/": "trading",
     "/api/production/": "production",
@@ -77,7 +78,13 @@ _TOOL_PATH_PREFIXES = {
 }
 
 _AUTH_START_PREFIX = "/api/auth/"
-_AUTH_START_SUFFIX = "/start"
+# Every /api/auth/{role_prefix}/<suffix> route that reveals or acts on a
+# specific tool's login role needs the same tool-grant check as /start -
+# /consent (GET status, POST acknowledge - the role-login data-access
+# confirmation, see auth.py's own get_consent_status/acknowledge_consent)
+# was added after #57's own fix and would otherwise silently fall through
+# this function to None (ungated) the exact same way /start used to.
+_AUTH_GATED_SUFFIXES = ("/start", "/consent")
 
 
 def _required_tool_for_path(path: str) -> Optional[str]:
@@ -95,9 +102,11 @@ def _required_tool_for_path(path: str) -> Optional[str]:
     # before this function is ever reached for it) and an unrecognized
     # role_prefix also maps to None here (the route handler itself rejects
     # it with a 400 - see auth.start_login), never silently granted access.
-    if path.startswith(_AUTH_START_PREFIX) and path.endswith(_AUTH_START_SUFFIX):
-        role_prefix = path[len(_AUTH_START_PREFIX):-len(_AUTH_START_SUFFIX)]
-        return auth.ROLE_PREFIX_TOOL.get(role_prefix)
+    if path.startswith(_AUTH_START_PREFIX):
+        for suffix in _AUTH_GATED_SUFFIXES:
+            if path.endswith(suffix):
+                role_prefix = path[len(_AUTH_START_PREFIX):-len(suffix)]
+                return auth.ROLE_PREFIX_TOOL.get(role_prefix)
     return None
 
 

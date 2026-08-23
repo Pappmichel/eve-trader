@@ -48,7 +48,7 @@ export default function ProductionLayout() {
   // freshness/counts info below stays - still legitimately informs this
   // tenant's own Production sidebar, just no longer paired with a button
   // that would refresh it for every tenant at once.
-  const { characters, addCharacter, removeCharacter, isRemoving } = useRoleCharacters(
+  const { characters, addCharacter, startLogin, removeCharacter, isRemoving } = useRoleCharacters(
     ['production', 'characters'], productionApi.producerCharacters, productionApi.removeCharacter, 'producer',
   )
   const syncEsi = useAction('Sync ESI Data', productionApi.syncEsi, [
@@ -135,7 +135,7 @@ export default function ProductionLayout() {
                 </Group>
               ))}
               <Stack gap="xs" mt="xs">
-                <Button size="xs" variant="default" onClick={() => addCharacter.mutate()} loading={addCharacter.isPending}>
+                <Button size="xs" variant="default" onClick={() => startLogin()} loading={addCharacter.isPending}>
                   Add Character
                 </Button>
                 <Button size="xs" variant="default" disabled={characters.length === 0}
