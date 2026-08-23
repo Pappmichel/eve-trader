@@ -344,6 +344,14 @@ for that part.
 
 ```bash
 cd eve-trader
+./deploy/deploy.sh
+```
+Bundles the sequence below into one idempotent script (git pull, every
+schema file, backend deps, frontend build, restart, then a verification
+check) - safe to re-run even when a given update didn't touch the schema or
+the frontend. Equivalent to running by hand:
+```bash
+cd eve-trader
 git pull                      # or re-rsync
 sudo -u postgres psql -d eve_trader -f docs/phase1_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/phase2_schema.sql
@@ -352,6 +360,7 @@ sudo -u postgres psql -d eve_trader -f docs/admin_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/doctrine_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/observability_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/refining_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/role_consent_schema.sql
 .venv/bin/pip install -e .
 cd frontend && npm ci && npm run build && cd ..
 sudo systemctl restart eve-trader
