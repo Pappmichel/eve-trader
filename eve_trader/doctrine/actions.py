@@ -110,8 +110,8 @@ def do_delete_doctrine(doctrine_id: str) -> dict:
 
 # -------------------------------------------------------------------- fittings
 def do_parse_fitting(raw_eft: str) -> dict:
-    """Preview only - never persists (Phase 2 F/Phase 3 A.7's "einfügen ->
-    Vorschau prüfen -> speichern" flow)."""
+    """Preview only - never persists (Phase 2 F/Phase 3 A.7's "paste ->
+    review preview -> save" flow)."""
     try:
         parsed = engine.parse_fitting_text(raw_eft)
     except FittingParseError as e:
