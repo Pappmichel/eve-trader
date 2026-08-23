@@ -65,9 +65,9 @@ ISSUE_KIND_UNKNOWN_SECTION = "unknown_section"
 ISSUE_KIND_MALFORMED = "malformed"
 ISSUE_KINDS = (ISSUE_KIND_UNRESOLVED_NAME, ISSUE_KIND_AMBIGUOUS_SPLIT, ISSUE_KIND_UNKNOWN_SECTION, ISSUE_KIND_MALFORMED)
 
-# Levenshtein-suggestion cutoff (Phase 3 spec A.7: "kein Vorschlag, wenn
-# Distanz > 1/3 der Namenslänge") - a suggestion further than this from the
-# unresolved name is more likely to confuse than help.
+# Levenshtein-suggestion cutoff (Phase 3 spec A.7: "no suggestion if
+# distance > 1/3 of the name length") - a suggestion further than this from
+# the unresolved name is more likely to confuse than help.
 LEVENSHTEIN_SUGGESTION_MAX_RATIO = 1 / 3
 
 # ---------------------------------------------------------------- deviations

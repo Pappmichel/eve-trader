@@ -199,8 +199,8 @@ def classify_activity(type_id: int) -> tuple[str, Optional[tuple[int, int, float
     Non-invented items get a second check against the SDE's real metaGroupID
     (storage.get_sde_type, populated from Fuzzwork's invMetaTypes.csv - see
     production/sde.py): "Faction" (confirmed with the user, 2026-07-16 -
-    "Faction items sind de facto T1 items, aber füg für diese eine
-    zusätzliche Kategorie hinzu"), extended 2026-07-17 to "Storyline" and
+    "Faction items are de facto T1 items, but add a separate category for
+    them"), extended 2026-07-17 to "Storyline" and
     "Officer" the same way (both confirmed to have real, blueprint-backed,
     market-priceable products in this app's own cached SDE - not just SDE
     rows that happen to exist but are never reachable here) and "Deadspace"
@@ -1211,7 +1211,7 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 
 
 # Job categories eligible for a slot-split recommendation (user request
-# 2026-08-15: "nur für components und reactions") - Equipment/Ships/Drones
+# 2026-08-15: "only for components and reactions") - Equipment/Ships/Drones
 # aren't included even though they're also Manufacturing-activity jobs.
 _SLOT_RECOMMENDATION_CATEGORIES = frozenset({"Reactions", "Advanced Components", "Capital Components"})
 

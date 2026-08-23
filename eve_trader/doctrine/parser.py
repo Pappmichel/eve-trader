@@ -57,7 +57,7 @@ SlotResolver = Callable[[int], Optional[str]]
 
 
 class FittingParseError(Exception):
-    """Hard parse failure (Phase 3 A.7's "harte Fehler" table) - header
+    """Hard parse failure (Phase 3 A.7's "hard errors" table) - header
     missing/invalid, or the hull name doesn't resolve to a real ship/
     structure. Caller (actions.do_add_fitting/do_parse_fitting) converts
     this to ActionError; nothing gets persisted."""
@@ -182,34 +182,34 @@ def parse_fitting(raw_text: str, resolve_name: NameResolver, resolve_slot: SlotR
             break
     if header_idx is None:
         raise FittingParseError(
-            "Kein gültiger EFT-Header - erste Zeile muss `[Schiffsname, Fittingname]` sein."
+            "No valid EFT header - first line must be `[Ship Name, Fitting Name]`."
         )
     header_line = lines[header_idx]
     m = _HEADER_RE.match(header_line)
     if not m:
         raise FittingParseError(
-            "Kein gültiger EFT-Header - erste Zeile muss `[Schiffsname, Fittingname]` sein."
+            "No valid EFT header - first line must be `[Ship Name, Fitting Name]`."
         )
     inner = m.group(1)
     if "," not in inner:
         raise FittingParseError(
-            "Header ohne Komma - erwartet `[Schiffsname, Fittingname]`."
+            "Header has no comma - expected `[Ship Name, Fitting Name]`."
         )
     comma_idx = inner.index(",")
     hull_name = inner[:comma_idx].strip()
     fit_name = inner[comma_idx + 1:].strip()
     if not hull_name:
-        raise FittingParseError("Leerer Schiffsname im Header.")
+        raise FittingParseError("Empty ship name in header.")
 
     hull = resolve_name(hull_name)
     if hull is None:
         suggestion = _suggest(hull_name, hull_name_candidates)
-        msg = f"Schiff '{hull_name}' nicht gefunden."
+        msg = f"Ship '{hull_name}' not found."
         if suggestion:
-            msg += f" Meintest du '{suggestion}'?"
+            msg += f" Did you mean '{suggestion}'?"
         raise FittingParseError(msg)
     if hull.category_id not in VALID_HULL_CATEGORY_IDS:
-        raise FittingParseError(f"'{hull_name}' ist kein Schiff.")
+        raise FittingParseError(f"'{hull_name}' is not a ship.")
 
     body_lines = lines[header_idx + 1:]
 
@@ -270,25 +270,25 @@ def parse_fitting(raw_text: str, resolve_name: NameResolver, resolve_slot: SlotR
             remainder = remainder.strip()
             if remainder.startswith("[") and not _EMPTY_MARKER_RE.match(line):
                 issues.append(ParsedIssue(line_no, line, ISSUE_KIND_MALFORMED,
-                                           f"Nicht erkennbare Zeile: '{line}'"))
+                                           f"Unrecognized line: '{line}'"))
                 continue
             if not remainder:
                 issues.append(ParsedIssue(line_no, line, ISSUE_KIND_MALFORMED,
-                                           f"Leere Zeile nach Suffix-Erkennung: '{line}'"))
+                                           f"Empty line after suffix removal: '{line}'"))
                 continue
 
             primary, charge, issue_kind = _resolve_names(remainder, resolve_name)
             if issue_kind == ISSUE_KIND_AMBIGUOUS_SPLIT:
                 issues.append(ParsedIssue(line_no, line, ISSUE_KIND_AMBIGUOUS_SPLIT,
-                                           f"Mehrdeutige Zeile, mehrere gültige Aufteilungen: '{line}'"))
+                                           f"Ambiguous line, multiple valid splits: '{line}'"))
                 continue
             if issue_kind == ISSUE_KIND_UNRESOLVED_NAME or primary is None:
                 suggestion = _suggest(remainder, hull_name_candidates)
-                msg = f"Unbekanntes Item: '{remainder}'."
+                msg = f"Unknown item: '{remainder}'."
                 if suggestion:
-                    msg += f" Meintest du '{suggestion}'?"
+                    msg += f" Did you mean '{suggestion}'?"
                 else:
-                    msg += " Möglicherweise ein mutiertes (Abyssal-)Modul - diese können nicht validiert werden."
+                    msg += " Possibly a mutated (Abyssal) module - these can't be validated."
                 issues.append(ParsedIssue(line_no, line, ISSUE_KIND_UNRESOLVED_NAME, msg))
                 continue
 
@@ -298,26 +298,26 @@ def parse_fitting(raw_text: str, resolve_name: NameResolver, resolve_slot: SlotR
             if bare_charge_without_qty:
                 section = "charge"
                 issues.append(ParsedIssue(line_no, line, ISSUE_KIND_UNKNOWN_SECTION,
-                                           f"Nackte Ladungs-Zeile ohne Modul/Menge: '{line}'"))
+                                           f"Bare charge line without module/quantity: '{line}'"))
             elif not has_qty and charge is None and primary.category_id not in (
                     DRONE_CATEGORY_ID, FIGHTER_CATEGORY_ID, CHARGE_CATEGORY_ID) and section == "cargo" \
                     and resolve_slot(primary.type_id) is None:
                 issues.append(ParsedIssue(line_no, line, ISSUE_KIND_UNKNOWN_SECTION,
-                                           f"Unerwartetes Item ohne Slot/Menge, als Cargo behandelt: '{line}'"))
+                                           f"Unexpected item without slot/quantity, treated as cargo: '{line}'"))
             elif has_qty:
-                # A.7's "xN-Suffix außerhalb Drones/Cargo" case: only a
+                # A.7's "xN suffix outside Drones/Cargo" case: only a
                 # genuine surprise if this type otherwise *has* a real slot
                 # (a fitted-module type carrying a quantity suffix).
                 if resolve_slot(primary.type_id) is not None:
                     issues.append(ParsedIssue(line_no, line, ISSUE_KIND_UNKNOWN_SECTION,
-                                               f"Mengenangabe bei fittbarem Modul: '{line}'"))
+                                               f"Quantity suffix on a fittable module: '{line}'"))
 
             if has_markers and not has_qty and line_no in expected_section_by_line:
                 expected = expected_section_by_line[line_no]
                 if expected in ("low", "med", "high", "rig", "subsystem", "service") and expected != section \
                         and resolve_slot(primary.type_id) is not None:
                     issues.append(ParsedIssue(line_no, line, ISSUE_KIND_UNKNOWN_SECTION,
-                                               f"Erwartete Sektion '{expected}', SDE sagt '{section}': '{line}'"))
+                                               f"Expected section '{expected}', SDE says '{section}': '{line}'"))
 
             items.append(ParsedItem(line_no=line_no, slot_section=section, type_id=primary.type_id,
                                      quantity=float(qty if has_qty else 1), is_offline=is_offline))
@@ -367,7 +367,7 @@ def parse_bay_items(text: str, resolve_name: NameResolver, slot_section: str,
         resolved = resolve_name(remainder) if remainder else None
         if resolved is None:
             issues.append(ParsedIssue(line_no, raw_line, ISSUE_KIND_UNRESOLVED_NAME,
-                                       f"Unbekanntes Item: '{remainder}'."))
+                                       f"Unknown item: '{remainder}'."))
         else:
             items.append(ParsedItem(line_no=line_no, slot_section=slot_section, type_id=resolved.type_id,
                                      quantity=float(qty if has_qty else 1), is_offline=False))
