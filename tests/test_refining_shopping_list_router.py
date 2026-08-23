@@ -17,7 +17,7 @@ _PLAN = {
                         "portions": 10, "units": 1000, "volume_m3": 150.0,
                         "landed_cost_per_unit": 10.0, "total_cost": 10000.0}],
     "direct_purchases": [{"type_id": 35, "name": "Pyerite", "quantity": 100,
-                           "landed_cost_per_unit": 12.0, "total_cost": 1200.0}],
+                           "landed_cost_per_unit": 12.0, "total_cost": 1200.0, "source": "Home"}],
     "coverage": [{"type_id": 34, "name": "Tritanium", "required": 4000.0, "from_ore": 4150,
                    "from_direct": 0, "delivered": 4150, "surplus": 150.0}],
     "ore_cost": 10000.0, "direct_cost": 1200.0, "total_cost": 11200.0, "lp_cost": 10900.0,
@@ -91,6 +91,11 @@ def test_optimize_shopping_list_without_a_body_solves_the_saved_list(monkeypatch
     assert captured["requirements"] is None
     assert resp.json()["total_cost"] == 11200.0
     assert resp.json()["ore_purchases"][0]["item"] == "Compressed Veldspar"
+    # GitHub issue #111: schemas.DirectMineralPurchase used to have no
+    # `source` field, so FastAPI's response_model silently dropped it -
+    # the frontend's "Source" column then always showed "-", even though
+    # the action itself had computed "Home"/"Jita" correctly.
+    assert resp.json()["direct_purchases"][0]["source"] == "Home"
 
 
 def test_optimize_shopping_list_passes_an_ad_hoc_list_through(monkeypatch):
