@@ -49,15 +49,16 @@ class ShortlistRow:
     jita_sell: Optional[float]
     import_cost: Optional[float]
     meta_level: Optional[int] = None
-    # Real average daily *sold* quantity (matched_qty from the last
-    # Reconcile Trades run, over cfg.lookback_days - see
-    # trade_reconciliation.average_daily_sold_by_type), NOT derived from
-    # sell_volume/order-book depth. None until Reconcile Trades has actually
-    # matched a sale for this item - GitHub issue #51: this field (not
-    # sell_volume) is what "Profit / Day" is computed from, so a
-    # never-actually-sold item with a big order book no longer produces an
-    # inflated theoretical number.
-    avg_daily_sold: Optional[float] = None
+    # Real average daily *market-wide* traded quantity (Goonmetrics region
+    # history for cfg.reference_region_id, the real region C-J's own solar
+    # system sits in - see shortlist.average_market_daily_volume), NOT
+    # derived from sell_volume/order-book depth (GitHub issue #51) and NOT
+    # scoped to this trader's own realized sales (GitHub issue #100 - #51's
+    # own trade_reconciliation-based version left this empty for every
+    # not-yet-sold-by-me candidate, which is most of what a shortlist is
+    # for). None means Goonmetrics has no history for this item in that
+    # region.
+    avg_daily_volume: Optional[float] = None
 
 
 @dataclass

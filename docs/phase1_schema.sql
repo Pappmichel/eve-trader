@@ -514,11 +514,27 @@ CREATE TABLE IF NOT EXISTS shortlist_snapshot (
 );
 -- GitHub issue #51: "Profit / Day" used to be computed from sell_volume
 -- (order-book depth, "how much is listed right now") - a never-actually-sold
--- item with a large order book produced a wildly inflated number. Real
--- observed average daily sold quantity instead (see
--- trade_reconciliation.average_daily_sold_by_type) - NULL until Reconcile
--- Trades has matched a real sale for this item.
-ALTER TABLE shortlist_snapshot ADD COLUMN IF NOT EXISTS avg_daily_sold REAL;
+-- item with a large order book produced a wildly inflated number. #51 first
+-- replaced it with the trader's own realized-sales average (avg_daily_sold,
+-- trade_reconciliation.average_daily_sold_by_type) - GitHub issue #100 then
+-- found that overcorrected: it left "Profit / Day" empty for every
+-- not-yet-sold-by-me candidate, the exact rows a shortlist exists to
+-- evaluate. Renamed avg_daily_sold -> avg_daily_volume and re-sourced from
+-- Goonmetrics region history (shortlist.average_market_daily_volume) - real
+-- market-wide traded quantity in C-J's own home region, not order-book
+-- depth and not one trader's own sales. The rename is itself idempotent: a
+-- DB that already ran the old avg_daily_sold migration gets it renamed in
+-- place (its historical values carry over, not dropped/reset); a fresh DB
+-- just gets avg_daily_volume created directly.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'shortlist_snapshot' AND column_name = 'avg_daily_sold') THEN
+        ALTER TABLE shortlist_snapshot RENAME COLUMN avg_daily_sold TO avg_daily_volume;
+    END IF;
+END
+$$;
+ALTER TABLE shortlist_snapshot ADD COLUMN IF NOT EXISTS avg_daily_volume REAL;
 CREATE INDEX IF NOT EXISTS idx_shortlist_snapshot_tenant ON shortlist_snapshot (tenant_id);
 ALTER TABLE shortlist_snapshot ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON shortlist_snapshot;

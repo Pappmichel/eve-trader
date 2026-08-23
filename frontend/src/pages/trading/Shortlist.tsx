@@ -75,14 +75,15 @@ export default function Shortlist() {
     })
   }, [data, effectiveCategories, selDecisions, effectiveMeta, search, minMarginPct])
 
-  // GitHub issue #51: computed from avg_daily_sold (real observed sales,
-  // from the last Reconcile Trades run) - NOT sell_volume/order-book depth,
-  // which used to make a never-actually-sold item with a big listed
-  // quantity show a wildly inflated "Profit / Day".
+  // GitHub issue #100: computed from avg_daily_volume (real market-wide
+  // traded quantity, Goonmetrics region history for C-J's own home region)
+  // - NOT sell_volume/order-book depth (#51) and NOT this trader's own
+  // realized sales (#51's own first fix, which left this empty for every
+  // not-yet-sold-by-me candidate).
   const topImports = useMemo(() => {
     return filtered
-      .filter((r) => r.profit_per_unit !== null && r.avg_daily_sold !== null)
-      .map((r) => ({ item: r.item, maxProfitPerDay: (r.profit_per_unit ?? 0) * (r.avg_daily_sold ?? 0) }))
+      .filter((r) => r.profit_per_unit !== null && r.avg_daily_volume !== null)
+      .map((r) => ({ item: r.item, maxProfitPerDay: (r.profit_per_unit ?? 0) * (r.avg_daily_volume ?? 0) }))
       .sort((a, b) => b.maxProfitPerDay - a.maxProfitPerDay)
       .slice(0, 15)
   }, [filtered])
@@ -130,22 +131,25 @@ export default function Shortlist() {
     },
     { header: 'Profit / Unit', accessorKey: 'profit_per_unit', size: 120, cell: (i) => isk(i.getValue()) },
     {
-      // GitHub issue #51/#99: real observed average daily sold quantity
-      // (from the last Reconcile Trades run), not sell_volume/order-book
-      // depth - "–" means no real sale has been matched for this item yet.
+      // GitHub issue #100: real average daily *market-wide* traded quantity
+      // (Goonmetrics region history for C-J's own home region), not
+      // sell_volume/order-book depth and not this trader's own sales - "–"
+      // means Goonmetrics has no history for this item in that region.
       // Shown as its own column so it's visible independent of Profit/Day,
       // which just multiplies this by Profit/Unit.
-      header: 'Volume Sold (avg/day)', accessorKey: 'avg_daily_sold', size: 150,
+      header: 'Market Volume (avg/day)', accessorKey: 'avg_daily_volume', size: 150,
       cell: (i) => qty(i.getValue()),
       meta: { mobileHide: true },
     },
     {
-      // GitHub issue #51: profit_per_unit x avg_daily_sold (real observed
-      // sales from the last Reconcile Trades run), not sell_volume/
-      // order-book depth - "–" means no real sale has been matched for this
-      // item yet, not a guess derived from listed quantity.
-      header: 'Profit / Day (avg. sold)', id: 'maxProfitPerDay', size: 160,
-      accessorFn: (r) => (r.profit_per_unit !== null && r.avg_daily_sold !== null) ? r.profit_per_unit * r.avg_daily_sold : null,
+      // GitHub issue #100: profit_per_unit x avg_daily_volume (real
+      // market-wide traded quantity from Goonmetrics region history), not
+      // sell_volume/order-book depth (#51) and not this trader's own sales
+      // (#51's own first fix) - "–" means Goonmetrics has no history for
+      // this item in C-J's home region, not a guess derived from listed
+      // quantity or a scope limited to this trader alone.
+      header: 'Profit / Day (market)', id: 'maxProfitPerDay', size: 160,
+      accessorFn: (r) => (r.profit_per_unit !== null && r.avg_daily_volume !== null) ? r.profit_per_unit * r.avg_daily_volume : null,
       cell: (i) => isk(i.getValue()),
       meta: { mobileHide: true },
     },
