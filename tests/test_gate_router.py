@@ -242,11 +242,16 @@ def test_callback_gate_branch_allowed_character_sets_cookie_and_redirects_succes
     tenant_id = str(uuid.uuid4())
     storage.add_tenant_registry_entry(tenant_id, 2112625428)
     state = "test-gate-allowed"
-    auth_router._pending[state] = {"verifier": "v", "role_prefix": "gate", "scopes": [], "created_at": time.time()}
+    auth_router._pending[state] = {
+        "verifier": "v", "role_prefix": "gate", "scopes": [], "created_at": time.time(), "browser_nonce": "n",
+    }
     monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
     monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (2112625428, "Allowed Character")))
 
-    resp = client.get("/api/auth/callback", params={"code": "abc", "state": state}, follow_redirects=False)
+    resp = client.get(
+        "/api/auth/callback", params={"code": "abc", "state": state},
+        cookies={auth_router._OAUTH_NONCE_COOKIE: "n"}, follow_redirects=False,
+    )
 
     assert resp.status_code in (302, 307)
     assert "gate=success" in resp.headers["location"]
@@ -269,11 +274,16 @@ def test_callback_gate_branch_refreshes_the_cached_character_name(
     tenant_id = storage.create_tenant(f"Test Tenant {uuid.uuid4()}")
     storage.add_tenant_registry_entry(tenant_id, 2112625428, character_name="Old Name")
     state = "test-gate-name-refresh"
-    auth_router._pending[state] = {"verifier": "v", "role_prefix": "gate", "scopes": [], "created_at": time.time()}
+    auth_router._pending[state] = {
+        "verifier": "v", "role_prefix": "gate", "scopes": [], "created_at": time.time(), "browser_nonce": "n",
+    }
     monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
     monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (2112625428, "New Name")))
 
-    client.get("/api/auth/callback", params={"code": "abc", "state": state}, follow_redirects=False)
+    client.get(
+        "/api/auth/callback", params={"code": "abc", "state": state},
+        cookies={auth_router._OAUTH_NONCE_COOKIE: "n"}, follow_redirects=False,
+    )
 
     users = storage.list_users_with_grants()
     assert next(u for u in users if u["character_id"] == 2112625428)["character_name"] == "New Name"
@@ -285,11 +295,16 @@ def test_callback_gate_branch_denied_character_redirects_without_a_cookie(
 ):
     _enable_gate(monkeypatch)  # no registry entries - nobody resolves to a tenant
     state = "test-gate-denied"
-    auth_router._pending[state] = {"verifier": "v", "role_prefix": "gate", "scopes": [], "created_at": time.time()}
+    auth_router._pending[state] = {
+        "verifier": "v", "role_prefix": "gate", "scopes": [], "created_at": time.time(), "browser_nonce": "n",
+    }
     monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
     monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (999, "Denied Character")))
 
-    resp = client.get("/api/auth/callback", params={"code": "abc", "state": state}, follow_redirects=False)
+    resp = client.get(
+        "/api/auth/callback", params={"code": "abc", "state": state},
+        cookies={auth_router._OAUTH_NONCE_COOKIE: "n"}, follow_redirects=False,
+    )
 
     assert resp.status_code in (302, 307)
     assert "gate=denied" in resp.headers["location"]
