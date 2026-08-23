@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { authApi } from '../api/client'
+import { openRoleAccessConfirmModal } from '../roleAccessDescriptions'
 import { useAction } from './useAction'
 
 export interface RoleCharacter {
@@ -44,6 +45,23 @@ export function useRoleCharacters(
     window.location.href = url
   })
 
+  // First login for this role_prefix (per tenant, tracked server-side -
+  // see docs/role_consent_schema.sql) shows a confirm modal describing what
+  // ESI data this role actually reads before ever redirecting to EVE SSO;
+  // once acknowledged, later logins for the same role (a second character,
+  // or re-adding one) skip straight to the redirect.
+  const startLogin = async () => {
+    const { acknowledged } = await authApi.consentStatus(ssoRolePrefix)
+    if (acknowledged) {
+      addCharacter.mutate()
+      return
+    }
+    openRoleAccessConfirmModal(ssoRolePrefix, async () => {
+      await authApi.acknowledgeConsent(ssoRolePrefix)
+      addCharacter.mutate()
+    })
+  }
+
   const removeCharacter = useAction('Remove Character', removeFn, [queryKey])
   // One shared mutation instance is reused across every character's Remove
   // button - without tracking which row is actually pending, clicking
@@ -60,6 +78,7 @@ export function useRoleCharacters(
   return {
     characters,
     addCharacter,
+    startLogin,
     removeCharacter: removeCharacterAt,
     isRemoving,
   }

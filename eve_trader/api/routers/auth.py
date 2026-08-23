@@ -78,6 +78,36 @@ ROLE_PREFIX_TOOL: dict[str, Optional[str]] = {
 }
 
 
+@router.get("/{role_prefix}/consent")
+def get_consent_status(role_prefix: str):
+    """Whether the current tenant has already acknowledged what data this
+    role_prefix's login reads - the frontend's confirm-before-redirect modal
+    (useRoleCharacters.ts) checks this before showing itself, so a tenant
+    only sees the confirmation once per role. "gate" is deliberately
+    excluded - before a first gate login there's no tenant to check this
+    against at all (see role_consent_schema.sql's own comment); the
+    Landing page uses localStorage for that one role instead."""
+    if role_prefix not in ROLE_PREFIX_TOOL:
+        raise HTTPException(400, f"Unknown role_prefix '{role_prefix}'.")
+    if role_prefix == "gate":
+        raise HTTPException(400, "gate consent is tracked client-side, not via this endpoint.")
+    return {"acknowledged": storage.has_role_consent(role_prefix)}
+
+
+@router.post("/{role_prefix}/consent")
+def acknowledge_consent(role_prefix: str):
+    """Records that the current tenant has seen and confirmed the
+    data-access description for role_prefix - called right before the
+    frontend proceeds to /start for the first time. See get_consent_status
+    above for why "gate" isn't accepted here."""
+    if role_prefix not in ROLE_PREFIX_TOOL:
+        raise HTTPException(400, f"Unknown role_prefix '{role_prefix}'.")
+    if role_prefix == "gate":
+        raise HTTPException(400, "gate consent is tracked client-side, not via this endpoint.")
+    storage.record_role_consent(role_prefix)
+    return {"acknowledged": True}
+
+
 @router.get("/{role_prefix}/start")
 def start_login(role_prefix: str):
     """role_prefix: "buyer" | "seller" | "producer" | ... - every one of
@@ -162,6 +192,13 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
         # is renamed, at zero extra cost (character_name is already known
         # here, no additional ESI call).
         storage.add_tenant_registry_entry(tenant_id, character_id, character_name=character_name)
+        # Informational only, not yet gating anything - the frontend's own
+        # gate confirmation uses localStorage (see role_consent_schema.sql's
+        # comment on why: there's no tenant to attach a server-side record
+        # to *before* this login resolves one). Recorded here now that a
+        # real tenant_id exists, in case a future need for it shows up.
+        with storage.tenant_context(tenant_id):
+            storage.record_role_consent("gate")
         resp = RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?gate=success&character={urllib.parse.quote(character_name)}")
         set_session_cookie(resp, character_id, character_name, tenant_id)
         return resp
