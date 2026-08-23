@@ -429,6 +429,13 @@ class DirectMineralPurchase(_Base):
     quantity: int
     landed_cost_per_unit: float
     total_cost: float
+    # GitHub issue #111: added by #106 (issue #102) to the internal
+    # refining/models.py dataclass, but never added here - FastAPI's
+    # response_model filters out any field this schema doesn't declare, so
+    # the backend was computing "Home"/"Jita" correctly the whole time and
+    # silently dropping it before it ever reached the frontend, which then
+    # fell back to showing "-" for every row.
+    source: Optional[str] = None
 
 
 class MineralCoverage(_Base):
