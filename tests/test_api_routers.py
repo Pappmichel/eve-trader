@@ -537,14 +537,17 @@ def test_auth_callback_network_failure_redirects_with_error_instead_of_500(monke
     state = "test-state-network-failure"
     auth_router._pending[state] = {
         "verifier": "v", "role_prefix": "producer", "scopes": ["esi-assets.read_assets.v1"],
-        "created_at": time.time(),
+        "created_at": time.time(), "browser_nonce": "n",
     }
 
     def _raise(self, code, verifier):
         raise requests.ConnectionError("network blip")
     monkeypatch.setattr(TokenManager, "_exchange_code", _raise)
 
-    resp = client.get("/api/auth/callback", params={"code": "abc", "state": state}, follow_redirects=False)
+    resp = client.get(
+        "/api/auth/callback", params={"code": "abc", "state": state},
+        cookies={auth_router._OAUTH_NONCE_COOKIE: "n"}, follow_redirects=False,
+    )
 
     assert resp.status_code in (302, 307)
     assert "auth=error" in resp.headers["location"]
