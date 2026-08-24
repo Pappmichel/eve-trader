@@ -74,9 +74,15 @@ def esi(monkeypatch):
 
 @pytest.fixture
 def cfgs():
+    # home_market=None (GitHub issue #102's own "skip the check when
+    # unconfigured" path) keeps every test but the dedicated home-market ones
+    # below from making a real GoonmetricsClient call against this machine's
+    # actual config.yaml home_market - this file's own docstring promises "no
+    # network" for all of these.
     return (TradingConfig(jita_buy_broker_fee=0.0, import_cost_per_m3=0.0, jita_region_id=10000002),
             RefiningConfig(refining_tax_rate=0.0, reprocessing_skill_level=0,
-                           reprocessing_efficiency_skill_level=0))
+                           reprocessing_efficiency_skill_level=0),
+            ProductionConfig(home_market=None))
 
 
 # ------------------------------------------------------------------- saving
@@ -139,10 +145,11 @@ def test_list_refinable_minerals_comes_from_real_sde_materials(sde, candidates):
 
 # --------------------------------------------------------------- optimizing
 def test_optimize_uses_the_saved_requirements_by_default(monkeypatch, sde, candidates, esi, cfgs):
-    trading_cfg, refining_cfg = cfgs
+    trading_cfg, refining_cfg, production_cfg = cfgs
     monkeypatch.setattr(storage, "load_mineral_requirements", lambda: [(TRIT, "Tritanium", 41_500.0)])
 
-    plan = actions.do_optimize_mineral_shopping_list(trading_cfg=trading_cfg, refining_cfg=refining_cfg)
+    plan = actions.do_optimize_mineral_shopping_list(trading_cfg=trading_cfg, refining_cfg=refining_cfg,
+                                                       production_cfg=production_cfg)
 
     # 100 units of Veldspar (1 portion) refines to floor(415 x 50%) = 207 Trit
     # at level-0 skills in an unrigged station, so this needs ~201 portions.
@@ -153,7 +160,7 @@ def test_optimize_uses_the_saved_requirements_by_default(monkeypatch, sde, candi
 
 
 def test_optimize_accepts_an_ad_hoc_list_without_persisting_it(monkeypatch, sde, candidates, esi, cfgs):
-    trading_cfg, refining_cfg = cfgs
+    trading_cfg, refining_cfg, production_cfg = cfgs
     monkeypatch.setattr(storage, "replace_mineral_requirements",
                         lambda rows: (_ for _ in ()).throw(AssertionError("must not persist")))
     monkeypatch.setattr(storage, "load_mineral_requirements",
@@ -161,7 +168,7 @@ def test_optimize_accepts_an_ad_hoc_list_without_persisting_it(monkeypatch, sde,
 
     plan = actions.do_optimize_mineral_shopping_list(
         requirements=[{"type_id": TRIT, "name": "Tritanium", "required_qty": 1000}],
-        trading_cfg=trading_cfg, refining_cfg=refining_cfg)
+        trading_cfg=trading_cfg, refining_cfg=refining_cfg, production_cfg=production_cfg)
 
     assert plan["total_cost"] > 0
 
@@ -170,10 +177,10 @@ def test_optimize_buys_the_mineral_directly_when_that_is_cheaper(monkeypatch, sd
     """Veldspar is a terrible Pyerite source (one 1000-ISK portion yields a
     handful of Pyerite, ~200 ISK/unit) against a 12-ISK Jita sell price, so
     the plan must buy Pyerite outright rather than refine for it."""
-    trading_cfg, refining_cfg = cfgs
+    trading_cfg, refining_cfg, production_cfg = cfgs
     plan = actions.do_optimize_mineral_shopping_list(
         requirements=[{"type_id": PYE, "name": "Pyerite", "required_qty": 100}],
-        trading_cfg=trading_cfg, refining_cfg=refining_cfg)
+        trading_cfg=trading_cfg, refining_cfg=refining_cfg, production_cfg=production_cfg)
     assert [p["type_id"] for p in plan["direct_purchases"]] == [PYE]
     assert plan["ore_purchases"] == []
 
@@ -181,40 +188,41 @@ def test_optimize_buys_the_mineral_directly_when_that_is_cheaper(monkeypatch, sd
 def test_optimize_applies_the_refining_tax_as_reduced_yield(monkeypatch, sde, candidates, esi, cfgs):
     """A 100% refining tax means ore delivers nothing, so the only way left to
     cover the requirement is buying the mineral outright."""
-    trading_cfg, _ = cfgs
+    trading_cfg, _, production_cfg = cfgs
     taxed = RefiningConfig(refining_tax_rate=1.0, reprocessing_skill_level=0,
                             reprocessing_efficiency_skill_level=0)
     plan = actions.do_optimize_mineral_shopping_list(
         requirements=[{"type_id": TRIT, "name": "Tritanium", "required_qty": 1000}],
-        trading_cfg=trading_cfg, refining_cfg=taxed)
+        trading_cfg=trading_cfg, refining_cfg=taxed, production_cfg=production_cfg)
     assert plan["ore_purchases"] == []
     assert [p["quantity"] for p in plan["direct_purchases"]] == [1000]
 
 
 def test_optimize_with_no_requirements_raises(monkeypatch, sde, candidates, esi, cfgs):
-    trading_cfg, refining_cfg = cfgs
+    trading_cfg, refining_cfg, production_cfg = cfgs
     monkeypatch.setattr(storage, "load_mineral_requirements", lambda: [])
     with pytest.raises(ActionError, match="No mineral requirements yet"):
-        actions.do_optimize_mineral_shopping_list(trading_cfg=trading_cfg, refining_cfg=refining_cfg)
+        actions.do_optimize_mineral_shopping_list(trading_cfg=trading_cfg, refining_cfg=refining_cfg,
+                                                    production_cfg=production_cfg)
 
 
 def test_optimize_with_an_empty_sde_candidate_universe_raises(monkeypatch, sde, esi, cfgs):
-    trading_cfg, refining_cfg = cfgs
+    trading_cfg, refining_cfg, production_cfg = cfgs
     monkeypatch.setattr(actions, "build_ore_candidate_universe", list)
     with pytest.raises(ActionError, match="Refresh SDE"):
         actions.do_optimize_mineral_shopping_list(
             requirements=[{"type_id": TRIT, "name": "Tritanium", "required_qty": 10}],
-            trading_cfg=trading_cfg, refining_cfg=refining_cfg)
+            trading_cfg=trading_cfg, refining_cfg=refining_cfg, production_cfg=production_cfg)
 
 
 def test_optimize_surfaces_an_unsourceable_mineral_as_an_action_error(monkeypatch, sde, candidates, esi, cfgs):
-    trading_cfg, refining_cfg = cfgs
+    trading_cfg, refining_cfg, production_cfg = cfgs
     monkeypatch.setattr(storage, "get_sde_type",
                         lambda type_id: _SDE.get(type_id) or (type_id, 18, "Morphite", 0.01, 1, None, 0, None, 1))
     with pytest.raises(ActionError, match="No way to source"):
         actions.do_optimize_mineral_shopping_list(
             requirements=[{"type_id": 11399, "name": "Morphite", "required_qty": 10}],
-            trading_cfg=trading_cfg, refining_cfg=refining_cfg)
+            trading_cfg=trading_cfg, refining_cfg=refining_cfg, production_cfg=production_cfg)
 
 
 def test_optimize_includes_haul_cost_in_both_ore_and_mineral_prices(monkeypatch, sde, candidates, esi):
@@ -225,7 +233,7 @@ def test_optimize_includes_haul_cost_in_both_ore_and_mineral_prices(monkeypatch,
                                    reprocessing_efficiency_skill_level=0)
     plan = actions.do_optimize_mineral_shopping_list(
         requirements=[{"type_id": PYE, "name": "Pyerite", "required_qty": 100}],
-        trading_cfg=trading_cfg, refining_cfg=refining_cfg)
+        trading_cfg=trading_cfg, refining_cfg=refining_cfg, production_cfg=ProductionConfig(home_market=None))
     # Pyerite: 12 ISK + 0.01 m3 x 1000 ISK/m3 = 22 ISK landed.
     assert plan["direct_purchases"][0]["landed_cost_per_unit"] == pytest.approx(22.0)
 
@@ -235,7 +243,7 @@ def test_optimize_prefers_a_cheaper_home_market_price_over_jita(monkeypatch, sde
     """GitHub issue #102: the direct-mineral alternative used to check Jita
     only, so a mineral already sitting cheaper at C-J (no haul needed) never
     got recommended."""
-    trading_cfg, refining_cfg = cfgs
+    trading_cfg, refining_cfg, _ = cfgs
     monkeypatch.setattr(actions, "GoonmetricsClient", lambda cfg: type(
         "_GM", (), {"current_prices": staticmethod(lambda market: [CurrentPrice(type_id=PYE, updated="", buy=1.0, sell=3.0)])})())
 
@@ -250,7 +258,7 @@ def test_optimize_prefers_a_cheaper_home_market_price_over_jita(monkeypatch, sde
 
 
 def test_optimize_falls_back_to_jita_when_home_market_has_no_listing(monkeypatch, sde, candidates, esi, cfgs):
-    trading_cfg, refining_cfg = cfgs
+    trading_cfg, refining_cfg, _ = cfgs
     monkeypatch.setattr(actions, "GoonmetricsClient", lambda cfg: type(
         "_GM", (), {"current_prices": staticmethod(lambda market: [])})())
 
@@ -264,7 +272,7 @@ def test_optimize_falls_back_to_jita_when_home_market_has_no_listing(monkeypatch
 
 
 def test_optimize_skips_the_home_market_check_when_unconfigured(monkeypatch, sde, candidates, esi, cfgs):
-    trading_cfg, refining_cfg = cfgs
+    trading_cfg, refining_cfg, _ = cfgs
 
     def _must_not_be_called(cfg):
         raise AssertionError("must not construct a GoonmetricsClient when home_market is unset")
@@ -282,7 +290,7 @@ def test_optimize_degrades_to_jita_only_on_a_goonmetrics_failure(monkeypatch, sd
     """A Goonmetrics outage must not break the whole shopping list - only the
     ESI order-book fetch (which the function genuinely can't proceed
     without) is a hard failure; the home-market check is best-effort."""
-    trading_cfg, refining_cfg = cfgs
+    trading_cfg, refining_cfg, _ = cfgs
 
     def _raise(market):
         raise requests.exceptions.ConnectionError("boom")
