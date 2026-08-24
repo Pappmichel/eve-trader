@@ -129,6 +129,25 @@ def test_do_contract_history_converts_real_datetime_columns_to_iso_strings(monke
     assert row["date_completed"] == "2026-08-02T00:00:00+00:00"
 
 
+def test_do_contract_history_converts_real_uuid_fitting_id_to_string(monkeypatch):
+    # Confirmed real bug caught live (2026-08-24): storage.load_doctrine_
+    # contract_history returns fitting_id as a real UUID object (it's a UUID
+    # column, see docs/doctrine_schema.sql), not a string - same class of bug
+    # as the date_issued/date_completed one above, and just as fatal: the API
+    # layer's ContractHistoryRow schema declares fitting_id Optional[str], so
+    # FastAPI's response validation 500s on a raw UUID rather than silently
+    # stringifying it.
+    import uuid
+    fitting_uuid = uuid.UUID("516e466c-9ec3-4d4f-a8b1-bc87e8b41ed7")
+    monkeypatch.setattr(storage, "load_doctrine_contract_history",
+                         lambda: [_history_db_row(fitting_id=fitting_uuid, hull_type_id=None)])
+    monkeypatch.setattr(esi_sync, "list_doctrine_characters", lambda: [])
+
+    result = actions.do_contract_history()
+
+    assert result["rows"][0]["fitting_id"] == "516e466c-9ec3-4d4f-a8b1-bc87e8b41ed7"
+
+
 def test_do_contract_history_blank_hull_when_fitting_unknown(monkeypatch):
     # A history row can have no fitting_id at all (never matched while it
     # was still outstanding) - must not crash trying to resolve a hull name
