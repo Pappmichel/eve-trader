@@ -6,6 +6,7 @@ indices - the ESI surface both the Trading and Production tools need.
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -18,7 +19,11 @@ from . import storage
 from .auth import TokenManager
 from .config import TRADING_CONFIG, TradingConfig
 
-USER_AGENT = "eve-trader-python (contact: set EVE_CONTACT_EMAIL in .env)"
+_contact = os.getenv("EVE_CONTACT_EMAIL", "").strip()
+USER_AGENT = (
+    f"eve-trader-python (contact: {_contact})" if _contact
+    else "eve-trader-python (contact: set EVE_CONTACT_EMAIL in .env)"
+)
 
 METALEVEL_ATTRIBUTE_ID = 633  # EVE SDE dogma attribute "metaLevel" (0=Tech I, 5=Tech II, ...)
 

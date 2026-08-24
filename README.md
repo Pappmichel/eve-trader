@@ -1,6 +1,6 @@
 # EVE Trader — C-J Import Trading & Production
 
-Two tools for EVE Online, sharing one backend and one multi-tenant Postgres
+Four tools for EVE Online, sharing one backend and one multi-tenant Postgres
 store (RLS-isolated per tenant - see `docs/MULTI_TENANT_PLAN.md`):
 
 - **Trading** — a market-arbitrage toolkit that buys goods in Jita (The
@@ -11,6 +11,19 @@ store (RLS-isolated per tenant - see `docs/MULTI_TENANT_PLAN.md`):
   home structure: buy-vs-build decisions, stock targets, buy/build lists,
   invention cost/probability, and logistics status, all driven by a local
   Fuzzwork SDE cache plus live ESI/Goonmetrics prices.
+- **Doctrine** — tracks fitted-ship contracts and stockpile against a
+  doctrine's EFT fittings: per-fitting/per-doctrine status, a shopping list
+  for what's missing, synced from ESI contracts/assets.
+- **Ore & Minerals** — imports compressed ore/ice from Jita, refines it at
+  C-J, and sells the minerals for profit; also a standalone reprocessing
+  quote calculator (paste ratting loot, get a refine-vs-sell verdict) and a
+  multi-ore buy-vs-refine mineral shopping list optimizer.
+
+Each tool opens on its own Overview page describing what works with zero EVE
+characters logged in versus what needs one and why - see it in the app before
+digging into setup below. An **Admin** tool (cross-tenant tenant/user/tool-
+grant management, SDE refresh) rounds out the app for anyone running it for
+more than themselves - see CLAUDE.md's "Tool permissions & Admin".
 
 Highlights:
 - A multi-tenant Postgres store as the durable source of truth for both
@@ -43,10 +56,20 @@ docker run -d --name eve-trader-pg -e POSTGRES_PASSWORD=devpassword \
   -e POSTGRES_DB=eve_trader -p 5432:5432 postgres:16
 
 # owner role applies the schema (never the app's own role - see CLAUDE.md's
-# "Multi-tenant Postgres" section for why):
+# "Multi-tenant Postgres" section for why). All eight files, not just
+# phase1-3 - admin_schema.sql/doctrine_schema.sql/observability_schema.sql/
+# refining_schema.sql/role_consent_schema.sql back the Admin/Doctrine/error-
+# tracking/Ore & Minerals/role-consent features, and their routers are
+# registered unconditionally, so skipping them means 500s the moment you
+# touch those tools, not just a missing feature:
 Get-Content docs\phase1_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
 Get-Content docs\phase2_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
 Get-Content docs\phase3_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
+Get-Content docs\admin_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
+Get-Content docs\doctrine_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
+Get-Content docs\observability_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
+Get-Content docs\refining_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
+Get-Content docs\role_consent_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
 ```
 
 (`phase1_schema.sql` creates the `eve_trader_app` role with the checked-in
@@ -160,9 +183,9 @@ above) - they skip automatically, rather than fail, when one isn't running.
 
 See [`deploy/README.md`](deploy/README.md) - a single-user deployment (e.g.
 a free-tier VPS) behind the access gate (`eve_trader/access_gate.py`), which
-requires an EVE SSO login matching an allowlisted character/corp/alliance
-before any part of the app is reachable. Off by default; local dev is
-unaffected either way.
+requires an EVE SSO login matching a character registered in the tenant
+registry before any part of the app is reachable. Off by default; local dev
+is unaffected either way.
 
 ## Interface
 

@@ -541,10 +541,8 @@ stale across Phases 1-4 and is now corrected:
 This document (`docs/MULTI_TENANT_PLAN.md`) stays as the permanent design-
 history record - `CLAUDE.md` is deliberately the terser, quick-reference
 version for day-to-day work, pointing back here for the "why" of anything
-non-obvious. `HANDOFF.md` still exists (per its own instruction, only
-deleted once this migration is "fully done and merged" - it isn't merged
-to `main` yet, still on the `multi-tenant` branch), updated to reflect
-Phase 5.
+non-obvious. `HANDOFF.md` was deleted once this migration was fully merged
+to `main`, per its own self-deleting-note lifecycle (see CLAUDE.md).
 
 **Phase 0 - Postgres + RLS proof of concept on `stock_targets`**
 Chosen specifically because its `type_id` PK has the collision problem, not because it's

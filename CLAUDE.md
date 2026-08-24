@@ -10,17 +10,27 @@ temporary, self-deleting note left when a session ends mid-task (e.g.
 continuing on a different computer with no access to this machine's Claude
 memory) and takes priority over re-deriving current status from scratch.
 
-## Two tools, one backend
+## Two tools, one backend (plus Doctrine, Ore & Minerals, and Admin)
 
 - **Trading**: buys in Jita, sells at a private player structure ("C-J").
 - **Production**: Tech I/II/Reaction manufacturing planning for the same C-J
   structure - buy-vs-build, stock targets, invention.
 
-Both share one FastAPI backend (`eve_trader/api/`), one Postgres store
-(`eve_trader/storage.py`, multi-tenant - see "Multi-tenant Postgres" below),
-and one React/TypeScript frontend (`frontend/src/`). `eve_trader/portfolio.py`
-and `eve_trader/scheduler.py` are the only modules that deliberately span
-both.
+These two are the original pair this section's title/history refers to -
+`eve_trader/portfolio.py` and `eve_trader/scheduler.py` are the only modules
+that deliberately span *just* them. The app has since grown two more
+tenant-facing tools that follow the exact same `do_*`-actions/router/RLS
+pattern described in the rest of this file: **Doctrine** (fitted-ship
+contract/stockpile tracking against EFT fittings, `eve_trader/doctrine/`)
+and **Ore & Minerals** (ore/ice import-refine-sell, reprocessing quotes,
+mineral shopping list, `eve_trader/refining/`, GitHub issue #90) - plus the
+cross-tenant **Admin** tool (`eve_trader/admin.py`, see "Tool permissions &
+Admin" below), which isn't tenant-facing at all.
+
+All four tenant-facing tools share one FastAPI backend (`eve_trader/api/`),
+one Postgres store (`eve_trader/storage.py`, multi-tenant - see
+"Multi-tenant Postgres" below), and one React/TypeScript frontend
+(`frontend/src/`).
 
 **Production sells only at C-J, never Jita** - this was implemented once
 (a Jita-comparison feature) and explicitly reverted after confirming with the

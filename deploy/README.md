@@ -264,7 +264,7 @@ cd ~/eve-trader
 .venv/bin/eve-trader tenant add-entry <tenant_id> --character <your_character_id>
 ```
 (`eve-trader tenant list` shows every provisioned tenant and their
-registered characters/corps/alliances, if you need to check later.)
+registered characters, if you need to check later.)
 
 **At https://developers.eveonline.com/applications:** register a **new**
 EVE SSO application for this deployment (don't reuse the local-dev one - an

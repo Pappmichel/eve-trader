@@ -47,6 +47,7 @@ lookback_days: 30
 scheduler_enabled: false
 trading_pipeline_interval_hours: 24.0
 production_sync_interval_hours: 6.0
+doctrine_sync_interval_hours: 12.0
 backup_interval_hours: 24.0
 
 # ---- Production tool (see eve_trader/production/config.py ProductionConfig) ----
@@ -92,13 +93,41 @@ datacore_skill_2_level: 4
 
 # ---- Access gate (see eve_trader/access_gate.py) - off by default. When
 # enabled, every /api/* route requires an EVE SSO login (identity only, no
-# ESI scopes) that resolves to a character/corp/alliance on one of the three
-# allowlists below - a match on *any* of the three grants access. Needed
-# before hosting this somewhere reachable beyond localhost; leave disabled
-# for a purely local install. Also needs SESSION_SECRET_KEY set in .env (see
-# .env.example) once enabled. NOT editable from the Settings page/API by
-# design - only a config.yaml hand-edit (+ restart) changes who's allowed in.
+# ESI scopes) that resolves to a character registered in the Postgres tenant
+# registry (character-only - corp/alliance registry entries were retired,
+# see storage.add_tenant_registry_entry / `eve-trader tenant add-entry`).
+# Needed before hosting this somewhere reachable beyond localhost; leave
+# disabled for a purely local install. Also needs SESSION_SECRET_KEY set in
+# .env (see .env.example) once enabled. Who's allowed in is managed via the
+# `eve-trader tenant` CLI commands or the Admin tool's "Add User", not via
+# this file.
 access_gate_enabled: false
-allowed_character_ids: []
-allowed_corporation_ids: []
-allowed_alliance_ids: []
+
+# ---- Doctrine tool (see eve_trader/doctrine/config.py DoctrineConfig) ----
+# doctrine_structure_id: 123456789012  # where fitted-ship contracts/stockpile
+                              # are checked (uncomment to set - falls back to
+                              # the Trading structure_id above if unset).
+# stockpile_location_id: 123456789012  # where stockpile Ist is counted from
+                              # (uncomment to set - falls back to
+                              # doctrine_structure_id/structure_id if unset).
+cargo_tolerance_pct: 0.9      # consumables (drones/cargo/charges) only need to
+                              # clear this fraction of their target to count as
+                              # "tolerable" rather than "critical"
+strict_extras: false          # true = a contract item the fitting doesn't call
+                              # for at all counts as "tolerable" instead of "info"
+
+# ---- Ore & Minerals / refining tool (see eve_trader/refining/config.py
+# RefiningConfig) - independent of Production's own structure/rig fields
+# above, since the refining structure may be a different one. ----
+structure_type: "Citadel (no bonuses)"
+rig_tier: "No Rig"
+security_status: 0.0          # -1.0 (deep null-sec/wormhole) .. 1.0 (highsec)
+implant: "None"
+reprocessing_skill_level: 0
+reprocessing_efficiency_skill_level: 0
+scrapmetal_processing_skill_level: 0
+refining_tax_rate: 0.0
+# ore_family_skill_levels:      # {ore/ice family name: skill level 0-5} - a
+#   Veldspar: 5                 # family missing from this dict is treated as
+#   Scordite: 5                 # level 5 (maxed), not 0 - see RefiningConfig's
+                                 # own docstring for why.
