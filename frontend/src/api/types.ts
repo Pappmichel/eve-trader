@@ -101,6 +101,11 @@ export interface MarginTrend {
   trend_pct: number
 }
 
+export interface HistoryTypeIdOption {
+  type_id: number
+  type_name: string
+}
+
 export interface PriceHistoryPoint {
   region_id: number
   type_id: number

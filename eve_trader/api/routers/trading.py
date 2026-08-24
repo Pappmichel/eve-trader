@@ -71,7 +71,15 @@ def get_history_type_ids():
     # in registration order, so the dynamic route would otherwise swallow
     # this literal path and fail trying to parse "type-ids" as an int.
     df = storage.read_table("goonmetrics_history")
-    return sorted(df["type_id"].unique().tolist()) if not df.empty else []
+    if df.empty:
+        return []
+    type_ids = sorted(df["type_id"].unique().tolist())
+    names = storage.sde_type_names(type_ids)
+    # Falls back to the bare type_id (stringified) when the local SDE cache
+    # has no row for it - e.g. a type_id from before the last Refresh SDE,
+    # or one outside the published/market-grouped subset sde_type_names
+    # covers. Still pickable, just unlabeled, rather than missing entirely.
+    return [{"type_id": t, "type_name": names.get(t, str(t))} for t in type_ids]
 
 
 @router.get("/history/{type_id}")

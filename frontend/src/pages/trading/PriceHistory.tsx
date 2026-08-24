@@ -11,7 +11,7 @@ export default function PriceHistory() {
   const { data: typeIds, isLoading } = useQuery({ queryKey: ['trading', 'history', 'type-ids'], queryFn: tradingApi.historyTypeIds })
   const [chosen, setChosen] = useState<string | null>(null)
 
-  const effectiveId = chosen ?? (typeIds && typeIds.length > 0 ? String(typeIds[0]) : null)
+  const effectiveId = chosen ?? (typeIds && typeIds.length > 0 ? String(typeIds[0].type_id) : null)
   const { data: history } = useQuery({
     queryKey: ['trading', 'history', effectiveId],
     queryFn: () => tradingApi.history(Number(effectiveId)),
@@ -33,13 +33,13 @@ export default function PriceHistory() {
   return (
     <>
       <Select
-        label="Type-ID"
-        data={typeIds.map((id) => String(id))}
+        label="Item"
+        data={typeIds.map((t) => ({ value: String(t.type_id), label: t.type_name }))}
         value={effectiveId}
         onChange={setChosen}
         searchable
         mb="md"
-        w={200}
+        w={280}
       />
       <ResponsiveContainer width="100%" height={360}>
         <LineChart data={history ?? []}>

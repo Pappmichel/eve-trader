@@ -974,6 +974,24 @@ def load_sde_types_with_market_group() -> list[tuple[int, str, float, int, Optio
         ).fetchall()
 
 
+def sde_type_names(type_ids: Iterable[int]) -> dict[int, str]:
+    """type_id -> type_name for whichever of `type_ids` exist in the local SDE
+    cache - used to label a bare type_id list (e.g. Trading's Price History
+    type picker) with real item names instead of raw numbers. A type_id with
+    no SDE row simply isn't a key in the returned dict, not an error - the
+    SDE cache is a subset (published, market-grouped types), so an id from
+    another source (goonmetrics_history) can legitimately miss."""
+    type_ids = list(type_ids)
+    if not type_ids:
+        return {}
+    placeholders = ",".join("?" * len(type_ids))
+    with connect() as conn:
+        rows = conn.execute(
+            f"SELECT type_id, type_name FROM sde_types WHERE type_id IN ({placeholders})", type_ids
+        ).fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
 def load_sde_type_groups() -> dict[int, int]:
     """type_id -> group_id for every SDE type - used by candidate_discovery.
     guess_category to tell Boosters/Drugs (group_id 746) apart from real
