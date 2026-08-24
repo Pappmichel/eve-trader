@@ -80,9 +80,9 @@ export default function TradingSettings() {
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Characters</Title>
       <SimpleGrid cols={2}>
-        <TextInput label="Buyer name (Jita)" value={form.buyer_character_name ?? ''}
+        <TextInput label="Buyer name (Jita)" value={form.buyer_character_name ?? ''} autoComplete="off"
           onChange={(e) => set('buyer_character_name', e.currentTarget.value)} />
-        <TextInput label="Seller name (structure)" value={form.seller_character_name ?? ''}
+        <TextInput label="Seller name (structure)" value={form.seller_character_name ?? ''} autoComplete="off"
           onChange={(e) => set('seller_character_name', e.currentTarget.value)} />
       </SimpleGrid>
 
