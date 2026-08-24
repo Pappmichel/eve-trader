@@ -9,7 +9,8 @@ import { useAction, warnIfPricedViaFallback } from '../../hooks/useAction'
 import { dateTime } from '../../format'
 
 const TABS = [
-  { path: '/ore', label: 'Ore Shortlist' },
+  { path: '/ore', label: 'Overview' },
+  { path: '/ore/shortlist', label: 'Ore Shortlist' },
   { path: '/ore/reprocessing', label: 'Reprocessing' },
   { path: '/ore/shopping-list', label: 'Mineral Shopping List' },
   { path: '/ore/settings', label: 'Settings' },

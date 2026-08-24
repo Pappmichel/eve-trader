@@ -13,7 +13,8 @@ import { useRoleCharacters } from '../../hooks/useRoleCharacters'
 import { dateTime } from '../../format'
 
 const TABS = [
-  { path: '/trading', label: 'Shortlist' },
+  { path: '/trading', label: 'Overview' },
+  { path: '/trading/shortlist', label: 'Shortlist' },
   { path: '/trading/candidates', label: 'Candidate Universe' },
   { path: '/trading/new-candidates', label: 'New Candidates' },
   { path: '/trading/history', label: 'Price History' },

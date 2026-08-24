@@ -188,7 +188,7 @@ export default function DoctrineDetail() {
             </Text>,
             labels: { confirm: 'Delete', cancel: 'Cancel' },
             confirmProps: { color: 'danger' },
-            onConfirm: () => deleteDoctrine.mutate(doctrineId, { onSuccess: () => navigate('/doctrine') }),
+            onConfirm: () => deleteDoctrine.mutate(doctrineId, { onSuccess: () => navigate('/doctrine/doctrines') }),
           })} loading={deleteDoctrine.isPending}>
             Delete Doctrine
           </Button>

@@ -60,17 +60,17 @@ const ACTIONS: SpotlightActionData[] = [
 // Router, so the actual onClick wiring happens once, here, at render time.
 const PATHS: Record<string, string> = {
   home: '/', portfolio: '/portfolio', admin: '/admin',
-  trading: '/trading', 'trading-candidates': '/trading/candidates', 'trading-new-candidates': '/trading/new-candidates',
+  trading: '/trading/shortlist', 'trading-candidates': '/trading/candidates', 'trading-new-candidates': '/trading/new-candidates',
   'trading-history': '/trading/history', 'trading-trades': '/trading/trades', 'trading-unlisted-stock': '/trading/unlisted-stock',
   'trading-undercut': '/trading/undercut', 'trading-settings': '/trading/settings',
-  production: '/production', 'production-market': '/production/market', 'production-jobs': '/production/jobs',
+  production: '/production/stock-targets', 'production-market': '/production/market', 'production-jobs': '/production/jobs',
   'production-slots': '/production/slots', 'production-buy': '/production/buy', 'production-build': '/production/build',
   'production-asset-plan': '/production/asset-plan', 'production-logistics': '/production/logistics',
   'production-invention': '/production/invention', 'production-blueprints': '/production/blueprints',
   'production-unlisted-stock': '/production/unlisted-stock', 'production-build-candidates': '/production/build-candidates',
   'production-margin': '/production/margin', 'production-material-tree': '/production/material-tree',
   'production-asset-search': '/production/asset-search', 'production-settings': '/production/settings',
-  doctrine: '/doctrine', 'doctrine-contracts': '/doctrine/contracts', 'doctrine-contracts-history': '/doctrine/contracts/history',
+  doctrine: '/doctrine/doctrines', 'doctrine-contracts': '/doctrine/contracts', 'doctrine-contracts-history': '/doctrine/contracts/history',
   'doctrine-stockpile': '/doctrine/stockpile', 'doctrine-shopping-list': '/doctrine/shopping-list',
   'doctrine-settings': '/doctrine/settings',
 }

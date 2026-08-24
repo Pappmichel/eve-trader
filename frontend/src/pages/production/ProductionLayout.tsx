@@ -12,7 +12,8 @@ import { useRoleCharacters } from '../../hooks/useRoleCharacters'
 import { dateTime } from '../../format'
 
 const TABS = [
-  { path: '/production', label: 'Stock Targets' },
+  { path: '/production', label: 'Overview' },
+  { path: '/production/stock-targets', label: 'Stock Targets' },
   { path: '/production/market', label: 'Market Status' },
   { path: '/production/jobs', label: 'Industry Jobs' },
   { path: '/production/slots', label: 'Character Slots' },
