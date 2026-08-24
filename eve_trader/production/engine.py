@@ -138,7 +138,7 @@ from .constants import (
 from .jobs import character_slot_overview
 from .models import (
     AssetPlanJob, BuildJobEntry, BuyListEntry, DistributionRow, InventionNeedRow, InventoryRow, LogisticsRow,
-    MarketStatusRow,
+    MarketStatusRow, T1BpcInventionNeedRow,
 )
 
 MAX_DEPTH = 10
@@ -1117,12 +1117,20 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                         runs_needed = math.ceil(missing / product_qty) if missing > 0 else 0
                         bpcs_needed = math.ceil(runs_needed / chosen.output_runs) if runs_needed > 0 else 0
                         recommended_runs = math.ceil(bpcs_needed / chosen.probability) if bpcs_needed > 0 else 0
+                        # blueprint_id here IS the invented T2 blueprint's own
+                        # type_id (find_invention_recipe_by_product_type_id's
+                        # own param name calls it product_blueprint_type_id) -
+                        # not `type_id` above, which is the manufactured item.
+                        t2_bpc_owned = int(storage.available_blueprint_copies(blueprint_id, None))
+                        stockpile_pct = (max(0.0, min(100.0, current_stock / backup_stock * 100))
+                                         if backup_stock > 0 else 0.0)
                         invention_list.append(InventionNeedRow(
                             type_id=type_id, type_name=type_name,
                             t1_blueprint_type_id=t1_blueprint_id, t1_blueprint_name=chosen.t1_blueprint_name,
                             decryptor=decryptor_name, probability=chosen.probability, output_runs=chosen.output_runs,
                             runs_needed=runs_needed, bpcs_needed=bpcs_needed,
                             recommended_invention_runs=recommended_runs,
+                            t2_bpc_owned=t2_bpc_owned, stockpile_pct=stockpile_pct,
                         ))
 
         if missing > 0:
@@ -2393,6 +2401,41 @@ def invention_logistics(invention_list: list[InventionNeedRow],
         rows.append(LogisticsRow(
             category="Invention", location_id=cfg.invention_location_id, type_id=type_id, type_name=name,
             needed=needed, available=available, missing=max(0.0, needed - available),
+        ))
+    rows.sort(key=lambda r: -r.missing)
+    return rows
+
+
+def t1_bpc_invention_needs(invention_list: list[InventionNeedRow],
+                            cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[T1BpcInventionNeedRow]:
+    """GitHub issue #114: invention_logistics above mixes T1 BPCs, decryptors
+    and datacores into one flat LogisticsRow list, which makes "how many BPC
+    runs am I short, and do I even own the BPO to print more" hard to see
+    for the thing that actually matters most - the T1 BPC itself. This is
+    the T1-blueprint-only slice of the exact same demand accumulation
+    invention_logistics already does (same recommended_invention_runs-per-
+    attempt reasoning - see that function's own docstring), plus a
+    BPO-presence check invention_logistics has no reason to compute (it
+    only cares about copies, the actual invention input)."""
+    if cfg.invention_location_id is None:
+        return []
+
+    needed_by_t1: dict[int, int] = {}
+    for need in invention_list:
+        if need.recommended_invention_runs <= 0:
+            continue
+        needed_by_t1[need.t1_blueprint_type_id] = (
+            needed_by_t1.get(need.t1_blueprint_type_id, 0) + need.recommended_invention_runs)
+
+    rows = []
+    for type_id, needed in needed_by_t1.items():
+        available = int(storage.available_blueprint_copies(type_id, cfg.invention_location_id))
+        sde_type = storage.get_sde_type(type_id)
+        name = sde_type[2] if sde_type else str(type_id)
+        rows.append(T1BpcInventionNeedRow(
+            type_id=type_id, name=name, needed=needed, available=available,
+            missing=max(0, needed - available),
+            bpo_present=storage.has_bpo_at_location(type_id, cfg.invention_location_id),
         ))
     rows.sort(key=lambda r: -r.missing)
     return rows

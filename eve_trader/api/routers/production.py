@@ -242,6 +242,15 @@ def get_invention_logistics():
     return _wrap(actions.do_get_invention_logistics, invention_list=_last_plan.get("invention_list") or [])
 
 
+@router.get("/invention/t1-bpc-needs", response_model=list[schemas.T1BpcInventionNeedRow])
+def get_t1_bpc_invention_needs():
+    # Same "_last_plan is None, not invention_list's own truthiness" rule as
+    # get_invention_logistics above - an empty list is a valid state.
+    if _last_plan is None:
+        raise HTTPException(status_code=400, detail="No build list computed yet. Run 'Compute Buy/Build List' first.")
+    return _wrap(actions.do_get_t1_bpc_invention_needs, invention_list=_last_plan.get("invention_list") or [])
+
+
 @router.get("/logistics/structure-names")
 def get_structure_names():
     """Cached names (storage.structure_names) for every location_id

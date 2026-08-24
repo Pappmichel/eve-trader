@@ -263,6 +263,17 @@ export interface InventionNeedRow {
   runs_needed: number
   bpcs_needed: number
   recommended_invention_runs: number
+  t2_bpc_owned: number
+  stockpile_pct: number
+}
+
+export interface T1BpcInventionNeedRow {
+  type_id: number
+  name: string
+  needed: number
+  available: number
+  missing: number
+  bpo_present: boolean
 }
 
 export interface IndustryJobRow {
