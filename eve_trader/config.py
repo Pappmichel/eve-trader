@@ -272,6 +272,21 @@ class TradingConfig:
     # trade_reconciliation.py compare location_id == structure_id, which is
     # safely a no-op (never matches) while this is unset.
     structure_id: Optional[int] = None
+    # appraise.gnf.lt market slug for structure_id (case-sensitive) - same
+    # idea as ProductionConfig.home_market. Optional failsafe (confirmed
+    # with the user 2026-08-24): Shortlist refresh, Ore Shortlist refresh
+    # and Reprocessing Quote normally price the structure leg from the real
+    # ESI order book (needs a logged-in seller with docking access), but
+    # fall back to a Goonmetrics current-price snapshot for it when no
+    # seller is logged in or the ESI call itself fails - see
+    # esi_client.ESIClient.structure_order_stats_bulk_or_goonmetrics.
+    # Deliberately NOT used by own_orders.check_undercut (Undercut Check) -
+    # that function's whole purpose is comparing against real competing
+    # orders, which a Goonmetrics snapshot can't answer; a fallback there
+    # could silently report "not undercut" when a real order says
+    # otherwise, worse than a hard failure. Left unset, every one of those
+    # three actions keeps today's exact behavior (hard ActionError).
+    structure_market_slug: Optional[str] = None
 
     # -- Economics --
     import_cost_per_m3: float = 900.0        # ISK freight cost per m3 to move goods to the structure

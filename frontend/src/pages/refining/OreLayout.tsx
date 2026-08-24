@@ -5,11 +5,12 @@ import { useQuery } from '@tanstack/react-query'
 import { IconArrowLeft, IconDownload, IconRefresh } from '@tabler/icons-react'
 
 import { refiningApi } from '../../api/client'
-import { useAction } from '../../hooks/useAction'
+import { useAction, warnIfPricedViaFallback } from '../../hooks/useAction'
 import { dateTime } from '../../format'
 
 const TABS = [
-  { path: '/ore', label: 'Ore Shortlist' },
+  { path: '/ore', label: 'Overview' },
+  { path: '/ore/shortlist', label: 'Ore Shortlist' },
   { path: '/ore/reprocessing', label: 'Reprocessing' },
   { path: '/ore/shopping-list', label: 'Mineral Shopping List' },
   { path: '/ore/settings', label: 'Settings' },
@@ -70,7 +71,7 @@ export default function OreLayout() {
                 Add Candidates
               </Button>
               <Button size="xs" leftSection={<IconRefresh size={14} />}
-                onClick={() => refresh.mutate()} loading={refresh.isPending}>
+                onClick={() => refresh.mutate(undefined, { onSuccess: warnIfPricedViaFallback })} loading={refresh.isPending}>
                 Refresh Ore Shortlist
               </Button>
               <Text size="xs" c="dimmed">

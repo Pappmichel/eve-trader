@@ -12,6 +12,11 @@ reference_region_id: 10000009     # Insmother - used only for historical backtes
                                    # get it from the structure's info window in-game, or a
                                    # market tool like appraise.gnf.lt/dotlan). Required before
                                    # Trading can place/track orders there.
+# structure_market_slug: "your-market-slug"  # appraise.gnf.lt market slug for structure_id
+                                   # (optional - same idea as Production's home_market). Failsafe
+                                   # only: Shortlist/Ore Shortlist refresh and Reprocessing Quote
+                                   # fall back to this Goonmetrics snapshot when no seller
+                                   # character is logged in or the real ESI order book fails.
 
 import_cost_per_m3: 900.0
 structure_sell_haircut: 0.95

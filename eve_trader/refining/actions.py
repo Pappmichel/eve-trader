@@ -80,8 +80,6 @@ def do_refresh_ore_shortlist(trading_cfg: TradingConfig = TRADING_CONFIG,
 
     tm = TokenManager(oauth_cfg)
     seller_role = _seller_role(tm)
-    if seller_role is None:
-        raise ActionError("Seller character isn't logged in yet (Trading -> Login -> Seller).")
     client = ESIClient(trading_cfg, tm)
 
     ore_type_ids = [c.type_id for c in tracked_candidates]
@@ -89,8 +87,13 @@ def do_refresh_ore_shortlist(trading_cfg: TradingConfig = TRADING_CONFIG,
 
     mineral_ids = mineral_type_ids_for(tracked_candidates)
     try:
-        mineral_stats_by_id = client.structure_order_stats_bulk(
-            trading_cfg.structure_id, mineral_ids, auth_role=seller_role)
+        # Falls back to a Goonmetrics current-price snapshot (trading_cfg.
+        # structure_market_slug) when no seller is logged in or the real
+        # call fails - see structure_order_stats_bulk_or_goonmetrics's own
+        # docstring.
+        mineral_stats_by_id, priced_via_fallback = client.structure_order_stats_bulk_or_goonmetrics(
+            trading_cfg.structure_id, mineral_ids, auth_role=seller_role,
+            goonmetrics_market_slug=trading_cfg.structure_market_slug)
     except ESIError as e:
         raise ActionError(f"Could not fetch the structure's order book ({e}). "
                            f"Does the seller character still have docking access?") from e
@@ -102,7 +105,7 @@ def do_refresh_ore_shortlist(trading_cfg: TradingConfig = TRADING_CONFIG,
     storage.set_esi_sync_time("refining", run_ts)
 
     import_count = sum(1 for r in rows if r.decision == "Import")
-    return {"evaluated": len(rows), "import_candidates": import_count}
+    return {"evaluated": len(rows), "import_candidates": import_count, "priced_via_fallback": priced_via_fallback}
 
 
 def _row_to_tuple(r: OreShortlistRow) -> tuple:
@@ -141,15 +144,19 @@ def do_quote_reprocessing(paste_text: str, trading_cfg: TradingConfig = TRADING_
 
     tm = TokenManager(oauth_cfg)
     seller_role = _seller_role(tm)
-    if seller_role is None:
-        raise ActionError("Seller character isn't logged in yet (Trading -> Login -> Seller).")
     client = ESIClient(trading_cfg, tm)
 
     type_ids = [tid for tid in (resolve_type_id(line.name) for line in parsed) if tid is not None]
     mineral_ids = mineral_type_ids_for_lines(type_ids)
     all_ids = sorted(set(type_ids) | set(mineral_ids))
     try:
-        stats_by_id = client.structure_order_stats_bulk(trading_cfg.structure_id, all_ids, auth_role=seller_role)
+        # Falls back to a Goonmetrics current-price snapshot (trading_cfg.
+        # structure_market_slug) when no seller is logged in or the real
+        # call fails - see structure_order_stats_bulk_or_goonmetrics's own
+        # docstring.
+        stats_by_id, priced_via_fallback = client.structure_order_stats_bulk_or_goonmetrics(
+            trading_cfg.structure_id, all_ids, auth_role=seller_role,
+            goonmetrics_market_slug=trading_cfg.structure_market_slug)
     except ESIError as e:
         raise ActionError(f"Could not fetch the structure's order book ({e}). "
                            f"Does the seller character still have docking access?") from e
@@ -167,7 +174,8 @@ def do_quote_reprocessing(paste_text: str, trading_cfg: TradingConfig = TRADING_
         "total_refined_value": sum(r.refined_value or 0.0 for r in reprocess_rows),
         "total_sell_as_is_value": sum(r.sell_as_is_value or 0.0 for r in rows if r.sell_as_is_value is not None),
     }
-    return {"rows": [_reprocessing_row_to_dict(r) for r in rows], "totals": totals}
+    return {"rows": [_reprocessing_row_to_dict(r) for r in rows], "totals": totals,
+            "priced_via_fallback": priced_via_fallback}
 
 
 def error_line_to_row(line) -> ReprocessingQuoteRow:

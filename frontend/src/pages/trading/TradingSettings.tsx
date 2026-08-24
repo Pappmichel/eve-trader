@@ -71,6 +71,12 @@ export default function TradingSettings() {
         <NumberInput label="Structure ID" value={form.structure_id ?? undefined} min={1}
           onChange={(v) => set('structure_id', Number(v))} />
       </SimpleGrid>
+      <SimpleGrid cols={2} mt="xs">
+        <TextInput label="Structure market slug (appraise.gnf.lt, optional failsafe)"
+          description="Falls back to this Goonmetrics snapshot for structure pricing when no seller is logged in or ESI fails - not used by Undercut Check."
+          value={form.structure_market_slug ?? ''}
+          onChange={(e) => set('structure_market_slug', e.currentTarget.value)} />
+      </SimpleGrid>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Characters</Title>
       <SimpleGrid cols={2}>

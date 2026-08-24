@@ -414,6 +414,7 @@ class ReprocessingQuoteTotals(_Base):
 class ReprocessingQuoteResult(_Base):
     rows: list[ReprocessingQuoteRow]
     totals: ReprocessingQuoteTotals
+    priced_via_fallback: bool = False
 
 
 class MineralRequirement(_Base):

@@ -12,7 +12,8 @@ import { useRoleCharacters, type RoleCharacter } from '../../hooks/useRoleCharac
 import { dateTime } from '../../format'
 
 const TABS = [
-  { path: '/doctrine', label: 'Doctrines' },
+  { path: '/doctrine', label: 'Overview' },
+  { path: '/doctrine/doctrines', label: 'Doctrines' },
   { path: '/doctrine/contracts', label: 'Contracts' },
   { path: '/doctrine/contracts/history', label: 'History' },
   { path: '/doctrine/stockpile', label: 'Stockpile' },
@@ -24,14 +25,17 @@ const TABS = [
 // still highlights its parent tab - Tabs.value requires an exact match
 // otherwise none of the TABS above would show as active while viewing a
 // single doctrine or fitting. History is checked before the plain Contracts
-// prefix it would otherwise also match.
+// prefix it would otherwise also match. The bare "/doctrine" root is its own
+// Overview tab now, so only an exact match highlights it - everything else
+// (including a single doctrine/fitting sub-page) falls through to Doctrines.
 function activeTab(pathname: string): string {
+  if (pathname === '/doctrine') return '/doctrine'
   if (pathname.startsWith('/doctrine/contracts/history')) return '/doctrine/contracts/history'
   if (pathname.startsWith('/doctrine/contracts')) return '/doctrine/contracts'
   if (pathname.startsWith('/doctrine/stockpile')) return '/doctrine/stockpile'
   if (pathname.startsWith('/doctrine/shopping-list')) return '/doctrine/shopping-list'
   if (pathname.startsWith('/doctrine/settings')) return '/doctrine/settings'
-  return '/doctrine'
+  return '/doctrine/doctrines'
 }
 
 // Shared by both character groups below - only the query key, ssoRolePrefix,

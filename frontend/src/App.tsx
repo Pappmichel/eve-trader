@@ -19,6 +19,7 @@ const Portfolio = lazy(() => import('./pages/Portfolio'))
 // real: the pre-split production build was a single ~1MB bundle, over Vite's
 // own 500kB chunk-size warning threshold.
 const TradingLayout = lazy(() => import('./pages/trading/TradingLayout'))
+const TradingOverview = lazy(() => import('./pages/trading/Overview'))
 const Shortlist = lazy(() => import('./pages/trading/Shortlist'))
 const Candidates = lazy(() => import('./pages/trading/Candidates'))
 const NewCandidates = lazy(() => import('./pages/trading/NewCandidates'))
@@ -29,6 +30,7 @@ const UndercutCheck = lazy(() => import('./pages/trading/UndercutCheck'))
 const TradingSettings = lazy(() => import('./pages/trading/TradingSettings'))
 
 const ProductionLayout = lazy(() => import('./pages/production/ProductionLayout'))
+const ProductionOverview = lazy(() => import('./pages/production/Overview'))
 const StockTargets = lazy(() => import('./pages/production/StockTargets'))
 const MarketStatus = lazy(() => import('./pages/production/MarketStatus'))
 const Jobs = lazy(() => import('./pages/production/Jobs'))
@@ -47,6 +49,7 @@ const AssetSearch = lazy(() => import('./pages/production/AssetSearch'))
 const ProductionSettings = lazy(() => import('./pages/production/ProductionSettings'))
 
 const DoctrineLayout = lazy(() => import('./pages/doctrine/DoctrineLayout'))
+const DoctrineOverview = lazy(() => import('./pages/doctrine/Overview'))
 const Doctrines = lazy(() => import('./pages/doctrine/Doctrines'))
 const DoctrineDetail = lazy(() => import('./pages/doctrine/DoctrineDetail'))
 const FittingDetail = lazy(() => import('./pages/doctrine/FittingDetail'))
@@ -57,6 +60,7 @@ const ShoppingList = lazy(() => import('./pages/doctrine/ShoppingList'))
 const DoctrineSettings = lazy(() => import('./pages/doctrine/DoctrineSettings'))
 
 const OreLayout = lazy(() => import('./pages/refining/OreLayout'))
+const OreOverview = lazy(() => import('./pages/refining/Overview'))
 const OreShortlist = lazy(() => import('./pages/refining/OreShortlist'))
 const ReprocessingQuote = lazy(() => import('./pages/refining/ReprocessingQuote'))
 const MineralShoppingList = lazy(() => import('./pages/refining/MineralShoppingList'))
@@ -171,7 +175,8 @@ function App() {
             <Route path="/admin" element={<AdminPage />} />
 
             <Route path="/trading" element={<TradingLayout />}>
-              <Route index element={<Shortlist />} />
+              <Route index element={<TradingOverview />} />
+              <Route path="shortlist" element={<Shortlist />} />
               <Route path="candidates" element={<Candidates />} />
               <Route path="new-candidates" element={<NewCandidates />} />
               <Route path="history" element={<PriceHistory />} />
@@ -182,7 +187,8 @@ function App() {
             </Route>
 
             <Route path="/production" element={<ProductionLayout />}>
-              <Route index element={<StockTargets />} />
+              <Route index element={<ProductionOverview />} />
+              <Route path="stock-targets" element={<StockTargets />} />
               <Route path="market" element={<MarketStatus />} />
               <Route path="jobs" element={<Jobs />} />
               <Route path="slots" element={<Slots />} />
@@ -201,7 +207,8 @@ function App() {
             </Route>
 
             <Route path="/doctrine" element={<DoctrineLayout />}>
-              <Route index element={<Doctrines />} />
+              <Route index element={<DoctrineOverview />} />
+              <Route path="doctrines" element={<Doctrines />} />
               <Route path=":doctrineId" element={<DoctrineDetail />} />
               <Route path="fittings/:fittingId" element={<FittingDetail />} />
               <Route path="contracts" element={<Contracts />} />
@@ -212,7 +219,8 @@ function App() {
             </Route>
 
             <Route path="/ore" element={<OreLayout />}>
-              <Route index element={<OreShortlist />} />
+              <Route index element={<OreOverview />} />
+              <Route path="shortlist" element={<OreShortlist />} />
               <Route path="reprocessing" element={<ReprocessingQuote />} />
               <Route path="shopping-list" element={<MineralShoppingList />} />
               <Route path="settings" element={<OreSettings />} />

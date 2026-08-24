@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Badge, Button, Card, Group, SimpleGrid, Stack, Text, Textarea, Title } from '@mantine/core'
+import { Alert, Badge, Button, Card, Group, SimpleGrid, Stack, Text, Textarea, Title } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { refiningApi } from '../../api/client'
@@ -68,6 +68,12 @@ export default function ReprocessingQuote() {
 
       {result && (
         <>
+          {result.priced_via_fallback && (
+            <Alert color="warn" variant="light">
+              Structure prices used the Goonmetrics fallback (no seller logged in, or the real order book was
+              unavailable) - a less precise community snapshot, not the real order-book percentile.
+            </Alert>
+          )}
           <SimpleGrid cols={{ base: 2, sm: 4 }}>
             <Card withBorder padding="sm">
               <Text size="xs" c="dimmed" tt="uppercase">Marked "Reprocess"</Text>
