@@ -1680,8 +1680,11 @@ def available_blueprint_copies(type_id: int, location_id: Optional[int],
                                 tables: tuple[str, str] = ("character_blueprints", "corp_blueprints")) -> float:
     """Counts owned blueprint *copies* (quantity == -2 in ESI's blueprint
     model - see get_owned_bpo_best_me_te's own runs == -1 check for the BPO
-    side of this same sentinel) of `type_id` sitting at `location_id`,
-    filtered on resolved_location_id (see replace_blueprints) the same way
+    side of this same sentinel) of `type_id` sitting at `location_id` (None =
+    all locations, mirroring esi_stock_at_location's own None branch - added
+    for GitHub issue #114's "how many of this T2 BPC do I own anywhere"
+    column, which has no single station to filter to), filtered on
+    resolved_location_id (see replace_blueprints) the same way
     esi_stock_at_location filters on it. Also excludes
     NON_STOCK_LOCATION_FLAGS (GitHub issue #32) the same way
     esi_stock_at_location does - a BPC sitting in Asset Safety requires its
@@ -1698,6 +1701,14 @@ def available_blueprint_copies(type_id: int, location_id: Optional[int],
     with connect() as conn:
         total = 0.0
         for table in tables:
+            if location_id is None:
+                row = conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE type_id = ? AND quantity = -2 "
+                    f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))",
+                    (type_id, *NON_STOCK_LOCATION_FLAGS),
+                ).fetchone()
+                total += row[0]
+                continue
             row = conn.execute(
                 f"SELECT COUNT(*) FROM {table} WHERE type_id = ? AND resolved_location_id = ? AND quantity = -2 "
                 f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))",
@@ -1705,6 +1716,29 @@ def available_blueprint_copies(type_id: int, location_id: Optional[int],
             ).fetchone()
             total += row[0]
     return total
+
+
+def has_bpo_at_location(type_id: int, location_id: int,
+                         tables: tuple[str, str] = ("character_blueprints", "corp_blueprints")) -> bool:
+    """Whether an original BPO (runs == -1, see get_owned_bpo_best_me_te's
+    own use of this same sentinel) of `type_id` sits at `location_id` -
+    GitHub issue #114: the new T1 BPC Invention Needs table's "BPO on site"
+    column, so a player can see at a glance whether a missing T1 BPC copy
+    can just be re-printed from a BPO already on site, or needs to be
+    imported/bought instead. Same NON_STOCK_LOCATION_FLAGS exclusion as
+    available_blueprint_copies - a BPO sitting in Asset Safety isn't usable
+    on site either."""
+    flag_placeholders = ",".join("?" * len(NON_STOCK_LOCATION_FLAGS))
+    with connect() as conn:
+        for table in tables:
+            row = conn.execute(
+                f"SELECT 1 FROM {table} WHERE type_id = ? AND resolved_location_id = ? AND runs = -1 "
+                f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders})) LIMIT 1",
+                (type_id, location_id, *NON_STOCK_LOCATION_FLAGS),
+            ).fetchone()
+            if row is not None:
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------- reads

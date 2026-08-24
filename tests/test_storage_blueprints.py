@@ -127,6 +127,73 @@ def test_available_blueprint_copies_filters_to_location(tenant):
     assert storage.available_blueprint_copies(TYPE_ID, LOCATION_ID) == 1
 
 
+def test_available_blueprint_copies_none_location_sums_across_all_locations(tenant):
+    # GitHub issue #114: the "how many T2 BPCs do I own, anywhere" column
+    # has no single station to filter to - None mirrors esi_stock_at_
+    # location's own None-means-everywhere convention.
+    other_location = 1000000000002
+    storage.replace_blueprints("character_blueprints", [
+        _bp_row(1, TYPE_ID, me=0, te=0, runs=1, location_id=LOCATION_ID, quantity=-2),
+        _bp_row(2, TYPE_ID, me=0, te=0, runs=1, location_id=other_location, quantity=-2),
+    ])
+    storage.replace_blueprints("corp_blueprints", [
+        _bp_row(3, TYPE_ID, me=0, te=0, runs=1, location_id=other_location, quantity=-2),
+    ])
+
+    assert storage.available_blueprint_copies(TYPE_ID, None) == 3
+
+
+def test_available_blueprint_copies_none_location_still_excludes_bpos_and_asset_safety(tenant):
+    storage.replace_blueprints("character_blueprints", [
+        _bp_row(1, TYPE_ID, me=10, te=20, runs=-1, location_id=LOCATION_ID),  # BPO - must not count
+        _bp_row(2, TYPE_ID, me=0, te=0, runs=1, location_id=LOCATION_ID, quantity=-2, location_flag="AssetSafety"),
+        _bp_row(3, TYPE_ID, me=0, te=0, runs=1, location_id=LOCATION_ID, quantity=-2, location_flag="Hangar"),
+    ])
+
+    assert storage.available_blueprint_copies(TYPE_ID, None) == 1
+
+
+def test_has_bpo_at_location_true_when_a_bpo_sits_there(tenant):
+    storage.replace_blueprints("character_blueprints", [
+        _bp_row(1, TYPE_ID, me=10, te=20, runs=-1, location_id=LOCATION_ID),
+    ])
+
+    assert storage.has_bpo_at_location(TYPE_ID, LOCATION_ID) is True
+
+
+def test_has_bpo_at_location_false_when_only_a_bpc_sits_there(tenant):
+    storage.replace_blueprints("character_blueprints", [
+        _bp_row(1, TYPE_ID, me=0, te=0, runs=3, location_id=LOCATION_ID, quantity=-2),
+    ])
+
+    assert storage.has_bpo_at_location(TYPE_ID, LOCATION_ID) is False
+
+
+def test_has_bpo_at_location_false_at_a_different_location(tenant):
+    other_location = 1000000000002
+    storage.replace_blueprints("character_blueprints", [
+        _bp_row(1, TYPE_ID, me=10, te=20, runs=-1, location_id=other_location),
+    ])
+
+    assert storage.has_bpo_at_location(TYPE_ID, LOCATION_ID) is False
+
+
+def test_has_bpo_at_location_excludes_asset_safety(tenant):
+    storage.replace_blueprints("character_blueprints", [
+        _bp_row(1, TYPE_ID, me=10, te=20, runs=-1, location_id=LOCATION_ID, location_flag="AssetSafety"),
+    ])
+
+    assert storage.has_bpo_at_location(TYPE_ID, LOCATION_ID) is False
+
+
+def test_has_bpo_at_location_checks_corp_table_too(tenant):
+    storage.replace_blueprints("corp_blueprints", [
+        _bp_row(1, TYPE_ID, me=10, te=20, runs=-1, location_id=LOCATION_ID),
+    ])
+
+    assert storage.has_bpo_at_location(TYPE_ID, LOCATION_ID) is True
+
+
 def test_replace_blueprints_without_matching_asset_row_keeps_own_location(tenant):
     # No corresponding character_assets row for the container - falls back
     # to the blueprint's own (unwrapped) location_id rather than erroring or

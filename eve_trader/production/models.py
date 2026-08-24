@@ -87,6 +87,35 @@ class InventionNeedRow:
     runs_needed: int         # total manufacturing runs the Bauliste requires
     bpcs_needed: int         # ceil(runs_needed / output_runs)
     recommended_invention_runs: int  # ceil(bpcs_needed / probability) - expected attempts
+    # GitHub issue #114: how many copies of the *invented* T2 blueprint
+    # (the invention recipe's own product_type_id, not `type_id` above -
+    # that's the manufactured item) are already owned, anywhere (not just
+    # the invention station - this is "do I even still need to invent more
+    # at all", independent of where a copy happens to be sitting).
+    t2_bpc_owned: int = 0
+    # This stock target's own current_stock/backup_stock, as a 0-100%
+    # (capped) - same idea as BuyListEntry.on_hand_pct but computed at the
+    # InventoryRow stage (plan_production already has current_stock/
+    # backup_stock in scope there), not the post-netting buy/build totals.
+    stockpile_pct: float = 0.0
+
+
+@dataclass
+class T1BpcInventionNeedRow:
+    """One row per T1 blueprint currently needed for invention (GitHub issue
+    #114) - the T1-blueprint-only slice of invention_logistics' combined
+    datacore/decryptor/T1-BPC LogisticsRow list, which mixing all three
+    together made it hard to see "how many BPC runs am I short on the thing
+    that actually matters" at a glance. Also adds a BPO-presence check
+    invention_logistics has no reason to compute (it only cares about
+    copies, the actual invention input) - if bpo_present is True, a missing
+    copy can be reprinted on site instead of imported/bought."""
+    type_id: int
+    name: str
+    needed: int       # total BPC copies/runs needed (recommended_invention_runs, summed across every stock target that invents from this T1 blueprint)
+    available: int    # BPC copies currently at cfg.invention_location_id
+    missing: int       # max(0, needed - available)
+    bpo_present: bool  # an original BPO of this type sits at cfg.invention_location_id too
 
 
 @dataclass

@@ -261,6 +261,17 @@ class InventionNeedRow(_Base):
     runs_needed: int
     bpcs_needed: int
     recommended_invention_runs: int
+    t2_bpc_owned: int
+    stockpile_pct: float
+
+
+class T1BpcInventionNeedRow(_Base):
+    type_id: int
+    name: str
+    needed: int
+    available: int
+    missing: int
+    bpo_present: bool
 
 
 class IndustryJobRow(_Base):

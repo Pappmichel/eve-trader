@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Title, Text, Group, TextInput, Select, Button, Stack } from '@mantine/core'
+import { Card, Title, Text, Group, TextInput, Select, Button, Stack, Badge } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
-import type { InventionNeedRow, InventionResult } from '../../api/types'
+import type { InventionNeedRow, InventionResult, T1BpcInventionNeedRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
@@ -18,9 +18,16 @@ export default function Invention() {
   const { data: plan, isLoading: planLoading, isError: planError, refetch: refetchPlan, dataUpdatedAt: planUpdatedAt } =
     useQuery({ queryKey: ['production', 'plan'], queryFn: productionApi.plan })
   const inventionNeeds = plan?.invention_list ?? []
+  const {
+    data: t1BpcNeeds, isLoading: t1BpcLoading, isError: t1BpcError, refetch: refetchT1Bpc,
+    dataUpdatedAt: t1BpcUpdatedAt,
+  } = useQuery({
+    queryKey: ['production', 'invention', 't1-bpc-needs'], queryFn: productionApi.t1BpcInventionNeeds, retry: false,
+  })
 
   const refreshPlan = useAction('Refresh Production', productionApi.refreshPlan, [
     ['production', 'plan'], ['production', 'stock-targets'], ['production', 'logistics'],
+    ['production', 'invention', 't1-bpc-needs'],
   ])
 
   const [productName, setProductName] = useState('')
@@ -41,6 +48,29 @@ export default function Invention() {
     { header: 'Runs Needed', accessorKey: 'runs_needed', size: 130, cell: (i) => qty(i.getValue()) },
     { header: 'BPCs Needed', accessorKey: 'bpcs_needed', size: 130, cell: (i) => qty(i.getValue()) },
     { header: 'Recommended Invention Runs', accessorKey: 'recommended_invention_runs', size: 200, cell: (i) => qty(i.getValue()) },
+    { header: 'T2 BPCs Owned', accessorKey: 't2_bpc_owned', size: 140, cell: (i) => qty(i.getValue()) },
+    {
+      header: 'Stockpile %', accessorKey: 'stockpile_pct', size: 120,
+      cell: (i) => {
+        const v = i.getValue() as number
+        const color = v >= 50 ? 'accent' : v > 0 ? 'warn' : 'gray'
+        return <Badge color={color} variant="light">{v.toFixed(0)}%</Badge>
+      },
+    },
+  ], [])
+
+  const t1BpcColumns = useMemo<ColumnDef<T1BpcInventionNeedRow, any>[]>(() => [
+    { header: 'T1 Blueprint', accessorKey: 'name', size: 220 },
+    { header: 'Needed', accessorKey: 'needed', size: 110, cell: (i) => qty(i.getValue()) },
+    { header: 'Available on Site', accessorKey: 'available', size: 150, cell: (i) => qty(i.getValue()) },
+    {
+      header: 'Missing', accessorKey: 'missing', size: 110,
+      cell: (i) => <Text c={i.getValue() > 0 ? 'warn' : 'accent'} fw={i.getValue() > 0 ? 600 : 400}>{qty(i.getValue())}</Text>,
+    },
+    {
+      header: 'BPO On Site', accessorKey: 'bpo_present', size: 130,
+      cell: (i) => (i.getValue() ? 'Yes' : 'No'),
+    },
   ], [])
 
   const columns = useMemo<ColumnDef<InventionResult, any>[]>(() => [
@@ -96,7 +126,33 @@ export default function Invention() {
               it yourself. Runs needed = missing quantity to the stock target ÷ quantity per manufacturing run,
               rounded up. BPCs needed = runs needed ÷ runs/BPC, rounded up. Recommended invention runs = BPCs needed
               ÷ success chance, rounded up - expected number of invention jobs to get enough BPCs. Decryptor as in
-              the Stock Targets tab (manual override possible).
+              the Stock Targets tab (manual override possible). T2 BPCs Owned = copies of this row's own invented
+              blueprint currently owned anywhere, not just at the invention station. Stockpile % = current stock ÷
+              backup target, capped at 100%.
+            </Text>
+          </>
+        )}
+      </Card>
+
+      <Card withBorder>
+        <Title order={4} mb="xs">T1 BPC Runs Needed at Invention Station</Title>
+        {t1BpcLoading ? (
+          <DataTable data={[]} columns={t1BpcColumns} isLoading maxHeight={360} />
+        ) : t1BpcError ? (
+          <DataTable data={[]} columns={t1BpcColumns} isError onRetry={() => refetchT1Bpc()} maxHeight={360} />
+        ) : !t1BpcNeeds || t1BpcNeeds.length === 0 ? (
+          <HintCard>
+            Nothing currently needs inventing, or no invention station is configured (Logistics tab's
+            "Invention structure ID").
+          </HintCard>
+        ) : (
+          <>
+            <DataTable data={t1BpcNeeds} columns={t1BpcColumns} maxHeight={360} dataUpdatedAt={t1BpcUpdatedAt} />
+            <Text size="xs" c="dimmed" mt="xs">
+              Just the T1 blueprint copies from the table above - the Logistics tab's combined Invention section also
+              mixes in decryptors and datacores, which made "how many BPC runs am I actually short" hard to see at a
+              glance. BPO On Site = whether an original BPO for that blueprint sits at the invention station too, so
+              a missing copy can be reprinted on site instead of imported.
             </Text>
           </>
         )}
