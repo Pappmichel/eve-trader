@@ -1,16 +1,23 @@
 import { useMemo, useState } from 'react'
-import { Button, Group, Stack, Text, TextInput } from '@mantine/core'
+import { Button, Group, Stack, Text } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
 import type { AssetLocationRow, AssetLocationSearchResult } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
+import { SearchableSelect } from '../../components/SearchableSelect'
 import { useAction } from '../../hooks/useAction'
+import { useItemNameOptions } from '../../hooks/useStaticOptions'
 import { qty } from '../../format'
 
 export default function AssetSearch() {
-  const [itemName, setItemName] = useState('')
+  const { data: itemNameOptions } = useItemNameOptions()
+  const options = useMemo(
+    () => (itemNameOptions ?? []).map((t) => ({ value: String(t.type_id), label: t.type_name })),
+    [itemNameOptions],
+  )
+  const [itemId, setItemId] = useState<string | null>(null)
   const [result, setResult] = useState<AssetLocationSearchResult | null>(null)
   const search = useAction('Search', (name: string) => productionApi.searchAssetLocations(name))
 
@@ -31,8 +38,9 @@ export default function AssetSearch() {
   )
 
   const runSearch = () => {
-    if (!itemName.trim()) return
-    search.mutate(itemName.trim(), { onSuccess: (r) => setResult(r) })
+    const name = options.find((o) => o.value === itemId)?.label
+    if (!name) return
+    search.mutate(name, { onSuccess: (r) => setResult(r) })
   }
 
   return (
@@ -45,13 +53,8 @@ export default function AssetSearch() {
       </HintCard>
 
       <Group align="flex-end">
-        <TextInput
-          label="Item name (exact)" placeholder="e.g. Tritanium" value={itemName}
-          onChange={(e) => setItemName(e.currentTarget.value)}
-          onKeyDown={(e) => e.key === 'Enter' && runSearch()}
-          w={320}
-        />
-        <Button loading={search.isPending} disabled={!itemName.trim()} onClick={runSearch}>
+        <SearchableSelect label="Item name" placeholder="Search item…" data={options} value={itemId} onChange={setItemId} w={320} />
+        <Button loading={search.isPending} disabled={!itemId} onClick={runSearch}>
           Search
         </Button>
       </Group>

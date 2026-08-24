@@ -45,24 +45,21 @@ def do_update_settings(updates: dict, cfg: ProductionConfig = PRODUCTION_CONFIG)
     return updates
 
 
-def do_set_system(profile: str, system_name: str, cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
-    """Resolves `system_name` (e.g. "Jita", "Amarr") to its solar system ID via
-    ESI once, then persists both under the given `profile` ("component" or
-    "manufacturing" - see production/constants.py COMPONENT_GROUP_IDS) - so the
-    rest of the app (system cost index lookups) keeps using the numeric ID
-    without re-resolving it every time."""
+def do_set_system(profile: str, system_id: int, system_name: str, cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
+    """Persists `system_id`/`system_name` under the given `profile`
+    ("component" or "manufacturing" - see production/constants.py
+    COMPONENT_GROUP_IDS) - so the rest of the app (system cost index
+    lookups) keeps using the numeric ID without re-resolving it every time.
+
+    `system_id` is expected to already be resolved client-side, picked from
+    the static local SDE system list (GET /production/systems) - this used
+    to re-resolve `system_name` via a live ESI call
+    (ESIClient().resolve_system_id) on every save, which is both slower and
+    a needless ESI-failure mode now that the frontend already has a real ID
+    from a local, non-access-gated data source."""
     if profile not in ("component", "manufacturing"):
         raise ActionError(f"Unknown profile '{profile}'. Options: component, manufacturing")
     system_name = system_name.strip()
-    try:
-        system_id = ESIClient().resolve_system_id(system_name)
-    except ESIError as e:
-        # A transient ESI error here used to become a raw, unhandled 500 (the
-        # API router's _wrap only catches ActionError) - convert to the app's
-        # normal clean error path like every other ESI call site in this file.
-        raise ActionError(f"Could not resolve '{system_name}' via ESI right now: {e}") from e
-    if system_id is None:
-        raise ActionError(f"Solar system '{system_name}' not found. Exact name?")
     save_tenant_config_overrides(
         "production", {f"{profile}_system_id": system_id, f"{profile}_system_name": system_name},
         cfg, cfg_type=ProductionConfig,

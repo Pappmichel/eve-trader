@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Title, Text, Group, TextInput, NumberInput, Button, Select, Stack, ActionIcon, Tooltip } from '@mantine/core'
+import { Card, Title, Text, Group, NumberInput, Button, Select, Stack, ActionIcon, Tooltip } from '@mantine/core'
 import { modals } from '@mantine/modals'
 import { IconCheck, IconAlertTriangle } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
@@ -9,7 +9,9 @@ import { productionApi } from '../../api/client'
 import type { StockTarget } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
+import { SearchableSelect } from '../../components/SearchableSelect'
 import { useAction } from '../../hooks/useAction'
+import { useItemNameOptions } from '../../hooks/useStaticOptions'
 import { isk, qty } from '../../format'
 
 const STOCK_KEYS = [
@@ -99,7 +101,12 @@ export default function StockTargets() {
     return m
   }, [plan])
 
-  const [newName, setNewName] = useState('')
+  const { data: itemNameOptions } = useItemNameOptions()
+  const newItemOptions = useMemo(
+    () => (itemNameOptions ?? []).map((t) => ({ value: String(t.type_id), label: t.type_name })),
+    [itemNameOptions],
+  )
+  const [newItemId, setNewItemId] = useState<string | null>(null)
   const [newBackup, setNewBackup] = useState<number | ''>(0)
   const [newHome, setNewHome] = useState<number | ''>(0)
   const [newJita, setNewJita] = useState<number | ''>(0)
@@ -206,14 +213,14 @@ export default function StockTargets() {
           Targets, current stock, and Backup/Home/Jita columns are editable directly in the table below once added.
         </Text>
         <Group grow align="flex-end">
-          <TextInput label="Item name (exact)" value={newName} onChange={(e) => setNewName(e.currentTarget.value)} />
+          <SearchableSelect label="Item name" placeholder="Search item…" data={newItemOptions} value={newItemId} onChange={setNewItemId} />
           <NumberInput label="Backup target" value={newBackup} onChange={(v) => setNewBackup(v === '' ? '' : Number(v))} min={0} />
           <NumberInput label="Home market target" value={newHome} onChange={(v) => setNewHome(v === '' ? '' : Number(v))} min={0} />
           <NumberInput label="Jita market target" value={newJita} onChange={(v) => setNewJita(v === '' ? '' : Number(v))} min={0} />
           <Button onClick={() => addTarget.mutate({
-            type_name: newName, backup_stock: Number(newBackup) || 0,
+            type_name: newItemOptions.find((o) => o.value === newItemId)?.label ?? '', backup_stock: Number(newBackup) || 0,
             home_market_stock: newHome ? Number(newHome) : null, jita_market_stock: newJita ? Number(newJita) : null,
-          })} loading={addTarget.isPending}>
+          })} loading={addTarget.isPending} disabled={!newItemId}>
             Add
           </Button>
         </Group>

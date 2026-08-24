@@ -106,6 +106,16 @@ export interface HistoryTypeIdOption {
   type_name: string
 }
 
+export interface SdeItemNameOption {
+  type_id: number
+  type_name: string
+}
+
+export interface SolarSystemOption {
+  solar_system_id: number
+  solar_system_name: string
+}
+
 export interface PriceHistoryPoint {
   region_id: number
   type_id: number

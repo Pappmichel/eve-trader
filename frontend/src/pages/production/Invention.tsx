@@ -1,13 +1,15 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Title, Text, Group, TextInput, Select, Button, Stack, Badge } from '@mantine/core'
+import { Card, Title, Text, Group, Select, Button, Stack, Badge } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
 import type { InventionNeedRow, InventionResult, T1BpcInventionNeedRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
+import { SearchableSelect } from '../../components/SearchableSelect'
 import { useAction } from '../../hooks/useAction'
+import { useItemNameOptions } from '../../hooks/useStaticOptions'
 import { isk, pct, qty } from '../../format'
 
 export default function Invention() {
@@ -30,7 +32,13 @@ export default function Invention() {
     ['production', 'invention', 't1-bpc-needs'],
   ])
 
-  const [productName, setProductName] = useState('')
+  const { data: itemNameOptions } = useItemNameOptions()
+  const blueprintOptions = useMemo(
+    () => (itemNameOptions ?? []).map((t) => ({ value: String(t.type_id), label: t.type_name })),
+    [itemNameOptions],
+  )
+  const [productId, setProductId] = useState<string | null>(null)
+  const productName = blueprintOptions.find((o) => o.value === productId)?.label ?? ''
   const [decryptorChoice, setDecryptorChoice] = useState('Compare all')
   const [results, setResults] = useState<InventionResult[] | null>(null)
 
@@ -160,11 +168,12 @@ export default function Invention() {
 
       <Card withBorder>
         <Group grow align="flex-end">
-          <TextInput
-            label="T2/T3 blueprint name (exact)"
-            placeholder="e.g. Small Shield Booster II Blueprint"
-            value={productName}
-            onChange={(e) => setProductName(e.currentTarget.value)}
+          <SearchableSelect
+            label="T2/T3 blueprint name"
+            placeholder="Search blueprint…"
+            data={blueprintOptions}
+            value={productId}
+            onChange={setProductId}
           />
           <Select label="Decryptor" data={['Compare all', ...(decryptors ?? [])]} value={decryptorChoice} onChange={(v) => v && setDecryptorChoice(v)} />
           <Button

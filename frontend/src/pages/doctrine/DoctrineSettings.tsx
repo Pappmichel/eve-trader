@@ -5,10 +5,13 @@ import { Stack, Title, Text, SimpleGrid, NumberInput, Switch, Button, Center, Lo
 import { doctrineApi } from '../../api/client'
 import type { DoctrineSettings as DoctrineSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
+import { useStructureNameOptions } from '../../hooks/useStaticOptions'
 import { HintCard } from '../../components/HintCard'
+import { StructureIdField } from '../../components/StructureIdField'
 
 export default function DoctrineSettings() {
   const { data } = useQuery({ queryKey: ['doctrine', 'settings'], queryFn: doctrineApi.settings })
+  const { data: structureNames } = useStructureNameOptions()
   const [form, setForm] = useState<DoctrineSettingsT | null>(null)
   useEffect(() => { if (data) setForm(data) }, [data])
 
@@ -28,10 +31,10 @@ export default function DoctrineSettings() {
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Structure &amp; Stockpile</Title>
       <SimpleGrid cols={2}>
-        <NumberInput label="Contract structure ID (blank = use Trading's)" value={form.doctrine_structure_id ?? undefined}
-          min={1} onChange={(v) => set('doctrine_structure_id', v ? Number(v) : null)} />
-        <NumberInput label="Stockpile location ID (blank = same as structure)" value={form.stockpile_location_id ?? undefined}
-          min={1} onChange={(v) => set('stockpile_location_id', v ? Number(v) : null)} />
+        <StructureIdField label="Contract structure ID (blank = use Trading's)" value={form.doctrine_structure_id ?? null}
+          onChange={(v) => set('doctrine_structure_id', v)} structureNames={structureNames} />
+        <StructureIdField label="Stockpile location ID (blank = same as structure)" value={form.stockpile_location_id ?? null}
+          onChange={(v) => set('stockpile_location_id', v)} structureNames={structureNames} />
       </SimpleGrid>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Validation</Title>

@@ -32,6 +32,13 @@ from .constants import ACTIVITY_REACTION, job_slots_from_skills
 
 PRODUCTION_ROLE_PREFIX = "producer"
 
+# Upwell structure IDs are always >= this (14 digits, e.g. 1049588174021);
+# NPC station IDs top out around 8 digits (e.g. 60003760) - a cheap range
+# check on a location_id already in hand from an asset row, used by
+# _discover_structure_names below to decide what's even worth attempting to
+# resolve as a structure, with no SDE lookup needed.
+STRUCTURE_ID_MIN = 1_000_000_000_000
+
 PRODUCTION_SCOPES = [
     "esi-assets.read_assets.v1",
     "esi-assets.read_corporation_assets.v1",
@@ -203,6 +210,76 @@ def _fetch_character_data(client: ESIClient, role: str, character_id: int, chara
     }
 
 
+def _discover_structure_names(client: ESIClient, all_assets: list[dict], corp_roles: dict[int, str]) -> dict:
+    """Proactive bulk fill of storage.structure_names, driven entirely by
+    this sync's own already-fetched asset data - no extra ESI calls to
+    *discover* location_ids, since character_assets/corporation_assets
+    already return location_id on every asset row (including corp Office
+    folder entries - there's no separate ESI "offices" endpoint, offices are
+    just root-level asset rows at a station). Only location_ids not already
+    cached (storage.get_cached_structure_names) are attempted - this is
+    meant to be cheap and incremental every sync tick, not a forced
+    re-resolve (use POST resolve-structure-name with force=True for that).
+
+    Two-tier resolution, same preference order as do_resolve_structure_name:
+    1. corporation_structures(corp_id) once per distinct corp in corp_roles
+       - returns every structure that corp owns, with its name included, in
+       one call, so this alone typically resolves most/all of a tenant's
+       own structures.
+    2. get_structure_name(location_id) per character, per still-unresolved
+       ID, stopping at the first character that can see it - the expensive
+       fallback, only reached for structures owned by a different corp than
+       any registered character's (e.g. a structure a character's own
+       assets merely sit inside, owned by someone else).
+
+    Never raises - every ESIError is caught and skipped, matching sync_esi's
+    "one failure must not abort the whole sync" contract; an unresolved ID
+    just stays unresolved for next sync's retry."""
+    candidate_ids = {a["location_id"] for a in all_assets if a["location_id"] >= STRUCTURE_ID_MIN}
+    if not candidate_ids:
+        return {"candidates": 0, "resolved": 0}
+
+    cached = storage.get_cached_structure_names(list(candidate_ids))
+    unresolved = {loc_id for loc_id in candidate_ids if not cached[loc_id][0]}
+    if not unresolved:
+        return {"candidates": len(candidate_ids), "resolved": 0}
+
+    resolved_count = 0
+
+    for corporation_id, role in corp_roles.items():
+        if not unresolved:
+            break
+        try:
+            structures = client.corporation_structures(corporation_id, auth_role=role)
+        except ESIError:
+            continue
+        for structure in structures:
+            loc_id = structure.get("structure_id")
+            if loc_id in unresolved:
+                storage.set_cached_structure_name(loc_id, structure.get("name"), structure.get("solar_system_id"))
+                unresolved.discard(loc_id)
+                resolved_count += 1
+
+    if unresolved:
+        characters = list_producer_characters()
+        for loc_id in list(unresolved):
+            name = None
+            solar_system_id = None
+            for role, character_id, _ in characters:
+                try:
+                    info = client.get_structure_name(loc_id, auth_role=role)
+                    name = info.get("name")
+                    solar_system_id = info.get("solar_system_id")
+                    break
+                except ESIError:
+                    continue
+            storage.set_cached_structure_name(loc_id, name, solar_system_id)
+            if name is not None:
+                resolved_count += 1
+
+    return {"candidates": len(candidate_ids), "resolved": resolved_count}
+
+
 def sync_esi() -> dict:
     """Pulls assets/industry jobs/blueprints/sell orders/skills for every
     registered producer character, plus each character's corp-level data
@@ -228,7 +305,12 @@ def sync_esi() -> dict:
     "claim" the same corp at once. Corp count is typically small (a handful
     at most, regardless of how many characters are registered), so this
     sequential half is cheap either way - almost all of sync_esi()'s wall
-    time scales with character *count*, which Phase A already parallelizes."""
+    time scales with character *count*, which Phase A already parallelizes.
+
+    Phase C (_discover_structure_names, after Phase B) proactively resolves
+    any not-yet-cached structure IDs found in this sync's own asset data -
+    additive and non-fatal like everything else here, never affects whether
+    the rest of the sync succeeds."""
     tm = TokenManager(OAUTH_CONFIG)
     characters = list_producer_characters(tm)
     if not characters:
@@ -262,6 +344,7 @@ def sync_esi() -> dict:
     per_character: dict = {}
     per_corporation: dict = {}
     corp_orders_done: set[str] = set()
+    corp_roles: dict[int, str] = {}
 
     for r in char_results:
         character_name = r["character_name"]
@@ -276,6 +359,13 @@ def sync_esi() -> dict:
         corporation_id, corp_name, role = r["corporation_id"], r["corp_name"], r["role"]
         if corporation_id is None:
             continue  # this character's own public-info fetch failed - already recorded above
+
+        # First-registered-character-per-corp wins, tried once by
+        # _discover_structure_names below - corporation_structures needs
+        # Station_Manager specifically (not Director), so a character
+        # without it just gets an ESIError there, non-fatal, same as every
+        # other per-corp call in this loop.
+        corp_roles.setdefault(corporation_id, role)
 
         # Assets/jobs/blueprints need the Director role; orders need
         # Accountant or Trader instead - tracked independently (not as one
@@ -313,6 +403,8 @@ def sync_esi() -> dict:
                 if isinstance(per_corporation.get(corp_name), dict):
                     per_corporation[corp_name]["corp_sell_orders"] = len(sell_rows)
 
+    structure_names = _discover_structure_names(client, all_char_assets + all_corp_assets, corp_roles)
+
     installer_ids = {j.get("installer_id") for j in all_char_jobs + all_corp_jobs if j.get("installer_id")}
     installer_names = client.resolve_names(list(installer_ids))
 
@@ -325,4 +417,4 @@ def sync_esi() -> dict:
     storage.replace_blueprints("corp_blueprints", _blueprint_rows(all_corp_bps))
     storage.replace_character_slots(slot_rows)
 
-    return {"characters": per_character, "corporations": per_corporation}
+    return {"characters": per_character, "corporations": per_corporation, "structure_names": structure_names}

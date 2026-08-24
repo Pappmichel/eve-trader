@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Badge, Button, Group, Paper, Stack, Text, TextInput } from '@mantine/core'
+import { Badge, Button, Group, Paper, Stack, Text } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 import { useQuery } from '@tanstack/react-query'
 
@@ -7,7 +7,9 @@ import { productionApi } from '../../api/client'
 import type { ShipMarginRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
+import { SearchableSelect } from '../../components/SearchableSelect'
 import { useAction } from '../../hooks/useAction'
+import { useItemNameOptions } from '../../hooks/useStaticOptions'
 import { isk, pct } from '../../format'
 
 function MarginDetailCard({ row }: { row: ShipMarginRow }) {
@@ -48,17 +50,20 @@ function MarginDetailCard({ row }: { row: ShipMarginRow }) {
 }
 
 function ItemSearch() {
-  const [itemName, setItemName] = useState('')
+  const { data: itemNameOptions } = useItemNameOptions()
+  const options = useMemo(
+    () => (itemNameOptions ?? []).map((t) => ({ value: String(t.type_id), label: t.type_name })),
+    [itemNameOptions],
+  )
+  const [itemId, setItemId] = useState<string | null>(null)
   const search = useAction('Search Item Margin', (name: string) => productionApi.itemMargin(name))
 
   return (
     <Stack>
       <Group align="flex-end">
-        <TextInput
-          label="Item name (exact)" placeholder="e.g. Rifter" value={itemName}
-          onChange={(e) => setItemName(e.currentTarget.value)} w={320}
-        />
-        <Button loading={search.isPending} disabled={!itemName} onClick={() => search.mutate(itemName)}>
+        <SearchableSelect label="Item name" placeholder="Search item…" data={options} value={itemId} onChange={setItemId} w={320} />
+        <Button loading={search.isPending} disabled={!itemId}
+          onClick={() => search.mutate(options.find((o) => o.value === itemId)?.label ?? '')}>
           Search
         </Button>
       </Group>

@@ -199,10 +199,63 @@ def test_set_system_action_error_maps_to_400(monkeypatch):
         raise ActionError("Solarsystem 'Nowhere' nicht gefunden. Exakter Name?")
     monkeypatch.setattr(production_actions, "do_set_system", _raise)
 
-    resp = client.post("/api/production/settings/systems", json={"profile": "component", "system_name": "Nowhere"})
+    resp = client.post(
+        "/api/production/settings/systems",
+        json={"profile": "component", "system_id": 99999999, "system_name": "Nowhere"},
+    )
 
     assert resp.status_code == 400
     assert "Nowhere" in resp.json()["detail"]
+
+
+def test_set_system_passes_system_id_through(monkeypatch):
+    captured = {}
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        return kwargs
+    monkeypatch.setattr(production_actions, "do_set_system", _capture)
+
+    resp = client.post(
+        "/api/production/settings/systems",
+        json={"profile": "manufacturing", "system_id": 30000142, "system_name": "Jita"},
+    )
+
+    assert resp.status_code == 200
+    assert captured == {"profile": "manufacturing", "system_id": 30000142, "system_name": "Jita"}
+
+
+def test_get_sde_item_names_serializes_storage_rows(monkeypatch):
+    monkeypatch.setattr(storage, "list_all_sde_types", lambda: [(587, "Rifter"), (34, "Tritanium")])
+
+    resp = client.get("/api/production/sde/item-names")
+
+    assert resp.status_code == 200
+    assert resp.json() == [
+        {"type_id": 587, "type_name": "Rifter"},
+        {"type_id": 34, "type_name": "Tritanium"},
+    ]
+
+
+def test_get_all_solar_systems_serializes_storage_rows(monkeypatch):
+    monkeypatch.setattr(storage, "list_all_solar_systems", lambda: [(30000142, "Jita"), (30002187, "Amarr")])
+
+    resp = client.get("/api/production/systems")
+
+    assert resp.status_code == 200
+    assert resp.json() == [
+        {"solar_system_id": 30000142, "solar_system_name": "Jita"},
+        {"solar_system_id": 30002187, "solar_system_name": "Amarr"},
+    ]
+
+
+def test_get_structure_names_returns_full_tenant_cache(monkeypatch):
+    monkeypatch.setattr(storage, "list_cached_structure_names", lambda: [(1049588174021, "C-J Keepstar"), (123, None)])
+
+    resp = client.get("/api/production/logistics/structure-names")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"1049588174021": "C-J Keepstar", "123": None}
 
 
 # --------------------------------------------------- trend/undercut/discovery

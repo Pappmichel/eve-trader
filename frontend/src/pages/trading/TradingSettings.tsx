@@ -5,10 +5,13 @@ import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, Button, Center,
 import { tradingApi } from '../../api/client'
 import type { TradingSettings as TradingSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
+import { useStructureNameOptions } from '../../hooks/useStaticOptions'
 import { HintCard } from '../../components/HintCard'
+import { StructureIdField } from '../../components/StructureIdField'
 
 export default function TradingSettings() {
   const { data } = useQuery({ queryKey: ['trading', 'settings'], queryFn: tradingApi.settings })
+  const { data: structureNames } = useStructureNameOptions()
   const [form, setForm] = useState<TradingSettingsT | null>(null)
   useEffect(() => { if (data) setForm(data) }, [data])
 
@@ -68,8 +71,8 @@ export default function TradingSettings() {
           onChange={(v) => set('jita_region_id', Number(v))} />
         <NumberInput label="Reference region ID" value={form.reference_region_id} min={1}
           onChange={(v) => set('reference_region_id', Number(v))} />
-        <NumberInput label="Structure ID" value={form.structure_id ?? undefined} min={1}
-          onChange={(v) => set('structure_id', Number(v))} />
+        <StructureIdField label="Structure ID" value={form.structure_id ?? null}
+          onChange={(v) => set('structure_id', v)} structureNames={structureNames} />
       </SimpleGrid>
       <SimpleGrid cols={2} mt="xs">
         <TextInput label="Structure market slug (appraise.gnf.lt, optional failsafe)"

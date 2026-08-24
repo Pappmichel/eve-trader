@@ -42,6 +42,15 @@ def get_sde_freshness():
     return _wrap(actions.do_check_sde_freshness)
 
 
+@router.get("/sde/item-names")
+def get_sde_item_names():
+    """Every published SDE item (type_id, type_name) - static full list for
+    the item-name autocomplete's client-side, loaded-once dict search (see
+    frontend's useItemNameOptions). Distinct from search_sde_types' LIKE
+    query, which stays server-side-only for exact-match validation."""
+    return [{"type_id": t, "type_name": n} for t, n in storage.list_all_sde_types()]
+
+
 @router.get("/stock-targets", response_model=list[schemas.StockTarget])
 def get_stock_targets():
     return [
@@ -190,14 +199,24 @@ def get_system_settings():
     }
 
 
+@router.get("/systems")
+def get_all_solar_systems():
+    """Every SDE solar system (solar_system_id, solar_system_name) - static
+    full list for the system-name autocomplete's client-side, loaded-once
+    dict search. Distinct from GET /settings/systems above, which returns
+    only the currently-selected component/manufacturing system."""
+    return [{"solar_system_id": s, "solar_system_name": n} for s, n in storage.list_all_solar_systems()]
+
+
 class SetSystemRequest(BaseModel):
     profile: str
+    system_id: int
     system_name: str
 
 
 @router.post("/settings/systems")
 def set_system(req: SetSystemRequest):
-    return _wrap(actions.do_set_system, profile=req.profile, system_name=req.system_name)
+    return _wrap(actions.do_set_system, profile=req.profile, system_id=req.system_id, system_name=req.system_name)
 
 
 @router.get("/decryptors")
@@ -253,24 +272,15 @@ def get_t1_bpc_invention_needs():
 
 @router.get("/logistics/structure-names")
 def get_structure_names():
-    """Cached names (storage.structure_names) for every location_id
-    currently assigned to a job category, saved as a quick-switch option, or
-    configured as the distribution source/home/invention station (GitHub
-    issue #21 - these three used to be left out entirely, so Distribution's
-    "From" column and the Invention station both showed a raw numeric ID
-    forever, never a name, regardless of how many times resolve-structure-
-    name was called for a category location) - never makes a live ESI call
-    itself, so this is always fast; use POST resolve-structure-name to
-    actually (re-)resolve one."""
-    location_ids = set(storage.load_category_locations().values())
-    for ids in storage.load_category_location_options().values():
-        location_ids.update(ids)
-    for loc_id in (PRODUCTION_CONFIG.distribution_source_location_id, PRODUCTION_CONFIG.home_location_id,
-                   PRODUCTION_CONFIG.invention_location_id):
-        if loc_id is not None:
-            location_ids.add(loc_id)
-    cached = storage.get_cached_structure_names(list(location_ids))
-    return {str(loc_id): (name if was_cached else None) for loc_id, (was_cached, name) in cached.items()}
+    """Every location_id this tenant has ever cached a structure-name
+    resolution for (storage.structure_names) - broadened from the original
+    config-assigned-IDs-only filter (GitHub issue #21) so this can also back
+    the structure-ID picker's option list across Trading/Production/Doctrine
+    Settings, not just Distribution's "From" column and the Invention
+    station's inline name display - never makes a live ESI call itself, so
+    this is always fast; use POST resolve-structure-name to (re-)resolve
+    one, or Sync ESI Data for the proactive bulk discovery pass."""
+    return {str(loc_id): name for loc_id, name in storage.list_cached_structure_names()}
 
 
 class ResolveStructureNameRequest(BaseModel):

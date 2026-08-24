@@ -1024,6 +1024,17 @@ def get_system_security(system_id: Optional[int]) -> Optional[float]:
     return row[0] if row else None
 
 
+def list_all_solar_systems() -> list[tuple[int, str]]:
+    """Every SDE solar system (solar_system_id, solar_system_name), name-
+    ordered - full candidate list for the system-name autocomplete
+    (Production Settings' component/manufacturing system pickers), loaded
+    once client-side rather than searched per keystroke. ~8.5k rows."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT solar_system_id, solar_system_name FROM sde_solar_systems ORDER BY solar_system_name"
+        ).fetchall()
+
+
 # ----------------------------------------------------- Production: user settings
 def upsert_stock_target(type_id: int, type_name: str, backup_stock: Optional[float] = None,
                          home_market_stock: Optional[float] = None,
@@ -1234,6 +1245,17 @@ def get_cached_structure_names(location_ids: list[int]) -> dict[int, tuple[bool,
         ).fetchall()
     found = dict(rows)
     return {loc_id: (loc_id in found, found.get(loc_id)) for loc_id in location_ids}
+
+
+def list_cached_structure_names() -> list[tuple[int, Optional[str]]]:
+    """Every location_id this tenant has ever attempted to resolve a
+    structure name for (RLS-scoped), success or failure - name is None for
+    an attempted-but-failed resolution (see get_cached_structure_name's
+    was_cached/name semantics). Backs GET /logistics/structure-names (a
+    superset of the old config-assigned-only filter) and the structure-ID
+    picker's option list."""
+    with connect() as conn:
+        return conn.execute("SELECT location_id, name FROM structure_names ORDER BY name").fetchall()
 
 
 def set_cached_structure_name(location_id: int, name: Optional[str], solar_system_id: Optional[int] = None) -> None:
@@ -1942,6 +1964,20 @@ def search_sde_types(query: str, limit: int = 20) -> list[tuple[int, str]]:
             (f"%{query}%", query, limit),
         ).fetchall()
     return rows
+
+
+def list_all_sde_types() -> list[tuple[int, str]]:
+    """Every published SDE type (type_id, type_name), name-ordered - the
+    full candidate list for the item-name autocomplete (static-list-loaded-
+    once approach, see frontend's useItemNameOptions), as opposed to
+    search_sde_types' per-keystroke LIKE query above, which stays in place
+    for server-side exact-match validation (do_add_stock_target and
+    friends) and CLI use. ~27k rows, small enough to ship as one JSON
+    payload and cache client-side indefinitely."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT type_id, type_name FROM sde_types WHERE published = 1 ORDER BY type_name"
+        ).fetchall()
 
 
 @lru_cache(maxsize=None)

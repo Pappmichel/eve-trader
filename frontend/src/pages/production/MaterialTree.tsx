@@ -1,11 +1,13 @@
-import { useState } from 'react'
-import { Badge, Button, Group, NumberInput, Paper, Stack, Text, TextInput } from '@mantine/core'
+import { useMemo, useState } from 'react'
+import { Badge, Button, Group, NumberInput, Paper, Stack, Text } from '@mantine/core'
 import { IconChevronDown, IconChevronRight } from '@tabler/icons-react'
 
 import { productionApi } from '../../api/client'
 import type { MaterialTreeNode } from '../../api/types'
 import { HintCard } from '../../components/HintCard'
+import { SearchableSelect } from '../../components/SearchableSelect'
 import { useAction } from '../../hooks/useAction'
+import { useItemNameOptions } from '../../hooks/useStaticOptions'
 import { qty } from '../../format'
 
 const ACTIVITY_COLOR: Record<string, string> = {
@@ -64,7 +66,12 @@ function TreeRow({ node, depth }: { node: MaterialTreeNode; depth: number }) {
 }
 
 export default function MaterialTree() {
-  const [typeName, setTypeName] = useState('')
+  const { data: itemNameOptions } = useItemNameOptions()
+  const options = useMemo(
+    () => (itemNameOptions ?? []).map((t) => ({ value: String(t.type_id), label: t.type_name })),
+    [itemNameOptions],
+  )
+  const [typeId, setTypeId] = useState<string | null>(null)
   const [quantity, setQuantity] = useState<number | ''>(1)
   const [tree, setTree] = useState<MaterialTreeNode | null>(null)
   const build = useAction('Build Material Tree',
@@ -80,17 +87,17 @@ export default function MaterialTree() {
       </HintCard>
 
       <Group align="flex-end">
-        <TextInput
-          label="Item name (exact)" placeholder="e.g. Praxis" value={typeName}
-          onChange={(e) => setTypeName(e.currentTarget.value)} w={320}
-        />
+        <SearchableSelect label="Item name" placeholder="Search item…" data={options} value={typeId} onChange={setTypeId} w={320} />
         <NumberInput
           label="Quantity" value={quantity} onChange={(v) => setQuantity(v === '' ? '' : Number(v))}
           min={1} w={140}
         />
         <Button
-          loading={build.isPending} disabled={!typeName || quantity === ''}
-          onClick={() => build.mutate({ typeName, quantity: Number(quantity) }, { onSuccess: (r) => setTree(r) })}
+          loading={build.isPending} disabled={!typeId || quantity === ''}
+          onClick={() => build.mutate(
+            { typeName: options.find((o) => o.value === typeId)?.label ?? '', quantity: Number(quantity) },
+            { onSuccess: (r) => setTree(r) },
+          )}
         >
           Build Tree
         </Button>

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Badge, Stack, Card, Title, Text, Group, TextInput, NumberInput, Button, ActionIcon, Divider } from '@mantine/core'
+import { Badge, Stack, Card, Title, Text, Group, NumberInput, Button, ActionIcon, Divider } from '@mantine/core'
 import { modals } from '@mantine/modals'
 import { IconTrash } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
@@ -9,7 +9,9 @@ import { productionApi } from '../../api/client'
 import type { ManualBlueprintCopyCostRow, OwnedBlueprintRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
+import { SearchableSelect } from '../../components/SearchableSelect'
 import { useAction } from '../../hooks/useAction'
+import { useItemNameOptions } from '../../hooks/useStaticOptions'
 import { isk, qty } from '../../format'
 
 const MANUAL_COPY_COSTS_KEY = [['production', 'manual-blueprint-copy-costs']]
@@ -33,7 +35,12 @@ function ManualBlueprintCopyCostsSection() {
   // pendingRoleKey comment already documents and fixes).
   const [pendingTypeId, setPendingTypeId] = useState<number | null>(null)
 
-  const [itemName, setItemName] = useState('')
+  const { data: itemNameOptions } = useItemNameOptions()
+  const copyCostItemOptions = useMemo(
+    () => (itemNameOptions ?? []).map((t) => ({ value: String(t.type_id), label: t.type_name })),
+    [itemNameOptions],
+  )
+  const [itemId, setItemId] = useState<string | null>(null)
   const [purchaseCost, setPurchaseCost] = useState<number | ''>('')
   const [runs, setRuns] = useState<number | ''>('')
 
@@ -72,17 +79,16 @@ function ManualBlueprintCopyCostsSection() {
 
       <Card withBorder mb="sm">
         <Group grow align="flex-end">
-          <TextInput label="Item name (exact)" placeholder="e.g. Rifter" value={itemName}
-            onChange={(e) => setItemName(e.currentTarget.value)} />
+          <SearchableSelect label="Item name" placeholder="Search item…" data={copyCostItemOptions} value={itemId} onChange={setItemId} />
           <NumberInput label="Purchase cost (ISK)" value={purchaseCost}
             onChange={(v) => setPurchaseCost(v === '' ? '' : Number(v))} min={0} />
           <NumberInput label="Runs included" value={runs} onChange={(v) => setRuns(v === '' ? '' : Number(v))} min={1} />
           <Button
-            disabled={!itemName.trim() || purchaseCost === '' || runs === ''}
+            disabled={!itemId || purchaseCost === '' || runs === ''}
             loading={addCost.isPending}
             onClick={() => addCost.mutate(
-              { itemName, purchaseCost: Number(purchaseCost), runs: Number(runs) },
-              { onSuccess: () => { setItemName(''); setPurchaseCost(''); setRuns('') } },
+              { itemName: copyCostItemOptions.find((o) => o.value === itemId)?.label ?? '', purchaseCost: Number(purchaseCost), runs: Number(runs) },
+              { onSuccess: () => { setItemId(null); setPurchaseCost(''); setRuns('') } },
             )}
           >
             Add

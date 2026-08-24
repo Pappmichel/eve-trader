@@ -1,26 +1,35 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, Select, Button, Card, Group, Center, Loader } from '@mantine/core'
 
 import { productionApi } from '../../api/client'
 import type { ProductionSettings as ProductionSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
+import { useSolarSystemOptions, useStructureNameOptions } from '../../hooks/useStaticOptions'
 import { HintCard } from '../../components/HintCard'
+import { SearchableSelect } from '../../components/SearchableSelect'
+import { StructureIdField } from '../../components/StructureIdField'
 
 export default function ProductionSettings() {
   const { data } = useQuery({ queryKey: ['production', 'settings'], queryFn: productionApi.settings })
   const { data: structureOptions } = useQuery({ queryKey: ['production', 'structure-options'], queryFn: productionApi.structureOptions })
   const { data: systemSettings } = useQuery({ queryKey: ['production', 'system-settings'], queryFn: productionApi.systemSettings })
+  const { data: solarSystemOptions } = useSolarSystemOptions()
+  const { data: structureNames } = useStructureNameOptions()
+  const systemSelectData = useMemo(
+    () => (solarSystemOptions ?? []).map((s) => ({ value: String(s.solar_system_id), label: s.solar_system_name })),
+    [solarSystemOptions],
+  )
 
   const [form, setForm] = useState<ProductionSettingsT | null>(null)
   useEffect(() => { if (data) setForm(data) }, [data])
 
-  const [componentSystemInput, setComponentSystemInput] = useState('')
-  const [manufacturingSystemInput, setManufacturingSystemInput] = useState('')
+  const [componentSystemId, setComponentSystemId] = useState<string | null>(null)
+  const [manufacturingSystemId, setManufacturingSystemId] = useState<string | null>(null)
   useEffect(() => {
     if (systemSettings) {
-      setComponentSystemInput(systemSettings.component_system_name ?? '')
-      setManufacturingSystemInput(systemSettings.manufacturing_system_name ?? '')
+      setComponentSystemId(systemSettings.component_system_id != null ? String(systemSettings.component_system_id) : null)
+      setManufacturingSystemId(systemSettings.manufacturing_system_id != null ? String(systemSettings.manufacturing_system_id) : null)
     }
   }, [systemSettings])
 
@@ -42,10 +51,14 @@ export default function ProductionSettings() {
     }
     return result
   }, [['production', 'settings'], ['production', 'structure-names']])
-  const saveComponentSystem = useAction('Save Component System',
-    () => productionApi.setSystem('component', componentSystemInput), [['production', 'system-settings']])
-  const saveManufacturingSystem = useAction('Save Manufacturing System',
-    () => productionApi.setSystem('manufacturing', manufacturingSystemInput), [['production', 'system-settings']])
+  const saveComponentSystem = useAction('Save Component System', () => {
+    const opt = systemSelectData.find((o) => o.value === componentSystemId)
+    return productionApi.setSystem('component', Number(componentSystemId), opt?.label ?? '')
+  }, [['production', 'system-settings']])
+  const saveManufacturingSystem = useAction('Save Manufacturing System', () => {
+    const opt = systemSelectData.find((o) => o.value === manufacturingSystemId)
+    return productionApi.setSystem('manufacturing', Number(manufacturingSystemId), opt?.label ?? '')
+  }, [['production', 'system-settings']])
 
   // Same fix as TradingSettings.tsx - a bare `return null` rendered a
   // blank page during the initial fetch instead of a loading indicator.
@@ -80,8 +93,8 @@ export default function ProductionSettings() {
       <SimpleGrid cols={2}>
         <TextInput label="Home market (appraise.gnf.lt slug)" value={form.home_market ?? ''}
           onChange={(e) => set('home_market', e.currentTarget.value)} />
-        <NumberInput label="Structure/location ID (assets/orders)" value={form.home_location_id ?? 0} min={0} step={1}
-          onChange={(v) => set('home_location_id', Number(v) || null)} />
+        <StructureIdField label="Structure/location ID (assets/orders)" value={form.home_location_id ?? null}
+          onChange={(v) => set('home_location_id', v)} structureNames={structureNames} />
       </SimpleGrid>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Where You Build</Title>
@@ -122,14 +135,15 @@ export default function ProductionSettings() {
       <Card withBorder mt="lg">
         <Title order={6} c="dimmed" tt="uppercase" mb="xs">Solar Systems (Cost Index)</Title>
         <Text size="xs" c="dimmed" mb="sm">
-          Names instead of IDs - resolved via ESI on save. Reactions and components use the component system;
-          everything else uses the manufacturing system.
+          Pick from the local SDE system list. Reactions and components use the component system; everything else
+          uses the manufacturing system.
         </Text>
         <Stack gap="sm">
           <Group align="flex-end">
-            <TextInput label="Component/reaction system" placeholder="e.g. Amarr" value={componentSystemInput}
-              onChange={(e) => setComponentSystemInput(e.currentTarget.value)} w={240} />
-            <Button variant="default" onClick={() => saveComponentSystem.mutate()} loading={saveComponentSystem.isPending}>
+            <SearchableSelect label="Component/reaction system" placeholder="Search system…" data={systemSelectData}
+              value={componentSystemId} onChange={setComponentSystemId} w={240} />
+            <Button variant="default" disabled={!componentSystemId}
+              onClick={() => saveComponentSystem.mutate()} loading={saveComponentSystem.isPending}>
               Save
             </Button>
             {systemSettings?.component_system_id && (
@@ -137,9 +151,10 @@ export default function ProductionSettings() {
             )}
           </Group>
           <Group align="flex-end">
-            <TextInput label="Manufacturing system (everything else)" placeholder="e.g. Dodixie" value={manufacturingSystemInput}
-              onChange={(e) => setManufacturingSystemInput(e.currentTarget.value)} w={240} />
-            <Button variant="default" onClick={() => saveManufacturingSystem.mutate()} loading={saveManufacturingSystem.isPending}>
+            <SearchableSelect label="Manufacturing system (everything else)" placeholder="Search system…" data={systemSelectData}
+              value={manufacturingSystemId} onChange={setManufacturingSystemId} w={240} />
+            <Button variant="default" disabled={!manufacturingSystemId}
+              onClick={() => saveManufacturingSystem.mutate()} loading={saveManufacturingSystem.isPending}>
               Save
             </Button>
             {systemSettings?.manufacturing_system_id && (

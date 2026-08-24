@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Title, Text, Stack, Button, Group, NumberInput, Select, SimpleGrid, ActionIcon, UnstyledButton } from '@mantine/core'
+import { Card, Title, Text, Stack, Button, Group, Select, SimpleGrid, ActionIcon, UnstyledButton } from '@mantine/core'
 import { modals } from '@mantine/modals'
 import { IconX } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
@@ -9,6 +9,7 @@ import { productionApi } from '../../api/client'
 import type { DistributionRow, LogisticsRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
+import { StructureIdField } from '../../components/StructureIdField'
 import { useAction } from '../../hooks/useAction'
 import { qty } from '../../format'
 
@@ -28,17 +29,17 @@ export default function Logistics() {
   })
   const { data: settings } = useQuery({ queryKey: ['production', 'settings'], queryFn: productionApi.settings })
 
-  const [sourceDraft, setSourceDraft] = useState('')
-  const [inventionDraft, setInventionDraft] = useState('')
+  const [sourceDraft, setSourceDraft] = useState<number | null>(null)
+  const [inventionDraft, setInventionDraft] = useState<number | null>(null)
   useEffect(() => {
     if (!settings) return
-    setSourceDraft(settings.distribution_source_location_id != null ? String(settings.distribution_source_location_id) : '')
-    setInventionDraft(settings.invention_location_id != null ? String(settings.invention_location_id) : '')
+    setSourceDraft(settings.distribution_source_location_id ?? null)
+    setInventionDraft(settings.invention_location_id ?? null)
   }, [settings])
 
   const saveDistributionSource = useAction('Distribution Source Saved', async () => {
     if (!settings) return
-    const locationId = sourceDraft ? Number(sourceDraft) : null
+    const locationId = sourceDraft
     const result = await productionApi.updateSettings({
       ...settings, distribution_source_location_id: locationId,
     })
@@ -58,7 +59,7 @@ export default function Logistics() {
 
   const saveInventionLocation = useAction('Invention Station Saved', async () => {
     if (!settings) return
-    const locationId = inventionDraft ? Number(inventionDraft) : null
+    const locationId = inventionDraft
     const result = await productionApi.updateSettings({ ...settings, invention_location_id: locationId })
     if (locationId != null) {
       try {
@@ -199,15 +200,14 @@ export default function Logistics() {
                   />
                 )}
                 <Group align="flex-end" gap="xs">
-                  <NumberInput
-                    label={options.length > 1 ? 'Other/new structure ID' : cat}
-                    placeholder="Structure ID"
-                    value={draft[cat] ?? ''}
-                    onChange={(v) => setDraft((d) => ({ ...d, [cat]: String(v) }))}
-                    min={0}
-                    hideControls
-                    style={{ flex: 1 }}
-                  />
+                  <div style={{ flex: 1 }}>
+                    <StructureIdField
+                      label={options.length > 1 ? 'Other/new structure ID' : cat}
+                      value={draft[cat] ? Number(draft[cat]) : null}
+                      onChange={(v) => setDraft((d) => ({ ...d, [cat]: v != null ? String(v) : '' }))}
+                      structureNames={structureNames}
+                    />
+                  </div>
                   <Button
                     size="xs" variant="default"
                     disabled={!draft[cat]}
@@ -301,8 +301,10 @@ export default function Logistics() {
           defaults to the home structure (Production Settings) if left empty.
         </Text>
         <Group align="flex-end" gap="xs" mb="sm">
-          <NumberInput label="Distribution source structure ID" placeholder="Home structure ID" value={sourceDraft}
-            onChange={(v) => setSourceDraft(String(v))} min={0} hideControls style={{ flex: 1, maxWidth: 300 }} />
+          <div style={{ flex: 1, maxWidth: 300 }}>
+            <StructureIdField label="Distribution source structure ID" value={sourceDraft}
+              onChange={setSourceDraft} structureNames={structureNames} />
+          </div>
           <Button size="xs" variant="default" loading={saveDistributionSource.isPending}
             onClick={() => saveDistributionSource.mutate()}>
             Save
@@ -321,8 +323,10 @@ export default function Logistics() {
           Datacores/decryptors/T1 blueprint copies needed vs. what's at the configured invention station.
         </Text>
         <Group align="flex-end" gap="xs" mb="sm">
-          <NumberInput label="Invention structure ID" placeholder="Structure ID" value={inventionDraft}
-            onChange={(v) => setInventionDraft(String(v))} min={0} hideControls style={{ flex: 1, maxWidth: 300 }} />
+          <div style={{ flex: 1, maxWidth: 300 }}>
+            <StructureIdField label="Invention structure ID" value={inventionDraft}
+              onChange={setInventionDraft} structureNames={structureNames} />
+          </div>
           <Button size="xs" variant="default" loading={saveInventionLocation.isPending}
             onClick={() => saveInventionLocation.mutate()}>
             Save
