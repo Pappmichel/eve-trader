@@ -391,7 +391,8 @@ def do_contract_history() -> dict:
     for (contract_id, source_role, fitting_id, fitting_name, hull_type_id, title, price, acceptor_id,
          acceptor_name, date_issued, date_completed) in rows:
         result.append(ContractHistoryRow(
-            contract_id=contract_id, source_role=source_role, fitting_id=fitting_id, fitting_name=fitting_name,
+            contract_id=contract_id, source_role=source_role, fitting_id=str(fitting_id) if fitting_id else None,
+            fitting_name=fitting_name,
             hull_type_id=hull_type_id, hull_name=_type_name(hull_type_id) if hull_type_id is not None else None,
             title=title, price=price, acceptor_id=acceptor_id, acceptor_name=acceptor_name,
             date_issued=_iso(date_issued), date_completed=_iso(date_completed),
