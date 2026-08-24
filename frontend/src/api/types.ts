@@ -127,6 +127,7 @@ export interface TradingSettings {
   jita_region_id: number
   reference_region_id: number
   structure_id: number | null
+  structure_market_slug: string | null
   buyer_character_name: string | null
   seller_character_name: string | null
 }
@@ -792,4 +793,5 @@ export interface ReprocessingQuoteTotals {
 export interface ReprocessingQuoteResult {
   rows: ReprocessingQuoteRow[]
   totals: ReprocessingQuoteTotals
+  priced_via_fallback: boolean
 }

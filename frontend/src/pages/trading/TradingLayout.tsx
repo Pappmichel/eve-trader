@@ -8,7 +8,7 @@ import {
 } from '@tabler/icons-react'
 
 import { productionApi, tradingApi } from '../../api/client'
-import { useAction } from '../../hooks/useAction'
+import { useAction, warnIfPricedViaFallback } from '../../hooks/useAction'
 import { useRoleCharacters } from '../../hooks/useRoleCharacters'
 import { dateTime } from '../../format'
 
@@ -146,7 +146,7 @@ export default function TradingLayout() {
           <div>
             <Title order={6} c="dimmed" tt="uppercase" mb="xs">Daily Workflow</Title>
             <Stack gap="xs">
-              <Button size="xs" variant="default" onClick={() => refreshShortlist.mutate()} loading={refreshShortlist.isPending}>
+              <Button size="xs" variant="default" onClick={() => refreshShortlist.mutate(undefined, { onSuccess: warnIfPricedViaFallback })} loading={refreshShortlist.isPending}>
                 Refresh Shortlist
               </Button>
               <Button size="xs" leftSection={<IconBolt size={14} />} onClick={() => refreshAndPrune.mutate()} loading={refreshAndPrune.isPending}>

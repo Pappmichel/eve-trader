@@ -286,8 +286,6 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
         raise ActionError("Shortlist is empty.")
     tm = TokenManager(oauth_cfg)
     seller_characters = _list_role_characters(tm, "seller")
-    if not seller_characters:
-        raise ActionError("Seller character isn't logged in yet (Login → Seller).")
     client = ESIClient(cfg, tm)
 
     meta_backfill = _backfill_meta_levels(items, client)
@@ -295,7 +293,11 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
     # Own sell orders pooled across every registered seller character (GitHub
     # issue #46: multiple sellers share the structure's order slots) - "how
     # much of this item do I already have listed" is a per-item total across
-    # all of them, not just one.
+    # all of them, not just one. Genuinely needs a real seller token - no
+    # Goonmetrics equivalent exists for "my own listings" - so with zero
+    # sellers logged in this just stays empty (every item shows as nothing
+    # currently listed) rather than blocking the whole refresh; structure
+    # *pricing* below still gets the Goonmetrics failsafe independently.
     own_remaining: dict[int, float] = {}
     for seller_role, seller_character_id, _name in seller_characters:
         for item_id, remaining in own_orders.fetch_own_sell_orders(
@@ -334,9 +336,16 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
     try:
         # The structure's order book is one shared/global fetch - any one
         # registered seller with docking access can retrieve it, so the
-        # first one is enough (GitHub issue #46).
-        structure_stats_by_item = client.structure_order_stats_bulk(
-            cfg.structure_id, priced_item_ids, auth_role=seller_characters[0][0])
+        # first one is enough (GitHub issue #46). Falls back to a
+        # Goonmetrics current-price snapshot (cfg.structure_market_slug) when
+        # no seller is logged in at all, or the real call fails (lost
+        # docking access, ESI outage) - see structure_order_stats_bulk_or_
+        # goonmetrics's own docstring for why this is safe here but NOT used
+        # by check_undercut.
+        structure_stats_by_item, priced_via_fallback = client.structure_order_stats_bulk_or_goonmetrics(
+            cfg.structure_id, priced_item_ids,
+            auth_role=seller_characters[0][0] if seller_characters else None,
+            goonmetrics_market_slug=cfg.structure_market_slug)
     except ESIError as e:
         # esi-markets.structure_markets.v1 additionally requires the seller
         # character to actually have current docking access to the structure
@@ -344,9 +353,9 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
         # 500 from clicking "Refresh Shortlist" directly (do_pipeline already
         # handled this gracefully one level up, but the direct action didn't -
         # inconsistent). A 403 here is a fixable, actionable problem (re-dock/
-        # re-invite the seller character), so raise a clear ActionError
-        # instead of either crashing raw or silently degrading every row to
-        # "no market data."
+        # re-invite the seller character, or configure structure_market_slug),
+        # so raise a clear ActionError instead of either crashing raw or
+        # silently degrading every row to "no market data."
         raise ActionError(f"Could not fetch the structure's order book ({e}). "
                            f"Does the seller character still have docking access?") from e
     jita_stats_by_item = client.region_order_stats_bulk(cfg.jita_region_id, priced_item_ids)
@@ -375,6 +384,7 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
         "own_sell_orders_found": sum(1 for v in own_remaining.values() if v > 0),
         "buyer_already_covered_found": len(buyer_already_covered_ids),
         "meta_level_backfill": meta_backfill,
+        "priced_via_fallback": priced_via_fallback,
     }
     return items, rows, extra
 

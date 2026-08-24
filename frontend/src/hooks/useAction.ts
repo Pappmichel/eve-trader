@@ -50,3 +50,21 @@ export function useAction<TArgs = void, TResult = unknown>(
     },
   })
 }
+
+// Shared `onSuccess` callback for a mutation whose result may carry a
+// `priced_via_fallback` flag (Refresh Shortlist, Refresh Ore Shortlist,
+// Reprocessing Quote) - see esi_client.ESIClient.structure_order_stats_
+// bulk_or_goonmetrics's own docstring for why this exists. A second, extra
+// notification alongside useAction's own generic success toast, since that
+// one collapses a result this large to a plain "Done" and would otherwise
+// bury this warning entirely.
+export function warnIfPricedViaFallback(result: unknown): void {
+  if (result && typeof result === 'object' && (result as Record<string, unknown>).priced_via_fallback) {
+    notifications.show({
+      title: 'Structure prices used the Goonmetrics fallback',
+      message: 'No seller was logged in, or the real order book was unavailable - prices are a less precise '
+        + 'community snapshot (best bid/ask, not a real order-book percentile) until this refreshes normally.',
+      color: 'warn',
+    })
+  }
+}

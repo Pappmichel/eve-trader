@@ -586,6 +586,57 @@ class ESIClient:
             by_type.setdefault(o.get("type_id"), []).append(o)
         return {tid: _summarize_orders(by_type.get(tid, [])) for tid in type_ids}
 
+    def structure_order_stats_bulk_or_goonmetrics(
+        self, structure_id: int, type_ids: list[int], auth_role: Optional[str],
+        goonmetrics_market_slug: Optional[str],
+    ) -> tuple[dict[int, OrderStats], bool]:
+        """Failsafe wrapper around structure_order_stats_bulk (confirmed with
+        the user 2026-08-24): tries the real structure order book first when
+        a seller/producer character (`auth_role`) is logged in, falling back
+        to a Goonmetrics current-price snapshot (GoonmetricsClient.
+        current_prices(goonmetrics_market_slug)) whenever that's unavailable
+        - no character logged in at all, or the ESI call itself fails (lost
+        docking access, ESI outage). Returns (stats_by_id, used_fallback) so
+        callers can surface the degraded-precision warning to the user.
+
+        The synthesized OrderStats only ever has sell_percentile/
+        buy_percentile populated, from Goonmetrics' best-ask/best-bid
+        snapshot - not a real percentile over actual orders, and
+        sell_volume/buy_volume are always 0.0 since Goonmetrics' current-
+        price endpoint carries no order-book depth at all. Good enough for
+        "roughly what's this worth" (Shortlist/Ore Shortlist/Reprocessing
+        Quote); deliberately NOT used by own_orders.check_undercut, whose
+        entire purpose is comparing against real competing orders - a
+        fallback there could silently report "not undercut" when a real
+        order says otherwise, worse than a hard failure.
+
+        Raises ESIError (same type the real call raises, so callers' own
+        ActionError wrapping needs no change) only when BOTH the real order
+        book AND the Goonmetrics fallback are unavailable."""
+        last_error: Optional[Exception] = None
+        if auth_role is not None:
+            try:
+                return self.structure_order_stats_bulk(structure_id, type_ids, auth_role=auth_role), False
+            except ESIError as e:
+                last_error = e
+        if goonmetrics_market_slug:
+            from .goonmetrics_client import GoonmetricsClient  # local import: avoids a hard esi_client<->goonmetrics_client coupling for callers that never hit this fallback
+            try:
+                prices = GoonmetricsClient(self.cfg).current_prices(goonmetrics_market_slug)
+            except requests.RequestException as e:
+                last_error = last_error or e
+            else:
+                wanted = set(type_ids)
+                return {
+                    p.type_id: OrderStats(sell_percentile=p.sell or None, sell_volume=0.0,
+                                           buy_percentile=p.buy or None, buy_volume=0.0)
+                    for p in prices if p.type_id in wanted
+                }, True
+        if auth_role is None:
+            raise ESIError("No seller/producer character logged in, and no Goonmetrics fallback "
+                            "market configured (structure_market_slug).")
+        raise ESIError(f"{last_error} (No Goonmetrics fallback market configured either.)")
+
     def region_market_history(self, region_id: int, type_id: int) -> list[dict]:
         """Official ESI daily history (used as a fallback / cross-check to Goonmetrics)."""
         return self._get(f"/markets/{region_id}/history/",

@@ -105,6 +105,7 @@ class TradingSettings(BaseModel):
     jita_region_id: int
     reference_region_id: int
     structure_id: Optional[int] = None
+    structure_market_slug: Optional[str] = None
     buyer_character_name: Optional[str] = None
     seller_character_name: Optional[str] = None
 
