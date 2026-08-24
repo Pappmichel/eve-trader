@@ -2226,3 +2226,66 @@ def test_invention_logistics_skips_rows_with_no_runs_needed(monkeypatch):
                              output_runs=2, runs_needed=0, bpcs_needed=0, recommended_invention_runs=0)
 
     assert engine.invention_logistics([need], cfg) == []
+
+
+# ------------------------------------------------------------- t1_bpc_invention_needs
+def test_t1_bpc_invention_needs_reports_missing_copies_and_bpo_presence(monkeypatch):
+    # GitHub issue #114: the T1-blueprint-only slice of invention_logistics'
+    # combined demand, plus a BPO-on-site check.
+    from eve_trader.production.models import InventionNeedRow
+    cfg = ProductionConfig(invention_location_id=5000)
+    need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
+                             t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
+                             output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id: 4.0)
+    monkeypatch.setattr(storage, "has_bpo_at_location", lambda type_id, location_id: True)
+
+    rows = engine.t1_bpc_invention_needs([need], cfg)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.type_id == 200
+    assert row.needed == 6
+    assert row.available == 4
+    assert row.missing == 2  # 6 needed - 4 available copies
+    assert row.bpo_present is True
+
+
+def test_t1_bpc_invention_needs_aggregates_across_stock_targets_sharing_a_t1_blueprint(monkeypatch):
+    from eve_trader.production.models import InventionNeedRow
+    cfg = ProductionConfig(invention_location_id=5000)
+    need_a = InventionNeedRow(type_id=10, type_name="T2 Widget A", t1_blueprint_type_id=200,
+                               t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
+                               output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
+    need_b = InventionNeedRow(type_id=11, type_name="T2 Widget B", t1_blueprint_type_id=200,
+                               t1_blueprint_name="Widget Blueprint", decryptor="Attainment", probability=0.4,
+                               output_runs=1, runs_needed=4, bpcs_needed=4, recommended_invention_runs=10)
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id: 0.0)
+    monkeypatch.setattr(storage, "has_bpo_at_location", lambda type_id, location_id: False)
+
+    rows = engine.t1_bpc_invention_needs([need_a, need_b], cfg)
+
+    assert len(rows) == 1
+    assert rows[0].needed == 16  # 6 + 10 attempts, both needing the same T1 blueprint
+
+
+def test_t1_bpc_invention_needs_empty_without_location_configured(monkeypatch):
+    from eve_trader.production.models import InventionNeedRow
+    cfg = ProductionConfig(invention_location_id=None)
+    need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
+                             t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
+                             output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
+
+    assert engine.t1_bpc_invention_needs([need], cfg) == []
+
+
+def test_t1_bpc_invention_needs_skips_rows_with_no_runs_needed(monkeypatch):
+    from eve_trader.production.models import InventionNeedRow
+    cfg = ProductionConfig(invention_location_id=5000)
+    need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
+                             t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
+                             output_runs=2, runs_needed=0, bpcs_needed=0, recommended_invention_runs=0)
+
+    assert engine.t1_bpc_invention_needs([need], cfg) == []

@@ -21,6 +21,7 @@ from .constants import DECRYPTORS, JOB_CATEGORIES
 from .engine import (
     build_material_tree, discover_build_candidates, discover_ship_margins, distribution_recommendations,
     invention_logistics, item_margin_detail, invalidate_discover_cache, invalidate_ship_margin_cache,
+    t1_bpc_invention_needs,
     invalidate_production_locations_cache, logistics_status, market_status, plan_asset_optimized,
     plan_production, stock_value,
 )
@@ -416,6 +417,10 @@ def do_get_distribution_recommendations(build_list: list) -> list:
 
 def do_get_invention_logistics(invention_list: list) -> list:
     return invention_logistics(invention_list)
+
+
+def do_get_t1_bpc_invention_needs(invention_list: list) -> list:
+    return t1_bpc_invention_needs(invention_list)
 
 
 def do_market_status(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
