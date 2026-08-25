@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Card, Title, Text, Group, NumberInput, Button, Select, Stack, ActionIcon, Tooltip } from '@mantine/core'
 import { modals } from '@mantine/modals'
-import { IconCheck, IconAlertTriangle } from '@tabler/icons-react'
+import { IconCheck, IconAlertTriangle, IconTrash } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
@@ -113,6 +113,12 @@ export default function StockTargets() {
 
   const addTarget = useAction('Add Stock Target', productionApi.addStockTarget, STOCK_KEYS)
   const removeTarget = useAction('Remove Stock Target', productionApi.removeStockTarget, STOCK_KEYS)
+  // One shared mutation instance reused across every row's delete button -
+  // without tracking which row is actually pending, clicking delete for one
+  // row would put *every* row's button into the loading/disabled state (same
+  // bug production/Blueprints.tsx's own removeCost/pendingTypeId already
+  // fixes for its identical pattern).
+  const [pendingRemoveId, setPendingRemoveId] = useState<number | null>(null)
   const updateTarget = useAction('Save Target', (args: {
     typeId: number
     field: 'backup_stock' | 'home_market_stock' | 'jita_market_stock'
@@ -189,7 +195,27 @@ export default function StockTargets() {
     {
       header: 'Build/Buy Override', id: 'override', size: 150, accessorFn: (r) => overrides?.[r.type_id] ?? 'Auto',
     },
-  ], [manualStock, computedStock, overrides, updateTarget, setManualStockAction])
+    {
+      header: '', id: 'actions', size: 50, enableSorting: false,
+      cell: (i) => (
+        <ActionIcon size="sm" variant="subtle" color="danger" aria-label={`Remove stock target for ${i.row.original.type_name}`}
+          onClick={() => modals.openConfirmModal({
+            title: 'Remove stock target',
+            children: (
+              <Text size="sm">
+                Remove the stock target for {i.row.original.type_name}? Its targets, manual stock, and overrides are all deleted.
+              </Text>
+            ),
+            labels: { confirm: 'Remove', cancel: 'Cancel' },
+            confirmProps: { color: 'danger' },
+            onConfirm: () => { setPendingRemoveId(i.row.original.type_id); removeTarget.mutate(i.row.original.type_id) },
+          })}
+          loading={removeTarget.isPending && pendingRemoveId === i.row.original.type_id}>
+          <IconTrash size={14} />
+        </ActionIcon>
+      ),
+    },
+  ], [manualStock, computedStock, overrides, updateTarget, setManualStockAction, removeTarget, pendingRemoveId])
 
   return (
     <Stack>
@@ -267,15 +293,6 @@ export default function StockTargets() {
                   else setDecryptor.mutate({ typeId: chosen.type_id, decryptor: v })
                 }}
               />
-              <Button color="danger" variant="outline" onClick={() => modals.openConfirmModal({
-                title: 'Remove stock target',
-                children: <Text size="sm">Remove the stock target for {chosen.type_name}? Its targets, manual stock, and overrides are all deleted.</Text>,
-                labels: { confirm: 'Remove', cancel: 'Cancel' },
-                confirmProps: { color: 'danger' },
-                onConfirm: () => removeTarget.mutate(chosen.type_id),
-              })} loading={removeTarget.isPending}>
-                Remove Stock Target
-              </Button>
             </Group>
           )}
         </>
