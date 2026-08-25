@@ -2,8 +2,17 @@
 and storage.py reads. No business logic here - see production/actions.py/
 engine.py for that.
 
-The last computed Buy/Build plan is cached in-process (module-level, single
-local user) so /plan/buy and /plan/build can serve it without recomputing.
+The last computed Buy/Build plan is cached in-process (module-level, keyed
+by tenant_id - see _tenant_key) so /plan and /asset-plan can serve it
+without recomputing. Confirmed real cross-tenant bug (GitHub issue #TBD,
+found 2026-08-26): this used to be a single bare Optional[dict] each,
+predating the multi-tenant migration and never revisited by it since this
+file's in-memory state doesn't go through storage.py's RLS-scoped
+connect() - whichever tenant last refreshed Build List/Asset-Optimized
+List silently overwrote what *every* tenant saw on that page (their own
+production data replaced by whichever tenant clicked Refresh last), until
+someone refreshed again. Keying by tenant_id fixes this the same way RLS
+already isolates every other piece of tenant state in this app.
 """
 from __future__ import annotations
 
@@ -20,8 +29,19 @@ from ...production.config import PRODUCTION_CONFIG
 
 router = APIRouter()
 
-_last_plan: Optional[dict] = None
-_last_asset_plan: Optional[dict] = None
+_last_plan: dict[str, dict] = {}
+_last_asset_plan: dict[str, dict] = {}
+
+
+def _tenant_key() -> str:
+    """Keys _last_plan/_last_asset_plan by the current request's tenant -
+    storage.get_current_tenant() is always set inside a request handler
+    (AccessGateMiddleware/the gate-disabled default path both call
+    storage.set_current_tenant before any router code runs), same
+    assumption storage.connect() itself already relies on."""
+    tenant_id = storage.get_current_tenant()
+    assert tenant_id is not None, "no current tenant set - must run inside a request"
+    return tenant_id
 
 
 def _wrap(fn, **kwargs):
@@ -76,12 +96,12 @@ def get_selected_decryptors():
 
 @router.get("/plan", response_model=Optional[schemas.ProductionPlan])
 def get_last_plan():
-    return _last_plan
+    return _last_plan.get(_tenant_key())
 
 
 @router.get("/asset-plan", response_model=Optional[schemas.AssetPlan])
 def get_last_asset_plan():
-    return _last_asset_plan
+    return _last_asset_plan.get(_tenant_key())
 
 
 @router.get("/market-status", response_model=list[schemas.MarketStatusRow])
@@ -238,36 +258,40 @@ def get_category_locations():
 
 @router.get("/logistics", response_model=list[schemas.LogisticsRow])
 def get_logistics_status():
-    if not _last_plan or not _last_plan.get("build_list"):
+    plan = _last_plan.get(_tenant_key())
+    if not plan or not plan.get("build_list"):
         raise HTTPException(status_code=400, detail="No build list computed yet. Run 'Compute Buy/Build List' first.")
-    return _wrap(actions.do_get_logistics_status, build_list=_last_plan["build_list"])
+    return _wrap(actions.do_get_logistics_status, build_list=plan["build_list"])
 
 
 @router.get("/logistics/distribution", response_model=list[schemas.DistributionRow])
 def get_distribution_recommendations():
-    if not _last_plan or not _last_plan.get("build_list"):
+    plan = _last_plan.get(_tenant_key())
+    if not plan or not plan.get("build_list"):
         raise HTTPException(status_code=400, detail="No build list computed yet. Run 'Compute Buy/Build List' first.")
-    return _wrap(actions.do_get_distribution_recommendations, build_list=_last_plan["build_list"])
+    return _wrap(actions.do_get_distribution_recommendations, build_list=plan["build_list"])
 
 
 @router.get("/logistics/invention", response_model=list[schemas.LogisticsRow])
 def get_invention_logistics():
-    # Deliberately only checks _last_plan is None (not invention_list's own
+    # Deliberately only checks plan is None (not invention_list's own
     # truthiness, unlike the sibling endpoints above) - an empty
     # invention_list is a real, valid "nothing needs inventing right now"
     # state (no Tech II stock targets configured), not an error.
-    if _last_plan is None:
+    plan = _last_plan.get(_tenant_key())
+    if plan is None:
         raise HTTPException(status_code=400, detail="No build list computed yet. Run 'Compute Buy/Build List' first.")
-    return _wrap(actions.do_get_invention_logistics, invention_list=_last_plan.get("invention_list") or [])
+    return _wrap(actions.do_get_invention_logistics, invention_list=plan.get("invention_list") or [])
 
 
 @router.get("/invention/t1-bpc-needs", response_model=list[schemas.T1BpcInventionNeedRow])
 def get_t1_bpc_invention_needs():
-    # Same "_last_plan is None, not invention_list's own truthiness" rule as
+    # Same "plan is None, not invention_list's own truthiness" rule as
     # get_invention_logistics above - an empty list is a valid state.
-    if _last_plan is None:
+    plan = _last_plan.get(_tenant_key())
+    if plan is None:
         raise HTTPException(status_code=400, detail="No build list computed yet. Run 'Compute Buy/Build List' first.")
-    return _wrap(actions.do_get_t1_bpc_invention_needs, invention_list=_last_plan.get("invention_list") or [])
+    return _wrap(actions.do_get_t1_bpc_invention_needs, invention_list=plan.get("invention_list") or [])
 
 
 @router.get("/logistics/structure-names")
@@ -477,10 +501,9 @@ def search_asset_locations(req: AssetLocationSearchRequest):
 
 @router.post("/plan/refresh")
 def refresh_production():
-    global _last_plan
     result = _wrap(actions.do_refresh_production)
     plan = result["plan"]
-    _last_plan = {
+    _last_plan[_tenant_key()] = {
         "inventory": plan["inventory"],
         "buy_list": plan["buy_list"],
         "build_list": plan["build_list"],
@@ -497,7 +520,6 @@ def refresh_production():
 
 @router.post("/asset-plan/refresh")
 def refresh_asset_plan():
-    global _last_asset_plan
     result = _wrap(actions.do_refresh_asset_plan)
-    _last_asset_plan = result["plan"]
+    _last_asset_plan[_tenant_key()] = result["plan"]
     return {"jobs": result["jobs"]}

@@ -258,6 +258,42 @@ def test_get_structure_names_returns_full_tenant_cache(monkeypatch):
     assert resp.json() == {"1049588174021": "C-J Keepstar", "123": None}
 
 
+def test_asset_plan_is_isolated_per_tenant(monkeypatch):
+    # Real bug, confirmed live 2026-08-26: _last_asset_plan used to be a
+    # single bare Optional[dict], not tenant-keyed - whichever tenant last
+    # refreshed overwrote what *every* tenant saw on this page. Simulates
+    # two tenants sharing one process (monkeypatching storage.
+    # get_current_tenant, same as AccessGateMiddleware would set per-request)
+    # without needing a real Postgres connection.
+    monkeypatch.setattr(production_actions, "do_refresh_asset_plan",
+                         lambda: {"jobs": 0, "plan": {"jobs": []}})
+
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-a")
+    refresh_resp = client.post("/api/production/asset-plan/refresh")
+    assert refresh_resp.status_code == 200
+    assert client.get("/api/production/asset-plan").json() == {"jobs": []}
+
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-b")
+    # tenant-b never refreshed - must see nothing, not tenant-a's plan.
+    assert client.get("/api/production/asset-plan").json() is None
+
+
+def test_plan_is_isolated_per_tenant(monkeypatch):
+    monkeypatch.setattr(production_actions, "do_refresh_production", lambda: {
+        "plan": {"inventory": [], "buy_list": [], "build_list": [], "invention_list": []},
+        "stock_targets": 1, "missing_types": 0, "buy_entries": 0, "build_jobs": 0,
+    })
+
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-a")
+    assert client.post("/api/production/plan/refresh").status_code == 200
+
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-b")
+    assert client.get("/api/production/plan").json() is None
+    # tenant-b's own logistics reads must also not see tenant-a's build_list.
+    resp = client.get("/api/production/logistics")
+    assert resp.status_code == 400
+
+
 # --------------------------------------------------- trend/undercut/discovery
 def test_get_shortlist_trends(monkeypatch):
     monkeypatch.setattr(actions, "do_shortlist_trends", lambda: {
