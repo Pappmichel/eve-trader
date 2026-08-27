@@ -10,10 +10,20 @@ import { HintCard } from '../../components/HintCard'
 import { SearchableSelect } from '../../components/SearchableSelect'
 import { StructureIdField } from '../../components/StructureIdField'
 
+// 2 decimal places, not format.ts's own pct() (1 decimal) - real EVE system
+// cost indices are small enough (e.g. 0.0231) that 1 decimal rounds away
+// exactly the precision this hint exists to show (confirmed real 2026-08-27:
+// a user misread "0.014" as "0.14", 5x higher than their real system's own
+// index, making the Buy/Build lists worse instead of better).
+function pctHint(value: number | undefined): string {
+  return value === undefined ? '–' : `${(value * 100).toFixed(2)}%`
+}
+
 export default function ProductionSettings() {
   const { data } = useQuery({ queryKey: ['production', 'settings'], queryFn: productionApi.settings })
   const { data: structureOptions } = useQuery({ queryKey: ['production', 'structure-options'], queryFn: productionApi.structureOptions })
   const { data: systemSettings } = useQuery({ queryKey: ['production', 'system-settings'], queryFn: productionApi.systemSettings })
+  const { data: costIndexHints } = useQuery({ queryKey: ['production', 'system-cost-indices'], queryFn: productionApi.systemCostIndices })
   const { data: solarSystemOptions } = useSolarSystemOptions()
   const { data: structureNames } = useStructureNameOptions()
   const systemSelectData = useMemo(
@@ -73,16 +83,16 @@ export default function ProductionSettings() {
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Economy</Title>
       <SimpleGrid cols={2}>
-        <NumberInput label="Component overbuild buffer" value={form.component_overbuild} min={0} step={0.05}
-          onChange={(v) => set('component_overbuild', Number(v))} />
+        <NumberInput label="Component overbuild buffer" suffix="%" decimalScale={2} value={form.component_overbuild * 100} min={0} step={5}
+          onChange={(v) => set('component_overbuild', Number(v) / 100)} />
         <NumberInput label="Freight cost (ISK/m³)" value={form.haul_cost_per_m3} min={0} step={50}
           onChange={(v) => set('haul_cost_per_m3', Number(v))} />
-        <NumberInput label="Market sell fees (0-1)" value={form.market_fees} min={0} max={1} step={0.01}
-          onChange={(v) => set('market_fees', Number(v))} />
-        <NumberInput label="Broker's fee buy (0-1)" value={form.jita_buy_broker_fee} min={0} max={1} step={0.01}
-          onChange={(v) => set('jita_buy_broker_fee', Number(v))} />
-        <NumberInput label="Minimum margin for build list" value={form.min_margin} min={0} step={0.01}
-          onChange={(v) => set('min_margin', Number(v))} />
+        <NumberInput label="Market sell fees" suffix="%" decimalScale={2} value={form.market_fees * 100} min={0} max={100} step={0.5}
+          onChange={(v) => set('market_fees', Number(v) / 100)} />
+        <NumberInput label="Broker's fee buy" suffix="%" decimalScale={2} value={form.jita_buy_broker_fee * 100} min={0} max={100} step={0.1}
+          onChange={(v) => set('jita_buy_broker_fee', Number(v) / 100)} />
+        <NumberInput label="Minimum margin for build list" suffix="%" decimalScale={2} value={form.min_margin * 100} min={0} step={1}
+          onChange={(v) => set('min_margin', Number(v) / 100)} />
         <NumberInput label="Minimum daily profit for Build Candidates (ISK)" value={form.min_daily_profit} min={0} step={1000}
           onChange={(v) => set('min_daily_profit', Number(v))} />
         <NumberInput label="BPC inventory" value={form.bpc_inventory} min={0} step={1}
@@ -138,8 +148,10 @@ export default function ProductionSettings() {
           Pick from the local SDE system list. Reactions and components use the component system; everything else
           uses the manufacturing system. Still needed even if every Logistics category has its own structure - it's
           the fallback for any category not yet resolved to a system, and the only source for rig security-tier
-          scaling. Each also has a manual override below (job cost %) that always wins when set, regardless of
-          system - leave blank to keep using the picked system's live ESI cost index.
+          scaling. Each also has a manual override below (shown as "Live system index" underneath) that always wins
+          when set, regardless of system - leave blank to keep using the picked system's live ESI cost index. Real
+          EVE cost indices are usually a few percent, not tens of percent - check the live value shown before typing
+          one in.
         </Text>
         <Stack gap="sm">
           <Group align="flex-end">
@@ -154,12 +166,18 @@ export default function ProductionSettings() {
             )}
           </Group>
           <SimpleGrid cols={2}>
-            <NumberInput label="Reaction cost index override (0-1)" placeholder="Auto (from system above)"
-              value={form.reaction_cost_index_override ?? ''} min={0} max={1} step={0.01}
-              onChange={(v) => set('reaction_cost_index_override', v === '' ? null : Number(v))} />
-            <NumberInput label="Component cost index override (0-1)" placeholder="Auto (from system above)"
-              value={form.component_cost_index_override ?? ''} min={0} max={1} step={0.01}
-              onChange={(v) => set('component_cost_index_override', v === '' ? null : Number(v))} />
+            <Stack gap={2}>
+              <NumberInput label="Reaction cost index override" suffix="%" decimalScale={2} placeholder="Auto (from system above)"
+                value={form.reaction_cost_index_override != null ? form.reaction_cost_index_override * 100 : ''} min={0} max={100} step={0.1}
+                onChange={(v) => set('reaction_cost_index_override', v === '' ? null : Number(v) / 100)} />
+              <Text size="xs" c="dimmed">Live system index: {pctHint(costIndexHints?.component?.reaction)}</Text>
+            </Stack>
+            <Stack gap={2}>
+              <NumberInput label="Component cost index override" suffix="%" decimalScale={2} placeholder="Auto (from system above)"
+                value={form.component_cost_index_override != null ? form.component_cost_index_override * 100 : ''} min={0} max={100} step={0.1}
+                onChange={(v) => set('component_cost_index_override', v === '' ? null : Number(v) / 100)} />
+              <Text size="xs" c="dimmed">Live system index: {pctHint(costIndexHints?.component?.manufacturing)}</Text>
+            </Stack>
           </SimpleGrid>
           <Group align="flex-end">
             <SearchableSelect label="Manufacturing system (everything else)" placeholder="Search system…" data={systemSelectData}
@@ -173,9 +191,12 @@ export default function ProductionSettings() {
             )}
           </Group>
           <SimpleGrid cols={2}>
-            <NumberInput label="Manufacturing cost index override (0-1)" placeholder="Auto (from system above)"
-              value={form.manufacturing_cost_index_override ?? ''} min={0} max={1} step={0.01}
-              onChange={(v) => set('manufacturing_cost_index_override', v === '' ? null : Number(v))} />
+            <Stack gap={2}>
+              <NumberInput label="Manufacturing cost index override" suffix="%" decimalScale={2} placeholder="Auto (from system above)"
+                value={form.manufacturing_cost_index_override != null ? form.manufacturing_cost_index_override * 100 : ''} min={0} max={100} step={0.1}
+                onChange={(v) => set('manufacturing_cost_index_override', v === '' ? null : Number(v) / 100)} />
+              <Text size="xs" c="dimmed">Live system index: {pctHint(costIndexHints?.manufacturing?.manufacturing)}</Text>
+            </Stack>
           </SimpleGrid>
           <Text size="xs" c="dimmed">
             Overrides are saved with the main <b>Save Settings</b> button above, not the per-system Save buttons here.

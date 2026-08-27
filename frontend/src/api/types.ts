@@ -116,6 +116,16 @@ export interface SolarSystemOption {
   solar_system_name: string
 }
 
+export interface SystemCostIndexPair {
+  manufacturing: number
+  reaction: number
+}
+
+export interface SystemCostIndices {
+  component: SystemCostIndexPair | null
+  manufacturing: SystemCostIndexPair | null
+}
+
 export interface PriceHistoryPoint {
   region_id: number
   type_id: number

@@ -225,6 +225,18 @@ def test_set_system_passes_system_id_through(monkeypatch):
     assert captured == {"profile": "manufacturing", "system_id": 30000142, "system_name": "Jita"}
 
 
+def test_get_system_cost_indices_passes_through_action_result(monkeypatch):
+    monkeypatch.setattr(production_actions, "do_get_system_cost_indices", lambda: {
+        "component": {"manufacturing": 0.0231, "reaction": 0.0583},
+        "manufacturing": None,
+    })
+
+    resp = client.get("/api/production/settings/system-cost-indices")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"component": {"manufacturing": 0.0231, "reaction": 0.0583}, "manufacturing": None}
+
+
 def test_get_sde_item_names_serializes_storage_rows(monkeypatch):
     monkeypatch.setattr(storage, "list_all_sde_types", lambda: [(587, "Rifter"), (34, "Tritanium")])
 

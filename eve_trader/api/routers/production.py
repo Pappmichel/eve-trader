@@ -206,6 +206,11 @@ def update_settings(updates: ProductionSettings):
     return _wrap(actions.do_update_settings, updates=updates.model_dump())
 
 
+@router.get("/settings/system-cost-indices")
+def get_system_cost_indices():
+    return _wrap(actions.do_get_system_cost_indices)
+
+
 @router.get("/settings/structure-options")
 def get_structure_options():
     from ...production.constants import RIG_TIERS, STRUCTURE_TYPES

@@ -68,6 +68,23 @@ def do_set_system(profile: str, system_id: int, system_name: str, cfg: Productio
     return {f"{profile}_system_name": system_name, f"{profile}_system_id": system_id}
 
 
+def do_get_system_cost_indices(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
+    """Live ESI cost indices for the configured component/manufacturing
+    systems - a display-only hint for Settings' manual override fields (so
+    "what's a sane value here" doesn't require guessing - confirmed real
+    live 2026-08-27: a user set 0.14 meaning to enter Jita-ballpark 0.014,
+    which was actually ~5x *higher* than their real system's index, making
+    the Buy/Build lists worse instead of better). Never raises -
+    pricing.system_cost_indices_for already degrades to {} on any ESI
+    failure or unset system_id; {} is normalized to None here so the
+    frontend can treat "no data" as one falsy value."""
+    esi_client = ESIClient()
+    return {
+        "component": pricing.system_cost_indices_for(esi_client, cfg.component_system_id) or None,
+        "manufacturing": pricing.system_cost_indices_for(esi_client, cfg.manufacturing_system_id) or None,
+    }
+
+
 def do_check_sde_freshness(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     """Read-only - the actual refresh action (do_refresh_sde) moved to
     admin.py (GitHub issue #34): the SDE cache is global/shared data, not

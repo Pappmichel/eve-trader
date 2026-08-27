@@ -196,6 +196,7 @@ export const productionApi = {
   setSystem: (profile: string, systemId: number, systemName: string) =>
     post('/api/production/settings/systems', { profile, system_id: systemId, system_name: systemName }),
   allSolarSystems: () => get<T.SolarSystemOption[]>('/api/production/systems'),
+  systemCostIndices: () => get<T.SystemCostIndices>('/api/production/settings/system-cost-indices'),
   itemNameOptions: () => get<T.SdeItemNameOption[]>('/api/production/sde/item-names'),
   decryptors: () => get<string[]>('/api/production/decryptors'),
   jobCategories: () => get<string[]>('/api/production/job-categories'),
