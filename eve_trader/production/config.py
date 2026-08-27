@@ -80,6 +80,19 @@ class ProductionConfig:
     manufacturing_system_name: Optional[str] = None
     manufacturing_system_id: Optional[int] = None
 
+    # Manual escape hatch, highest priority (see engine._job_cost_rate) -
+    # overrides whatever the category/flat-system lookup above would
+    # otherwise compute, as long as a value is set here. Split into 3, not
+    # 2, because the "component" system slot actually feeds two genuinely
+    # different rates (Reaction jobs use one, Tech I/II component-group
+    # jobs use the other) - the "manufacturing" slot's own reaction rate is
+    # never read anywhere, so there's deliberately no override field for it
+    # (would be dead weight). None (the default) means "use the computed
+    # value, same as today."
+    reaction_cost_index_override: Optional[float] = None
+    component_cost_index_override: Optional[float] = None
+    manufacturing_cost_index_override: Optional[float] = None
+
     # -- Where you build, split by build profile just like the system cost index
     # above (see production/constants.py STRUCTURE_TYPES / RIG_TIERS /
     # engine.py _structure_profile): reactions typically run in a Refinery,

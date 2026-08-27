@@ -341,19 +341,42 @@ def _job_cost_rate(activity: str, type_id: int, cfg: ProductionConfig, cost_indi
     (every _activity_mods call whose job_cost_rate is immediately discarded,
     material_mult/time_mult-only formula tests included) pass a plain
     component/manufacturing dict or {} and must stay exactly as cheap and
-    storage-independent as before."""
+    storage-independent as before.
+
+    cfg.reaction_cost_index_override/component_cost_index_override/
+    manufacturing_cost_index_override (confirmed with the user 2026-08-27)
+    outrank everything above, including the per-category lookup - a manual
+    value always wins when set, skipping the category/system lookup
+    entirely (not just as a tiebreaker), so it works even with no system
+    configured at all. Three fields, not two, because the "component"
+    profile alone actually needs both a reaction rate and a manufacturing
+    rate (see esi_activity below) - there's deliberately no override for
+    the "manufacturing" profile's own reaction rate, since that combination
+    is never read by any code path (Reaction jobs always resolve to the
+    "component" profile, never "manufacturing")."""
     structure_type, rig_tier = _structure_rig(_structure_profile(activity, type_id), cfg)
     cost_mult, _, _ = structure_rig_multiplier(structure_type, rig_tier)
     esi_activity = "reaction" if activity == "Reaction" else "manufacturing"
+    is_component_profile = activity == "Reaction" or _is_component(type_id)
 
-    index = None
-    if any(key.startswith("category:") for key in cost_indices):
-        category = job_category(type_id)
-        if category is not None:
-            index = cost_indices.get(f"category:{category}", {}).get(esi_activity)
-    if index is None:
-        system_profile = "component" if (activity == "Reaction" or _is_component(type_id)) else "manufacturing"
-        index = cost_indices.get(system_profile, {}).get(esi_activity)
+    if activity == "Reaction":
+        override = cfg.reaction_cost_index_override
+    elif is_component_profile:
+        override = cfg.component_cost_index_override
+    else:
+        override = cfg.manufacturing_cost_index_override
+
+    if override is not None:
+        index = override
+    else:
+        index = None
+        if any(key.startswith("category:") for key in cost_indices):
+            category = job_category(type_id)
+            if category is not None:
+                index = cost_indices.get(f"category:{category}", {}).get(esi_activity)
+        if index is None:
+            system_profile = "component" if is_component_profile else "manufacturing"
+            index = cost_indices.get(system_profile, {}).get(esi_activity)
 
     index_rate = ACTIVITY_MODS[activity].job_cost_rate if index is None else index
     return index_rate * cost_mult + cfg.facility_tax_rate + SCC_SURCHARGE_RATE

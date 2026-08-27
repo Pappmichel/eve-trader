@@ -191,6 +191,9 @@ class ProductionSettings(BaseModel):
     encryption_skill_level: int
     datacore_skill_1_level: int
     datacore_skill_2_level: int
+    reaction_cost_index_override: Optional[float] = None
+    component_cost_index_override: Optional[float] = None
+    manufacturing_cost_index_override: Optional[float] = None
 
 
 @router.get("/settings", response_model=ProductionSettings)

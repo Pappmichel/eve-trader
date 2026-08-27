@@ -424,6 +424,9 @@ export interface ProductionSettings {
   encryption_skill_level: number
   datacore_skill_1_level: number
   datacore_skill_2_level: number
+  reaction_cost_index_override: number | null
+  component_cost_index_override: number | null
+  manufacturing_cost_index_override: number | null
 }
 
 export interface ProducerCharacter {

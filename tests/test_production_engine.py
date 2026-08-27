@@ -525,6 +525,56 @@ def test_job_cost_rate_skips_job_category_lookup_when_no_category_entries_presen
     assert round(job_cost_rate, 6) == round(expected, 6)
 
 
+def test_job_cost_rate_manual_override_wins_over_category_index(monkeypatch):
+    # Confirmed with the user 2026-08-27: a manual override always wins,
+    # even over the per-category system index (the previous highest
+    # priority) - not just a tiebreaker against the flat split.
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (500, 11, 1.0))  # Reaction
+    cfg = ProductionConfig(reaction_cost_index_override=0.42)
+    cost_indices = {"category:Reactions": {"reaction": 0.20}}
+
+    _, _, job_cost_rate = _activity_mods("Reaction", type_id=1, cfg=cfg, cost_indices=cost_indices, blueprint_id=2)
+
+    expected = 0.42 * 1.0 + cfg.facility_tax_rate + SCC_SURCHARGE_RATE
+    assert round(job_cost_rate, 6) == round(expected, 6)
+
+
+def test_job_cost_rate_manual_override_works_with_no_system_configured_at_all(monkeypatch):
+    # The whole point of an override is to work even without picking a
+    # system in Settings - empty cost_indices, no category entries.
+    cfg = ProductionConfig(reaction_cost_index_override=0.33)
+
+    _, _, job_cost_rate = _activity_mods("Reaction", type_id=1, cfg=cfg, cost_indices={}, blueprint_id=2)
+
+    expected = 0.33 * 1.0 + cfg.facility_tax_rate + SCC_SURCHARGE_RATE
+    assert round(job_cost_rate, 6) == round(expected, 6)
+
+
+def test_job_cost_rate_component_and_reaction_overrides_are_not_mixed_up(monkeypatch):
+    # The "component" profile feeds two genuinely different rates - a
+    # Reaction job must use reaction_cost_index_override, a Tech I/II
+    # component-group job must use component_cost_index_override, even
+    # though both resolve to the same "component" system_profile bucket.
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 334, "Fernite Plate", 0.01, 1, 1, 0, None))
+    cfg = ProductionConfig(reaction_cost_index_override=0.11, component_cost_index_override=0.22)
+
+    _, _, reaction_rate = _activity_mods("Reaction", type_id=1, cfg=cfg, cost_indices={}, blueprint_id=2)
+    _, _, component_rate = _activity_mods("Tech I", type_id=1, cfg=cfg, cost_indices={}, blueprint_id=None)
+
+    assert round(reaction_rate, 6) == round(0.11 * 1.0 + cfg.facility_tax_rate + SCC_SURCHARGE_RATE, 6)
+    assert round(component_rate, 6) == round(0.22 * 1.0 + cfg.facility_tax_rate + SCC_SURCHARGE_RATE, 6)
+
+
+def test_job_cost_rate_manufacturing_override_applies_to_non_component_items(monkeypatch):
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 999, "Some Ship", 0.01, 1, 1, 0, None))
+    cfg = ProductionConfig(manufacturing_cost_index_override=0.07)
+
+    _, _, job_cost_rate = _activity_mods("Tech I", type_id=1, cfg=cfg, cost_indices={}, blueprint_id=None)
+
+    expected = 0.07 * 1.0 + cfg.facility_tax_rate + SCC_SURCHARGE_RATE
+    assert round(job_cost_rate, 6) == round(expected, 6)
+
+
 # ----------------------------------------------------- _structural_material_closure
 def _fake_classify_activity(blueprints: dict[int, tuple]):
     """blueprints: {type_id: (blueprint_id, activity_id, product_qty)} - a

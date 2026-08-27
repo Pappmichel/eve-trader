@@ -136,7 +136,10 @@ export default function ProductionSettings() {
         <Title order={6} c="dimmed" tt="uppercase" mb="xs">Solar Systems (Cost Index)</Title>
         <Text size="xs" c="dimmed" mb="sm">
           Pick from the local SDE system list. Reactions and components use the component system; everything else
-          uses the manufacturing system.
+          uses the manufacturing system. Still needed even if every Logistics category has its own structure - it's
+          the fallback for any category not yet resolved to a system, and the only source for rig security-tier
+          scaling. Each also has a manual override below (job cost %) that always wins when set, regardless of
+          system - leave blank to keep using the picked system's live ESI cost index.
         </Text>
         <Stack gap="sm">
           <Group align="flex-end">
@@ -150,6 +153,14 @@ export default function ProductionSettings() {
               <Text size="xs" c="dimmed">Current: {systemSettings.component_system_name} (ID {systemSettings.component_system_id})</Text>
             )}
           </Group>
+          <SimpleGrid cols={2}>
+            <NumberInput label="Reaction cost index override (0-1)" placeholder="Auto (from system above)"
+              value={form.reaction_cost_index_override ?? ''} min={0} max={1} step={0.01}
+              onChange={(v) => set('reaction_cost_index_override', v === '' ? null : Number(v))} />
+            <NumberInput label="Component cost index override (0-1)" placeholder="Auto (from system above)"
+              value={form.component_cost_index_override ?? ''} min={0} max={1} step={0.01}
+              onChange={(v) => set('component_cost_index_override', v === '' ? null : Number(v))} />
+          </SimpleGrid>
           <Group align="flex-end">
             <SearchableSelect label="Manufacturing system (everything else)" placeholder="Search system…" data={systemSelectData}
               value={manufacturingSystemId} onChange={setManufacturingSystemId} w={240} />
@@ -161,6 +172,14 @@ export default function ProductionSettings() {
               <Text size="xs" c="dimmed">Current: {systemSettings.manufacturing_system_name} (ID {systemSettings.manufacturing_system_id})</Text>
             )}
           </Group>
+          <SimpleGrid cols={2}>
+            <NumberInput label="Manufacturing cost index override (0-1)" placeholder="Auto (from system above)"
+              value={form.manufacturing_cost_index_override ?? ''} min={0} max={1} step={0.01}
+              onChange={(v) => set('manufacturing_cost_index_override', v === '' ? null : Number(v))} />
+          </SimpleGrid>
+          <Text size="xs" c="dimmed">
+            Overrides are saved with the main <b>Save Settings</b> button above, not the per-system Save buttons here.
+          </Text>
         </Stack>
       </Card>
     </Stack>
