@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from .. import storage
-from ..goonmetrics_client import GoonmetricsClient
 from . import pricing
 from .config import PRODUCTION_CONFIG, ProductionConfig
 from .constants import ACTIVITY_JOB_LABELS, ACTIVITY_SLOT_CATEGORY, SLOT_CATEGORY_LABELS
@@ -30,14 +29,18 @@ def list_current_jobs(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[Industr
     already None for those, see IndustryJobRow's own docstring) or if
     neither market has a sell quote for it, so a temporary data gap shows as
     "no value" rather than silently as 0."""
-    gm_client = GoonmetricsClient(cfg)
-    home = pricing.home_prices(gm_client, cfg)
-    jita = pricing.jita_prices(gm_client)
+    jobs = storage.list_industry_jobs()
+    # Only the distinct products these jobs actually output need pricing -
+    # see pricing.home_prices/jita_prices' own docstrings for why callers
+    # must scope type_ids explicitly now.
+    product_type_ids = list({j[3] for j in jobs if j[3] is not None})
+    home = pricing.home_prices(cfg, product_type_ids)
+    jita = pricing.jita_prices(product_type_ids)
 
     now = datetime.now(timezone.utc)
     rows = []
     for (job_id, activity_id, blueprint_type_id, product_type_id, type_name, runs,
-         _output_location_id, status, end_date, start_date, installer_name) in storage.list_industry_jobs():
+         _output_location_id, status, end_date, start_date, installer_name) in jobs:
         quantity = None
         if product_type_id is not None:
             qty_per_run = storage.get_product_quantity(blueprint_type_id, activity_id, product_type_id)

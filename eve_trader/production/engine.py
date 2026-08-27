@@ -121,7 +121,7 @@ from __future__ import annotations
 import math
 import threading
 import time
-from typing import Optional
+from typing import Iterable, Optional
 
 from .. import storage
 from ..config import TRADING_CONFIG
@@ -1007,16 +1007,18 @@ class _PlanContext:
     on how they size jobs against available stock."""
     def __init__(self, cfg: ProductionConfig):
         from ..esi_client import ESIClient
-        from ..goonmetrics_client import GoonmetricsClient  # local import: keeps pricing.py dependency-light
 
         self.stock_targets = storage.load_stock_targets()
         self.manual_stock = storage.load_manual_stock()
         self.manual_overrides = storage.load_manual_build_buy()
         self.selected_decryptors = storage.load_selected_decryptors()
 
-        gm_client = GoonmetricsClient()
-        self.home = pricing.home_prices(gm_client, cfg)
-        self.jita = pricing.jita_prices(gm_client)
+        # Bounded, price-agnostic universe to price - see pricing.home_prices/
+        # jita_prices' own docstrings for why this can't just be "everything"
+        # now that both are ESI-first (Jita has no bulk-region endpoint).
+        priced_type_ids = list(_structural_material_closure(t[0] for t in self.stock_targets))
+        self.home = pricing.home_prices(cfg, priced_type_ids)
+        self.jita = pricing.jita_prices(priced_type_ids)
 
         esi_client = ESIClient()
         self.cost_indices: CostIndices = {
@@ -1654,17 +1656,19 @@ def stock_value(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     'priced_items': N, 'unpriced_items': N} - unpriced items (no sell quote
     anywhere) are excluded from total_value rather than counted as 0, so a
     temporary market-data gap doesn't silently understate the total."""
-    from ..goonmetrics_client import GoonmetricsClient  # local import: keeps this rarely-needed KPI's dependency lazy, same as _PlanContext
-
     manual_stock = storage.load_manual_stock()
-    gm_client = GoonmetricsClient(cfg)
-    home = pricing.home_prices(gm_client, cfg)
-    jita = pricing.jita_prices(gm_client)
+    stock_targets = storage.load_stock_targets()
+    # Only the stock targets' own type_ids need pricing here (this KPI never
+    # recurses into materials) - see pricing.home_prices/jita_prices' own
+    # docstrings for why callers must scope type_ids explicitly now.
+    type_ids = [t[0] for t in stock_targets]
+    home = pricing.home_prices(cfg, type_ids)
+    jita = pricing.jita_prices(type_ids)
 
     total_value = 0.0
     priced_items = 0
     unpriced_items = 0
-    for type_id, _type_name, _backup_target, _home_target, _jita_target in storage.load_stock_targets():
+    for type_id, _type_name, _backup_target, _home_target, _jita_target in stock_targets:
         _, bp = classify_activity(type_id)
         current = _current_stock(type_id, manual_stock, cfg, bp)
         if current <= 0:
@@ -2075,6 +2079,43 @@ def item_margin_detail(type_id: int, type_name: str, cfg: ProductionConfig = PRO
         "margin_home": margin_home(type_id, build_cost, ctx.home, cfg),
         "margin_jita": margin_jita(type_id, build_cost, ctx.jita, cfg),
     }
+
+
+def _structural_material_closure(seed_type_ids: Iterable[int]) -> set[int]:
+    """Every type_id reachable from `seed_type_ids` through blueprint
+    materials, ignoring buy-vs-build economics entirely - pricing isn't
+    known yet at this point, that's the whole reason this exists: a
+    bounded, price-agnostic universe to bulk-price (see pricing.home_prices/
+    jita_prices), rather than needing pricing for "everything" up front the
+    way the old Goonmetrics-whole-market-dump approach did.
+
+    Necessarily a superset of what the real priced _expand_all walk would
+    visit (a node whose real price makes "Buy" cheaper still gets recursed
+    into here) - that's correct, not wasteful: better to have a live price
+    ready and unused than to hit an un-priced node mid-recursion. Capped at
+    MAX_DEPTH, same as every other recursive walk in this file (build_
+    material_tree's single-root version of this same walk). Visited-set
+    de-duplication means a shared base material (T1 minerals, common
+    components) is only ever expanded once regardless of how many parents
+    reach it - the walk is breadth-first specifically so a type_id already
+    visited at a shallower depth is never re-queued at a deeper one."""
+    visited: set[int] = set()
+    frontier: set[int] = set(seed_type_ids)
+    depth = 0
+    while frontier and depth < MAX_DEPTH:
+        visited |= frontier
+        next_frontier: set[int] = set()
+        for type_id in frontier:
+            _activity, bp = classify_activity(type_id)
+            if bp is None:
+                continue
+            blueprint_id, activity_id, _product_qty = bp
+            for material_id, _base_qty in storage.get_blueprint_materials(blueprint_id, activity_id):
+                if material_id not in visited:
+                    next_frontier.add(material_id)
+        frontier = next_frontier
+        depth += 1
+    return visited
 
 
 def build_material_tree(type_id: int, quantity: float, cfg: ProductionConfig, home: dict, jita: dict,

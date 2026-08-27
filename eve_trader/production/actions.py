@@ -14,14 +14,13 @@ from ..actions import ActionError
 from ..auth import TokenManager
 from ..config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
 from ..esi_client import ESIClient, ESIError
-from ..goonmetrics_client import GoonmetricsClient
 from . import esi_sync, invention, jobs, pricing, sde
 from .config import PRODUCTION_CONFIG, ProductionConfig, validate_production_overrides
 from .constants import DECRYPTORS, JOB_CATEGORIES
 from .engine import (
-    build_material_tree, discover_build_candidates, discover_ship_margins, distribution_recommendations,
-    invention_logistics, item_margin_detail, invalidate_discover_cache, invalidate_ship_margin_cache,
-    t1_bpc_invention_needs,
+    _structural_material_closure, build_material_tree, discover_build_candidates, discover_ship_margins,
+    distribution_recommendations, invention_logistics, item_margin_detail, invalidate_discover_cache,
+    invalidate_ship_margin_cache, t1_bpc_invention_needs,
     invalidate_production_locations_cache, logistics_status, market_status, plan_asset_optimized,
     plan_production, stock_value,
 )
@@ -349,9 +348,9 @@ def do_estimate_invention(product_name: str, decryptor_name: str | None = None,
         )
     t1_blueprint_type_id, product_blueprint_id = recipe
 
-    gm_client = GoonmetricsClient()
-    home = pricing.home_prices(gm_client, cfg)
-    jita = pricing.jita_prices(gm_client)
+    type_ids = list(_structural_material_closure([product_blueprint_id]))
+    home = pricing.home_prices(cfg, type_ids)
+    jita = pricing.jita_prices(type_ids)
     # activity 1 = Manufacturing: the invented BPC's *own* build materials,
     # used to weigh ME savings the same way the Bauliste does (see engine.py).
     reducible_cost = invention.reducible_material_cost(product_blueprint_id, 1, home, jita, cfg)
@@ -450,9 +449,9 @@ def do_build_material_tree(type_name: str, quantity: float = 1.0,
         raise ActionError(f"No exact match for '{type_name}'. Did you mean: {matches[0][1]}?")
     type_id, resolved_name = exact[0]
 
-    gm_client = GoonmetricsClient()
-    home = pricing.home_prices(gm_client, cfg)
-    jita = pricing.jita_prices(gm_client)
+    type_ids = list(_structural_material_closure([type_id]))
+    home = pricing.home_prices(cfg, type_ids)
+    jita = pricing.jita_prices(type_ids)
     selected_decryptors = storage.load_selected_decryptors()
     t2_memo: dict = {}
 

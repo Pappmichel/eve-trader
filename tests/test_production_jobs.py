@@ -3,6 +3,7 @@ output_value pricing (same C-J-sell-falling-back-to-Jita convention as
 engine.stock_value, see tests/test_stock_value.py for that precedent).
 """
 from eve_trader import storage
+from eve_trader.esi_client import ESIClient, ESIError
 from eve_trader.goonmetrics_client import CurrentPrice, GoonmetricsClient
 from eve_trader.production import jobs
 from eve_trader.production.config import ProductionConfig
@@ -21,6 +22,14 @@ def test_output_value_prices_at_home_sell_falling_back_to_jita(monkeypatch):
         _job(3, 1, 103, 30, "No Price Anywhere", runs=1),
     ])
     monkeypatch.setattr(storage, "get_product_quantity", lambda bp, act, prod: 5.0)
+
+    # cfg.home_location_id is unset, so pricing.home_prices already skips
+    # ESI entirely - only Jita's ESI-first attempt needs to be forced to
+    # fail here so it falls through to the Goonmetrics mock below, matching
+    # this test's pre-ESI-first pricing scenario.
+    def _fail(self, region_id, type_ids):
+        raise ESIError("no ESI in this test")
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", _fail)
 
     def fake_current_prices(self, market):
         if market == cfg.home_market:

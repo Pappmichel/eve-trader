@@ -54,6 +54,9 @@ PRODUCTION_SCOPES = [
                                              # (unlike esi-universe.read_structures.v1) - needs the Station_Manager
                                              # in-game role, not just Director - see ESIClient.corporation_structures,
                                              # tried first by actions.do_resolve_structure_name
+    "esi-markets.structure_markets.v1",  # live C-J order-book check for pricing (production/pricing.py) - a
+                                          # character added before this existed needs to be re-added before this
+                                          # specific check works for it; falls back to Goonmetrics until then.
 ]
 
 

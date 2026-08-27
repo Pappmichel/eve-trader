@@ -5,7 +5,9 @@ from eve_trader.goonmetrics_client import CurrentPrice
 from eve_trader.production import engine
 from eve_trader.production.config import ProductionConfig
 from eve_trader.production.constants import SCC_SURCHARGE_RATE, ACTIVITY_MODS, rig_security_multiplier
-from eve_trader.production.engine import _activity_mods, _material_qty, _tech_ii_mods, _total_missing, classify_activity
+from eve_trader.production.engine import (
+    _activity_mods, _material_qty, _structural_material_closure, _tech_ii_mods, _total_missing, classify_activity,
+)
 from eve_trader.production.models import CharacterSlotRow
 
 from . import pg_helpers
@@ -523,6 +525,69 @@ def test_job_cost_rate_skips_job_category_lookup_when_no_category_entries_presen
     assert round(job_cost_rate, 6) == round(expected, 6)
 
 
+# ----------------------------------------------------- _structural_material_closure
+def _fake_classify_activity(blueprints: dict[int, tuple]):
+    """blueprints: {type_id: (blueprint_id, activity_id, product_qty)} - a
+    type_id absent from this dict has no blueprint (a leaf/Buy-only item)."""
+    def _classify(type_id):
+        bp = blueprints.get(type_id)
+        return ("Tech I" if bp else "Buy"), bp
+    return _classify
+
+
+def test_structural_material_closure_walks_multiple_levels_and_stops_at_no_blueprint_leaf(monkeypatch):
+    monkeypatch.setattr(engine, "classify_activity", _fake_classify_activity({
+        100: (1000, 1, 1.0),  # -> materials 200, 201
+        200: (1002, 1, 1.0),  # -> material 300
+        # 201, 300 have no blueprint - leaves
+    }))
+    materials = {(1000, 1): [(200, 5.0), (201, 3.0)], (1002, 1): [(300, 1.0)]}
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda bp_id, activity_id: materials[(bp_id, activity_id)])
+
+    result = _structural_material_closure([100])
+
+    assert result == {100, 200, 201, 300}
+
+
+def test_structural_material_closure_visits_a_shared_material_only_once(monkeypatch):
+    # 100 and 400 both need 300 - a real, common BOM shape (shared base
+    # mineral/component) - classify_activity must only be asked about 300
+    # once, not once per parent that reaches it.
+    classify_calls: list[int] = []
+    classify = _fake_classify_activity({
+        100: (1000, 1, 1.0),  # -> material 300
+        400: (1004, 1, 1.0),  # -> material 300
+    })
+
+    def _tracking_classify(type_id):
+        classify_calls.append(type_id)
+        return classify(type_id)
+    monkeypatch.setattr(engine, "classify_activity", _tracking_classify)
+    materials = {(1000, 1): [(300, 1.0)], (1004, 1): [(300, 1.0)]}
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda bp_id, activity_id: materials[(bp_id, activity_id)])
+
+    result = _structural_material_closure([100, 400])
+
+    assert result == {100, 400, 300}
+    assert classify_calls.count(300) == 1
+
+
+def test_structural_material_closure_capped_at_max_depth(monkeypatch):
+    # A chain deeper than MAX_DEPTH (10) - the walk must stop instead of
+    # recursing forever (a real EVE BOM never legitimately goes this deep;
+    # this only happens for a bad/circular blueprint reference).
+    chain_length = 15
+    blueprints = {i: (i * 10, 1, 1.0) for i in range(chain_length)}  # 0 needs 1, 1 needs 2, ...
+    monkeypatch.setattr(engine, "classify_activity", _fake_classify_activity(blueprints))
+    materials = {(i * 10, 1): [(i + 1, 1.0)] for i in range(chain_length - 1)}
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda bp_id, activity_id: materials.get((bp_id, activity_id), []))
+
+    result = _structural_material_closure([0])
+
+    assert len(result) <= engine.MAX_DEPTH + 1  # seed depth + MAX_DEPTH more levels, never the full 15-item chain
+    assert chain_length - 1 not in result  # the deepest item is never reached
+
+
 def test_plan_context_populates_category_cost_indices_sharing_fetches_by_system(monkeypatch):
     # GitHub issue #12: _PlanContext.cost_indices gains one "category:<name>"
     # entry per Logistik category with a resolved system - two categories
@@ -537,8 +602,8 @@ def test_plan_context_populates_category_cost_indices_sharing_fetches_by_system(
     monkeypatch.setattr(storage, "load_selected_decryptors", lambda: {})
     monkeypatch.setattr(storage, "load_category_system_ids",
                          lambda: {"Reactions": 30000142, "Capital Components": 30000142, "Equipment": 30000144})
-    monkeypatch.setattr(pricing_module, "home_prices", lambda gm_client, cfg: {})
-    monkeypatch.setattr(pricing_module, "jita_prices", lambda gm_client: {})
+    monkeypatch.setattr(pricing_module, "home_prices", lambda cfg, type_ids: {})
+    monkeypatch.setattr(pricing_module, "jita_prices", lambda type_ids: {})
     monkeypatch.setattr(goonmetrics_client_module.GoonmetricsClient, "__init__", lambda self: None)
     monkeypatch.setattr(esi_client_module.ESIClient, "__init__", lambda self: None)
     monkeypatch.setattr(esi_client_module.ESIClient, "get_adjusted_prices", lambda self: {})
@@ -558,6 +623,40 @@ def test_plan_context_populates_category_cost_indices_sharing_fetches_by_system(
     assert real_system_fetches == [30000142, 30000144]  # one fetch per distinct system, not per category
     assert ctx.cost_indices["category:Reactions"] == ctx.cost_indices["category:Capital Components"]
     assert ctx.cost_indices["category:Equipment"] != ctx.cost_indices["category:Reactions"]
+
+
+def test_plan_context_home_prices_exclude_a_live_confirmed_empty_market(monkeypatch):
+    # End-to-end regression test for the reported bug (2026-08-26): a stock
+    # target whose real C-J market has zero sell orders right now must not
+    # show up priced at ctx.home, even if some other source (Goonmetrics)
+    # would have reported a stale nonzero price.
+    from eve_trader import esi_client as esi_client_module
+    from eve_trader.esi_client import OrderStats
+    from eve_trader.production import esi_sync as esi_sync_module
+
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(587, "Rifter", 1.0, None, None)])
+    monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
+    monkeypatch.setattr(storage, "load_manual_build_buy", lambda: {})
+    monkeypatch.setattr(storage, "load_selected_decryptors", lambda: {})
+    monkeypatch.setattr(storage, "load_category_system_ids", lambda: {})
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Buy", None))  # no blueprint - closure is just {587}
+
+    monkeypatch.setattr(esi_sync_module, "list_producer_characters", lambda: [("producer:1", 1, "TestChar")])
+    monkeypatch.setattr(esi_client_module.ESIClient, "structure_order_stats_bulk",
+                         lambda self, location_id, type_ids, auth_role: {
+                             587: OrderStats(sell_percentile=None, sell_volume=0.0, buy_percentile=None, buy_volume=0.0),
+                         })
+    monkeypatch.setattr(esi_client_module.ESIClient, "region_order_stats_bulk", lambda self, region_id, type_ids: {
+        587: OrderStats(sell_percentile=100.0, sell_volume=5.0, buy_percentile=90.0, buy_volume=3.0),
+    })
+    monkeypatch.setattr(esi_client_module.ESIClient, "get_adjusted_prices", lambda self: {})
+
+    cfg = ProductionConfig(component_system_id=None, manufacturing_system_id=None,
+                            home_market="c-j6mt", home_location_id=1049588174021)
+    ctx = engine._PlanContext(cfg)
+
+    assert ctx.home[587].sell == 0.0
+    assert ctx.jita[587].sell == 100.0
 
 
 def test_reaction_te_rig_applies(monkeypatch):

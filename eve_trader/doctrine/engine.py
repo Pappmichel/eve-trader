@@ -472,11 +472,21 @@ def doctrine_status(doctrine_row: tuple, cfg: DoctrineConfig = DOCTRINE_CONFIG) 
     stockpile_rows, assets_available = stockpile_rows_for_doctrine(doctrine.doctrine_id, cfg)
 
     # Fetched once for every fitting's multibuy_cost below, not per-fitting -
-    # GoonmetricsClient's own 60s cache would mostly cover repeat calls
-    # anyway, but explicit-once matches this function's existing
-    # stockpile_rows-computed-once convention.
-    from ..goonmetrics_client import GoonmetricsClient
-    home = production_pricing.home_prices(GoonmetricsClient(), PRODUCTION_CONFIG)
+    # matches this function's existing stockpile_rows-computed-once
+    # convention. Every hull + fitting item across every active fitting in
+    # this doctrine, since pricing.home_prices/jita_prices now require
+    # callers to scope type_ids explicitly (see their own docstrings) -
+    # these are finished items to price, not materials to recursively
+    # expand, so no _structural_material_closure needed here.
+    type_ids: set[int] = set()
+    for row in fitting_rows:
+        fitting = fitting_from_row(row)
+        if not fitting.active:
+            continue
+        type_ids.add(fitting.hull_type_id)
+        for _line_no, _slot_section, type_id, _quantity, _is_offline in storage.load_fitting_items(fitting.fitting_id):
+            type_ids.add(type_id)
+    home = production_pricing.home_prices(PRODUCTION_CONFIG, list(type_ids))
 
     statuses = []
     for row in fitting_rows:
