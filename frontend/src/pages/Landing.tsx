@@ -125,6 +125,8 @@ export default function Landing() {
           description="Fleet doctrine fittings, contract validation against C-J stock contracts, stockpile tracking." />
         <ToolCard tools={tools} toolKey="refining" to="/ore" title="Ore &amp; Minerals"
           description="Import compressed ore/ice, refine at C-J, sell minerals for profit." />
+        <ToolCard tools={tools} toolKey="station_trading" to="/station-trading" title="Station Trading"
+          description="Buy and sell on Jita's own order book, profiting from the bid-ask spread." />
       </SimpleGrid>
 
       <SimpleGrid cols={{ base: 1, xs: 2 }} spacing="md" mt="md">

@@ -30,6 +30,7 @@ from ...auth import TokenManager, _make_pkce_pair
 from ...config import OAUTH_CONFIG
 from ...doctrine import esi_sync as doctrine_esi_sync
 from ...production import esi_sync
+from ...station_trading import esi_sync as station_trading_esi_sync
 
 router = APIRouter()
 
@@ -72,6 +73,8 @@ def _scopes_for(role_prefix: str) -> list[str]:
         return doctrine_esi_sync.DOCTRINE_SCOPES
     if role_prefix == "doctrine-assets":
         return doctrine_esi_sync.DOCTRINE_ASSET_SCOPES
+    if role_prefix == "trader":
+        return station_trading_esi_sync.STATION_TRADING_SCOPES
     if role_prefix == "gate":
         return []  # identity only - see access_gate.py
     return list(OAUTH_CONFIG.scopes)
@@ -93,6 +96,7 @@ ROLE_PREFIX_TOOL: dict[str, Optional[str]] = {
     "producer": "production",
     "doctrine": "doctrine",
     "doctrine-assets": "doctrine",
+    "trader": "station_trading",
     "gate": None,
 }
 

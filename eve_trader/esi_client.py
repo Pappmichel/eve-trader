@@ -228,7 +228,7 @@ class ESIClient:
     # computed number) ever goes into these caches, so sharing them across
     # tenants can't reintroduce issue #54's cross-tenant leak class.
     _ORDER_BOOK_CACHE_TTL = 30  # seconds
-    _region_order_stats_cache: dict[tuple[int, int], "OrderStats"] = {}
+    _region_order_stats_cache: dict[tuple[int, int], list[dict]] = {}
     _region_order_stats_cache_at: dict[tuple[int, int], float] = {}
     _region_order_stats_locks: dict[tuple[int, int], threading.Lock] = {}
     _structure_book_cache: dict[int, list[dict]] = {}
@@ -481,8 +481,14 @@ class ESIClient:
                           params={"datasource": "tranquility"}, auth_role=auth_role)
 
     # -------------------------------------------------------------- markets
-    def region_order_stats(self, region_id: int, type_id: int) -> OrderStats:
-        """Regional order-book stats for one type_id.
+    def region_orders_raw(self, region_id: int, type_id: int) -> list[dict]:
+        """The region's full, unsummarized order book for one type_id - every
+        order (both is_buy_order true/false), with location_id so a caller
+        can further scope down to one specific station (see
+        station_trading/undercut.py, which needs to know *which* competing
+        order beat a given own order, not just the best price - the same
+        reason structure_orders_raw exists alongside structure_order_stats).
+
         Uses _get_all_pages defensively: /markets/{region_id}/orders/ is a
         genuinely paginated endpoint per the ESI spec even with a type_id
         filter applied - a single type_id in a normal region is very unlikely
@@ -502,10 +508,15 @@ class ESIClient:
             orders = self._get_all_pages(
                 f"/markets/{region_id}/orders/",
                 params={"datasource": "tranquility", "type_id": type_id, "order_type": "all"})
-            stats = _summarize_orders(orders)
-            self._region_order_stats_cache[key] = stats
+            self._region_order_stats_cache[key] = orders
             self._region_order_stats_cache_at[key] = time.time()
-            return stats
+            return orders
+
+    def region_order_stats(self, region_id: int, type_id: int) -> OrderStats:
+        """Regional order-book stats for one type_id - summarizes
+        region_orders_raw (see that method's own docstring for the
+        pagination/caching details, shared by both)."""
+        return _summarize_orders(self.region_orders_raw(region_id, type_id))
 
     def region_order_stats_bulk(self, region_id: int, type_ids: list[int], max_workers: int = 10) -> dict[int, OrderStats]:
         """Same as region_order_stats, but for many type_ids concurrently. ESI

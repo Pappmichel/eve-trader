@@ -52,6 +52,11 @@ const ACTIONS: SpotlightActionData[] = [
   { id: 'doctrine-stockpile', label: 'Doctrine — Stockpile', description: 'Doctrine', onClick: () => {} },
   { id: 'doctrine-shopping-list', label: 'Doctrine — Shopping List', description: 'Doctrine', onClick: () => {} },
   { id: 'doctrine-settings', label: 'Doctrine — Settings', description: 'Doctrine', onClick: () => {} },
+
+  { id: 'station-trading', label: 'Station Trading — Overview', description: 'Station Trading', onClick: () => {} },
+  { id: 'station-trading-shortlist', label: 'Station Trading — Shortlist', description: 'Station Trading', onClick: () => {} },
+  { id: 'station-trading-undercut', label: 'Station Trading — Undercut Check', description: 'Station Trading', onClick: () => {} },
+  { id: 'station-trading-settings', label: 'Station Trading — Settings', description: 'Station Trading', onClick: () => {} },
 ]
 
 // id -> real path, kept as a separate map (rather than baking navigate()
@@ -73,6 +78,8 @@ const PATHS: Record<string, string> = {
   doctrine: '/doctrine/doctrines', 'doctrine-contracts': '/doctrine/contracts', 'doctrine-contracts-history': '/doctrine/contracts/history',
   'doctrine-stockpile': '/doctrine/stockpile', 'doctrine-shopping-list': '/doctrine/shopping-list',
   'doctrine-settings': '/doctrine/settings',
+  'station-trading': '/station-trading', 'station-trading-shortlist': '/station-trading/shortlist',
+  'station-trading-undercut': '/station-trading/undercut', 'station-trading-settings': '/station-trading/settings',
 }
 
 // id -> tool_key, same tool_keys as Landing.tsx's own ToolCard filtering
@@ -92,6 +99,8 @@ const TOOL_KEYS: Record<string, string> = {
   'production-asset-search': 'production', 'production-settings': 'production',
   doctrine: 'doctrine', 'doctrine-contracts': 'doctrine', 'doctrine-contracts-history': 'doctrine',
   'doctrine-stockpile': 'doctrine', 'doctrine-shopping-list': 'doctrine', 'doctrine-settings': 'doctrine',
+  'station-trading': 'station_trading', 'station-trading-shortlist': 'station_trading',
+  'station-trading-undercut': 'station_trading', 'station-trading-settings': 'station_trading',
 }
 
 export function QuickNav() {

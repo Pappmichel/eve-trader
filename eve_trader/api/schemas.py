@@ -490,6 +490,46 @@ class RefiningSettings(_Base):
     refining_tax_rate: float
 
 
+# ------------------------------------------------------------ station trading
+class StationTradingSettings(_Base):
+    station_id: int
+    broker_fee_rate: float
+    sales_tax_rate: float
+    min_spread_threshold: float
+    min_daily_volume: float
+
+
+class StationTradingShortlistRow(_Base):
+    type_id: int
+    name: str
+    spread_pct: float
+    avg_daily_volume: float
+    discovered_at: str
+    active: bool
+    live_buy: Optional[float] = None
+    live_sell: Optional[float] = None
+
+
+class StationTradingUndercutRow(_Base):
+    type_id: int
+    name: str
+    my_price: float
+    competitor_price: float
+    difference: float
+
+
+class StationTradingUndercutCheckResult(_Base):
+    sell: list[StationTradingUndercutRow]
+    buy: list[StationTradingUndercutRow]
+
+
+class SkillSummary(_Base):
+    character_name: str
+    levels: Optional[dict[str, int]] = None
+    order_slots: Optional[int] = None
+    error: Optional[str] = None
+
+
 # ------------------------------------------------------------------ portfolio
 class Doctrine(_Base):
     doctrine_id: str

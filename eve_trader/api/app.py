@@ -21,7 +21,7 @@ from ..access_gate import SESSION_COOKIE_NAME, read_session_token, tools_for
 from ..config import ACCESS_CONFIG, TRADING_CONFIG, apply_config_overrides
 from ..doctrine.config import DOCTRINE_CONFIG
 from ..production.config import PRODUCTION_CONFIG
-from .routers import admin, auth, doctrine, errors, gate, portfolio, production, refining, trading
+from .routers import admin, auth, doctrine, errors, gate, portfolio, production, refining, station_trading, trading
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 
@@ -73,6 +73,7 @@ _TOOL_PATH_PREFIXES = {
     "/api/production/": "production",
     "/api/doctrine/": "doctrine",
     "/api/refining/": "refining",
+    "/api/station-trading/": "station_trading",
     "/api/portfolio/": "portfolio",
     "/api/admin/": "admin",
 }
@@ -251,6 +252,7 @@ def create_app() -> FastAPI:
     app.include_router(portfolio.router, prefix="/api/portfolio", tags=["portfolio"])
     app.include_router(doctrine.router, prefix="/api/doctrine", tags=["doctrine"])
     app.include_router(refining.router, prefix="/api/refining", tags=["refining"])
+    app.include_router(station_trading.router, prefix="/api/station-trading", tags=["station_trading"])
     app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
     app.include_router(errors.router, prefix="/api/errors", tags=["errors"])
 

@@ -823,3 +823,43 @@ export interface ReprocessingQuoteResult {
   totals: ReprocessingQuoteTotals
   priced_via_fallback: boolean
 }
+
+// ------------------------------------------------------------ station trading
+export interface StationTradingSettings {
+  station_id: number
+  broker_fee_rate: number
+  sales_tax_rate: number
+  min_spread_threshold: number
+  min_daily_volume: number
+}
+
+export interface StationTradingShortlistRow {
+  type_id: number
+  name: string
+  spread_pct: number
+  avg_daily_volume: number
+  discovered_at: string
+  active: boolean
+  live_buy: number | null
+  live_sell: number | null
+}
+
+export interface StationTradingUndercutRow {
+  type_id: number
+  name: string
+  my_price: number
+  competitor_price: number
+  difference: number
+}
+
+export interface StationTradingUndercutCheckResult {
+  sell: StationTradingUndercutRow[]
+  buy: StationTradingUndercutRow[]
+}
+
+export interface SkillSummary {
+  character_name: string
+  levels: Record<string, number> | null
+  order_slots: number | null
+  error: string | null
+}

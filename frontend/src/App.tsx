@@ -66,6 +66,12 @@ const ReprocessingQuote = lazy(() => import('./pages/refining/ReprocessingQuote'
 const MineralShoppingList = lazy(() => import('./pages/refining/MineralShoppingList'))
 const OreSettings = lazy(() => import('./pages/refining/OreSettings'))
 
+const StationTradingLayout = lazy(() => import('./pages/station_trading/StationTradingLayout'))
+const StationTradingOverview = lazy(() => import('./pages/station_trading/Overview'))
+const StationTradingShortlist = lazy(() => import('./pages/station_trading/Shortlist'))
+const StationTradingUndercutCheck = lazy(() => import('./pages/station_trading/UndercutCheck'))
+const StationTradingSettings = lazy(() => import('./pages/station_trading/StationTradingSettings'))
+
 const AdminPage = lazy(() => import('./pages/admin/AdminPage'))
 
 function RouteFallback() {
@@ -224,6 +230,13 @@ function App() {
               <Route path="reprocessing" element={<ReprocessingQuote />} />
               <Route path="shopping-list" element={<MineralShoppingList />} />
               <Route path="settings" element={<OreSettings />} />
+            </Route>
+
+            <Route path="/station-trading" element={<StationTradingLayout />}>
+              <Route index element={<StationTradingOverview />} />
+              <Route path="shortlist" element={<StationTradingShortlist />} />
+              <Route path="undercut" element={<StationTradingUndercutCheck />} />
+              <Route path="settings" element={<StationTradingSettings />} />
             </Route>
           </Routes>
         </Suspense>

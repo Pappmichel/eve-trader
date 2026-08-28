@@ -57,6 +57,13 @@ export const ROLE_ACCESS_DESCRIPTIONS: Record<string, RoleAccessInfo> = {
       "Your (and your corporation's) asset hangars, tracked against doctrine stockpile requirements",
     ],
   },
+  trader: {
+    title: 'Station Trading — Trader Character',
+    bullets: [
+      "Your market orders (buy and sell) at Jita, to check if you've been undercut on either side",
+      'Your skills, to show your available concurrent order slots',
+    ],
+  },
   gate: {
     title: 'Account Login',
     bullets: [

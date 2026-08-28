@@ -1949,6 +1949,56 @@ def load_mineral_requirements() -> list[tuple[int, str, float]]:
         ).fetchall()
 
 
+# ----------------------------------------------- Station Trading: candidate shortlist
+def upsert_station_trading_shortlist(rows: Iterable[tuple[int, float, float, str]]) -> None:
+    """rows: (type_id, spread_pct, avg_daily_volume, discovered_at) - a
+    re-discovered type_id refreshes its spread/volume/discovered_at but
+    leaves `active` untouched (ON CONFLICT only sets the columns actually
+    passed in), same "don't silently reactivate a deliberately-deactivated
+    row" reasoning as ore_shortlist's own upsert."""
+    rows = [(int(type_id), float(spread_pct), float(avg_daily_volume), discovered_at)
+            for type_id, spread_pct, avg_daily_volume, discovered_at in rows]
+    with connect() as conn:
+        conn.executemany(
+            "INSERT INTO station_trading_shortlist (type_id, spread_pct, avg_daily_volume, discovered_at) "
+            "VALUES (?,?,?,?) "
+            "ON CONFLICT(tenant_id, type_id) DO UPDATE SET spread_pct=excluded.spread_pct, "
+            "avg_daily_volume=excluded.avg_daily_volume, discovered_at=excluded.discovered_at",
+            rows,
+        )
+
+
+def load_station_trading_shortlist() -> list[tuple[int, float, float, str, bool]]:
+    """Returns (type_id, spread_pct, avg_daily_volume, discovered_at, active) rows."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT type_id, spread_pct, avg_daily_volume, discovered_at, active FROM station_trading_shortlist"
+        ).fetchall()
+
+
+def deactivate_station_trading_shortlist_items(type_ids: Iterable[int]) -> None:
+    type_ids = list(type_ids)
+    if not type_ids:
+        return
+    with connect() as conn:
+        conn.executemany("UPDATE station_trading_shortlist SET active = false WHERE type_id = ?",
+                          [(i,) for i in type_ids])
+
+
+def activate_station_trading_shortlist_items(type_ids: Iterable[int]) -> None:
+    """Reactivation counterpart to deactivate_station_trading_shortlist_items
+    above - same reasoning as ore_shortlist's own activate/deactivate pair:
+    without this, an item deactivated once stays inactive forever even after
+    a later Refresh Shortlist re-discovers it (upsert deliberately never
+    touches `active` - see that function's own docstring)."""
+    type_ids = list(type_ids)
+    if not type_ids:
+        return
+    with connect() as conn:
+        conn.executemany("UPDATE station_trading_shortlist SET active = true WHERE type_id = ?",
+                          [(i,) for i in type_ids])
+
+
 # ------------------------------------------------------------- Production: SDE reads
 def search_sde_types(query: str, limit: int = 20) -> list[tuple[int, str]]:
     """Type-ahead lookup for the Stock Targets editor. An exact (case-insensitive)

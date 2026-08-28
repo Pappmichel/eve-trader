@@ -376,6 +376,28 @@ export const refiningApi = {
     post<T.ShoppingListPlan>('/api/refining/shopping-list/optimize', { requirements: requirements ?? null }),
 }
 
+// -------------------------------------------------------------- station trading
+export const stationTradingApi = {
+  shortlist: () => get<T.StationTradingShortlistRow[]>('/api/station-trading/shortlist'),
+  refreshShortlist: () =>
+    post<{ discovered: number; rows: T.StationTradingShortlistRow[] }>('/api/station-trading/shortlist/refresh'),
+  deactivateShortlistItems: (typeIds: number[]) =>
+    post<{ deactivated: number }>('/api/station-trading/shortlist/deactivate', { type_ids: typeIds }),
+  activateShortlistItems: (typeIds: number[]) =>
+    post<{ activated: number }>('/api/station-trading/shortlist/activate', { type_ids: typeIds }),
+  checkUndercut: () => post<T.StationTradingUndercutCheckResult>('/api/station-trading/undercut/check'),
+  skills: () => get<T.SkillSummary[]>('/api/station-trading/skills'),
+  settings: () => get<T.StationTradingSettings>('/api/station-trading/settings'),
+  updateSettings: (s: T.StationTradingSettings) =>
+    post<T.StationTradingSettings>('/api/station-trading/settings', s),
+  esiSyncTime: () => get<{ synced_at: string | null }>('/api/station-trading/esi/sync-time'),
+
+  // No addCharacter() here, deliberately - Add Character uses the same
+  // redirect-based EVE SSO flow every other role does (authApi.start('trader')).
+  traderCharacters: () => get<T.ProducerCharacter[]>('/api/station-trading/trader-characters'),
+  removeCharacter: (roleKey: string) => del(`/api/station-trading/auth/character/${roleKey}`),
+}
+
 // ------------------------------------------------------------------- admin
 export const adminApi = {
   tenants: () => get<T.AdminTenant[]>('/api/admin/tenants'),

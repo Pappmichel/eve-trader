@@ -37,7 +37,7 @@ SESSION_MAX_AGE_SECONDS = 30 * 24 * 3600  # 30 days
 # special case elsewhere (see tools_for's own docstring for why
 # DEFAULT_TENANT_ID's users get all of these, including "admin", without an
 # explicit tool_grants row).
-ALL_TOOL_KEYS = ("trading", "production", "doctrine", "refining", "portfolio", "admin")
+ALL_TOOL_KEYS = ("trading", "production", "doctrine", "refining", "station_trading", "portfolio", "admin")
 
 
 def _serializer(cfg: OAuthConfig) -> URLSafeTimedSerializer:
