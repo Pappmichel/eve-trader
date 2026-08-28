@@ -849,12 +849,15 @@ export interface StationTradingSettings {
 export interface StationTradingShortlistRow {
   type_id: number
   name: string
+  category: string
   spread_pct: number
   avg_daily_volume: number
   discovered_at: string
   active: boolean
   live_buy: number | null
   live_sell: number | null
+  profit_per_unit: number | null
+  margin: number | null
 }
 
 export interface StationTradingUndercutRow {

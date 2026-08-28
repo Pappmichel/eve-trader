@@ -12,8 +12,9 @@ client = TestClient(create_app())
 
 
 def test_get_shortlist_calls_action(monkeypatch):
-    rows = [{"type_id": 34, "name": "Tritanium", "spread_pct": 0.1, "avg_daily_volume": 5000.0,
-             "discovered_at": "2026-08-27T00:00:00", "active": True, "live_buy": None, "live_sell": None}]
+    rows = [{"type_id": 34, "name": "Tritanium", "category": "Mineral", "spread_pct": 0.1,
+             "avg_daily_volume": 5000.0, "discovered_at": "2026-08-27T00:00:00", "active": True,
+             "live_buy": None, "live_sell": None, "profit_per_unit": None, "margin": None}]
     monkeypatch.setattr(station_trading_actions, "do_get_shortlist", lambda: rows)
 
     resp = client.get("/api/station-trading/shortlist")

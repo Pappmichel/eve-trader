@@ -27,6 +27,54 @@ def _item_name(type_id: int) -> str:
     return sde_row[2] if sde_row else str(type_id)
 
 
+def _category_name(type_id: int, category_names: dict[int, str]) -> str:
+    category_id = storage.get_type_category(type_id)
+    return category_names.get(category_id, "Unknown") if category_id is not None else "Unknown"
+
+
+def _profit(live_buy: float | None, live_sell: float | None,
+            cfg: StationTradingConfig) -> tuple[float | None, float | None]:
+    """profit_per_unit/margin from LIVE prices only (never the Goonmetrics
+    discovery-time snapshot the shortlist persists) - broker fee is charged
+    on both legs (buy placement and sell placement), sales tax only on the
+    sell leg, matching real EVE market mechanics (see StationTradingConfig's
+    own field comments). None/None when no live price is available (ESI
+    outage, or the item never confirmed) - same "don't fabricate a number"
+    convention Trading's own shortlist uses for landed_cost/net_sell."""
+    if live_buy is None or live_sell is None or live_buy <= 0:
+        return None, None
+    buy_cost = live_buy * (1 + cfg.broker_fee_rate)
+    sell_net = live_sell * (1 - cfg.broker_fee_rate - cfg.sales_tax_rate)
+    profit_per_unit = sell_net - buy_cost
+    margin = profit_per_unit / buy_cost
+    return profit_per_unit, margin
+
+
+def _build_shortlist_rows(rows: list[tuple[int, float, float, str, bool]],
+                           cfg: StationTradingConfig) -> list[dict]:
+    """Shared by do_get_shortlist/do_refresh_shortlist - live-confirms every
+    row's price in one bounded confirm_live call (never per-row) and derives
+    category/profit/margin from that live price, not the persisted
+    discovery-time spread (see _profit's own docstring)."""
+    type_ids = [type_id for type_id, *_rest in rows]
+    live = confirm_live(type_ids)
+    category_names = storage.load_sde_category_names()
+    result = []
+    for type_id, spread_pct, avg_daily_volume, discovered_at, active in rows:
+        stats = live.get(type_id)
+        live_buy = stats.buy_percentile if stats else None
+        live_sell = stats.sell_percentile if stats else None
+        profit_per_unit, margin = _profit(live_buy, live_sell, cfg)
+        result.append({
+            "type_id": type_id, "name": _item_name(type_id), "category": _category_name(type_id, category_names),
+            "spread_pct": spread_pct, "avg_daily_volume": avg_daily_volume,
+            "discovered_at": discovered_at, "active": active,
+            "live_buy": live_buy, "live_sell": live_sell,
+            "profit_per_unit": profit_per_unit, "margin": margin,
+        })
+    return result
+
+
 # ---------------------------------------------------------- trader characters
 def do_list_trader_characters() -> list[tuple[str, int, str]]:
     return esi_sync.list_trader_characters()
@@ -40,42 +88,30 @@ def do_remove_trader_character(role_key: str) -> dict:
 # ---------------------------------------------------------------- shortlist
 def do_refresh_shortlist(cfg: StationTradingConfig = STATION_TRADING_CONFIG) -> dict:
     """Re-runs candidate discovery (Goonmetrics-based, see
-    candidate_discovery.discover_candidates), persists the result, then
-    live-confirms every discovered candidate against Jita's real order book
-    in the same pass (candidate_discovery.confirm_live) - the "Refresh"
-    button's click gets the fully live-confirmed table back immediately,
-    without a second round-trip."""
+    candidate_discovery.discover_candidates) and persists the result -
+    newly-discovered rows all start active; a previously-deactivated
+    type_id stays deactivated (see storage.upsert_station_trading_shortlist).
+    Returns the same live-confirmed, profit-annotated shape do_get_shortlist
+    does (_build_shortlist_rows), so the "Refresh" button's click updates
+    the table immediately without a second round-trip."""
     candidates = discover_candidates(cfg)
     run_ts = now_ts()
     storage.upsert_station_trading_shortlist(
         [(c["type_id"], c["spread_pct"], c["avg_daily_volume"], run_ts) for c in candidates]
     )
     storage.set_esi_sync_time("station_trading", run_ts)
-
-    live = confirm_live([c["type_id"] for c in candidates])
-    rows = []
-    for c in candidates:
-        stats = live.get(c["type_id"])
-        rows.append({
-            "type_id": c["type_id"], "name": _item_name(c["type_id"]),
-            "spread_pct": c["spread_pct"], "avg_daily_volume": c["avg_daily_volume"],
-            "discovered_at": run_ts, "active": True,
-            "live_buy": stats.buy_percentile if stats else None,
-            "live_sell": stats.sell_percentile if stats else None,
-        })
+    rows = do_get_shortlist(cfg)
     return {"discovered": len(candidates), "rows": rows}
 
 
-def do_get_shortlist() -> list[dict]:
-    """Persisted shortlist rows only, no live ESI call - a fast read for
-    page load, refreshed to live prices only when the user actually clicks
-    Refresh (do_refresh_shortlist)."""
+def do_get_shortlist(cfg: StationTradingConfig = STATION_TRADING_CONFIG) -> list[dict]:
+    """Persisted shortlist rows, live-price-confirmed and profit-annotated on
+    every read (see _build_shortlist_rows) - bounded to at most top_n=200
+    rows (candidate_discovery.discover_candidates' own cap), so the live ESI
+    call this makes is cheap and stays within ESIClient's existing 30s
+    class-wide order-book cache."""
     rows = storage.load_station_trading_shortlist()
-    return [
-        {"type_id": type_id, "name": _item_name(type_id), "spread_pct": spread_pct,
-         "avg_daily_volume": avg_daily_volume, "discovered_at": discovered_at, "active": active}
-        for type_id, spread_pct, avg_daily_volume, discovered_at, active in rows
-    ]
+    return _build_shortlist_rows(rows, cfg)
 
 
 def do_deactivate_shortlist_items(type_ids: list[int]) -> dict:

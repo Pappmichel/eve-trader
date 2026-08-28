@@ -515,12 +515,15 @@ class StationTradingSettings(_Base):
 class StationTradingShortlistRow(_Base):
     type_id: int
     name: str
+    category: str
     spread_pct: float
     avg_daily_volume: float
     discovered_at: str
     active: bool
     live_buy: Optional[float] = None
     live_sell: Optional[float] = None
+    profit_per_unit: Optional[float] = None
+    margin: Optional[float] = None
 
 
 class StationTradingUndercutRow(_Base):

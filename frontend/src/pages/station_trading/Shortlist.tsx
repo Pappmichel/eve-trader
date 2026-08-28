@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ActionIcon, Group, Text, TextInput, Tooltip } from '@mantine/core'
+import { ActionIcon, Group, MultiSelect, Text, TextInput, Tooltip } from '@mantine/core'
 import { IconBan, IconRotateClockwise } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
@@ -27,18 +27,34 @@ export default function Shortlist() {
   ])
 
   const [search, setSearch] = useState('')
+  const [selCategories, setSelCategories] = useState<string[]>([])
+
+  const categories = useMemo(() => [...new Set((data ?? []).map((r) => r.category))].sort(), [data])
+  const effectiveCategories = selCategories.length ? selCategories : categories
 
   const filtered = useMemo(() => {
-    if (!search) return data ?? []
-    return (data ?? []).filter((r) => r.name.toLowerCase().includes(search.toLowerCase()))
-  }, [data, search])
+    return (data ?? []).filter((r) => {
+      if (!effectiveCategories.includes(r.category)) return false
+      if (search && !r.name.toLowerCase().includes(search.toLowerCase())) return false
+      return true
+    })
+  }, [data, effectiveCategories, search])
 
   const columns = useMemo<ColumnDef<StationTradingShortlistRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'name', size: 240 },
-    { header: 'Spread', accessorKey: 'spread_pct', size: 100, cell: (i) => pct(i.getValue()) },
+    { header: 'Item', accessorKey: 'name', size: 220 },
+    { header: 'Category', accessorKey: 'category', size: 130, meta: { mobileHide: true } },
+    { header: 'Spread', accessorKey: 'spread_pct', size: 90, cell: (i) => pct(i.getValue()) },
     { header: 'Avg Daily Volume', accessorKey: 'avg_daily_volume', size: 150, cell: (i) => qty(i.getValue()) },
     { header: 'Live Buy', accessorKey: 'live_buy', size: 120, cell: (i) => isk(i.getValue()) },
     { header: 'Live Sell', accessorKey: 'live_sell', size: 120, cell: (i) => isk(i.getValue()) },
+    {
+      header: 'Profit / Unit', accessorKey: 'profit_per_unit', size: 130,
+      cell: (i) => {
+        const v = i.getValue()
+        return <Text c={v != null && v < 0 ? 'danger' : undefined}>{isk(v)}</Text>
+      },
+    },
+    { header: 'Margin', accessorKey: 'margin', size: 100, cell: (i) => pct(i.getValue()), meta: { mobileHide: true } },
     { header: 'Discovered', accessorKey: 'discovered_at', size: 150, meta: { mobileHide: true } },
     {
       header: '', id: 'actions', size: 50, enableSorting: false,
@@ -75,12 +91,13 @@ export default function Shortlist() {
 
   return (
     <>
-      <Group mb="md">
+      <Group mb="md" grow align="flex-end">
+        <MultiSelect label="Category" data={categories} value={selCategories} onChange={setSelCategories} placeholder="All" clearable />
         <TextInput label="Search (item)" value={search} onChange={(e) => setSearch(e.currentTarget.value)} />
       </Group>
       <Text size="sm" c="dimmed" mb="xs">{filtered.length} of {data.length} candidates</Text>
       {filtered.length === 0 ? (
-        <HintCard>No items match the current filter.</HintCard>
+        <HintCard>No items match the current filters.</HintCard>
       ) : (
         <DataTable data={filtered} columns={columns} maxHeight={560} getRowId={(r) => String(r.type_id)} />
       )}
