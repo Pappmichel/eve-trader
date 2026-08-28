@@ -25,6 +25,7 @@ const Candidates = lazy(() => import('./pages/trading/Candidates'))
 const NewCandidates = lazy(() => import('./pages/trading/NewCandidates'))
 const PriceHistory = lazy(() => import('./pages/trading/PriceHistory'))
 const RealizedTrades = lazy(() => import('./pages/trading/RealizedTrades'))
+const Transactions = lazy(() => import('./pages/trading/Transactions'))
 const UnlistedStock = lazy(() => import('./pages/trading/UnlistedStock'))
 const UndercutCheck = lazy(() => import('./pages/trading/UndercutCheck'))
 const TradingSettings = lazy(() => import('./pages/trading/TradingSettings'))
@@ -187,6 +188,7 @@ function App() {
               <Route path="new-candidates" element={<NewCandidates />} />
               <Route path="history" element={<PriceHistory />} />
               <Route path="trades" element={<RealizedTrades />} />
+              <Route path="transactions" element={<Transactions />} />
               <Route path="unlisted-stock" element={<UnlistedStock />} />
               <Route path="undercut" element={<UndercutCheck />} />
               <Route path="settings" element={<TradingSettings />} />

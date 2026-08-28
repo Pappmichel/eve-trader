@@ -225,6 +225,19 @@ def remove_trading_character(role_key: str):
     return _wrap(actions.do_remove_trading_character, role_key=role_key)
 
 
+@router.get("/transaction-characters")
+def get_transaction_characters():
+    return [
+        {"role_key": role, "character_id": cid, "character_name": name}
+        for role, cid, name in actions.do_list_transaction_characters()
+    ]
+
+
+@router.get("/wallet-transactions", response_model=list[schemas.WalletTransaction])
+def get_wallet_transactions(role_key: str, lookback_days: Optional[int] = None):
+    return _wrap(actions.do_wallet_transactions, role_key=role_key, lookback_days=lookback_days)
+
+
 @router.post("/pipeline/run")
 def run_pipeline(safe: bool = True, rebuild_universe: bool = False):
     return _wrap(actions.do_pipeline, safe=safe, rebuild_universe=rebuild_universe)

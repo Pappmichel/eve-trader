@@ -1247,6 +1247,35 @@ def get_cached_structure_names(location_ids: list[int]) -> dict[int, tuple[bool,
     return {loc_id: (loc_id in found, found.get(loc_id)) for loc_id in location_ids}
 
 
+def get_location_names(location_ids: Iterable[int]) -> dict[int, Optional[str]]:
+    """Batched location_id -> display name, structure_names (player
+    structures) first, then sde_stations.station_name (NPC stations) - same
+    two-tier fallback search_item_stock_locations already does inline per
+    row, just batched here for a whole set of ids in one call (backs GET
+    /trading/wallet-transactions, which resolves every distinct location_id
+    across a character's transaction page in one shot rather than N+1)."""
+    location_ids = list(location_ids)
+    if not location_ids:
+        return {}
+    placeholders = ",".join("?" * len(location_ids))
+    with connect() as conn:
+        structure_rows = conn.execute(
+            f"SELECT location_id, name FROM structure_names WHERE location_id IN ({placeholders})",
+            location_ids,
+        ).fetchall()
+        resolved = dict(structure_rows)
+        missing = [loc_id for loc_id in location_ids if resolved.get(loc_id) is None]
+        if missing:
+            missing_placeholders = ",".join("?" * len(missing))
+            station_rows = conn.execute(
+                f"SELECT station_id, station_name FROM sde_stations WHERE station_id IN ({missing_placeholders})",
+                missing,
+            ).fetchall()
+            for station_id, station_name in station_rows:
+                resolved[station_id] = station_name
+    return {loc_id: resolved.get(loc_id) for loc_id in location_ids}
+
+
 def list_cached_structure_names() -> list[tuple[int, Optional[str]]]:
     """Every location_id this tenant has ever attempted to resolve a
     structure name for (RLS-scoped), success or failure - name is None for

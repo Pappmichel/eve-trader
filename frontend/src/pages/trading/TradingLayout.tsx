@@ -19,6 +19,7 @@ const TABS = [
   { path: '/trading/new-candidates', label: 'New Candidates' },
   { path: '/trading/history', label: 'Price History' },
   { path: '/trading/trades', label: 'Realized Trades' },
+  { path: '/trading/transactions', label: 'Transactions' },
   { path: '/trading/unlisted-stock', label: 'Unlisted Stock' },
   { path: '/trading/undercut', label: 'Undercut Check' },
   { path: '/trading/settings', label: 'Settings' },

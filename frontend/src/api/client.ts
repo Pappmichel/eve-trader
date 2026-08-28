@@ -144,6 +144,13 @@ export const tradingApi = {
   buyerCharacters: () => get<T.TradingCharacter[]>('/api/trading/buyer-characters'),
   sellerCharacters: () => get<T.TradingCharacter[]>('/api/trading/seller-characters'),
   removeCharacter: (roleKey: string) => del(`/api/trading/auth/character/${roleKey}`),
+
+  transactionCharacters: () => get<T.TradingCharacter[]>('/api/trading/transaction-characters'),
+  walletTransactions: (roleKey: string, lookbackDays?: number) =>
+    get<T.WalletTransaction[]>(
+      `/api/trading/wallet-transactions?role_key=${encodeURIComponent(roleKey)}` +
+        (lookbackDays ? `&lookback_days=${lookbackDays}` : ''),
+    ),
 }
 
 // ------------------------------------------------------------- production

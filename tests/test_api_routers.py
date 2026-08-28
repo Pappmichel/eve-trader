@@ -42,6 +42,48 @@ def test_refresh_shortlist_action_error_maps_to_400(monkeypatch):
     assert resp.json() == {"detail": "Shortlist is empty."}
 
 
+def test_get_transaction_characters_serializes_role_tuples(monkeypatch):
+    monkeypatch.setattr(actions, "do_list_transaction_characters", lambda: [
+        ("buyer:2112625428", 2112625428, "Some Buyer"),
+    ])
+    resp = client.get("/api/trading/transaction-characters")
+    assert resp.status_code == 200
+    assert resp.json() == [
+        {"role_key": "buyer:2112625428", "character_id": 2112625428, "character_name": "Some Buyer"},
+    ]
+
+
+def test_get_wallet_transactions_passes_role_key_and_lookback_days(monkeypatch):
+    captured = {}
+
+    def _fake(role_key, lookback_days=None):
+        captured["role_key"] = role_key
+        captured["lookback_days"] = lookback_days
+        return [{
+            "transaction_id": 1, "date": "2026-08-01T00:00:00Z", "type_id": 34,
+            "item": "Tritanium", "is_buy": True, "quantity": 100, "unit_price": 5.0,
+            "total": 500.0, "location_id": 60003760, "location_name": "Jita IV - Moon 4",
+        }]
+    monkeypatch.setattr(actions, "do_wallet_transactions", _fake)
+
+    resp = client.get("/api/trading/wallet-transactions?role_key=buyer:2112625428&lookback_days=90")
+
+    assert resp.status_code == 200
+    assert captured == {"role_key": "buyer:2112625428", "lookback_days": 90}
+    assert resp.json()[0]["item"] == "Tritanium"
+
+
+def test_get_wallet_transactions_action_error_maps_to_400(monkeypatch):
+    def _raise(role_key, lookback_days=None):
+        raise ActionError("Character 'buyer:1' is not logged in.")
+    monkeypatch.setattr(actions, "do_wallet_transactions", _raise)
+
+    resp = client.get("/api/trading/wallet-transactions?role_key=buyer:1")
+
+    assert resp.status_code == 400
+    assert resp.json() == {"detail": "Character 'buyer:1' is not logged in."}
+
+
 def test_refresh_and_prune_candidates_passes_safe_query_param(monkeypatch):
     captured = {}
 
