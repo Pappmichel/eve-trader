@@ -48,12 +48,20 @@ class StationTradingConfig:
     # noise from near-zero order-book depth) vs. a small cluster of real,
     # liquid commodities (minerals etc., volume in the tens of millions+) -
     # 1000 sits well inside the gap between those two clusters, not a
-    # precisely-derived number. discover_candidates' own top_n cap is the
-    # primary defense against a huge candidate count either way (see its
-    # docstring) - this floor is a cheap secondary filter, not load-bearing
-    # on its own.
+    # precisely-derived number, and already brings the real live candidate
+    # count down from 10,000+ to ~1,300 (checked live 2026-08-29) - a real,
+    # legitimately large opportunity set, not something to additionally cap
+    # by default.
     min_spread_threshold: float = 0.08
     min_daily_volume: float = 1000.0
+
+    # Same "off by default, user opts in" shape as TradingConfig's own
+    # enforce_shortlist_cap/max_active_shortlist_items - confirmed with the
+    # user 2026-08-29 that an always-on hard cap (this tool's initial 200)
+    # was wrong: min_daily_volume above is the real noise filter, a cap on
+    # top of that should be an explicit choice, not a silent default.
+    enforce_shortlist_cap: bool = False
+    max_active_shortlist_items: int = 300
 
 
 _yaml_cache: dict = {}

@@ -42,7 +42,7 @@ def test_build_shortlist_rows_includes_category_and_live_profit(monkeypatch):
     assert rows == [{
         "type_id": 34, "name": "Tritanium", "category": "Mineral", "spread_pct": 0.1,
         "avg_daily_volume": 5000.0, "discovered_at": "2026-08-27T00:00:00", "active": True,
-        "live_buy": 5.0, "live_sell": 6.0, "profit_per_unit": 1.0, "margin": 0.2,
+        "live_buy": 5.0, "live_sell": 6.0, "profit_per_unit": 1.0, "margin": 0.2, "profit_per_day": 5000.0,
     }]
 
 
@@ -58,3 +58,4 @@ def test_build_shortlist_rows_unknown_category_when_type_not_in_sde(monkeypatch)
     assert rows[0]["category"] == "Unknown"
     assert rows[0]["name"] == "999"
     assert rows[0]["live_buy"] is None and rows[0]["profit_per_unit"] is None
+    assert rows[0]["profit_per_day"] is None

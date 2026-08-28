@@ -65,12 +65,20 @@ def _build_shortlist_rows(rows: list[tuple[int, float, float, str, bool]],
         live_buy = stats.buy_percentile if stats else None
         live_sell = stats.sell_percentile if stats else None
         profit_per_unit, margin = _profit(live_buy, live_sell, cfg)
+        # Whole-market theoretical ceiling (profit_per_unit * a volume
+        # figure), deliberately NOT a personal-achievable estimate - same
+        # convention as Production's potential_daily_profit/Trading's own
+        # "Profit / Day" (see CLAUDE.md's "Theoretical ceiling figures"
+        # section). avg_daily_volume here is real Goonmetrics region
+        # turnover (not order-book depth), so this doesn't repeat that
+        # section's documented sell_volume/depth bug.
+        profit_per_day = profit_per_unit * avg_daily_volume if profit_per_unit is not None else None
         result.append({
             "type_id": type_id, "name": _item_name(type_id), "category": _category_name(type_id, category_names),
             "spread_pct": spread_pct, "avg_daily_volume": avg_daily_volume,
             "discovered_at": discovered_at, "active": active,
             "live_buy": live_buy, "live_sell": live_sell,
-            "profit_per_unit": profit_per_unit, "margin": margin,
+            "profit_per_unit": profit_per_unit, "margin": margin, "profit_per_day": profit_per_day,
         })
     return result
 

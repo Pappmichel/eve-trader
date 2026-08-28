@@ -510,6 +510,8 @@ class StationTradingSettings(_Base):
     sales_tax_rate: float
     min_spread_threshold: float
     min_daily_volume: float
+    enforce_shortlist_cap: bool
+    max_active_shortlist_items: int
 
 
 class StationTradingShortlistRow(_Base):
@@ -524,6 +526,7 @@ class StationTradingShortlistRow(_Base):
     live_sell: Optional[float] = None
     profit_per_unit: Optional[float] = None
     margin: Optional[float] = None
+    profit_per_day: Optional[float] = None
 
 
 class StationTradingUndercutRow(_Base):

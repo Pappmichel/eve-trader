@@ -51,7 +51,12 @@ export default function StationTradingSettings() {
           onChange={(v) => set('min_spread_threshold', Number(v) / 100)} />
         <NumberInput label="Minimum avg daily volume" value={form.min_daily_volume} min={0} step={1}
           onChange={(v) => set('min_daily_volume', Number(v))} />
+        <NumberInput label="Max. active shortlist entries (when cap is on)" value={form.max_active_shortlist_items} min={1} step={10}
+          onChange={(v) => set('max_active_shortlist_items', Number(v))} />
       </SimpleGrid>
+      <Text size="xs" c="dimmed">
+        The cap itself is off by default - toggle it on the Shortlist page.
+      </Text>
 
       <Button mt="md" w={240} onClick={() => save.mutate(form)} loading={save.isPending}>
         Save Settings

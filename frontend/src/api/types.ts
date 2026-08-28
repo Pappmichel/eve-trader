@@ -844,6 +844,8 @@ export interface StationTradingSettings {
   sales_tax_rate: number
   min_spread_threshold: number
   min_daily_volume: number
+  enforce_shortlist_cap: boolean
+  max_active_shortlist_items: number
 }
 
 export interface StationTradingShortlistRow {
@@ -858,6 +860,7 @@ export interface StationTradingShortlistRow {
   live_sell: number | null
   profit_per_unit: number | null
   margin: number | null
+  profit_per_day: number | null
 }
 
 export interface StationTradingUndercutRow {
