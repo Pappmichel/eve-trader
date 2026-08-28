@@ -77,6 +77,19 @@ export interface RealizedTrade {
   margin: number
 }
 
+export interface WalletTransaction {
+  transaction_id: number
+  date: string
+  type_id: number
+  item: string
+  is_buy: boolean
+  quantity: number
+  unit_price: number
+  total: number
+  location_id: number
+  location_name: string | null
+}
+
 export interface UnlistedStockRow {
   type_id: number
   item: string

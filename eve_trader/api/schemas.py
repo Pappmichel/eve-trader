@@ -110,6 +110,19 @@ class RealizedTrade(_Base):
     margin: float
 
 
+class WalletTransaction(_Base):
+    transaction_id: int
+    date: str
+    type_id: int
+    item: str
+    is_buy: bool
+    quantity: int
+    unit_price: float
+    total: float
+    location_id: int
+    location_name: Optional[str] = None
+
+
 class UnlistedStockRow(_Base):
     type_id: int
     item: str
