@@ -20,7 +20,7 @@ from .goonmetrics_client import GoonmetricsClient
 from .models import Candidate, ShortlistItem, UndercutRow, UnlistedStockRow
 from .shortlist import (NO_MARKET_DATA_DECISION, SKIP_DECISION, _decision, audit_shortlist, average_market_daily_volume,
                          evaluate_shortlist, summary_counts, top_imports_by_daily_profit)
-from .trade_reconciliation import reconcile_realized_trades, summarize_realized
+from .trade_reconciliation import fetch_recent_transactions, reconcile_realized_trades, summarize_realized
 
 log = logging.getLogger("eve_trader.actions")
 
@@ -118,6 +118,47 @@ def do_list_seller_characters(oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> list[tup
 def do_remove_trading_character(role_key: str, oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
     TokenManager(oauth_cfg).remove_token(role_key)
     return {"removed": role_key}
+
+
+def do_list_transaction_characters(oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> list[tuple[str, int, str]]:
+    """Every buyer + seller character (Transactions tab's character picker
+    pools both roles, since either can have wallet transactions worth
+    viewing) - deduped by character_id the same way _list_role_characters
+    itself dedupes a legacy single-key entry against a multi-key one."""
+    tm = TokenManager(oauth_cfg)
+    out = []
+    seen_ids = set()
+    for role, cid, name in _list_role_characters(tm, "buyer") + _list_role_characters(tm, "seller"):
+        if cid not in seen_ids:
+            out.append((role, cid, name))
+            seen_ids.add(cid)
+    return out
+
+
+def do_wallet_transactions(role_key: str, lookback_days: Optional[int] = None,
+                            cfg: TradingConfig = TRADING_CONFIG, oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> list[dict]:
+    tm = TokenManager(oauth_cfg)
+    record = tm.get_record(role_key)
+    if record is None:
+        raise ActionError(f"Character '{role_key}' is not logged in.")
+    client = ESIClient(cfg, tm)
+    txns = fetch_recent_transactions(record.character_id, role_key, client, lookback_days or cfg.lookback_days)
+
+    item_names = storage.sde_type_names({t["type_id"] for t in txns})
+    location_names = storage.get_location_names({t["location_id"] for t in txns})
+    rows = [{
+        "transaction_id": t["transaction_id"],
+        "date": t["date"],
+        "type_id": t["type_id"],
+        "item": item_names.get(t["type_id"], str(t["type_id"])),
+        "is_buy": t["is_buy"],
+        "quantity": t["quantity"],
+        "unit_price": t["unit_price"],
+        "total": t["quantity"] * t["unit_price"],
+        "location_id": t["location_id"],
+        "location_name": location_names.get(t["location_id"]),
+    } for t in txns]
+    return sorted(rows, key=lambda r: r["date"], reverse=True)
 
 
 def do_update_settings(updates: dict, cfg: TradingConfig = TRADING_CONFIG) -> dict:
