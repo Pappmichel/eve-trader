@@ -41,8 +41,19 @@ class StationTradingConfig:
     sales_tax_rate: float = 0.075
 
     # Candidate-discovery gates (candidate_discovery.discover_candidates).
+    # min_daily_volume's real-world shape was checked live against Jita's
+    # actual market (2026-08-28): items clearing an 8% spread are sharply
+    # bimodal - thousands of genuinely dead items (avg_daily_volume in the
+    # single-to-low-hundreds range, a wide "spread" on these is meaningless
+    # noise from near-zero order-book depth) vs. a small cluster of real,
+    # liquid commodities (minerals etc., volume in the tens of millions+) -
+    # 1000 sits well inside the gap between those two clusters, not a
+    # precisely-derived number. discover_candidates' own top_n cap is the
+    # primary defense against a huge candidate count either way (see its
+    # docstring) - this floor is a cheap secondary filter, not load-bearing
+    # on its own.
     min_spread_threshold: float = 0.08
-    min_daily_volume: float = 1.0
+    min_daily_volume: float = 1000.0
 
 
 _yaml_cache: dict = {}

@@ -22,12 +22,19 @@ from .config import StationTradingConfig
 JITA_MARKET = "jita"
 
 
-def discover_candidates(cfg: StationTradingConfig, client: GoonmetricsClient | None = None) -> list[dict]:
+def discover_candidates(cfg: StationTradingConfig, client: GoonmetricsClient | None = None,
+                         top_n: int = 200) -> list[dict]:
     """Every Jita item whose current Goonmetrics spread clears
     cfg.min_spread_threshold and whose real average daily traded volume
     (Goonmetrics region history for TRADING_CONFIG.jita_region_id, not
     order-book depth - see CLAUDE.md's "Theoretical ceiling figures" section
-    for why depth is the wrong signal) clears cfg.min_daily_volume. Returns
+    for why depth is the wrong signal) clears cfg.min_daily_volume, capped
+    to the top `top_n` by spread * volume (same shape/default as
+    production/engine.py's discover_build_candidates(top_n=200) - confirmed
+    live against the real Jita market 2026-08-28: spread alone qualifies
+    10,000+ items, the overwhelming majority genuinely dead/illiquid, so a
+    hard cap is the real defense here, not just min_daily_volume - see that
+    config field's own comment for the live numbers behind this). Returns
     dicts sorted by spread * volume, richest first: {"type_id", "buy",
     "sell", "spread_pct", "avg_daily_volume"}.
 
@@ -59,7 +66,7 @@ def discover_candidates(cfg: StationTradingConfig, client: GoonmetricsClient | N
         results.append({"type_id": type_id, "buy": buy, "sell": sell,
                          "spread_pct": spread, "avg_daily_volume": avg_daily_volume})
     results.sort(key=lambda r: r["spread_pct"] * r["avg_daily_volume"], reverse=True)
-    return results
+    return results[:top_n]
 
 
 def confirm_live(type_ids: list[int], client: ESIClient | None = None) -> dict[int, OrderStats]:

@@ -73,6 +73,18 @@ def test_ignores_items_with_no_real_two_sided_market():
     assert discover_candidates(cfg, client=client) == []
 
 
+def test_caps_results_to_top_n():
+    cfg = _cfg(min_spread_threshold=0.0, min_daily_volume=0.0)
+    prices = [_price(i, buy=90.0, sell=100.0) for i in range(5)]
+    history = [_history(i, float(i + 1)) for i in range(5)]
+    client = FakeGoonmetricsClient(prices, history)
+
+    result = discover_candidates(cfg, client=client, top_n=2)
+
+    assert len(result) == 2
+    assert [r["type_id"] for r in result] == [4, 3]  # highest volume (= highest spread*volume) first
+
+
 def test_sorts_by_spread_times_volume_richest_first():
     cfg = _cfg(min_spread_threshold=0.0, min_daily_volume=0.0)
     prices = [_price(100, buy=50.0, sell=100.0),  # 50% spread, low volume
