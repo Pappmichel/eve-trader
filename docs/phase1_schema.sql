@@ -202,10 +202,18 @@ CREATE TABLE IF NOT EXISTS manual_blueprint_copy_costs (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
     type_id INTEGER NOT NULL,
     type_name TEXT NOT NULL,
-    purchase_cost REAL NOT NULL,
+    purchase_cost DOUBLE PRECISION NOT NULL,
     runs INTEGER NOT NULL,
     PRIMARY KEY (tenant_id, type_id)
 );
+-- ISK values need double precision, not REAL (single-precision/~7 sig
+-- digits) - a 500M+ ISK price silently rounds to the nearest ~32-256 ISK in
+-- REAL. Widens an already-provisioned DB's column in place (CREATE TABLE IF
+-- NOT EXISTS above is a no-op there); a fresh DB gets DOUBLE PRECISION
+-- directly. Found in a full-codebase audit (2026-08-28), confirmed live:
+-- REAL rounding was already visible in realized_trades' stored prices (see
+-- that table's own comment below).
+ALTER TABLE manual_blueprint_copy_costs ALTER COLUMN purchase_cost TYPE DOUBLE PRECISION;
 ALTER TABLE manual_blueprint_copy_costs ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON manual_blueprint_copy_costs;
 CREATE POLICY tenant_isolation ON manual_blueprint_copy_costs
@@ -498,20 +506,33 @@ CREATE TABLE IF NOT EXISTS shortlist_snapshot (
     item_id INTEGER,
     item TEXT,
     category TEXT,
-    landed_cost REAL,
-    net_sell REAL,
+    landed_cost DOUBLE PRECISION,
+    net_sell DOUBLE PRECISION,
     sell_volume REAL,
     own_orders_remaining REAL,
-    profit_per_unit REAL,
+    profit_per_unit DOUBLE PRECISION,
     margin REAL,
-    profit_per_m3 REAL,
+    profit_per_m3 DOUBLE PRECISION,
     decision TEXT,
     active INTEGER,
     volume_m3 REAL,
-    jita_sell REAL,
-    import_cost REAL,
+    jita_sell DOUBLE PRECISION,
+    import_cost DOUBLE PRECISION,
     meta_level INTEGER
 );
+-- The six ISK-denominated columns above (landed_cost/net_sell/profit_per_unit/
+-- profit_per_m3/jita_sell/import_cost) need double precision, not REAL - see
+-- manual_blueprint_copy_costs' own comment above for why. sell_volume/
+-- own_orders_remaining/volume_m3 (unit counts/m3) and margin (a ratio, not
+-- an ISK amount) don't have this problem - REAL's ~7 significant digits is
+-- already far more precision than either needs, so they're deliberately
+-- left as-is. Widens an already-provisioned DB's columns in place.
+ALTER TABLE shortlist_snapshot ALTER COLUMN landed_cost TYPE DOUBLE PRECISION;
+ALTER TABLE shortlist_snapshot ALTER COLUMN net_sell TYPE DOUBLE PRECISION;
+ALTER TABLE shortlist_snapshot ALTER COLUMN profit_per_unit TYPE DOUBLE PRECISION;
+ALTER TABLE shortlist_snapshot ALTER COLUMN profit_per_m3 TYPE DOUBLE PRECISION;
+ALTER TABLE shortlist_snapshot ALTER COLUMN jita_sell TYPE DOUBLE PRECISION;
+ALTER TABLE shortlist_snapshot ALTER COLUMN import_cost TYPE DOUBLE PRECISION;
 -- GitHub issue #51: "Profit / Day" used to be computed from sell_volume
 -- (order-book depth, "how much is listed right now") - a never-actually-sold
 -- item with a large order book produced a wildly inflated number. #51 first
@@ -588,13 +609,17 @@ CREATE TABLE IF NOT EXISTS new_candidates (
     hit_rate REAL,
     latest_margin REAL,
     best_margin REAL,
-    avg_profit_m3 REAL,
+    avg_profit_m3 DOUBLE PRECISION,
     avg_sell_movement REAL,
     score REAL,
     recommendation TEXT,
     add_flag INTEGER,
     meta_level INTEGER
 );
+-- avg_profit_m3 is ISK/m3 - needs double precision, not REAL, same reasoning
+-- as manual_blueprint_copy_costs' own comment above. hit_rate/latest_margin/
+-- best_margin/score are ratios/scores, not ISK amounts - left as REAL.
+ALTER TABLE new_candidates ALTER COLUMN avg_profit_m3 TYPE DOUBLE PRECISION;
 CREATE INDEX IF NOT EXISTS idx_new_candidates_tenant ON new_candidates (tenant_id);
 ALTER TABLE new_candidates ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON new_candidates;
@@ -609,14 +634,28 @@ CREATE TABLE IF NOT EXISTS realized_trades (
     item TEXT,
     buy_date TEXT,
     buy_qty INTEGER,
-    buy_unit_price REAL,
+    buy_unit_price DOUBLE PRECISION,
     sell_date TEXT,
     sell_qty INTEGER,
-    sell_unit_price REAL,
+    sell_unit_price DOUBLE PRECISION,
     matched_qty INTEGER,
-    realized_profit REAL,
+    realized_profit DOUBLE PRECISION,
     margin REAL
 );
+-- This is the realized-P&L ledger - a record of what actually happened, not
+-- just a decision-support estimate, so REAL's silent rounding (confirmed
+-- live 2026-08-28: stored buy/sell prices above ~16.7M ISK were provably not
+-- the exact fill price, e.g. a 535,1xx,xxx ISK fill stored back as an
+-- exactly-round 535,100,000) is a real correctness defect here, not just an
+-- immaterial rounding difference the way it is for a margin percentage.
+-- margin stays REAL - it's a ratio, not an ISK amount, unaffected by this.
+-- Widening the type does NOT recover precision already lost on existing
+-- rows (float32 -> float64 preserves the already-rounded number); only a
+-- fresh Reconcile Trades run re-derives exact values from ESI wallet
+-- transactions.
+ALTER TABLE realized_trades ALTER COLUMN buy_unit_price TYPE DOUBLE PRECISION;
+ALTER TABLE realized_trades ALTER COLUMN sell_unit_price TYPE DOUBLE PRECISION;
+ALTER TABLE realized_trades ALTER COLUMN realized_profit TYPE DOUBLE PRECISION;
 CREATE INDEX IF NOT EXISTS idx_realized_trades_tenant ON realized_trades (tenant_id);
 ALTER TABLE realized_trades ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON realized_trades;

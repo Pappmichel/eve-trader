@@ -150,7 +150,7 @@ CREATE TABLE IF NOT EXISTS doctrine_contracts (
     start_location_id BIGINT,
     status TEXT NOT NULL,
     title TEXT,
-    price REAL,
+    price DOUBLE PRECISION,
     date_expired TIMESTAMPTZ,
     matched_fitting_id UUID,
     match_score REAL,
@@ -158,6 +158,11 @@ CREATE TABLE IF NOT EXISTS doctrine_contracts (
     synced_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (tenant_id, contract_id)
 );
+-- Contract price is an ISK amount, not a ratio/score like match_score -
+-- needs double precision, not REAL, same reasoning as phase1_schema.sql's
+-- realized_trades comment (found in the same 2026-08-28 audit). Widens an
+-- already-provisioned DB's column in place.
+ALTER TABLE doctrine_contracts ALTER COLUMN price TYPE DOUBLE PRECISION;
 CREATE INDEX IF NOT EXISTS idx_doctrine_contracts_fitting ON doctrine_contracts (tenant_id, matched_fitting_id);
 CREATE INDEX IF NOT EXISTS idx_doctrine_contracts_status ON doctrine_contracts (tenant_id, validation_status);
 ALTER TABLE doctrine_contracts ENABLE ROW LEVEL SECURITY;
@@ -222,7 +227,7 @@ CREATE TABLE IF NOT EXISTS doctrine_contract_history (
     fitting_name TEXT,
     hull_type_id INTEGER,
     title TEXT,
-    price REAL,
+    price DOUBLE PRECISION,
     acceptor_id BIGINT,
     acceptor_name TEXT,
     date_issued TIMESTAMPTZ,
@@ -230,6 +235,8 @@ CREATE TABLE IF NOT EXISTS doctrine_contract_history (
     recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (tenant_id, contract_id)
 );
+-- Same ISK-amount reasoning as doctrine_contracts.price above.
+ALTER TABLE doctrine_contract_history ALTER COLUMN price TYPE DOUBLE PRECISION;
 CREATE INDEX IF NOT EXISTS idx_doctrine_contract_history_fitting
     ON doctrine_contract_history (tenant_id, fitting_id);
 ALTER TABLE doctrine_contract_history ENABLE ROW LEVEL SECURITY;
