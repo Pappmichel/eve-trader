@@ -22,6 +22,21 @@ def _parse_iso(ts: str) -> datetime:
 
 WALLET_TRANSACTIONS_PAGE_SIZE = 2500  # ESI's fixed per-call cap for this endpoint
 
+# Buys are fetched over a longer window than sells - a sale inside
+# cfg.lookback_days can legitimately be funded by inventory bought well
+# before that window started (an item just sitting at the structure waiting
+# to sell), and the FIFO matcher's buy_date <= sell_date rule (PB-02, a
+# separate confirmed bug fixed the same day this was found) means a too-old
+# buy that was never even fetched looks identical to "no real cost basis" -
+# the sale is dropped instead of matched to a fabricated later buy, which is
+# safe but an avoidable under-report (PB-05, business-logic audit,
+# 2026-08-29). A flat multiplier (not a separate persisted config field)
+# scales with however long the user has already configured "recent" to
+# mean, while staying bounded - unlike an unbounded/no-cutoff buy fetch,
+# which would risk very slow reconciliation for a character with years of
+# trading history.
+_BUY_LOOKBACK_MULTIPLIER = 3
+
 
 def fetch_recent_transactions(character_id: int, auth_role: str, client: ESIClient,
                                lookback_days: int) -> list[dict]:
@@ -68,7 +83,8 @@ def reconcile_realized_trades(buyer_characters: list[tuple[int, str]], seller_ch
     """
     buys = []
     for character_id, role in buyer_characters:
-        buys.extend(fetch_recent_transactions(character_id, role, client, cfg.lookback_days))
+        buys.extend(fetch_recent_transactions(character_id, role, client,
+                                               cfg.lookback_days * _BUY_LOOKBACK_MULTIPLIER))
     sells = []
     for character_id, role in seller_characters:
         sells.extend(fetch_recent_transactions(character_id, role, client, cfg.lookback_days))

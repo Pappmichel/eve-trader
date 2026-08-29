@@ -128,6 +128,50 @@ def test_reconcile_lets_a_later_sell_reach_a_buy_deferred_by_an_earlier_sell(mon
     assert trades[0].matched_qty == 10
 
 
+def test_reconcile_matches_a_buy_older_than_the_sell_side_lookback_window(monkeypatch):
+    """PB-05 (business-logic audit, 2026-08-29): buys are fetched over a
+    longer window than sells (_BUY_LOOKBACK_MULTIPLIER) specifically so a
+    sell inside cfg.lookback_days can still be matched to real, older
+    inventory. Without this, PB-02's date-ordering fix (a sell can't be
+    funded by a later buy) would silently drop such a sell instead of
+    fabricating a wrong cost basis for it - safe, but an avoidable
+    under-report of real realized profit."""
+    monkeypatch.setattr(trade_reconciliation.storage, "get_station_ids_in_region",
+                         lambda region_id: frozenset({JITA_4_4_STATION_ID}))
+    cfg = TradingConfig(lookback_days=30)  # buy window becomes 90 days (_BUY_LOOKBACK_MULTIPLIER=3)
+    buys = [{"is_buy": True, "type_id": 100, "date": _iso(60), "unit_price": 1000.0, "quantity": 10,
+             "location_id": JITA_4_4_STATION_ID, "transaction_id": 1}]  # older than the 30-day sell window
+    sells = [{"is_buy": False, "type_id": 100, "date": _iso(1), "unit_price": 1200.0, "quantity": 10,
+              "location_id": cfg.structure_id, "transaction_id": 2}]
+    client = FakeClient(buys, sells)
+
+    trades = reconcile_realized_trades(
+        buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
+        client=client, item_names={100: "Widget"}, item_volumes={100: 0.0}, cfg=cfg,
+    )
+
+    assert len(trades) == 1
+    assert trades[0].matched_qty == 10
+
+
+def test_reconcile_still_ignores_a_buy_beyond_even_the_widened_buy_window(monkeypatch):
+    monkeypatch.setattr(trade_reconciliation.storage, "get_station_ids_in_region",
+                         lambda region_id: frozenset({JITA_4_4_STATION_ID}))
+    cfg = TradingConfig(lookback_days=30)  # buy window becomes 90 days
+    buys = [{"is_buy": True, "type_id": 100, "date": _iso(120), "unit_price": 1000.0, "quantity": 10,
+             "location_id": JITA_4_4_STATION_ID, "transaction_id": 1}]  # older than even the 90-day buy window
+    sells = [{"is_buy": False, "type_id": 100, "date": _iso(1), "unit_price": 1200.0, "quantity": 10,
+              "location_id": cfg.structure_id, "transaction_id": 2}]
+    client = FakeClient(buys, sells)
+
+    trades = reconcile_realized_trades(
+        buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
+        client=client, item_names={100: "Widget"}, item_volumes={100: 0.0}, cfg=cfg,
+    )
+
+    assert trades == []
+
+
 def test_average_daily_sold_by_type_empty_table_returns_empty_dict(monkeypatch):
     monkeypatch.setattr(trade_reconciliation.storage, "read_table", lambda table: pd.DataFrame())
     assert average_daily_sold_by_type(TradingConfig(lookback_days=30)) == {}
