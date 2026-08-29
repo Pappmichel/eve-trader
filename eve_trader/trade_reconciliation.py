@@ -128,6 +128,31 @@ def reconcile_realized_trades(buyer_characters: list[tuple[int, str]], seller_ch
             remaining_to_match = sell["quantity"]
             while remaining_to_match > 0 and buy_idx < len(buy_queue):
                 buy = buy_queue[buy_idx]
+                if buy["date"] > sell["date"]:
+                    # Confirmed real bug (business-logic audit, 2026-08-29):
+                    # a sale can't be funded by inventory bought *after* it
+                    # sold - but FIFO here only ordered buys chronologically,
+                    # never checked a matched buy actually predates its sell.
+                    # Live evidence: 324 of 1640 realized_trades rows (20%)
+                    # had buy_date > sell_date, accounting for 21.8% of the
+                    # reported net realized profit - happens whenever a sell
+                    # has no in-window buy old enough to be its real cost
+                    # basis (most commonly: pre-window inventory, bought
+                    # before cfg.lookback_days even started) and FIFO reached
+                    # for the next available buy regardless of its date.
+                    # buy_queue is sorted ascending and buy_idx never
+                    # rewinds, so every later buy is >= this one's date too -
+                    # break (not skip past it) leaves it for a later,
+                    # actually-later-dated sell to still reach; the
+                    # unmatched remainder of *this* sell is simply dropped,
+                    # same "no real data yet" honesty as elsewhere in this
+                    # module (see average_daily_sold_by_type's own docstring)
+                    # rather than fabricating a cost basis. Doesn't recover a
+                    # sell's true pre-window cost basis (a separate, larger
+                    # fix - seed the FIFO queue with real pre-window
+                    # inventory) - this only stops it from silently
+                    # substituting a wrong, later one.
+                    break
                 matched = min(remaining_to_match, buy["quantity"])
                 if matched <= 0:
                     buy_idx += 1

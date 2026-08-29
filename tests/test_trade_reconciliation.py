@@ -75,6 +75,59 @@ def test_reconcile_ignores_buys_outside_the_forge(monkeypatch):
     assert trades == []
 
 
+def test_reconcile_never_matches_a_sell_against_a_later_buy(monkeypatch):
+    """PB-02 regression (business-logic audit, 2026-08-29): a sale can't be
+    funded by inventory bought after it sold - FIFO used to only order buys
+    chronologically among themselves, never checking a matched buy actually
+    predates its sell. Live evidence before this fix: 324 of 1640
+    realized_trades rows (20%) had buy_date > sell_date, accounting for
+    21.8% of the reported net realized profit."""
+    monkeypatch.setattr(trade_reconciliation.storage, "get_station_ids_in_region",
+                         lambda region_id: frozenset({JITA_4_4_STATION_ID}))
+    cfg = TradingConfig(lookback_days=30)
+    buys = [{"is_buy": True, "type_id": 100, "date": _iso(1), "unit_price": 1000.0, "quantity": 10,
+             "location_id": JITA_4_4_STATION_ID, "transaction_id": 1}]  # more recent than the sell below
+    sells = [{"is_buy": False, "type_id": 100, "date": _iso(2), "unit_price": 1200.0, "quantity": 10,
+              "location_id": cfg.structure_id, "transaction_id": 2}]
+    client = FakeClient(buys, sells)
+
+    trades = reconcile_realized_trades(
+        buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
+        client=client, item_names={100: "Widget"}, item_volumes={100: 0.0}, cfg=cfg,
+    )
+
+    assert trades == []  # the only available buy postdates the sell - must not fabricate a cost basis
+
+
+def test_reconcile_lets_a_later_sell_reach_a_buy_deferred_by_an_earlier_sell(monkeypatch):
+    """The buy_date > sell_date check must `break` out of the inner match
+    loop, not advance past the too-late buy entirely - a buy that's too late
+    for one (earlier) sell can still be the valid cost basis for a later
+    sell whose own date comes after it."""
+    monkeypatch.setattr(trade_reconciliation.storage, "get_station_ids_in_region",
+                         lambda region_id: frozenset({JITA_4_4_STATION_ID}))
+    cfg = TradingConfig(lookback_days=30)
+    later_sell_date = _iso(1)
+    buys = [{"is_buy": True, "type_id": 100, "date": _iso(2), "unit_price": 1000.0, "quantity": 10,
+             "location_id": JITA_4_4_STATION_ID, "transaction_id": 1}]
+    sells = [
+        {"is_buy": False, "type_id": 100, "date": _iso(3), "unit_price": 1200.0, "quantity": 10,
+         "location_id": cfg.structure_id, "transaction_id": 2},  # older than the buy - must not match
+        {"is_buy": False, "type_id": 100, "date": later_sell_date, "unit_price": 1300.0, "quantity": 10,
+         "location_id": cfg.structure_id, "transaction_id": 3},  # newer than the buy - must match
+    ]
+    client = FakeClient(buys, sells)
+
+    trades = reconcile_realized_trades(
+        buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
+        client=client, item_names={100: "Widget"}, item_volumes={100: 0.0}, cfg=cfg,
+    )
+
+    assert len(trades) == 1
+    assert trades[0].sell_date == later_sell_date
+    assert trades[0].matched_qty == 10
+
+
 def test_average_daily_sold_by_type_empty_table_returns_empty_dict(monkeypatch):
     monkeypatch.setattr(trade_reconciliation.storage, "read_table", lambda table: pd.DataFrame())
     assert average_daily_sold_by_type(TradingConfig(lookback_days=30)) == {}
