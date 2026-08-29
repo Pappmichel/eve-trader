@@ -28,3 +28,8 @@ frontend/dist/
 
 # Local Claude Code settings/state - machine-specific, not project config
 .claude/
+
+# Full security/system audit (2026-08-28) - contains live server details and
+# open vulnerability findings (e.g. F-01's session-cookie gap) that must not
+# be published to this public repo before they're fixed. Kept locally only.
+AUDIT.md
