@@ -4,12 +4,21 @@ module docstring for the confirmed asymmetry vs. the ore/ice path #91 uses -
 structure/rig/implant/general Reprocessing skills have no effect here, only
 RefiningConfig.scrapmetal_processing_skill_level).
 
-    Sell-as-is value = quantity x C-J sell percentile
+    Sell-as-is value = quantity x C-J sell percentile x structure_sell_haircut
     Refined value     = mineral yield (scrapmetal_yield, portion-size-rounded)
                          x mineral C-J sell percentile x structure_sell_haircut - Refining Tax
     Recommendation    = "Reprocess" if Refined value > Sell-as-is value, else "Sell instead"
                          (both numbers always shown - nothing is auto-decided/excluded, #92's
                          own "informational, not auto-decided" requirement)
+
+Both options end with a C-J sell order, so both incur the same
+structure_sell_haircut (broker fee + sales tax + SCC surcharge, ~5.37%) -
+confirmed real bug (found in a business-logic audit, 2026-08-29): sell-as-is
+used to be a bare gross quantity x price with no haircut at all, while the
+refined side already netted it out on the mineral side. That understated
+reprocessing's relative value by the same ~5.37%, systematically biasing
+borderline items toward "Sell instead" even when reprocessing was actually
+the better outcome.
 """
 from __future__ import annotations
 
@@ -85,7 +94,10 @@ def evaluate_reprocessing_line(line: ParsedPasteLine, item_stats: Optional[Order
 
     portion_size = storage.get_portion_size(type_id)
     materials = storage.get_type_materials(type_id)
-    sell_as_is_value = item_stats.sell_percentile * line.quantity if item_stats and item_stats.sell_percentile is not None else None
+    sell_as_is_value = (
+        item_stats.sell_percentile * line.quantity * trading_cfg.structure_sell_haircut
+        if item_stats and item_stats.sell_percentile is not None else None
+    )
 
     if not portion_size or not materials:
         return ReprocessingQuoteRow(name=line.name, quantity=line.quantity, type_id=type_id, category=line.category,

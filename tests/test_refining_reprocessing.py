@@ -61,7 +61,8 @@ def test_evaluate_line_not_reprocessable_when_no_portion_size(monkeypatch, tradi
     item_stats = OrderStats(sell_percentile=1.0, sell_volume=1000.0, buy_percentile=None, buy_volume=0.0)
     row = evaluate_reprocessing_line(_line(), item_stats, {}, trading_cfg, refining_cfg)
     assert row.decision == NOT_REPROCESSABLE_DECISION
-    assert row.sell_as_is_value == 1000.0  # still priced, even though not reprocessable
+    # still priced, even though not reprocessable - 1.0 x 1000 x 0.9463 haircut
+    assert row.sell_as_is_value == pytest.approx(946.3)
 
 
 def test_evaluate_line_no_market_data_when_item_unpriced(monkeypatch, trading_cfg, refining_cfg):
@@ -81,7 +82,7 @@ def test_evaluate_line_recommends_reprocess_when_refined_value_higher(monkeypatc
 
     row = evaluate_reprocessing_line(_line(quantity=1000), item_stats, {35: tritanium}, trading_cfg, refining_cfg)
 
-    # sell_as_is = 1000 x 0.01 = 10; minerals = floor(1000 x 0.01 x 0.55) = 5;
+    # sell_as_is = 1000 x 0.01 x 0.9463 = 9.463; minerals = floor(1000 x 0.01 x 0.55) = 5;
     # mineral_value = 5 x 1000 x 0.9463 = 4731.5 >> sell_as_is
     assert row.decision == REPROCESS_DECISION
     assert row.refined_value > row.sell_as_is_value
@@ -114,6 +115,44 @@ def test_evaluate_line_refining_tax_reduces_refined_value(monkeypatch, trading_c
 
     assert with_tax.refined_value < no_tax.refined_value
     assert with_tax.refining_tax > 0
+
+
+def test_evaluate_line_sell_as_is_value_includes_structure_sell_haircut(monkeypatch, trading_cfg, refining_cfg):
+    """Regression test for a confirmed real bug (business-logic audit,
+    2026-08-29): sell_as_is_value used to be a bare gross quantity x price,
+    while refined_value already netted out structure_sell_haircut on the
+    mineral side - both options end with a C-J sell order, so both must
+    incur the same fee, or the comparison is apples-to-oranges."""
+    monkeypatch.setattr(storage, "search_sde_types", lambda name, limit=5: [(100, "Antimatter Charge S")])
+    monkeypatch.setattr(storage, "get_portion_size", lambda type_id: None)
+    monkeypatch.setattr(storage, "get_type_materials", lambda type_id: [])
+    item_stats = OrderStats(sell_percentile=1.0, sell_volume=1000.0, buy_percentile=None, buy_volume=0.0)
+
+    row = evaluate_reprocessing_line(_line(quantity=1000), item_stats, {}, trading_cfg, refining_cfg)
+
+    assert row.sell_as_is_value == pytest.approx(1000 * 1.0 * trading_cfg.structure_sell_haircut)
+
+
+def test_evaluate_line_reprocess_decision_flips_once_fee_consistency_is_fixed(monkeypatch, trading_cfg):
+    """Concrete PB-01 scenario: refined_value sits strictly between the net
+    (haircut-adjusted) and gross sell-as-is values - the old, buggy formula
+    (bare gross sell_as_is, no haircut) would have wrongly said "Sell
+    instead" here; the fixed formula must say "Reprocess"."""
+    monkeypatch.setattr(storage, "search_sde_types", lambda name, limit=5: [(100, "Antimatter Charge S")])
+    monkeypatch.setattr(storage, "get_portion_size", lambda type_id: 1)
+    monkeypatch.setattr(storage, "get_type_materials", lambda type_id: [(35, 0.19)])
+    refining_cfg = RefiningConfig(scrapmetal_processing_skill_level=5, refining_tax_rate=0.0)  # 55% yield
+    item_stats = OrderStats(sell_percentile=1.0, sell_volume=1000.0, buy_percentile=None, buy_volume=0.0)
+    tritanium = OrderStats(sell_percentile=10.5, sell_volume=1_000_000.0, buy_percentile=None, buy_volume=0.0)
+
+    row = evaluate_reprocessing_line(_line(quantity=100), item_stats, {35: tritanium}, trading_cfg, refining_cfg)
+
+    gross_sell_as_is = 100 * 1.0  # what the old, buggy formula would have compared against
+    net_sell_as_is = gross_sell_as_is * trading_cfg.structure_sell_haircut  # 94.63
+    # minerals = floor(100 x 0.19 x 0.55) = 10; mineral_value = 10 x 10.5 x 0.9463 = 99.3615
+    assert net_sell_as_is < row.refined_value < gross_sell_as_is
+    assert row.sell_as_is_value == pytest.approx(net_sell_as_is)
+    assert row.decision == REPROCESS_DECISION  # would have been SELL_DECISION before the fix
 
 
 def test_mineral_type_ids_for_lines_collects_union(monkeypatch):
