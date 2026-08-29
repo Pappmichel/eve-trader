@@ -81,21 +81,40 @@ def estimate(t1_blueprint_type_id: int, decryptor_name: str, home: dict, jita: d
     probability = min(1.0, recipe["base_probability"] * skill_multiplier(cfg) * decryptor.probability_multiplier)
     output_runs = max(0, recipe["base_runs"] + decryptor.run_bonus)
 
+    # Confirmed real bug (business-logic audit, 2026-08-29, PB-06): a
+    # datacore/decryptor with genuinely no sell order anywhere used to be
+    # silently priced at 0 ISK (`price or 0.0`) rather than "unknown" -
+    # understating the invention attempt's real cost, which could make an
+    # actually-expensive decryptor look cheaper than it is. `datacore_cost`/
+    # `decryptor_cost` below still sum whatever *is* priced (useful partial
+    # info), but `all_prices_known` gates the decision-driving derived
+    # fields (expected_cost_per_success/per_run/net_cost_per_run) so a
+    # missing price surfaces as an honest "can't estimate" (None) instead of
+    # a too-low number silently feeding compare_decryptors' own ranking.
+    all_prices_known = True
+
     datacore_cost = 0.0
     for material_id, qty in recipe["datacores"]:
         sde_type = storage.get_sde_type(material_id)
         volume = sde_type[3] if sde_type else None
         price = pricing.buy_price(material_id, home, jita, volume, cfg)
+        if price is None:
+            all_prices_known = False
         datacore_cost += qty * (price or 0.0)
 
     decryptor_cost = 0.0
     if decryptor.type_id:
         sde_type = storage.get_sde_type(decryptor.type_id)
         volume = sde_type[3] if sde_type else None
-        decryptor_cost = pricing.buy_price(decryptor.type_id, home, jita, volume, cfg) or 0.0
+        price = pricing.buy_price(decryptor.type_id, home, jita, volume, cfg)
+        if price is None:
+            all_prices_known = False
+        decryptor_cost = price or 0.0
 
     total_attempt_cost = datacore_cost + decryptor_cost
-    expected_cost_per_success = (total_attempt_cost / probability) if probability > 0 else None
+    expected_cost_per_success = (
+        (total_attempt_cost / probability) if probability > 0 and all_prices_known else None
+    )
     expected_cost_per_run = (
         (expected_cost_per_success / output_runs) if expected_cost_per_success is not None and output_runs > 0 else None
     )
