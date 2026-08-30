@@ -1231,7 +1231,7 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         product_qty = bp[2] if bp else 1
         product_activity = classify_activity(product_type_id)[0]
         if product_activity == "Tech II" and product_type_id in t2_memo:
-            _, time_mult, decryptor_name = t2_memo[product_type_id]
+            _, time_mult, decryptor_name, _ = t2_memo[product_type_id]
         else:
             _, time_mult, _ = _activity_mods(product_activity, product_type_id, cfg, {}, blueprint_id)
             decryptor_name = None
@@ -1536,7 +1536,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             runs_this_round[type_id] = runs
 
             if activity == "Tech II" and type_id in t2_memo:
-                material_mult, time_mult, decryptor_name = t2_memo[type_id]
+                material_mult, time_mult, decryptor_name, _ = t2_memo[type_id]
             else:
                 material_mult, time_mult, _ = _activity_mods(activity, type_id, cfg, {}, blueprint_id)
                 decryptor_name = None
