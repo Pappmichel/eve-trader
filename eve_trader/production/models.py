@@ -99,17 +99,20 @@ class InventionNeedRow:
     # count is what actually represents remaining manufacturing capacity,
     # not how many separate copies happen to exist).
     t2_bpc_owned: int = 0
-    # t2_bpc_owned as a 0-100% (capped) of a *fixed* target derived from this
-    # stock target's own backup_stock (converted to BPC runs via product_qty/
-    # output_runs) - not the manufactured end product's own current_stock/
+    # t2_bpc_owned as a 0-100% (capped) of a *fixed* target: the manufacturing
+    # runs needed to fully stock this stock target's own backup_stock
+    # (backup_stock / product_qty) - both sides share the same unit
+    # (manufacturing runs of the T2/T3 blueprint), no conversion through
+    # output_runs. Not the manufactured end product's own current_stock/
     # backup_stock (that answers "is the shelf full of finished items", a
     # different question from "how well-stocked am I on invented BPC runs"),
-    # and not bpcs_needed either (that's the current *shortfall*, which
-    # collapses to 0 the moment the end product happens to be fully stocked -
-    # forcing a meaningless 100% regardless of actual BPC holdings, and
-    # otherwise is usually a tiny integer, so this landed on nothing but
-    # 0%/100% in practice - confirmed real bug, 2026-08-30, both against a
-    # fixed target so this varies smoothly as t2_bpc_owned changes).
+    # and not bpcs_needed either (the current *shortfall*, which collapses to
+    # 0 the moment the end product happens to be fully stocked, and otherwise
+    # is usually a tiny integer) - both of those, and an earlier attempt that
+    # divided the fixed target through output_runs into "number of discrete
+    # invented BPCs" (often just 1, since a single invented BPC frequently
+    # covers the whole backup_stock target on its own), landed on nothing but
+    # 0%/100% in practice (confirmed real bug, 2026-08-30).
     stockpile_pct: float = 0.0
 
 
