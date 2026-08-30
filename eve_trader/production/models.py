@@ -99,10 +99,14 @@ class InventionNeedRow:
     # count is what actually represents remaining manufacturing capacity,
     # not how many separate copies happen to exist).
     t2_bpc_owned: int = 0
-    # This stock target's own current_stock/backup_stock, as a 0-100%
-    # (capped) - same idea as BuyListEntry.on_hand_pct but computed at the
-    # InventoryRow stage (plan_production already has current_stock/
-    # backup_stock in scope there), not the post-netting buy/build totals.
+    # t2_bpc_owned / bpcs_needed as a 0-100% (capped) - how much of the BPC
+    # *runs* currently needed is already covered by owned T2 BPC runs, not
+    # the manufactured end product's own stock level (confirmed real bug,
+    # 2026-08-30: this used to be the end product's current_stock/
+    # backup_stock, which answers "is the shelf full of finished items", a
+    # different question from "do I still need to invent more BPCs" - the
+    # latter is what this column is for). 100% when bpcs_needed is 0 (no
+    # invention work outstanding right now, regardless of t2_bpc_owned).
     stockpile_pct: float = 0.0
 
 

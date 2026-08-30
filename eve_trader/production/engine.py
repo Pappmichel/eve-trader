@@ -1160,8 +1160,12 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                 # blueprint *consumed* to invent it) - t2_bpc_owned always
                 # means "owned copies of the blueprint invention produces".
                 t2_bpc_owned = int(storage.available_blueprint_copies(blueprint_id, None))
-                stockpile_pct = (max(0.0, min(100.0, current_stock / backup_stock * 100))
-                                 if backup_stock > 0 else 0.0)
+                # BPC-runs-covered %, not the end product's own stock level
+                # (see InventionNeedRow.stockpile_pct docstring) - 100% when
+                # nothing is currently missing (bpcs_needed == 0), since no
+                # invention work is outstanding regardless of t2_bpc_owned.
+                stockpile_pct = (max(0.0, min(100.0, t2_bpc_owned / bpcs_needed * 100))
+                                 if bpcs_needed > 0 else 100.0)
                 invention_list.append(InventionNeedRow(
                     type_id=type_id, type_name=type_name,
                     t1_blueprint_type_id=chosen.t1_blueprint_type_id, t1_blueprint_name=chosen.t1_blueprint_name,
