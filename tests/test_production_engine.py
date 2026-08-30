@@ -8,7 +8,7 @@ from eve_trader.production.constants import ANCIENT_RELIC_CATEGORY_ID, SCC_SURCH
 from eve_trader.production.engine import (
     _activity_mods, _material_qty, _structural_material_closure, _tech_ii_mods, _total_missing, classify_activity,
 )
-from eve_trader.production.models import CharacterSlotRow
+from eve_trader.production.models import CharacterSlotRow, InventionResult
 
 from . import pg_helpers
 from .pg_helpers import _apply_phase1_schema, tenant, tenant_pair  # noqa: F401
@@ -1981,6 +1981,59 @@ def test_plan_production_build_list_handles_tech_ii_item_via_t2_memo(monkeypatch
     result = engine.plan_production(cfg)  # must not raise ValueError
 
     assert {row.type_id for row in result["build_list"]} == {10}
+
+
+@pg_helpers.postgres_required()
+def test_plan_production_invention_list_nets_off_owned_bpc_runs(monkeypatch, tenant):
+    """Real bug reported live, 2026-08-30: recommended_invention_runs stayed
+    positive even when stockpile_pct already showed full BPC coverage,
+    because bpcs_needed/recommended_invention_runs were derived from
+    runs_needed alone - t2_bpc_owned (runs remaining on owned-but-not-yet-
+    built T2 BPCs) was never subtracted first. Two stock targets: one where
+    owned BPC runs fully cover the shortfall (must recommend 0 further
+    invention attempts), one where they only partially cover it (must
+    recommend invention for exactly the remainder, not the full shortfall)."""
+    stock_targets = [
+        (10, "FullyCoveredByOwnedBpc", 10, 0, 0),
+        (20, "PartiallyCoveredByOwnedBpc", 10, 0, 0),
+    ]
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_plan_context(stock_targets))
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech II", (100 + type_id, 1, 1.0)))
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [])
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_buy_or_build_decision", lambda *a, **k: "Build")
+    monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: 1.0)
+    monkeypatch.setattr(engine, "margin_home", lambda *a, **k: 0.9)
+
+    def fake_chosen(blueprint_id):
+        return InventionResult(
+            t1_blueprint_type_id=1000 + blueprint_id, t1_blueprint_name="Fake T1 BPO",
+            product_type_id=blueprint_id, product_name="Fake T2 Product", decryptor="None",
+            probability=1.0, output_runs=5.0, datacore_cost=0.0, decryptor_cost=0.0, relic_cost=0.0,
+            total_attempt_cost=0.0, expected_cost_per_success=0.0, expected_cost_per_run=0.0,
+            me=10, te=20, material_savings_per_run=0.0, net_cost_per_run=0.0,
+        )
+    monkeypatch.setattr(engine, "_tech_ii_mods",
+                         lambda type_id, blueprint_id, *a, **k: (1.0, 1.0, "None", fake_chosen(blueprint_id)))
+    # 110 = FullyCoveredByOwnedBpc's blueprint_id (100 + type_id 10), owns
+    # all 10 runs it needs; 120 = PartiallyCoveredByOwnedBpc's, owns 4 of 10.
+    owned = {110: 10, 120: 4}
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda blueprint_id, loc: owned[blueprint_id])
+
+    cfg = ProductionConfig(min_margin=0.0)
+    result = engine.plan_production(cfg)
+
+    by_type = {row.type_id: row for row in result["invention_list"]}
+    assert by_type[10].t2_bpc_owned == 10
+    assert by_type[10].bpcs_needed == 0
+    assert by_type[10].recommended_invention_runs == 0
+    assert by_type[10].stockpile_pct == 100.0
+
+    assert by_type[20].t2_bpc_owned == 4
+    assert by_type[20].bpcs_needed == 2  # ceil((10 - 4) / 5) - only the remainder, not the full 10
+    assert by_type[20].recommended_invention_runs == 2
+    assert by_type[20].stockpile_pct == 40.0
 
 
 @pg_helpers.postgres_required()

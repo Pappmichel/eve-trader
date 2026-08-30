@@ -1151,15 +1151,23 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             _, _, _, chosen = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
                                              selected_decryptors, t2_memo)
             if chosen is not None and chosen.output_runs > 0 and chosen.probability > 0:
-                runs_needed = math.ceil(missing / product_qty) if missing > 0 else 0
-                bpcs_needed = math.ceil(runs_needed / chosen.output_runs) if runs_needed > 0 else 0
-                recommended_runs = math.ceil(bpcs_needed / chosen.probability) if bpcs_needed > 0 else 0
                 # blueprint_id here IS the invented T2/T3 blueprint's own
                 # type_id - not `type_id` above (the manufactured item), and
                 # not chosen.t1_blueprint_type_id either (the relic/T1
                 # blueprint *consumed* to invent it) - t2_bpc_owned always
                 # means "owned copies of the blueprint invention produces".
                 t2_bpc_owned = int(storage.available_blueprint_copies(blueprint_id, None))
+                runs_needed = math.ceil(missing / product_qty) if missing > 0 else 0
+                # Net off runs already covered by owned-but-not-yet-built T2
+                # BPCs before recommending more invention attempts - without
+                # this, recommended_invention_runs stayed positive even when
+                # t2_bpc_owned/stockpile_pct already showed full coverage,
+                # since it was computed from runs_needed alone (confirmed
+                # real bug, reported live: "many show 100% but it's still
+                # recommending I start inventions", 2026-08-30).
+                runs_still_needed = max(0, runs_needed - t2_bpc_owned)
+                bpcs_needed = math.ceil(runs_still_needed / chosen.output_runs) if runs_still_needed > 0 else 0
+                recommended_runs = math.ceil(bpcs_needed / chosen.probability) if bpcs_needed > 0 else 0
                 # BPC-runs-owned as a % of a *fixed* target (derived from
                 # backup_stock, the same fixed target the old end-product
                 # formula used) - both sides already share the same unit

@@ -85,7 +85,7 @@ class InventionNeedRow:
     probability: float
     output_runs: float       # BPC runs produced per successful invention
     runs_needed: int         # total manufacturing runs the Bauliste requires
-    bpcs_needed: int         # ceil(runs_needed / output_runs)
+    bpcs_needed: int         # ceil(max(0, runs_needed - t2_bpc_owned) / output_runs) - nets off owned-but-unbuilt BPC runs first
     recommended_invention_runs: int  # ceil(bpcs_needed / probability) - expected attempts
     # GitHub issue #114: total remaining *runs* across every owned copy of
     # the *invented* T2 blueprint (the invention recipe's own product_
