@@ -237,6 +237,7 @@ class InventionResult(_Base):
     output_runs: float
     datacore_cost: float
     decryptor_cost: float
+    relic_cost: float
     total_attempt_cost: float
     expected_cost_per_success: Optional[float]
     expected_cost_per_run: Optional[float]

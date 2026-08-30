@@ -261,6 +261,7 @@ export interface InventionResult {
   output_runs: number
   datacore_cost: number
   decryptor_cost: number
+  relic_cost: number
   total_attempt_cost: number
   expected_cost_per_success: number | null
   expected_cost_per_run: number | null

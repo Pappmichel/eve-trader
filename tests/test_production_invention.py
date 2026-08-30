@@ -23,6 +23,11 @@ def _fake_recipe_and_sde(monkeypatch):
     monkeypatch.setattr(storage, "get_sde_type",
                          lambda type_id: (type_id, None, f"Type {type_id}", 0.01, None, None, None, None))
     monkeypatch.setattr(storage, "get_blueprint_materials", lambda *a, **k: [])
+    # category_id 9 = a genuine T1 blueprint (not a Tech III relic, category
+    # 34) - every test in this file exercises the Tech II path, where
+    # estimate() must NOT add a relic_cost (see test_production_relic.py for
+    # the Tech III relic-pricing behavior this deliberately excludes here).
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)
 
 
 def test_estimate_computes_cost_per_run_when_every_price_is_known(monkeypatch):

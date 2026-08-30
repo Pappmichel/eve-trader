@@ -265,6 +265,16 @@ class InventionResult:
     output_runs: float
     datacore_cost: float
     decryptor_cost: float
+    # Cost of t1_blueprint_type_id itself, ONLY when it's a Tech III relic
+    # (production/constants.py's ANCIENT_RELIC_CATEGORY_ID) - always 0.0 for
+    # a genuine T1 blueprint (Tech II), matching that case's existing,
+    # deliberate "ignore BPC copy cost" simplification (see production/
+    # invention.py's own module docstring for why the two cases differ -
+    # a relic must be bought fresh per attempt, a T1 BPC is usually a
+    # near-free reprint of an already-owned BPO). Confirmed real bug fix,
+    # reported by a user, 2026-08-30 - this used to be silently 0.0 for
+    # relics too, materially overstating Tech III invention profitability.
+    relic_cost: float
     total_attempt_cost: float
     expected_cost_per_success: Optional[float]  # total_attempt_cost / probability
     expected_cost_per_run: Optional[float]       # expected_cost_per_success / output_runs

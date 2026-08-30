@@ -128,17 +128,17 @@ from ..config import TRADING_CONFIG
 from . import invention, pricing
 from .config import PRODUCTION_CONFIG, ProductionConfig
 from .constants import (
-    ACTIVITY_MODS, ACTIVITY_REACTION, ADVANCED_COMPONENT_GROUP_IDS, CAPITAL_COMPONENT_GROUP_IDS,
-    CHARGE_CATEGORY_ID, COMPONENT_GROUP_IDS, DEADSPACE_META_GROUP_ID, DECRYPTORS, DRONE_CATEGORY_ID,
-    FACTION_META_GROUP_ID, FIGHTER_CATEGORY_ID, MODULE_CATEGORY_ID, OFFICER_META_GROUP_ID,
+    ACTIVITY_MODS, ACTIVITY_REACTION, ADVANCED_COMPONENT_GROUP_IDS, ANCIENT_RELIC_CATEGORY_ID,
+    CAPITAL_COMPONENT_GROUP_IDS, CHARGE_CATEGORY_ID, COMPONENT_GROUP_IDS, DEADSPACE_META_GROUP_ID, DECRYPTORS,
+    DRONE_CATEGORY_ID, FACTION_META_GROUP_ID, FIGHTER_CATEGORY_ID, MODULE_CATEGORY_ID, OFFICER_META_GROUP_ID,
     SCC_SURCHARGE_RATE, SHIP_CATEGORY_ID, SHIP_SIZE_GROUP_IDS, SPECIAL_EDITION_SHIPS_MARKET_GROUP_ID,
     STORYLINE_META_GROUP_ID, SUBSYSTEM_GROUP_IDS,
     rig_security_multiplier, structure_rig_multiplier,
 )
 from .jobs import character_slot_overview
 from .models import (
-    AssetPlanJob, BuildJobEntry, BuyListEntry, DistributionRow, InventionNeedRow, InventoryRow, LogisticsRow,
-    MarketStatusRow, T1BpcInventionNeedRow,
+    AssetPlanJob, BuildJobEntry, BuyListEntry, DistributionRow, InventionNeedRow, InventionResult, InventoryRow,
+    LogisticsRow, MarketStatusRow, T1BpcInventionNeedRow,
 )
 
 MAX_DEPTH = 10
@@ -169,32 +169,37 @@ def classify_activity(type_id: int) -> tuple[str, Optional[tuple[int, int, float
 
     "Tech II" (meaning: decryptor-invented, routed through _tech_ii_mods) is
     decided *solely* by whether a real invention recipe exists for the
-    blueprint (storage.find_invention_recipe_by_product_type_id) - not by
-    metaLevel. This used to be "metaLevel>=2 OR has an invention recipe" to
-    catch Tech III hulls/subsystems, whose metaLevel doesn't reliably track
-    "genuinely invented" (confirmed against real SDE data: a Loki hull is
-    metaLevel 5, but its "Loki Core - Augmented Nuclear Reactor" subsystem is
-    metaLevel 1, even though it's genuinely invented via a real T1-equivalent
-    blueprint) - but that metaLevel>=2 fallback turned out to be both
-    unnecessary (find_invention_recipe_by_product_type_id already correctly
-    catches the Loki Core case directly, no metaLevel needed) and actively
-    wrong elsewhere: confirmed live (2026-07-16) that metaLevel>=2 also
-    covers every Faction/Pirate ship (Machariel, Nestor: metaLevel 8),
-    Officer/Deadspace module, and faction booster/drug - none of which are
-    actually decryptor-invented (find_invention_recipe_by_product_type_id
-    correctly returns None for all of them; they're built from their own
-    real, directly-researchable blueprint, same as a Tech I item, just not
+    blueprint (storage.find_invention_recipe_candidates_by_product_type_id) -
+    not by metaLevel. This used to be "metaLevel>=2 OR has an invention
+    recipe" to catch Tech III hulls/subsystems, whose metaLevel doesn't
+    reliably track "genuinely invented" (confirmed against real SDE data: a
+    Loki hull is metaLevel 5, but its "Loki Core - Augmented Nuclear Reactor"
+    subsystem is metaLevel 1, even though it's genuinely invented via a real
+    T1-equivalent blueprint) - but that metaLevel>=2 fallback turned out to
+    be both unnecessary (find_invention_recipe_candidates_by_product_type_id
+    already correctly catches the Loki Core case directly, no metaLevel
+    needed) and actively wrong elsewhere: confirmed live (2026-07-16) that
+    metaLevel>=2 also covers every Faction/Pirate ship (Machariel, Nestor:
+    metaLevel 8), Officer/Deadspace module, and faction booster/drug - none
+    of which are actually decryptor-invented
+    (find_invention_recipe_candidates_by_product_type_id correctly returns
+    an empty tuple for all of them; they're built from their own real,
+    directly-researchable blueprint, same as a Tech I item, just not
     obtainable from an NPC seller). The metaLevel branch alone misclassified
     854 of 4208 scanned manufacturable items as "Tech II" in a live scan -
     each one then got priced off the flat Tech II ACTIVITY_MODS ME/TE
     baseline (and shown as "Tech II" in the Bauliste/Build Candidates UI)
     instead of the correct Tech I-style baseline (owned BPO ME/TE if you
-    have it, else the flat "perfect BPO" assumption). Tech III is NOT
-    otherwise special-cased here: CCP removed the old relic-based "Reverse
-    Engineering" mechanic years ago (confirmed empirically - the current SDE
-    has zero rows for activity_id 7), so Tech III now uses the exact same
-    activity_id=8 Invention this tool already models for Tech II, with no
-    separate cost/probability machinery needed.
+    have it, else the flat "perfect BPO" assumption). Tech III uses the
+    exact same activity_id=8 Invention this tool already models for Tech II
+    (CCP removed the old relic-based "Reverse Engineering" mechanic years
+    ago - confirmed empirically, the current SDE has zero rows for
+    activity_id 7) for probability/runs/materials - but its *input* is a
+    Sleeper relic (Intact/Malfunctioning/Wrecked, one of 3 grades), never a
+    real T1 blueprint, which DOES need its own separate handling elsewhere
+    (buy-list/logistics routing, cost pricing, grade optimization - see
+    production/constants.py's ANCIENT_RELIC_CATEGORY_ID and production/
+    invention.py's best_recipe_and_decryptor).
 
     Non-invented items get a second check against the SDE's real metaGroupID
     (storage.get_sde_type, populated from Fuzzwork's invMetaTypes.csv - see
@@ -222,7 +227,7 @@ def classify_activity(type_id: int) -> tuple[str, Optional[tuple[int, int, float
     blueprint_id, activity_id, _ = bp
     if activity_id == ACTIVITY_REACTION:
         return "Reaction", bp
-    if storage.find_invention_recipe_by_product_type_id(blueprint_id) is not None:
+    if storage.find_invention_recipe_candidates_by_product_type_id(blueprint_id):
         return "Tech II", bp
     sde_type = storage.get_sde_type(type_id)
     meta_group_id = sde_type[7] if sde_type else None
@@ -437,19 +442,29 @@ def _activity_mods(activity: str, type_id: int, cfg: ProductionConfig,
 
 def _tech_ii_mods(type_id: int, blueprint_id: int, activity_id: int, cfg: ProductionConfig,
                    home: dict, jita: dict, selected_decryptors: dict[int, str],
-                   memo: dict[int, tuple[float, float, Optional[str]]]) -> tuple[float, float, Optional[str]]:
-    """Returns (material_multiplier, time_multiplier, decryptor_name) for a
-    Tech II *or* Tech III item: the resulting BPC's own ME/TE (per the module
-    docstring), with your structure/rig bonus applied on top - same as every
-    other activity. Tech III hulls/subsystems use the exact same activity_id=8
-    Invention as Tech II (CCP removed the old relic-based "Reverse
-    Engineering" mechanic years ago - see classify_activity's docstring), so
-    for the overwhelming majority of Tech III items `t1_blueprint_id` below
-    resolves normally and this function's automatic "best decryptor" cost
-    optimization applies exactly as it does for Tech II - no special-casing
-    needed. The `elif override and override in DECRYPTORS` branch below is
-    only a defensive fallback for the rare case where no invention recipe can
-    be found at all (e.g. missing/stale SDE data) but the user has still
+                   memo: dict[int, tuple[float, float, Optional[str], Optional[InventionResult]]]
+                   ) -> tuple[float, float, Optional[str], Optional[InventionResult]]:
+    """Returns (material_multiplier, time_multiplier, decryptor_name, chosen)
+    for a Tech II *or* Tech III item: the resulting BPC's own ME/TE (per the
+    module docstring), with your structure/rig bonus applied on top - same as
+    every other activity. `chosen` is the full InventionResult the material/
+    time multipliers and decryptor_name were derived from (None in both
+    fallback branches below) - callers that need more than just the
+    multipliers (plan_production's own invention-need-row building) can reuse
+    it directly instead of re-resolving/re-estimating from scratch.
+
+    Tech II and Tech III hulls/subsystems use the exact same activity_id=8
+    Invention (CCP removed the old relic-based "Reverse Engineering"
+    mechanic years ago - see classify_activity's docstring) - what varies is
+    the *invention-source candidates* storage.find_invention_recipe_
+    candidates_by_product_type_id returns: always exactly one (a real T1
+    blueprint) for Tech II, up to three (Intact/Malfunctioning/Wrecked relic
+    grades) for Tech III - invention.best_recipe_and_decryptor explores every
+    candidate x every decryptor and returns the single cheapest, which for
+    Tech II reduces to exactly today's single-candidate "best decryptor"
+    optimization. The `elif override and override in DECRYPTORS` branch below
+    is only a defensive fallback for the rare case where no invention recipe
+    can be found at all (e.g. missing/stale SDE data) but the user has still
     manually picked a decryptor for the item (storage.selected_decryptors) -
     that decryptor's ME/TE still applies rather than silently ignoring it.
     Falls back further to the flat ACTIVITY_MODS["Tech II"] entry
@@ -464,30 +479,29 @@ def _tech_ii_mods(type_id: int, blueprint_id: int, activity_id: int, cfg: Produc
     _, me_mult, te_mult = structure_rig_multiplier(structure_type, rig_tier, security_multiplier)
     fallback = ACTIVITY_MODS["Tech II"]
     override = selected_decryptors.get(type_id)
-    t1_blueprint_id = storage.find_invention_recipe_by_product_type_id(blueprint_id)
+    candidates = storage.find_invention_recipe_candidates_by_product_type_id(blueprint_id)
 
-    chosen = None
-    if t1_blueprint_id is not None:
+    chosen: Optional[InventionResult] = None
+    if candidates:
         reducible_cost = invention.reducible_material_cost(blueprint_id, activity_id, home, jita, cfg)
-        try:
-            if override:
-                chosen = invention.estimate(t1_blueprint_id, override, home, jita, cfg, reducible_cost)
-            else:
-                chosen = invention.best_decryptor_for_item(t1_blueprint_id, home, jita, cfg, reducible_cost)
-        except ValueError:
-            chosen = None
+        if override:
+            # Decryptor fixed by the user - the grade (Tech III's relic
+            # tiers) is still auto-optimized against that fixed decryptor.
+            chosen = invention.best_recipe_for_decryptor(blueprint_id, override, home, jita, cfg, reducible_cost)
+        else:
+            chosen = invention.best_recipe_and_decryptor(blueprint_id, home, jita, cfg, reducible_cost)
     elif override and override in DECRYPTORS:
         # No invention recipe found (rare - see docstring), but the
         # manually-selected decryptor's ME/TE still applies directly.
         decryptor = DECRYPTORS[override]
-        result = ((1 - decryptor.me_bonus / 100) * me_mult, (1 - decryptor.te_bonus / 100) * te_mult, override)
+        result = ((1 - decryptor.me_bonus / 100) * me_mult, (1 - decryptor.te_bonus / 100) * te_mult, override, None)
         memo[type_id] = result
         return result
 
     if chosen is None:
-        result = (fallback.material_multiplier * me_mult, fallback.time_multiplier * te_mult, None)
+        result = (fallback.material_multiplier * me_mult, fallback.time_multiplier * te_mult, None, None)
     else:
-        result = ((1 - chosen.me / 100) * me_mult, (1 - chosen.te / 100) * te_mult, chosen.decryptor)
+        result = ((1 - chosen.me / 100) * me_mult, (1 - chosen.te / 100) * te_mult, chosen.decryptor, chosen)
     memo[type_id] = result
     return result
 
@@ -526,8 +540,8 @@ def _unit_cost(type_id: int, cfg: ProductionConfig, home: dict, jita: dict,
 
     blueprint_id, activity_id, product_qty = bp
     if activity == "Tech II":
-        material_mult, _, _ = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
-                                             selected_decryptors, t2_memo)
+        material_mult, _, _, _ = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
+                                                selected_decryptors, t2_memo)
         job_cost_rate = _job_cost_rate("Tech II", type_id, cfg, cost_indices)
     else:
         material_mult, _, job_cost_rate = _activity_mods(activity, type_id, cfg, cost_indices, blueprint_id)
@@ -579,8 +593,8 @@ def unit_cost_detail(type_id: int, cfg: ProductionConfig, home: dict, jita: dict
         return buy, None, buy
     blueprint_id, activity_id, product_qty = bp
     if activity == "Tech II":
-        material_mult, _, _ = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
-                                             selected_decryptors, t2_memo)
+        material_mult, _, _, _ = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
+                                                selected_decryptors, t2_memo)
         job_cost_rate = _job_cost_rate("Tech II", type_id, cfg, cost_indices)
     else:
         material_mult, _, job_cost_rate = _activity_mods(activity, type_id, cfg, cost_indices, blueprint_id)
@@ -708,8 +722,8 @@ def _base_runs(cfg: ProductionConfig, home: dict, jita: dict, manual_overrides: 
         runs = math.ceil(quantity / product_qty)
         base_runs[type_id] = base_runs.get(type_id, 0.0) + runs
         if activity == "Tech II":
-            material_mult, _, _ = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
-                                                 selected_decryptors, t2_memo)
+            material_mult, _, _, _ = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
+                                                    selected_decryptors, t2_memo)
         else:
             material_mult, _, _ = _activity_mods(activity, type_id, cfg, {}, blueprint_id)
         for material_id, base_qty in storage.get_blueprint_materials(blueprint_id, activity_id):
@@ -844,8 +858,8 @@ def _expand_all(seed_missing: dict[int, float], cfg: ProductionConfig, home: dic
             build_runs[key] = build_runs.get(key, 0) + runs
 
             if activity == "Tech II":
-                material_mult, _, _ = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
-                                                     selected_decryptors, t2_memo)
+                material_mult, _, _, _ = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
+                                                        selected_decryptors, t2_memo)
             else:
                 # job_cost_rate isn't needed here (only material_mult drives sub-material
                 # quantities) - {} makes _activity_mods fall back cleanly without a live lookup.
@@ -1128,35 +1142,34 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         # Bauliste (see plan_production docstring).
         if activity == "Tech II" and bp is not None:
             blueprint_id, activity_id, product_qty = bp
-            _, _, decryptor_name = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
-                                                  selected_decryptors, t2_memo)
-            if decryptor_name is not None:
-                t1_blueprint_id = storage.find_invention_recipe_by_product_type_id(blueprint_id)
-                if t1_blueprint_id is not None:
-                    reducible_cost = invention.reducible_material_cost(blueprint_id, activity_id, home, jita, cfg)
-                    try:
-                        chosen = invention.estimate(t1_blueprint_id, decryptor_name, home, jita, cfg, reducible_cost)
-                    except ValueError:
-                        chosen = None
-                    if chosen is not None and chosen.output_runs > 0 and chosen.probability > 0:
-                        runs_needed = math.ceil(missing / product_qty) if missing > 0 else 0
-                        bpcs_needed = math.ceil(runs_needed / chosen.output_runs) if runs_needed > 0 else 0
-                        recommended_runs = math.ceil(bpcs_needed / chosen.probability) if bpcs_needed > 0 else 0
-                        # blueprint_id here IS the invented T2 blueprint's own
-                        # type_id (find_invention_recipe_by_product_type_id's
-                        # own param name calls it product_blueprint_type_id) -
-                        # not `type_id` above, which is the manufactured item.
-                        t2_bpc_owned = int(storage.available_blueprint_copies(blueprint_id, None))
-                        stockpile_pct = (max(0.0, min(100.0, current_stock / backup_stock * 100))
-                                         if backup_stock > 0 else 0.0)
-                        invention_list.append(InventionNeedRow(
-                            type_id=type_id, type_name=type_name,
-                            t1_blueprint_type_id=t1_blueprint_id, t1_blueprint_name=chosen.t1_blueprint_name,
-                            decryptor=decryptor_name, probability=chosen.probability, output_runs=chosen.output_runs,
-                            runs_needed=runs_needed, bpcs_needed=bpcs_needed,
-                            recommended_invention_runs=recommended_runs,
-                            t2_bpc_owned=t2_bpc_owned, stockpile_pct=stockpile_pct,
-                        ))
+            # Reuses _tech_ii_mods' own chosen InventionResult directly
+            # (grade x decryptor already optimized there) instead of
+            # re-resolving the recipe and re-running invention.estimate() a
+            # second time from scratch - a genuine duplicate computation the
+            # old code did here, not merely a style preference (confirmed
+            # while fixing the Tech III relic-grade bug, 2026-08-30).
+            _, _, _, chosen = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
+                                             selected_decryptors, t2_memo)
+            if chosen is not None and chosen.output_runs > 0 and chosen.probability > 0:
+                runs_needed = math.ceil(missing / product_qty) if missing > 0 else 0
+                bpcs_needed = math.ceil(runs_needed / chosen.output_runs) if runs_needed > 0 else 0
+                recommended_runs = math.ceil(bpcs_needed / chosen.probability) if bpcs_needed > 0 else 0
+                # blueprint_id here IS the invented T2/T3 blueprint's own
+                # type_id - not `type_id` above (the manufactured item), and
+                # not chosen.t1_blueprint_type_id either (the relic/T1
+                # blueprint *consumed* to invent it) - t2_bpc_owned always
+                # means "owned copies of the blueprint invention produces".
+                t2_bpc_owned = int(storage.available_blueprint_copies(blueprint_id, None))
+                stockpile_pct = (max(0.0, min(100.0, current_stock / backup_stock * 100))
+                                 if backup_stock > 0 else 0.0)
+                invention_list.append(InventionNeedRow(
+                    type_id=type_id, type_name=type_name,
+                    t1_blueprint_type_id=chosen.t1_blueprint_type_id, t1_blueprint_name=chosen.t1_blueprint_name,
+                    decryptor=chosen.decryptor, probability=chosen.probability, output_runs=chosen.output_runs,
+                    runs_needed=runs_needed, bpcs_needed=bpcs_needed,
+                    recommended_invention_runs=recommended_runs,
+                    t2_bpc_owned=t2_bpc_owned, stockpile_pct=stockpile_pct,
+                ))
 
         if missing > 0:
             _unit_cost(type_id, cfg, home, jita, cost_memo, selected_decryptors, t2_memo, cost_indices, adjusted_prices)
@@ -2173,8 +2186,8 @@ def build_material_tree(type_id: int, quantity: float, cfg: ProductionConfig, ho
 
     blueprint_id, activity_id, product_qty = bp
     if activity == "Tech II":
-        material_mult, _, decryptor_name = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
-                                                           selected_decryptors, t2_memo)
+        material_mult, _, decryptor_name, _ = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
+                                                              selected_decryptors, t2_memo)
         node["decryptor"] = decryptor_name
     else:
         material_mult, _, _ = _activity_mods(activity, type_id, cfg, {}, blueprint_id)
@@ -2420,7 +2433,7 @@ def invention_logistics(invention_list: list[InventionNeedRow],
     "recommended attempts", so this now matches that number exactly (plus
     whatever overbuild the user has already baked into it upstream).
 
-    Availability for the T1 blueprint itself goes through
+    Availability for a genuine T1 blueprint goes through
     storage.available_blueprint_copies, not the generic esi_stock_at_location
     every other row here uses - a T1 blueprint's BPO and BPC share the exact
     same type_id in EVE's data model (only ever distinguished by which
@@ -2433,10 +2446,24 @@ def invention_logistics(invention_list: list[InventionNeedRow],
     reporting a single 300-run T1 copy as "1 available" instead of "300" -
     see that function's own docstring for the full fix).
 
+    A Tech III relic (production/constants.py's ANCIENT_RELIC_CATEGORY_ID)
+    is the opposite case: it's t1_blueprint_type_id's real value for a Tech
+    III item (see production/invention.py's own module docstring), but it's
+    a plain purchasable/lootable item, never owned as a blueprint copy - so
+    it must go through esi_stock_at_location (character_assets/corp_assets),
+    never available_blueprint_copies, which would always return 0 for it
+    (character_blueprints/corp_blueprints simply never has a row for a
+    non-blueprint type_id). Confirmed real bug (reported by a user,
+    2026-08-30): every relic used to be routed through available_blueprint_
+    copies unconditionally (same branch as a real T1 blueprint), so its true
+    availability never reached this table at all - it always showed 0
+    regardless of how much was actually sitting at the station, and its real
+    stock never fed the wider Buy List either.
+
     Decryptor/datacore demand was already right - each attempt consumes one
     of each regardless of outcome, so it already scaled with
     recommended_invention_runs. Those stay on esi_stock_at_location - plain
-    items, no BPO/BPC ambiguity to worry about."""
+    items, no BPO/BPC/relic ambiguity to worry about."""
     if cfg.invention_location_id is None:
         return []
 
@@ -2462,7 +2489,8 @@ def invention_logistics(invention_list: list[InventionNeedRow],
 
     rows = []
     for type_id, needed in demand.items():
-        if type_id in t1_blueprint_type_ids:
+        is_real_blueprint = type_id in t1_blueprint_type_ids and storage.get_type_category(type_id) != ANCIENT_RELIC_CATEGORY_ID
+        if is_real_blueprint:
             available = storage.available_blueprint_copies(type_id, cfg.invention_location_id)
         else:
             available = storage.esi_stock_at_location(type_id, cfg.invention_location_id)
@@ -2485,8 +2513,19 @@ def t1_bpc_invention_needs(invention_list: list[InventionNeedRow],
     the T1-blueprint-only slice of the exact same demand accumulation
     invention_logistics already does (same recommended_invention_runs-per-
     attempt reasoning - see that function's own docstring), plus a
-    BPO-presence check invention_logistics has no reason to compute (it
-    only cares about copies, the actual invention input)."""
+    BPO-presence check invention_logistics has no reason to compute.
+
+    Despite this function's own name, `type_id` here can also be a Tech III
+    relic (production/constants.py's ANCIENT_RELIC_CATEGORY_ID) - see
+    invention_logistics' own docstring for why that needs
+    esi_stock_at_location instead of available_blueprint_copies (confirmed
+    real bug, reported by a user, 2026-08-30: every relic used to be routed
+    through available_blueprint_copies unconditionally, always showing 0
+    available regardless of real stock). bpo_present needs no equivalent
+    branch - storage.has_bpo_at_location naturally returns False for a relic
+    already (a relic type_id never has a quantity==-1 row in character_
+    blueprints/corp_blueprints, since it was never a blueprint to begin
+    with), so this correctly stays False without any special-casing."""
     if cfg.invention_location_id is None:
         return []
 
@@ -2499,7 +2538,11 @@ def t1_bpc_invention_needs(invention_list: list[InventionNeedRow],
 
     rows = []
     for type_id, needed in needed_by_t1.items():
-        available = int(storage.available_blueprint_copies(type_id, cfg.invention_location_id))
+        is_relic = storage.get_type_category(type_id) == ANCIENT_RELIC_CATEGORY_ID
+        available = int(
+            storage.esi_stock_at_location(type_id, cfg.invention_location_id) if is_relic
+            else storage.available_blueprint_copies(type_id, cfg.invention_location_id)
+        )
         sde_type = storage.get_sde_type(type_id)
         name = sde_type[2] if sde_type else str(type_id)
         rows.append(T1BpcInventionNeedRow(

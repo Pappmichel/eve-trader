@@ -4,7 +4,7 @@ from eve_trader import storage
 from eve_trader.goonmetrics_client import CurrentPrice
 from eve_trader.production import engine
 from eve_trader.production.config import ProductionConfig
-from eve_trader.production.constants import SCC_SURCHARGE_RATE, ACTIVITY_MODS, rig_security_multiplier
+from eve_trader.production.constants import ANCIENT_RELIC_CATEGORY_ID, SCC_SURCHARGE_RATE, ACTIVITY_MODS, rig_security_multiplier
 from eve_trader.production.engine import (
     _activity_mods, _material_qty, _structural_material_closure, _tech_ii_mods, _total_missing, classify_activity,
 )
@@ -183,14 +183,16 @@ def test_total_missing_zero_current_stock_matches_prior_behavior(monkeypatch):
 
 @pg_helpers.postgres_required()
 def test_tech_iii_manual_decryptor_applies_without_invention_recipe(monkeypatch, tenant):
-    # Tech III hulls/subsystems are Reverse-Engineering products, not T1-BP
-    # Invention products, so find_invention_recipe_by_product_type_id always
-    # returns None for them - a manually-selected decryptor must still drive
-    # ME/TE instead of silently falling back to the flat Tech II baseline.
-    monkeypatch.setattr(storage, "find_invention_recipe_by_product_type_id", lambda blueprint_id: None)
+    # Defensive fallback case (rare - missing/stale SDE data, not the normal
+    # Tech III path, which genuinely does have invention-recipe candidates -
+    # see production/invention.py's own module docstring): no invention
+    # recipe/candidate can be found at all, but a manually-selected
+    # decryptor must still drive ME/TE instead of silently falling back to
+    # the flat Tech II baseline.
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda blueprint_id: ())
     cfg = ProductionConfig()
 
-    material_mult, time_mult, decryptor_name = _tech_ii_mods(
+    material_mult, time_mult, decryptor_name, chosen = _tech_ii_mods(
         type_id=1, blueprint_id=2, activity_id=1, cfg=cfg, home={}, jita={},
         selected_decryptors={1: "Accelerant"}, memo={},
     )
@@ -198,20 +200,22 @@ def test_tech_iii_manual_decryptor_applies_without_invention_recipe(monkeypatch,
     assert round(material_mult, 4) == 0.96
     assert round(time_mult, 4) == 0.86
     assert decryptor_name == "Accelerant"
+    assert chosen is None  # no real recipe - this is the defensive override-only fallback
 
 
 @pg_helpers.postgres_required()
 def test_tech_iii_falls_back_to_flat_baseline_without_override(monkeypatch, tenant):
-    monkeypatch.setattr(storage, "find_invention_recipe_by_product_type_id", lambda blueprint_id: None)
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda blueprint_id: ())
     cfg = ProductionConfig()
 
-    material_mult, time_mult, decryptor_name = _tech_ii_mods(
+    material_mult, time_mult, decryptor_name, chosen = _tech_ii_mods(
         type_id=1, blueprint_id=2, activity_id=1, cfg=cfg, home={}, jita={},
         selected_decryptors={}, memo={},
     )
     assert round(material_mult, 4) == 0.98
     assert round(time_mult, 4) == 0.96
     assert decryptor_name is None
+    assert chosen is None
 
 
 @pg_helpers.postgres_required()
@@ -255,12 +259,12 @@ def test_faction_is_always_me0_te0_and_ignores_owned_bpo_data(monkeypatch, tenan
 def test_classify_activity_treats_low_meta_level_invented_item_as_tech_ii(monkeypatch):
     # Real bug found against live SDE data: a Tech III subsystem ("Loki Core
     # - Augmented Nuclear Reactor") has metaLevel=1 - genuinely invented
-    # (find_invention_recipe_by_product_type_id finds a real recipe), and
-    # must be routed through the decryptor-based Tech II path, not priced
-    # off the flat "perfect Tech I BPO" baseline - metaLevel plays no part in
-    # the decision at all, only the invention recipe does.
+    # (find_invention_recipe_candidates_by_product_type_id finds a real
+    # recipe), and must be routed through the decryptor-based Tech II path,
+    # not priced off the flat "perfect Tech I BPO" baseline - metaLevel
+    # plays no part in the decision at all, only the invention recipe does.
     monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (200, 1, 1.0))
-    monkeypatch.setattr(storage, "find_invention_recipe_by_product_type_id", lambda blueprint_id: 999)
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda blueprint_id: (999,))
 
     activity, bp = classify_activity(100)
     assert activity == "Tech II"
@@ -269,7 +273,7 @@ def test_classify_activity_treats_low_meta_level_invented_item_as_tech_ii(monkey
 
 def test_classify_activity_still_tech_i_for_genuinely_uninvented_low_meta_item(monkeypatch):
     monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (200, 1, 1.0))
-    monkeypatch.setattr(storage, "find_invention_recipe_by_product_type_id", lambda blueprint_id: None)
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda blueprint_id: ())
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (100, 958, "Plain Tech I Thing", 40.0, 1, 1125, 0, None))
 
     activity, _ = classify_activity(100)
@@ -290,7 +294,7 @@ def test_classify_activity_treats_uninvented_faction_ship_as_faction_not_tech_i_
     # (2026-07-16), these items should still be visibly labeled "Faction",
     # not lumped in as plain "Tech I", via the SDE's real metaGroupID (4).
     monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (17739, 1, 1.0))
-    monkeypatch.setattr(storage, "find_invention_recipe_by_product_type_id", lambda blueprint_id: None)
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda blueprint_id: ())
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (17738, 27, "Machariel", 470000.0, 1, 1380, 8, 4))
 
     activity, bp = classify_activity(17738)  # Machariel's real type_id
@@ -305,7 +309,7 @@ def test_classify_activity_treats_uninvented_officer_item_as_officer(monkeypatch
     # a genuine 3-material Abyssal-tier blueprint), same treatment as Faction
     # (ME0/TE0, non-researchable label, see ACTIVITY_MODS["Officer"]).
     monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (200, 1, 1.0))
-    monkeypatch.setattr(storage, "find_invention_recipe_by_product_type_id", lambda blueprint_id: None)
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda blueprint_id: ())
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (100, 1, "Some Officer Mod", 5.0, 1, 600, 14, 5))
 
     activity, _ = classify_activity(100)
@@ -317,7 +321,7 @@ def test_classify_activity_treats_uninvented_storyline_item_as_storyline(monkeyp
     # Analyzer", built from a real "Mangled Sansha Data Analyzer" conversion
     # blueprint) - same ME0/TE0, non-researchable treatment as Faction.
     monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (201, 1, 1.0))
-    monkeypatch.setattr(storage, "find_invention_recipe_by_product_type_id", lambda blueprint_id: None)
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda blueprint_id: ())
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (101, 1, "Some Storyline Mod", 5.0, 1, 600, 14, 3))
 
     activity, _ = classify_activity(101)
@@ -331,7 +335,7 @@ def test_classify_activity_treats_uninvented_deadspace_item_as_deadspace(monkeyp
     # exercised directly here since discover_build_candidates/plan_production
     # will never hit it against real data today.
     monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (202, 1, 1.0))
-    monkeypatch.setattr(storage, "find_invention_recipe_by_product_type_id", lambda blueprint_id: None)
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda blueprint_id: ())
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (102, 1, "Some Deadspace Mod", 5.0, 1, 600, 14, 6))
 
     activity, _ = classify_activity(102)
@@ -342,7 +346,7 @@ def test_classify_activity_falls_back_to_tech_i_for_unmapped_meta_group(monkeypa
     # Any other real metaGroupID not explicitly mapped (e.g. 17/19 - SKINs,
     # apparel, boosters) still falls back to plain "Tech I", not a KeyError.
     monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (203, 1, 1.0))
-    monkeypatch.setattr(storage, "find_invention_recipe_by_product_type_id", lambda blueprint_id: None)
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda blueprint_id: ())
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (103, 1, "Some Other Item", 5.0, 1, 600, 14, 17))
 
     activity, _ = classify_activity(103)
@@ -359,7 +363,7 @@ def test_job_category_treats_advanced_capital_components_as_advanced_not_capital
     # against the user's own real build location. Only group 873 (actual
     # Basic Capital Components) should ever come back "Capital Components".
     monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (29074, 1, 1.0))
-    monkeypatch.setattr(storage, "find_invention_recipe_by_product_type_id", lambda blueprint_id: None)
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda blueprint_id: ())
     monkeypatch.setattr(
         storage, "get_sde_type",
         lambda type_id: (29073, 913, "Capital Nanoelectrical Microprocessor", 10.0, 1, 1884, None, None),
@@ -370,7 +374,7 @@ def test_job_category_treats_advanced_capital_components_as_advanced_not_capital
 
 def test_job_category_treats_basic_capital_components_as_capital(monkeypatch):
     monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (200, 1, 1.0))
-    monkeypatch.setattr(storage, "find_invention_recipe_by_product_type_id", lambda blueprint_id: None)
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda blueprint_id: ())
     monkeypatch.setattr(
         storage, "get_sde_type",
         lambda type_id: (100, 873, "Capital Construction Parts", 10.0, 1, 1884, None, None),
@@ -388,7 +392,7 @@ def test_unit_cost_detail_returns_build_cost_and_buy_price_separately(monkeypatc
     # tested even for _unit_cost itself in this file - always mocked away in
     # its own downstream tests).
     monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (200, 1, 1.0))
-    monkeypatch.setattr(storage, "find_invention_recipe_by_product_type_id", lambda blueprint_id: None)
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda blueprint_id: ())
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (100, 958, "Plain Tech I Thing", 40.0, 1, 1125, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 99)  # not a ship - plain SDE volume path
     monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id: None)
@@ -411,7 +415,7 @@ def test_unit_cost_detail_adds_amortized_manual_bpc_cost_per_unit(monkeypatch):
     # its purchase cost, amortized over its included runs, to the per-unit
     # build cost - on top of materials/job cost.
     monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (200, 1, 2.0))  # 2 units/run
-    monkeypatch.setattr(storage, "find_invention_recipe_by_product_type_id", lambda blueprint_id: None)
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda blueprint_id: ())
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (100, 958, "Plain Tech I Thing", 40.0, 1, 1125, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 99)
     monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id: None)
@@ -431,7 +435,7 @@ def test_unit_cost_detail_adds_amortized_manual_bpc_cost_per_unit(monkeypatch):
 
 def test_unit_cost_detail_returns_buy_only_when_not_buildable(monkeypatch):
     monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: None)  # no blueprint at all
-    monkeypatch.setattr(storage, "find_invention_recipe_by_product_type_id", lambda blueprint_id: None)
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda blueprint_id: ())
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (100, 958, "Buy-only Thing", 40.0, 1, 1125, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 99)
 
@@ -2293,6 +2297,7 @@ def test_invention_logistics_needs_bpcs_decryptors_and_datacores(monkeypatch):
                              output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
     monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id: {"datacores": [(300, 2), (301, 2)]})
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)  # real T1 blueprint, not a relic
     monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: 0.0)
     monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id: 0.0)
 
@@ -2324,6 +2329,7 @@ def test_invention_logistics_t1_blueprint_availability_uses_copy_count_not_gener
                              output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
     monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id: {"datacores": []})
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)  # real T1 blueprint, not a relic
 
     def _esi_stock_at_location(type_id, location_id):
         assert type_id != 200, "must not call esi_stock_at_location for a T1 blueprint type_id"
@@ -2338,6 +2344,36 @@ def test_invention_logistics_t1_blueprint_availability_uses_copy_count_not_gener
     assert by_type[200].missing == 2.0  # 6 needed - 4 available copies
 
 
+def test_invention_logistics_relic_availability_uses_generic_stock_not_copy_count(monkeypatch):
+    """Mirrors the real-T1-blueprint test above in the opposite direction -
+    confirmed real bug, reported by a user, 2026-08-30: a Tech III relic
+    (t1_blueprint_type_id here is the relic's own type_id, e.g. "Intact
+    Power Cores") is a plain purchasable/lootable item, never owned as a
+    blueprint copy - it must go through esi_stock_at_location (character_
+    assets/corp_assets), never available_blueprint_copies (character_
+    blueprints/corp_blueprints), which would always return 0 for it since a
+    relic type_id never has a row there at all."""
+    from eve_trader.production.models import InventionNeedRow
+    cfg = ProductionConfig(invention_location_id=5000)
+    need = InventionNeedRow(type_id=10, type_name="T3 Widget", t1_blueprint_type_id=302,
+                             t1_blueprint_name="Intact Power Cores", decryptor="Parity", probability=0.26,
+                             output_runs=20, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
+    monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id: {"datacores": []})
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: ANCIENT_RELIC_CATEGORY_ID)  # a relic
+
+    def _available_blueprint_copies(type_id, location_id):
+        raise AssertionError("must not call available_blueprint_copies for a Tech III relic type_id")
+    monkeypatch.setattr(storage, "available_blueprint_copies", _available_blueprint_copies)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: 4.0)
+
+    rows = engine.invention_logistics([need], cfg)
+
+    by_type = {r.type_id: r for r in rows}
+    assert by_type[302].available == 4.0
+    assert by_type[302].missing == 2.0  # 6 needed - 4 available units
+
+
 def test_invention_logistics_none_decryptor_does_not_demand_type_zero(monkeypatch):
     # GitHub issue #13: DECRYPTORS["None"].type_id is 0 (no real decryptor
     # used) - SDE type_id 0 happens to be named "#System", so a need with no
@@ -2349,6 +2385,7 @@ def test_invention_logistics_none_decryptor_does_not_demand_type_zero(monkeypatc
                              output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
     monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id: {"datacores": []})
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)  # real T1 blueprint, not a relic
     monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: 0.0)
     monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id: 0.0)
 
@@ -2387,6 +2424,7 @@ def test_t1_bpc_invention_needs_reports_missing_copies_and_bpo_presence(monkeypa
                              t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
                              output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)  # real T1 blueprint, not a relic
     monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id: 4.0)
     monkeypatch.setattr(storage, "has_bpo_at_location", lambda type_id, location_id: True)
 
@@ -2401,6 +2439,39 @@ def test_t1_bpc_invention_needs_reports_missing_copies_and_bpo_presence(monkeypa
     assert row.bpo_present is True
 
 
+def test_t1_bpc_invention_needs_relic_uses_generic_stock_and_never_shows_a_bpo(monkeypatch):
+    """Same relic-routing fix as invention_logistics' own mirrored test -
+    confirmed real bug, reported by a user, 2026-08-30."""
+    from eve_trader.production.models import InventionNeedRow
+    cfg = ProductionConfig(invention_location_id=5000)
+    need = InventionNeedRow(type_id=10, type_name="T3 Widget", t1_blueprint_type_id=302,
+                             t1_blueprint_name="Intact Power Cores", decryptor="Parity", probability=0.26,
+                             output_runs=20, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: ANCIENT_RELIC_CATEGORY_ID)  # a relic
+
+    def _available_blueprint_copies(type_id, location_id):
+        raise AssertionError("must not call available_blueprint_copies for a Tech III relic type_id")
+    monkeypatch.setattr(storage, "available_blueprint_copies", _available_blueprint_copies)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: 4.0)
+    # A relic type_id genuinely never has a quantity==-1 row in the
+    # blueprint tables (it was never a blueprint) - has_bpo_at_location
+    # naturally returns False for it with no special-casing needed, so this
+    # is left un-mocked/real here to prove that (storage.connect() isn't
+    # reached in this monkeypatched-everything-else test, so a real call
+    # would raise "no current tenant set" if this ever stopped being true).
+    monkeypatch.setattr(storage, "has_bpo_at_location", lambda type_id, location_id: False)
+
+    rows = engine.t1_bpc_invention_needs([need], cfg)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.type_id == 302
+    assert row.available == 4
+    assert row.missing == 2  # 6 needed - 4 available units
+    assert row.bpo_present is False
+
+
 def test_t1_bpc_invention_needs_aggregates_across_stock_targets_sharing_a_t1_blueprint(monkeypatch):
     from eve_trader.production.models import InventionNeedRow
     cfg = ProductionConfig(invention_location_id=5000)
@@ -2411,6 +2482,7 @@ def test_t1_bpc_invention_needs_aggregates_across_stock_targets_sharing_a_t1_blu
                                t1_blueprint_name="Widget Blueprint", decryptor="Attainment", probability=0.4,
                                output_runs=1, runs_needed=4, bpcs_needed=4, recommended_invention_runs=10)
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)  # real T1 blueprint, not a relic
     monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id: 0.0)
     monkeypatch.setattr(storage, "has_bpo_at_location", lambda type_id, location_id: False)
 

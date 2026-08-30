@@ -89,6 +89,7 @@ export default function Invention() {
     { header: 'TE', accessorKey: 'te', size: 70 },
     { header: 'Datacore Cost', accessorKey: 'datacore_cost', size: 140, cell: (i) => isk(i.getValue()) },
     { header: 'Decryptor Cost', accessorKey: 'decryptor_cost', size: 140, cell: (i) => isk(i.getValue()) },
+    { header: 'Relic Cost', accessorKey: 'relic_cost', size: 140, cell: (i) => isk(i.getValue()) },
     { header: 'Cost/Success', accessorKey: 'expected_cost_per_success', size: 140, cell: (i) => isk(i.getValue()) },
     { header: 'Cost/Run', accessorKey: 'expected_cost_per_run', size: 130, cell: (i) => isk(i.getValue()) },
     { header: 'ME Savings/Run', accessorKey: 'material_savings_per_run', size: 150, cell: (i) => isk(i.getValue()) },

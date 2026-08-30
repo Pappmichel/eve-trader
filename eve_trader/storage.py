@@ -863,7 +863,7 @@ def replace_sde_data(
     get_blueprint_for_product.cache_clear()
     get_blueprint_materials.cache_clear()
     get_blueprint_time.cache_clear()
-    find_invention_recipe_by_product_type_id.cache_clear()
+    find_invention_recipe_candidates_by_product_type_id.cache_clear()
     get_station_ids_in_system.cache_clear()
     get_station_ids_in_region.cache_clear()
     get_type_slot.cache_clear()
@@ -2244,33 +2244,44 @@ def find_invention_recipe_by_product_name(product_name: str) -> Optional[tuple[i
 
 
 @lru_cache(maxsize=None)
-def find_invention_recipe_by_product_type_id(product_blueprint_type_id: int) -> Optional[int]:
+def find_invention_recipe_candidates_by_product_type_id(product_blueprint_type_id: int) -> tuple[int, ...]:
     """Given a T2/T3 *blueprint*'s type_id (e.g. from get_blueprint_for_product),
-    returns the T1 blueprint that invents it, or None if it isn't an invented
-    type (e.g. a T1 item, or a BPO that was never invention-sourced).
+    returns every valid invention source for it (best-probability-first),
+    or an empty tuple if it isn't an invented type (e.g. a T1 item, or a BPO
+    that was never invention-sourced).
 
-    Confirmed real bug: 79 T2/T3 products have *more than one* valid
-    invention source in the SDE - most visibly every Tech III hull/subsystem,
-    which has 3 relic BPCs (Intact/Malfunctioning/Wrecked Hull Section) with
-    materially different success probability (0.26/0.21/0.14) but identical
-    materials/time. Without an explicit tiebreak this picked whichever row
-    SQLite's unordered scan happened to return first - it silently returned
-    the best (Intact) option today only by accident of row-insertion order,
-    not by design. `ORDER BY probability DESC` makes "always prefer the
-    highest-probability recipe" an explicit, deterministic choice instead of
-    a coincidence that could flip on a future SDE refresh. Cached - see
-    get_sde_type."""
+    Confirmed real: 79 T2/T3 products have *more than one* valid invention
+    source in the SDE - most visibly every Tech III hull/subsystem, which
+    has 3 relic "blueprints" (Intact/Malfunctioning/Wrecked Hull Section,
+    Armor Nanobot, Power Cores, Thruster Sections, or Weapon Subroutines,
+    depending on which hull/subsystem - see production/constants.py's
+    ANCIENT_RELIC_CATEGORY_ID) with materially different success probability
+    (0.26/0.21/0.14) *and* output runs (20/10/3) but identical materials/
+    time otherwise - a real buy-cost-vs-odds tradeoff, not a tiebreak to
+    collapse away. Used to be exactly that: a single-result version of this
+    function picked only the highest-probability row via `ORDER BY
+    probability DESC LIMIT 1`, discarding the other two grades entirely -
+    fine for Tech II (which only ever has one real candidate, a genuine T1
+    BPO/BPC), but for Tech III this silently prevented ever considering the
+    cheaper Malfunctioning/Wrecked grades at all (confirmed real, reported
+    by a user, 2026-08-30). production/invention.py's best_recipe_and_
+    decryptor is what actually explores every candidate this returns x every
+    decryptor and picks the globally cheapest net cost - this function's own
+    job is just "what are the options", ordered for a deterministic first
+    element (still meaningful for T2's single-candidate case, and as a
+    sensible default if a caller only wants "the best odds" without running
+    the full cost comparison). Cached - see get_sde_type."""
     with connect() as conn:
-        row = conn.execute(
+        rows = conn.execute(
             "SELECT p.blueprint_type_id FROM sde_blueprint_products p "
             "LEFT JOIN sde_invention_probability prob "
             "  ON prob.t1_blueprint_type_id = p.blueprint_type_id "
             "  AND prob.product_type_id = p.product_type_id "
             "WHERE p.activity_id = 8 AND p.product_type_id = ? "
-            "ORDER BY prob.probability DESC, p.blueprint_type_id LIMIT 1",
+            "ORDER BY prob.probability DESC, p.blueprint_type_id",
             (product_blueprint_type_id,),
-        ).fetchone()
-    return row[0] if row else None
+        ).fetchall()
+    return tuple(row[0] for row in rows)
 
 
 def get_invention_recipe(t1_blueprint_type_id: int) -> Optional[dict]:

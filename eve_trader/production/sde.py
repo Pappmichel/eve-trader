@@ -40,8 +40,10 @@ USER_AGENT = "eve-trader-python"
 # Reverse Engineering years ago. Tech III hulls/subsystems are produced via
 # the exact same activity_id=8 Invention this tool already models for Tech
 # II (confirmed against real SDE data: e.g. Loki hull's blueprint - type_id
-# 29991 - has a real find_invention_recipe_by_product_type_id() hit, same as
-# any Tech II item) - see engine.py classify_activity's is_invented check.
+# 29991 - has a real find_invention_recipe_candidates_by_product_type_id()
+# hit, same as any Tech II item, just with a Sleeper relic as the candidate
+# instead of a real T1 blueprint) - see engine.py classify_activity's
+# is_invented check.
 _RELEVANT_ACTIVITIES = {ACTIVITY_MANUFACTURING, ACTIVITY_REACTION, ACTIVITY_INVENTION, ACTIVITY_COPYING}
 
 

@@ -356,14 +356,30 @@ def do_resolve_structure_name(location_id: int, force: bool = False) -> dict:
 def do_estimate_invention(product_name: str, decryptor_name: str | None = None,
                            cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     """`product_name` is the T2/T3 blueprint you want (e.g. "Small Shield Booster
-    II Blueprint"), not the T1 base blueprint. If `decryptor_name` is None,
-    compares all decryptor options; otherwise estimates just that one."""
+    II Blueprint"), not the T1 base blueprint (or, for Tech III, the relic).
+    If `decryptor_name` is None, compares every (grade, decryptor)
+    combination (invention.compare_recipes_and_decryptors - for Tech III,
+    "grade" means the Intact/Malfunctioning/Wrecked relic tier, not just the
+    decryptor: see that function's own docstring); otherwise estimates just
+    that one decryptor, still auto-picking the cheapest grade for it
+    (invention.best_recipe_for_decryptor).
+
+    Confirmed real bug (reported by a user, 2026-08-30): this used to take
+    only storage.find_invention_recipe_by_product_name's own arbitrary,
+    non-deterministic `blueprint_type_id` (no ORDER BY at all - fine for its
+    OTHER return value, product_type_id, which is identical across every
+    grade candidate for the same product, but not for blueprint_type_id,
+    which varies by grade) and run every decryptor comparison against that
+    one grade alone - so for Tech III this page could show, and the "single
+    decryptor" mode could estimate against, a different relic grade on every
+    call, never letting the user compare or deliberately pick a grade at
+    all."""
     recipe = storage.find_invention_recipe_by_product_name(product_name.strip())
     if recipe is None:
         raise ActionError(
             f"No invention recipe found for '{product_name}'. Exact name? Refresh SDE first?"
         )
-    t1_blueprint_type_id, product_blueprint_id = recipe
+    _, product_blueprint_id = recipe
 
     type_ids = list(_structural_material_closure([product_blueprint_id]))
     home = pricing.home_prices(cfg, type_ids)
@@ -373,11 +389,12 @@ def do_estimate_invention(product_name: str, decryptor_name: str | None = None,
     reducible_cost = invention.reducible_material_cost(product_blueprint_id, 1, home, jita, cfg)
 
     if decryptor_name is None:
-        results = invention.compare_decryptors(t1_blueprint_type_id, home, jita, cfg, reducible_cost)
+        results = invention.compare_recipes_and_decryptors(product_blueprint_id, home, jita, cfg, reducible_cost)
     else:
         if decryptor_name not in DECRYPTORS:
             raise ActionError(f"Unknown decryptor '{decryptor_name}'. Options: {', '.join(DECRYPTORS)}")
-        results = [invention.estimate(t1_blueprint_type_id, decryptor_name, home, jita, cfg, reducible_cost)]
+        chosen = invention.best_recipe_for_decryptor(product_blueprint_id, decryptor_name, home, jita, cfg, reducible_cost)
+        results = [chosen] if chosen is not None else []
 
     return {"results": results}
 

@@ -97,6 +97,27 @@ STORYLINE_META_GROUP_ID = 3
 OFFICER_META_GROUP_ID = 5
 DEADSPACE_META_GROUP_ID = 6
 
+# SDE category_id for "Ancient Relics" - confirmed live (2026-08-30) against
+# the SDE cache: every Sleeper relic family used as a Tech III invention
+# input (Intact/Malfunctioning/Wrecked Hull Section, Armor Nanobot, Power
+# Cores, Thruster Sections, Weapon Subroutines - one family per subsystem
+# slot, per wiki.eveuniversity.org/Tech_3_Production) shares this one
+# category_id, vs. category_id 9 ("Blueprint") for a genuine T1 BPO/BPC.
+# CCP's SDE models a relic as a pseudo-"blueprint" row in the same
+# industryActivity tables a real T1 blueprint uses for invention (see
+# storage.find_invention_recipe_candidates_by_product_type_id) - probability/
+# runs/material lookups work identically either way, but a relic is a plain
+# purchasable/lootable item (character_assets/corp_assets), never owned as a
+# blueprint copy (character_blueprints/corp_blueprints) the way a real T1
+# BPC is - this constant is what lets the rest of the invention code tell
+# the two apart (confirmed real bug, reported by a user, 2026-08-30: relics
+# were treated exactly like a real T1 BPC everywhere - checked against
+# storage.available_blueprint_copies, which only ever queries the blueprint
+# tables, so a relic's real availability/need never reached the buy list at
+# all, and its own market cost was never priced into invention's total
+# attempt cost either).
+ANCIENT_RELIC_CATEGORY_ID = 34
+
 
 @dataclass(frozen=True)
 class ActivityMods:

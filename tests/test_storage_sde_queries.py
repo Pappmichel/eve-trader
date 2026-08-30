@@ -18,7 +18,7 @@ def _wipe():
     # ids happen to be reused. Note: conftest.py's autouse
     # _clear_storage_lru_caches fixture already handles the @lru_cache'd
     # storage functions (get_blueprint_for_product,
-    # find_invention_recipe_by_product_type_id) reading this data.
+    # find_invention_recipe_candidates_by_product_type_id) reading this data.
     pg_helpers.wipe_tables("sde_types", "sde_blueprint_products", "sde_invention_probability")
     yield
 
@@ -88,11 +88,15 @@ def test_find_invention_recipe_by_product_name_is_case_and_whitespace_insensitiv
     assert storage.find_invention_recipe_by_product_name("  Loki Blueprint  ") == (200, 101)
 
 
-def test_find_invention_recipe_by_product_type_id_prefers_highest_probability(tenant):
-    # Confirmed real bug: T3 hulls/subsystems have 3 valid relic BPCs
-    # (Intact/Malfunctioning/Wrecked) with different success probability but
-    # identical materials/time - without an explicit ORDER BY, whichever row
-    # SQLite's unordered scan returned first won, by accident not by design.
+def test_find_invention_recipe_candidates_by_product_type_id_orders_by_probability(tenant):
+    # T3 hulls/subsystems have 3 valid relic "blueprints" (Intact/
+    # Malfunctioning/Wrecked) with different success probability but
+    # identical materials/time - every candidate must be returned (not
+    # collapsed to just the best one, confirmed real bug reported by a user,
+    # 2026-08-30: a single-result predecessor of this function silently
+    # discarded the other two grades, so a real buy-cost-vs-odds tradeoff
+    # could never even be considered), ordered best-probability-first for a
+    # deterministic first element.
     product_type_id = 999
     _insert_product(301, 8, product_type_id, 1.0)  # Wrecked - worst odds
     _insert_product(302, 8, product_type_id, 1.0)  # Intact - best odds
@@ -101,8 +105,19 @@ def test_find_invention_recipe_by_product_type_id_prefers_highest_probability(te
     _insert_probability(302, product_type_id, 0.26)
     _insert_probability(303, product_type_id, 0.21)
 
-    result = storage.find_invention_recipe_by_product_type_id(product_type_id)
-    assert result == 302
+    result = storage.find_invention_recipe_candidates_by_product_type_id(product_type_id)
+    assert result == (302, 303, 301)
+
+
+def test_find_invention_recipe_candidates_by_product_type_id_single_result_for_tech_ii(tenant):
+    _insert_product(200, 8, 101, 1.0)
+    _insert_probability(200, 101, 0.4)
+
+    assert storage.find_invention_recipe_candidates_by_product_type_id(101) == (200,)
+
+
+def test_find_invention_recipe_candidates_by_product_type_id_empty_for_uninvented(tenant):
+    assert storage.find_invention_recipe_candidates_by_product_type_id(999999) == ()
 
 
 def test_search_sde_types_tolerates_incidental_whitespace(tenant):
