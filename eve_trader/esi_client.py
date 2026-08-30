@@ -840,6 +840,23 @@ class ESIClient:
         return self._get(f"/characters/{character_id}/wallet/transactions/",
                           params=params, auth_role=auth_role)
 
+    def character_wallet_journal(self, character_id: int, auth_role: str) -> list[dict]:
+        """This character's wallet journal (every ISK-moving event, not just
+        market trades - contract payments, bounties, taxes, ...). Standard
+        page/X-Pages pagination (_get_all_pages), unlike character_wallet_
+        transactions' from_id cursor scheme above - confirmed against ESI's
+        own OpenAPI spec (2026-08-29), not assumed. trade_reconciliation.py
+        uses this for one specific purpose: a wallet/transactions entry's own
+        `journal_ref_id` links 1:1 to the journal entry recording that same
+        sale (`ref_type: "market_transaction"`), whose `amount` field is the
+        real ISK actually credited *after* sales tax - a more accurate
+        sell-side figure than the modeled structure_sell_haircut for the tax
+        portion specifically. Requires esi-wallet.read_character_wallet.v1 -
+        the same scope character_wallet_transactions already needs, no new
+        grant required."""
+        return self._get_all_pages(f"/characters/{character_id}/wallet/journal/",
+                                    params={"datasource": "tranquility"}, auth_role=auth_role)
+
     def character_skills(self, character_id: int, auth_role: str) -> dict:
         """Requires esi-skills.read_skills.v1. Returns {"skills": [{"skill_id",
         "active_skill_level", ...}], "total_sp", ...} - used to derive industry

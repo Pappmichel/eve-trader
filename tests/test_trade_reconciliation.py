@@ -10,17 +10,24 @@ JITA_4_4_STATION_ID = 60003760  # real EVE station ID, used as the test's "Jita"
 
 
 class FakeClient:
-    """Minimal ESIClient double - only character_wallet_transactions is used
-    by reconcile_realized_trades/fetch_recent_transactions. Single-page fixture
-    data (a real call chain with from_id pagination is covered separately in
-    test_fetch_recent_transactions_pages.py) - always returns the full fixture
-    on the first (from_id=None) call and nothing on any follow-up call, same
-    as a real character with fewer than 2500 total transactions."""
-    def __init__(self, buyer_txns, seller_txns):
+    """Minimal ESIClient double - character_wallet_transactions/
+    character_wallet_journal are used by reconcile_realized_trades. Single-
+    page fixture data (a real call chain with from_id pagination is covered
+    separately in test_fetch_recent_transactions_pages.py) - always returns
+    the full fixture on the first (from_id=None) call and nothing on any
+    follow-up call, same as a real character with fewer than 2500 total
+    transactions. `journal_entries` defaults to {} (empty per character) -
+    every existing test exercises the fully-modeled fallback path unless it
+    explicitly opts into PB-03's real-tax path by passing journal data."""
+    def __init__(self, buyer_txns, seller_txns, journal_entries=None):
         self._by_char = {1: buyer_txns, 2: seller_txns}
+        self._journal_by_char = journal_entries or {}
 
     def character_wallet_transactions(self, character_id, auth_role, from_id=None):
         return self._by_char[character_id] if from_id is None else []
+
+    def character_wallet_journal(self, character_id, auth_role):
+        return self._journal_by_char.get(character_id, [])
 
 
 def _iso(days_ago: int) -> str:
@@ -170,6 +177,97 @@ def test_reconcile_still_ignores_a_buy_beyond_even_the_widened_buy_window(monkey
     )
 
     assert trades == []
+
+
+def test_reconcile_uses_real_tax_from_wallet_journal_when_available(monkeypatch):
+    """PB-03 (business-logic audit, 2026-08-29): net_sell should use the real
+    post-tax proceeds from the wallet journal (via a transaction's own
+    journal_ref_id) for the tax portion, scaled by the SCC+broker-only
+    retention ratio backed out of the modeled haircut - not the fully
+    modeled sell_unit_price x haircut figure."""
+    monkeypatch.setattr(trade_reconciliation.storage, "get_station_ids_in_region",
+                         lambda region_id: frozenset({JITA_4_4_STATION_ID}))
+    cfg = TradingConfig(lookback_days=30, structure_sell_haircut=0.9463)
+    buys = [{"is_buy": True, "type_id": 100, "date": _iso(2), "unit_price": 1000.0, "quantity": 10,
+             "location_id": JITA_4_4_STATION_ID, "transaction_id": 1}]
+    sells = [{"is_buy": False, "type_id": 100, "date": _iso(1), "unit_price": 1200.0, "quantity": 10,
+              "location_id": cfg.structure_id, "transaction_id": 2, "journal_ref_id": 555}]
+    journal_entries = {2: [{"id": 555, "ref_type": "market_transaction", "amount": 11000.0, "date": _iso(1)}]}
+    client = FakeClient(buys, sells, journal_entries=journal_entries)
+
+    trades = reconcile_realized_trades(
+        buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
+        client=client, item_names={100: "Widget"}, item_volumes={100: 0.0}, cfg=cfg,
+    )
+
+    assert len(trades) == 1
+    expected_net_sell = (11000.0 / 10) * (0.9463 + trade_reconciliation._ASSUMED_TAX_RATE_IN_DEFAULT_HAIRCUT)
+    expected_landed = 1000.0 * (1 + cfg.jita_buy_broker_fee)
+    profit_per_unit = trades[0].realized_profit / trades[0].matched_qty
+    assert round(profit_per_unit, 4) == round(expected_net_sell - expected_landed, 4)
+
+
+def test_reconcile_falls_back_to_modeled_haircut_when_no_journal_entry_matches(monkeypatch):
+    monkeypatch.setattr(trade_reconciliation.storage, "get_station_ids_in_region",
+                         lambda region_id: frozenset({JITA_4_4_STATION_ID}))
+    cfg = TradingConfig(lookback_days=30, structure_sell_haircut=1.0, jita_buy_broker_fee=0.0)
+    buys = [{"is_buy": True, "type_id": 100, "date": _iso(2), "unit_price": 1000.0, "quantity": 10,
+             "location_id": JITA_4_4_STATION_ID, "transaction_id": 1}]
+    sells = [{"is_buy": False, "type_id": 100, "date": _iso(1), "unit_price": 1200.0, "quantity": 10,
+              "location_id": cfg.structure_id, "transaction_id": 2, "journal_ref_id": 999}]  # no matching journal entry
+    client = FakeClient(buys, sells, journal_entries={2: []})
+
+    trades = reconcile_realized_trades(
+        buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
+        client=client, item_names={100: "Widget"}, item_volumes={100: 0.0}, cfg=cfg,
+    )
+
+    profit_per_unit = trades[0].realized_profit / trades[0].matched_qty
+    assert round(profit_per_unit, 2) == round(1200.0 - 1000.0, 2)  # fully modeled: haircut=1.0, broker_fee=0.0
+
+
+def test_reconcile_ignores_non_market_transaction_journal_entries(monkeypatch):
+    """A journal_ref_id happening to collide with some OTHER ref_type entry
+    (e.g. a brokers_fee entry) must never be used as if it were the sell's
+    own post-tax proceeds."""
+    monkeypatch.setattr(trade_reconciliation.storage, "get_station_ids_in_region",
+                         lambda region_id: frozenset({JITA_4_4_STATION_ID}))
+    cfg = TradingConfig(lookback_days=30, structure_sell_haircut=1.0, jita_buy_broker_fee=0.0)
+    buys = [{"is_buy": True, "type_id": 100, "date": _iso(2), "unit_price": 1000.0, "quantity": 10,
+             "location_id": JITA_4_4_STATION_ID, "transaction_id": 1}]
+    sells = [{"is_buy": False, "type_id": 100, "date": _iso(1), "unit_price": 1200.0, "quantity": 10,
+              "location_id": cfg.structure_id, "transaction_id": 2, "journal_ref_id": 555}]
+    journal_entries = {2: [{"id": 555, "ref_type": "brokers_fee", "amount": -50.0, "date": _iso(1)}]}
+    client = FakeClient(buys, sells, journal_entries=journal_entries)
+
+    trades = reconcile_realized_trades(
+        buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
+        client=client, item_names={100: "Widget"}, item_volumes={100: 0.0}, cfg=cfg,
+    )
+
+    profit_per_unit = trades[0].realized_profit / trades[0].matched_qty
+    assert round(profit_per_unit, 2) == round(1200.0 - 1000.0, 2)  # fell back to modeled, ignored the brokers_fee entry
+
+
+def test_reconcile_ignores_journal_entries_outside_the_lookback_window(monkeypatch):
+    monkeypatch.setattr(trade_reconciliation.storage, "get_station_ids_in_region",
+                         lambda region_id: frozenset({JITA_4_4_STATION_ID}))
+    cfg = TradingConfig(lookback_days=30, structure_sell_haircut=1.0, jita_buy_broker_fee=0.0)
+    buys = [{"is_buy": True, "type_id": 100, "date": _iso(2), "unit_price": 1000.0, "quantity": 10,
+             "location_id": JITA_4_4_STATION_ID, "transaction_id": 1}]
+    sells = [{"is_buy": False, "type_id": 100, "date": _iso(1), "unit_price": 1200.0, "quantity": 10,
+              "location_id": cfg.structure_id, "transaction_id": 2, "journal_ref_id": 555}]
+    # Real journal entry exists but is far outside the lookback window - must not be used.
+    journal_entries = {2: [{"id": 555, "ref_type": "market_transaction", "amount": 11000.0, "date": _iso(400)}]}
+    client = FakeClient(buys, sells, journal_entries=journal_entries)
+
+    trades = reconcile_realized_trades(
+        buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
+        client=client, item_names={100: "Widget"}, item_volumes={100: 0.0}, cfg=cfg,
+    )
+
+    profit_per_unit = trades[0].realized_profit / trades[0].matched_qty
+    assert round(profit_per_unit, 2) == round(1200.0 - 1000.0, 2)  # journal entry too old, fell back to modeled
 
 
 def test_average_daily_sold_by_type_empty_table_returns_empty_dict(monkeypatch):

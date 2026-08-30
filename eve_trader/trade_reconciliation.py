@@ -2,7 +2,12 @@
 
 Pulls wallet transactions for two characters (buyer imports in Jita, seller
 sells in the structure) over a lookback window, and matches buys against
-sells per item (FIFO) to compute realized profit.
+sells per item (FIFO) to compute realized profit. The sell side's tax
+deduction uses the real per-sale amount from the wallet *journal* when
+available (see fetch_recent_journal_entries/_ASSUMED_TAX_RATE_IN_DEFAULT_
+HAIRCUT), falling back to a fully modeled haircut otherwise; the buy side
+and broker's fee stay modeled (ESI has no per-fill broker-fee attribution -
+see PB-03 in the 2026-08-29 business-logic audit).
 """
 from __future__ import annotations
 
@@ -36,6 +41,55 @@ WALLET_TRANSACTIONS_PAGE_SIZE = 2500  # ESI's fixed per-call cap for this endpoi
 # which would risk very slow reconciliation for a character with years of
 # trading history.
 _BUY_LOOKBACK_MULTIPLIER = 3
+
+# PB-03 (business-logic audit, 2026-08-29): net_sell used to be entirely
+# modeled (sell_unit_price x structure_sell_haircut) even though ESI's
+# wallet journal has the REAL sales tax for each specific sell (via a
+# transaction's own journal_ref_id -> the matching journal entry's `amount`,
+# already net of that real tax - confirmed against ESI's own OpenAPI spec).
+# Only the tax portion is fixable this way: broker's fee is charged once per
+# ORDER, not per fill, so it can't be attributed to one specific FIFO-matched
+# sale the way tax can - confirmed with the user (2026-08-29) to leave that
+# portion modeled rather than guess at an order-level allocation.
+#
+# structure_sell_haircut bundles SCC surcharge + broker's fee + sales tax
+# into one multiplier (see its own default-derivation comment in config.py:
+# "SCC surcharge 0.5% + Broker's fee 1.5% + Sales tax 3.37% = 5.37% total").
+# To swap in the real tax without a new config field to hold the SCC+broker
+# portion separately, this is the assumed tax rate baked into that *default*
+# 0.9463 value, used only to back it out: (structure_sell_haircut +
+# _ASSUMED_TAX_RATE_IN_DEFAULT_HAIRCUT) isolates the SCC+broker-only
+# retention ratio, which then multiplies the *real* post-tax proceeds
+# instead of the raw unit price. Exact when structure_sell_haircut is still
+# its default; a tenant who has customized it away from 0.9463 (different
+# real skills/standings) gets a close-but-not-exact SCC+broker estimate -
+# still strictly more accurate on the tax term than the fully-modeled
+# formula, which is the one thing this fix set out to improve.
+_ASSUMED_TAX_RATE_IN_DEFAULT_HAIRCUT = 0.0337
+
+_MARKET_TRANSACTION_REF_TYPE = "market_transaction"
+
+
+def fetch_recent_journal_entries(character_id: int, auth_role: str, client: ESIClient,
+                                  lookback_days: int) -> dict[int, float]:
+    """{journal entry id: amount} for this character's `market_transaction`
+    journal entries within `lookback_days` - the lookup reconcile_realized_
+    trades uses to find a specific sell's real post-tax proceeds via its
+    wallet-transaction's own `journal_ref_id`. Best-effort: any ESI failure
+    (missing scope, outage, ...) returns {} rather than raising, so a wallet-
+    journal problem degrades reconciliation to the fully-modeled formula
+    instead of blocking it entirely - same spirit as this module's other
+    best-effort fallbacks (_type_info below)."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    try:
+        entries = client.character_wallet_journal(character_id, auth_role=auth_role)
+    except Exception:  # noqa: BLE001 - best-effort; modeled fallback is always safe
+        return {}
+    return {
+        entry["id"]: entry["amount"]
+        for entry in entries
+        if entry.get("ref_type") == _MARKET_TRANSACTION_REF_TYPE and _parse_iso(entry["date"]) >= cutoff
+    }
 
 
 def fetch_recent_transactions(character_id: int, auth_role: str, client: ESIClient,
@@ -88,6 +142,13 @@ def reconcile_realized_trades(buyer_characters: list[tuple[int, str]], seller_ch
     sells = []
     for character_id, role in seller_characters:
         sells.extend(fetch_recent_transactions(character_id, role, client, cfg.lookback_days))
+
+    # PB-03: real post-tax proceeds per journal entry id, for whichever
+    # sells actually have one - see fetch_recent_journal_entries/
+    # _ASSUMED_TAX_RATE_IN_DEFAULT_HAIRCUT's own comments above.
+    journal_amount_by_ref_id: dict[int, float] = {}
+    for character_id, role in seller_characters:
+        journal_amount_by_ref_id.update(fetch_recent_journal_entries(character_id, role, client, cfg.lookback_days))
 
     # Confirmed real bug: unlike `sells` (correctly scoped to cfg.structure_id
     # below), `buys` had no location filter at all - any wallet transaction
@@ -178,20 +239,26 @@ def reconcile_realized_trades(buyer_characters: list[tuple[int, str]], seller_ch
                 # per-unit volume, or cheap/small/bulk-traded items (ammo, ice
                 # products, ...) get a wildly overstated landed cost.
                 freight = volumes[type_id] * cfg.import_cost_per_m3
-                # jita_buy_broker_fee/structure_sell_haircut are *modeled*
-                # rates (config.py), applied on top of the real observed
-                # buy["unit_price"]/sell["unit_price"] from the wallet
-                # transaction itself - not the real fee actually charged for
-                # that specific transaction (ESI's wallet *journal*, a
-                # separate endpoint from wallet *transactions*, has the real
-                # per-transaction brokers_fee/transaction_tax entries, not
-                # pulled here). An approximation, same spirit as this app's
-                # other documented simplifications (e.g. invention's job-fee
-                # estimate) - real skill/standing changes over the lookback
-                # window could make Realized Trades' own profit/margin drift
-                # from what actually landed in the wallet.
+                # jita_buy_broker_fee is still fully *modeled* (config.py) -
+                # broker's fee is charged once per order, not per fill, so it
+                # can't be attributed to this specific matched buy the way
+                # sales tax can be (see PB-03's comment above) - real
+                # skill/standing changes over the lookback window could still
+                # make this side of Realized Trades drift from what actually
+                # landed in the wallet.
                 landed = buy["unit_price"] * (1 + cfg.jita_buy_broker_fee) + freight
-                net_sell = sell["unit_price"] * cfg.structure_sell_haircut
+                journal_amount = journal_amount_by_ref_id.get(sell.get("journal_ref_id"))
+                if journal_amount is not None and sell["quantity"]:
+                    # Real post-tax proceeds (ESI wallet journal) scaled by
+                    # the SCC+broker-only retention ratio backed out of the
+                    # modeled haircut - see _ASSUMED_TAX_RATE_IN_DEFAULT_
+                    # HAIRCUT's own comment for why this, not the real tax
+                    # amount, replaces the sell["unit_price"] x haircut term.
+                    net_sell = (journal_amount / sell["quantity"]) * (
+                        cfg.structure_sell_haircut + _ASSUMED_TAX_RATE_IN_DEFAULT_HAIRCUT
+                    )
+                else:
+                    net_sell = sell["unit_price"] * cfg.structure_sell_haircut
                 profit_per_unit = net_sell - landed
                 results.append(RealizedTrade(
                     type_id=type_id,
