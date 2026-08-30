@@ -1160,12 +1160,21 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                 # blueprint *consumed* to invent it) - t2_bpc_owned always
                 # means "owned copies of the blueprint invention produces".
                 t2_bpc_owned = int(storage.available_blueprint_copies(blueprint_id, None))
-                # BPC-runs-covered %, not the end product's own stock level
-                # (see InventionNeedRow.stockpile_pct docstring) - 100% when
-                # nothing is currently missing (bpcs_needed == 0), since no
-                # invention work is outstanding regardless of t2_bpc_owned.
-                stockpile_pct = (max(0.0, min(100.0, t2_bpc_owned / bpcs_needed * 100))
-                                 if bpcs_needed > 0 else 100.0)
+                # BPC-runs-owned as a % of a *fixed* target (derived from
+                # backup_stock, the same fixed target the old end-product
+                # formula used), not of bpcs_needed - bpcs_needed is the
+                # current shortfall, which collapses to 0 the moment the end
+                # product is fully stocked (forcing a meaningless 100%
+                # regardless of actual BPC holdings) and is otherwise usually
+                # a tiny integer, so owning 0 vs >=1 BPC runs landed on
+                # nothing but 0%/100% in practice (confirmed real bug,
+                # 2026-08-30). backup_stock_bpcs mirrors bpcs_needed's own
+                # runs_needed/output_runs math, just against the fixed
+                # backup_stock target instead of today's variable missing.
+                backup_stock_runs = math.ceil(backup_stock / product_qty) if backup_stock > 0 else 0
+                backup_stock_bpcs = math.ceil(backup_stock_runs / chosen.output_runs) if backup_stock_runs > 0 else 0
+                stockpile_pct = (max(0.0, min(100.0, t2_bpc_owned / backup_stock_bpcs * 100))
+                                 if backup_stock_bpcs > 0 else 0.0)
                 invention_list.append(InventionNeedRow(
                     type_id=type_id, type_name=type_name,
                     t1_blueprint_type_id=chosen.t1_blueprint_type_id, t1_blueprint_name=chosen.t1_blueprint_name,

@@ -99,14 +99,17 @@ class InventionNeedRow:
     # count is what actually represents remaining manufacturing capacity,
     # not how many separate copies happen to exist).
     t2_bpc_owned: int = 0
-    # t2_bpc_owned / bpcs_needed as a 0-100% (capped) - how much of the BPC
-    # *runs* currently needed is already covered by owned T2 BPC runs, not
-    # the manufactured end product's own stock level (confirmed real bug,
-    # 2026-08-30: this used to be the end product's current_stock/
-    # backup_stock, which answers "is the shelf full of finished items", a
-    # different question from "do I still need to invent more BPCs" - the
-    # latter is what this column is for). 100% when bpcs_needed is 0 (no
-    # invention work outstanding right now, regardless of t2_bpc_owned).
+    # t2_bpc_owned as a 0-100% (capped) of a *fixed* target derived from this
+    # stock target's own backup_stock (converted to BPC runs via product_qty/
+    # output_runs) - not the manufactured end product's own current_stock/
+    # backup_stock (that answers "is the shelf full of finished items", a
+    # different question from "how well-stocked am I on invented BPC runs"),
+    # and not bpcs_needed either (that's the current *shortfall*, which
+    # collapses to 0 the moment the end product happens to be fully stocked -
+    # forcing a meaningless 100% regardless of actual BPC holdings, and
+    # otherwise is usually a tiny integer, so this landed on nothing but
+    # 0%/100% in practice - confirmed real bug, 2026-08-30, both against a
+    # fixed target so this varies smoothly as t2_bpc_owned changes).
     stockpile_pct: float = 0.0
 
 
