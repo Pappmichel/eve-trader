@@ -42,10 +42,8 @@ export default function ReprocessingQuote() {
   return (
     <Stack>
       <HintCard>
-        Paste from an EVE Inventory window's list view (Ctrl+A, Ctrl+C) - primarily for ratting loot (T1/meta
-        modules, ammo, drones). Uses the scrapmetal reprocessing path (fixed 50% + Scrapmetal Processing skill
-        only - structure/rig/implant/general Reprocessing skills don't apply here, see Settings). Nothing is
-        auto-decided - both numbers are always shown, you act on the recommendation manually in-game.
+        Paste from an EVE Inventory window's list view (Ctrl+A, Ctrl+C) - for ratting loot (T1/meta modules,
+        ammo, drones). Uses the scrapmetal reprocessing path (fixed 50% + Scrapmetal Processing skill only).
       </HintCard>
 
       <Textarea

@@ -23,15 +23,9 @@ export default function UnlistedStock() {
   return (
     <Stack>
       <HintCard>
-        Live-queries ESI for the assets and open sell orders of every registered producer character <b>and</b> their
-        corporations (personal orders <b>and</b> corp orders - corp-hangar stock is often listed via a corp order,
-        not a personal one) at the configured location (Settings -&gt; structure/location ID), and shows stock
-        targets that sit there but currently have <b>no</b> sell order at all - always fresh, never from the last
-        ESI sync snapshot. Corp orders need the Accountant or Trader role (separate from the Director role assets
-        need) on at least one registered character; characters added before this existed need to be re-added once.
-        Only considers targets that actually have a <b>Home Market Target</b> or <b>Jita Market Target</b> set - a
-        target with only a Backup Target is a personal/component buffer you never intended to list, so it's
-        excluded here (see the Stock Targets tab).
+        Live-checks stock targets at the configured location (Settings) that have no sell order yet - personal
+        <b>and</b> corp orders/hangars. Corp orders need the Accountant or Trader role on at least one registered
+        character. Only targets with a <b>Home</b> or <b>Jita Market Target</b> are considered.
       </HintCard>
 
       <Button w={280} onClick={() => check.mutate()} loading={check.isPending}>

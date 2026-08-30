@@ -30,12 +30,7 @@ export default function UndercutCheck() {
 
   return (
     <Stack>
-      <HintCard>
-        Checks every open order a registered trader character has at Jita's trade hub against the live order
-        book, both sides - a sell order beaten by a cheaper competitor, and a buy order outbid by a higher
-        competing bid. ESI has no "you got undercut" notification, so this can only be found by comparing
-        prices live.
-      </HintCard>
+      <HintCard>Checks your open orders at Jita against the live order book - sell orders undercut and buy orders outbid.</HintCard>
 
       <Button w={280} onClick={() => check.mutate()} loading={check.isPending}>
         Check Undercut Orders

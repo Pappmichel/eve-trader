@@ -73,8 +73,8 @@ function ManualBlueprintCopyCostsSection() {
       <Title order={5} mb="xs">Blueprint Copies That Must Be Bought</Title>
       <Text size="sm" c="dimmed" mb="sm">
         Some items can only be built from a blueprint <b>copy</b> bought outright (never owned as a BPO, not
-        inventable) - register its purchase cost and included run count here so the amortized cost per run gets
-        folded into that item's modeled build cost everywhere (Bauliste, Build Candidates, Margin).
+        inventable) - register its purchase cost and included run count so the amortized cost per run feeds
+        into that item's build cost everywhere (Build List, Build Candidates, Margin).
       </Text>
 
       <Card withBorder mb="sm">

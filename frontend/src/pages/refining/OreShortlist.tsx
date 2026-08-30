@@ -96,10 +96,7 @@ export default function OreShortlist() {
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
   if (!data || data.length === 0) {
     return (
-      <HintCard>
-        No run yet. Click <b>Add Candidates</b> then <b>Refresh Ore Shortlist</b> on the left to import the
-        compressed ore/ice universe and compute profit.
-      </HintCard>
+      <HintCard>No run yet. Click <b>Add Candidates</b> then <b>Refresh Ore Shortlist</b> on the left.</HintCard>
     )
   }
 

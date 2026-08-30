@@ -28,7 +28,7 @@ export default function TradingSettings() {
 
   return (
     <Stack maw={700}>
-      <HintCard>Changes take effect immediately and are saved to <b>config.yaml</b> (survives a restart).</HintCard>
+      <HintCard>Changes take effect immediately and are saved to your account.</HintCard>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Economy</Title>
       <Text size="xs" c="dimmed">
@@ -50,9 +50,7 @@ export default function TradingSettings() {
       </SimpleGrid>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Candidate Search</Title>
-      <Text size="xs" c="dimmed">
-        Categories are no longer pre-filtered - only margin/hit rate/volume decide whether an item gets suggested.
-      </Text>
+      <Text size="xs" c="dimmed">Only margin/hit rate/volume decide whether an item gets suggested - no category pre-filter.</Text>
       <SimpleGrid cols={3}>
         <NumberInput label="Min. hit rate (0-1)" value={form.min_hit_rate} min={0} max={1} step={0.05}
           onChange={(v) => set('min_hit_rate', Number(v))} />

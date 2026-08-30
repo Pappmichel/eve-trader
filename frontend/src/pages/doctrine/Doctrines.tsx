@@ -75,8 +75,7 @@ export default function Doctrines() {
       </Group>
 
       <HintCard>
-        Ampels: green = target met, yellow = partially covered (or only tolerable matches), red = no viable
-        contracts/stock, gray = no data yet (never synced, or no asset-scanning character has synced yet).
+        Status colors: green = target met, yellow = partially covered, red = no viable contracts/stock, gray = no data yet.
       </HintCard>
 
       {!isLoading && !isError && (data?.length ?? 0) === 0 && <Text c="dimmed">No doctrines yet - create one to get started.</Text>}

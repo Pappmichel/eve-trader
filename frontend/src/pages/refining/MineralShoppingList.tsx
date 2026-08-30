@@ -107,11 +107,8 @@ export default function MineralShoppingList() {
   return (
     <Stack>
       <HintCard>
-        Enter how many of each mineral you need; the optimizer solves a real linear program across every
-        compressed ore/ice type at once for the cheapest mix of buy-and-refine vs. buying the mineral outright.
-        Every price is a Jita buy landed at C-J (Jita sell percentile + broker fee + haul cost), refining yield
-        comes from your Settings tab (the structure's reprocessing tax is taken out of the refined materials).
-        Ore quantities are rounded UP to whole reprocessing portions, so the plan always covers the requirement.
+        Enter how many of each mineral you need. The optimizer finds the cheapest mix of buy-and-refine vs.
+        buying outright, using landed Jita prices and your Settings' refining yield.
       </HintCard>
 
       <Group align="flex-end">

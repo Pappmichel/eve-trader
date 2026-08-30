@@ -79,7 +79,7 @@ export default function ProductionSettings() {
 
   return (
     <Stack maw={800}>
-      <HintCard>Changes take effect immediately and are saved to <b>config.yaml</b> (survives a restart).</HintCard>
+      <HintCard>Changes take effect immediately and are saved to your account.</HintCard>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Economy</Title>
       <SimpleGrid cols={2}>

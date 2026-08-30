@@ -25,12 +25,7 @@ export default function UndercutCheck() {
 
   return (
     <Stack>
-      <HintCard>
-        Checks every open sell order the seller character has at the structure against the live order book, and
-        flags any order that's currently beaten by a cheaper competing order - ESI has no "you got undercut"
-        notification, so this can only be found by comparing prices live. Needs esi-markets.structure_markets.v1 on
-        the seller token.
-      </HintCard>
+      <HintCard>Checks your open sell orders at the structure against the live order book and flags any beaten by a cheaper competitor.</HintCard>
 
       <Button w={280} onClick={() => check.mutate()} loading={check.isPending}>
         Check Undercut Orders

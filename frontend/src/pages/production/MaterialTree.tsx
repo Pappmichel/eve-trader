@@ -80,10 +80,8 @@ export default function MaterialTree() {
   return (
     <Stack>
       <HintCard>
-        Shows the full recursive material recipe for one item - Invention → Components → ... → base minerals -
-        exactly as the blueprint defines it, regardless of whether building it is currently economical right now
-        (that's what the Build List/Buy List already decide - this is for exploring a recipe, not planning a
-        shopping list). Click a row with an arrow to expand/collapse its own materials.
+        Shows the full recursive material recipe for one item, down to base minerals, exactly as the blueprint
+        defines it. Click a row with an arrow to expand/collapse its materials.
       </HintCard>
 
       <Group align="flex-end">

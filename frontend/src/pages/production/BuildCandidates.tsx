@@ -62,31 +62,13 @@ export default function BuildCandidates() {
   return (
     <Stack>
       <HintCard>
-        Scans every published, market-listed item with a real Manufacturing/Reaction/Invention recipe that
-        <b> isn't</b> already one of your configured stock targets, and flags the ones where building clearly beats
-        buying right now (same buy-vs-build margin gate the Bauliste itself uses) - Production's equivalent of the
-        Trading tool's candidate discovery, for things you haven't thought to track yet. Prices at the C-J (home)
-        sell quote - this tool is for building for the local C-J market, not freighting finished goods to Jita to
-        sell. Needs the SDE cache populated (Refresh SDE in the Admin tool) and can take a while - it walks every
-        market-listed item, not just your existing stock targets.
+        Scans every buildable, market-listed item not already a stock target and flags where building clearly
+        beats buying, priced at the C-J sell quote. Needs the SDE cache populated (Refresh SDE in the Admin tool)
+        and can take a while.
         <br /><br />
-        Sorted by <b>Potential Daily Profit (theoretical)</b>, not Margin - a huge margin on an item nobody actually
-        buys locally is worthless. Daily Movement is the item's average number of <b>units</b> traded per day in the
-        C-J region (ESI's own official daily market history); Potential Daily Profit multiplies that by the
-        estimated profit per unit - same "(theoretical)" framing as the Trading tool's own Profit/Day column: it's
-        the value of the item's <b>entire</b> day of C-J turnover, not a claim that you personally could capture all
-        of it. A rare, expensive item (a capital hull, a faction module) can show a huge number from only a handful
-        of units/day - that's mathematically correct for "what's the whole market worth", just not something to bet
-        on selling single-handedly. An item with no recent C-J trading history shows 0 for both and sorts to the
-        bottom even if its margin looks great - that's an accurate reflection of this tool's own local sales
-        channel, even for an item that happens to trade heavily elsewhere. The hard minimum-margin and
-        minimum-daily-profit gates live in Settings (shared with the Bauliste); the filters below only narrow what's
-        already been fetched, no re-scan needed.
-        <br /><br />
-        Filters out the worst SDE/market data quirks found while building this (a handful of reward ships have a
-        real but vestigial "1 material" blueprint entry; some obscure items have no real order book at all) - but
-        with tens of thousands of items scanned, treat every result as a lead to verify in-game before committing
-        real ISK, not a guarantee.
+        Sorted by <b>Potential Daily Profit</b> (theoretical - the value of the item's entire day of C-J turnover,
+        not what you alone could capture), not Margin. Minimum-margin/profit gates live in Settings; the filters
+        below only narrow what's already fetched.
       </HintCard>
 
       <Group align="flex-end">

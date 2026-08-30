@@ -87,11 +87,9 @@ export default function Margin() {
   return (
     <Stack>
       <HintCard>
-        Home/Jita sell price, build cost, and margin for every ship - a pure information view, not a candidate
-        filter like Build Candidates: every ship with a real Manufacturing/Reaction/Invention recipe appears here
-        regardless of margin or whether it's already a configured stock target. "–" means no real order book on
-        that side right now, not a margin of zero. Jita margin is informational (what selling there would net after
-        the export haul cost) - Production still only sells at C-J, this doesn't change that.
+        Home/Jita sell price, build cost, and margin for every ship - a pure information view, not filtered by
+        margin like Build Candidates. "–" means no real order book, not a margin of zero. Jita margin is
+        informational only; Production still only sells at C-J.
       </HintCard>
 
       <ItemSearch />

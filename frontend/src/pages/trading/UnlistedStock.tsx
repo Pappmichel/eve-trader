@@ -23,10 +23,8 @@ export default function UnlistedStock() {
   return (
     <Stack>
       <HintCard>
-        Shows shortlist items (including deactivated/hidden ones - you can still sell what you already have) that
-        the seller character physically has at the structure, but for which <b>no</b> sell order currently exists
-        at all. Needs esi-assets.read_assets.v1 on the seller token; if the seller was logged in before this
-        feature existed, log in again once.
+        Shows shortlist items (including hidden ones - you can still sell what you already have) that the seller
+        physically has at the structure but for which <b>no</b> sell order currently exists.
       </HintCard>
 
       <Button w={280} onClick={() => check.mutate()} loading={check.isPending}>

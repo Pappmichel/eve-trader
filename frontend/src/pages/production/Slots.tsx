@@ -47,10 +47,7 @@ export default function Slots() {
   if (isLoading) return <Text c="dimmed">Loading…</Text>
   if (!data || data.length === 0) {
     return (
-      <HintCard>
-        No character slot data - or not synced yet ('Sync ESI Data' in the sidebar). Characters that were added
-        before the skills permission existed need to be re-added once.
-      </HintCard>
+      <HintCard>No character slot data yet - run <b>Sync ESI Data</b> in the sidebar.</HintCard>
     )
   }
 

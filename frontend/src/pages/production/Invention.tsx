@@ -130,14 +130,9 @@ export default function Invention() {
           <>
             <DataTable data={inventionNeeds} columns={needsColumns} maxHeight={360} dataUpdatedAt={planUpdatedAt} />
             <Text size="xs" c="dimmed" mt="xs">
-              Covers <b>all</b> Tech II items set up as stock targets, not just the current build list - including
-              ones that are currently fully stocked (0 runs) or where the market is currently cheaper than building
-              it yourself. Runs needed = missing quantity to the stock target ÷ quantity per manufacturing run,
-              rounded up. BPCs needed = runs needed ÷ runs/BPC, rounded up. Recommended invention runs = BPCs needed
-              ÷ success chance, rounded up - expected number of invention jobs to get enough BPCs. Decryptor as in
-              the Stock Targets tab (manual override possible). T2 BPCs Owned = copies of this row's own invented
-              blueprint currently owned anywhere, not just at the invention station. Stockpile % = current stock ÷
-              backup target, capped at 100%.
+              Covers <b>all</b> Tech II stock targets, including fully-stocked ones. Runs needed = missing
+              quantity ÷ quantity per run, rounded up. Recommended invention runs = BPCs needed ÷ success chance,
+              rounded up. T2 BPCs Owned = copies owned anywhere, not just at the invention station.
             </Text>
           </>
         )}

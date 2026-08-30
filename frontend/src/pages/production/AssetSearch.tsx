@@ -46,10 +46,8 @@ export default function AssetSearch() {
   return (
     <Stack>
       <HintCard>
-        Shows every station/structure a specific item currently sits at, how much, and who it belongs to (which
-        character, or "&lt;corp&gt; (corp)" for corp hangar stock) - reflects the last "Sync ESI Data" run, not a
-        live lookup. Quantities sitting inside a container, ship, or corp Office are resolved up to the station/
-        structure they're actually at.
+        Shows every station/structure a specific item sits at, how much, and who owns it - reflects the last
+        <b> Sync ESI Data</b> run, not a live lookup.
       </HintCard>
 
       <Group align="flex-end">

@@ -87,8 +87,8 @@ export default function Portfolio() {
               </Stack>
               {!scheduler.enabled && (
                 <Text size="xs" c="dimmed" mt="sm">
-                  Off by default - set scheduler_enabled: true in config.yaml to run these automatically in the
-                  background instead of clicking "Run Complete Pipeline" / "Sync ESI" / "Backup Now" by hand.
+                  Off by default - enable it in Settings to run these automatically instead of clicking
+                  "Run Complete Pipeline" / "Sync ESI" / "Backup Now" by hand.
                 </Text>
               )}
             </Card>
@@ -107,9 +107,8 @@ export default function Portfolio() {
               </Button>
             </Group>
             <Text size="xs" c="dimmed" mb="sm">
-              Zips data/eve_trader.db, config.yaml, and data/tokens.json - this app's entire persistent state
-              (no git repo, no other copy exists). Kept under data/backups/; the oldest are pruned automatically
-              once there are more than 14.
+              Backs up the full database plus config.yaml. Kept under data/backups/; the oldest are pruned
+              automatically once there are more than 14.
             </Text>
             {backups && backups.length === 0 && (
               <Text size="sm" c="dimmed">No backups yet.</Text>
@@ -129,11 +128,7 @@ export default function Portfolio() {
             )}
           </Card>
 
-          <HintCard>
-            Combined Value, the scoreboard cards, and the two status cards below are read-only - they combine
-            numbers already shown in the Trading and Production sections. "Backup Now" is the one action here that
-            actually does something: it writes a new file under data/backups/, nothing else.
-          </HintCard>
+          <HintCard>Everything above is read-only except "Backup Now", which writes a new file under data/backups/.</HintCard>
         </Stack>
       )}
     </Container>

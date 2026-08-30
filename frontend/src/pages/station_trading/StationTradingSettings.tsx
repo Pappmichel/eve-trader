@@ -25,10 +25,8 @@ export default function StationTradingSettings() {
   return (
     <Stack maw={800}>
       <HintCard>
-        Changes take effect immediately. Broker fee/sales tax below are starting defaults for the base-game NPC
-        rate (no standings/skill reduction applied) - check your own in-game Market window and adjust. The
-        Skills panel shows your live-pulled trade skill levels for reference, but doesn't automatically feed
-        into these two fields (see the Add Character consent text for what's read).
+        Changes take effect immediately. Broker fee/sales tax below default to the base NPC rate - check your
+        in-game Market window and adjust for your own standings/skills.
       </HintCard>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Station</Title>

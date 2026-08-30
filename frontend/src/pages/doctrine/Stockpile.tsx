@@ -68,10 +68,7 @@ export default function Stockpile() {
       )}
 
       {!isLoading && data && !data.assets_available && (
-        <HintCard>
-          No asset data available yet - add an asset-scanning character under "Asset-Scanning Characters" in the
-          sidebar and run "Sync Assets" to populate stock levels here.
-        </HintCard>
+        <HintCard>No asset data yet - add an asset-scanning character in the sidebar and run <b>Sync Assets</b>.</HintCard>
       )}
 
       {!isLoading && data?.assets_available && rows.length === 0 && (

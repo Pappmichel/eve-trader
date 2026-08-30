@@ -24,10 +24,7 @@ export default function DoctrineSettings() {
 
   return (
     <Stack maw={700}>
-      <HintCard>
-        Changes take effect immediately. The scheduled sync interval is configured on the Trading Settings page
-        (shared background-scheduler on/off switch) - Doctrine's own sync runs on that same operator-level schedule.
-      </HintCard>
+      <HintCard>Changes take effect immediately. The scheduled sync interval is configured on the Trading Settings page.</HintCard>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Structure &amp; Stockpile</Title>
       <SimpleGrid cols={2}>

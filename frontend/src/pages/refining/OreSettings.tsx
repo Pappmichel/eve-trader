@@ -29,10 +29,7 @@ export default function OreSettings() {
 
   return (
     <Stack maw={800}>
-      <HintCard>
-        Changes take effect immediately. Structure/rig/security/implant/skills are manually entered here, not
-        pulled from ESI - see the Ore Shortlist's yield% formula.
-      </HintCard>
+      <HintCard>Changes take effect immediately. Structure/rig/security/implant/skills are entered manually here, not pulled from ESI.</HintCard>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Ore/Ice Reprocessing Setup</Title>
       <SimpleGrid cols={2}>

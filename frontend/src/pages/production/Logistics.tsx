@@ -170,11 +170,9 @@ export default function Logistics() {
       <Card withBorder>
         <Title order={4} mb="xs">Structure per Category</Title>
         <Text size="xs" c="dimmed" mb="sm">
-          Structure/location ID per job category (the system prefix in the structure name is irrelevant since it can
-          change - only the ID counts). Leave empty for categories you don't want to track. The name is resolved
-          automatically after saving - this needs at least one producer character with access to the structure
-          (docking rights/having been there before) <b>and</b> the new ESI scope; characters added before this
-          update need to be removed and re-added once for this to work.
+          Structure/location ID per job category (only the ID matters, not the system prefix in the name, which can
+          change). Leave empty for categories you don't want to track. The name resolves automatically after saving,
+          using a producer character with docking rights/access to the structure.
         </Text>
         <SimpleGrid cols={3}>
           {(categories ?? []).map((cat) => {
