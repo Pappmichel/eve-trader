@@ -87,11 +87,17 @@ class InventionNeedRow:
     runs_needed: int         # total manufacturing runs the Bauliste requires
     bpcs_needed: int         # ceil(runs_needed / output_runs)
     recommended_invention_runs: int  # ceil(bpcs_needed / probability) - expected attempts
-    # GitHub issue #114: how many copies of the *invented* T2 blueprint
-    # (the invention recipe's own product_type_id, not `type_id` above -
-    # that's the manufactured item) are already owned, anywhere (not just
-    # the invention station - this is "do I even still need to invent more
-    # at all", independent of where a copy happens to be sitting).
+    # GitHub issue #114: total remaining *runs* across every owned copy of
+    # the *invented* T2 blueprint (the invention recipe's own product_
+    # type_id, not `type_id` above - that's the manufactured item), owned
+    # anywhere (not just the invention station - this is "do I even still
+    # need to invent more at all", independent of where a copy happens to be
+    # sitting). Despite the field's own name, this is a run count, not a
+    # copy count (storage.available_blueprint_copies - confirmed real bug,
+    # 2026-08-30: one manufacturing run consumes one run from a T2 BPC, same
+    # as invention consuming one run from a T1 BPC, so a copy's own run
+    # count is what actually represents remaining manufacturing capacity,
+    # not how many separate copies happen to exist).
     t2_bpc_owned: int = 0
     # This stock target's own current_stock/backup_stock, as a 0-100%
     # (capped) - same idea as BuyListEntry.on_hand_pct but computed at the

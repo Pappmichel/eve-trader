@@ -2399,24 +2399,26 @@ def distribution_recommendations(build_list: list[BuildJobEntry],
 
 def invention_logistics(invention_list: list[InventionNeedRow],
                          cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[LogisticsRow]:
-    """Datacores/decryptors/T1 BPC copies needed vs. what's sitting at the
+    """Datacores/decryptors/T1 BPC runs needed vs. what's sitting at the
     configured invention station (cfg.invention_location_id - GitHub issue
     #9), reusing LogisticsRow's existing "needed vs available at one
     location" shape. Needs recommended_invention_runs (not bpcs_needed)
-    copies of the T1 blueprint itself (GitHub issue #14, previously
-    reversed): a T1 blueprint copy is entirely consumed by ONE invention
-    attempt regardless of outcome (success or fail) *and* regardless of how
-    many manufacturing runs that specific copy itself holds - a max-run copy
-    is worth exactly the same as a 1-run copy here, which is exactly why
-    players don't always keep max-run copies on hand for this (the report
-    that caught this: "not always are max run copies used"). bpcs_needed
-    (ceil(runs_needed / output_runs), the number of *successful* inventions
-    needed) undercounts real T1-copy consumption, since every failed attempt
-    burns a copy too without producing anything - recommended_invention_runs
-    (ceil(bpcs_needed / probability), the full attempt count) is the number
-    already shown on the Invention tab as "recommended attempts", so this
-    now matches that number exactly (plus whatever overbuild the user has
-    already baked into it upstream).
+    *runs* of the T1 blueprint itself (GitHub issue #14, previously
+    reversed): one invention attempt consumes exactly one *run* from a T1
+    BPC, whether that attempt succeeds or fails (confirmed against
+    wiki.eveuniversity.org/Invention: "this BPC will be returned to you
+    with one fewer run remaining on it. If it only has one run remaining,
+    it will be consumed.") - a max-run copy is worth many attempts, a 1-run
+    copy is worth exactly one, which is exactly why players don't always
+    keep max-run copies on hand for this (the report that caught the
+    original GitHub issue #14 confusion: "not always are max run copies
+    used"). bpcs_needed (ceil(runs_needed / output_runs), the number of
+    *successful* inventions needed) undercounts real T1-run consumption,
+    since every failed attempt burns a run too without producing anything -
+    recommended_invention_runs (ceil(bpcs_needed / probability), the full
+    attempt count) is the number already shown on the Invention tab as
+    "recommended attempts", so this now matches that number exactly (plus
+    whatever overbuild the user has already baked into it upstream).
 
     Availability for the T1 blueprint itself goes through
     storage.available_blueprint_copies, not the generic esi_stock_at_location
@@ -2425,7 +2427,11 @@ def invention_logistics(invention_list: list[InventionNeedRow],
     ESI/asset field they come from), so a plain esi_stock_at_location call
     would count an owned BPO as if it were a usable invention input too.
     available_blueprint_copies filters to actual copies only (character_
-    blueprints/corp_blueprints' own quantity == -2 sentinel).
+    blueprints/corp_blueprints' own quantity == -2 sentinel) and - despite
+    its own name - sums their remaining *runs*, not the number of copies
+    (confirmed real bug, 2026-08-30: it used to COUNT(*) copies instead,
+    reporting a single 300-run T1 copy as "1 available" instead of "300" -
+    see that function's own docstring for the full fix).
 
     Decryptor/datacore demand was already right - each attempt consumes one
     of each regardless of outcome, so it already scaled with

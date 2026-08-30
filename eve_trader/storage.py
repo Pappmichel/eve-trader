@@ -1747,18 +1747,34 @@ def get_owned_bpo_best_me_te(blueprint_type_id: int) -> Optional[tuple[int, int]
 
 def available_blueprint_copies(type_id: int, location_id: Optional[int],
                                 tables: tuple[str, str] = ("character_blueprints", "corp_blueprints")) -> float:
-    """Counts owned blueprint *copies* (quantity == -2 in ESI's blueprint
-    model - see get_owned_bpo_best_me_te's own runs == -1 check for the BPO
-    side of this same sentinel) of `type_id` sitting at `location_id` (None =
-    all locations, mirroring esi_stock_at_location's own None branch - added
-    for GitHub issue #114's "how many of this T2 BPC do I own anywhere"
-    column, which has no single station to filter to), filtered on
-    resolved_location_id (see replace_blueprints) the same way
+    """Sums the remaining *runs* across owned blueprint copies (quantity ==
+    -2 in ESI's blueprint model - see get_owned_bpo_best_me_te's own runs ==
+    -1 check for the BPO side of this same sentinel) of `type_id` sitting at
+    `location_id` (None = all locations, mirroring esi_stock_at_location's
+    own None branch - added for GitHub issue #114's "how many of this T2 BPC
+    do I own anywhere" column, which has no single station to filter to),
+    filtered on resolved_location_id (see replace_blueprints) the same way
     esi_stock_at_location filters on it. Also excludes
     NON_STOCK_LOCATION_FLAGS (GitHub issue #32) the same way
     esi_stock_at_location does - a BPC sitting in Asset Safety requires its
     own retrieval trip/fee, so it isn't actually usable for invention right
     now even though it shares this location's resolved_location_id.
+
+    Confirmed real bug (reported by a user, 2026-08-30; confirmed against
+    wiki.eveuniversity.org/Invention, not just re-read from this function's
+    own prior comment): this used to COUNT(*) - the number of separate BPC
+    rows - not sum their runs. EVE's real mechanic is the opposite of what
+    that implied: one invention attempt consumes exactly one *run* from a
+    T1 BPC, not the whole copy ("Whether the invention job is successful or
+    not, this BPC will be returned to you with one fewer run remaining on
+    it. If it only has one run remaining, it will be consumed." - EVE
+    University). A single 300-run copy supports 300 separate attempts, not
+    one - COUNT(*) reported that copy as "1 available" instead of "300",
+    understating real invention capacity by up to two orders of magnitude
+    for anyone using multi-run T1 copies. COALESCE guards a table with zero
+    matching rows, which SUM alone would return NULL for (breaking the `+=`
+    accumulation below) rather than the 0 both COUNT(*) and callers here
+    always got before.
 
     Used by production/engine.py's invention_logistics (GitHub issue #14)
     instead of the generic esi_stock_at_location: a T1 blueprint's BPO and
@@ -1772,15 +1788,15 @@ def available_blueprint_copies(type_id: int, location_id: Optional[int],
         for table in tables:
             if location_id is None:
                 row = conn.execute(
-                    f"SELECT COUNT(*) FROM {table} WHERE type_id = ? AND quantity = -2 "
+                    f"SELECT COALESCE(SUM(runs), 0) FROM {table} WHERE type_id = ? AND quantity = -2 "
                     f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))",
                     (type_id, *NON_STOCK_LOCATION_FLAGS),
                 ).fetchone()
                 total += row[0]
                 continue
             row = conn.execute(
-                f"SELECT COUNT(*) FROM {table} WHERE type_id = ? AND resolved_location_id = ? AND quantity = -2 "
-                f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))",
+                f"SELECT COALESCE(SUM(runs), 0) FROM {table} WHERE type_id = ? AND resolved_location_id = ? "
+                f"AND quantity = -2 AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))",
                 (type_id, location_id, *NON_STOCK_LOCATION_FLAGS),
             ).fetchone()
             total += row[0]

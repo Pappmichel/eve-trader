@@ -77,19 +77,34 @@ def test_replace_blueprints_resolves_location_through_a_container(tenant):
     assert row[0] == LOCATION_ID
 
 
+def test_available_blueprint_copies_sums_runs_not_copy_count(tenant):
+    """Confirmed real bug (reported by a user, 2026-08-30): one invention
+    attempt consumes exactly one *run* from a T1 BPC, not the whole copy
+    (confirmed against wiki.eveuniversity.org/Invention - "this BPC will be
+    returned to you with one fewer run remaining on it. If it only has one
+    run remaining, it will be consumed."). A single 300-run copy supports
+    300 separate attempts, so it must report 300 available - the opposite of
+    what COUNT(*) (the pre-fix behavior) would give."""
+    storage.replace_blueprints("character_blueprints", [
+        _bp_row(1, TYPE_ID, me=0, te=0, runs=300, location_id=LOCATION_ID, quantity=-2),
+    ])
+
+    assert storage.available_blueprint_copies(TYPE_ID, LOCATION_ID) == 300
+
+
 def test_available_blueprint_copies_excludes_bpos(tenant):
     # GitHub issue #14: a T1 blueprint's BPO and BPC share the same type_id -
-    # available_blueprint_copies must only count actual copies (quantity ==
-    # -2), never an owned BPO (quantity == -1) of the same type_id, or the
-    # Invention Logistics tab would report a BPO as if it were a usable
-    # invention input.
+    # available_blueprint_copies must only sum actual copies' runs (quantity
+    # == -2), never an owned BPO (quantity == -1, runs == -1 sentinel) of the
+    # same type_id, or the Invention Logistics tab would report a BPO's own
+    # -1 runs sentinel as if it were negative usable invention capacity.
     storage.replace_blueprints("character_blueprints", [
         _bp_row(1, TYPE_ID, me=10, te=20, runs=-1, location_id=LOCATION_ID),  # BPO - must not count
         _bp_row(2, TYPE_ID, me=0, te=0, runs=3, location_id=LOCATION_ID, quantity=-2),  # BPC
         _bp_row(3, TYPE_ID, me=0, te=0, runs=1, location_id=LOCATION_ID, quantity=-2),  # BPC
     ])
 
-    assert storage.available_blueprint_copies(TYPE_ID, LOCATION_ID) == 2
+    assert storage.available_blueprint_copies(TYPE_ID, LOCATION_ID) == 4  # 3 + 1 runs, not 2 copies
 
 
 def test_available_blueprint_copies_excludes_asset_safety(tenant):
@@ -99,58 +114,58 @@ def test_available_blueprint_copies_excludes_asset_safety(tenant):
     # though it shares resolved_location_id with real hangar stock. Must be
     # excluded the same way esi_stock_at_location already excludes it.
     storage.replace_blueprints("character_blueprints", [
-        _bp_row(1, TYPE_ID, me=0, te=0, runs=1, location_id=LOCATION_ID, quantity=-2, location_flag="AssetSafety"),
-        _bp_row(2, TYPE_ID, me=0, te=0, runs=1, location_id=LOCATION_ID, quantity=-2, location_flag="Hangar"),
+        _bp_row(1, TYPE_ID, me=0, te=0, runs=9, location_id=LOCATION_ID, quantity=-2, location_flag="AssetSafety"),
+        _bp_row(2, TYPE_ID, me=0, te=0, runs=5, location_id=LOCATION_ID, quantity=-2, location_flag="Hangar"),
     ])
 
-    assert storage.available_blueprint_copies(TYPE_ID, LOCATION_ID) == 1
+    assert storage.available_blueprint_copies(TYPE_ID, LOCATION_ID) == 5  # AssetSafety's 9 runs excluded
 
 
 def test_available_blueprint_copies_sums_character_and_corp_tables(tenant):
     storage.replace_blueprints("character_blueprints", [
-        _bp_row(1, TYPE_ID, me=0, te=0, runs=1, location_id=LOCATION_ID, quantity=-2),
+        _bp_row(1, TYPE_ID, me=0, te=0, runs=2, location_id=LOCATION_ID, quantity=-2),
     ])
     storage.replace_blueprints("corp_blueprints", [
-        _bp_row(2, TYPE_ID, me=0, te=0, runs=1, location_id=LOCATION_ID, quantity=-2),
+        _bp_row(2, TYPE_ID, me=0, te=0, runs=4, location_id=LOCATION_ID, quantity=-2),
     ])
 
-    assert storage.available_blueprint_copies(TYPE_ID, LOCATION_ID) == 2
+    assert storage.available_blueprint_copies(TYPE_ID, LOCATION_ID) == 6
 
 
 def test_available_blueprint_copies_filters_to_location(tenant):
     other_location = 1000000000002
     storage.replace_blueprints("character_blueprints", [
-        _bp_row(1, TYPE_ID, me=0, te=0, runs=1, location_id=LOCATION_ID, quantity=-2),
-        _bp_row(2, TYPE_ID, me=0, te=0, runs=1, location_id=other_location, quantity=-2),
+        _bp_row(1, TYPE_ID, me=0, te=0, runs=7, location_id=LOCATION_ID, quantity=-2),
+        _bp_row(2, TYPE_ID, me=0, te=0, runs=99, location_id=other_location, quantity=-2),
     ])
 
-    assert storage.available_blueprint_copies(TYPE_ID, LOCATION_ID) == 1
+    assert storage.available_blueprint_copies(TYPE_ID, LOCATION_ID) == 7
 
 
 def test_available_blueprint_copies_none_location_sums_across_all_locations(tenant):
-    # GitHub issue #114: the "how many T2 BPCs do I own, anywhere" column
-    # has no single station to filter to - None mirrors esi_stock_at_
+    # GitHub issue #114: the "how many T2 BPC runs do I own, anywhere"
+    # column has no single station to filter to - None mirrors esi_stock_at_
     # location's own None-means-everywhere convention.
     other_location = 1000000000002
     storage.replace_blueprints("character_blueprints", [
         _bp_row(1, TYPE_ID, me=0, te=0, runs=1, location_id=LOCATION_ID, quantity=-2),
-        _bp_row(2, TYPE_ID, me=0, te=0, runs=1, location_id=other_location, quantity=-2),
+        _bp_row(2, TYPE_ID, me=0, te=0, runs=2, location_id=other_location, quantity=-2),
     ])
     storage.replace_blueprints("corp_blueprints", [
-        _bp_row(3, TYPE_ID, me=0, te=0, runs=1, location_id=other_location, quantity=-2),
+        _bp_row(3, TYPE_ID, me=0, te=0, runs=3, location_id=other_location, quantity=-2),
     ])
 
-    assert storage.available_blueprint_copies(TYPE_ID, None) == 3
+    assert storage.available_blueprint_copies(TYPE_ID, None) == 6
 
 
 def test_available_blueprint_copies_none_location_still_excludes_bpos_and_asset_safety(tenant):
     storage.replace_blueprints("character_blueprints", [
         _bp_row(1, TYPE_ID, me=10, te=20, runs=-1, location_id=LOCATION_ID),  # BPO - must not count
-        _bp_row(2, TYPE_ID, me=0, te=0, runs=1, location_id=LOCATION_ID, quantity=-2, location_flag="AssetSafety"),
-        _bp_row(3, TYPE_ID, me=0, te=0, runs=1, location_id=LOCATION_ID, quantity=-2, location_flag="Hangar"),
+        _bp_row(2, TYPE_ID, me=0, te=0, runs=9, location_id=LOCATION_ID, quantity=-2, location_flag="AssetSafety"),
+        _bp_row(3, TYPE_ID, me=0, te=0, runs=4, location_id=LOCATION_ID, quantity=-2, location_flag="Hangar"),
     ])
 
-    assert storage.available_blueprint_copies(TYPE_ID, None) == 1
+    assert storage.available_blueprint_copies(TYPE_ID, None) == 4
 
 
 def test_has_bpo_at_location_true_when_a_bpo_sits_there(tenant):
