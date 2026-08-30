@@ -1952,6 +1952,38 @@ def test_plan_production_build_list_includes_margin_home(monkeypatch, tenant):
 
 
 @pg_helpers.postgres_required()
+def test_plan_production_build_list_handles_tech_ii_item_via_t2_memo(monkeypatch, tenant):
+    """Regression test for a real production outage (2026-08-30, commit
+    846eef4): _tech_ii_mods' memo cache was widened from a 3-tuple to a
+    4-tuple (business-logic audit's Tech III relic fix, commit d6af047), but
+    two sites read t2_memo[...] directly - bypassing the _tech_ii_mods(...)
+    call itself, so grepping for that call site never caught them - and
+    still unpacked it as a 3-tuple, raising "ValueError: too many values to
+    unpack (expected 3)" in production. Every existing plan_production test
+    before this one mocked classify_activity to always return "Tech I",
+    which never exercises the `product_activity == "Tech II" and
+    product_type_id in t2_memo` branch at all - confirmed the actual gap
+    that let this ship. _tech_ii_mods is deliberately NOT mocked here (only
+    classify_activity is) so it runs for real and genuinely populates
+    t2_memo via its own fallback path (no invention recipe exists for this
+    fake type_id), matching exactly how the live crash happened."""
+    stock_targets = [(10, "T2 Widget", 1, 0, 0)]
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_plan_context(stock_targets))
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech II", (110, 1, 1.0)))
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [])
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_buy_or_build_decision", lambda *a, **k: "Build")
+    monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: 1.0)
+    monkeypatch.setattr(engine, "margin_home", lambda type_id, *a, **k: 0.9 if type_id == 10 else None)
+
+    cfg = ProductionConfig(min_margin=0.0)
+    result = engine.plan_production(cfg)  # must not raise ValueError
+
+    assert {row.type_id for row in result["build_list"]} == {10}
+
+
+@pg_helpers.postgres_required()
 def test_plan_production_manual_override_bypasses_the_margin_gate(monkeypatch, tenant):
     # A manual Build/Buy override (storage.manual_build_buy) is an explicit
     # user decision - the margin gate must not second-guess it.
