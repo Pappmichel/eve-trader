@@ -2037,6 +2037,50 @@ def test_plan_production_invention_list_nets_off_owned_bpc_runs(monkeypatch, ten
 
 
 @pg_helpers.postgres_required()
+def test_plan_production_invention_stockpile_pct_counts_market_targets_too(monkeypatch, tenant):
+    """Real bug reported live, 2026-08-31: stockpile_pct's target was
+    computed from backup_stock alone, while runs_needed/bpcs_needed on the
+    very same row are computed from the full target (backup_stock plus
+    home/Jita market-listing targets, via _total_missing). A stock target
+    with backup_stock=0 but a real Jita market target forced the
+    stockpile_pct target to 0, which forced stockpile_pct itself to a
+    hardcoded 0% no matter how many BPC runs were actually owned - even
+    while bpcs_needed on the same row correctly showed 0 (fully covered)."""
+    stock_targets = [(10, "MarketOnlyStockTarget", 0, 0, 10)]
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_plan_context(stock_targets))
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech II", (100 + type_id, 1, 1.0)))
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [])
+    monkeypatch.setattr(storage, "sell_order_qty_in_region", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_buy_or_build_decision", lambda *a, **k: "Build")
+    monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: 1.0)
+    monkeypatch.setattr(engine, "margin_home", lambda *a, **k: 0.9)
+
+    def fake_chosen(blueprint_id):
+        return InventionResult(
+            t1_blueprint_type_id=1000 + blueprint_id, t1_blueprint_name="Fake T1 BPO",
+            product_type_id=blueprint_id, product_name="Fake T2 Product", decryptor="None",
+            probability=1.0, output_runs=5.0, datacore_cost=0.0, decryptor_cost=0.0, relic_cost=0.0,
+            total_attempt_cost=0.0, expected_cost_per_success=0.0, expected_cost_per_run=0.0,
+            me=10, te=20, material_savings_per_run=0.0, net_cost_per_run=0.0,
+        )
+    monkeypatch.setattr(engine, "_tech_ii_mods",
+                         lambda type_id, blueprint_id, *a, **k: (1.0, 1.0, "None", fake_chosen(blueprint_id)))
+    # 110 = MarketOnlyStockTarget's blueprint_id (100 + type_id 10), owns 10
+    # of the 10 runs its Jita market target needs.
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda blueprint_id, loc: 10)
+
+    cfg = ProductionConfig(min_margin=0.0)
+    result = engine.plan_production(cfg)
+
+    row = next(r for r in result["invention_list"] if r.type_id == 10)
+    assert row.t2_bpc_owned == 10
+    assert row.bpcs_needed == 0
+    assert row.stockpile_pct == 100.0
+
+
+@pg_helpers.postgres_required()
 def test_plan_production_manual_override_bypasses_the_margin_gate(monkeypatch, tenant):
     # A manual Build/Buy override (storage.manual_build_buy) is an explicit
     # user decision - the margin gate must not second-guess it.
