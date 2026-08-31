@@ -868,6 +868,7 @@ def replace_sde_data(
     get_station_ids_in_region.cache_clear()
     get_type_slot.cache_clear()
     get_type_materials.cache_clear()
+    get_invention_recipe.cache_clear()
 
 
 def sde_row_counts() -> dict[str, int]:
@@ -2284,10 +2285,18 @@ def find_invention_recipe_candidates_by_product_type_id(product_blueprint_type_i
     return tuple(row[0] for row in rows)
 
 
+@lru_cache(maxsize=None)
 def get_invention_recipe(t1_blueprint_type_id: int) -> Optional[dict]:
     """Returns the full invention job definition for `t1_blueprint_type_id`:
     product_type_id, base_runs (the invented BPC's run count before decryptor
-    bonus), base_probability, job time, and datacore requirements."""
+    bonus), base_probability, job time, and datacore requirements. Cached -
+    see get_sde_type. Confirmed real perf bug (2026-09-01): every sibling
+    SDE-lookup in this file already had this same @lru_cache, but this one
+    didn't - invention.estimate() calls it once per decryptor candidate
+    evaluated for the same t1_blueprint_type_id (~12x per Tech II/III item),
+    so plan_production's Buy/Build-list computation re-ran its 4 queries
+    thousands of times for data that never changes between decryptor
+    choices. Profiled live: ~2100 calls/~8s of a ~39s run."""
     with connect() as conn:
         product = conn.execute(
             "SELECT product_type_id, quantity FROM sde_blueprint_products "
