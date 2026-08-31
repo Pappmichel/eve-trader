@@ -12,6 +12,16 @@ import { useAction } from '../../hooks/useAction'
 import { useItemNameOptions } from '../../hooks/useStaticOptions'
 import { isk, pct, qty } from '../../format'
 
+// Shared by both tables' "Stockpile %" column - deliberately not clamped to
+// 100 (backend sends the real, uncapped ratio: confirmed with the user,
+// 2026-08-31, owning more than the target is a real signal worth showing,
+// not something to flatten to the same 100% a right-on-target row also
+// shows).
+function stockpileBadge(v: number) {
+  const color = v >= 50 ? 'accent' : v > 0 ? 'warn' : 'gray'
+  return <Badge color={color} variant="light">{v.toFixed(0)}%</Badge>
+}
+
 export default function Invention() {
   const { data: sdeCounts, isLoading: sdeLoading, isError: sdeError, refetch: refetchSde } =
     useQuery({ queryKey: ['production', 'sde', 'counts'], queryFn: productionApi.sdeCounts })
@@ -57,14 +67,7 @@ export default function Invention() {
     { header: 'BPCs Needed', accessorKey: 'bpcs_needed', size: 130, cell: (i) => qty(i.getValue()) },
     { header: 'Recommended Invention Runs', accessorKey: 'recommended_invention_runs', size: 200, cell: (i) => qty(i.getValue()) },
     { header: 'T2 BPCs Owned', accessorKey: 't2_bpc_owned', size: 140, cell: (i) => qty(i.getValue()) },
-    {
-      header: 'Stockpile %', accessorKey: 'stockpile_pct', size: 120,
-      cell: (i) => {
-        const v = i.getValue() as number
-        const color = v >= 50 ? 'accent' : v > 0 ? 'warn' : 'gray'
-        return <Badge color={color} variant="light">{v.toFixed(0)}%</Badge>
-      },
-    },
+    { header: 'Stockpile %', accessorKey: 'stockpile_pct', size: 120, cell: (i) => stockpileBadge(i.getValue()) },
   ], [])
 
   const t1BpcColumns = useMemo<ColumnDef<T1BpcInventionNeedRow, any>[]>(() => [
@@ -79,6 +82,7 @@ export default function Invention() {
       header: 'BPO On Site', accessorKey: 'bpo_present', size: 130,
       cell: (i) => (i.getValue() ? 'Yes' : 'No'),
     },
+    { header: 'Stockpile %', accessorKey: 'stockpile_pct', size: 120, cell: (i) => stockpileBadge(i.getValue()) },
   ], [])
 
   const columns = useMemo<ColumnDef<InventionResult, any>[]>(() => [

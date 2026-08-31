@@ -2081,6 +2081,44 @@ def test_plan_production_invention_stockpile_pct_counts_market_targets_too(monke
 
 
 @pg_helpers.postgres_required()
+def test_plan_production_invention_stockpile_pct_uncapped_above_100(monkeypatch, tenant):
+    """Confirmed with the user, 2026-08-31: owning more T2 BPC runs than the
+    fixed target calls for is a real, useful signal ("you're over-invented
+    on this one"), not something to flatten to the same 100% a
+    right-on-target row would also show."""
+    stock_targets = [(10, "OverInventedStockTarget", 10, 0, 0)]
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_plan_context(stock_targets))
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech II", (100 + type_id, 1, 1.0)))
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [])
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_buy_or_build_decision", lambda *a, **k: "Build")
+    monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: 1.0)
+    monkeypatch.setattr(engine, "margin_home", lambda *a, **k: 0.9)
+
+    def fake_chosen(blueprint_id):
+        return InventionResult(
+            t1_blueprint_type_id=1000 + blueprint_id, t1_blueprint_name="Fake T1 BPO",
+            product_type_id=blueprint_id, product_name="Fake T2 Product", decryptor="None",
+            probability=1.0, output_runs=5.0, datacore_cost=0.0, decryptor_cost=0.0, relic_cost=0.0,
+            total_attempt_cost=0.0, expected_cost_per_success=0.0, expected_cost_per_run=0.0,
+            me=10, te=20, material_savings_per_run=0.0, net_cost_per_run=0.0,
+        )
+    monkeypatch.setattr(engine, "_tech_ii_mods",
+                         lambda type_id, blueprint_id, *a, **k: (1.0, 1.0, "None", fake_chosen(blueprint_id)))
+    # 110 = OverInventedStockTarget's blueprint_id (100 + type_id 10), owns
+    # 30 runs against a backup_stock target of only 10 - 3x over target.
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda blueprint_id, loc: 30)
+
+    cfg = ProductionConfig(min_margin=0.0)
+    result = engine.plan_production(cfg)
+
+    row = next(r for r in result["invention_list"] if r.type_id == 10)
+    assert row.t2_bpc_owned == 30
+    assert row.stockpile_pct == pytest.approx(300.0)
+
+
+@pg_helpers.postgres_required()
 def test_plan_production_manual_override_bypasses_the_margin_gate(monkeypatch, tenant):
     # A manual Build/Buy override (storage.manual_build_buy) is an explicit
     # user decision - the margin gate must not second-guess it.
@@ -2566,6 +2604,7 @@ def test_t1_bpc_invention_needs_reports_missing_copies_and_bpo_presence(monkeypa
     assert row.available == 4
     assert row.missing == 2  # 6 needed - 4 available copies
     assert row.bpo_present is True
+    assert row.stockpile_pct == pytest.approx(4 / 6 * 100)
 
 
 def test_t1_bpc_invention_needs_relic_uses_generic_stock_and_never_shows_a_bpo(monkeypatch):
@@ -2619,6 +2658,29 @@ def test_t1_bpc_invention_needs_aggregates_across_stock_targets_sharing_a_t1_blu
 
     assert len(rows) == 1
     assert rows[0].needed == 16  # 6 + 10 attempts, both needing the same T1 blueprint
+
+
+def test_t1_bpc_invention_needs_stockpile_pct_uncapped_above_100(monkeypatch):
+    """Confirmed with the user, 2026-08-31: owning more T1 BPC runs than
+    currently needed is a real, useful signal, not something to flatten to
+    the same 100% a right-on-target row would also show."""
+    from eve_trader.production.models import InventionNeedRow
+    cfg = ProductionConfig(invention_location_id=5000)
+    need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
+                             t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
+                             output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)  # real T1 blueprint, not a relic
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id: 18.0)  # 3x needed (6)
+    monkeypatch.setattr(storage, "has_bpo_at_location", lambda type_id, location_id: True)
+
+    rows = engine.t1_bpc_invention_needs([need], cfg)
+
+    assert len(rows) == 1
+    assert rows[0].needed == 6
+    assert rows[0].available == 18
+    assert rows[0].missing == 0
+    assert rows[0].stockpile_pct == pytest.approx(300.0)
 
 
 def test_t1_bpc_invention_needs_empty_without_location_configured(monkeypatch):

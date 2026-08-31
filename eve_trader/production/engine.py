@@ -1192,9 +1192,14 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                 # stockpile_pct to a hardcoded 0% regardless of how many BPC
                 # runs were actually owned - even for a row simultaneously
                 # showing bpcs_needed=0 (fully covered right now).
+                # Deliberately uncapped above 100% (confirmed with the user,
+                # 2026-08-31) - owning more BPC runs than the target calls for
+                # is a real, useful signal ("you're over-invented on this
+                # one, ease off"), not something to hide by flattening it to
+                # the same 100% a right-on-target row would also show.
                 target_stock = backup_stock + (home_market_stock or 0) + (jita_market_stock or 0)
                 target_stock_runs = math.ceil(target_stock / product_qty) if target_stock > 0 else 0
-                stockpile_pct = (max(0.0, min(100.0, t2_bpc_owned / target_stock_runs * 100))
+                stockpile_pct = (max(0.0, t2_bpc_owned / target_stock_runs * 100)
                                  if target_stock_runs > 0 else 0.0)
                 invention_list.append(InventionNeedRow(
                     type_id=type_id, type_name=type_name,
@@ -2583,6 +2588,7 @@ def t1_bpc_invention_needs(invention_list: list[InventionNeedRow],
             type_id=type_id, name=name, needed=needed, available=available,
             missing=max(0, needed - available),
             bpo_present=storage.has_bpo_at_location(type_id, cfg.invention_location_id),
+            stockpile_pct=(available / needed * 100) if needed > 0 else 0.0,
         ))
     rows.sort(key=lambda r: -r.missing)
     return rows

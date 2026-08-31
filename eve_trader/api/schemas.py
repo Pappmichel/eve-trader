@@ -286,6 +286,7 @@ class T1BpcInventionNeedRow(_Base):
     available: int
     missing: int
     bpo_present: bool
+    stockpile_pct: float
 
 
 class IndustryJobRow(_Base):
