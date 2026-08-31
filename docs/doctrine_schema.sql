@@ -16,21 +16,29 @@
 -- save_tenant_config_overrides("doctrine", ...) can persist Doctrine
 -- Settings-page saves the same way Trading/Production already do.
 --
--- Kept in sync with docs/refining_schema.sql's own copy of this same ALTER
--- (GitHub issue #90) - each new tool's schema file must restate the FULL
--- current scope list, not just its own addition: DROP+ADD CONSTRAINT
--- replaces the whole check, so a re-run of this file *after*
--- refining_schema.sql has already run (both are individually documented as
--- "idempotent, safe to re-run" - deploy/README.md doesn't forbid re-running
--- an earlier one) would otherwise silently narrow the constraint back down
--- and CheckViolation on any already-saved 'refining'-scope row. Confirmed
--- real during this feature's own test suite (two schema files' session
--- fixtures reapplying their ALTERs in a different order than the
--- documented deploy sequence). If a sixth tool adds a scope, its own schema
--- file needs the same treatment - add its name here too, not just there.
+-- Kept in sync with docs/refining_schema.sql's and docs/
+-- station_trading_schema.sql's own copies of this same ALTER (GitHub issue
+-- #90) - each new tool's schema file must restate the FULL current scope
+-- list, not just its own addition: DROP+ADD CONSTRAINT replaces the whole
+-- check, so a re-run of this file *after* a later tool's schema file has
+-- already run (all are individually documented as "idempotent, safe to
+-- re-run" - deploy/README.md doesn't forbid re-running an earlier one, and
+-- deploy.sh's own loop always re-runs every file in chronological order on
+-- every deploy) would otherwise silently narrow the constraint back down
+-- and CheckViolation on any already-saved later-scope row. Confirmed real
+-- twice: once during this feature's own test suite (two schema files'
+-- session fixtures reapplying their ALTERs in a different order than the
+-- documented deploy sequence), and again live in production (2026-08-31,
+-- ON_ERROR_STOP aborting deploy.sh's whole schema loop here, before it
+-- ever reached station_trading_schema.sql's own wider ADD CONSTRAINT,
+-- against a real already-saved 'station_trading' row) - this file's own
+-- list had drifted stale, missing 'station_trading' entirely, exactly the
+-- failure mode this comment already warned about. If a sixth tool adds a
+-- scope, EVERY existing schema file's copy of this ALTER needs the new
+-- scope added too, not just the newest one's.
 ALTER TABLE tenant_settings DROP CONSTRAINT IF EXISTS tenant_settings_scope_check;
 ALTER TABLE tenant_settings ADD CONSTRAINT tenant_settings_scope_check
-    CHECK (scope IN ('trading', 'production', 'doctrine', 'refining'));
+    CHECK (scope IN ('trading', 'production', 'doctrine', 'refining', 'station_trading'));
 
 -- ============================================================== shared table
 -- typeID -> fitting slot (see production/sde.py's refresh_sde, storage.

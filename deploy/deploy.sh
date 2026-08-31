@@ -22,15 +22,27 @@ echo "==> Applying Postgres schema (all files, idempotent)..."
 # schema.sql - each schema file's own tenant_settings_scope_check widening
 # (DROP CONSTRAINT then ADD CONSTRAINT with that file's own, then-current
 # scope list) is only self-consistent in the original chronological order
-# these files were written in. Without station_trading_schema.sql (which
-# has the only currently-complete scope list, including 'station_trading')
-# in this loop, doctrine_schema.sql's and refining_schema.sql's own
-# (older, narrower) ADD CONSTRAINT statements fail against a live
-# 'station_trading' row - and since their own DROP CONSTRAINT already
-# succeeded first, this SILENTLY LEFT THE CONSTRAINT MISSING ENTIRELY
-# rather than merely stale (psql's default no-ON_ERROR_STOP behavior
-# doesn't abort the file or this loop on that error either, so this was
-# easy to miss - see ON_ERROR_STOP below, added for the same reason).
+# these files were written in. Without station_trading_schema.sql in this
+# loop, doctrine_schema.sql's and refining_schema.sql's own (older,
+# narrower) ADD CONSTRAINT statements fail against a live 'station_trading'
+# row - and since their own DROP CONSTRAINT already succeeded first, this
+# SILENTLY LEFT THE CONSTRAINT MISSING ENTIRELY rather than merely stale
+# (psql's default no-ON_ERROR_STOP behavior doesn't abort the file or this
+# loop on that error either, so this was easy to miss - see ON_ERROR_STOP
+# below, added for the same reason).
+#
+# Adding station_trading_schema.sql to the loop and ON_ERROR_STOP together
+# only turned that silent failure into a loud one, though - they didn't fix
+# the actual root cause: confirmed real again live (2026-08-31),
+# doctrine_schema.sql's and refining_schema.sql's own scope lists had
+# independently drifted stale (missing 'station_trading'), so
+# ON_ERROR_STOP correctly aborted the whole deploy right there, before the
+# loop ever reached station_trading_schema.sql's wider ADD CONSTRAINT that
+# would've put things right again. The actual fix is keeping every schema
+# file's copy of this ALTER's scope list equal to the full, current set
+# (see docs/doctrine_schema.sql's own comment on this same ALTER) - this
+# loop's chronological ordering only matters for tables/columns being
+# introduced, never for this particular shared CHECK constraint.
 for f in phase1_schema.sql phase2_schema.sql phase3_schema.sql admin_schema.sql \
          doctrine_schema.sql observability_schema.sql refining_schema.sql \
          station_trading_schema.sql role_consent_schema.sql; do
