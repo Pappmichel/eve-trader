@@ -16,9 +16,21 @@
 -- editing phase2_schema.sql/doctrine_schema.sql themselves) so
 -- save_tenant_config_overrides("refining", ...) can persist RefiningConfig
 -- Settings-page saves the same way Trading/Production/Doctrine already do.
+--
+-- Kept in sync with docs/doctrine_schema.sql's and docs/
+-- station_trading_schema.sql's own copies of this same ALTER - restate the
+-- FULL current scope list here too, not just this file's own addition, or
+-- a later deploy re-running this file (deploy.sh's loop always re-runs
+-- every schema file, every deploy) narrows the constraint back down and
+-- CheckViolations on any already-saved later-scope row. Confirmed real
+-- live (2026-08-31): this file's list had drifted stale, missing
+-- 'station_trading' entirely - see docs/doctrine_schema.sql's own comment
+-- on this same ALTER for the full incident. If a sixth tool adds a scope,
+-- EVERY existing schema file's copy of this ALTER needs the new scope
+-- added too, not just the newest one's.
 ALTER TABLE tenant_settings DROP CONSTRAINT IF EXISTS tenant_settings_scope_check;
 ALTER TABLE tenant_settings ADD CONSTRAINT tenant_settings_scope_check
-    CHECK (scope IN ('trading', 'production', 'doctrine', 'refining'));
+    CHECK (scope IN ('trading', 'production', 'doctrine', 'refining', 'station_trading'));
 
 -- sde_types (phase1_schema.sql) gets a new trailing column - portionSize
 -- (Fuzzwork invTypes.csv), the whole-batch unit reprocessing rounds down to
