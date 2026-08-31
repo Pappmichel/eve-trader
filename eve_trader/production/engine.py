@@ -1168,22 +1168,34 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                 runs_still_needed = max(0, runs_needed - t2_bpc_owned)
                 bpcs_needed = math.ceil(runs_still_needed / chosen.output_runs) if runs_still_needed > 0 else 0
                 recommended_runs = math.ceil(bpcs_needed / chosen.probability) if bpcs_needed > 0 else 0
-                # BPC-runs-owned as a % of a *fixed* target (derived from
-                # backup_stock, the same fixed target the old end-product
-                # formula used) - both sides already share the same unit
-                # (manufacturing runs of blueprint_id: t2_bpc_owned is runs
-                # remaining on owned copies, backup_stock_runs is runs needed
-                # to fully stock backup_stock), so no further conversion
-                # through output_runs is needed. An earlier version divided
-                # backup_stock_runs by output_runs into "number of discrete
-                # invented BPCs" instead - that discretized the target down
-                # to a tiny integer (often just 1, since a single invented
-                # BPC frequently covers the whole backup_stock target on its
-                # own), which reintroduced the same 0%/100%-only behavior
-                # this fix exists to avoid (confirmed real bug, 2026-08-30).
-                backup_stock_runs = math.ceil(backup_stock / product_qty) if backup_stock > 0 else 0
-                stockpile_pct = (max(0.0, min(100.0, t2_bpc_owned / backup_stock_runs * 100))
-                                 if backup_stock_runs > 0 else 0.0)
+                # BPC-runs-owned as a % of a *fixed* target - both sides
+                # already share the same unit (manufacturing runs of
+                # blueprint_id: t2_bpc_owned is runs remaining on owned
+                # copies, target_stock_runs is runs needed to fully stock the
+                # target), so no further conversion through output_runs is
+                # needed. An earlier version divided the target by
+                # output_runs into "number of discrete invented BPCs"
+                # instead - that discretized the target down to a tiny
+                # integer (often just 1, since a single invented BPC
+                # frequently covers the whole target on its own), which
+                # reintroduced the same 0%/100%-only behavior this fix
+                # exists to avoid (confirmed real bug, 2026-08-30).
+                #
+                # The fixed target itself must be the *same* total this row's
+                # own runs_needed/bpcs_needed are computed against - backup_stock
+                # plus home/Jita market-listing targets (mirrors _total_missing
+                # above), not backup_stock alone. Using backup_stock alone was a
+                # real bug (confirmed live, 2026-08-31): a stock target with
+                # backup_stock=0 but a real home/Jita market target (e.g. an
+                # ammo/turret item stocked for market resale rather than a
+                # backup reserve) forced target_stock_runs to 0, which forced
+                # stockpile_pct to a hardcoded 0% regardless of how many BPC
+                # runs were actually owned - even for a row simultaneously
+                # showing bpcs_needed=0 (fully covered right now).
+                target_stock = backup_stock + (home_market_stock or 0) + (jita_market_stock or 0)
+                target_stock_runs = math.ceil(target_stock / product_qty) if target_stock > 0 else 0
+                stockpile_pct = (max(0.0, min(100.0, t2_bpc_owned / target_stock_runs * 100))
+                                 if target_stock_runs > 0 else 0.0)
                 invention_list.append(InventionNeedRow(
                     type_id=type_id, type_name=type_name,
                     t1_blueprint_type_id=chosen.t1_blueprint_type_id, t1_blueprint_name=chosen.t1_blueprint_name,
