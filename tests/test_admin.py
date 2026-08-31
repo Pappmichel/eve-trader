@@ -7,7 +7,7 @@ import pytest
 from eve_trader import admin, storage
 from eve_trader.actions import ActionError
 from eve_trader.esi_client import ESIClient, ESIError
-from eve_trader.production import sde
+from eve_trader.production import jita_price_cache, sde
 
 from . import pg_helpers
 from .pg_helpers import _apply_admin_schema, _apply_phase1_schema, _apply_phase2_schema, _apply_phase3_schema  # noqa: F401
@@ -148,3 +148,16 @@ def test_do_refresh_sde_wraps_network_error():
         mp.setattr(sde, "refresh_sde", _raise)
         with pytest.raises(ActionError, match="SDE refresh failed"):
             admin.do_refresh_sde()
+
+
+def test_do_refresh_jita_price_cache_returns_count_and_timestamp(monkeypatch):
+    # Standalone manual trigger for production/jita_price_cache.py's shared
+    # cache - same cross-tenant-impacting-cache reasoning as do_refresh_sde
+    # above, thin wrapper only (the real refresh logic is tested in
+    # tests/test_production_jita_price_cache.py).
+    monkeypatch.setattr(jita_price_cache, "refresh_jita_price_cache", lambda: 42)
+    monkeypatch.setattr(jita_price_cache, "last_updated_at", lambda: "2026-09-01T00:00:00+00:00")
+
+    result = admin.do_refresh_jita_price_cache()
+
+    assert result == {"cached_type_ids": 42, "updated_at": "2026-09-01T00:00:00+00:00"}

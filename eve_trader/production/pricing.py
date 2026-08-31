@@ -11,6 +11,7 @@ from typing import Optional
 from ..config import TRADING_CONFIG
 from ..esi_client import ESIClient, ESIError
 from ..goonmetrics_client import CurrentPrice, GoonmetricsClient
+from . import jita_price_cache
 from .config import PRODUCTION_CONFIG, ProductionConfig
 
 JITA_MARKET = "jita"
@@ -86,17 +87,29 @@ def jita_prices(type_ids: list[int]) -> dict[int, CurrentPrice]:
     endpoint, so passing "every item Goonmetrics knows about" here would
     mean one ESI call per item across the whole Jita market.
 
+    Reads production.jita_price_cache's shared, hourly-refreshed snapshot
+    first (see that module's own docstring) - confirmed real perf issue,
+    2026-09-01: live-calling ESI for every priced material on every
+    plan_production() run cost ~15s by itself. Only whichever type_ids
+    aren't cached yet (e.g. a stock target added since the last refresh)
+    fall through to a live per-type fetch below, same as before.
+
     Jita's region_id comes from TRADING_CONFIG (not a ProductionConfig
     field - Jita itself is Trading's own concept, matching every other
     Production call site that already reaches into TRADING_CONFIG.
     jita_region_id, e.g. engine.py's market_status/stock_value)."""
     if not type_ids:
         return {}
+    result = jita_price_cache.get_cached_prices(type_ids)
+    missing = [tid for tid in type_ids if tid not in result]
+    if not missing:
+        return result
     try:
-        stats = ESIClient().region_order_stats_bulk(TRADING_CONFIG.jita_region_id, type_ids)
+        stats = ESIClient().region_order_stats_bulk(TRADING_CONFIG.jita_region_id, missing)
+        result.update(_from_order_stats(stats, missing))
     except Exception:  # noqa: BLE001 - best-effort; Goonmetrics fallback is always safe
-        return _goonmetrics_prices(JITA_MARKET, type_ids)
-    return _from_order_stats(stats, type_ids)
+        result.update(_goonmetrics_prices(JITA_MARKET, missing))
+    return result
 
 
 def _candidate_prices(type_id: int, home: dict[int, CurrentPrice], jita: dict[int, CurrentPrice],

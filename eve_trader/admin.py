@@ -18,7 +18,7 @@ import requests
 from . import access_gate, storage
 from .actions import ActionError
 from .esi_client import ESIError
-from .production import sde
+from .production import jita_price_cache, sde
 from .production.engine import invalidate_discover_cache, invalidate_ship_margin_cache
 
 
@@ -100,6 +100,20 @@ def do_refresh_sde() -> dict:
     invalidate_discover_cache(all_tenants=True)
     invalidate_ship_margin_cache(all_tenants=True)
     return result
+
+
+def do_refresh_jita_price_cache() -> dict:
+    """Standalone manual trigger for the shared Jita price cache (production/
+    jita_price_cache.py) - deliberately its own action, not called from
+    anywhere else (do_refresh_production and friends only ever *read* the
+    cache, via pricing.jita_prices), so a user wanting genuinely fresh Jita
+    prices right now can force one without it silently piggybacking on, or
+    blocking, any other action. Also normally refreshed automatically once
+    an hour by the scheduler (see scheduler._check_and_run_jita_price_cache_
+    job) - same cross-tenant-impacting-cache reasoning as do_refresh_sde
+    above, since the cache is shared/global, not per-tenant."""
+    count = jita_price_cache.refresh_jita_price_cache()
+    return {"cached_type_ids": count, "updated_at": jita_price_cache.last_updated_at()}
 
 
 def do_set_tool_grants(character_id: int, tool_keys: list[str]) -> dict:

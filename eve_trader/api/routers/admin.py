@@ -69,6 +69,14 @@ def refresh_sde():
     return _wrap(admin.do_refresh_sde)
 
 
+# Same "cross-tenant-impacting cache, not a per-tenant Production button"
+# reasoning as /sde/refresh above - see production/jita_price_cache.py and
+# admin.do_refresh_jita_price_cache's own docstrings.
+@router.post("/jita-price-cache/refresh")
+def refresh_jita_price_cache():
+    return _wrap(admin.do_refresh_jita_price_cache)
+
+
 # GitHub issue #88 - error_log is deliberately its own module (like
 # portfolio.py/admin.py's own docstring on cross-cutting concerns), not
 # folded into admin.py, since /api/errors' *report* endpoint (api/routers/

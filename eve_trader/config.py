@@ -187,6 +187,7 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "production_sync_interval_hours": (0, None),
     "backup_interval_hours": (0, None),
     "doctrine_sync_interval_hours": (0, None),
+    "jita_price_cache_interval_hours": (0, None),
     # -- Doctrine tool (see doctrine/config.py's DoctrineConfig) --
     "doctrine_structure_id": (1, None),
     "stockpile_location_id": (1, None),
@@ -400,6 +401,7 @@ class TradingConfig:
     production_sync_interval_hours: float = 6.0        # production do_sync_esi
     backup_interval_hours: float = 24.0                # backup.create_backup() - see backup.py
     doctrine_sync_interval_hours: float = 12.0          # doctrine do_sync_contracts
+    jita_price_cache_interval_hours: float = 1.0        # production.jita_price_cache.refresh_jita_price_cache()
 
 
 @dataclass

@@ -59,6 +59,33 @@ function SdeDataSection() {
   )
 }
 
+// Same "cross-tenant-impacting cache, not a per-tenant Production button"
+// reasoning as SdeDataSection above - see production/jita_price_cache.py's
+// own docstring. Deliberately its own standalone action (not wired into
+// Production's "Recompute Buy/Build List" or any other button) - normally
+// refreshed automatically once an hour by the scheduler (see the
+// "Background Scheduler" card on the Portfolio page for that job's own
+// last-run/interval status); this button is only for forcing a fresh one
+// on demand.
+function JitaPriceCacheSection() {
+  const refreshJitaPriceCache = useAction('Refresh Jita Price Cache', adminApi.refreshJitaPriceCache,
+    [['portfolio', 'scheduler-status']])
+
+  return (
+    <div>
+      <Title order={4} mb="xs">Jita Price Cache</Title>
+      <Text size="sm" c="dimmed" mb="xs">
+        Shared, hourly-refreshed Jita price snapshot used by Production's Buy/Build list - shared across every
+        tenant. See the Background Scheduler card on the Portfolio page for last-refreshed time.
+      </Text>
+      <Button size="xs" variant="default" onClick={() => refreshJitaPriceCache.mutate()}
+        loading={refreshJitaPriceCache.isPending}>
+        Refresh Now
+      </Button>
+    </div>
+  )
+}
+
 // Mirrors access_gate.ALL_TOOL_KEYS (eve_trader/access_gate.py) - kept in
 // sync by hand, same as every other small fixed-vocabulary list already
 // hardcoded on the frontend elsewhere in this app.
@@ -245,6 +272,8 @@ export default function AdminPage() {
 
       <Stack gap="xl">
         <SdeDataSection />
+        <Divider />
+        <JitaPriceCacheSection />
         <Divider />
         <TenantSection />
         <Divider />

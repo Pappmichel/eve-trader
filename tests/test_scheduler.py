@@ -179,6 +179,44 @@ def test_check_and_run_backup_job_skips_when_recent(monkeypatch):
     assert calls == []
 
 
+def test_check_and_run_jita_price_cache_job_runs_when_overdue(monkeypatch):
+    monkeypatch.setattr(scheduler.jita_price_cache, "last_updated_at", lambda: None)  # never refreshed -> always due
+    calls = []
+    monkeypatch.setattr(scheduler.jita_price_cache, "refresh_jita_price_cache", lambda: calls.append("refresh") or 3)
+    monkeypatch.setattr(scheduler.tenant_scope, "enter_tenant",
+                         _fake_enter_tenant(TradingConfig(jita_price_cache_interval_hours=1.0)))
+
+    scheduler._check_and_run_jita_price_cache_job()
+
+    assert calls == ["refresh"]
+
+
+def test_check_and_run_jita_price_cache_job_skips_when_recent(monkeypatch):
+    recent = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=5)).isoformat()
+    monkeypatch.setattr(scheduler.jita_price_cache, "last_updated_at", lambda: recent)
+    calls = []
+    monkeypatch.setattr(scheduler.jita_price_cache, "refresh_jita_price_cache", lambda: calls.append("refresh") or 3)
+    monkeypatch.setattr(scheduler.tenant_scope, "enter_tenant",
+                         _fake_enter_tenant(TradingConfig(jita_price_cache_interval_hours=1.0)))
+
+    scheduler._check_and_run_jita_price_cache_job()
+
+    assert calls == []
+
+
+def test_run_job_with_no_tenant_routes_by_name_to_its_own_global_status():
+    # backup and jita_price_cache are both global/unscoped (tenant_id=None)
+    # but must land in their own separate status dict, not overwrite
+    # each other's.
+    scheduler._backup_status.clear()
+    scheduler._jita_price_cache_status.clear()
+    scheduler._run_job(None, "backup", lambda: None)
+    scheduler._run_job(None, "jita_price_cache", lambda: (_ for _ in ()).throw(RuntimeError("esi down")))
+
+    assert scheduler._backup_status["error"] is None
+    assert scheduler._jita_price_cache_status["error"] == "esi down"
+
+
 def test_start_is_noop_when_default_tenant_disabled(monkeypatch):
     monkeypatch.setattr(scheduler.tenant_scope, "enter_tenant",
                          _fake_enter_tenant(TradingConfig(scheduler_enabled=False)))
@@ -190,7 +228,9 @@ def test_start_is_noop_when_default_tenant_disabled(monkeypatch):
 def test_get_status_reflects_disabled_config(monkeypatch):
     monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: None)
     monkeypatch.setattr(backup, "list_backups", lambda: [])
-    token = config._trading_config_var.set(TradingConfig(scheduler_enabled=False, trading_pipeline_interval_hours=12.0))
+    monkeypatch.setattr(scheduler.jita_price_cache, "last_updated_at", lambda: None)
+    token = config._trading_config_var.set(TradingConfig(
+        scheduler_enabled=False, trading_pipeline_interval_hours=12.0, jita_price_cache_interval_hours=2.0))
     try:
         status = scheduler.get_status()
     finally:
@@ -200,6 +240,8 @@ def test_get_status_reflects_disabled_config(monkeypatch):
     assert status["jobs"]["trading_pipeline"]["interval_hours"] == 12.0
     assert status["jobs"]["trading_pipeline"]["last_run_at"] is None
     assert status["jobs"]["backup"]["last_run_at"] is None
+    assert status["jobs"]["jita_price_cache"]["interval_hours"] == 2.0
+    assert status["jobs"]["jita_price_cache"]["last_run_at"] is None
 
 
 def test_get_status_reports_last_backup_time(monkeypatch):

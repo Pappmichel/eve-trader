@@ -518,6 +518,7 @@ export interface SchedulerStatus {
     production_sync: SchedulerJobStatus
     doctrine_contract_sync: SchedulerJobStatus
     backup: SchedulerJobStatus
+    jita_price_cache: SchedulerJobStatus
   }
 }
 

@@ -84,6 +84,7 @@ export default function Portfolio() {
                 <SchedulerJobRow label="Trading pipeline" job={scheduler.jobs.trading_pipeline} />
                 <SchedulerJobRow label="Production ESI sync" job={scheduler.jobs.production_sync} />
                 <SchedulerJobRow label="Backup" job={scheduler.jobs.backup} />
+                <SchedulerJobRow label="Jita price cache" job={scheduler.jobs.jita_price_cache} />
               </Stack>
               {!scheduler.enabled && (
                 <Text size="xs" c="dimmed" mt="sm">

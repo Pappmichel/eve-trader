@@ -422,6 +422,10 @@ export const adminApi = {
   // global/shared across every tenant, so triggering a refresh is a
   // cross-tenant-impacting action, not a per-tenant Production one.
   refreshSde: () => post<Record<string, number>>('/api/admin/sde/refresh'),
+  // Same cross-tenant-cache reasoning as refreshSde above - see
+  // production/jita_price_cache.py's own docstring.
+  refreshJitaPriceCache: () =>
+    post<{ cached_type_ids: number; updated_at: string | null }>('/api/admin/jita-price-cache/refresh'),
   // GitHub issue #88 - cross-tenant, same reasoning as everything else here.
   errors: (limit = 200) => get<T.ErrorLogRow[]>(`/api/admin/errors?limit=${limit}`),
 }

@@ -2,13 +2,28 @@ import pytest
 
 from eve_trader.esi_client import ESIClient, ESIError, OrderStats
 from eve_trader.goonmetrics_client import CurrentPrice, GoonmetricsClient
-from eve_trader.production import esi_sync
+from eve_trader.production import esi_sync, jita_price_cache
 from eve_trader.production.config import ProductionConfig
 from eve_trader.production.pricing import buy_price, buy_source, home_prices, jita_prices
 
 # jita_buy_broker_fee=0.0 keeps these source-picking tests' arithmetic clean -
 # see test_buy_price_includes_buy_broker_fee for the fee itself.
 CFG = ProductionConfig(haul_cost_per_m3=900.0, jita_buy_broker_fee=0.0)
+
+
+@pytest.fixture(autouse=True)
+def _reset_jita_price_cache():
+    # jita_prices() reads production.jita_price_cache's module-level cache
+    # first (see that module's own docstring) - without resetting it between
+    # tests, one test populating it (directly, or via jita_prices() itself)
+    # would silently make a later test's ESI mock never get called, the
+    # exact staleness risk CLAUDE.md's testing-conventions section warns
+    # about for any module-level cache.
+    jita_price_cache._cache.clear()
+    jita_price_cache._updated_at = None
+    yield
+    jita_price_cache._cache.clear()
+    jita_price_cache._updated_at = None
 
 
 def _price(sell: float) -> CurrentPrice:
@@ -151,3 +166,29 @@ def test_jita_prices_falls_back_to_goonmetrics_when_esi_fails(monkeypatch):
 
 def test_jita_prices_empty_type_ids_returns_empty_dict():
     assert jita_prices([]) == {}
+
+
+def test_jita_prices_uses_shared_cache_without_calling_esi(monkeypatch):
+    jita_price_cache._cache[34] = CurrentPrice(type_id=34, updated="", buy=5.0, sell=5.5)
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", lambda self, region_id, type_ids:
+                         pytest.fail("must not call ESI when the shared cache already has every requested type_id"))
+
+    result = jita_prices([34])
+
+    assert result[34].sell == 5.5
+
+
+def test_jita_prices_only_live_fetches_type_ids_missing_from_cache(monkeypatch):
+    jita_price_cache._cache[34] = CurrentPrice(type_id=34, updated="", buy=5.0, sell=5.5)
+    seen_type_ids = []
+
+    def _fetch(self, region_id, type_ids):
+        seen_type_ids.extend(type_ids)
+        return {99: OrderStats(sell_percentile=7.0, sell_volume=1.0, buy_percentile=6.0, buy_volume=1.0)}
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", _fetch)
+
+    result = jita_prices([34, 99])
+
+    assert seen_type_ids == [99]
+    assert result[34].sell == 5.5
+    assert result[99].sell == 7.0

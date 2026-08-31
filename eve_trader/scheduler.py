@@ -39,6 +39,7 @@ from typing import Optional
 
 from . import backup, storage, tenant_scope
 from .config import TRADING_CONFIG, TradingConfig
+from .production import jita_price_cache
 
 log = logging.getLogger("eve_trader.scheduler")
 
@@ -58,6 +59,12 @@ last_run_status: dict[str, dict[str, dict]] = {}
 # itself isn't per-tenant (see module docstring).
 _backup_status: dict = {}
 
+# Same shape as _backup_status, for the other global/unscoped job - the
+# shared Jita price cache (production/jita_price_cache.py) prices public,
+# tenant-independent ESI data, so like backup it runs once per tick, not
+# once per tenant.
+_jita_price_cache_status: dict = {}
+
 
 def _hours_since(iso_ts: str | None) -> float:
     if iso_ts is None:
@@ -73,9 +80,13 @@ def _hours_since_last_backup() -> float:
     return _hours_since(backups[0]["created_at"]) if backups else float("inf")
 
 
+_GLOBAL_JOB_STATUS = {"backup": _backup_status, "jita_price_cache": _jita_price_cache_status}
+
+
 def _run_job(tenant_id: Optional[str], name: str, fn) -> None:
-    """tenant_id=None records into the global _backup_status instead of a
-    per-tenant slot - only the backup job ever passes None."""
+    """tenant_id=None records into the matching global status dict (looked
+    up by `name` via _GLOBAL_JOB_STATUS) instead of a per-tenant slot - only
+    the backup and jita_price_cache jobs ever pass None."""
     try:
         fn()
         result = {"ran_at": dt.datetime.now(dt.timezone.utc).isoformat(), "error": None}
@@ -84,7 +95,7 @@ def _run_job(tenant_id: Optional[str], name: str, fn) -> None:
         result = {"ran_at": dt.datetime.now(dt.timezone.utc).isoformat(), "error": str(e)}
 
     if tenant_id is None:
-        _backup_status.update(result)
+        _GLOBAL_JOB_STATUS[name].update(result)
     else:
         last_run_status.setdefault(tenant_id, {})[name] = result
 
@@ -125,6 +136,23 @@ def _check_and_run_backup_job() -> None:
         _run_job(None, "backup", backup.create_backup)
 
 
+def _check_and_run_jita_price_cache_job() -> None:
+    """Global, unscoped, same reasoning as _check_and_run_backup_job - the
+    cache itself (production/jita_price_cache.py) prices public, tenant-
+    independent ESI data, so this reads DEFAULT_TENANT_ID's own
+    jita_price_cache_interval_hours (the operator's setting) rather than
+    iterating tenants. last_updated_at() (not a per-tenant esi_sync_state
+    row) is this job's own "when did this last happen" source - shared by
+    both this scheduled tick and the standalone manual admin action
+    (admin.do_refresh_jita_price_cache), so a manual run correctly pushes
+    back the next scheduled one too, same as backup's own mtime-based
+    check."""
+    with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
+        interval_hours = TRADING_CONFIG.jita_price_cache_interval_hours
+    if _hours_since(jita_price_cache.last_updated_at()) >= interval_hours:
+        _run_job(None, "jita_price_cache", jita_price_cache.refresh_jita_price_cache)
+
+
 def _check_and_run_due_jobs() -> None:
     for tenant_id, _name, _created_at in storage.list_tenants():
         tenant_id = str(tenant_id)
@@ -135,6 +163,7 @@ def _check_and_run_due_jobs() -> None:
             log.warning("Per-tenant job check failed for tenant %s: %s", tenant_id, e)
 
     _check_and_run_backup_job()
+    _check_and_run_jita_price_cache_job()
 
 
 def _loop() -> None:
@@ -211,6 +240,11 @@ def get_status() -> dict:
                 "interval_hours": TRADING_CONFIG.backup_interval_hours,
                 "last_run_at": backups[0]["created_at"] if backups else None,
                 "last_error": _backup_status.get("error"),
+            },
+            "jita_price_cache": {
+                "interval_hours": TRADING_CONFIG.jita_price_cache_interval_hours,
+                "last_run_at": jita_price_cache.last_updated_at(),
+                "last_error": _jita_price_cache_status.get("error"),
             },
         },
     }
