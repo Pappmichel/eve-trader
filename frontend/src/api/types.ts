@@ -314,6 +314,7 @@ export interface T1BpcInventionNeedRow {
   available: number
   missing: number
   bpo_present: boolean
+  stockpile_pct: number
 }
 
 export interface IndustryJobRow {
