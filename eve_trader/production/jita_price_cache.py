@@ -82,7 +82,21 @@ def refresh_jita_price_cache() -> int:
     for tenant_id, _name, _created_at in storage.list_tenants():
         with tenant_scope.enter_tenant(str(tenant_id)):
             stock_targets = storage.load_stock_targets()
-        type_ids |= _structural_material_closure(t[0] for t in stock_targets)
+            # Confirmed real bug, caught live on first restart-after-deploy
+            # (2026-09-01): _structural_material_closure/classify_activity
+            # read SDE data through storage.connect() same as any other
+            # storage call - even though the *data* itself is tenant-
+            # independent, connect() unconditionally requires an ambient
+            # tenant to be set. Must stay called *inside* this `with` block,
+            # not after it exits - calling it outside worked by accident
+            # whenever some earlier request had already warmed the
+            # relevant type_ids into the @lru_cache'd SDE lookups (no
+            # connect() call on a cache hit), which masked this in every
+            # manual test run but not on a cold cache right after a
+            # service restart, when the scheduler's own global tick (no
+            # ambient tenant at all outside this `with`) is often the very
+            # first caller.
+            type_ids |= _structural_material_closure(t[0] for t in stock_targets)
 
     if not type_ids:
         return 0
