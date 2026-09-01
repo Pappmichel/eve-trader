@@ -151,6 +151,8 @@ export const tradingApi = {
       `/api/trading/wallet-transactions?role_key=${encodeURIComponent(roleKey)}` +
         (lookbackDays ? `&lookback_days=${lookbackDays}` : ''),
     ),
+  walletBalance: (roleKey: string) =>
+    get<T.WalletBalance>(`/api/trading/wallet-balance?role_key=${encodeURIComponent(roleKey)}`),
 }
 
 // ------------------------------------------------------------- production

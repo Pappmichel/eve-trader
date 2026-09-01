@@ -123,6 +123,11 @@ class WalletTransaction(_Base):
     location_name: Optional[str] = None
 
 
+class WalletBalance(_Base):
+    role_key: str
+    balance: float
+
+
 class UnlistedStockRow(_Base):
     type_id: int
     item: str

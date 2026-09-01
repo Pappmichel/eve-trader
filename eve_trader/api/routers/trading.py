@@ -238,6 +238,11 @@ def get_wallet_transactions(role_key: str, lookback_days: Optional[int] = None):
     return _wrap(actions.do_wallet_transactions, role_key=role_key, lookback_days=lookback_days)
 
 
+@router.get("/wallet-balance", response_model=schemas.WalletBalance)
+def get_wallet_balance(role_key: str):
+    return _wrap(actions.do_wallet_balance, role_key=role_key)
+
+
 @router.post("/pipeline/run")
 def run_pipeline(safe: bool = True, rebuild_universe: bool = False):
     return _wrap(actions.do_pipeline, safe=safe, rebuild_universe=rebuild_universe)
