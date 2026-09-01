@@ -840,6 +840,14 @@ class ESIClient:
         return self._get(f"/characters/{character_id}/wallet/transactions/",
                           params=params, auth_role=auth_role)
 
+    def character_wallet_balance(self, character_id: int, auth_role: str) -> float:
+        """This character's current ISK wallet balance (a bare float, not a
+        list/object - ESI's own response shape for this endpoint). Same
+        esi-wallet.read_character_wallet.v1 scope character_wallet_
+        transactions already needs, no new grant required."""
+        return self._get(f"/characters/{character_id}/wallet/",
+                          params={"datasource": "tranquility"}, auth_role=auth_role)
+
     def character_wallet_journal(self, character_id: int, auth_role: str) -> list[dict]:
         """This character's wallet journal (every ISK-moving event, not just
         market trades - contract payments, bounties, taxes, ...). Standard

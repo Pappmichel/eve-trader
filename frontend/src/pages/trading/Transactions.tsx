@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Badge, Group, Select, SegmentedControl } from '@mantine/core'
+import { Badge, Group, Select, SegmentedControl, Text } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { tradingApi } from '../../api/client'
@@ -31,6 +31,12 @@ export default function Transactions() {
   const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({
     queryKey: ['trading', 'wallet-transactions', roleKey, lookbackDays],
     queryFn: () => tradingApi.walletTransactions(roleKey as string, Number(lookbackDays)),
+    enabled: !!roleKey,
+  })
+
+  const { data: walletBalance } = useQuery({
+    queryKey: ['trading', 'wallet-balance', roleKey],
+    queryFn: () => tradingApi.walletBalance(roleKey as string),
     enabled: !!roleKey,
   })
 
@@ -70,6 +76,11 @@ export default function Transactions() {
           onChange={setRoleKey}
           w={240}
         />
+        {walletBalance && (
+          <Text c="green" fw={600} size="sm" pb={6}>
+            {isk(walletBalance.balance)}
+          </Text>
+        )}
         <Select
           label="Lookback"
           data={LOOKBACK_OPTIONS}

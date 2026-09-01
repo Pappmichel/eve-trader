@@ -90,6 +90,11 @@ export interface WalletTransaction {
   location_name: string | null
 }
 
+export interface WalletBalance {
+  role_key: string
+  balance: number
+}
+
 export interface UnlistedStockRow {
   type_id: number
   item: string

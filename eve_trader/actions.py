@@ -161,6 +161,19 @@ def do_wallet_transactions(role_key: str, lookback_days: Optional[int] = None,
     return sorted(rows, key=lambda r: r["date"], reverse=True)
 
 
+def do_wallet_balance(role_key: str, cfg: TradingConfig = TRADING_CONFIG, oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
+    """Current ISK wallet balance for the Transactions tab's selected
+    character - a live ESI call (no caching, matches character_wallet_
+    transactions' own no-cache behavior), not something worth persisting."""
+    tm = TokenManager(oauth_cfg)
+    record = tm.get_record(role_key)
+    if record is None:
+        raise ActionError(f"Character '{role_key}' is not logged in.")
+    client = ESIClient(cfg, tm)
+    balance = client.character_wallet_balance(record.character_id, role_key)
+    return {"role_key": role_key, "balance": balance}
+
+
 def do_update_settings(updates: dict, cfg: TradingConfig = TRADING_CONFIG) -> dict:
     """Persists `updates` to tenant_settings and applies them to the live
     TRADING_CONFIG immediately (see Settings tab in the dashboard)."""
