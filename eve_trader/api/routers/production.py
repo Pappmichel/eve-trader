@@ -542,3 +542,51 @@ def refresh_asset_plan():
     result = _wrap(actions.do_refresh_asset_plan)
     _last_asset_plan[_tenant_key()] = result["plan"]
     return {"jobs": result["jobs"]}
+
+
+# --------------------------------------------------------- special orders
+class SpecialOrderItemInput(BaseModel):
+    type_id: int
+    quantity: float
+
+
+class CreateSpecialOrderRequest(BaseModel):
+    items: list[SpecialOrderItemInput]
+    note: Optional[str] = None
+    net_against_stock: bool = False
+
+
+@router.post("/special-orders")
+def create_special_order(req: CreateSpecialOrderRequest):
+    return _wrap(actions.do_create_special_order, items=[i.model_dump() for i in req.items],
+                 note=req.note, net_against_stock=req.net_against_stock)
+
+
+@router.get("/special-orders", response_model=list[schemas.SpecialOrder])
+def list_special_orders():
+    return _wrap(actions.do_list_special_orders)
+
+
+@router.get("/special-orders/{order_id}")
+def get_special_order(order_id: str):
+    return _wrap(actions.do_get_special_order, order_id=order_id)
+
+
+class UpdateSpecialOrderRequest(BaseModel):
+    status: Optional[str] = None
+    note: Optional[str] = None
+
+
+@router.patch("/special-orders/{order_id}")
+def update_special_order(order_id: str, req: UpdateSpecialOrderRequest):
+    return _wrap(actions.do_update_special_order, order_id=order_id, **req.model_dump())
+
+
+@router.delete("/special-orders/{order_id}")
+def remove_special_order(order_id: str):
+    return _wrap(actions.do_remove_special_order, order_id=order_id)
+
+
+@router.post("/special-orders/{order_id}/compute", response_model=schemas.SpecialOrderComputeResult)
+def compute_special_order(order_id: str):
+    return _wrap(actions.do_compute_special_order, order_id=order_id)

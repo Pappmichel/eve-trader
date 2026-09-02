@@ -297,6 +297,40 @@ export interface AssetPlan {
   jobs: AssetPlanJob[]
 }
 
+export interface SpecialOrder {
+  order_id: string
+  note: string | null
+  net_against_stock: boolean
+  status: string // "open" | "done"
+  created_at: string | null
+  item_count: number
+}
+
+export interface SpecialOrderLineItem {
+  type_id: number
+  type_name: string
+  quantity: number
+}
+
+export interface StockOverlapWarningRow {
+  type_id: number
+  type_name: string
+  current_stock: number
+}
+
+export interface SpecialOrderComputeResult {
+  line_items: SpecialOrderLineItem[]
+  buy_list: BuyListEntry[]
+  build_list: BuildJobEntry[]
+  invention_list: InventionNeedRow[]
+  stock_overlap_warning: StockOverlapWarningRow[]
+}
+
+export interface SpecialOrderDetail {
+  order: SpecialOrder
+  items: SpecialOrderLineItem[]
+}
+
 export interface InventionNeedRow {
   type_id: number
   type_name: string

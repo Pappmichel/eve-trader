@@ -413,3 +413,41 @@ class ShipMarginRow:
     margin_home: Optional[float]
     margin_jita: Optional[float]
     meta_level: Optional[int] = None
+
+
+@dataclass
+class SpecialOrder:
+    """One row of the Special Orders list (Production tool) - a one-off
+    build order, tracked separately from the permanent stock_targets list.
+    See engine.plan_special_order for the computed Buy/Build/Invention
+    breakdown, kept separate from this header row (not persisted -
+    recomputed on demand, same "last computed plan" convention as the
+    regular Bauliste, see api/routers/production.py)."""
+    order_id: str
+    note: Optional[str]
+    net_against_stock: bool
+    status: str  # "open" | "done"
+    created_at: Optional[str]
+    item_count: int
+
+
+@dataclass
+class SpecialOrderLineItem:
+    """One ordered item within a SpecialOrder - what was actually asked
+    for, as opposed to BuyListEntry/BuildJobEntry (what it takes to
+    fulfil it)."""
+    type_id: int
+    type_name: str
+    quantity: float
+
+
+@dataclass
+class StockOverlapWarningRow:
+    """One item flagged by plan_special_order's net_against_stock=True
+    overlap check: reachable from both this order's own material tree and
+    the configured stock_targets' own tree, and currently has stock on
+    hand right now - see plan_special_order's own docstring for exactly
+    what this does/doesn't prove."""
+    type_id: int
+    type_name: str
+    current_stock: float

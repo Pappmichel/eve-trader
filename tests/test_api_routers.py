@@ -375,6 +375,100 @@ def test_plan_is_isolated_per_tenant(monkeypatch):
     assert resp.status_code == 400
 
 
+# ------------------------------------------------------------ special orders
+def test_create_special_order_forwards_items_note_and_net_against_stock(monkeypatch):
+    captured = {}
+
+    def _fake_create(**kwargs):
+        captured["kwargs"] = kwargs
+        return {"order_id": "order-1"}
+    monkeypatch.setattr(production_actions, "do_create_special_order", _fake_create)
+
+    resp = client.post("/api/production/special-orders", json={
+        "items": [{"type_id": 12058, "quantity": 6000.0}],
+        "note": "Customer X", "net_against_stock": True,
+    })
+
+    assert resp.status_code == 200
+    assert resp.json() == {"order_id": "order-1"}
+    assert captured["kwargs"] == {
+        "items": [{"type_id": 12058, "quantity": 6000.0}], "note": "Customer X", "net_against_stock": True,
+    }
+
+
+def test_create_special_order_action_error_maps_to_400(monkeypatch):
+    def _raise(**kwargs):
+        raise ActionError("A special order needs at least one item.")
+    monkeypatch.setattr(production_actions, "do_create_special_order", _raise)
+
+    resp = client.post("/api/production/special-orders", json={"items": []})
+
+    assert resp.status_code == 400
+    assert resp.json() == {"detail": "A special order needs at least one item."}
+
+
+def test_list_special_orders_serializes_rows(monkeypatch):
+    from eve_trader.production.models import SpecialOrder
+    monkeypatch.setattr(production_actions, "do_list_special_orders", lambda: [
+        SpecialOrder(order_id="order-1", note="Customer X", net_against_stock=True,
+                     status="open", created_at="2026-09-01T00:00:00", item_count=2),
+    ])
+
+    resp = client.get("/api/production/special-orders")
+
+    assert resp.status_code == 200
+    assert resp.json() == [{
+        "order_id": "order-1", "note": "Customer X", "net_against_stock": True,
+        "status": "open", "created_at": "2026-09-01T00:00:00", "item_count": 2,
+    }]
+
+
+def test_update_special_order_forwards_status(monkeypatch):
+    captured = {}
+
+    def _fake_update(**kwargs):
+        captured["kwargs"] = kwargs
+        return {"order": None, "items": []}
+    monkeypatch.setattr(production_actions, "do_update_special_order", _fake_update)
+
+    resp = client.patch("/api/production/special-orders/order-1", json={"status": "done"})
+
+    assert resp.status_code == 200
+    assert captured["kwargs"] == {"order_id": "order-1", "status": "done", "note": None}
+
+
+def test_remove_special_order(monkeypatch):
+    monkeypatch.setattr(production_actions, "do_remove_special_order", lambda order_id: {"removed": order_id})
+
+    resp = client.delete("/api/production/special-orders/order-1")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"removed": "order-1"}
+
+
+def test_compute_special_order_success(monkeypatch):
+    monkeypatch.setattr(production_actions, "do_compute_special_order", lambda order_id: {
+        "line_items": [], "buy_list": [], "build_list": [], "invention_list": [], "stock_overlap_warning": [],
+    })
+
+    resp = client.post("/api/production/special-orders/order-1/compute")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "line_items": [], "buy_list": [], "build_list": [], "invention_list": [], "stock_overlap_warning": [],
+    }
+
+
+def test_compute_special_order_action_error_maps_to_400(monkeypatch):
+    def _raise(order_id):
+        raise ActionError("Special order missing not found.")
+    monkeypatch.setattr(production_actions, "do_compute_special_order", _raise)
+
+    resp = client.post("/api/production/special-orders/missing/compute")
+
+    assert resp.status_code == 400
+
+
 # --------------------------------------------------- trend/undercut/discovery
 def test_get_shortlist_trends(monkeypatch):
     monkeypatch.setattr(actions, "do_shortlist_trends", lambda: {

@@ -274,6 +274,16 @@ export const productionApi = {
       '/api/production/plan/refresh',
     ),
   refreshAssetPlan: () => post<{ jobs: number }>('/api/production/asset-plan/refresh'),
+
+  specialOrders: () => get<T.SpecialOrder[]>('/api/production/special-orders'),
+  createSpecialOrder: (req: { items: { type_id: number; quantity: number }[]; note?: string | null; net_against_stock?: boolean }) =>
+    post<{ order_id: string }>('/api/production/special-orders', req),
+  getSpecialOrder: (orderId: string) => get<T.SpecialOrderDetail>(`/api/production/special-orders/${orderId}`),
+  updateSpecialOrder: (orderId: string, updates: { status?: string | null; note?: string | null }) =>
+    patch<T.SpecialOrderDetail>(`/api/production/special-orders/${orderId}`, updates),
+  removeSpecialOrder: (orderId: string) => del(`/api/production/special-orders/${orderId}`),
+  computeSpecialOrder: (orderId: string) =>
+    post<T.SpecialOrderComputeResult>(`/api/production/special-orders/${orderId}/compute`),
 }
 
 // ------------------------------------------------------------- portfolio

@@ -2694,3 +2694,84 @@ def has_any_doctrine_synced_assets() -> bool:
             "SELECT EXISTS(SELECT 1 FROM doctrine_character_assets) OR EXISTS(SELECT 1 FROM doctrine_corp_assets)"
         ).fetchone()
     return bool(row[0])
+
+
+# ------------------------------------------------------------- Special Orders (Production tool)
+# One-off build orders, tracked separately from the permanent stock_targets
+# list (production/engine.py's plan_special_order) - see docs/
+# special_orders_schema.sql. Header/child pair, same CRUD shape as
+# doctrines/doctrine_fittings above.
+
+def create_special_order(note: Optional[str], net_against_stock: bool) -> str:
+    with connect() as conn:
+        row = conn.execute(
+            "INSERT INTO special_orders (note, net_against_stock) VALUES (?, ?) RETURNING order_id",
+            (note, net_against_stock),
+        ).fetchone()
+    return str(row[0])
+
+
+_SPECIAL_ORDER_COLUMNS = ("order_id", "note", "net_against_stock", "status", "created_at")
+
+
+def list_special_orders() -> list[tuple]:
+    """(order_id, note, net_against_stock, status, created_at), most-recently-created first."""
+    with connect() as conn:
+        return conn.execute(
+            f"SELECT {', '.join(_SPECIAL_ORDER_COLUMNS)} FROM special_orders ORDER BY created_at DESC"
+        ).fetchall()
+
+
+def get_special_order(order_id: str) -> Optional[tuple]:
+    with connect() as conn:
+        return conn.execute(
+            f"SELECT {', '.join(_SPECIAL_ORDER_COLUMNS)} FROM special_orders WHERE order_id = ?",
+            (order_id,),
+        ).fetchone()
+
+
+def update_special_order(order_id: str, updates: dict) -> None:
+    """`updates` keys must be a subset of {"note", "net_against_stock", "status"}
+    - caller (production/actions.py's do_update_special_order) is responsible
+    for only passing real fields; this does no validation of its own (same
+    "thin storage layer" convention as storage.update_doctrine)."""
+    if not updates:
+        return
+    cols = ", ".join(f"{k} = ?" for k in updates)
+    with connect() as conn:
+        conn.execute(f"UPDATE special_orders SET {cols} WHERE order_id = ?", (*updates.values(), order_id))
+
+
+def delete_special_order(order_id: str) -> None:
+    """Deletes the order's own items first - no DB-level ON DELETE CASCADE
+    on special_order_items, matching this codebase's explicit-not-implicit
+    convention for cross-table deletes (see delete_fitting/
+    unmatch_contracts_for_fitting above for the same explicit-ordering
+    style)."""
+    with connect() as conn:
+        conn.execute("DELETE FROM special_order_items WHERE order_id = ?", (order_id,))
+        conn.execute("DELETE FROM special_orders WHERE order_id = ?", (order_id,))
+
+
+def upsert_special_order_item(order_id: str, type_id: int, type_name: str, quantity: float) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO special_order_items (order_id, type_id, type_name, quantity) VALUES (?,?,?,?) "
+            "ON CONFLICT(tenant_id, order_id, type_id) DO UPDATE SET "
+            "type_name=excluded.type_name, quantity=excluded.quantity",
+            (order_id, type_id, type_name, quantity),
+        )
+
+
+def remove_special_order_item(order_id: str, type_id: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM special_order_items WHERE order_id = ? AND type_id = ?", (order_id, type_id))
+
+
+def list_special_order_items(order_id: str) -> list[tuple[int, str, float]]:
+    """(type_id, type_name, quantity), name-ordered."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT type_id, type_name, quantity FROM special_order_items WHERE order_id = ? ORDER BY type_name",
+            (order_id,),
+        ).fetchall()

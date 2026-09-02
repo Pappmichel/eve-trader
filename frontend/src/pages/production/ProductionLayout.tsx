@@ -14,6 +14,7 @@ import { dateTime } from '../../format'
 const TABS = [
   { path: '/production', label: 'Overview' },
   { path: '/production/stock-targets', label: 'Stock Targets' },
+  { path: '/production/special-orders', label: 'Special Orders' },
   { path: '/production/market', label: 'Market Status' },
   { path: '/production/jobs', label: 'Industry Jobs' },
   { path: '/production/slots', label: 'Character Slots' },
