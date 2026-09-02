@@ -21,10 +21,11 @@ candidate.
 | File here | File in eve-trader-local | What's shared | Status |
 |---|---|---|---|
 | `eve_trader/auth.py` | `eve_trader_local/auth.py` | EVE SSO authorization-code+PKCE flow: state/PKCE generation, loopback callback handling, refresh logic | Ported 2026-09-02. Storage calls adapted (no tenant scoping), locking removed (single-process) — port algorithm changes only, not the storage glue. |
+| `eve_trader/production/sde.py` | `eve_trader_local/sde.py` | Fuzzwork CSV fetch/parse: the file list, `_fetch_csv`'s retry-with-backoff, `_dump_etag`'s ETag freshness check, every row-shaping rule (the `_RELEVANT_ACTIVITIES` filter, the slot-defining dogma effect IDs, `metaGroupID`/`portionSize` handling) | Ported 2026-09-02, near-verbatim. **Data layer only.** Deliberately left out: the `production/constants.py` import (the four activity IDs are inlined on the local side), `ProductionConfig.fuzzwork_csv_base` (a module constant there — no Production config exists in eve-trader-local yet), and most of this repo's `storage.py` SDE *read* helpers (`load_sde_*`, `get_type_category`, `get_blueprint_*`, `find_invention_recipe_candidates_*`, `get_type_slot`, `get_type_materials`, …) — those exist to serve Production/Doctrine/Refining business logic that isn't ported to eve-trader-local yet; port each one when the feature that needs it arrives there. Only `sde_row_counts`, `get_sde_type` and `search_sde_types` came over, to make its `refresh-sde`/`sde-status` CLI verifiable by a human. This repo's `lru_cache` memoisation on those reads was dropped on the local side (nothing there calls them in a hot loop yet, and a cache would need invalidation on every refresh). |
 
 ## Candidates — port when the algorithm changes, once each exists on the local side
 
-None of these are in `eve-trader-local` yet (only the storage/config/auth
+None of these are in `eve-trader-local` yet (only the storage/config/auth/SDE
 foundation has been built so far). When one gets ported over as a real
 local feature, add it to the table above and keep the following in sync
 going forward. Each entry names *what part* is shareable — usually the
@@ -42,7 +43,6 @@ computation, not the surrounding storage/config wiring:
 | `eve_trader/production/engine.py` | `classify_activity`, `potential_daily_profit`/`daily_movement`, `ACTIVITY_MODS` |
 | `eve_trader/production/pricing.py` | Buy-vs-build pricing |
 | `eve_trader/production/invention.py` | Invention math |
-| `eve_trader/production/sde.py` | SDE refresh/parsing |
 | `eve_trader/production/constants.py` | Structure/rig-tier enums |
 | `eve_trader/refining/engine.py`, `pricing.py`, `reprocessing.py`, `optimizer.py`, `paste_parser.py` | Ore/mineral/reprocessing math |
 | `eve_trader/doctrine/engine.py`, `parser.py`, `validation.py` | Fitting parsing/validation logic |
