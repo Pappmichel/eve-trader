@@ -188,6 +188,10 @@ export const productionApi = {
     post<{ type_id: number; type_name: string; purchase_cost: number; runs: number }>(
       '/api/production/blueprints/manual-copy-costs', { item_name: itemName, purchase_cost: purchaseCost, runs },
     ),
+  updateManualBlueprintCopyCost: (typeId: number, purchaseCost: number, runs: number) =>
+    put<{ type_id: number; purchase_cost: number; runs: number }>(
+      `/api/production/blueprints/manual-copy-costs/${typeId}`, { purchase_cost: purchaseCost, runs },
+    ),
   removeManualBlueprintCopyCost: (typeId: number) =>
     del(`/api/production/blueprints/manual-copy-costs/${typeId}`),
   settings: () => get<T.ProductionSettings>('/api/production/settings'),
