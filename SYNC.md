@@ -32,6 +32,85 @@ candidate.
 
 | `eve_trader/own_orders.py`, `eve_trader/models.py` | `eve_trader_local/own_orders.py`, `eve_trader_local/models.py` | All four live order-management checks: `fetch_own_sell_orders` (one pass over the character's orders producing `{type_id: volume_remain}` for open sells at `structure_id`, instead of one filtered query per shortlist row), `check_undercut`/`_pooled` (which of the seller's own listings a competitor has beaten on price), `fetch_seller_stock_without_order`/`_pooled` (shortlist stock physically at the structure with no sell order on it at all), and `fetch_buyer_already_covered` (items already on a buy order or already in inventory at Jita/the structure, so they needn't be imported again). Plus the `UnlistedStockRow`/`UndercutRow` dataclasses. | Ported 2026-09-02, near-verbatim on the local side. Two real constraints came over in the code, not just in this table: **"which orders are mine" can only be decided by `order_id`** — ESI's structure order book carries no owning-character field at all, so type_id/price matching would false-positive on a coincidentally identical competitor price; and **the own-order exclusion is pooled across every registered seller character** (issue #46 — several sellers share one structure's order slots, and a cheaper order from another of your own characters must never read as "undercut"). Same pooling applies to unlisted stock. This file's deliberate scope limits are kept as-is on the local side: only shortlist items are considered, only a *complete* absence of a sell order is flagged, and only assets sitting directly in the structure's own `location_id` are seen (anything nested in a container or parked ship carries that container's item_id). **Storage-ownership decision: this module calls storage itself on the local side too, following `trade_reconciliation.py`'s precedent rather than `shortlist.py`'s** — because this file itself imports `storage` and calls it directly (`get_station_ids_in_system`, for the buyer-side "is this asset in Jita" check), so the local port mirrors this file's actual structure; the SQL lives in eve-trader-local's one persistence module, and nothing in the ported module writes anything. Added there to support it: `storage.get_station_ids_in_system` (without this repo's `lru_cache`, same call already made for its other SDE reads) and `esi_client.NON_STOCK_LOCATION_FLAGS` — that constant lives in `storage.py` here because this repo's persisted asset tables filter on it; **on the local side it sits in `esi_client.py` instead**, since it describes ESI's asset payload and eve-trader-local has no persisted asset table for it to sit beside. Deliberately left out there: item-name resolution, the shortlist-item-id set, the margin/`sell_volume` enrichment and the "log in again for esi-assets.read_assets.v1" error message — all of those live in this repo's `actions.do_check_seller_unlisted_stock`/`do_check_undercut`, not in `own_orders.py`, and arrive with eve-trader-local's future action layer. |
 
+## The orchestration layer (`actions.py`) — an integration, not a port
+
+`eve_trader_local/actions.py` (2026-09-02) is a different kind of entry from
+every row above: the rows are file-for-file ports of business logic, this is
+the *integration* that finally wires them together on the local side. It
+follows this repo's own `actions.py` structurally — same `do_*` names, same
+"thin orchestration only, real logic stays in the other modules" rule, same
+`ActionError` boundary the CLI catches — but it is a synthesis against
+eve-trader-local's own modules, so a future diff against this file will
+never apply cleanly line-for-line. **Sync its *behavior*, not its text**: a
+change to this file's step ordering, pruning policy, failure isolation or a
+`do_*`'s documented result shape is a sync candidate; its tenant/config/
+DataFrame plumbing is not.
+
+What's covered on the local side: `do_list_buyer_characters`/
+`do_list_seller_characters`/`do_remove_trading_character`,
+`do_wallet_balance`/`do_wallet_transactions`, `do_update_settings`,
+`do_build_universe`/`do_build_focused`, `do_find_new_candidates`,
+`do_add_to_shortlist`, `do_refresh_shortlist` (plus the shared
+`_refresh_shortlist_rows`/`_backfill_meta_levels`), `do_shortlist_trends`,
+`do_check_seller_unlisted_stock`/`do_check_undercut`,
+`do_refresh_and_prune_candidates` (with `_items_past_skip_grace_period`/
+`_items_beyond_rank`/`_items_to_reactivate` and
+`shortlist_skip_deactivation_days`), `do_reconcile_trades` and
+`do_pipeline`. This file's two real behavioral lessons came over in the
+code there: `do_pipeline` calls `do_refresh_and_prune_candidates`, never a
+separate find+refresh pair (this repo's "Run Complete Pipeline" once added
+and pruned nothing at all because of that), and each of its steps is
+isolated in its own try/except so a missing login or a network hiccup in
+one can't stop the others.
+
+Deliberately excluded on the local side: `do_create_backup`/
+`do_list_backups` (this repo's `backup.py` shells out to
+`docker exec pg_dump` — see "Never sync"), and anything tenant/admin-shaped.
+`do_auth` is excluded too: eve-trader-local's `cli.py` `auth` command calls
+`TokenManager.login` directly, and its TokenManager has only ever stored
+characters under `f"{prefix}:{character_id}"`, so this repo's legacy-
+single-key reconciliation in `_list_role_characters` has nothing to
+reconcile there — it is one `tm.list_records(prefix)` call.
+`do_recategorize_shortlist` and `do_list_transaction_characters` are left
+out there as web-UI-specific one-offs (a one-time fix-up for a bug the
+local shortlist never had, and a character picker for a tab that doesn't
+exist); port them if a GUI needs them. `do_wallet_transactions` returns raw
+`location_id`s on the local side where this repo resolves display names —
+that needs this repo's persisted `structure_names` table, which
+eve-trader-local has no equivalent of yet.
+
+Added on the local side specifically to support this layer:
+- `storage.py`: the `new_candidates`, `goonmetrics_history`,
+  `candidate_search_cursor` and `shortlist_skip_streak` tables (the
+  persistence `candidate_discovery.py`/`history_backtest.py` were
+  deliberately ported without, since their caller owns it there) with
+  matching save/load helpers, plus `sde_type_names`. Reads there return
+  `NewCandidateResult`/`HistoryPoint` objects where this repo returns
+  DataFrames (no pandas on the local side) — the history read imports
+  `HistoryPoint` *inside* the function, since a module-level import would
+  close a `storage -> goonmetrics_client -> config -> storage` cycle there.
+  `new_candidates` is append-only there (a safe-mode run only ever covers a
+  rotating window); reads filter to `MAX(run_ts)` themselves.
+- `config.py`: `TradingConfig.skip_grace_period_days`,
+  `enforce_shortlist_cap` and `max_active_shortlist_items` on the local
+  side — the pruning policy fields the `shortlist.py` row deferred to
+  exactly this layer, with `_FIELD_RANGES` entries for the two numeric ones.
+- `cli.py`: `build-universe`, `find-candidates` (`--safe/--full`, matching
+  this repo's own flag pair), `add-to-shortlist`, `refresh-shortlist`,
+  `check-unlisted-stock`, `check-undercut`, `reconcile-trades` and
+  `pipeline` (`--rebuild-universe`) on the local side. One command per
+  action, printing only — no logic, so a future GUI calls the same `do_*`
+  functions.
+
+One deliberate behavioral difference from this repo, not an oversight:
+eve-trader-local's `do_add_to_shortlist` raises only when *no* candidate
+search has ever run, and returns `{"added": 0}` when the latest run simply
+recommended nothing. This repo raises on an empty table only, which amounts
+to the same thing here (its table accumulates across tenants' runs); there
+the distinction has to be explicit so a normal "nothing worth adding this
+run" outcome doesn't abort `do_refresh_and_prune_candidates` before it
+prunes.
+
 ## Candidates — port when the algorithm changes, once each exists on the local side
 
 None of these are in `eve-trader-local` yet. When one gets ported over as a
