@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Badge, Stack, Card, Title, Text, Group, NumberInput, Button, ActionIcon, Divider } from '@mantine/core'
 import { modals } from '@mantine/modals'
-import { IconTrash } from '@tabler/icons-react'
+import { IconTrash, IconCheck } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
@@ -34,6 +34,16 @@ function ManualBlueprintCopyCostsSection() {
   // being removed (same bug ProductionLayout.tsx's own removeCharacter/
   // pendingRoleKey comment already documents and fixes).
   const [pendingTypeId, setPendingTypeId] = useState<number | null>(null)
+  const updateCost = useAction(
+    'Save Blueprint Copy Cost',
+    (args: { typeId: number; purchaseCost: number; runs: number }) =>
+      productionApi.updateManualBlueprintCopyCost(args.typeId, args.purchaseCost, args.runs),
+    MANUAL_COPY_COSTS_KEY,
+  )
+  // Same one-shared-mutation-instance caveat as removeCost/pendingTypeId
+  // above, tracked separately since a row's edit and delete can each be
+  // in flight independently.
+  const [pendingEditTypeId, setPendingEditTypeId] = useState<number | null>(null)
 
   const { data: itemNameOptions } = useItemNameOptions()
   const copyCostItemOptions = useMemo(
@@ -46,8 +56,28 @@ function ManualBlueprintCopyCostsSection() {
 
   const columns = useMemo<ColumnDef<ManualBlueprintCopyCostRow, any>[]>(() => [
     { header: 'Item', accessorKey: 'type_name', size: 260 },
-    { header: 'Purchase Cost', accessorKey: 'purchase_cost', size: 150, cell: (i) => isk(i.getValue()) },
-    { header: 'Runs', accessorKey: 'runs', size: 100, cell: (i) => qty(i.getValue()) },
+    {
+      header: 'Purchase Cost', accessorKey: 'purchase_cost', size: 170,
+      cell: (i) => (
+        <EditableCopyCostCell value={i.getValue()} ariaLabel={`Purchase cost for ${i.row.original.type_name}`}
+          min={0} isPending={updateCost.isPending && pendingEditTypeId === i.row.original.type_id}
+          onSave={(v) => {
+            setPendingEditTypeId(i.row.original.type_id)
+            updateCost.mutate({ typeId: i.row.original.type_id, purchaseCost: v, runs: i.row.original.runs })
+          }} />
+      ),
+    },
+    {
+      header: 'Runs', accessorKey: 'runs', size: 130,
+      cell: (i) => (
+        <EditableCopyCostCell value={i.getValue()} ariaLabel={`Runs for ${i.row.original.type_name}`}
+          min={1} isPending={updateCost.isPending && pendingEditTypeId === i.row.original.type_id}
+          onSave={(v) => {
+            setPendingEditTypeId(i.row.original.type_id)
+            updateCost.mutate({ typeId: i.row.original.type_id, purchaseCost: i.row.original.purchase_cost, runs: v })
+          }} />
+      ),
+    },
     { header: 'Cost/Run', accessorKey: 'cost_per_run', size: 150, cell: (i) => isk(i.getValue()) },
     {
       header: '', id: 'actions', size: 60, enableSorting: false,
@@ -66,7 +96,7 @@ function ManualBlueprintCopyCostsSection() {
       ),
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  ], [removeCost, pendingTypeId])
+  ], [removeCost, pendingTypeId, updateCost, pendingEditTypeId])
 
   return (
     <div>
@@ -108,6 +138,37 @@ function ManualBlueprintCopyCostsSection() {
           dataUpdatedAt={dataUpdatedAt} />
       )}
     </div>
+  )
+}
+
+// Inline cell editor for the manual-copy-costs table below - same
+// "local draft state, checkmark appears once it differs from the saved
+// value, click to save" pattern as StockTargets.tsx's own
+// EditableNumberCell/doctrine/DoctrineDetail.tsx's TargetEditor. Safe to key
+// state purely off the initial `value` prop (no resync effect needed) for
+// the same reason those components don't need one either - see DataTable's
+// `getRowId` prop (used below) for what actually *would* break this if it
+// were missing.
+function EditableCopyCostCell({ value, ariaLabel, min, isPending, onSave }: {
+  value: number
+  ariaLabel: string
+  min: number
+  isPending: boolean
+  onSave: (value: number) => void
+}) {
+  const [draft, setDraft] = useState(value)
+  const dirty = draft !== value
+  return (
+    <Group gap={4} wrap="nowrap">
+      <NumberInput value={draft} onChange={(v) => setDraft(v === '' ? min : Number(v))}
+        min={min} size="xs" w={110} aria-label={ariaLabel} />
+      {dirty && (
+        <ActionIcon size="sm" variant="filled" color="accent" aria-label={`Save ${ariaLabel}`}
+          onClick={() => onSave(draft)} loading={isPending}>
+          <IconCheck size={14} />
+        </ActionIcon>
+      )}
+    </Group>
   )
 }
 

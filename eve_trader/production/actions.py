@@ -796,6 +796,22 @@ def do_add_manual_blueprint_copy_cost(item_name: str, purchase_cost: float, runs
     return {"type_id": type_id, "type_name": resolved_name, "purchase_cost": purchase_cost, "runs": runs}
 
 
+def do_update_manual_blueprint_copy_cost(type_id: int, purchase_cost: float, runs: int) -> dict:
+    """Edits purchase_cost/runs for an already-registered row in place (the
+    Blueprints page's inline-editable table) - unlike do_add_*, takes
+    type_id directly instead of re-resolving an item name, since the row
+    already exists."""
+    if purchase_cost <= 0:
+        raise ActionError("Purchase cost must be a positive number.")
+    if runs <= 0:
+        raise ActionError("Runs must be a positive integer.")
+    if not storage.update_manual_blueprint_copy_cost(type_id, purchase_cost, runs):
+        raise ActionError(f"No registered blueprint copy cost found for type_id {type_id}.")
+    invalidate_discover_cache()
+    invalidate_ship_margin_cache()
+    return {"type_id": type_id, "purchase_cost": purchase_cost, "runs": runs}
+
+
 def do_remove_manual_blueprint_copy_cost(type_id: int) -> dict:
     storage.delete_manual_blueprint_copy_cost(type_id)
     invalidate_discover_cache()

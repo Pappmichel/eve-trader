@@ -1139,6 +1139,18 @@ def upsert_manual_blueprint_copy_cost(type_id: int, type_name: str, purchase_cos
         )
 
 
+def update_manual_blueprint_copy_cost(type_id: int, purchase_cost: float, runs: int) -> bool:
+    """Updates purchase_cost/runs for an already-registered row, leaving
+    type_name untouched. Returns False if no row exists for `type_id` (the
+    caller should raise ActionError, not silently insert a name-less row)."""
+    with connect() as conn:
+        cur = conn.execute(
+            "UPDATE manual_blueprint_copy_costs SET purchase_cost=?, runs=? WHERE type_id=?",
+            (purchase_cost, runs, type_id),
+        )
+        return cur.rowcount > 0
+
+
 def load_manual_blueprint_copy_costs() -> list[tuple]:
     """Returns [(type_id, type_name, purchase_cost, runs), ...]."""
     with connect() as conn:

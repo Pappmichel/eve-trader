@@ -235,6 +235,22 @@ def test_manual_blueprint_copy_cost_upsert_updates_existing_row(tenant):
     assert rows == [(TYPE_ID, "Tritanium", 2_000_000.0, 5)]
 
 
+def test_manual_blueprint_copy_cost_update_existing_row(tenant):
+    storage.upsert_manual_blueprint_copy_cost(TYPE_ID, "Tritanium", purchase_cost=1_000_000.0, runs=10)
+
+    updated = storage.update_manual_blueprint_copy_cost(TYPE_ID, purchase_cost=2_000_000.0, runs=5)
+
+    assert updated is True
+    assert storage.load_manual_blueprint_copy_costs() == [(TYPE_ID, "Tritanium", 2_000_000.0, 5)]
+
+
+def test_manual_blueprint_copy_cost_update_missing_row_returns_false(tenant):
+    updated = storage.update_manual_blueprint_copy_cost(TYPE_ID, purchase_cost=2_000_000.0, runs=5)
+
+    assert updated is False
+    assert storage.load_manual_blueprint_copy_costs() == []
+
+
 def test_manual_blueprint_copy_cost_delete(tenant):
     storage.upsert_manual_blueprint_copy_cost(TYPE_ID, "Tritanium", purchase_cost=1_000_000.0, runs=10)
 

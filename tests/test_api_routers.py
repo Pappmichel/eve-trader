@@ -222,6 +222,33 @@ def test_add_manual_blueprint_copy_cost_action_error_maps_to_400(monkeypatch):
     assert "Nowhere" in resp.json()["detail"]
 
 
+def test_update_manual_blueprint_copy_cost_passes_body_fields(monkeypatch):
+    captured = {}
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        return {"type_id": kwargs["type_id"], "purchase_cost": kwargs["purchase_cost"], "runs": kwargs["runs"]}
+    monkeypatch.setattr(production_actions, "do_update_manual_blueprint_copy_cost", _capture)
+
+    resp = client.put("/api/production/blueprints/manual-copy-costs/34",
+                       json={"purchase_cost": 2_000_000.0, "runs": 5})
+
+    assert resp.status_code == 200
+    assert captured == {"type_id": 34, "purchase_cost": 2_000_000.0, "runs": 5}
+
+
+def test_update_manual_blueprint_copy_cost_action_error_maps_to_400(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise ActionError("No registered blueprint copy cost found for type_id 34.")
+    monkeypatch.setattr(production_actions, "do_update_manual_blueprint_copy_cost", _raise)
+
+    resp = client.put("/api/production/blueprints/manual-copy-costs/34",
+                       json={"purchase_cost": 1.0, "runs": 1})
+
+    assert resp.status_code == 400
+    assert "34" in resp.json()["detail"]
+
+
 def test_remove_manual_blueprint_copy_cost_passes_type_id(monkeypatch):
     captured = {}
 

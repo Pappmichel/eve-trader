@@ -157,6 +157,17 @@ def add_manual_blueprint_copy_cost(req: AddManualBlueprintCopyCostRequest):
                  purchase_cost=req.purchase_cost, runs=req.runs)
 
 
+class UpdateManualBlueprintCopyCostRequest(BaseModel):
+    purchase_cost: float
+    runs: int
+
+
+@router.put("/blueprints/manual-copy-costs/{type_id}")
+def update_manual_blueprint_copy_cost(type_id: int, req: UpdateManualBlueprintCopyCostRequest):
+    return _wrap(actions.do_update_manual_blueprint_copy_cost, type_id=type_id,
+                 purchase_cost=req.purchase_cost, runs=req.runs)
+
+
 @router.delete("/blueprints/manual-copy-costs/{type_id}")
 def remove_manual_blueprint_copy_cost(type_id: int):
     return _wrap(actions.do_remove_manual_blueprint_copy_cost, type_id=type_id)
