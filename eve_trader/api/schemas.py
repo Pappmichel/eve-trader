@@ -744,3 +744,33 @@ class ProductionPlan(BaseModel):
 
 class AssetPlan(BaseModel):
     jobs: list[AssetPlanJob]
+
+
+# --------------------------------------------------------- special orders
+class SpecialOrder(_Base):
+    order_id: str
+    note: Optional[str] = None
+    net_against_stock: bool
+    status: str
+    created_at: Optional[str] = None
+    item_count: int
+
+
+class SpecialOrderLineItem(_Base):
+    type_id: int
+    type_name: str
+    quantity: float
+
+
+class StockOverlapWarningRow(_Base):
+    type_id: int
+    type_name: str
+    current_stock: float
+
+
+class SpecialOrderComputeResult(BaseModel):
+    line_items: list[SpecialOrderLineItem]
+    buy_list: list[BuyListEntry]
+    build_list: list[BuildJobEntry]
+    invention_list: list[InventionNeedRow]
+    stock_overlap_warning: list[StockOverlapWarningRow]
