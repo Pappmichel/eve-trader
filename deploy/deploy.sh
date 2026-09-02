@@ -45,7 +45,7 @@ echo "==> Applying Postgres schema (all files, idempotent)..."
 # introduced, never for this particular shared CHECK constraint.
 for f in phase1_schema.sql phase2_schema.sql phase3_schema.sql admin_schema.sql \
          doctrine_schema.sql observability_schema.sql refining_schema.sql \
-         station_trading_schema.sql role_consent_schema.sql; do
+         station_trading_schema.sql role_consent_schema.sql special_orders_schema.sql; do
     sudo -u postgres psql -d eve_trader -v ON_ERROR_STOP=1 -f "docs/$f"
 done
 

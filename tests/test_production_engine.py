@@ -1535,6 +1535,170 @@ def test_expand_all_still_pools_multiple_edges_to_the_same_material_within_one_r
     assert buy_totals[5] == 110  # Mineral: 1:1 with Common's runs, no buffer
 
 
+def test_expand_all_ignore_current_stock_treats_every_material_as_zero_on_hand(monkeypatch, _expand_all_bom):
+    # plan_special_order's net_against_stock=False ("from scratch") mode -
+    # even though real stock is on hand (Common: 5 units), ignore_current_stock=True
+    # must plan as if none of it exists, same totals as if _current_stock
+    # always returned 0 (the _expand_all_bom fixture's own default).
+    monkeypatch.setattr(engine, "_current_stock", lambda type_id, *a, **k: 5.0 if type_id == 3 else 0.0)
+    cfg = ProductionConfig(component_overbuild=0.0)
+    stock_targets = [(1, "ItemA", 1, 0, 0), (2, "ItemB", 1, 0, 0)]
+    base_runs = engine._base_runs(cfg, {}, {}, {}, {}, {}, {}, {}, {}, stock_targets)
+
+    with_stock = engine._expand_all({1: 1.0, 2: 1.0}, cfg, {}, {}, {}, {}, {}, {}, {}, {}, base_runs)
+    ignored = engine._expand_all({1: 1.0, 2: 1.0}, cfg, {}, {}, {}, {}, {}, {}, {}, {}, dict(base_runs),
+                                  ignore_current_stock=True)
+
+    # With real netting on, Common's 5 units on hand reduce its target
+    # (110) by exactly 5 before sizing its own build runs - with
+    # ignore_current_stock, it's planned exactly as if _current_stock
+    # always returned 0, matching the sibling pooling test's own totals
+    # above (110, no netting at all).
+    assert with_stock[1][(103, 1, 3)] == 105
+    assert ignored[1][(103, 1, 3)] == 110
+    assert ignored[0][5] == 110
+
+
+# ------------------------------------------------------------ plan_special_order
+def _make_fake_special_order_context(stock_targets=(), manual_stock=None):
+    """Same idea as _make_fake_plan_context above, but also accepts
+    extra_type_ids (plan_special_order's own addition to _PlanContext.__init__) -
+    ignored here since these tests don't exercise real pricing at all."""
+    class _FakeCtx:
+        def __init__(self, cfg, extra_type_ids=()):
+            self.stock_targets = list(stock_targets)
+            self.manual_stock = manual_stock or {}
+            self.manual_overrides = {}
+            self.selected_decryptors = {}
+            self.home = {}
+            self.jita = {}
+            self.cost_indices = {}
+            self.adjusted_prices = {}
+    return _FakeCtx
+
+
+@pg_helpers.postgres_required()
+def test_plan_special_order_pools_a_shared_material_across_two_line_items(monkeypatch, tenant):
+    # Two line items (Widget A, Widget B) both need Common - must be pooled
+    # into one buy_list entry, not double-ordered, same guarantee
+    # plan_production already gives across stock targets.
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_special_order_context())
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: (
+        ("Tech I", (100 + type_id, 1, 1.0)) if type_id in (10, 20) else ("Input", None)))
+    monkeypatch.setattr(storage, "get_blueprint_materials",
+                         lambda blueprint_id, activity_id: [(999, 1)])  # both need 1x Common per unit
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_buy_or_build_decision",
+                         lambda type_id, cfg, home, jita, manual_overrides, cost_memo, bp, depth: "Buy" if bp is None else "Build")
+
+    items = [(10, "Widget A", 5.0), (20, "Widget B", 3.0)]
+    result = engine.plan_special_order(items, ProductionConfig(component_overbuild=0.0), net_against_stock=False)
+
+    assert {row.type_id for row in result["build_list"]} == {10, 20}
+    assert result["buy_list"][0].type_id == 999
+    assert result["buy_list"][0].quantity == 8.0  # 5 (Widget A) + 3 (Widget B), pooled once
+    assert [li.type_id for li in result["line_items"]] == [10, 20]
+
+
+@pg_helpers.postgres_required()
+def test_plan_special_order_no_margin_gate_unprofitable_item_still_appears(monkeypatch, tenant):
+    # plan_production would drop an unprofitable item's demand entirely
+    # (test_plan_production_drops_demand_entirely_when_build_margin_fails_min_margin
+    # above) - a special order must never do that, even if _build_margin
+    # would say no. _build_margin is deliberately left unmocked/unpatched
+    # here too - if plan_special_order ever called it, this test would fail
+    # with an AttributeError-shaped surprise, not silently pass.
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_special_order_context())
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (110, 1, 1.0)))
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [])
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_buy_or_build_decision", lambda *a, **k: "Build")
+
+    items = [(10, "BadMargin", 1.0)]
+    result = engine.plan_special_order(items, ProductionConfig(min_margin=0.99), net_against_stock=False)
+
+    assert {row.type_id for row in result["build_list"]} == {10}
+
+
+@pg_helpers.postgres_required()
+def test_plan_special_order_net_against_stock_false_ignores_current_stock(monkeypatch, tenant):
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_special_order_context())
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))  # plain Buy leaf
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 999.0)  # plenty on hand
+
+    items = [(10, "Widget", 5.0)]
+    result = engine.plan_special_order(items, ProductionConfig(), net_against_stock=False)
+
+    assert {row.type_id: row.quantity for row in result["buy_list"]} == {10: 5.0}  # full quantity, stock ignored
+
+
+@pg_helpers.postgres_required()
+def test_plan_special_order_net_against_stock_true_nets_off_current_stock(monkeypatch, tenant):
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_special_order_context())
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 3.0)  # 3 of the 5 ordered already on hand
+
+    items = [(10, "Widget", 5.0)]
+    result = engine.plan_special_order(items, ProductionConfig(), net_against_stock=True)
+
+    assert {row.type_id: row.quantity for row in result["buy_list"]} == {10: 2.0}  # only the shortfall
+
+
+@pg_helpers.postgres_required()
+def test_plan_special_order_net_against_stock_true_fully_covered_needs_nothing(monkeypatch, tenant):
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_special_order_context())
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 10.0)  # more than the 5 ordered
+
+    items = [(10, "Widget", 5.0)]
+    result = engine.plan_special_order(items, ProductionConfig(), net_against_stock=True)
+
+    assert result["buy_list"] == []
+    assert result["build_list"] == []
+
+
+@pg_helpers.postgres_required()
+def test_plan_special_order_stock_overlap_warning_flags_shared_in_stock_items(monkeypatch, tenant):
+    # 34 (Tritanium) is reachable from both the order's own item and a
+    # configured stock target, and has real stock on hand - must be
+    # flagged. 999 (only reachable from the stock target, never from the
+    # order) must not appear even though it also has stock.
+    stock_targets = [(20, "StockTargetWidget", 1, 0, 0)]
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_special_order_context(stock_targets))
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: stock_targets)
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: (
+        ("Tech I", (100 + type_id, 1, 1.0)) if type_id in (10, 20) else ("Input", None)))
+    materials_by_blueprint = {110: [(34, 1)], 120: [(34, 1), (999, 1)]}
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: materials_by_blueprint.get(blueprint_id, []))
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_current_stock", lambda type_id, *a, **k: {34: 500.0, 999: 200.0}.get(type_id, 0.0))
+    monkeypatch.setattr(engine, "_buy_or_build_decision",
+                         lambda type_id, cfg, home, jita, manual_overrides, cost_memo, bp, depth: "Buy" if bp is None else "Build")
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Type{type_id}", 1.0, 1, 1, 0, None))
+
+    items = [(10, "OrderWidget", 5.0)]
+    result = engine.plan_special_order(items, ProductionConfig(component_overbuild=0.0), net_against_stock=True)
+
+    assert {row.type_id for row in result["stock_overlap_warning"]} == {34}
+    assert result["stock_overlap_warning"][0].current_stock == 500.0
+
+
+@pg_helpers.postgres_required()
+def test_plan_special_order_no_overlap_warning_when_net_against_stock_false(monkeypatch, tenant):
+    stock_targets = [(20, "StockTargetWidget", 1, 0, 0)]
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_special_order_context(stock_targets))
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: stock_targets)
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 500.0)
+
+    items = [(10, "OrderWidget", 5.0)]
+    result = engine.plan_special_order(items, ProductionConfig(), net_against_stock=False)
+
+    assert result["stock_overlap_warning"] == []
+
+
 # ------------------------------------------------------------ plan_asset_optimized
 @pg_helpers.postgres_required()
 def test_plan_asset_optimized_applies_the_same_overbuild_buffer_as_expand_all(monkeypatch, _expand_all_bom, tenant):
