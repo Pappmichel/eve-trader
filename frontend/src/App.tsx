@@ -33,6 +33,7 @@ const TradingSettings = lazy(() => import('./pages/trading/TradingSettings'))
 const ProductionLayout = lazy(() => import('./pages/production/ProductionLayout'))
 const ProductionOverview = lazy(() => import('./pages/production/Overview'))
 const StockTargets = lazy(() => import('./pages/production/StockTargets'))
+const SpecialOrders = lazy(() => import('./pages/production/SpecialOrders'))
 const MarketStatus = lazy(() => import('./pages/production/MarketStatus'))
 const Jobs = lazy(() => import('./pages/production/Jobs'))
 const Slots = lazy(() => import('./pages/production/Slots'))
@@ -197,6 +198,7 @@ function App() {
             <Route path="/production" element={<ProductionLayout />}>
               <Route index element={<ProductionOverview />} />
               <Route path="stock-targets" element={<StockTargets />} />
+              <Route path="special-orders" element={<SpecialOrders />} />
               <Route path="market" element={<MarketStatus />} />
               <Route path="jobs" element={<Jobs />} />
               <Route path="slots" element={<Slots />} />
