@@ -46,10 +46,18 @@ class BuyListEntry:
     # % of this item's *total* demand (quantity + whatever's already on hand)
     # already covered by owned stock across every location (see
     # engine._current_stock) - 0-100. 0 means none of it is on hand yet (or
-    # it's a brand-new demand this run); 100 would mean it's fully covered
-    # and wouldn't appear on the Buy List at all.
+    # it's a brand-new demand this run); 100 means it's fully covered - for
+    # plan_production this means the row wouldn't appear on the Buy List at
+    # all, but plan_special_order's own net_against_stock=True mode
+    # deliberately still emits a quantity=0/on_hand_pct=100 row for these
+    # (confirmed with the user, 2026-09-02: "what's needed" should stay a
+    # complete picture even when everything's already on hand).
     on_hand_pct: float = 0.0
     buy_from: Optional[str] = None  # "C-J" | "Jita" | None (no sell order anywhere)
+    # Real SDE item category (Ship/Module/Charge/Material/...) - see
+    # engine._build_buy_list's own comment for why this isn't job_category
+    # (None for most buyable items, which have no blueprint of their own).
+    category: Optional[str] = None
 
 
 @dataclass

@@ -434,7 +434,7 @@ def test_update_special_order_forwards_status(monkeypatch):
     resp = client.patch("/api/production/special-orders/order-1", json={"status": "done"})
 
     assert resp.status_code == 200
-    assert captured["kwargs"] == {"order_id": "order-1", "status": "done", "note": None}
+    assert captured["kwargs"] == {"order_id": "order-1", "status": "done", "note": None, "net_against_stock": None}
 
 
 def test_remove_special_order(monkeypatch):
@@ -465,6 +465,94 @@ def test_compute_special_order_action_error_maps_to_400(monkeypatch):
     monkeypatch.setattr(production_actions, "do_compute_special_order", _raise)
 
     resp = client.post("/api/production/special-orders/missing/compute")
+
+    assert resp.status_code == 400
+
+
+def test_update_special_order_forwards_net_against_stock(monkeypatch):
+    captured = {}
+
+    def _fake_update(**kwargs):
+        captured["kwargs"] = kwargs
+        return {"order": None, "items": []}
+    monkeypatch.setattr(production_actions, "do_update_special_order", _fake_update)
+
+    resp = client.patch("/api/production/special-orders/order-1", json={"net_against_stock": True})
+
+    assert resp.status_code == 200
+    assert captured["kwargs"] == {"order_id": "order-1", "status": None, "note": None, "net_against_stock": True}
+
+
+def test_set_special_order_item_forwards_type_id_and_quantity(monkeypatch):
+    captured = {}
+
+    def _fake_set(**kwargs):
+        captured["kwargs"] = kwargs
+        return {"order": None, "items": []}
+    monkeypatch.setattr(production_actions, "do_set_special_order_item", _fake_set)
+
+    resp = client.put("/api/production/special-orders/order-1/items", json={"type_id": 34, "quantity": 500.0})
+
+    assert resp.status_code == 200
+    assert captured["kwargs"] == {"order_id": "order-1", "type_id": 34, "quantity": 500.0}
+
+
+def test_remove_special_order_item(monkeypatch):
+    monkeypatch.setattr(production_actions, "do_remove_special_order_item",
+                         lambda order_id, type_id: {"order": None, "items": []})
+
+    resp = client.delete("/api/production/special-orders/order-1/items/34")
+
+    assert resp.status_code == 200
+
+
+def test_remove_special_order_item_action_error_maps_to_400(monkeypatch):
+    def _raise(order_id, type_id):
+        raise ActionError("A special order needs at least one item.")
+    monkeypatch.setattr(production_actions, "do_remove_special_order_item", _raise)
+
+    resp = client.delete("/api/production/special-orders/order-1/items/34")
+
+    assert resp.status_code == 400
+
+
+def test_compute_combined_special_orders_forwards_order_ids_and_net_against_stock(monkeypatch):
+    captured = {}
+
+    def _fake_combine(**kwargs):
+        captured["kwargs"] = kwargs
+        return {"line_items": [], "buy_list": [], "build_list": [], "invention_list": [], "stock_overlap_warning": []}
+    monkeypatch.setattr(production_actions, "do_compute_combined_special_orders", _fake_combine)
+
+    resp = client.post("/api/production/special-orders/combine/compute",
+                        json={"order_ids": ["order-1", "order-2"], "net_against_stock": True})
+
+    assert resp.status_code == 200
+    assert captured["kwargs"] == {"order_ids": ["order-1", "order-2"], "net_against_stock": True}
+
+
+def test_compute_combined_special_orders_does_not_collide_with_order_id_route(monkeypatch):
+    # Regression guard for the routing ambiguity documented in
+    # api/routers/production.py's own comment - "combine" must never be
+    # interpreted as an {order_id} path param by the /special-orders/
+    # {order_id}/compute route registered later.
+    monkeypatch.setattr(production_actions, "do_compute_combined_special_orders", lambda **kwargs: {
+        "line_items": [], "buy_list": [], "build_list": [], "invention_list": [], "stock_overlap_warning": [],
+    })
+    monkeypatch.setattr(production_actions, "do_compute_special_order",
+                         lambda order_id: pytest.fail("must not route to the single-order compute action"))
+
+    resp = client.post("/api/production/special-orders/combine/compute", json={"order_ids": ["order-1"]})
+
+    assert resp.status_code == 200
+
+
+def test_compute_combined_special_orders_action_error_maps_to_400(monkeypatch):
+    def _raise(**kwargs):
+        raise ActionError("Select at least one special order to combine.")
+    monkeypatch.setattr(production_actions, "do_compute_combined_special_orders", _raise)
+
+    resp = client.post("/api/production/special-orders/combine/compute", json={"order_ids": []})
 
     assert resp.status_code == 400
 

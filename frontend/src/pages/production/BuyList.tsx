@@ -1,6 +1,6 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Title, Text, Stack, Button, Group, Badge } from '@mantine/core'
+import { Card, Title, Text, Stack, Button, Group, Badge, MultiSelect } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
@@ -10,6 +10,8 @@ import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
 import { isk, qty } from '../../format'
 
+const CATEGORY_UNKNOWN = 'no category'
+
 export default function BuyList() {
   const { data: plan, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['production', 'plan'], queryFn: productionApi.plan })
   const buyList = plan?.buy_list ?? []
@@ -18,10 +20,20 @@ export default function BuyList() {
     ['production', 'plan'], ['production', 'stock-targets'], ['production', 'logistics'],
   ])
 
-  const total = useMemo(() => buyList.reduce((sum, e) => sum + (e.total_price ?? 0), 0), [buyList])
+  const categories = useMemo(
+    () => [...new Set(buyList.map((e) => e.category ?? CATEGORY_UNKNOWN))].sort(), [buyList],
+  )
+  const [selCategories, setSelCategories] = useState<string[]>([])
+  const filtered = useMemo(() => {
+    if (selCategories.length === 0) return buyList
+    return buyList.filter((e) => selCategories.includes(e.category ?? CATEGORY_UNKNOWN))
+  }, [buyList, selCategories])
+
+  const total = useMemo(() => filtered.reduce((sum, e) => sum + (e.total_price ?? 0), 0), [filtered])
 
   const columns = useMemo<ColumnDef<BuyListEntry, any>[]>(() => [
     { header: 'Item', accessorKey: 'type_name', size: 220 },
+    { header: 'Category', accessorKey: 'category', size: 150, cell: (i) => i.getValue() ?? '–' },
     {
       header: 'Buy From', accessorKey: 'buy_from', size: 120,
       cell: (i) => {
@@ -59,15 +71,26 @@ export default function BuyList() {
   return (
     <Stack>
       <Group justify="space-between" align="flex-end">
-        <Card withBorder padding="sm" w={280}>
-          <Text size="xs" c="dimmed" tt="uppercase">Total Buy List Value</Text>
-          <Title order={3} c="accent">{isk(total)}</Title>
-        </Card>
+        <Group align="flex-end">
+          <Card withBorder padding="sm" w={280}>
+            <Text size="xs" c="dimmed" tt="uppercase">Total Buy List Value</Text>
+            <Title order={3} c="accent">{isk(total)}</Title>
+          </Card>
+          <MultiSelect
+            label="Category" data={categories} value={selCategories} onChange={setSelCategories}
+            placeholder="All" clearable w={280}
+          />
+        </Group>
         <Button variant="default" onClick={() => refreshPlan.mutate()} loading={refreshPlan.isPending}>
           Recompute
         </Button>
       </Group>
-      <DataTable data={buyList} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
+      <Text size="xs" c="dimmed">{filtered.length} of {buyList.length} items</Text>
+      {filtered.length === 0 ? (
+        <HintCard>No items in the selected categories.</HintCard>
+      ) : (
+        <DataTable data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
+      )}
     </Stack>
   )
 }

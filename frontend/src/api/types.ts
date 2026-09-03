@@ -208,6 +208,7 @@ export interface BuyListEntry {
   total_price: number | null
   on_hand_pct: number
   buy_from: string | null
+  category: string | null
 }
 
 export interface BuildJobEntry {

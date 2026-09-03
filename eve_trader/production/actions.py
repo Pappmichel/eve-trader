@@ -483,10 +483,14 @@ def do_get_special_order(order_id: str) -> dict:
     }
 
 
-def do_update_special_order(order_id: str, status: str | None = None, note: str | None = None) -> dict:
+def do_update_special_order(order_id: str, status: str | None = None, note: str | None = None,
+                             net_against_stock: bool | None = None) -> dict:
     """Partial update - same dynamic-dict shape as doctrine/actions.py's
-    do_update_fitting/storage.update_doctrine. Used for both "mark
-    complete" (status="done") and "reopen" (status="open")."""
+    do_update_fitting/storage.update_doctrine. Used for "mark complete"
+    (status="done"), "reopen" (status="open"), editing the note, and
+    flipping net_against_stock after creation (confirmed with the user,
+    2026-09-02: an order shouldn't be locked to whatever was picked at
+    creation time)."""
     if storage.get_special_order(order_id) is None:
         raise ActionError(f"Special order {order_id} not found.")
     if status is not None and status not in ("open", "done"):
@@ -496,6 +500,8 @@ def do_update_special_order(order_id: str, status: str | None = None, note: str 
         updates["status"] = status
     if note is not None:
         updates["note"] = note
+    if net_against_stock is not None:
+        updates["net_against_stock"] = net_against_stock
     storage.update_special_order(order_id, updates)
     return do_get_special_order(order_id)
 
@@ -503,6 +509,35 @@ def do_update_special_order(order_id: str, status: str | None = None, note: str 
 def do_remove_special_order(order_id: str) -> dict:
     storage.delete_special_order(order_id)
     return {"removed": order_id}
+
+
+def do_set_special_order_item(order_id: str, type_id: int, quantity: float) -> dict:
+    """Adds a new line item to an existing order, or updates an existing
+    one's quantity (upsert, same as do_create_special_order's own per-item
+    validation) - confirmed with the user (2026-09-02): items/quantities
+    must stay editable after creation, not just at creation time."""
+    if storage.get_special_order(order_id) is None:
+        raise ActionError(f"Special order {order_id} not found.")
+    if quantity <= 0:
+        raise ActionError(f"Quantity for type_id {type_id} must be positive.")
+    sde_type = storage.get_sde_type(type_id)
+    if sde_type is None:
+        raise ActionError(f"Unknown type_id {type_id} - refresh SDE first?")
+    storage.upsert_special_order_item(order_id, type_id, sde_type[2], quantity)
+    return do_get_special_order(order_id)
+
+
+def do_remove_special_order_item(order_id: str, type_id: int) -> dict:
+    """Refuses to remove an order's last remaining item - same "needs at
+    least one item" invariant do_create_special_order enforces at creation,
+    kept true for the lifetime of the order rather than only checked once."""
+    if storage.get_special_order(order_id) is None:
+        raise ActionError(f"Special order {order_id} not found.")
+    items = storage.list_special_order_items(order_id)
+    if len(items) <= 1 and any(t == type_id for t, _n, _q in items):
+        raise ActionError("A special order needs at least one item - remove the whole order instead.")
+    storage.remove_special_order_item(order_id, type_id)
+    return do_get_special_order(order_id)
 
 
 def do_compute_special_order(order_id: str, cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
@@ -518,6 +553,35 @@ def do_compute_special_order(order_id: str, cfg: ProductionConfig = PRODUCTION_C
         raise ActionError(f"Special order {order_id} not found.")
     _order_id, _note, net_against_stock, _status, _created_at = row
     items = storage.list_special_order_items(order_id)
+    return plan_special_order(items, cfg, net_against_stock=net_against_stock)
+
+
+def do_compute_combined_special_orders(order_ids: list[str], net_against_stock: bool,
+                                        cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
+    """Temporary, unsaved combination of 2+ existing orders' line items into
+    one pooled Buy/Build/Invention computation (confirmed with the user,
+    2026-09-02: preview-only - the individual orders themselves are never
+    modified, nothing new is persisted, this is purely "what would fulfilling
+    all of these together look like"). Items sharing a type_id across the
+    selected orders are pooled (summed), same "don't double-order a shared
+    material" guarantee a single order's own line items already get.
+    `net_against_stock` is chosen fresh for this combined view, independent
+    of whatever each individual order's own setting is - there's no single
+    correct way to combine two orders that disagree, so the caller picks."""
+    if not order_ids:
+        raise ActionError("Select at least one special order to combine.")
+    if sum(storage.sde_row_counts().values()) == 0:
+        raise ActionError("SDE cache is empty. Run 'Refresh SDE' first.")
+    pooled: dict[int, list] = {}  # type_id -> [type_name, quantity]
+    for order_id in order_ids:
+        if storage.get_special_order(order_id) is None:
+            raise ActionError(f"Special order {order_id} not found.")
+        for type_id, type_name, quantity in storage.list_special_order_items(order_id):
+            if type_id in pooled:
+                pooled[type_id][1] += quantity
+            else:
+                pooled[type_id] = [type_name, quantity]
+    items = [(type_id, type_name, quantity) for type_id, (type_name, quantity) in pooled.items()]
     return plan_special_order(items, cfg, net_against_stock=net_against_stock)
 
 

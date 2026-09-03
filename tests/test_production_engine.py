@@ -1635,19 +1635,14 @@ def test_plan_special_order_net_against_stock_false_ignores_current_stock(monkey
 
 
 @pg_helpers.postgres_required()
-def test_plan_special_order_net_against_stock_true_nets_off_current_stock(monkeypatch, tenant):
-    monkeypatch.setattr(engine, "_PlanContext", _make_fake_special_order_context())
-    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))
-    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 3.0)  # 3 of the 5 ordered already on hand
-
-    items = [(10, "Widget", 5.0)]
-    result = engine.plan_special_order(items, ProductionConfig(), net_against_stock=True)
-
-    assert {row.type_id: row.quantity for row in result["buy_list"]} == {10: 2.0}  # only the shortfall
-
-
-@pg_helpers.postgres_required()
-def test_plan_special_order_net_against_stock_true_fully_covered_needs_nothing(monkeypatch, tenant):
+def test_plan_special_order_top_level_quantity_never_netted_against_stock(monkeypatch, tenant):
+    # Confirmed with the user (2026-09-02): net_against_stock must never
+    # reduce the ordered quantity itself, even when far more than enough is
+    # already sitting on hand - the customer ordered 5, so 5 get sourced
+    # fresh regardless (existing finished-good stock isn't "claimed" by
+    # this order at all - see plan_special_order's own docstring). This
+    # replaces the old (now-reverted) behavior where net_against_stock also
+    # netted the line item's own top-level quantity.
     monkeypatch.setattr(engine, "_PlanContext", _make_fake_special_order_context())
     monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))
     monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 10.0)  # more than the 5 ordered
@@ -1655,8 +1650,36 @@ def test_plan_special_order_net_against_stock_true_fully_covered_needs_nothing(m
     items = [(10, "Widget", 5.0)]
     result = engine.plan_special_order(items, ProductionConfig(), net_against_stock=True)
 
-    assert result["buy_list"] == []
-    assert result["build_list"] == []
+    assert {row.type_id: row.quantity for row in result["buy_list"]} == {10: 5.0}
+
+
+@pg_helpers.postgres_required()
+def test_plan_special_order_net_against_stock_true_nets_sub_material_stock(monkeypatch, tenant):
+    # Unlike the top-level order quantity (never netted, see test above),
+    # component/material demand *below* the seed level still nets against
+    # real stock normally when net_against_stock=True - and a component
+    # fully covered by stock is still shown on the Buy List at quantity 0,
+    # 100% on hand (not silently omitted - confirmed with the user).
+    materials_by_blueprint = {110: [(20, 5)]}  # Widget needs 5x Component per unit
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_special_order_context())
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: (
+        ("Tech I", (110, 1, 1.0)) if type_id == 10 else ("Input", None)))
+    monkeypatch.setattr(storage, "get_blueprint_materials",
+                         lambda blueprint_id, activity_id: materials_by_blueprint.get(blueprint_id, []))
+    monkeypatch.setattr(engine, "_activity_mods",
+                         lambda activity, type_id, cfg, cost_indices, blueprint_id=None: (1.0, 1.0, 0.0))
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_current_stock", lambda type_id, *a, **k: 15.0 if type_id == 20 else 0.0)
+    monkeypatch.setattr(engine, "_buy_or_build_decision",
+                         lambda type_id, cfg, home, jita, manual_overrides, cost_memo, bp, depth: "Buy" if bp is None else "Build")
+
+    items = [(10, "Widget", 1.0)]  # needs 5x Component, 15 already on hand -> fully covered
+    result = engine.plan_special_order(items, ProductionConfig(component_overbuild=0.0), net_against_stock=True)
+
+    assert {row.type_id for row in result["build_list"]} == {10}  # Widget itself still fully built
+    component_entries = {row.type_id: row for row in result["buy_list"]}
+    assert component_entries[20].quantity == 0.0
+    assert component_entries[20].on_hand_pct == 100.0
 
 
 @pg_helpers.postgres_required()
@@ -2054,6 +2077,25 @@ def _make_fake_plan_context(stock_targets, manual_stock=None):
             self.cost_indices = {}
             self.adjusted_prices = {}
     return _FakeCtx
+
+
+@pg_helpers.postgres_required()
+def test_plan_production_buy_list_includes_real_sde_category_not_job_category(monkeypatch, tenant):
+    # Buy List's own "category" is the real SDE item category (Ship/Module/
+    # Material/...), deliberately not job_category - job_category is None
+    # for anything without a blueprint, which is most of what actually ends
+    # up on a Buy List (a raw mineral here has no blueprint at all).
+    stock_targets = [(34, "Tritanium", 1, 0, 0)]
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_plan_context(stock_targets))
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))  # no blueprint -> job_category is None
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_buy_or_build_decision", lambda *a, **k: "Buy")
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 4)  # 4 = Material
+    monkeypatch.setattr(storage, "load_sde_category_names", lambda: {4: "Material", 6: "Ship"})
+
+    result = engine.plan_production(ProductionConfig())
+
+    assert {row.type_id: row.category for row in result["buy_list"]} == {34: "Material"}
 
 
 @pg_helpers.postgres_required()
