@@ -138,7 +138,7 @@ from .constants import (
 from .jobs import character_slot_overview
 from .models import (
     AssetPlanJob, BuildJobEntry, BuyListEntry, DistributionRow, InventionNeedRow, InventionResult, InventoryRow,
-    LogisticsRow, MarketStatusRow, T1BpcInventionNeedRow,
+    LogisticsRow, MarketStatusRow, SpecialOrderLineItem, StockOverlapWarningRow, T1BpcInventionNeedRow,
 )
 
 MAX_DEPTH = 10
@@ -770,10 +770,19 @@ def _expand_all(seed_missing: dict[int, float], cfg: ProductionConfig, home: dic
                  manual_stock: dict[int, float], stock_used: dict[int, float],
                  base_runs: dict[int, float],
                  gross_demand: Optional[dict[int, float]] = None,
+                 ignore_current_stock: bool = False,
                  ) -> tuple[dict[int, float], dict[tuple[int, int, int], int]]:
     """Resolves every stock target's `seed_missing` quantity into buy_totals
     ({type_id: qty}) and build_runs ({(blueprint_id, activity_id, product_type_id): runs}),
     using the buy-vs-build decisions already computed in cost_memo.
+
+    `ignore_current_stock`, if True, treats every material's on-hand stock
+    as 0 regardless of what _current_stock would actually report - used by
+    plan_special_order's own `net_against_stock=False` ("from scratch")
+    mode, so a special order can be priced/planned independently of
+    whatever's currently sitting in the hangar. Default False preserves
+    today's behavior exactly for plan_production/plan_asset_optimized, the
+    only two callers this had before.
 
     `gross_demand`, if given, is mutated in place with each material's total
     *pre-stock-netting* pooled demand (this round's `target`, before
@@ -880,7 +889,10 @@ def _expand_all(seed_missing: dict[int, float], cfg: ProductionConfig, home: dic
             if gross_demand is not None:
                 gross_demand[material_id] = gross_demand.get(material_id, 0.0) + target
             _, m_bp = classify_activity(material_id)
-            available = max(0.0, _current_stock(material_id, manual_stock, cfg, m_bp) - stock_used.get(material_id, 0.0))
+            if ignore_current_stock:
+                available = 0.0
+            else:
+                available = max(0.0, _current_stock(material_id, manual_stock, cfg, m_bp) - stock_used.get(material_id, 0.0))
             consumed = min(target, available)
             stock_used[material_id] = stock_used.get(material_id, 0.0) + consumed
             net_needed = target - consumed
@@ -1042,7 +1054,7 @@ class _PlanContext:
     stock-target/manual-override/decryptor config - factored out so the two
     Baulisten can't drift apart on *how* they price or classify items, only
     on how they size jobs against available stock."""
-    def __init__(self, cfg: ProductionConfig):
+    def __init__(self, cfg: ProductionConfig, extra_type_ids: Iterable[int] = ()):
         from ..esi_client import ESIClient
 
         self.stock_targets = storage.load_stock_targets()
@@ -1053,7 +1065,11 @@ class _PlanContext:
         # Bounded, price-agnostic universe to price - see pricing.home_prices/
         # jita_prices' own docstrings for why this can't just be "everything"
         # now that both are ESI-first (Jita has no bulk-region endpoint).
-        priced_type_ids = list(_structural_material_closure(t[0] for t in self.stock_targets))
+        # `extra_type_ids` folds in plan_special_order's own line items
+        # (never part of stock_targets) so a one-off order's own materials
+        # get priced too, not just whatever stock_targets already covers.
+        priced_type_ids = list(_structural_material_closure(
+            [t[0] for t in self.stock_targets] + list(extra_type_ids)))
         self.home = pricing.home_prices(cfg, priced_type_ids)
         self.jita = pricing.jita_prices(priced_type_ids)
 
@@ -1078,6 +1094,68 @@ class _PlanContext:
             self.adjusted_prices = esi_client.get_adjusted_prices()
         except Exception:  # noqa: BLE001 - best-effort; falls back to 0 (job_cost=0), not a guess
             self.adjusted_prices = {}
+
+
+def _build_buy_list(buy_totals: dict[int, float], gross_demand: dict[int, float],
+                     cfg: ProductionConfig, home: dict, jita: dict) -> list[BuyListEntry]:
+    """Turns _expand_all's buy_totals into BuyListEntry rows, sorted by total
+    price desc - factored out of plan_production so plan_special_order can
+    build the exact same shape from its own buy_totals/gross_demand without
+    duplicating this loop."""
+    buy_list = []
+    for type_id, quantity in buy_totals.items():
+        sde_type = storage.get_sde_type(type_id)
+        name = sde_type[2] if sde_type else str(type_id)
+        volume = _haul_volume(type_id, cfg)
+        unit_price = pricing.buy_price(type_id, home, jita, volume, cfg)
+        gross = gross_demand.get(type_id, quantity)
+        on_hand_pct = max(0.0, min(100.0, (gross - quantity) / gross * 100)) if gross > 0 else 0.0
+        buy_list.append(BuyListEntry(
+            type_id=type_id, type_name=name, quantity=quantity, unit_price=unit_price,
+            on_hand_pct=on_hand_pct,
+            total_price=(unit_price * quantity) if unit_price is not None else None,
+            buy_from=pricing.buy_source(type_id, home, jita, volume, cfg),
+        ))
+    buy_list.sort(key=lambda e: e.total_price or 0, reverse=True)
+    return buy_list
+
+
+def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: dict[int, Optional[float]],
+                       t2_memo: dict[int, tuple[float, float, Optional[str]]],
+                       cfg: ProductionConfig, home: dict) -> list[BuildJobEntry]:
+    """Turns _expand_all's build_runs into BuildJobEntry rows, sorted by job
+    time desc - factored out of plan_production, same reasoning as
+    _build_buy_list above."""
+    build_list = []
+    for (blueprint_id, activity_id, product_type_id), runs in build_runs.items():
+        sde_type = storage.get_sde_type(product_type_id)
+        name = sde_type[2] if sde_type else str(product_type_id)
+        activity_label = "Reaction" if activity_id == ACTIVITY_REACTION else "Manufacturing"
+        base_time = storage.get_blueprint_time(blueprint_id, activity_id) or 0
+        bp = storage.get_blueprint_for_product(product_type_id)
+        product_qty = bp[2] if bp else 1
+        product_activity = classify_activity(product_type_id)[0]
+        if product_activity == "Tech II" and product_type_id in t2_memo:
+            _, time_mult, decryptor_name, _ = t2_memo[product_type_id]
+        else:
+            _, time_mult, _ = _activity_mods(product_activity, product_type_id, cfg, {}, blueprint_id)
+            decryptor_name = None
+        job_time = base_time * time_mult * runs
+        unit_cost = cost_memo.get(product_type_id)
+        build_list.append(BuildJobEntry(
+            type_id=product_type_id, type_name=name, blueprint_type_id=blueprint_id,
+            activity=activity_label, quantity=runs * product_qty, job_runs=runs,
+            job_time_seconds=job_time, unit_build_cost=unit_cost, decryptor=decryptor_name,
+            job_category=job_category(product_type_id),
+            # GitHub issue #38: margin_home, not margin_jita - Production
+            # sells only at C-J, never Jita (see CLAUDE.md), so the
+            # Bauliste's own margin must be the real C-J one, not the
+            # informational Jita comparison the standalone Margin page also
+            # shows.
+            margin=margin_home(product_type_id, unit_cost, home, cfg),
+        ))
+    build_list.sort(key=lambda e: e.job_time_seconds, reverse=True)
+    return build_list
 
 
 @storage.with_batch_session()
@@ -1244,55 +1322,132 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                                           selected_decryptors, t2_memo, manual_stock, stock_used, base_runs,
                                           gross_demand)
 
-    buy_list = []
-    for type_id, quantity in buy_totals.items():
-        sde_type = storage.get_sde_type(type_id)
-        name = sde_type[2] if sde_type else str(type_id)
-        volume = _haul_volume(type_id, cfg)
-        unit_price = pricing.buy_price(type_id, home, jita, volume, cfg)
-        gross = gross_demand.get(type_id, quantity)
-        on_hand_pct = max(0.0, min(100.0, (gross - quantity) / gross * 100)) if gross > 0 else 0.0
-        buy_list.append(BuyListEntry(
-            type_id=type_id, type_name=name, quantity=quantity, unit_price=unit_price,
-            on_hand_pct=on_hand_pct,
-            total_price=(unit_price * quantity) if unit_price is not None else None,
-            buy_from=pricing.buy_source(type_id, home, jita, volume, cfg),
-        ))
-    buy_list.sort(key=lambda e: e.total_price or 0, reverse=True)
-
-    build_list = []
-    for (blueprint_id, activity_id, product_type_id), runs in build_runs.items():
-        sde_type = storage.get_sde_type(product_type_id)
-        name = sde_type[2] if sde_type else str(product_type_id)
-        activity_label = "Reaction" if activity_id == ACTIVITY_REACTION else "Manufacturing"
-        base_time = storage.get_blueprint_time(blueprint_id, activity_id) or 0
-        bp = storage.get_blueprint_for_product(product_type_id)
-        product_qty = bp[2] if bp else 1
-        product_activity = classify_activity(product_type_id)[0]
-        if product_activity == "Tech II" and product_type_id in t2_memo:
-            _, time_mult, decryptor_name, _ = t2_memo[product_type_id]
-        else:
-            _, time_mult, _ = _activity_mods(product_activity, product_type_id, cfg, {}, blueprint_id)
-            decryptor_name = None
-        job_time = base_time * time_mult * runs
-        unit_cost = cost_memo.get(product_type_id)
-        build_list.append(BuildJobEntry(
-            type_id=product_type_id, type_name=name, blueprint_type_id=blueprint_id,
-            activity=activity_label, quantity=runs * product_qty, job_runs=runs,
-            job_time_seconds=job_time, unit_build_cost=unit_cost, decryptor=decryptor_name,
-            job_category=job_category(product_type_id),
-            # GitHub issue #38: margin_home, not margin_jita - Production
-            # sells only at C-J, never Jita (see CLAUDE.md), so the
-            # Bauliste's own margin must be the real C-J one, not the
-            # informational Jita comparison the standalone Margin page also
-            # shows.
-            margin=margin_home(product_type_id, unit_cost, home, cfg),
-        ))
-    build_list.sort(key=lambda e: e.job_time_seconds, reverse=True)
+    buy_list = _build_buy_list(buy_totals, gross_demand, cfg, home, jita)
+    build_list = _build_build_list(build_runs, cost_memo, t2_memo, cfg, home)
 
     invention_list.sort(key=lambda e: e.recommended_invention_runs, reverse=True)
 
     return {"inventory": inventory, "buy_list": buy_list, "build_list": build_list, "invention_list": invention_list}
+
+
+@storage.with_batch_session()
+def plan_special_order(items: list[tuple[int, str, float]], cfg: ProductionConfig,
+                        net_against_stock: bool) -> dict:
+    """One-off order variant of plan_production - seeded from `items`
+    ((type_id, type_name, quantity) tuples, a Special Order's own line
+    items) instead of storage.load_stock_targets(). Reuses the exact same
+    buy-vs-build/pricing/invention engine (_PlanContext, _base_runs,
+    _expand_all, _build_buy_list/_build_build_list) so the two Baulisten
+    can never drift apart on *how* they price or decide build-vs-buy - only
+    on *what* demand they start from and how stock is (or isn't) netted.
+
+    Two deliberate differences from plan_production, confirmed with the
+    user:
+    - No margin gate: an order must be fulfilled regardless of whether
+      building clears cfg.min_margin - margin is still visible on each
+      BuildJobEntry, just never used to drop an item from the result.
+    - `net_against_stock` (per order, not per line item) picks between two
+      whole-order modes: False (default) plans "from scratch", entirely
+      ignoring current stock (_expand_all's ignore_current_stock=True,
+      plus no top-level stock netting on the line items themselves either);
+      True nets against real ESI-synced stock the same way plan_production
+      does. True also triggers a stock_overlap_warning: every item that's
+      both reachable from this order's own material tree AND from the
+      configured stock_targets' own tree AND currently has stock on hand
+      right now - a heads-up that the same physical stock might get
+      "claimed" by both this order and a separately-computed regular
+      Bauliste, which don't otherwise know about each other. This is a
+      structural/currently-in-stock signal, not a precise "did the regular
+      plan actually consume it" check (that would need re-running
+      plan_production itself)."""
+    ctx = _PlanContext(cfg, extra_type_ids=[type_id for type_id, _name, _qty in items])
+    manual_stock, manual_overrides, selected_decryptors = ctx.manual_stock, ctx.manual_overrides, ctx.selected_decryptors
+    home, jita, cost_indices, adjusted_prices = ctx.home, ctx.jita, ctx.cost_indices, ctx.adjusted_prices
+
+    cost_memo: dict[int, Optional[float]] = {}
+    t2_memo: dict[int, tuple[float, float, Optional[str]]] = {}
+    invention_list: list[InventionNeedRow] = []
+    line_items: list[SpecialOrderLineItem] = []
+    # Same pooling ledger _expand_all itself uses (see its own docstring) -
+    # seeded here for the order's own top-level items the same way
+    # plan_production seeds it for top-level stock targets, so a line item
+    # that's *also* a shared material downstream doesn't get the same
+    # physical stock counted against both.
+    stock_used: dict[int, float] = {}
+
+    synthetic_stock_targets = [(type_id, type_name, quantity, 0, 0) for type_id, type_name, quantity in items]
+    base_runs = _base_runs(cfg, home, jita, manual_overrides, cost_memo, selected_decryptors, t2_memo,
+                            cost_indices, adjusted_prices, synthetic_stock_targets)
+
+    seed_missing: dict[int, float] = {}
+    gross_demand: dict[int, float] = {}
+
+    for type_id, type_name, quantity in items:
+        activity, bp = classify_activity(type_id)
+        if net_against_stock:
+            current_stock = _current_stock(type_id, manual_stock, cfg, bp)
+            missing = max(0.0, quantity - current_stock)
+            stock_used[type_id] = stock_used.get(type_id, 0.0) + min(current_stock, quantity)
+        else:
+            missing = quantity
+        line_items.append(SpecialOrderLineItem(type_id=type_id, type_name=type_name, quantity=quantity))
+
+        # Tech II/III line item: same invention-needs row shape as
+        # plan_production's own (InventionNeedRow), but the "target"
+        # stockpile_pct is measured against is this order's own runs_needed
+        # - there's no backup+home+Jita steady-state target for a one-off
+        # order the way there is for a stock target.
+        if activity == "Tech II" and bp is not None:
+            blueprint_id, activity_id, product_qty = bp
+            _, _, _, chosen = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
+                                             selected_decryptors, t2_memo)
+            if chosen is not None and chosen.output_runs > 0 and chosen.probability > 0:
+                t2_bpc_owned = int(storage.available_blueprint_copies(blueprint_id, None))
+                runs_needed = math.ceil(missing / product_qty) if missing > 0 else 0
+                runs_still_needed = max(0, runs_needed - t2_bpc_owned)
+                bpcs_needed = math.ceil(runs_still_needed / chosen.output_runs) if runs_still_needed > 0 else 0
+                recommended_runs = math.ceil(bpcs_needed / chosen.probability) if bpcs_needed > 0 else 0
+                stockpile_pct = max(0.0, t2_bpc_owned / runs_needed * 100) if runs_needed > 0 else 0.0
+                invention_list.append(InventionNeedRow(
+                    type_id=type_id, type_name=type_name,
+                    t1_blueprint_type_id=chosen.t1_blueprint_type_id, t1_blueprint_name=chosen.t1_blueprint_name,
+                    decryptor=chosen.decryptor, probability=chosen.probability, output_runs=chosen.output_runs,
+                    runs_needed=runs_needed, bpcs_needed=bpcs_needed,
+                    recommended_invention_runs=recommended_runs,
+                    t2_bpc_owned=t2_bpc_owned, stockpile_pct=stockpile_pct,
+                ))
+
+        if missing > 0:
+            _unit_cost(type_id, cfg, home, jita, cost_memo, selected_decryptors, t2_memo, cost_indices, adjusted_prices)
+            # No margin gate here (see docstring) - every missing quantity
+            # feeds the Buy/Build result regardless of cfg.min_margin.
+            seed_missing[type_id] = missing
+            gross_demand[type_id] = gross_demand.get(type_id, 0.0) + quantity
+
+    buy_totals, build_runs = _expand_all(seed_missing, cfg, home, jita, manual_overrides, cost_memo,
+                                          selected_decryptors, t2_memo, manual_stock, stock_used, base_runs,
+                                          gross_demand, ignore_current_stock=not net_against_stock)
+
+    buy_list = _build_buy_list(buy_totals, gross_demand, cfg, home, jita)
+    build_list = _build_build_list(build_runs, cost_memo, t2_memo, cfg, home)
+    invention_list.sort(key=lambda e: e.recommended_invention_runs, reverse=True)
+
+    stock_overlap_warning: list[StockOverlapWarningRow] = []
+    if net_against_stock:
+        order_closure = _structural_material_closure(type_id for type_id, _n, _q in items)
+        targets_closure = _structural_material_closure(t[0] for t in storage.load_stock_targets())
+        for type_id in sorted(order_closure & targets_closure):
+            _, m_bp = classify_activity(type_id)
+            stock = _current_stock(type_id, manual_stock, cfg, m_bp)
+            if stock > 0:
+                sde_type = storage.get_sde_type(type_id)
+                name = sde_type[2] if sde_type else str(type_id)
+                stock_overlap_warning.append(StockOverlapWarningRow(type_id=type_id, type_name=name, current_stock=stock))
+
+    return {
+        "line_items": line_items, "buy_list": buy_list, "build_list": build_list,
+        "invention_list": invention_list, "stock_overlap_warning": stock_overlap_warning,
+    }
 
 
 # Job categories eligible for a slot-split recommendation (user request
