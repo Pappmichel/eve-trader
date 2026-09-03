@@ -1102,6 +1102,14 @@ def _build_buy_list(buy_totals: dict[int, float], gross_demand: dict[int, float]
     price desc - factored out of plan_production so plan_special_order can
     build the exact same shape from its own buy_totals/gross_demand without
     duplicating this loop."""
+    # The real SDE item category (Ship/Module/Charge/Material/...), not
+    # job_category (the Bauliste's own "where do I start this job"
+    # grouping) - job_category is None for anything without a blueprint,
+    # which is most of what actually ends up on a Buy List (raw minerals,
+    # datacores, PI materials, ...), so it would leave this column empty
+    # for most rows. Category names loaded once per call (48 rows, not
+    # per-item) - get_type_category itself is already @lru_cache'd.
+    category_names = storage.load_sde_category_names()
     buy_list = []
     for type_id, quantity in buy_totals.items():
         sde_type = storage.get_sde_type(type_id)
@@ -1115,6 +1123,7 @@ def _build_buy_list(buy_totals: dict[int, float], gross_demand: dict[int, float]
             on_hand_pct=on_hand_pct,
             total_price=(unit_price * quantity) if unit_price is not None else None,
             buy_from=pricing.buy_source(type_id, home, jita, volume, cfg),
+            category=category_names.get(storage.get_type_category(type_id)),
         ))
     buy_list.sort(key=lambda e: e.total_price or 0, reverse=True)
     return buy_list
@@ -1348,18 +1357,24 @@ def plan_special_order(items: list[tuple[int, str, float]], cfg: ProductionConfi
       BuildJobEntry, just never used to drop an item from the result.
     - `net_against_stock` (per order, not per line item) picks between two
       whole-order modes: False (default) plans "from scratch", entirely
-      ignoring current stock (_expand_all's ignore_current_stock=True,
-      plus no top-level stock netting on the line items themselves either);
-      True nets against real ESI-synced stock the same way plan_production
-      does. True also triggers a stock_overlap_warning: every item that's
-      both reachable from this order's own material tree AND from the
-      configured stock_targets' own tree AND currently has stock on hand
-      right now - a heads-up that the same physical stock might get
-      "claimed" by both this order and a separately-computed regular
-      Bauliste, which don't otherwise know about each other. This is a
-      structural/currently-in-stock signal, not a precise "did the regular
-      plan actually consume it" check (that would need re-running
-      plan_production itself)."""
+      ignoring current stock (_expand_all's ignore_current_stock=True);
+      True nets *component/material* demand against real ESI-synced stock
+      the same way plan_production does - but never the line items'
+      own top-level quantity itself (confirmed with the user, 2026-09-02:
+      "wenn der current stock mit in Betracht gezogen wird, soll trotzdem
+      die gewünschte Menge produziert werden, nicht das Endprodukt mit aus
+      den Assets ziehen" - the customer ordered N units, so N units get
+      built/bought fresh regardless of how many finished units happen to
+      already be sitting in the hangar; those existing units aren't
+      reserved/claimed by this order at all). True also triggers a
+      stock_overlap_warning: every item that's both reachable from this
+      order's own material tree AND from the configured stock_targets' own
+      tree AND currently has stock on hand right now - a heads-up that the
+      same physical stock might get "claimed" by both this order and a
+      separately-computed regular Bauliste, which don't otherwise know
+      about each other. This is a structural/currently-in-stock signal,
+      not a precise "did the regular plan actually consume it" check (that
+      would need re-running plan_production itself)."""
     ctx = _PlanContext(cfg, extra_type_ids=[type_id for type_id, _name, _qty in items])
     manual_stock, manual_overrides, selected_decryptors = ctx.manual_stock, ctx.manual_overrides, ctx.selected_decryptors
     home, jita, cost_indices, adjusted_prices = ctx.home, ctx.jita, ctx.cost_indices, ctx.adjusted_prices
@@ -1368,11 +1383,12 @@ def plan_special_order(items: list[tuple[int, str, float]], cfg: ProductionConfi
     t2_memo: dict[int, tuple[float, float, Optional[str]]] = {}
     invention_list: list[InventionNeedRow] = []
     line_items: list[SpecialOrderLineItem] = []
-    # Same pooling ledger _expand_all itself uses (see its own docstring) -
-    # seeded here for the order's own top-level items the same way
-    # plan_production seeds it for top-level stock targets, so a line item
-    # that's *also* a shared material downstream doesn't get the same
-    # physical stock counted against both.
+    # Nothing seeded here for the order's own top-level items (unlike
+    # plan_production's equivalent ledger) - their own current stock is
+    # deliberately never consulted at all (see docstring above), so there's
+    # no risk of double-claiming it against a downstream material's own
+    # netting. _expand_all still threads this through/mutates it normally
+    # for materials *below* the seed level.
     stock_used: dict[int, float] = {}
 
     synthetic_stock_targets = [(type_id, type_name, quantity, 0, 0) for type_id, type_name, quantity in items]
@@ -1384,12 +1400,12 @@ def plan_special_order(items: list[tuple[int, str, float]], cfg: ProductionConfi
 
     for type_id, type_name, quantity in items:
         activity, bp = classify_activity(type_id)
-        if net_against_stock:
-            current_stock = _current_stock(type_id, manual_stock, cfg, bp)
-            missing = max(0.0, quantity - current_stock)
-            stock_used[type_id] = stock_used.get(type_id, 0.0) + min(current_stock, quantity)
-        else:
-            missing = quantity
+        # Always the full ordered quantity - see docstring's "never the line
+        # items' own top-level quantity" note. `missing` is kept as its own
+        # name (matching plan_production's equivalent local var) purely for
+        # symmetry with the invention-row math below, which is written in
+        # terms of "how much is missing" - here that's simply "all of it".
+        missing = quantity
         line_items.append(SpecialOrderLineItem(type_id=type_id, type_name=type_name, quantity=quantity))
 
         # Tech II/III line item: same invention-needs row shape as
@@ -1427,6 +1443,33 @@ def plan_special_order(items: list[tuple[int, str, float]], cfg: ProductionConfi
     buy_totals, build_runs = _expand_all(seed_missing, cfg, home, jita, manual_overrides, cost_memo,
                                           selected_decryptors, t2_memo, manual_stock, stock_used, base_runs,
                                           gross_demand, ignore_current_stock=not net_against_stock)
+
+    # Confirmed with the user (2026-09-02): a material fully covered by
+    # current stock (net_needed <= 0, so _expand_all never queues it into a
+    # further round - no buy-vs-build decision is ever made for it, it just
+    # silently never reaches buy_totals/build_runs at all) must still be
+    # visible on the Buy List at quantity 0/100% on-hand, not simply
+    # omitted - "what does this order need" should stay a complete picture
+    # even when everything's already on hand. Only meaningful when
+    # net_against_stock is actually netting anything at all; in "from
+    # scratch" mode nothing is ever fully covered by definition
+    # (ignore_current_stock=True above). gross_demand already has a real,
+    # pre-netting entry for every material _expand_all ever pooled a target
+    # for (mutated unconditionally, before the stock check) - so the
+    # "touched but never sourced" set is exactly the fully-covered ones.
+    # Classified via the same _buy_or_build_decision every other material
+    # goes through (unit economics don't depend on quantity, so this is the
+    # same decision a nonzero net_needed would have produced) - a material
+    # that would've been Built, not Bought, is left out here, matching the
+    # Build List's own unchanged "nothing to build" omission for those.
+    if net_against_stock:
+        build_product_ids = {product_type_id for _bp_id, _act_id, product_type_id in build_runs}
+        for type_id, gross in gross_demand.items():
+            if gross <= 0 or type_id in buy_totals or type_id in build_product_ids:
+                continue
+            _, m_bp = classify_activity(type_id)
+            if _buy_or_build_decision(type_id, cfg, home, jita, manual_overrides, cost_memo, m_bp, 0) == "Buy":
+                buy_totals[type_id] = 0.0
 
     buy_list = _build_buy_list(buy_totals, gross_demand, cfg, home, jita)
     build_list = _build_build_list(build_runs, cost_memo, t2_memo, cfg, home)

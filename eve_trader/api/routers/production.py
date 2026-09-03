@@ -567,6 +567,23 @@ def list_special_orders():
     return _wrap(actions.do_list_special_orders)
 
 
+class CombineSpecialOrdersRequest(BaseModel):
+    order_ids: list[str]
+    net_against_stock: bool = False
+
+
+# Registered before the /special-orders/{order_id}* routes below,
+# deliberately - "/special-orders/combine/compute" has the same segment
+# shape as "/special-orders/{order_id}/compute" (both are two segments
+# after "special-orders"), so FastAPI would otherwise match a request here
+# against the earlier-registered {order_id} route first (order_id="combine")
+# and never reach this one at all.
+@router.post("/special-orders/combine/compute", response_model=schemas.SpecialOrderComputeResult)
+def compute_combined_special_orders(req: CombineSpecialOrdersRequest):
+    return _wrap(actions.do_compute_combined_special_orders, order_ids=req.order_ids,
+                 net_against_stock=req.net_against_stock)
+
+
 @router.get("/special-orders/{order_id}")
 def get_special_order(order_id: str):
     return _wrap(actions.do_get_special_order, order_id=order_id)
@@ -575,6 +592,7 @@ def get_special_order(order_id: str):
 class UpdateSpecialOrderRequest(BaseModel):
     status: Optional[str] = None
     note: Optional[str] = None
+    net_against_stock: Optional[bool] = None
 
 
 @router.patch("/special-orders/{order_id}")
@@ -585,6 +603,21 @@ def update_special_order(order_id: str, req: UpdateSpecialOrderRequest):
 @router.delete("/special-orders/{order_id}")
 def remove_special_order(order_id: str):
     return _wrap(actions.do_remove_special_order, order_id=order_id)
+
+
+class SetSpecialOrderItemRequest(BaseModel):
+    type_id: int
+    quantity: float
+
+
+@router.put("/special-orders/{order_id}/items")
+def set_special_order_item(order_id: str, req: SetSpecialOrderItemRequest):
+    return _wrap(actions.do_set_special_order_item, order_id=order_id, type_id=req.type_id, quantity=req.quantity)
+
+
+@router.delete("/special-orders/{order_id}/items/{type_id}")
+def remove_special_order_item(order_id: str, type_id: int):
+    return _wrap(actions.do_remove_special_order_item, order_id=order_id, type_id=type_id)
 
 
 @router.post("/special-orders/{order_id}/compute", response_model=schemas.SpecialOrderComputeResult)
