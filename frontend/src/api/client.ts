@@ -279,11 +279,18 @@ export const productionApi = {
   createSpecialOrder: (req: { items: { type_id: number; quantity: number }[]; note?: string | null; net_against_stock?: boolean }) =>
     post<{ order_id: string }>('/api/production/special-orders', req),
   getSpecialOrder: (orderId: string) => get<T.SpecialOrderDetail>(`/api/production/special-orders/${orderId}`),
-  updateSpecialOrder: (orderId: string, updates: { status?: string | null; note?: string | null }) =>
+  updateSpecialOrder: (orderId: string, updates: { status?: string | null; note?: string | null; net_against_stock?: boolean | null }) =>
     patch<T.SpecialOrderDetail>(`/api/production/special-orders/${orderId}`, updates),
   removeSpecialOrder: (orderId: string) => del(`/api/production/special-orders/${orderId}`),
+  setSpecialOrderItem: (orderId: string, typeId: number, quantity: number) =>
+    put<T.SpecialOrderDetail>(`/api/production/special-orders/${orderId}/items`, { type_id: typeId, quantity }),
+  removeSpecialOrderItem: (orderId: string, typeId: number) =>
+    del<T.SpecialOrderDetail>(`/api/production/special-orders/${orderId}/items/${typeId}`),
   computeSpecialOrder: (orderId: string) =>
     post<T.SpecialOrderComputeResult>(`/api/production/special-orders/${orderId}/compute`),
+  computeCombinedSpecialOrders: (orderIds: string[], netAgainstStock: boolean) =>
+    post<T.SpecialOrderComputeResult>('/api/production/special-orders/combine/compute',
+      { order_ids: orderIds, net_against_stock: netAgainstStock }),
 }
 
 // ------------------------------------------------------------- portfolio
