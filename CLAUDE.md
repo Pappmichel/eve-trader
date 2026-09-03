@@ -69,9 +69,30 @@ across the whole app. A new failure mode should raise `ActionError` (or a
 narrower exception the caller converts to `ActionError`), not a raw
 exception that would otherwise surface as a bare 500.
 
+The rule above is about *mutating* actions and anything with real business
+logic: those always go through a `do_*` function so the CLI and the web app
+can't drift apart on what a change actually does. A **GET-only, read-a-
+value-straight-out-of-storage** endpoint is a different, much more common
+exception than the two below - most routers have at least one (`production.py`
+alone has around eight: `/sde/counts`, `/sde/item-names`, `/stock-targets`,
+`/manual-stock`, `/manual-build-buy`, `/selected-decryptors`,
+`/category-locations`, plus `/plan`/`/asset-plan` reading the in-process
+`_last_plan`/`_last_asset_plan` cache; `trading.py` has a similar handful for
+its shortlist/candidate/history/realized-trades reads). This is fine and not
+a rule violation: there is no business logic to duplicate in a bare
+`storage.read_x()` call, so a `do_*` wrapper would only add a pass-through
+layer with nothing of its own to keep in sync. It stops being fine the
+moment a "read" needs a decision, transformation, or a cross-check beyond
+"return this row" - that belongs in `do_*`, not in the router. (A `do_*`-
+name-only audit of this repo - e.g. when comparing against a port - will
+systematically miss this whole GET-read layer; check the routers directly,
+not just `actions.py`'s function list, if you need a complete inventory of
+what a repo's API surface actually exposes.)
+
 Two narrow, deliberate exceptions call something other than a `do_*`
-function directly - not places where the rule was missed, but don't extend
-either without the same reasoning: `api/routers/portfolio.py` calls
+function directly for *mutating or cross-cutting* work specifically - not
+places where the rule was missed, but don't extend either without the same
+reasoning: `api/routers/portfolio.py` calls
 `portfolio.portfolio_overview()`/`scheduler.get_status()` directly, since
 `portfolio.py`/`scheduler.py` are the cross-cutting modules that
 deliberately span both tools (see "Two tools, one backend" above) - there's
