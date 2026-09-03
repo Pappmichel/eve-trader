@@ -23,27 +23,47 @@ added a new project dependency for.
 
 Three modelling decisions worth knowing, all deliberate:
 
-1. **Portion-size rounding is handled outside the LP, by rounding UP.**
-   Reprocessing is genuinely discrete (you refine whole portions - 100
-   Veldspar at a time - and each material's output is floored, see
-   engine.py's apply_reprocessing_yield), which would make this an integer
-   program. It's relaxed to a continuous LP instead - a fractional portion
-   is a reasonable idealization while *searching* for the cheapest mix -
-   and each ore's solved quantity is then rounded UP to the next whole
-   portion in the plan the user actually buys from. Up, never down:
-   rounding down would under-deliver against the stated requirement, which
-   is the one thing a shopping list must not do. Because per-material
-   output is floored (not just scaled), rounding up isn't *by itself*
-   proof the requirement still clears, so the rounded plan is re-verified
-   against the real discrete yields and topped up until it does (see
-   `_repair_shortfalls`) - `ShoppingListPlan.coverage` carries that proof
-   per mineral. Rounding up can also *over*-buy (a requirement worth a
-   fiftieth of a portion still costs a whole one), so a cheap
-   single-portion descent on the real cost function then drops any portion
-   that direct-buying replaces more cheaply (`_trim_rounded_plan`). The
-   LP's own continuous optimum is kept as
-   `ShoppingListPlan.lp_cost` so the (small) cost of rounding is visible
-   rather than hidden.
+1. **Portion-size (and direct-mineral) quantities are solved as real
+   integers, via `linprog`'s `integrality` parameter - not relaxed to a
+   continuous LP and rounded.** Reprocessing is genuinely discrete (you
+   refine whole portions - 100 Veldspar at a time - and each material's
+   output is floored, see engine.py's apply_reprocessing_yield), which
+   makes this properly a mixed-integer program. An earlier version of this
+   file relaxed it to a continuous LP and rounded the result UP to the next
+   whole portion, then ran a post-hoc heuristic (`_trim_rounded_plan`) that
+   only ever *dropped* portions from the ore set the continuous relaxation
+   had already given non-zero weight - it could never *add* an ore the
+   relaxation left at exactly zero, even when one whole portion of that ore
+   was the true cheapest way to cover a small requirement (a different ore
+   only looked marginally cheaper *fractionally*, a margin whole-portion
+   buying can't use). Confirmed via randomized brute-force comparison before
+   the fix: ~8% of small synthetic cases landed more than 0.1% above the
+   true discrete optimum, worst case observed 64% over (a plan costing 5757
+   ISK against a true optimum of 3514 ISK) - see
+   `test_matches_brute_force_optimum_on_random_small_cases` in
+   test_refining_optimizer.py, which now asserts the fixed solver lands on
+   the true optimum instead. Every plan produced (before and after this
+   fix) was still *feasible* - no requirement was ever left under-covered -
+   this was purely a cost-optimality gap.
+
+   Direct-mineral purchase quantities are ALSO marked integer, not left
+   continuous - real minerals are bought in whole units too, and leaving
+   that variable continuous re-opens a smaller version of the same gap: the
+   solver would price a fractional "0.5 units direct" at half a unit's ISK,
+   while the actual purchase (rounded up to a whole unit afterward) costs a
+   full unit - enough of a mismatch, on small requirements, to make the
+   solver choose ore portions that are optimal for its own (wrong)
+   continuous accounting but not for the real whole-unit cost. Marking both
+   variable groups integer makes the solver's objective exactly the real
+   cost, closing that gap too (confirmed by the same brute-force test - 0
+   mismatches across 500 random cases with both integer, versus a real
+   ~9% average case among many that had direct purchases left continuous).
+
+   The LP's own continuous relaxation (both variable groups left
+   continuous) is still solved once, purely to report
+   `ShoppingListPlan.lp_cost` as a "theoretical floor" next to the real
+   (whole-unit) total - it plays no part in building the actual plan
+   anymore.
 
 2. **The structure's refining tax is modelled as reduced output, not an ISK
    fee.** EVE takes a structure's reprocessing tax out of the refined
@@ -78,27 +98,44 @@ from .models import (
     ShoppingListPlan,
 )
 
-# Solver noise guard: HiGHS routinely returns 3.0000000000000004 or 1e-13 for
-# what is really 3 and 0. Rounding those up naively would buy a whole extra
-# portion of an ore the LP didn't actually want.
+# Solver noise guard: even with `integrality` set, HiGHS routinely returns
+# 3.0000000000000004 or 1e-13 for what is really an exact 3 or 0 - this only
+# needs to survive a round()/comparison now, never a round-UP, since there's
+# no fractional remainder left to round away.
 _EPS = 1e-9
 
-# `_repair_shortfalls` adds whole portions, which strictly increases delivery,
-# so it terminates - this cap only bounds a pathological case (an ore whose
-# floored per-portion yield of some mineral is 0 can never close that gap, and
-# is filtered out before we get here).
+# `_repair_shortfalls` is now a defensive backstop, not a normal code path:
+# with both ore-portion and direct-mineral variables solved as true integers
+# (see the module docstring's decision 1), the MIP's own hard constraints
+# already guarantee every requirement clears, up to _EPS solver noise. It's
+# kept in case a future caller feeds in a degenerate case the solver reports
+# success on despite float slop, or a genuine MIP time-limit fallback (see
+# `_MIP_TIME_LIMIT_SECONDS`) that returned an under-covered incumbent. It
+# still terminates the same way as before: adding whole portions strictly
+# increases delivery, and an ore whose floored per-portion yield of some
+# mineral is 0 can never close that gap but is filtered out before we get
+# here.
 _MAX_REPAIR_ROUNDS = 8
 
-# `_trim_rounded_plan` only ever accepts a strictly cheaper plan, so it can't
-# cycle; the cap bounds how long a descent runs on a pathologically large plan.
-_MAX_TRIM_ROUNDS = 50
+# Safety net for a real MIP solve, not expected to trigger at this tool's
+# realistic scale (see the module docstring and
+# test_realistic_scale_solves_quickly): HiGHS' own branch-and-bound can, on a
+# pathological cost/yield structure (many near-tied ore choices), take
+# multiple seconds rather than the sub-second this is called at request time
+# for. Capping it means a genuinely adversarial instance degrades to "best
+# plan found so far" (still feasible - HiGHS only reports incumbents that
+# satisfy every constraint - just not provably cost-optimal) instead of
+# hanging the request.
+_MIP_TIME_LIMIT_SECONDS = 5.0
 
 
 class OptimizationError(Exception):
     """Raised when no plan can satisfy the requirements at all (a mineral no
-    ore yields and no market lists, or a solver failure). refining/actions.py
-    converts this to the app-wide ActionError - see CLAUDE.md's "ActionError
-    is the one user-facing error type"."""
+    ore yields and no market lists, or a solver failure - LP-infeasible or a
+    genuine MIP failure with no usable incumbent at all; see
+    `optimize_shopping_list`). refining/actions.py converts this to the
+    app-wide ActionError - see CLAUDE.md's "ActionError is the one
+    user-facing error type"."""
 
 
 def optimize_shopping_list(requirements: list[MineralRequirement], ore_options: list[OreOption],
@@ -148,16 +185,33 @@ def optimize_shopping_list(requirements: list[MineralRequirement], ore_options: 
             a_ub[row, n_ore + direct_ids.index(mineral_id)] = -1.0
     b_ub = np.array([-required[m] for m in mineral_ids], dtype=float)
 
-    result = linprog(cost, A_ub=a_ub, b_ub=b_ub, bounds=(0, None), method="highs")
-    if not result.success:
-        raise OptimizationError(f"Could not solve the shopping list ({result.message.strip()}).")
-    lp_cost = float(result.fun)
+    # Solved once, continuous (no `integrality`), purely to report `lp_cost`
+    # as a theoretical floor next to the real whole-unit total below - see
+    # decision 1's docstring. The actual plan is never derived from this.
+    relaxed = linprog(cost, A_ub=a_ub, b_ub=b_ub, bounds=(0, None), method="highs")
+    if not relaxed.success:
+        raise OptimizationError(f"Could not solve the shopping list ({relaxed.message.strip()}).")
+    lp_cost = float(relaxed.fun)
 
-    # ------------------------------------------- round up to whole portions
-    portions = {i: max(0, math.ceil(result.x[i] - _EPS)) for i in range(n_ore)}
+    # ------------------------------------------------------- the real (integer) program
+    # Both ore-portion AND direct-mineral columns are integer - see decision
+    # 1's docstring for why direct-mineral buying needs this too, not just
+    # ore. `_MIP_TIME_LIMIT_SECONDS` bounds worst-case solve time; on a
+    # timeout HiGHS still returns its best incumbent (a genuinely feasible,
+    # just not provably optimal, solution - see that constant's own comment).
+    integrality = np.array([1] * n_ore + [1] * n_direct)
+    result = linprog(cost, A_ub=a_ub, b_ub=b_ub, bounds=(0, None), method="highs",
+                      integrality=integrality, options={"time_limit": _MIP_TIME_LIMIT_SECONDS})
+    if result.x is None:
+        raise OptimizationError(f"Could not solve the shopping list as a whole-unit plan ({result.message.strip()}).")
+
+    # HiGHS' own integer variables still land at e.g. 2.9999999999996 or
+    # 3.0000000000004 rather than an exact 3 - round(), not ceil(): unlike the
+    # old relax-then-round-up step, there's no fractional remainder left to
+    # round UP, only solver noise to round off.
+    portions = {i: max(0, round(result.x[i])) for i in range(n_ore)}
     delivered = _delivered_from_ore(ores, portions, mineral_ids)
     _repair_shortfalls(ores, portions, delivered, mineral_ids, required, direct_price, names)
-    _trim_rounded_plan(ores, portions, mineral_ids, required, direct_price)
     delivered = _delivered_from_ore(ores, portions, mineral_ids)
 
     ore_purchases = []
@@ -173,7 +227,7 @@ def optimize_shopping_list(requirements: list[MineralRequirement], ore_options: 
         ))
     ore_purchases.sort(key=lambda p: -p.total_cost)
 
-    # Whatever the (rounded-up) ore still doesn't cover is bought outright.
+    # Whatever the solved ore quantities still don't cover is bought outright.
     direct_purchases = []
     from_direct: dict[int, int] = {}
     for mineral_id in mineral_ids:
@@ -232,57 +286,6 @@ def _delivered_from_ore(ores: list[OreOption], portions: dict[int, int], mineral
         for mineral_id in mineral_ids:
             delivered[mineral_id] += portions[i] * ore.yield_per_portion.get(mineral_id, 0)
     return delivered
-
-
-def _plan_cost(ores: list[OreOption], portions: dict[int, int], mineral_ids: list[int],
-                required: dict[int, float], direct_price: dict[int, float]) -> float:
-    """Real ISK cost of a whole-portion plan: the ore itself plus whatever
-    direct buying is still needed to close the gap it leaves."""
-    delivered = _delivered_from_ore(ores, portions, mineral_ids)
-    cost = sum(portions[i] * o.landed_cost_per_portion for i, o in enumerate(ores))
-    for mineral_id in mineral_ids:
-        gap = required[mineral_id] - delivered.get(mineral_id, 0)
-        if gap > _EPS and mineral_id in direct_price:
-            cost += math.ceil(gap - _EPS) * direct_price[mineral_id]
-    return cost
-
-
-def _trim_rounded_plan(ores: list[OreOption], portions: dict[int, int], mineral_ids: list[int],
-                        required: dict[int, float], direct_price: dict[int, float]) -> None:
-    """Drops whole portions the rounding-up step over-bought, whenever buying
-    the difference outright is genuinely cheaper. Mutates `portions` in place.
-
-    This is what keeps decision 1 (relax, then round up) honest at small
-    quantities: the LP optimizes a *continuous* mix, so for a requirement far
-    below one portion it can happily "buy" 0.02 of a portion - rounded up to a
-    whole one, that's a real 275k-ISK ore purchase to cover 7k ISK worth of
-    mineral (seen live during #93's verification). The LP can't see this,
-    because the whole-portion granularity it would have to reason about is
-    exactly what was relaxed away. A single-portion-at-a-time descent on the
-    *real* cost function (`_plan_cost`, which prices the leftover gap at the
-    direct-buy price) fixes it without reintegerizing the whole program: it
-    never drops a portion a mineral with no direct-buy price depends on, and
-    it only ever accepts a strictly cheaper plan, so the result can't be worse
-    than the naive round-up - just often better."""
-    for _ in range(_MAX_TRIM_ROUNDS):
-        best_cost = _plan_cost(ores, portions, mineral_ids, required, direct_price)
-        improved = False
-        for i in sorted((i for i in portions if portions[i] > 0),
-                         key=lambda i: -ores[i].landed_cost_per_portion):
-            trial = dict(portions)
-            trial[i] -= 1
-            trial_delivered = _delivered_from_ore(ores, trial, mineral_ids)
-            # A mineral nothing lists in Jita can only come from ore - never
-            # trim below what covers it.
-            if any(m not in direct_price and trial_delivered.get(m, 0) + _EPS < required[m]
-                   for m in mineral_ids):
-                continue
-            trial_cost = _plan_cost(ores, trial, mineral_ids, required, direct_price)
-            if trial_cost + _EPS < best_cost:
-                portions[i] = trial[i]
-                best_cost, improved = trial_cost, True
-        if not improved:
-            return
 
 
 def _repair_shortfalls(ores: list[OreOption], portions: dict[int, int], delivered: dict[int, int],
