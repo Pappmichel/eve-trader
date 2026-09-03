@@ -135,6 +135,13 @@ Fully ported on the local side.
 | `eve_trader/station_trading/esi_sync.py` | `eve_trader_local/station_trading/esi_sync.py` | Character registration for the `trader` role: `STATION_TRADING_ROLE_PREFIX`, `STATION_TRADING_SCOPES` and `list_trader_characters`. | Ported 2026-09-03 on the local side. Confirmed by reading the real code: Station Trading does **not** reuse Trading's own `buyer`/`seller` characters - it registers its own distinct `trader` role prefix and scope pair, kept separate the same way Production's `producer` role already is. No `sync_esi()`-style bulk pull there either - own orders and skill levels are read live, on demand. |
 | `eve_trader/station_trading/actions.py` | `eve_trader_local/station_trading/actions.py` | The whole `do_*` set: `do_list_trader_characters`/`do_remove_trader_character`, `do_refresh_shortlist`/`do_get_shortlist`, `do_deactivate_shortlist_items`/`do_activate_shortlist_items`, `do_check_undercut`, `do_get_skill_summary`, `do_update_settings`. Plus `_profit`'s real market-mechanic formula: broker fee charged on *both* legs (buy and sell placement) but sales tax only on the sell leg, and `profit_per_day = profit_per_unit x avg_daily_volume` (the same whole-market theoretical-ceiling convention every tool's daily-profit figure already follows). | Ported 2026-09-03 on the local side. `ActionError` comes from eve-trader-local's own `errors.py` there (not this repo's `from ..actions import ActionError` path) - the same import path every other tool's `actions.py` there already uses. Added there to support it: the `station_trading_shortlist` SQLite table (no `tenant_id`, no append-only snapshot counterpart - every row is re-priced live off the current order book on every read there, so no history table is needed) with matching CRUD - the upsert deliberately never touches `active` on conflict, so a re-discovery run can't silently reactivate a deactivated item. CLI there: `auth --role trader`, `refresh-station-shortlist`, `list-station-shortlist`, `check-station-undercut`, `station-trading-skills`. |
 
+### Cross-cutting
+
+| File here | File in eve-trader-local | What's shared | Status |
+|---|---|---|---|
+| `eve_trader/portfolio.py` | `eve_trader_local/portfolio.py` | The whole combined-overview computation: `portfolio_overview`'s Trading-realized-profit-plus-Production-stock-value summary, its weighted-average-margin formula (shared with `trade_reconciliation.summarize_realized`), and the day-to-day realized-profit population-stdev volatility signal (`None` below 2 days of data). Each half degrades independently to zero/None when that tool has no data yet, exactly matching this file's own "additive, never a replacement for either tool's own view" framing. | Ported 2026-09-03 on the local side, near-verbatim. Adapted there: this repo reads `storage.read_table("realized_trades")` (a pandas DataFrame) and does the day-grouping/stdev via `.groupby`/`.std(ddof=0)`; the local side has no pandas, so it reads `storage.latest_realized_trades()` (already-ported, returns `RealizedTrade` objects) and does the same grouping/`ddof=0` population-stdev by hand. `stock_value`/`PRODUCTION_CONFIG` are imported lazily there too, matching this file's own lazy import. CLI there: `portfolio-overview` — no `do_*` action wrapper, since it's a pure read with nothing an `ActionError` boundary would ever need to catch. |
+| `eve_trader/logging_setup.py` | `eve_trader_local/logging_setup.py` | The *concept* only (an idempotent rotating-file-handler setup for the package's own logger namespace) — not the console-handler half, and not the reasoning it's scoped around. | **Deliberately simplified on the local side, not ported verbatim** — judged worth having in a smaller form, not skipped outright. This file's version exists because `scheduler.py` runs background jobs for hours with nobody watching a terminal, needing both a console and a file handler. The local side has no long-running process at all - `cli.py`'s own docstring: "commands run and exit" - so a console handler would just duplicate what every command's own `print()` already puts on screen in the same process. What's still real there: several already-ported modules call `logger.exception`/`logger.warning` on deliberately-swallowed best-effort paths that today vanish once the terminal closes - a real gap for diagnosing a `pipeline`/`sync-esi` run after the fact. So the local side ports a file-handler-only `configure_logging()`, wired into `cli.py`'s `main()`, and nothing else. |
+
 ## The orchestration layer (`actions.py`) — an integration, not a port
 
 `eve_trader_local/actions.py` (2026-09-02) is a different kind of entry from
@@ -233,6 +240,22 @@ computation, not the surrounding storage/config wiring:
   eve-trader-local exists as a separate repo, not a fork.
 - `access_gate.py`, `admin.py` — multi-tenant/cross-tenant concepts with no
   local-single-user equivalent.
+- `error_log.py` — self-hosted error tracking for the web *frontend*:
+  `do_report_error` exists to be reachable, unauthenticated, by any tenant's
+  browser tab when a React component crashes, and `do_list_errors` is an
+  Admin-tool-only cross-tenant view of everyone's reports. Checked against
+  the real code (not assumed from the module docstring alone) before ruling
+  it out on the local side: neither half has a local equivalent to attach
+  to — there is no frontend there to crash and report from, and no
+  multi-tenant Admin surface to view a log across users. A future native
+  GUI crashing is a real, different concern (see `logging_setup.py`'s row
+  above, which *is* ported in simplified form for exactly that "record what
+  went wrong so it can be diagnosed later" purpose) — but that's an
+  unhandled-exception-to-a-local-log-file problem, not this module's
+  networked report-then-list-across-tenants shape; a local GUI's own crash
+  handler should log to that file directly rather than reimplement
+  `error_log.py`'s truncation/storage/Admin-viewer split for an audience of
+  one person on their own machine.
 - `api/*` — FastAPI web layer; eve-trader-local's target UI is a native GUI,
   not a web frontend (`frontend/*` doesn't apply either).
 - `scheduler.py` — per-tenant background-job iteration; a local app's
