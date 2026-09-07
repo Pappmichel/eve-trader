@@ -20,17 +20,29 @@ from .pg_helpers import tenant  # noqa: F401
 
 psycopg = pytest.importorskip("psycopg")
 
-_SPECIAL_ORDERS_SCHEMA_SQL = Path(__file__).resolve().parent.parent / "docs" / "special_orders_schema.sql"
-_PHASE1_SCHEMA_SQL = Path(__file__).resolve().parent.parent / "docs" / "phase1_schema.sql"
+_DOCS = Path(__file__).resolve().parent.parent / "docs"
+_PHASE1_SCHEMA_SQL = _DOCS / "phase1_schema.sql"
+_PHASE2_SCHEMA_SQL = _DOCS / "phase2_schema.sql"
+_REFINING_SCHEMA_SQL = _DOCS / "refining_schema.sql"
+_SPECIAL_ORDERS_SCHEMA_SQL = _DOCS / "special_orders_schema.sql"
 
 
 @pytest.fixture(scope="session", autouse=True)
 def _apply_special_orders_schema():
-    """Idempotent owner-role apply of phase1 + special_orders (including events)."""
+    """Idempotent owner-role apply for a *fresh* Postgres (CI).
+
+    `storage.replace_sde_data` always DELETEs `sde_type_materials` and INSERTs
+    9-column `sde_types` rows (`portion_size`). Those live in
+    `refining_schema.sql`, which itself ALTERs `tenant_settings` from phase2.
+    A Cloud Agent VM that already ran other test modules hid this; GitHub
+    Actions starts empty and does not.
+    """
     if not pg_helpers._postgres_available():
         return
     with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
         conn.execute(_PHASE1_SCHEMA_SQL.read_text(encoding="utf-8"))
+        conn.execute(_PHASE2_SCHEMA_SQL.read_text(encoding="utf-8"))
+        conn.execute(_REFINING_SCHEMA_SQL.read_text(encoding="utf-8"))
         conn.execute(_SPECIAL_ORDERS_SCHEMA_SQL.read_text(encoding="utf-8"))
 
 MINERAL = 34
