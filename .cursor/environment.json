@@ -1,0 +1,17 @@
+{
+  "name": "EVE Trader",
+  "user": "ubuntu",
+  "install": "bash .cursor/install.sh",
+  "start": "bash .cursor/start.sh",
+  "terminals": [
+    {
+      "name": "backend",
+      "command": "EVE_TRADER_PG_DSN='host=localhost port=5432 dbname=eve_trader_dev user=eve_trader_app password=app_devpassword' EVE_TRADER_PG_CONTAINER='' .venv/bin/uvicorn eve_trader.api.main:app --port 8000"
+    },
+    {
+      "name": "frontend",
+      "command": "cd frontend && npm run dev -- --host"
+    }
+  ],
+  "ports": [8000, 5173]
+}
