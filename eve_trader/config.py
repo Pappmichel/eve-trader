@@ -159,7 +159,6 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "min_margin_threshold": (0, None),
     "skip_grace_period_days": (0, None),
     "max_active_shortlist_items": (1, None),
-    "min_history_days": (0, None),
     "min_hit_rate": (0, 1),
     "safe_mode_max_ids": (1, None),
     "chunk_size": (1, None),
@@ -321,14 +320,16 @@ class TradingConfig:
     # the Skip-grace-period prune above - off by default, toggled via a
     # checkbox on the Shortlist page. When on, active items beyond the
     # max_active_shortlist_items'th rank by max daily profit
-    # (profit_per_unit x sell_volume, descending - confirmed with the user:
-    # margin x liquidity, not margin alone) are deactivated, same as a
-    # Skip-grace-period prune (not deleted, shortlist_snapshot history kept).
+    # (profit_per_unit x avg_daily_volume, descending - the same
+    # market-wide daily-turnover figure Shortlist "Profit / Day" uses, not
+    # sell_volume/order-book depth; see GitHub issues #51/#100) are
+    # deactivated, same as a Skip-grace-period prune (not deleted,
+    # shortlist_snapshot history kept). Items with no computable
+    # profit/avg_daily_volume sort last.
     enforce_shortlist_cap: bool = False
     max_active_shortlist_items: int = 300
 
     # -- Candidate discovery --
-    min_history_days: int = 1
     min_hit_rate: float = 0.30                # Minimum share of profitable days to recommend a candidate
     safe_mode_max_ids: int = 500               # Cap on IDs evaluated per run (mirrors FindNewImportCandidatesSafe)
     chunk_size: int = 25                       # IDs per Goonmetrics request chunk (safe mode default)
