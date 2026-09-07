@@ -195,6 +195,7 @@ sudo -u postgres psql -d eve_trader -f docs/observability_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/refining_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/station_trading_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/role_consent_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/special_orders_schema.sql
 ```
 `phase1_schema.sql` creates the `eve_trader_app` role with the **checked-in
 dev password** (`app_devpassword`) - fine for local dev, not for a real
@@ -370,6 +371,7 @@ sudo -u postgres psql -d eve_trader -f docs/observability_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/refining_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/station_trading_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/role_consent_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/special_orders_schema.sql
 .venv/bin/pip install -e .
 cd frontend && npm ci && npm run build && cd ..
 sudo systemctl restart eve-trader

@@ -50,3 +50,24 @@ CREATE POLICY tenant_isolation ON special_order_items
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON special_orders, special_order_items TO eve_trader_app;
+
+-- Append-only mutation log (Phase E.2). Survives header delete — there is
+-- no FK/cascade onto special_orders. Composite PK (tenant_id, event_id)
+-- because event_id is app-generated UUID (same shape as special_orders).
+CREATE TABLE IF NOT EXISTS special_order_events (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    event_id UUID NOT NULL DEFAULT gen_random_uuid(),
+    order_id UUID NOT NULL,
+    event TEXT NOT NULL,
+    detail TEXT,
+    at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_special_order_events_order ON special_order_events (tenant_id, order_id, at);
+ALTER TABLE special_order_events ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON special_order_events;
+CREATE POLICY tenant_isolation ON special_order_events
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON special_order_events TO eve_trader_app;

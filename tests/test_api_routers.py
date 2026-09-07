@@ -381,7 +381,7 @@ def test_create_special_order_forwards_items_note_and_net_against_stock(monkeypa
 
     def _fake_create(**kwargs):
         captured["kwargs"] = kwargs
-        return {"order_id": "order-1"}
+        return {"order_id": "order-1", "item_count": 1}
     monkeypatch.setattr(production_actions, "do_create_special_order", _fake_create)
 
     resp = client.post("/api/production/special-orders", json={
@@ -390,10 +390,26 @@ def test_create_special_order_forwards_items_note_and_net_against_stock(monkeypa
     })
 
     assert resp.status_code == 200
-    assert resp.json() == {"order_id": "order-1"}
+    assert resp.json() == {"order_id": "order-1", "item_count": 1}
     assert captured["kwargs"] == {
         "items": [{"type_id": 12058, "quantity": 6000.0}], "note": "Customer X", "net_against_stock": True,
     }
+
+
+def test_create_special_order_forwards_item_name(monkeypatch):
+    captured = {}
+
+    def _fake_create(**kwargs):
+        captured["kwargs"] = kwargs
+        return {"order_id": "order-1", "item_count": 1}
+    monkeypatch.setattr(production_actions, "do_create_special_order", _fake_create)
+
+    resp = client.post("/api/production/special-orders", json={
+        "items": [{"name": "Tritanium", "quantity": 10.0}],
+    })
+
+    assert resp.status_code == 200
+    assert captured["kwargs"]["items"] == [{"name": "Tritanium", "quantity": 10.0}]
 
 
 def test_create_special_order_action_error_maps_to_400(monkeypatch):
@@ -409,7 +425,7 @@ def test_create_special_order_action_error_maps_to_400(monkeypatch):
 
 def test_list_special_orders_serializes_rows(monkeypatch):
     from eve_trader.production.models import SpecialOrder
-    monkeypatch.setattr(production_actions, "do_list_special_orders", lambda: [
+    monkeypatch.setattr(production_actions, "do_list_special_orders", lambda status=None: [
         SpecialOrder(order_id="order-1", note="Customer X", net_against_stock=True,
                      status="open", created_at="2026-09-01T00:00:00", item_count=2),
     ])
@@ -555,6 +571,66 @@ def test_compute_combined_special_orders_action_error_maps_to_400(monkeypatch):
     resp = client.post("/api/production/special-orders/combine/compute", json={"order_ids": []})
 
     assert resp.status_code == 400
+
+
+def test_list_special_orders_forwards_status(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(production_actions, "do_list_special_orders",
+                         lambda status=None: captured.update(status=status) or [])
+    resp = client.get("/api/production/special-orders?status=open")
+    assert resp.status_code == 200
+    assert captured["status"] == "open"
+
+
+def test_audit_and_events_do_not_collide_with_order_id_route(monkeypatch):
+    monkeypatch.setattr(production_actions, "do_audit_special_orders", lambda: {"ok": True, "issues": []})
+    monkeypatch.setattr(production_actions, "do_list_special_order_events", lambda order_id=None: {"rows": []})
+    monkeypatch.setattr(production_actions, "do_get_special_order",
+                         lambda order_id: pytest.fail("must not route to get_special_order"))
+    assert client.get("/api/production/special-orders/audit").json() == {"ok": True, "issues": []}
+    assert client.get("/api/production/special-orders/events").json() == {"rows": []}
+    assert client.get("/api/production/special-orders/order-1/events").json() == {"rows": []}
+
+
+def test_set_special_order_item_recompute_uses_wrapper(monkeypatch):
+    from eve_trader.production import preview_refresh
+    captured = {}
+
+    def _fake(**kwargs):
+        captured["kwargs"] = kwargs
+        return {
+            "order": None, "items": [],
+            "plan": {"line_items": [], "buy_list": [], "build_list": [],
+                     "invention_list": [], "stock_overlap_warning": []},
+        }
+    monkeypatch.setattr(preview_refresh, "set_item_and_preview", _fake)
+    monkeypatch.setattr(production_actions, "do_set_special_order_item",
+                         lambda **kwargs: pytest.fail("must not call bare set when recompute=true"))
+    resp = client.put("/api/production/special-orders/order-1/items?recompute=true",
+                      json={"type_id": 34, "quantity": 1.0})
+    assert resp.status_code == 200
+    assert captured["kwargs"]["order_id"] == "order-1"
+    assert captured["kwargs"]["type_id"] == 34
+    assert captured["kwargs"]["quantity"] == 1.0
+
+
+def test_remove_special_order_item_recompute_uses_wrapper(monkeypatch):
+    from eve_trader.production import preview_refresh
+    captured = {}
+
+    def _fake(**kwargs):
+        captured["kwargs"] = kwargs
+        return {
+            "order": None, "items": [],
+            "plan": {"line_items": [], "buy_list": [], "build_list": [],
+                     "invention_list": [], "stock_overlap_warning": []},
+        }
+    monkeypatch.setattr(preview_refresh, "remove_item_and_preview", _fake)
+    monkeypatch.setattr(production_actions, "do_remove_special_order_item",
+                         lambda **kwargs: pytest.fail("must not call bare remove when recompute=true"))
+    resp = client.delete("/api/production/special-orders/order-1/items/34?recompute=true")
+    assert resp.status_code == 200
+    assert captured["kwargs"] == {"order_id": "order-1", "type_id": 34}
 
 
 # --------------------------------------------------- trend/undercut/discovery

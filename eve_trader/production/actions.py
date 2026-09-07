@@ -14,7 +14,7 @@ from ..actions import ActionError
 from ..auth import TokenManager
 from ..config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
 from ..esi_client import ESIClient, ESIError
-from . import esi_sync, invention, jobs, pricing, sde
+from . import esi_sync, invention, jobs, order_integrity, pricing, sde
 from .config import PRODUCTION_CONFIG, ProductionConfig, validate_production_overrides
 from .constants import DECRYPTORS, JOB_CATEGORIES
 from .engine import (
@@ -433,6 +433,11 @@ def do_refresh_asset_plan(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 # list - see engine.plan_special_order's own docstring for the two
 # deliberate differences from plan_production (no margin gate,
 # net_against_stock replacing stock-target-driven netting).
+# Frozen semantics: docs/PRODUCTION_SEMANTICS.md (SF-1..SF-8). API and the
+# frontend must not call plan_special_order / _expand_all / _invention_need_row.
+
+_COST_INDEX_KINDS = ("reaction", "component", "manufacturing")
+
 
 def _special_order_to_model(row: tuple, item_count: int) -> SpecialOrder:
     order_id, note, net_against_stock, status, created_at = row
@@ -440,36 +445,72 @@ def _special_order_to_model(row: tuple, item_count: int) -> SpecialOrder:
                          status=status, created_at=str(created_at) if created_at else None, item_count=item_count)
 
 
-def do_create_special_order(items: list[dict], note: str | None = None, net_against_stock: bool = False) -> dict:
-    """`items`: [{"type_id": int, "quantity": float}, ...] - at least one,
-    each validated the same way do_update_stock_target validates an
-    existing type_id (storage.get_sde_type(type_id) is not None), since
-    these arrive as type_id directly from the frontend's item picker, not a
-    raw name needing storage.search_sde_types resolution like
-    do_add_stock_target. Raises on the first invalid item rather than
-    silently skipping it."""
-    if not items:
-        raise ActionError("A special order needs at least one item.")
-    resolved: list[tuple[int, str, float]] = []
-    for item in items:
-        type_id = item["type_id"]
-        quantity = item["quantity"]
-        if quantity <= 0:
-            raise ActionError(f"Quantity for type_id {type_id} must be positive.")
+def _resolve_type(type_id_or_name: int | str) -> tuple[int, str]:
+    """Accepts a numeric type_id or an item name (exact match, case-insensitive)
+    - same lookup shape do_add_stock_target uses for names."""
+    if isinstance(type_id_or_name, int) or (isinstance(type_id_or_name, str) and type_id_or_name.strip().isdigit()):
+        type_id = int(type_id_or_name)
         sde_type = storage.get_sde_type(type_id)
         if sde_type is None:
             raise ActionError(f"Unknown type_id {type_id} - refresh SDE first?")
-        resolved.append((type_id, sde_type[2], quantity))
+        return type_id, sde_type[2]
+    stripped = str(type_id_or_name).strip()
+    matches = storage.search_sde_types(stripped, limit=2)
+    exact = [m for m in matches if m[1].lower() == stripped.lower()]
+    if not exact:
+        if not matches:
+            raise ActionError(f"No type found for '{stripped}'. Refresh SDE first?")
+        raise ActionError(f"No exact match for '{stripped}'. Did you mean: {matches[0][1]}?")
+    return exact[0]
 
-    order_id = storage.create_special_order(note, net_against_stock)
-    for type_id, type_name, quantity in resolved:
-        storage.upsert_special_order_item(order_id, type_id, type_name, quantity)
-    return {"order_id": order_id}
+
+def _resolve_create_item(item: dict) -> tuple[int, str, float]:
+    quantity = item["quantity"]
+    raw = item.get("type_id")
+    if raw is None:
+        raw = item.get("type_id_or_name") or item.get("name")
+    if raw is None or raw == "":
+        raise ActionError("Each item needs type_id or name.")
+    if quantity <= 0:
+        raise ActionError(f"Quantity for {raw} must be positive.")
+    type_id, type_name = _resolve_type(raw)
+    return type_id, type_name, quantity
 
 
-def do_list_special_orders() -> list[SpecialOrder]:
+def _plan_special_order_items(items: list[tuple[int, str, float]], cfg: ProductionConfig,
+                              net_against_stock: bool) -> dict:
+    """Single planner entry for one-order compute and combined preview (SF-8)."""
+    return plan_special_order(items, cfg, net_against_stock=net_against_stock)
+
+
+def do_create_special_order(items: list[dict], note: str | None = None, net_against_stock: bool = False) -> dict:
+    """`items`: [{"type_id": int, "quantity": float}, ...] and/or
+    {"name"|"type_id_or_name", "quantity"}. At least one item. Duplicate
+    type_ids are summed (SF-3 / E.2 pooling). Header + items write in one
+    transaction — a failed item does not leave an empty order."""
+    if not items:
+        raise ActionError("A special order needs at least one item.")
+    pooled: dict[int, list] = {}
+    for item in items:
+        type_id, type_name, quantity = _resolve_create_item(item)
+        if type_id in pooled:
+            pooled[type_id][1] += quantity
+        else:
+            pooled[type_id] = [type_name, quantity]
+    resolved = [(type_id, type_name, quantity) for type_id, (type_name, quantity) in pooled.items()]
+    order_id = storage.create_special_order_with_items(note, net_against_stock, resolved)
+    return {"order_id": order_id, "item_count": len(resolved)}
+
+
+def do_list_special_orders(status: str | None = None) -> list[SpecialOrder]:
+    """`status` None lists all; "open" / "done" filters. Unknown status is an error."""
+    if status is not None and status not in ("open", "done"):
+        raise ActionError(f"Unknown status {status!r} - must be 'open' or 'done'.")
+    rows = storage.list_special_orders()
+    if status is not None:
+        rows = [row for row in rows if row[3] == status]
     return [_special_order_to_model(row, len(storage.list_special_order_items(str(row[0]))))
-            for row in storage.list_special_orders()]
+            for row in rows]
 
 
 def do_get_special_order(order_id: str) -> dict:
@@ -490,7 +531,7 @@ def do_update_special_order(order_id: str, status: str | None = None, note: str 
     (status="done"), "reopen" (status="open"), editing the note, and
     flipping net_against_stock after creation (confirmed with the user,
     2026-09-02: an order shouldn't be locked to whatever was picked at
-    creation time)."""
+    creation time). Combined preview still ignores stored flags (SF-5)."""
     if storage.get_special_order(order_id) is None:
         raise ActionError(f"Special order {order_id} not found.")
     if status is not None and status not in ("open", "done"):
@@ -511,32 +552,36 @@ def do_remove_special_order(order_id: str) -> dict:
     return {"removed": order_id}
 
 
-def do_set_special_order_item(order_id: str, type_id: int, quantity: float) -> dict:
+def do_set_special_order_item(order_id: str, type_id: int | str, quantity: float) -> dict:
     """Adds a new line item to an existing order, or updates an existing
-    one's quantity (upsert, same as do_create_special_order's own per-item
-    validation) - confirmed with the user (2026-09-02): items/quantities
-    must stay editable after creation, not just at creation time."""
+    one's quantity (upsert). Does not compute a plan (SF-6). `type_id` may
+    be a numeric id or an exact item name (E.3)."""
     if storage.get_special_order(order_id) is None:
         raise ActionError(f"Special order {order_id} not found.")
     if quantity <= 0:
         raise ActionError(f"Quantity for type_id {type_id} must be positive.")
-    sde_type = storage.get_sde_type(type_id)
-    if sde_type is None:
-        raise ActionError(f"Unknown type_id {type_id} - refresh SDE first?")
-    storage.upsert_special_order_item(order_id, type_id, sde_type[2], quantity)
+    resolved_id, type_name = _resolve_type(type_id)
+    storage.upsert_special_order_item(order_id, resolved_id, type_name, quantity)
     return do_get_special_order(order_id)
 
 
-def do_remove_special_order_item(order_id: str, type_id: int) -> dict:
+def do_remove_special_order_item(order_id: str, type_id: int | str) -> dict:
     """Refuses to remove an order's last remaining item - same "needs at
     least one item" invariant do_create_special_order enforces at creation,
-    kept true for the lifetime of the order rather than only checked once."""
+    kept true for the lifetime of the order rather than only checked once.
+    Unknown type on that order is an error (SF-6), not a silent no-op."""
     if storage.get_special_order(order_id) is None:
         raise ActionError(f"Special order {order_id} not found.")
+    if isinstance(type_id, int) or (isinstance(type_id, str) and str(type_id).strip().isdigit()):
+        resolved_id = int(type_id)
+    else:
+        resolved_id, _type_name = _resolve_type(type_id)
     items = storage.list_special_order_items(order_id)
-    if len(items) <= 1 and any(t == type_id for t, _n, _q in items):
+    if not any(t == resolved_id for t, _n, _q in items):
+        raise ActionError(f"Type {resolved_id} is not on special order {order_id}.")
+    if len(items) <= 1:
         raise ActionError("A special order needs at least one item - remove the whole order instead.")
-    storage.remove_special_order_item(order_id, type_id)
+    storage.remove_special_order_item(order_id, resolved_id)
     return do_get_special_order(order_id)
 
 
@@ -545,7 +590,7 @@ def do_compute_special_order(order_id: str, cfg: ProductionConfig = PRODUCTION_C
     Raises under the same SDE-cache-empty precondition as
     do_refresh_production - a special order has no stock_targets
     equivalent precondition (it always has >=1 item, enforced at
-    creation)."""
+    creation). Does not mutate stored orders (SF-4)."""
     if sum(storage.sde_row_counts().values()) == 0:
         raise ActionError("SDE cache is empty. Run 'Refresh SDE' first.")
     row = storage.get_special_order(order_id)
@@ -553,23 +598,20 @@ def do_compute_special_order(order_id: str, cfg: ProductionConfig = PRODUCTION_C
         raise ActionError(f"Special order {order_id} not found.")
     _order_id, _note, net_against_stock, _status, _created_at = row
     items = storage.list_special_order_items(order_id)
-    return plan_special_order(items, cfg, net_against_stock=net_against_stock)
+    return _plan_special_order_items(items, cfg, net_against_stock=net_against_stock)
 
 
 def do_compute_combined_special_orders(order_ids: list[str], net_against_stock: bool,
                                         cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
-    """Temporary, unsaved combination of 2+ existing orders' line items into
-    one pooled Buy/Build/Invention computation (confirmed with the user,
-    2026-09-02: preview-only - the individual orders themselves are never
-    modified, nothing new is persisted, this is purely "what would fulfilling
-    all of these together look like"). Items sharing a type_id across the
-    selected orders are pooled (summed), same "don't double-order a shared
-    material" guarantee a single order's own line items already get.
-    `net_against_stock` is chosen fresh for this combined view, independent
-    of whatever each individual order's own setting is - there's no single
-    correct way to combine two orders that disagree, so the caller picks."""
+    """Temporary, unsaved combination of existing orders' line items into
+    one pooled Buy/Build/Invention computation (SF-2 / SF-4). Items sharing
+    a type_id across the selected orders are pooled (summed) (SF-3).
+    `net_against_stock` is chosen fresh for this combined view (SF-5),
+    independent of whatever each individual order's own setting is."""
     if not order_ids:
         raise ActionError("Select at least one special order to combine.")
+    if len(order_ids) != len(set(order_ids)):
+        raise ActionError("Duplicate special order ids cannot be combined.")
     if sum(storage.sde_row_counts().values()) == 0:
         raise ActionError("SDE cache is empty. Run 'Refresh SDE' first.")
     pooled: dict[int, list] = {}  # type_id -> [type_name, quantity]
@@ -582,7 +624,44 @@ def do_compute_combined_special_orders(order_ids: list[str], net_against_stock: 
             else:
                 pooled[type_id] = [type_name, quantity]
     items = [(type_id, type_name, quantity) for type_id, (type_name, quantity) in pooled.items()]
-    return plan_special_order(items, cfg, net_against_stock=net_against_stock)
+    return _plan_special_order_items(items, cfg, net_against_stock=net_against_stock)
+
+
+def do_audit_special_orders() -> dict:
+    """Read-only integrity report (E.2). Never repairs and never plans."""
+    issues = order_integrity.audit()
+    return {"ok": not issues, "issues": issues}
+
+
+def do_list_special_order_events(order_id: str | None = None) -> dict:
+    rows = storage.list_special_order_events(order_id)
+    return {
+        "rows": [
+            {"event_id": str(event_id), "order_id": str(oid), "event": event,
+             "detail": detail, "at": str(at) if at else None}
+            for event_id, oid, event, detail, at in rows
+        ]
+    }
+
+
+def do_set_cost_index_override(kind: str, value: float) -> dict:
+    """E.5: writes an existing ProductionConfig cost-index field via Settings."""
+    if kind not in _COST_INDEX_KINDS:
+        raise ActionError(f"Unknown cost-index kind {kind!r} - must be reaction, component, or manufacturing.")
+    return do_update_settings({f"{kind}_cost_index_override": value})
+
+
+def do_clear_cost_index_override(kind: str) -> dict:
+    if kind not in _COST_INDEX_KINDS:
+        raise ActionError(f"Unknown cost-index kind {kind!r} - must be reaction, component, or manufacturing.")
+    return do_update_settings({f"{kind}_cost_index_override": None})
+
+
+def do_list_cost_index_overrides() -> dict:
+    cfg = PRODUCTION_CONFIG
+    return {
+        "overrides": {kind: getattr(cfg, f"{kind}_cost_index_override") for kind in _COST_INDEX_KINDS}
+    }
 
 
 # GitHub issue #64 (found in a full-codebase audit 2026-08-21): the three
