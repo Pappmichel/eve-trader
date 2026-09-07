@@ -546,7 +546,8 @@ def refresh_asset_plan():
 
 # --------------------------------------------------------- special orders
 class SpecialOrderItemInput(BaseModel):
-    type_id: int
+    type_id: Optional[int] = None
+    name: Optional[str] = None
     quantity: float
 
 
@@ -558,13 +559,13 @@ class CreateSpecialOrderRequest(BaseModel):
 
 @router.post("/special-orders")
 def create_special_order(req: CreateSpecialOrderRequest):
-    return _wrap(actions.do_create_special_order, items=[i.model_dump() for i in req.items],
+    return _wrap(actions.do_create_special_order, items=[i.model_dump(exclude_none=True) for i in req.items],
                  note=req.note, net_against_stock=req.net_against_stock)
 
 
 @router.get("/special-orders", response_model=list[schemas.SpecialOrder])
-def list_special_orders():
-    return _wrap(actions.do_list_special_orders)
+def list_special_orders(status: Optional[str] = None):
+    return _wrap(actions.do_list_special_orders, status=status)
 
 
 class CombineSpecialOrdersRequest(BaseModel):
@@ -577,11 +578,21 @@ class CombineSpecialOrdersRequest(BaseModel):
 # shape as "/special-orders/{order_id}/compute" (both are two segments
 # after "special-orders"), so FastAPI would otherwise match a request here
 # against the earlier-registered {order_id} route first (order_id="combine")
-# and never reach this one at all.
+# and never reach this one at all. Same for /audit and /events.
 @router.post("/special-orders/combine/compute", response_model=schemas.SpecialOrderComputeResult)
 def compute_combined_special_orders(req: CombineSpecialOrdersRequest):
     return _wrap(actions.do_compute_combined_special_orders, order_ids=req.order_ids,
                  net_against_stock=req.net_against_stock)
+
+
+@router.get("/special-orders/audit")
+def audit_special_orders():
+    return _wrap(actions.do_audit_special_orders)
+
+
+@router.get("/special-orders/events")
+def list_special_order_events(order_id: Optional[str] = None):
+    return _wrap(actions.do_list_special_order_events, order_id=order_id)
 
 
 @router.get("/special-orders/{order_id}")
@@ -605,18 +616,32 @@ def remove_special_order(order_id: str):
     return _wrap(actions.do_remove_special_order, order_id=order_id)
 
 
+@router.get("/special-orders/{order_id}/events")
+def list_one_special_order_events(order_id: str):
+    return _wrap(actions.do_list_special_order_events, order_id=order_id)
+
+
 class SetSpecialOrderItemRequest(BaseModel):
-    type_id: int
+    type_id: Optional[int] = None
+    name: Optional[str] = None
     quantity: float
 
 
 @router.put("/special-orders/{order_id}/items")
-def set_special_order_item(order_id: str, req: SetSpecialOrderItemRequest):
-    return _wrap(actions.do_set_special_order_item, order_id=order_id, type_id=req.type_id, quantity=req.quantity)
+def set_special_order_item(order_id: str, req: SetSpecialOrderItemRequest, recompute: bool = False):
+    type_ref = req.type_id if req.type_id is not None else req.name
+    if recompute:
+        from ...production import preview_refresh
+        return _wrap(preview_refresh.set_item_and_preview, order_id=order_id,
+                     type_id=type_ref, quantity=req.quantity)
+    return _wrap(actions.do_set_special_order_item, order_id=order_id, type_id=type_ref, quantity=req.quantity)
 
 
 @router.delete("/special-orders/{order_id}/items/{type_id}")
-def remove_special_order_item(order_id: str, type_id: int):
+def remove_special_order_item(order_id: str, type_id: int, recompute: bool = False):
+    if recompute:
+        from ...production import preview_refresh
+        return _wrap(preview_refresh.remove_item_and_preview, order_id=order_id, type_id=type_id)
     return _wrap(actions.do_remove_special_order_item, order_id=order_id, type_id=type_id)
 
 

@@ -506,6 +506,52 @@ def _tech_ii_mods(type_id: int, blueprint_id: int, activity_id: int, cfg: Produc
     return result
 
 
+def _invention_need_row(type_id: int, type_name: str, activity: str,
+                        bp: Optional[tuple[int, int, float]], missing: float,
+                        stockpile_quantity: float, cfg: ProductionConfig,
+                        home: dict, jita: dict, selected_decryptors: dict[int, str],
+                        t2_memo: dict[int, tuple[float, float, Optional[str], Optional[InventionResult]]]
+                        ) -> Optional[InventionNeedRow]:
+    """One InventionNeedRow for a Tech II/III product, or None if it isn't
+    invention-sourced. Reuses `_tech_ii_mods`' chosen InventionResult
+    (grade x decryptor already optimized there) instead of re-resolving the
+    recipe. `missing` drives runs_needed; `stockpile_quantity` is the
+    stockpile_pct denominator (a stock target's backup+home+Jita total, or
+    a special order's ordered qty - plan_special_order measures stockpile
+    against the order itself, not a standing backup target).
+
+    This is the only constructor of InventionNeedRow in production code
+    (SF-7). CLI, API routers, and the frontend must not invent a second
+    formula.
+    """
+    if activity != "Tech II" or bp is None:
+        return None
+    blueprint_id, activity_id, product_qty = bp
+    _, _, _, chosen = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
+                                    selected_decryptors, t2_memo)
+    if chosen is None or chosen.output_runs <= 0 or chosen.probability <= 0:
+        return None
+    # blueprint_id here IS the invented T2/T3 blueprint's own type_id - not
+    # `type_id` (the manufactured item), and not chosen.t1_blueprint_type_id
+    # (the relic/T1 blueprint consumed to invent it).
+    t2_bpc_owned = int(storage.available_blueprint_copies(blueprint_id, None))
+    runs_needed = math.ceil(missing / product_qty) if missing > 0 else 0
+    runs_still_needed = max(0, runs_needed - t2_bpc_owned)
+    bpcs_needed = math.ceil(runs_still_needed / chosen.output_runs) if runs_still_needed > 0 else 0
+    recommended_runs = math.ceil(bpcs_needed / chosen.probability) if bpcs_needed > 0 else 0
+    target_stock_runs = math.ceil(stockpile_quantity / product_qty) if stockpile_quantity > 0 else 0
+    stockpile_pct = (max(0.0, t2_bpc_owned / target_stock_runs * 100)
+                     if target_stock_runs > 0 else 0.0)
+    return InventionNeedRow(
+        type_id=type_id, type_name=type_name,
+        t1_blueprint_type_id=chosen.t1_blueprint_type_id, t1_blueprint_name=chosen.t1_blueprint_name,
+        decryptor=chosen.decryptor, probability=chosen.probability, output_runs=chosen.output_runs,
+        runs_needed=runs_needed, bpcs_needed=bpcs_needed,
+        recommended_invention_runs=recommended_runs,
+        t2_bpc_owned=t2_bpc_owned, stockpile_pct=stockpile_pct,
+    )
+
+
 def _unit_cost(type_id: int, cfg: ProductionConfig, home: dict, jita: dict,
                memo: dict[int, Optional[float]], selected_decryptors: dict[int, str],
                t2_memo: dict[int, tuple[float, float, Optional[str]]], cost_indices: CostIndices,
@@ -1226,76 +1272,15 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         # buy-vs-build gate below would pick "Buy" for it right now - the
         # point of this list is forward planning ("what would it take to
         # invent enough BPCs for this stock target"), not just today's
-        # Bauliste (see plan_production docstring).
-        if activity == "Tech II" and bp is not None:
-            blueprint_id, activity_id, product_qty = bp
-            # Reuses _tech_ii_mods' own chosen InventionResult directly
-            # (grade x decryptor already optimized there) instead of
-            # re-resolving the recipe and re-running invention.estimate() a
-            # second time from scratch - a genuine duplicate computation the
-            # old code did here, not merely a style preference (confirmed
-            # while fixing the Tech III relic-grade bug, 2026-08-30).
-            _, _, _, chosen = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
-                                             selected_decryptors, t2_memo)
-            if chosen is not None and chosen.output_runs > 0 and chosen.probability > 0:
-                # blueprint_id here IS the invented T2/T3 blueprint's own
-                # type_id - not `type_id` above (the manufactured item), and
-                # not chosen.t1_blueprint_type_id either (the relic/T1
-                # blueprint *consumed* to invent it) - t2_bpc_owned always
-                # means "owned copies of the blueprint invention produces".
-                t2_bpc_owned = int(storage.available_blueprint_copies(blueprint_id, None))
-                runs_needed = math.ceil(missing / product_qty) if missing > 0 else 0
-                # Net off runs already covered by owned-but-not-yet-built T2
-                # BPCs before recommending more invention attempts - without
-                # this, recommended_invention_runs stayed positive even when
-                # t2_bpc_owned/stockpile_pct already showed full coverage,
-                # since it was computed from runs_needed alone (confirmed
-                # real bug, reported live: "many show 100% but it's still
-                # recommending I start inventions", 2026-08-30).
-                runs_still_needed = max(0, runs_needed - t2_bpc_owned)
-                bpcs_needed = math.ceil(runs_still_needed / chosen.output_runs) if runs_still_needed > 0 else 0
-                recommended_runs = math.ceil(bpcs_needed / chosen.probability) if bpcs_needed > 0 else 0
-                # BPC-runs-owned as a % of a *fixed* target - both sides
-                # already share the same unit (manufacturing runs of
-                # blueprint_id: t2_bpc_owned is runs remaining on owned
-                # copies, target_stock_runs is runs needed to fully stock the
-                # target), so no further conversion through output_runs is
-                # needed. An earlier version divided the target by
-                # output_runs into "number of discrete invented BPCs"
-                # instead - that discretized the target down to a tiny
-                # integer (often just 1, since a single invented BPC
-                # frequently covers the whole target on its own), which
-                # reintroduced the same 0%/100%-only behavior this fix
-                # exists to avoid (confirmed real bug, 2026-08-30).
-                #
-                # The fixed target itself must be the *same* total this row's
-                # own runs_needed/bpcs_needed are computed against - backup_stock
-                # plus home/Jita market-listing targets (mirrors _total_missing
-                # above), not backup_stock alone. Using backup_stock alone was a
-                # real bug (confirmed live, 2026-08-31): a stock target with
-                # backup_stock=0 but a real home/Jita market target (e.g. an
-                # ammo/turret item stocked for market resale rather than a
-                # backup reserve) forced target_stock_runs to 0, which forced
-                # stockpile_pct to a hardcoded 0% regardless of how many BPC
-                # runs were actually owned - even for a row simultaneously
-                # showing bpcs_needed=0 (fully covered right now).
-                # Deliberately uncapped above 100% (confirmed with the user,
-                # 2026-08-31) - owning more BPC runs than the target calls for
-                # is a real, useful signal ("you're over-invented on this
-                # one, ease off"), not something to hide by flattening it to
-                # the same 100% a right-on-target row would also show.
-                target_stock = backup_stock + (home_market_stock or 0) + (jita_market_stock or 0)
-                target_stock_runs = math.ceil(target_stock / product_qty) if target_stock > 0 else 0
-                stockpile_pct = (max(0.0, t2_bpc_owned / target_stock_runs * 100)
-                                 if target_stock_runs > 0 else 0.0)
-                invention_list.append(InventionNeedRow(
-                    type_id=type_id, type_name=type_name,
-                    t1_blueprint_type_id=chosen.t1_blueprint_type_id, t1_blueprint_name=chosen.t1_blueprint_name,
-                    decryptor=chosen.decryptor, probability=chosen.probability, output_runs=chosen.output_runs,
-                    runs_needed=runs_needed, bpcs_needed=bpcs_needed,
-                    recommended_invention_runs=recommended_runs,
-                    t2_bpc_owned=t2_bpc_owned, stockpile_pct=stockpile_pct,
-                ))
+        # Bauliste (see plan_production docstring). Stockpile % is against
+        # backup+home+Jita (not backup_stock alone) - see _invention_need_row.
+        invention_row = _invention_need_row(
+            type_id, type_name, activity, bp, missing,
+            backup_stock + (home_market_stock or 0) + (jita_market_stock or 0),
+            cfg, home, jita, selected_decryptors, t2_memo,
+        )
+        if invention_row is not None:
+            invention_list.append(invention_row)
 
         if missing > 0:
             _unit_cost(type_id, cfg, home, jita, cost_memo, selected_decryptors, t2_memo, cost_indices, adjusted_prices)
@@ -1408,30 +1393,15 @@ def plan_special_order(items: list[tuple[int, str, float]], cfg: ProductionConfi
         missing = quantity
         line_items.append(SpecialOrderLineItem(type_id=type_id, type_name=type_name, quantity=quantity))
 
-        # Tech II/III line item: same invention-needs row shape as
-        # plan_production's own (InventionNeedRow), but the "target"
-        # stockpile_pct is measured against is this order's own runs_needed
-        # - there's no backup+home+Jita steady-state target for a one-off
-        # order the way there is for a stock target.
-        if activity == "Tech II" and bp is not None:
-            blueprint_id, activity_id, product_qty = bp
-            _, _, _, chosen = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
-                                             selected_decryptors, t2_memo)
-            if chosen is not None and chosen.output_runs > 0 and chosen.probability > 0:
-                t2_bpc_owned = int(storage.available_blueprint_copies(blueprint_id, None))
-                runs_needed = math.ceil(missing / product_qty) if missing > 0 else 0
-                runs_still_needed = max(0, runs_needed - t2_bpc_owned)
-                bpcs_needed = math.ceil(runs_still_needed / chosen.output_runs) if runs_still_needed > 0 else 0
-                recommended_runs = math.ceil(bpcs_needed / chosen.probability) if bpcs_needed > 0 else 0
-                stockpile_pct = max(0.0, t2_bpc_owned / runs_needed * 100) if runs_needed > 0 else 0.0
-                invention_list.append(InventionNeedRow(
-                    type_id=type_id, type_name=type_name,
-                    t1_blueprint_type_id=chosen.t1_blueprint_type_id, t1_blueprint_name=chosen.t1_blueprint_name,
-                    decryptor=chosen.decryptor, probability=chosen.probability, output_runs=chosen.output_runs,
-                    runs_needed=runs_needed, bpcs_needed=bpcs_needed,
-                    recommended_invention_runs=recommended_runs,
-                    t2_bpc_owned=t2_bpc_owned, stockpile_pct=stockpile_pct,
-                ))
+        # Tech II/III line item: same InventionNeedRow constructor as
+        # plan_production (_invention_need_row). Stockpile % is against this
+        # order's own quantity - there is no backup+home+Jita standing target.
+        invention_row = _invention_need_row(
+            type_id, type_name, activity, bp, missing, missing,
+            cfg, home, jita, selected_decryptors, t2_memo,
+        )
+        if invention_row is not None:
+            invention_list.append(invention_row)
 
         if missing > 0:
             _unit_cost(type_id, cfg, home, jita, cost_memo, selected_decryptors, t2_memo, cost_indices, adjusted_prices)

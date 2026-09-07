@@ -1,6 +1,6 @@
 [project]
 name = "eve-trader"
-version = "0.1.0"
+version = "0.2.0rc1"
 description = "C-J import trading and Tech I/II production planning toolkit for EVE Online"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -39,3 +39,8 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["eve_trader*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "release: Production Special-Order freeze regression (phases C–H)",
+]

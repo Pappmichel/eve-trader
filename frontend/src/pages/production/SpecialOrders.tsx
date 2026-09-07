@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  Alert, Badge, Button, Card, Checkbox, Group, MultiSelect, NumberInput, Stack, Text, Textarea, Title, ActionIcon,
+  Alert, Badge, Button, Card, Checkbox, Group, MultiSelect, NumberInput, SegmentedControl, Stack, Text, Textarea, Title, ActionIcon,
 } from '@mantine/core'
 import { modals } from '@mantine/modals'
 import { IconCheck, IconPlus, IconTrash } from '@tabler/icons-react'
@@ -9,7 +9,8 @@ import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
 import type {
-  BuildJobEntry, BuyListEntry, InventionNeedRow, SpecialOrder, SpecialOrderComputeResult, SpecialOrderLineItem,
+  BuildJobEntry, BuyListEntry, InventionNeedRow, SpecialOrder, SpecialOrderComputeResult, SpecialOrderDetail,
+  SpecialOrderLineItem, SpecialOrderPreviewResult,
 } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
@@ -261,16 +262,25 @@ function NewOrderForm() {
   )
 }
 
-function OrderItemsEditor({ order, items }: { order: SpecialOrder; items: SpecialOrderLineItem[] }) {
+function OrderItemsEditor({ order, items, autoRecompute, onPreview }: {
+  order: SpecialOrder
+  items: SpecialOrderLineItem[]
+  autoRecompute: boolean
+  onPreview: (plan: SpecialOrderComputeResult) => void
+}) {
   const queryClient = useQueryClient()
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ['production', 'special-orders'] })
     queryClient.invalidateQueries({ queryKey: ['production', 'special-orders', order.order_id] })
   }
+  const applyResult = (result: SpecialOrderDetail | SpecialOrderPreviewResult) => {
+    invalidate()
+    if ('plan' in result && result.plan) onPreview(result.plan)
+  }
   const setItem = useAction('Save Item', (args: { typeId: number; quantity: number }) =>
-    productionApi.setSpecialOrderItem(order.order_id, args.typeId, args.quantity))
+    productionApi.setSpecialOrderItem(order.order_id, args.typeId, args.quantity, autoRecompute))
   const removeItem = useAction('Remove Item', (typeId: number) =>
-    productionApi.removeSpecialOrderItem(order.order_id, typeId))
+    productionApi.removeSpecialOrderItem(order.order_id, typeId, autoRecompute))
   const [pendingTypeId, setPendingTypeId] = useState<number | null>(null)
 
   const { data: itemNameOptions } = useItemNameOptions()
@@ -291,7 +301,7 @@ function OrderItemsEditor({ order, items }: { order: SpecialOrder; items: Specia
           isPending={setItem.isPending && pendingTypeId === i.row.original.type_id}
           onSave={(value) => {
             setPendingTypeId(i.row.original.type_id)
-            setItem.mutate({ typeId: i.row.original.type_id, quantity: value }, { onSuccess: invalidate })
+            setItem.mutate({ typeId: i.row.original.type_id, quantity: value }, { onSuccess: applyResult })
           }}
         />
       ),
@@ -304,14 +314,14 @@ function OrderItemsEditor({ order, items }: { order: SpecialOrder; items: Specia
           loading={removeItem.isPending && pendingTypeId === i.row.original.type_id}
           onClick={() => {
             setPendingTypeId(i.row.original.type_id)
-            removeItem.mutate(i.row.original.type_id, { onSuccess: invalidate })
+            removeItem.mutate(i.row.original.type_id, { onSuccess: applyResult })
           }}>
           <IconTrash size={14} />
         </ActionIcon>
       ),
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  ], [items.length, setItem.isPending, removeItem.isPending, pendingTypeId])
+  ], [items.length, setItem.isPending, removeItem.isPending, pendingTypeId, autoRecompute])
 
   return (
     <Stack gap="xs">
@@ -332,7 +342,7 @@ function OrderItemsEditor({ order, items }: { order: SpecialOrder; items: Specia
           onClick={() => {
             setPendingTypeId(null)
             setItem.mutate({ typeId: Number(newTypeId), quantity: Number(newQuantity) }, {
-              onSuccess: () => { invalidate(); setNewTypeId(null); setNewQuantity(1) },
+              onSuccess: (result) => { applyResult(result); setNewTypeId(null); setNewQuantity(1) },
             })
           }}
         >
@@ -350,21 +360,49 @@ function OrderDetail({ order }: { order: SpecialOrder }) {
     queryFn: () => productionApi.getSpecialOrder(order.order_id),
   })
   const compute = useAction('Compute Special Order', () => productionApi.computeSpecialOrder(order.order_id))
-  const result = compute.data
+  const [preview, setPreview] = useState<SpecialOrderComputeResult | null>(null)
+  const result = preview ?? compute.data
   const setNetAgainstStock = useAction('Save Special Order',
     (netAgainstStock: boolean) => productionApi.updateSpecialOrder(order.order_id, { net_against_stock: netAgainstStock }),
     SPECIAL_ORDER_KEYS)
+  const saveNote = useAction('Save Special Order',
+    (note: string) => productionApi.updateSpecialOrder(order.order_id, { note: note || null }),
+    SPECIAL_ORDER_KEYS)
+  const [noteDraft, setNoteDraft] = useState(order.note ?? '')
+  const [autoRecompute, setAutoRecompute] = useState(false)
 
   return (
     <Card withBorder mt="sm">
       <Group justify="space-between" mb="xs">
         <Title order={6}>{order.note ?? `Order ${order.order_id.slice(0, 8)}`}</Title>
-        <Button size="xs" onClick={() => compute.mutate()} loading={compute.isPending}>
+        <Button size="xs" onClick={() => compute.mutate(undefined, { onSuccess: (plan) => setPreview(plan) })}
+          loading={compute.isPending}>
           {result ? 'Recompute' : 'Compute'}
         </Button>
       </Group>
 
-      {detail && <OrderItemsEditor order={order} items={detail.items} />}
+      <Group align="flex-end" mb="sm">
+        <Textarea label="Note" placeholder="Customer / purpose" value={noteDraft}
+          onChange={(e) => setNoteDraft(e.currentTarget.value)} autosize minRows={1} maxRows={3} style={{ flex: 1 }} />
+        <Button size="xs" variant="default" loading={saveNote.isPending}
+          disabled={noteDraft === (order.note ?? '')}
+          onClick={() => saveNote.mutate(noteDraft.trim())}>
+          Save Note
+        </Button>
+      </Group>
+
+      {detail && (
+        <OrderItemsEditor
+          order={order} items={detail.items}
+          autoRecompute={autoRecompute} onPreview={setPreview}
+        />
+      )}
+
+      <Checkbox
+        mt="sm"
+        label="Auto-recompute after edit (session only — not stored on the order)"
+        checked={autoRecompute} onChange={(e) => setAutoRecompute(e.currentTarget.checked)}
+      />
 
       <Checkbox
         mt="sm"
@@ -397,7 +435,8 @@ function CombinePanel({ orderIds, onClear }: { orderIds: string[]; onClear: () =
       </Group>
       <Text size="xs" c="dimmed" mb="sm">
         Temporary - pools the selected orders' own items (shared items summed) into one Buy/Build/Invention
-        computation. Nothing is saved; the individual orders are never changed.
+        computation. Nothing is saved; the individual orders are never changed. Combined "prefer stock" is
+        this checkbox only — it does not read or write each order's stored flag.
       </Text>
       <Group align="flex-end">
         <Checkbox
@@ -414,8 +453,12 @@ function CombinePanel({ orderIds, onClear }: { orderIds: string[]; onClear: () =
 }
 
 export default function SpecialOrders() {
+  const [statusFilter, setStatusFilter] = useState<'all' | 'open' | 'done'>('all')
   const { data: orders, isLoading, isError, refetch, dataUpdatedAt } =
-    useQuery({ queryKey: ['production', 'special-orders'], queryFn: productionApi.specialOrders })
+    useQuery({
+      queryKey: ['production', 'special-orders', statusFilter],
+      queryFn: () => productionApi.specialOrders(statusFilter === 'all' ? undefined : statusFilter),
+    })
 
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [pendingId, setPendingId] = useState<string | null>(null)
@@ -500,20 +543,32 @@ export default function SpecialOrders() {
     <Stack>
       <NewOrderForm />
 
+      <Group justify="space-between" align="flex-end" mb="xs">
+        <Text size="xs" c="dimmed">Select 2 or more orders to combine them into a temporary preview.</Text>
+        <SegmentedControl
+          size="xs"
+          value={statusFilter}
+          onChange={(v) => setStatusFilter(v as 'all' | 'open' | 'done')}
+          data={[
+            { label: 'All', value: 'all' },
+            { label: 'Open', value: 'open' },
+            { label: 'Done', value: 'done' },
+          ]}
+        />
+      </Group>
       {isLoading ? (
         <DataTable data={[]} columns={columns} isLoading maxHeight={420} />
       ) : isError ? (
         <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={420} />
       ) : !orders || orders.length === 0 ? (
-        <HintCard>No special orders yet.</HintCard>
+        <HintCard>
+          {statusFilter === 'all' ? 'No special orders yet.' : `No ${statusFilter} special orders.`}
+        </HintCard>
       ) : (
-        <>
-          <Text size="xs" c="dimmed">Select 2 or more orders to combine them into a temporary preview.</Text>
-          <DataTable
-            data={orders} columns={columns} maxHeight={420}
-            getRowId={(row) => row.order_id} dataUpdatedAt={dataUpdatedAt}
-          />
-        </>
+        <DataTable
+          data={orders} columns={columns} maxHeight={420}
+          getRowId={(row) => row.order_id} dataUpdatedAt={dataUpdatedAt}
+        />
       )}
 
       {selectedIds.size >= 2 && (

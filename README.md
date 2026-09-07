@@ -9,8 +9,8 @@ store (RLS-isolated per tenant - see `docs/MULTI_TENANT_PLAN.md`):
   tracking, and realized-trade reconciliation between two characters.
 - **Production** — Tech I/II/Reaction manufacturing planning for the same
   home structure: buy-vs-build decisions, stock targets, buy/build lists,
-  invention cost/probability, and logistics status, all driven by a local
-  Fuzzwork SDE cache plus live ESI/Goonmetrics prices.
+  invention cost/probability, logistics status, and Special Orders (frozen
+  semantics in `docs/PRODUCTION_SEMANTICS.md`, certified `0.2.0rc1`).
 - **Doctrine** — tracks fitted-ship contracts and stockpile against a
   doctrine's EFT fittings: per-fitting/per-doctrine status, a shopping list
   for what's missing, synced from ESI contracts/assets.
@@ -56,12 +56,13 @@ docker run -d --name eve-trader-pg -e POSTGRES_PASSWORD=devpassword \
   -e POSTGRES_DB=eve_trader -p 5432:5432 postgres:16
 
 # owner role applies the schema (never the app's own role - see CLAUDE.md's
-# "Multi-tenant Postgres" section for why). All eight files, not just
+# "Multi-tenant Postgres" section for why). All schema files, not just
 # phase1-3 - admin_schema.sql/doctrine_schema.sql/observability_schema.sql/
-# refining_schema.sql/role_consent_schema.sql back the Admin/Doctrine/error-
-# tracking/Ore & Minerals/role-consent features, and their routers are
-# registered unconditionally, so skipping them means 500s the moment you
-# touch those tools, not just a missing feature:
+# refining_schema.sql/role_consent_schema.sql/special_orders_schema.sql back
+# the Admin/Doctrine/error-tracking/Ore & Minerals/role-consent/Special
+# Orders features, and their routers are registered unconditionally, so
+# skipping them means 500s the moment you touch those tools, not just a
+# missing feature:
 Get-Content docs\phase1_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
 Get-Content docs\phase2_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
 Get-Content docs\phase3_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
@@ -70,6 +71,7 @@ Get-Content docs\doctrine_schema.sql | docker exec -i eve-trader-pg psql -U post
 Get-Content docs\observability_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
 Get-Content docs\refining_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
 Get-Content docs\role_consent_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
+Get-Content docs\special_orders_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
 ```
 
 (`phase1_schema.sql` creates the `eve_trader_app` role with the checked-in

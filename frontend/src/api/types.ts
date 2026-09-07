@@ -332,6 +332,24 @@ export interface SpecialOrderDetail {
   items: SpecialOrderLineItem[]
 }
 
+export interface SpecialOrderPreviewResult extends SpecialOrderDetail {
+  plan: SpecialOrderComputeResult
+}
+
+export interface SpecialOrderAuditIssue {
+  kind: string
+  order_id: string
+  detail: string
+}
+
+export interface SpecialOrderEventRow {
+  event_id: string
+  order_id: string
+  event: string
+  detail: string | null
+  at: string | null
+}
+
 export interface InventionNeedRow {
   type_id: number
   type_name: string

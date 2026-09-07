@@ -2702,13 +2702,48 @@ def has_any_doctrine_synced_assets() -> bool:
 # special_orders_schema.sql. Header/child pair, same CRUD shape as
 # doctrines/doctrine_fittings above.
 
+def _insert_special_order_event(conn, order_id: str, event: str,
+                                detail: Optional[str] = None) -> None:
+    conn.execute(
+        "INSERT INTO special_order_events (order_id, event, detail) VALUES (?, ?, ?)",
+        (order_id, event, detail),
+    )
+
+
 def create_special_order(note: Optional[str], net_against_stock: bool) -> str:
+    """Header only — tests/audit use this to seed incomplete rows. Production
+    create goes through create_special_order_with_items so items cannot be
+    dropped mid-write."""
     with connect() as conn:
         row = conn.execute(
             "INSERT INTO special_orders (note, net_against_stock) VALUES (?, ?) RETURNING order_id",
             (note, net_against_stock),
         ).fetchone()
-    return str(row[0])
+        order_id = str(row[0])
+        _insert_special_order_event(conn, order_id, "created")
+    return order_id
+
+
+def create_special_order_with_items(note: Optional[str], net_against_stock: bool,
+                                    items: list[tuple[int, str, float]]) -> str:
+    """Header + line items in one transaction (Phase E.2). `items` is
+    `(type_id, type_name, quantity)` already pooled and validated. Uses
+    batch_session so a failed item insert rolls back the header."""
+    with batch_session():
+        with connect() as conn:
+            row = conn.execute(
+                "INSERT INTO special_orders (note, net_against_stock) VALUES (?, ?) RETURNING order_id",
+                (note, net_against_stock),
+            ).fetchone()
+            order_id = str(row[0])
+            for type_id, type_name, quantity in items:
+                conn.execute(
+                    "INSERT INTO special_order_items (order_id, type_id, type_name, quantity) "
+                    "VALUES (?,?,?,?)",
+                    (order_id, type_id, type_name, quantity),
+                )
+            _insert_special_order_event(conn, order_id, "created", f"{len(items)} item(s)")
+    return order_id
 
 
 _SPECIAL_ORDER_COLUMNS = ("order_id", "note", "net_against_stock", "status", "created_at")
@@ -2740,6 +2775,9 @@ def update_special_order(order_id: str, updates: dict) -> None:
     cols = ", ".join(f"{k} = ?" for k in updates)
     with connect() as conn:
         conn.execute(f"UPDATE special_orders SET {cols} WHERE order_id = ?", (*updates.values(), order_id))
+        _insert_special_order_event(
+            conn, order_id, "updated", ", ".join(sorted(updates.keys())),
+        )
 
 
 def delete_special_order(order_id: str) -> None:
@@ -2747,8 +2785,10 @@ def delete_special_order(order_id: str) -> None:
     on special_order_items, matching this codebase's explicit-not-implicit
     convention for cross-table deletes (see delete_fitting/
     unmatch_contracts_for_fitting above for the same explicit-ordering
-    style)."""
+    style). The append-only event log is written first and is not deleted.
+    """
     with connect() as conn:
+        _insert_special_order_event(conn, order_id, "deleted")
         conn.execute("DELETE FROM special_order_items WHERE order_id = ?", (order_id,))
         conn.execute("DELETE FROM special_orders WHERE order_id = ?", (order_id,))
 
@@ -2761,11 +2801,18 @@ def upsert_special_order_item(order_id: str, type_id: int, type_name: str, quant
             "type_name=excluded.type_name, quantity=excluded.quantity",
             (order_id, type_id, type_name, quantity),
         )
+        _insert_special_order_event(
+            conn, order_id, "item_set", f"{type_name} x{quantity:g}",
+        )
 
 
 def remove_special_order_item(order_id: str, type_id: int) -> None:
+    """Deletes one line item. Callers must already have checked that the
+    order exists and that this type_id is on it — this is a thin DELETE,
+    not the ActionError boundary."""
     with connect() as conn:
         conn.execute("DELETE FROM special_order_items WHERE order_id = ? AND type_id = ?", (order_id, type_id))
+        _insert_special_order_event(conn, order_id, "item_removed", str(type_id))
 
 
 def list_special_order_items(order_id: str) -> list[tuple[int, str, float]]:
@@ -2774,4 +2821,30 @@ def list_special_order_items(order_id: str) -> list[tuple[int, str, float]]:
         return conn.execute(
             "SELECT type_id, type_name, quantity FROM special_order_items WHERE order_id = ? ORDER BY type_name",
             (order_id,),
+        ).fetchall()
+
+
+def list_special_order_events(order_id: Optional[str] = None) -> list[tuple]:
+    """(event_id, order_id, event, detail, at), oldest first. `order_id` None
+    lists every event visible to the current tenant."""
+    with connect() as conn:
+        if order_id is None:
+            return conn.execute(
+                "SELECT event_id, order_id, event, detail, at FROM special_order_events "
+                "ORDER BY at, event_id"
+            ).fetchall()
+        return conn.execute(
+            "SELECT event_id, order_id, event, detail, at FROM special_order_events "
+            "WHERE order_id = ? ORDER BY at, event_id",
+            (order_id,),
+        ).fetchall()
+
+
+def list_all_special_order_item_rows() -> list[tuple[str, int, str, float]]:
+    """(order_id, type_id, type_name, quantity) across every order — audit
+    only (Phase E.2). Not a second listing API for the UI."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT order_id, type_id, type_name, quantity FROM special_order_items "
+            "ORDER BY order_id, type_name"
         ).fetchall()
