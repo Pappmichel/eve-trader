@@ -628,17 +628,17 @@ def _items_beyond_rank(rows: list, max_active_items: int) -> list[tuple[int, str
     """Pure ranking logic for the optional hard shortlist-size cap
     (TradingConfig.enforce_shortlist_cap/max_active_shortlist_items) - ranks
     `rows` (expected: already filtered down to the still-active-this-run set)
-    by max daily profit (profit_per_unit x sell_volume, descending - margin x
-    liquidity, confirmed with the user over margin alone, since a high-margin
-    item with near-zero sell volume isn't worth much operationally) and
-    returns every item beyond the `max_active_items`'th rank. Items with no
-    computable profit/sell_volume (None) sort last, same as if their daily
-    profit were 0 - they're not being unfairly pushed out ahead of items that
-    do have data, just never prioritized over them either."""
+    by max daily profit (profit_per_unit x avg_daily_volume, descending -
+    the same market-wide daily-turnover figure Shortlist "Profit / Day"
+    uses, never sell_volume/order-book depth; see GitHub issues #51/#100)
+    and returns every item beyond the `max_active_items`'th rank. Items with
+    no computable profit/avg_daily_volume (None) sort last, same as if their
+    daily profit were 0 - they're not being unfairly pushed out ahead of
+    items that do have data, just never prioritized over them either."""
     def _daily_profit(r):
-        if r.profit_per_unit is None or r.sell_volume is None:
+        if r.profit_per_unit is None or r.avg_daily_volume is None:
             return float("-inf")
-        return r.profit_per_unit * r.sell_volume
+        return r.profit_per_unit * r.avg_daily_volume
 
     ranked = sorted(rows, key=_daily_profit, reverse=True)
     return [(r.item_id, r.item) for r in ranked[max_active_items:] if r.item_id]
