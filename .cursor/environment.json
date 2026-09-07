@@ -1,16 +1,16 @@
 {
   "name": "EVE Trader",
   "user": "ubuntu",
-  "install": "D=eve-trader; [ -d \"$D\" ] || D=.; bash \"$D/.cursor/install.sh\"",
-  "start": "D=eve-trader; [ -d \"$D\" ] || D=.; bash \"$D/.cursor/start.sh\"",
+  "install": "for d in eve-trader repos/eve-trader /agent/repos/eve-trader .; do [ -f \"$d/.cursor/install.sh\" ] && { cd \"$d\"; break; }; done; bash .cursor/install.sh",
+  "start": "for d in eve-trader repos/eve-trader /agent/repos/eve-trader .; do [ -f \"$d/.cursor/start.sh\" ] && { cd \"$d\"; break; }; done; bash .cursor/start.sh",
   "terminals": [
     {
       "name": "backend",
-      "command": "D=eve-trader; [ -d \"$D\" ] || D=.; cd \"$D\" && EVE_TRADER_PG_DSN='host=localhost port=5432 dbname=eve_trader_dev user=eve_trader_app password=app_devpassword' EVE_TRADER_PG_CONTAINER='' .venv/bin/uvicorn eve_trader.api.main:app --port 8000"
+      "command": "for d in eve-trader repos/eve-trader /agent/repos/eve-trader .; do [ -f \"$d/.cursor/start.sh\" ] && { cd \"$d\"; break; }; done; EVE_TRADER_PG_DSN='host=localhost port=5432 dbname=eve_trader_dev user=eve_trader_app password=app_devpassword' EVE_TRADER_PG_CONTAINER='' .venv/bin/uvicorn eve_trader.api.main:app --port 8000"
     },
     {
       "name": "frontend",
-      "command": "D=eve-trader; [ -d \"$D\" ] || D=.; cd \"$D/frontend\" && npm run dev -- --host"
+      "command": "for d in eve-trader repos/eve-trader /agent/repos/eve-trader .; do [ -f \"$d/.cursor/start.sh\" ] && { cd \"$d\"; break; }; done; cd frontend && npm run dev -- --host"
     }
   ],
   "ports": [8000, 5173]
