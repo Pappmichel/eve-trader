@@ -27,7 +27,7 @@ def _wrap(fn, **kwargs):
 class AddIntakeSourceRequest(BaseModel):
     source_kind: str
     hangar_flag: str
-    character_name: Optional[str] = None
+    owner_name: Optional[str] = None
     label: Optional[str] = None
 
 
@@ -47,7 +47,7 @@ def add_intake_source(req: AddIntakeSourceRequest):
         actions.do_add_intake_source,
         source_kind=req.source_kind,
         hangar_flag=req.hangar_flag,
-        character_name=req.character_name,
+        owner_name=req.owner_name,
         label=req.label,
     )
 
@@ -60,6 +60,11 @@ def remove_intake_source(source_id: int):
 @router.get("/available-characters", response_model=schemas.SortingAvailableCharacters)
 def list_available_characters():
     return _wrap(actions.do_list_available_characters)
+
+
+@router.get("/available-corps", response_model=schemas.SortingAvailableCorps)
+def list_available_corps():
+    return _wrap(actions.do_list_available_corps)
 
 
 @router.get("/hangar-division-options")

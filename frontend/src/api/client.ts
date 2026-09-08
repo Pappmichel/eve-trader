@@ -485,11 +485,12 @@ export const sortingApi = {
   addIntakeSource: (body: {
     source_kind: string
     hangar_flag: string
-    character_name?: string | null
+    owner_name?: string | null
     label?: string | null
   }) => post<T.SortingIntakeSource>('/api/sorting/intake-sources', body),
   removeIntakeSource: (id: number) => del<{ removed: number }>(`/api/sorting/intake-sources/${id}`),
   availableCharacters: () => get<{ characters: string[] }>('/api/sorting/available-characters'),
+  availableCorps: () => get<{ corps: string[] }>('/api/sorting/available-corps'),
   hangarDivisionOptions: () => get<{ hangar_division_flags: string[] }>(
     '/api/sorting/hangar-division-options',
   ),

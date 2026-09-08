@@ -24,7 +24,7 @@ def _empty_snapshot_df() -> pd.DataFrame:
 
 
 def _one_corp_source():
-    return [(1, "corp", None, "CorpSAG1", "Intake")]
+    return [(1, "corp", "RichlTech (corp)", "CorpSAG1", "Intake")]
 
 
 @pytest.fixture(autouse=True)
@@ -187,7 +187,7 @@ def test_by_source_keeps_two_characters_and_a_corp_division_separate(monkeypatch
     monkeypatch.setattr(storage, "load_sorting_intake_sources", lambda: [
         (1, "character", "Alice", "Hangar", None),
         (2, "character", "Bob", "Hangar", None),
-        (3, "corp", None, "CorpSAG3", "Corp intake"),
+        (3, "corp", "RichlTech (corp)", "CorpSAG3", "Corp intake"),
     ])
 
     def fake_assets(flag, tables=(), owner_name=None):
@@ -195,7 +195,7 @@ def test_by_source_keeps_two_characters_and_a_corp_division_separate(monkeypatch
             return [(34, 10.0)]
         if tables == ("character_assets",) and owner_name == "Bob":
             return [(34, 20.0)]
-        if tables == ("corp_assets",) and owner_name is None:
+        if tables == ("corp_assets",) and owner_name == "RichlTech (corp)":
             return [(34, 5.0), (35, 7.0)]
         return []
     monkeypatch.setattr(storage, "assets_at_flag", fake_assets)
@@ -245,6 +245,39 @@ def test_doctrine_wanted_empty_when_no_doctrine_assets_synced(monkeypatch):
     assert result["rows"][0]["unclaimed"] is True
 
 
+def test_two_corp_sources_count_only_their_own_corp(monkeypatch):
+    # The bug this covers: a corp intake source used to pass owner_name=None
+    # to assets_at_flag, so two corps' CorpSAG1 stacks were silently summed.
+    monkeypatch.setattr(storage, "load_sorting_intake_sources", lambda: [
+        (1, "corp", "RichlTech (corp)", "CorpSAG1", None),
+        (2, "corp", "building mining and research corporation (corp)", "CorpSAG1", None),
+    ])
+
+    def fake_assets(flag, tables=(), owner_name=None):
+        assert flag == "CorpSAG1"
+        assert tables == ("corp_assets",)
+        if owner_name == "RichlTech (corp)":
+            return [(34, 100.0)]
+        if owner_name == "building mining and research corporation (corp)":
+            return [(34, 40.0), (35, 8.0)]
+        return []
+    monkeypatch.setattr(storage, "assets_at_flag", fake_assets)
+
+    result = sorting_engine.do_sorting_list()
+
+    by_type = {r["type_id"]: r for r in result["rows"]}
+    trit = by_type[34]
+    assert trit["intake_qty"] == 140.0
+    assert trit["by_source"] == [
+        {"source_label": "RichlTech (corp) (Corp, CorpSAG1)", "qty": 100.0},
+        {"source_label": "building mining and research corporation (corp) (Corp, CorpSAG1)", "qty": 40.0},
+    ]
+    assert by_type[35]["intake_qty"] == 8.0
+    assert by_type[35]["by_source"] == [
+        {"source_label": "building mining and research corporation (corp) (Corp, CorpSAG1)", "qty": 8.0},
+    ]
+
+
 def test_do_add_intake_source_rejects_unknown_kind(monkeypatch):
     with pytest.raises(ActionError, match="source_kind"):
         do_add_intake_source("alliance", "Hangar")
@@ -252,12 +285,14 @@ def test_do_add_intake_source_rejects_unknown_kind(monkeypatch):
 
 def test_do_add_intake_source_rejects_unknown_hangar_flag(monkeypatch):
     with pytest.raises(ActionError, match="hangar_flag"):
-        do_add_intake_source("corp", "NotARealFlag")
+        do_add_intake_source("corp", "NotARealFlag", owner_name="RichlTech (corp)")
 
 
-def test_do_add_intake_source_requires_character_name(monkeypatch):
-    with pytest.raises(ActionError, match="character_name"):
+def test_do_add_intake_source_requires_owner_name(monkeypatch):
+    with pytest.raises(ActionError, match="owner_name"):
         do_add_intake_source("character", "Hangar")
+    with pytest.raises(ActionError, match="owner_name"):
+        do_add_intake_source("corp", "CorpSAG1")
 
 
 def test_do_add_intake_source_accepts_deliveries_as_intake_flag(monkeypatch):
@@ -269,6 +304,7 @@ def test_do_add_intake_source_accepts_deliveries_as_intake_flag(monkeypatch):
     # against INTAKE_HANGAR_FLAGS, not the narrower HANGAR_DIVISION_FLAGS.
     monkeypatch.setattr(storage, "add_sorting_intake_source", lambda *a, **kw: 1)
 
-    result = do_add_intake_source("corp", "Deliveries")
+    result = do_add_intake_source("corp", "Deliveries", owner_name="RichlTech (corp)")
 
     assert result["hangar_flag"] == "Deliveries"
+    assert result["owner_name"] == "RichlTech (corp)"

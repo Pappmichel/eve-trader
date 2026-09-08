@@ -423,30 +423,37 @@ def list_tenant_registry_entries(tenant_id: str) -> list[tuple]:
         ).fetchall()
 
 
-def load_tenant_character_names() -> list[str]:
-    """Known character names for the current tenant, from
-    tenant_registry_entries (the same table AccessGate uses - see
-    add_tenant_registry_entry). Unscoped because that table is not
-    RLS-scoped (docs/admin_schema.sql); filtered to the ambient tenant_id
-    instead of returning every tenant's characters. Empty names (a
-    registration that never cached character_name) are dropped - the
-    Sorting-tool dropdown has nothing useful to show for those until the
-    character logs in again and the name is filled in."""
-    tenant_id = get_current_tenant()
-    if tenant_id is None:
-        raise RuntimeError(
-            "No tenant is set on this task - call set_current_tenant()/"
-            "tenant_context() first."
-        )
-    with connect_unscoped() as conn:
+def _distinct_asset_owner_names(table: str) -> list[str]:
+    """Distinct non-empty owner_name values from one of the ESI asset
+    tables. RLS-scoped via connect() to the current tenant - these tables
+    are per-tenant (docs/phase1_schema.sql), unlike tenant_registry_entries.
+    Empty names are dropped (a row synced before owner_name existed has
+    nothing useful for a Sorting-tool dropdown until the next ESI sync)."""
+    if table not in ("character_assets", "corp_assets"):
+        raise ValueError(f"unsupported asset table: {table!r}")
+    with connect() as conn:
         rows = conn.execute(
-            "SELECT character_name FROM tenant_registry_entries "
-            "WHERE tenant_id = ? AND entry_type = 'character' "
-            "AND character_name IS NOT NULL AND character_name <> '' "
-            "ORDER BY character_name",
-            (tenant_id,),
+            f"SELECT DISTINCT owner_name FROM {table} "
+            "WHERE owner_name IS NOT NULL AND owner_name <> '' "
+            "ORDER BY owner_name",
         ).fetchall()
     return [r[0] for r in rows]
+
+
+def load_tenant_character_names() -> list[str]:
+    """Characters who actually have ESI-synced personal assets for the
+    current tenant (character_assets.owner_name), not who is registered
+    in tenant_registry_entries (AccessGate login). Alts used only as
+    producer:/doctrine: token roles never appear in the login registry but
+    do appear here after a sync."""
+    return _distinct_asset_owner_names("character_assets")
+
+
+def load_tenant_corp_names() -> list[str]:
+    """Corps who actually have ESI-synced corp assets for the current
+    tenant (corp_assets.owner_name). Same shape as
+    load_tenant_character_names - a tenant can have more than one corp."""
+    return _distinct_asset_owner_names("corp_assets")
 
 
 # ------------------------------------------------------------------ tool grants
@@ -1759,18 +1766,17 @@ def assets_at_flag(flag: str, tables: tuple[str, ...] = ("character_assets", "co
 
 # --------------------------------------------------------------- sorting intake
 def add_sorting_intake_source(source_kind: str, hangar_flag: str,
-                               character_name: Optional[str] = None,
+                               owner_name: Optional[str] = None,
                                label: Optional[str] = None) -> int:
     """Inserts one sorting_intake_sources row for the current tenant.
-    Returns the new surrogate id. source_kind/character_name pairing is
-    enforced by the table CHECK (character sources need a name; corp
-    sources must have character_name NULL) - a violating insert raises
-    from Postgres rather than being papered over here."""
+    Returns the new surrogate id. owner_name is required for both kinds
+    (the table CHECK rejects NULL/empty) - a violating insert raises from
+    Postgres rather than being papered over here."""
     with connect() as conn:
         row = conn.execute(
-            "INSERT INTO sorting_intake_sources (source_kind, character_name, hangar_flag, label) "
+            "INSERT INTO sorting_intake_sources (source_kind, owner_name, hangar_flag, label) "
             "VALUES (?, ?, ?, ?) RETURNING id",
-            (source_kind, character_name, hangar_flag, label),
+            (source_kind, owner_name, hangar_flag, label),
         ).fetchone()
     return int(row[0])
 
@@ -1781,11 +1787,12 @@ def remove_sorting_intake_source(source_id: int) -> None:
 
 
 def load_sorting_intake_sources() -> list[tuple[int, str, Optional[str], str, Optional[str]]]:
-    """Returns (id, source_kind, character_name, hangar_flag, label) for
-    every configured Wareneingang source of the current tenant."""
+    """Returns (id, source_kind, owner_name, hangar_flag, label) for every
+    configured Wareneingang source of the current tenant. owner_name is
+    the character or corp whose assets that source counts."""
     with connect() as conn:
         return conn.execute(
-            "SELECT id, source_kind, character_name, hangar_flag, label "
+            "SELECT id, source_kind, owner_name, hangar_flag, label "
             "FROM sorting_intake_sources ORDER BY id",
         ).fetchall()
 
