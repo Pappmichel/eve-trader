@@ -172,6 +172,47 @@ def test_validate_production_overrides_rejects_unknown_rig_tier():
         validate_production_overrides({"component_rig_tier": "T3-Rig"})
 
 
+def test_validate_production_overrides_accepts_known_hangar_flags():
+    validate_production_overrides({"stock_hangar_flags": ["Hangar", "CorpSAG1"]})
+
+
+def test_validate_production_overrides_rejects_unknown_hangar_flag():
+    with pytest.raises(ConfigError, match="stock_hangar_flags"):
+        validate_production_overrides({"stock_hangar_flags": ["Deliveries"]})
+
+
+def test_validate_production_overrides_accepts_empty_hangar_flags():
+    validate_production_overrides({"stock_hangar_flags": []})
+
+
+def test_validate_doctrine_overrides_accepts_known_hangar_flags():
+    from eve_trader.doctrine.config import validate_doctrine_overrides
+
+    validate_doctrine_overrides({"stockpile_hangar_flags": ["CorpSAG3"]})
+
+
+def test_validate_doctrine_overrides_rejects_unknown_hangar_flag():
+    from eve_trader.doctrine.config import validate_doctrine_overrides
+
+    with pytest.raises(ConfigError, match="stockpile_hangar_flags"):
+        validate_doctrine_overrides({"stockpile_hangar_flags": ["NotARealFlag"]})
+
+
+def test_do_update_settings_rejects_bad_hangar_flag_as_action_error_production():
+    cfg = ProductionConfig()
+    with pytest.raises(ActionError, match="stock_hangar_flags"):
+        production_actions.do_update_settings({"stock_hangar_flags": ["NotARealFlag"]}, cfg=cfg)
+
+
+def test_do_update_settings_rejects_bad_hangar_flag_as_action_error_doctrine():
+    from eve_trader.doctrine import actions as doctrine_actions
+    from eve_trader.doctrine.config import DoctrineConfig
+
+    cfg = DoctrineConfig()
+    with pytest.raises(ActionError, match="stockpile_hangar_flags"):
+        doctrine_actions.do_update_settings({"stockpile_hangar_flags": ["NotARealFlag"]}, cfg=cfg)
+
+
 def test_do_update_settings_rejects_bad_type_as_action_error(monkeypatch):
     from eve_trader import actions
 

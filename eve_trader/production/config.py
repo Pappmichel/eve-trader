@@ -12,7 +12,7 @@ import yaml
 
 from .. import storage
 from ..config import ConfigError, ConfigProxy, DEFAULT_CONFIG_PATH, apply_config_overrides, validate_config_overrides
-from .constants import RIG_TIERS, STRUCTURE_TYPES
+from .constants import HANGAR_DIVISION_FLAGS, RIG_TIERS, STRUCTURE_TYPES
 
 
 @dataclass
@@ -66,6 +66,20 @@ class ProductionConfig:
     # (invention isn't itself a job_category bucket) - see engine.
     # invention_logistics.
     invention_location_id: Optional[int] = None
+    # Which hangar/office division(s) at home_location_id count as Production's
+    # own physical stock (storage.esi_stock_at_location's allowed_flags - see
+    # production/constants.py HANGAR_DIVISION_FLAGS) - GitHub issue #90-era
+    # hangar-sorting work: Jita imports for every tool (Trading resale stock,
+    # Doctrine contract materials, Ore & Minerals ore/ice, Production's own
+    # build materials) physically land in one shared corp Wareneingang
+    # division first, and _current_stock/_stock_on_hand used to count that
+    # whole division (and every other one) as Production's own available
+    # material regardless of what it was actually bought for. Empty tuple
+    # (the default) = no filter, i.e. today's whole-hangar-counts-everywhere
+    # behaviour, unchanged - only meaningful once the operator has actually
+    # sorted Production's own stock into specific division(s) and configures
+    # this to match.
+    stock_hangar_flags: tuple[str, ...] = ()
 
     # -- System cost index, split by *what's being built* (see engine.py /
     # constants.py COMPONENT_GROUP_IDS): reactions + certain component groups
@@ -136,6 +150,11 @@ def validate_production_overrides(overrides: dict) -> None:
         if key in overrides and overrides[key] not in RIG_TIERS:
             raise ConfigError(f"{key}: '{overrides[key]}' is not a known rig tier. "
                                f"Options: {', '.join(RIG_TIERS)}")
+    if "stock_hangar_flags" in overrides:
+        bad = [f for f in overrides["stock_hangar_flags"] if f not in HANGAR_DIVISION_FLAGS]
+        if bad:
+            raise ConfigError(f"stock_hangar_flags: {bad!r} are not known hangar divisions. "
+                               f"Options: {', '.join(HANGAR_DIVISION_FLAGS)}")
 
 
 _production_config_yaml_cache: dict = {}

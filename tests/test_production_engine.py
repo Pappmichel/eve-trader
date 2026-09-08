@@ -72,7 +72,7 @@ def test_current_stock_checks_every_location_not_a_curated_set(monkeypatch):
     # confirm _current_stock passes None through, not a specific location.
     calls = []
 
-    def fake_esi_stock(type_id, location_id):
+    def fake_esi_stock(type_id, location_id, allowed_flags=None):
         calls.append(location_id)
         return 1_572_335.0
 
@@ -101,7 +101,7 @@ def test_market_status_skips_items_with_no_market_target(monkeypatch):
     cfg = ProductionConfig(home_location_id=1000000000001)
     _no_listings(monkeypatch)
     monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
-    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: 0.0)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None: 0.0)
     monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id: {"runs": 0, "jobs": 0})
     monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [

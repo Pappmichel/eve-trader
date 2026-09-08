@@ -193,6 +193,7 @@ class ProductionSettings(BaseModel):
     home_location_id: Optional[int] = None
     distribution_source_location_id: Optional[int] = None
     invention_location_id: Optional[int] = None
+    stock_hangar_flags: tuple[str, ...] = ()
     reaction_structure_type: str
     reaction_rig_tier: str
     component_structure_type: str
@@ -224,8 +225,9 @@ def get_system_cost_indices():
 
 @router.get("/settings/structure-options")
 def get_structure_options():
-    from ...production.constants import RIG_TIERS, STRUCTURE_TYPES
-    return {"structure_types": list(STRUCTURE_TYPES), "rig_tiers": list(RIG_TIERS)}
+    from ...production.constants import HANGAR_DIVISION_FLAGS, RIG_TIERS, STRUCTURE_TYPES
+    return {"structure_types": list(STRUCTURE_TYPES), "rig_tiers": list(RIG_TIERS),
+            "hangar_division_flags": list(HANGAR_DIVISION_FLAGS)}
 
 
 @router.get("/settings/systems")

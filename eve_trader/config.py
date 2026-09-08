@@ -296,6 +296,19 @@ class TradingConfig:
     # otherwise, worse than a hard failure. Left unset, every one of those
     # three actions keeps today's exact behavior (hard ActionError).
     structure_market_slug: Optional[str] = None
+    # The location_flag (see production/constants.py HANGAR_DIVISION_FLAGS)
+    # of the shared corp Wareneingang division every Jita import for every
+    # tool (Trading, Production, Doctrine, Ore & Minerals) physically lands
+    # in first - EVE has no API to move an item between hangar divisions, so
+    # a human still has to sort it into each tool's own division by hand
+    # (see cross_tool.do_sorting_list, Portfolio's Sorting panel). A single
+    # global/Default-tenant field, not per-tool, since it names one real
+    # physical place in the game, the same one regardless of which tool's
+    # Settings page you're looking at. Empty string (the default) = feature
+    # off - do_sorting_list returns an empty list rather than erroring, so
+    # an operator who hasn't set up hangar sorting at all sees an empty,
+    # harmless panel instead of a crash.
+    intake_hangar_flag: str = ""
 
     # -- Economics --
     import_cost_per_m3: float = 900.0        # ISK freight cost per m3 to move goods to the structure

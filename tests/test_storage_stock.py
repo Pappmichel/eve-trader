@@ -43,6 +43,86 @@ def test_esi_stock_at_location_excludes_non_stock_flags(tenant):
     assert storage.esi_stock_at_location(TYPE_ID, LOCATION_ID) == 100
 
 
+def test_esi_stock_at_location_allowed_flags_restricts_to_named_divisions(tenant):
+    storage.replace_assets("character_assets", [
+        (1, TYPE_ID, LOCATION_ID, "Hangar", 100, 0, "pilot"),
+        (2, TYPE_ID, LOCATION_ID, "CorpSAG1", 40, 0, "pilot"),
+        (3, TYPE_ID, LOCATION_ID, "CorpSAG2", 25, 0, "pilot"),
+    ])
+
+    # Only the named division(s) count, even though CorpSAG2 is a perfectly
+    # normal, non-NON_STOCK_LOCATION_FLAGS division too - allowed_flags is a
+    # strictly narrower filter on top of the existing exclude-list, not a
+    # replacement for it.
+    assert storage.esi_stock_at_location(TYPE_ID, LOCATION_ID, allowed_flags=("CorpSAG1",)) == 40
+    assert storage.esi_stock_at_location(TYPE_ID, LOCATION_ID, allowed_flags=("Hangar", "CorpSAG1")) == 140
+
+
+def test_esi_stock_at_location_allowed_flags_still_excludes_non_stock_flags(tenant):
+    storage.replace_assets("character_assets", [
+        (1, TYPE_ID, LOCATION_ID, "AssetSafety", 500, 0, "pilot"),
+        (2, TYPE_ID, LOCATION_ID, "CorpSAG1", 40, 0, "pilot"),
+    ])
+
+    # Even if a caller mistakenly named a NON_STOCK_LOCATION_FLAGS value in
+    # allowed_flags, the existing exclusion still wins - allowed_flags only
+    # narrows, it can never widen past what's already excluded.
+    assert storage.esi_stock_at_location(TYPE_ID, LOCATION_ID, allowed_flags=("AssetSafety", "CorpSAG1")) == 40
+
+
+def test_esi_stock_at_location_none_allowed_flags_matches_default_behaviour(tenant):
+    storage.replace_assets("character_assets", [
+        (1, TYPE_ID, LOCATION_ID, "Hangar", 100, 0, "pilot"),
+        (2, TYPE_ID, LOCATION_ID, "CorpSAG1", 40, 0, "pilot"),
+    ])
+
+    # Both an empty tuple and the None default must behave exactly like
+    # today (no allowed_flags at all) - backward compatibility is required.
+    assert storage.esi_stock_at_location(TYPE_ID, LOCATION_ID) == 140
+    assert storage.esi_stock_at_location(TYPE_ID, LOCATION_ID, allowed_flags=()) == 140
+    assert storage.esi_stock_at_location(TYPE_ID, LOCATION_ID, allowed_flags=None) == 140
+
+
+def test_esi_stock_at_location_allowed_flags_with_location_id_none(tenant):
+    other_location = 1000000000002
+    storage.replace_assets("character_assets", [
+        (1, TYPE_ID, LOCATION_ID, "CorpSAG1", 40, 0, "pilot"),
+        (2, TYPE_ID, other_location, "CorpSAG1", 15, 0, "pilot"),
+        (3, TYPE_ID, LOCATION_ID, "Hangar", 999, 0, "pilot"),
+    ])
+
+    # allowed_flags composes with the location_id=None ("everywhere") case
+    # too, not just the single-location one.
+    assert storage.esi_stock_at_location(TYPE_ID, None, allowed_flags=("CorpSAG1",)) == 55
+
+
+def test_assets_at_flag_sums_across_character_and_corp_assets(tenant):
+    storage.replace_assets("character_assets", [
+        (1, TYPE_ID, LOCATION_ID, "CorpSAG3", 10, 0, "pilot"),
+    ])
+    storage.replace_assets("corp_assets", [
+        (2, TYPE_ID, LOCATION_ID, "CorpSAG3", 5, 0, "My Corp (corp)"),
+        (3, 35, LOCATION_ID, "CorpSAG3", 7, 0, "My Corp (corp)"),  # Pyerite - a different type_id
+    ])
+
+    rows = storage.assets_at_flag("CorpSAG3")
+
+    assert dict(rows) == {TYPE_ID: 15, 35: 7}
+
+
+def test_assets_at_flag_ignores_other_divisions(tenant):
+    storage.replace_assets("character_assets", [
+        (1, TYPE_ID, LOCATION_ID, "CorpSAG3", 10, 0, "pilot"),
+        (2, TYPE_ID, LOCATION_ID, "Hangar", 999, 0, "pilot"),
+    ])
+
+    assert dict(storage.assets_at_flag("CorpSAG3")) == {TYPE_ID: 10}
+
+
+def test_assets_at_flag_empty_when_nothing_matches(tenant):
+    assert storage.assets_at_flag("CorpSAG7") == []
+
+
 def test_esi_stock_at_location_still_unwraps_corp_office(tenant):
     office_item_id = 900
     storage.replace_assets("corp_assets", [

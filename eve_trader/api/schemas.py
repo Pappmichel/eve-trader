@@ -780,3 +780,21 @@ class SpecialOrderComputeResult(BaseModel):
     build_list: list[BuildJobEntry]
     invention_list: list[InventionNeedRow]
     stock_overlap_warning: list[StockOverlapWarningRow]
+
+
+# ---------------------------------------------------------------- cross-tool
+class ToolDemandRow(_Base):
+    tool: str
+    wanted_qty: float
+
+
+class SortingRow(_Base):
+    type_id: int
+    type_name: str
+    intake_qty: float
+    wanted_by_tool: list[ToolDemandRow]
+    unclaimed: bool
+
+
+class SortingList(BaseModel):
+    rows: list[SortingRow]
