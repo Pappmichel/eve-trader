@@ -57,6 +57,9 @@ const ACTIONS: SpotlightActionData[] = [
   { id: 'station-trading-shortlist', label: 'Station Trading — Shortlist', description: 'Station Trading', onClick: () => {} },
   { id: 'station-trading-undercut', label: 'Station Trading — Undercut Check', description: 'Station Trading', onClick: () => {} },
   { id: 'station-trading-settings', label: 'Station Trading — Settings', description: 'Station Trading', onClick: () => {} },
+
+  { id: 'sorting', label: 'Sorting — Overview', description: 'Sorting', onClick: () => {} },
+  { id: 'sorting-settings', label: 'Sorting — Settings', description: 'Sorting', onClick: () => {} },
 ]
 
 // id -> real path, kept as a separate map (rather than baking navigate()
@@ -80,6 +83,7 @@ const PATHS: Record<string, string> = {
   'doctrine-settings': '/doctrine/settings',
   'station-trading': '/station-trading', 'station-trading-shortlist': '/station-trading/shortlist',
   'station-trading-undercut': '/station-trading/undercut', 'station-trading-settings': '/station-trading/settings',
+  sorting: '/sorting', 'sorting-settings': '/sorting/settings',
 }
 
 // id -> tool_key, same tool_keys as Landing.tsx's own ToolCard filtering
@@ -101,6 +105,7 @@ const TOOL_KEYS: Record<string, string> = {
   'doctrine-stockpile': 'doctrine', 'doctrine-shopping-list': 'doctrine', 'doctrine-settings': 'doctrine',
   'station-trading': 'station_trading', 'station-trading-shortlist': 'station_trading',
   'station-trading-undercut': 'station_trading', 'station-trading-settings': 'station_trading',
+  sorting: 'sorting', 'sorting-settings': 'sorting',
 }
 
 export function QuickNav() {

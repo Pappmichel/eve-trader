@@ -74,6 +74,10 @@ const StationTradingShortlist = lazy(() => import('./pages/station_trading/Short
 const StationTradingUndercutCheck = lazy(() => import('./pages/station_trading/UndercutCheck'))
 const StationTradingSettings = lazy(() => import('./pages/station_trading/StationTradingSettings'))
 
+const SortingLayout = lazy(() => import('./pages/sorting/SortingLayout'))
+const SortingOverview = lazy(() => import('./pages/sorting/SortingOverview'))
+const SortingSettings = lazy(() => import('./pages/sorting/SortingSettings'))
+
 const AdminPage = lazy(() => import('./pages/admin/AdminPage'))
 
 function RouteFallback() {
@@ -241,6 +245,11 @@ function App() {
               <Route path="shortlist" element={<StationTradingShortlist />} />
               <Route path="undercut" element={<StationTradingUndercutCheck />} />
               <Route path="settings" element={<StationTradingSettings />} />
+            </Route>
+
+            <Route path="/sorting" element={<SortingLayout />}>
+              <Route index element={<SortingOverview />} />
+              <Route path="settings" element={<SortingSettings />} />
             </Route>
           </Routes>
         </Suspense>

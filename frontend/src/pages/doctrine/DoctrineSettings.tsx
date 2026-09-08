@@ -38,7 +38,7 @@ export default function DoctrineSettings() {
       </SimpleGrid>
       <Text size="xs" c="dimmed">
         Jita imports for every tool land in one shared corp Wareneingang division first (EVE has no API to move
-        items between hangar divisions - see the Sorting panel on Portfolio). If you've sorted Doctrine's own
+        items between hangar divisions - see the Sorting tool). If you've sorted Doctrine's own
         contract materials into specific division(s), select them here so stockpile Ist only counts material
         actually set aside for Doctrine. Leave empty to count every division (today's default behaviour).
       </Text>

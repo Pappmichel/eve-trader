@@ -782,19 +782,41 @@ class SpecialOrderComputeResult(BaseModel):
     stock_overlap_warning: list[StockOverlapWarningRow]
 
 
-# ---------------------------------------------------------------- cross-tool
+# ---------------------------------------------------------------- sorting
 class ToolDemandRow(_Base):
     tool: str
     wanted_qty: float
+
+
+class SortingSourceQty(_Base):
+    source_label: str
+    qty: float
 
 
 class SortingRow(_Base):
     type_id: int
     type_name: str
     intake_qty: float
+    by_source: list[SortingSourceQty]
     wanted_by_tool: list[ToolDemandRow]
     unclaimed: bool
 
 
 class SortingList(BaseModel):
     rows: list[SortingRow]
+
+
+class SortingIntakeSource(_Base):
+    id: int
+    source_kind: str
+    character_name: Optional[str] = None
+    hangar_flag: str
+    label: Optional[str] = None
+
+
+class SortingIntakeSourceList(BaseModel):
+    sources: list[SortingIntakeSource]
+
+
+class SortingAvailableCharacters(BaseModel):
+    characters: list[str]

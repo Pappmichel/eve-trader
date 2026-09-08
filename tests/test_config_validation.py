@@ -232,29 +232,6 @@ def test_do_update_settings_rejects_bad_hangar_flag_as_action_error_doctrine():
         doctrine_actions.do_update_settings({"stockpile_hangar_flags": ["NotARealFlag"]}, cfg=cfg)
 
 
-def test_validate_trading_overrides_accepts_known_intake_flag():
-    from eve_trader.config import validate_trading_overrides
-
-    validate_trading_overrides({"intake_hangar_flag": "CorpSAG3"})
-    validate_trading_overrides({"intake_hangar_flag": "Deliveries"})  # a legitimate intake-only option
-    validate_trading_overrides({"intake_hangar_flag": ""})  # disables the feature, always allowed
-
-
-def test_validate_trading_overrides_rejects_unknown_intake_flag():
-    from eve_trader.config import validate_trading_overrides
-
-    with pytest.raises(ConfigError, match="intake_hangar_flag"):
-        validate_trading_overrides({"intake_hangar_flag": "NotARealFlag"})
-
-
-def test_do_update_settings_rejects_bad_intake_flag_as_action_error():
-    from eve_trader import actions
-
-    cfg = TradingConfig()
-    with pytest.raises(ActionError, match="intake_hangar_flag"):
-        actions.do_update_settings({"intake_hangar_flag": "NotARealFlag"}, cfg=cfg)
-
-
 def test_do_update_settings_rejects_bad_type_as_action_error(monkeypatch):
     from eve_trader import actions
 

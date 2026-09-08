@@ -1082,6 +1082,37 @@ def _total_missing(type_id: int, backup_stock: float, home_market_stock: Optiona
     return missing
 
 
+def market_listing_shortfall_by_type(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict[int, float]:
+    """Shortfall only against the home/Jita market-*listing* pools
+    (home_market_stock/jita_market_stock), WITHOUT backup_stock - the "must
+    be listed at C-J/Jita" side of _total_missing, isolated for the
+    Sorting tool's Markt pot (see eve_trader/sorting/). Runs through
+    _total_missing's full three-pool calculation (so a unit that already
+    covers the backup reserve is not double-counted as available for
+    market listing) and then subtracts the pure backup shortfall, leaving
+    only the market share.
+
+    current_stock is _stock_on_hand (manual_stock + hangar-filtered ESI
+    assets), not _current_stock: incoming industry jobs are not listed
+    yet, so they must not shrink listing demand here the way they
+    legitimately shrink "how many more runs to plan" on the Buy/Build
+    lists."""
+    manual_stock = storage.load_manual_stock()
+    wanted: dict[int, float] = {}
+    for type_id, _name, backup_stock, home_market_stock, jita_market_stock in storage.load_stock_targets():
+        if not home_market_stock and not jita_market_stock:
+            continue
+        current_stock = _stock_on_hand(type_id, manual_stock, cfg)
+        total = _total_missing(
+            type_id, backup_stock, home_market_stock, jita_market_stock, current_stock, cfg,
+        )
+        backup_only = max(0.0, backup_stock - current_stock)
+        market = total - backup_only
+        if market > 0:
+            wanted[type_id] = market
+    return wanted
+
+
 def _haul_volume(type_id: int, cfg: ProductionConfig) -> Optional[float]:
     """Volume to use for haul-cost math (cfg.haul_cost_per_m3 x this) - the
     *packaged* volume for ships and capital-sized modules (GitHub issue #11:

@@ -423,6 +423,32 @@ def list_tenant_registry_entries(tenant_id: str) -> list[tuple]:
         ).fetchall()
 
 
+def load_tenant_character_names() -> list[str]:
+    """Known character names for the current tenant, from
+    tenant_registry_entries (the same table AccessGate uses - see
+    add_tenant_registry_entry). Unscoped because that table is not
+    RLS-scoped (docs/admin_schema.sql); filtered to the ambient tenant_id
+    instead of returning every tenant's characters. Empty names (a
+    registration that never cached character_name) are dropped - the
+    Sorting-tool dropdown has nothing useful to show for those until the
+    character logs in again and the name is filled in."""
+    tenant_id = get_current_tenant()
+    if tenant_id is None:
+        raise RuntimeError(
+            "No tenant is set on this task - call set_current_tenant()/"
+            "tenant_context() first."
+        )
+    with connect_unscoped() as conn:
+        rows = conn.execute(
+            "SELECT character_name FROM tenant_registry_entries "
+            "WHERE tenant_id = ? AND entry_type = 'character' "
+            "AND character_name IS NOT NULL AND character_name <> '' "
+            "ORDER BY character_name",
+            (tenant_id,),
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
 # ------------------------------------------------------------------ tool grants
 def set_tool_grant(character_id: int, tool_key: str, tenant_id: str) -> None:
     """Grants `tool_key` to `character_id` - upsert (re-granting an
@@ -1682,18 +1708,26 @@ def esi_stock_at_location(type_id: int, location_id: Optional[int],
     return total
 
 
-def assets_at_flag(flag: str, tables: tuple[str, str] = ("character_assets", "corp_assets")) -> list[tuple[int, float]]:
-    """For a single `location_flag` (e.g. the shared corp Wareneingang
-    division named by TradingConfig.intake_hangar_flag - see
-    cross_tool.do_sorting_list), every `type_id` currently sitting there and
-    its summed quantity, across both asset tables. Unlike
-    esi_stock_at_location, this has no type_id filter (it answers "what's in
-    this division at all", not "how much of one item") and no location_id
-    filter either - a hangar-division flag alone (e.g. "CorpSAG3") only makes
-    sense relative to whatever structure the corp's own offices are actually
-    at, and this app has exactly one such structure per tenant in practice,
-    so narrowing further wasn't worth the extra parameter for this read-only,
-    diagnostic-style helper.
+def assets_at_flag(flag: str, tables: tuple[str, ...] = ("character_assets", "corp_assets"),
+                   owner_name: Optional[str] = None) -> list[tuple[int, float]]:
+    """For a single hangar division (`resolved_hangar_flag`, e.g. a character's
+    personal "Hangar" or a corp CorpSAG*), every `type_id` currently sitting
+    there and its summed quantity. Unlike esi_stock_at_location, this has no
+    type_id filter (it answers "what's in this division at all", not "how
+    much of one item") and no location_id filter either - a hangar-division
+    flag alone (e.g. "CorpSAG3") only makes sense relative to whatever
+    structure the corp's own offices are actually at, and this app has
+    exactly one such structure per tenant in practice, so narrowing further
+    wasn't worth the extra parameter for this read-only helper.
+
+    `tables` defaults to both character and corp asset tables - pass a
+    one-element tuple (e.g. `("character_assets",)` / `("corp_assets",)`)
+    when the caller already knows which side a sorting_intake_sources row
+    refers to (see eve_trader/sorting/). `owner_name`: when set, an extra
+    `AND owner_name = ?` filter so a character source only counts that
+    character's personal hangar, not every other character's Hangar sitting
+    in the same table. None (the default) leaves today's unfiltered
+    behaviour unchanged.
 
     Filters on resolved_hangar_flag (see _resolve_hangar_flags), not the raw
     location_flag column - a fresh Wareneingang delivery routinely arrives
@@ -1705,17 +1739,55 @@ def assets_at_flag(flag: str, tables: tuple[str, str] = ("character_assets", "co
     division flag is never one of those), so it's deliberately not applied -
     keep this simple rather than importing filter logic that can never fire
     for a real caller."""
+    owner_clause = ""
+    owner_params: tuple = ()
+    if owner_name is not None:
+        owner_clause = " AND owner_name = ?"
+        owner_params = (owner_name,)
     with connect() as conn:
         totals: dict[int, float] = {}
         for table in tables:
             rows = conn.execute(
                 f"SELECT type_id, COALESCE(SUM(quantity), 0) FROM {table} "
-                "WHERE resolved_hangar_flag = ? GROUP BY type_id",
-                (flag,),
+                f"WHERE resolved_hangar_flag = ?{owner_clause} GROUP BY type_id",
+                (flag, *owner_params),
             ).fetchall()
             for type_id, qty in rows:
                 totals[type_id] = totals.get(type_id, 0.0) + qty
     return sorted(totals.items())
+
+
+# --------------------------------------------------------------- sorting intake
+def add_sorting_intake_source(source_kind: str, hangar_flag: str,
+                               character_name: Optional[str] = None,
+                               label: Optional[str] = None) -> int:
+    """Inserts one sorting_intake_sources row for the current tenant.
+    Returns the new surrogate id. source_kind/character_name pairing is
+    enforced by the table CHECK (character sources need a name; corp
+    sources must have character_name NULL) - a violating insert raises
+    from Postgres rather than being papered over here."""
+    with connect() as conn:
+        row = conn.execute(
+            "INSERT INTO sorting_intake_sources (source_kind, character_name, hangar_flag, label) "
+            "VALUES (?, ?, ?, ?) RETURNING id",
+            (source_kind, character_name, hangar_flag, label),
+        ).fetchone()
+    return int(row[0])
+
+
+def remove_sorting_intake_source(source_id: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM sorting_intake_sources WHERE id = ?", (source_id,))
+
+
+def load_sorting_intake_sources() -> list[tuple[int, str, Optional[str], str, Optional[str]]]:
+    """Returns (id, source_kind, character_name, hangar_flag, label) for
+    every configured Wareneingang source of the current tenant."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT id, source_kind, character_name, hangar_flag, label "
+            "FROM sorting_intake_sources ORDER BY id",
+        ).fetchall()
 
 
 def search_item_stock_locations(type_id: int) -> list[tuple[int, Optional[str], str, float]]:

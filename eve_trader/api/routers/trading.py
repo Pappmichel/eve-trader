@@ -114,7 +114,6 @@ class TradingSettings(BaseModel):
     reference_region_id: int
     structure_id: Optional[int] = None
     structure_market_slug: Optional[str] = None
-    intake_hangar_flag: str = ""
     buyer_character_name: Optional[str] = None
     seller_character_name: Optional[str] = None
 
@@ -127,17 +126,6 @@ def get_settings():
 @router.post("/settings")
 def update_settings(updates: TradingSettings):
     return _wrap(actions.do_update_settings, updates=updates.model_dump())
-
-
-@router.get("/settings/hangar-division-options")
-def get_hangar_division_options():
-    # Trading's intake_hangar_flag names the shared Wareneingang, which
-    # legitimately includes "Deliveries" (a courier/market delivery lands
-    # there) - unlike Production/Doctrine's stock_hangar_flags/
-    # stockpile_hangar_flags (see production/constants.py's
-    # INTAKE_HANGAR_FLAGS docstring for why those two must NOT offer it).
-    from ...production.constants import INTAKE_HANGAR_FLAGS
-    return {"hangar_division_flags": list(INTAKE_HANGAR_FLAGS)}
 
 
 @router.get("/esi/sync-time")

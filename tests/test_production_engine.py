@@ -181,6 +181,66 @@ def test_total_missing_zero_current_stock_matches_prior_behavior(monkeypatch):
     assert missing == 72.0
 
 
+def test_market_listing_shortfall_excludes_backup_only_targets(monkeypatch):
+    from eve_trader.production.engine import market_listing_shortfall_by_type
+
+    cfg = ProductionConfig(home_location_id=1000000000001)
+    _no_listings(monkeypatch)
+    monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None: 0.0)
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [
+        (1, "Backup only", 10.0, None, None),
+        (2, "Home listing", 0.0, 20.0, None),
+    ])
+
+    wanted = market_listing_shortfall_by_type(cfg)
+    assert wanted == {2: 20.0}
+
+
+def test_market_listing_shortfall_unit_covering_backup_is_not_double_counted_for_market(monkeypatch):
+    # current_stock=10, backup=10, home=10: all 10 owned units cover the
+    # backup reserve, so the market listing is still 10 short - the same
+    # unit must not also count as available to list.
+    from eve_trader.production.engine import market_listing_shortfall_by_type
+
+    cfg = ProductionConfig(home_location_id=1000000000001)
+    _no_listings(monkeypatch)
+    monkeypatch.setattr(storage, "load_manual_stock", lambda: {1: 10.0})
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None: 0.0)
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(1, "Item", 10.0, 10.0, None)])
+
+    wanted = market_listing_shortfall_by_type(cfg)
+    assert wanted == {1: 10.0}
+
+
+def test_market_listing_shortfall_surplus_after_backup_covers_market(monkeypatch):
+    from eve_trader.production.engine import market_listing_shortfall_by_type
+
+    cfg = ProductionConfig(home_location_id=1000000000001)
+    _no_listings(monkeypatch)
+    monkeypatch.setattr(storage, "load_manual_stock", lambda: {1: 12.0})
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None: 0.0)
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(1, "Item", 5.0, 5.0, 5.0)])
+
+    # 5 to backup, 5 to home, 2 left for jita -> jita still 3 short. Backup
+    # shortfall is 0, so market share is the full remaining 3.
+    wanted = market_listing_shortfall_by_type(cfg)
+    assert wanted == {1: 3.0}
+
+
+def test_market_listing_shortfall_zero_when_listings_already_cover_targets(monkeypatch):
+    from eve_trader.production.engine import market_listing_shortfall_by_type
+
+    cfg = ProductionConfig(home_location_id=1000000000001)
+    monkeypatch.setattr(storage, "sell_order_qty_at_location", lambda type_id, location_id: 20.0)
+    monkeypatch.setattr(storage, "sell_order_qty_in_region", lambda type_id, region_id: 0.0)
+    monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None: 0.0)
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(1, "Item", 0.0, 20.0, None)])
+
+    assert market_listing_shortfall_by_type(cfg) == {}
+
+
 @pg_helpers.postgres_required()
 def test_tech_iii_manual_decryptor_applies_without_invention_recipe(monkeypatch, tenant):
     # Defensive fallback case (rare - missing/stale SDE data, not the normal

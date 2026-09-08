@@ -58,9 +58,10 @@ docker run -d --name eve-trader-pg -e POSTGRES_PASSWORD=devpassword \
 # owner role applies the schema (never the app's own role - see CLAUDE.md's
 # "Multi-tenant Postgres" section for why). All schema files, not just
 # phase1-3 - admin_schema.sql/doctrine_schema.sql/observability_schema.sql/
-# refining_schema.sql/role_consent_schema.sql/special_orders_schema.sql back
+# refining_schema.sql/role_consent_schema.sql/special_orders_schema.sql/
+# station_trading_schema.sql/sorting_schema.sql back
 # the Admin/Doctrine/error-tracking/Ore & Minerals/role-consent/Special
-# Orders features, and their routers are registered unconditionally, so
+# Orders/Station Trading/Sorting features, and their routers are registered unconditionally, so
 # skipping them means 500s the moment you touch those tools, not just a
 # missing feature:
 Get-Content docs\phase1_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
@@ -72,6 +73,8 @@ Get-Content docs\observability_schema.sql | docker exec -i eve-trader-pg psql -U
 Get-Content docs\refining_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
 Get-Content docs\role_consent_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
 Get-Content docs\special_orders_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
+Get-Content docs\station_trading_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
+Get-Content docs\sorting_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
 ```
 
 (`phase1_schema.sql` creates the `eve_trader_app` role with the checked-in
