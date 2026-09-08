@@ -17,7 +17,7 @@ CLAUDE.md's "Nicht tun").
 """
 from __future__ import annotations
 
-from typing import Optional
+import math
 
 from . import storage
 from .config import TRADING_CONFIG, TradingConfig
@@ -40,28 +40,29 @@ def _trading_wanted_by_type() -> dict[int, float]:
     Trading already computes and treats as a real daily-turnover estimate
     (avg_daily_volume - GitHub issue #100, the same figure CLAUDE.md's
     "Theoretical ceiling" section documents for Profit/Day) as a stand-in for
-    "how much of this could plausibly be imported today", net of sell_volume
-    (already listed for sale at the structure - what's still covering that
-    demand). This is a deliberately simple approximation, not a real Trading
-    feature - documented here rather than over-built, since Trading has no
-    existing "buy quantity" concept to mirror.
+    "how much of this could plausibly be imported today". This is a
+    deliberately simple approximation, not a real Trading feature -
+    documented here rather than over-built, since Trading has no existing
+    "buy quantity" concept to mirror.
 
-    Deliberately does NOT also subtract own_orders_remaining (the trader's
-    own open buy-side coverage): shortlist._decision already routes any row
-    with own_orders_remaining > 0 to "Already ordered", never "Import" (see
-    shortlist.py), so by the time a row reaches this function - already
-    filtered to decision == "Import" below - own_orders_remaining is always
-    0 on it. Subtracting it here would be dead code, not a real second
-    factor.
+    Deliberately does NOT subtract sell_volume: that field is live
+    order-book depth (sum of volume_remain across every open sell order at
+    the structure), not turnover - GitHub issues #51/#100. Netting it
+    against avg_daily_volume mixed those two quantities and a single parked
+    stack would zero out Trading's wanted_qty. own_orders_remaining is also
+    not subtracted: shortlist._decision already routes any row with
+    own_orders_remaining > 0 to "Already ordered", never "Import", so by
+    the time a row reaches this function it is always 0 on it.
 
     Only rows the last run actually flagged "Import" (shortlist._decision) -
     a Skip/Inactive/No-market-data/Already-ordered row isn't something
     Trading currently wants more of, even if it happens to sit in the shared
-    intake hangar right now."""
+    intake hangar right now. avg_daily_volume of None/0 means Goonmetrics
+    has no history yet (issue #100) - treated as "no quantity to report",
+    not estimated from sell_volume."""
     df = storage.latest_snapshot()
     if df.empty:
         return {}
-    df = df.fillna(0)
     wanted: dict[int, float] = {}
     for _, row in df.iterrows():
         if row.get("decision") != "Import":
@@ -69,8 +70,14 @@ def _trading_wanted_by_type() -> dict[int, float]:
         type_id = int(row["item_id"])
         if not type_id:
             continue
-        qty = max(0.0, float(row.get("avg_daily_volume", 0.0)) - float(row.get("sell_volume", 0.0)))
-        if qty > 0:
+        raw = row.get("avg_daily_volume")
+        if raw is None or raw == "":
+            continue
+        try:
+            qty = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(qty) and qty > 0:
             wanted[type_id] = wanted.get(type_id, 0.0) + qty
     return wanted
 

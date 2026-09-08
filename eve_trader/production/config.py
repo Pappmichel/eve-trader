@@ -68,8 +68,8 @@ class ProductionConfig:
     invention_location_id: Optional[int] = None
     # Which hangar/office division(s) at home_location_id count as Production's
     # own physical stock (storage.esi_stock_at_location's allowed_flags - see
-    # production/constants.py HANGAR_DIVISION_FLAGS) - GitHub issue #90-era
-    # hangar-sorting work: Jita imports for every tool (Trading resale stock,
+    # production/constants.py HANGAR_DIVISION_FLAGS). Hangar-sorting:
+    # Jita imports for every tool (Trading resale stock,
     # Doctrine contract materials, Ore & Minerals ore/ice, Production's own
     # build materials) physically land in one shared corp Wareneingang
     # division first, and _current_stock/_stock_on_hand used to count that

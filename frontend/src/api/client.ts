@@ -482,9 +482,9 @@ export const errorsApi = {
 }
 
 // ---------------------------------------------------------------- cross-tool
-// Wareneingang/hangar-sorting helper (GitHub issue #90-era work) - see
-// eve_trader/cross_tool.py's own docstring for why it's neither Trading's
-// nor Production's nor Doctrine's nor Ore & Minerals' own router.
+// Wareneingang/hangar-sorting helper - see eve_trader/cross_tool.py's own
+// docstring for why it's neither Trading's nor Production's nor Doctrine's
+// nor Ore & Minerals' own router.
 export const crossToolApi = {
   sortingList: () => get<T.SortingList>('/api/cross-tool/sorting-list'),
 }

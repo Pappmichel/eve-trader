@@ -76,6 +76,17 @@ def test_validate_accepts_list_for_tuple_field():
     validate_config_overrides(cfg, {"excluded_path_prefixes": ["ships", "blueprints"]})
 
 
+def test_intake_hangar_flags_stay_in_sync_across_the_layer_boundary():
+    # config.py cannot import production/constants.py (CLAUDE.md layering:
+    # config.py is imported *by* production/config.py). The two lists must
+    # still name the same ESI flags or Trading's intake enum and the
+    # Settings dropdown silently disagree.
+    from eve_trader.config import _INTAKE_HANGAR_FLAGS
+    from eve_trader.production.constants import INTAKE_HANGAR_FLAGS
+
+    assert _INTAKE_HANGAR_FLAGS == INTAKE_HANGAR_FLAGS
+
+
 def test_validate_rejects_non_list_for_parametrized_tuple_field():
     # Regression: a `tuple[str, ...]`-annotated field (e.g.
     # ProductionConfig.stock_hangar_flags) has a different typing.get_origin

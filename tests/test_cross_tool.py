@@ -1,6 +1,6 @@
 """Tests for eve_trader/cross_tool.py's do_sorting_list - the Wareneingang/
-hangar-sorting helper (GitHub issue #90-era work, see cross_tool.py's own
-module docstring). Unit-level: every storage/engine call it makes is
+hangar-sorting helper (see cross_tool.py's own module docstring).
+Unit-level: every storage/engine call it makes is
 monkeypatched rather than exercised against a real Postgres schema (unlike
 tests/test_storage_stock.py's esi_stock_at_location/assets_at_flag tests,
 which are genuine DB-level tests) - do_sorting_list itself is pure
@@ -80,8 +80,37 @@ def test_trading_wanted_qty_from_import_decision_snapshot(monkeypatch):
     result = cross_tool.do_sorting_list(cfg=cfg)
 
     row = result["rows"][0]
-    assert row["wanted_by_tool"] == [{"tool": "trading", "wanted_qty": 250.0}]  # 300 - 50
+    assert row["wanted_by_tool"] == [{"tool": "trading", "wanted_qty": 300.0}]
     assert row["unclaimed"] is False
+
+
+def test_trading_wanted_qty_ignores_sell_volume_order_book_depth(monkeypatch):
+    # GitHub issues #51/#100: sell_volume is listed quantity across every
+    # open sell order at the structure, not daily turnover. A parked stack
+    # must not zero out Trading's sorting demand.
+    cfg = TradingConfig(intake_hangar_flag="CorpSAG1")
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=None: [(34, 500.0)])
+    monkeypatch.setattr(storage, "latest_snapshot", lambda: pd.DataFrame([
+        {"item_id": 34, "decision": "Import", "avg_daily_volume": 20.0, "sell_volume": 100_000.0,
+         "own_orders_remaining": 0.0},
+    ]))
+
+    result = cross_tool.do_sorting_list(cfg=cfg)
+
+    assert result["rows"][0]["wanted_by_tool"] == [{"tool": "trading", "wanted_qty": 20.0}]
+
+
+def test_trading_wanted_qty_skips_import_rows_without_avg_daily_volume(monkeypatch):
+    cfg = TradingConfig(intake_hangar_flag="CorpSAG1")
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=None: [(34, 500.0)])
+    monkeypatch.setattr(storage, "latest_snapshot", lambda: pd.DataFrame([
+        {"item_id": 34, "decision": "Import", "avg_daily_volume": None, "sell_volume": 999.0,
+         "own_orders_remaining": 0.0},
+    ]))
+
+    result = cross_tool.do_sorting_list(cfg=cfg)
+
+    assert result["rows"][0]["unclaimed"] is True
 
 
 def test_trading_ignores_non_import_decisions(monkeypatch):
