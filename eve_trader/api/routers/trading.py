@@ -131,8 +131,13 @@ def update_settings(updates: TradingSettings):
 
 @router.get("/settings/hangar-division-options")
 def get_hangar_division_options():
-    from ...production.constants import HANGAR_DIVISION_FLAGS
-    return {"hangar_division_flags": list(HANGAR_DIVISION_FLAGS)}
+    # Trading's intake_hangar_flag names the shared Wareneingang, which
+    # legitimately includes "Deliveries" (a courier/market delivery lands
+    # there) - unlike Production/Doctrine's stock_hangar_flags/
+    # stockpile_hangar_flags (see production/constants.py's
+    # INTAKE_HANGAR_FLAGS docstring for why those two must NOT offer it).
+    from ...production.constants import INTAKE_HANGAR_FLAGS
+    return {"hangar_division_flags": list(INTAKE_HANGAR_FLAGS)}
 
 
 @router.get("/esi/sync-time")

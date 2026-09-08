@@ -273,13 +273,16 @@ CREATE TABLE IF NOT EXISTS doctrine_character_assets (
     quantity INTEGER,
     is_blueprint_copy INTEGER,
     owner_name TEXT,
-    resolved_location_id BIGINT
+    resolved_location_id BIGINT,
+    resolved_hangar_flag TEXT
 );
 -- Same resolved_location_id shape as phase1_schema.sql's character_assets/
 -- corp_assets (GitHub issue #4/#20) - both go through storage.replace_assets,
 -- which computes this the same way regardless of which pair of tables it's
--- called for.
+-- called for. Same for resolved_hangar_flag (hangar-sorting feature) - see
+-- phase1_schema.sql's character_assets comment / storage._resolve_hangar_flags.
 ALTER TABLE doctrine_character_assets ADD COLUMN IF NOT EXISTS resolved_location_id BIGINT;
+ALTER TABLE doctrine_character_assets ADD COLUMN IF NOT EXISTS resolved_hangar_flag TEXT;
 DROP INDEX IF EXISTS idx_doctrine_character_assets_type_location;
 CREATE INDEX IF NOT EXISTS idx_doctrine_character_assets_type_resolved_location
     ON doctrine_character_assets (type_id, resolved_location_id);
@@ -298,9 +301,11 @@ CREATE TABLE IF NOT EXISTS doctrine_corp_assets (
     quantity INTEGER,
     is_blueprint_copy INTEGER,
     owner_name TEXT,
-    resolved_location_id BIGINT
+    resolved_location_id BIGINT,
+    resolved_hangar_flag TEXT
 );
 ALTER TABLE doctrine_corp_assets ADD COLUMN IF NOT EXISTS resolved_location_id BIGINT;
+ALTER TABLE doctrine_corp_assets ADD COLUMN IF NOT EXISTS resolved_hangar_flag TEXT;
 DROP INDEX IF EXISTS idx_doctrine_corp_assets_type_location;
 CREATE INDEX IF NOT EXISTS idx_doctrine_corp_assets_type_resolved_location
     ON doctrine_corp_assets (type_id, resolved_location_id);

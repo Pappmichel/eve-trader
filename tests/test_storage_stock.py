@@ -96,6 +96,30 @@ def test_esi_stock_at_location_allowed_flags_with_location_id_none(tenant):
     assert storage.esi_stock_at_location(TYPE_ID, None, allowed_flags=("CorpSAG1",)) == 55
 
 
+def test_esi_stock_at_location_allowed_flags_sees_stock_nested_inside_a_division_container(tenant):
+    # Regression: allowed_flags originally filtered on the raw location_flag
+    # column, which is only meaningful for a row sitting directly in the
+    # division - anything nested one level deeper inside a container (a very
+    # common real shape: a fresh delivery arrives as one wrapped container)
+    # carries its own container-internal flag ("Unlocked"), not the
+    # division's, and silently vanished from a filtered count. Same bug
+    # class as GitHub issue #4/#20 (see
+    # test_esi_stock_at_location_sees_stock_inside_a_container_in_corp_hangar
+    # above), reintroduced here and fixed via resolved_hangar_flag/
+    # storage._resolve_hangar_flags.
+    office_item_id = 900
+    container_item_id = 901
+    storage.replace_assets("corp_assets", [
+        (office_item_id, storage.OFFICE_TYPE_ID, LOCATION_ID, "OfficeFolder", 1, 0, "My Corp (corp)"),
+        (container_item_id, 649, office_item_id, "CorpSAG1", 1, 0, "My Corp (corp)"),  # a Station Container
+        (2, TYPE_ID, container_item_id, "Unlocked", 300000000, 0, "My Corp (corp)"),  # tritanium inside it
+        (3, TYPE_ID, office_item_id, "CorpSAG2", 500, 0, "My Corp (corp)"),  # a different division - excluded
+    ])
+
+    assert storage.esi_stock_at_location(TYPE_ID, LOCATION_ID, allowed_flags=("CorpSAG1",)) == 300000000
+    assert storage.esi_stock_at_location(TYPE_ID, LOCATION_ID, allowed_flags=("CorpSAG2",)) == 500
+
+
 def test_assets_at_flag_sums_across_character_and_corp_assets(tenant):
     storage.replace_assets("character_assets", [
         (1, TYPE_ID, LOCATION_ID, "CorpSAG3", 10, 0, "pilot"),
@@ -121,6 +145,27 @@ def test_assets_at_flag_ignores_other_divisions(tenant):
 
 def test_assets_at_flag_empty_when_nothing_matches(tenant):
     assert storage.assets_at_flag("CorpSAG7") == []
+
+
+def test_assets_at_flag_sees_contents_of_a_container_sitting_in_the_division(tenant):
+    # Same regression as
+    # test_esi_stock_at_location_allowed_flags_sees_stock_nested_inside_a_division_container
+    # for assets_at_flag: a Wareneingang delivery routinely arrives as one
+    # container placed in the division, with its actual contents one level
+    # deeper - filtering on the raw location_flag column would report the
+    # division as empty.
+    office_item_id = 900
+    container_item_id = 901
+    storage.replace_assets("corp_assets", [
+        (office_item_id, storage.OFFICE_TYPE_ID, LOCATION_ID, "OfficeFolder", 1, 0, "My Corp (corp)"),
+        (container_item_id, 649, office_item_id, "CorpSAG3", 1, 0, "My Corp (corp)"),
+        (2, TYPE_ID, container_item_id, "Unlocked", 42, 0, "My Corp (corp)"),
+    ])
+
+    # The container itself (type_id 649) also genuinely sits in CorpSAG3 and
+    # is correctly counted too - the regression this guards against is the
+    # tritanium (TYPE_ID) *inside* it going missing, not the container.
+    assert dict(storage.assets_at_flag("CorpSAG3")) == {TYPE_ID: 42, 649: 1}
 
 
 def test_esi_stock_at_location_still_unwraps_corp_office(tenant):

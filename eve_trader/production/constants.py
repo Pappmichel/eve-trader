@@ -140,6 +140,19 @@ HANGAR_DIVISION_FLAGS: tuple[str, ...] = (
     "CorpSAG1", "CorpSAG2", "CorpSAG3", "CorpSAG4", "CorpSAG5", "CorpSAG6", "CorpSAG7",
 )
 
+# Valid options for TradingConfig.intake_hangar_flag (the shared Wareneingang
+# division - see cross_tool.do_sorting_list) - every real division
+# (HANGAR_DIVISION_FLAGS) *plus* "Deliveries", deliberately not included in
+# HANGAR_DIVISION_FLAGS itself: "Deliveries" is one of storage.
+# NON_STOCK_LOCATION_FLAGS, so it would never be a sane choice for
+# stock_hangar_flags/stockpile_hangar_flags (esi_stock_at_location excludes
+# it unconditionally before allowed_flags even applies, making it a silent
+# always-zero filter there) - but it's exactly where a courier contract or
+# market delivery routinely lands at C-J, so it's a legitimate, common
+# Wareneingang choice (assets_at_flag has no NON_STOCK_LOCATION_FLAGS
+# exclusion, so it works there).
+INTAKE_HANGAR_FLAGS: tuple[str, ...] = HANGAR_DIVISION_FLAGS + ("Deliveries",)
+
 
 @dataclass(frozen=True)
 class ActivityMods:

@@ -104,6 +104,20 @@ def _check_type(key: str, value: Any, expected: type) -> None:
         if real_types:
             _check_type(key, value, real_types[0])
         return
+    # A parametrized generic (tuple[str, ...], list[int], ...) has its own
+    # origin (plain `tuple`/`list`) distinct from the bare `tuple`/`list`
+    # type object - `expected is tuple` alone misses it, which used to let a
+    # `tuple[str, ...]`-annotated field (e.g. ProductionConfig.
+    # stock_hangar_flags) skip this whole function's checks silently (falls
+    # through every branch below, never raises). Confirmed real gap: a
+    # non-list/tuple value there would reach the enum-check loop in
+    # validate_production_overrides/validate_doctrine_overrides and blow up
+    # with a raw TypeError (not iterable) instead of a clean ConfigError.
+    # Folding origin into `expected` here, once, lets every branch below
+    # keep using `expected is X` unchanged for both the bare and the
+    # parametrized spelling.
+    if origin in (tuple, list):
+        expected = origin
     if expected is float:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ConfigError(f"{key}: expected a number, got {value!r} ({type(value).__name__})")
@@ -254,6 +268,36 @@ def apply_config_overrides(cfg: Any, overrides: dict[str, Any]) -> None:
     for key, value in overrides.items():
         if hasattr(cfg, key):
             setattr(cfg, key, value)
+
+
+# Valid options for TradingConfig.intake_hangar_flag - the same real ESI
+# hangar-division flags as production/constants.py's HANGAR_DIVISION_FLAGS,
+# plus "Deliveries" (a legitimate Wareneingang location even though it's not
+# a legitimate *stock_hangar_flags* one - see that module's own
+# INTAKE_HANGAR_FLAGS docstring for why). Duplicated here rather than
+# imported: config.py is the shared base module imported *by*
+# production/config.py, so reaching back into production/constants.py from
+# here would be a layering violation (see CLAUDE.md's Config section) - keep
+# this in sync with production/constants.py's HANGAR_DIVISION_FLAGS/
+# INTAKE_HANGAR_FLAGS if either ever changes.
+_INTAKE_HANGAR_FLAGS = (
+    "Hangar",
+    "CorpSAG1", "CorpSAG2", "CorpSAG3", "CorpSAG4", "CorpSAG5", "CorpSAG6", "CorpSAG7",
+    "Deliveries",
+)
+
+
+def validate_trading_overrides(overrides: dict) -> None:
+    """Beyond the generic type checks (validate_config_overrides): enum-check
+    for intake_hangar_flag - same pattern as production/config.py's
+    validate_production_overrides/doctrine/config.py's
+    validate_doctrine_overrides. Empty string (the field's default, "not set
+    yet") is always allowed - see intake_hangar_flag's own docstring."""
+    flag = overrides.get("intake_hangar_flag")
+    if flag and flag not in _INTAKE_HANGAR_FLAGS:
+        raise ConfigError(f"intake_hangar_flag: {flag!r} is not a known hangar division. "
+                           f"Options: {', '.join(_INTAKE_HANGAR_FLAGS)} (or '' to disable)")
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"

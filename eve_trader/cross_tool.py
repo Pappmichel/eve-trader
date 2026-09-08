@@ -5,8 +5,8 @@ CLAUDE.md's "Two tools, one backend"). Still follows the `do_*` pattern
 (UI-agnostic, plain dict/dataclass return, no framework imports) - api/
 routers/cross_tool.py is the only caller.
 
-Today this is exactly one feature: the Wareneingang/hangar-sorting helper
-(GitHub issue #90-era work). EVE has no API to move an item between hangar
+Today this is exactly one feature: the Wareneingang/hangar-sorting helper.
+EVE has no API to move an item between hangar
 divisions - Jita imports for every tool physically land in one shared corp
 "Wareneingang" division first, and a human has to sort them into each tool's
 own division by hand. do_sorting_list answers "what's sitting in the intake
@@ -40,12 +40,19 @@ def _trading_wanted_by_type() -> dict[int, float]:
     Trading already computes and treats as a real daily-turnover estimate
     (avg_daily_volume - GitHub issue #100, the same figure CLAUDE.md's
     "Theoretical ceiling" section documents for Profit/Day) as a stand-in for
-    "how much of this could plausibly be imported today", net of what's
-    already covering that demand: sell_volume (already listed for sale at
-    the structure) and own_orders_remaining (the trader's own open buy-side
-    coverage). This is a deliberately simple approximation, not a real
-    Trading feature - documented here rather than over-built, since Trading
-    has no existing "buy quantity" concept to mirror.
+    "how much of this could plausibly be imported today", net of sell_volume
+    (already listed for sale at the structure - what's still covering that
+    demand). This is a deliberately simple approximation, not a real Trading
+    feature - documented here rather than over-built, since Trading has no
+    existing "buy quantity" concept to mirror.
+
+    Deliberately does NOT also subtract own_orders_remaining (the trader's
+    own open buy-side coverage): shortlist._decision already routes any row
+    with own_orders_remaining > 0 to "Already ordered", never "Import" (see
+    shortlist.py), so by the time a row reaches this function - already
+    filtered to decision == "Import" below - own_orders_remaining is always
+    0 on it. Subtracting it here would be dead code, not a real second
+    factor.
 
     Only rows the last run actually flagged "Import" (shortlist._decision) -
     a Skip/Inactive/No-market-data/Already-ordered row isn't something
@@ -62,8 +69,7 @@ def _trading_wanted_by_type() -> dict[int, float]:
         type_id = int(row["item_id"])
         if not type_id:
             continue
-        qty = max(0.0, float(row.get("avg_daily_volume", 0.0)) - float(row.get("sell_volume", 0.0))
-                   - float(row.get("own_orders_remaining", 0.0)))
+        qty = max(0.0, float(row.get("avg_daily_volume", 0.0)) - float(row.get("sell_volume", 0.0)))
         if qty > 0:
             wanted[type_id] = wanted.get(type_id, 0.0) + qty
     return wanted

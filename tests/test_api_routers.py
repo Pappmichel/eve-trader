@@ -8,7 +8,7 @@ or Goonmetrics - safe to run anywhere, no network/auth required.
 """
 from fastapi.testclient import TestClient
 
-from eve_trader import actions, storage
+from eve_trader import actions, cross_tool, storage
 from eve_trader.actions import ActionError
 from eve_trader.api.app import create_app
 from eve_trader.models import ShortlistItem
@@ -979,3 +979,25 @@ def test_auth_callback_network_failure_redirects_with_error_instead_of_500(monke
 
     assert resp.status_code in (302, 307)
     assert "auth=error" in resp.headers["location"]
+
+
+# ---------------------------------------------------------------- cross_tool
+def test_get_sorting_list_serializes_action_result(monkeypatch):
+    monkeypatch.setattr(cross_tool, "do_sorting_list", lambda: {"rows": [
+        {"type_id": 34, "type_name": "Tritanium", "intake_qty": 500.0,
+         "wanted_by_tool": [{"tool": "production", "wanted_qty": 100.0}], "unclaimed": False},
+    ]})
+    resp = client.get("/api/cross-tool/sorting-list")
+    assert resp.status_code == 200
+    assert resp.json() == {"rows": [
+        {"type_id": 34, "type_name": "Tritanium", "intake_qty": 500.0,
+         "wanted_by_tool": [{"tool": "production", "wanted_qty": 100.0}], "unclaimed": False},
+    ]}
+
+
+def test_get_sorting_list_action_error_maps_to_400(monkeypatch):
+    def _raise():
+        raise ActionError("boom")
+    monkeypatch.setattr(cross_tool, "do_sorting_list", _raise)
+    resp = client.get("/api/cross-tool/sorting-list")
+    assert resp.status_code == 400

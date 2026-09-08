@@ -74,13 +74,13 @@ def test_trading_wanted_qty_from_import_decision_snapshot(monkeypatch):
     monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=None: [(34, 500.0)])
     monkeypatch.setattr(storage, "latest_snapshot", lambda: pd.DataFrame([
         {"item_id": 34, "decision": "Import", "avg_daily_volume": 300.0, "sell_volume": 50.0,
-         "own_orders_remaining": 20.0},
+         "own_orders_remaining": 0.0},
     ]))
 
     result = cross_tool.do_sorting_list(cfg=cfg)
 
     row = result["rows"][0]
-    assert row["wanted_by_tool"] == [{"tool": "trading", "wanted_qty": 230.0}]  # 300 - 50 - 20
+    assert row["wanted_by_tool"] == [{"tool": "trading", "wanted_qty": 250.0}]  # 300 - 50
     assert row["unclaimed"] is False
 
 
