@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 
 from eve_trader import storage
+from eve_trader.models import ShortlistItem
 from eve_trader.doctrine.config import DoctrineConfig
 from eve_trader.doctrine.models import StockpileRow
 from eve_trader.production.config import ProductionConfig
@@ -34,6 +35,7 @@ def _stub_everything(monkeypatch):
     monkeypatch.setattr(storage, "load_sorting_intake_sources", lambda: [])
     monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [])
     monkeypatch.setattr(storage, "latest_snapshot", _empty_snapshot_df)
+    monkeypatch.setattr(storage, "load_shortlist", lambda: [])
     monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
     monkeypatch.setattr(storage, "load_latest_buy_list", lambda: {})
@@ -85,11 +87,60 @@ def test_trading_wanted_qty_from_import_decision_snapshot(monkeypatch):
     result = sorting_engine.do_sorting_list()
 
     row = result["rows"][0]
-    assert row["wanted_by_tool"] == [{"tool": "markt", "wanted_qty": 250.0}]  # 300 - 50
+    # sell_volume is listed qty, not a reason to drop hangar demand
+    assert row["wanted_by_tool"] == [{"tool": "trading", "wanted_qty": 300.0}]
     assert row["unclaimed"] is False
 
 
-def test_trading_ignores_non_import_decisions(monkeypatch):
+def test_trading_still_wants_item_when_listings_cover_daily_volume(monkeypatch):
+    # The stack in Wareneingang still belongs in the market hangar even
+    # when open sell orders already cover avg_daily_volume (no further
+    # import needed today).
+    monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(34, 500.0)])
+    monkeypatch.setattr(storage, "latest_snapshot", lambda: pd.DataFrame([
+        {"item_id": 34, "decision": "Import", "avg_daily_volume": 300.0, "sell_volume": 400.0,
+         "own_orders_remaining": 0.0},
+    ]))
+
+    result = sorting_engine.do_sorting_list()
+
+    row = result["rows"][0]
+    assert row["wanted_by_tool"] == [{"tool": "trading", "wanted_qty": 300.0}]
+    assert row["unclaimed"] is False
+
+
+def test_trading_already_ordered_still_claims_market_hangar(monkeypatch):
+    monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(34, 500.0)])
+    monkeypatch.setattr(storage, "latest_snapshot", lambda: pd.DataFrame([
+        {"item_id": 34, "decision": "Already ordered", "avg_daily_volume": 80.0, "sell_volume": 80.0,
+         "own_orders_remaining": 10.0},
+    ]))
+
+    result = sorting_engine.do_sorting_list()
+
+    row = result["rows"][0]
+    assert row["wanted_by_tool"] == [{"tool": "trading", "wanted_qty": 80.0}]
+    assert row["unclaimed"] is False
+
+
+def test_trading_import_with_no_avg_daily_volume_still_claimed(monkeypatch):
+    monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(34, 500.0)])
+    monkeypatch.setattr(storage, "latest_snapshot", lambda: pd.DataFrame([
+        {"item_id": 34, "decision": "Import", "avg_daily_volume": 0.0, "sell_volume": 50.0,
+         "own_orders_remaining": 0.0},
+    ]))
+
+    result = sorting_engine.do_sorting_list()
+
+    row = result["rows"][0]
+    assert row["wanted_by_tool"] == [{"tool": "trading", "wanted_qty": 1.0}]
+    assert row["unclaimed"] is False
+
+
+def test_trading_ignores_snapshot_skip_when_not_on_shortlist(monkeypatch):
     monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
     monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(34, 500.0)])
     monkeypatch.setattr(storage, "latest_snapshot", lambda: pd.DataFrame([
@@ -100,6 +151,57 @@ def test_trading_ignores_non_import_decisions(monkeypatch):
     result = sorting_engine.do_sorting_list()
 
     assert result["rows"][0]["unclaimed"] is True
+
+
+def test_active_shortlist_item_is_claimed_for_trading_even_when_snapshot_says_skip(monkeypatch):
+    # shortlist._decision returns Skip when sell_volume is 0 (no C-J
+    # listings yet) even for a profitable import-list item. Sorting still
+    # sends that stack to the Trading hangar so it can be listed.
+    monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(34, 500.0)])
+    monkeypatch.setattr(storage, "latest_snapshot", lambda: pd.DataFrame([
+        {"item_id": 34, "decision": "Skip", "avg_daily_volume": 300.0, "sell_volume": 0.0,
+         "own_orders_remaining": 0.0},
+    ]))
+    monkeypatch.setattr(storage, "load_shortlist", lambda: [
+        ShortlistItem(item="Tritanium", item_id=34, category="Material", volume_m3=0.01, active=True),
+    ])
+
+    result = sorting_engine.do_sorting_list()
+
+    row = result["rows"][0]
+    assert row["wanted_by_tool"] == [{"tool": "trading", "wanted_qty": 300.0}]
+    assert row["unclaimed"] is False
+
+
+def test_inactive_shortlist_item_is_not_claimed_for_trading(monkeypatch):
+    monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(34, 500.0)])
+    monkeypatch.setattr(storage, "latest_snapshot", lambda: pd.DataFrame([
+        {"item_id": 34, "decision": "Import", "avg_daily_volume": 300.0, "sell_volume": 50.0,
+         "own_orders_remaining": 0.0},
+    ]))
+    monkeypatch.setattr(storage, "load_shortlist", lambda: [
+        ShortlistItem(item="Tritanium", item_id=34, category="Material", volume_m3=0.01, active=False),
+    ])
+
+    result = sorting_engine.do_sorting_list()
+
+    assert result["rows"][0]["unclaimed"] is True
+
+
+def test_active_shortlist_item_without_snapshot_is_still_claimed(monkeypatch):
+    monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(34, 500.0)])
+    monkeypatch.setattr(storage, "load_shortlist", lambda: [
+        ShortlistItem(item="Tritanium", item_id=34, category="Material", volume_m3=0.01, active=True),
+    ])
+
+    result = sorting_engine.do_sorting_list()
+
+    row = result["rows"][0]
+    assert row["wanted_by_tool"] == [{"tool": "trading", "wanted_qty": 1.0}]
+    assert row["unclaimed"] is False
 
 
 def test_material_wanted_qty_from_persisted_buy_list_not_stock_targets(monkeypatch):
@@ -131,7 +233,7 @@ def test_material_wanted_empty_when_no_buy_list_saved(monkeypatch):
     assert result["rows"][0]["unclaimed"] is True
 
 
-def test_markt_merges_trading_import_and_production_listing_shortfall(monkeypatch):
+def test_trading_and_production_listing_are_separate_pots(monkeypatch):
     production_cfg = ProductionConfig(home_location_id=1000000000001)
     monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
     monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(34, 500.0)])
@@ -145,7 +247,7 @@ def test_markt_merges_trading_import_and_production_listing_shortfall(monkeypatc
     result = sorting_engine.do_sorting_list(production_cfg=production_cfg)
 
     wanted = {w["tool"]: w["wanted_qty"] for w in result["rows"][0]["wanted_by_tool"]}
-    assert wanted == {"markt": 140.0}
+    assert wanted == {"trading": 100.0, "markt": 40.0}
 
 
 def test_doctrine_wanted_qty_sums_shortfall_across_fittings(monkeypatch):

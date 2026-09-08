@@ -11,6 +11,7 @@ import { qty } from '../../format'
 import { filterSortingRows, UNCLAIMED } from './sortingFilters'
 
 const TOOL_LABELS: Record<string, string> = {
+  trading: 'Trading',
   markt: 'Markt',
   material: 'Material',
   doctrine: 'Doctrine',

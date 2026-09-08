@@ -29,7 +29,7 @@ describe('filterSortingRows', () => {
   const plex = row({
     type_id: 1, type_name: 'PLEX', intake_qty: 10,
     by_source: [{ source_label: 'Intake', qty: 10 }],
-    wanted_by_tool: [{ tool: 'markt', wanted_qty: 4 }, { tool: 'doctrine', wanted_qty: 2 }],
+    wanted_by_tool: [{ tool: 'trading', wanted_qty: 4 }, { tool: 'doctrine', wanted_qty: 2 }],
     unclaimed: false,
   })
   const rows = [mexallon, trit, plex]
@@ -51,6 +51,6 @@ describe('filterSortingRows', () => {
   })
 
   it('combines tool and source filters', () => {
-    expect(filterSortingRows(rows, ['markt'], ['Intake']).map((r) => r.type_id)).toEqual([1])
+    expect(filterSortingRows(rows, ['trading'], ['Intake']).map((r) => r.type_id)).toEqual([1])
   })
 })
