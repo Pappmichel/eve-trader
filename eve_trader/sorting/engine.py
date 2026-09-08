@@ -81,12 +81,17 @@ def _material_wanted_by_type(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict[
     listing targets and open sell orders) - this is a "how much material do
     I still need to sort into my own hangar" question. Market-listing
     demand is a separate pot (`markt`, via
-    production_engine.market_listing_shortfall_by_type)."""
+    production_engine.market_listing_shortfall_by_type).
+
+    Ist excludes configured Sorting intake sources at cfg.home_location_id
+    so a stack still sitting in the Wareneingang is not treated as already
+    covering the backup reserve."""
     manual_stock = storage.load_manual_stock()
     wanted: dict[int, float] = {}
     for type_id, _name, backup_stock, _home, _jita in storage.load_stock_targets():
         current = manual_stock.get(type_id, 0.0) + storage.esi_stock_at_location(
-            type_id, cfg.home_location_id, allowed_flags=cfg.stock_hangar_flags)
+            type_id, cfg.home_location_id, allowed_flags=cfg.stock_hangar_flags,
+            exclude_intake_at_location_id=cfg.home_location_id)
         missing = max(0.0, backup_stock - current)
         if missing > 0:
             wanted[type_id] = missing

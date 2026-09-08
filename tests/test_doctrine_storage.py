@@ -13,6 +13,7 @@ psycopg = pytest.importorskip("psycopg")
 pytestmark = pg_helpers.postgres_required()
 
 _DOCTRINE_SCHEMA_SQL = Path(__file__).resolve().parent.parent / "docs" / "doctrine_schema.sql"
+_SORTING_SCHEMA_SQL = Path(__file__).resolve().parent.parent / "docs" / "sorting_schema.sql"
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -26,6 +27,7 @@ def _apply_doctrine_schema(_apply_phase1_schema, _apply_phase2_schema):
         return
     with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
         conn.execute(_DOCTRINE_SCHEMA_SQL.read_text(encoding="utf-8"))
+        conn.execute(_SORTING_SCHEMA_SQL.read_text(encoding="utf-8"))
 
 
 def test_doctrine_and_fitting_crud(tenant):
@@ -217,7 +219,10 @@ def _wipe_doctrine_assets():
     # real flake: replace_assets' own DELETE is RLS-scoped to the *current*
     # tenant, but item_id's PK isn't tenant-scoped, so a different tenant's
     # already-committed row isn't deleted and blocks the INSERT).
-    pg_helpers.wipe_tables("doctrine_character_assets", "doctrine_corp_assets", "character_assets", "corp_assets")
+    pg_helpers.wipe_tables(
+        "doctrine_character_assets", "doctrine_corp_assets", "character_assets", "corp_assets",
+        "sorting_intake_sources",
+    )
     yield
 
 
@@ -249,6 +254,22 @@ def test_esi_stock_at_location_reads_doctrines_own_asset_tables(tenant):
 
     doctrine_tables = ("doctrine_character_assets", "doctrine_corp_assets")
     assert storage.esi_stock_at_location(type_id, location_id, tables=doctrine_tables) == 150
+
+
+def test_doctrine_esi_stock_excludes_sorting_intake_at_home(tenant):
+    type_id, location_id = 34, 1000000000001
+    storage.replace_assets("doctrine_character_assets", [
+        (1, type_id, location_id, "Hangar", 100, 0, "pappmichl5"),
+        (2, type_id, location_id, "CorpSAG1", 25, 0, "pappmichl5"),
+    ])
+    storage.add_sorting_intake_source("character", "Hangar", owner_name="pappmichl5")
+    doctrine_tables = ("doctrine_character_assets", "doctrine_corp_assets")
+
+    assert storage.esi_stock_at_location(type_id, location_id, tables=doctrine_tables) == 125
+    assert storage.esi_stock_at_location(
+        type_id, location_id, tables=doctrine_tables,
+        exclude_intake_at_location_id=location_id,
+    ) == 25
 
 
 def _history_row(**overrides) -> tuple:

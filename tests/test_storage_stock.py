@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 
 from eve_trader import storage
 
@@ -11,6 +12,15 @@ pytestmark = pg_helpers.postgres_required()
 
 TYPE_ID = 34  # Tritanium
 LOCATION_ID = 1000000000001
+_SORTING_SCHEMA_SQL = Path(__file__).resolve().parent.parent / "docs" / "sorting_schema.sql"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _apply_sorting_schema(_apply_phase1_schema):
+    if not pg_helpers._postgres_available():
+        return
+    with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
+        conn.execute(_SORTING_SCHEMA_SQL.read_text(encoding="utf-8"))
 
 
 @pytest.fixture(autouse=True)
@@ -24,7 +34,10 @@ def _wipe():
     # fake station_id into it. character_slots is the same column-only-bucket
     # shape (PK = character_name alone) and the tests added for GitHub issue
     # #39 below reuse small hardcoded names ("Alice"/"Bob") too.
-    pg_helpers.wipe_tables("character_assets", "corp_assets", "sde_stations", "character_slots")
+    pg_helpers.wipe_tables(
+        "character_assets", "corp_assets", "sde_stations", "character_slots",
+        "sorting_intake_sources",
+    )
     yield
 
 
@@ -94,6 +107,32 @@ def test_esi_stock_at_location_allowed_flags_with_location_id_none(tenant):
     # allowed_flags composes with the location_id=None ("everywhere") case
     # too, not just the single-location one.
     assert storage.esi_stock_at_location(TYPE_ID, None, allowed_flags=("CorpSAG1",)) == 55
+
+
+def test_esi_stock_at_location_exclude_intake_skips_configured_source_at_that_location(tenant):
+    other_location = 1000000000002
+    storage.replace_assets("character_assets", [
+        (1, TYPE_ID, LOCATION_ID, "Hangar", 500, 0, "pappmichl5"),
+        (2, TYPE_ID, other_location, "Hangar", 80, 0, "pappmichl5"),
+        (3, TYPE_ID, LOCATION_ID, "Hangar", 40, 0, "someone else"),
+        (4, TYPE_ID, LOCATION_ID, "CorpSAG1", 10, 0, "pappmichl5"),
+    ])
+    storage.add_sorting_intake_source("character", "Hangar", owner_name="pappmichl5")
+
+    # Without the opt-in, intake still counts (call sites that haven't been
+    # updated keep today's behaviour).
+    assert storage.esi_stock_at_location(TYPE_ID, LOCATION_ID) == 550
+    # At C-J: intake Hangar for pappmichl5 is excluded; other owner in the
+    # same flag, and pappmichl5's non-intake CorpSAG1, still count.
+    assert storage.esi_stock_at_location(
+        TYPE_ID, LOCATION_ID, exclude_intake_at_location_id=LOCATION_ID) == 50
+    # Same owner+flag at a different structure is real stock, not intake.
+    assert storage.esi_stock_at_location(
+        TYPE_ID, other_location, exclude_intake_at_location_id=LOCATION_ID) == 80
+    # Corp-wide (_current_stock's location_id=None): C-J intake Hangar is
+    # dropped, Jita Hangar + remaining C-J stacks remain.
+    assert storage.esi_stock_at_location(
+        TYPE_ID, None, exclude_intake_at_location_id=LOCATION_ID) == 130
 
 
 def test_esi_stock_at_location_allowed_flags_sees_stock_nested_inside_a_division_container(tenant):

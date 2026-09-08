@@ -222,8 +222,10 @@ def stockpile_rows_for_doctrine(doctrine_id: Optional[str] = None,
 
     type_ids = {t for _fid, soll in ordered_soll for t in soll}
     available_by_type = {
-        t: storage.esi_stock_at_location(t, location_id, tables=("doctrine_character_assets", "doctrine_corp_assets"),
-                                          allowed_flags=cfg.stockpile_hangar_flags)
+        t: storage.esi_stock_at_location(
+            t, location_id, tables=("doctrine_character_assets", "doctrine_corp_assets"),
+            allowed_flags=cfg.stockpile_hangar_flags,
+            exclude_intake_at_location_id=PRODUCTION_CONFIG.home_location_id)
         for t in type_ids
     }
     allocation = validation.allocate_stockpile(ordered_soll, available_by_type)

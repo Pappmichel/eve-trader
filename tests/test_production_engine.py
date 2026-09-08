@@ -72,8 +72,8 @@ def test_current_stock_checks_every_location_not_a_curated_set(monkeypatch):
     # confirm _current_stock passes None through, not a specific location.
     calls = []
 
-    def fake_esi_stock(type_id, location_id, allowed_flags=None):
-        calls.append(location_id)
+    def fake_esi_stock(type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None):
+        calls.append({"location_id": location_id, "exclude": exclude_intake_at_location_id})
         return 1_572_335.0
 
     monkeypatch.setattr(storage, "esi_stock_at_location", fake_esi_stock)
@@ -82,12 +82,41 @@ def test_current_stock_checks_every_location_not_a_curated_set(monkeypatch):
 
     total = engine._current_stock(type_id=16636, manual_stock={}, cfg=cfg, bp=None)
 
-    assert calls == [None]  # checked everywhere in one call, not a specific/curated location
+    assert calls == [{"location_id": None, "exclude": 1000000000001}]
     assert total == 1_572_335.0
 
 
+@pg_helpers.postgres_required()
+def test_current_stock_does_not_count_configured_sorting_intake(monkeypatch, tenant):
+    """pappmichl5's personal Hangar is a Sorting intake source AND a
+    Production producer hangar. Stock sitting there is unsortiertes staging
+    and must not cover Buy-List / _current_stock demand at C-J. The same
+    character's Hangar at another structure, and a non-intake division at
+    C-J, still count."""
+    from pathlib import Path
+    home = 1000000000001
+    jita = 60003760
+    sql = Path(__file__).resolve().parent.parent / "docs" / "sorting_schema.sql"
+    with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
+        conn.execute(sql.read_text(encoding="utf-8"))
+    pg_helpers.wipe_tables("character_assets", "sorting_intake_sources")
+    storage.replace_assets("character_assets", [
+        (9101, 34, home, "Hangar", 500, 0, "pappmichl5"),
+        (9102, 34, home, "CorpSAG1", 10, 0, "pappmichl5"),
+        (9103, 34, jita, "Hangar", 80, 0, "pappmichl5"),
+    ])
+    storage.add_sorting_intake_source("character", "Hangar", owner_name="pappmichl5")
+    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id: {"runs": 0, "jobs": 0})
+    cfg = ProductionConfig(home_location_id=home)
+
+    assert engine._current_stock(34, {}, cfg, None) == 90.0
+    assert engine._stock_on_hand(34, {}, cfg) == 90.0
+    # Call sites that don't pass exclude_intake still see the intake stack.
+    assert storage.esi_stock_at_location(34, None) == 590.0
+
+
 def _no_listings(monkeypatch):
-    monkeypatch.setattr(storage, "sell_order_qty_at_location", lambda type_id, location_id: 0.0)
+    monkeypatch.setattr(storage, "sell_order_qty_at_location", lambda type_id, location_id, **kwargs: 0.0)
     monkeypatch.setattr(storage, "sell_order_qty_in_region", lambda type_id, region_id: 0.0)
 
 
@@ -101,7 +130,7 @@ def test_market_status_skips_items_with_no_market_target(monkeypatch):
     cfg = ProductionConfig(home_location_id=1000000000001)
     _no_listings(monkeypatch)
     monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
-    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None: 0.0)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None: 0.0)
     monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id: {"runs": 0, "jobs": 0})
     monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [
@@ -162,7 +191,7 @@ def test_total_missing_still_nets_against_already_listed_quantity(monkeypatch):
     # (see _current_stock/_total_missing docstrings) - both must still net
     # against the target, not just one or the other.
     cfg = ProductionConfig(home_location_id=1000000000001)
-    monkeypatch.setattr(storage, "sell_order_qty_at_location", lambda type_id, location_id: 5.0)
+    monkeypatch.setattr(storage, "sell_order_qty_at_location", lambda type_id, location_id, **kwargs: 5.0)
     monkeypatch.setattr(storage, "sell_order_qty_in_region", lambda type_id, region_id: 0.0)
 
     missing = _total_missing(1, backup_stock=0.0, home_market_stock=20.0, jita_market_stock=None,
@@ -187,7 +216,7 @@ def test_market_listing_shortfall_excludes_backup_only_targets(monkeypatch):
     cfg = ProductionConfig(home_location_id=1000000000001)
     _no_listings(monkeypatch)
     monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
-    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None: 0.0)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None: 0.0)
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [
         (1, "Backup only", 10.0, None, None),
         (2, "Home listing", 0.0, 20.0, None),
@@ -206,7 +235,7 @@ def test_market_listing_shortfall_unit_covering_backup_is_not_double_counted_for
     cfg = ProductionConfig(home_location_id=1000000000001)
     _no_listings(monkeypatch)
     monkeypatch.setattr(storage, "load_manual_stock", lambda: {1: 10.0})
-    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None: 0.0)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None: 0.0)
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [(1, "Item", 10.0, 10.0, None)])
 
     wanted = market_listing_shortfall_by_type(cfg)
@@ -219,7 +248,7 @@ def test_market_listing_shortfall_surplus_after_backup_covers_market(monkeypatch
     cfg = ProductionConfig(home_location_id=1000000000001)
     _no_listings(monkeypatch)
     monkeypatch.setattr(storage, "load_manual_stock", lambda: {1: 12.0})
-    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None: 0.0)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None: 0.0)
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [(1, "Item", 5.0, 5.0, 5.0)])
 
     # 5 to backup, 5 to home, 2 left for jita -> jita still 3 short. Backup
@@ -232,10 +261,10 @@ def test_market_listing_shortfall_zero_when_listings_already_cover_targets(monke
     from eve_trader.production.engine import market_listing_shortfall_by_type
 
     cfg = ProductionConfig(home_location_id=1000000000001)
-    monkeypatch.setattr(storage, "sell_order_qty_at_location", lambda type_id, location_id: 20.0)
+    monkeypatch.setattr(storage, "sell_order_qty_at_location", lambda type_id, location_id, **kwargs: 20.0)
     monkeypatch.setattr(storage, "sell_order_qty_in_region", lambda type_id, region_id: 0.0)
     monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
-    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None: 0.0)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None: 0.0)
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [(1, "Item", 0.0, 20.0, None)])
 
     assert market_listing_shortfall_by_type(cfg) == {}
@@ -2481,7 +2510,7 @@ def _stub_material_demand(monkeypatch, material_id=2, base_qty=10.0):
 def test_logistics_status_nets_needed_against_available_at_assigned_location(monkeypatch):
     monkeypatch.setattr(storage, "load_category_locations", lambda: {"Advanced Components": 1001})
     _stub_material_demand(monkeypatch)
-    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: 3.0)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, **kwargs: 3.0)
 
     rows = engine.logistics_status([_build_job()])
 
@@ -2509,7 +2538,7 @@ def test_logistics_status_pull_from_hint_picks_richest_surplus_when_no_warehouse
     })
     _stub_material_demand(monkeypatch)
 
-    def fake_stock(type_id, location_id):
+    def fake_stock(type_id, location_id, **kwargs):
         return {1001: 3.0, 1002: 20.0, 1003: 5.0}[location_id]
     monkeypatch.setattr(storage, "esi_stock_at_location", fake_stock)
 
@@ -2528,7 +2557,7 @@ def test_logistics_status_prefers_warehouse_over_surplus(monkeypatch):
     })
     _stub_material_demand(monkeypatch)
 
-    def fake_stock(type_id, location_id):
+    def fake_stock(type_id, location_id, **kwargs):
         return {1001: 3.0, 1002: 20.0, 9000: 6.0}[location_id]
     monkeypatch.setattr(storage, "esi_stock_at_location", fake_stock)
 
@@ -2549,7 +2578,7 @@ def test_logistics_status_falls_back_to_surplus_when_warehouse_empty(monkeypatch
     })
     _stub_material_demand(monkeypatch)
 
-    def fake_stock(type_id, location_id):
+    def fake_stock(type_id, location_id, **kwargs):
         return {1001: 3.0, 1002: 20.0, 9000: 0.0}[location_id]
     monkeypatch.setattr(storage, "esi_stock_at_location", fake_stock)
 
@@ -2573,7 +2602,7 @@ def test_logistics_status_pull_from_hint_nets_other_locations_own_demand(monkeyp
     monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [(2, 10.0)])
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
 
-    def fake_stock(type_id, location_id):
+    def fake_stock(type_id, location_id, **kwargs):
         return {1001: 3.0, 1002: 20.0, 1003: 5.0}[location_id]
     monkeypatch.setattr(storage, "esi_stock_at_location", fake_stock)
 
@@ -2592,7 +2621,7 @@ def test_logistics_status_no_pull_from_hint_when_nothing_missing(monkeypatch):
         "Advanced Components": 1001, "Capital Components": 1002,
     })
     _stub_material_demand(monkeypatch)
-    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: 100.0)  # plenty everywhere
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, **kwargs: 100.0)  # plenty everywhere
 
     rows = engine.logistics_status([_build_job()], cfg)
 
@@ -2606,7 +2635,7 @@ def test_distribution_recommendations_moves_from_source_to_shortest_category(mon
     monkeypatch.setattr(storage, "load_category_locations", lambda: {"Advanced Components": 1001})
     _stub_material_demand(monkeypatch)
 
-    def fake_stock(type_id, location_id):
+    def fake_stock(type_id, location_id, **kwargs):
         return {1001: 3.0, 2000: 50.0}[location_id]
     monkeypatch.setattr(storage, "esi_stock_at_location", fake_stock)
 
@@ -2625,7 +2654,7 @@ def test_distribution_recommendations_falls_back_to_home_location(monkeypatch):
     cfg = ProductionConfig(distribution_source_location_id=None, home_location_id=3000)
     monkeypatch.setattr(storage, "load_category_locations", lambda: {"Advanced Components": 1001})
     _stub_material_demand(monkeypatch)
-    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: {1001: 0.0, 3000: 50.0}[location_id])
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, **kwargs: {1001: 0.0, 3000: 50.0}[location_id])
 
     rows = engine.distribution_recommendations([_build_job()], cfg)
 
@@ -2649,7 +2678,7 @@ def test_distribution_recommendations_covers_largest_shortfall_first_when_source
     monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [(2, 10.0)])
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
 
-    def fake_stock(type_id, location_id):
+    def fake_stock(type_id, location_id, **kwargs):
         # Advanced Components short by 8, Capital Components short by 3 - only 5 available at source, not enough for both
         return {1001: 2.0, 1002: 7.0, 2000: 5.0}[location_id]
     monkeypatch.setattr(storage, "esi_stock_at_location", fake_stock)
@@ -2677,7 +2706,7 @@ def test_distribution_recommendations_falls_back_to_surplus_when_warehouse_exhau
     monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [(2, 8.0)])
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
 
-    def fake_stock(type_id, location_id):
+    def fake_stock(type_id, location_id, **kwargs):
         return {1001: 0.0, 1002: 5.0, 1003: 20.0, 2000: 8.0}[location_id]
     monkeypatch.setattr(storage, "esi_stock_at_location", fake_stock)
 
@@ -2710,7 +2739,7 @@ def test_distribution_recommendations_never_double_books_a_surplus_location(monk
     monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [(2, 10.0)])
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
 
-    def fake_stock(type_id, location_id):
+    def fake_stock(type_id, location_id, **kwargs):
         return {1001: 0.0, 1002: 0.0, 1003: 12.0}[location_id]
     monkeypatch.setattr(storage, "esi_stock_at_location", fake_stock)
 
@@ -2731,8 +2760,8 @@ def test_invention_logistics_needs_bpcs_decryptors_and_datacores(monkeypatch):
     monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id: {"datacores": [(300, 2), (301, 2)]})
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)  # real T1 blueprint, not a relic
-    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: 0.0)
-    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id: 0.0)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, **kwargs: 0.0)
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id, **kwargs: 0.0)
 
     rows = engine.invention_logistics([need], cfg)
 
@@ -2764,11 +2793,11 @@ def test_invention_logistics_t1_blueprint_availability_uses_copy_count_not_gener
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)  # real T1 blueprint, not a relic
 
-    def _esi_stock_at_location(type_id, location_id):
+    def _esi_stock_at_location(type_id, location_id, **kwargs):
         assert type_id != 200, "must not call esi_stock_at_location for a T1 blueprint type_id"
         return 0.0
     monkeypatch.setattr(storage, "esi_stock_at_location", _esi_stock_at_location)
-    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id: 4.0)
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id, **kwargs: 4.0)
 
     rows = engine.invention_logistics([need], cfg)
 
@@ -2798,7 +2827,7 @@ def test_invention_logistics_relic_availability_uses_generic_stock_not_copy_coun
     def _available_blueprint_copies(type_id, location_id):
         raise AssertionError("must not call available_blueprint_copies for a Tech III relic type_id")
     monkeypatch.setattr(storage, "available_blueprint_copies", _available_blueprint_copies)
-    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: 4.0)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, **kwargs: 4.0)
 
     rows = engine.invention_logistics([need], cfg)
 
@@ -2819,8 +2848,8 @@ def test_invention_logistics_none_decryptor_does_not_demand_type_zero(monkeypatc
     monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id: {"datacores": []})
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)  # real T1 blueprint, not a relic
-    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: 0.0)
-    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id: 0.0)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, **kwargs: 0.0)
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id, **kwargs: 0.0)
 
     rows = engine.invention_logistics([need], cfg)
 
@@ -2858,8 +2887,8 @@ def test_t1_bpc_invention_needs_reports_missing_copies_and_bpo_presence(monkeypa
                              output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)  # real T1 blueprint, not a relic
-    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id: 4.0)
-    monkeypatch.setattr(storage, "has_bpo_at_location", lambda type_id, location_id: True)
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id, **kwargs: 4.0)
+    monkeypatch.setattr(storage, "has_bpo_at_location", lambda type_id, location_id, **kwargs: True)
 
     rows = engine.t1_bpc_invention_needs([need], cfg)
 
@@ -2887,14 +2916,14 @@ def test_t1_bpc_invention_needs_relic_uses_generic_stock_and_never_shows_a_bpo(m
     def _available_blueprint_copies(type_id, location_id):
         raise AssertionError("must not call available_blueprint_copies for a Tech III relic type_id")
     monkeypatch.setattr(storage, "available_blueprint_copies", _available_blueprint_copies)
-    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: 4.0)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, **kwargs: 4.0)
     # A relic type_id genuinely never has a quantity==-1 row in the
     # blueprint tables (it was never a blueprint) - has_bpo_at_location
     # naturally returns False for it with no special-casing needed, so this
     # is left un-mocked/real here to prove that (storage.connect() isn't
     # reached in this monkeypatched-everything-else test, so a real call
     # would raise "no current tenant set" if this ever stopped being true).
-    monkeypatch.setattr(storage, "has_bpo_at_location", lambda type_id, location_id: False)
+    monkeypatch.setattr(storage, "has_bpo_at_location", lambda type_id, location_id, **kwargs: False)
 
     rows = engine.t1_bpc_invention_needs([need], cfg)
 
@@ -2917,8 +2946,8 @@ def test_t1_bpc_invention_needs_aggregates_across_stock_targets_sharing_a_t1_blu
                                output_runs=1, runs_needed=4, bpcs_needed=4, recommended_invention_runs=10)
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)  # real T1 blueprint, not a relic
-    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id: 0.0)
-    monkeypatch.setattr(storage, "has_bpo_at_location", lambda type_id, location_id: False)
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id, **kwargs: 0.0)
+    monkeypatch.setattr(storage, "has_bpo_at_location", lambda type_id, location_id, **kwargs: False)
 
     rows = engine.t1_bpc_invention_needs([need_a, need_b], cfg)
 
@@ -2937,8 +2966,8 @@ def test_t1_bpc_invention_needs_stockpile_pct_uncapped_above_100(monkeypatch):
                              output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)  # real T1 blueprint, not a relic
-    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id: 18.0)  # 3x needed (6)
-    monkeypatch.setattr(storage, "has_bpo_at_location", lambda type_id, location_id: True)
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id, **kwargs: 18.0)  # 3x needed (6)
+    monkeypatch.setattr(storage, "has_bpo_at_location", lambda type_id, location_id, **kwargs: True)
 
     rows = engine.t1_bpc_invention_needs([need], cfg)
 
