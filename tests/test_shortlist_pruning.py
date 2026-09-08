@@ -10,11 +10,12 @@ NOW = dt.datetime(2026, 7, 15, 12, 0, 0)
 
 
 def _row(item_id: int, item: str, decision: str, profit_per_unit=None, sell_volume=None, active=True,
-         margin=None) -> ShortlistRow:
+         margin=None, avg_daily_volume=None) -> ShortlistRow:
     return ShortlistRow(
         item=item, category="Material", landed_cost=None, net_sell=None, sell_volume=sell_volume,
         own_orders_remaining=0.0, profit_per_unit=profit_per_unit, margin=margin, profit_per_m3=None,
         decision=decision, active=active, item_id=item_id, volume_m3=1.0, jita_sell=None, import_cost=None,
+        avg_daily_volume=avg_daily_volume,
     )
 
 
@@ -101,9 +102,9 @@ def test_skip_deactivation_days_empty_when_no_streaks(monkeypatch):
 
 def test_items_beyond_rank_keeps_top_n_by_daily_profit():
     rows = [
-        _row(1, "Best", "Import", profit_per_unit=100, sell_volume=100),   # 10,000/day
-        _row(2, "Middle", "Import", profit_per_unit=50, sell_volume=100),  # 5,000/day
-        _row(3, "Worst", "Import", profit_per_unit=1, sell_volume=10),     # 10/day
+        _row(1, "Best", "Import", profit_per_unit=100, avg_daily_volume=100),   # 10,000/day
+        _row(2, "Middle", "Import", profit_per_unit=50, avg_daily_volume=100),  # 5,000/day
+        _row(3, "Worst", "Import", profit_per_unit=1, avg_daily_volume=10),     # 10/day
     ]
     assert _items_beyond_rank(rows, max_active_items=2) == [(3, "Worst")]
     assert _items_beyond_rank(rows, max_active_items=3) == []
@@ -111,12 +112,22 @@ def test_items_beyond_rank_keeps_top_n_by_daily_profit():
 
 def test_items_beyond_rank_sorts_missing_data_last():
     rows = [
-        _row(1, "Has Data", "Import", profit_per_unit=10, sell_volume=10),  # 100/day
-        _row(2, "No Sell Volume", "Import", profit_per_unit=10, sell_volume=None),
-        _row(3, "No Profit", "Import", profit_per_unit=None, sell_volume=10),
+        _row(1, "Has Data", "Import", profit_per_unit=10, avg_daily_volume=10),  # 100/day
+        _row(2, "No Avg Daily Volume", "Import", profit_per_unit=10, avg_daily_volume=None),
+        _row(3, "No Profit", "Import", profit_per_unit=None, avg_daily_volume=10),
     ]
     beyond = _items_beyond_rank(rows, max_active_items=1)
     assert {item_id for item_id, _ in beyond} == {2, 3}
+
+
+def test_items_beyond_rank_uses_avg_daily_volume_not_sell_volume():
+    # Same class of inflation as GitHub issue #51: a parked listing with huge
+    # sell_volume (order-book depth) must not outrank a liquid item whose
+    # real market-wide daily turnover is higher. Cap ranking follows Profit /
+    # Day, which uses avg_daily_volume.
+    parked = _row(1, "Parked", "Import", profit_per_unit=10, sell_volume=100_000, avg_daily_volume=1)
+    liquid = _row(2, "Liquid", "Import", profit_per_unit=10, sell_volume=5, avg_daily_volume=500)
+    assert _items_beyond_rank([parked, liquid], max_active_items=1) == [(1, "Parked")]
 
 
 # ------------------------------------------------------------- reactivation (GitHub issue #35)

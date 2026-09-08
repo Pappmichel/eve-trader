@@ -4,7 +4,7 @@ For every candidate not already on the shortlist, pair up daily average
 prices in the Jita region vs. the reference region (Insmother by default) and
 compute, per day:
 
-    landed  = jita_avg_price + volume_m3 * import_cost_per_m3
+    landed  = jita_avg_price * (1 + jita_buy_broker_fee) + volume_m3 * import_cost_per_m3
     netSell = reference_avg_price * haircut
     profit  = netSell - landed
     margin  = profit / landed

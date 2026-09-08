@@ -7,20 +7,25 @@ from eve_trader.production.actions import ActionError
 
 def test_do_create_special_order_validates_and_creates_items(monkeypatch):
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Type{type_id}", 0.01, 1, 1, 0, None))
-    monkeypatch.setattr(storage, "create_special_order", lambda note, net_against_stock: "order-1")
-    upserted = []
-    monkeypatch.setattr(storage, "upsert_special_order_item",
-                         lambda order_id, type_id, type_name, quantity: upserted.append((order_id, type_id, type_name, quantity)))
+    captured = {}
+
+    def _create(note, net_against_stock, items):
+        captured["args"] = (note, net_against_stock, items)
+        return "order-1"
+    monkeypatch.setattr(storage, "create_special_order_with_items", _create)
 
     result = actions.do_create_special_order(
         [{"type_id": 12058, "quantity": 6000.0}, {"type_id": 638, "quantity": 10.0}],
         note="Customer X", net_against_stock=True,
     )
 
-    assert result == {"order_id": "order-1"}
-    assert upserted == [
-        ("order-1", 12058, "Type12058", 6000.0),
-        ("order-1", 638, "Type638", 10.0),
+    assert result["order_id"] == "order-1"
+    assert result["item_count"] == 2
+    assert captured["args"][0] == "Customer X"
+    assert captured["args"][1] is True
+    assert captured["args"][2] == [
+        (12058, "Type12058", 6000.0),
+        (638, "Type638", 10.0),
     ]
 
 
@@ -31,7 +36,7 @@ def test_do_create_special_order_rejects_empty_item_list():
 
 def test_do_create_special_order_rejects_non_positive_quantity(monkeypatch):
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Tritanium", 0.01, 1, 1, 0, None))
-    monkeypatch.setattr(storage, "create_special_order", lambda *a: pytest.fail("must not reach storage"))
+    monkeypatch.setattr(storage, "create_special_order_with_items", lambda *a: pytest.fail("must not reach storage"))
 
     with pytest.raises(ActionError, match="must be positive"):
         actions.do_create_special_order([{"type_id": 34, "quantity": 0}])
@@ -39,7 +44,7 @@ def test_do_create_special_order_rejects_non_positive_quantity(monkeypatch):
 
 def test_do_create_special_order_rejects_unknown_type_id(monkeypatch):
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: None)
-    monkeypatch.setattr(storage, "create_special_order", lambda *a: pytest.fail("must not reach storage"))
+    monkeypatch.setattr(storage, "create_special_order_with_items", lambda *a: pytest.fail("must not reach storage"))
 
     with pytest.raises(ActionError, match="Unknown type_id"):
         actions.do_create_special_order([{"type_id": 999999999, "quantity": 1.0}])

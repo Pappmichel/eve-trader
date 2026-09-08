@@ -275,22 +275,33 @@ export const productionApi = {
     ),
   refreshAssetPlan: () => post<{ jobs: number }>('/api/production/asset-plan/refresh'),
 
-  specialOrders: () => get<T.SpecialOrder[]>('/api/production/special-orders'),
-  createSpecialOrder: (req: { items: { type_id: number; quantity: number }[]; note?: string | null; net_against_stock?: boolean }) =>
-    post<{ order_id: string }>('/api/production/special-orders', req),
+  specialOrders: (status?: 'open' | 'done') =>
+    get<T.SpecialOrder[]>(`/api/production/special-orders${status ? `?status=${status}` : ''}`),
+  createSpecialOrder: (req: { items: { type_id?: number; name?: string; quantity: number }[]; note?: string | null; net_against_stock?: boolean }) =>
+    post<{ order_id: string; item_count: number }>('/api/production/special-orders', req),
   getSpecialOrder: (orderId: string) => get<T.SpecialOrderDetail>(`/api/production/special-orders/${orderId}`),
   updateSpecialOrder: (orderId: string, updates: { status?: string | null; note?: string | null; net_against_stock?: boolean | null }) =>
     patch<T.SpecialOrderDetail>(`/api/production/special-orders/${orderId}`, updates),
   removeSpecialOrder: (orderId: string) => del(`/api/production/special-orders/${orderId}`),
-  setSpecialOrderItem: (orderId: string, typeId: number, quantity: number) =>
-    put<T.SpecialOrderDetail>(`/api/production/special-orders/${orderId}/items`, { type_id: typeId, quantity }),
-  removeSpecialOrderItem: (orderId: string, typeId: number) =>
-    del<T.SpecialOrderDetail>(`/api/production/special-orders/${orderId}/items/${typeId}`),
+  setSpecialOrderItem: (orderId: string, typeId: number, quantity: number, recompute = false) =>
+    put<T.SpecialOrderDetail | T.SpecialOrderPreviewResult>(
+      `/api/production/special-orders/${orderId}/items${recompute ? '?recompute=true' : ''}`,
+      { type_id: typeId, quantity },
+    ),
+  removeSpecialOrderItem: (orderId: string, typeId: number, recompute = false) =>
+    del<T.SpecialOrderDetail | T.SpecialOrderPreviewResult>(
+      `/api/production/special-orders/${orderId}/items/${typeId}${recompute ? '?recompute=true' : ''}`,
+    ),
   computeSpecialOrder: (orderId: string) =>
     post<T.SpecialOrderComputeResult>(`/api/production/special-orders/${orderId}/compute`),
   computeCombinedSpecialOrders: (orderIds: string[], netAgainstStock: boolean) =>
     post<T.SpecialOrderComputeResult>('/api/production/special-orders/combine/compute',
       { order_ids: orderIds, net_against_stock: netAgainstStock }),
+  auditSpecialOrders: () => get<{ ok: boolean; issues: T.SpecialOrderAuditIssue[] }>('/api/production/special-orders/audit'),
+  specialOrderEvents: (orderId?: string) =>
+    get<{ rows: T.SpecialOrderEventRow[] }>(
+      orderId ? `/api/production/special-orders/${orderId}/events` : '/api/production/special-orders/events',
+    ),
 }
 
 // ------------------------------------------------------------- portfolio
