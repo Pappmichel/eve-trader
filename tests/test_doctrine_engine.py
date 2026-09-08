@@ -266,7 +266,7 @@ def test_shopping_list_rows_picks_cheapest_of_build_cj_jita(monkeypatch):
     monkeypatch.setattr(engine, "aggregate_stockpile_rows", lambda rows: [agg_row])
 
     class _FakePlanContext:
-        def __init__(self, cfg):
+        def __init__(self, cfg, extra_type_ids=()):
             self.home = {MODULE: CurrentPrice(type_id=MODULE, updated="2026-01-01", buy=90.0, sell=100.0)}
             self.jita = {MODULE: CurrentPrice(type_id=MODULE, updated="2026-01-01", buy=45.0, sell=50.0)}
             self.cost_indices = {}
@@ -308,7 +308,7 @@ def test_shopping_list_rows_recommends_none_when_no_price_data(monkeypatch):
     monkeypatch.setattr(engine, "aggregate_stockpile_rows", lambda rows: [agg_row])
 
     class _FakePlanContext:
-        def __init__(self, cfg):
+        def __init__(self, cfg, extra_type_ids=()):
             self.home, self.jita, self.cost_indices, self.adjusted_prices, self.selected_decryptors = {}, {}, {}, {}, {}
     monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
     monkeypatch.setattr(engine, "unit_cost_detail", lambda *a, **k: (None, None, None))
@@ -331,7 +331,7 @@ def test_shopping_list_rows_suppresses_jita_price_with_no_live_orders(monkeypatc
     monkeypatch.setattr(engine, "aggregate_stockpile_rows", lambda rows: [agg_row])
 
     class _FakePlanContext:
-        def __init__(self, cfg):
+        def __init__(self, cfg, extra_type_ids=()):
             self.home = {}
             self.jita = {MODULE: CurrentPrice(type_id=MODULE, updated="2026-01-01", buy=45.0, sell=50.0)}
             self.cost_indices, self.adjusted_prices, self.selected_decryptors = {}, {}, {}

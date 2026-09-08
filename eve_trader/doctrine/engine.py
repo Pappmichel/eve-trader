@@ -327,7 +327,15 @@ def shopping_list_rows(doctrine_id: Optional[str] = None, cfg: DoctrineConfig = 
     if not aggregated:
         return []
 
-    ctx = _PlanContext(PRODUCTION_CONFIG)
+    # extra_type_ids: _PlanContext's own priced universe is otherwise scoped
+    # to Production's stock_targets material closure (see its docstring) -
+    # without this, any shortfall item that isn't already a Production stock
+    # target (most doctrine ammo/charges) never gets a Goonmetrics quote
+    # fetched at all, showing "-" for C-J/Jita even when a real price exists.
+    # Same mechanism plan_special_order already relies on for its own
+    # never-a-stock-target line items.
+    type_ids = [row.type_id for row in aggregated]
+    ctx = _PlanContext(PRODUCTION_CONFIG, extra_type_ids=type_ids)
     cost_memo: dict[int, Optional[float]] = {}
     t2_memo: dict[int, tuple[float, float, Optional[str]]] = {}
 
@@ -343,7 +351,6 @@ def shopping_list_rows(doctrine_id: Optional[str] = None, cfg: DoctrineConfig = 
     # effort, degrades to trusting Goonmetrics for whichever leg it can't
     # verify rather than failing the whole page.
     esi = ESIClient()
-    type_ids = [row.type_id for row in aggregated]
     try:
         jita_stats = esi.region_order_stats_bulk(TRADING_CONFIG.jita_region_id, type_ids)
     except Exception:  # noqa: BLE001 - best-effort; falls back to trusting Goonmetrics for every row
