@@ -74,8 +74,11 @@ _PER_TENANT_TABLES: list[tuple[str, tuple[str, ...] | None]] = [
     ("structure_names", ("tenant_id", "location_id")),
     ("category_location_options", ("tenant_id", "category", "location_id")),
     # column-only bucket - PK already globally unique per ESI, unchanged
-    ("character_assets", ("item_id",)),
-    ("corp_assets", ("item_id",)),
+    # (character_assets/corp_assets are the one exception: PK widened
+    # 2026-09-08 to (item_id, owner_name) - item_id alone turned out not to
+    # be globally unique after all, see phase1_schema.sql's own comment)
+    ("character_assets", ("item_id", "owner_name")),
+    ("corp_assets", ("item_id", "owner_name")),
     ("character_industry_jobs", ("job_id",)),
     ("corp_industry_jobs", ("job_id",)),
     ("character_slots", ("character_name",)),

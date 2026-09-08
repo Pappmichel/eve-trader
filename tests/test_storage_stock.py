@@ -197,6 +197,50 @@ def test_assets_at_flag_owner_name_does_not_match_other_table_owners(tenant):
     assert dict(storage.assets_at_flag("CorpSAG1", tables=("character_assets",), owner_name="Alice")) == {TYPE_ID: 3}
 
 
+def test_replace_assets_allows_colliding_item_id_across_different_owners(tenant):
+    # Confirmed live (2026-09-08): CCP's item_id for a non-singleton
+    # (stackable) asset is NOT guaranteed globally unique across different
+    # owners at the same location - two real characters both had a "Hangar"
+    # stack of Tritanium at C-J sharing one item_id, crashing sync_esi with
+    # a UniqueViolation on the old item_id-only PK. character_assets'/
+    # corp_assets' PK is now (item_id, owner_name) - this must not raise.
+    storage.replace_assets("character_assets", [
+        (1, TYPE_ID, LOCATION_ID, "Hangar", 230000, 0, "pappmichl"),
+        (1, TYPE_ID, LOCATION_ID, "Hangar", 368000, 0, "pappmichl5"),
+    ])
+
+    assert dict(storage.assets_at_flag(
+        "Hangar", tables=("character_assets",), owner_name="pappmichl",
+    )) == {TYPE_ID: 230000}
+    assert dict(storage.assets_at_flag(
+        "Hangar", tables=("character_assets",), owner_name="pappmichl5",
+    )) == {TYPE_ID: 368000}
+    assert storage.esi_stock_at_location(TYPE_ID, LOCATION_ID) == 598000
+
+
+def test_container_resolution_does_not_cross_owners_on_colliding_item_id(tenant):
+    # Same collision as above, but item_id 1 is also used as a *container*
+    # id by one owner (an Office/ship/station-container row whose own
+    # item_id another row's location_id points back to) - _resolve_locations/
+    # _resolve_hangar_flags key their parent-of lookups on (item_id,
+    # owner_name), so pilot B's colliding item_id 1 must not be mistaken for
+    # pilot A's own container.
+    storage.replace_assets("character_assets", [
+        (1, 649, LOCATION_ID, "Hangar", 1, 0, "pappmichl"),           # A's container, sits directly in Hangar
+        (2, TYPE_ID, 1, "Unlocked", 100, 0, "pappmichl"),             # A's item, nested inside it
+        (1, TYPE_ID, LOCATION_ID, "Hangar", 368000, 0, "pappmichl5"),  # B's own, unrelated stack - colliding item_id
+    ])
+
+    # A's nested Tritanium must resolve up through A's own container to
+    # LOCATION_ID, not get redirected by B's colliding item_id 1.
+    assert dict(storage.assets_at_flag("Hangar", tables=("character_assets",), owner_name="pappmichl")) == {
+        649: 1, TYPE_ID: 100,
+    }
+    assert dict(storage.assets_at_flag("Hangar", tables=("character_assets",), owner_name="pappmichl5")) == {
+        TYPE_ID: 368000,
+    }
+
+
 def test_assets_at_flag_location_id_filters_to_that_station(tenant):
     other_location_id = 1000000000002
     storage.replace_assets("character_assets", [
