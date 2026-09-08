@@ -69,6 +69,42 @@ def test_match_and_validate_contract_no_hull_match_when_no_candidate_hull_presen
     assert status == engine.NO_HULL_MATCH
 
 
+def test_stockpile_rows_for_doctrine_excludes_intake_at_production_home(monkeypatch):
+    """Doctrine Ist must not count stacks sitting in a Sorting intake
+    source at C-J (ProductionConfig.home_location_id) - same exclusion
+    Production's _current_stock uses."""
+    from eve_trader.production.config import PRODUCTION_CONFIG
+
+    captured = {}
+
+    def fake_esi(type_id, location_id, tables=(), allowed_flags=None, exclude_intake_at_location_id=None):
+        captured["exclude"] = exclude_intake_at_location_id
+        captured["tables"] = tables
+        return 0.0
+
+    monkeypatch.setattr(storage, "esi_stock_at_location", fake_esi)
+    monkeypatch.setattr(storage, "has_any_doctrine_synced_assets", lambda: True)
+    monkeypatch.setattr(storage, "list_doctrines", lambda: [("d1", "Doctrine 1")])
+    monkeypatch.setattr(storage, "list_doctrine_contracts", lambda fitting_id=None: [])
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Module", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "get_type_slot", lambda type_id: "low")
+
+    fitting = Fitting(fitting_id="f1", doctrine_id="d1", name="Fit 1", hull_type_id=HULL_A,
+                       raw_eft="", contract_target=0, stockpile_target=1)
+    items = [FittingItem("f1", 1, "low", MODULE, 1)]
+    from eve_trader.doctrine.validation import build_contract_soll
+    exact, consume = build_contract_soll(items)
+    cand = engine._Candidate(fitting=fitting, exact_soll=exact, consume_soll=consume, items=items)
+    monkeypatch.setattr(engine, "load_match_candidates", lambda: [cand])
+
+    rows, assets_available = engine.stockpile_rows_for_doctrine(cfg=DoctrineConfig())
+
+    assert assets_available is True
+    assert captured["exclude"] == PRODUCTION_CONFIG.home_location_id
+    assert captured["tables"] == ("doctrine_character_assets", "doctrine_corp_assets")
+    assert any(r.type_id == MODULE and r.shortfall > 0 for r in rows)
+
+
 def test_match_and_validate_contract_unmatched_when_hull_present_but_below_threshold():
     # Hull IS present (a real near-miss - wrong/missing modules) - distinct
     # from NO_HULL_MATCH, must still be a genuine "unmatched" (kept visible).

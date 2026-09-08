@@ -986,9 +986,15 @@ def _current_stock(type_id: int, manual_stock: dict[int, float], cfg: Production
     already exists exactly for this (its own docstring: "None = all
     locations"), and already excludes NON_STOCK_LOCATION_FLAGS (AssetSafety/
     Deliveries/CorpMarket/...) regardless of location, so this doesn't trade
-    away that filtering to get the wider scope."""
+    away that filtering to get the wider scope.
+
+    Also excludes stacks sitting in a configured Sorting intake source at
+    cfg.home_location_id (C-J) - that hangar is unsortiertes staging, not
+    Production Ist. The same owner+flag at any other location still counts."""
     total = manual_stock.get(type_id, 0)
-    total += storage.esi_stock_at_location(type_id, None, allowed_flags=cfg.stock_hangar_flags)
+    total += storage.esi_stock_at_location(
+        type_id, None, allowed_flags=cfg.stock_hangar_flags,
+        exclude_intake_at_location_id=cfg.home_location_id)
     incoming = storage.esi_incoming_industry_qty(type_id)
     if incoming["runs"] and bp is not None:
         _, _, product_qty = bp
@@ -1019,7 +1025,8 @@ def _stock_on_hand(type_id: int, manual_stock: dict[int, float], cfg: Production
     plan_asset_optimized's Phase B for the split ledger this requires
     (stock_used vs. stock_used_on_hand)."""
     return manual_stock.get(type_id, 0) + storage.esi_stock_at_location(
-        type_id, None, allowed_flags=cfg.stock_hangar_flags)
+        type_id, None, allowed_flags=cfg.stock_hangar_flags,
+        exclude_intake_at_location_id=cfg.home_location_id)
 
 
 def _total_missing(type_id: int, backup_stock: float, home_market_stock: Optional[float],
@@ -2528,7 +2535,8 @@ def logistics_status(build_list: list[BuildJobEntry], cfg: ProductionConfig = PR
     rows = []
     for (category, material_id), needed in demand.items():
         location_id = category_locations[category]
-        available = storage.esi_stock_at_location(material_id, location_id)
+        available = storage.esi_stock_at_location(
+            material_id, location_id, exclude_intake_at_location_id=cfg.home_location_id)
         missing = max(0.0, needed - available)
         sde_type = storage.get_sde_type(material_id)
         name = sde_type[2] if sde_type else str(material_id)
@@ -2537,7 +2545,9 @@ def logistics_status(build_list: list[BuildJobEntry], cfg: ProductionConfig = PR
         pull_from_available = None
         if missing > 0:
             if warehouse_location_id is not None and warehouse_location_id != location_id:
-                warehouse_stock = storage.esi_stock_at_location(material_id, warehouse_location_id)
+                warehouse_stock = storage.esi_stock_at_location(
+                    material_id, warehouse_location_id,
+                    exclude_intake_at_location_id=cfg.home_location_id)
                 if warehouse_stock > 0:
                     pull_from_location_id, pull_from_available = warehouse_location_id, warehouse_stock
             if pull_from_location_id is None:
@@ -2546,7 +2556,9 @@ def logistics_status(build_list: list[BuildJobEntry], cfg: ProductionConfig = PR
                         continue
                     other_category = next(c for c, loc in category_locations.items() if loc == other_location_id)
                     other_demand = demand.get((other_category, material_id), 0.0)
-                    stock = storage.esi_stock_at_location(material_id, other_location_id)
+                    stock = storage.esi_stock_at_location(
+                        material_id, other_location_id,
+                        exclude_intake_at_location_id=cfg.home_location_id)
                     surplus = max(0.0, stock - other_demand)
                     if surplus > 0 and (pull_from_available is None or surplus > pull_from_available):
                         pull_from_location_id, pull_from_available = other_location_id, surplus
@@ -2596,14 +2608,16 @@ def distribution_recommendations(build_list: list[BuildJobEntry],
         location_id = category_locations[category]
         if location_id == source_location_id:
             continue  # already sourced locally, nothing to move
-        available = storage.esi_stock_at_location(material_id, location_id)
+        available = storage.esi_stock_at_location(
+            material_id, location_id, exclude_intake_at_location_id=cfg.home_location_id)
         missing = max(0.0, needed - available)
         if missing > 0:
             shortfalls_by_material.setdefault(material_id, []).append((category, missing))
 
     rows = []
     for material_id, shortfalls in shortfalls_by_material.items():
-        remaining_from_warehouse = storage.esi_stock_at_location(material_id, source_location_id)
+        remaining_from_warehouse = storage.esi_stock_at_location(
+            material_id, source_location_id, exclude_intake_at_location_id=cfg.home_location_id)
         sde_type = storage.get_sde_type(material_id)
         name = sde_type[2] if sde_type else str(material_id)
 
@@ -2634,7 +2648,9 @@ def distribution_recommendations(build_list: list[BuildJobEntry],
                     continue
                 if other_location_id not in surplus_remaining:
                     other_demand = demand.get((other_category, material_id), 0.0)
-                    other_stock = storage.esi_stock_at_location(material_id, other_location_id)
+                    other_stock = storage.esi_stock_at_location(
+                        material_id, other_location_id,
+                        exclude_intake_at_location_id=cfg.home_location_id)
                     surplus_remaining[other_location_id] = max(0.0, other_stock - other_demand)
                 candidate_ids.append(other_location_id)
             for loc_id in sorted(candidate_ids, key=lambda l: -surplus_remaining[l]):
@@ -2738,7 +2754,9 @@ def invention_logistics(invention_list: list[InventionNeedRow],
         if is_real_blueprint:
             available = storage.available_blueprint_copies(type_id, cfg.invention_location_id)
         else:
-            available = storage.esi_stock_at_location(type_id, cfg.invention_location_id)
+            available = storage.esi_stock_at_location(
+                type_id, cfg.invention_location_id,
+                exclude_intake_at_location_id=cfg.home_location_id)
         sde_type = storage.get_sde_type(type_id)
         name = sde_type[2] if sde_type else str(type_id)
         rows.append(LogisticsRow(
@@ -2785,7 +2803,9 @@ def t1_bpc_invention_needs(invention_list: list[InventionNeedRow],
     for type_id, needed in needed_by_t1.items():
         is_relic = storage.get_type_category(type_id) == ANCIENT_RELIC_CATEGORY_ID
         available = int(
-            storage.esi_stock_at_location(type_id, cfg.invention_location_id) if is_relic
+            storage.esi_stock_at_location(
+                type_id, cfg.invention_location_id,
+                exclude_intake_at_location_id=cfg.home_location_id) if is_relic
             else storage.available_blueprint_copies(type_id, cfg.invention_location_id)
         )
         sde_type = storage.get_sde_type(type_id)

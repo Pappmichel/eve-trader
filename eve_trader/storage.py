@@ -1651,7 +1651,8 @@ NON_STOCK_LOCATION_FLAGS = ("AssetSafety", "Deliveries", "CorpDeliveries", "Corp
 
 def esi_stock_at_location(type_id: int, location_id: Optional[int],
                            tables: tuple[str, str] = ("character_assets", "corp_assets"),
-                           allowed_flags: Optional[tuple[str, ...]] = None) -> float:
+                           allowed_flags: Optional[tuple[str, ...]] = None,
+                           exclude_intake_at_location_id: Optional[int] = None) -> float:
     """Sums character + corp asset quantities for `type_id`, optionally filtered
     to `location_id` (None = all locations - useful when the home structure's
     numeric ID isn't configured). Excludes NON_STOCK_LOCATION_FLAGS (see above).
@@ -1677,6 +1678,16 @@ def esi_stock_at_location(type_id: int, location_id: Optional[int],
     non-NON_STOCK_LOCATION_FLAGS flag counts, regardless of which division
     it's in.
 
+    `exclude_intake_at_location_id`: when set, stacks whose (owner_name,
+    resolved_hangar_flag) pair is a configured sorting_intake_sources row
+    *and* whose resolved_location_id is this structure are not counted.
+    Callers pass ProductionConfig.home_location_id (C-J) so Wareneingang
+    staging isn't treated as already-available Production/Doctrine stock.
+    Location-scoped on purpose: the same owner+flag name at another station
+    (a Jita Hangar, a second office) is real independent stock and must
+    still count. None (the default) is opt-in, same convention as
+    allowed_flags - this helper stays config-agnostic.
+
     Filters on resolved_location_id (GitHub issue #4/#20), not the raw
     location_id column - replace_assets computes that once at sync time by
     walking each item up through however many nested containers (a corp's
@@ -1697,19 +1708,34 @@ def esi_stock_at_location(type_id: int, location_id: Optional[int],
     with connect() as conn:
         total = 0.0
         for table in tables:
+            exclude_clause = ""
+            exclude_params: tuple = ()
+            if exclude_intake_at_location_id is not None:
+                exclude_clause = (
+                    " AND NOT ("
+                    "resolved_location_id = ? "
+                    "AND EXISTS ("
+                    "SELECT 1 FROM sorting_intake_sources s "
+                    f"WHERE s.owner_name = {table}.owner_name "
+                    f"AND s.hangar_flag = {table}.resolved_hangar_flag"
+                    ")"
+                    ")"
+                )
+                exclude_params = (exclude_intake_at_location_id,)
             if location_id is None:
                 row = conn.execute(
                     f"SELECT COALESCE(SUM(quantity), 0) FROM {table} "
                     f"WHERE type_id = ? AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))"
-                    f"{allowed_clause}",
-                    (type_id, *NON_STOCK_LOCATION_FLAGS, *allowed_params),
+                    f"{allowed_clause}{exclude_clause}",
+                    (type_id, *NON_STOCK_LOCATION_FLAGS, *allowed_params, *exclude_params),
                 ).fetchone()
                 total += row[0]
                 continue
             row = conn.execute(
                 f"SELECT COALESCE(SUM(quantity), 0) FROM {table} WHERE type_id = ? AND resolved_location_id = ? "
-                f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders})){allowed_clause}",
-                (type_id, location_id, *NON_STOCK_LOCATION_FLAGS, *allowed_params),
+                f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))"
+                f"{allowed_clause}{exclude_clause}",
+                (type_id, location_id, *NON_STOCK_LOCATION_FLAGS, *allowed_params, *exclude_params),
             ).fetchone()
             total += row[0]
     return total
