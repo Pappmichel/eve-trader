@@ -8,12 +8,13 @@ or Goonmetrics - safe to run anywhere, no network/auth required.
 """
 from fastapi.testclient import TestClient
 
-from eve_trader import actions, cross_tool, storage
+from eve_trader import actions, storage
 from eve_trader.actions import ActionError
 from eve_trader.api.app import create_app
 from eve_trader.models import ShortlistItem
 from eve_trader.production import actions as production_actions
 from eve_trader.production.models import AssetLocationRow, ShipMarginRow
+from eve_trader.sorting import actions as sorting_actions
 
 client = TestClient(create_app())
 
@@ -981,23 +982,71 @@ def test_auth_callback_network_failure_redirects_with_error_instead_of_500(monke
     assert "auth=error" in resp.headers["location"]
 
 
-# ---------------------------------------------------------------- cross_tool
+# ---------------------------------------------------------------- sorting
 def test_get_sorting_list_serializes_action_result(monkeypatch):
-    monkeypatch.setattr(cross_tool, "do_sorting_list", lambda: {"rows": [
+    monkeypatch.setattr(sorting_actions, "do_sorting_list", lambda: {"rows": [
         {"type_id": 34, "type_name": "Tritanium", "intake_qty": 500.0,
-         "wanted_by_tool": [{"tool": "production", "wanted_qty": 100.0}], "unclaimed": False},
+         "by_source": [{"source_label": "Alice (Hangar)", "qty": 500.0}],
+         "wanted_by_tool": [{"tool": "markt", "wanted_qty": 100.0}], "unclaimed": False},
     ]})
-    resp = client.get("/api/cross-tool/sorting-list")
+    resp = client.get("/api/sorting/sorting-list")
     assert resp.status_code == 200
     assert resp.json() == {"rows": [
         {"type_id": 34, "type_name": "Tritanium", "intake_qty": 500.0,
-         "wanted_by_tool": [{"tool": "production", "wanted_qty": 100.0}], "unclaimed": False},
+         "by_source": [{"source_label": "Alice (Hangar)", "qty": 500.0}],
+         "wanted_by_tool": [{"tool": "markt", "wanted_qty": 100.0}], "unclaimed": False},
     ]}
 
 
 def test_get_sorting_list_action_error_maps_to_400(monkeypatch):
     def _raise():
         raise ActionError("boom")
-    monkeypatch.setattr(cross_tool, "do_sorting_list", _raise)
-    resp = client.get("/api/cross-tool/sorting-list")
+    monkeypatch.setattr(sorting_actions, "do_sorting_list", _raise)
+    resp = client.get("/api/sorting/sorting-list")
     assert resp.status_code == 400
+
+
+def test_list_intake_sources_serializes_action_result(monkeypatch):
+    monkeypatch.setattr(sorting_actions, "do_list_intake_sources", lambda: {"sources": [
+        {"id": 1, "source_kind": "character", "character_name": "Alice",
+         "hangar_flag": "Hangar", "label": None},
+    ]})
+    resp = client.get("/api/sorting/intake-sources")
+    assert resp.status_code == 200
+    assert resp.json()["sources"][0]["character_name"] == "Alice"
+
+
+def test_add_intake_source_passes_body_to_action(monkeypatch):
+    captured = {}
+
+    def _add(**kwargs):
+        captured.update(kwargs)
+        return {"id": 7, "source_kind": kwargs["source_kind"], "character_name": kwargs["character_name"],
+                "hangar_flag": kwargs["hangar_flag"], "label": kwargs["label"]}
+    monkeypatch.setattr(sorting_actions, "do_add_intake_source", _add)
+    resp = client.post("/api/sorting/intake-sources", json={
+        "source_kind": "character", "hangar_flag": "Hangar", "character_name": "Alice",
+    })
+    assert resp.status_code == 200
+    assert captured["source_kind"] == "character"
+    assert captured["character_name"] == "Alice"
+    assert resp.json()["id"] == 7
+
+
+def test_delete_intake_source_passes_id(monkeypatch):
+    captured = {}
+
+    def _remove(source_id):
+        captured["source_id"] = source_id
+        return {"removed": source_id}
+    monkeypatch.setattr(sorting_actions, "do_remove_intake_source", _remove)
+    resp = client.delete("/api/sorting/intake-sources/12")
+    assert resp.status_code == 200
+    assert captured["source_id"] == 12
+
+
+def test_available_characters_serializes_action_result(monkeypatch):
+    monkeypatch.setattr(sorting_actions, "do_list_available_characters", lambda: {"characters": ["Alice", "Bob"]})
+    resp = client.get("/api/sorting/available-characters")
+    assert resp.status_code == 200
+    assert resp.json() == {"characters": ["Alice", "Bob"]}

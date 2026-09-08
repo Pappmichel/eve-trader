@@ -40,7 +40,7 @@ export PGPASSWORD=devpassword
 APP_DSN="host=localhost port=5432 user=postgres dbname=eve_trader_dev"
 for f in phase1_schema phase2_schema phase3_schema admin_schema doctrine_schema \
          observability_schema refining_schema role_consent_schema \
-         special_orders_schema station_trading_schema; do
+         special_orders_schema station_trading_schema sorting_schema; do
   psql "$APP_DSN" -v ON_ERROR_STOP=1 -q -f "docs/$f.sql" >/dev/null
 done
 

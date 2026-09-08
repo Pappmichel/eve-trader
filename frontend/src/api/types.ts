@@ -171,7 +171,6 @@ export interface TradingSettings {
   reference_region_id: number
   structure_id: number | null
   structure_market_slug: string | null
-  intake_hangar_flag: string
   buyer_character_name: string | null
   seller_character_name: string | null
 }
@@ -947,20 +946,38 @@ export interface SkillSummary {
   error: string | null
 }
 
-// ---------------------------------------------------------------- cross-tool
+// ---------------------------------------------------------------- sorting
 export interface ToolDemandRow {
   tool: string
   wanted_qty: number
+}
+
+export interface SortingSourceQty {
+  source_label: string
+  qty: number
 }
 
 export interface SortingRow {
   type_id: number
   type_name: string
   intake_qty: number
+  by_source: SortingSourceQty[]
   wanted_by_tool: ToolDemandRow[]
   unclaimed: boolean
 }
 
 export interface SortingList {
   rows: SortingRow[]
+}
+
+export interface SortingIntakeSource {
+  id: number
+  source_kind: string
+  character_name: string | null
+  hangar_flag: string
+  label: string | null
+}
+
+export interface SortingIntakeSourceList {
+  sources: SortingIntakeSource[]
 }

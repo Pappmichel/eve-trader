@@ -270,35 +270,6 @@ def apply_config_overrides(cfg: Any, overrides: dict[str, Any]) -> None:
             setattr(cfg, key, value)
 
 
-# Valid options for TradingConfig.intake_hangar_flag - the same real ESI
-# hangar-division flags as production/constants.py's HANGAR_DIVISION_FLAGS,
-# plus "Deliveries" (a legitimate Wareneingang location even though it's not
-# a legitimate *stock_hangar_flags* one - see that module's own
-# INTAKE_HANGAR_FLAGS docstring for why). Duplicated here rather than
-# imported: config.py is the shared base module imported *by*
-# production/config.py, so reaching back into production/constants.py from
-# here would be a layering violation (see CLAUDE.md's Config section) - keep
-# this in sync with production/constants.py's HANGAR_DIVISION_FLAGS/
-# INTAKE_HANGAR_FLAGS if either ever changes.
-_INTAKE_HANGAR_FLAGS = (
-    "Hangar",
-    "CorpSAG1", "CorpSAG2", "CorpSAG3", "CorpSAG4", "CorpSAG5", "CorpSAG6", "CorpSAG7",
-    "Deliveries",
-)
-
-
-def validate_trading_overrides(overrides: dict) -> None:
-    """Beyond the generic type checks (validate_config_overrides): enum-check
-    for intake_hangar_flag - same pattern as production/config.py's
-    validate_production_overrides/doctrine/config.py's
-    validate_doctrine_overrides. Empty string (the field's default, "not set
-    yet") is always allowed - see intake_hangar_flag's own docstring."""
-    flag = overrides.get("intake_hangar_flag")
-    if flag and flag not in _INTAKE_HANGAR_FLAGS:
-        raise ConfigError(f"intake_hangar_flag: {flag!r} is not a known hangar division. "
-                           f"Options: {', '.join(_INTAKE_HANGAR_FLAGS)} (or '' to disable)")
-
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 DATA_DIR = PROJECT_ROOT / "data"
@@ -340,19 +311,6 @@ class TradingConfig:
     # otherwise, worse than a hard failure. Left unset, every one of those
     # three actions keeps today's exact behavior (hard ActionError).
     structure_market_slug: Optional[str] = None
-    # The location_flag (see production/constants.py HANGAR_DIVISION_FLAGS)
-    # of the shared corp Wareneingang division every Jita import for every
-    # tool (Trading, Production, Doctrine, Ore & Minerals) physically lands
-    # in first - EVE has no API to move an item between hangar divisions, so
-    # a human still has to sort it into each tool's own division by hand
-    # (see cross_tool.do_sorting_list, Portfolio's Sorting panel). A single
-    # global/Default-tenant field, not per-tool, since it names one real
-    # physical place in the game, the same one regardless of which tool's
-    # Settings page you're looking at. Empty string (the default) = feature
-    # off - do_sorting_list returns an empty list rather than erroring, so
-    # an operator who hasn't set up hangar sorting at all sees an empty,
-    # harmless panel instead of a crash.
-    intake_hangar_flag: str = ""
 
     # -- Economics --
     import_cost_per_m3: float = 900.0        # ISK freight cost per m3 to move goods to the structure

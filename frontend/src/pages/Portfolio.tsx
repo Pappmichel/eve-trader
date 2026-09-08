@@ -1,78 +1,13 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Container, Title, Text, SimpleGrid, Card, Group, Stack, Button, Loader, Center, Badge, Table } from '@mantine/core'
+import { Container, Title, Text, SimpleGrid, Card, Group, Stack, Button, Loader, Center, Badge } from '@mantine/core'
 import { IconArrowLeft } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 
-import { portfolioApi, crossToolApi } from '../api/client'
+import { portfolioApi } from '../api/client'
 import { HintCard } from '../components/HintCard'
 import { useAction } from '../hooks/useAction'
 import { isk, qty, pct, dateTime } from '../format'
 import type { SchedulerJobStatus } from '../api/types'
-
-const TOOL_LABELS: Record<string, string> = {
-  trading: 'Trading', production: 'Production', doctrine: 'Doctrine', ore_minerals: 'Ore & Minerals',
-}
-
-function SortingPanel() {
-  const { data, isLoading } = useQuery({ queryKey: ['cross-tool', 'sorting-list'], queryFn: crossToolApi.sortingList })
-
-  return (
-    <Card withBorder padding="lg" radius="md">
-      <Title order={6} c="dimmed" tt="uppercase" mb="xs">Sorting (Wareneingang)</Title>
-      <Text size="xs" c="dimmed" mb="sm">
-        Jita imports for every tool land in one shared corp hangar division first - EVE has no API to move an item
-        between divisions, so sorting it into each tool's own division is still manual. This lists what's currently
-        sitting in that shared intake and how much each tool still wants of it (set the intake division on Trading
-        Settings to enable this).
-      </Text>
-      {isLoading && <Center h={80}><Loader color="accent" size="sm" /></Center>}
-      {data && data.rows.length === 0 && (
-        <Text size="sm" c="dimmed">
-          Nothing to sort right now - either the shared intake hangar division isn't set (Trading Settings), or
-          it's currently empty.
-        </Text>
-      )}
-      {data && data.rows.length > 0 && (
-        <Table striped highlightOnHover>
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th>Item</Table.Th>
-              <Table.Th>In Wareneingang</Table.Th>
-              <Table.Th>Wanted by</Table.Th>
-              <Table.Th>Rest</Table.Th>
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {data.rows.map((row) => {
-              const totalWanted = row.wanted_by_tool.reduce((sum, w) => sum + w.wanted_qty, 0)
-              const rest = row.intake_qty - totalWanted
-              return (
-                <Table.Tr key={row.type_id}>
-                  <Table.Td>{row.type_name}</Table.Td>
-                  <Table.Td>{qty(row.intake_qty)}</Table.Td>
-                  <Table.Td>
-                    {row.unclaimed ? (
-                      <Badge color="gray" variant="light">nobody</Badge>
-                    ) : (
-                      <Group gap={4}>
-                        {row.wanted_by_tool.map((w) => (
-                          <Badge key={w.tool} color="accent" variant="light">
-                            {TOOL_LABELS[w.tool] ?? w.tool}: {qty(w.wanted_qty)}
-                          </Badge>
-                        ))}
-                      </Group>
-                    )}
-                  </Table.Td>
-                  <Table.Td>{qty(Math.max(0, rest))}</Table.Td>
-                </Table.Tr>
-              )
-            })}
-          </Table.Tbody>
-        </Table>
-      )}
-    </Card>
-  )
-}
 
 function SchedulerJobRow({ label, job }: { label: string; job: SchedulerJobStatus }) {
   return (
@@ -193,8 +128,6 @@ export default function Portfolio() {
               </Stack>
             )}
           </Card>
-
-          <SortingPanel />
 
           <HintCard>Everything above is read-only except "Backup Now", which writes a new file under data/backups/.</HintCard>
         </Stack>

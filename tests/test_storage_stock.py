@@ -168,6 +168,35 @@ def test_assets_at_flag_sees_contents_of_a_container_sitting_in_the_division(ten
     assert dict(storage.assets_at_flag("CorpSAG3")) == {TYPE_ID: 42, 649: 1}
 
 
+def test_assets_at_flag_owner_name_filters_to_that_character(tenant):
+    storage.replace_assets("character_assets", [
+        (1, TYPE_ID, LOCATION_ID, "Hangar", 10, 0, "Alice"),
+        (2, TYPE_ID, LOCATION_ID, "Hangar", 20, 0, "Bob"),
+        (3, 35, LOCATION_ID, "Hangar", 7, 0, "Alice"),
+    ])
+
+    assert dict(storage.assets_at_flag("Hangar", tables=("character_assets",), owner_name="Alice")) == {
+        TYPE_ID: 10, 35: 7,
+    }
+    assert dict(storage.assets_at_flag("Hangar", tables=("character_assets",), owner_name="Bob")) == {TYPE_ID: 20}
+    # None keeps today's unfiltered behaviour (both characters).
+    assert dict(storage.assets_at_flag("Hangar", tables=("character_assets",))) == {TYPE_ID: 30, 35: 7}
+
+
+def test_assets_at_flag_owner_name_does_not_match_other_table_owners(tenant):
+    storage.replace_assets("corp_assets", [
+        (1, TYPE_ID, LOCATION_ID, "CorpSAG1", 40, 0, "My Corp (corp)"),
+    ])
+    storage.replace_assets("character_assets", [
+        (2, TYPE_ID, LOCATION_ID, "CorpSAG1", 3, 0, "Alice"),
+    ])
+
+    # A corp source must not pick up Alice's personal stack just because
+    # the hangar flag happens to match.
+    assert dict(storage.assets_at_flag("CorpSAG1", tables=("corp_assets",))) == {TYPE_ID: 40}
+    assert dict(storage.assets_at_flag("CorpSAG1", tables=("character_assets",), owner_name="Alice")) == {TYPE_ID: 3}
+
+
 def test_esi_stock_at_location_still_unwraps_corp_office(tenant):
     office_item_id = 900
     storage.replace_assets("corp_assets", [

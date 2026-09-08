@@ -120,9 +120,6 @@ export const tradingApi = {
   realizedTrades: () => get<T.RealizedTrade[]>('/api/trading/trades/realized'),
   settings: () => get<T.TradingSettings>('/api/trading/settings'),
   updateSettings: (s: T.TradingSettings) => post<T.TradingSettings>('/api/trading/settings', s),
-  hangarDivisionOptions: () => get<{ hangar_division_flags: string[] }>(
-    '/api/trading/settings/hangar-division-options',
-  ),
   esiSyncTime: () => get<{ synced_at: string | null }>('/api/trading/esi/sync-time'),
 
   buildUniverse: () => post<{ count: number }>('/api/trading/universe/build'),
@@ -481,10 +478,19 @@ export const errorsApi = {
     post<{ recorded: boolean }>('/api/errors', { source, message, detail, path }),
 }
 
-// ---------------------------------------------------------------- cross-tool
-// Wareneingang/hangar-sorting helper (GitHub issue #90-era work) - see
-// eve_trader/cross_tool.py's own docstring for why it's neither Trading's
-// nor Production's nor Doctrine's nor Ore & Minerals' own router.
-export const crossToolApi = {
-  sortingList: () => get<T.SortingList>('/api/cross-tool/sorting-list'),
+// ---------------------------------------------------------------- sorting
+export const sortingApi = {
+  sortingList: () => get<T.SortingList>('/api/sorting/sorting-list'),
+  intakeSources: () => get<T.SortingIntakeSourceList>('/api/sorting/intake-sources'),
+  addIntakeSource: (body: {
+    source_kind: string
+    hangar_flag: string
+    character_name?: string | null
+    label?: string | null
+  }) => post<T.SortingIntakeSource>('/api/sorting/intake-sources', body),
+  removeIntakeSource: (id: number) => del<{ removed: number }>(`/api/sorting/intake-sources/${id}`),
+  availableCharacters: () => get<{ characters: string[] }>('/api/sorting/available-characters'),
+  hangarDivisionOptions: () => get<{ hangar_division_flags: string[] }>(
+    '/api/sorting/hangar-division-options',
+  ),
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, Select, Button, Center, Loader } from '@mantine/core'
+import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, Button, Center, Loader } from '@mantine/core'
 
 import { tradingApi } from '../../api/client'
 import type { TradingSettings as TradingSettingsT } from '../../api/types'
@@ -11,9 +11,6 @@ import { StructureIdField } from '../../components/StructureIdField'
 
 export default function TradingSettings() {
   const { data } = useQuery({ queryKey: ['trading', 'settings'], queryFn: tradingApi.settings })
-  const { data: hangarOptions } = useQuery({
-    queryKey: ['trading', 'hangar-division-options'], queryFn: tradingApi.hangarDivisionOptions,
-  })
   const { data: structureNames } = useStructureNameOptions()
   const [form, setForm] = useState<TradingSettingsT | null>(null)
   useEffect(() => { if (data) setForm(data) }, [data])
@@ -80,19 +77,6 @@ export default function TradingSettings() {
           description="Falls back to this Goonmetrics snapshot for structure pricing when no seller is logged in or ESI fails - not used by Undercut Check."
           value={form.structure_market_slug ?? ''}
           onChange={(e) => set('structure_market_slug', e.currentTarget.value)} />
-      </SimpleGrid>
-
-      <Title order={6} c="dimmed" tt="uppercase" mt="md">Hangar Sorting</Title>
-      <Text size="xs" c="dimmed">
-        Jita imports for every tool (Trading, Production, Doctrine, Ore &amp; Minerals) land in one shared corp
-        hangar division first - EVE has no API to move an item between divisions, so a human still sorts it by
-        hand. Set which division that shared intake is to see a cross-tool sorting helper on Portfolio. Leave blank
-        to leave the feature off.
-      </Text>
-      <SimpleGrid cols={2}>
-        <Select label="Intake/Wareneingang hangar division" data={hangarOptions?.hangar_division_flags ?? []}
-          value={form.intake_hangar_flag || null} clearable
-          onChange={(v) => set('intake_hangar_flag', v ?? '')} />
       </SimpleGrid>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Characters</Title>

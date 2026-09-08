@@ -110,7 +110,7 @@ export default function ProductionSettings() {
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Hangar Sorting</Title>
       <Text size="xs" c="dimmed">
         Jita imports for every tool land in one shared corp Wareneingang division first (EVE has no API to move
-        items between hangar divisions - see the Sorting panel on Portfolio). If you've sorted Production's own
+        items between hangar divisions - see the Sorting tool). If you've sorted Production's own
         stock into specific division(s), select them here so build/stock calculations only count material actually
         set aside for Production, not everything sitting in the shared hangar. Leave empty to count every division
         (today's default behaviour).
