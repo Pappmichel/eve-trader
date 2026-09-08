@@ -17,6 +17,7 @@ from ..config import (
     ConfigError, ConfigProxy, DEFAULT_CONFIG_PATH, TRADING_CONFIG, apply_config_overrides,
     validate_config_overrides,
 )
+from ..production.constants import HANGAR_DIVISION_FLAGS
 
 
 @dataclass
@@ -49,6 +50,17 @@ class DoctrineConfig:
     # first-setup time only (see engine._shopping_prices) - the two don't
     # stay in sync after that, editing one doesn't touch the other.
     import_cost_per_m3: float = 900.0
+    # Which hangar/office division(s) at effective_stockpile_location_id count
+    # as Doctrine's own stockpile Ist (storage.esi_stock_at_location's
+    # allowed_flags - see production/constants.py HANGAR_DIVISION_FLAGS).
+    # Same hangar-sorting reasoning as ProductionConfig.stock_hangar_flags
+    # (see that field's own comment): Jita imports for every tool land in one
+    # shared corp Wareneingang division first, and stockpile_rows_for_doctrine
+    # used to count that whole division (and every other one) as Doctrine's
+    # own available stockpile regardless of what it was actually bought for.
+    # Empty tuple (the default) = no filter, today's whole-hangar-counts
+    # behaviour, unchanged.
+    stockpile_hangar_flags: tuple[str, ...] = ()
 
     @property
     def effective_structure_id(self) -> Optional[int]:
@@ -57,6 +69,21 @@ class DoctrineConfig:
     @property
     def effective_stockpile_location_id(self) -> Optional[int]:
         return self.stockpile_location_id or self.effective_structure_id
+
+
+def validate_doctrine_overrides(overrides: dict) -> None:
+    """Beyond the generic type checks (validate_config_overrides), same enum-
+    check pattern as production/config.py's validate_production_overrides -
+    stockpile_hangar_flags entries must be real ESI hangar-division flags
+    (production/constants.py HANGAR_DIVISION_FLAGS), not just any string, so
+    a typo doesn't silently pass here and only fail later as "counts
+    everything except a division that doesn't exist" (esi_stock_at_location's
+    allowed_flags is a plain IN-list filter with no validation of its own)."""
+    if "stockpile_hangar_flags" in overrides:
+        bad = [f for f in overrides["stockpile_hangar_flags"] if f not in HANGAR_DIVISION_FLAGS]
+        if bad:
+            raise ConfigError(f"stockpile_hangar_flags: {bad!r} are not known hangar divisions. "
+                               f"Options: {', '.join(HANGAR_DIVISION_FLAGS)}")
 
 
 _doctrine_config_yaml_cache: dict = {}
@@ -74,6 +101,7 @@ def load_doctrine_config(path=DEFAULT_CONFIG_PATH) -> DoctrineConfig:
             with open(path, "r", encoding="utf-8") as f:
                 overrides = yaml.safe_load(f) or {}
             validate_config_overrides(cfg, overrides)
+            validate_doctrine_overrides(overrides)
             apply_config_overrides(cfg, overrides)
         _doctrine_config_yaml_cache[path] = cfg
     return copy.deepcopy(_doctrine_config_yaml_cache[path])

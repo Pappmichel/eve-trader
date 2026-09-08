@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Stack, Title, Text, SimpleGrid, NumberInput, Switch, Button, Center, Loader } from '@mantine/core'
+import { Stack, Title, Text, SimpleGrid, NumberInput, Switch, MultiSelect, Button, Center, Loader } from '@mantine/core'
 
 import { doctrineApi } from '../../api/client'
 import type { DoctrineSettings as DoctrineSettingsT } from '../../api/types'
@@ -11,6 +11,9 @@ import { StructureIdField } from '../../components/StructureIdField'
 
 export default function DoctrineSettings() {
   const { data } = useQuery({ queryKey: ['doctrine', 'settings'], queryFn: doctrineApi.settings })
+  const { data: hangarOptions } = useQuery({
+    queryKey: ['doctrine', 'hangar-division-options'], queryFn: doctrineApi.hangarDivisionOptions,
+  })
   const { data: structureNames } = useStructureNameOptions()
   const [form, setForm] = useState<DoctrineSettingsT | null>(null)
   useEffect(() => { if (data) setForm(data) }, [data])
@@ -33,6 +36,15 @@ export default function DoctrineSettings() {
         <StructureIdField label="Stockpile location ID (blank = same as structure)" value={form.stockpile_location_id ?? null}
           onChange={(v) => set('stockpile_location_id', v)} structureNames={structureNames} />
       </SimpleGrid>
+      <Text size="xs" c="dimmed">
+        Jita imports for every tool land in one shared corp Wareneingang division first (EVE has no API to move
+        items between hangar divisions - see the Sorting panel on Portfolio). If you've sorted Doctrine's own
+        contract materials into specific division(s), select them here so stockpile Ist only counts material
+        actually set aside for Doctrine. Leave empty to count every division (today's default behaviour).
+      </Text>
+      <MultiSelect label="Hangar divisions counted as Doctrine stockpile" data={hangarOptions?.hangar_division_flags ?? []}
+        value={form.stockpile_hangar_flags} onChange={(v) => set('stockpile_hangar_flags', v)}
+        placeholder="All divisions" clearable />
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Validation</Title>
       <SimpleGrid cols={2}>

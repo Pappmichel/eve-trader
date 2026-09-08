@@ -171,6 +171,7 @@ export interface TradingSettings {
   reference_region_id: number
   structure_id: number | null
   structure_market_slug: string | null
+  intake_hangar_flag: string
   buyer_character_name: string | null
   seller_character_name: string | null
 }
@@ -498,6 +499,7 @@ export interface ProductionSettings {
   home_location_id: number | null
   distribution_source_location_id: number | null
   invention_location_id: number | null
+  stock_hangar_flags: string[]
   reaction_structure_type: string
   reaction_rig_tier: string
   component_structure_type: string
@@ -769,6 +771,7 @@ export interface DoctrineSettings {
   cargo_tolerance_pct: number
   strict_extras: boolean
   import_cost_per_m3: number
+  stockpile_hangar_flags: string[]
 }
 
 export interface DoctrineCharacter {
@@ -942,4 +945,22 @@ export interface SkillSummary {
   levels: Record<string, number> | null
   order_slots: number | null
   error: string | null
+}
+
+// ---------------------------------------------------------------- cross-tool
+export interface ToolDemandRow {
+  tool: string
+  wanted_qty: number
+}
+
+export interface SortingRow {
+  type_id: number
+  type_name: string
+  intake_qty: number
+  wanted_by_tool: ToolDemandRow[]
+  unclaimed: boolean
+}
+
+export interface SortingList {
+  rows: SortingRow[]
 }

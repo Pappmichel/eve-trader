@@ -328,7 +328,8 @@ CREATE TABLE IF NOT EXISTS character_assets (
     quantity INTEGER,
     is_blueprint_copy INTEGER,
     owner_name TEXT,
-    resolved_location_id BIGINT
+    resolved_location_id BIGINT,
+    resolved_hangar_flag TEXT
 );
 -- GitHub issue #4/#20: location_id is the item's *immediate* parent (a ship,
 -- a container, a corp Office, ...), which can be several containers deep -
@@ -337,6 +338,14 @@ CREATE TABLE IF NOT EXISTS character_assets (
 -- time so every query can filter on it directly instead of re-walking the
 -- chain (or missing anything past one level, the original bug) per query.
 ALTER TABLE character_assets ADD COLUMN IF NOT EXISTS resolved_location_id BIGINT;
+-- Hangar-sorting feature: resolved_hangar_flag is the corp-hangar-division
+-- flag (e.g. "CorpSAG1") an item should be counted under, walked up through
+-- nested containers/ships the same way resolved_location_id is - see
+-- storage._resolve_hangar_flags. Filtering allowed_flags/assets_at_flag on
+-- the raw location_flag column instead (an earlier version of this feature)
+-- reintroduced the exact #4/#20 bug class: an item nested one level inside a
+-- flagged container read as invisible to that container's own division.
+ALTER TABLE character_assets ADD COLUMN IF NOT EXISTS resolved_hangar_flag TEXT;
 DROP INDEX IF EXISTS idx_character_assets_type_location;
 CREATE INDEX IF NOT EXISTS idx_character_assets_type_resolved_location
     ON character_assets (type_id, resolved_location_id);
@@ -355,9 +364,11 @@ CREATE TABLE IF NOT EXISTS corp_assets (
     quantity INTEGER,
     is_blueprint_copy INTEGER,
     owner_name TEXT,
-    resolved_location_id BIGINT
+    resolved_location_id BIGINT,
+    resolved_hangar_flag TEXT
 );
 ALTER TABLE corp_assets ADD COLUMN IF NOT EXISTS resolved_location_id BIGINT;
+ALTER TABLE corp_assets ADD COLUMN IF NOT EXISTS resolved_hangar_flag TEXT;
 DROP INDEX IF EXISTS idx_corp_assets_type_location;
 CREATE INDEX IF NOT EXISTS idx_corp_assets_type_resolved_location ON corp_assets (type_id, resolved_location_id);
 ALTER TABLE corp_assets ENABLE ROW LEVEL SECURITY;

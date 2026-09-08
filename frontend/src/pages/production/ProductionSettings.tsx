@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, Select, Button, Card, Group, Center, Loader } from '@mantine/core'
+import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, Select, MultiSelect, Button, Card, Group, Center, Loader } from '@mantine/core'
 
 import { productionApi } from '../../api/client'
 import type { ProductionSettings as ProductionSettingsT } from '../../api/types'
@@ -106,6 +106,18 @@ export default function ProductionSettings() {
         <StructureIdField label="Structure/location ID (assets/orders)" value={form.home_location_id ?? null}
           onChange={(v) => set('home_location_id', v)} structureNames={structureNames} />
       </SimpleGrid>
+
+      <Title order={6} c="dimmed" tt="uppercase" mt="md">Hangar Sorting</Title>
+      <Text size="xs" c="dimmed">
+        Jita imports for every tool land in one shared corp Wareneingang division first (EVE has no API to move
+        items between hangar divisions - see the Sorting panel on Portfolio). If you've sorted Production's own
+        stock into specific division(s), select them here so build/stock calculations only count material actually
+        set aside for Production, not everything sitting in the shared hangar. Leave empty to count every division
+        (today's default behaviour).
+      </Text>
+      <MultiSelect label="Hangar divisions counted as Production stock" data={structureOptions.hangar_division_flags}
+        value={form.stock_hangar_flags} onChange={(v) => set('stock_hangar_flags', v)}
+        placeholder="All divisions" clearable />
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Where You Build</Title>
       <Text size="xs" c="dimmed">

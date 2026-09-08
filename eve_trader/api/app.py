@@ -21,7 +21,9 @@ from ..access_gate import SESSION_COOKIE_NAME, read_session_token, tools_for
 from ..config import ACCESS_CONFIG, TRADING_CONFIG, apply_config_overrides
 from ..doctrine.config import DOCTRINE_CONFIG
 from ..production.config import PRODUCTION_CONFIG
-from .routers import admin, auth, doctrine, errors, gate, portfolio, production, refining, station_trading, trading
+from .routers import (
+    admin, auth, cross_tool, doctrine, errors, gate, portfolio, production, refining, station_trading, trading,
+)
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 
@@ -76,6 +78,12 @@ _TOOL_PATH_PREFIXES = {
     "/api/station-trading/": "station_trading",
     "/api/portfolio/": "portfolio",
     "/api/admin/": "admin",
+    # Cross-tool by definition (Trading/Production/Doctrine/Ore & Minerals
+    # demand all aggregated into one read) - no single tool_key of its own
+    # would be more correct than another, so it rides on "portfolio", the
+    # one existing tool_key already meant for cross-tool pages (see
+    # portfolio.py/CLAUDE.md's "Two tools, one backend").
+    "/api/cross-tool/": "portfolio",
 }
 
 _AUTH_START_PREFIX = "/api/auth/"
@@ -250,6 +258,7 @@ def create_app() -> FastAPI:
     app.include_router(trading.router, prefix="/api/trading", tags=["trading"])
     app.include_router(production.router, prefix="/api/production", tags=["production"])
     app.include_router(portfolio.router, prefix="/api/portfolio", tags=["portfolio"])
+    app.include_router(cross_tool.router, prefix="/api/cross-tool", tags=["cross_tool"])
     app.include_router(doctrine.router, prefix="/api/doctrine", tags=["doctrine"])
     app.include_router(refining.router, prefix="/api/refining", tags=["refining"])
     app.include_router(station_trading.router, prefix="/api/station-trading", tags=["station_trading"])

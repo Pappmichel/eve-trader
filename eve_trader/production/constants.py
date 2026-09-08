@@ -118,6 +118,41 @@ DEADSPACE_META_GROUP_ID = 6
 # attempt cost either).
 ANCIENT_RELIC_CATEGORY_ID = 34
 
+# ESI location_flag values for a station/structure's hangar divisions - real
+# ESI enum values (confirmed against ESI's asset location_flag docs), used to
+# let a tool restrict "how much do I have" to just the division(s) it's
+# actually been assigned, instead of the whole shared hangar every other
+# tool's Jita imports also land in first (see CLAUDE.md's Wareneingang/
+# hangar-sorting note - EVE has no API to move an item between hangar
+# divisions, so this is purely a *counting* filter, never a mover).
+# "Hangar" is a personal-character hangar division (there's only one, no
+# CorpSAG-style numbering); "CorpSAG1".."CorpSAG7" are a corp structure's
+# seven numbered hangar divisions (ESI's real "Corp Security Access Group"
+# naming - confirmed against this repo's own synced-asset test fixtures,
+# tests/test_storage_stock.py/test_storage_blueprints.py, both of which
+# already use "CorpSAG1" for a corp office's hangar division).
+# ProductionConfig.stock_hangar_flags / DoctrineConfig.stockpile_hangar_flags
+# are validated against this list (see validate_production_overrides /
+# validate_doctrine_overrides) - an empty tuple (both fields' default) means
+# "no filter", i.e. today's whole-hangar-counts behaviour, unchanged.
+HANGAR_DIVISION_FLAGS: tuple[str, ...] = (
+    "Hangar",
+    "CorpSAG1", "CorpSAG2", "CorpSAG3", "CorpSAG4", "CorpSAG5", "CorpSAG6", "CorpSAG7",
+)
+
+# Valid options for TradingConfig.intake_hangar_flag (the shared Wareneingang
+# division - see cross_tool.do_sorting_list) - every real division
+# (HANGAR_DIVISION_FLAGS) *plus* "Deliveries", deliberately not included in
+# HANGAR_DIVISION_FLAGS itself: "Deliveries" is one of storage.
+# NON_STOCK_LOCATION_FLAGS, so it would never be a sane choice for
+# stock_hangar_flags/stockpile_hangar_flags (esi_stock_at_location excludes
+# it unconditionally before allowed_flags even applies, making it a silent
+# always-zero filter there) - but it's exactly where a courier contract or
+# market delivery routinely lands at C-J, so it's a legitimate, common
+# Wareneingang choice (assets_at_flag has no NON_STOCK_LOCATION_FLAGS
+# exclusion, so it works there).
+INTAKE_HANGAR_FLAGS: tuple[str, ...] = HANGAR_DIVISION_FLAGS + ("Deliveries",)
+
 
 @dataclass(frozen=True)
 class ActivityMods:

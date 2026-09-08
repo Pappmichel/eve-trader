@@ -1379,21 +1379,68 @@ def _resolve_locations(rows: list[tuple], location_index: int = 2) -> list[int]:
     return resolved
 
 
+def _resolve_hangar_flags(rows: list[tuple], location_index: int = 2, flag_index: int = 3,
+                           type_index: int = 1) -> list[str]:
+    """For each row, the *hangar-division* location_flag it should be
+    counted under for allowed_flags/assets_at_flag filtering - NOT simply
+    the row's own raw location_flag, which is meaningless once an item is
+    nested inside a container/ship (e.g. "Unlocked"): a container itself
+    carries the real division flag (e.g. "CorpSAG1"), and everything placed
+    inside it inherits that division without its own row ever mentioning it.
+    Filtering on the raw column (the original allowed_flags implementation)
+    silently dropped anything nested one level deeper than the flagged
+    container - the exact same bug class _resolve_locations/resolved_location_id
+    already fixed for GitHub issue #4/#20, reintroduced here because
+    allowed_flags shipped without going through the same resolution.
+
+    Walks the same parent_of chain as _resolve_locations, but instead of
+    returning the outermost id, returns the *flag* of the row one level
+    inside the outermost tracked ancestor when that ancestor is a corp
+    Office (OFFICE_TYPE_ID) - a corp Office's own row flag is always the
+    fixed system value "OfficeFolder", never a real division; the row
+    parented directly under the Office (CorpSAG1..7) is what actually names
+    the division, and everything nested deeper than that inherits it. For a
+    personal hangar (no Office involved), the outermost tracked ancestor's
+    own flag ("Hangar") already *is* the answer - it isn't Office-anchored,
+    so no back-off needed. An un-nested row (already the outermost ancestor)
+    simply returns its own flag either way, identical to today's raw-column
+    behaviour - only nested rows differ."""
+    by_item = {row[0]: row for row in rows}
+    resolved = []
+    for row in rows:
+        current = row
+        previous = row
+        hops = 0
+        while current[location_index] in by_item and hops < 10:
+            previous = current
+            current = by_item[current[location_index]]
+            hops += 1
+        if current[type_index] == OFFICE_TYPE_ID and previous is not current:
+            resolved.append(previous[flag_index])
+        else:
+            resolved.append(current[flag_index])
+    return resolved
+
+
 # --------------------------------------------------- Production: ESI-derived stock
 def replace_assets(table: str, rows: list[tuple]) -> None:
     """`rows`: (item_id, type_id, location_id, location_flag, quantity,
     is_blueprint_copy, owner_name) - resolved_location_id (GitHub issue #4/
-    #20) is computed here, not by the caller, so every existing/future
-    caller (esi_sync.py, doctrine/esi_sync.py, tests) gets it automatically
-    just by going through this one function - see _resolve_locations."""
+    #20) and resolved_hangar_flag (the corp-hangar-division flag a nested
+    item should actually be counted under - see _resolve_hangar_flags) are
+    both computed here, not by the caller, so every existing/future caller
+    (esi_sync.py, doctrine/esi_sync.py, tests) gets them automatically just
+    by going through this one function."""
     assert table in ("character_assets", "corp_assets", "doctrine_character_assets", "doctrine_corp_assets")
-    resolved = _resolve_locations(rows, location_index=2)
+    resolved_locations = _resolve_locations(rows, location_index=2)
+    resolved_flags = _resolve_hangar_flags(rows, location_index=2, flag_index=3, type_index=1)
     with connect() as conn:
         conn.execute(f"DELETE FROM {table}")
         conn.executemany(
             f"INSERT INTO {table} (item_id, type_id, location_id, location_flag, quantity, "
-            "is_blueprint_copy, owner_name, resolved_location_id) VALUES (?,?,?,?,?,?,?,?)",
-            [row + (root,) for row, root in zip(rows, resolved)],
+            "is_blueprint_copy, owner_name, resolved_location_id, resolved_hangar_flag) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            [row + (loc, flag) for row, loc, flag in zip(rows, resolved_locations, resolved_flags)],
         )
 
 
@@ -1570,7 +1617,8 @@ NON_STOCK_LOCATION_FLAGS = ("AssetSafety", "Deliveries", "CorpDeliveries", "Corp
 
 
 def esi_stock_at_location(type_id: int, location_id: Optional[int],
-                           tables: tuple[str, str] = ("character_assets", "corp_assets")) -> float:
+                           tables: tuple[str, str] = ("character_assets", "corp_assets"),
+                           allowed_flags: Optional[tuple[str, ...]] = None) -> float:
     """Sums character + corp asset quantities for `type_id`, optionally filtered
     to `location_id` (None = all locations - useful when the home structure's
     numeric ID isn't configured). Excludes NON_STOCK_LOCATION_FLAGS (see above).
@@ -1579,6 +1627,22 @@ def esi_stock_at_location(type_id: int, location_id: Optional[int],
     `("doctrine_character_assets", "doctrine_corp_assets")` for Doctrine's
     own independent asset sync (doctrine/esi_sync.py's sync_assets) instead;
     same column shape either way, just a different source table pair.
+
+    `allowed_flags`: when a non-empty tuple, an *additional*
+    `resolved_hangar_flag IN (...)` filter restricting the count to just
+    those hangar/office divisions (e.g. ProductionConfig.stock_hangar_flags/
+    DoctrineConfig.stockpile_hangar_flags - see production/constants.py
+    HANGAR_DIVISION_FLAGS) - lets a tool count only the corp-hangar division
+    it's actually been assigned, instead of the whole shared hangar every
+    other tool also lands cargo in (see CLAUDE.md's Wareneingang/hangar-
+    sorting note). Filters on resolved_hangar_flag, not the raw
+    location_flag column, so an item nested inside a container/ship sitting
+    in the division is still counted (see _resolve_hangar_flags - the raw
+    column would read as e.g. "Unlocked" for anything nested one level
+    deeper than the flagged container). None or an empty tuple (the
+    default) leaves today's behaviour unchanged: every
+    non-NON_STOCK_LOCATION_FLAGS flag counts, regardless of which division
+    it's in.
 
     Filters on resolved_location_id (GitHub issue #4/#20), not the raw
     location_id column - replace_assets computes that once at sync time by
@@ -1591,24 +1655,67 @@ def esi_stock_at_location(type_id: int, location_id: Optional[int],
     container sitting inside a corp hangar - confirmed real cause of a
     "300M tritanium sitting at C-J invisible to Distribution" bug report)."""
     flag_placeholders = ",".join("?" * len(NON_STOCK_LOCATION_FLAGS))
+    allowed_clause = ""
+    allowed_params: tuple = ()
+    if allowed_flags:
+        allowed_placeholders = ",".join("?" * len(allowed_flags))
+        allowed_clause = f" AND resolved_hangar_flag IN ({allowed_placeholders})"
+        allowed_params = tuple(allowed_flags)
     with connect() as conn:
         total = 0.0
         for table in tables:
             if location_id is None:
                 row = conn.execute(
                     f"SELECT COALESCE(SUM(quantity), 0) FROM {table} "
-                    f"WHERE type_id = ? AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))",
-                    (type_id, *NON_STOCK_LOCATION_FLAGS),
+                    f"WHERE type_id = ? AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))"
+                    f"{allowed_clause}",
+                    (type_id, *NON_STOCK_LOCATION_FLAGS, *allowed_params),
                 ).fetchone()
                 total += row[0]
                 continue
             row = conn.execute(
                 f"SELECT COALESCE(SUM(quantity), 0) FROM {table} WHERE type_id = ? AND resolved_location_id = ? "
-                f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))",
-                (type_id, location_id, *NON_STOCK_LOCATION_FLAGS),
+                f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders})){allowed_clause}",
+                (type_id, location_id, *NON_STOCK_LOCATION_FLAGS, *allowed_params),
             ).fetchone()
             total += row[0]
     return total
+
+
+def assets_at_flag(flag: str, tables: tuple[str, str] = ("character_assets", "corp_assets")) -> list[tuple[int, float]]:
+    """For a single `location_flag` (e.g. the shared corp Wareneingang
+    division named by TradingConfig.intake_hangar_flag - see
+    cross_tool.do_sorting_list), every `type_id` currently sitting there and
+    its summed quantity, across both asset tables. Unlike
+    esi_stock_at_location, this has no type_id filter (it answers "what's in
+    this division at all", not "how much of one item") and no location_id
+    filter either - a hangar-division flag alone (e.g. "CorpSAG3") only makes
+    sense relative to whatever structure the corp's own offices are actually
+    at, and this app has exactly one such structure per tenant in practice,
+    so narrowing further wasn't worth the extra parameter for this read-only,
+    diagnostic-style helper.
+
+    Filters on resolved_hangar_flag (see _resolve_hangar_flags), not the raw
+    location_flag column - a fresh Wareneingang delivery routinely arrives
+    as a single container/wrapped courier contract sitting in the division,
+    with its actual contents one level deeper (raw flag "Unlocked"/similar);
+    filtering the raw column would report the Wareneingang as empty even
+    while it visibly holds a container full of stock. Same
+    NON_STOCK_LOCATION_FLAGS exclusion would be a no-op here (a real hangar
+    division flag is never one of those), so it's deliberately not applied -
+    keep this simple rather than importing filter logic that can never fire
+    for a real caller."""
+    with connect() as conn:
+        totals: dict[int, float] = {}
+        for table in tables:
+            rows = conn.execute(
+                f"SELECT type_id, COALESCE(SUM(quantity), 0) FROM {table} "
+                "WHERE resolved_hangar_flag = ? GROUP BY type_id",
+                (flag,),
+            ).fetchall()
+            for type_id, qty in rows:
+                totals[type_id] = totals.get(type_id, 0.0) + qty
+    return sorted(totals.items())
 
 
 def search_item_stock_locations(type_id: int) -> list[tuple[int, Optional[str], str, float]]:

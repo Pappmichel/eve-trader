@@ -76,6 +76,25 @@ def test_validate_accepts_list_for_tuple_field():
     validate_config_overrides(cfg, {"excluded_path_prefixes": ["ships", "blueprints"]})
 
 
+def test_validate_rejects_non_list_for_parametrized_tuple_field():
+    # Regression: a `tuple[str, ...]`-annotated field (e.g.
+    # ProductionConfig.stock_hangar_flags) has a different typing.get_origin
+    # than the bare `tuple` annotation excluded_path_prefixes uses above -
+    # _check_type used to only recognize the bare spelling (`expected is
+    # tuple`), so a parametrized field silently skipped every check here and
+    # only failed later, deep in an enum-check loop, with a raw TypeError
+    # instead of a clean ConfigError.
+    from eve_trader.production.config import ProductionConfig
+
+    cfg = ProductionConfig()
+    with pytest.raises(ConfigError, match="stock_hangar_flags"):
+        validate_config_overrides(cfg, {"stock_hangar_flags": "CorpSAG1"}, cfg_type=ProductionConfig)
+    with pytest.raises(ConfigError, match="stock_hangar_flags"):
+        validate_config_overrides(cfg, {"stock_hangar_flags": 5}, cfg_type=ProductionConfig)
+    # A real list still passes, same as the bare-tuple field above.
+    validate_config_overrides(cfg, {"stock_hangar_flags": ["Hangar", "CorpSAG1"]}, cfg_type=ProductionConfig)
+
+
 def test_validate_ignores_unknown_keys():
     cfg = TradingConfig()
     validate_config_overrides(cfg, {"this_field_does_not_exist": 123})
@@ -170,6 +189,70 @@ def test_validate_production_overrides_rejects_unknown_structure_type():
 def test_validate_production_overrides_rejects_unknown_rig_tier():
     with pytest.raises(ConfigError, match="component_rig_tier"):
         validate_production_overrides({"component_rig_tier": "T3-Rig"})
+
+
+def test_validate_production_overrides_accepts_known_hangar_flags():
+    validate_production_overrides({"stock_hangar_flags": ["Hangar", "CorpSAG1"]})
+
+
+def test_validate_production_overrides_rejects_unknown_hangar_flag():
+    with pytest.raises(ConfigError, match="stock_hangar_flags"):
+        validate_production_overrides({"stock_hangar_flags": ["Deliveries"]})
+
+
+def test_validate_production_overrides_accepts_empty_hangar_flags():
+    validate_production_overrides({"stock_hangar_flags": []})
+
+
+def test_validate_doctrine_overrides_accepts_known_hangar_flags():
+    from eve_trader.doctrine.config import validate_doctrine_overrides
+
+    validate_doctrine_overrides({"stockpile_hangar_flags": ["CorpSAG3"]})
+
+
+def test_validate_doctrine_overrides_rejects_unknown_hangar_flag():
+    from eve_trader.doctrine.config import validate_doctrine_overrides
+
+    with pytest.raises(ConfigError, match="stockpile_hangar_flags"):
+        validate_doctrine_overrides({"stockpile_hangar_flags": ["NotARealFlag"]})
+
+
+def test_do_update_settings_rejects_bad_hangar_flag_as_action_error_production():
+    cfg = ProductionConfig()
+    with pytest.raises(ActionError, match="stock_hangar_flags"):
+        production_actions.do_update_settings({"stock_hangar_flags": ["NotARealFlag"]}, cfg=cfg)
+
+
+def test_do_update_settings_rejects_bad_hangar_flag_as_action_error_doctrine():
+    from eve_trader.doctrine import actions as doctrine_actions
+    from eve_trader.doctrine.config import DoctrineConfig
+
+    cfg = DoctrineConfig()
+    with pytest.raises(ActionError, match="stockpile_hangar_flags"):
+        doctrine_actions.do_update_settings({"stockpile_hangar_flags": ["NotARealFlag"]}, cfg=cfg)
+
+
+def test_validate_trading_overrides_accepts_known_intake_flag():
+    from eve_trader.config import validate_trading_overrides
+
+    validate_trading_overrides({"intake_hangar_flag": "CorpSAG3"})
+    validate_trading_overrides({"intake_hangar_flag": "Deliveries"})  # a legitimate intake-only option
+    validate_trading_overrides({"intake_hangar_flag": ""})  # disables the feature, always allowed
+
+
+def test_validate_trading_overrides_rejects_unknown_intake_flag():
+    from eve_trader.config import validate_trading_overrides
+
+    with pytest.raises(ConfigError, match="intake_hangar_flag"):
+        validate_trading_overrides({"intake_hangar_flag": "NotARealFlag"})
+
+
+def test_do_update_settings_rejects_bad_intake_flag_as_action_error():
+    from eve_trader import actions
+
+    cfg = TradingConfig()
+    with pytest.raises(ActionError, match="intake_hangar_flag"):
+        actions.do_update_settings({"intake_hangar_flag": "NotARealFlag"}, cfg=cfg)
 
 
 def test_do_update_settings_rejects_bad_type_as_action_error(monkeypatch):

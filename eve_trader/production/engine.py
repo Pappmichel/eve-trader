@@ -976,13 +976,19 @@ def _current_stock(type_id: int, manual_stock: dict[int, float], cfg: Production
     list *nor* its saved quick-switch options, invisible either way. Any
     maintained whitelist can silently miss a real structure the same way.
     "Do I own this material anywhere" is inherently a corp-wide question,
-    not a location-scoped one - storage.esi_stock_at_location(type_id, None)
+    not a location-scoped one - passes cfg.stock_hangar_flags through as
+    allowed_flags (empty by default = no filter, unchanged behaviour) so an
+    operator who's actually sorted the shared Jita-import Wareneingang into
+    per-tool hangar divisions can narrow this to just Production's own
+    division(s) instead of counting Trading/Doctrine/Ore & Minerals' stock
+    sitting in the same corp-wide location too (see production/config.py's
+    own comment on that field). storage.esi_stock_at_location(type_id, None)
     already exists exactly for this (its own docstring: "None = all
     locations"), and already excludes NON_STOCK_LOCATION_FLAGS (AssetSafety/
     Deliveries/CorpMarket/...) regardless of location, so this doesn't trade
     away that filtering to get the wider scope."""
     total = manual_stock.get(type_id, 0)
-    total += storage.esi_stock_at_location(type_id, None)
+    total += storage.esi_stock_at_location(type_id, None, allowed_flags=cfg.stock_hangar_flags)
     incoming = storage.esi_incoming_industry_qty(type_id)
     if incoming["runs"] and bp is not None:
         _, _, product_qty = bp
@@ -1012,7 +1018,8 @@ def _stock_on_hand(type_id: int, manual_stock: dict[int, float], cfg: Production
     readiness signal needs this on-hand-only number instead - see
     plan_asset_optimized's Phase B for the split ledger this requires
     (stock_used vs. stock_used_on_hand)."""
-    return manual_stock.get(type_id, 0) + storage.esi_stock_at_location(type_id, None)
+    return manual_stock.get(type_id, 0) + storage.esi_stock_at_location(
+        type_id, None, allowed_flags=cfg.stock_hangar_flags)
 
 
 def _total_missing(type_id: int, backup_stock: float, home_market_stock: Optional[float],

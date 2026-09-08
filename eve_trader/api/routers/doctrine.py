@@ -195,6 +195,7 @@ class DoctrineSettings(BaseModel):
     cargo_tolerance_pct: float
     strict_extras: bool
     import_cost_per_m3: float
+    stockpile_hangar_flags: tuple[str, ...] = ()
 
 
 @router.get("/settings", response_model=DoctrineSettings)
@@ -205,3 +206,9 @@ def get_settings():
 @router.post("/settings")
 def update_settings(updates: DoctrineSettings):
     return _wrap(actions.do_update_settings, updates=updates.model_dump())
+
+
+@router.get("/settings/hangar-division-options")
+def get_hangar_division_options():
+    from ...production.constants import HANGAR_DIVISION_FLAGS
+    return {"hangar_division_flags": list(HANGAR_DIVISION_FLAGS)}

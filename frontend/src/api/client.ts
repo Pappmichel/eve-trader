@@ -120,6 +120,9 @@ export const tradingApi = {
   realizedTrades: () => get<T.RealizedTrade[]>('/api/trading/trades/realized'),
   settings: () => get<T.TradingSettings>('/api/trading/settings'),
   updateSettings: (s: T.TradingSettings) => post<T.TradingSettings>('/api/trading/settings', s),
+  hangarDivisionOptions: () => get<{ hangar_division_flags: string[] }>(
+    '/api/trading/settings/hangar-division-options',
+  ),
   esiSyncTime: () => get<{ synced_at: string | null }>('/api/trading/esi/sync-time'),
 
   buildUniverse: () => post<{ count: number }>('/api/trading/universe/build'),
@@ -196,7 +199,7 @@ export const productionApi = {
     del(`/api/production/blueprints/manual-copy-costs/${typeId}`),
   settings: () => get<T.ProductionSettings>('/api/production/settings'),
   updateSettings: (s: T.ProductionSettings) => post<T.ProductionSettings>('/api/production/settings', s),
-  structureOptions: () => get<{ structure_types: string[]; rig_tiers: string[] }>(
+  structureOptions: () => get<{ structure_types: string[]; rig_tiers: string[]; hangar_division_flags: string[] }>(
     '/api/production/settings/structure-options',
   ),
   systemSettings: () =>
@@ -388,6 +391,9 @@ export const doctrineApi = {
 
   settings: () => get<T.DoctrineSettings>('/api/doctrine/settings'),
   updateSettings: (s: T.DoctrineSettings) => post<T.DoctrineSettings>('/api/doctrine/settings', s),
+  hangarDivisionOptions: () => get<{ hangar_division_flags: string[] }>(
+    '/api/doctrine/settings/hangar-division-options',
+  ),
 }
 
 // ------------------------------------------------------------- ore & minerals
@@ -473,4 +479,12 @@ export const adminApi = {
 export const errorsApi = {
   report: (source: string, message: string, detail?: string, path?: string) =>
     post<{ recorded: boolean }>('/api/errors', { source, message, detail, path }),
+}
+
+// ---------------------------------------------------------------- cross-tool
+// Wareneingang/hangar-sorting helper (GitHub issue #90-era work) - see
+// eve_trader/cross_tool.py's own docstring for why it's neither Trading's
+// nor Production's nor Doctrine's nor Ore & Minerals' own router.
+export const crossToolApi = {
+  sortingList: () => get<T.SortingList>('/api/cross-tool/sorting-list'),
 }

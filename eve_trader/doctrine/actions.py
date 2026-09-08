@@ -16,7 +16,7 @@ from ..actions import ActionError
 from ..auth import TokenManager
 from ..config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
 from . import engine, esi_sync
-from .config import DOCTRINE_CONFIG, DoctrineConfig
+from .config import DOCTRINE_CONFIG, DoctrineConfig, validate_doctrine_overrides
 from .models import ContractHistoryRow, ContractItemRow, ParsedFitting
 from .parser import FittingParseError
 
@@ -408,6 +408,7 @@ def do_get_esi_sync_time() -> dict:
 # ------------------------------------------------------------------ settings
 def do_update_settings(updates: dict, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
     try:
+        validate_doctrine_overrides(updates)  # stockpile_hangar_flags enum check - see its docstring
         save_tenant_config_overrides("doctrine", updates, cfg, cfg_type=DoctrineConfig)
     except ConfigError as e:
         raise ActionError(str(e)) from e
