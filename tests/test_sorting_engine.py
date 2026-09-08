@@ -130,7 +130,7 @@ def test_material_wanted_qty_does_not_treat_intake_stack_as_already_covered(monk
     monkeypatch.setattr(storage, "load_sorting_intake_sources", lambda: [
         (1, "character", "pappmichl5", "Hangar", None),
     ])
-    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None: [(34, 500.0)])
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(34, 500.0)])
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [(34, "Tritanium", 200.0, None, None)])
     monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
 
