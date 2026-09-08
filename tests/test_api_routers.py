@@ -1050,3 +1050,19 @@ def test_available_characters_serializes_action_result(monkeypatch):
     resp = client.get("/api/sorting/available-characters")
     assert resp.status_code == 200
     assert resp.json() == {"characters": ["Alice", "Bob"]}
+
+
+def test_sorting_hangar_division_options_includes_deliveries():
+    # Regression: a Wareneingang intake source legitimately includes
+    # "Deliveries" (courier/market deliveries land there) - unlike
+    # Production's/Doctrine's own hangar-division-options, which must NOT
+    # offer it (see production/constants.py's INTAKE_HANGAR_FLAGS docstring).
+    resp = client.get("/api/sorting/hangar-division-options")
+    assert resp.status_code == 200
+    assert "Deliveries" in resp.json()["hangar_division_flags"]
+
+
+def test_production_hangar_division_options_excludes_deliveries():
+    resp = client.get("/api/production/settings/structure-options")
+    assert resp.status_code == 200
+    assert "Deliveries" not in resp.json()["hangar_division_flags"]

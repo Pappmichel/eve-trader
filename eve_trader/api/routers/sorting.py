@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from .. import schemas
 from ...actions import ActionError
-from ...production.constants import HANGAR_DIVISION_FLAGS
+from ...production.constants import INTAKE_HANGAR_FLAGS
 from ...sorting import actions
 
 router = APIRouter()
@@ -64,4 +64,9 @@ def list_available_characters():
 
 @router.get("/hangar-division-options")
 def get_hangar_division_options():
-    return {"hangar_division_flags": list(HANGAR_DIVISION_FLAGS)}
+    # Deliberately INTAKE_HANGAR_FLAGS, not HANGAR_DIVISION_FLAGS: a
+    # Wareneingang intake source legitimately includes "Deliveries" (a
+    # courier/market delivery lands there) - unlike Production/Doctrine's
+    # stock_hangar_flags/stockpile_hangar_flags, which must NOT offer it
+    # (see production/constants.py's INTAKE_HANGAR_FLAGS docstring).
+    return {"hangar_division_flags": list(INTAKE_HANGAR_FLAGS)}

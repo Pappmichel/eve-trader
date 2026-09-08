@@ -140,6 +140,24 @@ HANGAR_DIVISION_FLAGS: tuple[str, ...] = (
     "CorpSAG1", "CorpSAG2", "CorpSAG3", "CorpSAG4", "CorpSAG5", "CorpSAG6", "CorpSAG7",
 )
 
+# Valid options for a Sorting-tool intake source's hangar_flag (see
+# eve_trader/sorting/) - every real division (HANGAR_DIVISION_FLAGS) *plus*
+# "Deliveries", deliberately not included in HANGAR_DIVISION_FLAGS itself:
+# "Deliveries" is one of storage.NON_STOCK_LOCATION_FLAGS, so it would never
+# be a sane choice for stock_hangar_flags/stockpile_hangar_flags
+# (esi_stock_at_location excludes it unconditionally before allowed_flags
+# even applies, making it a silent always-zero filter there) - but it's
+# exactly where a courier contract or market delivery routinely lands at
+# C-J, so it's a legitimate, common Wareneingang choice (assets_at_flag has
+# no NON_STOCK_LOCATION_FLAGS exclusion, so it works there). Was briefly
+# dropped when the Wareneingang helper moved off TradingConfig onto its own
+# Sorting tool (PR promoting cross_tool.py to eve_trader/sorting/) - a real
+# regression, since it silently took away a previously-supported intake
+# location with no functional reason (assets_at_flag/resolved_hangar_flag
+# handle "Deliveries" correctly either way, only the validation list here
+# was ever the blocker). Restored.
+INTAKE_HANGAR_FLAGS: tuple[str, ...] = HANGAR_DIVISION_FLAGS + ("Deliveries",)
+
 
 @dataclass(frozen=True)
 class ActivityMods:

@@ -258,3 +258,17 @@ def test_do_add_intake_source_rejects_unknown_hangar_flag(monkeypatch):
 def test_do_add_intake_source_requires_character_name(monkeypatch):
     with pytest.raises(ActionError, match="character_name"):
         do_add_intake_source("character", "Hangar")
+
+
+def test_do_add_intake_source_accepts_deliveries_as_intake_flag(monkeypatch):
+    # Regression: "Deliveries" is a legitimate Wareneingang location (a
+    # courier/market delivery routinely lands there) even though it must
+    # NOT be a valid ProductionConfig.stock_hangar_flags/DoctrineConfig.
+    # stockpile_hangar_flags choice (see production/constants.py's
+    # INTAKE_HANGAR_FLAGS docstring) - do_add_intake_source validates
+    # against INTAKE_HANGAR_FLAGS, not the narrower HANGAR_DIVISION_FLAGS.
+    monkeypatch.setattr(storage, "add_sorting_intake_source", lambda *a, **kw: 1)
+
+    result = do_add_intake_source("corp", "Deliveries")
+
+    assert result["hangar_flag"] == "Deliveries"

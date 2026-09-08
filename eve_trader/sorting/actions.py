@@ -8,7 +8,7 @@ from typing import Optional
 
 from .. import storage
 from ..actions import ActionError
-from ..production.constants import HANGAR_DIVISION_FLAGS
+from ..production.constants import INTAKE_HANGAR_FLAGS
 from . import engine
 
 
@@ -36,10 +36,10 @@ def do_add_intake_source(source_kind: str, hangar_flag: str,
                          label: Optional[str] = None) -> dict:
     if source_kind not in ("character", "corp"):
         raise ActionError("source_kind must be 'character' or 'corp'.")
-    if hangar_flag not in HANGAR_DIVISION_FLAGS:
+    if hangar_flag not in INTAKE_HANGAR_FLAGS:
         raise ActionError(
             f"hangar_flag: {hangar_flag!r} is not a known hangar division. "
-            f"Options: {', '.join(HANGAR_DIVISION_FLAGS)}"
+            f"Options: {', '.join(INTAKE_HANGAR_FLAGS)}"
         )
     if source_kind == "character":
         if not character_name or not character_name.strip():
