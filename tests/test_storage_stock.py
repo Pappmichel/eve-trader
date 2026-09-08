@@ -197,6 +197,29 @@ def test_assets_at_flag_owner_name_does_not_match_other_table_owners(tenant):
     assert dict(storage.assets_at_flag("CorpSAG1", tables=("character_assets",), owner_name="Alice")) == {TYPE_ID: 3}
 
 
+def test_assets_at_flag_location_id_filters_to_that_station(tenant):
+    other_location_id = 1000000000002
+    storage.replace_assets("character_assets", [
+        (1, TYPE_ID, LOCATION_ID, "Hangar", 10, 0, "Alice"),
+        (2, TYPE_ID, other_location_id, "Hangar", 20, 0, "Alice"),
+    ])
+
+    # Same character, same hangar-division flag, two different stations
+    # (e.g. a Jita "Hangar" and a C-J "Hangar") - a Wareneingang source
+    # means one specific structure, not "Hangar" everywhere the character
+    # has ever had cargo.
+    assert dict(storage.assets_at_flag(
+        "Hangar", tables=("character_assets",), owner_name="Alice", location_id=LOCATION_ID,
+    )) == {TYPE_ID: 10}
+    assert dict(storage.assets_at_flag(
+        "Hangar", tables=("character_assets",), owner_name="Alice", location_id=other_location_id,
+    )) == {TYPE_ID: 20}
+    # None keeps today's unfiltered-by-location behaviour (both stations).
+    assert dict(storage.assets_at_flag(
+        "Hangar", tables=("character_assets",), owner_name="Alice",
+    )) == {TYPE_ID: 30}
+
+
 def test_esi_stock_at_location_still_unwraps_corp_office(tenant):
     office_item_id = 900
     storage.replace_assets("corp_assets", [

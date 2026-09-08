@@ -1716,16 +1716,13 @@ def esi_stock_at_location(type_id: int, location_id: Optional[int],
 
 
 def assets_at_flag(flag: str, tables: tuple[str, ...] = ("character_assets", "corp_assets"),
-                   owner_name: Optional[str] = None) -> list[tuple[int, float]]:
+                   owner_name: Optional[str] = None,
+                   location_id: Optional[int] = None) -> list[tuple[int, float]]:
     """For a single hangar division (`resolved_hangar_flag`, e.g. a character's
     personal "Hangar" or a corp CorpSAG*), every `type_id` currently sitting
     there and its summed quantity. Unlike esi_stock_at_location, this has no
     type_id filter (it answers "what's in this division at all", not "how
-    much of one item") and no location_id filter either - a hangar-division
-    flag alone (e.g. "CorpSAG3") only makes sense relative to whatever
-    structure the corp's own offices are actually at, and this app has
-    exactly one such structure per tenant in practice, so narrowing further
-    wasn't worth the extra parameter for this read-only helper.
+    much of one item").
 
     `tables` defaults to both character and corp asset tables - pass a
     one-element tuple (e.g. `("character_assets",)` / `("corp_assets",)`)
@@ -1733,8 +1730,16 @@ def assets_at_flag(flag: str, tables: tuple[str, ...] = ("character_assets", "co
     refers to (see eve_trader/sorting/). `owner_name`: when set, an extra
     `AND owner_name = ?` filter so a character source only counts that
     character's personal hangar, not every other character's Hangar sitting
-    in the same table. None (the default) leaves today's unfiltered
-    behaviour unchanged.
+    in the same table. `location_id`: when set, an extra
+    `AND resolved_location_id = ?` filter (same resolved column
+    esi_stock_at_location uses - see its own docstring) so a hangar-division
+    flag like "Hangar" only counts the copy of that division sitting at one
+    specific structure/station, not every station a character has ever
+    visited with cargo in a "Hangar" flag (a character routinely has both a
+    Jita "Hangar" and a C-J "Hangar", and a Wareneingang source cares about
+    exactly one of those). Both `owner_name`/`location_id` default to None
+    (today's unfiltered-in-that-dimension behaviour) so existing callers
+    that don't pass them are unaffected.
 
     Filters on resolved_hangar_flag (see _resolve_hangar_flags), not the raw
     location_flag column - a fresh Wareneingang delivery routinely arrives
@@ -1751,13 +1756,18 @@ def assets_at_flag(flag: str, tables: tuple[str, ...] = ("character_assets", "co
     if owner_name is not None:
         owner_clause = " AND owner_name = ?"
         owner_params = (owner_name,)
+    location_clause = ""
+    location_params: tuple = ()
+    if location_id is not None:
+        location_clause = " AND resolved_location_id = ?"
+        location_params = (location_id,)
     with connect() as conn:
         totals: dict[int, float] = {}
         for table in tables:
             rows = conn.execute(
                 f"SELECT type_id, COALESCE(SUM(quantity), 0) FROM {table} "
-                f"WHERE resolved_hangar_flag = ?{owner_clause} GROUP BY type_id",
-                (flag, *owner_params),
+                f"WHERE resolved_hangar_flag = ?{owner_clause}{location_clause} GROUP BY type_id",
+                (flag, *owner_params, *location_params),
             ).fetchall()
             for type_id, qty in rows:
                 totals[type_id] = totals.get(type_id, 0.0) + qty

@@ -149,12 +149,18 @@ def _source_label(source_kind: str, owner_name: Optional[str], hangar_flag: str,
     return f"Corp ({hangar_flag})"
 
 
-def _intake_from_sources() -> tuple[dict[int, float], dict[int, list[dict]]]:
+def _intake_from_sources(production_cfg: ProductionConfig = PRODUCTION_CONFIG,
+                         ) -> tuple[dict[int, float], dict[int, list[dict]]]:
     """Sums every configured sorting_intake_sources row, returning
     (totals_by_type, by_source_by_type). Character sources read
     character_assets filtered to that character's owner_name; corp sources
-    read corp_assets filtered to that corp's owner_name. Empty sources
-    list -> empty dicts, not an error."""
+    read corp_assets filtered to that corp's owner_name. Both are also
+    filtered to production_cfg.home_location_id (the C-J structure) when
+    set - a hangar-division flag like "Hangar" exists at every station a
+    character has ever had cargo in, and a Wareneingang source means the
+    copy of it sitting at C-J specifically, not a character's Jita "Hangar"
+    or any other station's. Empty sources list -> empty dicts, not an
+    error."""
     totals: dict[int, float] = {}
     by_source: dict[int, list[dict]] = {}
     for source_id, source_kind, owner_name, hangar_flag, label in storage.load_sorting_intake_sources():
@@ -162,7 +168,8 @@ def _intake_from_sources() -> tuple[dict[int, float], dict[int, list[dict]]]:
             tables: tuple[str, ...] = ("character_assets",)
         else:
             tables = ("corp_assets",)
-        items = storage.assets_at_flag(hangar_flag, tables=tables, owner_name=owner_name)
+        items = storage.assets_at_flag(hangar_flag, tables=tables, owner_name=owner_name,
+                                        location_id=production_cfg.home_location_id)
         source_label = _source_label(source_kind, owner_name, hangar_flag, label)
         for type_id, qty in items:
             totals[type_id] = totals.get(type_id, 0.0) + qty
@@ -194,7 +201,7 @@ def do_sorting_list(production_cfg: ProductionConfig = PRODUCTION_CONFIG,
     Empty `rows` (not an error) when no sorting_intake_sources are
     configured - the feature is simply off until an operator adds at least
     one character/corp intake."""
-    intake, by_source = _intake_from_sources()
+    intake, by_source = _intake_from_sources(production_cfg)
     if not intake:
         return {"rows": []}
 
