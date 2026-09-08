@@ -46,7 +46,7 @@ echo "==> Applying Postgres schema (all files, idempotent)..."
 for f in phase1_schema.sql phase2_schema.sql phase3_schema.sql admin_schema.sql \
          doctrine_schema.sql observability_schema.sql refining_schema.sql \
          station_trading_schema.sql role_consent_schema.sql special_orders_schema.sql \
-         sorting_schema.sql; do
+         sorting_schema.sql production_buy_list_schema.sql; do
     sudo -u postgres psql -d eve_trader -v ON_ERROR_STOP=1 -f "docs/$f"
 done
 

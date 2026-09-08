@@ -36,6 +36,7 @@ def _stub_everything(monkeypatch):
     monkeypatch.setattr(storage, "latest_snapshot", _empty_snapshot_df)
     monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
+    monkeypatch.setattr(storage, "load_latest_buy_list", lambda: {})
     monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None: 0.0)
     monkeypatch.setattr(storage, "sell_order_qty_at_location", lambda type_id, location_id: 0.0)
     monkeypatch.setattr(storage, "sell_order_qty_in_region", lambda type_id, region_id: 0.0)
@@ -101,49 +102,33 @@ def test_trading_ignores_non_import_decisions(monkeypatch):
     assert result["rows"][0]["unclaimed"] is True
 
 
-def test_material_wanted_qty_from_stock_target_backup_minus_ist(monkeypatch):
-    production_cfg = ProductionConfig(home_location_id=1000000000001, stock_hangar_flags=("CorpSAG1",))
+def test_material_wanted_qty_from_persisted_buy_list_not_stock_targets(monkeypatch):
+    # The reported bug: a real buy-list material (Mexallon, Platinum, ...) is
+    # never itself a stock_targets row - those are finished products. Sorting
+    # must still claim it via the persisted plan_production buy list.
     monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
-    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(34, 500.0)])
-    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(34, "Tritanium", 200.0, None, None)])
-    monkeypatch.setattr(storage, "load_manual_stock", lambda: {34: 10.0})
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(36, 500.0)])
+    monkeypatch.setattr(storage, "load_latest_buy_list", lambda: {36: 21100000.0})
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
 
-    def fake_stock(type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None):
-        assert location_id == 1000000000001
-        assert allowed_flags == ("CorpSAG1",)
-        assert exclude_intake_at_location_id == 1000000000001
-        return 40.0
-    monkeypatch.setattr(storage, "esi_stock_at_location", fake_stock)
+    result = sorting_engine.do_sorting_list()
 
-    result = sorting_engine.do_sorting_list(production_cfg=production_cfg)
-
-    # backup_stock 200 - (manual 10 + esi 40 = 50) = 150; no market target so not markt
-    assert result["rows"][0]["wanted_by_tool"] == [{"tool": "material", "wanted_qty": 150.0}]
+    row = result["rows"][0]
+    assert row["type_id"] == 36
+    assert row["wanted_by_tool"] == [{"tool": "material", "wanted_qty": 21100000.0}]
+    assert row["unclaimed"] is False
 
 
-def test_material_wanted_qty_does_not_treat_intake_stack_as_already_covered(monkeypatch):
-    # The reported bug one layer down: Sorting's own material pot used
-    # esi_stock_at_location without excluding intake, so a type sitting only
-    # in the Wareneingang looked fully covered and vanished from
-    # wanted_by_tool: material.
-    production_cfg = ProductionConfig(home_location_id=1000000000001)
-    monkeypatch.setattr(storage, "load_sorting_intake_sources", lambda: [
-        (1, "character", "pappmichl5", "Hangar", None),
-    ])
-    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(34, 500.0)])
-    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(34, "Tritanium", 200.0, None, None)])
-    monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
+def test_material_wanted_empty_when_no_buy_list_saved(monkeypatch):
+    monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(36, 500.0)])
+    monkeypatch.setattr(storage, "load_latest_buy_list", lambda: {})
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(36, "Mexallon", 200.0, None, None)])
 
-    def fake_stock(type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None):
-        assert exclude_intake_at_location_id == 1000000000001
-        return 0.0
-    monkeypatch.setattr(storage, "esi_stock_at_location", fake_stock)
+    result = sorting_engine.do_sorting_list()
 
-    result = sorting_engine.do_sorting_list(production_cfg=production_cfg)
-
-    assert result["rows"][0]["intake_qty"] == 500.0
-    assert result["rows"][0]["wanted_by_tool"] == [{"tool": "material", "wanted_qty": 200.0}]
-    assert result["rows"][0]["unclaimed"] is False
+    assert result["rows"][0]["wanted_by_tool"] == []
+    assert result["rows"][0]["unclaimed"] is True
 
 
 def test_markt_merges_trading_import_and_production_listing_shortfall(monkeypatch):
@@ -197,7 +182,7 @@ def test_multiple_pots_can_each_want_more_than_is_actually_in_the_intake(monkeyp
     # 300+75 > 500 and decide by hand.
     monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
     monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(34, 100.0)])
-    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(34, "Tritanium", 300.0, None, None)])
+    monkeypatch.setattr(storage, "load_latest_buy_list", lambda: {34: 300.0})
     monkeypatch.setattr(storage, "load_mineral_requirements", lambda: [(34, "Tritanium", 75.0)])
 
     result = sorting_engine.do_sorting_list()

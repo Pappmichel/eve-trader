@@ -1117,6 +1117,31 @@ def load_manual_stock() -> dict[int, float]:
     return {r[0]: r[1] for r in rows}
 
 
+def save_latest_buy_list(rows: list[tuple[int, float]]) -> None:
+    """Wholesale-replace this tenant's latest Production buy list
+    (plan_production's own buy_list: type_id, quantity). DELETE+INSERT, same
+    shape as replace_assets/replace_mineral_requirements - Sorting only needs
+    the current list, not history, so a second save must drop types that are
+    no longer on the buy list. The DELETE is tenant-scoped by RLS."""
+    rows = [(int(type_id), float(qty)) for type_id, qty in rows if float(qty) > 0]
+    with connect() as conn:
+        conn.execute("DELETE FROM production_buy_list")
+        if rows:
+            conn.executemany(
+                "INSERT INTO production_buy_list (type_id, quantity) VALUES (?,?)",
+                rows,
+            )
+
+
+def load_latest_buy_list() -> dict[int, float]:
+    """Current Production buy-list quantities by type_id. Empty dict (not an
+    error) if this tenant has never run plan_production, matching how
+    latest_snapshot() is empty until the first Refresh Shortlist."""
+    with connect() as conn:
+        rows = conn.execute("SELECT type_id, quantity FROM production_buy_list").fetchall()
+    return {int(type_id): float(qty) for type_id, qty in rows if qty and float(qty) > 0}
+
+
 def upsert_manual_build_buy(type_id: int, decision: str) -> None:
     assert decision in ("Build", "Buy")
     with connect() as conn:

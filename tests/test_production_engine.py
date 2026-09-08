@@ -27,6 +27,16 @@ psycopg = pytest.importorskip("psycopg")
 
 
 @pytest.fixture(autouse=True)
+def _noop_save_latest_buy_list(monkeypatch):
+    # plan_production now persists its buy_list; most tests here never apply
+    # production_buy_list_schema.sql. The dedicated persist spy below
+    # re-monkeypatches this. plan_special_order / plan_asset_optimized must
+    # not write that table, so a no-op here also keeps those calls honest
+    # if someone wires them up by accident (they simply wouldn't be called).
+    monkeypatch.setattr(storage, "save_latest_buy_list", lambda rows: None)
+
+
+@pytest.fixture(autouse=True)
 def _reset_discover_cache():
     # discover_build_candidates now caches its own results (see engine.py's
     # _discover_cache) - without this, whichever test in this file runs
@@ -2490,6 +2500,43 @@ def test_plan_production_buy_list_on_hand_pct_for_a_recursively_reached_material
     row = next(r for r in result["buy_list"] if r.type_id == 2)
     assert row.quantity == 6.0  # 10 gross - 4 on hand
     assert round(row.on_hand_pct, 1) == 40.0  # 4 of 10 = 40%
+
+
+@pg_helpers.postgres_required()
+def test_plan_production_persists_buy_list_via_save_latest_buy_list(monkeypatch, tenant):
+    saved = []
+    monkeypatch.setattr(storage, "save_latest_buy_list", lambda rows: saved.append(list(rows)))
+    stock_targets = [(34, "Tritanium", 1, 0, 0)]
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_plan_context(stock_targets))
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_buy_or_build_decision", lambda *a, **k: "Buy")
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 4)
+    monkeypatch.setattr(storage, "load_sde_category_names", lambda: {4: "Material"})
+
+    result = engine.plan_production(ProductionConfig())
+
+    assert len(saved) == 1
+    assert saved[0] == [(e.type_id, e.quantity) for e in result["buy_list"]]
+    assert saved[0] == [(34, 1.0)]
+
+
+@pg_helpers.postgres_required()
+def test_plan_special_order_does_not_persist_buy_list(monkeypatch, tenant):
+    saved = []
+    monkeypatch.setattr(storage, "save_latest_buy_list", lambda rows: saved.append(list(rows)))
+    items = [(34, "Tritanium", 1.0)]
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_special_order_context())
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_buy_or_build_decision", lambda *a, **k: "Buy")
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 4)
+    monkeypatch.setattr(storage, "load_sde_category_names", lambda: {4: "Material"})
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
+
+    engine.plan_special_order(items, ProductionConfig(), net_against_stock=False)
+
+    assert saved == []
 
 
 # ---------------------------------------------------------------- logistics_status
