@@ -12,7 +12,11 @@ section. Two groups, by the real storage.py write pattern each table uses:
      (the plan's reasoning: column-only-bucket IDs are already globally
      unique per ESI; the no-PK ones have no PK to widen) - so the *entire*
      safety of that unfiltered DELETE depends on RLS alone. Proving that is
-     this file's main job.
+     this file's main job. (character_assets/corp_assets' own PK was widened
+     2026-09-08 to (item_id, owner_name) - item_id alone turned out not to be
+     globally unique after all, see phase1_schema.sql's own comment - but
+     that's orthogonal to tenant scoping: it's still not tenant_id-widened,
+     so this file's RLS-alone claim is unaffected.)
   2. Append-only tables (2: shortlist_snapshot, new_candidates) - no DELETE,
      no PK, rows just accumulate across runs. Proves multiple appends by one
      tenant never become visible to another.
@@ -38,8 +42,8 @@ pytestmark = pg_helpers.postgres_required()
 # insert a distinguishable row per tenant; full column realism isn't needed
 # to prove RLS visibility/delete-scoping, which doesn't care about content.
 _WHOLESALE_REPLACE_TABLES = [
-    ("character_assets", ("item_id", "type_id", "quantity"), (100001, 34, 500), (200001, 35, 300)),
-    ("corp_assets", ("item_id", "type_id", "quantity"), (100002, 34, 500), (200002, 35, 300)),
+    ("character_assets", ("item_id", "type_id", "quantity", "owner_name"), (100001, 34, 500, "Alice"), (200001, 35, 300, "Bob")),
+    ("corp_assets", ("item_id", "type_id", "quantity", "owner_name"), (100002, 34, 500, "My Corp (corp)"), (200002, 35, 300, "Other Corp (corp)")),
     ("character_industry_jobs", ("job_id", "activity_id", "runs"), (500001, 1, 10), (500002, 1, 5)),
     ("corp_industry_jobs", ("job_id", "activity_id", "runs"), (500003, 1, 10), (500004, 1, 5)),
     ("character_slots", ("character_name", "manufacturing_slots"), ("Alice", 5), ("Bob", 3)),

@@ -32,7 +32,7 @@ def _stub_everything(monkeypatch):
     """Every do_sorting_list call site defaults to 'nothing here' - each
     test below overrides just the one or two it cares about."""
     monkeypatch.setattr(storage, "load_sorting_intake_sources", lambda: [])
-    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None: [])
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [])
     monkeypatch.setattr(storage, "latest_snapshot", _empty_snapshot_df)
     monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
@@ -51,7 +51,7 @@ def test_no_intake_sources_returns_empty_list():
 
 def test_empty_intake_returns_empty_list(monkeypatch):
     monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
-    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None: [])
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [])
 
     result = sorting_engine.do_sorting_list()
 
@@ -60,7 +60,7 @@ def test_empty_intake_returns_empty_list(monkeypatch):
 
 def test_item_nobody_wants_is_included_and_marked_unclaimed(monkeypatch):
     monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
-    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None: [(34, 500.0)])
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(34, 500.0)])
 
     result = sorting_engine.do_sorting_list()
 
@@ -75,7 +75,7 @@ def test_item_nobody_wants_is_included_and_marked_unclaimed(monkeypatch):
 
 def test_trading_wanted_qty_from_import_decision_snapshot(monkeypatch):
     monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
-    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None: [(34, 500.0)])
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(34, 500.0)])
     monkeypatch.setattr(storage, "latest_snapshot", lambda: pd.DataFrame([
         {"item_id": 34, "decision": "Import", "avg_daily_volume": 300.0, "sell_volume": 50.0,
          "own_orders_remaining": 0.0},
@@ -90,7 +90,7 @@ def test_trading_wanted_qty_from_import_decision_snapshot(monkeypatch):
 
 def test_trading_ignores_non_import_decisions(monkeypatch):
     monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
-    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None: [(34, 500.0)])
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(34, 500.0)])
     monkeypatch.setattr(storage, "latest_snapshot", lambda: pd.DataFrame([
         {"item_id": 34, "decision": "Skip", "avg_daily_volume": 300.0, "sell_volume": 0.0,
          "own_orders_remaining": 0.0},
@@ -104,7 +104,7 @@ def test_trading_ignores_non_import_decisions(monkeypatch):
 def test_material_wanted_qty_from_stock_target_backup_minus_ist(monkeypatch):
     production_cfg = ProductionConfig(home_location_id=1000000000001, stock_hangar_flags=("CorpSAG1",))
     monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
-    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None: [(34, 500.0)])
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(34, 500.0)])
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [(34, "Tritanium", 200.0, None, None)])
     monkeypatch.setattr(storage, "load_manual_stock", lambda: {34: 10.0})
 
@@ -149,7 +149,7 @@ def test_material_wanted_qty_does_not_treat_intake_stack_as_already_covered(monk
 def test_markt_merges_trading_import_and_production_listing_shortfall(monkeypatch):
     production_cfg = ProductionConfig(home_location_id=1000000000001)
     monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
-    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None: [(34, 500.0)])
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(34, 500.0)])
     monkeypatch.setattr(storage, "latest_snapshot", lambda: pd.DataFrame([
         {"item_id": 34, "decision": "Import", "avg_daily_volume": 100.0, "sell_volume": 0.0,
          "own_orders_remaining": 0.0},
@@ -165,7 +165,7 @@ def test_markt_merges_trading_import_and_production_listing_shortfall(monkeypatc
 
 def test_doctrine_wanted_qty_sums_shortfall_across_fittings(monkeypatch):
     monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
-    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None: [(34, 500.0)])
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(34, 500.0)])
     rows = [
         StockpileRow(fitting_id="f1", fitting_name="Fit 1", doctrine_id="d1", doctrine_name="Doctrine 1",
                      type_id=34, type_name="Tritanium", slot_section="drone/cargo/charge",
@@ -183,7 +183,7 @@ def test_doctrine_wanted_qty_sums_shortfall_across_fittings(monkeypatch):
 
 def test_ore_minerals_wanted_qty_from_mineral_requirements(monkeypatch):
     monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
-    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None: [(34, 500.0)])
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(34, 500.0)])
     monkeypatch.setattr(storage, "load_mineral_requirements", lambda: [(34, "Tritanium", 75.0)])
 
     result = sorting_engine.do_sorting_list()
@@ -196,7 +196,7 @@ def test_multiple_pots_can_each_want_more_than_is_actually_in_the_intake(monkeyp
     # own raw demand; it's up to the human sorting the hangar to see that
     # 300+75 > 500 and decide by hand.
     monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
-    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None: [(34, 100.0)])
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(34, 100.0)])
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [(34, "Tritanium", 300.0, None, None)])
     monkeypatch.setattr(storage, "load_mineral_requirements", lambda: [(34, "Tritanium", 75.0)])
 
@@ -216,7 +216,7 @@ def test_by_source_keeps_two_characters_and_a_corp_division_separate(monkeypatch
         (3, "corp", "RichlTech (corp)", "CorpSAG3", "Corp intake"),
     ])
 
-    def fake_assets(flag, tables=(), owner_name=None):
+    def fake_assets(flag, tables=(), owner_name=None, location_id=None):
         if tables == ("character_assets",) and owner_name == "Alice":
             return [(34, 10.0)]
         if tables == ("character_assets",) and owner_name == "Bob":
@@ -242,7 +242,7 @@ def test_by_source_keeps_two_characters_and_a_corp_division_separate(monkeypatch
 
 def test_type_name_resolved_from_sde(monkeypatch):
     monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
-    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None: [(34, 500.0)])
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(34, 500.0)])
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (34, 18, "Tritanium", 0.01, 1, None, None, None))
 
     result = sorting_engine.do_sorting_list()
@@ -252,7 +252,7 @@ def test_type_name_resolved_from_sde(monkeypatch):
 
 def test_type_name_falls_back_to_type_id_when_sde_unknown(monkeypatch):
     monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
-    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None: [(999999, 1.0)])
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(999999, 1.0)])
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: None)
 
     result = sorting_engine.do_sorting_list()
@@ -262,7 +262,7 @@ def test_type_name_falls_back_to_type_id_when_sde_unknown(monkeypatch):
 
 def test_doctrine_wanted_empty_when_no_doctrine_assets_synced(monkeypatch):
     monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
-    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None: [(34, 500.0)])
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(34, 500.0)])
     doctrine_cfg = DoctrineConfig()
     monkeypatch.setattr(sorting_engine, "stockpile_rows_for_doctrine", lambda cfg=None: ([], False))
 
@@ -279,7 +279,7 @@ def test_two_corp_sources_count_only_their_own_corp(monkeypatch):
         (2, "corp", "building mining and research corporation (corp)", "CorpSAG1", None),
     ])
 
-    def fake_assets(flag, tables=(), owner_name=None):
+    def fake_assets(flag, tables=(), owner_name=None, location_id=None):
         assert flag == "CorpSAG1"
         assert tables == ("corp_assets",)
         if owner_name == "RichlTech (corp)":
@@ -302,6 +302,24 @@ def test_two_corp_sources_count_only_their_own_corp(monkeypatch):
     assert by_type[35]["by_source"] == [
         {"source_label": "building mining and research corporation (corp) (Corp, CorpSAG1)", "qty": 8.0},
     ]
+
+
+def test_intake_scoped_to_production_home_location(monkeypatch):
+    # The bug this covers: a character/corp routinely has cargo sitting in
+    # a same-named hangar flag (e.g. "Hangar") at more than one station -
+    # a Wareneingang source without a location filter counted all of them,
+    # not just the C-J structure Production is actually configured for.
+    monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
+    production_cfg = ProductionConfig(home_location_id=1000000000042)
+
+    def fake_assets(flag, tables=(), owner_name=None, location_id=None):
+        assert location_id == 1000000000042
+        return [(34, 500.0)]
+    monkeypatch.setattr(storage, "assets_at_flag", fake_assets)
+
+    result = sorting_engine.do_sorting_list(production_cfg=production_cfg)
+
+    assert result["rows"][0]["intake_qty"] == 500.0
 
 
 def test_do_add_intake_source_rejects_unknown_kind(monkeypatch):

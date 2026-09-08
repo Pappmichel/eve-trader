@@ -1383,37 +1383,50 @@ def load_category_system_ids() -> dict[str, int]:
     return {category: system_id for category, system_id in rows}
 
 
-def _resolve_locations(rows: list[tuple], location_index: int = 2) -> list[int]:
+def _resolve_locations(rows: list[tuple], location_index: int = 2, owner_index: int = 6) -> list[int]:
     """For each row, walks its own location_id (at `location_index`) up
     through however many nested containers (ship cargo, corp Office,
     personal/station container, ...) it's parented under, to the outermost
     station/structure id - the general fix for GitHub issues #4/#20 (stock
     at a resolved-one-level-only location_id, e.g. a container inside a corp
     hangar, used to read as invisible). `rows` supplies its own parent map
-    (item_id at index 0 -> location_id at `location_index`) - correct as
-    long as every container a row could be nested under is itself present in
-    `rows`, true for character_assets/corp_assets (containers are ordinary
-    assets in the same per-owner table) but not for blueprints, whose
-    immediate container lives in the *asset* table instead (see
-    replace_blueprints, which builds parent_of from there instead).
+    (`(item_id, owner_name)` at indices 0/`owner_index` -> location_id at
+    `location_index`) - correct as long as every container a row could be
+    nested under is itself present in `rows`, true for character_assets/
+    corp_assets (containers are ordinary assets in the same per-owner table)
+    but not for blueprints, whose immediate container lives in the *asset*
+    table instead (see replace_blueprints, which builds parent_of from there
+    instead).
+
+    Keyed on `(item_id, owner_name)`, not item_id alone: confirmed live
+    (2026-09-08) - CCP's item_id for a non-singleton (stackable) asset is
+    NOT guaranteed globally unique across different owners at the same
+    location, only that this app's own schema comments assumed it was
+    (phase1_schema.sql's "column-only bucket" note) - two real characters
+    both had a "Hangar" stack of the same type_id at C-J sharing one
+    item_id (different quantities, so genuinely two different stacks, not
+    a duplicate fetch). A container can only ever be the parent of items
+    the *same* owner's own asset list references, so scoping the lookup to
+    (item_id, owner_name) can't pick up the wrong owner's colliding id.
 
     Capped at 10 hops as a defensive bound against a cyclical edge case, not
     a realistic EVE nesting depth (mirrors the walk this replaces, formerly
     duplicated per-query in esi_stock_at_location/search_item_stock_locations)."""
-    parent_of = {row[0]: row[location_index] for row in rows}
+    parent_of = {(row[0], row[owner_index]): row[location_index] for row in rows}
     resolved = []
     for row in rows:
+        owner = row[owner_index]
         root = row[location_index]
         hops = 0
-        while root in parent_of and hops < 10:
-            root = parent_of[root]
+        while (root, owner) in parent_of and hops < 10:
+            root = parent_of[(root, owner)]
             hops += 1
         resolved.append(root)
     return resolved
 
 
 def _resolve_hangar_flags(rows: list[tuple], location_index: int = 2, flag_index: int = 3,
-                           type_index: int = 1) -> list[str]:
+                           type_index: int = 1, owner_index: int = 6) -> list[str]:
     """For each row, the *hangar-division* location_flag it should be
     counted under for allowed_flags/assets_at_flag filtering - NOT simply
     the row's own raw location_flag, which is meaningless once an item is
@@ -1426,11 +1439,13 @@ def _resolve_hangar_flags(rows: list[tuple], location_index: int = 2, flag_index
     already fixed for GitHub issue #4/#20, reintroduced here because
     allowed_flags shipped without going through the same resolution.
 
-    Walks the same parent_of chain as _resolve_locations, but instead of
-    returning the outermost id, returns the *flag* of the row one level
-    inside the outermost tracked ancestor when that ancestor is a corp
-    Office (OFFICE_TYPE_ID) - a corp Office's own row flag is always the
-    fixed system value "OfficeFolder", never a real division; the row
+    Walks the same (item_id, owner_name)-keyed parent_of chain as
+    _resolve_locations (see its own docstring for why owner_name is part of
+    the key - item_id alone can collide across different owners), but
+    instead of returning the outermost id, returns the *flag* of the row
+    one level inside the outermost tracked ancestor when that ancestor is a
+    corp Office (OFFICE_TYPE_ID) - a corp Office's own row flag is always
+    the fixed system value "OfficeFolder", never a real division; the row
     parented directly under the Office (CorpSAG1..7) is what actually names
     the division, and everything nested deeper than that inherits it. For a
     personal hangar (no Office involved), the outermost tracked ancestor's
@@ -1438,15 +1453,16 @@ def _resolve_hangar_flags(rows: list[tuple], location_index: int = 2, flag_index
     so no back-off needed. An un-nested row (already the outermost ancestor)
     simply returns its own flag either way, identical to today's raw-column
     behaviour - only nested rows differ."""
-    by_item = {row[0]: row for row in rows}
+    by_item = {(row[0], row[owner_index]): row for row in rows}
     resolved = []
     for row in rows:
+        owner = row[owner_index]
         current = row
         previous = row
         hops = 0
-        while current[location_index] in by_item and hops < 10:
+        while (current[location_index], owner) in by_item and hops < 10:
             previous = current
-            current = by_item[current[location_index]]
+            current = by_item[(current[location_index], owner)]
             hops += 1
         if current[type_index] == OFFICE_TYPE_ID and previous is not current:
             resolved.append(previous[flag_index])
@@ -1742,16 +1758,13 @@ def esi_stock_at_location(type_id: int, location_id: Optional[int],
 
 
 def assets_at_flag(flag: str, tables: tuple[str, ...] = ("character_assets", "corp_assets"),
-                   owner_name: Optional[str] = None) -> list[tuple[int, float]]:
+                   owner_name: Optional[str] = None,
+                   location_id: Optional[int] = None) -> list[tuple[int, float]]:
     """For a single hangar division (`resolved_hangar_flag`, e.g. a character's
     personal "Hangar" or a corp CorpSAG*), every `type_id` currently sitting
     there and its summed quantity. Unlike esi_stock_at_location, this has no
     type_id filter (it answers "what's in this division at all", not "how
-    much of one item") and no location_id filter either - a hangar-division
-    flag alone (e.g. "CorpSAG3") only makes sense relative to whatever
-    structure the corp's own offices are actually at, and this app has
-    exactly one such structure per tenant in practice, so narrowing further
-    wasn't worth the extra parameter for this read-only helper.
+    much of one item").
 
     `tables` defaults to both character and corp asset tables - pass a
     one-element tuple (e.g. `("character_assets",)` / `("corp_assets",)`)
@@ -1759,8 +1772,16 @@ def assets_at_flag(flag: str, tables: tuple[str, ...] = ("character_assets", "co
     refers to (see eve_trader/sorting/). `owner_name`: when set, an extra
     `AND owner_name = ?` filter so a character source only counts that
     character's personal hangar, not every other character's Hangar sitting
-    in the same table. None (the default) leaves today's unfiltered
-    behaviour unchanged.
+    in the same table. `location_id`: when set, an extra
+    `AND resolved_location_id = ?` filter (same resolved column
+    esi_stock_at_location uses - see its own docstring) so a hangar-division
+    flag like "Hangar" only counts the copy of that division sitting at one
+    specific structure/station, not every station a character has ever
+    visited with cargo in a "Hangar" flag (a character routinely has both a
+    Jita "Hangar" and a C-J "Hangar", and a Wareneingang source cares about
+    exactly one of those). Both `owner_name`/`location_id` default to None
+    (today's unfiltered-in-that-dimension behaviour) so existing callers
+    that don't pass them are unaffected.
 
     Filters on resolved_hangar_flag (see _resolve_hangar_flags), not the raw
     location_flag column - a fresh Wareneingang delivery routinely arrives
@@ -1777,13 +1798,18 @@ def assets_at_flag(flag: str, tables: tuple[str, ...] = ("character_assets", "co
     if owner_name is not None:
         owner_clause = " AND owner_name = ?"
         owner_params = (owner_name,)
+    location_clause = ""
+    location_params: tuple = ()
+    if location_id is not None:
+        location_clause = " AND resolved_location_id = ?"
+        location_params = (location_id,)
     with connect() as conn:
         totals: dict[int, float] = {}
         for table in tables:
             rows = conn.execute(
                 f"SELECT type_id, COALESCE(SUM(quantity), 0) FROM {table} "
-                f"WHERE resolved_hangar_flag = ?{owner_clause} GROUP BY type_id",
-                (flag, *owner_params),
+                f"WHERE resolved_hangar_flag = ?{owner_clause}{location_clause} GROUP BY type_id",
+                (flag, *owner_params, *location_params),
             ).fetchall()
             for type_id, qty in rows:
                 totals[type_id] = totals.get(type_id, 0.0) + qty

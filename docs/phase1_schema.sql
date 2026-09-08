@@ -315,22 +315,43 @@ CREATE POLICY tenant_isolation ON category_location_options
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 
 -- ======================================================== column-only bucket
--- PK (item_id/job_id/order_id/character_name) is already globally unique per
+-- PK (job_id/order_id/character_name) is already globally unique per
 -- EVE/ESI's own guarantees - tenant_id added for RLS row-visibility only, PK
 -- left unchanged.
+--
+-- character_assets/corp_assets are the one exception, PK (item_id,
+-- owner_name) rather than item_id alone: confirmed live (2026-09-08,
+-- production/esi_sync.py's sync_esi 500ing with a real
+-- character_assets_pkey UniqueViolation) - CCP's item_id for a
+-- non-singleton (stackable) asset is NOT guaranteed globally unique across
+-- different owners at the same location, only that this file originally
+-- assumed it was. Two real characters both had a "Hangar" stack of the
+-- same type_id at the same structure sharing one item_id (different
+-- quantities - genuinely two different stacks, not a duplicate fetch, and
+-- reproduced deterministically on every retry, not a one-off race). See
+-- storage._resolve_locations/_resolve_hangar_flags, which key their own
+-- parent-of-container lookups the same way for the same reason.
 
 CREATE TABLE IF NOT EXISTS character_assets (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
-    item_id BIGINT PRIMARY KEY,
+    item_id BIGINT NOT NULL,
     type_id INTEGER,
     location_id BIGINT,
     location_flag TEXT,
     quantity INTEGER,
     is_blueprint_copy INTEGER,
-    owner_name TEXT,
+    owner_name TEXT NOT NULL,
     resolved_location_id BIGINT,
-    resolved_hangar_flag TEXT
+    resolved_hangar_flag TEXT,
+    PRIMARY KEY (item_id, owner_name)
 );
+-- Live migration: a table created before 2026-09-08 still has the old
+-- item_id-only PK - widen it in place. owner_name has no legacy NULLs to
+-- worry about (every existing row was already populated by replace_assets),
+-- so SET NOT NULL is safe unconditionally.
+ALTER TABLE character_assets ALTER COLUMN owner_name SET NOT NULL;
+ALTER TABLE character_assets DROP CONSTRAINT IF EXISTS character_assets_pkey;
+ALTER TABLE character_assets ADD CONSTRAINT character_assets_pkey PRIMARY KEY (item_id, owner_name);
 -- GitHub issue #4/#20: location_id is the item's *immediate* parent (a ship,
 -- a container, a corp Office, ...), which can be several containers deep -
 -- resolved_location_id is that chain walked all the way up to the outermost
@@ -357,16 +378,20 @@ CREATE POLICY tenant_isolation ON character_assets
 
 CREATE TABLE IF NOT EXISTS corp_assets (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
-    item_id BIGINT PRIMARY KEY,
+    item_id BIGINT NOT NULL,
     type_id INTEGER,
     location_id BIGINT,
     location_flag TEXT,
     quantity INTEGER,
     is_blueprint_copy INTEGER,
-    owner_name TEXT,
+    owner_name TEXT NOT NULL,
     resolved_location_id BIGINT,
-    resolved_hangar_flag TEXT
+    resolved_hangar_flag TEXT,
+    PRIMARY KEY (item_id, owner_name)
 );
+ALTER TABLE corp_assets ALTER COLUMN owner_name SET NOT NULL;
+ALTER TABLE corp_assets DROP CONSTRAINT IF EXISTS corp_assets_pkey;
+ALTER TABLE corp_assets ADD CONSTRAINT corp_assets_pkey PRIMARY KEY (item_id, owner_name);
 ALTER TABLE corp_assets ADD COLUMN IF NOT EXISTS resolved_location_id BIGINT;
 ALTER TABLE corp_assets ADD COLUMN IF NOT EXISTS resolved_hangar_flag TEXT;
 DROP INDEX IF EXISTS idx_corp_assets_type_location;
