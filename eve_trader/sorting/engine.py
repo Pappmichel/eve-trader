@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+import pandas as pd
+
 from .. import storage
 from ..doctrine.config import DOCTRINE_CONFIG, DoctrineConfig
 from ..doctrine.engine import stockpile_rows_for_doctrine
@@ -19,53 +21,117 @@ from ..production import engine as production_engine
 from ..production.config import PRODUCTION_CONFIG, ProductionConfig
 
 
-def _trading_wanted_by_type() -> dict[int, float]:
-    """Approximates each shortlist item's still-open "buy more of this to
-    import" quantity from the last Refresh Shortlist snapshot
-    (storage.latest_snapshot - a plain read of an already-computed run, no
-    fresh ESI/Goonmetrics calls here).
+# Snapshot decisions that mean "this is a live Trading SKU". The Shortlist
+# page renders latest_snapshot(), not the live shortlist.active flag, so
+# Import/Already-ordered on the snapshot is the same "on the import list"
+# signal the operator sees. Skip is not one of these: a brand-new import
+# with no C-J listings yet is Skip (shortlist._decision requires
+# sell_volume > 0 for Import) and is claimed via the active shortlist
+# instead.
+_TRADING_SNAPSHOT_DECISIONS = frozenset({"Import", "Already ordered"})
 
-    There is no dedicated "recommended buy quantity" anywhere in Trading -
-    ShortlistRow only carries priced/derived columns (landed_cost, margin,
-    ...), never a target quantity to actually buy (shortlist.py's own
-    "Import"/"Skip"/... decision is a yes/no gate, not a sizing). Rather than
-    inventing new sizing logic here, this reuses the one quantity figure
-    Trading already computes and treats as a real daily-turnover estimate
-    (avg_daily_volume - GitHub issue #100, the same figure CLAUDE.md's
-    "Theoretical ceiling" section documents for Profit/Day) as a stand-in for
-    "how much of this could plausibly be imported today", net of sell_volume
-    (already listed for sale at the structure - what's still covering that
-    demand). This is a deliberately simple approximation, not a real Trading
-    feature - documented here rather than over-built, since Trading has no
-    existing "buy quantity" concept to mirror.
 
-    Deliberately does NOT also subtract own_orders_remaining (the trader's
-    own open buy-side coverage): shortlist._decision already routes any row
-    with own_orders_remaining > 0 to "Already ordered", never "Import" (see
-    shortlist.py), so by the time a row reaches this function - already
-    filtered to decision == "Import" below - own_orders_remaining is always
-    0 on it. Subtracting it here would be dead code, not a real second
-    factor.
+def _as_type_id(value) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    try:
+        type_id = int(value)
+    except (TypeError, ValueError):
+        return None
+    return type_id or None
 
-    Only rows the last run actually flagged "Import" (shortlist._decision) -
-    a Skip/Inactive/No-market-data/Already-ordered row isn't something
-    Trading currently wants more of, even if it happens to sit in the shared
-    intake hangar right now."""
+
+def _as_qty(value) -> float:
+    if value is None:
+        return 1.0
+    try:
+        if pd.isna(value):
+            return 1.0
+        qty = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    if qty != qty:
+        return 1.0
+    return max(1.0, qty)
+
+
+def _as_item_name(value) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    name = value.strip().lower()
+    return name or None
+
+
+def _trading_wanted() -> tuple[dict[int, float], dict[str, float]]:
+    """Hangar-staging demand for Trading's import list, claimed as the
+    `trading` pot (separate from Production's `markt` listing shortfall).
+
+    Returns (by_type_id, by_lower_item_name). Name matching covers the
+    case where the snapshot/shortlist row's item_id doesn't equal the
+    intake stack's type_id but both are the same SDE name (Navy Cap
+    Booster 3200 vs a drifted id) - the Shortlist page is name-first.
+
+    Membership is the last Refresh Shortlist snapshot's Import/Already-
+    ordered rows (storage.latest_snapshot - the same freeze the Shortlist
+    page shows) plus every active live shortlist row
+    (storage.load_shortlist). Snapshot Import wins even if the live
+    shortlist later marked the row inactive: GitHub issue #35's booster
+    deactivations left high-margin Boosters/Drugs inactive while the
+    still-displayed snapshot said Import, which dropped them as nobody.
+
+    Quantity reuses avg_daily_volume (GitHub issue #100), floored at 1.
+    Deliberately does NOT subtract sell_volume: listings covering ADV
+    means "don't import more today", not "this doesn't belong in the
+    Trading hangar"."""
+    snapshot_qty_by_id: dict[int, float] = {}
+    snapshot_qty_by_name: dict[str, float] = {}
+    snapshot_live_ids: set[int] = set()
+    snapshot_live_names: set[str] = set()
+
     df = storage.latest_snapshot()
-    if df.empty:
-        return {}
-    df = df.fillna(0)
-    wanted: dict[int, float] = {}
-    for _, row in df.iterrows():
-        if row.get("decision") != "Import":
+    if not df.empty:
+        for _, row in df.iterrows():
+            type_id = _as_type_id(row.get("item_id"))
+            name = _as_item_name(row.get("item"))
+            qty = _as_qty(row.get("avg_daily_volume"))
+            if type_id:
+                snapshot_qty_by_id[type_id] = max(snapshot_qty_by_id.get(type_id, 0.0), qty)
+            if name:
+                snapshot_qty_by_name[name] = max(snapshot_qty_by_name.get(name, 0.0), qty)
+            decision = row.get("decision")
+            if isinstance(decision, str):
+                decision = decision.strip()
+            if decision in _TRADING_SNAPSHOT_DECISIONS:
+                if type_id:
+                    snapshot_live_ids.add(type_id)
+                if name:
+                    snapshot_live_names.add(name)
+
+    active_ids: set[int] = set()
+    active_names: set[str] = set()
+    for item in storage.load_shortlist():
+        if not item.active:
             continue
-        type_id = int(row["item_id"])
-        if not type_id:
-            continue
-        qty = max(0.0, float(row.get("avg_daily_volume", 0.0)) - float(row.get("sell_volume", 0.0)))
-        if qty > 0:
-            wanted[type_id] = wanted.get(type_id, 0.0) + qty
-    return wanted
+        if item.item_id:
+            active_ids.add(item.item_id)
+        name = _as_item_name(item.item)
+        if name:
+            active_names.add(name)
+
+    by_id = {
+        type_id: snapshot_qty_by_id.get(type_id, 1.0)
+        for type_id in active_ids | snapshot_live_ids
+    }
+    by_name = {
+        name: snapshot_qty_by_name.get(name, 1.0)
+        for name in active_names | snapshot_live_names
+    }
+    return by_id, by_name
 
 
 def _material_wanted_by_type() -> dict[int, float]:
@@ -81,9 +147,9 @@ def _material_wanted_by_type() -> dict[int, float]:
 
     Empty dict (not an error) if Production has never been refreshed this
     tenant - the same accepted staleness/emptiness Trading's
-    _trading_wanted_by_type already has via latest_snapshot(). Market-
-    listing demand stays a separate pot (`markt`, via
-    production_engine.market_listing_shortfall_by_type)."""
+    `_trading_wanted` already has via load_shortlist()/
+    latest_snapshot(). Market-listing demand stays a separate pot
+    (`markt`, via production_engine.market_listing_shortfall_by_type)."""
     return storage.load_latest_buy_list()
 
 
@@ -116,20 +182,11 @@ def _ore_minerals_wanted_by_type() -> dict[int, float]:
 
 
 def _markt_wanted_by_type(production_cfg: ProductionConfig) -> dict[int, float]:
-    """Combined 'this belongs on the market' demand: Trading's open import
-    quantity plus Production's home/Jita listing shortfall. A finished
-    Production hull waiting to be listed at C-J and a Trading import item
-    are the same physical question - both land on the structure market -
-    so they share one pot rather than showing as two competing wanted_by
-    entries."""
-    wanted: dict[int, float] = {}
-    for source in (
-        _trading_wanted_by_type(),
-        production_engine.market_listing_shortfall_by_type(production_cfg),
-    ):
-        for type_id, qty in source.items():
-            wanted[type_id] = wanted.get(type_id, 0.0) + qty
-    return wanted
+    """Production's home/Jita listing shortfall - finished goods that
+    belong on the C-J market hangar. Trading import-list items are a
+    separate `trading` pot: same physical 'list this at C-J' idea, but a
+    different hangar destination in practice, so they must not merge."""
+    return production_engine.market_listing_shortfall_by_type(production_cfg)
 
 
 def _source_label(source_kind: str, owner_name: Optional[str], hangar_flag: str,
@@ -199,6 +256,7 @@ def do_sorting_list(production_cfg: ProductionConfig = PRODUCTION_CONFIG,
     if not intake:
         return {"rows": []}
 
+    trading_by_id, trading_by_name = _trading_wanted()
     markt_wanted = _markt_wanted_by_type(production_cfg)
     material_wanted = _material_wanted_by_type()
     doctrine_wanted = _doctrine_wanted_by_type(doctrine_cfg)
@@ -206,16 +264,21 @@ def do_sorting_list(production_cfg: ProductionConfig = PRODUCTION_CONFIG,
 
     rows = []
     for type_id, intake_qty in sorted(intake.items()):
-        wanted_by_tool = []
-        for tool, wanted_map in (
-            ("markt", markt_wanted), ("material", material_wanted),
-            ("doctrine", doctrine_wanted), ("ore_minerals", ore_minerals_wanted),
-        ):
-            qty = wanted_map.get(type_id)
-            if qty:
-                wanted_by_tool.append({"tool": tool, "wanted_qty": qty})
         sde_type = storage.get_sde_type(type_id)
         type_name = sde_type[2] if sde_type else str(type_id)
+        trading_qty = trading_by_id.get(_as_type_id(type_id) or type_id)
+        if not trading_qty:
+            trading_qty = trading_by_name.get(_as_item_name(type_name) or "")
+        wanted_by_tool = []
+        for tool, qty in (
+            ("trading", trading_qty),
+            ("markt", markt_wanted.get(type_id)),
+            ("material", material_wanted.get(type_id)),
+            ("doctrine", doctrine_wanted.get(type_id)),
+            ("ore_minerals", ore_minerals_wanted.get(type_id)),
+        ):
+            if qty:
+                wanted_by_tool.append({"tool": tool, "wanted_qty": qty})
         source_rows = [
             {"source_label": s["source_label"], "qty": s["qty"]}
             for s in by_source.get(type_id, [])
