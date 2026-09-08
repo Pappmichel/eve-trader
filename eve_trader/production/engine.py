@@ -1366,6 +1366,14 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 
     invention_list.sort(key=lambda e: e.recommended_invention_runs, reverse=True)
 
+    # Persist the current buy list for Sorting's material pot
+    # (sorting/engine._material_wanted_by_type reads storage.load_latest_buy_list
+    # instead of recomputing plan_production - no fresh ESI/Goonmetrics from
+    # that read path). Only this function, not plan_asset_optimized / 
+    # plan_special_order: those are a different shape, and "the buy list" the
+    # Sorting tool means is specifically plan_production / do_refresh_production.
+    storage.save_latest_buy_list([(e.type_id, e.quantity) for e in buy_list])
+
     return {"inventory": inventory, "buy_list": buy_list, "build_list": build_list, "invention_list": invention_list}
 
 

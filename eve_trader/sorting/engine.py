@@ -68,34 +68,23 @@ def _trading_wanted_by_type() -> dict[int, float]:
     return wanted
 
 
-def _material_wanted_by_type(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict[int, float]:
-    """Production's backup_stock (the internal-reserve Soll - see
-    production/engine.py's _total_missing docstring for the full three-pool
-    breakdown) minus current Ist, where Ist is manual_stock plus real ESI
-    assets restricted to cfg.stock_hangar_flags (Teil A's filtered
-    esi_stock_at_location) at cfg.home_location_id - the same structure the
-    shared intake hangar physically sits at.
+def _material_wanted_by_type() -> dict[int, float]:
+    """Production's real material demand, from the last Refresh Production
+    buy list (storage.load_latest_buy_list - a plain read of an already-
+    computed plan_production run, no fresh ESI/Goonmetrics calls here).
 
-    Deliberately only the backup_stock pool, not the fuller three-pool
-    _total_missing calculation (which also nets against home/Jita market-
-    listing targets and open sell orders) - this is a "how much material do
-    I still need to sort into my own hangar" question. Market-listing
-    demand is a separate pot (`markt`, via
-    production_engine.market_listing_shortfall_by_type).
+    That list is the fully expanded, margin-gated bill of materials (raw
+    minerals, reaction inputs, ...), not the stock_targets rows themselves
+    (those are almost always finished ships/modules). Reading stock_targets
+    shortfall for the exact type_id sitting in intake therefore missed
+    every real buy-list material that was never itself a stock target.
 
-    Ist excludes configured Sorting intake sources at cfg.home_location_id
-    so a stack still sitting in the Wareneingang is not treated as already
-    covering the backup reserve."""
-    manual_stock = storage.load_manual_stock()
-    wanted: dict[int, float] = {}
-    for type_id, _name, backup_stock, _home, _jita in storage.load_stock_targets():
-        current = manual_stock.get(type_id, 0.0) + storage.esi_stock_at_location(
-            type_id, cfg.home_location_id, allowed_flags=cfg.stock_hangar_flags,
-            exclude_intake_at_location_id=cfg.home_location_id)
-        missing = max(0.0, backup_stock - current)
-        if missing > 0:
-            wanted[type_id] = missing
-    return wanted
+    Empty dict (not an error) if Production has never been refreshed this
+    tenant - the same accepted staleness/emptiness Trading's
+    _trading_wanted_by_type already has via latest_snapshot(). Market-
+    listing demand stays a separate pot (`markt`, via
+    production_engine.market_listing_shortfall_by_type)."""
+    return storage.load_latest_buy_list()
 
 
 def _doctrine_wanted_by_type(doctrine_cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict[int, float]:
@@ -211,7 +200,7 @@ def do_sorting_list(production_cfg: ProductionConfig = PRODUCTION_CONFIG,
         return {"rows": []}
 
     markt_wanted = _markt_wanted_by_type(production_cfg)
-    material_wanted = _material_wanted_by_type(production_cfg)
+    material_wanted = _material_wanted_by_type()
     doctrine_wanted = _doctrine_wanted_by_type(doctrine_cfg)
     ore_minerals_wanted = _ore_minerals_wanted_by_type()
 

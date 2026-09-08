@@ -1,6 +1,9 @@
 ﻿import pytest
 
+from pathlib import Path
+
 from eve_trader import storage
+from eve_trader.storage import save_latest_buy_list as _save_latest_buy_list_impl
 from eve_trader.goonmetrics_client import CurrentPrice
 from eve_trader.production import engine
 from eve_trader.production.config import ProductionConfig
@@ -24,6 +27,16 @@ from .pg_helpers import _apply_phase1_schema, tenant, tenant_pair  # noqa: F401
 # each of the 11 affected tests gets its own
 # @pg_helpers.postgres_required() decorator instead.
 psycopg = pytest.importorskip("psycopg")
+
+
+@pytest.fixture(autouse=True)
+def _noop_save_latest_buy_list(monkeypatch):
+    # plan_production now persists its buy_list; most tests here never apply
+    # production_buy_list_schema.sql. The dedicated persist spy below
+    # re-monkeypatches this. plan_special_order / plan_asset_optimized must
+    # not write that table, so a no-op here also keeps those calls honest
+    # if someone wires them up by accident (they simply wouldn't be called).
+    monkeypatch.setattr(storage, "save_latest_buy_list", lambda rows: None)
 
 
 @pytest.fixture(autouse=True)
@@ -2490,6 +2503,95 @@ def test_plan_production_buy_list_on_hand_pct_for_a_recursively_reached_material
     row = next(r for r in result["buy_list"] if r.type_id == 2)
     assert row.quantity == 6.0  # 10 gross - 4 on hand
     assert round(row.on_hand_pct, 1) == 40.0  # 4 of 10 = 40%
+
+
+@pg_helpers.postgres_required()
+def test_plan_production_persists_buy_list_via_save_latest_buy_list(monkeypatch, tenant):
+    saved = []
+    monkeypatch.setattr(storage, "save_latest_buy_list", lambda rows: saved.append(list(rows)))
+    stock_targets = [(34, "Tritanium", 1, 0, 0)]
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_plan_context(stock_targets))
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_buy_or_build_decision", lambda *a, **k: "Buy")
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 4)
+    monkeypatch.setattr(storage, "load_sde_category_names", lambda: {4: "Material"})
+
+    result = engine.plan_production(ProductionConfig())
+
+    assert len(saved) == 1
+    assert saved[0] == [(e.type_id, e.quantity) for e in result["buy_list"]]
+    assert saved[0] == [(34, 1.0)]
+
+
+@pg_helpers.postgres_required()
+def test_plan_special_order_does_not_persist_buy_list(monkeypatch, tenant):
+    saved = []
+    monkeypatch.setattr(storage, "save_latest_buy_list", lambda rows: saved.append(list(rows)))
+    items = [(34, "Tritanium", 1.0)]
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_special_order_context())
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_buy_or_build_decision", lambda *a, **k: "Buy")
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 4)
+    monkeypatch.setattr(storage, "load_sde_category_names", lambda: {4: "Material"})
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
+
+    engine.plan_special_order(items, ProductionConfig(), net_against_stock=False)
+
+    assert saved == []
+
+
+@pg_helpers.postgres_required()
+def test_plan_production_persisted_buy_list_ignores_sorting_intake_stash(monkeypatch, tenant):
+    # Combined path for the live Platinum/Mexallon report: a huge stack in a
+    # configured Wareneingang must not count as Production Ist, or
+    # plan_production omits/shrinks that type on the buy list and Sorting
+    # (which now reads the persisted list) still shows unclaimed.
+    home = 1000000000001
+    docs = Path(__file__).resolve().parent.parent / "docs"
+    with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
+        conn.execute((docs / "sorting_schema.sql").read_text(encoding="utf-8"))
+        conn.execute((docs / "production_buy_list_schema.sql").read_text(encoding="utf-8"))
+    pg_helpers.wipe_tables("character_assets", "sorting_intake_sources", "production_buy_list")
+    storage.replace_assets("character_assets", [
+        (9201, 36, home, "Hangar", 1_135_000, 0, "pappmichl5"),
+    ])
+    storage.add_sorting_intake_source("character", "Hangar", owner_name="pappmichl5")
+    monkeypatch.setattr(storage, "save_latest_buy_list", _save_latest_buy_list_impl)
+    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id: {"runs": 0, "jobs": 0})
+
+    stock_targets = [(1, "Widget", 1, 0, 0)]
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_plan_context(stock_targets))
+
+    def fake_classify(type_id):
+        return ("Tech I", (101, 1, 1.0)) if type_id == 1 else ("Input", None)
+    monkeypatch.setattr(engine, "classify_activity", fake_classify)
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [(36, 10)])
+    monkeypatch.setattr(engine, "_activity_mods", lambda *a, **k: (1.0, 1.0, 0.0))
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_buy_or_build_decision",
+                         lambda type_id, *a, **k: "Build" if type_id == 1 else "Buy")
+    monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: 0.5)
+    monkeypatch.setattr(engine.pricing, "buy_price", lambda *a, **k: 10.0)
+    monkeypatch.setattr(engine.pricing, "buy_source", lambda *a, **k: "Jita")
+    monkeypatch.setattr(engine, "_haul_volume", lambda *a, **k: 1.0)
+    monkeypatch.setattr(storage, "get_sde_type",
+                         lambda type_id: (type_id, 1, {1: "Widget", 36: "Mexallon"}.get(type_id, str(type_id)),
+                                          0.01, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 4 if type_id == 36 else 6)
+    monkeypatch.setattr(storage, "load_sde_category_names", lambda: {4: "Material", 6: "Ship"})
+
+    cfg = ProductionConfig(home_location_id=home, component_overbuild=0.0, min_margin=0.15)
+
+    assert storage.esi_stock_at_location(36, None) == 1_135_000.0
+    assert engine._current_stock(36, {}, cfg, None) == 0.0
+
+    result = engine.plan_production(cfg)
+
+    mex = next(row for row in result["buy_list"] if row.type_id == 36)
+    assert mex.quantity == 10.0
+    assert storage.load_latest_buy_list() == {36: 10.0}
 
 
 # ---------------------------------------------------------------- logistics_status

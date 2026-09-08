@@ -1,14 +1,19 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ActionIcon, Button, Group, Select, SimpleGrid, Stack, Table, Text, TextInput, Title } from '@mantine/core'
+import { ActionIcon, Button, Group, Select, SimpleGrid, Stack, Text, TextInput, Title } from '@mantine/core'
 import { IconTrash } from '@tabler/icons-react'
+import type { ColumnDef } from '@tanstack/react-table'
 
 import { sortingApi } from '../../api/client'
+import type { SortingIntakeSource } from '../../api/types'
+import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
 
 export default function SortingSettings() {
-  const { data: sources } = useQuery({ queryKey: ['sorting', 'intake-sources'], queryFn: sortingApi.intakeSources })
+  const { data: sources, isLoading: sourcesLoading, isError: sourcesError, refetch: refetchSources } = useQuery({
+    queryKey: ['sorting', 'intake-sources'], queryFn: sortingApi.intakeSources,
+  })
   const { data: characters } = useQuery({
     queryKey: ['sorting', 'available-characters'], queryFn: sortingApi.availableCharacters,
   })
@@ -37,8 +42,29 @@ export default function SortingSettings() {
 
   const canAdd = Boolean(hangarFlag) && Boolean(ownerName)
 
+  const sourceColumns = useMemo<ColumnDef<SortingIntakeSource, unknown>[]>(() => [
+    {
+      header: 'Kind', id: 'source_kind', size: 120,
+      accessorFn: (r) => (r.source_kind === 'character' ? 'Character' : 'Corp'),
+    },
+    { header: 'Owner', accessorKey: 'owner_name', size: 220, cell: (i) => (i.getValue() as string | null) ?? '–' },
+    { header: 'Hangar', accessorKey: 'hangar_flag', size: 140 },
+    { header: 'Label', accessorKey: 'label', size: 200, cell: (i) => (i.getValue() as string | null) ?? '–' },
+    {
+      header: '', id: 'actions', size: 50, enableSorting: false,
+      cell: (i) => (
+        <ActionIcon
+          variant="subtle" color="danger" aria-label={`Remove intake source ${i.row.original.owner_name ?? i.row.original.id}`}
+          onClick={() => removeSource.mutate(i.row.original.id)} loading={removeSource.isPending}
+        >
+          <IconTrash size={16} />
+        </ActionIcon>
+      ),
+    },
+  ], [removeSource])
+
   return (
-    <Stack maw={800}>
+    <Stack>
       <HintCard>
         Each character can have their own personal hangar as a Wareneingang (filtered to that character&apos;s
         assets). A corp division is filtered to one corp the same way — pick which corp&apos;s hangar to count.
@@ -46,38 +72,22 @@ export default function SortingSettings() {
       </HintCard>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Configured intake sources</Title>
-      {!sources || sources.sources.length === 0 ? (
+      {sourcesLoading ? (
+        <DataTable data={[]} columns={sourceColumns} isLoading maxHeight={320} />
+      ) : sourcesError ? (
+        <DataTable data={[]} columns={sourceColumns} isError onRetry={() => refetchSources()} maxHeight={320} />
+      ) : !sources || sources.sources.length === 0 ? (
         <Text size="sm" c="dimmed">None yet — add a character hangar or a corp division below.</Text>
       ) : (
-        <Table striped highlightOnHover>
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th>Kind</Table.Th>
-              <Table.Th>Owner</Table.Th>
-              <Table.Th>Hangar</Table.Th>
-              <Table.Th>Label</Table.Th>
-              <Table.Th w={48} />
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {sources.sources.map((s) => (
-              <Table.Tr key={s.id}>
-                <Table.Td>{s.source_kind === 'character' ? 'Character' : 'Corp'}</Table.Td>
-                <Table.Td>{s.owner_name ?? '–'}</Table.Td>
-                <Table.Td>{s.hangar_flag}</Table.Td>
-                <Table.Td>{s.label ?? '–'}</Table.Td>
-                <Table.Td>
-                  <ActionIcon
-                    variant="subtle" color="danger" aria-label="Remove intake source"
-                    onClick={() => removeSource.mutate(s.id)} loading={removeSource.isPending}
-                  >
-                    <IconTrash size={16} />
-                  </ActionIcon>
-                </Table.Td>
-              </Table.Tr>
-            ))}
-          </Table.Tbody>
-        </Table>
+        <DataTable
+          data={sources.sources}
+          columns={sourceColumns}
+          tableId="sorting-intake-sources"
+          exportFilename="sorting-intake-sources"
+          getRowId={(r) => String(r.id)}
+          maxHeight={320}
+          emptyLabel="None yet — add a character hangar or a corp division below."
+        />
       )}
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Add source</Title>

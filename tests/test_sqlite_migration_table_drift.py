@@ -13,6 +13,7 @@ from .test_doctrine_storage import _apply_doctrine_schema  # noqa: F401
 from .test_storage_refining import _apply_refining_schema  # noqa: F401
 from .test_storage_special_orders import _apply_special_orders_schema  # noqa: F401
 from .test_storage_sorting import _apply_sorting_schema  # noqa: F401
+from .test_storage_production_buy_list import _apply_production_buy_list_schema  # noqa: F401
 
 psycopg = pytest.importorskip("psycopg")
 
@@ -21,7 +22,7 @@ pytestmark = pg_helpers.postgres_required()
 
 def test_per_tenant_tables_list_matches_the_real_schema(_apply_doctrine_schema, _apply_refining_schema,
                                                           _apply_role_consent_schema, _apply_special_orders_schema,
-                                                          _apply_sorting_schema):
+                                                          _apply_sorting_schema, _apply_production_buy_list_schema):
     # Every table with a "tenant_isolation" RLS policy is either an
     # actively-migrated table (_PER_TENANT_TABLES) or a documented,
     # deliberate exclusion (KNOWN_NON_MIGRATED_TABLES) - a table falling
