@@ -13,5 +13,8 @@
       "command": "for d in eve-trader repos/eve-trader /agent/repos/eve-trader .; do [ -f \"$d/.cursor/start.sh\" ] && { cd \"$d\"; break; }; done; cd frontend && npm run dev -- --host"
     }
   ],
-  "ports": [8000, 5173]
+  "ports": [
+    { "name": "backend", "port": 8000 },
+    { "name": "frontend", "port": 5173 }
+  ]
 }
