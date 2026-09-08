@@ -809,7 +809,7 @@ class SortingList(BaseModel):
 class SortingIntakeSource(_Base):
     id: int
     source_kind: str
-    character_name: Optional[str] = None
+    owner_name: Optional[str] = None
     hangar_flag: str
     label: Optional[str] = None
 
@@ -820,3 +820,7 @@ class SortingIntakeSourceList(BaseModel):
 
 class SortingAvailableCharacters(BaseModel):
     characters: list[str]
+
+
+class SortingAvailableCorps(BaseModel):
+    corps: list[str]

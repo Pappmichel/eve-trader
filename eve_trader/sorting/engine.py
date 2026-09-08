@@ -138,31 +138,32 @@ def _markt_wanted_by_type(production_cfg: ProductionConfig) -> dict[int, float]:
     return wanted
 
 
-def _source_label(source_kind: str, character_name: Optional[str], hangar_flag: str,
+def _source_label(source_kind: str, owner_name: Optional[str], hangar_flag: str,
                   label: Optional[str]) -> str:
     if label:
         return label
-    if source_kind == "character" and character_name:
-        return f"{character_name} ({hangar_flag})"
+    if source_kind == "character" and owner_name:
+        return f"{owner_name} ({hangar_flag})"
+    if owner_name:
+        return f"{owner_name} (Corp, {hangar_flag})"
     return f"Corp ({hangar_flag})"
 
 
 def _intake_from_sources() -> tuple[dict[int, float], dict[int, list[dict]]]:
     """Sums every configured sorting_intake_sources row, returning
     (totals_by_type, by_source_by_type). Character sources read
-    character_assets filtered to owner_name; corp sources read corp_assets
-    with no owner filter. Empty sources list -> empty dicts, not an error."""
+    character_assets filtered to that character's owner_name; corp sources
+    read corp_assets filtered to that corp's owner_name. Empty sources
+    list -> empty dicts, not an error."""
     totals: dict[int, float] = {}
     by_source: dict[int, list[dict]] = {}
-    for source_id, source_kind, character_name, hangar_flag, label in storage.load_sorting_intake_sources():
+    for source_id, source_kind, owner_name, hangar_flag, label in storage.load_sorting_intake_sources():
         if source_kind == "character":
             tables: tuple[str, ...] = ("character_assets",)
-            owner_name: Optional[str] = character_name
         else:
             tables = ("corp_assets",)
-            owner_name = None
         items = storage.assets_at_flag(hangar_flag, tables=tables, owner_name=owner_name)
-        source_label = _source_label(source_kind, character_name, hangar_flag, label)
+        source_label = _source_label(source_kind, owner_name, hangar_flag, label)
         for type_id, qty in items:
             totals[type_id] = totals.get(type_id, 0.0) + qty
             by_source.setdefault(type_id, []).append({

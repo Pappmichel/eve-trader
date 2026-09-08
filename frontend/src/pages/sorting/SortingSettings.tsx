@@ -12,6 +12,9 @@ export default function SortingSettings() {
   const { data: characters } = useQuery({
     queryKey: ['sorting', 'available-characters'], queryFn: sortingApi.availableCharacters,
   })
+  const { data: corps } = useQuery({
+    queryKey: ['sorting', 'available-corps'], queryFn: sortingApi.availableCorps,
+  })
   const { data: hangarOptions } = useQuery({
     queryKey: ['sorting', 'hangar-division-options'], queryFn: sortingApi.hangarDivisionOptions,
   })
@@ -24,21 +27,22 @@ export default function SortingSettings() {
   )
 
   const [sourceKind, setSourceKind] = useState<'character' | 'corp'>('character')
-  const [characterName, setCharacterName] = useState<string | null>(null)
+  const [ownerName, setOwnerName] = useState<string | null>(null)
   const [hangarFlag, setHangarFlag] = useState<string | null>('Hangar')
   const [label, setLabel] = useState('')
 
   const characterOptions = (characters?.characters ?? []).map((name) => ({ value: name, label: name }))
+  const corpOptions = (corps?.corps ?? []).map((name) => ({ value: name, label: name }))
   const hangarFlags = hangarOptions?.hangar_division_flags ?? []
 
-  const canAdd = Boolean(hangarFlag) && (sourceKind === 'corp' || Boolean(characterName))
+  const canAdd = Boolean(hangarFlag) && Boolean(ownerName)
 
   return (
     <Stack maw={800}>
       <HintCard>
         Each character can have their own personal hangar as a Wareneingang (filtered to that character&apos;s
-        assets). A corp division is shared — it is not owned by one character. The overview sums every source
-        and still shows which hangar the stack actually sits in.
+        assets). A corp division is filtered to one corp the same way — pick which corp&apos;s hangar to count.
+        The overview sums every source and still shows which hangar the stack actually sits in.
       </HintCard>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Configured intake sources</Title>
@@ -49,7 +53,7 @@ export default function SortingSettings() {
           <Table.Thead>
             <Table.Tr>
               <Table.Th>Kind</Table.Th>
-              <Table.Th>Character</Table.Th>
+              <Table.Th>Owner</Table.Th>
               <Table.Th>Hangar</Table.Th>
               <Table.Th>Label</Table.Th>
               <Table.Th w={48} />
@@ -59,7 +63,7 @@ export default function SortingSettings() {
             {sources.sources.map((s) => (
               <Table.Tr key={s.id}>
                 <Table.Td>{s.source_kind === 'character' ? 'Character' : 'Corp'}</Table.Td>
-                <Table.Td>{s.character_name ?? '–'}</Table.Td>
+                <Table.Td>{s.owner_name ?? '–'}</Table.Td>
                 <Table.Td>{s.hangar_flag}</Table.Td>
                 <Table.Td>{s.label ?? '–'}</Table.Td>
                 <Table.Td>
@@ -88,6 +92,7 @@ export default function SortingSettings() {
           onChange={(v) => {
             if (v === 'character' || v === 'corp') {
               setSourceKind(v)
+              setOwnerName(null)
               if (v === 'character' && !hangarFlag) setHangarFlag('Hangar')
             }
           }}
@@ -95,14 +100,21 @@ export default function SortingSettings() {
         {sourceKind === 'character' ? (
           <Select
             label="Character"
-            placeholder={characterOptions.length === 0 ? 'No registered characters' : 'Select character'}
+            placeholder={characterOptions.length === 0 ? 'No synced characters' : 'Select character'}
             data={characterOptions}
-            value={characterName}
-            onChange={setCharacterName}
+            value={ownerName}
+            onChange={setOwnerName}
             searchable
           />
         ) : (
-          <Text size="sm" c="dimmed" mt={28}>No character — this division is shared.</Text>
+          <Select
+            label="Corp"
+            placeholder={corpOptions.length === 0 ? 'No synced corps' : 'Select corp'}
+            data={corpOptions}
+            value={ownerName}
+            onChange={setOwnerName}
+            searchable
+          />
         )}
         <Select
           label="Hangar division"
@@ -125,12 +137,12 @@ export default function SortingSettings() {
           onClick={() => addSource.mutate({
             source_kind: sourceKind,
             hangar_flag: hangarFlag ?? '',
-            character_name: sourceKind === 'character' ? characterName : null,
+            owner_name: ownerName,
             label: label.trim() || null,
           }, {
             onSuccess: () => {
               setLabel('')
-              if (sourceKind === 'character') setCharacterName(null)
+              setOwnerName(null)
             },
           })}
         >

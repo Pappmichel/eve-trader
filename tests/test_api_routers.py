@@ -1008,12 +1008,12 @@ def test_get_sorting_list_action_error_maps_to_400(monkeypatch):
 
 def test_list_intake_sources_serializes_action_result(monkeypatch):
     monkeypatch.setattr(sorting_actions, "do_list_intake_sources", lambda: {"sources": [
-        {"id": 1, "source_kind": "character", "character_name": "Alice",
+        {"id": 1, "source_kind": "character", "owner_name": "Alice",
          "hangar_flag": "Hangar", "label": None},
     ]})
     resp = client.get("/api/sorting/intake-sources")
     assert resp.status_code == 200
-    assert resp.json()["sources"][0]["character_name"] == "Alice"
+    assert resp.json()["sources"][0]["owner_name"] == "Alice"
 
 
 def test_add_intake_source_passes_body_to_action(monkeypatch):
@@ -1021,15 +1021,15 @@ def test_add_intake_source_passes_body_to_action(monkeypatch):
 
     def _add(**kwargs):
         captured.update(kwargs)
-        return {"id": 7, "source_kind": kwargs["source_kind"], "character_name": kwargs["character_name"],
+        return {"id": 7, "source_kind": kwargs["source_kind"], "owner_name": kwargs["owner_name"],
                 "hangar_flag": kwargs["hangar_flag"], "label": kwargs["label"]}
     monkeypatch.setattr(sorting_actions, "do_add_intake_source", _add)
     resp = client.post("/api/sorting/intake-sources", json={
-        "source_kind": "character", "hangar_flag": "Hangar", "character_name": "Alice",
+        "source_kind": "character", "hangar_flag": "Hangar", "owner_name": "Alice",
     })
     assert resp.status_code == 200
     assert captured["source_kind"] == "character"
-    assert captured["character_name"] == "Alice"
+    assert captured["owner_name"] == "Alice"
     assert resp.json()["id"] == 7
 
 
@@ -1050,6 +1050,17 @@ def test_available_characters_serializes_action_result(monkeypatch):
     resp = client.get("/api/sorting/available-characters")
     assert resp.status_code == 200
     assert resp.json() == {"characters": ["Alice", "Bob"]}
+
+
+def test_available_corps_serializes_action_result(monkeypatch):
+    monkeypatch.setattr(sorting_actions, "do_list_available_corps", lambda: {
+        "corps": ["RichlTech (corp)", "building mining and research corporation (corp)"],
+    })
+    resp = client.get("/api/sorting/available-corps")
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "corps": ["RichlTech (corp)", "building mining and research corporation (corp)"],
+    }
 
 
 def test_sorting_hangar_division_options_includes_deliveries():

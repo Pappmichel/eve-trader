@@ -973,7 +973,7 @@ export interface SortingList {
 export interface SortingIntakeSource {
   id: number
   source_kind: string
-  character_name: string | null
+  owner_name: string | null
   hangar_flag: string
   label: string | null
 }
