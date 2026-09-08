@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+import pandas as pd
+
 from .. import storage
 from ..doctrine.config import DOCTRINE_CONFIG, DoctrineConfig
 from ..doctrine.engine import stockpile_rows_for_doctrine
@@ -19,64 +21,117 @@ from ..production import engine as production_engine
 from ..production.config import PRODUCTION_CONFIG, ProductionConfig
 
 
-# Snapshot decisions that mean "this is a live Trading SKU" even without
-# a current shortlist row (e.g. tests, or a snapshot taken before a later
-# shortlist edit). Skip is not one of these: a brand-new import with no
-# C-J listings yet is Skip (shortlist._decision requires sell_volume > 0
-# for Import) and is claimed via the active shortlist instead.
+# Snapshot decisions that mean "this is a live Trading SKU". The Shortlist
+# page renders latest_snapshot(), not the live shortlist.active flag, so
+# Import/Already-ordered on the snapshot is the same "on the import list"
+# signal the operator sees. Skip is not one of these: a brand-new import
+# with no C-J listings yet is Skip (shortlist._decision requires
+# sell_volume > 0 for Import) and is claimed via the active shortlist
+# instead.
 _TRADING_SNAPSHOT_DECISIONS = frozenset({"Import", "Already ordered"})
 
 
-def _trading_wanted_by_type() -> dict[int, float]:
+def _as_type_id(value) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    try:
+        type_id = int(value)
+    except (TypeError, ValueError):
+        return None
+    return type_id or None
+
+
+def _as_qty(value) -> float:
+    if value is None:
+        return 1.0
+    try:
+        if pd.isna(value):
+            return 1.0
+        qty = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    if qty != qty:
+        return 1.0
+    return max(1.0, qty)
+
+
+def _as_item_name(value) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    name = value.strip().lower()
+    return name or None
+
+
+def _trading_wanted() -> tuple[dict[int, float], dict[str, float]]:
     """Hangar-staging demand for Trading's import list, claimed as the
     `trading` pot (separate from Production's `markt` listing shortfall).
 
-    Membership is the live shortlist (storage.load_shortlist, active rows)
-    plus the last Refresh Shortlist snapshot's Import/Already-ordered rows
-    (storage.latest_snapshot). Both are plain reads of already-computed
-    state, no fresh ESI/Goonmetrics calls here.
+    Returns (by_type_id, by_lower_item_name). Name matching covers the
+    case where the snapshot/shortlist row's item_id doesn't equal the
+    intake stack's type_id but both are the same SDE name (Navy Cap
+    Booster 3200 vs a drifted id) - the Shortlist page is name-first.
 
-    An active shortlist item is something Trading is tracking for import,
-    including the common Skip case of "profitable but no C-J sell orders
-    yet" (shortlist._decision only returns Import when sell_volume > 0).
-    Those stacks still belong in the Trading hangar so they can be listed.
-    Inactive shortlist rows are excluded.
+    Membership is the last Refresh Shortlist snapshot's Import/Already-
+    ordered rows (storage.latest_snapshot - the same freeze the Shortlist
+    page shows) plus every active live shortlist row
+    (storage.load_shortlist). Snapshot Import wins even if the live
+    shortlist later marked the row inactive: GitHub issue #35's booster
+    deactivations left high-margin Boosters/Drugs inactive while the
+    still-displayed snapshot said Import, which dropped them as nobody.
 
-    There is no dedicated "recommended buy quantity" anywhere in Trading -
-    ShortlistRow never carries a target quantity to actually buy. Quantity
-    here reuses avg_daily_volume (GitHub issue #100) as a stand-in for how
-    much of this SKU belongs staged, floored at 1 so a missing/zero ADV
-    still claims the type. Deliberately does NOT subtract sell_volume:
-    listings covering ADV means "don't import more today", not "this
-    doesn't belong in the Trading hangar"."""
-    snapshot_qty: dict[int, float] = {}
-    snapshot_live: set[int] = set()
+    Quantity reuses avg_daily_volume (GitHub issue #100), floored at 1.
+    Deliberately does NOT subtract sell_volume: listings covering ADV
+    means "don't import more today", not "this doesn't belong in the
+    Trading hangar"."""
+    snapshot_qty_by_id: dict[int, float] = {}
+    snapshot_qty_by_name: dict[str, float] = {}
+    snapshot_live_ids: set[int] = set()
+    snapshot_live_names: set[str] = set()
+
     df = storage.latest_snapshot()
     if not df.empty:
-        df = df.fillna(0)
         for _, row in df.iterrows():
-            type_id = int(row["item_id"])
-            if not type_id:
-                continue
-            qty = max(1.0, float(row.get("avg_daily_volume", 0.0)))
-            snapshot_qty[type_id] = snapshot_qty.get(type_id, 0.0) + qty
-            if row.get("decision") in _TRADING_SNAPSHOT_DECISIONS:
-                snapshot_live.add(type_id)
+            type_id = _as_type_id(row.get("item_id"))
+            name = _as_item_name(row.get("item"))
+            qty = _as_qty(row.get("avg_daily_volume"))
+            if type_id:
+                snapshot_qty_by_id[type_id] = max(snapshot_qty_by_id.get(type_id, 0.0), qty)
+            if name:
+                snapshot_qty_by_name[name] = max(snapshot_qty_by_name.get(name, 0.0), qty)
+            decision = row.get("decision")
+            if isinstance(decision, str):
+                decision = decision.strip()
+            if decision in _TRADING_SNAPSHOT_DECISIONS:
+                if type_id:
+                    snapshot_live_ids.add(type_id)
+                if name:
+                    snapshot_live_names.add(name)
 
-    inactive_ids: set[int] = set()
     active_ids: set[int] = set()
+    active_names: set[str] = set()
     for item in storage.load_shortlist():
-        if not item.item_id:
+        if not item.active:
             continue
-        if item.active:
+        if item.item_id:
             active_ids.add(item.item_id)
-        else:
-            inactive_ids.add(item.item_id)
+        name = _as_item_name(item.item)
+        if name:
+            active_names.add(name)
 
-    wanted: dict[int, float] = {}
-    for type_id in active_ids | (snapshot_live - inactive_ids):
-        wanted[type_id] = snapshot_qty.get(type_id, 1.0)
-    return wanted
+    by_id = {
+        type_id: snapshot_qty_by_id.get(type_id, 1.0)
+        for type_id in active_ids | snapshot_live_ids
+    }
+    by_name = {
+        name: snapshot_qty_by_name.get(name, 1.0)
+        for name in active_names | snapshot_live_names
+    }
+    return by_id, by_name
 
 
 def _material_wanted_by_type() -> dict[int, float]:
@@ -92,7 +147,7 @@ def _material_wanted_by_type() -> dict[int, float]:
 
     Empty dict (not an error) if Production has never been refreshed this
     tenant - the same accepted staleness/emptiness Trading's
-    `_trading_wanted_by_type` already has via load_shortlist()/
+    `_trading_wanted` already has via load_shortlist()/
     latest_snapshot(). Market-listing demand stays a separate pot
     (`markt`, via production_engine.market_listing_shortfall_by_type)."""
     return storage.load_latest_buy_list()
@@ -201,7 +256,7 @@ def do_sorting_list(production_cfg: ProductionConfig = PRODUCTION_CONFIG,
     if not intake:
         return {"rows": []}
 
-    trading_wanted = _trading_wanted_by_type()
+    trading_by_id, trading_by_name = _trading_wanted()
     markt_wanted = _markt_wanted_by_type(production_cfg)
     material_wanted = _material_wanted_by_type()
     doctrine_wanted = _doctrine_wanted_by_type(doctrine_cfg)
@@ -209,17 +264,21 @@ def do_sorting_list(production_cfg: ProductionConfig = PRODUCTION_CONFIG,
 
     rows = []
     for type_id, intake_qty in sorted(intake.items()):
-        wanted_by_tool = []
-        for tool, wanted_map in (
-            ("trading", trading_wanted), ("markt", markt_wanted),
-            ("material", material_wanted), ("doctrine", doctrine_wanted),
-            ("ore_minerals", ore_minerals_wanted),
-        ):
-            qty = wanted_map.get(type_id)
-            if qty:
-                wanted_by_tool.append({"tool": tool, "wanted_qty": qty})
         sde_type = storage.get_sde_type(type_id)
         type_name = sde_type[2] if sde_type else str(type_id)
+        trading_qty = trading_by_id.get(_as_type_id(type_id) or type_id)
+        if not trading_qty:
+            trading_qty = trading_by_name.get(_as_item_name(type_name) or "")
+        wanted_by_tool = []
+        for tool, qty in (
+            ("trading", trading_qty),
+            ("markt", markt_wanted.get(type_id)),
+            ("material", material_wanted.get(type_id)),
+            ("doctrine", doctrine_wanted.get(type_id)),
+            ("ore_minerals", ore_minerals_wanted.get(type_id)),
+        ):
+            if qty:
+                wanted_by_tool.append({"tool": tool, "wanted_qty": qty})
         source_rows = [
             {"source_label": s["source_label"], "qty": s["qty"]}
             for s in by_source.get(type_id, [])

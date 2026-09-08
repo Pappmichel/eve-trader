@@ -174,12 +174,55 @@ def test_active_shortlist_item_is_claimed_for_trading_even_when_snapshot_says_sk
     assert row["unclaimed"] is False
 
 
-def test_inactive_shortlist_item_is_not_claimed_for_trading(monkeypatch):
+def test_snapshot_import_still_claims_when_live_shortlist_is_inactive(monkeypatch):
+    # The Shortlist page renders latest_snapshot(), so an Import row there
+    # is what the operator sees as "on the import list". GitHub issue #35
+    # left Booster/Drugs items inactive on the live shortlist while the
+    # snapshot still said Import — Sorting used to drop those as nobody.
+    monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(33332, 12.0)])
+    monkeypatch.setattr(storage, "latest_snapshot", lambda: pd.DataFrame([
+        {"item_id": 33332, "item": "Navy Cap Booster 3200", "decision": "Import",
+         "avg_daily_volume": 40.0, "sell_volume": 80.0, "own_orders_remaining": 0.0},
+    ]))
+    monkeypatch.setattr(storage, "load_shortlist", lambda: [
+        ShortlistItem(item="Navy Cap Booster 3200", item_id=33332, category="Charge",
+                      volume_m3=0.01, active=False),
+    ])
+    monkeypatch.setattr(storage, "get_sde_type",
+                        lambda type_id: (type_id, 1, "Navy Cap Booster 3200", 0.01, 1, 1, 0, None))
+
+    result = sorting_engine.do_sorting_list()
+
+    row = result["rows"][0]
+    assert row["type_name"] == "Navy Cap Booster 3200"
+    assert row["wanted_by_tool"] == [{"tool": "trading", "wanted_qty": 40.0}]
+    assert row["unclaimed"] is False
+
+
+def test_trading_matches_snapshot_import_by_item_name_when_type_ids_differ(monkeypatch):
+    monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
+    monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(33332, 12.0)])
+    monkeypatch.setattr(storage, "latest_snapshot", lambda: pd.DataFrame([
+        {"item_id": 99999, "item": "Navy Cap Booster 3200", "decision": "Import",
+         "avg_daily_volume": 40.0, "sell_volume": 80.0, "own_orders_remaining": 0.0},
+    ]))
+    monkeypatch.setattr(storage, "get_sde_type",
+                        lambda type_id: (type_id, 1, "Navy Cap Booster 3200", 0.01, 1, 1, 0, None))
+
+    result = sorting_engine.do_sorting_list()
+
+    row = result["rows"][0]
+    assert row["wanted_by_tool"] == [{"tool": "trading", "wanted_qty": 40.0}]
+    assert row["unclaimed"] is False
+
+
+def test_snapshot_inactive_without_active_shortlist_stays_unclaimed(monkeypatch):
     monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
     monkeypatch.setattr(storage, "assets_at_flag", lambda flag, tables=(), owner_name=None, location_id=None: [(34, 500.0)])
     monkeypatch.setattr(storage, "latest_snapshot", lambda: pd.DataFrame([
-        {"item_id": 34, "decision": "Import", "avg_daily_volume": 300.0, "sell_volume": 50.0,
-         "own_orders_remaining": 0.0},
+        {"item_id": 34, "item": "Tritanium", "decision": "Inactive",
+         "avg_daily_volume": 300.0, "sell_volume": 50.0, "own_orders_remaining": 0.0},
     ]))
     monkeypatch.setattr(storage, "load_shortlist", lambda: [
         ShortlistItem(item="Tritanium", item_id=34, category="Material", volume_m3=0.01, active=False),
