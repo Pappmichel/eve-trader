@@ -29,8 +29,11 @@ export default function AssetPlanList() {
     return jobs.filter((j) => selCategories.includes(j.job_category ?? CATEGORY_UNKNOWN))
   }, [jobs, selCategories])
 
-  const readyRuns = useMemo(() => filtered.reduce((sum, j) => sum + j.runs_ready_now, 0), [filtered])
-  const totalRuns = useMemo(() => filtered.reduce((sum, j) => sum + j.job_runs, 0), [filtered])
+  const readyHours = useMemo(
+    () => filtered.reduce((sum, j) => sum + (j.job_runs > 0 ? (j.job_time_seconds * j.runs_ready_now) / j.job_runs : 0), 0) / 3600,
+    [filtered],
+  )
+  const totalHours = useMemo(() => filtered.reduce((sum, j) => sum + j.job_time_seconds, 0) / 3600, [filtered])
   const readyJobs = useMemo(() => filtered.filter((j) => j.runs_ready_now > 0).length, [filtered])
 
   const columns = useMemo<ColumnDef<AssetPlanJob, any>[]>(() => [
@@ -99,8 +102,8 @@ export default function AssetPlanList() {
       <Group justify="space-between" align="flex-end">
         <Group align="flex-end">
           <Card withBorder padding="sm" w={220}>
-            <Text size="xs" c="dimmed" tt="uppercase">Runs Ready Now</Text>
-            <Title order={3} c="accent">{readyRuns} / {totalRuns}</Title>
+            <Text size="xs" c="dimmed" tt="uppercase">Job Time Ready Now (h)</Text>
+            <Title order={3} c="accent">{readyHours.toFixed(1)} / {totalHours.toFixed(1)}</Title>
           </Card>
           <Card withBorder padding="sm" w={220}>
             <Text size="xs" c="dimmed" tt="uppercase">Jobs With Runs Ready Now</Text>
