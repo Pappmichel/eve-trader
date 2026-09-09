@@ -120,6 +120,24 @@ def test_find_invention_recipe_candidates_by_product_type_id_empty_for_uninvente
     assert storage.find_invention_recipe_candidates_by_product_type_id(999999) == ()
 
 
+def test_get_invention_recipe_selects_the_requested_sibling_product(tenant):
+    """Condor Blueprint (live type 684) invents into Crow *and* Raptor.
+    Without a product_type_id filter, fetchone() returns an arbitrary
+    sibling, so both Invention rows would share one product_type_id."""
+    t1 = 684
+    crow_bp, raptor_bp = 11177, 11179
+    _insert_product(t1, 8, crow_bp, 1.0)
+    _insert_product(t1, 8, raptor_bp, 1.0)
+    _insert_probability(t1, crow_bp, 0.30)
+    _insert_probability(t1, raptor_bp, 0.30)
+
+    crow = storage.get_invention_recipe(t1, crow_bp)
+    raptor = storage.get_invention_recipe(t1, raptor_bp)
+    assert crow is not None and raptor is not None
+    assert crow["product_type_id"] == crow_bp
+    assert raptor["product_type_id"] == raptor_bp
+
+
 def test_search_sde_types_tolerates_incidental_whitespace(tenant):
     _insert_type(34, "Tritanium")
 
