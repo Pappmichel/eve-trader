@@ -531,17 +531,28 @@ def _invention_need_row(type_id: int, type_name: str, activity: str,
                                     selected_decryptors, t2_memo)
     if chosen is None or chosen.output_runs <= 0 or chosen.probability <= 0:
         return None
-    # blueprint_id here IS the invented T2/T3 blueprint's own type_id - not
-    # `type_id` (the manufactured item), and not chosen.t1_blueprint_type_id
-    # (the relic/T1 blueprint consumed to invent it).
-    t2_bpc_owned = int(storage.available_blueprint_copies(blueprint_id, None))
+    # chosen.product_type_id IS the invented T2/T3 blueprint's own type_id -
+    # not `type_id` (the manufactured item), and not chosen.t1_blueprint_type_id
+    # (the relic/T1 blueprint consumed to invent it). For a normal Tech II
+    # item this equals `blueprint_id` from get_blueprint_for_product; using
+    # the invention recipe's product is the one that stays correct if those
+    # ever diverge.
+    t2_bpc_owned = int(storage.available_blueprint_copies(chosen.product_type_id, None))
     runs_needed = math.ceil(missing / product_qty) if missing > 0 else 0
     runs_still_needed = max(0, runs_needed - t2_bpc_owned)
     bpcs_needed = math.ceil(runs_still_needed / chosen.output_runs) if runs_still_needed > 0 else 0
     recommended_runs = math.ceil(bpcs_needed / chosen.probability) if bpcs_needed > 0 else 0
     target_stock_runs = math.ceil(stockpile_quantity / product_qty) if stockpile_quantity > 0 else 0
-    stockpile_pct = (max(0.0, t2_bpc_owned / target_stock_runs * 100)
-                     if target_stock_runs > 0 else 0.0)
+    # Owning BPC runs against a zero configured target must not collapse to
+    # a hardcoded 0% (same class of bug as backup_stock=0 hiding a real
+    # market-listing target, 2026-08-31): the row is still on the Invention
+    # table, T2 BPCs Owned is a real number, and a gray 0% badge next to it
+    # reads as "you have none". 100% here means "covered relative to a
+    # nothing-to-cover target", not "exactly on target".
+    if target_stock_runs > 0:
+        stockpile_pct = max(0.0, t2_bpc_owned / target_stock_runs * 100)
+    else:
+        stockpile_pct = 100.0 if t2_bpc_owned > 0 else 0.0
     return InventionNeedRow(
         type_id=type_id, type_name=type_name,
         t1_blueprint_type_id=chosen.t1_blueprint_type_id, t1_blueprint_name=chosen.t1_blueprint_name,
@@ -2709,7 +2720,7 @@ def invention_logistics(invention_list: list[InventionNeedRow],
     ESI/asset field they come from), so a plain esi_stock_at_location call
     would count an owned BPO as if it were a usable invention input too.
     available_blueprint_copies filters to actual copies only (character_
-    blueprints/corp_blueprints' own quantity == -2 sentinel) and - despite
+    blueprints/corp_blueprints rows with remaining runs > 0) and - despite
     its own name - sums their remaining *runs*, not the number of copies
     (confirmed real bug, 2026-08-30: it used to COUNT(*) copies instead,
     reporting a single 300-run T1 copy as "1 available" instead of "300" -

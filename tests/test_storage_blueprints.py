@@ -168,6 +168,23 @@ def test_available_blueprint_copies_none_location_still_excludes_bpos_and_asset_
     assert storage.available_blueprint_copies(TYPE_ID, None) == 4
 
 
+def test_available_blueprint_copies_counts_copies_by_remaining_runs_not_quantity_sentinel(tenant):
+    """Copies are copies because they have remaining runs, not because ESI's
+    quantity sentinel happens to be -2. The Blueprints tab already keys off
+    runs == -1 vs not; requiring quantity == -2 here dropped every copy
+    whose quantity was 1 / -1 / anything else (this file's own _bp_row
+    default for a BPC is quantity=1) and forced Invention stockpile % to 0
+    next to a Blueprints tab that still listed the copies. Live report:
+    Equite II showed 0% stockpile despite owned T2 BPC copies."""
+    storage.replace_blueprints("character_blueprints", [
+        _bp_row(1, TYPE_ID, me=0, te=0, runs=10, location_id=LOCATION_ID),  # quantity=1 default
+        _bp_row(2, TYPE_ID, me=0, te=0, runs=4, location_id=LOCATION_ID, quantity=-1),
+        _bp_row(3, TYPE_ID, me=10, te=20, runs=-1, location_id=LOCATION_ID, quantity=-2),  # BPO
+    ])
+
+    assert storage.available_blueprint_copies(TYPE_ID, LOCATION_ID) == 14  # 10 + 4, not the BPO
+
+
 def test_has_bpo_at_location_true_when_a_bpo_sits_there(tenant):
     storage.replace_blueprints("character_blueprints", [
         _bp_row(1, TYPE_ID, me=10, te=20, runs=-1, location_id=LOCATION_ID),

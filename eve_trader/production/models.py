@@ -114,17 +114,19 @@ class InventionNeedRow:
     # backup_stock plus home/Jita market-listing targets (backup_stock +
     # home_market_stock + jita_market_stock, all divided by product_qty) -
     # both sides share the same unit (manufacturing runs of the T2/T3
-    # blueprint), no conversion through output_runs. Not the manufactured
-    # end product's own current_stock/backup_stock (that answers "is the
-    # shelf full of finished items", a different question from "how
-    # well-stocked am I on invented BPC runs"), and not bpcs_needed either
-    # (the current *shortfall*, which collapses to 0 the moment the end
-    # product happens to be fully stocked, and otherwise is usually a tiny
-    # integer) - both of those, and an earlier attempt that divided the
-    # fixed target through output_runs into "number of discrete invented
-    # BPCs" (often just 1, since a single invented BPC frequently covers the
-    # whole backup_stock target on its own), landed on nothing but 0%/100%
-    # in practice (confirmed real bug, 2026-08-30).
+    # blueprint), no conversion through output_runs. A zero configured
+    # target with owned BPC runs is 100% (covered, nothing to cover), not a
+    # hardcoded 0% next to a non-zero T2 BPCs Owned column. Not the
+    # manufactured end product's own current_stock/backup_stock (that
+    # answers "is the shelf full of finished items", a different question
+    # from "how well-stocked am I on invented BPC runs"), and not
+    # bpcs_needed either (the current *shortfall*, which collapses to 0 the
+    # moment the end product happens to be fully stocked, and otherwise is
+    # usually a tiny integer) - both of those, and an earlier attempt that
+    # divided the fixed target through output_runs into "number of discrete
+    # invented BPCs" (often just 1, since a single invented BPC frequently
+    # covers the whole backup_stock target on its own), landed on nothing
+    # but 0%/100% in practice (confirmed real bug, 2026-08-30).
     stockpile_pct: float = 0.0
 
 
