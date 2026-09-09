@@ -2023,18 +2023,30 @@ def get_owned_bpo_best_me_te(blueprint_type_id: int) -> Optional[tuple[int, int]
 
 def available_blueprint_copies(type_id: int, location_id: Optional[int],
                                 tables: tuple[str, str] = ("character_blueprints", "corp_blueprints")) -> float:
-    """Sums the remaining *runs* across owned blueprint copies (quantity ==
-    -2 in ESI's blueprint model - see get_owned_bpo_best_me_te's own runs ==
-    -1 check for the BPO side of this same sentinel) of `type_id` sitting at
-    `location_id` (None = all locations, mirroring esi_stock_at_location's
-    own None branch - added for GitHub issue #114's "how many of this T2 BPC
-    do I own anywhere" column, which has no single station to filter to),
-    filtered on resolved_location_id (see replace_blueprints) the same way
-    esi_stock_at_location filters on it. Also excludes
+    """Sums the remaining *runs* across owned blueprint copies of `type_id`
+    sitting at `location_id` (None = all locations, mirroring esi_stock_at_
+    location's own None branch - added for GitHub issue #114's "how many of
+    this T2 BPC do I own anywhere" column, which has no single station to
+    filter to), filtered on resolved_location_id (see replace_blueprints)
+    the same way esi_stock_at_location filters on it. Also excludes
     NON_STOCK_LOCATION_FLAGS (GitHub issue #32) the same way
     esi_stock_at_location does - a BPC sitting in Asset Safety requires its
     own retrieval trip/fee, so it isn't actually usable for invention right
     now even though it shares this location's resolved_location_id.
+
+    Copies are identified by remaining runs > 0, the same sentinel the
+    Blueprints tab / get_owned_bpo_best_me_te / has_bpo_at_location already
+    use on the BPO side (`runs == -1` = original). ESI's `quantity` field
+    is *also* a BPO/BPC sentinel (-1 original / -2 copy, or a positive
+    stack of unresearched originals fresh from the market), but requiring
+    `quantity == -2` here silently dropped every copy whose quantity was
+    anything else - the rest of this module already treats `runs != -1` as
+    "this is a copy", and live Invention-tab reports (e.g. Equite II showing
+    0% stockpile despite owned T2 BPC copies) matched that gap: T2 BPCs
+    Owned / stockpile % went through this function, the Blueprints tab
+    (which keys off runs) still listed the copies. A BPO's runs == -1
+    sentinel must not be summed either way (it would subtract 1 per original
+    from real copy capacity).
 
     Confirmed real bug (reported by a user, 2026-08-30; confirmed against
     wiki.eveuniversity.org/Invention, not just re-read from this function's
@@ -2064,7 +2076,7 @@ def available_blueprint_copies(type_id: int, location_id: Optional[int],
         for table in tables:
             if location_id is None:
                 row = conn.execute(
-                    f"SELECT COALESCE(SUM(runs), 0) FROM {table} WHERE type_id = ? AND quantity = -2 "
+                    f"SELECT COALESCE(SUM(runs), 0) FROM {table} WHERE type_id = ? AND runs > 0 "
                     f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))",
                     (type_id, *NON_STOCK_LOCATION_FLAGS),
                 ).fetchone()
@@ -2072,7 +2084,7 @@ def available_blueprint_copies(type_id: int, location_id: Optional[int],
                 continue
             row = conn.execute(
                 f"SELECT COALESCE(SUM(runs), 0) FROM {table} WHERE type_id = ? AND resolved_location_id = ? "
-                f"AND quantity = -2 AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))",
+                f"AND runs > 0 AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))",
                 (type_id, location_id, *NON_STOCK_LOCATION_FLAGS),
             ).fetchone()
             total += row[0]
