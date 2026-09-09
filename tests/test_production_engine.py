@@ -2467,6 +2467,49 @@ def test_plan_production_invention_stockpile_pct_owned_bpcs_not_zero_when_target
 
 
 @pg_helpers.postgres_required()
+def test_plan_production_invention_t2_bpc_owned_does_not_share_sibling_t2(monkeypatch, tenant):
+    """Live report after the Equite II stockpile fix: Crow and Raptor both
+    showed 507 T2 BPC runs. Condor Blueprint invents into *both* Crow and
+    Raptor; get_invention_recipe's unfiltered fetchone() returns one sibling
+    as chosen.product_type_id, so looking T2 BPCs up through that field
+    counted the same copies on every row that shares the T1. t2_bpc_owned
+    must use this item's own manufacturing blueprint instead."""
+    stock_targets = [
+        (10, "Crow", 10, 0, 0),
+        (20, "Raptor", 10, 0, 0),
+    ]
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_plan_context(stock_targets))
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech II", (100 + type_id, 1, 1.0)))
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [])
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_buy_or_build_decision", lambda *a, **k: "Build")
+    monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: 1.0)
+    monkeypatch.setattr(engine, "margin_home", lambda *a, **k: 0.9)
+
+    def fake_chosen(blueprint_id):
+        return InventionResult(
+            t1_blueprint_type_id=684, t1_blueprint_name="Condor Blueprint",
+            # Same arbitrary sibling for both rows - the pre-fix recipe lookup.
+            product_type_id=110, product_name="Crow Blueprint", decryptor="None",
+            probability=1.0, output_runs=1.0, datacore_cost=0.0, decryptor_cost=0.0, relic_cost=0.0,
+            total_attempt_cost=0.0, expected_cost_per_success=0.0, expected_cost_per_run=0.0,
+            me=2, te=4, material_savings_per_run=0.0, net_cost_per_run=0.0,
+        )
+    monkeypatch.setattr(engine, "_tech_ii_mods",
+                         lambda type_id, blueprint_id, *a, **k: (1.0, 1.0, "None", fake_chosen(blueprint_id)))
+    owned = {110: 507, 120: 12}
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda blueprint_id, loc: owned.get(blueprint_id, 0))
+
+    cfg = ProductionConfig(min_margin=0.0)
+    result = engine.plan_production(cfg)
+
+    by_type = {row.type_id: row for row in result["invention_list"]}
+    assert by_type[10].t2_bpc_owned == 507
+    assert by_type[20].t2_bpc_owned == 12
+
+
+@pg_helpers.postgres_required()
 def test_plan_production_manual_override_bypasses_the_margin_gate(monkeypatch, tenant):
     # A manual Build/Buy override (storage.manual_build_buy) is an explicit
     # user decision - the margin gate must not second-guess it.
@@ -2899,7 +2942,7 @@ def test_invention_logistics_needs_bpcs_decryptors_and_datacores(monkeypatch):
     need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
                              t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
                              output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
-    monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id: {"datacores": [(300, 2), (301, 2)]})
+    monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id, product_type_id=None: {"datacores": [(300, 2), (301, 2)]})
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)  # real T1 blueprint, not a relic
     monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, **kwargs: 0.0)
@@ -2931,7 +2974,7 @@ def test_invention_logistics_t1_blueprint_availability_uses_copy_count_not_gener
     need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
                              t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
                              output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
-    monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id: {"datacores": []})
+    monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id, product_type_id=None: {"datacores": []})
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)  # real T1 blueprint, not a relic
 
@@ -2962,7 +3005,7 @@ def test_invention_logistics_relic_availability_uses_generic_stock_not_copy_coun
     need = InventionNeedRow(type_id=10, type_name="T3 Widget", t1_blueprint_type_id=302,
                              t1_blueprint_name="Intact Power Cores", decryptor="Parity", probability=0.26,
                              output_runs=20, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
-    monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id: {"datacores": []})
+    monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id, product_type_id=None: {"datacores": []})
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: ANCIENT_RELIC_CATEGORY_ID)  # a relic
 
@@ -2987,7 +3030,7 @@ def test_invention_logistics_none_decryptor_does_not_demand_type_zero(monkeypatc
     need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
                              t1_blueprint_name="Widget Blueprint", decryptor="None", probability=0.5,
                              output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
-    monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id: {"datacores": []})
+    monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id, product_type_id=None: {"datacores": []})
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)  # real T1 blueprint, not a relic
     monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, **kwargs: 0.0)

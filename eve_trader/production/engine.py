@@ -531,13 +531,15 @@ def _invention_need_row(type_id: int, type_name: str, activity: str,
                                     selected_decryptors, t2_memo)
     if chosen is None or chosen.output_runs <= 0 or chosen.probability <= 0:
         return None
-    # chosen.product_type_id IS the invented T2/T3 blueprint's own type_id -
-    # not `type_id` (the manufactured item), and not chosen.t1_blueprint_type_id
-    # (the relic/T1 blueprint consumed to invent it). For a normal Tech II
-    # item this equals `blueprint_id` from get_blueprint_for_product; using
-    # the invention recipe's product is the one that stays correct if those
-    # ever diverge.
-    t2_bpc_owned = int(storage.available_blueprint_copies(chosen.product_type_id, None))
+    # blueprint_id here IS this item's invented T2/T3 manufacturing
+    # blueprint - not `type_id` (the manufactured item), and not
+    # chosen.t1_blueprint_type_id (the relic/T1 consumed to invent it).
+    # Do not substitute chosen.product_type_id: a single T1 often invents
+    # into two T2s (Condor Blueprint → Crow *and* Raptor), and
+    # get_invention_recipe's unfiltered fetchone used to return one sibling
+    # for both rows, so both counted the same T2 BPC runs (live: Crow and
+    # Raptor each showing 507).
+    t2_bpc_owned = int(storage.available_blueprint_copies(blueprint_id, None))
     runs_needed = math.ceil(missing / product_qty) if missing > 0 else 0
     runs_still_needed = max(0, runs_needed - t2_bpc_owned)
     bpcs_needed = math.ceil(runs_still_needed / chosen.output_runs) if runs_still_needed > 0 else 0

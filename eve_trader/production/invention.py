@@ -78,13 +78,14 @@ def skill_multiplier(cfg: ProductionConfig = PRODUCTION_CONFIG) -> float:
 
 
 def estimate(t1_blueprint_type_id: int, decryptor_name: str, home: dict, jita: dict,
-             cfg: ProductionConfig = PRODUCTION_CONFIG, reducible_material_cost_per_run: float = 0.0) -> InventionResult:
+             cfg: ProductionConfig = PRODUCTION_CONFIG, reducible_material_cost_per_run: float = 0.0,
+             product_type_id: Optional[int] = None) -> InventionResult:
     """`reducible_material_cost_per_run` is the cost of the resulting item's own
     build materials that actually scale with ME (base qty > 1 - EVE never
     reduces a material below 1 unit/run) - pass 0 to ignore build-side ME
     savings entirely (e.g. when just pricing invention itself, not deciding
     which decryptor to build with)."""
-    recipe = storage.get_invention_recipe(t1_blueprint_type_id)
+    recipe = storage.get_invention_recipe(t1_blueprint_type_id, product_type_id)
     if recipe is None:
         raise ValueError(f"No invention recipe found for type ID {t1_blueprint_type_id}.")
     if recipe["base_probability"] is None:
@@ -179,12 +180,16 @@ def estimate(t1_blueprint_type_id: int, decryptor_name: str, home: dict, jita: d
 
 def compare_decryptors(t1_blueprint_type_id: int, home: dict, jita: dict,
                         cfg: ProductionConfig = PRODUCTION_CONFIG,
-                        reducible_material_cost_per_run: float = 0.0) -> list[InventionResult]:
+                        reducible_material_cost_per_run: float = 0.0,
+                        product_type_id: Optional[int] = None) -> list[InventionResult]:
     """One InventionResult per decryptor option (including "None"), cheapest
     net cost per BPC run first (expected invention cost minus the ME material
-    savings that decryptor gives on every subsequent build)."""
+    savings that decryptor gives on every subsequent build). Pass
+    `product_type_id` when the T1 invents into more than one T2 (see
+    estimate / storage.get_invention_recipe)."""
     results = [
-        estimate(t1_blueprint_type_id, name, home, jita, cfg, reducible_material_cost_per_run)
+        estimate(t1_blueprint_type_id, name, home, jita, cfg, reducible_material_cost_per_run,
+                 product_type_id=product_type_id)
         for name in DECRYPTORS
     ]
     results.sort(key=lambda r: r.net_cost_per_run if r.net_cost_per_run is not None else float("inf"))
@@ -225,7 +230,8 @@ def compare_recipes_and_decryptors(product_blueprint_type_id: int, home: dict, j
     results: list[InventionResult] = []
     for candidate in storage.find_invention_recipe_candidates_by_product_type_id(product_blueprint_type_id):
         try:
-            results.extend(compare_decryptors(candidate, home, jita, cfg, reducible_material_cost_per_run))
+            results.extend(compare_decryptors(candidate, home, jita, cfg, reducible_material_cost_per_run,
+                                              product_type_id=product_blueprint_type_id))
         except ValueError:
             continue
     results.sort(key=lambda r: r.net_cost_per_run if r.net_cost_per_run is not None else float("inf"))
@@ -256,7 +262,8 @@ def best_recipe_for_decryptor(product_blueprint_type_id: int, decryptor_name: st
     best: Optional[InventionResult] = None
     for candidate in storage.find_invention_recipe_candidates_by_product_type_id(product_blueprint_type_id):
         try:
-            result = estimate(candidate, decryptor_name, home, jita, cfg, reducible_material_cost_per_run)
+            result = estimate(candidate, decryptor_name, home, jita, cfg, reducible_material_cost_per_run,
+                              product_type_id=product_blueprint_type_id)
         except ValueError:
             continue
         if best is None:

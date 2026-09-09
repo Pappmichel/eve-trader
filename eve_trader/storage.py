@@ -2573,23 +2573,38 @@ def find_invention_recipe_candidates_by_product_type_id(product_blueprint_type_i
 
 
 @lru_cache(maxsize=None)
-def get_invention_recipe(t1_blueprint_type_id: int) -> Optional[dict]:
+def get_invention_recipe(t1_blueprint_type_id: int, product_type_id: Optional[int] = None) -> Optional[dict]:
     """Returns the full invention job definition for `t1_blueprint_type_id`:
     product_type_id, base_runs (the invented BPC's run count before decryptor
-    bonus), base_probability, job time, and datacore requirements. Cached -
-    see get_sde_type. Confirmed real perf bug (2026-09-01): every sibling
-    SDE-lookup in this file already had this same @lru_cache, but this one
-    didn't - invention.estimate() calls it once per decryptor candidate
-    evaluated for the same t1_blueprint_type_id (~12x per Tech II/III item),
-    so plan_production's Buy/Build-list computation re-ran its 4 queries
-    thousands of times for data that never changes between decryptor
-    choices. Profiled live: ~2100 calls/~8s of a ~39s run."""
+    bonus), base_probability, job time, and datacore requirements.
+
+    Pass `product_type_id` (the invented T2/T3 *blueprint*) whenever the
+    caller already knows which output it wants. A single T1 often invents
+    into two T2s (Condor Blueprint → Crow Blueprint *and* Raptor Blueprint,
+    both activity 8); without that filter an un-ORDERed fetchone() returns
+    an arbitrary sibling, so Crow and Raptor would share one recipe's
+    product_type_id (live: both Invention rows showed the same T2 BPC run
+    count). Cached - see get_sde_type. Confirmed real perf bug (2026-09-01):
+    every sibling SDE-lookup in this file already had this same @lru_cache,
+    but this one didn't - invention.estimate() calls it once per decryptor
+    candidate evaluated for the same t1_blueprint_type_id (~12x per Tech
+    II/III item), so plan_production's Buy/Build-list computation re-ran
+    its 4 queries thousands of times for data that never changes between
+    decryptor choices. Profiled live: ~2100 calls/~8s of a ~39s run."""
     with connect() as conn:
-        product = conn.execute(
-            "SELECT product_type_id, quantity FROM sde_blueprint_products "
-            "WHERE blueprint_type_id = ? AND activity_id = 8",
-            (t1_blueprint_type_id,),
-        ).fetchone()
+        if product_type_id is None:
+            product = conn.execute(
+                "SELECT product_type_id, quantity FROM sde_blueprint_products "
+                "WHERE blueprint_type_id = ? AND activity_id = 8 "
+                "ORDER BY product_type_id LIMIT 1",
+                (t1_blueprint_type_id,),
+            ).fetchone()
+        else:
+            product = conn.execute(
+                "SELECT product_type_id, quantity FROM sde_blueprint_products "
+                "WHERE blueprint_type_id = ? AND activity_id = 8 AND product_type_id = ?",
+                (t1_blueprint_type_id, product_type_id),
+            ).fetchone()
         if product is None:
             return None
         product_type_id, base_runs = product
