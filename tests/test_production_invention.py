@@ -19,7 +19,7 @@ RECIPE = {
 
 @pytest.fixture(autouse=True)
 def _fake_recipe_and_sde(monkeypatch):
-    monkeypatch.setattr(storage, "get_invention_recipe", lambda type_id: RECIPE)
+    monkeypatch.setattr(storage, "get_invention_recipe", lambda type_id, product_type_id=None: RECIPE)
     monkeypatch.setattr(storage, "get_sde_type",
                          lambda type_id: (type_id, None, f"Type {type_id}", 0.01, None, None, None, None))
     monkeypatch.setattr(storage, "get_blueprint_materials", lambda *a, **k: [])

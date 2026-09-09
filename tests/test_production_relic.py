@@ -39,7 +39,7 @@ RELIC_PRICES = {WRECKED_TYPE_ID: 1_000_000.0, MALFUNCTIONING_TYPE_ID: 10_000_000
 
 @pytest.fixture(autouse=True)
 def _fake_sde(monkeypatch):
-    monkeypatch.setattr(storage, "get_invention_recipe", lambda type_id: RECIPES[type_id])
+    monkeypatch.setattr(storage, "get_invention_recipe", lambda type_id, product_type_id=None: RECIPES[type_id])
     monkeypatch.setattr(storage, "get_sde_type",
                          lambda type_id: (type_id, None, f"Type {type_id}", 0.01, None, None, None, None))
     monkeypatch.setattr(storage, "get_blueprint_materials", lambda *a, **k: [])
@@ -58,7 +58,7 @@ def test_estimate_prices_a_relic_but_not_a_real_t1_blueprint(monkeypatch):
     # own "buy price" added - same deliberate simplification Tech II already
     # had (a T1 BPO is normally a near-free reprint of something you own).
     monkeypatch.setattr(storage, "get_invention_recipe",
-                         lambda type_id: {"base_probability": 0.4, "base_runs": 1, "datacores": [], "product_type_id": 1})
+                         lambda type_id, product_type_id=None: {"base_probability": 0.4, "base_runs": 1, "datacores": [], "product_type_id": 1})
     real_bp_result = invention.estimate(500, "None", {}, {})  # 500 not in RECIPES -> category_id 9 (real blueprint)
     assert real_bp_result.relic_cost == 0.0
     assert real_bp_result.total_attempt_cost == 0.0
