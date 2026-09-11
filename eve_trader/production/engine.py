@@ -1281,7 +1281,12 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     invention-sourced (has a decryptor), regardless of whether it's currently
     missing or would be bought instead of built right now - runs_needed/
     bpcs_needed/recommended_invention_runs are 0 for a target that's already
-    fully stocked)."""
+    fully stocked).
+
+    Track B (2026-09-11): HTTP entry is do_refresh_production — see that
+    docstring for the live timing and why this was not moved onto
+    pipeline_runner. Do not hang a progress_callback on _PlanContext /
+    _expand_all; those are shared with other callers."""
     ctx = _PlanContext(cfg)
     stock_targets, manual_stock, manual_overrides, selected_decryptors = (
         ctx.stock_targets, ctx.manual_stock, ctx.manual_overrides, ctx.selected_decryptors)

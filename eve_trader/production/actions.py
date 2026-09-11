@@ -149,7 +149,13 @@ def do_remove_producer_character(role_key: str) -> dict:
 
 def do_sync_esi() -> dict:
     """Pulls character + corp assets/industry-jobs/blueprints from ESI for
-    every registered producer character."""
+    every registered producer character.
+
+    Track B (2026-09-11, this tenant): 0 producer characters; POST
+    /api/production/esi/sync returned 400 in 0.001s before any ESI. Not
+    migrated to pipeline_runner — re-measure if a real character roster
+    ever hits a proxy timeout (Trading's original reason for a background
+    job). Scheduler still calls this in-process."""
     result = esi_sync.sync_esi()
     storage.set_esi_sync_time("production", datetime.now(timezone.utc).isoformat())
     # Owned-BPO ME/TE (storage.get_owned_bpo_best_me_te, used by _owned_bpo_mods
@@ -404,7 +410,15 @@ def do_estimate_invention(product_name: str, decryptor_name: str | None = None,
 
 def do_refresh_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     """Recomputes Inventory (target vs. current stock) and the resulting
-    Buy/Build lists. Raises if the SDE cache is empty (nothing to plan against)."""
+    Buy/Build lists. Raises if the SDE cache is empty (nothing to plan against).
+
+    Track B (2026-09-11, this tenant): 0 stock targets, SDE loaded
+    (sde_types=52999); POST /api/production/plan/refresh returned 400 in
+    0.009s. Not migrated to pipeline_runner — re-measure against a real
+    stock-target set if Compute Buy/Build List ever blocks the request.
+    If migrated later, progress belongs on this function's stock-target
+    loop, not inside _PlanContext/_expand_all (shared with unlisted-stock
+    / discover / item_margin_detail)."""
     if sum(storage.sde_row_counts().values()) == 0:
         raise ActionError("SDE cache is empty. Run 'Refresh SDE' first.")
     if not storage.load_stock_targets():
@@ -854,7 +868,11 @@ def do_unlisted_stock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     Only considers stock targets that actually have a home_market_stock or
     jita_market_stock target set (see listed_target_ids below) - a target
     with only backup_stock configured is a personal/component buffer never
-    meant to be listed for sale, so it must not show up here."""
+    meant to be listed for sale, so it must not show up here.
+
+    Track B (2026-09-11, this tenant): POST /api/production/unlisted-stock/check
+    returned 400 in 0.001s (no home_location_id; also 0 stock targets and
+    0 producer characters). Not migrated to pipeline_runner."""
     if cfg.home_location_id is None:
         raise ActionError("No structure/location ID configured (Settings -> Market & Location).")
     stock_targets = storage.load_stock_targets()

@@ -100,6 +100,10 @@ export default function DoctrineLayout() {
     resultKeys: SYNC_RESULT_KEYS,
     labels: SYNC_LABELS,
     defaultLabel: 'Sync Contracts',
+    // Same reasoning as Admin's SDE refresh - contract sync now reports
+    // per-item batch progress, so a tighter poll shows real movement
+    // instead of just "Running…" for its (typically short) duration.
+    pollIntervalMs: 1000,
   })
   const syncStart = useBackgroundJobStart(syncJob, () => doctrineApi.syncContracts())
   const syncRunning = syncJob.runningStatus || syncStart.isPending

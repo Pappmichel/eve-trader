@@ -131,11 +131,12 @@ def test_refresh_sde_conflict_maps_to_409(monkeypatch):
 def test_refresh_sde_status_returns_latest_run(monkeypatch):
     monkeypatch.setattr(admin, "do_sde_refresh_status", lambda: {
         "run_id": "sde-1", "status": "running", "tool": "admin",
-        "progress": {"phase": "run", "message": "Refreshing SDE"},
+        "progress": {"phase": "run", "batch": 3, "total_batches": 13, "message": "Fetching invGroups.csv"},
     })
     resp = client.get("/api/admin/sde/refresh/status")
     assert resp.status_code == 200
-    assert resp.json()["progress"]["message"] == "Refreshing SDE"
+    assert resp.json()["progress"]["batch"] == 3
+    assert resp.json()["progress"]["total_batches"] == 13
 
 
 def test_refresh_sde_action_error_maps_to_400(monkeypatch):

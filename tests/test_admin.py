@@ -129,7 +129,7 @@ def test_do_refresh_sde_downloads_and_invalidates_caches(monkeypatch):
     # cache TTL. Asserting only that the functions were *called* (the
     # original version of this test) let exactly that regression pass.
     invalidated = []
-    monkeypatch.setattr(sde, "refresh_sde", lambda: {"sde_types": 100})
+    monkeypatch.setattr(sde, "refresh_sde", lambda progress_callback=None: {"sde_types": 100})
     monkeypatch.setattr(admin, "invalidate_discover_cache",
                          lambda all_tenants=False: invalidated.append(("discover", all_tenants)))
     monkeypatch.setattr(admin, "invalidate_ship_margin_cache",
@@ -142,12 +142,40 @@ def test_do_refresh_sde_downloads_and_invalidates_caches(monkeypatch):
 
 
 def test_do_refresh_sde_wraps_network_error():
-    def _raise():
+    def _raise(progress_callback=None):
         raise requests.RequestException("connection refused")
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(sde, "refresh_sde", _raise)
         with pytest.raises(ActionError, match="SDE refresh failed"):
             admin.do_refresh_sde()
+
+
+def test_do_refresh_sde_emits_increasing_batch_progress(monkeypatch):
+    """Track A: each of the 13 sequential CSV fetches reports batch/total_batches."""
+    fetched = []
+
+    def fake_fetch(session, base, filename):
+        fetched.append(filename)
+        return []
+
+    monkeypatch.setattr(sde, "_fetch_csv", fake_fetch)
+    monkeypatch.setattr(sde, "_dump_etag", lambda *a, **k: "etag")
+    monkeypatch.setattr(storage, "replace_sde_data", lambda **k: None)
+    monkeypatch.setattr(storage, "set_sde_refresh_state", lambda *a, **k: None)
+    monkeypatch.setattr(storage, "sde_row_counts", lambda: {"sde_types": 0})
+    monkeypatch.setattr(admin, "invalidate_discover_cache", lambda all_tenants=False: None)
+    monkeypatch.setattr(admin, "invalidate_ship_margin_cache", lambda all_tenants=False: None)
+
+    seen = []
+    admin.do_refresh_sde(progress_callback=seen.append)
+
+    assert len(sde._SDE_CSV_FILES) == 13
+    assert fetched == list(sde._SDE_CSV_FILES)
+    assert [p["batch"] for p in seen] == list(range(1, 14))
+    assert all(p["phase"] == "run" for p in seen)
+    assert all(p["total_batches"] == 13 for p in seen)
+    assert seen[0]["message"] == "Fetching invTypes.csv"
+    assert seen[-1]["message"] == "Fetching invTypeMaterials.csv"
 
 
 def test_do_refresh_jita_price_cache_returns_count_and_timestamp(monkeypatch):

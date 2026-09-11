@@ -22,12 +22,12 @@ more:
 from __future__ import annotations
 
 import logging
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Optional
 
 from .. import storage
-from ..actions import ActionError
+from ..actions import ActionError, _emit_progress
 from ..auth import TokenManager
 from ..config import OAUTH_CONFIG
 from ..esi_client import ESIClient, ESIError
@@ -130,11 +130,15 @@ def _fetch_character_contracts(client: ESIClient, role: str, character_id: int) 
     return result
 
 
-def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG, progress_callback=None) -> dict:
     """Phase 2 spec E.3, full flow. Raises ActionError only if no doctrine
     character is registered at all, or the structure isn't configured -
     every per-character/per-contract failure degrades into the returned
-    report instead (Phase 3 spec D.3)."""
+    report instead (Phase 3 spec D.3).
+
+    progress_callback is optional so the scheduler/CLI in-process path
+    (do_sync_contracts with no callback) is unchanged; the HTTP background
+    job passes pipeline_runner's status writer."""
     structure_id = cfg.effective_structure_id
     if structure_id is None:
         raise ActionError(
@@ -246,12 +250,22 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
     fetched_items: dict[int, list[dict]] = {}
     fetch_errors: dict[int, str] = {}
     if to_fetch:
-        with ThreadPoolExecutor(max_workers=min(8, len(to_fetch))) as pool:
-            for cid, items, error in pool.map(storage.with_current_tenant(_fetch_items), to_fetch):
+        total = len(to_fetch)
+        wrapped = storage.with_current_tenant(_fetch_items)
+        with ThreadPoolExecutor(max_workers=min(8, total)) as pool:
+            futures = [pool.submit(wrapped, entry) for entry in to_fetch]
+            for i, fut in enumerate(as_completed(futures), start=1):
+                cid, items, error = fut.result()
                 if error is not None:
                     fetch_errors[cid] = error
                 else:
                     fetched_items[cid] = items or []
+                _emit_progress(progress_callback, {
+                    "phase": "sync",
+                    "batch": i,
+                    "total_batches": total,
+                    "message": "Fetching contract items",
+                })
 
     # Contracts whose items fetch failed this run are dropped from this
     # snapshot entirely (Phase 3 spec D.3: never write a contract with no

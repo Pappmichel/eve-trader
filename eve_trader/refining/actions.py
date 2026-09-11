@@ -139,7 +139,12 @@ def do_quote_reprocessing(paste_text: str, trading_cfg: TradingConfig = TRADING_
     per-item rows and a totals summary. Reuses Trading's own seller
     character/C-J structure, same as do_refresh_ore_shortlist - both the
     item's own sell price and its mineral yield's sell price are C-J-only
-    (consistent with #91 and Production's established rule)."""
+    (consistent with #91 and Production's established rule).
+
+    Track B (2026-09-11, this tenant): 217-line compressed-ore paste
+    (SDE-resolved names) returned 400 in 1.149s — parse + type resolve
+    finished, then pricing failed (no seller, no structure_market_slug).
+    Under the 10-15s bar; not migrated to pipeline_runner."""
     if not paste_text or not paste_text.strip():
         raise ActionError("Paste is empty - copy items from an Inventory window's list view first.")
 

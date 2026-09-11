@@ -22,8 +22,9 @@ thread per start is enough; the unique partial index on pipeline_runs is
 the cross-worker lock.
 
 Polling, not LISTEN/NOTIFY: this app has no existing NOTIFY path, the
-frontend already polls via react-query, and a ~4s lag on a minutes-long
-job is the right complexity tradeoff.
+frontend already polls via react-query. While a job is running the hook
+refetches every 1s (tight enough that a ~6s SDE refresh shows
+batch/total_batches, not only "Running…").
 
 The background thread uses tenant_scope.enter_tenant (not a bare
 storage.set_current_tenant) so TRADING_CONFIG/PRODUCTION_CONFIG's
@@ -173,7 +174,7 @@ def start_doctrine_sync() -> dict:
     return start_job(
         TOOL_DOCTRINE, JOB_SYNC_CONTRACTS,
         _JOB_LABELS[(TOOL_DOCTRINE, JOB_SYNC_CONTRACTS)],
-        lambda cb: _run_with_message(cb, "Syncing contracts", doctrine_actions.do_sync_contracts),
+        lambda cb: doctrine_actions.do_sync_contracts(progress_callback=cb),
     )
 
 
@@ -184,16 +185,8 @@ def start_sde_refresh() -> dict:
     return start_job(
         TOOL_ADMIN, JOB_SDE_REFRESH,
         _JOB_LABELS[(TOOL_ADMIN, JOB_SDE_REFRESH)],
-        lambda cb: _run_with_message(cb, "Refreshing SDE", admin_mod.do_refresh_sde),
+        lambda cb: admin_mod.do_refresh_sde(progress_callback=cb),
     )
-
-
-def _run_with_message(progress_cb, message: str, fn: Callable) -> object:
-    try:
-        progress_cb({"phase": "run", "message": message})
-    except Exception:  # noqa: BLE001
-        log.exception("progress_callback failed")
-    return fn()
 
 
 def _execute(tenant_id: str, run_id: str, work: Worker) -> None:
@@ -241,4 +234,20 @@ def _run_pipeline(tenant_id: str, run_id: str, safe: bool, rebuild_universe: boo
         tenant_id, run_id,
         lambda cb: actions.do_pipeline(
             safe=safe, rebuild_universe=rebuild_universe, progress_callback=cb),
+    )
+
+
+def _run_doctrine_sync(tenant_id: str, run_id: str) -> None:
+    from .doctrine import actions as doctrine_actions
+    _execute(
+        tenant_id, run_id,
+        lambda cb: doctrine_actions.do_sync_contracts(progress_callback=cb),
+    )
+
+
+def _run_sde_refresh(tenant_id: str, run_id: str) -> None:
+    from . import admin as admin_mod
+    _execute(
+        tenant_id, run_id,
+        lambda cb: admin_mod.do_refresh_sde(progress_callback=cb),
     )
