@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { notifications } from '@mantine/notifications'
 
 import { ApiError, tradingApi } from '../api/client'
-import type { PipelineRunProgress, PipelineRunStatus } from '../api/types'
+import type { PipelineRunProgress } from '../api/types'
 
 const STATUS_KEY = ['trading', 'pipeline', 'refresh-and-prune'] as const
 
