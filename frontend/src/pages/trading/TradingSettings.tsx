@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, Button, Center, Loader } from '@mantine/core'
+import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, TagsInput, Button, Center, Loader } from '@mantine/core'
 
 import { tradingApi } from '../../api/client'
 import type { TradingSettings as TradingSettingsT } from '../../api/types'
@@ -50,7 +50,10 @@ export default function TradingSettings() {
       </SimpleGrid>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Candidate Search</Title>
-      <Text size="xs" c="dimmed">Only margin/hit rate/volume decide whether an item gets suggested - no category pre-filter.</Text>
+      <Text size="xs" c="dimmed">
+        Beyond the excluded market-group paths below, only margin/hit rate/volume decide whether an item gets suggested -
+        no keyword allow/denylist, no per-item size cap.
+      </Text>
       <SimpleGrid cols={3}>
         <NumberInput label="Min. hit rate (0-1)" value={form.min_hit_rate} min={0} max={1} step={0.05}
           onChange={(v) => set('min_hit_rate', Number(v))} />
@@ -61,6 +64,10 @@ export default function TradingSettings() {
         <NumberInput label="Trade reconciliation: days back" value={form.lookback_days} min={1} step={5}
           onChange={(v) => set('lookback_days', Number(v))} />
       </SimpleGrid>
+      <TagsInput mt="xs" label="Excluded market-group path prefixes"
+        description="Top-level market-group paths (e.g. 'ships', 'blueprints') hard-excluded from candidate discovery entirely, regardless of profitability."
+        value={form.excluded_path_prefixes} onChange={(v) => set('excluded_path_prefixes', v)}
+        placeholder="Add a market-group path prefix" splitChars={[',']} />
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Regions &amp; Structure</Title>
       <Text size="xs" c="dimmed">Only change if your trading location shifts entirely.</Text>

@@ -165,6 +165,7 @@ export interface TradingSettings {
   max_active_shortlist_items: number
   min_hit_rate: number
   min_avg_movement: number
+  excluded_path_prefixes: string[]
   safe_mode_max_ids: number
   lookback_days: number
   jita_region_id: number

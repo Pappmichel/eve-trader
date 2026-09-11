@@ -108,6 +108,7 @@ class TradingSettings(BaseModel):
     max_active_shortlist_items: int
     min_hit_rate: float
     min_avg_movement: float
+    excluded_path_prefixes: list[str]
     safe_mode_max_ids: int
     lookback_days: int
     jita_region_id: int
