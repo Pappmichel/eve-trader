@@ -1,8 +1,10 @@
--- Manual-trigger Trading pipeline runs (Search + Add + Clean Up). Status is
--- persisted per tenant so a server restart / second worker process still
--- sees an in-flight job - unlike scheduler.py's in-memory last_run_status,
--- which is fine for a "last tick" readout but would lose a minutes-long
--- cleanup that the UI is polling.
+-- Manual-trigger Trading pipeline runs (Search + Add + Clean Up, Refresh
+-- Shortlist, Run Complete Pipeline). Status is persisted per tenant so a
+-- server restart / second worker process still sees an in-flight job -
+-- unlike scheduler.py's in-memory last_run_status, which is fine for a
+-- "last tick" readout but would lose a minutes-long cleanup that the UI
+-- is polling. The three jobs share one running-row lock: they all mutate
+-- the shortlist / snapshot.
 --
 -- Named (not phase4_schema.sql): after phase3 the repo switched to
 -- feature-named schema files (admin/doctrine/refining/...). Numbering
@@ -43,11 +45,20 @@ CREATE POLICY tenant_isolation ON pipeline_runs
 CREATE INDEX IF NOT EXISTS pipeline_runs_tenant_started_idx
     ON pipeline_runs (tenant_id, started_at DESC);
 
--- At most one running job per tenant+job_name. The application checks first
--- for a friendly ConflictError; this unique index is the race-condition
--- backstop if two POSTs land on different workers in the same instant.
+-- At most one running job per tenant+job_name. Weaker than the per-tenant
+-- lock below; kept so databases that already applied this file don't need
+-- a DROP, and so a same-job_name race is still named clearly in Postgres.
 CREATE UNIQUE INDEX IF NOT EXISTS pipeline_runs_one_running
     ON pipeline_runs (tenant_id, job_name)
+    WHERE status = 'running';
+
+-- At most one running Trading job per tenant, across job_names. Refresh
+-- Shortlist / Search+Add+Clean Up / Run Complete Pipeline all mutate the
+-- shortlist; overlapping them would race. The application checks first for
+-- a friendly ConflictError; this unique index is the race-condition
+-- backstop if two POSTs land on different workers in the same instant.
+CREATE UNIQUE INDEX IF NOT EXISTS pipeline_runs_one_running_per_tenant
+    ON pipeline_runs (tenant_id)
     WHERE status = 'running';
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON pipeline_runs TO eve_trader_app;

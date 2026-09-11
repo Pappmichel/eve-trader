@@ -100,7 +100,7 @@ def _snapshot_row(item_id: int, decision: str, active: bool = True):
 
 
 def test_replace_shortlist_snapshot_run_overwrites_same_run_ts_keeps_older(tenant):
-    storage.save_shortlist_snapshot([_snapshot_row(1, "Import")], "2026-01-01T00:00:00")
+    storage.replace_shortlist_snapshot_run([_snapshot_row(1, "Import")], "2026-01-01T00:00:00")
     storage.replace_shortlist_snapshot_run(
         [_snapshot_row(1, "Import"), _snapshot_row(2, "Skip")],
         "2026-09-11T00:00:00",

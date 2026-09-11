@@ -779,17 +779,6 @@ def _shortlist_snapshot_params(rows: list[ShortlistRow], run_ts: str) -> list[tu
              r.avg_daily_volume) for r in rows]
 
 
-def save_shortlist_snapshot(rows: list[ShortlistRow], run_ts: str) -> None:
-    """Appends a new run_ts of snapshot rows (legacy write). Prefer
-    replace_shortlist_snapshot_run for cleanup: that overwrites one in-progress
-    run_ts after each batch so MAX(run_ts) never points at a partial insert
-    that hid the previous complete snapshot."""
-    if not rows:
-        return
-    with connect() as conn:
-        conn.executemany(_SHORTLIST_SNAPSHOT_INSERT, _shortlist_snapshot_params(rows, run_ts))
-
-
 def replace_shortlist_snapshot_run(rows: list[ShortlistRow], run_ts: str) -> None:
     """Replaces every shortlist_snapshot row for this run_ts (RLS-scoped).
 
@@ -797,9 +786,8 @@ def replace_shortlist_snapshot_run(rows: list[ShortlistRow], run_ts: str) -> Non
     mid-job still leaves the Shortlist page with whatever has been priced
     plus carried-forward previous rows, rather than blanking it. The prune
     pass overwrites that same run_ts after same-run deactivations so the
-    snapshot the page reads (latest_snapshot = MAX(run_ts)) reflects Inactive
-    - the guarantee save_shortlist_snapshot-at-the-end used to provide, just
-    incremental. Earlier run_ts values stay as history.
+    snapshot the page reads (latest_snapshot = MAX(run_ts)) reflects Inactive.
+    Incremental, not a second run_ts. Earlier run_ts values stay as history.
     """
     with connect() as conn:
         conn.execute("DELETE FROM shortlist_snapshot WHERE run_ts = ?", (run_ts,))
@@ -2067,8 +2055,8 @@ def _serialize_pipeline_run(row) -> dict:
 
 def start_pipeline_run(job_name: str) -> str:
     """Inserts a `running` row and returns its id. Raises psycopg
-    UniqueViolation if this tenant already has a running row for
-    `job_name` (see pipeline_runs_one_running) - the runner converts that
+    UniqueViolation if this tenant already has any running Trading job
+    (see pipeline_runs_one_running_per_tenant) - the runner converts that
     to ConflictError."""
     run_id = str(uuid.uuid4())
     with connect() as conn:
@@ -2097,25 +2085,46 @@ def finish_pipeline_run(run_id: str, status: str, result: Optional[dict] = None,
         )
 
 
-def get_running_pipeline_run(job_name: str) -> Optional[dict]:
+def get_running_pipeline_run(job_name: Optional[str] = None) -> Optional[dict]:
+    """The in-flight Trading job for this tenant. `job_name=None` (the
+    default) matches any job - Refresh Shortlist / Search+Add+Clean Up /
+    Pipeline share one running lock. Pass a name only when a caller
+    genuinely cares which job is running."""
     with connect() as conn:
-        row = conn.execute(
-            "SELECT id, job_name, status, started_at, updated_at, finished_at, progress, result, error "
-            "FROM pipeline_runs WHERE job_name = ? AND status = 'running' "
-            "ORDER BY started_at DESC LIMIT 1",
-            (job_name,),
-        ).fetchone()
+        if job_name is None:
+            row = conn.execute(
+                "SELECT id, job_name, status, started_at, updated_at, finished_at, progress, result, error "
+                "FROM pipeline_runs WHERE status = 'running' "
+                "ORDER BY started_at DESC LIMIT 1",
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT id, job_name, status, started_at, updated_at, finished_at, progress, result, error "
+                "FROM pipeline_runs WHERE job_name = ? AND status = 'running' "
+                "ORDER BY started_at DESC LIMIT 1",
+                (job_name,),
+            ).fetchone()
     return _serialize_pipeline_run(row) if row else None
 
 
-def get_latest_pipeline_run(job_name: str) -> Optional[dict]:
+def get_latest_pipeline_run(job_name: Optional[str] = None) -> Optional[dict]:
+    """Most recently started Trading job for this tenant (`job_name=None`
+    = any of the three). Running rows sort first only by started_at, not
+    status - callers that need the in-flight job should use
+    get_running_pipeline_run."""
     with connect() as conn:
-        row = conn.execute(
-            "SELECT id, job_name, status, started_at, updated_at, finished_at, progress, result, error "
-            "FROM pipeline_runs WHERE job_name = ? "
-            "ORDER BY started_at DESC LIMIT 1",
-            (job_name,),
-        ).fetchone()
+        if job_name is None:
+            row = conn.execute(
+                "SELECT id, job_name, status, started_at, updated_at, finished_at, progress, result, error "
+                "FROM pipeline_runs ORDER BY started_at DESC LIMIT 1",
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT id, job_name, status, started_at, updated_at, finished_at, progress, result, error "
+                "FROM pipeline_runs WHERE job_name = ? "
+                "ORDER BY started_at DESC LIMIT 1",
+                (job_name,),
+            ).fetchone()
     return _serialize_pipeline_run(row) if row else None
 
 
@@ -2129,20 +2138,31 @@ def get_pipeline_run(run_id: str) -> Optional[dict]:
     return _serialize_pipeline_run(row) if row else None
 
 
-def fail_stale_pipeline_runs(job_name: str, stale_after_seconds: int = 7200) -> int:
+def fail_stale_pipeline_runs(job_name: Optional[str] = None, stale_after_seconds: int = 7200) -> int:
     """Marks `running` rows whose updated_at is older than `stale_after_seconds`
     as failed so a crashed worker can't block this tenant forever. Returns
     how many rows were flipped. 2h default is well above a legitimate full
     search of a large universe, and well below "wait until someone notices
-    the button is stuck"."""
+    the button is stuck". `job_name=None` covers every Trading job for this
+    tenant (the shared lock means a stale Pipeline would otherwise block
+    Refresh Shortlist)."""
     with connect() as conn:
-        cur = conn.execute(
-            "UPDATE pipeline_runs SET status = 'failed', finished_at = now(), updated_at = now(), "
-            "error = 'Stale running job (process restarted or hung)' "
-            "WHERE job_name = ? AND status = 'running' "
-            "AND updated_at < now() - (? * INTERVAL '1 second')",
-            (job_name, stale_after_seconds),
-        )
+        if job_name is None:
+            cur = conn.execute(
+                "UPDATE pipeline_runs SET status = 'failed', finished_at = now(), updated_at = now(), "
+                "error = 'Stale running job (process restarted or hung)' "
+                "WHERE status = 'running' "
+                "AND updated_at < now() - (? * INTERVAL '1 second')",
+                (stale_after_seconds,),
+            )
+        else:
+            cur = conn.execute(
+                "UPDATE pipeline_runs SET status = 'failed', finished_at = now(), updated_at = now(), "
+                "error = 'Stale running job (process restarted or hung)' "
+                "WHERE job_name = ? AND status = 'running' "
+                "AND updated_at < now() - (? * INTERVAL '1 second')",
+                (job_name, stale_after_seconds),
+            )
         return cur.rowcount or 0
 
 

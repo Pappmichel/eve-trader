@@ -229,7 +229,6 @@ def test_refresh_shortlist_prices_jita_in_oldest_first_batches(monkeypatch):
         lambda self, structure_id, type_ids, auth_role, goonmetrics_market_slug: ({}, False),
     )
     monkeypatch.setattr(GoonmetricsClient, "price_history_chunked", lambda self, *a, **k: [])
-    monkeypatch.setattr(storage, "save_shortlist_snapshot", lambda rows, run_ts: None)
     monkeypatch.setattr(storage, "replace_shortlist_snapshot_run", lambda rows, run_ts: None)
     monkeypatch.setattr(storage, "load_latest_shortlist_rows", lambda: [])
     monkeypatch.setattr(storage, "set_esi_sync_time", lambda tool, run_ts: None)

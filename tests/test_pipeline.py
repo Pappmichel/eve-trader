@@ -11,7 +11,7 @@ def test_pipeline_step_isolation_survives_esi_error_in_reconcile_trades(monkeypa
     # reconcile-trades crashed the whole pipeline with a raw 500 instead of
     # being isolated the same way build_universe/refresh_and_prune_candidates
     # already are.
-    monkeypatch.setattr(actions, "do_refresh_and_prune_candidates", lambda safe=True: {"ok": True})
+    monkeypatch.setattr(actions, "do_refresh_and_prune_candidates", lambda safe=True, progress_callback=None: {"ok": True})
 
     def boom():
         raise ESIError("420 rate limited")
@@ -24,7 +24,7 @@ def test_pipeline_step_isolation_survives_esi_error_in_reconcile_trades(monkeypa
 
 
 def test_pipeline_step_isolation_survives_action_error_in_reconcile_trades(monkeypatch):
-    monkeypatch.setattr(actions, "do_refresh_and_prune_candidates", lambda safe=True: {"ok": True})
+    monkeypatch.setattr(actions, "do_refresh_and_prune_candidates", lambda safe=True, progress_callback=None: {"ok": True})
 
     def boom():
         raise actions.ActionError("buyer and seller both need to be logged in")

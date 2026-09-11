@@ -35,12 +35,34 @@ def test_get_shortlist_items_serializes_storage_rows(monkeypatch):
 def test_refresh_shortlist_action_error_maps_to_400(monkeypatch):
     def _raise(*args, **kwargs):
         raise ActionError("Shortlist is empty.")
-    monkeypatch.setattr(actions, "do_refresh_shortlist", _raise)
+    monkeypatch.setattr(actions, "do_start_refresh_shortlist", _raise)
 
     resp = client.post("/api/trading/shortlist/refresh")
 
     assert resp.status_code == 400
     assert resp.json() == {"detail": "Shortlist is empty."}
+
+
+def test_refresh_shortlist_starts_background_job(monkeypatch):
+    monkeypatch.setattr(actions, "do_start_refresh_shortlist", lambda: {
+        "run_id": "abc", "status": "running", "job_name": "refresh_shortlist",
+    })
+
+    resp = client.post("/api/trading/shortlist/refresh")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"run_id": "abc", "status": "running", "job_name": "refresh_shortlist"}
+
+
+def test_refresh_shortlist_conflict_maps_to_409(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise actions.ConflictError("Search + Add + Clean Up is already running.")
+    monkeypatch.setattr(actions, "do_start_refresh_shortlist", _raise)
+
+    resp = client.post("/api/trading/shortlist/refresh")
+
+    assert resp.status_code == 409
+    assert resp.json() == {"detail": "Search + Add + Clean Up is already running."}
 
 
 def test_get_transaction_characters_serializes_role_tuples(monkeypatch):
@@ -112,7 +134,7 @@ def test_refresh_and_prune_conflict_maps_to_409(monkeypatch):
 
 
 def test_refresh_and_prune_status_returns_latest_run(monkeypatch):
-    monkeypatch.setattr(actions, "do_refresh_and_prune_status", lambda: {
+    monkeypatch.setattr(actions, "do_trading_job_status", lambda: {
         "run_id": "abc", "status": "running",
         "progress": {"phase": "search", "batch": 2, "total_batches": 10, "evaluated": 80},
     })
@@ -122,6 +144,33 @@ def test_refresh_and_prune_status_returns_latest_run(monkeypatch):
     assert resp.status_code == 200
     assert resp.json()["status"] == "running"
     assert resp.json()["progress"]["batch"] == 2
+
+
+def test_pipeline_run_starts_background_job(monkeypatch):
+    captured = {}
+
+    def _capture(safe=True, rebuild_universe=False):
+        captured["safe"] = safe
+        captured["rebuild_universe"] = rebuild_universe
+        return {"run_id": "pipe-1", "status": "running", "job_name": "pipeline"}
+    monkeypatch.setattr(actions, "do_start_pipeline", _capture)
+
+    resp = client.post("/api/trading/pipeline/run?safe=false&rebuild_universe=true")
+
+    assert resp.status_code == 200
+    assert captured == {"safe": False, "rebuild_universe": True}
+    assert resp.json() == {"run_id": "pipe-1", "status": "running", "job_name": "pipeline"}
+
+
+def test_pipeline_run_conflict_maps_to_409(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise actions.ConflictError("Refresh Shortlist is already running.")
+    monkeypatch.setattr(actions, "do_start_pipeline", _raise)
+
+    resp = client.post("/api/trading/pipeline/run")
+
+    assert resp.status_code == 409
+    assert resp.json() == {"detail": "Refresh Shortlist is already running."}
 
 
 def test_shortlist_snapshot_merges_days_until_deactivation(monkeypatch):

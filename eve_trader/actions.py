@@ -650,8 +650,9 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
 
 
 def do_refresh_shortlist(cfg: TradingConfig = TRADING_CONFIG,
-                          oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
-    items, rows, extra = _refresh_shortlist_rows(cfg, oauth_cfg)
+                          oauth_cfg: OAuthConfig = OAUTH_CONFIG,
+                          progress_callback=None) -> dict:
+    items, rows, extra = _refresh_shortlist_rows(cfg, oauth_cfg, progress_callback=progress_callback)
     run_ts = extra["cleanup_run_ts"]
     # Incremental persist already wrote this run_ts after each batch; rewrite
     # once more so a persist that failed mid-loop still lands the complete
@@ -1004,14 +1005,44 @@ def do_start_refresh_and_prune(safe: bool = True) -> dict:
     return pipeline_runner.start_refresh_and_prune(safe=safe)
 
 
-def do_refresh_and_prune_status() -> dict:
-    """Latest pipeline_runs row for this tenant's refresh_and_prune job, or
-    an idle placeholder when none has ever run."""
-    from .pipeline_runner import JOB_REFRESH_AND_PRUNE
-    row = storage.get_latest_pipeline_run(JOB_REFRESH_AND_PRUNE)
+def do_start_refresh_shortlist() -> dict:
+    """Kicks off Refresh Shortlist as a background job. Empty-shortlist is
+    a cheap fail-fast (HTTP 400) so we don't insert a pipeline_runs row
+    that would immediately fail; the ESI work itself still runs in the
+    worker. Shares the per-tenant lock with Search + Add + Clean Up and
+    Run Complete Pipeline."""
+    if not storage.load_shortlist():
+        raise ActionError("Shortlist is empty.")
+    from . import pipeline_runner
+    return pipeline_runner.start_refresh_shortlist()
+
+
+def do_start_pipeline(safe: bool = True, rebuild_universe: bool = False) -> dict:
+    """Kicks off Run Complete Pipeline as a background job. Scheduler and
+    CLI still call do_pipeline in-process."""
+    from . import pipeline_runner
+    return pipeline_runner.start_pipeline(safe=safe, rebuild_universe=rebuild_universe)
+
+
+def do_trading_job_status() -> dict:
+    """Currently-running Trading job for this tenant (any of the three
+    user-triggered jobs share one lock), else the latest finished one, or
+    an idle placeholder when none has ever run. One poller for all three
+    HTTP start endpoints."""
+    running = storage.get_running_pipeline_run()
+    if running:
+        return running
+    row = storage.get_latest_pipeline_run()
     if row is None:
-        return {"run_id": None, "status": "idle", "progress": None, "result": None, "error": None}
+        return {"run_id": None, "job_name": None, "status": "idle",
+                "progress": None, "result": None, "error": None}
     return row
+
+
+def do_refresh_and_prune_status() -> dict:
+    """Alias for do_trading_job_status - GET /candidates/refresh-and-prune/status
+    is the shared poller for every user-triggered Trading job."""
+    return do_trading_job_status()
 
 
 def shortlist_skip_deactivation_days(cfg: TradingConfig = TRADING_CONFIG) -> dict[int, int]:
@@ -1054,7 +1085,8 @@ def do_reconcile_trades(cfg: TradingConfig = TRADING_CONFIG,
     return {"matched_trades": len(trades), **summary}
 
 
-def do_pipeline(safe: bool = True, rebuild_universe: bool = False) -> dict:
+def do_pipeline(safe: bool = True, rebuild_universe: bool = False,
+                 progress_callback=None) -> dict:
     """Runs the daily workflow. `rebuild_universe` re-crawls the *entire* ESI
     market-group tree (hundreds/thousands of requests) and is off by default -
     that's an occasional setup step, not something to redo every day. Each
@@ -1072,6 +1104,9 @@ def do_pipeline(safe: bool = True, rebuild_universe: bool = False) -> dict:
     results = {}
 
     if rebuild_universe:
+        _emit_progress(progress_callback, {
+            "phase": "build_universe", "message": "Loading market groups",
+        })
         try:
             results["build_universe"] = do_build_universe()
             results["build_focused"] = do_build_focused()
@@ -1079,10 +1114,14 @@ def do_pipeline(safe: bool = True, rebuild_universe: bool = False) -> dict:
             results["build_universe"] = {"error": str(e)}
 
     try:
-        results["refresh_and_prune_candidates"] = do_refresh_and_prune_candidates(safe=safe)
+        results["refresh_and_prune_candidates"] = do_refresh_and_prune_candidates(
+            safe=safe, progress_callback=progress_callback)
     except (ActionError, ESIError) as e:
         results["refresh_and_prune_candidates"] = {"error": str(e)}
 
+    _emit_progress(progress_callback, {
+        "phase": "reconcile", "message": "Reconciling trades",
+    })
     try:
         results["reconcile_trades"] = do_reconcile_trades()
     except (ActionError, ESIError) as e:

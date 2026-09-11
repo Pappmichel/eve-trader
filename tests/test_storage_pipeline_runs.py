@@ -35,6 +35,15 @@ def test_second_running_insert_is_rejected(tenant, _apply_pipeline_runs_schema):
         storage.start_pipeline_run(JOB_REFRESH_AND_PRUNE)
 
 
+def test_second_running_insert_of_a_different_job_is_rejected(tenant, _apply_pipeline_runs_schema):
+    storage.start_pipeline_run(JOB_REFRESH_AND_PRUNE)
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        storage.start_pipeline_run("refresh_shortlist")
+    running = storage.get_running_pipeline_run()
+    assert running is not None
+    assert running["job_name"] == JOB_REFRESH_AND_PRUNE
+
+
 def test_pipeline_runs_are_isolated_per_tenant(tenant_pair, _apply_pipeline_runs_schema):
     tenant_a, tenant_b = tenant_pair
     with storage.tenant_context(tenant_a):
