@@ -551,6 +551,32 @@ class ESIClient:
                     results[tid] = OrderStats(None, 0.0, None, 0.0)
         return results
 
+    def region_orders_raw_bulk(self, region_id: int, type_ids: list[int],
+                                max_workers: int = 10) -> dict[int, list[dict]]:
+        """Same ThreadPoolExecutor + with_current_tenant shape as
+        region_order_stats_bulk, but returns the raw order list per type_id
+        instead of aggregated OrderStats percentiles.
+
+        Station Trading's undercut check (station_trading/undercut.py) needs
+        individual orders: is_buy_order, location_id vs cfg.station_id, and
+        order_id so the trader's own listings can be excluded before taking
+        min (sell) / max (buy) competitor price. region_order_stats_bulk's
+        OrderStats cannot answer that - swapping it in would silently compare
+        against a region-wide percentile that mixes stations and own orders.
+        A failed lookup for one type_id falls back to [] (no competitor
+        visible) rather than aborting the rest of the book."""
+        results: dict[int, list[dict]] = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(storage.with_current_tenant(self.region_orders_raw), region_id, tid): tid
+                       for tid in type_ids}
+            for future in as_completed(futures):
+                tid = futures[future]
+                try:
+                    results[tid] = future.result()
+                except ESIError:
+                    results[tid] = []
+        return results
+
     def structure_order_stats(self, structure_id: int, type_id: int, auth_role: str) -> OrderStats:
         """Player-structure order-book stats for one type_id.
         Requires a token with esi-markets.structure_markets.v1 for a character

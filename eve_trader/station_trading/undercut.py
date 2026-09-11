@@ -68,9 +68,15 @@ def _check_side(my_orders: list[dict], client: ESIClient, cfg: StationTradingCon
             if type_id not in my_best_price or price < my_best_price[type_id]:
                 my_best_price[type_id] = price
 
+    # region_orders_raw_bulk, not region_order_stats_bulk: undercut matching
+    # needs the raw book (side, station, own order_id exclusion) before
+    # taking min/max competitor price. Aggregated percentiles mix stations
+    # and would count the trader's own orders as "competition".
+    raw_by_type = client.region_orders_raw_bulk(
+        TRADING_CONFIG.jita_region_id, list(my_best_price))
     competitor_best: dict[int, float] = {}
     for type_id in my_best_price:
-        for o in client.region_orders_raw(TRADING_CONFIG.jita_region_id, type_id):
+        for o in raw_by_type.get(type_id, []):
             if (bool(o.get("is_buy_order")) != is_buy_order
                     or o.get("location_id") != cfg.station_id
                     or o.get("order_id") in my_order_ids):

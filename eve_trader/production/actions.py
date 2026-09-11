@@ -5,6 +5,7 @@ layer).
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import requests
@@ -18,7 +19,8 @@ from . import esi_sync, invention, jobs, order_integrity, pricing, sde
 from .config import PRODUCTION_CONFIG, ProductionConfig, validate_production_overrides
 from .constants import DECRYPTORS, JOB_CATEGORIES
 from .engine import (
-    _structural_material_closure, build_material_tree, discover_build_candidates, discover_ship_margins,
+    _PlanContext, _item_margin_detail_with_context, _structural_material_closure,
+    build_material_tree, discover_build_candidates, discover_ship_margins,
     distribution_recommendations, invention_logistics, item_margin_detail, invalidate_discover_cache,
     invalidate_ship_margin_cache, t1_bpc_invention_needs,
     invalidate_production_locations_cache, logistics_status, market_status, plan_asset_optimized,
@@ -796,6 +798,32 @@ def do_get_item_margin(item_name: str, cfg: ProductionConfig = PRODUCTION_CONFIG
     return ShipMarginRow(**item_margin_detail(type_id, resolved_name, cfg))
 
 
+def _fetch_unlisted_character_personal(client: ESIClient, role: str, character_id: int) -> dict:
+    """Phase A of do_unlisted_stock: character-scoped assets/orders/corp id
+    in isolation. Same error-per-character contract as the old sequential
+    loop (ESIError -> empty list / None, never abort the rest). Corp
+    assets/orders stay sequential in the caller - they are stateful across
+    characters (first Director/Accountant in original list order claims
+    that corp; parallelizing would race two characters to "claim" it),
+    matching esi_sync.sync_esi's Phase A/B split."""
+    try:
+        assets = client.character_assets(character_id, auth_role=role)
+    except ESIError:
+        assets = []
+    try:
+        orders = client.character_orders(character_id, auth_role=role)
+    except ESIError:
+        orders = []
+    try:
+        corporation_id = client.character_public_info(character_id)["corporation_id"]
+    except ESIError:
+        corporation_id = None
+    return {
+        "role": role, "character_id": character_id,
+        "assets": assets, "orders": orders, "corporation_id": corporation_id,
+    }
+
+
 def _accumulate_stock_at_location(assets: list[dict], location_id: int, out: dict[int, float]) -> None:
     """In-memory equivalent of storage.esi_stock_at_location's per-location
     aggregation (same corp-office-unwrap + NON_STOCK_LOCATION_FLAGS exclusion
@@ -847,25 +875,28 @@ def do_unlisted_stock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     # at, so it was always flagged "unlisted" even while actually for sale.
     seen_corp_orders: set[int] = set()
 
-    for role, character_id, _character_name in characters:
-        try:
-            assets = client.character_assets(character_id, auth_role=role)
-        except ESIError:
-            assets = []
-        _accumulate_stock_at_location(assets, cfg.home_location_id, stock_qty)
+    # Phase A: personal assets/orders/public-info in parallel, same pattern
+    # as esi_sync.sync_esi. list() not as_completed() so Phase B still sees
+    # characters in original registration order (first Director/Accountant
+    # per corp wins). with_current_tenant: worker threads don't inherit
+    # contextvars (CLAUDE.md) - TokenManager refresh would otherwise 500.
+    with ThreadPoolExecutor(max_workers=min(8, len(characters))) as pool:
+        char_results = list(pool.map(
+            storage.with_current_tenant(
+                lambda c: _fetch_unlisted_character_personal(client, c[0], c[1])),
+            characters,
+        ))
 
-        try:
-            orders = client.character_orders(character_id, auth_role=role)
-        except ESIError:
-            orders = []
-        for o in orders:
+    for r in char_results:
+        _accumulate_stock_at_location(r["assets"], cfg.home_location_id, stock_qty)
+        for o in r["orders"]:
             if not o.get("is_buy_order") and o.get("location_id") == cfg.home_location_id:
                 sell_qty[o["type_id"]] = sell_qty.get(o["type_id"], 0.0) + o.get("volume_remain", 0)
 
-        try:
-            corporation_id = client.character_public_info(character_id)["corporation_id"]
-        except ESIError:
+        corporation_id = r["corporation_id"]
+        if corporation_id is None:
             continue
+        role = r["role"]
 
         if corporation_id not in seen_corp_assets:
             try:
@@ -917,22 +948,40 @@ def do_unlisted_stock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         except ESIError:
             pass
 
+    # One _PlanContext for every unlisted row, not one per row. Each
+    # item_margin_detail call used to rebuild stock_targets/manual
+    # overrides/decryptors and walk the full BOM tree again - the same
+    # waste discover_build_candidates already avoided by sharing a
+    # context+memo pair across its ~19,400-item scan. Public
+    # item_margin_detail is unchanged (Margin page still wants a fresh
+    # context for a single lookup).
+    ctx = None
+    cost_memo: dict[int, float | None] = {}
+    t2_memo: dict[int, tuple[float, float, str | None]] = {}
+    if unlisted:
+        try:
+            ctx = _PlanContext(cfg)
+        except (ESIError, requests.RequestException):
+            ctx = None
+
     rows = []
     for type_id, name, qty in unlisted:
         structure_stats = structure_stats_by_item.get(type_id)
         sell_volume = structure_stats.sell_volume if structure_stats else None
         try:
-            margin = item_margin_detail(type_id, name, cfg).get("margin_home")
+            if ctx is None:
+                margin = None
+            else:
+                margin = _item_margin_detail_with_context(
+                    type_id, name, cfg, ctx, cost_memo, t2_memo).get("margin_home")
         except (ESIError, requests.RequestException):
             # Found in code review: unlike every other try/except in this
             # function (pure ESI calls, whose own client already wraps
-            # transport failures into ESIError), item_margin_detail's
-            # _PlanContext build also calls Goonmetrics directly
-            # (pricing.jita_prices/home_prices) - a Goonmetrics outage
-            # (confirmed unreliable elsewhere in this codebase even after
-            # retries) used to propagate uncaught past this best-effort
-            # degrade, turning "margin unknown for this one row" into a 500
-            # for the whole Unlisted Stock page.
+            # transport failures into ESIError), the _PlanContext build also
+            # calls Goonmetrics directly (pricing.jita_prices/home_prices) -
+            # a Goonmetrics outage used to propagate uncaught past this
+            # best-effort degrade, turning "margin unknown for this one row"
+            # into a 500 for the whole Unlisted Stock page.
             margin = None
         rows.append(UnlistedStockRow(type_id=type_id, type_name=name, stock_quantity=qty,
                                       sell_volume=sell_volume, margin=margin))
