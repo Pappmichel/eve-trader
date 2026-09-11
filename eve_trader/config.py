@@ -177,6 +177,7 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "min_hit_rate": (0, 1),
     "safe_mode_max_ids": (1, None),
     "chunk_size": (1, None),
+    "shortlist_refresh_batch_size": (1, None),
     "min_avg_movement": (0, None),
     "lookback_days": (0, None),
     "component_overbuild": (0, None),
@@ -379,6 +380,21 @@ class TradingConfig:
     # rather than reducing cycle count.
     safe_mode_max_ids: int = 500
     chunk_size: int = 25                       # IDs per Goonmetrics request chunk (safe mode default)
+    # ESI-priced shortlist items per cleanup batch inside
+    # actions._refresh_shortlist_rows. Oldest refreshed_at first (NULL =
+    # never, so newly added items go first). Unlike safe-mode candidate
+    # search (one window per run over a tens-of-thousands universe), one
+    # cleanup job walks every batch: after pipeline_runner moved this off
+    # the HTTP request, a single click can finish the tenant's own
+    # shortlist without a proxy timeout. Batching still bounds ESI burst
+    # size (region_order_stats_bulk's max_workers stays the in-flight cap
+    # regardless of shortlist length) and gives Phase 4 a unit to isolate.
+    # Coverage: ceil(len(shortlist) / shortlist_refresh_batch_size) batches
+    # per job, oldest-first, so a mid-job crash resumes with the never /
+    # longest-stale items - no item can permanently stick at the end of a
+    # list cursor the way a naive offset could. Default 250: a typical
+    # cap-on shortlist (max_active_shortlist_items=300) is one batch.
+    shortlist_refresh_batch_size: int = 250
     # Minimum average daily reference-region "movement" (Goonmetrics' daily
     # unit-quantity-traded liquidity figure - literally ESI's own /markets/
     # {region_id}/history/ `volume` field re-served verbatim, confirmed live

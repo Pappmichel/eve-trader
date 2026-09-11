@@ -744,10 +744,24 @@ def update_shortlist_meta_levels(meta_levels: dict[int, int]) -> None:
 def load_shortlist() -> list[ShortlistItem]:
     with connect() as conn:
         rows = conn.execute(
-            "SELECT item_id, item, category, volume_m3, active, meta_level FROM shortlist"
+            "SELECT item_id, item, category, volume_m3, active, meta_level, refreshed_at FROM shortlist"
         ).fetchall()
     return [ShortlistItem(item=r[1], item_id=r[0], category=r[2], volume_m3=r[3], active=bool(r[4]),
-                           meta_level=r[5]) for r in rows]
+                           meta_level=r[5],
+                           refreshed_at=r[6].isoformat() if r[6] is not None else None) for r in rows]
+
+
+def mark_shortlist_refreshed(item_ids: Iterable[int], refreshed_at: str) -> None:
+    """Records when cleanup last successfully re-priced each item_id - the
+    rotation cursor for _refresh_shortlist_rows (oldest / NULL first)."""
+    item_ids = list(item_ids)
+    if not item_ids:
+        return
+    with connect() as conn:
+        conn.executemany(
+            "UPDATE shortlist SET refreshed_at = ? WHERE item_id = ?",
+            [(refreshed_at, i) for i in item_ids],
+        )
 
 
 def save_shortlist_snapshot(rows: list[ShortlistRow], run_ts: str) -> None:

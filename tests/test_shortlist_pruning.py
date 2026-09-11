@@ -163,3 +163,84 @@ def test_does_not_reactivate_inactive_item_with_missing_data():
     cfg = TradingConfig(min_profit_threshold=0, min_margin_threshold=0.1)
     rows = [_row(1, "No Data", "Inactive", profit_per_unit=None, sell_volume=None, margin=None, active=False)]
     assert _items_to_reactivate(rows, cfg) == []
+
+
+def test_select_shortlist_refresh_batches_orders_never_refreshed_first():
+    from eve_trader.actions import select_shortlist_refresh_batches
+    from eve_trader.models import ShortlistItem
+
+    items = [
+        ShortlistItem(item="Old", item_id=1, category="X", volume_m3=1.0, refreshed_at="2026-01-01T00:00:00"),
+        ShortlistItem(item="Never", item_id=2, category="X", volume_m3=1.0, refreshed_at=None),
+        ShortlistItem(item="Older", item_id=3, category="X", volume_m3=1.0, refreshed_at="2025-12-01T00:00:00"),
+        ShortlistItem(item="Never2", item_id=4, category="X", volume_m3=1.0, refreshed_at=None),
+    ]
+    batches = select_shortlist_refresh_batches(items, batch_size=2)
+    assert len(batches) == 2
+    assert [i.item_id for i in batches[0]] == [2, 4]  # NULLs first, then item_id
+    assert [i.item_id for i in batches[1]] == [3, 1]  # older timestamp before newer
+
+
+def test_select_shortlist_refresh_batches_covers_everything_in_ceil_n_over_batch():
+    from eve_trader.actions import select_shortlist_refresh_batches
+    from eve_trader.models import ShortlistItem
+
+    items = [ShortlistItem(item=f"I{i}", item_id=i, category="X", volume_m3=1.0) for i in range(10)]
+    batches = select_shortlist_refresh_batches(items, batch_size=3)
+    seen = [i.item_id for batch in batches for i in batch]
+    assert sorted(seen) == list(range(10))
+    assert len(batches) == 4  # 3+3+3+1
+
+
+def test_refresh_shortlist_prices_jita_in_oldest_first_batches(monkeypatch):
+    """Cleanup must not dump the whole shortlist into one region_order_stats_bulk
+    call - that would spawn max_workers concurrent ESI lookups per id-wave
+    but still hold every type_id in one future-set. Batches of
+    shortlist_refresh_batch_size, never-refreshed first, then oldest
+    refreshed_at, so a crash mid-job retries the stalest items first."""
+    from eve_trader import actions, storage
+    from eve_trader.config import TradingConfig
+    from eve_trader.esi_client import ESIClient
+    from eve_trader.goonmetrics_client import GoonmetricsClient
+    from eve_trader.models import ShortlistItem
+
+    items = [
+        ShortlistItem(item="Old", item_id=1, category="X", volume_m3=1.0, meta_level=5,
+                      refreshed_at="2026-01-01T00:00:00"),
+        ShortlistItem(item="Never", item_id=2, category="X", volume_m3=1.0, meta_level=5, refreshed_at=None),
+        ShortlistItem(item="Older", item_id=3, category="X", volume_m3=1.0, meta_level=5,
+                      refreshed_at="2025-12-01T00:00:00"),
+        ShortlistItem(item="Never2", item_id=4, category="X", volume_m3=1.0, meta_level=5, refreshed_at=None),
+        ShortlistItem(item="Mid", item_id=5, category="X", volume_m3=1.0, meta_level=5,
+                      refreshed_at="2025-12-15T00:00:00"),
+    ]
+    bulk_calls: list[list[int]] = []
+    marked: list[list[int]] = []
+
+    def fake_bulk(self, region_id, type_ids, max_workers=10):
+        bulk_calls.append(list(type_ids))
+        return {}
+
+    monkeypatch.setattr(storage, "load_shortlist", lambda: items)
+    monkeypatch.setattr(actions, "_list_role_characters", lambda tm, prefix: [])
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", fake_bulk)
+    monkeypatch.setattr(
+        ESIClient, "structure_order_stats_bulk_or_goonmetrics",
+        lambda self, structure_id, type_ids, auth_role, goonmetrics_market_slug: ({}, False),
+    )
+    monkeypatch.setattr(GoonmetricsClient, "price_history_chunked", lambda self, *a, **k: [])
+    monkeypatch.setattr(storage, "save_shortlist_snapshot", lambda rows, run_ts: None)
+    monkeypatch.setattr(storage, "set_esi_sync_time", lambda tool, run_ts: None)
+    monkeypatch.setattr(storage, "mark_shortlist_refreshed",
+                        lambda item_ids, ts: marked.append(list(item_ids)))
+
+    result = actions.do_refresh_shortlist(
+        TradingConfig(structure_id=1000, shortlist_refresh_batch_size=2),
+    )
+
+    assert bulk_calls == [[2, 4], [3, 5], [1]]
+    assert marked == [[2, 4], [3, 5], [1]]
+    assert result["cleanup_batches_total"] == 3
+    assert result["cleanup_batches_done"] == 3
+    assert result["cleanup_items_refreshed"] == 5
+    assert result["cleanup_batch_size"] == 2

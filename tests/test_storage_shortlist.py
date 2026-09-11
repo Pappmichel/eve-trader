@@ -76,3 +76,14 @@ def test_skip_streak_start_does_not_overwrite_existing_streak(tenant):
     storage.start_shortlist_skip_streak([1], "2026-06-15T00:00:00")
 
     assert storage.get_shortlist_skip_since() == {1: "2026-06-01T00:00:00"}
+
+
+def test_mark_shortlist_refreshed_sets_timestamp(tenant):
+    storage.upsert_shortlist([
+        ShortlistItem(item="A", item_id=1, category="Material", volume_m3=1.0, active=True),
+        ShortlistItem(item="B", item_id=2, category="Material", volume_m3=1.0, active=True),
+    ])
+    storage.mark_shortlist_refreshed([1], "2026-09-11T00:00:00")
+    items = {i.item_id: i for i in storage.load_shortlist()}
+    assert items[1].refreshed_at is not None
+    assert items[2].refreshed_at is None

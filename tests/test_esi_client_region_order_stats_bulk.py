@@ -40,3 +40,36 @@ def test_region_order_stats_bulk_with_no_ambient_tenant_stays_none(monkeypatch):
     ESIClient().region_order_stats_bulk(10000002, [1])
 
     assert seen_tenants == [None]
+
+
+def test_region_order_stats_bulk_caps_in_flight_even_for_thousands_of_ids(monkeypatch):
+    """Cleanup now feeds region_order_stats_bulk in shortlist_refresh_batch_size
+    waves, but even a single 2000-id call must not spawn 2000 concurrent ESI
+    requests - that would burn ESI's 420 error-limit (and the separate 429
+    burst limiter, GitHub issue #99). max_workers is the in-flight cap;
+    _error_limit_remain backoff stays as-is (already correct)."""
+    import threading
+    import time
+
+    in_flight = 0
+    max_in_flight = 0
+    lock = threading.Lock()
+    remain_samples = []
+
+    def fake_region_order_stats(self, region_id, type_id):
+        nonlocal in_flight, max_in_flight
+        with lock:
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            remain_samples.append(ESIClient._error_limit_remain)
+        time.sleep(0.002)
+        with lock:
+            in_flight -= 1
+        return OrderStats(None, 0.0, None, 0.0)
+    monkeypatch.setattr(ESIClient, "region_order_stats", fake_region_order_stats)
+    ESIClient._error_limit_remain = 100
+
+    ESIClient().region_order_stats_bulk(10000002, list(range(200)), max_workers=10)
+
+    assert max_in_flight <= 10
+    assert min(remain_samples) == 100  # successful mock calls never decrement the error budget

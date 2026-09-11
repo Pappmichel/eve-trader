@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import math
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 import pandas as pd
@@ -338,27 +339,45 @@ def do_recategorize_shortlist() -> dict:
     return {"checked": len(items), "recategorized": changed}
 
 
-def _backfill_meta_levels(items: list[ShortlistItem], client: ESIClient) -> dict:
+def _backfill_meta_levels(items: list[ShortlistItem], client: ESIClient,
+                           max_workers: int = 10) -> dict:
     """Fills in meta_level for shortlist items that don't have one cached yet
     (e.g. added manually, or added before this field existed) and persists it
     so future runs don't re-fetch it. Best-effort - a lookup failure for one
     item shouldn't block the whole refresh.
+
+    Parallelized with ThreadPoolExecutor + storage.with_current_tenant the
+    same way esi_client.region_order_stats_bulk is: get_meta_level is one
+    ESI call per missing item, so sequential backfill of a large shortlist
+    would dominate cleanup the same way per-item Jita order-book calls used
+    to. Worker threads don't inherit the submitting thread's tenant
+    contextvar (see storage.with_current_tenant).
     """
     missing = [i for i in items if i.item_id and i.meta_level is None]
     if not missing:
         return {"checked": 0, "fetched": 0, "no_attribute": 0, "failed": 0}
     fetched: dict[int, int] = {}
     failed = 0
-    for item in missing:
+    by_id = {i.item_id: i for i in missing}
+
+    def _fetch(item_id: int) -> tuple[int, Optional[int], Optional[Exception]]:
         try:
-            level = client.get_meta_level(item.item_id)
+            return item_id, client.get_meta_level(item_id), None
         except Exception as e:  # noqa: BLE001
-            log.warning("Could not fetch meta level for %s (%s): %s", item.item, item.item_id, e)
-            failed += 1
-            continue
-        if level is not None:
-            fetched[item.item_id] = level
-            item.meta_level = level
+            return item_id, None, e
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [pool.submit(storage.with_current_tenant(_fetch), item_id) for item_id in by_id]
+        for future in as_completed(futures):
+            item_id, level, err = future.result()
+            if err is not None:
+                item = by_id[item_id]
+                log.warning("Could not fetch meta level for %s (%s): %s", item.item, item_id, err)
+                failed += 1
+                continue
+            if level is not None:
+                fetched[item_id] = level
+                by_id[item_id].meta_level = level
     if fetched:
         storage.update_shortlist_meta_levels(fetched)
     return {
@@ -369,16 +388,51 @@ def _backfill_meta_levels(items: list[ShortlistItem], client: ESIClient) -> dict
     }
 
 
+def select_shortlist_refresh_batches(items: list[ShortlistItem], batch_size: int) -> list[list[ShortlistItem]]:
+    """Chunks `items` into `batch_size` groups, oldest refreshed_at first
+    (NULL / never-refreshed first, then item_id for stability).
+
+    Analogous to history_backtest.select_candidate_window, except the cursor
+    is per-item (shortlist.refreshed_at) rather than a list offset: a
+    crashed mid-job run automatically retries the oldest/never-refreshed
+    items first on the next call, so no item can permanently stick at the
+    end of a rotating window. Unlike safe-mode search (one window per run,
+    because the candidate universe is tens of thousands of Goonmetrics
+    histories), one cleanup job walks every batch: after Phase 2 moved this
+    off the HTTP request, a single click can finish the tenant's own
+    shortlist without a proxy timeout. Batching still bounds ESI burst size
+    (region_order_stats_bulk's max_workers is the in-flight cap regardless
+    of shortlist length). Coverage within one successful job is the whole
+    list; within ceil(N/batch_size) batches if a job dies mid-way and is
+    retried - well inside 24h with repeated runs.
+    """
+    if batch_size < 1:
+        batch_size = 1
+    ordered = sorted(
+        items,
+        key=lambda i: (i.refreshed_at is not None, i.refreshed_at or "", i.item_id or 0),
+    )
+    return [ordered[i:i + batch_size] for i in range(0, len(ordered), batch_size)]
+
+
 def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
-                             oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> tuple[list[ShortlistItem], list, dict]:
+                             oauth_cfg: OAuthConfig = OAUTH_CONFIG,
+                             progress_callback=None) -> tuple[list[ShortlistItem], list, dict]:
     """Shared core of do_refresh_shortlist: re-fetches live market data for
-    every active shortlist item and recomputes each one's decision (does NOT
+    every shortlist item and recomputes each one's decision (does NOT
     save the snapshot itself - callers do that once they're done using the
     rows, see do_refresh_shortlist / do_refresh_and_prune_candidates). Returns
     (items, rows, extra) where `extra` holds the ESI-derived counts both
     callers surface in their result dict - factored out so
     do_refresh_and_prune_candidates can reuse the freshly computed `rows`
-    (in particular each item's decision) without a second recompute."""
+    (in particular each item's decision) without a second recompute.
+
+    ESI work that scales with item count (Jita region_order_stats_bulk,
+    Goonmetrics history, meta-level backfill) runs in
+    shortlist_refresh_batch_size batches, oldest refreshed_at first - see
+    select_shortlist_refresh_batches. The structure order book is still one
+    shared fetch (ESI has no type_id filter on /markets/structures/).
+    """
     items = storage.load_shortlist()
     if not items:
         raise ActionError("Shortlist is empty.")
@@ -398,9 +452,13 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
     # *pricing* below still gets the Goonmetrics failsafe independently.
     own_remaining: dict[int, float] = {}
     for seller_role, seller_character_id, _name in seller_characters:
-        for item_id, remaining in own_orders.fetch_own_sell_orders(
-                seller_character_id, seller_role, client, cfg).items():
-            own_remaining[item_id] = own_remaining.get(item_id, 0.0) + remaining
+        try:
+            for item_id, remaining in own_orders.fetch_own_sell_orders(
+                    seller_character_id, seller_role, client, cfg).items():
+                own_remaining[item_id] = own_remaining.get(item_id, 0.0) + remaining
+        except ESIError as e:
+            log.warning("Could not fetch seller %s own sell orders (%s) - skipping this seller.",
+                        seller_character_id, e)
 
     buyer_characters = _list_role_characters(tm, "buyer")
     buyer_already_covered_ids: frozenset[int] = frozenset()
@@ -424,13 +482,26 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
     # decision. This means more ESI/Goonmetrics calls per refresh than the
     # previous active-only filter (a real, deliberate tradeoff - proportional
     # to total shortlist size now, not just the active count).
-    priced_item_ids = [i.item_id for i in items if i.item_id]
+    priced_items = [i for i in items if i.item_id]
+    priced_item_ids = [i.item_id for i in priced_items]
     # Fetch every item's market stats up front instead of one-by-one inside
     # evaluate_shortlist: the structure endpoint has no type_id filter, so a
     # per-item call there re-downloaded the *entire* order book every time
     # (the main cause of a slow refresh) - one full download now covers every
     # item. Jita's per-type_id calls are parallelized since ESI has no
-    # multi-type_id batch endpoint for regional orders.
+    # multi-type_id batch endpoint for regional orders, and run in
+    # shortlist_refresh_batch_size waves so in-flight concurrency stays
+    # region_order_stats_bulk's max_workers (default 10) regardless of
+    # shortlist length.
+    #
+    # ESI bulk / scale audit (ships+blueprints universe):
+    # - region_order_stats_bulk: ThreadPoolExecutor + with_current_tenant,
+    #   per-type_id ESIError isolated; max_workers=10 is the 420-limit cap.
+    # - structure_order_stats_bulk: one shared book download, not per-item.
+    # - own_orders.fetch_own_sell_orders / fetch_buyer_already_covered: one
+    #   call per character, not per shortlist item - no item-count thread
+    #   pool to add. Per-seller/per-buyer ESIError already skips that
+    #   character rather than aborting cleanup.
     try:
         # The structure's order book is one shared/global fetch - any one
         # registered seller with docking access can retrieve it, so the
@@ -456,33 +527,60 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
         # silently degrading every row to "no market data."
         raise ActionError(f"Could not fetch the structure's order book ({e}). "
                            f"Does the seller character still have docking access?") from e
-    jita_stats_by_item = client.region_order_stats_bulk(cfg.jita_region_id, priced_item_ids)
 
-    # Real average daily *market-wide* traded volume (GitHub issue #100), not
-    # order-book depth (GitHub issue #51) and not this trader's own realized
-    # sales (#51's original fix, which left "Profit / Day" empty for every
-    # not-yet-sold-by-me candidate). cfg.reference_region_id is the real
-    # region C-J's own solar system sits in (confirmed live 2026-08-23 via
-    # sde_solar_systems) - there's no ESI/Goonmetrics history endpoint for a
-    # player structure's own market at all, so region-wide is the closest
-    # real signal available. Best-effort: a Goonmetrics/ESI outage degrades
-    # every row's avg_daily_volume to None (honest "no data yet"), same as a
-    # missing structure/Jita price, rather than aborting the whole refresh.
-    try:
-        history_points = GoonmetricsClient(cfg).price_history_chunked(cfg.reference_region_id, priced_item_ids)
-        avg_daily_volume_by_item = average_market_daily_volume(history_points)
-    except Exception:  # noqa: BLE001 - best-effort; a history outage shouldn't block the whole refresh
-        log.exception("Could not fetch Goonmetrics region history for Profit/Day - leaving it empty this run.")
-        avg_daily_volume_by_item = {}
+    jita_stats_by_item: dict = {}
+    avg_daily_volume_by_item: dict = {}
+    batches = select_shortlist_refresh_batches(priced_items, cfg.shortlist_refresh_batch_size)
+    total_batches = len(batches)
+    gm = GoonmetricsClient(cfg)
+    for batch_num, batch in enumerate(batches, start=1):
+        batch_ids = [i.item_id for i in batch]
+        jita_stats_by_item.update(client.region_order_stats_bulk(cfg.jita_region_id, batch_ids))
+        # Real average daily *market-wide* traded volume (GitHub issue #100), not
+        # order-book depth (GitHub issue #51) and not this trader's own realized
+        # sales (#51's original fix, which left "Profit / Day" empty for every
+        # not-yet-sold-by-me candidate). cfg.reference_region_id is the real
+        # region C-J's own solar system sits in (confirmed live 2026-08-23 via
+        # sde_solar_systems) - there's no ESI/Goonmetrics history endpoint for a
+        # player structure's own market at all, so region-wide is the closest
+        # real signal available. Best-effort: a Goonmetrics/ESI outage degrades
+        # this batch's avg_daily_volume to None (honest "no data yet"), same as a
+        # missing structure/Jita price, rather than aborting the whole refresh.
+        try:
+            history_points = gm.price_history_chunked(cfg.reference_region_id, batch_ids)
+            avg_daily_volume_by_item.update(average_market_daily_volume(history_points))
+        except Exception:  # noqa: BLE001 - best-effort; a history outage shouldn't block the whole refresh
+            log.exception("Could not fetch Goonmetrics region history for Profit/Day "
+                          "(cleanup batch %d/%d) - leaving those rows empty this run.",
+                          batch_num, total_batches)
+        storage.mark_shortlist_refreshed(batch_ids, now_ts())
+        _emit_progress(progress_callback, {
+            "phase": "cleanup",
+            "batch": batch_num,
+            "total_batches": total_batches,
+            "refreshed": len(jita_stats_by_item),
+            "evaluated": len(jita_stats_by_item),
+        })
 
-    rows = evaluate_shortlist(items, own_remaining, jita_stats_by_item, structure_stats_by_item, cfg=cfg,
-                               buyer_already_covered_ids=buyer_already_covered_ids,
-                               avg_daily_volume_by_item=avg_daily_volume_by_item)
+    rows = evaluate_shortlist(
+        items,
+        own_remaining,
+        jita_stats_by_item,
+        structure_stats_by_item,
+        cfg=cfg,
+        buyer_already_covered_ids=buyer_already_covered_ids,
+        avg_daily_volume_by_item=avg_daily_volume_by_item,
+    )
     extra = {
         "own_sell_orders_found": sum(1 for v in own_remaining.values() if v > 0),
         "buyer_already_covered_found": len(buyer_already_covered_ids),
         "meta_level_backfill": meta_backfill,
         "priced_via_fallback": priced_via_fallback,
+        "cleanup_batches_total": total_batches,
+        "cleanup_batches_done": total_batches,
+        "cleanup_items_refreshed": len(items),
+        "cleanup_items_skipped": 0,
+        "cleanup_batch_size": cfg.shortlist_refresh_batch_size,
     }
     return items, rows, extra
 
@@ -751,7 +849,7 @@ def do_refresh_and_prune_candidates(safe: bool = True, cfg: TradingConfig = TRAD
     add_result = do_add_to_shortlist()
     _emit_progress(progress_callback, {"phase": "cleanup", "message": "Refreshing shortlist prices"})
 
-    items, rows, extra = _refresh_shortlist_rows(cfg, oauth_cfg)
+    items, rows, extra = _refresh_shortlist_rows(cfg, oauth_cfg, progress_callback=progress_callback)
     run_ts = now_ts()
 
     to_reactivate = _items_to_reactivate(rows, cfg)

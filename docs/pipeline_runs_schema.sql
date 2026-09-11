@@ -51,3 +51,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS pipeline_runs_one_running
     WHERE status = 'running';
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON pipeline_runs TO eve_trader_app;
+
+-- Cleanup rotation cursor on shortlist (Phase 3 of the Search+Add+Clean Up
+-- scale work). NULL = never refreshed, so newly added items are priced first.
+-- Also added to phase1_schema.sql's CREATE TABLE for fresh installs; this
+-- ALTER covers databases that already applied phase1 before the column existed.
+ALTER TABLE shortlist ADD COLUMN IF NOT EXISTS refreshed_at TIMESTAMPTZ;
