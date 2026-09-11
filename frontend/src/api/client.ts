@@ -351,7 +351,8 @@ export const doctrineApi = {
   deleteFitting: (fittingId: string) => del(`/api/doctrine/fittings/${fittingId}`),
   fittingDetail: (fittingId: string) => get<T.FittingDetail>(`/api/doctrine/fittings/${fittingId}`),
 
-  syncContracts: () => post<T.DoctrineSyncReport>('/api/doctrine/sync'),
+  syncContracts: () => post<T.PipelineRunStatus>('/api/doctrine/sync'),
+  syncContractsStatus: () => get<T.PipelineRunStatus>('/api/doctrine/sync/status'),
   validateContracts: () => post<{ revalidated: number }>('/api/doctrine/validate'),
   syncTime: () => get<{ synced_at: string | null }>('/api/doctrine/sync-time'),
 
@@ -460,7 +461,8 @@ export const adminApi = {
   // GitHub issue #34: moved here from productionApi - the SDE cache is
   // global/shared across every tenant, so triggering a refresh is a
   // cross-tenant-impacting action, not a per-tenant Production one.
-  refreshSde: () => post<Record<string, number>>('/api/admin/sde/refresh'),
+  refreshSde: () => post<T.PipelineRunStatus>('/api/admin/sde/refresh'),
+  refreshSdeStatus: () => get<T.PipelineRunStatus>('/api/admin/sde/refresh/status'),
   // Same cross-tenant-cache reasoning as refreshSde above - see
   // production/jita_price_cache.py's own docstring.
   refreshJitaPriceCache: () =>

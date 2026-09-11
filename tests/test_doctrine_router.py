@@ -132,11 +132,37 @@ def test_delete_fitting(monkeypatch):
 
 
 # ----------------------------------------------------------------------- sync
-def test_sync_contracts(monkeypatch):
-    monkeypatch.setattr(doctrine_actions, "do_sync_contracts", lambda: {"synced": 5})
+def test_sync_contracts_starts_background_job(monkeypatch):
+    monkeypatch.setattr(doctrine_actions, "do_start_sync_contracts", lambda: {
+        "run_id": "abc", "status": "running", "job_name": "sync_contracts", "tool": "doctrine",
+    })
     resp = client.post("/api/doctrine/sync")
     assert resp.status_code == 200
-    assert resp.json() == {"synced": 5}
+    assert resp.json() == {
+        "run_id": "abc", "status": "running", "job_name": "sync_contracts", "tool": "doctrine",
+    }
+
+
+def test_sync_contracts_conflict_maps_to_409(monkeypatch):
+    from eve_trader.actions import ConflictError
+
+    def _raise():
+        raise ConflictError("Search + Add + Clean Up is already running.")
+    monkeypatch.setattr(doctrine_actions, "do_start_sync_contracts", _raise)
+    resp = client.post("/api/doctrine/sync")
+    assert resp.status_code == 409
+    assert resp.json() == {"detail": "Search + Add + Clean Up is already running."}
+
+
+def test_sync_status_returns_latest_run(monkeypatch):
+    monkeypatch.setattr(doctrine_actions, "do_sync_status", lambda: {
+        "run_id": "abc", "status": "running", "job_name": "sync_contracts", "tool": "doctrine",
+        "progress": {"phase": "run", "message": "Syncing contracts"},
+    })
+    resp = client.get("/api/doctrine/sync/status")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "running"
+    assert resp.json()["progress"]["message"] == "Syncing contracts"
 
 
 def test_get_sync_time_is_not_wrapped_but_still_reachable(monkeypatch):

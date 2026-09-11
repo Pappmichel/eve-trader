@@ -45,6 +45,9 @@ def _stub_everything(monkeypatch):
     monkeypatch.setattr(sorting_engine, "stockpile_rows_for_doctrine", lambda cfg=None: ([], False))
     monkeypatch.setattr(storage, "load_mineral_requirements", lambda: [])
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(
+        storage, "get_sde_types_bulk",
+        lambda type_ids: {tid: storage.get_sde_type(tid) for tid in type_ids})
 
 
 def test_no_intake_sources_returns_empty_list():
@@ -482,3 +485,23 @@ def test_do_add_intake_source_accepts_deliveries_as_intake_flag(monkeypatch):
 
     assert result["hangar_flag"] == "Deliveries"
     assert result["owner_name"] == "RichlTech (corp)"
+
+
+def test_sorting_list_loads_sde_types_in_one_bulk_call(monkeypatch):
+    bulk_calls = []
+
+    def fake_bulk(type_ids):
+        bulk_calls.append(list(type_ids))
+        return {tid: (tid, 1, f"Item{tid}", 1.0, 1, 1, 0, None) for tid in type_ids}
+
+    monkeypatch.setattr(storage, "get_sde_types_bulk", fake_bulk)
+    monkeypatch.setattr(storage, "load_sorting_intake_sources", _one_corp_source)
+    monkeypatch.setattr(
+        storage, "assets_at_flag",
+        lambda flag, tables=(), owner_name=None, location_id=None: [(34, 10.0), (35, 20.0)])
+
+    result = sorting_engine.do_sorting_list()
+
+    assert len(bulk_calls) == 1
+    assert sorted(bulk_calls[0]) == [34, 35]
+    assert {r["type_id"] for r in result["rows"]} == {34, 35}

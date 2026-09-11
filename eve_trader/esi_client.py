@@ -313,7 +313,19 @@ class ESIClient:
             headers.update(self.tokens.auth_header(auth_role))
         for attempt in range(1, retries + 1):
             self._await_error_budget()
-            resp = self.session.get(url, params=params, headers=headers, timeout=30)
+            try:
+                resp = self.session.get(url, params=params, headers=headers, timeout=30)
+            except requests.RequestException as e:
+                # Transport failures (timeout, DNS, connection reset) used to
+                # leak as requests.RequestException past every do_* that only
+                # catches ESIError, becoming a raw 500 at _wrap. Same bug
+                # class as _post_response raising HTTPError before it was
+                # converted. Retry like a 502; convert to ESIError so callers
+                # already wrapping ESIError keep covering the outage path.
+                if attempt < retries:
+                    time.sleep(attempt * 1.5)
+                    continue
+                raise ESIError(f"Request failed for {url}: {e}") from e
             self._record_error_budget(resp)
             if resp.status_code == 200:
                 return resp
@@ -364,7 +376,16 @@ class ESIClient:
         url = f"{self.cfg.esi_base}{path}"
         for attempt in range(1, retries + 1):
             self._await_error_budget()
-            resp = self.session.post(url, json=json_body, params=params, timeout=30)
+            try:
+                resp = self.session.post(url, json=json_body, params=params, timeout=30)
+            except requests.RequestException as e:
+                # Same transport-to-ESIError conversion as _get_response -
+                # a timeout here used to surface as HTTPError/ConnectionError
+                # past do_set_system's ActionError wrapping.
+                if attempt < retries:
+                    time.sleep(attempt * 1.5)
+                    continue
+                raise ESIError(f"Request failed for {url}: {e}") from e
             self._record_error_budget(resp)
             if resp.status_code == 200:
                 return resp
@@ -549,6 +570,32 @@ class ESIClient:
                     results[tid] = future.result()
                 except ESIError:
                     results[tid] = OrderStats(None, 0.0, None, 0.0)
+        return results
+
+    def region_orders_raw_bulk(self, region_id: int, type_ids: list[int],
+                                max_workers: int = 10) -> dict[int, list[dict]]:
+        """Same ThreadPoolExecutor + with_current_tenant shape as
+        region_order_stats_bulk, but returns the raw order list per type_id
+        instead of aggregated OrderStats percentiles.
+
+        Station Trading's undercut check (station_trading/undercut.py) needs
+        individual orders: is_buy_order, location_id vs cfg.station_id, and
+        order_id so the trader's own listings can be excluded before taking
+        min (sell) / max (buy) competitor price. region_order_stats_bulk's
+        OrderStats cannot answer that - swapping it in would silently compare
+        against a region-wide percentile that mixes stations and own orders.
+        A failed lookup for one type_id falls back to [] (no competitor
+        visible) rather than aborting the rest of the book."""
+        results: dict[int, list[dict]] = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(storage.with_current_tenant(self.region_orders_raw), region_id, tid): tid
+                       for tid in type_ids}
+            for future in as_completed(futures):
+                tid = futures[future]
+                try:
+                    results[tid] = future.result()
+                except ESIError:
+                    results[tid] = []
         return results
 
     def structure_order_stats(self, structure_id: int, type_id: int, auth_role: str) -> OrderStats:

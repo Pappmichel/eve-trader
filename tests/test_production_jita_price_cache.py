@@ -116,3 +116,25 @@ def test_refresh_replaces_the_cache_wholesale(monkeypatch):
     jita_price_cache.refresh_jita_price_cache()
 
     assert jita_price_cache.get_cached_prices([999]) == {}
+
+
+def test_refresh_keeps_previous_snapshot_when_esi_returns_no_quotes(monkeypatch):
+    # region_order_stats_bulk isolates per-type failures as empty OrderStats.
+    # Writing those as buy=sell=0 would poison the cache (jita_prices treats
+    # a cached 0 as a hit and never falls through to Goonmetrics).
+    previous = CurrentPrice(type_id=34, updated="", buy=5.0, sell=5.5)
+    jita_price_cache._cache[34] = previous
+    jita_price_cache._updated_at = "2026-09-01T00:00:00+00:00"
+    monkeypatch.setattr(storage, "list_tenants", lambda: [(storage.DEFAULT_TENANT_ID, "Default", None)])
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(587, "Rifter", 10, 0, 0)])
+    monkeypatch.setattr(tenant_scope, "enter_tenant", _fake_enter_tenant())
+    monkeypatch.setattr(engine, "_structural_material_closure", lambda seed_type_ids: set(seed_type_ids))
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", lambda self, region_id, type_ids: {
+        587: OrderStats(sell_percentile=None, sell_volume=0.0, buy_percentile=None, buy_volume=0.0),
+    })
+
+    count = jita_price_cache.refresh_jita_price_cache()
+
+    assert count == 1
+    assert jita_price_cache.get_cached_prices([34])[34].sell == 5.5
+    assert jita_price_cache.last_updated_at() == "2026-09-01T00:00:00+00:00"

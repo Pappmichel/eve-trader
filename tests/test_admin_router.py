@@ -102,20 +102,46 @@ def test_set_tool_grants_action_error_maps_to_400(monkeypatch):
     assert resp.json() == {"detail": "Unknown tool_key(s): bogus"}
 
 
-def test_refresh_sde_serializes_action_result(monkeypatch):
-    # GitHub issue #34: moved here from /api/production/sde/refresh.
-    monkeypatch.setattr(admin, "do_refresh_sde", lambda: {"sde_types": 100})
+def test_refresh_sde_starts_background_job(monkeypatch):
+    monkeypatch.setattr(admin, "do_start_refresh_sde", lambda: {
+        "run_id": "sde-1", "status": "running", "job_name": "sde_refresh", "tool": "admin",
+    })
 
     resp = client.post("/api/admin/sde/refresh")
 
     assert resp.status_code == 200
-    assert resp.json() == {"sde_types": 100}
+    assert resp.json() == {
+        "run_id": "sde-1", "status": "running", "job_name": "sde_refresh", "tool": "admin",
+    }
+
+
+def test_refresh_sde_conflict_maps_to_409(monkeypatch):
+    from eve_trader.actions import ConflictError
+
+    def _raise():
+        raise ConflictError("Sync Contracts is already running.")
+    monkeypatch.setattr(admin, "do_start_refresh_sde", _raise)
+
+    resp = client.post("/api/admin/sde/refresh")
+
+    assert resp.status_code == 409
+    assert resp.json() == {"detail": "Sync Contracts is already running."}
+
+
+def test_refresh_sde_status_returns_latest_run(monkeypatch):
+    monkeypatch.setattr(admin, "do_sde_refresh_status", lambda: {
+        "run_id": "sde-1", "status": "running", "tool": "admin",
+        "progress": {"phase": "run", "message": "Refreshing SDE"},
+    })
+    resp = client.get("/api/admin/sde/refresh/status")
+    assert resp.status_code == 200
+    assert resp.json()["progress"]["message"] == "Refreshing SDE"
 
 
 def test_refresh_sde_action_error_maps_to_400(monkeypatch):
     def _raise():
         raise ActionError("SDE refresh failed: connection refused")
-    monkeypatch.setattr(admin, "do_refresh_sde", _raise)
+    monkeypatch.setattr(admin, "do_start_refresh_sde", _raise)
 
     resp = client.post("/api/admin/sde/refresh")
 
@@ -123,7 +149,15 @@ def test_refresh_sde_action_error_maps_to_400(monkeypatch):
     assert resp.json() == {"detail": "SDE refresh failed: connection refused"}
 
 
-def test_list_errors_serializes_action_result(monkeypatch):
+def test_refresh_jita_price_cache_action_error_maps_to_400(monkeypatch):
+    def _raise():
+        raise ActionError("Could not refresh Jita price cache (ESI down).")
+    monkeypatch.setattr(admin, "do_refresh_jita_price_cache", _raise)
+
+    resp = client.post("/api/admin/jita-price-cache/refresh")
+
+    assert resp.status_code == 400
+    assert "Jita price cache" in resp.json()["detail"]
     # GitHub issue #88 - error_log is its own module, not admin.py, since
     # its report endpoint (api/routers/errors.py) must stay reachable
     # without the "admin" tool grant every other route here requires - only

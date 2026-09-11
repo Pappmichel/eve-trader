@@ -1,4 +1,5 @@
 from eve_trader import storage
+from eve_trader.actions import ActionError
 from eve_trader.esi_client import OrderStats
 from eve_trader.station_trading import actions
 from eve_trader.station_trading.config import StationTradingConfig
@@ -59,3 +60,17 @@ def test_build_shortlist_rows_unknown_category_when_type_not_in_sde(monkeypatch)
     assert rows[0]["name"] == "999"
     assert rows[0]["live_buy"] is None and rows[0]["profit_per_unit"] is None
     assert rows[0]["profit_per_day"] is None
+
+
+def test_refresh_shortlist_wraps_goonmetrics_outage(monkeypatch):
+    import requests
+
+    def _boom(cfg):
+        raise requests.ConnectionError("appraise.gnf.lt down")
+    monkeypatch.setattr(actions, "discover_candidates", _boom)
+
+    try:
+        actions.do_refresh_shortlist(_cfg())
+        assert False, "expected ActionError"
+    except ActionError as e:
+        assert "Could not fetch Jita prices" in str(e)

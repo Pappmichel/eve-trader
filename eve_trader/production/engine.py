@@ -2393,19 +2393,18 @@ def _scan_ship_margins(cfg: ProductionConfig) -> list[dict]:
     return results
 
 
-@storage.with_batch_session()
-def item_margin_detail(type_id: int, type_name: str, cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
-    """Production Margin page's search: the same row shape discover_ship_
-    margins produces, for one arbitrary already-resolved item (any category,
-    not just ships - see production/actions.py's do_get_item_margin, which
-    resolves `type_name` -> `type_id` the same way do_build_material_tree
-    does before calling this). No caching needed (one item per call, same
-    cheap cost profile as the existing Material Tree feature) - a fresh
-    _PlanContext every call, unlike discover_ship_margins' cached whole-
-    catalog scan."""
-    ctx = _PlanContext(cfg)
-    cost_memo: dict[int, Optional[float]] = {}
-    t2_memo: dict[int, tuple[float, float, Optional[str]]] = {}
+def _item_margin_detail_with_context(
+    type_id: int, type_name: str, cfg: ProductionConfig, ctx: _PlanContext,
+    cost_memo: dict[int, Optional[float]],
+    t2_memo: dict[int, tuple[float, float, Optional[str]]],
+) -> dict:
+    """Same row shape as item_margin_detail, but reuses an already-built
+    _PlanContext and cost memos. The public item_margin_detail stays the
+    Margin-page single-item lookup (fresh context per call, cheap for one
+    item). do_unlisted_stock is the one caller with many rows and must not
+    rebuild the BOM/price context per type_id - that is the same one-
+    context-for-the-whole-scan pattern discover_build_candidates already
+    uses."""
     activity, _bp = classify_activity(type_id)
     build_cost = _unit_cost(type_id, cfg, ctx.home, ctx.jita, cost_memo, ctx.selected_decryptors,
                              t2_memo, ctx.cost_indices, ctx.adjusted_prices)
@@ -2419,6 +2418,23 @@ def item_margin_detail(type_id: int, type_name: str, cfg: ProductionConfig = PRO
         "margin_home": margin_home(type_id, build_cost, ctx.home, cfg),
         "margin_jita": margin_jita(type_id, build_cost, ctx.jita, cfg),
     }
+
+
+@storage.with_batch_session()
+def item_margin_detail(type_id: int, type_name: str, cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
+    """Production Margin page's search: the same row shape discover_ship_
+    margins produces, for one arbitrary already-resolved item (any category,
+    not just ships - see production/actions.py's do_get_item_margin, which
+    resolves `type_name` -> `type_id` the same way do_build_material_tree
+    does before calling this). No caching needed (one item per call, same
+    cheap cost profile as the existing Material Tree feature) - a fresh
+    _PlanContext every call, unlike discover_ship_margins' cached whole-
+    catalog scan. Multi-item callers (do_unlisted_stock) must use
+    _item_margin_detail_with_context with a shared context instead."""
+    ctx = _PlanContext(cfg)
+    cost_memo: dict[int, Optional[float]] = {}
+    t2_memo: dict[int, tuple[float, float, Optional[str]]] = {}
+    return _item_margin_detail_with_context(type_id, type_name, cfg, ctx, cost_memo, t2_memo)
 
 
 def _structural_material_closure(seed_type_ids: Iterable[int]) -> set[int]:

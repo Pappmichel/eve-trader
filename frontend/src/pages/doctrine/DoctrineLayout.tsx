@@ -8,6 +8,7 @@ import { IconArrowLeft, IconRefresh, IconSearch, IconTrash } from '@tabler/icons
 
 import { doctrineApi } from '../../api/client'
 import { useAction } from '../../hooks/useAction'
+import { useBackgroundJob, useBackgroundJobStart } from '../../hooks/useBackgroundJob'
 import { useRoleCharacters, type RoleCharacter } from '../../hooks/useRoleCharacters'
 import { dateTime } from '../../format'
 
@@ -20,6 +21,11 @@ const TABS = [
   { path: '/doctrine/shopping-list', label: 'Shopping List' },
   { path: '/doctrine/settings', label: 'Settings' },
 ]
+
+const SYNC_RESULT_KEYS: string[][] = [
+  ['doctrine', 'status'], ['doctrine', 'contracts'], ['doctrine', 'contract-history'], ['doctrine', 'sync-time'],
+]
+const SYNC_LABELS = { sync_contracts: 'Sync Contracts' }
 
 // A fitting/detail sub-page (path has extra segments beyond a known tab)
 // still highlights its parent tab - Tabs.value requires an exact match
@@ -88,9 +94,15 @@ export default function DoctrineLayout() {
   const navigate = useNavigate()
 
   const { data: syncTime } = useQuery({ queryKey: ['doctrine', 'sync-time'], queryFn: doctrineApi.syncTime })
-  const sync = useAction('Sync Contracts', doctrineApi.syncContracts, [
-    ['doctrine', 'status'], ['doctrine', 'contracts'], ['doctrine', 'contract-history'], ['doctrine', 'sync-time'],
-  ])
+  const syncJob = useBackgroundJob({
+    queryKey: ['doctrine', 'pipeline', 'sync'],
+    fetchStatus: doctrineApi.syncContractsStatus,
+    resultKeys: SYNC_RESULT_KEYS,
+    labels: SYNC_LABELS,
+    defaultLabel: 'Sync Contracts',
+  })
+  const syncStart = useBackgroundJobStart(syncJob, () => doctrineApi.syncContracts())
+  const syncRunning = syncJob.runningStatus || syncStart.isPending
 
   const { data: assetSyncTime } = useQuery({ queryKey: ['doctrine', 'asset-sync-time'], queryFn: doctrineApi.assetSyncTime })
   const syncAssets = useAction('Sync Assets', doctrineApi.syncAssets, [
@@ -124,9 +136,16 @@ export default function DoctrineLayout() {
               <Title order={6} c="dimmed" tt="uppercase">Contract Sync</Title>
               <Text size="xs" c="dimmed">{dateTime(syncTime?.synced_at)}</Text>
             </Group>
-            <Button size="xs" leftSection={<IconRefresh size={14} />} onClick={() => sync.mutate()} loading={sync.isPending}>
+            <Button size="xs" leftSection={<IconRefresh size={14} />}
+              variant={syncRunning ? 'light' : undefined}
+              onClick={() => syncStart.mutate()}>
               Sync Contracts
             </Button>
+            {syncRunning && (
+              <Text size="xs" c="dimmed" mt={4}>
+                {syncJob.formatProgress(syncJob.status?.progress, syncJob.jobName)}
+              </Text>
+            )}
           </div>
 
           <Divider />

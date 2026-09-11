@@ -15,6 +15,11 @@ class FakeClient:
     def region_orders_raw(self, region_id, type_id):
         return [o for o in self._region_orders if o["type_id"] == type_id]
 
+    def region_orders_raw_bulk(self, region_id, type_ids, max_workers=10):
+        self.bulk_calls = getattr(self, "bulk_calls", 0) + 1
+        self.bulk_type_ids = list(type_ids)
+        return {tid: self.region_orders_raw(region_id, tid) for tid in type_ids}
+
 
 def _order(order_id, type_id, price, location_id, is_buy_order=False):
     return {"order_id": order_id, "type_id": type_id, "price": price,
@@ -107,3 +112,23 @@ def test_no_own_orders_returns_empty():
     client = FakeClient({1: []}, [])
     assert check_undercut_pooled([(1, "trader")], client, cfg) == []
     assert check_buy_undercut_pooled([(1, "trader")], client, cfg) == []
+
+
+def test_undercut_fetches_raw_orders_in_one_bulk_call_not_per_type():
+    # region_order_stats_bulk is the wrong primitive here (percentiles, no
+    # station/order_id) - the bulk path must still be raw orders, just
+    # parallelized. One call with every distinct type_id, not N sequential
+    # region_orders_raw calls.
+    cfg = _cfg()
+    my_orders = [_order(1, 100, 500.0, cfg.station_id), _order(2, 200, 300.0, cfg.station_id)]
+    book = [
+        _order(1, 100, 500.0, cfg.station_id), _order(3, 100, 450.0, cfg.station_id),
+        _order(2, 200, 300.0, cfg.station_id), _order(4, 200, 250.0, cfg.station_id),
+    ]
+    client = FakeClient({1: my_orders}, book)
+
+    result = check_undercut_pooled([(1, "trader")], client, cfg)
+
+    assert client.bulk_calls == 1
+    assert sorted(client.bulk_type_ids) == [100, 200]
+    assert {r["type_id"] for r in result} == {100, 200}

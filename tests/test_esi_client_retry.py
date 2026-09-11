@@ -97,3 +97,41 @@ def test_get_response_does_not_retry_a_non_rate_limit_4xx(monkeypatch):
     except ESIError:
         pass
     assert len(calls) == 1  # a genuine 404 isn't a rate-limit signal - no point retrying it
+
+
+def test_get_response_converts_transport_failure_to_esierror(monkeypatch):
+    # Timeouts/connection errors used to leak as requests.RequestException
+    # past every do_* that only catches ESIError. Retried like a 502, then
+    # raised as ESIError so existing ActionError wraps keep covering them.
+    _no_sleep(monkeypatch)
+    calls = []
+
+    def fake_get(self, url, params=None, headers=None, timeout=30):
+        calls.append(url)
+        raise requests.ConnectionError("timed out")
+    monkeypatch.setattr(requests.Session, "get", fake_get)
+
+    try:
+        ESIClient()._get_response("/some/path/", retries=3)
+        assert False, "expected ESIError"
+    except ESIError as e:
+        assert "timed out" in str(e)
+    except requests.RequestException:
+        assert False, "transport failure must not leak as RequestException"
+    assert len(calls) == 3
+
+
+def test_post_response_converts_transport_failure_to_esierror(monkeypatch):
+    _no_sleep(monkeypatch)
+
+    def fake_post(self, url, json=None, params=None, timeout=30):
+        raise requests.Timeout("read timed out")
+    monkeypatch.setattr(requests.Session, "post", fake_post)
+
+    try:
+        ESIClient()._post_response("/universe/ids/", json_body=["Jita"], retries=2)
+        assert False, "expected ESIError"
+    except ESIError as e:
+        assert "read timed out" in str(e)
+    except requests.RequestException:
+        assert False, "transport failure must not leak as RequestException"

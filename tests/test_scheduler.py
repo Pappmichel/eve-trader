@@ -1,4 +1,5 @@
 import datetime as dt
+import threading
 from contextlib import contextmanager
 
 import pytest
@@ -215,6 +216,28 @@ def test_run_job_with_no_tenant_routes_by_name_to_its_own_global_status():
 
     assert scheduler._backup_status["error"] is None
     assert scheduler._jita_price_cache_status["error"] == "esi down"
+
+
+def test_run_job_timeout_records_error_without_blocking_later_jobs(monkeypatch):
+    scheduler.last_run_status.clear()
+    monkeypatch.setattr(scheduler, "JOB_TIMEOUT_SECONDS", 0.05)
+    started = threading.Event()
+    release = threading.Event()
+
+    def hang():
+        started.set()
+        release.wait(timeout=2)
+
+    scheduler._run_job("test-tenant", "slow_job", hang)
+    assert started.wait(timeout=1)
+    status = scheduler.last_run_status["test-tenant"]["slow_job"]
+    assert status["error"] is not None
+    assert "timed out" in status["error"]
+
+    follow_up = []
+    scheduler._run_job("test-tenant", "next_job", lambda: follow_up.append("ran"))
+    assert follow_up == ["ran"]
+    release.set()
 
 
 def test_start_is_noop_when_default_tenant_disabled(monkeypatch):

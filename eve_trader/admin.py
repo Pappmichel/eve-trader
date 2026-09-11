@@ -102,6 +102,18 @@ def do_refresh_sde() -> dict:
     return result
 
 
+def do_start_refresh_sde() -> dict:
+    """Kicks off SDE refresh as a background job. The HTTP handler must not
+    block on the ~14 sequential CSV downloads."""
+    from . import pipeline_runner
+    return pipeline_runner.start_sde_refresh()
+
+
+def do_sde_refresh_status() -> dict:
+    from . import pipeline_runner
+    return pipeline_runner.job_status(pipeline_runner.TOOL_ADMIN)
+
+
 def do_refresh_jita_price_cache() -> dict:
     """Standalone manual trigger for the shared Jita price cache (production/
     jita_price_cache.py) - deliberately its own action, not called from
@@ -112,7 +124,14 @@ def do_refresh_jita_price_cache() -> dict:
     an hour by the scheduler (see scheduler._check_and_run_jita_price_cache_
     job) - same cross-tenant-impacting-cache reasoning as do_refresh_sde
     above, since the cache is shared/global, not per-tenant."""
-    count = jita_price_cache.refresh_jita_price_cache()
+    try:
+        count = jita_price_cache.refresh_jita_price_cache()
+    except (ESIError, requests.RequestException) as e:
+        # refresh_jita_price_cache talks to ESI directly (not via a do_* that
+        # already translates). A transport failure here used to 500 the
+        # Admin "Refresh Jita prices" button; the scheduler path already
+        # records the exception on the job status.
+        raise ActionError(f"Could not refresh Jita price cache ({e}).") from e
     return {"cached_type_ids": count, "updated_at": jita_price_cache.last_updated_at()}
 
 

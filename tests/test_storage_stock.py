@@ -567,3 +567,43 @@ def test_set_character_slot_excluded_toggles_flag(tenant):
 def test_set_character_slot_excluded_is_a_noop_for_unknown_character(tenant):
     storage.set_character_slot_excluded("Nobody", True)  # doesn't raise
     assert storage.load_character_slots() == []
+
+
+def test_esi_stock_at_location_bulk_empty_list_skips_db(tenant, monkeypatch):
+    from contextlib import contextmanager
+    calls = {"n": 0}
+    real = storage.connect
+
+    @contextmanager
+    def counting():
+        calls["n"] += 1
+        with real() as conn:
+            yield conn
+
+    monkeypatch.setattr(storage, "connect", counting)
+    assert storage.esi_stock_at_location_bulk([], LOCATION_ID) == {}
+    assert calls["n"] == 0
+
+
+def test_esi_stock_at_location_bulk_one_connect_for_many_types(tenant, monkeypatch):
+    from contextlib import contextmanager
+    other_type = 35
+    storage.replace_assets("character_assets", [
+        (1, TYPE_ID, LOCATION_ID, "Hangar", 100, 0, "Alice"),
+        (2, other_type, LOCATION_ID, "Hangar", 50, 0, "Alice"),
+    ])
+    calls = {"n": 0}
+    real = storage.connect
+
+    @contextmanager
+    def counting():
+        calls["n"] += 1
+        with real() as conn:
+            yield conn
+
+    monkeypatch.setattr(storage, "connect", counting)
+    result = storage.esi_stock_at_location_bulk([TYPE_ID, other_type, 99], LOCATION_ID)
+    assert calls["n"] == 1
+    assert result[TYPE_ID] == 100
+    assert result[other_type] == 50
+    assert result[99] == 0.0

@@ -105,10 +105,21 @@ def refresh_jita_price_cache() -> int:
         jita_region_id = TRADING_CONFIG.jita_region_id
 
     stats = ESIClient().region_order_stats_bulk(jita_region_id, list(type_ids))
+    # Skip type_ids whose bulk lookup returned no real percentile - region_
+    # order_stats_bulk isolates per-type ESIError as OrderStats(None, 0, ...),
+    # and ESIClient now converts transport timeouts to ESIError too. Writing
+    # those as buy=sell=0 would poison the shared cache: jita_prices treats
+    # a cached 0 as a hit and never falls through to Goonmetrics.
     prices = {
-        tid: CurrentPrice(type_id=tid, updated="", buy=s.buy_percentile or 0.0, sell=s.sell_percentile or 0.0)
+        tid: CurrentPrice(type_id=tid, updated="",
+                          buy=s.buy_percentile or 0.0, sell=s.sell_percentile or 0.0)
         for tid, s in stats.items()
+        if s.buy_percentile or s.sell_percentile
     }
+    if not prices:
+        log.warning("Jita price cache refresh produced no quotes - keeping previous snapshot")
+        with _lock:
+            return len(_cache)
     with _lock:
         global _updated_at
         _cache.clear()

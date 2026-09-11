@@ -73,3 +73,33 @@ def test_region_order_stats_bulk_caps_in_flight_even_for_thousands_of_ids(monkey
 
     assert max_in_flight <= 10
     assert min(remain_samples) == 100  # successful mock calls never decrement the error budget
+
+
+def test_region_orders_raw_bulk_propagates_ambient_tenant_to_worker_threads(monkeypatch):
+    seen_tenants = []
+
+    def fake_region_orders_raw(self, region_id, type_id):
+        seen_tenants.append(storage.get_current_tenant())
+        return []
+    monkeypatch.setattr(ESIClient, "region_orders_raw", fake_region_orders_raw)
+
+    with storage.tenant_context(_TENANT_ID):
+        ESIClient().region_orders_raw_bulk(10000002, [1, 2, 3])
+
+    assert seen_tenants == [_TENANT_ID, _TENANT_ID, _TENANT_ID]
+
+
+def test_region_orders_raw_bulk_failed_type_falls_back_to_empty_list(monkeypatch):
+    from eve_trader.esi_client import ESIError
+
+    def fake_region_orders_raw(self, region_id, type_id):
+        if type_id == 2:
+            raise ESIError("timeout")
+        return [{"type_id": type_id, "price": 1.0}]
+    monkeypatch.setattr(ESIClient, "region_orders_raw", fake_region_orders_raw)
+
+    result = ESIClient().region_orders_raw_bulk(10000002, [1, 2, 3])
+
+    assert result[1] == [{"type_id": 1, "price": 1.0}]
+    assert result[2] == []
+    assert result[3] == [{"type_id": 3, "price": 1.0}]

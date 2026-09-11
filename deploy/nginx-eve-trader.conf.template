@@ -16,14 +16,14 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        # All three user-triggered Trading HTTP jobs (Refresh Shortlist,
-        # Search + Add + Clean Up, Run Complete Pipeline) return immediately
-        # now (background thread + status polling, see
+        # User-triggered HTTP jobs (Trading Refresh Shortlist / Search+Add+
+        # Clean Up / Pipeline, Doctrine contract sync, Admin SDE refresh)
+        # return immediately now (background thread + status polling, see
         # eve_trader/pipeline_runner.py) - the 300s timeout added 2026-08-23
         # for those synchronous endpoints is no longer needed. 60s is
         # nginx's own default and is enough for the remaining request-scoped
-        # actions. The scheduler and CLI still call do_pipeline /
-        # do_refresh_shortlist in-process (no HTTP hop).
+        # actions. The scheduler and CLI still call do_* in-process (no
+        # HTTP hop).
         proxy_read_timeout 60s;
         proxy_connect_timeout 60s;
         proxy_send_timeout 60s;

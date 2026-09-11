@@ -32,6 +32,7 @@ should never start happening without the user explicitly asking for it.
 """
 from __future__ import annotations
 
+import contextvars
 import datetime as dt
 import logging
 import threading
@@ -44,6 +45,19 @@ from .production import jita_price_cache
 log = logging.getLogger("eve_trader.scheduler")
 
 CHECK_INTERVAL_SECONDS = 300  # how often the background thread wakes up to check what's due
+
+# Per-job wall-clock cap. Tenants run sequentially on this one scheduler
+# thread; a hung ESI call would otherwise delay every later tenant plus the
+# global backup/jita-cache jobs on the same tick.
+#
+# A short-lived worker thread + join(timeout) lets the tick move on. The
+# worker is not killed (unsafe with the connection pool / ESI session) - it
+# keeps running in the background. Overlap is acceptable at this app's
+# invite-only scale (well under 10 tenants, see CLAUDE.md's connection-pool
+# note). If tenant count routinely exceeds ~10, or a single job regularly
+# exceeds this timeout while still making progress, raise the cap before
+# adding a real job-queue.
+JOB_TIMEOUT_SECONDS = 900  # 15 minutes
 
 _thread: threading.Thread | None = None
 _stop_event = threading.Event()
@@ -86,13 +100,40 @@ _GLOBAL_JOB_STATUS = {"backup": _backup_status, "jita_price_cache": _jita_price_
 def _run_job(tenant_id: Optional[str], name: str, fn) -> None:
     """tenant_id=None records into the matching global status dict (looked
     up by `name` via _GLOBAL_JOB_STATUS) instead of a per-tenant slot - only
-    the backup and jita_price_cache jobs ever pass None."""
-    try:
-        fn()
-        result = {"ran_at": dt.datetime.now(dt.timezone.utc).isoformat(), "error": None}
-    except Exception as e:  # noqa: BLE001 - a job's own failure must never kill the scheduler thread
-        log.warning("Scheduled job %r (tenant=%s) failed: %s", name, tenant_id, e)
-        result = {"ran_at": dt.datetime.now(dt.timezone.utc).isoformat(), "error": str(e)}
+    the backup and jita_price_cache jobs ever pass None.
+
+    Runs `fn` on a short-lived daemon thread so a hang cannot stall later
+    tenants on this tick (see JOB_TIMEOUT_SECONDS). contextvars.copy_context
+    carries the submitting thread's tenant/config into the worker - raw
+    threading.Thread does not inherit contextvars (CLAUDE.md)."""
+    outcome: dict = {"error": None}
+
+    def _worker() -> None:
+        try:
+            fn()
+        except Exception as e:  # noqa: BLE001 - a job's own failure must never kill the scheduler thread
+            log.warning("Scheduled job %r (tenant=%s) failed: %s", name, tenant_id, e)
+            outcome["error"] = str(e)
+
+    ctx = contextvars.copy_context()
+    thread = threading.Thread(
+        target=ctx.run, args=(_worker,),
+        daemon=True, name=f"eve-trader-job-{name}",
+    )
+    thread.start()
+    thread.join(JOB_TIMEOUT_SECONDS)
+    if thread.is_alive():
+        log.warning(
+            "Scheduled job %r (tenant=%s) exceeded %ss timeout - still running in the "
+            "background; later tenants on this tick will proceed",
+            name, tenant_id, JOB_TIMEOUT_SECONDS,
+        )
+        outcome["error"] = f"timed out after {JOB_TIMEOUT_SECONDS}s (still running)"
+
+    result = {
+        "ran_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "error": outcome["error"],
+    }
 
     if tenant_id is None:
         _GLOBAL_JOB_STATUS[name].update(result)

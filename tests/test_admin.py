@@ -161,3 +161,11 @@ def test_do_refresh_jita_price_cache_returns_count_and_timestamp(monkeypatch):
     result = admin.do_refresh_jita_price_cache()
 
     assert result == {"cached_type_ids": 42, "updated_at": "2026-09-01T00:00:00+00:00"}
+
+
+def test_do_refresh_jita_price_cache_wraps_network_error(monkeypatch):
+    def _raise():
+        raise ESIError("ESI down")
+    monkeypatch.setattr(jita_price_cache, "refresh_jita_price_cache", _raise)
+    with pytest.raises(ActionError, match="Could not refresh Jita price cache"):
+        admin.do_refresh_jita_price_cache()
