@@ -9,7 +9,7 @@ plain dict/dataclass, nothing more.
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Optional
+from typing import Iterable, Optional
 
 from .. import storage
 from ..actions import ActionError
@@ -179,16 +179,13 @@ def do_update_fitting(fitting_id: str, raw_eft: Optional[str] = None, name: Opti
                        stockpile_target: Optional[int] = None, cargo_tolerance_pct: Optional[float] = None,
                        active: Optional[bool] = None, fuel_bay_text: Optional[str] = None,
                        ship_maintenance_bay_text: Optional[str] = None) -> dict:
-    """Re-parses on a new raw_eft, then always re-validates this fitting's
-    already-persisted contracts (Phase 2 F: changed Soll data must never
-    leave a stale validation result standing - same invalidation discipline
-    as production/engine.py's invalidate_discover_cache).
-
-    GitHub issue #18: raw_eft/fuel_bay_text/ship_maintenance_bay_text share
-    replace_fitting_items' own wholesale-replace semantics - there's one
-    combined item set per fitting, not one per text field, so editing *any*
-    of the three re-parses *all* of them together, falling back to whatever
-    is already stored for the ones this call didn't touch."""
+    """Re-parses on a new raw_eft. Re-validates only contracts this change
+    can actually affect (see match_and_validate_contract): already-matched
+    rows for this fitting always, plus unmatched and same-hull competitors
+    when matching-relevant fields change (EFT/bays/name/active). Pure
+    stockpile_target / contract_target / variant_label edits skip
+    validation — stockpile and ampel are computed live, not persisted on
+    the contract snapshot."""
     existing_row = storage.get_fitting(fitting_id)
     if existing_row is None:
         raise ActionError(f"Fitting {fitting_id} not found.")
@@ -236,7 +233,16 @@ def do_update_fitting(fitting_id: str, raw_eft: Optional[str] = None, name: Opti
         if updates:
             storage.update_fitting(fitting_id, updates)
 
-    do_validate_contracts()
+    matching_changed = any(v is not None for v in (
+        raw_eft, fuel_bay_text, ship_maintenance_bay_text, name, active))
+    tolerance_changed = cargo_tolerance_pct is not None
+    if matching_changed or tolerance_changed:
+        existing = engine.fitting_from_row(existing_row)
+        hulls = {existing.hull_type_id}
+        if updates.get("hull_type_id") is not None:
+            hulls.add(updates["hull_type_id"])
+        do_validate_contracts(contract_ids=_contract_ids_affected_by_fitting(
+            fitting_id, rematch_unmatched=matching_changed, hull_type_ids=hulls))
     fitting, _items = engine.load_fitting_with_items(fitting_id)
     return {"fitting": asdict(fitting), "issues": [asdict(i) for i in issues]}
 
@@ -295,13 +301,45 @@ def do_sync_status() -> dict:
     return pipeline_runner.job_status(pipeline_runner.TOOL_DOCTRINE)
 
 
-def do_validate_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
-    """Re-matches + re-validates every persisted contract against the
-    current Fitting definitions, without touching ESI (Phase 2 F) - used
-    after editing a fitting (do_update_fitting) and as its own standalone
-    action for "I only changed targets/tolerance, no need to re-sync"."""
+def _contract_ids_affected_by_fitting(fitting_id: str, rematch_unmatched: bool,
+                                       hull_type_ids: set[int]) -> list[int]:
+    """Contracts whose match/validation result can change when `fitting_id`
+    is edited. Matching uses hull_gate + soll + name tie-break
+    (match_and_validate_contract); cargo_tolerance only affects deviations
+    after a winner is chosen, so rematch_unmatched=False limits this to
+    rows already assigned to this fitting."""
+    fitting_id = str(fitting_id)
+    competitor_ids = {fitting_id}
+    if rematch_unmatched:
+        for row in storage.list_active_fittings():
+            fitting = engine.fitting_from_row(row)
+            if fitting.hull_type_id in hull_type_ids:
+                competitor_ids.add(fitting.fitting_id)
+    ids: list[int] = []
+    seen: set[int] = set()
+    for c in engine.contract_rows_from_db(storage.list_doctrine_contracts()):
+        matched = str(c.matched_fitting_id) if c.matched_fitting_id else None
+        take = matched == fitting_id
+        if rematch_unmatched:
+            take = take or matched is None or matched in competitor_ids
+        if take and c.contract_id not in seen:
+            seen.add(c.contract_id)
+            ids.append(c.contract_id)
+    return ids
+
+
+def do_validate_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG,
+                           contract_ids: Optional[Iterable[int]] = None) -> dict:
+    """Re-matches + re-validates persisted contracts against current Fitting
+    definitions, without touching ESI (Phase 2 F). Used after editing a
+    fitting (do_update_fitting, scoped to affected contract_ids) and as its
+    own standalone action for a full re-run (`contract_ids` None).
+
+    replace_doctrine_sync_snapshot is wholesale, so untouched contracts are
+    written through with their existing items/deviations rather than dropped."""
     candidates = engine.load_match_candidates()
     contracts = engine.contract_rows_from_db(storage.list_doctrine_contracts())
+    target_ids = set(contract_ids) if contract_ids is not None else None
     revalidated = 0
     contract_rows: list[tuple] = []
     item_rows: list[tuple] = []
@@ -311,8 +349,17 @@ def do_validate_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
             items_raw = storage.load_doctrine_contract_items(c.contract_id)
             items = [ContractItemRow(c.contract_id, rid, tid, qty, bool(incl), bool(single))
                      for rid, tid, qty, incl, single in items_raw]
-            matched_fitting_id, score, deviations, status = engine.match_and_validate_contract(
-                c.contract_id, c.title, items, candidates, cfg)
+            if target_ids is None or c.contract_id in target_ids:
+                matched_fitting_id, score, deviations, status = engine.match_and_validate_contract(
+                    c.contract_id, c.title, items, candidates, cfg)
+                revalidated += 1
+                for d in deviations:
+                    deviation_rows.append(
+                        (c.contract_id, d.type_id, d.kind, d.expected_qty, d.actual_qty, d.severity))
+            else:
+                matched_fitting_id, score, status = c.matched_fitting_id, c.match_score, c.validation_status
+                for t, k, e, a, s in storage.load_doctrine_contract_deviations(c.contract_id):
+                    deviation_rows.append((c.contract_id, t, k, e, a, s))
             contract_rows.append((
                 c.contract_id, c.source_role, c.for_corporation, c.issuer_id, c.start_location_id,
                 c.status, c.title, c.price, c.date_expired, matched_fitting_id, score, status, c.synced_at,
@@ -320,9 +367,6 @@ def do_validate_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
             for it in items:
                 item_rows.append((c.contract_id, it.record_id, it.type_id, it.quantity, it.is_included,
                                    it.is_singleton))
-            for d in deviations:
-                deviation_rows.append((c.contract_id, d.type_id, d.kind, d.expected_qty, d.actual_qty, d.severity))
-            revalidated += 1
         storage.replace_doctrine_sync_snapshot(contract_rows, item_rows, deviation_rows)
     return {"revalidated": revalidated}
 

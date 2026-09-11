@@ -3,8 +3,11 @@ need real Postgres - specifically do_list_contracts' source-name/hull
 enrichment (engine.py's own contract_rows_from_db and storage.py stay
 mocked out, same "thin wrapper, real logic elsewhere" split every other
 do_* function in this app follows)."""
+from contextlib import contextmanager
+
 from eve_trader import storage
-from eve_trader.doctrine import actions, esi_sync
+from eve_trader.doctrine import actions, engine, esi_sync
+from eve_trader.doctrine.models import ParsedFitting
 
 
 def _contract_db_row(**overrides) -> tuple:
@@ -178,3 +181,114 @@ def test_do_get_shopping_list_wraps_engine_result(monkeypatch):
         "type_id": 100, "type_name": "Widget", "shortfall": 5.0, "build_cost": 10.0, "cj_price": 12.0,
         "jita_landed_price": 15.0, "recommended_source": "Build", "total_cost": 50.0,
     }]
+
+
+@contextmanager
+def _batch():
+    yield
+
+
+def _stub_fitting_update(monkeypatch, fitting_row=None):
+    row = fitting_row or _fitting_db_row()
+    fitting = engine.fitting_from_row(row)
+    monkeypatch.setattr(storage, "get_fitting", lambda fid: row)
+    monkeypatch.setattr(storage, "batch_session", _batch)
+    monkeypatch.setattr(storage, "update_fitting", lambda *a, **k: None)
+    monkeypatch.setattr(storage, "replace_fitting_items", lambda *a, **k: None)
+    monkeypatch.setattr(storage, "replace_fitting_parse_issues", lambda *a, **k: None)
+    monkeypatch.setattr(engine, "load_fitting_with_items", lambda fid: (fitting, []))
+    monkeypatch.setattr(engine, "parse_fitting_text",
+                         lambda text: ParsedFitting(hull_type_id=fitting.hull_type_id,
+                                                     hull_name="Hull", fit_name=fitting.name))
+    monkeypatch.setattr(actions, "_merge_bay_items", lambda parsed, fuel, smb: ([], []))
+    return fitting
+
+
+def test_do_update_fitting_stockpile_target_skips_contract_validation(monkeypatch):
+    _stub_fitting_update(monkeypatch)
+    match_ids = []
+    monkeypatch.setattr(engine, "match_and_validate_contract",
+                         lambda *a, **k: match_ids.append(a[0]) or (None, 0.0, [], "unmatched"))
+    monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **k: [
+        _contract_db_row(contract_id=1, matched_fitting_id="f1"),
+        _contract_db_row(contract_id=2, matched_fitting_id="f2"),
+    ])
+
+    actions.do_update_fitting("f1", stockpile_target=9)
+
+    assert match_ids == []
+
+
+def test_do_update_fitting_eft_revalidates_own_and_unmatched_not_other_hull(monkeypatch):
+    _stub_fitting_update(monkeypatch, _fitting_db_row(fitting_id="f1", hull_type_id=1000))
+    match_ids = []
+
+    def fake_match(contract_id, title, items, candidates, cfg=None):
+        match_ids.append(contract_id)
+        return ("f1", 1.0, [], "valid")
+
+    monkeypatch.setattr(engine, "match_and_validate_contract", fake_match)
+    monkeypatch.setattr(engine, "load_match_candidates", lambda: [])
+    monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **k: [
+        _contract_db_row(contract_id=1, matched_fitting_id="f1"),
+        _contract_db_row(contract_id=2, matched_fitting_id="f2"),
+        _contract_db_row(contract_id=3, matched_fitting_id=None),
+    ])
+    monkeypatch.setattr(storage, "list_active_fittings", lambda: [
+        _fitting_db_row(fitting_id="f1", hull_type_id=1000),
+        _fitting_db_row(fitting_id="f2", hull_type_id=2000),
+    ])
+    monkeypatch.setattr(storage, "load_doctrine_contract_items", lambda cid: [])
+    monkeypatch.setattr(storage, "load_doctrine_contract_deviations", lambda cid: [])
+    monkeypatch.setattr(storage, "replace_doctrine_sync_snapshot", lambda *a, **k: None)
+
+    actions.do_update_fitting("f1", raw_eft="[Rifter, Fit]\n")
+
+    assert match_ids == [1, 3]
+
+
+def test_do_update_fitting_eft_still_rechecks_unmatched_contracts(monkeypatch):
+    # Regression: an EFT/soll change must still try to match contracts that
+    # were unmatched, not only rows already assigned to this fitting.
+    _stub_fitting_update(monkeypatch, _fitting_db_row(fitting_id="f1", hull_type_id=1000))
+    match_ids = []
+    monkeypatch.setattr(engine, "match_and_validate_contract",
+                         lambda contract_id, *a, **k: match_ids.append(contract_id) or (None, 0.0, [], "unmatched"))
+    monkeypatch.setattr(engine, "load_match_candidates", lambda: [])
+    monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **k: [
+        _contract_db_row(contract_id=99, matched_fitting_id=None),
+    ])
+    monkeypatch.setattr(storage, "list_active_fittings", lambda: [
+        _fitting_db_row(fitting_id="f1", hull_type_id=1000),
+    ])
+    monkeypatch.setattr(storage, "load_doctrine_contract_items", lambda cid: [])
+    monkeypatch.setattr(storage, "load_doctrine_contract_deviations", lambda cid: [])
+    monkeypatch.setattr(storage, "replace_doctrine_sync_snapshot", lambda *a, **k: None)
+
+    actions.do_update_fitting("f1", raw_eft="[Rifter, Fit]\n")
+
+    assert match_ids == [99]
+
+
+def test_do_update_fitting_cargo_tolerance_only_revalidates_own_contracts(monkeypatch):
+    _stub_fitting_update(monkeypatch, _fitting_db_row(fitting_id="f1", hull_type_id=1000))
+    match_ids = []
+    monkeypatch.setattr(engine, "match_and_validate_contract",
+                         lambda contract_id, *a, **k: match_ids.append(contract_id) or ("f1", 1.0, [], "valid"))
+    monkeypatch.setattr(engine, "load_match_candidates", lambda: [])
+    monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **k: [
+        _contract_db_row(contract_id=1, matched_fitting_id="f1"),
+        _contract_db_row(contract_id=2, matched_fitting_id="f2"),
+        _contract_db_row(contract_id=3, matched_fitting_id=None),
+    ])
+    monkeypatch.setattr(storage, "list_active_fittings", lambda: [
+        _fitting_db_row(fitting_id="f1", hull_type_id=1000),
+        _fitting_db_row(fitting_id="f2", hull_type_id=1000),
+    ])
+    monkeypatch.setattr(storage, "load_doctrine_contract_items", lambda cid: [])
+    monkeypatch.setattr(storage, "load_doctrine_contract_deviations", lambda cid: [])
+    monkeypatch.setattr(storage, "replace_doctrine_sync_snapshot", lambda *a, **k: None)
+
+    actions.do_update_fitting("f1", cargo_tolerance_pct=0.5)
+
+    assert match_ids == [1]
