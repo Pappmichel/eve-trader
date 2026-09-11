@@ -68,7 +68,7 @@ export function useBackgroundJob(opts: {
   const statusQuery = useQuery({
     queryKey,
     queryFn: fetchStatus,
-    refetchInterval: (query) => (query.state.data?.status === 'running' ? 4000 : false),
+    refetchInterval: (query) => (query.state.data?.status === 'running' ? 1000 : false),
     refetchOnWindowFocus: true,
   })
 

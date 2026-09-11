@@ -22,8 +22,9 @@ thread per start is enough; the unique partial index on pipeline_runs is
 the cross-worker lock.
 
 Polling, not LISTEN/NOTIFY: this app has no existing NOTIFY path, the
-frontend already polls via react-query, and a ~4s lag on a minutes-long
-job is the right complexity tradeoff.
+frontend already polls via react-query. While a job is running the hook
+refetches every 1s (tight enough that a ~6s SDE refresh shows
+batch/total_batches, not only "Running…").
 
 The background thread uses tenant_scope.enter_tenant (not a bare
 storage.set_current_tenant) so TRADING_CONFIG/PRODUCTION_CONFIG's
