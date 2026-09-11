@@ -204,6 +204,21 @@ function or table after that migration (all 5 of its phases are done).
   plausibly collide across tenants (an EVE item type ID, a literal
   scope/category string) - see that same file's "composite-PK bucket" vs.
   "column-only bucket" comment banners for real examples of each.
+- **A brand-new schema file** (a new top-level `docs/*_schema.sql`, not an
+  addition to an existing one) needs adding to every place that applies
+  schema files, not just the file itself - confirmed real, repeated bug
+  class: `deploy/deploy.sh`'s migration for-loop, `deploy/README.md`'s and
+  the root `README.md`'s manual `psql`/`docker exec` instructions, and
+  `.cursor/start.sh`'s dev-environment loop. Forgetting one of these is a
+  silent gap, not a loud error - the app runs fine until the first request
+  that touches the new table, which then 500s with an `UndefinedTable`/
+  "relation does not exist" error that has nothing to do with whatever
+  changed in that request (see `docs/pipeline_runs_schema.sql`'s own
+  2026-09-11 addition, and the pre-existing `station_trading_schema.sql`
+  incident `deploy/deploy.sh` documents inline - both were exactly this).
+  Grep the repo for an existing schema filename (e.g.
+  `production_buy_list_schema`) to find every place a new one needs adding
+  alongside it, rather than assuming `deploy/deploy.sh` is the only list.
 - **`tenant_scope.enter_tenant(tenant_id)`** is the one place that resolves
   a tenant fully - storage's own ambient tenant *and* `TRADING_CONFIG`/
   `PRODUCTION_CONFIG`'s per-tenant instance together. Used by
