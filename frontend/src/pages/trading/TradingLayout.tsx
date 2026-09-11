@@ -137,7 +137,8 @@ export default function TradingLayout() {
                 Refresh Shortlist
               </Button>
               <Button size="xs" leftSection={<IconBolt size={14} />}
-                onClick={() => refreshAndPrune.start(true)} loading={refreshAndPrune.running}>
+                variant={refreshAndPrune.running ? 'light' : undefined}
+                onClick={() => refreshAndPrune.start(true)}>
                 Search + Add + Clean Up
               </Button>
               {refreshAndPrune.progressLabel && (
@@ -175,7 +176,7 @@ export default function TradingLayout() {
                 Filter Candidates
               </Button>
               <Button size="xs" variant="light" color="warn" leftSection={<IconSearch size={14} />}
-                onClick={() => refreshAndPrune.start(false)} loading={refreshAndPrune.running}>
+                onClick={() => refreshAndPrune.start(false)}>
                 Full Search (ALL candidates)
               </Button>
               {refreshAndPrune.progressLabel && (
