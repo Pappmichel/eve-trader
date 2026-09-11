@@ -56,11 +56,20 @@ export function useBackgroundJob(opts: {
     jobName?: string | null,
   ) => string
   onSucceeded?: (status: PipelineRunStatus) => void
+  // Poll cadence while a job is running. Default 4000ms matches Trading's
+  // original behavior (a run can take minutes - no need to poll faster).
+  // Callers whose job is typically much shorter (Admin SDE refresh finishes
+  // in ~6s) can pass a tighter interval so the UI shows more than a single
+  // "Running…" before it's already done - that tradeoff (more status-poll
+  // requests for the job's duration) should stay opt-in per caller, not a
+  // blanket change that also speeds up polling during a long Trading run.
+  pollIntervalMs?: number
 }) {
   const queryClient = useQueryClient()
   const prevStatus = useRef<string | undefined>(undefined)
   const {
     queryKey, fetchStatus, resultKeys, labels, defaultLabel, onSucceeded,
+    pollIntervalMs = 4000,
   } = opts
   const formatProgress = opts.formatProgress
     ?? ((progress, jobName) => formatBackgroundProgress(progress, jobName, labels, defaultLabel))
@@ -68,7 +77,7 @@ export function useBackgroundJob(opts: {
   const statusQuery = useQuery({
     queryKey,
     queryFn: fetchStatus,
-    refetchInterval: (query) => (query.state.data?.status === 'running' ? 1000 : false),
+    refetchInterval: (query) => (query.state.data?.status === 'running' ? pollIntervalMs : false),
     refetchOnWindowFocus: true,
   })
 

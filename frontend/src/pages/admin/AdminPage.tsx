@@ -36,6 +36,9 @@ function SdeDataSection() {
     resultKeys: SDE_RESULT_KEYS,
     labels: SDE_LABELS,
     defaultLabel: 'Refresh SDE',
+    // SDE refresh typically finishes in seconds (~6s in this environment) -
+    // the default 4s poll would often show only "Running…" then Done.
+    pollIntervalMs: 1000,
   })
   const refreshSde = useBackgroundJobStart(sdeJob, () => adminApi.refreshSde())
   const sdeRunning = sdeJob.runningStatus || refreshSde.isPending
