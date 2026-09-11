@@ -55,6 +55,12 @@ def do_remove_doctrine_asset_character(role_key: str) -> dict:
 
 
 def do_sync_assets() -> dict:
+    """Doctrine Stockpile asset sync.
+
+    Track B (2026-09-11, this tenant): 0 doctrine-assets characters; POST
+    /api/doctrine/assets/sync returned 400 in 0.002s before any ESI. Not
+    migrated to pipeline_runner — re-measure if a real asset-scanner roster
+    ever hits a proxy timeout."""
     return esi_sync.sync_assets()
 
 
