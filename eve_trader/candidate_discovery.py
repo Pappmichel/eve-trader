@@ -144,15 +144,21 @@ def _build_candidate_universe_from_sde(market_groups: list[tuple[int, int, str]]
     # GitHub issue #73: capital-sized modules (category_id=MODULE_CATEGORY_ID)
     # have a much smaller *packaged* volume than the raw SDE `volume` above,
     # the same quirk already fixed for Production's own haul cost in issue
-    # #11. Ships have the identical quirk but are already excluded via
-    # is_wanted_market_path above (excluded_path_prefixes), so only
-    # Module-category types actually need the ESI lookup. Resolved in one
-    # bulk, concurrent pass (not per-type_id inside this loop) - GitHub
-    # issue #96: on a deploy where type_packaged_volume hasn't been fully
-    # backfilled yet, doing this one type_id at a time meant hundreds of
-    # sequential live ESI calls in a single request, timing out well before
-    # nginx's default 60s proxy_read_timeout (see resolve_effective_volume_
-    # bulk's own docstring).
+    # #11. Ships have the identical quirk - resolve_effective_volume_bulk
+    # checks category_id itself (Ship or Module) rather than assuming which
+    # rows can contain either, so this stays correct regardless of whether
+    # "ships" is currently in cfg.excluded_path_prefixes (it was
+    # unconditionally excluded when this comment was first written, no
+    # longer true since it's now a user-editable Settings-page field - see
+    # TradingSettings.tsx's "Excluded market-group path prefixes"). With
+    # ships included, every not-yet-cached ship type also pays this lookup,
+    # not just modules. Resolved in one bulk, concurrent pass (not
+    # per-type_id inside this loop) - GitHub issue #96: on a deploy where
+    # type_packaged_volume hasn't been fully backfilled yet, doing this one
+    # type_id at a time meant hundreds of sequential live ESI calls in a
+    # single request, timing out well before nginx's default 60s
+    # proxy_read_timeout (see resolve_effective_volume_bulk's own
+    # docstring) - a risk that only grows now that ships can be in scope.
     effective_volumes = resolve_effective_volume_bulk(
         [(type_id, volume, category_id) for type_id, _type_name, volume, _meta, category_id, _path in rows]
     )
