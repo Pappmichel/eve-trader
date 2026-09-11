@@ -240,12 +240,38 @@ def do_find_new_candidates(safe: bool = True, cfg: TradingConfig = TRADING_CONFI
     return {"evaluated": len(results), "recommended": sum(r.add for r in results)}
 
 
-def do_add_to_shortlist() -> dict:
+def _new_candidates_to_add(df: pd.DataFrame, existing_ids: set[int],
+                            max_growth: int) -> tuple[pd.DataFrame, int]:
+    """Splits the latest run's add_flag=1 rows into (to_upsert, deferred_count).
+
+    Ranking matches history_backtest.find_new_import_candidates: (score,
+    latest_margin) descending. Item ids already on the shortlist always
+    upsert (category re-derive, not growth). Brand-new ids are capped at
+    `max_growth`; the rest stay in new_candidates with add_flag=1 and are
+    considered again on the next run - nothing is discarded.
+    """
+    if df.empty:
+        return df, 0
+    ranked = df.sort_values(["score", "latest_margin"], ascending=False, kind="mergesort")
+    already = ranked[ranked["type_id"].isin(existing_ids)]
+    newcomers = ranked[~ranked["type_id"].isin(existing_ids)]
+    take = newcomers.head(max_growth)
+    deferred = int(len(newcomers) - len(take))
+    if already.empty:
+        return take, deferred
+    return pd.concat([already, take], ignore_index=True), deferred
+
+
+def do_add_to_shortlist(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     df = storage.read_table("new_candidates")
     if df.empty:
         raise ActionError("No 'New Candidates' available - run '⚡ Search + Add + Clean Up' first.")
     latest_run = df["run_ts"].max()
     df = df[(df["run_ts"] == latest_run) & (df["add_flag"] == 1)]
+    existing_ids = {i.item_id for i in storage.load_shortlist() if i.item_id}
+    df, deferred = _new_candidates_to_add(df, existing_ids, cfg.max_shortlist_growth_per_run)
+    if df.empty:
+        return {"added": 0, "deferred": deferred}
     # Re-derive category fresh from the SDE instead of trusting new_candidates.
     # category - that value was computed whenever candidate_universe/
     # focused_candidates were last rebuilt (① Load Market Groups / ② Filter
@@ -262,7 +288,7 @@ def do_add_to_shortlist() -> dict:
                             volume_m3=r.volume_m3, active=True,
                             meta_level=_int_or_none(r.meta_level)) for r in df.itertuples()]
     storage.upsert_shortlist(items)
-    return {"added": len(items)}
+    return {"added": len(items), "deferred": deferred}
 
 
 def do_recategorize_shortlist() -> dict:

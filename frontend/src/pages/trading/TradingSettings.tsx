@@ -45,7 +45,9 @@ export default function TradingSettings() {
           onChange={(v) => set('min_margin_threshold', Number(v))} />
         <NumberInput label="Grace period before deactivation (days)" value={form.skip_grace_period_days} min={0} step={1}
           onChange={(v) => set('skip_grace_period_days', Number(v))} />
-        <NumberInput label="Max. active shortlist entries (when cap is on)" value={form.max_active_shortlist_items} min={1} step={10}
+        <NumberInput label="Max. active shortlist entries (when cap is on)"
+          description="Toggle the cap itself on the Shortlist page — easy to miss here, so the switch lives next to the live count."
+          value={form.max_active_shortlist_items} min={1} step={10}
           onChange={(v) => set('max_active_shortlist_items', Number(v))} />
       </SimpleGrid>
 
@@ -58,6 +60,10 @@ export default function TradingSettings() {
           onChange={(v) => set('min_avg_movement', Number(v))} />
         <NumberInput label="Safe mode: max IDs/run" value={form.safe_mode_max_ids} min={1} step={50}
           onChange={(v) => set('safe_mode_max_ids', Number(v))} />
+        <NumberInput label="Max new shortlist items per run"
+          description="Search + Add keeps leftover recommendations for the next run instead of dropping them."
+          value={form.max_shortlist_growth_per_run} min={1} step={10}
+          onChange={(v) => set('max_shortlist_growth_per_run', Number(v))} />
         <NumberInput label="Trade reconciliation: days back" value={form.lookback_days} min={1} step={5}
           onChange={(v) => set('lookback_days', Number(v))} />
       </SimpleGrid>

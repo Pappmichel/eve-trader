@@ -163,6 +163,7 @@ export interface TradingSettings {
   skip_grace_period_days: number
   enforce_shortlist_cap: boolean
   max_active_shortlist_items: number
+  max_shortlist_growth_per_run: number
   min_hit_rate: number
   min_avg_movement: number
   safe_mode_max_ids: number

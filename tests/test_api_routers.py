@@ -124,6 +124,7 @@ def test_get_trading_settings():
     body = resp.json()
     assert "structure_sell_haircut" in body
     assert "skip_grace_period_days" in body
+    assert "max_shortlist_growth_per_run" in body
 
 
 # ---------------------------------------------------------------- production

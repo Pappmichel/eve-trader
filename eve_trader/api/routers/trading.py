@@ -106,6 +106,7 @@ class TradingSettings(BaseModel):
     skip_grace_period_days: int
     enforce_shortlist_cap: bool
     max_active_shortlist_items: int
+    max_shortlist_growth_per_run: int
     min_hit_rate: float
     min_avg_movement: float
     safe_mode_max_ids: int
