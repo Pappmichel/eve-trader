@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from .. import schemas
 from ... import admin, error_log
-from ...actions import ActionError
+from ...actions import ActionError, ConflictError
 
 router = APIRouter()
 
@@ -19,6 +19,8 @@ router = APIRouter()
 def _wrap(fn, **kwargs):
     try:
         return fn(**kwargs)
+    except ConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except ActionError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -66,7 +68,15 @@ def set_tool_grants(character_id: int, req: SetToolGrantsRequest):
 # cross-tenant-impacting action, not a per-tenant Production one.
 @router.post("/sde/refresh")
 def refresh_sde():
-    return _wrap(admin.do_refresh_sde)
+    """Starts SDE refresh as a background job and returns immediately.
+    Poll GET /sde/refresh/status; a second start while any background job
+    is running is HTTP 409."""
+    return _wrap(admin.do_start_refresh_sde)
+
+
+@router.get("/sde/refresh/status")
+def sde_refresh_status():
+    return _wrap(admin.do_sde_refresh_status)
 
 
 # Same "cross-tenant-impacting cache, not a per-tenant Production button"

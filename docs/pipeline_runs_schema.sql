@@ -1,10 +1,21 @@
--- Manual-trigger Trading pipeline runs (Search + Add + Clean Up, Refresh
--- Shortlist, Run Complete Pipeline). Status is persisted per tenant so a
--- server restart / second worker process still sees an in-flight job -
--- unlike scheduler.py's in-memory last_run_status, which is fine for a
--- "last tick" readout but would lose a minutes-long cleanup that the UI
--- is polling. The three jobs share one running-row lock: they all mutate
--- the shortlist / snapshot.
+-- Manual-trigger background jobs (Trading Search+Add+Clean Up / Refresh
+-- Shortlist / Pipeline, Doctrine contract sync, Admin SDE refresh). Status
+-- is persisted per tenant so a server restart / second worker process still
+-- sees an in-flight job - unlike scheduler.py's in-memory last_run_status,
+-- which is fine for a "last tick" readout but would lose a minutes-long
+-- job that the UI is polling.
+--
+-- `tool` is a real column (DEFAULT 'trading'), not a "doctrine:sync"-style
+-- prefix on job_name: status pollers are per-tool (Trading's GET must not
+-- surface a Doctrine run as its own progress), and filtering by a typed
+-- column is cheaper than parsing a string. job_name stays the unqualified
+-- name within that tool (`refresh_and_prune`, `sync_contracts`).
+--
+-- Lock granularity stays one running job per tenant, not per (tenant, tool).
+-- ESI rate limits and the 10-conn app pool are process-wide; overlapping a
+-- Trading pipeline with a Doctrine sync or SDE refresh on the same tenant
+-- is resource contention, not just a data race. Cross-tenant overlap is
+-- already allowed (RLS-scoped rows) - two tenants can run at once.
 --
 -- Named (not phase4_schema.sql): after phase3 the repo switched to
 -- feature-named schema files (admin/doctrine/refining/...). Numbering
@@ -28,6 +39,7 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     id UUID PRIMARY KEY,
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
     job_name TEXT NOT NULL,
+    tool TEXT NOT NULL DEFAULT 'trading',
     status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed')),
     started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -42,8 +54,14 @@ CREATE POLICY tenant_isolation ON pipeline_runs
     USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 
+-- Existing databases created before `tool` existed.
+ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS tool TEXT NOT NULL DEFAULT 'trading';
+
 CREATE INDEX IF NOT EXISTS pipeline_runs_tenant_started_idx
     ON pipeline_runs (tenant_id, started_at DESC);
+
+CREATE INDEX IF NOT EXISTS pipeline_runs_tenant_tool_started_idx
+    ON pipeline_runs (tenant_id, tool, started_at DESC);
 
 -- At most one running job per tenant+job_name. Weaker than the per-tenant
 -- lock below; kept so databases that already applied this file don't need
@@ -52,11 +70,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS pipeline_runs_one_running
     ON pipeline_runs (tenant_id, job_name)
     WHERE status = 'running';
 
--- At most one running Trading job per tenant, across job_names. Refresh
--- Shortlist / Search+Add+Clean Up / Run Complete Pipeline all mutate the
--- shortlist; overlapping them would race. The application checks first for
--- a friendly ConflictError; this unique index is the race-condition
--- backstop if two POSTs land on different workers in the same instant.
+-- At most one running background job per tenant, across tools and job_names.
+-- The application checks first for a friendly ConflictError; this unique
+-- index is the race-condition backstop if two POSTs land on different
+-- workers in the same instant.
 CREATE UNIQUE INDEX IF NOT EXISTS pipeline_runs_one_running_per_tenant
     ON pipeline_runs (tenant_id)
     WHERE status = 'running';

@@ -10,9 +10,13 @@ import type { ColumnDef } from '@tanstack/react-table'
 
 import { adminApi, productionApi } from '../../api/client'
 import { useAction } from '../../hooks/useAction'
+import { useBackgroundJob, useBackgroundJobStart } from '../../hooks/useBackgroundJob'
 import { dateTime } from '../../format'
 import type { AdminTenant, AdminUser, ErrorLogRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
+
+const SDE_RESULT_KEYS: string[][] = [['production', 'sde', 'counts'], ['production', 'sde-freshness']]
+const SDE_LABELS = { sde_refresh: 'Refresh SDE' }
 
 // GitHub issue #34: the SDE cache is global/shared across every tenant, so
 // refreshing it is a cross-tenant-impacting action - moved here from
@@ -26,8 +30,15 @@ function SdeDataSection() {
     queryKey: ['production', 'sde-freshness'], queryFn: productionApi.sdeFreshness,
     staleTime: Infinity, refetchOnWindowFocus: false, retry: false,
   })
-  const refreshSde = useAction('Refresh SDE', adminApi.refreshSde,
-    [['production', 'sde', 'counts'], ['production', 'sde-freshness']])
+  const sdeJob = useBackgroundJob({
+    queryKey: ['admin', 'pipeline', 'sde-refresh'],
+    fetchStatus: adminApi.refreshSdeStatus,
+    resultKeys: SDE_RESULT_KEYS,
+    labels: SDE_LABELS,
+    defaultLabel: 'Refresh SDE',
+  })
+  const refreshSde = useBackgroundJobStart(sdeJob, () => adminApi.refreshSde())
+  const sdeRunning = sdeJob.runningStatus || refreshSde.isPending
 
   return (
     <div>
@@ -52,9 +63,14 @@ function SdeDataSection() {
           ))}
         </Group>
       )}
-      <Button size="xs" variant="default" onClick={() => refreshSde.mutate()} loading={refreshSde.isPending}>
+      <Button size="xs" variant={sdeRunning ? 'light' : 'default'} onClick={() => refreshSde.mutate()}>
         Refresh SDE
       </Button>
+      {sdeRunning && (
+        <Text size="xs" c="dimmed" mt={4}>
+          {sdeJob.formatProgress(sdeJob.status?.progress, sdeJob.jobName)}
+        </Text>
+      )}
     </div>
   )
 }

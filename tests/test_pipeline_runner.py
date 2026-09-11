@@ -76,7 +76,7 @@ def test_start_wraps_the_worker_with_current_tenant(monkeypatch):
     monkeypatch.setattr(storage, "get_current_tenant", lambda: _TENANT_ID)
     monkeypatch.setattr(storage, "fail_stale_pipeline_runs", _noop_fail_stale)
     monkeypatch.setattr(storage, "get_running_pipeline_run", lambda job_name=None: None)
-    monkeypatch.setattr(storage, "start_pipeline_run", lambda job: "run-1")
+    monkeypatch.setattr(storage, "start_pipeline_run", lambda job, tool="trading": "run-1")
 
     captured = {}
 
@@ -92,7 +92,7 @@ def test_start_wraps_the_worker_with_current_tenant(monkeypatch):
 
     result = pipeline_runner.start_refresh_and_prune(safe=False)
 
-    assert result == {"run_id": "run-1", "status": "running", "job_name": JOB_REFRESH_AND_PRUNE}
+    assert result == {"run_id": "run-1", "status": "running", "job_name": JOB_REFRESH_AND_PRUNE, "tool": "trading"}
     assert wrapped, "storage.with_current_tenant must wrap the worker target"
     assert captured.get("started") is True
     assert captured.get("daemon") is True
@@ -102,7 +102,7 @@ def test_start_refresh_shortlist_returns_running(monkeypatch):
     monkeypatch.setattr(storage, "get_current_tenant", lambda: _TENANT_ID)
     monkeypatch.setattr(storage, "fail_stale_pipeline_runs", _noop_fail_stale)
     monkeypatch.setattr(storage, "get_running_pipeline_run", lambda job_name=None: None)
-    monkeypatch.setattr(storage, "start_pipeline_run", lambda job: "run-sl")
+    monkeypatch.setattr(storage, "start_pipeline_run", lambda job, tool="trading": "run-sl")
     monkeypatch.setattr(storage, "with_current_tenant", lambda fn: fn)
 
     class FakeThread:
@@ -115,7 +115,7 @@ def test_start_refresh_shortlist_returns_running(monkeypatch):
     monkeypatch.setattr(pipeline_runner.threading, "Thread", FakeThread)
 
     result = pipeline_runner.start_refresh_shortlist()
-    assert result == {"run_id": "run-sl", "status": "running", "job_name": JOB_REFRESH_SHORTLIST}
+    assert result == {"run_id": "run-sl", "status": "running", "job_name": JOB_REFRESH_SHORTLIST, "tool": "trading"}
 
 
 def test_unique_violation_on_insert_maps_to_conflict(monkeypatch):
@@ -125,7 +125,7 @@ def test_unique_violation_on_insert_maps_to_conflict(monkeypatch):
     monkeypatch.setattr(storage, "fail_stale_pipeline_runs", _noop_fail_stale)
     monkeypatch.setattr(storage, "get_running_pipeline_run", lambda job_name=None: None)
 
-    def _raise(job):
+    def _raise(job, tool="trading"):
         raise UniqueViolation("pipeline_runs_one_running_per_tenant")
     monkeypatch.setattr(storage, "start_pipeline_run", _raise)
 
@@ -200,8 +200,8 @@ def test_trading_job_status_prefers_running_over_latest(monkeypatch):
     monkeypatch.setattr(storage, "get_running_pipeline_run", lambda job_name=None: {
         "run_id": "r1", "status": "running", "job_name": JOB_REFRESH_SHORTLIST,
     })
-    monkeypatch.setattr(storage, "get_latest_pipeline_run", lambda job_name=None: {
-        "run_id": "old", "status": "succeeded", "job_name": JOB_REFRESH_AND_PRUNE,
+    monkeypatch.setattr(storage, "get_latest_pipeline_run", lambda job_name=None, tool=None: {
+        "run_id": "old", "status": "succeeded", "job_name": JOB_REFRESH_AND_PRUNE, "tool": "trading",
     })
     assert actions.do_trading_job_status()["run_id"] == "r1"
     assert actions.do_refresh_and_prune_status()["run_id"] == "r1"
@@ -213,3 +213,64 @@ def test_start_refresh_shortlist_action_rejects_empty_shortlist(monkeypatch):
     monkeypatch.setattr(storage, "load_shortlist", lambda: [])
     with pytest.raises(ActionError, match="Shortlist is empty"):
         do_start_refresh_shortlist()
+
+
+def test_start_job_is_the_generic_entry(monkeypatch):
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: _TENANT_ID)
+    monkeypatch.setattr(storage, "fail_stale_pipeline_runs", _noop_fail_stale)
+    monkeypatch.setattr(storage, "get_running_pipeline_run", lambda job_name=None: None)
+    monkeypatch.setattr(storage, "start_pipeline_run", lambda job, tool="trading": "run-g")
+    monkeypatch.setattr(storage, "with_current_tenant", lambda fn: fn)
+
+    class FakeThread:
+        def __init__(self, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(pipeline_runner.threading, "Thread", FakeThread)
+
+    result = pipeline_runner.start_job(
+        "doctrine", "sync_contracts", "Sync Contracts", lambda cb: {"ok": True},
+    )
+    assert result == {
+        "run_id": "run-g", "status": "running",
+        "job_name": "sync_contracts", "tool": "doctrine",
+    }
+
+
+def test_start_job_of_another_tool_is_rejected_while_trading_runs(monkeypatch):
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: _TENANT_ID)
+    monkeypatch.setattr(storage, "fail_stale_pipeline_runs", _noop_fail_stale)
+    monkeypatch.setattr(storage, "get_running_pipeline_run", lambda job_name=None: {
+        "run_id": "already", "status": "running",
+        "job_name": JOB_REFRESH_AND_PRUNE, "tool": "trading",
+    })
+    started = []
+
+    class FakeThread:
+        def __init__(self, **kwargs):
+            started.append(kwargs)
+
+        def start(self):
+            started.append("start")
+
+    monkeypatch.setattr(pipeline_runner.threading, "Thread", FakeThread)
+
+    with pytest.raises(ConflictError, match="Search \\+ Add \\+ Clean Up is already running"):
+        pipeline_runner.start_doctrine_sync()
+    assert started == []
+
+
+def test_job_status_ignores_a_running_job_for_a_different_tool(monkeypatch):
+    monkeypatch.setattr(storage, "get_running_pipeline_run", lambda job_name=None: {
+        "run_id": "doc", "status": "running", "job_name": "sync_contracts", "tool": "doctrine",
+    })
+    monkeypatch.setattr(storage, "get_latest_pipeline_run", lambda job_name=None, tool=None: {
+        "run_id": "old-trading", "status": "succeeded",
+        "job_name": JOB_REFRESH_AND_PRUNE, "tool": tool,
+    })
+    status = pipeline_runner.job_status(pipeline_runner.TOOL_TRADING)
+    assert status["run_id"] == "old-trading"
+    assert pipeline_runner.job_status(pipeline_runner.TOOL_DOCTRINE)["run_id"] == "doc"

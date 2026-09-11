@@ -190,6 +190,7 @@ export interface PipelineRunProgress {
 export interface PipelineRunStatus {
   run_id: string | null
   job_name?: string
+  tool?: string
   status: 'idle' | 'running' | 'succeeded' | 'failed'
   started_at?: string | null
   updated_at?: string | null

@@ -283,6 +283,18 @@ def do_sync_contracts() -> dict:
     return esi_sync.sync_contracts()
 
 
+def do_start_sync_contracts() -> dict:
+    """Kicks off Doctrine contract sync as a background job. Scheduler still
+    calls do_sync_contracts in-process."""
+    from .. import pipeline_runner
+    return pipeline_runner.start_doctrine_sync()
+
+
+def do_sync_status() -> dict:
+    from .. import pipeline_runner
+    return pipeline_runner.job_status(pipeline_runner.TOOL_DOCTRINE)
+
+
 def do_validate_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
     """Re-matches + re-validates every persisted contract against the
     current Fitting definitions, without touching ESI (Phase 2 F) - used

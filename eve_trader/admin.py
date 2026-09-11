@@ -102,6 +102,18 @@ def do_refresh_sde() -> dict:
     return result
 
 
+def do_start_refresh_sde() -> dict:
+    """Kicks off SDE refresh as a background job. The HTTP handler must not
+    block on the ~14 sequential CSV downloads."""
+    from . import pipeline_runner
+    return pipeline_runner.start_sde_refresh()
+
+
+def do_sde_refresh_status() -> dict:
+    from . import pipeline_runner
+    return pipeline_runner.job_status(pipeline_runner.TOOL_ADMIN)
+
+
 def do_refresh_jita_price_cache() -> dict:
     """Standalone manual trigger for the shared Jita price cache (production/
     jita_price_cache.py) - deliberately its own action, not called from

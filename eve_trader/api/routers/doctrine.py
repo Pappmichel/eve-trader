@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from .. import schemas
 from ...doctrine import actions
 from ...doctrine.actions import ActionError
+from ...actions import ConflictError
 from ...doctrine.config import DOCTRINE_CONFIG
 
 router = APIRouter()
@@ -20,6 +21,8 @@ router = APIRouter()
 def _wrap(fn, **kwargs):
     try:
         return fn(**kwargs)
+    except ConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except ActionError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -112,7 +115,15 @@ def get_fitting_detail(fitting_id: str):
 # ----------------------------------------------------------------------- sync
 @router.post("/sync")
 def sync_contracts():
-    return _wrap(actions.do_sync_contracts)
+    """Starts Doctrine contract sync as a background job and returns
+    immediately ({run_id, status: running}). Poll GET .../sync/status;
+    a second start while any background job is running is HTTP 409."""
+    return _wrap(actions.do_start_sync_contracts)
+
+
+@router.get("/sync/status")
+def sync_status():
+    return _wrap(actions.do_sync_status)
 
 
 @router.post("/validate")

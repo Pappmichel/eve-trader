@@ -2036,13 +2036,20 @@ def set_candidate_search_offset(offset: int) -> None:
         )
 
 
+_PIPELINE_RUN_SELECT = (
+    "id, job_name, tool, status, started_at, updated_at, finished_at, progress, result, error"
+)
+
+
 def _serialize_pipeline_run(row) -> dict:
     """Turns a pipeline_runs SELECT row into the JSON-safe dict the status
     endpoint / frontend poll. psycopg returns UUID/datetime/JSONB natively."""
-    run_id, job_name, status, started_at, updated_at, finished_at, progress, result, error = row
+    (run_id, job_name, tool, status, started_at, updated_at, finished_at,
+     progress, result, error) = row
     return {
         "run_id": str(run_id),
         "job_name": job_name,
+        "tool": tool,
         "status": status,
         "started_at": started_at.isoformat() if started_at else None,
         "updated_at": updated_at.isoformat() if updated_at else None,
@@ -2053,16 +2060,16 @@ def _serialize_pipeline_run(row) -> dict:
     }
 
 
-def start_pipeline_run(job_name: str) -> str:
+def start_pipeline_run(job_name: str, tool: str = "trading") -> str:
     """Inserts a `running` row and returns its id. Raises psycopg
-    UniqueViolation if this tenant already has any running Trading job
+    UniqueViolation if this tenant already has any running job
     (see pipeline_runs_one_running_per_tenant) - the runner converts that
     to ConflictError."""
     run_id = str(uuid.uuid4())
     with connect() as conn:
         conn.execute(
-            "INSERT INTO pipeline_runs (id, job_name, status) VALUES (?, ?, 'running')",
-            (run_id, job_name),
+            "INSERT INTO pipeline_runs (id, job_name, tool, status) VALUES (?, ?, ?, 'running')",
+            (run_id, job_name, tool),
         )
     return run_id
 
@@ -2086,20 +2093,19 @@ def finish_pipeline_run(run_id: str, status: str, result: Optional[dict] = None,
 
 
 def get_running_pipeline_run(job_name: Optional[str] = None) -> Optional[dict]:
-    """The in-flight Trading job for this tenant. `job_name=None` (the
-    default) matches any job - Refresh Shortlist / Search+Add+Clean Up /
-    Pipeline share one running lock. Pass a name only when a caller
-    genuinely cares which job is running."""
+    """The in-flight background job for this tenant. `job_name=None` (the
+    default) matches any job - every tool shares one running lock. Pass a
+    name only when a caller genuinely cares which job is running."""
     with connect() as conn:
         if job_name is None:
             row = conn.execute(
-                "SELECT id, job_name, status, started_at, updated_at, finished_at, progress, result, error "
+                f"SELECT {_PIPELINE_RUN_SELECT} "
                 "FROM pipeline_runs WHERE status = 'running' "
                 "ORDER BY started_at DESC LIMIT 1",
             ).fetchone()
         else:
             row = conn.execute(
-                "SELECT id, job_name, status, started_at, updated_at, finished_at, progress, result, error "
+                f"SELECT {_PIPELINE_RUN_SELECT} "
                 "FROM pipeline_runs WHERE job_name = ? AND status = 'running' "
                 "ORDER BY started_at DESC LIMIT 1",
                 (job_name,),
@@ -2107,23 +2113,35 @@ def get_running_pipeline_run(job_name: Optional[str] = None) -> Optional[dict]:
     return _serialize_pipeline_run(row) if row else None
 
 
-def get_latest_pipeline_run(job_name: Optional[str] = None) -> Optional[dict]:
-    """Most recently started Trading job for this tenant (`job_name=None`
-    = any of the three). Running rows sort first only by started_at, not
-    status - callers that need the in-flight job should use
-    get_running_pipeline_run."""
+def get_latest_pipeline_run(job_name: Optional[str] = None,
+                             tool: Optional[str] = None) -> Optional[dict]:
+    """Most recently started job for this tenant. `tool` scopes to one
+    tool's history (status pollers); `job_name` is the older single-job
+    filter. Running rows sort first only by started_at, not status -
+    callers that need the in-flight job should use get_running_pipeline_run."""
     with connect() as conn:
-        if job_name is None:
+        if job_name is not None and tool is not None:
             row = conn.execute(
-                "SELECT id, job_name, status, started_at, updated_at, finished_at, progress, result, error "
-                "FROM pipeline_runs ORDER BY started_at DESC LIMIT 1",
+                f"SELECT {_PIPELINE_RUN_SELECT} FROM pipeline_runs "
+                "WHERE job_name = ? AND tool = ? ORDER BY started_at DESC LIMIT 1",
+                (job_name, tool),
+            ).fetchone()
+        elif job_name is not None:
+            row = conn.execute(
+                f"SELECT {_PIPELINE_RUN_SELECT} FROM pipeline_runs "
+                "WHERE job_name = ? ORDER BY started_at DESC LIMIT 1",
+                (job_name,),
+            ).fetchone()
+        elif tool is not None:
+            row = conn.execute(
+                f"SELECT {_PIPELINE_RUN_SELECT} FROM pipeline_runs "
+                "WHERE tool = ? ORDER BY started_at DESC LIMIT 1",
+                (tool,),
             ).fetchone()
         else:
             row = conn.execute(
-                "SELECT id, job_name, status, started_at, updated_at, finished_at, progress, result, error "
-                "FROM pipeline_runs WHERE job_name = ? "
+                f"SELECT {_PIPELINE_RUN_SELECT} FROM pipeline_runs "
                 "ORDER BY started_at DESC LIMIT 1",
-                (job_name,),
             ).fetchone()
     return _serialize_pipeline_run(row) if row else None
 
@@ -2131,8 +2149,7 @@ def get_latest_pipeline_run(job_name: Optional[str] = None) -> Optional[dict]:
 def get_pipeline_run(run_id: str) -> Optional[dict]:
     with connect() as conn:
         row = conn.execute(
-            "SELECT id, job_name, status, started_at, updated_at, finished_at, progress, result, error "
-            "FROM pipeline_runs WHERE id = ?",
+            f"SELECT {_PIPELINE_RUN_SELECT} FROM pipeline_runs WHERE id = ?",
             (run_id,),
         ).fetchone()
     return _serialize_pipeline_run(row) if row else None
@@ -2143,9 +2160,9 @@ def fail_stale_pipeline_runs(job_name: Optional[str] = None, stale_after_seconds
     as failed so a crashed worker can't block this tenant forever. Returns
     how many rows were flipped. 2h default is well above a legitimate full
     search of a large universe, and well below "wait until someone notices
-    the button is stuck". `job_name=None` covers every Trading job for this
-    tenant (the shared lock means a stale Pipeline would otherwise block
-    Refresh Shortlist)."""
+    the button is stuck". `job_name=None` covers every background job for
+    this tenant (the shared lock means a stale Doctrine sync would otherwise
+    block Refresh Shortlist)."""
     with connect() as conn:
         if job_name is None:
             cur = conn.execute(

@@ -1025,18 +1025,11 @@ def do_start_pipeline(safe: bool = True, rebuild_universe: bool = False) -> dict
 
 
 def do_trading_job_status() -> dict:
-    """Currently-running Trading job for this tenant (any of the three
-    user-triggered jobs share one lock), else the latest finished one, or
-    an idle placeholder when none has ever run. One poller for all three
-    HTTP start endpoints."""
-    running = storage.get_running_pipeline_run()
-    if running:
-        return running
-    row = storage.get_latest_pipeline_run()
-    if row is None:
-        return {"run_id": None, "job_name": None, "status": "idle",
-                "progress": None, "result": None, "error": None}
-    return row
+    """Currently-running Trading job for this tenant, else the latest
+    finished Trading one, or an idle placeholder. Other tools' running jobs
+    are not returned here (the shared lock still 409s a start)."""
+    from . import pipeline_runner
+    return pipeline_runner.job_status(pipeline_runner.TOOL_TRADING)
 
 
 def do_refresh_and_prune_status() -> dict:

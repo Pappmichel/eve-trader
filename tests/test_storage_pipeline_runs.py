@@ -24,6 +24,7 @@ def test_start_and_finish_pipeline_run(tenant, _apply_pipeline_runs_schema):
 
     latest = storage.get_latest_pipeline_run(JOB_REFRESH_AND_PRUNE)
     assert latest["status"] == "succeeded"
+    assert latest["tool"] == "trading"
     assert latest["progress"]["batch"] == 1
     assert latest["result"]["added"] == 3
     assert storage.get_running_pipeline_run(JOB_REFRESH_AND_PRUNE) is None
@@ -53,3 +54,14 @@ def test_pipeline_runs_are_isolated_per_tenant(tenant_pair, _apply_pipeline_runs
         assert storage.get_running_pipeline_run(JOB_REFRESH_AND_PRUNE)["run_id"] == run_b
     with storage.tenant_context(tenant_a):
         assert storage.get_running_pipeline_run(JOB_REFRESH_AND_PRUNE)["run_id"] == run_a
+
+
+def test_latest_pipeline_run_filters_by_tool(tenant, _apply_pipeline_runs_schema):
+    storage.start_pipeline_run(JOB_REFRESH_AND_PRUNE, tool="trading")
+    storage.finish_pipeline_run(storage.get_running_pipeline_run()["run_id"], "succeeded")
+    storage.start_pipeline_run("sync_contracts", tool="doctrine")
+    storage.finish_pipeline_run(storage.get_running_pipeline_run()["run_id"], "succeeded")
+    latest_trading = storage.get_latest_pipeline_run(tool="trading")
+    latest_doctrine = storage.get_latest_pipeline_run(tool="doctrine")
+    assert latest_trading["job_name"] == JOB_REFRESH_AND_PRUNE
+    assert latest_doctrine["job_name"] == "sync_contracts"
