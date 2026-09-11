@@ -277,6 +277,13 @@ export interface InventionResult {
   net_cost_per_run: number | null
 }
 
+export interface AssetPlanBlocker {
+  type_id: number
+  type_name: string
+  needed: number
+  covered: number
+}
+
 export interface AssetPlanJob {
   type_id: number
   type_name: string
@@ -292,6 +299,7 @@ export interface AssetPlanJob {
   margin: number | null
   stock_coverage: number | null
   recommended_slots: number | null
+  blockers: AssetPlanBlocker[]
 }
 
 export interface AssetPlan {

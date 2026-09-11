@@ -107,4 +107,22 @@ describe('DataTable', () => {
 
     globalThis.Blob = OriginalBlob
   })
+
+  it('uses a column meta.cellTitle for the native hover title when provided', () => {
+    const titled: ColumnDef<Row, any>[] = [
+      { header: 'Item', accessorKey: 'item' },
+      {
+        header: 'Amount',
+        accessorKey: 'amount',
+        meta: { cellTitle: (row) => `${row.item}: ${row.amount} missing` },
+      },
+    ]
+    render(
+      <MantineProvider>
+        <DataTable data={rows} columns={titled} />
+      </MantineProvider>,
+    )
+    const amountCell = within(bodyRows()[0]).getAllByRole('cell')[1]
+    expect(amountCell).toHaveAttribute('title', 'Zebra Ore: 5 missing')
+  })
 })
