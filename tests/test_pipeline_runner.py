@@ -83,3 +83,38 @@ def test_unique_violation_on_insert_maps_to_conflict(monkeypatch):
 
     with pytest.raises(ConflictError, match="already running"):
         pipeline_runner.start_refresh_and_prune()
+
+
+def test_runner_marks_succeeded_when_cleanup_reports_skips(monkeypatch):
+    """A partial cleanup (some ESI batches skipped) is still a succeeded job
+    - the skip counts live in result, not in status=failed."""
+    from contextlib import contextmanager
+
+    from eve_trader import actions
+
+    monkeypatch.setattr(
+        actions, "do_refresh_and_prune_candidates",
+        lambda safe=True, progress_callback=None: {
+            "cleanup_items_skipped": 12,
+            "cleanup_skipped_item_ids": list(range(12)),
+        },
+    )
+    finished = []
+    monkeypatch.setattr(
+        storage, "finish_pipeline_run",
+        lambda run_id, status, result=None, error=None: finished.append((status, result, error)),
+    )
+    monkeypatch.setattr(storage, "update_pipeline_run_progress", lambda *a, **k: None)
+
+    @contextmanager
+    def _enter(tenant_id):
+        yield
+
+    monkeypatch.setattr(pipeline_runner.tenant_scope, "enter_tenant", _enter)
+    pipeline_runner._run_refresh_and_prune(_TENANT_ID, "run-1", True)
+
+    assert finished == [(
+        "succeeded",
+        {"cleanup_items_skipped": 12, "cleanup_skipped_item_ids": list(range(12))},
+        None,
+    )]

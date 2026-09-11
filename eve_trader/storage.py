@@ -764,18 +764,103 @@ def mark_shortlist_refreshed(item_ids: Iterable[int], refreshed_at: str) -> None
         )
 
 
+_SHORTLIST_SNAPSHOT_INSERT = (
+    "INSERT INTO shortlist_snapshot (run_ts, item_id, item, category, landed_cost, net_sell, "
+    "sell_volume, own_orders_remaining, profit_per_unit, margin, profit_per_m3, decision, active, "
+    "volume_m3, jita_sell, import_cost, meta_level, avg_daily_volume) "
+    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+)
+
+
+def _shortlist_snapshot_params(rows: list[ShortlistRow], run_ts: str) -> list[tuple]:
+    return [(run_ts, r.item_id, r.item, r.category, r.landed_cost, r.net_sell, r.sell_volume,
+             r.own_orders_remaining, r.profit_per_unit, r.margin, r.profit_per_m3, r.decision,
+             int(r.active), r.volume_m3, r.jita_sell, r.import_cost, r.meta_level,
+             r.avg_daily_volume) for r in rows]
+
+
 def save_shortlist_snapshot(rows: list[ShortlistRow], run_ts: str) -> None:
+    """Appends a new run_ts of snapshot rows (legacy write). Prefer
+    replace_shortlist_snapshot_run for cleanup: that overwrites one in-progress
+    run_ts after each batch so MAX(run_ts) never points at a partial insert
+    that hid the previous complete snapshot."""
+    if not rows:
+        return
     with connect() as conn:
-        conn.executemany(
-            "INSERT INTO shortlist_snapshot (run_ts, item_id, item, category, landed_cost, net_sell, "
-            "sell_volume, own_orders_remaining, profit_per_unit, margin, profit_per_m3, decision, active, "
-            "volume_m3, jita_sell, import_cost, meta_level, avg_daily_volume) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            [(run_ts, r.item_id, r.item, r.category, r.landed_cost, r.net_sell, r.sell_volume,
-              r.own_orders_remaining, r.profit_per_unit, r.margin, r.profit_per_m3, r.decision,
-              int(r.active), r.volume_m3, r.jita_sell, r.import_cost, r.meta_level,
-              r.avg_daily_volume) for r in rows],
-        )
+        conn.executemany(_SHORTLIST_SNAPSHOT_INSERT, _shortlist_snapshot_params(rows, run_ts))
+
+
+def replace_shortlist_snapshot_run(rows: list[ShortlistRow], run_ts: str) -> None:
+    """Replaces every shortlist_snapshot row for this run_ts (RLS-scoped).
+
+    Cleanup writes the same run_ts after each successful batch so a crash
+    mid-job still leaves the Shortlist page with whatever has been priced
+    plus carried-forward previous rows, rather than blanking it. The prune
+    pass overwrites that same run_ts after same-run deactivations so the
+    snapshot the page reads (latest_snapshot = MAX(run_ts)) reflects Inactive
+    - the guarantee save_shortlist_snapshot-at-the-end used to provide, just
+    incremental. Earlier run_ts values stay as history.
+    """
+    with connect() as conn:
+        conn.execute("DELETE FROM shortlist_snapshot WHERE run_ts = ?", (run_ts,))
+        if rows:
+            conn.executemany(_SHORTLIST_SNAPSHOT_INSERT, _shortlist_snapshot_params(rows, run_ts))
+
+
+def _snapshot_na_none(value):
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return value
+
+
+def _snapshot_opt_float(value) -> Optional[float]:
+    value = _snapshot_na_none(value)
+    return None if value is None else float(value)
+
+
+def _snapshot_opt_int(value) -> Optional[int]:
+    value = _snapshot_na_none(value)
+    return None if value is None else int(value)
+
+
+def load_latest_shortlist_rows() -> list[ShortlistRow]:
+    """ShortlistRow view of latest_snapshot() - used to carry forward
+    last-known-good prices for cleanup batches that fail this run, so a
+    skipped item is not rewritten as 'No market data' (which would wrongly
+    start a skip-deactivation streak)."""
+    df = latest_snapshot()
+    if df.empty:
+        return []
+    rows: list[ShortlistRow] = []
+    for rec in df.to_dict("records"):
+        item_id = _snapshot_opt_int(rec.get("item_id"))
+        if item_id is None:
+            continue
+        rows.append(ShortlistRow(
+            item=rec.get("item") or "",
+            category=rec.get("category") or "",
+            landed_cost=_snapshot_opt_float(rec.get("landed_cost")),
+            net_sell=_snapshot_opt_float(rec.get("net_sell")),
+            sell_volume=_snapshot_opt_float(rec.get("sell_volume")),
+            own_orders_remaining=float(rec.get("own_orders_remaining") or 0),
+            profit_per_unit=_snapshot_opt_float(rec.get("profit_per_unit")),
+            margin=_snapshot_opt_float(rec.get("margin")),
+            profit_per_m3=_snapshot_opt_float(rec.get("profit_per_m3")),
+            decision=rec.get("decision") or "",
+            active=bool(rec.get("active")),
+            item_id=item_id,
+            volume_m3=float(rec.get("volume_m3") or 0),
+            jita_sell=_snapshot_opt_float(rec.get("jita_sell")),
+            import_cost=_snapshot_opt_float(rec.get("import_cost")),
+            meta_level=_snapshot_opt_int(rec.get("meta_level")),
+            avg_daily_volume=_snapshot_opt_float(rec.get("avg_daily_volume")),
+        ))
+    return rows
 
 
 def update_snapshot_categories(categories: dict[int, str]) -> None:

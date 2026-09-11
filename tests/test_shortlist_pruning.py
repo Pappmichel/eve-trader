@@ -230,6 +230,8 @@ def test_refresh_shortlist_prices_jita_in_oldest_first_batches(monkeypatch):
     )
     monkeypatch.setattr(GoonmetricsClient, "price_history_chunked", lambda self, *a, **k: [])
     monkeypatch.setattr(storage, "save_shortlist_snapshot", lambda rows, run_ts: None)
+    monkeypatch.setattr(storage, "replace_shortlist_snapshot_run", lambda rows, run_ts: None)
+    monkeypatch.setattr(storage, "load_latest_shortlist_rows", lambda: [])
     monkeypatch.setattr(storage, "set_esi_sync_time", lambda tool, run_ts: None)
     monkeypatch.setattr(storage, "mark_shortlist_refreshed",
                         lambda item_ids, ts: marked.append(list(item_ids)))
@@ -243,4 +245,164 @@ def test_refresh_shortlist_prices_jita_in_oldest_first_batches(monkeypatch):
     assert result["cleanup_batches_total"] == 3
     assert result["cleanup_batches_done"] == 3
     assert result["cleanup_items_refreshed"] == 5
+    assert result["cleanup_items_skipped"] == 0
     assert result["cleanup_batch_size"] == 2
+
+
+def _cleanup_refresh_mocks(monkeypatch, items, fake_bulk, previous_rows=None, marked=None, snapshots=None):
+    from eve_trader import actions, storage
+    from eve_trader.esi_client import ESIClient
+    from eve_trader.goonmetrics_client import GoonmetricsClient
+
+    monkeypatch.setattr(storage, "load_shortlist", lambda: items)
+    monkeypatch.setattr(actions, "_list_role_characters", lambda tm, prefix: [])
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", fake_bulk)
+    monkeypatch.setattr(
+        ESIClient, "structure_order_stats_bulk_or_goonmetrics",
+        lambda self, structure_id, type_ids, auth_role, goonmetrics_market_slug: ({}, False),
+    )
+    monkeypatch.setattr(GoonmetricsClient, "price_history_chunked", lambda self, *a, **k: [])
+    monkeypatch.setattr(storage, "load_latest_shortlist_rows", lambda: list(previous_rows or []))
+    monkeypatch.setattr(storage, "replace_shortlist_snapshot_run",
+                        lambda rows, run_ts: snapshots.append((run_ts, list(rows))) if snapshots is not None else None)
+    monkeypatch.setattr(storage, "set_esi_sync_time", lambda tool, run_ts: None)
+    monkeypatch.setattr(storage, "mark_shortlist_refreshed",
+                        lambda item_ids, ts: marked.append(list(item_ids)) if marked is not None else None)
+    monkeypatch.setattr(storage, "get_shortlist_skip_since", lambda: {})
+    monkeypatch.setattr(storage, "clear_shortlist_skip_streak", lambda ids: None)
+    monkeypatch.setattr(storage, "start_shortlist_skip_streak", lambda ids, ts: None)
+    monkeypatch.setattr(storage, "activate_shortlist_items", lambda ids: None)
+    monkeypatch.setattr(storage, "deactivate_shortlist_items", lambda ids: None)
+
+
+def test_failed_cleanup_batch_is_skipped_not_no_market_data(monkeypatch):
+    """A single ESI hiccup on one batch must not abort cleanup or rewrite
+    that batch as 'No market data' (which would start a skip streak)."""
+    from eve_trader import actions
+    from eve_trader.config import TradingConfig
+    from eve_trader.esi_client import ESIError
+    from eve_trader.models import ShortlistItem, ShortlistRow
+
+    items = [
+        ShortlistItem(item="A", item_id=1, category="X", volume_m3=1.0, meta_level=5, refreshed_at=None),
+        ShortlistItem(item="B", item_id=2, category="X", volume_m3=1.0, meta_level=5, refreshed_at=None),
+        ShortlistItem(item="C", item_id=3, category="X", volume_m3=1.0, meta_level=5, refreshed_at=None),
+    ]
+    previous = [
+        ShortlistRow(
+            item="B", category="X", landed_cost=100, net_sell=200, sell_volume=10,
+            own_orders_remaining=0, profit_per_unit=100, margin=1.0, profit_per_m3=100,
+            decision="Import", active=True, item_id=2, volume_m3=1.0, jita_sell=100,
+            import_cost=0, meta_level=5, avg_daily_volume=5,
+        ),
+    ]
+    marked: list[list[int]] = []
+    snapshots: list = []
+
+    def fake_bulk(self, region_id, type_ids, max_workers=10):
+        if 2 in type_ids:
+            raise ESIError("timed out")
+        return {}
+
+    _cleanup_refresh_mocks(monkeypatch, items, fake_bulk, previous, marked, snapshots)
+    result = actions.do_refresh_shortlist(
+        TradingConfig(structure_id=1000, shortlist_refresh_batch_size=1),
+    )
+
+    assert result["cleanup_items_skipped"] == 1
+    assert result["cleanup_skipped_item_ids"] == [2]
+    assert result["cleanup_batches_done"] == 2
+    assert marked == [[1], [3]]
+    last_by_id = {r.item_id: r for r in snapshots[-1][1]}
+    assert last_by_id[2].decision == "Import"
+    assert last_by_id[2].profit_per_unit == 100
+    assert 1 in last_by_id and 3 in last_by_id
+    assert len(snapshots) >= 3  # one per batch, plus the final rewrite
+
+
+def test_refresh_and_prune_succeeds_when_some_of_thousands_of_batches_fail(monkeypatch):
+    """Phase 4c: a mocked multi-thousand-item cleanup with ESI timeout,
+    420, and a parse error still finishes as a partial success, with skip
+    counts visible - not a failed job."""
+    from eve_trader import actions
+    from eve_trader.config import TradingConfig
+    from eve_trader.esi_client import ESIError
+    from eve_trader.models import ShortlistItem
+
+    n = 2500
+    items = [
+        ShortlistItem(item=f"I{i}", item_id=i, category="X", volume_m3=1.0, meta_level=5)
+        for i in range(1, n + 1)
+    ]
+    marked: list[list[int]] = []
+    snapshots: list = []
+    progress: list[dict] = []
+
+    def fake_bulk(self, region_id, type_ids, max_workers=10):
+        # Fail the whole batch that contains these ids (timeout / 420 / parse).
+        if 500 in type_ids:
+            raise ESIError("420 rate limited")
+        if 1250 in type_ids:
+            raise TimeoutError("ESI timeout")
+        if 2000 in type_ids:
+            raise ValueError("malformed order book")
+        return {}
+
+    _cleanup_refresh_mocks(monkeypatch, items, fake_bulk, [], marked, snapshots)
+    monkeypatch.setattr(actions, "do_find_new_candidates",
+                        lambda safe=True, cfg=None, progress_callback=None: {"evaluated": 0})
+    monkeypatch.setattr(actions, "do_add_to_shortlist", lambda: {"added": 0, "deferred": 0})
+
+    result = actions.do_refresh_and_prune_candidates(
+        safe=True,
+        cfg=TradingConfig(structure_id=1000, shortlist_refresh_batch_size=250),
+        progress_callback=progress.append,
+    )
+
+    assert result["cleanup_items_skipped"] == 750
+    assert result["cleanup_items_refreshed"] == 1750
+    assert result["cleanup_batches_done"] == 7
+    assert result["cleanup_batches_total"] == 10
+    assert set(result["cleanup_skipped_item_ids"]) == (
+        set(range(251, 501)) | set(range(1001, 1251)) | set(range(1751, 2001))
+    )
+    marked_ids = {i for batch in marked for i in batch}
+    assert 500 not in marked_ids and 1250 not in marked_ids and 2000 not in marked_ids
+    assert 1 in marked_ids and 2500 in marked_ids
+    cleanup_progress = [p for p in progress if p.get("phase") == "cleanup"]
+    assert cleanup_progress[-1]["skipped"] == 750
+    assert cleanup_progress[-1]["refreshed"] == 1750
+    assert snapshots, "in-progress snapshot must be persisted per batch"
+
+
+def test_prune_overwrites_same_run_ts_after_deactivation(monkeypatch):
+    """Same-run Inactive must land on the cleanup run_ts, not a later append
+    that would leave the in-progress snapshot as MAX(run_ts)."""
+    from eve_trader import actions
+    from eve_trader.config import TradingConfig
+    from eve_trader.models import ShortlistItem
+
+    items = [
+        ShortlistItem(item="Keep", item_id=1, category="X", volume_m3=1.0, meta_level=5),
+        ShortlistItem(item="Drop", item_id=2, category="X", volume_m3=1.0, meta_level=5),
+    ]
+    snapshots: list = []
+    _cleanup_refresh_mocks(monkeypatch, items, lambda self, region_id, type_ids, max_workers=10: {},
+                           [], None, snapshots)
+    monkeypatch.setattr(actions, "do_find_new_candidates",
+                        lambda safe=True, cfg=None, progress_callback=None: {"evaluated": 0})
+    monkeypatch.setattr(actions, "do_add_to_shortlist", lambda: {"added": 0, "deferred": 0})
+    monkeypatch.setattr(actions, "_items_past_skip_grace_period",
+                        lambda rows, skip_since, days, now: [(2, "Drop")])
+
+    result = actions.do_refresh_and_prune_candidates(
+        cfg=TradingConfig(structure_id=1000, shortlist_refresh_batch_size=50),
+    )
+
+    run_ts = result["cleanup_run_ts"]
+    assert all(ts == run_ts for ts, _ in snapshots)
+    final_by_id = {r.item_id: r for r in snapshots[-1][1]}
+    assert final_by_id[2].decision == "Inactive"
+    assert final_by_id[2].active is False
+    assert result["deactivated_count"] == 1
+

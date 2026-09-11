@@ -19,7 +19,7 @@ from .config import (OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, Tra
                      save_tenant_config_overrides)
 from .esi_client import ESIClient, ESIError
 from .goonmetrics_client import GoonmetricsClient
-from .models import Candidate, ShortlistItem, UndercutRow, UnlistedStockRow
+from .models import Candidate, ShortlistItem, ShortlistRow, UndercutRow, UnlistedStockRow
 from .shortlist import (NO_MARKET_DATA_DECISION, SKIP_DECISION, _decision, audit_shortlist, average_market_daily_volume,
                          evaluate_shortlist, summary_counts, top_imports_by_daily_profit)
 from .trade_reconciliation import fetch_recent_transactions, reconcile_realized_trades, summarize_realized
@@ -415,23 +415,57 @@ def select_shortlist_refresh_batches(items: list[ShortlistItem], batch_size: int
     return [ordered[i:i + batch_size] for i in range(0, len(ordered), batch_size)]
 
 
+def _merge_cleanup_snapshot_rows(
+    items: list[ShortlistItem],
+    priced_by_id: dict[int, ShortlistRow],
+    previous_by_id: dict[int, ShortlistRow],
+    unpriced_rows: list[ShortlistRow],
+) -> list[ShortlistRow]:
+    """This-run prices win; last-known-good snapshot fills failed/not-yet
+    batches so the Shortlist page never blanks and a skipped item is not
+    rewritten as 'No market data'."""
+    rows = list(unpriced_rows)
+    for item in items:
+        if not item.item_id:
+            continue
+        if item.item_id in priced_by_id:
+            rows.append(priced_by_id[item.item_id])
+        elif item.item_id in previous_by_id:
+            rows.append(previous_by_id[item.item_id])
+    return rows
+
+
+def _persist_cleanup_snapshot(rows: list[ShortlistRow], run_ts: str) -> None:
+    """Best-effort in-progress write - a snapshot persist must never abort
+    cleanup (same stance as history_backtest's results_sink)."""
+    if not rows:
+        return
+    try:
+        storage.replace_shortlist_snapshot_run(rows, run_ts)
+    except Exception:  # noqa: BLE001
+        log.exception("Could not persist in-progress cleanup snapshot for run_ts %s", run_ts)
+
+
 def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
                              oauth_cfg: OAuthConfig = OAUTH_CONFIG,
                              progress_callback=None) -> tuple[list[ShortlistItem], list, dict]:
     """Shared core of do_refresh_shortlist: re-fetches live market data for
-    every shortlist item and recomputes each one's decision (does NOT
-    save the snapshot itself - callers do that once they're done using the
-    rows, see do_refresh_shortlist / do_refresh_and_prune_candidates). Returns
-    (items, rows, extra) where `extra` holds the ESI-derived counts both
-    callers surface in their result dict - factored out so
-    do_refresh_and_prune_candidates can reuse the freshly computed `rows`
-    (in particular each item's decision) without a second recompute.
+    every shortlist item and recomputes each one's decision. Persists the
+    in-progress snapshot incrementally (same run_ts after each batch) so a
+    crash doesn't lose already-priced rows or blank the Shortlist page;
+    callers that then deactivate items (do_refresh_and_prune_candidates)
+    overwrite that same run_ts after prune so same-run Inactive still lands
+    in MAX(run_ts). Returns (items, rows, extra).
 
     ESI work that scales with item count (Jita region_order_stats_bulk,
     Goonmetrics history, meta-level backfill) runs in
     shortlist_refresh_batch_size batches, oldest refreshed_at first - see
-    select_shortlist_refresh_batches. The structure order book is still one
-    shared fetch (ESI has no type_id filter on /markets/structures/).
+    select_shortlist_refresh_batches. Each Jita/history batch is isolated
+    (one bad ESI hiccup skips that batch, does not mark refreshed_at, does
+    not abort the job - same pattern as find_new_import_candidates). The
+    structure order book is still one shared fetch (ESI has no type_id
+    filter on /markets/structures/) and remains a hard failure: without it
+    nothing can be priced.
     """
     items = storage.load_shortlist()
     if not items:
@@ -533,54 +567,84 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
     batches = select_shortlist_refresh_batches(priced_items, cfg.shortlist_refresh_batch_size)
     total_batches = len(batches)
     gm = GoonmetricsClient(cfg)
+    run_ts = now_ts()
+    previous_by_id = {r.item_id: r for r in storage.load_latest_shortlist_rows() if r.item_id}
+    priced_by_id: dict[int, ShortlistRow] = {}
+    skipped_item_ids: list[int] = []
+    batches_done = 0
+    unpriced_rows = evaluate_shortlist(
+        [i for i in items if not i.item_id],
+        own_remaining, {}, structure_stats_by_item, cfg=cfg,
+        buyer_already_covered_ids=buyer_already_covered_ids,
+    ) if any(not i.item_id for i in items) else []
+
     for batch_num, batch in enumerate(batches, start=1):
         batch_ids = [i.item_id for i in batch]
-        jita_stats_by_item.update(client.region_order_stats_bulk(cfg.jita_region_id, batch_ids))
-        # Real average daily *market-wide* traded volume (GitHub issue #100), not
-        # order-book depth (GitHub issue #51) and not this trader's own realized
-        # sales (#51's original fix, which left "Profit / Day" empty for every
-        # not-yet-sold-by-me candidate). cfg.reference_region_id is the real
-        # region C-J's own solar system sits in (confirmed live 2026-08-23 via
-        # sde_solar_systems) - there's no ESI/Goonmetrics history endpoint for a
-        # player structure's own market at all, so region-wide is the closest
-        # real signal available. Best-effort: a Goonmetrics/ESI outage degrades
-        # this batch's avg_daily_volume to None (honest "no data yet"), same as a
-        # missing structure/Jita price, rather than aborting the whole refresh.
         try:
-            history_points = gm.price_history_chunked(cfg.reference_region_id, batch_ids)
-            avg_daily_volume_by_item.update(average_market_daily_volume(history_points))
-        except Exception:  # noqa: BLE001 - best-effort; a history outage shouldn't block the whole refresh
-            log.exception("Could not fetch Goonmetrics region history for Profit/Day "
-                          "(cleanup batch %d/%d) - leaving those rows empty this run.",
-                          batch_num, total_batches)
-        storage.mark_shortlist_refreshed(batch_ids, now_ts())
+            jita_stats_by_item.update(client.region_order_stats_bulk(cfg.jita_region_id, batch_ids))
+            # Real average daily *market-wide* traded volume (GitHub issue #100), not
+            # order-book depth (GitHub issue #51) and not this trader's own realized
+            # sales (#51's original fix, which left "Profit / Day" empty for every
+            # not-yet-sold-by-me candidate). cfg.reference_region_id is the real
+            # region C-J's own solar system sits in (confirmed live 2026-08-23 via
+            # sde_solar_systems) - there's no ESI/Goonmetrics history endpoint for a
+            # player structure's own market at all, so region-wide is the closest
+            # real signal available. Best-effort: a Goonmetrics/ESI outage degrades
+            # this batch's avg_daily_volume to None (honest "no data yet"), same as a
+            # missing structure/Jita price, rather than aborting the whole refresh.
+            try:
+                history_points = gm.price_history_chunked(cfg.reference_region_id, batch_ids)
+                avg_daily_volume_by_item.update(average_market_daily_volume(history_points))
+            except Exception:  # noqa: BLE001 - best-effort; a history outage shouldn't skip the Jita prices
+                log.exception("Could not fetch Goonmetrics region history for Profit/Day "
+                              "(cleanup batch %d/%d) - leaving those rows empty this run.",
+                              batch_num, total_batches)
+            batch_rows = evaluate_shortlist(
+                batch,
+                own_remaining,
+                jita_stats_by_item,
+                structure_stats_by_item,
+                cfg=cfg,
+                buyer_already_covered_ids=buyer_already_covered_ids,
+                avg_daily_volume_by_item=avg_daily_volume_by_item,
+            )
+            for row in batch_rows:
+                if row.item_id:
+                    priced_by_id[row.item_id] = row
+            storage.mark_shortlist_refreshed(batch_ids, now_ts())
+            batches_done += 1
+        except Exception:  # noqa: BLE001 - one bad batch must not lose every other batch's results
+            log.exception("Cleanup batch %d/%d (%d items) failed - skipping it, continuing with the rest.",
+                          batch_num, total_batches, len(batch))
+            skipped_item_ids.extend(batch_ids)
+            # Do not mark refreshed_at: next run retries these first (NULL/oldest).
+
+        _persist_cleanup_snapshot(
+            _merge_cleanup_snapshot_rows(items, priced_by_id, previous_by_id, unpriced_rows),
+            run_ts,
+        )
         _emit_progress(progress_callback, {
             "phase": "cleanup",
             "batch": batch_num,
             "total_batches": total_batches,
-            "refreshed": len(jita_stats_by_item),
-            "evaluated": len(jita_stats_by_item),
+            "refreshed": len(priced_by_id),
+            "evaluated": len(priced_by_id),
+            "skipped": len(skipped_item_ids),
         })
 
-    rows = evaluate_shortlist(
-        items,
-        own_remaining,
-        jita_stats_by_item,
-        structure_stats_by_item,
-        cfg=cfg,
-        buyer_already_covered_ids=buyer_already_covered_ids,
-        avg_daily_volume_by_item=avg_daily_volume_by_item,
-    )
+    rows = _merge_cleanup_snapshot_rows(items, priced_by_id, previous_by_id, unpriced_rows)
     extra = {
         "own_sell_orders_found": sum(1 for v in own_remaining.values() if v > 0),
         "buyer_already_covered_found": len(buyer_already_covered_ids),
         "meta_level_backfill": meta_backfill,
         "priced_via_fallback": priced_via_fallback,
         "cleanup_batches_total": total_batches,
-        "cleanup_batches_done": total_batches,
-        "cleanup_items_refreshed": len(items),
-        "cleanup_items_skipped": 0,
+        "cleanup_batches_done": batches_done,
+        "cleanup_items_refreshed": len(priced_by_id),
+        "cleanup_items_skipped": len(skipped_item_ids),
+        "cleanup_skipped_item_ids": skipped_item_ids,
         "cleanup_batch_size": cfg.shortlist_refresh_batch_size,
+        "cleanup_run_ts": run_ts,
     }
     return items, rows, extra
 
@@ -588,8 +652,12 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
 def do_refresh_shortlist(cfg: TradingConfig = TRADING_CONFIG,
                           oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
     items, rows, extra = _refresh_shortlist_rows(cfg, oauth_cfg)
-    run_ts = now_ts()
-    storage.save_shortlist_snapshot(rows, run_ts)
+    run_ts = extra["cleanup_run_ts"]
+    # Incremental persist already wrote this run_ts after each batch; rewrite
+    # once more so a persist that failed mid-loop still lands the complete
+    # merge. No second run_ts - that would make MAX(run_ts) a duplicate of
+    # the in-progress one and hide same-run history semantics.
+    _persist_cleanup_snapshot(rows, run_ts)
     storage.set_esi_sync_time("trading", run_ts)
     return {
         **extra,
@@ -850,9 +918,13 @@ def do_refresh_and_prune_candidates(safe: bool = True, cfg: TradingConfig = TRAD
     _emit_progress(progress_callback, {"phase": "cleanup", "message": "Refreshing shortlist prices"})
 
     items, rows, extra = _refresh_shortlist_rows(cfg, oauth_cfg, progress_callback=progress_callback)
-    run_ts = now_ts()
+    run_ts = extra["cleanup_run_ts"]
+    skipped_ids = set(extra.get("cleanup_skipped_item_ids") or [])
 
-    to_reactivate = _items_to_reactivate(rows, cfg)
+    to_reactivate = [
+        (item_id, name) for item_id, name in _items_to_reactivate(rows, cfg)
+        if item_id not in skipped_ids
+    ]
     if to_reactivate:
         reactivated_ids = [item_id for item_id, _ in to_reactivate]
         storage.activate_shortlist_items(reactivated_ids)
@@ -871,15 +943,20 @@ def do_refresh_and_prune_candidates(safe: bool = True, cfg: TradingConfig = TRAD
     skip_deactivate = _items_past_skip_grace_period(rows, skip_since, cfg.skip_grace_period_days,
                                                       dt.datetime.fromisoformat(run_ts))
 
-    skip_item_ids = [r.item_id for r in rows if r.decision in SKIP_STREAK_DECISIONS and r.item_id]
-    recovered_item_ids = [r.item_id for r in rows if r.decision not in SKIP_STREAK_DECISIONS and r.item_id]
+    skip_item_ids = [r.item_id for r in rows
+                     if r.decision in SKIP_STREAK_DECISIONS and r.item_id and r.item_id not in skipped_ids]
+    recovered_item_ids = [r.item_id for r in rows
+                          if r.decision not in SKIP_STREAK_DECISIONS and r.item_id
+                          and r.item_id not in skipped_ids]
     storage.clear_shortlist_skip_streak(recovered_item_ids)
     storage.start_shortlist_skip_streak(skip_item_ids, run_ts)  # no-op for ids already mid-streak
 
     cap_deactivate: list[tuple[int, str]] = []
     if cfg.enforce_shortlist_cap:
         skip_deactivated_ids = {item_id for item_id, _ in skip_deactivate}
-        still_active = [r for r in rows if r.active and r.item_id and r.item_id not in skip_deactivated_ids]
+        still_active = [r for r in rows if r.active and r.item_id
+                        and r.item_id not in skip_deactivated_ids
+                        and r.item_id not in skipped_ids]
         cap_deactivate = _items_beyond_rank(still_active, cfg.max_active_shortlist_items)
 
     to_deactivate = skip_deactivate + cap_deactivate
@@ -893,13 +970,15 @@ def do_refresh_and_prune_candidates(safe: bool = True, cfg: TradingConfig = TRAD
         # even though storage.shortlist already has them deactivated (a real,
         # confirmed bug: shortlist_snapshot was previously saved before this
         # deactivation step ran at all, so it never reflected same-run prunes).
+        # Same run_ts as the in-progress cleanup writes: replace, don't append,
+        # so MAX(run_ts) is this job's final (Inactive-updated) snapshot.
         deactivated_id_set = set(deactivated_ids)
         for r in rows:
             if r.item_id in deactivated_id_set:
                 r.active = False
                 r.decision = "Inactive"
 
-    storage.save_shortlist_snapshot(rows, run_ts)
+    storage.replace_shortlist_snapshot_run(rows, run_ts)
     storage.set_esi_sync_time("trading", run_ts)
 
     return {

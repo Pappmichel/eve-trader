@@ -25,6 +25,8 @@ def test_refresh_shortlist_surfaces_priced_via_fallback(monkeypatch):
     monkeypatch.setattr(ESIClient, "structure_order_stats_bulk_or_goonmetrics",
                          lambda self, structure_id, type_ids, auth_role, goonmetrics_market_slug: ({}, True))
     monkeypatch.setattr(storage, "save_shortlist_snapshot", lambda rows, run_ts: None)
+    monkeypatch.setattr(storage, "replace_shortlist_snapshot_run", lambda rows, run_ts: None)
+    monkeypatch.setattr(storage, "load_latest_shortlist_rows", lambda: [])
     monkeypatch.setattr(storage, "set_esi_sync_time", lambda tool, run_ts: None)
     monkeypatch.setattr(storage, "mark_shortlist_refreshed", lambda item_ids, ts: None)
     monkeypatch.setattr(GoonmetricsClient, "price_history_chunked", lambda self, *a, **k: [])
@@ -45,6 +47,8 @@ def test_refresh_shortlist_no_fallback_when_seller_logged_in(monkeypatch):
     monkeypatch.setattr(ESIClient, "structure_order_stats_bulk_or_goonmetrics",
                          lambda self, structure_id, type_ids, auth_role, goonmetrics_market_slug: ({}, False))
     monkeypatch.setattr(storage, "save_shortlist_snapshot", lambda rows, run_ts: None)
+    monkeypatch.setattr(storage, "replace_shortlist_snapshot_run", lambda rows, run_ts: None)
+    monkeypatch.setattr(storage, "load_latest_shortlist_rows", lambda: [])
     monkeypatch.setattr(storage, "set_esi_sync_time", lambda tool, run_ts: None)
     monkeypatch.setattr(storage, "mark_shortlist_refreshed", lambda item_ids, ts: None)
     monkeypatch.setattr(GoonmetricsClient, "price_history_chunked", lambda self, *a, **k: [])

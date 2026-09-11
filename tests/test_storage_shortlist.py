@@ -87,3 +87,40 @@ def test_mark_shortlist_refreshed_sets_timestamp(tenant):
     items = {i.item_id: i for i in storage.load_shortlist()}
     assert items[1].refreshed_at is not None
     assert items[2].refreshed_at is None
+
+
+def _snapshot_row(item_id: int, decision: str, active: bool = True):
+    from eve_trader.models import ShortlistRow
+    return ShortlistRow(
+        item=f"Item {item_id}", category="Material", landed_cost=10.0, net_sell=20.0,
+        sell_volume=5.0, own_orders_remaining=0.0, profit_per_unit=10.0, margin=1.0,
+        profit_per_m3=10.0, decision=decision, active=active, item_id=item_id,
+        volume_m3=1.0, jita_sell=10.0, import_cost=0.0, meta_level=5, avg_daily_volume=3.0,
+    )
+
+
+def test_replace_shortlist_snapshot_run_overwrites_same_run_ts_keeps_older(tenant):
+    storage.save_shortlist_snapshot([_snapshot_row(1, "Import")], "2026-01-01T00:00:00")
+    storage.replace_shortlist_snapshot_run(
+        [_snapshot_row(1, "Import"), _snapshot_row(2, "Skip")],
+        "2026-09-11T00:00:00",
+    )
+    storage.replace_shortlist_snapshot_run(
+        [_snapshot_row(1, "Inactive", active=False)],
+        "2026-09-11T00:00:00",
+    )
+    latest = storage.latest_snapshot()
+    assert list(latest["item_id"]) == [1]
+    assert latest.iloc[0]["decision"] == "Inactive"
+    history = storage.read_table("shortlist_snapshot")
+    assert set(history["run_ts"]) == {"2026-01-01T00:00:00", "2026-09-11T00:00:00"}
+
+
+def test_load_latest_shortlist_rows_round_trips(tenant):
+    storage.replace_shortlist_snapshot_run([_snapshot_row(7, "Import")], "2026-09-11T12:00:00")
+    loaded = storage.load_latest_shortlist_rows()
+    assert len(loaded) == 1
+    assert loaded[0].item_id == 7
+    assert loaded[0].decision == "Import"
+    assert loaded[0].profit_per_unit == 10.0
+    assert loaded[0].avg_daily_volume == 3.0
