@@ -149,7 +149,15 @@ def test_refresh_sde_action_error_maps_to_400(monkeypatch):
     assert resp.json() == {"detail": "SDE refresh failed: connection refused"}
 
 
-def test_list_errors_serializes_action_result(monkeypatch):
+def test_refresh_jita_price_cache_action_error_maps_to_400(monkeypatch):
+    def _raise():
+        raise ActionError("Could not refresh Jita price cache (ESI down).")
+    monkeypatch.setattr(admin, "do_refresh_jita_price_cache", _raise)
+
+    resp = client.post("/api/admin/jita-price-cache/refresh")
+
+    assert resp.status_code == 400
+    assert "Jita price cache" in resp.json()["detail"]
     # GitHub issue #88 - error_log is its own module, not admin.py, since
     # its report endpoint (api/routers/errors.py) must stay reachable
     # without the "admin" tool grant every other route here requires - only

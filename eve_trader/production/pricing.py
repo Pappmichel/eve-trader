@@ -6,13 +6,18 @@ the actual HTTP calls this wraps.
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional
+
+import requests
 
 from ..config import TRADING_CONFIG
 from ..esi_client import ESIClient, ESIError
 from ..goonmetrics_client import CurrentPrice, GoonmetricsClient
 from . import jita_price_cache
 from .config import PRODUCTION_CONFIG, ProductionConfig
+
+log = logging.getLogger("eve_trader.production.pricing")
 
 JITA_MARKET = "jita"
 
@@ -21,7 +26,20 @@ def _goonmetrics_prices(market: str, type_ids: list[int]) -> dict[int, CurrentPr
     if not market or not type_ids:
         return {}
     wanted = set(type_ids)
-    return {p.type_id: p for p in GoonmetricsClient().current_prices(market) if p.type_id in wanted}
+    try:
+        prices = GoonmetricsClient().current_prices(market)
+    except requests.RequestException as e:
+        # Best-effort: appraise.gnf.lt is a no-SLA third party. An outage
+        # here used to 500 every Production page that builds a _PlanContext
+        # (Buy/Build, stock value, margins, invention estimate) plus
+        # portfolio_overview and Doctrine's shopping list, which reuse
+        # home_prices/jita_prices. Empty quotes match home_prices already
+        # returning {} when home_market is unset - callers treat missing
+        # quotes as unpriced, not as zero.
+        log.warning("Goonmetrics current_prices(%s) failed (%s) - treating those quotes as missing.",
+                    market, e)
+        return {}
+    return {p.type_id: p for p in prices if p.type_id in wanted}
 
 
 def _from_order_stats(stats: dict, type_ids: list[int]) -> dict[int, CurrentPrice]:

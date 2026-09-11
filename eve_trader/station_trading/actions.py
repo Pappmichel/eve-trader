@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import datetime as dt
 
+import requests
+
 from .. import storage
 from ..actions import ActionError
 from ..auth import TokenManager
@@ -102,7 +104,13 @@ def do_refresh_shortlist(cfg: StationTradingConfig = STATION_TRADING_CONFIG) -> 
     Returns the same live-confirmed, profit-annotated shape do_get_shortlist
     does (_build_shortlist_rows), so the "Refresh" button's click updates
     the table immediately without a second round-trip."""
-    candidates = discover_candidates(cfg)
+    try:
+        candidates = discover_candidates(cfg)
+    except requests.RequestException as e:
+        # discover_candidates dumps the whole Jita Goonmetrics current-price
+        # snapshot - unlike price_history, current_prices has no ESI
+        # fallback, so an appraise.gnf.lt outage used to 500 Refresh.
+        raise ActionError(f"Could not fetch Jita prices ({e}).") from e
     run_ts = now_ts()
     storage.upsert_station_trading_shortlist(
         [(c["type_id"], c["spread_pct"], c["avg_daily_volume"], run_ts) for c in candidates]

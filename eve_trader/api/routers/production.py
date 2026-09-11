@@ -116,11 +116,15 @@ def get_stock_value():
 
 @router.get("/jobs", response_model=list[schemas.IndustryJobRow])
 def get_current_jobs():
-    return actions.do_list_current_jobs()["rows"]
+    # Live-prices output_value via pricing.home_prices/jita_prices, which
+    # degrade to {} on ESI/Goonmetrics failure rather than raising. _wrap
+    # still converts ActionError if a future change starts raising one.
+    return _wrap(actions.do_list_current_jobs)["rows"]
 
 
 @router.get("/slots", response_model=list[schemas.CharacterSlotRow])
 def get_character_slots():
+    # Storage-only (synced industry_jobs/character_slots) - no live ESI.
     return actions.do_character_slot_overview()["rows"]
 
 
@@ -137,11 +141,13 @@ def set_character_slot_excluded(character_name: str, req: SetCharacterSlotExclud
 
 @router.get("/blueprints", response_model=list[schemas.OwnedBlueprintRow])
 def get_owned_blueprints():
+    # Storage-only (last ESI sync snapshot) - no live ESI/Goonmetrics.
     return actions.do_list_owned_blueprints()["rows"]
 
 
 @router.get("/blueprints/manual-copy-costs", response_model=list[schemas.ManualBlueprintCopyCostRow])
 def get_manual_blueprint_copy_costs():
+    # Storage-only - no live ESI/Goonmetrics.
     return actions.do_list_manual_blueprint_copy_costs()["rows"]
 
 
@@ -175,6 +181,7 @@ def remove_manual_blueprint_copy_cost(type_id: int):
 
 @router.get("/producer-characters")
 def get_producer_characters():
+    # Token-store listing (get_record, no refresh) - no live ESI.
     return [
         {"role_key": role, "character_id": cid, "character_name": name}
         for role, cid, name in actions.do_list_producer_characters()
@@ -358,6 +365,7 @@ def sync_esi():
 
 @router.get("/esi/sync-time")
 def get_esi_sync_time():
+    # Storage-only timestamp - no live ESI.
     return actions.do_get_esi_sync_time()
 
 

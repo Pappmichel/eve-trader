@@ -164,6 +164,21 @@ def test_jita_prices_falls_back_to_goonmetrics_when_esi_fails(monkeypatch):
     assert result[34].sell == 6.0
 
 
+def test_jita_prices_goonmetrics_outage_returns_empty_not_raise(monkeypatch):
+    import requests
+    from eve_trader.production.pricing import jita_prices as _jita_prices
+
+    def _fail(self, region_id, type_ids):
+        raise ESIError("ESI outage")
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", _fail)
+
+    def _gm_fail(self, market):
+        raise requests.ConnectionError("appraise.gnf.lt down")
+    monkeypatch.setattr(GoonmetricsClient, "current_prices", _gm_fail)
+
+    assert _jita_prices([34]) == {}
+
+
 def test_jita_prices_empty_type_ids_returns_empty_dict():
     assert jita_prices([]) == {}
 

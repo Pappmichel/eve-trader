@@ -83,7 +83,14 @@ def do_refresh_ore_shortlist(trading_cfg: TradingConfig = TRADING_CONFIG,
     client = ESIClient(trading_cfg, tm)
 
     ore_type_ids = [c.type_id for c in tracked_candidates]
-    jita_stats_by_id = client.region_order_stats_bulk(trading_cfg.jita_region_id, ore_type_ids)
+    try:
+        # Per-type ESIError is swallowed inside region_order_stats_bulk;
+        # a transport-level failure (ESI down) is not, and without this
+        # would 500 Refresh after the shortlist was already loaded. Same
+        # wrap do_optimize_mineral_shopping_list already has.
+        jita_stats_by_id = client.region_order_stats_bulk(trading_cfg.jita_region_id, ore_type_ids)
+    except (ESIError, requests.RequestException) as e:
+        raise ActionError(f"Could not fetch Jita's order book ({e}).") from e
 
     mineral_ids = mineral_type_ids_for(tracked_candidates)
     try:

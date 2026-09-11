@@ -31,6 +31,7 @@ def get_shortlist():
 
 @router.get("/trader-characters")
 def get_trader_characters():
+    # Token-store listing (get_record, no refresh) - no live ESI.
     return [
         {"role_key": role, "character_id": cid, "character_name": name}
         for role, cid, name in actions.do_list_trader_characters()

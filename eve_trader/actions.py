@@ -737,7 +737,13 @@ def do_check_seller_unlisted_stock(cfg: TradingConfig = TRADING_CONFIG,
         except ESIError as e:
             raise ActionError(f"Could not fetch the structure's order book ({e}). "
                                f"Does the seller character still have docking access?") from e
-        jita_stats_by_item = client.region_order_stats_bulk(cfg.jita_region_id, unlisted_type_ids)
+        try:
+            # region_order_stats_bulk isolates per-type ESIError, but a
+            # thread-pool/transport failure that escapes that still used to
+            # 500 this page after the structure book had already succeeded.
+            jita_stats_by_item = client.region_order_stats_bulk(cfg.jita_region_id, unlisted_type_ids)
+        except ESIError as e:
+            raise ActionError(f"Could not fetch Jita's order book ({e}).") from e
 
     rows = []
     for entry in unlisted:
@@ -1069,10 +1075,18 @@ def do_reconcile_trades(cfg: TradingConfig = TRADING_CONFIG,
     # Pooled across every registered buyer/seller character (GitHub issue
     # #46) - every buyer's Jita buys are matched against every seller's
     # structure sells, not paired 1:1 by character.
-    trades = reconcile_realized_trades(
-        [(cid, role) for role, cid, _name in buyer_characters],
-        [(cid, role) for role, cid, _name in seller_characters],
-        client, item_names, item_volumes, cfg)
+    try:
+        trades = reconcile_realized_trades(
+            [(cid, role) for role, cid, _name in buyer_characters],
+            [(cid, role) for role, cid, _name in seller_characters],
+            client, item_names, item_volumes, cfg)
+    except ESIError as e:
+        # Wallet/journal fetches have no per-character isolation of their
+        # own (unlike shortlist refresh's per-seller skip). A 401/timeout
+        # here used to reach POST /trades/reconcile as a raw 500 - _wrap
+        # only converts ActionError. do_pipeline already caught ESIError
+        # one level up, so the scheduled path was fine and the button wasn't.
+        raise ActionError(f"ESI access failed ({e}).") from e
     storage.save_realized_trades(trades, now_ts())
     summary = summarize_realized(trades)
     return {"matched_trades": len(trades), **summary}

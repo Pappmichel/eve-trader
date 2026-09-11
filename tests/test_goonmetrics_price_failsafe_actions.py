@@ -72,6 +72,26 @@ def test_refresh_ore_shortlist_surfaces_priced_via_fallback(monkeypatch):
     assert result["priced_via_fallback"] is True
 
 
+def test_refresh_ore_shortlist_wraps_jita_order_book_outage(monkeypatch):
+    from eve_trader.actions import ActionError
+    from eve_trader.esi_client import ESIError
+
+    trading_cfg = TradingConfig(structure_id=1000, structure_market_slug="my-structure")
+    monkeypatch.setattr(refining_actions, "build_ore_candidate_universe", lambda: [])
+    monkeypatch.setattr(storage, "load_ore_shortlist", lambda: [(34, "Test Ore", "Veldspar", False, True)])
+    monkeypatch.setattr(refining_actions, "_seller_role", lambda tm: None)
+
+    def _boom(self, region_id, type_ids):
+        raise ESIError("ESI down")
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", _boom)
+
+    try:
+        refining_actions.do_refresh_ore_shortlist(trading_cfg)
+        assert False, "expected ActionError"
+    except ActionError as e:
+        assert "Could not fetch Jita's order book" in str(e)
+
+
 def test_quote_reprocessing_surfaces_priced_via_fallback(monkeypatch):
     from eve_trader.refining import reprocessing
 

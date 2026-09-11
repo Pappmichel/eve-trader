@@ -133,6 +133,7 @@ def validate_contracts():
 
 @router.get("/sync-time")
 def get_sync_time():
+    # Storage-only timestamp - no live ESI.
     return actions.do_get_esi_sync_time()
 
 
@@ -143,6 +144,7 @@ def sync_assets():
 
 @router.get("/assets/sync-time")
 def get_asset_sync_time():
+    # Storage-only timestamp - no live ESI.
     return actions.do_get_asset_sync_time()
 
 
@@ -175,6 +177,7 @@ def get_shopping_list(doctrine_id: Optional[str] = None):
 # ------------------------------------------------------------------ characters
 @router.get("/characters")
 def get_doctrine_characters():
+    # Token-store listing (get_record, no refresh) - no live ESI.
     return [
         {"role_key": role, "character_id": cid, "character_name": name}
         for role, cid, name in actions.do_list_doctrine_characters()
@@ -188,6 +191,7 @@ def remove_doctrine_character(role_key: str):
 
 @router.get("/asset-characters")
 def get_doctrine_asset_characters():
+    # Token-store listing (get_record, no refresh) - no live ESI.
     return [
         {"role_key": role, "character_id": cid, "character_name": name}
         for role, cid, name in actions.do_list_doctrine_asset_characters()

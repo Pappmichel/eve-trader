@@ -34,3 +34,24 @@ def test_pipeline_step_isolation_survives_action_error_in_reconcile_trades(monke
 
     assert result["refresh_and_prune_candidates"] == {"ok": True}
     assert "error" in result["reconcile_trades"]
+
+
+def test_do_reconcile_trades_converts_esierror_to_actionerror(monkeypatch):
+    # Direct POST /trades/reconcile only catches ActionError at _wrap -
+    # an ESI 401/timeout here used to be a raw 500 even though do_pipeline
+    # already isolated the same ESIError one level up.
+    monkeypatch.setattr(actions.TokenManager, "__init__", lambda self, *a, **k: None)
+    monkeypatch.setattr(actions, "_list_role_characters",
+                        lambda tm, prefix: [("buyer", 1, "B")] if prefix == "buyer" else [("seller", 2, "S")])
+    monkeypatch.setattr(actions.storage, "load_shortlist", lambda: [])
+    monkeypatch.setattr(actions, "ESIClient", lambda *a, **k: object())
+
+    def boom(*a, **k):
+        raise ESIError("401 unauthorized")
+    monkeypatch.setattr(actions, "reconcile_realized_trades", boom)
+
+    try:
+        actions.do_reconcile_trades()
+        assert False, "expected ActionError"
+    except actions.ActionError as e:
+        assert "ESI access failed" in str(e)
