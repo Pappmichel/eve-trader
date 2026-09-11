@@ -30,6 +30,12 @@ declare module '@tanstack/react-table' {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   interface ColumnMeta<TData, TValue> {
     mobileHide?: boolean
+    // Native hover title for the cell. When omitted, DataTable stringifies
+    // string/number cell values (the default "full text on hover" for
+    // ellipsis-truncated cells). A column that renders custom content and
+    // wants a richer title (or none) should set this instead of fighting
+    // the Td's default `title`.
+    cellTitle?: (row: TData, value: TValue) => string | undefined
   }
 }
 
@@ -421,7 +427,11 @@ export function DataTable<T>({
                       {row.getVisibleCells()
                         .filter((cell) => !(isMobile && cell.column.columnDef.meta?.mobileHide))
                         .map((cell) => (
-                          <Table.Td key={cell.id} style={cellStyle} title={cellText(cell.getValue())}>
+                          <Table.Td
+                            key={cell.id}
+                            style={cellStyle}
+                            title={cell.column.columnDef.meta?.cellTitle?.(cell.row.original, cell.getValue()) ?? cellText(cell.getValue())}
+                          >
                             {flexRender(cell.column.columnDef.cell, cell.getContext())}
                           </Table.Td>
                         ))}

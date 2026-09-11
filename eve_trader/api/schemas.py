@@ -253,6 +253,13 @@ class InventionResult(_Base):
     net_cost_per_run: Optional[float]
 
 
+class AssetPlanBlocker(_Base):
+    type_id: int
+    type_name: str
+    needed: float
+    covered: float
+
+
 class AssetPlanJob(_Base):
     type_id: int
     type_name: str
@@ -268,6 +275,7 @@ class AssetPlanJob(_Base):
     margin: Optional[float] = None
     stock_coverage: Optional[float] = None
     recommended_slots: Optional[int] = None
+    blockers: list[AssetPlanBlocker] = []
 
 
 class InventionNeedRow(_Base):

@@ -9,6 +9,7 @@ import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
 import { isk, pct, qty } from '../../format'
+import { blockedRunsTitle } from './assetPlanList'
 
 const CATEGORY_UNKNOWN = 'no category'
 
@@ -47,6 +48,7 @@ export default function AssetPlanList() {
     },
     {
       header: 'Blocked', id: 'blocked', size: 110, accessorFn: (r) => r.job_runs - r.runs_ready_now,
+      meta: { cellTitle: (row) => blockedRunsTitle(row) },
       cell: (i) => (i.getValue() as number) > 0
         ? <Text c="warn">{qty(i.getValue() as number)}</Text>
         : qty(0),
@@ -130,7 +132,7 @@ export default function AssetPlanList() {
         is scarce, the jobs with the smallest requirement get fully restocked first, so as many jobs as possible
         are completely (not just partially) ready to start right away. "Ready now" = how many runs of this job you
         can queue in-game right now without waiting on another intermediate product - the rest of "Job Runs (total)"
-        is still blocked. "Stock Coverage" is how much of <i>this item itself</i> is already on hand relative to
+        is still blocked (hover the Blocked number to see which direct materials are short, and by how much). "Stock Coverage" is how much of <i>this item itself</i> is already on hand relative to
         what's currently wanted - for a stock target that's its backup/home/Jita goal, for a pure intermediate
         component (no goal of its own) it's this round's pooled demand instead. Distinct from "Blocked", which is
         about whether <i>this item's own materials</i> are available to build it, not about this item's own stock.

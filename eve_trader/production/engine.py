@@ -137,8 +137,8 @@ from .constants import (
 )
 from .jobs import character_slot_overview
 from .models import (
-    AssetPlanJob, BuildJobEntry, BuyListEntry, DistributionRow, InventionNeedRow, InventionResult, InventoryRow,
-    LogisticsRow, MarketStatusRow, SpecialOrderLineItem, StockOverlapWarningRow, T1BpcInventionNeedRow,
+    AssetPlanBlocker, AssetPlanJob, BuildJobEntry, BuyListEntry, DistributionRow, InventionNeedRow, InventionResult,
+    InventoryRow, LogisticsRow, MarketStatusRow, SpecialOrderLineItem, StockOverlapWarningRow, T1BpcInventionNeedRow,
 )
 
 MAX_DEPTH = 10
@@ -1636,6 +1636,26 @@ def _allocate_slots_proportionally(claims: list[tuple[int, float, int]], availab
     return allocated
 
 
+def _merge_asset_plan_blockers(
+        left: list[AssetPlanBlocker], right: list[AssetPlanBlocker]) -> list[AssetPlanBlocker]:
+    """Sums needed/covered for the same material across rounds when one
+    type_id is a job at two tree depths (plan_asset_optimized's merge path).
+    Sorted scarcest-shortfall first so the tooltip's top line is the actual
+    bottleneck, then by name for a stable remainder."""
+    combined: dict[int, AssetPlanBlocker] = {}
+    for blocker in (*left, *right):
+        prev = combined.get(blocker.type_id)
+        if prev is None:
+            combined[blocker.type_id] = AssetPlanBlocker(
+                type_id=blocker.type_id, type_name=blocker.type_name,
+                needed=blocker.needed, covered=blocker.covered,
+            )
+        else:
+            prev.needed += blocker.needed
+            prev.covered += blocker.covered
+    return sorted(combined.values(), key=lambda b: (-(b.needed - b.covered), b.type_name))
+
+
 @storage.with_batch_session()
 def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     """Asset-aware Bauliste: same buy-vs-build calls as plan_production (see
@@ -1836,6 +1856,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         # instead (a legitimate "don't plan to build even more of something
         # already queued" question, distinct from "can I click start now").
         min_fraction: dict[int, float] = {type_id: 1.0 for type_id in runs_this_round}
+        blockers_this_round: dict[int, list[AssetPlanBlocker]] = {type_id: [] for type_id in runs_this_round}
         jobs_this_level = {}
         for material_id, claims in next_level_claims.items():
             _, m_bp = classify_activity(material_id)
@@ -1845,10 +1866,17 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             covered_by_parent = _allocate_scarce_stock(claims, available_on_hand)
             stock_used_on_hand[material_id] = stock_used_on_hand.get(material_id, 0.0) + sum(covered_by_parent.values())
 
+            sde_material = storage.get_sde_type(material_id)
+            material_name = sde_material[2] if sde_material else str(material_id)
             for parent_type_id, qty in claims:
-                fraction = covered_by_parent.get(parent_type_id, 0.0) / qty if qty > 0 else 1.0
+                covered = covered_by_parent.get(parent_type_id, 0.0)
+                fraction = covered / qty if qty > 0 else 1.0
                 if fraction < min_fraction[parent_type_id]:
                     min_fraction[parent_type_id] = fraction
+                if covered + 1e-9 < qty:
+                    blockers_this_round[parent_type_id].append(AssetPlanBlocker(
+                        type_id=material_id, type_name=material_name, needed=qty, covered=covered,
+                    ))
 
             buffered_total = buffered_demand.get(material_id, 0.0)
             consumed = min(buffered_total, available)
@@ -1873,6 +1901,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             ready_increment = math.floor(runs * min_fraction[type_id])
 
             existing = jobs.get(type_id)
+            round_blockers = _merge_asset_plan_blockers([], blockers_this_round.get(type_id, []))
             if existing is None:
                 jobs[type_id] = AssetPlanJob(
                     type_id=type_id, type_name=name, blueprint_type_id=blueprint_id,
@@ -1884,6 +1913,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                     # GitHub issue #38: margin_home, not margin_jita - see
                     # plan_production's BuildJobEntry construction for why.
                     margin=margin_home(type_id, cost_memo.get(type_id), home, cfg),
+                    blockers=round_blockers,
                 )
             else:
                 # Same item is a job in more than one round (needed at two
@@ -1893,6 +1923,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                 existing.quantity += runs * product_qty
                 existing.runs_ready_now += ready_increment
                 existing.job_time_seconds += job_time
+                existing.blockers = _merge_asset_plan_blockers(existing.blockers, round_blockers)
 
         depth += 1
 

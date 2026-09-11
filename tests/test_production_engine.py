@@ -24,7 +24,7 @@ from .pg_helpers import _apply_phase1_schema, tenant, tenant_pair  # noqa: F401
 # individual storage read/write inside is mocked - confirmed live, those
 # tests still raised "no current tenant set" without this. No module-level
 # pytestmark here (most tests in this file genuinely don't need Postgres) -
-# each of the 11 affected tests gets its own
+# each of the affected tests gets its own
 # @pg_helpers.postgres_required() decorator instead.
 psycopg = pytest.importorskip("psycopg")
 
@@ -1982,6 +1982,69 @@ def test_plan_asset_optimized_readiness_ignores_in_progress_industry_jobs(monkey
     jobs_by_id = {job.type_id: job for job in result["jobs"]}
     assert jobs_by_id[1].runs_ready_now == 0  # not actually startable - Common isn't physically here
     assert jobs_by_id[2].runs_ready_now == 0
+    # Blocked-column tooltip: both jobs are short the same direct material.
+    assert [(b.type_id, b.type_name, b.needed, b.covered) for b in jobs_by_id[1].blockers] == [
+        (3, "Item3", 10.0, 0.0),
+    ]
+    assert [(b.type_id, b.type_name, b.needed, b.covered) for b in jobs_by_id[2].blockers] == [
+        (3, "Item3", 10.0, 0.0),
+    ]
+
+
+@pg_helpers.postgres_required()
+def test_plan_asset_optimized_blockers_list_only_short_direct_materials(monkeypatch, tenant):
+    # Blocked tooltip should name *what is missing*, not every input: a fully
+    # covered material stays off the list, a partially covered one reports
+    # this job's allocated on-hand share (post smallest-claim-first split),
+    # and a completely missing one reports covered=0. ItemP needs 10 Common
+    # (all on hand) + 10 Rare (3 on hand) + 5 Missing (none).
+    bp_by_id = {1: (101, 1, 1)}
+    materials_by_bp = {101: [(3, 10), (4, 10), (5, 5)]}
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: (
+        ("Tech I", bp_by_id[type_id]) if type_id in bp_by_id else ("Input", None)
+    ))
+    monkeypatch.setattr(storage, "get_blueprint_materials",
+                         lambda blueprint_id, activity_id: materials_by_bp.get(blueprint_id, []))
+    monkeypatch.setattr(engine, "_activity_mods", lambda *a, **k: (1.0, 1.0, 0.0))
+    monkeypatch.setattr(engine, "_buy_or_build_decision",
+                         lambda type_id, cfg, home, jita, manual_overrides, cost_memo, bp, depth=0:
+                         "Buy" if bp is None else "Build")
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: None)
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (
+        type_id, 1, {3: "Common", 4: "Rare", 5: "Gone"}.get(type_id, f"Item{type_id}"), 1.0, 1, 1, 0, None
+    ))
+    monkeypatch.setattr(storage, "get_blueprint_time", lambda blueprint_id, activity_id: 100.0)
+    monkeypatch.setattr(engine, "job_category", lambda type_id: None)
+    on_hand = {1: 0.0, 3: 10.0, 4: 3.0, 5: 0.0}
+    monkeypatch.setattr(engine, "_current_stock", lambda type_id, *a, **k: on_hand.get(type_id, 0.0))
+    monkeypatch.setattr(engine, "_stock_on_hand", lambda type_id, *a, **k: on_hand.get(type_id, 0.0))
+
+    stock_targets = [(1, "ItemP", 1, 0, 0)]
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_plan_context(stock_targets))
+
+    cfg = ProductionConfig(component_overbuild=0.0)
+    result = engine.plan_asset_optimized(cfg)
+
+    job = {j.type_id: j for j in result["jobs"]}[1]
+    assert job.job_runs == 1
+    assert job.runs_ready_now == 0  # bottlenecked by Rare/Gone, not Common
+    assert [(b.type_name, b.needed, b.covered) for b in job.blockers] == [
+        ("Rare", 10.0, 3.0),
+        ("Gone", 5.0, 0.0),
+    ]
+
+
+def test_merge_asset_plan_blockers_sums_the_same_material_across_rounds():
+    from eve_trader.production.models import AssetPlanBlocker
+    a = [AssetPlanBlocker(type_id=3, type_name="Common", needed=10.0, covered=4.0)]
+    b = [AssetPlanBlocker(type_id=3, type_name="Common", needed=20.0, covered=1.0),
+         AssetPlanBlocker(type_id=4, type_name="Rare", needed=5.0, covered=0.0)]
+    merged = engine._merge_asset_plan_blockers(a, b)
+    assert [(x.type_name, x.needed, x.covered) for x in merged] == [
+        ("Common", 30.0, 5.0),
+        ("Rare", 5.0, 0.0),
+    ]
 
 
 @pg_helpers.postgres_required()

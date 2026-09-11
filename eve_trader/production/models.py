@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 
@@ -157,6 +157,20 @@ class T1BpcInventionNeedRow:
 
 
 @dataclass
+class AssetPlanBlocker:
+    """A direct material of an AssetPlanJob whose physically-on-hand stock
+    (this job's own share after engine._allocate_scarce_stock) does not fully
+    cover this job's current-round claim - i.e. why some of job_runs are not
+    in runs_ready_now. needed/covered are this job's allocated claim, not the
+    market-wide pool: a unit given to a smaller competing job shows up as
+    uncovered here even if it physically exists."""
+    type_id: int
+    type_name: str
+    needed: float
+    covered: float
+
+
+@dataclass
 class AssetPlanJob:
     """One row of the asset-aware Bauliste (engine.plan_asset_optimized): like
     BuildJobEntry, but job_runs is netted against real owned stock at *every*
@@ -218,6 +232,10 @@ class AssetPlanJob:
     # only when runs_ready_now > 0 (nothing to split otherwise) - None
     # everywhere else.
     recommended_slots: Optional[int] = None
+    # Direct materials that still short this job (needed > covered). Empty
+    # when every run is ready now. Display-only (Blocked-column tooltip);
+    # never feeds sizing or slot-split math.
+    blockers: list[AssetPlanBlocker] = field(default_factory=list)
 
 
 @dataclass
