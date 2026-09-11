@@ -23,7 +23,7 @@ the better outcome.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Union
 
 from .. import storage
 from ..config import TRADING_CONFIG, TradingConfig
@@ -37,6 +37,10 @@ SELL_DECISION = "Sell instead"
 NOT_REPROCESSABLE_DECISION = "Not reprocessable"
 UNRESOLVED_DECISION = "Unknown item"
 NO_MARKET_DATA_DECISION = "No market data"
+
+# Sentinel so evaluate_reprocessing_line can tell "caller didn't resolve"
+# from "caller resolved, item unknown" (None).
+_TYPE_ID_UNRESOLVED = object()
 
 
 @dataclass
@@ -68,8 +72,8 @@ def resolve_type_id(name: str) -> Optional[int]:
 
 def mineral_type_ids_for_lines(type_ids: list[int]) -> list[int]:
     ids: set[int] = set()
-    for type_id in type_ids:
-        for material_type_id, _qty in storage.get_type_materials(type_id):
+    for materials in storage.get_type_materials_bulk(type_ids).values():
+        for material_type_id, _qty in materials:
             ids.add(material_type_id)
     return sorted(ids)
 
@@ -77,15 +81,19 @@ def mineral_type_ids_for_lines(type_ids: list[int]) -> list[int]:
 def evaluate_reprocessing_line(line: ParsedPasteLine, item_stats: Optional[OrderStats],
                                 mineral_stats_by_id: dict[int, OrderStats],
                                 trading_cfg: TradingConfig = TRADING_CONFIG,
-                                refining_cfg: RefiningConfig = REFINING_CONFIG) -> ReprocessingQuoteRow:
+                                refining_cfg: RefiningConfig = REFINING_CONFIG,
+                                type_id: Union[int, None, object] = _TYPE_ID_UNRESOLVED) -> ReprocessingQuoteRow:
     """Pure - `item_stats`/`mineral_stats_by_id` are pre-fetched by the caller
-    (see do_quote_reprocessing), no network calls here."""
+    (see do_quote_reprocessing), no network calls here. `type_id` is optional:
+    do_quote_reprocessing passes the already-resolved id so each paste name
+    is looked up once; unit tests that omit it still resolve here."""
     if line.error:
         return ReprocessingQuoteRow(name=line.name, quantity=line.quantity, type_id=None, category=line.category,
                                      sell_as_is_value=None, refined_value=None, mineral_value=None,
                                      refining_tax=None, decision=UNRESOLVED_DECISION, error=line.error)
 
-    type_id = resolve_type_id(line.name)
+    if type_id is _TYPE_ID_UNRESOLVED:
+        type_id = resolve_type_id(line.name)
     if type_id is None:
         return ReprocessingQuoteRow(name=line.name, quantity=line.quantity, type_id=None, category=line.category,
                                      sell_as_is_value=None, refined_value=None, mineral_value=None,

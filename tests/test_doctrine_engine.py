@@ -77,16 +77,20 @@ def test_stockpile_rows_for_doctrine_excludes_intake_at_production_home(monkeypa
 
     captured = {}
 
-    def fake_esi(type_id, location_id, tables=(), allowed_flags=None, exclude_intake_at_location_id=None):
+    def fake_esi_bulk(type_ids, location_id, tables=(), allowed_flags=None, exclude_intake_at_location_id=None):
         captured["exclude"] = exclude_intake_at_location_id
         captured["tables"] = tables
-        return 0.0
+        captured["type_ids"] = list(type_ids)
+        return {tid: 0.0 for tid in type_ids}
 
-    monkeypatch.setattr(storage, "esi_stock_at_location", fake_esi)
+    monkeypatch.setattr(storage, "esi_stock_at_location_bulk", fake_esi_bulk)
     monkeypatch.setattr(storage, "has_any_doctrine_synced_assets", lambda: True)
     monkeypatch.setattr(storage, "list_doctrines", lambda: [("d1", "Doctrine 1")])
-    monkeypatch.setattr(storage, "list_doctrine_contracts", lambda fitting_id=None: [])
+    monkeypatch.setattr(storage, "list_doctrine_contracts", lambda fitting_id=None, fitting_ids=None: [])
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Module", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(
+        storage, "get_sde_types_bulk",
+        lambda type_ids: {tid: (tid, 1, "Module", 1.0, 1, 1, 0, None) for tid in type_ids})
     monkeypatch.setattr(storage, "get_type_slot", lambda type_id: "low")
 
     fitting = Fitting(fitting_id="f1", doctrine_id="d1", name="Fit 1", hull_type_id=HULL_A,
@@ -103,6 +107,48 @@ def test_stockpile_rows_for_doctrine_excludes_intake_at_production_home(monkeypa
     assert captured["exclude"] == PRODUCTION_CONFIG.home_location_id
     assert captured["tables"] == ("doctrine_character_assets", "doctrine_corp_assets")
     assert any(r.type_id == MODULE and r.shortfall > 0 for r in rows)
+
+
+def test_stockpile_rows_for_doctrine_uses_bulk_lookups_not_per_fitting(monkeypatch):
+    contract_calls = []
+    stock_calls = []
+    sde_calls = []
+
+    def fake_contracts(fitting_id=None, fitting_ids=None, status=None):
+        contract_calls.append((fitting_id, tuple(fitting_ids) if fitting_ids is not None else None))
+        return []
+
+    def fake_stock_bulk(type_ids, location_id, tables=(), allowed_flags=None, exclude_intake_at_location_id=None):
+        stock_calls.append(tuple(type_ids))
+        return {tid: 0.0 for tid in type_ids}
+
+    def fake_sde_bulk(type_ids):
+        sde_calls.append(tuple(type_ids))
+        return {tid: (tid, 1, "Module", 1.0, 1, 1, 0, None) for tid in type_ids}
+
+    monkeypatch.setattr(storage, "list_doctrine_contracts", fake_contracts)
+    monkeypatch.setattr(storage, "esi_stock_at_location_bulk", fake_stock_bulk)
+    monkeypatch.setattr(storage, "get_sde_types_bulk", fake_sde_bulk)
+    monkeypatch.setattr(storage, "has_any_doctrine_synced_assets", lambda: True)
+    monkeypatch.setattr(storage, "list_doctrines", lambda: [("d1", "Doctrine 1")])
+
+    items = [FittingItem("f1", 1, "low", MODULE, 1)]
+    from eve_trader.doctrine.validation import build_contract_soll
+    exact, consume = build_contract_soll(items)
+    cands = []
+    for fid in ("f1", "f2"):
+        fitting = Fitting(fitting_id=fid, doctrine_id="d1", name=fid, hull_type_id=HULL_A,
+                           raw_eft="", contract_target=0, stockpile_target=1)
+        cands.append(engine._Candidate(fitting=fitting, exact_soll=exact, consume_soll=consume, items=items))
+    monkeypatch.setattr(engine, "load_match_candidates", lambda: cands)
+
+    engine.stockpile_rows_for_doctrine(cfg=DoctrineConfig())
+
+    assert len(contract_calls) == 1
+    assert contract_calls[0][0] is None
+    assert set(contract_calls[0][1]) == {"f1", "f2"}
+    assert len(stock_calls) == 1
+    assert len(sde_calls) == 1
 
 
 def test_match_and_validate_contract_unmatched_when_hull_present_but_below_threshold():

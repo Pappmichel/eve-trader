@@ -1827,6 +1827,23 @@ def esi_stock_at_location(type_id: int, location_id: Optional[int],
     under-counted anything nested one level deeper than that, e.g. a
     container sitting inside a corp hangar - confirmed real cause of a
     "300M tritanium sitting at C-J invisible to Distribution" bug report)."""
+    return esi_stock_at_location_bulk(
+        [type_id], location_id, tables=tables, allowed_flags=allowed_flags,
+        exclude_intake_at_location_id=exclude_intake_at_location_id,
+    )[type_id]
+
+
+def esi_stock_at_location_bulk(type_ids: list[int], location_id: Optional[int],
+                                tables: tuple[str, str] = ("character_assets", "corp_assets"),
+                                allowed_flags: Optional[tuple[str, ...]] = None,
+                                exclude_intake_at_location_id: Optional[int] = None) -> dict[int, float]:
+    """Same filters as esi_stock_at_location, one GROUP BY type_id query per
+    asset table instead of one query per type_id. Missing ids map to 0.0.
+    Empty input is `{}` and opens no connection. esi_stock_at_location is a
+    thin wrapper so existing single-id callers (and their tests) stay put."""
+    unique = list(dict.fromkeys(type_ids))
+    if not unique:
+        return {}
     flag_placeholders = ",".join("?" * len(NON_STOCK_LOCATION_FLAGS))
     allowed_clause = ""
     allowed_params: tuple = ()
@@ -1834,8 +1851,8 @@ def esi_stock_at_location(type_id: int, location_id: Optional[int],
         allowed_placeholders = ",".join("?" * len(allowed_flags))
         allowed_clause = f" AND resolved_hangar_flag IN ({allowed_placeholders})"
         allowed_params = tuple(allowed_flags)
+    totals = {tid: 0.0 for tid in unique}
     with connect() as conn:
-        total = 0.0
         for table in tables:
             exclude_clause = ""
             exclude_params: tuple = ()
@@ -1852,22 +1869,24 @@ def esi_stock_at_location(type_id: int, location_id: Optional[int],
                 )
                 exclude_params = (exclude_intake_at_location_id,)
             if location_id is None:
-                row = conn.execute(
-                    f"SELECT COALESCE(SUM(quantity), 0) FROM {table} "
-                    f"WHERE type_id = ? AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))"
-                    f"{allowed_clause}{exclude_clause}",
-                    (type_id, *NON_STOCK_LOCATION_FLAGS, *allowed_params, *exclude_params),
-                ).fetchone()
-                total += row[0]
-                continue
-            row = conn.execute(
-                f"SELECT COALESCE(SUM(quantity), 0) FROM {table} WHERE type_id = ? AND resolved_location_id = ? "
-                f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))"
-                f"{allowed_clause}{exclude_clause}",
-                (type_id, location_id, *NON_STOCK_LOCATION_FLAGS, *allowed_params, *exclude_params),
-            ).fetchone()
-            total += row[0]
-    return total
+                rows = conn.execute(
+                    f"SELECT type_id, COALESCE(SUM(quantity), 0) FROM {table} "
+                    f"WHERE type_id = ANY(?) AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))"
+                    f"{allowed_clause}{exclude_clause} GROUP BY type_id",
+                    (list(unique), *NON_STOCK_LOCATION_FLAGS, *allowed_params, *exclude_params),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"SELECT type_id, COALESCE(SUM(quantity), 0) FROM {table} "
+                    f"WHERE type_id = ANY(?) AND resolved_location_id = ? "
+                    f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))"
+                    f"{allowed_clause}{exclude_clause} GROUP BY type_id",
+                    (list(unique), location_id, *NON_STOCK_LOCATION_FLAGS, *allowed_params, *exclude_params),
+                ).fetchall()
+            for tid, qty in rows:
+                if tid in totals:
+                    totals[tid] += qty
+    return totals
 
 
 def assets_at_flag(flag: str, tables: tuple[str, ...] = ("character_assets", "corp_assets"),
@@ -2598,6 +2617,12 @@ def list_all_sde_types() -> list[tuple[int, str]]:
         ).fetchall()
 
 
+# Sidecar for get_sde_types_bulk: lru_cache has no setter, so bulk fills
+# this dict then calls get_sde_type (which reads it, no second DB trip) to
+# keep the decorator cache in sync. replace_sde_data / cache_clear wipe both.
+_sde_type_rows: dict[int, Optional[tuple]] = {}
+
+
 @lru_cache(maxsize=None)
 def get_sde_type(type_id: int) -> Optional[tuple]:
     """Returns (type_id, group_id, type_name, volume, published, market_group_id,
@@ -2616,8 +2641,45 @@ def get_sde_type(type_id: int) -> Optional[tuple]:
     Veldspar=100, GitHub issue #90), was appended after the other 8 - existing
     positional readers (`sde_type[0]`..`sde_type[7]`) are unaffected; use
     get_portion_size(type_id) rather than indexing [8] directly."""
+    if type_id in _sde_type_rows:
+        return _sde_type_rows[type_id]
     with connect() as conn:
-        return conn.execute("SELECT * FROM sde_types WHERE type_id = ?", (type_id,)).fetchone()
+        row = conn.execute("SELECT * FROM sde_types WHERE type_id = ?", (type_id,)).fetchone()
+    _sde_type_rows[type_id] = row
+    return row
+
+
+_orig_get_sde_type_cache_clear = get_sde_type.cache_clear
+
+
+def _clear_sde_type_cache() -> None:
+    _sde_type_rows.clear()
+    _orig_get_sde_type_cache_clear()
+
+
+get_sde_type.cache_clear = _clear_sde_type_cache  # type: ignore[method-assign]
+
+
+def get_sde_types_bulk(type_ids: list[int]) -> dict[int, Optional[tuple]]:
+    """One `WHERE type_id = ANY(?)` round-trip for every uncached id, then
+    warms get_sde_type's lru_cache so later single-id lookups (and
+    get_portion_size) don't go behind the cache. Missing SDE ids map to
+    None, same as get_sde_type. Empty input is `{}` and opens no connection."""
+    unique = list(dict.fromkeys(type_ids))
+    if not unique:
+        return {}
+    missing = [tid for tid in unique if tid not in _sde_type_rows]
+    if missing:
+        with connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM sde_types WHERE type_id = ANY(?)",
+                (list(missing),),
+            ).fetchall()
+        by_id = {row[0]: row for row in rows}
+        for tid in missing:
+            _sde_type_rows[tid] = by_id.get(tid)
+            get_sde_type(tid)  # lru warm; sidecar hit, no extra query
+    return {tid: _sde_type_rows[tid] for tid in unique}
 
 
 def get_portion_size(type_id: int) -> Optional[int]:
@@ -2715,6 +2777,9 @@ def get_blueprint_materials(blueprint_type_id: int, activity_id: int) -> list[tu
         ).fetchall()
 
 
+_type_materials_rows: dict[int, list[tuple[int, float]]] = {}
+
+
 @lru_cache(maxsize=None)
 def get_type_materials(type_id: int) -> list[tuple[int, float]]:
     """Returns [(material_type_id, quantity_per_portion), ...] from the SDE's
@@ -2727,12 +2792,52 @@ def get_type_materials(type_id: int) -> list[tuple[int, float]]:
     apply_reprocessing_yield). Cached - see get_sde_type. The returned list
     is shared across callers (lru_cache returns the same object every time) -
     callers must treat it as read-only."""
+    if type_id in _type_materials_rows:
+        return _type_materials_rows[type_id]
     with connect() as conn:
-        return conn.execute(
+        rows = conn.execute(
             "SELECT material_type_id, quantity FROM sde_type_materials WHERE type_id = ? "
             "ORDER BY material_type_id",
             (type_id,),
         ).fetchall()
+    _type_materials_rows[type_id] = rows
+    return rows
+
+
+_orig_get_type_materials_cache_clear = get_type_materials.cache_clear
+
+
+def _clear_type_materials_cache() -> None:
+    _type_materials_rows.clear()
+    _orig_get_type_materials_cache_clear()
+
+
+get_type_materials.cache_clear = _clear_type_materials_cache  # type: ignore[method-assign]
+
+
+def get_type_materials_bulk(type_ids: list[int]) -> dict[int, list[tuple[int, float]]]:
+    """One query for every uncached id (`WHERE type_id = ANY(?)`), grouped
+    per type. Types with no invTypeMaterials rows (or not in the SDE at
+    all) map to `[]`, same as get_type_materials. Warms that function's
+    lru_cache. Empty input is `{}` and opens no connection."""
+    unique = list(dict.fromkeys(type_ids))
+    if not unique:
+        return {}
+    missing = [tid for tid in unique if tid not in _type_materials_rows]
+    if missing:
+        grouped: dict[int, list[tuple[int, float]]] = {tid: [] for tid in missing}
+        with connect() as conn:
+            rows = conn.execute(
+                "SELECT type_id, material_type_id, quantity FROM sde_type_materials "
+                "WHERE type_id = ANY(?) ORDER BY type_id, material_type_id",
+                (list(missing),),
+            ).fetchall()
+        for type_id, material_type_id, quantity in rows:
+            grouped[type_id].append((material_type_id, quantity))
+        for tid in missing:
+            _type_materials_rows[tid] = grouped[tid]
+            get_type_materials(tid)  # lru warm; sidecar hit, no extra query
+    return {tid: _type_materials_rows[tid] for tid in unique}
 
 
 @lru_cache(maxsize=None)
@@ -3125,12 +3230,26 @@ def replace_doctrine_sync_snapshot(contracts: list[tuple], items: list[tuple], d
         )
 
 
-def list_doctrine_contracts(fitting_id: Optional[str] = None, status: Optional[str] = None) -> list[tuple]:
+def list_doctrine_contracts(fitting_id: Optional[str] = None, status: Optional[str] = None,
+                             fitting_ids: Optional[list[str]] = None) -> list[tuple]:
+    """`fitting_id` is the single-fitting filter (fitting_status, etc.).
+    `fitting_ids` is the bulk equivalent used by stockpile_rows_for_doctrine
+    so N fittings are one query, not N. Empty `fitting_ids` is `[]` and
+    opens no connection. Pass one or the other, not both - if both are set,
+    `fitting_ids` wins."""
+    if fitting_ids is not None:
+        if not fitting_ids:
+            return []
+        ids = list(dict.fromkeys(fitting_ids))
+    elif fitting_id is not None:
+        ids = [fitting_id]
+    else:
+        ids = None
     query = f"SELECT {', '.join(_CONTRACT_COLUMNS)} FROM doctrine_contracts WHERE 1=1"
     params: list = []
-    if fitting_id is not None:
-        query += " AND matched_fitting_id = ?"
-        params.append(fitting_id)
+    if ids is not None:
+        query += " AND matched_fitting_id = ANY(?)"
+        params.append(ids)
     if status is not None:
         query += " AND validation_status = ?"
         params.append(status)

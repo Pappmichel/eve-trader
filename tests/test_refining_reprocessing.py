@@ -156,7 +156,17 @@ def test_evaluate_line_reprocess_decision_flips_once_fee_consistency_is_fixed(mo
 
 
 def test_mineral_type_ids_for_lines_collects_union(monkeypatch):
-    def fake_materials(type_id):
-        return [(35, 1.0), (36, 2.0)] if type_id == 100 else [(35, 3.0)]
-    monkeypatch.setattr(storage, "get_type_materials", fake_materials)
+    def fake_bulk(type_ids):
+        return {100: [(35, 1.0), (36, 2.0)], 200: [(35, 3.0)]}
+    monkeypatch.setattr(storage, "get_type_materials_bulk", fake_bulk)
     assert mineral_type_ids_for_lines([100, 200]) == [35, 36]
+
+
+def test_mineral_type_ids_for_lines_is_one_bulk_call(monkeypatch):
+    calls = []
+    def fake_bulk(type_ids):
+        calls.append(list(type_ids))
+        return {tid: [] for tid in type_ids}
+    monkeypatch.setattr(storage, "get_type_materials_bulk", fake_bulk)
+    mineral_type_ids_for_lines([100, 200, 300])
+    assert calls == [[100, 200, 300]]

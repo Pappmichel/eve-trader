@@ -146,6 +146,52 @@ def test_replace_sde_data_clears_and_reloads_type_materials(tenant):
     assert storage.get_type_materials(34) == [(35, 420.0)]
 
 
+def test_get_type_materials_bulk_empty_list_skips_db(tenant, monkeypatch):
+    from contextlib import contextmanager
+    calls = {"n": 0}
+    real = storage.connect
+
+    @contextmanager
+    def counting():
+        calls["n"] += 1
+        with real() as conn:
+            yield conn
+
+    monkeypatch.setattr(storage, "connect", counting)
+    assert storage.get_type_materials_bulk([]) == {}
+    assert calls["n"] == 0
+
+
+def test_get_type_materials_bulk_one_query_and_warms_single_lookup_cache(tenant, monkeypatch):
+    from contextlib import contextmanager
+    _insert_type(34, "Compressed Veldspar", portion_size=100)
+    _insert_type(35, "Tritanium", portion_size=1)
+    _insert_material(34, 35, 415.0)
+    _insert_material(34, 36, 41.0)
+    storage.get_type_materials.cache_clear()
+
+    calls = {"n": 0}
+    real = storage.connect
+
+    @contextmanager
+    def counting():
+        calls["n"] += 1
+        with real() as conn:
+            yield conn
+
+    monkeypatch.setattr(storage, "connect", counting)
+    result = storage.get_type_materials_bulk([34, 35, 34, 99])
+    assert calls["n"] == 1
+    assert result[34] == [(35, 415.0), (36, 41.0)]
+    assert result[35] == []
+    assert result[99] == []
+
+    calls["n"] = 0
+    assert storage.get_type_materials(34) == [(35, 415.0), (36, 41.0)]
+    assert storage.get_type_materials(99) == []
+    assert calls["n"] == 0
+
+
 def test_sde_row_counts_includes_type_materials(tenant):
     _insert_type(34, portion_size=100)
     _insert_material(34, 35, 415.0)

@@ -208,12 +208,20 @@ def stockpile_rows_for_doctrine(doctrine_id: Optional[str] = None,
     doctrine_name_by_id = {str(row[0]): row[1] for row in storage.list_doctrines()}
 
     ordered_soll: list[tuple[str, dict[int, tuple[float, str]]]] = []
+    fitting_ids = [c.fitting.fitting_id for c in candidates]
+    contracts_by_fitting: dict[str, list] = {fid: [] for fid in fitting_ids}
+    for row in storage.list_doctrine_contracts(fitting_ids=fitting_ids):
+        matched_id = row[9]  # matched_fitting_id, see storage._CONTRACT_COLUMNS
+        if matched_id in contracts_by_fitting:
+            contracts_by_fitting[matched_id].append(row)
+        elif matched_id is not None and str(matched_id) in contracts_by_fitting:
+            contracts_by_fitting[str(matched_id)].append(row)
     for c in candidates:
         # GitHub issue #36: same valid-contract count fitting_status computes
         # (contract_ampel's own "valid" count) - a fitting still short of its
         # contract_target needs the materials for those extra contracts too,
         # not just its separate stockpile_target buffer.
-        contracts = contract_rows_from_db(storage.list_doctrine_contracts(fitting_id=c.fitting.fitting_id))
+        contracts = contract_rows_from_db(contracts_by_fitting.get(c.fitting.fitting_id, []))
         valid_contracts = sum(1 for ct in contracts if ct.validation_status == "valid" and ct.status != "expired")
         soll = validation.build_stockpile_soll(c.items, c.fitting.hull_type_id, c.fitting.stockpile_target,
                                                 contract_target=c.fitting.contract_target,
@@ -221,13 +229,12 @@ def stockpile_rows_for_doctrine(doctrine_id: Optional[str] = None,
         ordered_soll.append((c.fitting.fitting_id, soll))
 
     type_ids = {t for _fid, soll in ordered_soll for t in soll}
-    available_by_type = {
-        t: storage.esi_stock_at_location(
-            t, location_id, tables=("doctrine_character_assets", "doctrine_corp_assets"),
-            allowed_flags=cfg.stockpile_hangar_flags,
-            exclude_intake_at_location_id=PRODUCTION_CONFIG.home_location_id)
-        for t in type_ids
-    }
+    available_by_type = storage.esi_stock_at_location_bulk(
+        list(type_ids), location_id,
+        tables=("doctrine_character_assets", "doctrine_corp_assets"),
+        allowed_flags=cfg.stockpile_hangar_flags,
+        exclude_intake_at_location_id=PRODUCTION_CONFIG.home_location_id)
+    sde_by_id = storage.get_sde_types_bulk(list(type_ids))
     allocation = validation.allocate_stockpile(ordered_soll, available_by_type)
 
     rows: list[StockpileRow] = []
@@ -238,7 +245,7 @@ def stockpile_rows_for_doctrine(doctrine_id: Optional[str] = None,
             allocated = alloc.get(type_id, 0.0)
             tolerance = effective_cargo_tolerance(c.fitting, cfg)
             shortfall, severity = validation.stockpile_deviation(type_id, required, allocated, item_class, tolerance)
-            type_row = storage.get_sde_type(type_id)
+            type_row = sde_by_id.get(type_id)
             type_name = type_row[2] if type_row else str(type_id)
             slot_section = "hull" if type_id == c.fitting.hull_type_id else (
                 "low/med/high/rig/subsystem/service" if item_class == "exact" else "drone/cargo/charge")

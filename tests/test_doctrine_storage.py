@@ -344,3 +344,33 @@ def test_contract_history_tenant_isolated_even_with_same_contract_id(tenant_pair
 
     assert len(rows_a) == 1 and rows_a[0][8] == "A's buyer"
     assert len(rows_b) == 1 and rows_b[0][8] == "B's buyer"
+
+
+def test_list_doctrine_contracts_fitting_ids_is_one_query(tenant, monkeypatch):
+    from contextlib import contextmanager
+    doctrine_id = storage.create_doctrine("D", None)
+    fit_a = storage.create_fitting(doctrine_id, "A", 587, "[Rifter, A]\n", None, 0, 0, None)
+    fit_b = storage.create_fitting(doctrine_id, "B", 587, "[Rifter, B]\n", None, 0, 0, None)
+    storage.replace_doctrine_sync_snapshot(
+        contracts=[
+            (1, "doctrine:1", False, 1, 12345, "outstanding", "t", 1.0, None, fit_a, 0.9, "valid",
+             "2026-01-01T00:00:00Z"),
+            (2, "doctrine:1", False, 1, 12345, "outstanding", "t", 1.0, None, fit_b, 0.8, "valid",
+             "2026-01-01T00:00:00Z"),
+        ],
+        items=[], deviations=[],
+    )
+    calls = {"n": 0}
+    real = storage.connect
+
+    @contextmanager
+    def counting():
+        calls["n"] += 1
+        with real() as conn:
+            yield conn
+
+    monkeypatch.setattr(storage, "connect", counting)
+    rows = storage.list_doctrine_contracts(fitting_ids=[fit_a, fit_b])
+    assert calls["n"] == 1
+    assert {r[0] for r in rows} == {1, 2}
+    assert storage.list_doctrine_contracts(fitting_ids=[]) == []

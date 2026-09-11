@@ -142,3 +142,47 @@ def test_search_sde_types_tolerates_incidental_whitespace(tenant):
     _insert_type(34, "Tritanium")
 
     assert storage.search_sde_types("  Tritanium  ") == [(34, "Tritanium")]
+
+
+def test_get_sde_types_bulk_empty_list_skips_db(tenant, monkeypatch):
+    from contextlib import contextmanager
+    calls = {"n": 0}
+    real = storage.connect
+
+    @contextmanager
+    def counting():
+        calls["n"] += 1
+        with real() as conn:
+            yield conn
+
+    monkeypatch.setattr(storage, "connect", counting)
+    assert storage.get_sde_types_bulk([]) == {}
+    assert calls["n"] == 0
+
+
+def test_get_sde_types_bulk_one_query_and_warms_single_lookup_cache(tenant, monkeypatch):
+    from contextlib import contextmanager
+    _insert_type(801, "Bulk Alpha")
+    _insert_type(802, "Bulk Beta")
+    storage.get_sde_type.cache_clear()
+
+    calls = {"n": 0}
+    real = storage.connect
+
+    @contextmanager
+    def counting():
+        calls["n"] += 1
+        with real() as conn:
+            yield conn
+
+    monkeypatch.setattr(storage, "connect", counting)
+    result = storage.get_sde_types_bulk([801, 802, 801, 899])
+    assert calls["n"] == 1
+    assert result[801][2] == "Bulk Alpha"
+    assert result[802][2] == "Bulk Beta"
+    assert result[899] is None
+
+    calls["n"] = 0
+    assert storage.get_sde_type(801)[2] == "Bulk Alpha"
+    assert storage.get_sde_type(899) is None
+    assert calls["n"] == 0

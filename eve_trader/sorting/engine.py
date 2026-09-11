@@ -263,8 +263,9 @@ def do_sorting_list(production_cfg: ProductionConfig = PRODUCTION_CONFIG,
     ore_minerals_wanted = _ore_minerals_wanted_by_type()
 
     rows = []
+    sde_by_id = storage.get_sde_types_bulk(list(intake))
     for type_id, intake_qty in sorted(intake.items()):
-        sde_type = storage.get_sde_type(type_id)
+        sde_type = sde_by_id.get(type_id)
         type_name = sde_type[2] if sde_type else str(type_id)
         trading_qty = trading_by_id.get(_as_type_id(type_id) or type_id)
         if not trading_qty:

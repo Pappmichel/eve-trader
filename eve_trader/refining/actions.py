@@ -146,7 +146,11 @@ def do_quote_reprocessing(paste_text: str, trading_cfg: TradingConfig = TRADING_
     seller_role = _seller_role(tm)
     client = ESIClient(trading_cfg, tm)
 
-    type_ids = [tid for tid in (resolve_type_id(line.name) for line in parsed) if tid is not None]
+    resolved_by_name: dict[str, Optional[int]] = {}
+    for line in parsed:
+        if line.name not in resolved_by_name:
+            resolved_by_name[line.name] = resolve_type_id(line.name)
+    type_ids = [tid for tid in resolved_by_name.values() if tid is not None]
     mineral_ids = mineral_type_ids_for_lines(type_ids)
     all_ids = sorted(set(type_ids) | set(mineral_ids))
     try:
@@ -163,9 +167,10 @@ def do_quote_reprocessing(paste_text: str, trading_cfg: TradingConfig = TRADING_
 
     rows = [error_line_to_row(line) for line in error_lines]
     for line in parsed:
-        type_id = resolve_type_id(line.name)
+        type_id = resolved_by_name[line.name]
         item_stats = stats_by_id.get(type_id) if type_id is not None else None
-        rows.append(evaluate_reprocessing_line(line, item_stats, stats_by_id, trading_cfg, refining_cfg))
+        rows.append(evaluate_reprocessing_line(
+            line, item_stats, stats_by_id, trading_cfg, refining_cfg, type_id=type_id))
 
     reprocess_rows = [r for r in rows if r.decision == REPROCESS_DECISION]
     totals = {
