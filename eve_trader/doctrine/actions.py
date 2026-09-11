@@ -285,8 +285,8 @@ def do_get_fitting_detail(fitting_id: str) -> dict:
 
 
 # --------------------------------------------------------------------- sync
-def do_sync_contracts() -> dict:
-    return esi_sync.sync_contracts()
+def do_sync_contracts(progress_callback=None) -> dict:
+    return esi_sync.sync_contracts(progress_callback=progress_callback)
 
 
 def do_start_sync_contracts() -> dict:

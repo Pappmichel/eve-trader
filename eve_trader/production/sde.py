@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -20,6 +21,8 @@ import requests
 from .. import storage
 from .config import PRODUCTION_CONFIG, ProductionConfig
 from .constants import ACTIVITY_COPYING, ACTIVITY_INVENTION, ACTIVITY_MANUFACTURING, ACTIVITY_REACTION
+
+log = logging.getLogger("eve_trader.production.sde")
 
 # Any one file from the dump is a fine freshness proxy - Fuzzwork regenerates
 # the whole dump directory together, and invTypes.csv is already the first
@@ -46,6 +49,26 @@ USER_AGENT = "eve-trader-python"
 # is_invented check.
 _RELEVANT_ACTIVITIES = {ACTIVITY_MANUFACTURING, ACTIVITY_REACTION, ACTIVITY_INVENTION, ACTIVITY_COPYING}
 
+# Sequential Fuzzwork CSV fetches for refresh_sde - batch/total_batches
+# progress uses this tuple's length rather than a magic number. Order is
+# the progress-batch order; why each file is needed is commented at the
+# unpack site below (meta groups, slot effects, type materials).
+_SDE_CSV_FILES = (
+    "invTypes.csv",
+    "invGroups.csv",
+    "invCategories.csv",
+    "invMarketGroups.csv",
+    "invMetaTypes.csv",
+    "industryActivity.csv",
+    "industryActivityMaterials.csv",
+    "industryActivityProducts.csv",
+    "industryActivityProbabilities.csv",
+    "mapSolarSystems.csv",
+    "staStations.csv",
+    "dgmTypeEffects.csv",
+    "invTypeMaterials.csv",
+)
+
 
 def _fetch_csv(session: requests.Session, base_url: str, filename: str) -> list[dict]:
     """Confirmed real gap: this used to be a bare session.get() with no
@@ -54,7 +77,7 @@ def _fetch_csv(session: requests.Session, base_url: str, filename: str) -> list[
     current_prices/price_history explicitly retry with backoff for the same
     "a bare timeout with no retry intermittently killed every caller on
     nothing more than normal response-time variance" reason). refresh_sde()
-    fetches 11 of these sequentially over one session - a single transient
+    fetches these sequentially over one session - a single transient
     blip on any one of them used to abort the whole SDE refresh."""
     last_exc: Optional[requests.RequestException] = None
     for attempt in range(1, 4):
@@ -93,30 +116,58 @@ def _float_or_none(v: str):
     return float(v) if v not in (None, "") else None
 
 
-def refresh_sde(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
+def _emit_progress(progress_callback, payload: dict) -> None:
+    """Best-effort: a status-write failure must never abort the real work.
+    Copied rather than imported from actions._emit_progress - this module
+    is imported by production/actions.py, so reaching back would cycle."""
+    if progress_callback is None:
+        return
+    try:
+        progress_callback(payload)
+    except Exception:  # noqa: BLE001
+        log.exception("progress_callback failed")
+
+
+def refresh_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None) -> dict:
     """Downloads the current Fuzzwork SDE export and replaces the local cache
-    wholesale. Safe to re-run any time (e.g. after a CCP balance patch)."""
+    wholesale. Safe to re-run any time (e.g. after a CCP balance patch).
+
+    progress_callback is optional so scheduler/CLI in-process callers stay
+    unchanged; the HTTP background job passes pipeline_runner's writer.
+    Emits phase=run + batch/total_batches (same vocabulary as Trading and
+    Doctrine sync - not a per-file schema) before each CSV fetch."""
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT})
     base = cfg.fuzzwork_csv_base
     dump_etag = _dump_etag(session, base)  # captured before the real fetches - see check_for_newer_sde
 
-    inv_types = _fetch_csv(session, base, "invTypes.csv")
-    inv_groups = _fetch_csv(session, base, "invGroups.csv")
-    inv_categories = _fetch_csv(session, base, "invCategories.csv")
-    inv_market_groups = _fetch_csv(session, base, "invMarketGroups.csv")
+    fetched: dict[str, list[dict]] = {}
+    total = len(_SDE_CSV_FILES)
+    for i, filename in enumerate(_SDE_CSV_FILES, start=1):
+        _emit_progress(progress_callback, {
+            "phase": "run",
+            "batch": i,
+            "total_batches": total,
+            "message": f"Fetching {filename}",
+        })
+        fetched[filename] = _fetch_csv(session, base, filename)
+
+    inv_types = fetched["invTypes.csv"]
+    inv_groups = fetched["invGroups.csv"]
+    inv_categories = fetched["invCategories.csv"]
+    inv_market_groups = fetched["invMarketGroups.csv"]
     # typeID -> metaGroupID (1=Tech I, 2=Tech II, 3=Storyline, 4=Faction,
     # 5=Officer, 6=Deadspace, ...) - a separate CSV from invTypes.csv (only
     # meta-variant types get a row at all), needed to tell a genuinely
     # invented Tech II item apart from a Faction/Officer/Deadspace one that
     # merely has an elevated metaLevel (see engine.classify_activity).
-    inv_meta_types = _fetch_csv(session, base, "invMetaTypes.csv")
-    activity_time = _fetch_csv(session, base, "industryActivity.csv")
-    activity_materials = _fetch_csv(session, base, "industryActivityMaterials.csv")
-    activity_products = _fetch_csv(session, base, "industryActivityProducts.csv")
-    activity_probabilities = _fetch_csv(session, base, "industryActivityProbabilities.csv")
-    solar_systems = _fetch_csv(session, base, "mapSolarSystems.csv")
-    stations = _fetch_csv(session, base, "staStations.csv")
+    inv_meta_types = fetched["invMetaTypes.csv"]
+    activity_time = fetched["industryActivity.csv"]
+    activity_materials = fetched["industryActivityMaterials.csv"]
+    activity_products = fetched["industryActivityProducts.csv"]
+    activity_probabilities = fetched["industryActivityProbabilities.csv"]
+    solar_systems = fetched["mapSolarSystems.csv"]
+    stations = fetched["staStations.csv"]
     # typeID -> fitting slot, for the Doctrine tool's EFT parser (see
     # doctrine/parser.py's SDE-verification step). dgmTypeEffects.csv is a
     # typeID/effectID/isDefault table (every dogma effect a type has, not
@@ -127,13 +178,13 @@ def refresh_sde(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     # module fits exactly one slot kind) - the dict comprehension below
     # keeps the last match per typeID if that assumption is ever wrong for
     # some edge-case type, rather than crashing the whole refresh.
-    type_effects = _fetch_csv(session, base, "dgmTypeEffects.csv")
+    type_effects = fetched["dgmTypeEffects.csv"]
     # GitHub issue #90 ("Ore & Minerals"): reprocessing/manufacturing material
     # yields - a table this codebase has never loaded before. Both the ore/ice
     # and scrapmetal reprocessing paths are "type -> material yield" lookups
     # against this one SDE table (see refining/engine.py, storage.
     # get_type_materials).
-    inv_type_materials = _fetch_csv(session, base, "invTypeMaterials.csv")
+    inv_type_materials = fetched["invTypeMaterials.csv"]
 
     meta_group_by_type = {int(r["typeID"]): _int_or_none(r["metaGroupID"]) for r in inv_meta_types}
     types_rows = [

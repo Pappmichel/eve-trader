@@ -19,6 +19,11 @@ export function formatBackgroundProgress(
     } else if (progress.phase === 'cleanup' && progress.batch && progress.total_batches) {
       const skipped = progress.skipped ? `, ${progress.skipped} skipped` : ''
       body = `Cleanup batch ${progress.batch}/${progress.total_batches}, ${progress.refreshed ?? 0} items refreshed${skipped}`
+    } else if (progress.batch && progress.total_batches) {
+      // Generic batch progress (Doctrine contract sync, Admin SDE refresh).
+      // Same batch/total_batches vocabulary as Trading - no per-tool schema.
+      const extra = progress.message ? ` (${progress.message})` : ''
+      body = `Batch ${progress.batch}/${progress.total_batches}${extra}`
     } else if (progress.message) {
       body = progress.message
     } else if (progress.phase === 'add') {

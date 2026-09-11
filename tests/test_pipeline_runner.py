@@ -274,3 +274,70 @@ def test_job_status_ignores_a_running_job_for_a_different_tool(monkeypatch):
     status = pipeline_runner.job_status(pipeline_runner.TOOL_TRADING)
     assert status["run_id"] == "old-trading"
     assert pipeline_runner.job_status(pipeline_runner.TOOL_DOCTRINE)["run_id"] == "doc"
+
+
+def test_doctrine_sync_worker_forwards_increasing_progress(monkeypatch):
+    """start_doctrine_sync's worker must pass pipeline_runner's callback into
+    do_sync_contracts (not a one-shot static message)."""
+    from contextlib import contextmanager
+
+    from eve_trader.doctrine import actions as doctrine_actions
+
+    def fake_sync(progress_callback=None):
+        assert progress_callback is not None
+        progress_callback({"phase": "sync", "batch": 1, "total_batches": 3, "message": "Fetching contract items"})
+        progress_callback({"phase": "sync", "batch": 2, "total_batches": 3, "message": "Fetching contract items"})
+        progress_callback({"phase": "sync", "batch": 3, "total_batches": 3, "message": "Fetching contract items"})
+        return {"contracts_synced": 3}
+
+    monkeypatch.setattr(doctrine_actions, "do_sync_contracts", fake_sync)
+    progresses = []
+    monkeypatch.setattr(storage, "update_pipeline_run_progress", lambda run_id, p: progresses.append(p))
+    finished = []
+    monkeypatch.setattr(
+        storage, "finish_pipeline_run",
+        lambda run_id, status, result=None, error=None: finished.append((status, result)),
+    )
+
+    @contextmanager
+    def _enter(tenant_id):
+        yield
+
+    monkeypatch.setattr(pipeline_runner.tenant_scope, "enter_tenant", _enter)
+    pipeline_runner._run_doctrine_sync(_TENANT_ID, "run-doc")
+
+    assert [p["batch"] for p in progresses] == [1, 2, 3]
+    assert all(p["phase"] == "sync" for p in progresses)
+    assert finished == [("succeeded", {"contracts_synced": 3})]
+
+
+def test_sde_refresh_worker_forwards_increasing_progress(monkeypatch):
+    from contextlib import contextmanager
+
+    from eve_trader import admin as admin_mod
+
+    def fake_refresh(progress_callback=None):
+        assert progress_callback is not None
+        progress_callback({"phase": "run", "batch": 1, "total_batches": 13, "message": "Fetching invTypes.csv"})
+        progress_callback({"phase": "run", "batch": 2, "total_batches": 13, "message": "Fetching invGroups.csv"})
+        return {"sde_types": 2}
+
+    monkeypatch.setattr(admin_mod, "do_refresh_sde", fake_refresh)
+    progresses = []
+    monkeypatch.setattr(storage, "update_pipeline_run_progress", lambda run_id, p: progresses.append(p))
+    finished = []
+    monkeypatch.setattr(
+        storage, "finish_pipeline_run",
+        lambda run_id, status, result=None, error=None: finished.append((status, result)),
+    )
+
+    @contextmanager
+    def _enter(tenant_id):
+        yield
+
+    monkeypatch.setattr(pipeline_runner.tenant_scope, "enter_tenant", _enter)
+    pipeline_runner._run_sde_refresh(_TENANT_ID, "run-sde")
+
+    assert [p["batch"] for p in progresses] == [1, 2]
+    assert all(p["phase"] == "run" for p in progresses)
+    assert finished == [("succeeded", {"sde_types": 2})]
