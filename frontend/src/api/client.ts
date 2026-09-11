@@ -129,8 +129,10 @@ export const tradingApi = {
   addToShortlist: () => post<{ added: number }>('/api/trading/shortlist/add-new'),
   refreshShortlist: () => post<Record<string, unknown>>('/api/trading/shortlist/refresh'),
   recategorizeShortlist: () => post<{ checked: number; recategorized: number }>('/api/trading/shortlist/recategorize'),
-  refreshAndPruneCandidates: (safe = true) =>
-    post<Record<string, unknown>>(`/api/trading/candidates/refresh-and-prune?safe=${safe}`),
+  startRefreshAndPrune: (safe = true) =>
+    post<T.PipelineRunStatus>(`/api/trading/candidates/refresh-and-prune?safe=${safe}`),
+  refreshAndPruneStatus: () =>
+    get<T.PipelineRunStatus>('/api/trading/candidates/refresh-and-prune/status'),
   reconcileTrades: () => post<Record<string, unknown>>('/api/trading/trades/reconcile'),
   runPipeline: (safe = true, rebuildUniverse = false) =>
     post<Record<string, unknown>>(

@@ -32,6 +32,7 @@ _PHASE2_SCHEMA_SQL = _DOCS_DIR / "phase2_schema.sql"
 _PHASE3_SCHEMA_SQL = _DOCS_DIR / "phase3_schema.sql"
 _ADMIN_SCHEMA_SQL = _DOCS_DIR / "admin_schema.sql"
 _ROLE_CONSENT_SCHEMA_SQL = _DOCS_DIR / "role_consent_schema.sql"
+_PIPELINE_RUNS_SCHEMA_SQL = _DOCS_DIR / "pipeline_runs_schema.sql"
 
 
 @functools.lru_cache(maxsize=1)
@@ -141,6 +142,17 @@ def _apply_role_consent_schema(_apply_phase1_schema) -> None:
         return
     with psycopg.connect(OWNER_DSN, autocommit=True) as conn:
         conn.execute(_ROLE_CONSENT_SCHEMA_SQL.read_text())
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _apply_pipeline_runs_schema(_apply_phase1_schema) -> None:
+    """Same idea as _apply_phase1_schema, for docs/pipeline_runs_schema.sql
+    (tenant-scoped background-job status) - depends on _apply_phase1_schema
+    because its GRANT targets the eve_trader_app role."""
+    if not _postgres_available():
+        return
+    with psycopg.connect(OWNER_DSN, autocommit=True) as conn:
+        conn.execute(_PIPELINE_RUNS_SCHEMA_SQL.read_text())
 
 
 @pytest.fixture

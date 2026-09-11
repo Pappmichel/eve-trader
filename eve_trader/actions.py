@@ -30,6 +30,10 @@ class ActionError(RuntimeError):
     """Raised for expected/user-facing problems (missing auth, empty tables, ...)."""
 
 
+class ConflictError(ActionError):
+    """A conflicting in-progress operation already exists (HTTP 409)."""
+
+
 def now_ts() -> str:
     return dt.datetime.utcnow().isoformat(timespec="seconds")
 
@@ -205,7 +209,18 @@ def do_build_focused(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     return {"count": len(focused)}
 
 
-def do_find_new_candidates(safe: bool = True, cfg: TradingConfig = TRADING_CONFIG) -> dict:
+def _emit_progress(progress_callback, payload: dict) -> None:
+    """Best-effort: a status-write failure must never abort the real work."""
+    if progress_callback is None:
+        return
+    try:
+        progress_callback(payload)
+    except Exception:  # noqa: BLE001
+        log.exception("progress_callback failed")
+
+
+def do_find_new_candidates(safe: bool = True, cfg: TradingConfig = TRADING_CONFIG,
+                            progress_callback=None) -> dict:
     df = storage.read_table("focused_candidates")
     if df.empty:
         raise ActionError("Focused Candidates is empty - run 'Filter Candidates' first.")
@@ -231,12 +246,14 @@ def do_find_new_candidates(safe: bool = True, cfg: TradingConfig = TRADING_CONFI
         offset = storage.get_candidate_search_offset()
         results, next_offset = history_backtest.find_new_import_candidates_safe(
             candidates, existing_ids, gm, cfg, offset=offset,
-            history_sink=storage.save_goonmetrics_history, results_sink=results_sink)
+            history_sink=storage.save_goonmetrics_history, results_sink=results_sink,
+            progress_callback=progress_callback)
         storage.set_candidate_search_offset(next_offset)
     else:
         results, _ = history_backtest.find_new_import_candidates(
             candidates, existing_ids, gm, cfg,
-            history_sink=storage.save_goonmetrics_history, results_sink=results_sink)
+            history_sink=storage.save_goonmetrics_history, results_sink=results_sink,
+            progress_callback=progress_callback)
     return {"evaluated": len(results), "recommended": sum(r.add for r in results)}
 
 
@@ -695,7 +712,8 @@ def _items_to_reactivate(rows: list, cfg: TradingConfig) -> list[tuple[int, str]
 
 
 def do_refresh_and_prune_candidates(safe: bool = True, cfg: TradingConfig = TRADING_CONFIG,
-                                     oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
+                                     oauth_cfg: OAuthConfig = OAUTH_CONFIG,
+                                     progress_callback=None) -> dict:
     """One-button candidate maintenance, combining three of the manual steps
     into one: ③ find new import candidates (against the already-built
     focused_candidates universe - run ①②  yourself first, they're an
@@ -727,8 +745,11 @@ def do_refresh_and_prune_candidates(safe: bool = True, cfg: TradingConfig = TRAD
     #1/#2 above: before this existed, a deactivated item had no path back
     to active even once its economics recovered).
     """
-    find_result = do_find_new_candidates(safe=safe, cfg=cfg)
+    _emit_progress(progress_callback, {"phase": "search", "message": "Searching for new import candidates"})
+    find_result = do_find_new_candidates(safe=safe, cfg=cfg, progress_callback=progress_callback)
+    _emit_progress(progress_callback, {"phase": "add", "message": "Adding recommended candidates to the shortlist"})
     add_result = do_add_to_shortlist()
+    _emit_progress(progress_callback, {"phase": "cleanup", "message": "Refreshing shortlist prices"})
 
     items, rows, extra = _refresh_shortlist_rows(cfg, oauth_cfg)
     run_ts = now_ts()
@@ -796,6 +817,24 @@ def do_refresh_and_prune_candidates(safe: bool = True, cfg: TradingConfig = TRAD
         "reactivated_count": len(to_reactivate),
         "reactivated_items": [item for _, item in to_reactivate],
     }
+
+
+def do_start_refresh_and_prune(safe: bool = True) -> dict:
+    """Kicks off Search + Add + Clean Up as a background job and returns
+    immediately. The HTTP handler must not block on the ESI work - see
+    pipeline_runner.start_refresh_and_prune."""
+    from . import pipeline_runner
+    return pipeline_runner.start_refresh_and_prune(safe=safe)
+
+
+def do_refresh_and_prune_status() -> dict:
+    """Latest pipeline_runs row for this tenant's refresh_and_prune job, or
+    an idle placeholder when none has ever run."""
+    from .pipeline_runner import JOB_REFRESH_AND_PRUNE
+    row = storage.get_latest_pipeline_run(JOB_REFRESH_AND_PRUNE)
+    if row is None:
+        return {"run_id": None, "status": "idle", "progress": None, "result": None, "error": None}
+    return row
 
 
 def shortlist_skip_deactivation_days(cfg: TradingConfig = TRADING_CONFIG) -> dict[int, int]:

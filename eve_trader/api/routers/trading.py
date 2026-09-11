@@ -19,6 +19,8 @@ router = APIRouter()
 def _wrap(fn, **kwargs):
     try:
         return fn(**kwargs)
+    except actions.ConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except ActionError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -185,7 +187,15 @@ def recategorize_shortlist():
 
 @router.post("/candidates/refresh-and-prune")
 def refresh_and_prune_candidates(safe: bool = True):
-    return _wrap(actions.do_refresh_and_prune_candidates, safe=safe)
+    """Starts Search + Add + Clean Up as a background job and returns
+    immediately ({run_id, status: running}). Poll GET .../status for
+    progress; a second start while one is running is HTTP 409."""
+    return _wrap(actions.do_start_refresh_and_prune, safe=safe)
+
+
+@router.get("/candidates/refresh-and-prune/status")
+def refresh_and_prune_status():
+    return _wrap(actions.do_refresh_and_prune_status)
 
 
 @router.post("/seller/unlisted-stock", response_model=list[schemas.UnlistedStockRow])

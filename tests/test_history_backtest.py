@@ -193,3 +193,18 @@ def test_find_new_import_candidates_full_mode_survives_one_bad_batch():
     result_ids = {r.type_id for r in results}
     assert result_ids == set(range(10)) - {3, 4, 5}
     assert sum(len(b) for b in saved_batches) == len(result_ids)
+
+
+def test_find_new_import_candidates_reports_progress_per_batch():
+    cfg = TradingConfig(import_cost_per_m3=900.0, structure_sell_haircut=0.95,
+                         min_margin_threshold=0.05, min_hit_rate=0.3, safe_mode_max_ids=3)
+    progress = []
+    results, _ = find_new_import_candidates(
+        _candidates(range(7)), existing_item_ids=set(),
+        client=_FakeGoonmetricsClient(cfg), cfg=cfg,
+        progress_callback=progress.append)
+    assert {r.type_id for r in results} == set(range(7))
+    assert [p["batch"] for p in progress] == [1, 2, 3]
+    assert progress[-1]["total_batches"] == 3
+    assert progress[-1]["evaluated"] == 7
+    assert all(p["phase"] == "search" for p in progress)

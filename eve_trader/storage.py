@@ -33,6 +33,7 @@ import functools
 import os
 import re
 import threading
+import uuid
 from contextlib import contextmanager
 from functools import lru_cache
 from typing import Iterable, Optional
@@ -1946,6 +1947,104 @@ def set_candidate_search_offset(offset: int) -> None:
             "ON CONFLICT(tenant_id, id) DO UPDATE SET offset_value=excluded.offset_value",
             (offset,),
         )
+
+
+def _serialize_pipeline_run(row) -> dict:
+    """Turns a pipeline_runs SELECT row into the JSON-safe dict the status
+    endpoint / frontend poll. psycopg returns UUID/datetime/JSONB natively."""
+    run_id, job_name, status, started_at, updated_at, finished_at, progress, result, error = row
+    return {
+        "run_id": str(run_id),
+        "job_name": job_name,
+        "status": status,
+        "started_at": started_at.isoformat() if started_at else None,
+        "updated_at": updated_at.isoformat() if updated_at else None,
+        "finished_at": finished_at.isoformat() if finished_at else None,
+        "progress": progress,
+        "result": result,
+        "error": error,
+    }
+
+
+def start_pipeline_run(job_name: str) -> str:
+    """Inserts a `running` row and returns its id. Raises psycopg
+    UniqueViolation if this tenant already has a running row for
+    `job_name` (see pipeline_runs_one_running) - the runner converts that
+    to ConflictError."""
+    run_id = str(uuid.uuid4())
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO pipeline_runs (id, job_name, status) VALUES (?, ?, 'running')",
+            (run_id, job_name),
+        )
+    return run_id
+
+
+def update_pipeline_run_progress(run_id: str, progress: dict) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE pipeline_runs SET progress = ?, updated_at = now() WHERE id = ?",
+            (Jsonb(progress), run_id),
+        )
+
+
+def finish_pipeline_run(run_id: str, status: str, result: Optional[dict] = None,
+                         error: Optional[str] = None) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE pipeline_runs SET status = ?, finished_at = now(), updated_at = now(), "
+            "result = ?, error = ? WHERE id = ?",
+            (status, Jsonb(result) if result is not None else None, error, run_id),
+        )
+
+
+def get_running_pipeline_run(job_name: str) -> Optional[dict]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT id, job_name, status, started_at, updated_at, finished_at, progress, result, error "
+            "FROM pipeline_runs WHERE job_name = ? AND status = 'running' "
+            "ORDER BY started_at DESC LIMIT 1",
+            (job_name,),
+        ).fetchone()
+    return _serialize_pipeline_run(row) if row else None
+
+
+def get_latest_pipeline_run(job_name: str) -> Optional[dict]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT id, job_name, status, started_at, updated_at, finished_at, progress, result, error "
+            "FROM pipeline_runs WHERE job_name = ? "
+            "ORDER BY started_at DESC LIMIT 1",
+            (job_name,),
+        ).fetchone()
+    return _serialize_pipeline_run(row) if row else None
+
+
+def get_pipeline_run(run_id: str) -> Optional[dict]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT id, job_name, status, started_at, updated_at, finished_at, progress, result, error "
+            "FROM pipeline_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+    return _serialize_pipeline_run(row) if row else None
+
+
+def fail_stale_pipeline_runs(job_name: str, stale_after_seconds: int = 7200) -> int:
+    """Marks `running` rows whose updated_at is older than `stale_after_seconds`
+    as failed so a crashed worker can't block this tenant forever. Returns
+    how many rows were flipped. 2h default is well above a legitimate full
+    search of a large universe, and well below "wait until someone notices
+    the button is stuck"."""
+    with connect() as conn:
+        cur = conn.execute(
+            "UPDATE pipeline_runs SET status = 'failed', finished_at = now(), updated_at = now(), "
+            "error = 'Stale running job (process restarted or hung)' "
+            "WHERE job_name = ? AND status = 'running' "
+            "AND updated_at < now() - (? * INTERVAL '1 second')",
+            (job_name, stale_after_seconds),
+        )
+        return cur.rowcount or 0
 
 
 def get_esi_sync_time(scope: str) -> Optional[str]:

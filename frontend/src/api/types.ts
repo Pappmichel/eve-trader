@@ -176,6 +176,28 @@ export interface TradingSettings {
   seller_character_name: string | null
 }
 
+export interface PipelineRunProgress {
+  phase?: string
+  batch?: number
+  total_batches?: number
+  evaluated?: number
+  skipped?: number
+  refreshed?: number
+  message?: string
+}
+
+export interface PipelineRunStatus {
+  run_id: string | null
+  job_name?: string
+  status: 'idle' | 'running' | 'succeeded' | 'failed'
+  started_at?: string | null
+  updated_at?: string | null
+  finished_at?: string | null
+  progress?: PipelineRunProgress | null
+  result?: Record<string, unknown> | null
+  error?: string | null
+}
+
 export interface TradingKpis {
   shortlist_count: number
   import_candidates: number
