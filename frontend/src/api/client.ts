@@ -127,13 +127,15 @@ export const tradingApi = {
   findNewCandidates: (safe = true) =>
     post<{ evaluated: number; recommended: number }>(`/api/trading/candidates/find-new?safe=${safe}`),
   addToShortlist: () => post<{ added: number }>('/api/trading/shortlist/add-new'),
-  refreshShortlist: () => post<Record<string, unknown>>('/api/trading/shortlist/refresh'),
+  refreshShortlist: () => post<T.PipelineRunStatus>('/api/trading/shortlist/refresh'),
   recategorizeShortlist: () => post<{ checked: number; recategorized: number }>('/api/trading/shortlist/recategorize'),
-  refreshAndPruneCandidates: (safe = true) =>
-    post<Record<string, unknown>>(`/api/trading/candidates/refresh-and-prune?safe=${safe}`),
+  startRefreshAndPrune: (safe = true) =>
+    post<T.PipelineRunStatus>(`/api/trading/candidates/refresh-and-prune?safe=${safe}`),
+  refreshAndPruneStatus: () =>
+    get<T.PipelineRunStatus>('/api/trading/candidates/refresh-and-prune/status'),
   reconcileTrades: () => post<Record<string, unknown>>('/api/trading/trades/reconcile'),
   runPipeline: (safe = true, rebuildUniverse = false) =>
-    post<Record<string, unknown>>(
+    post<T.PipelineRunStatus>(
       `/api/trading/pipeline/run?safe=${safe}&rebuild_universe=${rebuildUniverse}`,
     ),
   checkSellerUnlistedStock: () => post<T.UnlistedStockRow[]>('/api/trading/seller/unlisted-stock'),

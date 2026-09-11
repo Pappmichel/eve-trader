@@ -163,6 +163,7 @@ export interface TradingSettings {
   skip_grace_period_days: number
   enforce_shortlist_cap: boolean
   max_active_shortlist_items: number
+  max_shortlist_growth_per_run: number
   min_hit_rate: number
   min_avg_movement: number
   excluded_path_prefixes: string[]
@@ -174,6 +175,28 @@ export interface TradingSettings {
   structure_market_slug: string | null
   buyer_character_name: string | null
   seller_character_name: string | null
+}
+
+export interface PipelineRunProgress {
+  phase?: string
+  batch?: number
+  total_batches?: number
+  evaluated?: number
+  skipped?: number
+  refreshed?: number
+  message?: string
+}
+
+export interface PipelineRunStatus {
+  run_id: string | null
+  job_name?: string
+  status: 'idle' | 'running' | 'succeeded' | 'failed'
+  started_at?: string | null
+  updated_at?: string | null
+  finished_at?: string | null
+  progress?: PipelineRunProgress | null
+  result?: Record<string, unknown> | null
+  error?: string | null
 }
 
 export interface TradingKpis {

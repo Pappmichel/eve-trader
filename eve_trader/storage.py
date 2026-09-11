@@ -33,6 +33,7 @@ import functools
 import os
 import re
 import threading
+import uuid
 from contextlib import contextmanager
 from functools import lru_cache
 from typing import Iterable, Optional
@@ -743,24 +744,111 @@ def update_shortlist_meta_levels(meta_levels: dict[int, int]) -> None:
 def load_shortlist() -> list[ShortlistItem]:
     with connect() as conn:
         rows = conn.execute(
-            "SELECT item_id, item, category, volume_m3, active, meta_level FROM shortlist"
+            "SELECT item_id, item, category, volume_m3, active, meta_level, refreshed_at FROM shortlist"
         ).fetchall()
     return [ShortlistItem(item=r[1], item_id=r[0], category=r[2], volume_m3=r[3], active=bool(r[4]),
-                           meta_level=r[5]) for r in rows]
+                           meta_level=r[5],
+                           refreshed_at=r[6].isoformat() if r[6] is not None else None) for r in rows]
 
 
-def save_shortlist_snapshot(rows: list[ShortlistRow], run_ts: str) -> None:
+def mark_shortlist_refreshed(item_ids: Iterable[int], refreshed_at: str) -> None:
+    """Records when cleanup last successfully re-priced each item_id - the
+    rotation cursor for _refresh_shortlist_rows (oldest / NULL first)."""
+    item_ids = list(item_ids)
+    if not item_ids:
+        return
     with connect() as conn:
         conn.executemany(
-            "INSERT INTO shortlist_snapshot (run_ts, item_id, item, category, landed_cost, net_sell, "
-            "sell_volume, own_orders_remaining, profit_per_unit, margin, profit_per_m3, decision, active, "
-            "volume_m3, jita_sell, import_cost, meta_level, avg_daily_volume) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            [(run_ts, r.item_id, r.item, r.category, r.landed_cost, r.net_sell, r.sell_volume,
-              r.own_orders_remaining, r.profit_per_unit, r.margin, r.profit_per_m3, r.decision,
-              int(r.active), r.volume_m3, r.jita_sell, r.import_cost, r.meta_level,
-              r.avg_daily_volume) for r in rows],
+            "UPDATE shortlist SET refreshed_at = ? WHERE item_id = ?",
+            [(refreshed_at, i) for i in item_ids],
         )
+
+
+_SHORTLIST_SNAPSHOT_INSERT = (
+    "INSERT INTO shortlist_snapshot (run_ts, item_id, item, category, landed_cost, net_sell, "
+    "sell_volume, own_orders_remaining, profit_per_unit, margin, profit_per_m3, decision, active, "
+    "volume_m3, jita_sell, import_cost, meta_level, avg_daily_volume) "
+    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+)
+
+
+def _shortlist_snapshot_params(rows: list[ShortlistRow], run_ts: str) -> list[tuple]:
+    return [(run_ts, r.item_id, r.item, r.category, r.landed_cost, r.net_sell, r.sell_volume,
+             r.own_orders_remaining, r.profit_per_unit, r.margin, r.profit_per_m3, r.decision,
+             int(r.active), r.volume_m3, r.jita_sell, r.import_cost, r.meta_level,
+             r.avg_daily_volume) for r in rows]
+
+
+def replace_shortlist_snapshot_run(rows: list[ShortlistRow], run_ts: str) -> None:
+    """Replaces every shortlist_snapshot row for this run_ts (RLS-scoped).
+
+    Cleanup writes the same run_ts after each successful batch so a crash
+    mid-job still leaves the Shortlist page with whatever has been priced
+    plus carried-forward previous rows, rather than blanking it. The prune
+    pass overwrites that same run_ts after same-run deactivations so the
+    snapshot the page reads (latest_snapshot = MAX(run_ts)) reflects Inactive.
+    Incremental, not a second run_ts. Earlier run_ts values stay as history.
+    """
+    with connect() as conn:
+        conn.execute("DELETE FROM shortlist_snapshot WHERE run_ts = ?", (run_ts,))
+        if rows:
+            conn.executemany(_SHORTLIST_SNAPSHOT_INSERT, _shortlist_snapshot_params(rows, run_ts))
+
+
+def _snapshot_na_none(value):
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return value
+
+
+def _snapshot_opt_float(value) -> Optional[float]:
+    value = _snapshot_na_none(value)
+    return None if value is None else float(value)
+
+
+def _snapshot_opt_int(value) -> Optional[int]:
+    value = _snapshot_na_none(value)
+    return None if value is None else int(value)
+
+
+def load_latest_shortlist_rows() -> list[ShortlistRow]:
+    """ShortlistRow view of latest_snapshot() - used to carry forward
+    last-known-good prices for cleanup batches that fail this run, so a
+    skipped item is not rewritten as 'No market data' (which would wrongly
+    start a skip-deactivation streak)."""
+    df = latest_snapshot()
+    if df.empty:
+        return []
+    rows: list[ShortlistRow] = []
+    for rec in df.to_dict("records"):
+        item_id = _snapshot_opt_int(rec.get("item_id"))
+        if item_id is None:
+            continue
+        rows.append(ShortlistRow(
+            item=rec.get("item") or "",
+            category=rec.get("category") or "",
+            landed_cost=_snapshot_opt_float(rec.get("landed_cost")),
+            net_sell=_snapshot_opt_float(rec.get("net_sell")),
+            sell_volume=_snapshot_opt_float(rec.get("sell_volume")),
+            own_orders_remaining=float(rec.get("own_orders_remaining") or 0),
+            profit_per_unit=_snapshot_opt_float(rec.get("profit_per_unit")),
+            margin=_snapshot_opt_float(rec.get("margin")),
+            profit_per_m3=_snapshot_opt_float(rec.get("profit_per_m3")),
+            decision=rec.get("decision") or "",
+            active=bool(rec.get("active")),
+            item_id=item_id,
+            volume_m3=float(rec.get("volume_m3") or 0),
+            jita_sell=_snapshot_opt_float(rec.get("jita_sell")),
+            import_cost=_snapshot_opt_float(rec.get("import_cost")),
+            meta_level=_snapshot_opt_int(rec.get("meta_level")),
+            avg_daily_volume=_snapshot_opt_float(rec.get("avg_daily_volume")),
+        ))
+    return rows
 
 
 def update_snapshot_categories(categories: dict[int, str]) -> None:
@@ -1946,6 +2034,136 @@ def set_candidate_search_offset(offset: int) -> None:
             "ON CONFLICT(tenant_id, id) DO UPDATE SET offset_value=excluded.offset_value",
             (offset,),
         )
+
+
+def _serialize_pipeline_run(row) -> dict:
+    """Turns a pipeline_runs SELECT row into the JSON-safe dict the status
+    endpoint / frontend poll. psycopg returns UUID/datetime/JSONB natively."""
+    run_id, job_name, status, started_at, updated_at, finished_at, progress, result, error = row
+    return {
+        "run_id": str(run_id),
+        "job_name": job_name,
+        "status": status,
+        "started_at": started_at.isoformat() if started_at else None,
+        "updated_at": updated_at.isoformat() if updated_at else None,
+        "finished_at": finished_at.isoformat() if finished_at else None,
+        "progress": progress,
+        "result": result,
+        "error": error,
+    }
+
+
+def start_pipeline_run(job_name: str) -> str:
+    """Inserts a `running` row and returns its id. Raises psycopg
+    UniqueViolation if this tenant already has any running Trading job
+    (see pipeline_runs_one_running_per_tenant) - the runner converts that
+    to ConflictError."""
+    run_id = str(uuid.uuid4())
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO pipeline_runs (id, job_name, status) VALUES (?, ?, 'running')",
+            (run_id, job_name),
+        )
+    return run_id
+
+
+def update_pipeline_run_progress(run_id: str, progress: dict) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE pipeline_runs SET progress = ?, updated_at = now() WHERE id = ?",
+            (Jsonb(progress), run_id),
+        )
+
+
+def finish_pipeline_run(run_id: str, status: str, result: Optional[dict] = None,
+                         error: Optional[str] = None) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE pipeline_runs SET status = ?, finished_at = now(), updated_at = now(), "
+            "result = ?, error = ? WHERE id = ?",
+            (status, Jsonb(result) if result is not None else None, error, run_id),
+        )
+
+
+def get_running_pipeline_run(job_name: Optional[str] = None) -> Optional[dict]:
+    """The in-flight Trading job for this tenant. `job_name=None` (the
+    default) matches any job - Refresh Shortlist / Search+Add+Clean Up /
+    Pipeline share one running lock. Pass a name only when a caller
+    genuinely cares which job is running."""
+    with connect() as conn:
+        if job_name is None:
+            row = conn.execute(
+                "SELECT id, job_name, status, started_at, updated_at, finished_at, progress, result, error "
+                "FROM pipeline_runs WHERE status = 'running' "
+                "ORDER BY started_at DESC LIMIT 1",
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT id, job_name, status, started_at, updated_at, finished_at, progress, result, error "
+                "FROM pipeline_runs WHERE job_name = ? AND status = 'running' "
+                "ORDER BY started_at DESC LIMIT 1",
+                (job_name,),
+            ).fetchone()
+    return _serialize_pipeline_run(row) if row else None
+
+
+def get_latest_pipeline_run(job_name: Optional[str] = None) -> Optional[dict]:
+    """Most recently started Trading job for this tenant (`job_name=None`
+    = any of the three). Running rows sort first only by started_at, not
+    status - callers that need the in-flight job should use
+    get_running_pipeline_run."""
+    with connect() as conn:
+        if job_name is None:
+            row = conn.execute(
+                "SELECT id, job_name, status, started_at, updated_at, finished_at, progress, result, error "
+                "FROM pipeline_runs ORDER BY started_at DESC LIMIT 1",
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT id, job_name, status, started_at, updated_at, finished_at, progress, result, error "
+                "FROM pipeline_runs WHERE job_name = ? "
+                "ORDER BY started_at DESC LIMIT 1",
+                (job_name,),
+            ).fetchone()
+    return _serialize_pipeline_run(row) if row else None
+
+
+def get_pipeline_run(run_id: str) -> Optional[dict]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT id, job_name, status, started_at, updated_at, finished_at, progress, result, error "
+            "FROM pipeline_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+    return _serialize_pipeline_run(row) if row else None
+
+
+def fail_stale_pipeline_runs(job_name: Optional[str] = None, stale_after_seconds: int = 7200) -> int:
+    """Marks `running` rows whose updated_at is older than `stale_after_seconds`
+    as failed so a crashed worker can't block this tenant forever. Returns
+    how many rows were flipped. 2h default is well above a legitimate full
+    search of a large universe, and well below "wait until someone notices
+    the button is stuck". `job_name=None` covers every Trading job for this
+    tenant (the shared lock means a stale Pipeline would otherwise block
+    Refresh Shortlist)."""
+    with connect() as conn:
+        if job_name is None:
+            cur = conn.execute(
+                "UPDATE pipeline_runs SET status = 'failed', finished_at = now(), updated_at = now(), "
+                "error = 'Stale running job (process restarted or hung)' "
+                "WHERE status = 'running' "
+                "AND updated_at < now() - (? * INTERVAL '1 second')",
+                (stale_after_seconds,),
+            )
+        else:
+            cur = conn.execute(
+                "UPDATE pipeline_runs SET status = 'failed', finished_at = now(), updated_at = now(), "
+                "error = 'Stale running job (process restarted or hung)' "
+                "WHERE job_name = ? AND status = 'running' "
+                "AND updated_at < now() - (? * INTERVAL '1 second')",
+                (job_name, stale_after_seconds),
+            )
+        return cur.rowcount or 0
 
 
 def get_esi_sync_time(scope: str) -> Optional[str]:

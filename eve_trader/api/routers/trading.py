@@ -19,6 +19,8 @@ router = APIRouter()
 def _wrap(fn, **kwargs):
     try:
         return fn(**kwargs)
+    except actions.ConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except ActionError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -106,6 +108,7 @@ class TradingSettings(BaseModel):
     skip_grace_period_days: int
     enforce_shortlist_cap: bool
     max_active_shortlist_items: int
+    max_shortlist_growth_per_run: int
     min_hit_rate: float
     min_avg_movement: float
     excluded_path_prefixes: list[str]
@@ -175,7 +178,11 @@ def add_to_shortlist():
 
 @router.post("/shortlist/refresh")
 def refresh_shortlist():
-    return _wrap(actions.do_refresh_shortlist)
+    """Starts Refresh Shortlist as a background job and returns immediately
+    ({run_id, status: running}). Poll GET /candidates/refresh-and-prune/status
+    for progress; a second start while any Trading job is running is HTTP 409.
+    Empty shortlist is still HTTP 400 (fail-fast, no pipeline_runs row)."""
+    return _wrap(actions.do_start_refresh_shortlist)
 
 
 @router.post("/shortlist/recategorize")
@@ -185,7 +192,18 @@ def recategorize_shortlist():
 
 @router.post("/candidates/refresh-and-prune")
 def refresh_and_prune_candidates(safe: bool = True):
-    return _wrap(actions.do_refresh_and_prune_candidates, safe=safe)
+    """Starts Search + Add + Clean Up as a background job and returns
+    immediately ({run_id, status: running}). Poll GET .../status for
+    progress; a second start while any Trading job is running is HTTP 409."""
+    return _wrap(actions.do_start_refresh_and_prune, safe=safe)
+
+
+@router.get("/candidates/refresh-and-prune/status")
+def refresh_and_prune_status():
+    """Currently-running Trading job for this tenant (Refresh Shortlist,
+    Search + Add + Clean Up, or Run Complete Pipeline), else the latest
+    finished one. One poller - the three jobs share a lock."""
+    return _wrap(actions.do_trading_job_status)
 
 
 @router.post("/seller/unlisted-stock", response_model=list[schemas.UnlistedStockRow])
@@ -246,4 +264,6 @@ def get_wallet_balance(role_key: str):
 
 @router.post("/pipeline/run")
 def run_pipeline(safe: bool = True, rebuild_universe: bool = False):
-    return _wrap(actions.do_pipeline, safe=safe, rebuild_universe=rebuild_universe)
+    """Starts Run Complete Pipeline as a background job and returns
+    immediately. Scheduler/CLI still call do_pipeline in-process."""
+    return _wrap(actions.do_start_pipeline, safe=safe, rebuild_universe=rebuild_universe)

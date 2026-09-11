@@ -224,6 +224,7 @@ def find_new_import_candidates(candidates: list[Candidate], existing_item_ids: s
                                 offset: int = 0,
                                 history_sink=None,
                                 results_sink: Optional[Callable[[list[NewCandidateResult]], None]] = None,
+                                progress_callback: Optional[Callable[[dict], None]] = None,
                                 ) -> tuple[list[NewCandidateResult], int]:
     """Full scan, or a "safe" (rate-limited) one if `max_ids` is set - see
     select_candidate_window for how safe mode rotates through the candidate
@@ -259,6 +260,11 @@ def find_new_import_candidates(candidates: list[Candidate], existing_item_ids: s
     fallback couldn't route around, an unexpected parsing error, etc.)
     doesn't lose the results already computed for every other batch - it's
     logged and skipped instead of aborting the whole run.
+
+    `progress_callback`, if given, is called after every batch (success or
+    skip) with {phase, batch, total_batches, evaluated, skipped} so a
+    background runner can persist real progress into pipeline_runs instead
+    of only logging it.
     """
     client = client or GoonmetricsClient(cfg)
     seen_ids: set[int] = set()
@@ -278,6 +284,7 @@ def find_new_import_candidates(candidates: list[Candidate], existing_item_ids: s
         batches = [new_candidates[i:i + batch_size] for i in range(0, len(new_candidates), batch_size)]
 
     all_results: list[NewCandidateResult] = []
+    skipped = 0
     total_batches = len(batches)
     for batch_num, batch in enumerate(batches, start=1):
         if not batch:
@@ -296,6 +303,18 @@ def find_new_import_candidates(candidates: list[Candidate], existing_item_ids: s
         except Exception:  # noqa: BLE001 - one bad batch must not lose every other batch's results
             log.exception("Candidate batch %d/%d (%d items) failed - skipping it, continuing with the rest.",
                            batch_num, total_batches, len(batch))
+            skipped += len(batch)
+            if progress_callback is not None:
+                try:
+                    progress_callback({
+                        "phase": "search",
+                        "batch": batch_num,
+                        "total_batches": total_batches,
+                        "evaluated": len(all_results),
+                        "skipped": skipped,
+                    })
+                except Exception:  # noqa: BLE001
+                    log.exception("progress_callback failed after skipped search batch")
             continue
 
         batch_results.sort(key=lambda r: (r.score, r.latest_margin), reverse=True)
@@ -305,6 +324,17 @@ def find_new_import_candidates(candidates: list[Candidate], existing_item_ids: s
         if total_batches > 1:
             log.info("Candidate search: batch %d/%d done (%d evaluated so far).",
                       batch_num, total_batches, len(all_results))
+        if progress_callback is not None:
+            try:
+                progress_callback({
+                    "phase": "search",
+                    "batch": batch_num,
+                    "total_batches": total_batches,
+                    "evaluated": len(all_results),
+                    "skipped": skipped,
+                })
+            except Exception:  # noqa: BLE001
+                log.exception("progress_callback failed after search batch")
 
     all_results.sort(key=lambda r: (r.score, r.latest_margin), reverse=True)
     return all_results, next_offset
@@ -316,6 +346,7 @@ def find_new_import_candidates_safe(candidates: list[Candidate], existing_item_i
                                      offset: int = 0,
                                      history_sink=None,
                                      results_sink: Optional[Callable[[list[NewCandidateResult]], None]] = None,
+                                     progress_callback: Optional[Callable[[dict], None]] = None,
                                      ) -> tuple[list[NewCandidateResult], int]:
     """Rate-limited variant: caps at cfg.safe_mode_max_ids and uses
     cfg.chunk_size-sized Goonmetrics requests so large candidate universes
@@ -323,4 +354,5 @@ def find_new_import_candidates_safe(candidates: list[Candidate], existing_item_i
     """
     return find_new_import_candidates(candidates, existing_item_ids, client, cfg,
                                        max_ids=cfg.safe_mode_max_ids, offset=offset,
-                                       history_sink=history_sink, results_sink=results_sink)
+                                       history_sink=history_sink, results_sink=results_sink,
+                                       progress_callback=progress_callback)

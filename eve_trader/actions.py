@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import math
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 import pandas as pd
@@ -18,7 +19,7 @@ from .config import (OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, Tra
                      save_tenant_config_overrides)
 from .esi_client import ESIClient, ESIError
 from .goonmetrics_client import GoonmetricsClient
-from .models import Candidate, ShortlistItem, UndercutRow, UnlistedStockRow
+from .models import Candidate, ShortlistItem, ShortlistRow, UndercutRow, UnlistedStockRow
 from .shortlist import (NO_MARKET_DATA_DECISION, SKIP_DECISION, _decision, audit_shortlist, average_market_daily_volume,
                          evaluate_shortlist, summary_counts, top_imports_by_daily_profit)
 from .trade_reconciliation import fetch_recent_transactions, reconcile_realized_trades, summarize_realized
@@ -28,6 +29,10 @@ log = logging.getLogger("eve_trader.actions")
 
 class ActionError(RuntimeError):
     """Raised for expected/user-facing problems (missing auth, empty tables, ...)."""
+
+
+class ConflictError(ActionError):
+    """A conflicting in-progress operation already exists (HTTP 409)."""
 
 
 def now_ts() -> str:
@@ -205,7 +210,18 @@ def do_build_focused(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     return {"count": len(focused)}
 
 
-def do_find_new_candidates(safe: bool = True, cfg: TradingConfig = TRADING_CONFIG) -> dict:
+def _emit_progress(progress_callback, payload: dict) -> None:
+    """Best-effort: a status-write failure must never abort the real work."""
+    if progress_callback is None:
+        return
+    try:
+        progress_callback(payload)
+    except Exception:  # noqa: BLE001
+        log.exception("progress_callback failed")
+
+
+def do_find_new_candidates(safe: bool = True, cfg: TradingConfig = TRADING_CONFIG,
+                            progress_callback=None) -> dict:
     df = storage.read_table("focused_candidates")
     if df.empty:
         raise ActionError("Focused Candidates is empty - run 'Filter Candidates' first.")
@@ -231,21 +247,49 @@ def do_find_new_candidates(safe: bool = True, cfg: TradingConfig = TRADING_CONFI
         offset = storage.get_candidate_search_offset()
         results, next_offset = history_backtest.find_new_import_candidates_safe(
             candidates, existing_ids, gm, cfg, offset=offset,
-            history_sink=storage.save_goonmetrics_history, results_sink=results_sink)
+            history_sink=storage.save_goonmetrics_history, results_sink=results_sink,
+            progress_callback=progress_callback)
         storage.set_candidate_search_offset(next_offset)
     else:
         results, _ = history_backtest.find_new_import_candidates(
             candidates, existing_ids, gm, cfg,
-            history_sink=storage.save_goonmetrics_history, results_sink=results_sink)
+            history_sink=storage.save_goonmetrics_history, results_sink=results_sink,
+            progress_callback=progress_callback)
     return {"evaluated": len(results), "recommended": sum(r.add for r in results)}
 
 
-def do_add_to_shortlist() -> dict:
+def _new_candidates_to_add(df: pd.DataFrame, existing_ids: set[int],
+                            max_growth: int) -> tuple[pd.DataFrame, int]:
+    """Splits the latest run's add_flag=1 rows into (to_upsert, deferred_count).
+
+    Ranking matches history_backtest.find_new_import_candidates: (score,
+    latest_margin) descending. Item ids already on the shortlist always
+    upsert (category re-derive, not growth). Brand-new ids are capped at
+    `max_growth`; the rest stay in new_candidates with add_flag=1 and are
+    considered again on the next run - nothing is discarded.
+    """
+    if df.empty:
+        return df, 0
+    ranked = df.sort_values(["score", "latest_margin"], ascending=False, kind="mergesort")
+    already = ranked[ranked["type_id"].isin(existing_ids)]
+    newcomers = ranked[~ranked["type_id"].isin(existing_ids)]
+    take = newcomers.head(max_growth)
+    deferred = int(len(newcomers) - len(take))
+    if already.empty:
+        return take, deferred
+    return pd.concat([already, take], ignore_index=True), deferred
+
+
+def do_add_to_shortlist(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     df = storage.read_table("new_candidates")
     if df.empty:
         raise ActionError("No 'New Candidates' available - run '⚡ Search + Add + Clean Up' first.")
     latest_run = df["run_ts"].max()
     df = df[(df["run_ts"] == latest_run) & (df["add_flag"] == 1)]
+    existing_ids = {i.item_id for i in storage.load_shortlist() if i.item_id}
+    df, deferred = _new_candidates_to_add(df, existing_ids, cfg.max_shortlist_growth_per_run)
+    if df.empty:
+        return {"added": 0, "deferred": deferred}
     # Re-derive category fresh from the SDE instead of trusting new_candidates.
     # category - that value was computed whenever candidate_universe/
     # focused_candidates were last rebuilt (① Load Market Groups / ② Filter
@@ -262,7 +306,7 @@ def do_add_to_shortlist() -> dict:
                             volume_m3=r.volume_m3, active=True,
                             meta_level=_int_or_none(r.meta_level)) for r in df.itertuples()]
     storage.upsert_shortlist(items)
-    return {"added": len(items)}
+    return {"added": len(items), "deferred": deferred}
 
 
 def do_recategorize_shortlist() -> dict:
@@ -295,27 +339,45 @@ def do_recategorize_shortlist() -> dict:
     return {"checked": len(items), "recategorized": changed}
 
 
-def _backfill_meta_levels(items: list[ShortlistItem], client: ESIClient) -> dict:
+def _backfill_meta_levels(items: list[ShortlistItem], client: ESIClient,
+                           max_workers: int = 10) -> dict:
     """Fills in meta_level for shortlist items that don't have one cached yet
     (e.g. added manually, or added before this field existed) and persists it
     so future runs don't re-fetch it. Best-effort - a lookup failure for one
     item shouldn't block the whole refresh.
+
+    Parallelized with ThreadPoolExecutor + storage.with_current_tenant the
+    same way esi_client.region_order_stats_bulk is: get_meta_level is one
+    ESI call per missing item, so sequential backfill of a large shortlist
+    would dominate cleanup the same way per-item Jita order-book calls used
+    to. Worker threads don't inherit the submitting thread's tenant
+    contextvar (see storage.with_current_tenant).
     """
     missing = [i for i in items if i.item_id and i.meta_level is None]
     if not missing:
         return {"checked": 0, "fetched": 0, "no_attribute": 0, "failed": 0}
     fetched: dict[int, int] = {}
     failed = 0
-    for item in missing:
+    by_id = {i.item_id: i for i in missing}
+
+    def _fetch(item_id: int) -> tuple[int, Optional[int], Optional[Exception]]:
         try:
-            level = client.get_meta_level(item.item_id)
+            return item_id, client.get_meta_level(item_id), None
         except Exception as e:  # noqa: BLE001
-            log.warning("Could not fetch meta level for %s (%s): %s", item.item, item.item_id, e)
-            failed += 1
-            continue
-        if level is not None:
-            fetched[item.item_id] = level
-            item.meta_level = level
+            return item_id, None, e
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [pool.submit(storage.with_current_tenant(_fetch), item_id) for item_id in by_id]
+        for future in as_completed(futures):
+            item_id, level, err = future.result()
+            if err is not None:
+                item = by_id[item_id]
+                log.warning("Could not fetch meta level for %s (%s): %s", item.item, item_id, err)
+                failed += 1
+                continue
+            if level is not None:
+                fetched[item_id] = level
+                by_id[item_id].meta_level = level
     if fetched:
         storage.update_shortlist_meta_levels(fetched)
     return {
@@ -326,16 +388,85 @@ def _backfill_meta_levels(items: list[ShortlistItem], client: ESIClient) -> dict
     }
 
 
+def select_shortlist_refresh_batches(items: list[ShortlistItem], batch_size: int) -> list[list[ShortlistItem]]:
+    """Chunks `items` into `batch_size` groups, oldest refreshed_at first
+    (NULL / never-refreshed first, then item_id for stability).
+
+    Analogous to history_backtest.select_candidate_window, except the cursor
+    is per-item (shortlist.refreshed_at) rather than a list offset: a
+    crashed mid-job run automatically retries the oldest/never-refreshed
+    items first on the next call, so no item can permanently stick at the
+    end of a rotating window. Unlike safe-mode search (one window per run,
+    because the candidate universe is tens of thousands of Goonmetrics
+    histories), one cleanup job walks every batch: after Phase 2 moved this
+    off the HTTP request, a single click can finish the tenant's own
+    shortlist without a proxy timeout. Batching still bounds ESI burst size
+    (region_order_stats_bulk's max_workers is the in-flight cap regardless
+    of shortlist length). Coverage within one successful job is the whole
+    list; within ceil(N/batch_size) batches if a job dies mid-way and is
+    retried - well inside 24h with repeated runs.
+    """
+    if batch_size < 1:
+        batch_size = 1
+    ordered = sorted(
+        items,
+        key=lambda i: (i.refreshed_at is not None, i.refreshed_at or "", i.item_id or 0),
+    )
+    return [ordered[i:i + batch_size] for i in range(0, len(ordered), batch_size)]
+
+
+def _merge_cleanup_snapshot_rows(
+    items: list[ShortlistItem],
+    priced_by_id: dict[int, ShortlistRow],
+    previous_by_id: dict[int, ShortlistRow],
+    unpriced_rows: list[ShortlistRow],
+) -> list[ShortlistRow]:
+    """This-run prices win; last-known-good snapshot fills failed/not-yet
+    batches so the Shortlist page never blanks and a skipped item is not
+    rewritten as 'No market data'."""
+    rows = list(unpriced_rows)
+    for item in items:
+        if not item.item_id:
+            continue
+        if item.item_id in priced_by_id:
+            rows.append(priced_by_id[item.item_id])
+        elif item.item_id in previous_by_id:
+            rows.append(previous_by_id[item.item_id])
+    return rows
+
+
+def _persist_cleanup_snapshot(rows: list[ShortlistRow], run_ts: str) -> None:
+    """Best-effort in-progress write - a snapshot persist must never abort
+    cleanup (same stance as history_backtest's results_sink)."""
+    if not rows:
+        return
+    try:
+        storage.replace_shortlist_snapshot_run(rows, run_ts)
+    except Exception:  # noqa: BLE001
+        log.exception("Could not persist in-progress cleanup snapshot for run_ts %s", run_ts)
+
+
 def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
-                             oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> tuple[list[ShortlistItem], list, dict]:
+                             oauth_cfg: OAuthConfig = OAUTH_CONFIG,
+                             progress_callback=None) -> tuple[list[ShortlistItem], list, dict]:
     """Shared core of do_refresh_shortlist: re-fetches live market data for
-    every active shortlist item and recomputes each one's decision (does NOT
-    save the snapshot itself - callers do that once they're done using the
-    rows, see do_refresh_shortlist / do_refresh_and_prune_candidates). Returns
-    (items, rows, extra) where `extra` holds the ESI-derived counts both
-    callers surface in their result dict - factored out so
-    do_refresh_and_prune_candidates can reuse the freshly computed `rows`
-    (in particular each item's decision) without a second recompute."""
+    every shortlist item and recomputes each one's decision. Persists the
+    in-progress snapshot incrementally (same run_ts after each batch) so a
+    crash doesn't lose already-priced rows or blank the Shortlist page;
+    callers that then deactivate items (do_refresh_and_prune_candidates)
+    overwrite that same run_ts after prune so same-run Inactive still lands
+    in MAX(run_ts). Returns (items, rows, extra).
+
+    ESI work that scales with item count (Jita region_order_stats_bulk,
+    Goonmetrics history, meta-level backfill) runs in
+    shortlist_refresh_batch_size batches, oldest refreshed_at first - see
+    select_shortlist_refresh_batches. Each Jita/history batch is isolated
+    (one bad ESI hiccup skips that batch, does not mark refreshed_at, does
+    not abort the job - same pattern as find_new_import_candidates). The
+    structure order book is still one shared fetch (ESI has no type_id
+    filter on /markets/structures/) and remains a hard failure: without it
+    nothing can be priced.
+    """
     items = storage.load_shortlist()
     if not items:
         raise ActionError("Shortlist is empty.")
@@ -355,9 +486,13 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
     # *pricing* below still gets the Goonmetrics failsafe independently.
     own_remaining: dict[int, float] = {}
     for seller_role, seller_character_id, _name in seller_characters:
-        for item_id, remaining in own_orders.fetch_own_sell_orders(
-                seller_character_id, seller_role, client, cfg).items():
-            own_remaining[item_id] = own_remaining.get(item_id, 0.0) + remaining
+        try:
+            for item_id, remaining in own_orders.fetch_own_sell_orders(
+                    seller_character_id, seller_role, client, cfg).items():
+                own_remaining[item_id] = own_remaining.get(item_id, 0.0) + remaining
+        except ESIError as e:
+            log.warning("Could not fetch seller %s own sell orders (%s) - skipping this seller.",
+                        seller_character_id, e)
 
     buyer_characters = _list_role_characters(tm, "buyer")
     buyer_already_covered_ids: frozenset[int] = frozenset()
@@ -381,13 +516,26 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
     # decision. This means more ESI/Goonmetrics calls per refresh than the
     # previous active-only filter (a real, deliberate tradeoff - proportional
     # to total shortlist size now, not just the active count).
-    priced_item_ids = [i.item_id for i in items if i.item_id]
+    priced_items = [i for i in items if i.item_id]
+    priced_item_ids = [i.item_id for i in priced_items]
     # Fetch every item's market stats up front instead of one-by-one inside
     # evaluate_shortlist: the structure endpoint has no type_id filter, so a
     # per-item call there re-downloaded the *entire* order book every time
     # (the main cause of a slow refresh) - one full download now covers every
     # item. Jita's per-type_id calls are parallelized since ESI has no
-    # multi-type_id batch endpoint for regional orders.
+    # multi-type_id batch endpoint for regional orders, and run in
+    # shortlist_refresh_batch_size waves so in-flight concurrency stays
+    # region_order_stats_bulk's max_workers (default 10) regardless of
+    # shortlist length.
+    #
+    # ESI bulk / scale audit (ships+blueprints universe):
+    # - region_order_stats_bulk: ThreadPoolExecutor + with_current_tenant,
+    #   per-type_id ESIError isolated; max_workers=10 is the 420-limit cap.
+    # - structure_order_stats_bulk: one shared book download, not per-item.
+    # - own_orders.fetch_own_sell_orders / fetch_buyer_already_covered: one
+    #   call per character, not per shortlist item - no item-count thread
+    #   pool to add. Per-seller/per-buyer ESIError already skips that
+    #   character rather than aborting cleanup.
     try:
         # The structure's order book is one shared/global fetch - any one
         # registered seller with docking access can retrieve it, so the
@@ -413,42 +561,104 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
         # silently degrading every row to "no market data."
         raise ActionError(f"Could not fetch the structure's order book ({e}). "
                            f"Does the seller character still have docking access?") from e
-    jita_stats_by_item = client.region_order_stats_bulk(cfg.jita_region_id, priced_item_ids)
 
-    # Real average daily *market-wide* traded volume (GitHub issue #100), not
-    # order-book depth (GitHub issue #51) and not this trader's own realized
-    # sales (#51's original fix, which left "Profit / Day" empty for every
-    # not-yet-sold-by-me candidate). cfg.reference_region_id is the real
-    # region C-J's own solar system sits in (confirmed live 2026-08-23 via
-    # sde_solar_systems) - there's no ESI/Goonmetrics history endpoint for a
-    # player structure's own market at all, so region-wide is the closest
-    # real signal available. Best-effort: a Goonmetrics/ESI outage degrades
-    # every row's avg_daily_volume to None (honest "no data yet"), same as a
-    # missing structure/Jita price, rather than aborting the whole refresh.
-    try:
-        history_points = GoonmetricsClient(cfg).price_history_chunked(cfg.reference_region_id, priced_item_ids)
-        avg_daily_volume_by_item = average_market_daily_volume(history_points)
-    except Exception:  # noqa: BLE001 - best-effort; a history outage shouldn't block the whole refresh
-        log.exception("Could not fetch Goonmetrics region history for Profit/Day - leaving it empty this run.")
-        avg_daily_volume_by_item = {}
+    jita_stats_by_item: dict = {}
+    avg_daily_volume_by_item: dict = {}
+    batches = select_shortlist_refresh_batches(priced_items, cfg.shortlist_refresh_batch_size)
+    total_batches = len(batches)
+    gm = GoonmetricsClient(cfg)
+    run_ts = now_ts()
+    previous_by_id = {r.item_id: r for r in storage.load_latest_shortlist_rows() if r.item_id}
+    priced_by_id: dict[int, ShortlistRow] = {}
+    skipped_item_ids: list[int] = []
+    batches_done = 0
+    unpriced_rows = evaluate_shortlist(
+        [i for i in items if not i.item_id],
+        own_remaining, {}, structure_stats_by_item, cfg=cfg,
+        buyer_already_covered_ids=buyer_already_covered_ids,
+    ) if any(not i.item_id for i in items) else []
 
-    rows = evaluate_shortlist(items, own_remaining, jita_stats_by_item, structure_stats_by_item, cfg=cfg,
-                               buyer_already_covered_ids=buyer_already_covered_ids,
-                               avg_daily_volume_by_item=avg_daily_volume_by_item)
+    for batch_num, batch in enumerate(batches, start=1):
+        batch_ids = [i.item_id for i in batch]
+        try:
+            jita_stats_by_item.update(client.region_order_stats_bulk(cfg.jita_region_id, batch_ids))
+            # Real average daily *market-wide* traded volume (GitHub issue #100), not
+            # order-book depth (GitHub issue #51) and not this trader's own realized
+            # sales (#51's original fix, which left "Profit / Day" empty for every
+            # not-yet-sold-by-me candidate). cfg.reference_region_id is the real
+            # region C-J's own solar system sits in (confirmed live 2026-08-23 via
+            # sde_solar_systems) - there's no ESI/Goonmetrics history endpoint for a
+            # player structure's own market at all, so region-wide is the closest
+            # real signal available. Best-effort: a Goonmetrics/ESI outage degrades
+            # this batch's avg_daily_volume to None (honest "no data yet"), same as a
+            # missing structure/Jita price, rather than aborting the whole refresh.
+            try:
+                history_points = gm.price_history_chunked(cfg.reference_region_id, batch_ids)
+                avg_daily_volume_by_item.update(average_market_daily_volume(history_points))
+            except Exception:  # noqa: BLE001 - best-effort; a history outage shouldn't skip the Jita prices
+                log.exception("Could not fetch Goonmetrics region history for Profit/Day "
+                              "(cleanup batch %d/%d) - leaving those rows empty this run.",
+                              batch_num, total_batches)
+            batch_rows = evaluate_shortlist(
+                batch,
+                own_remaining,
+                jita_stats_by_item,
+                structure_stats_by_item,
+                cfg=cfg,
+                buyer_already_covered_ids=buyer_already_covered_ids,
+                avg_daily_volume_by_item=avg_daily_volume_by_item,
+            )
+            for row in batch_rows:
+                if row.item_id:
+                    priced_by_id[row.item_id] = row
+            storage.mark_shortlist_refreshed(batch_ids, now_ts())
+            batches_done += 1
+        except Exception:  # noqa: BLE001 - one bad batch must not lose every other batch's results
+            log.exception("Cleanup batch %d/%d (%d items) failed - skipping it, continuing with the rest.",
+                          batch_num, total_batches, len(batch))
+            skipped_item_ids.extend(batch_ids)
+            # Do not mark refreshed_at: next run retries these first (NULL/oldest).
+
+        _persist_cleanup_snapshot(
+            _merge_cleanup_snapshot_rows(items, priced_by_id, previous_by_id, unpriced_rows),
+            run_ts,
+        )
+        _emit_progress(progress_callback, {
+            "phase": "cleanup",
+            "batch": batch_num,
+            "total_batches": total_batches,
+            "refreshed": len(priced_by_id),
+            "evaluated": len(priced_by_id),
+            "skipped": len(skipped_item_ids),
+        })
+
+    rows = _merge_cleanup_snapshot_rows(items, priced_by_id, previous_by_id, unpriced_rows)
     extra = {
         "own_sell_orders_found": sum(1 for v in own_remaining.values() if v > 0),
         "buyer_already_covered_found": len(buyer_already_covered_ids),
         "meta_level_backfill": meta_backfill,
         "priced_via_fallback": priced_via_fallback,
+        "cleanup_batches_total": total_batches,
+        "cleanup_batches_done": batches_done,
+        "cleanup_items_refreshed": len(priced_by_id),
+        "cleanup_items_skipped": len(skipped_item_ids),
+        "cleanup_skipped_item_ids": skipped_item_ids,
+        "cleanup_batch_size": cfg.shortlist_refresh_batch_size,
+        "cleanup_run_ts": run_ts,
     }
     return items, rows, extra
 
 
 def do_refresh_shortlist(cfg: TradingConfig = TRADING_CONFIG,
-                          oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
-    items, rows, extra = _refresh_shortlist_rows(cfg, oauth_cfg)
-    run_ts = now_ts()
-    storage.save_shortlist_snapshot(rows, run_ts)
+                          oauth_cfg: OAuthConfig = OAUTH_CONFIG,
+                          progress_callback=None) -> dict:
+    items, rows, extra = _refresh_shortlist_rows(cfg, oauth_cfg, progress_callback=progress_callback)
+    run_ts = extra["cleanup_run_ts"]
+    # Incremental persist already wrote this run_ts after each batch; rewrite
+    # once more so a persist that failed mid-loop still lands the complete
+    # merge. No second run_ts - that would make MAX(run_ts) a duplicate of
+    # the in-progress one and hide same-run history semantics.
+    _persist_cleanup_snapshot(rows, run_ts)
     storage.set_esi_sync_time("trading", run_ts)
     return {
         **extra,
@@ -669,7 +879,8 @@ def _items_to_reactivate(rows: list, cfg: TradingConfig) -> list[tuple[int, str]
 
 
 def do_refresh_and_prune_candidates(safe: bool = True, cfg: TradingConfig = TRADING_CONFIG,
-                                     oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
+                                     oauth_cfg: OAuthConfig = OAUTH_CONFIG,
+                                     progress_callback=None) -> dict:
     """One-button candidate maintenance, combining three of the manual steps
     into one: ③ find new import candidates (against the already-built
     focused_candidates universe - run ①②  yourself first, they're an
@@ -701,13 +912,20 @@ def do_refresh_and_prune_candidates(safe: bool = True, cfg: TradingConfig = TRAD
     #1/#2 above: before this existed, a deactivated item had no path back
     to active even once its economics recovered).
     """
-    find_result = do_find_new_candidates(safe=safe, cfg=cfg)
+    _emit_progress(progress_callback, {"phase": "search", "message": "Searching for new import candidates"})
+    find_result = do_find_new_candidates(safe=safe, cfg=cfg, progress_callback=progress_callback)
+    _emit_progress(progress_callback, {"phase": "add", "message": "Adding recommended candidates to the shortlist"})
     add_result = do_add_to_shortlist()
+    _emit_progress(progress_callback, {"phase": "cleanup", "message": "Refreshing shortlist prices"})
 
-    items, rows, extra = _refresh_shortlist_rows(cfg, oauth_cfg)
-    run_ts = now_ts()
+    items, rows, extra = _refresh_shortlist_rows(cfg, oauth_cfg, progress_callback=progress_callback)
+    run_ts = extra["cleanup_run_ts"]
+    skipped_ids = set(extra.get("cleanup_skipped_item_ids") or [])
 
-    to_reactivate = _items_to_reactivate(rows, cfg)
+    to_reactivate = [
+        (item_id, name) for item_id, name in _items_to_reactivate(rows, cfg)
+        if item_id not in skipped_ids
+    ]
     if to_reactivate:
         reactivated_ids = [item_id for item_id, _ in to_reactivate]
         storage.activate_shortlist_items(reactivated_ids)
@@ -726,15 +944,20 @@ def do_refresh_and_prune_candidates(safe: bool = True, cfg: TradingConfig = TRAD
     skip_deactivate = _items_past_skip_grace_period(rows, skip_since, cfg.skip_grace_period_days,
                                                       dt.datetime.fromisoformat(run_ts))
 
-    skip_item_ids = [r.item_id for r in rows if r.decision in SKIP_STREAK_DECISIONS and r.item_id]
-    recovered_item_ids = [r.item_id for r in rows if r.decision not in SKIP_STREAK_DECISIONS and r.item_id]
+    skip_item_ids = [r.item_id for r in rows
+                     if r.decision in SKIP_STREAK_DECISIONS and r.item_id and r.item_id not in skipped_ids]
+    recovered_item_ids = [r.item_id for r in rows
+                          if r.decision not in SKIP_STREAK_DECISIONS and r.item_id
+                          and r.item_id not in skipped_ids]
     storage.clear_shortlist_skip_streak(recovered_item_ids)
     storage.start_shortlist_skip_streak(skip_item_ids, run_ts)  # no-op for ids already mid-streak
 
     cap_deactivate: list[tuple[int, str]] = []
     if cfg.enforce_shortlist_cap:
         skip_deactivated_ids = {item_id for item_id, _ in skip_deactivate}
-        still_active = [r for r in rows if r.active and r.item_id and r.item_id not in skip_deactivated_ids]
+        still_active = [r for r in rows if r.active and r.item_id
+                        and r.item_id not in skip_deactivated_ids
+                        and r.item_id not in skipped_ids]
         cap_deactivate = _items_beyond_rank(still_active, cfg.max_active_shortlist_items)
 
     to_deactivate = skip_deactivate + cap_deactivate
@@ -748,13 +971,15 @@ def do_refresh_and_prune_candidates(safe: bool = True, cfg: TradingConfig = TRAD
         # even though storage.shortlist already has them deactivated (a real,
         # confirmed bug: shortlist_snapshot was previously saved before this
         # deactivation step ran at all, so it never reflected same-run prunes).
+        # Same run_ts as the in-progress cleanup writes: replace, don't append,
+        # so MAX(run_ts) is this job's final (Inactive-updated) snapshot.
         deactivated_id_set = set(deactivated_ids)
         for r in rows:
             if r.item_id in deactivated_id_set:
                 r.active = False
                 r.decision = "Inactive"
 
-    storage.save_shortlist_snapshot(rows, run_ts)
+    storage.replace_shortlist_snapshot_run(rows, run_ts)
     storage.set_esi_sync_time("trading", run_ts)
 
     return {
@@ -770,6 +995,54 @@ def do_refresh_and_prune_candidates(safe: bool = True, cfg: TradingConfig = TRAD
         "reactivated_count": len(to_reactivate),
         "reactivated_items": [item for _, item in to_reactivate],
     }
+
+
+def do_start_refresh_and_prune(safe: bool = True) -> dict:
+    """Kicks off Search + Add + Clean Up as a background job and returns
+    immediately. The HTTP handler must not block on the ESI work - see
+    pipeline_runner.start_refresh_and_prune."""
+    from . import pipeline_runner
+    return pipeline_runner.start_refresh_and_prune(safe=safe)
+
+
+def do_start_refresh_shortlist() -> dict:
+    """Kicks off Refresh Shortlist as a background job. Empty-shortlist is
+    a cheap fail-fast (HTTP 400) so we don't insert a pipeline_runs row
+    that would immediately fail; the ESI work itself still runs in the
+    worker. Shares the per-tenant lock with Search + Add + Clean Up and
+    Run Complete Pipeline."""
+    if not storage.load_shortlist():
+        raise ActionError("Shortlist is empty.")
+    from . import pipeline_runner
+    return pipeline_runner.start_refresh_shortlist()
+
+
+def do_start_pipeline(safe: bool = True, rebuild_universe: bool = False) -> dict:
+    """Kicks off Run Complete Pipeline as a background job. Scheduler and
+    CLI still call do_pipeline in-process."""
+    from . import pipeline_runner
+    return pipeline_runner.start_pipeline(safe=safe, rebuild_universe=rebuild_universe)
+
+
+def do_trading_job_status() -> dict:
+    """Currently-running Trading job for this tenant (any of the three
+    user-triggered jobs share one lock), else the latest finished one, or
+    an idle placeholder when none has ever run. One poller for all three
+    HTTP start endpoints."""
+    running = storage.get_running_pipeline_run()
+    if running:
+        return running
+    row = storage.get_latest_pipeline_run()
+    if row is None:
+        return {"run_id": None, "job_name": None, "status": "idle",
+                "progress": None, "result": None, "error": None}
+    return row
+
+
+def do_refresh_and_prune_status() -> dict:
+    """Alias for do_trading_job_status - GET /candidates/refresh-and-prune/status
+    is the shared poller for every user-triggered Trading job."""
+    return do_trading_job_status()
 
 
 def shortlist_skip_deactivation_days(cfg: TradingConfig = TRADING_CONFIG) -> dict[int, int]:
@@ -812,7 +1085,8 @@ def do_reconcile_trades(cfg: TradingConfig = TRADING_CONFIG,
     return {"matched_trades": len(trades), **summary}
 
 
-def do_pipeline(safe: bool = True, rebuild_universe: bool = False) -> dict:
+def do_pipeline(safe: bool = True, rebuild_universe: bool = False,
+                 progress_callback=None) -> dict:
     """Runs the daily workflow. `rebuild_universe` re-crawls the *entire* ESI
     market-group tree (hundreds/thousands of requests) and is off by default -
     that's an occasional setup step, not something to redo every day. Each
@@ -830,6 +1104,9 @@ def do_pipeline(safe: bool = True, rebuild_universe: bool = False) -> dict:
     results = {}
 
     if rebuild_universe:
+        _emit_progress(progress_callback, {
+            "phase": "build_universe", "message": "Loading market groups",
+        })
         try:
             results["build_universe"] = do_build_universe()
             results["build_focused"] = do_build_focused()
@@ -837,10 +1114,14 @@ def do_pipeline(safe: bool = True, rebuild_universe: bool = False) -> dict:
             results["build_universe"] = {"error": str(e)}
 
     try:
-        results["refresh_and_prune_candidates"] = do_refresh_and_prune_candidates(safe=safe)
+        results["refresh_and_prune_candidates"] = do_refresh_and_prune_candidates(
+            safe=safe, progress_callback=progress_callback)
     except (ActionError, ESIError) as e:
         results["refresh_and_prune_candidates"] = {"error": str(e)}
 
+    _emit_progress(progress_callback, {
+        "phase": "reconcile", "message": "Reconciling trades",
+    })
     try:
         results["reconcile_trades"] = do_reconcile_trades()
     except (ActionError, ESIError) as e:

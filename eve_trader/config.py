@@ -173,9 +173,11 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "min_margin_threshold": (0, None),
     "skip_grace_period_days": (0, None),
     "max_active_shortlist_items": (1, None),
+    "max_shortlist_growth_per_run": (1, None),
     "min_hit_rate": (0, 1),
     "safe_mode_max_ids": (1, None),
     "chunk_size": (1, None),
+    "shortlist_refresh_batch_size": (1, None),
     "min_avg_movement": (0, None),
     "lookback_days": (0, None),
     "component_overbuild": (0, None),
@@ -343,11 +345,56 @@ class TradingConfig:
     # profit/avg_daily_volume sort last.
     enforce_shortlist_cap: bool = False
     max_active_shortlist_items: int = 300
+    # Hard cap on *new* shortlist items added in one do_add_to_shortlist
+    # call (the Add step of "Search + Add + Clean Up"). Unlike
+    # enforce_shortlist_cap (off by default, optional total-size prune),
+    # this always applies: if a search run flags more add_flag=1 candidates
+    # than this, only the top N by (score, latest_margin) are upserted;
+    # the rest stay in new_candidates with add_flag=1 for the next run, so
+    # nothing is discarded. Default 50 keeps cleanup's ESI cost from
+    # jumping by thousands of items after ships/blueprints re-entered the
+    # candidate universe (those two categories dwarf the rest combined) -
+    # raise it on the Settings page if a single run should absorb more.
+    max_shortlist_growth_per_run: int = 50
 
     # -- Candidate discovery --
     min_hit_rate: float = 0.30                # Minimum share of profitable days to recommend a candidate
-    safe_mode_max_ids: int = 500               # Cap on IDs evaluated per run (mirrors FindNewImportCandidatesSafe)
+    # Cap on type_ids evaluated per safe-mode search run (mirrors
+    # FindNewImportCandidatesSafe). Rotation duration is
+    # ceil(len(focused_candidates) / safe_mode_max_ids) runs until every
+    # candidate is scored once - see history_backtest.select_candidate_window.
+    # With ships/blueprints no longer categorically excluded, focused_
+    # candidates can be ~15-25k type_ids (every T1/T2 hull variant plus a
+    # blueprint for essentially every manufacturable item). At the default
+    # 500 that's ~30-50 cycles; at the scheduler's 24h trading_pipeline
+    # interval that's a month-plus to cover the universe once. Raising this
+    # shortens rotation linearly but each run's Goonmetrics cost grows with
+    # it (chunk_size=25 requests per chunk, so 500 ids = 20 chunks/region
+    # x 2 regions). 500 is still the right default: it stays inside ESI/
+    # Goonmetrics courtesy limits for a single click, and leftover
+    # candidates are not lost - the persisted cursor guarantees eventual
+    # coverage. Increase it only if you deliberately want faster coverage
+    # and can tolerate a longer per-run search. chunk_size=25 is unchanged:
+    # Goonmetrics' price_history endpoint is already chunked internally,
+    # and a larger chunk mainly inflates one request's payload/latency
+    # rather than reducing cycle count.
+    safe_mode_max_ids: int = 500
     chunk_size: int = 25                       # IDs per Goonmetrics request chunk (safe mode default)
+    # ESI-priced shortlist items per cleanup batch inside
+    # actions._refresh_shortlist_rows. Oldest refreshed_at first (NULL =
+    # never, so newly added items go first). Unlike safe-mode candidate
+    # search (one window per run over a tens-of-thousands universe), one
+    # cleanup job walks every batch: after pipeline_runner moved this off
+    # the HTTP request, a single click can finish the tenant's own
+    # shortlist without a proxy timeout. Batching still bounds ESI burst
+    # size (region_order_stats_bulk's max_workers stays the in-flight cap
+    # regardless of shortlist length) and gives Phase 4 a unit to isolate.
+    # Coverage: ceil(len(shortlist) / shortlist_refresh_batch_size) batches
+    # per job, oldest-first, so a mid-job crash resumes with the never /
+    # longest-stale items - no item can permanently stick at the end of a
+    # list cursor the way a naive offset could. Default 250: a typical
+    # cap-on shortlist (max_active_shortlist_items=300) is one batch.
+    shortlist_refresh_batch_size: int = 250
     # Minimum average daily reference-region "movement" (Goonmetrics' daily
     # unit-quantity-traded liquidity figure - literally ESI's own /markets/
     # {region_id}/history/ `volume` field re-served verbatim, confirmed live

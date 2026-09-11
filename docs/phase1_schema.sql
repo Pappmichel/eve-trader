@@ -228,6 +228,7 @@ CREATE TABLE IF NOT EXISTS shortlist (
     volume_m3 REAL,
     active INTEGER DEFAULT 1,
     meta_level INTEGER,
+    refreshed_at TIMESTAMPTZ,
     PRIMARY KEY (tenant_id, item_id)
 );
 ALTER TABLE shortlist ENABLE ROW LEVEL SECURITY;
@@ -235,6 +236,7 @@ DROP POLICY IF EXISTS tenant_isolation ON shortlist;
 CREATE POLICY tenant_isolation ON shortlist
     USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+ALTER TABLE shortlist ADD COLUMN IF NOT EXISTS refreshed_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS shortlist_skip_streak (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,

@@ -25,10 +25,11 @@ def test_do_add_to_shortlist_recomputes_category_fresh_from_sde(monkeypatch):
 
     captured = {}
     monkeypatch.setattr(storage, "upsert_shortlist", lambda items: captured.setdefault("items", items))
+    monkeypatch.setattr(storage, "load_shortlist", lambda: [])
 
     result = actions.do_add_to_shortlist()
 
-    assert result == {"added": 1}
+    assert result == {"added": 1, "deferred": 0}
     assert captured["items"][0].category == "Skill"
 
 
@@ -115,3 +116,72 @@ def test_do_recategorize_shortlist_stays_implant_when_esi_lookup_also_fails(monk
     assert result == {"checked": 1, "recategorized": 0}
     assert captured["items"][0].category == "Implant"
     assert captured["snapshot_categories"] == {}
+
+
+def _candidate_row(type_id: int, item: str, score: float, latest_margin: float, add_flag: int = 1,
+                    run_ts: str = "2026-01-01T00:00:00") -> dict:
+    return {
+        "run_ts": run_ts, "item": item, "category": "Material", "type_id": type_id,
+        "volume_m3": 1.0, "paired_days": 5, "profitable_days": 5, "hit_rate": 1.0,
+        "latest_margin": latest_margin, "best_margin": latest_margin, "avg_profit_m3": score,
+        "avg_sell_movement": 1.0, "score": score, "recommendation": "Consider import",
+        "add_flag": add_flag, "meta_level": None,
+    }
+
+
+def test_new_candidates_to_add_keeps_top_n_by_score_and_defers_the_rest():
+    # More add_flag=1 newcomers than max_shortlist_growth_per_run allows -
+    # only the top N by (score, latest_margin) are taken; the rest stay in
+    # new_candidates (this helper doesn't touch storage) for the next run.
+    df = pd.DataFrame([
+        _candidate_row(1, "Low score", score=1.0, latest_margin=0.4),
+        _candidate_row(2, "High score", score=9.0, latest_margin=0.1),
+        _candidate_row(3, "Mid score, high margin", score=5.0, latest_margin=0.9),
+        _candidate_row(4, "Mid score, low margin", score=5.0, latest_margin=0.2),
+        _candidate_row(5, "Not recommended", score=99.0, latest_margin=0.9, add_flag=0),
+    ])
+    # The action already filters to add_flag=1; this helper sees that slice.
+    flagged = df[df["add_flag"] == 1]
+    taken, deferred = actions._new_candidates_to_add(flagged, existing_ids=set(), max_growth=2)
+
+    assert deferred == 2
+    assert list(taken["type_id"]) == [2, 3]  # 9.0 first, then 5.0 with the higher margin
+
+
+def test_new_candidates_to_add_does_not_count_existing_shortlist_ids_as_growth():
+    df = pd.DataFrame([
+        _candidate_row(10, "Already tracked", score=0.1, latest_margin=0.01),
+        _candidate_row(11, "New A", score=3.0, latest_margin=0.2),
+        _candidate_row(12, "New B", score=2.0, latest_margin=0.2),
+        _candidate_row(13, "New C", score=1.0, latest_margin=0.2),
+    ])
+    taken, deferred = actions._new_candidates_to_add(df, existing_ids={10}, max_growth=1)
+
+    assert deferred == 2  # B and C wait for the next run
+    assert set(taken["type_id"]) == {10, 11}  # existing + top newcomer
+
+
+def test_do_add_to_shortlist_caps_growth_and_leaves_the_rest_in_new_candidates(monkeypatch):
+    from eve_trader.config import TradingConfig
+    from eve_trader.models import ShortlistItem
+
+    rows = [_candidate_row(i, f"Item {i}", score=float(i), latest_margin=0.1) for i in range(1, 6)]
+    monkeypatch.setattr(storage, "read_table", lambda table: pd.DataFrame(rows))
+    monkeypatch.setattr(storage, "load_sde_category_names", lambda: {4: "Material"})
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 4)
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item {type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "load_shortlist", lambda: [
+        ShortlistItem(item="Item 1", item_id=1, category="Material", volume_m3=1.0, active=True),
+    ])
+
+    captured = {}
+    monkeypatch.setattr(storage, "upsert_shortlist", lambda items: captured.setdefault("items", items))
+
+    result = actions.do_add_to_shortlist(cfg=TradingConfig(max_shortlist_growth_per_run=2))
+
+    # Existing id 1 always upserts; of the 4 newcomers only the top 2 by score
+    # (5 and 4) are added; 3 and 2 are deferred. new_candidates itself is not
+    # rewritten - the deferred rows keep add_flag=1 for the next run.
+    added_ids = {i.item_id for i in captured["items"]}
+    assert result == {"added": 3, "deferred": 2}
+    assert added_ids == {1, 5, 4}

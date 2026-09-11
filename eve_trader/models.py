@@ -24,6 +24,9 @@ class ShortlistItem:
     volume_m3: float
     active: bool = True
     meta_level: Optional[int] = None
+    # When _refresh_shortlist_rows last successfully re-priced this item
+    # (ISO timestamp). None = never - those go first in the cleanup rotation.
+    refreshed_at: Optional[str] = None
 
 
 @dataclass

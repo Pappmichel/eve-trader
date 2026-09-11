@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Button, Checkbox, Group, MultiSelect, TextInput, NumberInput, Badge, Text, Stack, Title } from '@mantine/core'
+import { Button, Checkbox, Group, MultiSelect, TextInput, NumberInput, Badge, Text, Stack, Title, Paper } from '@mantine/core'
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts'
 import { IconMinus, IconTrendingDown, IconTrendingUp } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
@@ -169,10 +169,17 @@ export default function Shortlist() {
   return (
     <Stack>
       {settings && (
-        <Stack gap={4}>
+        <Paper withBorder p="md" radius="md">
+          <Title order={6} mb={4}>Limit active shortlist size</Title>
+          <Text size="sm" c="dimmed" mb="sm">
+            Cleanup fetches live market data for every active item, so an uncapped list (especially once
+            ships and blueprints are in the candidate universe) gets expensive fast. When this is on,
+            Search + Add + Clean Up deactivates the least profitable items beyond the limit — they stay
+            visible as Inactive, they are not deleted. Off by default.
+          </Text>
           <Group gap="xs" align="center">
             <Checkbox
-              label="Cap shortlist at max."
+              label="Enforce active-item cap"
               checked={settings.enforce_shortlist_cap}
               disabled={toggleCap.isPending}
               onChange={(e) => toggleCap.mutate({ ...settings, enforce_shortlist_cap: e.currentTarget.checked })}
@@ -182,17 +189,18 @@ export default function Shortlist() {
               onChange={(v) => setCapDraft(v === '' ? '' : Number(v))}
               onBlur={() => capDraft !== '' && toggleCap.mutate({ ...settings, max_active_shortlist_items: Number(capDraft) })}
               min={1} step={10} w={100} size="xs"
-              disabled={toggleCap.isPending}
+              disabled={toggleCap.isPending || !settings.enforce_shortlist_cap}
+              aria-label="Maximum active shortlist items"
             />
             <Text size="sm">
-              active entries (by profit/day, excess items are deactivated by "Search + Add + Clean Up")
+              active entries (ranked by profit/day)
             </Text>
           </Group>
-          <Text size="xs" c="dimmed">
+          <Text size="xs" c="dimmed" mt={6}>
             Currently active: {activeCount} of {data.length} total (deactivated items stay visible as "Inactive" in
             the list, they don't disappear - deselect them in the status filter below).
           </Text>
-        </Stack>
+        </Paper>
       )}
 
       <Group grow align="flex-end">

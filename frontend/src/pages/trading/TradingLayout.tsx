@@ -8,7 +8,8 @@ import {
 } from '@tabler/icons-react'
 
 import { productionApi, tradingApi } from '../../api/client'
-import { useAction, warnIfPricedViaFallback } from '../../hooks/useAction'
+import { useAction } from '../../hooks/useAction'
+import { useTradingPipelineJob } from '../../hooks/useRefreshAndPruneJob'
 import { useRoleCharacters } from '../../hooks/useRoleCharacters'
 import { dateTime } from '../../format'
 
@@ -78,36 +79,12 @@ export default function TradingLayout() {
   const buildUniverse = useAction('Load Market Groups', tradingApi.buildUniverse,
     [['trading', 'candidates', 'universe'], ['production', 'sde-freshness']])
   const buildFocused = useAction('Filter Candidates', tradingApi.buildFocused, [['trading', 'candidates', 'focused']])
-  const refreshShortlist = useAction('Refresh Shortlist', tradingApi.refreshShortlist, [
-    ['trading', 'shortlist', 'snapshot'], ['trading', 'kpis'], ['trading', 'esi-sync-time'],
-  ])
-  // Finds new candidates, adds the recommended ones, and prunes stale/over-cap
-  // items - all three in one action since there's no manual review step
-  // between "found" and "added" (add_flag is purely algorithmic, see
-  // NewCandidates.tsx) that would justify separate buttons for each step.
-  const refreshAndPrune = useAction('Search, Add & Clean Up Candidates',
-    () => tradingApi.refreshAndPruneCandidates(true), [
-      ['trading', 'shortlist', 'snapshot'], ['trading', 'shortlist', 'items'],
-      ['trading', 'candidates', 'new'], ['trading', 'kpis'], ['trading', 'esi-sync-time'],
-    ])
-  // Full (safe=false) search: backtests every remaining candidate in one run
-  // instead of a 500-sized window - can take several minutes (thousands of
-  // Goonmetrics/ESI requests). Results are saved incrementally batch-by-batch
-  // on the backend (history_backtest.find_new_import_candidates' results_sink),
-  // so even if this gets interrupted partway through, whatever was already
-  // scored is kept, not lost. Also runs add+prune afterward, same as ⚡ -
-  // otherwise a later ⚡ click would start a newer run and its add step would
-  // only see its own (windowed) results, silently ignoring this run's.
-  const fullSearch = useAction('Full Search + Add & Clean Up',
-    () => tradingApi.refreshAndPruneCandidates(false), [
-      ['trading', 'shortlist', 'snapshot'], ['trading', 'shortlist', 'items'],
-      ['trading', 'candidates', 'new'], ['trading', 'kpis'], ['trading', 'esi-sync-time'],
-    ])
+  // Refresh Shortlist, Search+Add+Clean Up, and Run Complete Pipeline share
+  // one background-job lock (POST returns immediately; this hook polls GET
+  // .../status until status != running). A second click while one is running
+  // is a 409 rather than a second thread.
+  const tradingJob = useTradingPipelineJob()
   const reconcile = useAction('Reconcile Trades', tradingApi.reconcileTrades, [['trading', 'trades', 'realized']])
-  const runPipeline = useAction('Pipeline', () => tradingApi.runPipeline(true, false), [
-    ['trading', 'shortlist', 'snapshot'], ['trading', 'shortlist', 'items'], ['trading', 'candidates', 'new'],
-    ['trading', 'trades', 'realized'], ['trading', 'kpis'], ['trading', 'esi-sync-time'],
-  ])
 
   return (
     <AppShell header={{ height: 56 }} navbar={{ width: 280, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding={{ base: 'xs', sm: 'md' }}>
@@ -148,16 +125,24 @@ export default function TradingLayout() {
           <div>
             <Title order={6} c="dimmed" tt="uppercase" mb="xs">Daily Workflow</Title>
             <Stack gap="xs">
-              <Button size="xs" variant="default" onClick={() => refreshShortlist.mutate(undefined, { onSuccess: warnIfPricedViaFallback })} loading={refreshShortlist.isPending}>
+              <Button size="xs" variant={tradingJob.isJob('refresh_shortlist') ? 'light' : 'default'}
+                onClick={() => tradingJob.startRefreshShortlist()}>
                 Refresh Shortlist
               </Button>
-              <Button size="xs" leftSection={<IconBolt size={14} />} onClick={() => refreshAndPrune.mutate()} loading={refreshAndPrune.isPending}>
+              <Button size="xs" leftSection={<IconBolt size={14} />}
+                variant={tradingJob.isJob('refresh_and_prune') ? 'light' : undefined}
+                onClick={() => tradingJob.startRefreshAndPrune(true)}>
                 Search + Add + Clean Up
               </Button>
+              {tradingJob.progressLabel && (
+                <Text size="xs" c="dimmed">{tradingJob.progressLabel}</Text>
+              )}
               <Button size="xs" variant="default" onClick={() => reconcile.mutate()} loading={reconcile.isPending}>
                 Reconcile Trades
               </Button>
-              <Button size="xs" leftSection={<IconPlayerPlay size={14} />} onClick={() => runPipeline.mutate()} loading={runPipeline.isPending}>
+              <Button size="xs" leftSection={<IconPlayerPlay size={14} />}
+                variant={tradingJob.isJob('pipeline') ? 'light' : 'default'}
+                onClick={() => tradingJob.startPipeline()}>
                 Run Complete Pipeline
               </Button>
             </Stack>
@@ -186,12 +171,15 @@ export default function TradingLayout() {
                 Filter Candidates
               </Button>
               <Button size="xs" variant="light" color="warn" leftSection={<IconSearch size={14} />}
-                onClick={() => fullSearch.mutate()} loading={fullSearch.isPending}>
+                onClick={() => tradingJob.startRefreshAndPrune(false)}>
                 Full Search (ALL candidates)
               </Button>
+              {tradingJob.progressLabel && (
+                <Text size="xs" c="dimmed">{tradingJob.progressLabel}</Text>
+              )}
               <Text size="xs" c="dimmed">
-                Backtests every remaining candidate instead of a 500 window - can take several minutes. Safe to
-                interrupt: results are saved as they come in, not just at the end.
+                Backtests every remaining candidate instead of a 500 window - runs in the background,
+                so leaving this page is safe. Results are saved as they come in, not just at the end.
               </Text>
             </Stack>
           </div>
