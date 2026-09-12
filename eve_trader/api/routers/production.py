@@ -213,6 +213,7 @@ class ProductionSettings(BaseModel):
     reaction_cost_index_override: Optional[float] = None
     component_cost_index_override: Optional[float] = None
     manufacturing_cost_index_override: Optional[float] = None
+    alchemy_reactions_enabled: bool = False
 
 
 @router.get("/settings", response_model=ProductionSettings)
@@ -377,6 +378,11 @@ def check_unlisted_stock():
 @router.post("/build-candidates/discover", response_model=list[schemas.BuildCandidate])
 def discover_build_candidates(top_n: int = 200):
     return _wrap(actions.do_discover_build_candidates, top_n=top_n)["rows"]
+
+
+@router.get("/alchemy-compare/{product_name}")
+def alchemy_compare(product_name: str):
+    return _wrap(actions.do_compare_alchemy, product_name=product_name)
 
 
 @router.get("/margins", response_model=list[schemas.ShipMarginRow])

@@ -125,6 +125,8 @@ from typing import Iterable, Optional
 
 from .. import storage
 from ..config import TRADING_CONFIG
+from ..refining.config import REFINING_CONFIG, RefiningConfig
+from ..refining.engine import apply_reprocessing_yield, scrapmetal_yield
 from . import invention, pricing
 from .config import PRODUCTION_CONFIG, ProductionConfig
 from .constants import (
@@ -137,8 +139,9 @@ from .constants import (
 )
 from .jobs import character_slot_overview
 from .models import (
-    AssetPlanBlocker, AssetPlanJob, BuildJobEntry, BuyListEntry, DistributionRow, InventionNeedRow, InventionResult,
-    InventoryRow, LogisticsRow, MarketStatusRow, SpecialOrderLineItem, StockOverlapWarningRow, T1BpcInventionNeedRow,
+    AlchemyComparison, AssetPlanBlocker, AssetPlanJob, BuildJobEntry, BuyListEntry, DistributionRow, InventionNeedRow,
+    InventionResult, InventoryRow, LogisticsRow, MarketStatusRow, SpecialOrderLineItem, StockOverlapWarningRow,
+    T1BpcInventionNeedRow,
 )
 
 MAX_DEPTH = 10
@@ -238,6 +241,208 @@ def classify_activity(type_id: int) -> tuple[str, Optional[tuple[int, int, float
         DEADSPACE_META_GROUP_ID: "Deadspace",
     }
     return meta_group_labels.get(meta_group_id, "Tech I"), bp
+
+
+def _sde_type_name(type_id: int) -> str:
+    """SDE type_name for `type_id`, or the raw id if the cache has no row -
+    same fallback every other display path in this file already uses."""
+    sde_type = storage.get_sde_type(type_id)
+    return sde_type[2] if sde_type else str(type_id)
+
+
+def find_alchemy_alternative(product_type_id: int) -> Optional[tuple[tuple[int, int, float], int, list[tuple[int, float]]]]:
+    """Returns (alchemy_blueprint_tuple, unrefined_type_id, reprocess_materials)
+    if `product_type_id` is produced by a Reaction AND a matching
+    "Unrefined <name>" alchemy formula also exists in the SDE, else None.
+    `alchemy_blueprint_tuple` is (blueprint_type_id, activity_id, quantity),
+    same shape as storage.get_blueprint_for_product's own return - this is
+    the reverse-lookup call already used everywhere else in this file for
+    recipe discovery (classify_activity etc.), just applied to the
+    "Unrefined X" intermediate's own product_type_id instead of the real
+    target's.
+
+    Detection is name-based ("Unrefined " + the real target's SDE type
+    name, exact match via storage.search_sde_types) - this matches every
+    currently known alchemy pair (Caesarium Cadmide, Dysporite, Vanadium
+    Hafnite, Neo Mercurite, Crystallite Alloy, Ferrofluid) with no
+    heuristics or hardcoded item lists. Returns None (not an error) for
+    any product with no such intermediate, or where the intermediate
+    exists but has no registered reaction formula or no reprocessing
+    materials (storage.get_type_materials empty) - all "no alchemy path",
+    not error conditions.
+    """
+    normal = storage.get_blueprint_for_product(product_type_id)
+    if normal is None or normal[1] != ACTIVITY_REACTION:
+        return None
+    product_name = _sde_type_name(product_type_id)
+    if not product_name or product_name == str(product_type_id):
+        return None
+    unrefined_name = f"Unrefined {product_name}"
+    unrefined_type_id = None
+    for type_id, type_name in storage.search_sde_types(unrefined_name, limit=5):
+        if type_name.strip().lower() == unrefined_name.strip().lower():
+            unrefined_type_id = type_id
+            break
+    if unrefined_type_id is None:
+        return None
+    alchemy_recipe = storage.get_blueprint_for_product(unrefined_type_id)
+    if alchemy_recipe is None:
+        return None
+    reprocess_materials = storage.get_type_materials(unrefined_type_id)
+    if not reprocess_materials:
+        return None
+    return alchemy_recipe, unrefined_type_id, reprocess_materials
+
+
+def _current_material_prices(cfg: ProductionConfig, type_ids: list[int],
+                              home: Optional[dict] = None, jita: Optional[dict] = None) -> dict:
+    """Home-first, Jita-fallback current quotes for `type_ids` (only quotes
+    with a real sell > 0). Used by compare_alchemy_profitability to value
+    recipe outputs / reprocess yields - input costing goes through
+    pricing.buy_price instead (landed home-vs-Jita), same as _unit_cost."""
+    unique = list(dict.fromkeys(type_ids))
+    if home is None:
+        home = pricing.home_prices(cfg, unique)
+    if jita is None:
+        jita = pricing.jita_prices(unique)
+    out = {}
+    for tid in unique:
+        home_quote = home.get(tid)
+        if home_quote is not None and home_quote.sell > 0:
+            out[tid] = home_quote
+            continue
+        jita_quote = jita.get(tid)
+        if jita_quote is not None and jita_quote.sell > 0:
+            out[tid] = jita_quote
+    return out
+
+
+def _reaction_run_cost_and_time(recipe: tuple[int, int, float], product_type_id: int,
+                                 cfg: ProductionConfig, home: dict, jita: dict,
+                                 cost_indices: CostIndices, adjusted_prices: dict[int, float]
+                                 ) -> tuple[Optional[float], float, float]:
+    """Per-run ISK cost, output quantity, and hours for one Reaction recipe.
+
+    Reuses this file's existing `_activity_mods` (structure/rig ME/TE +
+    `_job_cost_rate` facility-tax/SCC math), `_material_qty` (EVE batch
+    rounding), `storage.get_blueprint_materials`, and
+    `storage.get_blueprint_time` - the same machinery `_unit_cost` /
+    `_build_build_list` already use. Deliberately omits any amortized BPC
+    purchase cost: Reaction Formula BPCs are a one-time, unlimited-run
+    purchase. Returns `(None, qty, hours)` if any input is unpriced so the
+    caller can leave that path's ISK/hour as None rather than guessing.
+    """
+    blueprint_id, activity_id, product_qty = recipe
+    material_mult, time_mult, job_cost_rate = _activity_mods(
+        "Reaction", product_type_id, cfg, cost_indices, blueprint_id)
+    materials = storage.get_blueprint_materials(blueprint_id, activity_id)
+    material_cost = 0.0
+    eiv = 0.0
+    for material_id, base_qty in materials:
+        qty = _material_qty(base_qty, material_mult, 1)
+        volume = _haul_volume(material_id, cfg)
+        unit = pricing.buy_price(material_id, home, jita, volume, cfg)
+        if unit is None:
+            base_time = storage.get_blueprint_time(blueprint_id, activity_id) or 0
+            return None, product_qty, (base_time * time_mult) / 3600.0
+        material_cost += qty * unit
+        eiv += base_qty * adjusted_prices.get(material_id, 0.0)
+    job_cost = eiv * job_cost_rate
+    base_time = storage.get_blueprint_time(blueprint_id, activity_id) or 0
+    hours = (base_time * time_mult) / 3600.0
+    return material_cost + job_cost, product_qty, hours
+
+
+def compare_alchemy_profitability(product_type_id: int, cfg: ProductionConfig = PRODUCTION_CONFIG,
+                                   home: Optional[dict] = None, jita: Optional[dict] = None,
+                                   cost_indices: Optional[CostIndices] = None,
+                                   adjusted_prices: Optional[dict[int, float]] = None,
+                                   refining_cfg: RefiningConfig = REFINING_CONFIG
+                                   ) -> Optional[AlchemyComparison]:
+    """Live normal-vs-alchemy ISK/hour comparison for one Reaction product.
+    Returns None if alchemy_reactions_enabled is False (feature-flag gate -
+    see ProductionConfig), or if find_alchemy_alternative finds no pair.
+    Never used to pick a recipe for real build/buy math - purely for
+    display (see AlchemyComparison's own docstring).
+
+    Optional `home`/`jita`/`cost_indices`/`adjusted_prices` let a batch
+    caller (discover_build_candidates) reuse one already-fetched price
+    context instead of re-hitting ESI per Reaction row; omitted kwargs are
+    fetched here for the single-item do_compare_alchemy path.
+    """
+    if not cfg.alchemy_reactions_enabled:
+        return None
+    normal = storage.get_blueprint_for_product(product_type_id)
+    if normal is None:
+        return None
+    alt = find_alchemy_alternative(product_type_id)
+    if alt is None:
+        return None
+    alchemy_recipe, unrefined_type_id, reprocess_materials = alt
+
+    needed_ids = [product_type_id, unrefined_type_id]
+    needed_ids.extend(tid for tid, _ in storage.get_blueprint_materials(normal[0], normal[1]))
+    needed_ids.extend(tid for tid, _ in storage.get_blueprint_materials(alchemy_recipe[0], alchemy_recipe[1]))
+    needed_ids.extend(tid for tid, _ in reprocess_materials)
+
+    if home is None:
+        home = pricing.home_prices(cfg, needed_ids)
+    if jita is None:
+        jita = pricing.jita_prices(needed_ids)
+    if cost_indices is None:
+        cost_indices = {}
+        try:
+            from ..esi_client import ESIClient
+            esi_client = ESIClient()
+            cost_indices = {
+                "component": pricing.system_cost_indices_for(esi_client, cfg.component_system_id),
+                "manufacturing": pricing.system_cost_indices_for(esi_client, cfg.manufacturing_system_id),
+            }
+        except Exception:  # noqa: BLE001 - same best-effort fallback _PlanContext uses
+            cost_indices = {}
+    if adjusted_prices is None:
+        try:
+            from ..esi_client import ESIClient
+            adjusted_prices = ESIClient().get_adjusted_prices()
+        except Exception:  # noqa: BLE001 - job_cost falls back to 0, not a guess
+            adjusted_prices = {}
+
+    normal_cost, normal_output_qty, normal_hours = _reaction_run_cost_and_time(
+        normal, product_type_id, cfg, home, jita, cost_indices, adjusted_prices)
+    output_prices = _current_material_prices(cfg, [product_type_id], home=home, jita=jita)
+    normal_output_price = output_prices.get(product_type_id)
+    normal_isk_per_hour = (
+        (normal_output_qty * normal_output_price.sell - normal_cost) / normal_hours
+        if normal_output_price is not None and normal_cost is not None and normal_hours else None
+    )
+
+    alchemy_cost, _alchemy_output_qty, alchemy_hours = _reaction_run_cost_and_time(
+        alchemy_recipe, unrefined_type_id, cfg, home, jita, cost_indices, adjusted_prices)
+    yield_pct = scrapmetal_yield(refining_cfg)
+    # Scrapmetal Processing only - structure/rig/security/implant have no
+    # effect on this reprocessing step (real EVE mechanic, see
+    # refining.engine.scrapmetal_yield). One Unrefined unit per alchemy run.
+    reprocessed = apply_reprocessing_yield(unrefined_type_id, 1, yield_pct)
+    material_prices = _current_material_prices(cfg, list(reprocessed.keys()), home=home, jita=jita)
+    have_all_prices = bool(reprocessed) and all(tid in material_prices for tid in reprocessed)
+    alchemy_value = (
+        sum(qty * material_prices[tid].sell for tid, qty in reprocessed.items())
+        if have_all_prices else None
+    )
+    alchemy_isk_per_hour = (
+        (alchemy_value - alchemy_cost) / alchemy_hours
+        if alchemy_value is not None and alchemy_cost is not None and alchemy_hours else None
+    )
+
+    return AlchemyComparison(
+        product_type_id=product_type_id,
+        product_type_name=_sde_type_name(product_type_id),
+        normal_isk_per_hour=normal_isk_per_hour,
+        alchemy_isk_per_hour=alchemy_isk_per_hour,
+        alchemy_unrefined_type_id=unrefined_type_id,
+        alchemy_unrefined_type_name=_sde_type_name(unrefined_type_id),
+        scrapmetal_yield_pct=yield_pct,
+    )
 
 
 def _is_component(type_id: int) -> bool:
@@ -2277,7 +2482,60 @@ def _scan_build_candidates(cfg: ProductionConfig, client: Optional["GoonmetricsC
         results = [r for r in results if r["potential_daily_profit"] >= cfg.min_daily_profit]
 
     results.sort(key=lambda r: r.get("potential_daily_profit", 0.0), reverse=True)
+    # Alchemy comparison is informational-only and never changes which
+    # recipe buy-vs-build / plan_production uses. compare_alchemy_profitability
+    # already no-ops to None when alchemy_reactions_enabled is False, so this
+    # does not look up alchemy formulas unless the operator opted in.
+    # _discover_cache does NOT need invalidating when refining's own
+    # scrapmetal_processing_skill_level changes - that's an acceptable
+    # staleness (bounded by discover_build_candidates' own TTL), not a
+    # correctness bug, since this is informational-only.
+    if results:
+        _attach_alchemy_comparisons(results, cfg, ctx)
     return results
+
+
+def _attach_alchemy_comparisons(results: list[dict], cfg: ProductionConfig, ctx: "_PlanContext") -> None:
+    """Populate `alchemy_comparison` on Reaction rows of a discover scan.
+
+    When the feature is on, missing quotes for alchemy inputs/outputs are
+    fetched once for the whole result set (home_prices downloads the full
+    structure book per call - repeating that per row would be wasteful).
+    When the feature is off, compare_alchemy_profitability returns None
+    without any alchemy lookup, and the result dicts stay identical to
+    before this feature existed (no `alchemy_comparison` key).
+    """
+    reaction_rows = [r for r in results if r.get("activity") == "Reaction"]
+    if not reaction_rows:
+        return
+    home = dict(ctx.home)
+    jita = dict(ctx.jita)
+    if cfg.alchemy_reactions_enabled:
+        needed: set[int] = set()
+        for r in reaction_rows:
+            needed.add(r["type_id"])
+            alt = find_alchemy_alternative(r["type_id"])
+            if alt is None:
+                continue
+            alchemy_recipe, unrefined_type_id, reprocess_materials = alt
+            needed.add(unrefined_type_id)
+            needed.update(tid for tid, _ in reprocess_materials)
+            needed.update(tid for tid, _ in storage.get_blueprint_materials(
+                alchemy_recipe[0], alchemy_recipe[1]))
+            normal = storage.get_blueprint_for_product(r["type_id"])
+            if normal is not None:
+                needed.update(tid for tid, _ in storage.get_blueprint_materials(normal[0], normal[1]))
+        missing = [tid for tid in needed if tid not in home and tid not in jita]
+        if missing:
+            home.update(pricing.home_prices(cfg, missing))
+            jita.update(pricing.jita_prices(missing))
+    for r in reaction_rows:
+        comparison = compare_alchemy_profitability(
+            r["type_id"], cfg, home=home, jita=jita,
+            cost_indices=ctx.cost_indices, adjusted_prices=ctx.adjusted_prices,
+        )
+        if comparison is not None:
+            r["alchemy_comparison"] = comparison
 
 
 # Separate cache from _discover_cache above, same TTL/lock shape - a

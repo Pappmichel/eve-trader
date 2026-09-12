@@ -171,6 +171,8 @@ export const productionApi = {
   stockValue: () => get<{ total_value: number; priced_items: number; unpriced_items: number }>('/api/production/stock-value'),
   checkUnlistedStock: () => post<T.ProductionUnlistedStockRow[]>('/api/production/unlisted-stock/check'),
   discoverBuildCandidates: (topN = 200) => post<T.BuildCandidate[]>(`/api/production/build-candidates/discover?top_n=${topN}`),
+  alchemyCompare: (productName: string) =>
+    get<T.AlchemyComparison | null>(`/api/production/alchemy-compare/${encodeURIComponent(productName)}`),
   shipMargins: () => get<T.ShipMarginRow[]>('/api/production/margins'),
   itemMargin: (itemName: string) => post<T.ShipMarginRow>('/api/production/margins/search', { item_name: itemName }),
   materialTree: (typeName: string, quantity: number) =>
