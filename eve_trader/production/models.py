@@ -278,6 +278,26 @@ class DistributionRow:
 
 
 @dataclass
+class RelocationRow:
+    """One row of the Logistik tab's Relocation section: a category's
+    assigned station changed (Logistik tab structure reassignment), and
+    material still needed for that category's currently-planned jobs is
+    sitting at a now-orphaned former station instead of the current one.
+    See engine.relocation_recommendations - unlike DistributionRow (a
+    central warehouse restocking a shortfall), this is netted the same way
+    but sourced from a station nobody's assigned to anymore, so only
+    whatever the *next* job still needs (demand minus what's already at the
+    current station) is recommended, not the orphaned station's full stock."""
+    category: str
+    type_id: int
+    type_name: str
+    from_location_id: int
+    to_location_id: int
+    quantity: float
+    volume_m3: float
+
+
+@dataclass
 class AssetLocationRow:
     """One row of the Asset Search tab: how much of a searched item sits at
     one specific station/structure, owned by one specific character or corp

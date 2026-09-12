@@ -6,12 +6,12 @@ import { IconX } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
-import type { DistributionRow, LogisticsRow } from '../../api/types'
+import type { DistributionRow, LogisticsRow, RelocationRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { StructureIdField } from '../../components/StructureIdField'
 import { useAction } from '../../hooks/useAction'
-import { qty } from '../../format'
+import { qty, volume } from '../../format'
 
 export default function Logistics() {
   const { data: categories, isLoading: categoriesLoading } = useQuery({ queryKey: ['production', 'job-categories'], queryFn: productionApi.jobCategories })
@@ -23,6 +23,9 @@ export default function Logistics() {
   })
   const { data: distributionRows } = useQuery({
     queryKey: ['production', 'logistics', 'distribution'], queryFn: productionApi.distributionRecommendations, retry: false,
+  })
+  const { data: relocationRows } = useQuery({
+    queryKey: ['production', 'logistics', 'relocation'], queryFn: productionApi.relocationRecommendations, retry: false,
   })
   const { data: inventionRows } = useQuery({
     queryKey: ['production', 'logistics', 'invention'], queryFn: productionApi.inventionLogistics, retry: false,
@@ -164,6 +167,26 @@ export default function Logistics() {
     },
     { header: 'Quantity', accessorKey: 'quantity', size: 120, cell: (i) => qty(i.getValue()) },
   ], [structureNames])
+
+  const relocationColumns = useMemo<ColumnDef<RelocationRow, any>[]>(() => [
+    { header: 'Category', accessorKey: 'category', size: 160 },
+    { header: 'Item', accessorKey: 'type_name', size: 220 },
+    {
+      header: 'From', accessorKey: 'from_location_id', size: 200,
+      cell: (i) => structureNames?.[String(i.getValue())] ?? i.getValue(),
+    },
+    {
+      header: 'To', accessorKey: 'to_location_id', size: 200,
+      cell: (i) => structureNames?.[String(i.getValue())] ?? i.getValue(),
+    },
+    { header: 'Quantity', accessorKey: 'quantity', size: 110, cell: (i) => qty(i.getValue()) },
+    { header: 'Volume', accessorKey: 'volume_m3', size: 110, cell: (i) => volume(i.getValue()) },
+  ], [structureNames])
+
+  const relocationTotalVolume = useMemo(
+    () => (relocationRows ?? []).reduce((sum, r) => sum + r.volume_m3, 0),
+    [relocationRows],
+  )
 
   return (
     <Stack>
@@ -312,6 +335,22 @@ export default function Logistics() {
           <Text size="sm" c="dimmed">Nothing to move right now.</Text>
         ) : (
           <DataTable data={distributionRows} columns={distributionColumns} maxHeight={320} />
+        )}
+      </Card>
+
+      <Card withBorder>
+        <Title order={4} mb="xs">Relocation</Title>
+        <Text size="xs" c="dimmed" mb="sm">
+          What to carry along from a category's former station (structure was reassigned above) to its current one -
+          only what the next planned job there is still short of, not the former station's full stock.
+        </Text>
+        {!relocationRows || relocationRows.length === 0 ? (
+          <Text size="sm" c="dimmed">Nothing to relocate right now.</Text>
+        ) : (
+          <>
+            <Text size="xs" c="dimmed" mb="xs">Total volume: <Text span fw={600} c="accent">{volume(relocationTotalVolume)}</Text></Text>
+            <DataTable data={relocationRows} columns={relocationColumns} maxHeight={320} />
+          </>
         )}
       </Card>
 

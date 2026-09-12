@@ -271,6 +271,16 @@ export interface DistributionRow {
   quantity: number
 }
 
+export interface RelocationRow {
+  category: string
+  type_id: number
+  type_name: string
+  from_location_id: number
+  to_location_id: number
+  quantity: number
+  volume_m3: number
+}
+
 export interface MarketStatusRow {
   type_id: number
   type_name: string

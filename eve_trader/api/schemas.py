@@ -215,6 +215,16 @@ class DistributionRow(_Base):
     quantity: float
 
 
+class RelocationRow(_Base):
+    category: str
+    type_id: int
+    type_name: str
+    from_location_id: int
+    to_location_id: int
+    quantity: float
+    volume_m3: float
+
+
 class AssetLocationRow(_Base):
     location_id: int
     location_name: Optional[str] = None

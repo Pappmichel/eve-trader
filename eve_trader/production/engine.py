@@ -138,7 +138,8 @@ from .constants import (
 from .jobs import character_slot_overview
 from .models import (
     AssetPlanBlocker, AssetPlanJob, BuildJobEntry, BuyListEntry, DistributionRow, InventionNeedRow, InventionResult,
-    InventoryRow, LogisticsRow, MarketStatusRow, SpecialOrderLineItem, StockOverlapWarningRow, T1BpcInventionNeedRow,
+    InventoryRow, LogisticsRow, MarketStatusRow, RelocationRow, SpecialOrderLineItem, StockOverlapWarningRow,
+    T1BpcInventionNeedRow,
 )
 
 MAX_DEPTH = 10
@@ -2741,6 +2742,73 @@ def distribution_recommendations(build_list: list[BuildJobEntry],
                 ))
 
     rows.sort(key=lambda r: r.quantity, reverse=True)
+    return rows
+
+
+def relocation_recommendations(build_list: list[BuildJobEntry],
+                                cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[RelocationRow]:
+    """What to carry along when a job_category's assigned station changed
+    (Logistik tab structure reassignment). Production rotates between a
+    handful of stations over time, so a former station isn't abandoned stock
+    to empty out in one trip - just a source for whatever the *next* planned
+    job at the new station still needs. Netted the same way as
+    distribution_recommendations (demand minus what's already at the new
+    station), but sourced from `category_location_options` history
+    (storage.add_category_location_option - every location a category was
+    *ever* pointed at) minus whichever locations are still actively assigned
+    to some category or configured as the distribution warehouse - those
+    aren't orphaned, the regular Logistics/Distribution flow above already
+    covers them. When several orphaned locations exist for one category, the
+    one with the most stock of a given material is drained first, same
+    "largest first" priority distribution_recommendations' own surplus phase
+    uses.
+
+    Each row's volume_m3 (packaged volume for ships/capital modules, same
+    engine._haul_volume the Build List's own haul-cost math uses) is for
+    freighting the move - reactions in particular can involve large moon
+    material batches, so knowing the m3 upfront matters as much as the raw
+    quantity."""
+    category_locations = storage.load_category_locations()
+    category_options = storage.load_category_location_options()
+    demand = _category_material_demand(build_list, category_locations, cfg)
+    warehouse_location_id = cfg.distribution_source_location_id or cfg.home_location_id
+    active_locations = set(category_locations.values())
+    if warehouse_location_id is not None:
+        active_locations.add(warehouse_location_id)
+
+    rows = []
+    for category, current_location_id in category_locations.items():
+        orphaned_locations = [
+            loc for loc in category_options.get(category, [])
+            if loc != current_location_id and loc not in active_locations
+        ]
+        if not orphaned_locations:
+            continue
+        material_ids = sorted({mid for (cat, mid) in demand if cat == category})
+        for material_id in material_ids:
+            needed = demand[(category, material_id)]
+            current_available = storage.esi_stock_at_location(material_id, current_location_id)
+            missing = max(0.0, needed - current_available)
+            if missing <= 0:
+                continue
+            sde_type = storage.get_sde_type(material_id)
+            name = sde_type[2] if sde_type else str(material_id)
+            unit_volume = _haul_volume(material_id, cfg) or 0.0
+            stock_by_location = {loc: storage.esi_stock_at_location(material_id, loc) for loc in orphaned_locations}
+            for loc in sorted(orphaned_locations, key=lambda l: -stock_by_location[l]):
+                if missing <= 0:
+                    break
+                stock = stock_by_location[loc]
+                if stock <= 0:
+                    continue
+                move_qty = min(missing, stock)
+                missing -= move_qty
+                rows.append(RelocationRow(
+                    category=category, type_id=material_id, type_name=name,
+                    from_location_id=loc, to_location_id=current_location_id,
+                    quantity=move_qty, volume_m3=move_qty * unit_volume,
+                ))
+    rows.sort(key=lambda r: (r.category, -r.quantity))
     return rows
 
 

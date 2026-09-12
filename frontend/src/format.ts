@@ -15,6 +15,11 @@ export function qty(value: number | null | undefined): string {
   return nf.format(Math.round(value))
 }
 
+export function volume(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return '–'
+  return `${nf1.format(value)} m³`
+}
+
 export function pct(value: number | null | undefined): string {
   if (value === null || value === undefined || Number.isNaN(value)) return '–'
   return `${nf1.format(value * 100)}%`

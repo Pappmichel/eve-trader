@@ -2998,6 +2998,105 @@ def test_distribution_recommendations_never_double_books_a_surplus_location(monk
     assert sum(r.quantity for r in from_equipment) <= 12.0
 
 
+# ------------------------------------------------------------- relocation_recommendations
+def test_relocation_recommends_orphaned_former_location(monkeypatch):
+    # Reactions moved from 1001 (M3) to 1002 (6-L) - 1001 is no longer any
+    # category's current location, but is still in the category's own
+    # location-options history, so it should surface as a relocation source.
+    cfg = ProductionConfig(distribution_source_location_id=None, home_location_id=None)
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {"Reactions": 1002})
+    monkeypatch.setattr(storage, "load_category_location_options", lambda: {"Reactions": [1001, 1002]})
+    monkeypatch.setattr(engine, "_haul_volume", lambda *a, **k: 2.0)
+    _stub_material_demand(monkeypatch)
+
+    def fake_stock(type_id, location_id):
+        return {1001: 20.0, 1002: 3.0}[location_id]
+    monkeypatch.setattr(storage, "esi_stock_at_location", fake_stock)
+
+    rows = engine.relocation_recommendations([_build_job(category="Reactions")], cfg)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.category == "Reactions"
+    assert row.from_location_id == 1001
+    assert row.to_location_id == 1002
+    assert row.quantity == 7.0  # 10 needed - 3 already at the new location
+    assert row.volume_m3 == 14.0  # 7 units * 2.0 m3/unit
+
+
+def test_relocation_empty_when_no_former_location(monkeypatch):
+    cfg = ProductionConfig(distribution_source_location_id=None, home_location_id=None)
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {"Reactions": 1002})
+    monkeypatch.setattr(storage, "load_category_location_options", lambda: {"Reactions": [1002]})
+    _stub_material_demand(monkeypatch)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: 0.0)
+
+    assert engine.relocation_recommendations([_build_job(category="Reactions")], cfg) == []
+
+
+def test_relocation_only_moves_what_the_next_job_still_needs(monkeypatch):
+    # Old location has plenty (20), but the new location already has enough
+    # (10) to cover current demand - nothing should be recommended, since the
+    # whole point is "only what the next job needs", not emptying the old
+    # station in one go.
+    cfg = ProductionConfig(distribution_source_location_id=None, home_location_id=None)
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {"Reactions": 1002})
+    monkeypatch.setattr(storage, "load_category_location_options", lambda: {"Reactions": [1001, 1002]})
+    _stub_material_demand(monkeypatch)
+
+    def fake_stock(type_id, location_id):
+        return {1001: 20.0, 1002: 10.0}[location_id]
+    monkeypatch.setattr(storage, "esi_stock_at_location", fake_stock)
+
+    assert engine.relocation_recommendations([_build_job(category="Reactions")], cfg) == []
+
+
+def test_relocation_ignores_location_still_active_for_another_category(monkeypatch):
+    # 1001 shows up in Reactions' own location-options history, but it's
+    # still Equipment's current location today - not orphaned, so the
+    # regular Logistics/Distribution flow owns it, not Relocation.
+    cfg = ProductionConfig(distribution_source_location_id=None, home_location_id=None)
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {"Reactions": 1002, "Equipment": 1001})
+    monkeypatch.setattr(storage, "load_category_location_options", lambda: {"Reactions": [1001, 1002]})
+    _stub_material_demand(monkeypatch)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: {1001: 20.0, 1002: 0.0}[location_id])
+
+    assert engine.relocation_recommendations([_build_job(category="Reactions")], cfg) == []
+
+
+def test_relocation_ignores_location_configured_as_warehouse(monkeypatch):
+    # A former category location that's since become the distribution
+    # warehouse is a legitimate, actively-used source already covered by
+    # distribution_recommendations - Relocation shouldn't double-recommend it.
+    cfg = ProductionConfig(distribution_source_location_id=1001, home_location_id=None)
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {"Reactions": 1002})
+    monkeypatch.setattr(storage, "load_category_location_options", lambda: {"Reactions": [1001, 1002]})
+    _stub_material_demand(monkeypatch)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id: {1001: 20.0, 1002: 0.0}[location_id])
+
+    assert engine.relocation_recommendations([_build_job(category="Reactions")], cfg) == []
+
+
+def test_relocation_drains_largest_orphaned_stock_first(monkeypatch):
+    cfg = ProductionConfig(distribution_source_location_id=None, home_location_id=None)
+    monkeypatch.setattr(storage, "load_category_locations", lambda: {"Reactions": 1003})
+    monkeypatch.setattr(storage, "load_category_location_options", lambda: {"Reactions": [1001, 1002, 1003]})
+    monkeypatch.setattr(engine, "_haul_volume", lambda *a, **k: 1.0)
+    _stub_material_demand(monkeypatch)
+
+    def fake_stock(type_id, location_id):
+        return {1001: 4.0, 1002: 9.0, 1003: 0.0}[location_id]
+    monkeypatch.setattr(storage, "esi_stock_at_location", fake_stock)
+
+    rows = engine.relocation_recommendations([_build_job(category="Reactions")], cfg)
+
+    assert len(rows) == 2
+    assert rows[0].from_location_id == 1002  # richer orphaned stock drained first
+    assert rows[0].quantity == 9.0
+    assert rows[1].from_location_id == 1001
+    assert rows[1].quantity == 1.0  # only 1 more needed to reach 10
+
+
 # ------------------------------------------------------------- invention_logistics
 def test_invention_logistics_needs_bpcs_decryptors_and_datacores(monkeypatch):
     from eve_trader.production.models import InventionNeedRow

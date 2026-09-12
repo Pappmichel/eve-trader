@@ -300,6 +300,14 @@ def get_distribution_recommendations():
     return _wrap(actions.do_get_distribution_recommendations, build_list=plan["build_list"])
 
 
+@router.get("/logistics/relocation", response_model=list[schemas.RelocationRow])
+def get_relocation_recommendations():
+    plan = _last_plan.get(_tenant_key())
+    if not plan or not plan.get("build_list"):
+        raise HTTPException(status_code=400, detail="No build list computed yet. Run 'Compute Buy/Build List' first.")
+    return _wrap(actions.do_get_relocation_recommendations, build_list=plan["build_list"])
+
+
 @router.get("/logistics/invention", response_model=list[schemas.LogisticsRow])
 def get_invention_logistics():
     # Deliberately only checks plan is None (not invention_list's own

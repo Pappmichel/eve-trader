@@ -24,7 +24,7 @@ from .engine import (
     distribution_recommendations, invention_logistics, item_margin_detail, invalidate_discover_cache,
     invalidate_ship_margin_cache, t1_bpc_invention_needs,
     invalidate_production_locations_cache, logistics_status, market_status, plan_asset_optimized,
-    plan_production, plan_special_order, stock_value,
+    plan_production, plan_special_order, relocation_recommendations, stock_value,
 )
 from .models import (
     AssetLocationRow, BuildCandidate, ManualBlueprintCopyCostRow, OwnedBlueprintRow, ShipMarginRow,
@@ -696,6 +696,10 @@ def do_get_logistics_status(build_list: list) -> list:
 
 def do_get_distribution_recommendations(build_list: list) -> list:
     return distribution_recommendations(build_list)
+
+
+def do_get_relocation_recommendations(build_list: list) -> list:
+    return relocation_recommendations(build_list)
 
 
 def do_get_invention_logistics(invention_list: list) -> list:
