@@ -255,9 +255,17 @@ class LogisticsRow:
     missing: float
     # Which other configured category-location has the most of this item
     # right now, if any (GitHub issue #4's "where to pull from" hint) - None
-    # when nothing's missing, or no other configured location has any.
+    # when nothing's missing, or no other configured location has any. Can
+    # also be a category's now-orphaned *former* station (Structure per
+    # Category above was reassigned, e.g. Reactions moved stations) - its
+    # whole remaining stock counts as pullable, since nobody's demand is
+    # netted against it anymore.
     pull_from_location_id: Optional[int] = None
     pull_from_available: Optional[float] = None
+    # Volume (packaged for ships/capital modules, engine._haul_volume) of
+    # `missing` - how many m3 actually need to be freighted in, not just the
+    # raw unit count.
+    volume_m3: float = 0.0
 
 
 @dataclass
@@ -275,26 +283,7 @@ class DistributionRow:
     to_category: str
     to_location_id: int
     quantity: float
-
-
-@dataclass
-class RelocationRow:
-    """One row of the Logistik tab's Relocation section: a category's
-    assigned station changed (Logistik tab structure reassignment), and
-    material still needed for that category's currently-planned jobs is
-    sitting at a now-orphaned former station instead of the current one.
-    See engine.relocation_recommendations - unlike DistributionRow (a
-    central warehouse restocking a shortfall), this is netted the same way
-    but sourced from a station nobody's assigned to anymore, so only
-    whatever the *next* job still needs (demand minus what's already at the
-    current station) is recommended, not the orphaned station's full stock."""
-    category: str
-    type_id: int
-    type_name: str
-    from_location_id: int
-    to_location_id: int
-    quantity: float
-    volume_m3: float
+    volume_m3: float = 0.0
 
 
 @dataclass

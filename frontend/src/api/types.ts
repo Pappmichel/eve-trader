@@ -260,6 +260,7 @@ export interface LogisticsRow {
   missing: number
   pull_from_location_id: number | null
   pull_from_available: number | null
+  volume_m3: number
 }
 
 export interface DistributionRow {
@@ -267,15 +268,6 @@ export interface DistributionRow {
   type_name: string
   from_location_id: number
   to_category: string
-  to_location_id: number
-  quantity: number
-}
-
-export interface RelocationRow {
-  category: string
-  type_id: number
-  type_name: string
-  from_location_id: number
   to_location_id: number
   quantity: number
   volume_m3: number

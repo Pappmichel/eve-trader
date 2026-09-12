@@ -6,7 +6,7 @@ import { IconX } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
-import type { DistributionRow, LogisticsRow, RelocationRow } from '../../api/types'
+import type { DistributionRow, LogisticsRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { StructureIdField } from '../../components/StructureIdField'
@@ -23,9 +23,6 @@ export default function Logistics() {
   })
   const { data: distributionRows } = useQuery({
     queryKey: ['production', 'logistics', 'distribution'], queryFn: productionApi.distributionRecommendations, retry: false,
-  })
-  const { data: relocationRows } = useQuery({
-    queryKey: ['production', 'logistics', 'relocation'], queryFn: productionApi.relocationRecommendations, retry: false,
   })
   const { data: inventionRows } = useQuery({
     queryKey: ['production', 'logistics', 'invention'], queryFn: productionApi.inventionLogistics, retry: false,
@@ -135,14 +132,19 @@ export default function Logistics() {
   }, [rows])
 
   const columns = useMemo<ColumnDef<LogisticsRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 260 },
-    { header: 'Needed', accessorKey: 'needed', size: 120, cell: (i) => qty(i.getValue()) },
-    { header: 'Available on Site', accessorKey: 'available', size: 150, cell: (i) => qty(i.getValue()) },
+    { header: 'Item', accessorKey: 'type_name', size: 240 },
+    { header: 'Needed', accessorKey: 'needed', size: 110, cell: (i) => qty(i.getValue()) },
+    { header: 'Available on Site', accessorKey: 'available', size: 140, cell: (i) => qty(i.getValue()) },
     {
-      header: 'Missing', accessorKey: 'missing', size: 110,
+      header: 'Missing', accessorKey: 'missing', size: 100,
       cell: (i) => <Text c={i.getValue() > 0 ? 'warn' : 'accent'} fw={i.getValue() > 0 ? 600 : 400}>{qty(i.getValue())}</Text>,
     },
+    { header: 'Volume', accessorKey: 'volume_m3', size: 100, cell: (i) => volume(i.getValue()) },
     {
+      // Can point at another category's currently-configured station (a
+      // surplus beyond its own demand) or a category's own former station
+      // (Structure per Category above was reassigned away from it) - either
+      // way, its whole stock counts once nobody else's demand claims it.
       header: 'Pull From', accessorKey: 'pull_from_location_id', size: 200,
       cell: (i) => {
         const locationId = i.getValue() as number | null
@@ -155,37 +157,23 @@ export default function Logistics() {
   ], [structureNames])
 
   const distributionColumns = useMemo<ColumnDef<DistributionRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 240 },
-    {
-      header: 'From', accessorKey: 'from_location_id', size: 200,
-      cell: (i) => structureNames?.[String(i.getValue())] ?? i.getValue(),
-    },
-    { header: 'To Category', accessorKey: 'to_category', size: 180 },
-    {
-      header: 'To', accessorKey: 'to_location_id', size: 200,
-      cell: (i) => structureNames?.[String(i.getValue())] ?? i.getValue(),
-    },
-    { header: 'Quantity', accessorKey: 'quantity', size: 120, cell: (i) => qty(i.getValue()) },
-  ], [structureNames])
-
-  const relocationColumns = useMemo<ColumnDef<RelocationRow, any>[]>(() => [
-    { header: 'Category', accessorKey: 'category', size: 160 },
     { header: 'Item', accessorKey: 'type_name', size: 220 },
     {
       header: 'From', accessorKey: 'from_location_id', size: 200,
       cell: (i) => structureNames?.[String(i.getValue())] ?? i.getValue(),
     },
+    { header: 'To Category', accessorKey: 'to_category', size: 160 },
     {
       header: 'To', accessorKey: 'to_location_id', size: 200,
       cell: (i) => structureNames?.[String(i.getValue())] ?? i.getValue(),
     },
     { header: 'Quantity', accessorKey: 'quantity', size: 110, cell: (i) => qty(i.getValue()) },
-    { header: 'Volume', accessorKey: 'volume_m3', size: 110, cell: (i) => volume(i.getValue()) },
+    { header: 'Volume', accessorKey: 'volume_m3', size: 100, cell: (i) => volume(i.getValue()) },
   ], [structureNames])
 
-  const relocationTotalVolume = useMemo(
-    () => (relocationRows ?? []).reduce((sum, r) => sum + r.volume_m3, 0),
-    [relocationRows],
+  const distributionTotalVolume = useMemo(
+    () => (distributionRows ?? []).reduce((sum, r) => sum + r.volume_m3, 0),
+    [distributionRows],
   )
 
   return (
@@ -303,12 +291,18 @@ export default function Logistics() {
         Array.from(grouped.entries()).map(([category, categoryRows]) => {
           const locationId = locations[category]
           const name = structureNames?.[String(locationId)]
+          const totalVolume = categoryRows.reduce((sum, r) => sum + r.volume_m3, 0)
           return (
             <Card withBorder key={category}>
               <Group justify="space-between" mb="xs">
                 <Title order={5}>{category}</Title>
                 <Text size="xs" c="dimmed">{name ? `${name} (${locationId})` : `Structure ID ${locationId}`}</Text>
               </Group>
+              {totalVolume > 0 && (
+                <Text size="xs" c="dimmed" mb="xs">
+                  Total missing volume: <Text span fw={600} c="accent">{volume(totalVolume)}</Text>
+                </Text>
+              )}
               <DataTable data={categoryRows} columns={columns} maxHeight={320} />
             </Card>
           )
@@ -334,22 +328,11 @@ export default function Logistics() {
         {!distributionRows || distributionRows.length === 0 ? (
           <Text size="sm" c="dimmed">Nothing to move right now.</Text>
         ) : (
-          <DataTable data={distributionRows} columns={distributionColumns} maxHeight={320} />
-        )}
-      </Card>
-
-      <Card withBorder>
-        <Title order={4} mb="xs">Relocation</Title>
-        <Text size="xs" c="dimmed" mb="sm">
-          What to carry along from a category's former station (structure was reassigned above) to its current one -
-          only what the next planned job there is still short of, not the former station's full stock.
-        </Text>
-        {!relocationRows || relocationRows.length === 0 ? (
-          <Text size="sm" c="dimmed">Nothing to relocate right now.</Text>
-        ) : (
           <>
-            <Text size="xs" c="dimmed" mb="xs">Total volume: <Text span fw={600} c="accent">{volume(relocationTotalVolume)}</Text></Text>
-            <DataTable data={relocationRows} columns={relocationColumns} maxHeight={320} />
+            <Text size="xs" c="dimmed" mb="xs">
+              Total volume: <Text span fw={600} c="accent">{volume(distributionTotalVolume)}</Text>
+            </Text>
+            <DataTable data={distributionRows} columns={distributionColumns} maxHeight={320} />
           </>
         )}
       </Card>
@@ -374,7 +357,17 @@ export default function Logistics() {
             {inventionDraft ? 'Nothing needed right now.' : 'Set an invention structure ID above to track this.'}
           </Text>
         ) : (
-          <DataTable data={inventionRows} columns={columns} maxHeight={320} />
+          <>
+            {(() => {
+              const totalVolume = inventionRows.reduce((sum, r) => sum + r.volume_m3, 0)
+              return totalVolume > 0 && (
+                <Text size="xs" c="dimmed" mb="xs">
+                  Total missing volume: <Text span fw={600} c="accent">{volume(totalVolume)}</Text>
+                </Text>
+              )
+            })()}
+            <DataTable data={inventionRows} columns={columns} maxHeight={320} />
+          </>
         )}
       </Card>
     </Stack>

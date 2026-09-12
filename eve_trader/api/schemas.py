@@ -204,6 +204,7 @@ class LogisticsRow(_Base):
     missing: float
     pull_from_location_id: Optional[int] = None
     pull_from_available: Optional[float] = None
+    volume_m3: float = 0.0
 
 
 class DistributionRow(_Base):
@@ -213,16 +214,7 @@ class DistributionRow(_Base):
     to_category: str
     to_location_id: int
     quantity: float
-
-
-class RelocationRow(_Base):
-    category: str
-    type_id: int
-    type_name: str
-    from_location_id: int
-    to_location_id: int
-    quantity: float
-    volume_m3: float
+    volume_m3: float = 0.0
 
 
 class AssetLocationRow(_Base):
