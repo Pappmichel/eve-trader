@@ -48,17 +48,17 @@ export default function BuildCandidates() {
 
   const columns = useMemo<ColumnDef<BuildCandidate, any>[]>(() => [
     {
-      header: 'Item', accessorKey: 'type_name', size: 360,
+      header: 'Item', accessorKey: 'type_name', size: 420,
       cell: (i) => {
         const row = i.row.original
         const note = row.activity === 'Reaction' ? row.alchemy_comparison : null
+        const iskH = (value: number | null) => (value == null ? '–' : `${isk(value)}/h`)
         return (
           <Stack gap={2}>
             <Text>{row.type_name}</Text>
             {note && (
-              <Text size="xs" c="dimmed">
-                ⚗ Alchemy alternative available: normal {note.normal_isk_per_hour == null ? '–' : `${isk(note.normal_isk_per_hour)}/h`} vs.
-                alchemy {note.alchemy_isk_per_hour == null ? '–' : `${isk(note.alchemy_isk_per_hour)}/h`}
+              <Text size="xs" c="dimmed" style={{ whiteSpace: 'normal' }}>
+                ⚗ Alchemy alternative available: normal {iskH(note.normal_isk_per_hour)} vs. alchemy {iskH(note.alchemy_isk_per_hour)}
               </Text>
             )}
           </Stack>
