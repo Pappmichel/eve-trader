@@ -47,7 +47,24 @@ export default function BuildCandidates() {
   }, [data, effectiveActivities, effectiveMeta, search, minMarginPct, minDailyProfit])
 
   const columns = useMemo<ColumnDef<BuildCandidate, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 260 },
+    {
+      header: 'Item', accessorKey: 'type_name', size: 360,
+      cell: (i) => {
+        const row = i.row.original
+        const note = row.activity === 'Reaction' ? row.alchemy_comparison : null
+        return (
+          <Stack gap={2}>
+            <Text>{row.type_name}</Text>
+            {note && (
+              <Text size="xs" c="dimmed">
+                ⚗ Alchemy alternative available: normal {note.normal_isk_per_hour == null ? '–' : `${isk(note.normal_isk_per_hour)}/h`} vs.
+                alchemy {note.alchemy_isk_per_hour == null ? '–' : `${isk(note.alchemy_isk_per_hour)}/h`}
+              </Text>
+            )}
+          </Stack>
+        )
+      },
+    },
     { header: 'Activity', accessorKey: 'activity', size: 120 },
     { header: 'Meta Level', accessorKey: 'meta_level', size: 100, cell: (i) => i.getValue() ?? '–' },
     { header: 'Build Cost', accessorKey: 'build_cost', size: 140, cell: (i) => isk(i.getValue()) },

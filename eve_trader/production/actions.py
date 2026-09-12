@@ -6,7 +6,9 @@ layer).
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict
 from datetime import datetime, timezone
+from typing import Optional
 
 import requests
 
@@ -20,7 +22,7 @@ from .config import PRODUCTION_CONFIG, ProductionConfig, validate_production_ove
 from .constants import DECRYPTORS, JOB_CATEGORIES
 from .engine import (
     _PlanContext, _item_margin_detail_with_context, _structural_material_closure,
-    build_material_tree, discover_build_candidates, discover_ship_margins,
+    build_material_tree, compare_alchemy_profitability, discover_build_candidates, discover_ship_margins,
     distribution_recommendations, invention_logistics, item_margin_detail, invalidate_discover_cache,
     invalidate_ship_margin_cache, t1_bpc_invention_needs,
     invalidate_production_locations_cache, logistics_status, market_status, plan_asset_optimized,
@@ -784,6 +786,23 @@ def do_discover_build_candidates(top_n: int = 200, cfg: ProductionConfig = PRODU
         raise ActionError("SDE cache is empty. Refresh SDE first.")
     candidates = discover_build_candidates(cfg, top_n=top_n)
     return {"rows": [BuildCandidate(**c) for c in candidates]}
+
+
+def do_compare_alchemy(product_name: str, cfg: ProductionConfig = PRODUCTION_CONFIG) -> Optional[dict]:
+    """Thin wrapper - see engine.compare_alchemy_profitability. Resolves
+    product_name via the same exact-match SDE lookup pattern used
+    elsewhere (see refining/reprocessing.py's resolve_type_id for the
+    pattern), raises ActionError if unresolvable."""
+    matches = storage.search_sde_types(product_name, limit=5)
+    type_id = None
+    for tid, type_name in matches:
+        if type_name.strip().lower() == product_name.strip().lower():
+            type_id = tid
+            break
+    if type_id is None:
+        raise ActionError(f"No exact SDE match for '{product_name}'.")
+    result = compare_alchemy_profitability(type_id, cfg)
+    return asdict(result) if result else None
 
 
 def do_get_ship_margins(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:

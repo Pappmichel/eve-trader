@@ -357,6 +357,16 @@ class ProductionUnlistedStockRow(_Base):
     margin: Optional[float] = None
 
 
+class AlchemyComparison(_Base):
+    product_type_id: int
+    product_type_name: str
+    normal_isk_per_hour: Optional[float] = None
+    alchemy_isk_per_hour: Optional[float] = None
+    alchemy_unrefined_type_id: int
+    alchemy_unrefined_type_name: str
+    scrapmetal_yield_pct: float
+
+
 class BuildCandidate(_Base):
     type_id: int
     type_name: str
@@ -366,6 +376,7 @@ class BuildCandidate(_Base):
     daily_movement: float
     potential_daily_profit: float
     meta_level: Optional[int] = None
+    alchemy_comparison: Optional[AlchemyComparison] = None
 
 
 class ShipMarginRow(_Base):

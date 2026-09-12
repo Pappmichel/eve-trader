@@ -10,8 +10,9 @@ from eve_trader.production.config import ProductionConfig
 from eve_trader.production.constants import ANCIENT_RELIC_CATEGORY_ID, SCC_SURCHARGE_RATE, ACTIVITY_MODS, rig_security_multiplier
 from eve_trader.production.engine import (
     _activity_mods, _material_qty, _structural_material_closure, _tech_ii_mods, _total_missing, classify_activity,
+    compare_alchemy_profitability, find_alchemy_alternative,
 )
-from eve_trader.production.models import CharacterSlotRow, InventionResult
+from eve_trader.production.models import AlchemyComparison, CharacterSlotRow, InventionResult
 
 from . import pg_helpers
 from .pg_helpers import _apply_phase1_schema, tenant, tenant_pair  # noqa: F401
@@ -3379,3 +3380,226 @@ def test_t1_bpc_invention_needs_skips_rows_with_no_runs_needed(monkeypatch):
                              output_runs=2, runs_needed=0, bpcs_needed=0, recommended_invention_runs=0)
 
     assert engine.t1_bpc_invention_needs([need], cfg) == []
+
+
+# --------------------------------------------------------------------- Alchemy
+# Informational normal-vs-alchemy ISK/hour comparison. Caesarium Cadmide
+# numbers below are the confirmed fixture from the feature spec:
+#   normal: 100 Cadmium + 100 Caesium + 5 Oxygen Fuel Block -> 200 Caesarium, 3h
+#   alchemy: 100 Cadmium + 100 Scandium + 5 Hydrogen Fuel Block -> 1 Unrefined, 6h
+#   reprocess (100% base): 164 Cadmium + 36 Caesarium Cadmide
+#   at 55% scrapmetal yield: floor(164*0.55)=90 Cadmium, floor(36*0.55)=19 Caesarium
+_CAESARIUM = 16675
+_UNREFINED = 32824
+_NORMAL_BP = 46166
+_ALCHEMY_BP = 46190
+_CADMIUM = 16643
+_CAESIUM = 16647
+_SCANDIUM = 16639
+_OXYGEN_FB = 4312
+_HYDROGEN_FB = 4246
+
+
+def _alchemy_names(type_id):
+    return {
+        _CAESARIUM: "Caesarium Cadmide",
+        _UNREFINED: "Unrefined Caesarium Cadmide",
+        _CADMIUM: "Cadmium",
+        _CAESIUM: "Caesium",
+        _SCANDIUM: "Scandium",
+        _OXYGEN_FB: "Oxygen Fuel Block",
+        _HYDROGEN_FB: "Hydrogen Fuel Block",
+    }.get(type_id)
+
+
+def _alchemy_sde_type(type_id):
+    name = _alchemy_names(type_id)
+    if name is None:
+        return None
+    return (type_id, 0, name, 0.01, 1, None, None, None)
+
+
+def _install_caesarium_alchemy_sde(monkeypatch):
+    """Minimal SDE fixture for the Caesarium Cadmide / Unrefined pair."""
+    def fake_bp(product_type_id):
+        if product_type_id == _CAESARIUM:
+            return (_NORMAL_BP, 11, 200.0)
+        if product_type_id == _UNREFINED:
+            return (_ALCHEMY_BP, 11, 1.0)
+        return None
+
+    def fake_materials(blueprint_type_id, activity_id):
+        if blueprint_type_id == _NORMAL_BP:
+            return [(_CADMIUM, 100.0), (_CAESIUM, 100.0), (_OXYGEN_FB, 5.0)]
+        if blueprint_type_id == _ALCHEMY_BP:
+            return [(_CADMIUM, 100.0), (_SCANDIUM, 100.0), (_HYDROGEN_FB, 5.0)]
+        return []
+
+    def fake_time(blueprint_type_id, activity_id):
+        if blueprint_type_id == _NORMAL_BP:
+            return 3 * 3600
+        if blueprint_type_id == _ALCHEMY_BP:
+            return 6 * 3600
+        return None
+
+    def fake_search(query, limit=5):
+        if "Unrefined Caesarium Cadmide" in query:
+            return [(_UNREFINED, "Unrefined Caesarium Cadmide")]
+        return []
+
+    monkeypatch.setattr(storage, "get_blueprint_for_product", fake_bp)
+    monkeypatch.setattr(storage, "get_sde_type", _alchemy_sde_type)
+    monkeypatch.setattr(storage, "search_sde_types", fake_search)
+    monkeypatch.setattr(storage, "get_blueprint_materials", fake_materials)
+    monkeypatch.setattr(storage, "get_blueprint_time", fake_time)
+    monkeypatch.setattr(storage, "get_type_materials",
+                         lambda type_id: [(_CADMIUM, 164.0), (_CAESARIUM, 36.0)] if type_id == _UNREFINED else [])
+    monkeypatch.setattr(storage, "get_portion_size", lambda type_id: 1 if type_id == _UNREFINED else None)
+    monkeypatch.setattr(engine, "_haul_volume", lambda type_id, cfg: 0.0)
+
+
+def test_compare_alchemy_disabled_does_not_touch_storage_or_refining(monkeypatch):
+    def boom(*args, **kwargs):
+        raise AssertionError("disabled alchemy path must not touch storage/refining")
+
+    monkeypatch.setattr(storage, "get_blueprint_for_product", boom)
+    monkeypatch.setattr(storage, "search_sde_types", boom)
+    monkeypatch.setattr(storage, "get_sde_type", boom)
+    monkeypatch.setattr(storage, "get_type_materials", boom)
+    monkeypatch.setattr(engine, "find_alchemy_alternative", boom)
+    monkeypatch.setattr(engine, "scrapmetal_yield", boom)
+    monkeypatch.setattr(engine, "apply_reprocessing_yield", boom)
+
+    assert compare_alchemy_profitability(_CAESARIUM, ProductionConfig(alchemy_reactions_enabled=False)) is None
+
+
+def test_find_alchemy_alternative_returns_none_for_non_reaction(monkeypatch):
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (999, 1, 1.0))  # manufacturing
+    assert find_alchemy_alternative(_CAESARIUM) is None
+
+
+def test_find_alchemy_alternative_returns_none_without_unrefined_counterpart(monkeypatch):
+    monkeypatch.setattr(storage, "get_blueprint_for_product",
+                         lambda type_id: (_NORMAL_BP, 11, 200.0) if type_id == _CAESARIUM else None)
+    monkeypatch.setattr(storage, "get_sde_type", _alchemy_sde_type)
+    monkeypatch.setattr(storage, "search_sde_types", lambda query, limit=5: [])
+    assert find_alchemy_alternative(_CAESARIUM) is None
+
+
+def test_find_alchemy_alternative_returns_none_when_unrefined_has_no_recipe(monkeypatch):
+    monkeypatch.setattr(storage, "get_blueprint_for_product",
+                         lambda type_id: (_NORMAL_BP, 11, 200.0) if type_id == _CAESARIUM else None)
+    monkeypatch.setattr(storage, "get_sde_type", _alchemy_sde_type)
+    monkeypatch.setattr(storage, "search_sde_types",
+                         lambda query, limit=5: [(_UNREFINED, "Unrefined Caesarium Cadmide")])
+    assert find_alchemy_alternative(_CAESARIUM) is None
+
+
+def test_find_alchemy_alternative_returns_none_when_unrefined_has_no_materials(monkeypatch):
+    _install_caesarium_alchemy_sde(monkeypatch)
+    monkeypatch.setattr(storage, "get_type_materials", lambda type_id: [])
+    assert find_alchemy_alternative(_CAESARIUM) is None
+
+
+def test_find_alchemy_alternative_returns_known_caesarium_pair(monkeypatch):
+    _install_caesarium_alchemy_sde(monkeypatch)
+    alt = find_alchemy_alternative(_CAESARIUM)
+    assert alt is not None
+    alchemy_recipe, unrefined_type_id, reprocess_materials = alt
+    assert alchemy_recipe == (_ALCHEMY_BP, 11, 1.0)
+    assert unrefined_type_id == _UNREFINED
+    assert reprocess_materials == [(_CADMIUM, 164.0), (_CAESARIUM, 36.0)]
+
+
+def test_compare_alchemy_returns_none_when_no_unrefined_pair(monkeypatch):
+    monkeypatch.setattr(storage, "get_blueprint_for_product",
+                         lambda type_id: (_NORMAL_BP, 11, 200.0) if type_id == _CAESARIUM else None)
+    monkeypatch.setattr(storage, "get_sde_type", _alchemy_sde_type)
+    monkeypatch.setattr(storage, "search_sde_types", lambda query, limit=5: [])
+    cfg = ProductionConfig(alchemy_reactions_enabled=True)
+    assert compare_alchemy_profitability(_CAESARIUM, cfg) is None
+
+
+def test_compare_alchemy_profitability_caesarium_isk_per_hour(monkeypatch):
+    from eve_trader.refining.config import RefiningConfig
+
+    _install_caesarium_alchemy_sde(monkeypatch)
+    sells = {
+        _CADMIUM: 1000.0,
+        _CAESIUM: 2000.0,
+        _SCANDIUM: 100.0,
+        _OXYGEN_FB: 20000.0,
+        _HYDROGEN_FB: 10000.0,
+        _CAESARIUM: 5000.0,
+    }
+    home = {
+        tid: CurrentPrice(type_id=tid, updated="", buy=price * 0.9, sell=price)
+        for tid, price in sells.items()
+    }
+    cfg = ProductionConfig(
+        alchemy_reactions_enabled=True,
+        jita_buy_broker_fee=0.0,
+        haul_cost_per_m3=0.0,
+    )
+    result = compare_alchemy_profitability(
+        _CAESARIUM, cfg, home=home, jita={}, cost_indices={}, adjusted_prices={},
+        refining_cfg=RefiningConfig(scrapmetal_processing_skill_level=5),
+    )
+    assert result is not None
+    assert result.product_type_id == _CAESARIUM
+    assert result.product_type_name == "Caesarium Cadmide"
+    assert result.alchemy_unrefined_type_id == _UNREFINED
+    assert result.alchemy_unrefined_type_name == "Unrefined Caesarium Cadmide"
+    assert result.scrapmetal_yield_pct == pytest.approx(0.55)
+    # normal: (200*5000 - (100*1000 + 100*2000 + 5*20000)) / 3 = 200000
+    # alchemy: ((90*1000 + 19*5000) - (100*1000 + 100*100 + 5*10000)) / 6 = 4166.666...
+    assert result.normal_isk_per_hour == pytest.approx(200_000.0)
+    assert result.alchemy_isk_per_hour == pytest.approx(25_000.0 / 6.0)
+
+
+@pg_helpers.postgres_required()
+def test_discover_build_candidates_skips_alchemy_lookups_when_disabled(monkeypatch, tenant):
+    monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
+    monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: [
+        (2, "Caesarium Cadmide", 1.0, 100, None, 4),
+    ])
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Reaction", (_NORMAL_BP, 11, 200.0)))
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: 0.5)
+    monkeypatch.setattr(engine, "find_alchemy_alternative",
+                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("alchemy must not be looked up")))
+
+    results = engine.discover_build_candidates(
+        ProductionConfig(min_margin=0.15, alchemy_reactions_enabled=False),
+        client=_FakeGmClient(),
+    )
+
+    assert [r["type_id"] for r in results] == [2]
+    assert "alchemy_comparison" not in results[0]
+
+
+@pg_helpers.postgres_required()
+def test_discover_build_candidates_attaches_alchemy_comparison_when_enabled(monkeypatch, tenant):
+    fake = AlchemyComparison(
+        product_type_id=2, product_type_name="Caesarium Cadmide",
+        normal_isk_per_hour=200000.0, alchemy_isk_per_hour=4166.67,
+        alchemy_unrefined_type_id=_UNREFINED,
+        alchemy_unrefined_type_name="Unrefined Caesarium Cadmide",
+        scrapmetal_yield_pct=0.55,
+    )
+    monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
+    monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: [
+        (2, "Caesarium Cadmide", 1.0, 100, None, 4),
+    ])
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Reaction", (_NORMAL_BP, 11, 200.0)))
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: 0.5)
+    monkeypatch.setattr(engine, "find_alchemy_alternative", lambda type_id: None)
+    monkeypatch.setattr(engine, "compare_alchemy_profitability", lambda *a, **k: fake)
+
+    results = engine.discover_build_candidates(
+        ProductionConfig(min_margin=0.15, alchemy_reactions_enabled=True),
+        client=_FakeGmClient(),
+    )
+
+    assert results[0]["alchemy_comparison"] == fake

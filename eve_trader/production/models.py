@@ -419,6 +419,23 @@ class UnlistedStockRow:
 
 
 @dataclass
+class AlchemyComparison:
+    """Live ISK/hour comparison between a Reaction product's normal recipe
+    and its alchemy ("Unrefined X") alternative, if one exists - see
+    engine.find_alchemy_alternative/compare_alchemy_profitability. Purely
+    informational (ProductionConfig.alchemy_reactions_enabled gates whether
+    this is computed/shown at all) - never changes which recipe buy-vs-build
+    or plan_production actually uses."""
+    product_type_id: int
+    product_type_name: str
+    normal_isk_per_hour: Optional[float]     # None if normal recipe's inputs have no price data
+    alchemy_isk_per_hour: Optional[float]     # None if alchemy path unavailable/no price data
+    alchemy_unrefined_type_id: int
+    alchemy_unrefined_type_name: str
+    scrapmetal_yield_pct: float                # the yield_pct actually used (REFINING_CONFIG-derived), for display/audit
+
+
+@dataclass
 class BuildCandidate:
     """A manufacturable item, not currently a configured stock target, where
     building clearly beats buying right now - see engine.discover_build_candidates.
@@ -432,6 +449,7 @@ class BuildCandidate:
     daily_movement: float
     potential_daily_profit: float
     meta_level: Optional[int]
+    alchemy_comparison: Optional[AlchemyComparison] = None
 
 
 @dataclass
