@@ -9,7 +9,7 @@ import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
 import { isk, pct, qty } from '../../format'
-import { blockedRunsTitle } from './assetPlanList'
+import { blockedRunsTitle } from './assetPlanBlockers'
 
 const CATEGORY_UNKNOWN = 'no category'
 

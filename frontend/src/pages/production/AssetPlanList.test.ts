@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { AssetPlanJob } from '../../api/types'
-import { blockedRunsTitle } from './assetPlanList'
+import { blockedRunsTitle } from './assetPlanBlockers'
 
 function job(partial: Partial<AssetPlanJob>): AssetPlanJob {
   return {
