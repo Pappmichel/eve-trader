@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Card, Title, Text, Stack, Button, Group, MultiSelect, Badge, NumberInput } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
@@ -29,6 +29,14 @@ export default function AssetPlanList() {
     },
     [['production', 'settings']],
   )
+  // Local draft state so typing a multi-digit number doesn't fire a save
+  // request per keystroke - only persisted on blur, same "edit locally,
+  // commit explicitly" shape as ProductionSettings.tsx's form (just without
+  // a separate Save button, since this is a single inline field).
+  const [daysTargetDraft, setDaysTargetDraft] = useState<number | ''>('')
+  useEffect(() => {
+    setDaysTargetDraft(settings?.asset_plan_slot_days_target ?? '')
+  }, [settings?.asset_plan_slot_days_target])
 
   const categories = useMemo(
     () => [...new Set(jobs.map((j) => j.job_category ?? CATEGORY_UNKNOWN))].sort(), [jobs],
@@ -136,12 +144,13 @@ export default function AssetPlanList() {
             label="Slot-Ziel (Tage bis Backlog abgearbeitet)"
             description="Leer = aus. Nach dem Speichern Recompute klicken."
             placeholder="Aus"
-            value={settings?.asset_plan_slot_days_target ?? undefined}
+            value={daysTargetDraft}
             min={0}
             step={1}
             w={280}
             disabled={!settings}
-            onChange={(v) => saveDaysTarget.mutate(v === '' ? null : Number(v))}
+            onChange={setDaysTargetDraft}
+            onBlur={() => saveDaysTarget.mutate(daysTargetDraft === '' ? null : Number(daysTargetDraft))}
           />
         </Group>
         <Button variant="default" onClick={() => refreshAssetPlan.mutate()} loading={refreshAssetPlan.isPending}>
