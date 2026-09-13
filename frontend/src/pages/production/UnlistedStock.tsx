@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { Button, Stack, Text } from '@mantine/core'
+import { Button, Stack, Text, Tooltip } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
@@ -10,7 +10,8 @@ import { useAction } from '../../hooks/useAction'
 import { pct, qty } from '../../format'
 
 export default function UnlistedStock() {
-  const check = useAction('Check Structure Stock Without Order', productionApi.checkUnlistedStock)
+  const check = useAction('Check Structure Stock Without Order', productionApi.checkUnlistedStock, [],
+    { tier: 'live', effect: 'Vergleicht deinen ESI-Asset-/Corp-Hangar-Bestand live mit den aktuell offenen Verkaufsorders.' })
   const data = check.data
 
   const columns = useMemo<ColumnDef<ProductionUnlistedStockRow, any>[]>(() => [
@@ -28,9 +29,11 @@ export default function UnlistedStock() {
         character. Only targets with a <b>Home</b> or <b>Jita Market Target</b> are considered.
       </HintCard>
 
-      <Button w={280} onClick={() => check.mutate()} loading={check.isPending}>
-        Check Structure Stock Without Order
-      </Button>
+      <Tooltip label={check.tooltip} disabled={!check.tooltip} multiline w={280}>
+        <Button w={280} leftSection={check.tierIcon} onClick={() => check.mutate()} loading={check.isPending}>
+          Check Structure Stock Without Order
+        </Button>
+      </Tooltip>
 
       {data && data.length === 0 && (
         <HintCard>All listing-target stock in the C-J hangar is listed.</HintCard>

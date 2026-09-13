@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { Button, Stack, Text } from '@mantine/core'
+import { Button, Stack, Text, Tooltip } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { tradingApi } from '../../api/client'
@@ -10,7 +10,8 @@ import { useAction } from '../../hooks/useAction'
 import { pct, qty } from '../../format'
 
 export default function UnlistedStock() {
-  const check = useAction('Check Structure Stock Without Order', tradingApi.checkSellerUnlistedStock)
+  const check = useAction('Check Structure Stock Without Order', tradingApi.checkSellerUnlistedStock, [],
+    { tier: 'live', effect: 'Vergleicht deinen ESI-Asset-Bestand live mit den aktuell offenen Verkaufsorders.' })
   const data = check.data
 
   const columns = useMemo<ColumnDef<UnlistedStockRow, any>[]>(() => [
@@ -27,9 +28,11 @@ export default function UnlistedStock() {
         physically has at the structure but for which <b>no</b> sell order currently exists.
       </HintCard>
 
-      <Button w={280} onClick={() => check.mutate()} loading={check.isPending}>
-        Check Structure Stock Without Order
-      </Button>
+      <Tooltip label={check.tooltip} disabled={!check.tooltip} multiline w={280}>
+        <Button w={280} leftSection={check.tierIcon} onClick={() => check.mutate()} loading={check.isPending}>
+          Check Structure Stock Without Order
+        </Button>
+      </Tooltip>
 
       {data && data.length === 0 && (
         <HintCard>All shortlist items with stock on hand are listed.</HintCard>

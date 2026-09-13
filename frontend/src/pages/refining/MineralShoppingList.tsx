@@ -30,7 +30,8 @@ export default function MineralShoppingList() {
   ])
   // Solved from the on-screen list rather than the saved one, so the button
   // always reflects what the user is looking at - no "save first" step.
-  const optimize = useAction('Optimize', (r: MineralRequirement[]) => refiningApi.optimizeShoppingList(r))
+  const optimize = useAction('Optimize', (r: MineralRequirement[]) => refiningApi.optimizeShoppingList(r), [],
+    { tier: 'live', effect: 'Löst die Kauf/Raffinerie-Mischung mit aktuellen Jita-Preisen (Cache mit Live-Fallback).' })
 
   // GitHub issue #94: manual, one-directional pull of Production's
   // already-computed buy-list shortfall - reads GET /api/production/plan
@@ -162,11 +163,13 @@ export default function MineralShoppingList() {
       )}
 
       <Group>
-        <Button leftSection={<IconCalculator size={14} />} loading={optimize.isPending}
-          disabled={rows.length === 0}
-          onClick={() => optimize.mutate(rows, { onSuccess: (p) => setPlan(p) })}>
-          Optimize
-        </Button>
+        <Tooltip label={optimize.tooltip} disabled={!optimize.tooltip} multiline w={280}>
+          <Button leftSection={<IconCalculator size={14} />} rightSection={optimize.tierIcon} loading={optimize.isPending}
+            disabled={rows.length === 0}
+            onClick={() => optimize.mutate(rows, { onSuccess: (p) => setPlan(p) })}>
+            Optimize
+          </Button>
+        </Tooltip>
         <Button variant="default" leftSection={<IconDeviceFloppy size={14} />} loading={save.isPending}
           onClick={() => save.mutate(rows)}>
           Save List

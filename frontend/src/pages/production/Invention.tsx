@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Title, Text, Group, Select, Button, Stack, Badge } from '@mantine/core'
+import { Card, Title, Text, Group, Select, Button, Stack, Badge, Tooltip } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
@@ -40,7 +40,7 @@ export default function Invention() {
   const refreshPlan = useAction('Refresh Production', productionApi.refreshPlan, [
     ['production', 'plan'], ['production', 'stock-targets'], ['production', 'logistics'],
     ['production', 'invention', 't1-bpc-needs'],
-  ])
+  ], { tier: 'live', effect: 'Berechnet die Buy/Build-Liste mit aktuellen Home-Preisen (live ESI) und Jita-Preisen (Cache mit Live-Fallback) neu.' })
 
   const { data: itemNameOptions } = useItemNameOptions()
   const blueprintOptions = useMemo(
@@ -53,7 +53,8 @@ export default function Invention() {
   const [results, setResults] = useState<InventionResult[] | null>(null)
 
   const estimate = useAction('Compute Invention', () =>
-    productionApi.estimateInvention(productName, decryptorChoice === 'Compare all' ? null : decryptorChoice))
+    productionApi.estimateInvention(productName, decryptorChoice === 'Compare all' ? null : decryptorChoice), [],
+    { tier: 'live', effect: 'Preist Datacores/Decryptor/Relic mit aktuellem Home-Preis (live ESI) und Jita-Preis (Cache mit Live-Fallback).' })
 
   const sdeReady = sdeCounts && Object.values(sdeCounts).some((c) => c > 0)
 
@@ -118,9 +119,12 @@ export default function Invention() {
       <Card withBorder>
         <Group justify="space-between" align="center" mb="xs">
           <Title order={4}>Required Invention Runs (all stock targets)</Title>
-          <Button variant="default" size="xs" onClick={() => refreshPlan.mutate()} loading={refreshPlan.isPending}>
-            Recompute
-          </Button>
+          <Tooltip label={refreshPlan.tooltip} disabled={!refreshPlan.tooltip} multiline w={280}>
+            <Button variant="default" size="xs" leftSection={refreshPlan.tierIcon}
+              onClick={() => refreshPlan.mutate()} loading={refreshPlan.isPending}>
+              Recompute
+            </Button>
+          </Tooltip>
         </Group>
         {planLoading ? (
           <DataTable data={[]} columns={needsColumns} isLoading maxHeight={360} />
@@ -176,13 +180,16 @@ export default function Invention() {
             onChange={setProductId}
           />
           <Select label="Decryptor" data={['Compare all', ...(decryptors ?? [])]} value={decryptorChoice} onChange={(v) => v && setDecryptorChoice(v)} />
-          <Button
-            loading={estimate.isPending}
-            disabled={!productName}
-            onClick={() => estimate.mutate(undefined, { onSuccess: (r) => setResults(r) })}
-          >
-            Compute
-          </Button>
+          <Tooltip label={estimate.tooltip} disabled={!estimate.tooltip} multiline w={280}>
+            <Button
+              leftSection={estimate.tierIcon}
+              loading={estimate.isPending}
+              disabled={!productName}
+              onClick={() => estimate.mutate(undefined, { onSuccess: (r) => setResults(r) })}
+            >
+              Compute
+            </Button>
+          </Tooltip>
         </Group>
       </Card>
 

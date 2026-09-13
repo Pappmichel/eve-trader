@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Button, Checkbox, Group, MultiSelect, TextInput, NumberInput, Badge, Text, Stack, Title, Paper } from '@mantine/core'
-import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts'
+import { Button, Checkbox, Group, MultiSelect, TextInput, NumberInput, Badge, Text, Stack, Title, Paper, Tooltip } from '@mantine/core'
+import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip as ChartTooltip } from 'recharts'
 import { IconMinus, IconTrendingDown, IconTrendingUp } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
@@ -31,8 +31,10 @@ export default function Shortlist() {
   // Goonmetrics history, see history_backtest.compute_margin_trends) - safe
   // to fetch unconditionally alongside the snapshot, no login/ESI needed.
   const { data: trends } = useQuery({ queryKey: ['trading', 'shortlist', 'trends'], queryFn: tradingApi.shortlistTrends })
-  const toggleCap = useAction('Shortlist Cap', tradingApi.updateSettings, [['trading', 'settings']])
-  const recategorize = useAction('Recategorize', tradingApi.recategorizeShortlist, [['trading', 'shortlist', 'snapshot']])
+  const toggleCap = useAction('Shortlist Cap', tradingApi.updateSettings, [['trading', 'settings']],
+    { tier: 'local' })
+  const recategorize = useAction('Recategorize', tradingApi.recategorizeShortlist, [['trading', 'shortlist', 'snapshot']],
+    { tier: 'local', effect: 'Reklassifiziert Drugs-vs-Implant lokal anhand bereits gespeicherter Kategoriedaten.' })
 
   const activeCount = useMemo(() => (data ?? []).filter((r) => r.decision !== 'Inactive').length, [data])
 
@@ -212,9 +214,11 @@ export default function Shortlist() {
       </Group>
 
       <Group justify="flex-end">
-        <Button size="xs" variant="default" onClick={() => recategorize.mutate()} loading={recategorize.isPending}>
-          Fix Categories (Drugs vs. Implant)
-        </Button>
+        <Tooltip label={recategorize.tooltip} disabled={!recategorize.tooltip}>
+          <Button size="xs" variant="default" onClick={() => recategorize.mutate()} loading={recategorize.isPending}>
+            Fix Categories (Drugs vs. Implant)
+          </Button>
+        </Tooltip>
       </Group>
 
       <Text size="sm" c="dimmed">{filtered.length} of {data.length} items</Text>
@@ -232,7 +236,7 @@ export default function Shortlist() {
             <BarChart data={topImports} layout="vertical" margin={{ left: 120 }}>
               <XAxis type="number" stroke={COLORS.textDim} />
               <YAxis type="category" dataKey="item" width={200} stroke={COLORS.textDim} tick={{ fontSize: 11 }} />
-              <Tooltip contentStyle={{ background: COLORS.surface2, border: `1px solid ${COLORS.border}` }} />
+              <ChartTooltip contentStyle={{ background: COLORS.surface2, border: `1px solid ${COLORS.border}` }} />
               <Bar dataKey="maxProfitPerDay" fill={COLORS.accent} />
             </BarChart>
           </ResponsiveContainer>

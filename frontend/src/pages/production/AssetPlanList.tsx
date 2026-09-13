@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Title, Text, Stack, Button, Group, MultiSelect, Badge, NumberInput } from '@mantine/core'
+import { Card, Title, Text, Stack, Button, Group, MultiSelect, Badge, NumberInput, Tooltip } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
@@ -20,7 +20,7 @@ export default function AssetPlanList() {
 
   const refreshAssetPlan = useAction('Refresh Asset Build List', productionApi.refreshAssetPlan, [
     ['production', 'asset-plan'],
-  ])
+  ], { tier: 'live', effect: 'Berechnet die Asset-optimierte Buy/Build-Liste mit aktuellen Home-/Jita-Preisen neu - kann eine Weile dauern.' })
   const saveDaysTarget = useAction(
     'Slot-Ziel gespeichert',
     async (value: number | null) => {
@@ -116,9 +116,11 @@ export default function AssetPlanList() {
     return (
       <Stack align="flex-start">
         <HintCard>No computation yet.</HintCard>
-        <Button onClick={() => refreshAssetPlan.mutate()} loading={refreshAssetPlan.isPending}>
-          Compute Asset Build List
-        </Button>
+        <Tooltip label={refreshAssetPlan.tooltip} disabled={!refreshAssetPlan.tooltip} multiline w={280}>
+          <Button leftSection={refreshAssetPlan.tierIcon} onClick={() => refreshAssetPlan.mutate()} loading={refreshAssetPlan.isPending}>
+            Compute Asset Build List
+          </Button>
+        </Tooltip>
       </Stack>
     )
   }
@@ -153,9 +155,11 @@ export default function AssetPlanList() {
             onBlur={() => saveDaysTarget.mutate(daysTargetDraft === '' ? null : Number(daysTargetDraft))}
           />
         </Group>
-        <Button variant="default" onClick={() => refreshAssetPlan.mutate()} loading={refreshAssetPlan.isPending}>
-          Recompute
-        </Button>
+        <Tooltip label={refreshAssetPlan.tooltip} disabled={!refreshAssetPlan.tooltip} multiline w={280}>
+          <Button variant="default" leftSection={refreshAssetPlan.tierIcon} onClick={() => refreshAssetPlan.mutate()} loading={refreshAssetPlan.isPending}>
+            Recompute
+          </Button>
+        </Tooltip>
       </Group>
       <Text size="xs" c="dimmed">{filtered.length} of {jobs.length} jobs</Text>
       {filtered.length === 0 ? (

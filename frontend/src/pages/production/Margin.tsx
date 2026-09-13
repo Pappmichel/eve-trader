@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Badge, Button, Group, Paper, Stack, Text } from '@mantine/core'
+import { Badge, Button, Group, Paper, Stack, Text, Tooltip } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 import { useQuery } from '@tanstack/react-query'
 
@@ -56,16 +56,19 @@ function ItemSearch() {
     [itemNameOptions],
   )
   const [itemId, setItemId] = useState<string | null>(null)
-  const search = useAction('Search Item Margin', (name: string) => productionApi.itemMargin(name))
+  const search = useAction('Search Item Margin', (name: string) => productionApi.itemMargin(name), [],
+    { tier: 'live', effect: 'Preist dieses Item mit aktuellem Home-Preis (live ESI) und Jita-Preis (Cache mit Live-Fallback).' })
 
   return (
     <Stack>
       <Group align="flex-end">
         <SearchableSelect label="Item name" placeholder="Search item…" data={options} value={itemId} onChange={setItemId} w={320} />
-        <Button loading={search.isPending} disabled={!itemId}
-          onClick={() => search.mutate(options.find((o) => o.value === itemId)?.label ?? '')}>
-          Search
-        </Button>
+        <Tooltip label={search.tooltip} disabled={!search.tooltip} multiline w={280}>
+          <Button leftSection={search.tierIcon} loading={search.isPending} disabled={!itemId}
+            onClick={() => search.mutate(options.find((o) => o.value === itemId)?.label ?? '')}>
+            Search
+          </Button>
+        </Tooltip>
       </Group>
       {search.data && <MarginDetailCard row={search.data} />}
     </Stack>

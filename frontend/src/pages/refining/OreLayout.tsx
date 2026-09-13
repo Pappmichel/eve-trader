@@ -1,4 +1,4 @@
-import { AppShell, Burger, Stack, Title, Text, Button, Group, Tabs, Container, Divider } from '@mantine/core'
+import { AppShell, Burger, Stack, Title, Text, Button, Group, Tabs, Container, Divider, Tooltip } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
@@ -24,10 +24,10 @@ export default function OreLayout() {
   const { data: syncTime } = useQuery({ queryKey: ['refining', 'esi-sync-time'], queryFn: refiningApi.esiSyncTime })
   const addCandidates = useAction('Add Candidates', refiningApi.addCandidates, [
     ['refining', 'shortlist', 'items'],
-  ])
+  ], { tier: 'local', effect: 'Übernimmt neue Compressed-Ore/Ice-Typen lokal aus dem SDE-Cache - kein ESI-Aufruf.' })
   const refresh = useAction('Refresh Ore Shortlist', refiningApi.refreshShortlist, [
     ['refining', 'shortlist', 'snapshot'], ['refining', 'esi-sync-time'],
-  ])
+  ], { tier: 'live', effect: 'Preist die gesamte Shortlist live über ESI (mit Goonmetrics-Fallback) neu.' })
 
   return (
     <AppShell header={{ height: 56 }} navbar={{ width: 280, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding={{ base: 'xs', sm: 'md' }}>
@@ -66,14 +66,18 @@ export default function OreLayout() {
           <div>
             <Title order={6} c="dimmed" tt="uppercase" mb="xs">Workflow</Title>
             <Stack gap="xs">
-              <Button size="xs" variant="default" leftSection={<IconDownload size={14} />}
-                onClick={() => addCandidates.mutate()} loading={addCandidates.isPending}>
-                Add Candidates
-              </Button>
-              <Button size="xs" leftSection={<IconRefresh size={14} />}
-                onClick={() => refresh.mutate(undefined, { onSuccess: warnIfPricedViaFallback })} loading={refresh.isPending}>
-                Refresh Ore Shortlist
-              </Button>
+              <Tooltip label={addCandidates.tooltip} disabled={!addCandidates.tooltip} multiline w={280}>
+                <Button size="xs" variant="default" leftSection={<IconDownload size={14} />}
+                  onClick={() => addCandidates.mutate()} loading={addCandidates.isPending}>
+                  Add Candidates
+                </Button>
+              </Tooltip>
+              <Tooltip label={refresh.tooltip} disabled={!refresh.tooltip} multiline w={280}>
+                <Button size="xs" leftSection={<IconRefresh size={14} />} rightSection={refresh.tierIcon}
+                  onClick={() => refresh.mutate(undefined, { onSuccess: warnIfPricedViaFallback })} loading={refresh.isPending}>
+                  Refresh Ore Shortlist
+                </Button>
+              </Tooltip>
               <Text size="xs" c="dimmed">
                 Add Candidates pulls in any new compressed ore/ice type from the SDE (run once, or again after a
                 Refresh SDE). Refresh Ore Shortlist re-prices everything and recomputes profit.

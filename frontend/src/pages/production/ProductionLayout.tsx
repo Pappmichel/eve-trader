@@ -1,4 +1,4 @@
-import { AppShell, Badge, Burger, Stack, Title, Text, Button, Group, Container, Tabs, ScrollArea, Divider } from '@mantine/core'
+import { AppShell, Badge, Burger, Stack, Title, Text, Button, Group, Container, Tabs, ScrollArea, Divider, Tooltip } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
@@ -56,10 +56,10 @@ export default function ProductionLayout() {
   const syncEsi = useAction('Sync ESI Data', productionApi.syncEsi, [
     ['production', 'jobs'], ['production', 'slots'], ['production', 'market-status'], ['production', 'esi-sync-time'],
     ['production', 'blueprints'], ['production', 'stock-value'],
-  ])
+  ], { tier: 'live', effect: 'Lädt Assets, Blueprints, Industry Jobs und Charakter-Slots live von ESI.' })
   const refreshPlan = useAction('Refresh Production', productionApi.refreshPlan, [
     ['production', 'plan'], ['production', 'stock-targets'], ['production', 'logistics'],
-  ])
+  ], { tier: 'live', effect: 'Berechnet die Buy/Build-Liste mit aktuellen Home-Preisen (live ESI) und Jita-Preisen (Cache mit Live-Fallback) neu.' })
 
   return (
     <AppShell header={{ height: 56 }} navbar={{ width: 300, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding={{ base: 'xs', sm: 'md' }}>
@@ -85,9 +85,11 @@ export default function ProductionLayout() {
             long scrolling stack, pushed off-screen by a long character list). */}
         <div style={{ padding: 'var(--mantine-spacing-md)', borderBottom: '1px solid var(--mantine-color-dark-4)' }}>
           <Title order={6} c="dimmed" tt="uppercase" mb="xs">Production</Title>
-          <Button size="xs" fullWidth onClick={() => refreshPlan.mutate()} loading={refreshPlan.isPending}>
-            Compute Buy/Build List
-          </Button>
+          <Tooltip label={refreshPlan.tooltip} disabled={!refreshPlan.tooltip} multiline w={280}>
+            <Button size="xs" fullWidth leftSection={refreshPlan.tierIcon} onClick={() => refreshPlan.mutate()} loading={refreshPlan.isPending}>
+              Compute Buy/Build List
+            </Button>
+          </Tooltip>
         </div>
 
         <ScrollArea style={{ flex: 1 }} p="md">
@@ -140,10 +142,13 @@ export default function ProductionLayout() {
                 <Button size="xs" variant="default" onClick={() => startLogin()} loading={addCharacter.isPending}>
                   Add Character
                 </Button>
-                <Button size="xs" variant="default" disabled={characters.length === 0}
-                  onClick={() => syncEsi.mutate()} loading={syncEsi.isPending}>
-                  Sync ESI Data
-                </Button>
+                <Tooltip label={syncEsi.tooltip} disabled={!syncEsi.tooltip} multiline w={280}>
+                  <Button size="xs" variant="default" disabled={characters.length === 0}
+                    leftSection={syncEsi.tierIcon}
+                    onClick={() => syncEsi.mutate()} loading={syncEsi.isPending}>
+                    Sync ESI Data
+                  </Button>
+                </Tooltip>
               </Stack>
             </div>
 

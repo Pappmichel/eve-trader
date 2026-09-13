@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import {
-  Container, Title, Text, Group, Stack, Button, TextInput, Checkbox, ActionIcon, Divider, Badge,
+  Container, Title, Text, Group, Stack, Button, TextInput, Checkbox, ActionIcon, Divider, Badge, Tooltip,
 } from '@mantine/core'
 import { IconArrowLeft, IconTrash } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
@@ -11,6 +11,7 @@ import type { ColumnDef } from '@tanstack/react-table'
 import { adminApi, productionApi } from '../../api/client'
 import { useAction } from '../../hooks/useAction'
 import { useBackgroundJob, useBackgroundJobStart } from '../../hooks/useBackgroundJob'
+import { ActionTierIcon, TIER_COPY } from '../../components/ActionTierIcon'
 import { dateTime } from '../../format'
 import type { AdminTenant, AdminUser, ErrorLogRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
@@ -66,9 +67,13 @@ function SdeDataSection() {
           ))}
         </Group>
       )}
-      <Button size="xs" variant={sdeRunning ? 'light' : 'default'} onClick={() => refreshSde.mutate()}>
-        Refresh SDE
-      </Button>
+      <Tooltip label={`Lädt Blueprint-Materialien/Produkte/Zeiten live von Fuzzwork (läuft als Background-Job mit Fortschrittsanzeige), global für alle Tenants. ${TIER_COPY.live}`}
+        multiline w={300}>
+        <Button size="xs" variant={sdeRunning ? 'light' : 'default'} rightSection={<ActionTierIcon tier="live" />}
+          onClick={() => refreshSde.mutate()}>
+          Refresh SDE
+        </Button>
+      </Tooltip>
       {sdeRunning && (
         <Text size="xs" c="dimmed" mt={4}>
           {sdeJob.formatProgress(sdeJob.status?.progress, sdeJob.jobName)}
@@ -88,7 +93,8 @@ function SdeDataSection() {
 // on demand.
 function JitaPriceCacheSection() {
   const refreshJitaPriceCache = useAction('Refresh Jita Price Cache', adminApi.refreshJitaPriceCache,
-    [['portfolio', 'scheduler-status']])
+    [['portfolio', 'scheduler-status']],
+    { tier: 'live', effect: 'Lädt Jita-Preise live von ESI für jedes Produktions-Stock-Target, global für alle Tenants.' })
 
   return (
     <div>
@@ -97,10 +103,12 @@ function JitaPriceCacheSection() {
         Shared, hourly-refreshed Jita price snapshot used by Production's Buy/Build list - shared across every
         tenant. See the Background Scheduler card on the Portfolio page for last-refreshed time.
       </Text>
-      <Button size="xs" variant="default" onClick={() => refreshJitaPriceCache.mutate()}
-        loading={refreshJitaPriceCache.isPending}>
-        Refresh Now
-      </Button>
+      <Tooltip label={refreshJitaPriceCache.tooltip} disabled={!refreshJitaPriceCache.tooltip} multiline w={280}>
+        <Button size="xs" variant="default" leftSection={refreshJitaPriceCache.tierIcon} onClick={() => refreshJitaPriceCache.mutate()}
+          loading={refreshJitaPriceCache.isPending}>
+          Refresh Now
+        </Button>
+      </Tooltip>
     </div>
   )
 }
@@ -170,7 +178,8 @@ function UsersSection() {
   const { data: users, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['admin', 'users'], queryFn: adminApi.users })
   const [characterName, setCharacterName] = useState('')
   const addUser = useAction('Add User', () => adminApi.addUser(characterName),
-    [['admin', 'users'], ['admin', 'tenants']])
+    [['admin', 'users'], ['admin', 'tenants']],
+    { tier: 'live', effect: 'Löst den Charakternamen live über ESI auf und legt einen neuen Tenant an.' })
   const removeUser = useAction('Remove User', adminApi.removeUser, [['admin', 'users']])
   // GitHub issue #59 (found in a full-codebase audit 2026-08-21): one shared
   // mutation instance reused across every user's Remove button - without
@@ -230,10 +239,12 @@ function UsersSection() {
       <Group mt="sm">
         <TextInput placeholder="Character name" value={characterName}
           onChange={(e) => setCharacterName(e.currentTarget.value)} w={220} />
-        <Button size="xs" disabled={!characterName.trim()} loading={addUser.isPending}
-          onClick={() => { addUser.mutate(); setCharacterName('') }}>
-          Add User
-        </Button>
+        <Tooltip label={addUser.tooltip} disabled={!addUser.tooltip} multiline w={280}>
+          <Button size="xs" leftSection={addUser.tierIcon} disabled={!characterName.trim()} loading={addUser.isPending}
+            onClick={() => { addUser.mutate(); setCharacterName('') }}>
+            Add User
+          </Button>
+        </Tooltip>
       </Group>
     </div>
   )

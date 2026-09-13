@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Button, Group, MultiSelect, NumberInput, Stack, Text, TextInput } from '@mantine/core'
+import { Button, Group, MultiSelect, NumberInput, Stack, Text, TextInput, Tooltip } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
@@ -12,7 +12,8 @@ import { isk, pct, qty } from '../../format'
 const META_UNKNOWN = 'unknown'
 
 export default function BuildCandidates() {
-  const discover = useAction('Discover Build Candidates', (topN: number) => productionApi.discoverBuildCandidates(topN))
+  const discover = useAction('Discover Build Candidates', (topN: number) => productionApi.discoverBuildCandidates(topN), [],
+    { tier: 'live', effect: 'Scannt jedes SDE-Item mit Preisen von ESI/Jita-Cache neu (Ergebnis wird einige Minuten gecacht) - kann eine Weile dauern.' })
   const data = discover.data
   const [topN, setTopN] = useState<number | ''>(200)
 
@@ -93,12 +94,14 @@ export default function BuildCandidates() {
           label="Results to fetch" value={topN} onChange={(v) => setTopN(v === '' ? '' : Number(v))}
           min={10} step={50} w={160}
         />
-        <Button
-          w={280} onClick={() => topN !== '' && discover.mutate(topN)}
-          loading={discover.isPending} disabled={topN === ''}
-        >
-          Discover Build Candidates
-        </Button>
+        <Tooltip label={discover.tooltip} disabled={!discover.tooltip} multiline w={280}>
+          <Button
+            w={280} leftSection={discover.tierIcon} onClick={() => topN !== '' && discover.mutate(topN)}
+            loading={discover.isPending} disabled={topN === ''}
+          >
+            Discover Build Candidates
+          </Button>
+        </Tooltip>
       </Group>
 
       {data && data.length === 0 && (

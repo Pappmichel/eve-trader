@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { Button, Stack, Text } from '@mantine/core'
+import { Button, Stack, Text, Tooltip } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { tradingApi } from '../../api/client'
@@ -10,7 +10,8 @@ import { useAction } from '../../hooks/useAction'
 import { isk } from '../../format'
 
 export default function UndercutCheck() {
-  const check = useAction('Check Undercut Orders', tradingApi.checkUndercut)
+  const check = useAction('Check Undercut Orders', tradingApi.checkUndercut, [],
+    { tier: 'live', effect: 'Vergleicht deine offenen Verkaufsorders live gegen das aktuelle Orderbuch der Struktur.' })
   const data = check.data
 
   const columns = useMemo<ColumnDef<UndercutRow, any>[]>(() => [
@@ -27,9 +28,11 @@ export default function UndercutCheck() {
     <Stack>
       <HintCard>Checks your open sell orders at the structure against the live order book and flags any beaten by a cheaper competitor.</HintCard>
 
-      <Button w={280} onClick={() => check.mutate()} loading={check.isPending}>
-        Check Undercut Orders
-      </Button>
+      <Tooltip label={check.tooltip} disabled={!check.tooltip} multiline w={280}>
+        <Button w={280} leftSection={check.tierIcon} onClick={() => check.mutate()} loading={check.isPending}>
+          Check Undercut Orders
+        </Button>
+      </Tooltip>
 
       {data && data.length === 0 && (
         <HintCard>None of your sell orders are currently undercut.</HintCard>

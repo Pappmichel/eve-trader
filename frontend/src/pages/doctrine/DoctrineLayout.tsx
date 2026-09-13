@@ -1,4 +1,4 @@
-import { AppShell, Burger, Stack, Title, Text, Button, Group, Tabs, Container, Divider, ActionIcon } from '@mantine/core'
+import { AppShell, Burger, Stack, Title, Text, Button, Group, Tabs, Container, Divider, ActionIcon, Tooltip } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
@@ -10,6 +10,7 @@ import { doctrineApi } from '../../api/client'
 import { useAction } from '../../hooks/useAction'
 import { useBackgroundJob, useBackgroundJobStart } from '../../hooks/useBackgroundJob'
 import { useRoleCharacters, type RoleCharacter } from '../../hooks/useRoleCharacters'
+import { ActionTierIcon, TIER_COPY } from '../../components/ActionTierIcon'
 import { dateTime } from '../../format'
 
 const TABS = [
@@ -111,7 +112,7 @@ export default function DoctrineLayout() {
   const { data: assetSyncTime } = useQuery({ queryKey: ['doctrine', 'asset-sync-time'], queryFn: doctrineApi.assetSyncTime })
   const syncAssets = useAction('Sync Assets', doctrineApi.syncAssets, [
     ['doctrine', 'stockpile'], ['doctrine', 'asset-sync-time'],
-  ])
+  ], { tier: 'live', effect: 'Lädt den ESI-Asset-Bestand der Scan-Charaktere live und aktualisiert die Stockpile-Übersicht.' })
 
   return (
     <AppShell header={{ height: 56 }} navbar={{ width: 260, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding={{ base: 'xs', sm: 'md' }}>
@@ -140,11 +141,16 @@ export default function DoctrineLayout() {
               <Title order={6} c="dimmed" tt="uppercase">Contract Sync</Title>
               <Text size="xs" c="dimmed">{dateTime(syncTime?.synced_at)}</Text>
             </Group>
-            <Button size="xs" leftSection={<IconRefresh size={14} />}
-              variant={syncRunning ? 'light' : undefined}
-              onClick={() => syncStart.mutate()}>
-              Sync Contracts
-            </Button>
+            <Tooltip
+              label={`Lädt Contracts der Contract-Charaktere live von ESI (läuft als Background-Job mit Fortschrittsanzeige). ${TIER_COPY.live}`}
+              multiline w={280}
+            >
+              <Button size="xs" leftSection={<IconRefresh size={14} />} rightSection={<ActionTierIcon tier="live" />}
+                variant={syncRunning ? 'light' : undefined}
+                onClick={() => syncStart.mutate()}>
+                Sync Contracts
+              </Button>
+            </Tooltip>
             {syncRunning && (
               <Text size="xs" c="dimmed" mt={4}>
                 {syncJob.formatProgress(syncJob.status?.progress, syncJob.jobName)}
@@ -162,9 +168,12 @@ export default function DoctrineLayout() {
               <Title order={6} c="dimmed" tt="uppercase">Asset Sync</Title>
               <Text size="xs" c="dimmed">{dateTime(assetSyncTime?.synced_at)}</Text>
             </Group>
-            <Button size="xs" leftSection={<IconRefresh size={14} />} onClick={() => syncAssets.mutate()} loading={syncAssets.isPending}>
-              Sync Assets
-            </Button>
+            <Tooltip label={syncAssets.tooltip} disabled={!syncAssets.tooltip} multiline w={280}>
+              <Button size="xs" leftSection={<IconRefresh size={14} />} rightSection={syncAssets.tierIcon}
+                onClick={() => syncAssets.mutate()} loading={syncAssets.isPending}>
+                Sync Assets
+              </Button>
+            </Tooltip>
           </div>
 
           <Divider />

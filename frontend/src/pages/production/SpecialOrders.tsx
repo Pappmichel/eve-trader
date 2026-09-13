@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  Alert, Badge, Button, Card, Checkbox, Group, MultiSelect, NumberInput, SegmentedControl, Stack, Text, Textarea, Title, ActionIcon,
+  Alert, Badge, Button, Card, Checkbox, Group, MultiSelect, NumberInput, SegmentedControl, Stack, Text, Textarea, Title, ActionIcon, Tooltip,
 } from '@mantine/core'
 import { modals } from '@mantine/modals'
 import { IconCheck, IconPlus, IconTrash } from '@tabler/icons-react'
@@ -359,7 +359,8 @@ function OrderDetail({ order }: { order: SpecialOrder }) {
     queryKey: ['production', 'special-orders', order.order_id],
     queryFn: () => productionApi.getSpecialOrder(order.order_id),
   })
-  const compute = useAction('Compute Special Order', () => productionApi.computeSpecialOrder(order.order_id))
+  const compute = useAction('Compute Special Order', () => productionApi.computeSpecialOrder(order.order_id), [],
+    { tier: 'live', effect: 'Berechnet Buy/Build/Invention mit aktuellen Home-Preisen (live ESI) und Jita-Preisen (Cache mit Live-Fallback).' })
   const [preview, setPreview] = useState<SpecialOrderComputeResult | null>(null)
   const result = preview ?? compute.data
   const setNetAgainstStock = useAction('Save Special Order',
@@ -375,10 +376,13 @@ function OrderDetail({ order }: { order: SpecialOrder }) {
     <Card withBorder mt="sm">
       <Group justify="space-between" mb="xs">
         <Title order={6}>{order.note ?? `Order ${order.order_id.slice(0, 8)}`}</Title>
-        <Button size="xs" onClick={() => compute.mutate(undefined, { onSuccess: (plan) => setPreview(plan) })}
-          loading={compute.isPending}>
-          {result ? 'Recompute' : 'Compute'}
-        </Button>
+        <Tooltip label={compute.tooltip} disabled={!compute.tooltip} multiline w={280}>
+          <Button size="xs" leftSection={compute.tierIcon}
+            onClick={() => compute.mutate(undefined, { onSuccess: (plan) => setPreview(plan) })}
+            loading={compute.isPending}>
+            {result ? 'Recompute' : 'Compute'}
+          </Button>
+        </Tooltip>
       </Group>
 
       <Group align="flex-end" mb="sm">
@@ -424,7 +428,8 @@ function OrderDetail({ order }: { order: SpecialOrder }) {
 function CombinePanel({ orderIds, onClear }: { orderIds: string[]; onClear: () => void }) {
   const [netAgainstStock, setNetAgainstStock] = useState(false)
   const combine = useAction('Combine Special Orders',
-    () => productionApi.computeCombinedSpecialOrders(orderIds, netAgainstStock))
+    () => productionApi.computeCombinedSpecialOrders(orderIds, netAgainstStock), [],
+    { tier: 'live', effect: 'Berechnet Buy/Build/Invention für alle ausgewählten Orders zusammen mit aktuellen Home-/Jita-Preisen.' })
   const result = combine.data
 
   return (
@@ -443,9 +448,11 @@ function CombinePanel({ orderIds, onClear }: { orderIds: string[]; onClear: () =
           label="Prefer current stock for this combined preview"
           checked={netAgainstStock} onChange={(e) => setNetAgainstStock(e.currentTarget.checked)}
         />
-        <Button size="xs" onClick={() => combine.mutate()} loading={combine.isPending}>
-          {result ? 'Recompute' : 'Compute Combined'}
-        </Button>
+        <Tooltip label={combine.tooltip} disabled={!combine.tooltip} multiline w={280}>
+          <Button size="xs" leftSection={combine.tierIcon} onClick={() => combine.mutate()} loading={combine.isPending}>
+            {result ? 'Recompute' : 'Compute Combined'}
+          </Button>
+        </Tooltip>
       </Group>
       {result && <Stack mt="md"><ComputeResultView result={result} /></Stack>}
     </Card>

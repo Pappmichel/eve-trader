@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Badge, Button, Group, NumberInput, Paper, Stack, Text } from '@mantine/core'
+import { Badge, Button, Group, NumberInput, Paper, Stack, Text, Tooltip } from '@mantine/core'
 import { IconChevronDown, IconChevronRight } from '@tabler/icons-react'
 
 import { productionApi } from '../../api/client'
@@ -75,7 +75,8 @@ export default function MaterialTree() {
   const [quantity, setQuantity] = useState<number | ''>(1)
   const [tree, setTree] = useState<MaterialTreeNode | null>(null)
   const build = useAction('Build Material Tree',
-    (args: { typeName: string; quantity: number }) => productionApi.materialTree(args.typeName, args.quantity))
+    (args: { typeName: string; quantity: number }) => productionApi.materialTree(args.typeName, args.quantity), [],
+    { tier: 'live', effect: 'Preist jedes Material im Baum mit aktuellem Home-Preis (live ESI) und Jita-Preis (Cache mit Live-Fallback).' })
 
   return (
     <Stack>
@@ -90,15 +91,18 @@ export default function MaterialTree() {
           label="Quantity" value={quantity} onChange={(v) => setQuantity(v === '' ? '' : Number(v))}
           min={1} w={140}
         />
-        <Button
-          loading={build.isPending} disabled={!typeId || quantity === ''}
-          onClick={() => build.mutate(
-            { typeName: options.find((o) => o.value === typeId)?.label ?? '', quantity: Number(quantity) },
-            { onSuccess: (r) => setTree(r) },
-          )}
-        >
-          Build Tree
-        </Button>
+        <Tooltip label={build.tooltip} disabled={!build.tooltip} multiline w={280}>
+          <Button
+            leftSection={build.tierIcon}
+            loading={build.isPending} disabled={!typeId || quantity === ''}
+            onClick={() => build.mutate(
+              { typeName: options.find((o) => o.value === typeId)?.label ?? '', quantity: Number(quantity) },
+              { onSuccess: (r) => setTree(r) },
+            )}
+          >
+            Build Tree
+          </Button>
+        </Tooltip>
       </Group>
 
       {tree && (

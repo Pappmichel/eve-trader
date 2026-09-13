@@ -1,4 +1,4 @@
-import { AppShell, Burger, Stack, Title, Text, Button, Group, Container, Tabs, ScrollArea, Divider } from '@mantine/core'
+import { AppShell, Burger, Stack, Title, Text, Button, Group, Container, Tabs, ScrollArea, Divider, Tooltip } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
@@ -30,7 +30,7 @@ export default function StationTradingLayout() {
   )
   const refreshShortlist = useAction('Refresh Shortlist', stationTradingApi.refreshShortlist, [
     ['station-trading', 'shortlist'], ['station-trading', 'esi-sync-time'],
-  ])
+  ], { tier: 'live', effect: 'Scannt Jita live über Goonmetrics/ESI nach neuen Spread-Kandidaten und preist die Shortlist neu.' })
 
   return (
     <AppShell header={{ height: 56 }} navbar={{ width: 300, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding={{ base: 'xs', sm: 'md' }}>
@@ -47,10 +47,12 @@ export default function StationTradingLayout() {
       <AppShell.Navbar p={0} style={{ display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: 'var(--mantine-spacing-md)', borderBottom: '1px solid var(--mantine-color-dark-4)' }}>
           <Title order={6} c="dimmed" tt="uppercase" mb="xs">Station Trading</Title>
-          <Button size="xs" fullWidth leftSection={<IconRefresh size={14} />}
-            onClick={() => refreshShortlist.mutate()} loading={refreshShortlist.isPending}>
-            Refresh Shortlist
-          </Button>
+          <Tooltip label={refreshShortlist.tooltip} disabled={!refreshShortlist.tooltip} multiline w={280}>
+            <Button size="xs" fullWidth leftSection={<IconRefresh size={14} />} rightSection={refreshShortlist.tierIcon}
+              onClick={() => refreshShortlist.mutate()} loading={refreshShortlist.isPending}>
+              Refresh Shortlist
+            </Button>
+          </Tooltip>
         </div>
 
         <ScrollArea style={{ flex: 1 }} p="md">

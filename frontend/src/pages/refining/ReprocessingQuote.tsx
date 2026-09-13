@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Alert, Badge, Button, Card, Group, SimpleGrid, Stack, Text, Textarea, Title } from '@mantine/core'
+import { Alert, Badge, Button, Card, Group, SimpleGrid, Stack, Text, Textarea, Title, Tooltip } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { refiningApi } from '../../api/client'
@@ -20,7 +20,8 @@ const DECISION_COLOR: Record<string, string> = {
 export default function ReprocessingQuote() {
   const [paste, setPaste] = useState('')
   const [result, setResult] = useState<ReprocessingQuoteResult | null>(null)
-  const quote = useAction('Get Quote', (text: string) => refiningApi.quoteReprocessing(text))
+  const quote = useAction('Get Quote', (text: string) => refiningApi.quoteReprocessing(text), [],
+    { tier: 'live', effect: 'Preist jedes eingefügte Item live über ESI (mit Goonmetrics-Fallback) an der C-J-Struktur.' })
 
   const columns = useMemo<ColumnDef<ReprocessingQuoteRow, any>[]>(() => [
     { header: 'Item', accessorKey: 'name', size: 220 },
@@ -53,10 +54,12 @@ export default function ReprocessingQuote() {
       />
 
       <Group>
-        <Button loading={quote.isPending} disabled={!paste.trim()}
-          onClick={() => quote.mutate(paste, { onSuccess: (r) => setResult(r) })}>
-          Get Quote
-        </Button>
+        <Tooltip label={quote.tooltip} disabled={!quote.tooltip} multiline w={280}>
+          <Button leftSection={quote.tierIcon} loading={quote.isPending} disabled={!paste.trim()}
+            onClick={() => quote.mutate(paste, { onSuccess: (r) => setResult(r) })}>
+            Get Quote
+          </Button>
+        </Tooltip>
         {result && (
           <Button variant="subtle" onClick={() => { setPaste(''); setResult(null) }}>
             Clear

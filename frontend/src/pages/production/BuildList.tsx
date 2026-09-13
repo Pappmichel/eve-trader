@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Title, Text, Stack, Button, Group, MultiSelect } from '@mantine/core'
+import { Card, Title, Text, Stack, Button, Group, MultiSelect, Tooltip } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
@@ -18,7 +18,7 @@ export default function BuildList() {
 
   const refreshPlan = useAction('Refresh Production', productionApi.refreshPlan, [
     ['production', 'plan'], ['production', 'stock-targets'], ['production', 'logistics'],
-  ])
+  ], { tier: 'live', effect: 'Berechnet die Buy/Build-Liste mit aktuellen Home-Preisen (live ESI) und Jita-Preisen (Cache mit Live-Fallback) neu.' })
 
   const categories = useMemo(
     () => [...new Set(buildList.map((e) => e.job_category ?? CATEGORY_UNKNOWN))].sort(), [buildList],
@@ -55,9 +55,11 @@ export default function BuildList() {
     return (
       <Stack align="flex-start">
         <HintCard>No computation yet.</HintCard>
-        <Button onClick={() => refreshPlan.mutate()} loading={refreshPlan.isPending}>
-          Compute Buy/Build List
-        </Button>
+        <Tooltip label={refreshPlan.tooltip} disabled={!refreshPlan.tooltip} multiline w={280}>
+          <Button leftSection={refreshPlan.tierIcon} onClick={() => refreshPlan.mutate()} loading={refreshPlan.isPending}>
+            Compute Buy/Build List
+          </Button>
+        </Tooltip>
       </Stack>
     )
   }
@@ -76,9 +78,11 @@ export default function BuildList() {
             placeholder="All" clearable w={280}
           />
         </Group>
-        <Button variant="default" onClick={() => refreshPlan.mutate()} loading={refreshPlan.isPending}>
-          Recompute
-        </Button>
+        <Tooltip label={refreshPlan.tooltip} disabled={!refreshPlan.tooltip} multiline w={280}>
+          <Button variant="default" leftSection={refreshPlan.tierIcon} onClick={() => refreshPlan.mutate()} loading={refreshPlan.isPending}>
+            Recompute
+          </Button>
+        </Tooltip>
       </Group>
       <Text size="xs" c="dimmed">{filtered.length} of {buildList.length} jobs</Text>
       {filtered.length === 0 ? (
