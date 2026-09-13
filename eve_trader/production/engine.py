@@ -121,9 +121,10 @@ from __future__ import annotations
 import math
 import threading
 import time
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 from .. import storage
+from ..actions import _emit_progress
 from ..config import TRADING_CONFIG
 from ..refining.config import REFINING_CONFIG, RefiningConfig
 from ..refining.engine import apply_reprocessing_yield, scrapmetal_yield
@@ -2364,6 +2365,26 @@ _discover_cache_at: dict[str, float] = {}
 _discover_cache_lock = threading.Lock()
 
 
+def get_cached_discover_results(top_n: int = 200) -> Optional[list[dict]]:
+    """Read-only: the current tenant's last-computed discover_build_candidates
+    result, ignoring _DISCOVER_CACHE_TTL (unlike discover_build_candidates
+    itself, whose TTL only governs whether a *write* - a fresh scan - is
+    needed). Same "serve the last computed result until explicitly
+    refreshed" semantics as plan_production/plan_asset_optimized's own
+    _last_plan/_last_asset_plan caches - the background-job version of
+    Discover Build Candidates (pipeline_runner.start_discover_build_
+    candidates) computes into the same _discover_cache dict on a worker
+    thread; this is how the frontend's separate GET then reads that result
+    back out once the job finishes, since the POST that started the job
+    only ever returns {run_id, status}, never the rows themselves. None if
+    this tenant has never completed a scan (or the process restarted since)."""
+    tenant_id = storage.get_current_tenant()
+    with _discover_cache_lock:
+        if tenant_id is None or tenant_id not in _discover_cache:
+            return None
+        return _discover_cache[tenant_id][:top_n]
+
+
 def invalidate_discover_cache(all_tenants: bool = False) -> None:
     """Forces the next discover_build_candidates call to re-scan instead of
     reusing a cached result. Defaults to the *current* tenant only (see the
@@ -2389,7 +2410,8 @@ def invalidate_discover_cache(all_tenants: bool = False) -> None:
 
 
 def discover_build_candidates(cfg: ProductionConfig = PRODUCTION_CONFIG, top_n: int = 200,
-                               client: Optional["GoonmetricsClient"] = None) -> list[dict]:
+                               client: Optional["GoonmetricsClient"] = None,
+                               progress_callback: Optional[Callable[[dict], None]] = None) -> list[dict]:
     """Production's equivalent of Trading's candidate discovery (candidate_
     discovery.py): scans every published, market-listed SDE item that has a
     real Manufacturing/Reaction/Invention recipe (classify_activity) and
@@ -2461,7 +2483,15 @@ def discover_build_candidates(cfg: ProductionConfig = PRODUCTION_CONFIG, top_n: 
     field) reuse the same scan instead of re-triggering it. The scan itself
     runs under _discover_cache_lock (see its comment) - two callers racing on
     a cold cache serialize instead of redundantly scanning twice. Cached per
-    tenant (GitHub issue #54) - see the cache's own module-level comment."""
+    tenant (GitHub issue #54) - see the cache's own module-level comment.
+
+    `progress_callback` (see actions._emit_progress) is only ever invoked
+    on a real scan, never on a cache hit - the HTTP background-job path
+    (pipeline_runner.start_discover_build_candidates) passes one so the
+    frontend can show batch progress on this tool's own genuinely slow
+    (~19,400-item) first-scan-after-cache-expiry case; the plain in-process
+    caller (the synchronous router path, still supported for compatibility)
+    omits it and gets the exact same result either way."""
     global _discover_cache, _discover_cache_at
     tenant_id = storage.get_current_tenant()
     with _discover_cache_lock:
@@ -2469,7 +2499,7 @@ def discover_build_candidates(cfg: ProductionConfig = PRODUCTION_CONFIG, top_n: 
         if tenant_id is not None and tenant_id in _discover_cache \
                 and (time.time() - cached_at) < _DISCOVER_CACHE_TTL:
             return _discover_cache[tenant_id][:top_n]
-        results = _scan_build_candidates(cfg, client)
+        results = _scan_build_candidates(cfg, client, progress_callback)
         if tenant_id is not None:
             _discover_cache[tenant_id] = results
             _discover_cache_at[tenant_id] = time.time()
@@ -2477,7 +2507,8 @@ def discover_build_candidates(cfg: ProductionConfig = PRODUCTION_CONFIG, top_n: 
 
 
 @storage.with_batch_session()
-def _scan_build_candidates(cfg: ProductionConfig, client: Optional["GoonmetricsClient"]) -> list[dict]:
+def _scan_build_candidates(cfg: ProductionConfig, client: Optional["GoonmetricsClient"],
+                            progress_callback: Optional[Callable[[dict], None]] = None) -> list[dict]:
     """The actual (slow - walks every SDE item) scan behind
     discover_build_candidates - split out so the public function can hold
     _discover_cache_lock across the whole scan without an awkwardly deep
@@ -2491,8 +2522,20 @@ def _scan_build_candidates(cfg: ProductionConfig, client: Optional["GoonmetricsC
     cost_memo: dict[int, Optional[float]] = {}
     t2_memo: dict[int, tuple[float, float, Optional[str]]] = {}
 
+    all_types = storage.load_sde_types_with_market_group()
+    # Batch size chosen so a ~19,400-item scan reports ~20 progress updates -
+    # frequent enough that "Batch X/Y" visibly moves (see useBackgroundJob.ts's
+    # own generic batch/total_batches rendering, already shared with Doctrine
+    # sync/Admin SDE refresh, no new frontend format needed), infrequent
+    # enough that the progress writes themselves don't meaningfully slow the
+    # scan down.
+    batch_size = 1000
+    total_batches = max(1, math.ceil(len(all_types) / batch_size))
+
     results = []
-    for type_id, type_name, _volume, _market_group_id, meta_level, _category_id in storage.load_sde_types_with_market_group():
+    for i, (type_id, type_name, _volume, _market_group_id, meta_level, _category_id) in enumerate(all_types):
+        if progress_callback is not None and i % batch_size == 0:
+            _emit_progress(progress_callback, {"batch": i // batch_size + 1, "total_batches": total_batches})
         if type_id in existing_target_ids:
             continue
         activity, bp = classify_activity(type_id)
@@ -2547,6 +2590,8 @@ def _scan_build_candidates(cfg: ProductionConfig, client: Optional["GoonmetricsC
     # correctness bug, since this is informational-only.
     if results:
         _attach_alchemy_comparisons(results, cfg, ctx)
+    if progress_callback is not None:
+        _emit_progress(progress_callback, {"batch": total_batches, "total_batches": total_batches})
     return results
 
 

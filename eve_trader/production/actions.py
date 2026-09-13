@@ -23,8 +23,8 @@ from .constants import DECRYPTORS, JOB_CATEGORIES
 from .engine import (
     _PlanContext, _item_margin_detail_with_context, _structural_material_closure,
     build_material_tree, compare_alchemy_profitability, discover_build_candidates, discover_ship_margins,
-    distribution_recommendations, invention_logistics, item_margin_detail, invalidate_discover_cache,
-    invalidate_ship_margin_cache, t1_bpc_invention_needs,
+    distribution_recommendations, get_cached_discover_results, invention_logistics, item_margin_detail,
+    invalidate_discover_cache, invalidate_ship_margin_cache, t1_bpc_invention_needs,
     invalidate_production_locations_cache, logistics_status, market_status, plan_asset_optimized,
     plan_production, plan_special_order, stock_value,
 )
@@ -770,7 +770,8 @@ def do_search_item_locations(item_name: str) -> dict:
     return {"type_id": type_id, "type_name": resolved_name, "locations": locations}
 
 
-def do_discover_build_candidates(top_n: int = 200, cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
+def do_discover_build_candidates(top_n: int = 200, cfg: ProductionConfig = PRODUCTION_CONFIG,
+                                  progress_callback=None) -> dict:
     """Scans every manufacturable, market-listed SDE item not already a
     stock target for ones where building clearly beats buying right now -
     see engine.discover_build_candidates. Needs the SDE cache populated
@@ -781,10 +782,41 @@ def do_discover_build_candidates(top_n: int = 200, cfg: ProductionConfig = PRODU
     instead of re-walking ~19,400 SDE items each time; invalidated automatically
     by anything that changes the result set (Settings save, stock target
     add/remove, decryptor change, SDE refresh - see invalidate_discover_cache
-    call sites in this module)."""
+    call sites in this module).
+
+    progress_callback is optional so this stays usable in-process (e.g. a
+    future CLI/scheduler call) unchanged - the HTTP background-job path
+    (do_start_discover_build_candidates) passes pipeline_runner's writer,
+    matching do_refresh_sde/do_sync_contracts's own shape."""
     if not storage.sde_row_counts().get("sde_types"):
         raise ActionError("SDE cache is empty. Refresh SDE first.")
-    candidates = discover_build_candidates(cfg, top_n=top_n)
+    candidates = discover_build_candidates(cfg, top_n=top_n, progress_callback=progress_callback)
+    return {"rows": [BuildCandidate(**c) for c in candidates]}
+
+
+def do_start_discover_build_candidates(top_n: int = 200) -> dict:
+    """Kicks off Discover Build Candidates as a background job - the scan
+    walks up to ~19,400 SDE items (engine._scan_build_candidates's own
+    docstring), genuinely slow enough on a cold cache to warrant progress
+    reporting instead of a blocking spinner with no feedback, same
+    reasoning as Admin's SDE refresh."""
+    from .. import pipeline_runner
+    return pipeline_runner.start_discover_build_candidates(top_n=top_n)
+
+
+def do_discover_build_candidates_status() -> dict:
+    from .. import pipeline_runner
+    return pipeline_runner.job_status(pipeline_runner.TOOL_PRODUCTION)
+
+
+def do_get_build_candidates(top_n: int = 200) -> dict:
+    """Read-only: the current tenant's last-computed Discover Build
+    Candidates result (engine.get_cached_discover_results), without
+    triggering a scan - the background-job POST only ever returns
+    {run_id, status}, so the frontend fetches the actual rows here once the
+    job's status flips to succeeded. Empty (not an error) if no scan has
+    completed yet for this tenant."""
+    candidates = get_cached_discover_results(top_n=top_n) or []
     return {"rows": [BuildCandidate(**c) for c in candidates]}
 
 

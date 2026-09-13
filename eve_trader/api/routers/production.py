@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from .. import schemas
 from ... import storage
+from ...actions import ConflictError
 from ...production import actions
 from ...production.actions import ActionError
 from ...production.config import PRODUCTION_CONFIG
@@ -47,6 +48,8 @@ def _tenant_key() -> str:
 def _wrap(fn, **kwargs):
     try:
         return fn(**kwargs)
+    except ConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except ActionError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -376,9 +379,28 @@ def check_unlisted_stock():
     return _wrap(actions.do_unlisted_stock)["rows"]
 
 
-@router.post("/build-candidates/discover", response_model=list[schemas.BuildCandidate])
+@router.post("/build-candidates/discover")
 def discover_build_candidates(top_n: int = 200):
-    return _wrap(actions.do_discover_build_candidates, top_n=top_n)["rows"]
+    """Starts Discover Build Candidates as a background job and returns
+    immediately ({run_id, status: running}) - the scan can walk up to
+    ~19,400 SDE items on a cold cache (see production/engine.py's
+    _scan_build_candidates docstring). Poll GET .../discover/status, then
+    fetch the actual rows from GET /build-candidates once it succeeds; a
+    second start while any background job is running is HTTP 409."""
+    return _wrap(actions.do_start_discover_build_candidates, top_n=top_n)
+
+
+@router.get("/build-candidates/discover/status")
+def discover_build_candidates_status():
+    return _wrap(actions.do_discover_build_candidates_status)
+
+
+@router.get("/build-candidates", response_model=list[schemas.BuildCandidate])
+def get_build_candidates(top_n: int = 200):
+    """Read-only: the last-computed Discover Build Candidates result for
+    this tenant, without triggering a scan - empty until the background job
+    above has completed at least once."""
+    return _wrap(actions.do_get_build_candidates, top_n=top_n)["rows"]
 
 
 @router.get("/alchemy-compare/{product_name}")

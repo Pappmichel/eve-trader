@@ -9,11 +9,11 @@ or Goonmetrics - safe to run anywhere, no network/auth required.
 from fastapi.testclient import TestClient
 
 from eve_trader import actions, storage
-from eve_trader.actions import ActionError
+from eve_trader.actions import ActionError, ConflictError
 from eve_trader.api.app import create_app
 from eve_trader.models import ShortlistItem
 from eve_trader.production import actions as production_actions
-from eve_trader.production.models import AssetLocationRow, ShipMarginRow
+from eve_trader.production.models import AssetLocationRow, BuildCandidate, ShipMarginRow
 from eve_trader.sorting import actions as sorting_actions
 
 client = TestClient(create_app())
@@ -791,28 +791,30 @@ def test_get_sde_freshness(monkeypatch):
     assert resp.json()["trading_universe_stale"] is False
 
 
-def test_discover_build_candidates_passes_top_n_query_param(monkeypatch):
+def test_discover_build_candidates_starts_background_job(monkeypatch):
     captured = {}
 
-    def _capture(top_n=200, **kwargs):
+    def _capture(top_n=200):
         captured["top_n"] = top_n
-        return {"rows": []}
-    monkeypatch.setattr(production_actions, "do_discover_build_candidates", _capture)
+        return {"run_id": "discover-1", "status": "running", "job_name": "discover_build_candidates", "tool": "production"}
+    monkeypatch.setattr(production_actions, "do_start_discover_build_candidates", _capture)
 
     resp = client.post("/api/production/build-candidates/discover?top_n=50")
 
     assert resp.status_code == 200
     assert captured["top_n"] == 50
-    assert resp.json() == []
+    assert resp.json() == {
+        "run_id": "discover-1", "status": "running", "job_name": "discover_build_candidates", "tool": "production",
+    }
 
 
 def test_discover_build_candidates_defaults_top_n_to_200(monkeypatch):
     captured = {}
 
-    def _capture(top_n=200, **kwargs):
+    def _capture(top_n=200):
         captured["top_n"] = top_n
-        return {"rows": []}
-    monkeypatch.setattr(production_actions, "do_discover_build_candidates", _capture)
+        return {"run_id": "discover-1", "status": "running", "job_name": "discover_build_candidates", "tool": "production"}
+    monkeypatch.setattr(production_actions, "do_start_discover_build_candidates", _capture)
 
     resp = client.post("/api/production/build-candidates/discover")
 
@@ -820,15 +822,66 @@ def test_discover_build_candidates_defaults_top_n_to_200(monkeypatch):
     assert captured["top_n"] == 200
 
 
+def test_discover_build_candidates_conflict_maps_to_409(monkeypatch):
+    def _raise(top_n=200):
+        raise ConflictError("Discover Build Candidates is already running.")
+    monkeypatch.setattr(production_actions, "do_start_discover_build_candidates", _raise)
+
+    resp = client.post("/api/production/build-candidates/discover")
+
+    assert resp.status_code == 409
+    assert resp.json() == {"detail": "Discover Build Candidates is already running."}
+
+
 def test_discover_build_candidates_action_error_maps_to_400(monkeypatch):
-    def _raise(*args, **kwargs):
+    def _raise(top_n=200):
         raise ActionError("SDE cache is empty. Refresh SDE first.")
-    monkeypatch.setattr(production_actions, "do_discover_build_candidates", _raise)
+    monkeypatch.setattr(production_actions, "do_start_discover_build_candidates", _raise)
 
     resp = client.post("/api/production/build-candidates/discover")
 
     assert resp.status_code == 400
     assert "SDE cache is empty" in resp.json()["detail"]
+
+
+def test_discover_build_candidates_status_returns_latest_run(monkeypatch):
+    monkeypatch.setattr(production_actions, "do_discover_build_candidates_status", lambda: {
+        "run_id": "discover-1", "status": "running", "tool": "production",
+        "progress": {"batch": 4, "total_batches": 20},
+    })
+
+    resp = client.get("/api/production/build-candidates/discover/status")
+
+    assert resp.status_code == 200
+    assert resp.json()["progress"]["batch"] == 4
+    assert resp.json()["progress"]["total_batches"] == 20
+
+
+def test_get_build_candidates_passes_top_n_and_returns_cached_rows(monkeypatch):
+    captured = {}
+
+    def _capture(top_n=200):
+        captured["top_n"] = top_n
+        return {"rows": [
+            BuildCandidate(type_id=1, type_name="Rifter", activity="Tech I", build_cost=1000.0, margin=0.2,
+                            daily_movement=5.0, potential_daily_profit=1000.0, meta_level=None),
+        ]}
+    monkeypatch.setattr(production_actions, "do_get_build_candidates", _capture)
+
+    resp = client.get("/api/production/build-candidates?top_n=50")
+
+    assert resp.status_code == 200
+    assert captured["top_n"] == 50
+    assert resp.json()[0]["type_name"] == "Rifter"
+
+
+def test_get_build_candidates_empty_when_no_scan_yet(monkeypatch):
+    monkeypatch.setattr(production_actions, "do_get_build_candidates", lambda top_n=200: {"rows": []})
+
+    resp = client.get("/api/production/build-candidates")
+
+    assert resp.status_code == 200
+    assert resp.json() == []
 
 
 def test_alchemy_compare_passes_product_name(monkeypatch):

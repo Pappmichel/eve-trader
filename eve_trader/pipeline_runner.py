@@ -49,12 +49,14 @@ log = logging.getLogger("eve_trader.pipeline_runner")
 TOOL_TRADING = "trading"
 TOOL_DOCTRINE = "doctrine"
 TOOL_ADMIN = "admin"
+TOOL_PRODUCTION = "production"
 
 JOB_REFRESH_AND_PRUNE = "refresh_and_prune"
 JOB_REFRESH_SHORTLIST = "refresh_shortlist"
 JOB_PIPELINE = "pipeline"
 JOB_SYNC_CONTRACTS = "sync_contracts"
 JOB_SDE_REFRESH = "sde_refresh"
+JOB_DISCOVER_BUILD_CANDIDATES = "discover_build_candidates"
 
 _JOB_LABELS: dict[tuple[str, str], str] = {
     (TOOL_TRADING, JOB_REFRESH_AND_PRUNE): "Search + Add + Clean Up",
@@ -62,6 +64,7 @@ _JOB_LABELS: dict[tuple[str, str], str] = {
     (TOOL_TRADING, JOB_PIPELINE): "Run Complete Pipeline",
     (TOOL_DOCTRINE, JOB_SYNC_CONTRACTS): "Sync Contracts",
     (TOOL_ADMIN, JOB_SDE_REFRESH): "Refresh SDE",
+    (TOOL_PRODUCTION, JOB_DISCOVER_BUILD_CANDIDATES): "Discover Build Candidates",
 }
 
 # worker(progress_callback) -> result dict (or any JSON-serializable value)
@@ -186,6 +189,27 @@ def start_sde_refresh() -> dict:
         TOOL_ADMIN, JOB_SDE_REFRESH,
         _JOB_LABELS[(TOOL_ADMIN, JOB_SDE_REFRESH)],
         lambda cb: admin_mod.do_refresh_sde(progress_callback=cb),
+    )
+
+
+def start_discover_build_candidates(top_n: int = 200) -> dict:
+    """Background Production Discover Build Candidates - the only Production
+    action slow enough (walks up to ~19,400 SDE items on a cold cache) to
+    warrant this over a plain blocking spinner; see production/engine.py's
+    _scan_build_candidates docstring. The rows themselves aren't returned by
+    this job's own `result` (unlike a small summary dict) - the frontend
+    fetches them separately via GET /production/build-candidates once status
+    flips to succeeded, same "job result is a signal to re-fetch, not the
+    payload itself" shape Trading's own jobs already use for their real
+    (DB-persisted) result sets - Production's own result instead lives in
+    engine._discover_cache (see get_cached_discover_results), a process-
+    local dict rather than a table, but the retrieval shape from the
+    frontend's point of view is identical."""
+    from .production import actions as production_actions
+    return start_job(
+        TOOL_PRODUCTION, JOB_DISCOVER_BUILD_CANDIDATES,
+        _JOB_LABELS[(TOOL_PRODUCTION, JOB_DISCOVER_BUILD_CANDIDATES)],
+        lambda cb: production_actions.do_discover_build_candidates(top_n=top_n, progress_callback=cb),
     )
 
 

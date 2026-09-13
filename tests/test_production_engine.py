@@ -1010,6 +1010,48 @@ def test_discover_build_candidates_skips_non_manufacturable_items(monkeypatch, t
 
 
 @pg_helpers.postgres_required()
+def test_discover_build_candidates_reports_progress_when_callback_given(monkeypatch, tenant):
+    monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
+    monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: [
+        (2, "New Widget", 1.0, 100, None, 7),
+        (3, "Another Widget", 1.0, 100, None, 7),
+    ])
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (999, 1, 1.0)))
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: 0.5)
+
+    calls = []
+    engine.discover_build_candidates(ProductionConfig(min_margin=0.15), client=_FakeGmClient(),
+                                      progress_callback=calls.append)
+
+    # First call at i=0 (batch 1/1, only 2 items against the 1000-item batch
+    # size) and a final call once the scan (incl. alchemy/movement lookups)
+    # is fully done, both reporting the same total_batches.
+    assert len(calls) >= 2
+    assert all(c["total_batches"] == 1 for c in calls)
+    assert calls[0]["batch"] == 1
+    assert calls[-1]["batch"] == 1
+
+
+@pg_helpers.postgres_required()
+def test_discover_build_candidates_no_progress_callback_by_default(monkeypatch, tenant):
+    """Regression guard: omitting progress_callback (the plain in-process
+    call shape, unchanged since before this feature existed) must not try
+    to call anything - no crash, no callback invocations."""
+    monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
+    monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: [
+        (2, "New Widget", 1.0, 100, None, 7),
+    ])
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (999, 1, 1.0)))
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: 0.5)
+
+    results = engine.discover_build_candidates(ProductionConfig(min_margin=0.15), client=_FakeGmClient())
+
+    assert [r["type_id"] for r in results] == [2]
+
+
+@pg_helpers.postgres_required()
 def test_discover_build_candidates_rejects_buy_equals_sell_as_synthetic_price(monkeypatch, tenant):
     # Confirmed live: 'Racket' Light Neutron Blaster I showed buy=sell=
     # 689083.36 to the ISK - a real independent buy-side/sell-side order

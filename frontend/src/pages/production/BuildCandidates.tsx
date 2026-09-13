@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Button, Group, MultiSelect, NumberInput, Stack, Text, TextInput, Tooltip } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 
@@ -6,16 +7,40 @@ import { productionApi } from '../../api/client'
 import type { BuildCandidate } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
-import { useAction } from '../../hooks/useAction'
+import { useBackgroundJob, useBackgroundJobStart } from '../../hooks/useBackgroundJob'
+import { ActionTierIcon, TIER_COPY } from '../../components/ActionTierIcon'
 import { isk, pct, qty } from '../../format'
 
 const META_UNKNOWN = 'unknown'
+const DISCOVER_LABELS = { discover_build_candidates: 'Discover Build Candidates' }
 
 export default function BuildCandidates() {
-  const discover = useAction('Discover Build Candidates', (topN: number) => productionApi.discoverBuildCandidates(topN), [],
-    { tier: 'live', effect: 'Scannt jedes SDE-Item mit Preisen von ESI/Jita-Cache neu (Ergebnis wird einige Minuten gecacht) - kann eine Weile dauern.' })
-  const data = discover.data
   const [topN, setTopN] = useState<number | ''>(200)
+
+  // Background job (Phase 2, 2026-09-13) - the scan can walk up to ~19,400
+  // SDE items on a cold cache (see production/engine.py's
+  // _scan_build_candidates docstring), genuinely slow enough to warrant
+  // progress reporting instead of a blocking spinner with zero feedback,
+  // same pattern as Doctrine's Sync Contracts / Admin's Refresh SDE.
+  const discoverJob = useBackgroundJob({
+    queryKey: ['production', 'build-candidates', 'discover-status'],
+    fetchStatus: productionApi.discoverBuildCandidatesStatus,
+    resultKeys: [['production', 'build-candidates']],
+    labels: DISCOVER_LABELS,
+    defaultLabel: 'Discover Build Candidates',
+    pollIntervalMs: 1500,
+  })
+  const discoverStart = useBackgroundJobStart(discoverJob, (n: number) => productionApi.discoverBuildCandidates(n))
+  const discoverRunning = discoverJob.runningStatus || discoverStart.isPending
+  // The job's own result never carries the rows themselves (engine._discover_
+  // cache is a process-local dict, not a DB table) - fetch them separately,
+  // re-sliced to the current "Results to fetch" value without re-scanning
+  // (get_cached_discover_results re-slices the same full cached scan).
+  const { data } = useQuery({
+    queryKey: ['production', 'build-candidates', topN],
+    queryFn: () => productionApi.buildCandidates(typeof topN === 'number' ? topN : 200),
+  })
+  const neverRunYet = discoverJob.status?.status === 'idle' || discoverJob.status === undefined
 
   const activities = useMemo(() => [...new Set((data ?? []).map((r) => r.activity))].sort(), [data])
   const metaLevels = useMemo(() => {
@@ -94,17 +119,29 @@ export default function BuildCandidates() {
           label="Results to fetch" value={topN} onChange={(v) => setTopN(v === '' ? '' : Number(v))}
           min={10} step={50} w={160}
         />
-        <Tooltip label={discover.tooltip} disabled={!discover.tooltip} multiline w={280}>
+        <Tooltip
+          label={`Scannt jedes SDE-Item mit Preisen von ESI/Jita-Cache neu (Ergebnis wird einige Minuten gecacht) - läuft als Background-Job mit Fortschrittsanzeige. ${TIER_COPY.live}`}
+          multiline w={280}
+        >
           <Button
-            w={280} leftSection={discover.tierIcon} onClick={() => topN !== '' && discover.mutate(topN)}
-            loading={discover.isPending} disabled={topN === ''}
+            w={280} variant={discoverRunning ? 'light' : undefined}
+            rightSection={<ActionTierIcon tier="live" />}
+            onClick={() => topN !== '' && discoverStart.mutate(Number(topN))}
+            disabled={topN === ''}
           >
             Discover Build Candidates
           </Button>
         </Tooltip>
       </Group>
+      {discoverRunning && (
+        <Text size="xs" c="dimmed">{discoverJob.formatProgress(discoverJob.status?.progress, discoverJob.jobName)}</Text>
+      )}
 
-      {data && data.length === 0 && (
+      {neverRunYet && (!data || data.length === 0) && (
+        <HintCard>No computation yet. Click <b>Discover Build Candidates</b> above.</HintCard>
+      )}
+
+      {!neverRunYet && data && data.length === 0 && (
         <HintCard>No untracked item currently clears the minimum build margin / minimum daily profit.</HintCard>
       )}
 

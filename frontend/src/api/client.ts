@@ -170,7 +170,16 @@ export const productionApi = {
   marketStatus: () => get<T.MarketStatusRow[]>('/api/production/market-status'),
   stockValue: () => get<{ total_value: number; priced_items: number; unpriced_items: number }>('/api/production/stock-value'),
   checkUnlistedStock: () => post<T.ProductionUnlistedStockRow[]>('/api/production/unlisted-stock/check'),
-  discoverBuildCandidates: (topN = 200) => post<T.BuildCandidate[]>(`/api/production/build-candidates/discover?top_n=${topN}`),
+  // Background job (2026-09-13, Phase 2 of the button-transparency pass) -
+  // the scan can walk up to ~19,400 SDE items on a cold cache, genuinely
+  // slow enough to warrant progress reporting instead of a blocking
+  // spinner. Start returns {run_id, status: running} immediately; poll
+  // discoverBuildCandidatesStatus, then fetch the real rows via
+  // buildCandidates once status flips to succeeded (same "job result is a
+  // signal to re-fetch, not the payload" shape as the other background jobs).
+  discoverBuildCandidates: (topN = 200) => post<T.PipelineRunStatus>(`/api/production/build-candidates/discover?top_n=${topN}`),
+  discoverBuildCandidatesStatus: () => get<T.PipelineRunStatus>('/api/production/build-candidates/discover/status'),
+  buildCandidates: (topN = 200) => get<T.BuildCandidate[]>(`/api/production/build-candidates?top_n=${topN}`),
   shipMargins: () => get<T.ShipMarginRow[]>('/api/production/margins'),
   itemMargin: (itemName: string) => post<T.ShipMarginRow>('/api/production/margins/search', { item_name: itemName }),
   materialTree: (typeName: string, quantity: number) =>
