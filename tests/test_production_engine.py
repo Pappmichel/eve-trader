@@ -2248,6 +2248,173 @@ def test_plan_asset_optimized_weights_slot_split_by_job_time_not_run_count(monke
     assert sum(j.recommended_slots for j in jobs_by_id.values()) == 10
 
 
+def test_slots_needed_for_days_target_exact_day_boundary():
+    # ready_seconds exactly fills target_days on one slot -> ceil(1.0) = 1.
+    assert engine._slots_needed_for_days_target(86400.0, 10, 1.0) == 1
+    # one second over the boundary needs a second slot.
+    assert engine._slots_needed_for_days_target(86401.0, 10, 1.0) == 2
+
+
+def test_slots_needed_for_days_target_caps_at_runs_ready_now():
+    # 10 days of serial work vs a 1-day target would ask for 10 slots, but
+    # there are only 3 ready runs to put on them.
+    assert engine._slots_needed_for_days_target(10 * 86400.0, 3, 1.0) == 3
+
+
+def test_slots_needed_for_days_target_non_positive_is_max_parallelism():
+    # <= 0 is "no meaningful cap", not a ZeroDivisionError - recommend one
+    # slot per ready run (same upper bound the allocator already applies).
+    assert engine._slots_needed_for_days_target(86400.0, 5, 0.0) == 5
+    assert engine._slots_needed_for_days_target(86400.0, 5, -1.0) == 5
+
+
+def _ready_reaction_plan(monkeypatch, stock_targets, free_slots, cfg, time_by_type=None,
+                         job_category_by_id=None):
+    """Minimal plan_asset_optimized setup for slot-recommendation tests:
+    every stock target is a fully-ready job (no materials). time_by_type is
+    per-type-id blueprint time in seconds (default 100). job_category_by_id
+    defaults every type to Reactions."""
+    bp_by_id = {tid: (100 + tid, 11, 1) for tid, *_ in stock_targets}
+    times = time_by_type or {}
+    cats = job_category_by_id or {}
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Reaction", bp_by_id[type_id]))
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [])
+    monkeypatch.setattr(engine, "_activity_mods", lambda *a, **k: (1.0, 1.0, 0.0))
+    monkeypatch.setattr(engine, "_buy_or_build_decision", lambda *a, **k: "Build")
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: None)
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(
+        storage, "get_blueprint_time",
+        lambda blueprint_id, activity_id: times.get(blueprint_id - 100, 100.0),
+    )
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_stock_on_hand", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "job_category", lambda type_id: cats.get(type_id, "Reactions"))
+    monkeypatch.setattr(engine, "character_slot_overview", lambda: [
+        CharacterSlotRow(character_name="Alice", job_type="Reactions",
+                         total_slots=free_slots, used_slots=0, free_slots=free_slots),
+        CharacterSlotRow(character_name="Alice", job_type="Manufacturing",
+                         total_slots=free_slots, used_slots=0, free_slots=free_slots),
+    ])
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_plan_context(stock_targets))
+    return engine.plan_asset_optimized(cfg)
+
+
+@pg_helpers.postgres_required()
+def test_plan_asset_optimized_days_target_none_matches_time_weighted_split(monkeypatch, tenant):
+    # Scenario 1 / regression guard: asset_plan_slot_days_target=None is the
+    # default and must stay byte-identical to the existing time-weighted
+    # split (the dedicated tests above). Explicit None here, same 10/20/70
+    # ready runs sharing 10 Reaction slots -> 1/2/7.
+    cfg = ProductionConfig(component_overbuild=0.0, asset_plan_slot_days_target=None)
+    result = _ready_reaction_plan(
+        monkeypatch,
+        [(1, "ItemA", 10, 0, 0), (2, "ItemB", 20, 0, 0), (3, "ItemC", 70, 0, 0)],
+        free_slots=10, cfg=cfg,
+    )
+    jobs_by_id = {job.type_id: job for job in result["jobs"]}
+    assert jobs_by_id[1].recommended_slots == 1
+    assert jobs_by_id[2].recommended_slots == 2
+    assert jobs_by_id[3].recommended_slots == 7
+    assert sum(j.recommended_slots for j in jobs_by_id.values()) == 10
+
+
+@pg_helpers.postgres_required()
+def test_plan_asset_optimized_days_target_surplus_gives_each_job_exactly_its_need(monkeypatch, tenant):
+    # Scenario 2: every job's own 1-day need (5 + 3 = 8) fits in 20 free
+    # slots. Each job gets exactly its target_cap - leftover free slots stay
+    # unallocated rather than being piled onto jobs that don't need them.
+    day = 86400.0
+    cfg = ProductionConfig(component_overbuild=0.0, asset_plan_slot_days_target=1.0)
+    result = _ready_reaction_plan(
+        monkeypatch,
+        [(1, "ItemA", 5, 0, 0), (2, "ItemB", 3, 0, 0)],
+        free_slots=20, cfg=cfg, time_by_type={1: day, 2: day},
+    )
+    jobs_by_id = {job.type_id: job for job in result["jobs"]}
+    assert jobs_by_id[1].recommended_slots == 5
+    assert jobs_by_id[2].recommended_slots == 3
+    allocated = sum(j.recommended_slots for j in jobs_by_id.values())
+    assert allocated == 8
+    assert allocated < 20
+
+
+@pg_helpers.postgres_required()
+def test_plan_asset_optimized_days_target_scarcity_rations_by_need_without_exceeding_cap(monkeypatch, tenant):
+    # Scenario 3: own 1-day needs are 2 + 8 = 10 against only 5 free slots.
+    # Same allocator, weight == cap == target need -> proportional 1/4, and
+    # no job receives more than its own target_cap even though both miss
+    # the ideal.
+    day = 86400.0
+    cfg = ProductionConfig(component_overbuild=0.0, asset_plan_slot_days_target=1.0)
+    result = _ready_reaction_plan(
+        monkeypatch,
+        [(1, "ItemA", 2, 0, 0), (2, "ItemB", 8, 0, 0)],
+        free_slots=5, cfg=cfg, time_by_type={1: day, 2: day},
+    )
+    jobs_by_id = {job.type_id: job for job in result["jobs"]}
+    assert jobs_by_id[1].recommended_slots == 1
+    assert jobs_by_id[2].recommended_slots == 4
+    assert jobs_by_id[1].recommended_slots <= 2
+    assert jobs_by_id[2].recommended_slots <= 8
+    assert sum(j.recommended_slots for j in jobs_by_id.values()) == 5
+
+
+@pg_helpers.postgres_required()
+def test_plan_asset_optimized_days_to_complete_computed_in_both_modes(monkeypatch, tenant):
+    # Informational in both modes whenever recommended_slots > 0 - not gated
+    # on asset_plan_slot_days_target. Default time-weighted 10/20/70 split
+    # of 10 slots (1/2/7) all finish in 1000s = 1000/86400 days. Days-target
+    # surplus case: 5 slots for 5 * 86400s of work -> exactly 1.0 day.
+    cfg_default = ProductionConfig(component_overbuild=0.0, asset_plan_slot_days_target=None)
+    default = _ready_reaction_plan(
+        monkeypatch,
+        [(1, "ItemA", 10, 0, 0), (2, "ItemB", 20, 0, 0), (3, "ItemC", 70, 0, 0)],
+        free_slots=10, cfg=cfg_default,
+    )
+    expected_days = 1000.0 / 86400.0
+    for job in default["jobs"]:
+        assert job.recommended_slots > 0
+        assert job.days_to_complete_at_recommended_slots == pytest.approx(expected_days)
+
+    day = 86400.0
+    cfg_target = ProductionConfig(component_overbuild=0.0, asset_plan_slot_days_target=1.0)
+    targeted = _ready_reaction_plan(
+        monkeypatch,
+        [(1, "ItemA", 5, 0, 0)],
+        free_slots=10, cfg=cfg_target, time_by_type={1: day},
+    )
+    job = targeted["jobs"][0]
+    assert job.recommended_slots == 5
+    assert job.days_to_complete_at_recommended_slots == pytest.approx(1.0)
+
+
+@pg_helpers.postgres_required()
+def test_plan_asset_optimized_days_to_complete_none_when_no_slots_or_ineligible(monkeypatch, tenant):
+    # None when recommended_slots is 0 (pool empty) or the job isn't in a
+    # recommendation category (Equipment) - same "nothing to report" as
+    # recommended_slots itself.
+    cfg = ProductionConfig(component_overbuild=0.0)
+    empty_pool = _ready_reaction_plan(
+        monkeypatch, [(1, "ItemA", 5, 0, 0)], free_slots=0, cfg=cfg,
+    )
+    empty_job = empty_pool["jobs"][0]
+    assert empty_job.recommended_slots == 0
+    assert empty_job.days_to_complete_at_recommended_slots is None
+
+    ineligible = _ready_reaction_plan(
+        monkeypatch,
+        [(1, "ItemP", 5, 0, 0), (2, "ItemQ", 5, 0, 0)],
+        free_slots=3, cfg=cfg, job_category_by_id={1: "Reactions", 2: "Equipment"},
+    )
+    jobs_by_id = {job.type_id: job for job in ineligible["jobs"]}
+    assert jobs_by_id[1].recommended_slots == 3
+    assert jobs_by_id[1].days_to_complete_at_recommended_slots == pytest.approx((5 * 100.0 / 3) / 86400)
+    assert jobs_by_id[2].recommended_slots is None
+    assert jobs_by_id[2].days_to_complete_at_recommended_slots is None
+
+
 # ------------------------------------------------------------- plan_production
 def _make_fake_plan_context(stock_targets, manual_stock=None):
     class _FakeCtx:

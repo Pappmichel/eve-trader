@@ -326,6 +326,7 @@ export interface AssetPlanJob {
   margin: number | null
   stock_coverage: number | null
   recommended_slots: number | null
+  days_to_complete_at_recommended_slots: number | null
   blockers: AssetPlanBlocker[]
 }
 
@@ -557,6 +558,7 @@ export interface ProductionSettings {
   reaction_cost_index_override: number | null
   component_cost_index_override: number | null
   manufacturing_cost_index_override: number | null
+  asset_plan_slot_days_target: number | null
   alchemy_reactions_enabled: boolean
 }
 

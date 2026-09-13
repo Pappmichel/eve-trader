@@ -213,6 +213,7 @@ class ProductionSettings(BaseModel):
     reaction_cost_index_override: Optional[float] = None
     component_cost_index_override: Optional[float] = None
     manufacturing_cost_index_override: Optional[float] = None
+    asset_plan_slot_days_target: Optional[float] = None
     alchemy_reactions_enabled: bool = False
 
 

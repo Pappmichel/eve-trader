@@ -1757,6 +1757,20 @@ def plan_special_order(items: list[tuple[int, str, float]], cfg: ProductionConfi
 _SLOT_RECOMMENDATION_CATEGORIES = frozenset({"Reactions", "Advanced Components", "Capital Components"})
 
 
+def _slots_needed_for_days_target(ready_seconds: float, runs_ready_now: int,
+                                   target_days: float) -> int:
+    """How many slots this job's ready runs would need to finish within
+    target_days, capped at runs_ready_now (never recommend more slots
+    than there are ready runs to put on them - same cap philosophy
+    _allocate_slots_proportionally already applies). target_days <= 0
+    is treated as "no meaningful cap" (max parallelism), not a
+    ZeroDivisionError."""
+    if target_days <= 0:
+        return runs_ready_now
+    target_seconds = target_days * 86400
+    return min(runs_ready_now, math.ceil(ready_seconds / target_seconds))
+
+
 def _free_slots_by_category() -> dict[str, int]:
     """Total free (total - currently used) industry job slots right now,
     summed across every registered producer character, keyed by
@@ -1944,7 +1958,11 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     category at once* (_allocate_slots_proportionally) - not each job
     recommended the whole pool independently, and not split by raw run count
     either (user correction 2026-08-16) - see AssetPlanJob.recommended_slots
-    for why that's the goal."""
+    for why that's the goal. When cfg.asset_plan_slot_days_target is set,
+    the same allocator is reused but each job's weight and cap become its
+    own days-target need (_slots_needed_for_days_target) instead. Also
+    always fills days_to_complete_at_recommended_slots whenever
+    recommended_slots is set and > 0, in both modes."""
     ctx = _PlanContext(cfg)
     manual_stock, manual_overrides, selected_decryptors = ctx.manual_stock, ctx.manual_overrides, ctx.selected_decryptors
     home, jita, cost_indices, adjusted_prices = ctx.home, ctx.jita, ctx.cost_indices, ctx.adjusted_prices
@@ -2157,19 +2175,44 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         pool_label = "Reactions" if job.activity == "Reaction" else "Manufacturing"
         eligible_by_pool.setdefault(pool_label, []).append(job)
     for pool_label, pool_jobs in eligible_by_pool.items():
-        # Weight = time needed for this job's ready runs specifically
-        # (runs_ready_now * per-run time), not runs_ready_now alone - see
-        # _allocate_slots_proportionally's docstring. job_runs is always >=1
-        # here (job.runs_ready_now <= job.job_runs, and the loop above
-        # already skipped runs_ready_now <= 0), so per-run time is safe to
-        # divide out.
-        claims = [
-            (j.type_id, j.runs_ready_now * (j.job_time_seconds / j.job_runs), j.runs_ready_now)
-            for j in pool_jobs
-        ]
+        # job_runs is always >=1 here (job.runs_ready_now <= job.job_runs,
+        # and the loop above already skipped runs_ready_now <= 0), so
+        # per-run time is safe to divide out.
+        if cfg.asset_plan_slot_days_target is not None:
+            # Confirmed design: weight AND cap are both each job's own
+            # days-target need. When the pool has enough free slots to
+            # cover every job's need, _allocate_slots_proportionally gives
+            # each job exactly that (ideal == weight == cap, any surplus
+            # capacity goes unused rather than over-allocated - a job never
+            # gets more slots than it needs just because capacity allows).
+            # When the pool is short, the SAME proportional/largest-
+            # remainder logic rations the scarce slots by each job's own
+            # need weight, still never exceeding what that job asked for -
+            # this is the user-confirmed "cap each job proportionally on
+            # its own target need" behavior, not a fallback to a different
+            # algorithm.
+            claims = []
+            for j in pool_jobs:
+                ready_seconds = j.runs_ready_now * (j.job_time_seconds / j.job_runs)
+                target_cap = _slots_needed_for_days_target(
+                    ready_seconds, j.runs_ready_now, cfg.asset_plan_slot_days_target)
+                claims.append((j.type_id, target_cap, target_cap))
+        else:
+            # Weight = time needed for this job's ready runs specifically
+            # (runs_ready_now * per-run time), not runs_ready_now alone - see
+            # _allocate_slots_proportionally's docstring.
+            claims = [
+                (j.type_id, j.runs_ready_now * (j.job_time_seconds / j.job_runs), j.runs_ready_now)
+                for j in pool_jobs
+            ]
         allocation = _allocate_slots_proportionally(claims, free_slots.get(pool_label, 0))
         for j in pool_jobs:
             j.recommended_slots = allocation[j.type_id]
+            ready_seconds = j.runs_ready_now * (j.job_time_seconds / j.job_runs)
+            j.days_to_complete_at_recommended_slots = (
+                (ready_seconds / j.recommended_slots) / 86400
+                if j.recommended_slots else None
+            )
 
     return {"jobs": sorted(jobs.values(), key=lambda j: j.job_runs, reverse=True)}
 

@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Title, Text, Stack, Button, Group, MultiSelect, Badge } from '@mantine/core'
+import { Card, Title, Text, Stack, Button, Group, MultiSelect, Badge, NumberInput } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
@@ -15,11 +15,28 @@ const CATEGORY_UNKNOWN = 'no category'
 
 export default function AssetPlanList() {
   const { data: plan, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['production', 'asset-plan'], queryFn: productionApi.assetPlan })
+  const { data: settings } = useQuery({ queryKey: ['production', 'settings'], queryFn: productionApi.settings })
   const jobs = plan?.jobs ?? []
 
   const refreshAssetPlan = useAction('Refresh Asset Build List', productionApi.refreshAssetPlan, [
     ['production', 'asset-plan'],
   ])
+  const saveDaysTarget = useAction(
+    'Slot-Ziel gespeichert',
+    async (value: number | null) => {
+      if (!settings) return
+      return productionApi.updateSettings({ ...settings, asset_plan_slot_days_target: value })
+    },
+    [['production', 'settings']],
+  )
+  // Local draft state so typing a multi-digit number doesn't fire a save
+  // request per keystroke - only persisted on blur, same "edit locally,
+  // commit explicitly" shape as ProductionSettings.tsx's form (just without
+  // a separate Save button, since this is a single inline field).
+  const [daysTargetDraft, setDaysTargetDraft] = useState<number | ''>('')
+  useEffect(() => {
+    setDaysTargetDraft(settings?.asset_plan_slot_days_target ?? '')
+  }, [settings?.asset_plan_slot_days_target])
 
   const categories = useMemo(
     () => [...new Set(jobs.map((j) => j.job_category ?? CATEGORY_UNKNOWN))].sort(), [jobs],
@@ -63,13 +80,21 @@ export default function AssetPlanList() {
       },
     },
     {
-      header: 'Split Into', accessorKey: 'recommended_slots', size: 170,
+      header: 'Split Into', accessorKey: 'recommended_slots', size: 220,
       cell: (i) => {
         const row = i.row.original
         const n = i.getValue() as number | null
         if (n === null || n <= 0) return '–'
         const perSlot = Math.ceil(row.runs_ready_now / n)
-        return <Text size="sm">{n} slot{n === 1 ? '' : 's'} (~{qty(perSlot)} each)</Text>
+        const days = row.days_to_complete_at_recommended_slots
+        const daysText = days == null ? '' : `, ~${days.toFixed(1)}d`
+        const target = settings?.asset_plan_slot_days_target
+        const missed = target != null && days != null && days > target + 0.05
+        return (
+          <Text size="sm" c={missed ? 'warn' : undefined}>
+            {n} slot{n === 1 ? '' : 's'} (~{qty(perSlot)} each{daysText})
+          </Text>
+        )
       },
     },
     { header: 'Quantity (Output)', accessorKey: 'quantity', size: 140, cell: (i) => qty(i.getValue()) },
@@ -83,7 +108,7 @@ export default function AssetPlanList() {
       },
     },
     { header: 'Decryptor', accessorKey: 'decryptor', size: 130, cell: (i) => i.getValue() ?? '–' },
-  ], [])
+  ], [settings?.asset_plan_slot_days_target])
 
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
   if (isError) return <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />
@@ -115,6 +140,18 @@ export default function AssetPlanList() {
             label="Category" data={categories} value={selCategories} onChange={setSelCategories}
             placeholder="All" clearable w={280}
           />
+          <NumberInput
+            label="Slot-Ziel (Tage bis Backlog abgearbeitet)"
+            description="Leer = aus. Nach dem Speichern Recompute klicken."
+            placeholder="Aus"
+            value={daysTargetDraft}
+            min={0}
+            step={1}
+            w={280}
+            disabled={!settings}
+            onChange={setDaysTargetDraft}
+            onBlur={() => saveDaysTarget.mutate(daysTargetDraft === '' ? null : Number(daysTargetDraft))}
+          />
         </Group>
         <Button variant="default" onClick={() => refreshAssetPlan.mutate()} loading={refreshAssetPlan.isPending}>
           Recompute
@@ -139,11 +176,18 @@ export default function AssetPlanList() {
         Click the column header to sort by it if you want to see what's closest to running out first; it doesn't
         affect the list's own sort order or which jobs get queued. "Split Into" (Reactions/Advanced Components/
         Capital Components only) recommends how many of your currently-free character job slots to queue this
-        job's ready runs across in parallel, instead of one long serial batch - your free slots for a category are
-        split across every ready job sharing that category at once, weighted by how much job time each job's ready
-        runs actually need (not just how many runs), so a job with fewer but much longer runs gets more slots than
-        a job with lots of quick ones - the numbers across all of them add up to your real total free slots, not
-        each job assuming it gets the whole pool to itself.
+        job's ready runs across in parallel, instead of one long serial batch. Two modes: with Slot-Ziel empty
+        (the default), your free slots for a category are split across every ready job sharing that category at
+        once, weighted by how much job time each job's ready runs actually need (not just how many runs), so a
+        job with fewer but much longer runs gets more slots than a job with lots of quick ones - unbounded by any
+        day target, and the numbers across all of them add up to your real total free slots. With a Slot-Ziel
+        set, each job asks only for as many slots as it would need to finish its own ready runs within that many
+        days (never more than it has ready runs); if the pool can cover every job's need, each job gets exactly
+        that and leftover slots stay unused rather than being piled onto jobs that don't need them. If the pool
+        is short, the same proportional/largest-remainder split rations the scarce slots by each job's own target
+        need, still never giving a job more than it asked for. The "~Nd" next to the split is how many days that
+        recommendation would actually take - always shown, in both modes. Orange means it missed the configured
+        Slot-Ziel because the pool ran short (the real number is still shown; nothing is hidden or auto-capped).
       </Text>
     </Stack>
   )
