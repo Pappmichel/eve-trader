@@ -125,6 +125,14 @@ class ProductionConfig:
     datacore_skill_1_level: int = 4
     datacore_skill_2_level: int = 4
 
+    # -- Alchemy reaction alternatives (informational only) --
+    alchemy_reactions_enabled: bool = False   # off by default - see engine.py's
+                                                # find_alchemy_alternative/compare_alchemy_profitability;
+                                                # when False, alchemy formulas are
+                                                # never looked up or suggested,
+                                                # behavior is identical to before
+                                                # this feature existed
+
     # -- Fuzzwork SDE --
     fuzzwork_csv_base: str = "https://www.fuzzwork.co.uk/dump/latest/csv/"
 
