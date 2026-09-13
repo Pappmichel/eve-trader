@@ -24,10 +24,10 @@ export default function OreLayout() {
   const { data: syncTime } = useQuery({ queryKey: ['refining', 'esi-sync-time'], queryFn: refiningApi.esiSyncTime })
   const addCandidates = useAction('Add Candidates', refiningApi.addCandidates, [
     ['refining', 'shortlist', 'items'],
-  ], { tier: 'local', effect: 'Übernimmt neue Compressed-Ore/Ice-Typen lokal aus dem SDE-Cache - kein ESI-Aufruf.' })
+  ], { tier: 'local', effect: 'Pulls in new compressed ore/ice types locally from the SDE cache - no ESI call.' })
   const refresh = useAction('Refresh Ore Shortlist', refiningApi.refreshShortlist, [
     ['refining', 'shortlist', 'snapshot'], ['refining', 'esi-sync-time'],
-  ], { tier: 'live', effect: 'Preist die gesamte Shortlist live über ESI (mit Goonmetrics-Fallback) neu.' })
+  ], { tier: 'live', effect: 'Reprices the entire shortlist live via ESI (with a Goonmetrics fallback).' })
 
   return (
     <AppShell header={{ height: 56 }} navbar={{ width: 280, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding={{ base: 'xs', sm: 'md' }}>

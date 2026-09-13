@@ -18,7 +18,7 @@ export default function BuildList() {
 
   const refreshPlan = useAction('Refresh Production', productionApi.refreshPlan, [
     ['production', 'plan'], ['production', 'stock-targets'], ['production', 'logistics'],
-  ], { tier: 'live', effect: 'Berechnet die Buy/Build-Liste mit aktuellen Home-Preisen (live ESI) und Jita-Preisen (Cache mit Live-Fallback) neu.' })
+  ], { tier: 'live', effect: 'Recomputes the Buy/Build list with current Home prices (live ESI) and Jita prices (cached with live fallback).' })
 
   const categories = useMemo(
     () => [...new Set(buildList.map((e) => e.job_category ?? CATEGORY_UNKNOWN))].sort(), [buildList],

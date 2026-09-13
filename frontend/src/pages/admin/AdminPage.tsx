@@ -67,7 +67,7 @@ function SdeDataSection() {
           ))}
         </Group>
       )}
-      <Tooltip label={`Lädt Blueprint-Materialien/Produkte/Zeiten live von Fuzzwork (läuft als Background-Job mit Fortschrittsanzeige), global für alle Tenants. ${TIER_COPY.live}`}
+      <Tooltip label={`Loads blueprint materials/products/times live from Fuzzwork (runs as a background job with progress), global across every tenant. ${TIER_COPY.live}`}
         multiline w={300}>
         <Button size="xs" variant={sdeRunning ? 'light' : 'default'} rightSection={<ActionTierIcon tier="live" />}
           onClick={() => refreshSde.mutate()}>
@@ -94,7 +94,7 @@ function SdeDataSection() {
 function JitaPriceCacheSection() {
   const refreshJitaPriceCache = useAction('Refresh Jita Price Cache', adminApi.refreshJitaPriceCache,
     [['portfolio', 'scheduler-status']],
-    { tier: 'live', effect: 'Lädt Jita-Preise live von ESI für jedes Produktions-Stock-Target, global für alle Tenants.' })
+    { tier: 'live', effect: 'Loads Jita prices live from ESI for every Production stock target, global across every tenant.' })
 
   return (
     <div>
@@ -179,7 +179,7 @@ function UsersSection() {
   const [characterName, setCharacterName] = useState('')
   const addUser = useAction('Add User', () => adminApi.addUser(characterName),
     [['admin', 'users'], ['admin', 'tenants']],
-    { tier: 'live', effect: 'Löst den Charakternamen live über ESI auf und legt einen neuen Tenant an.' })
+    { tier: 'live', effect: 'Resolves the character name live via ESI and creates a new tenant.' })
   const removeUser = useAction('Remove User', adminApi.removeUser, [['admin', 'users']])
   // GitHub issue #59 (found in a full-codebase audit 2026-08-21): one shared
   // mutation instance reused across every user's Remove button - without

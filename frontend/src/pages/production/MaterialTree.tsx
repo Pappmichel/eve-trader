@@ -76,7 +76,7 @@ export default function MaterialTree() {
   const [tree, setTree] = useState<MaterialTreeNode | null>(null)
   const build = useAction('Build Material Tree',
     (args: { typeName: string; quantity: number }) => productionApi.materialTree(args.typeName, args.quantity), [],
-    { tier: 'live', effect: 'Preist jedes Material im Baum mit aktuellem Home-Preis (live ESI) und Jita-Preis (Cache mit Live-Fallback).' })
+    { tier: 'live', effect: 'Prices every material in the tree at the current Home price (live ESI) and Jita price (cached with live fallback).' })
 
   return (
     <Stack>

@@ -20,9 +20,9 @@ export default function AssetPlanList() {
 
   const refreshAssetPlan = useAction('Refresh Asset Build List', productionApi.refreshAssetPlan, [
     ['production', 'asset-plan'],
-  ], { tier: 'live', effect: 'Berechnet die Asset-optimierte Buy/Build-Liste mit aktuellen Home-/Jita-Preisen neu - kann eine Weile dauern.' })
+  ], { tier: 'live', effect: 'Recomputes the asset-optimized Buy/Build list with current Home/Jita prices - can take a while.' })
   const saveDaysTarget = useAction(
-    'Slot-Ziel gespeichert',
+    'Slot target saved',
     async (value: number | null) => {
       if (!settings) return
       return productionApi.updateSettings({ ...settings, asset_plan_slot_days_target: value })
@@ -143,9 +143,9 @@ export default function AssetPlanList() {
             placeholder="All" clearable w={280}
           />
           <NumberInput
-            label="Slot-Ziel (Tage bis Backlog abgearbeitet)"
-            description="Leer = aus. Nach dem Speichern Recompute klicken."
-            placeholder="Aus"
+            label="Slot target (days to clear backlog)"
+            description="Empty = off. Click Recompute after saving."
+            placeholder="Off"
             value={daysTargetDraft}
             min={0}
             step={1}
@@ -180,18 +180,18 @@ export default function AssetPlanList() {
         Click the column header to sort by it if you want to see what's closest to running out first; it doesn't
         affect the list's own sort order or which jobs get queued. "Split Into" (Reactions/Advanced Components/
         Capital Components only) recommends how many of your currently-free character job slots to queue this
-        job's ready runs across in parallel, instead of one long serial batch. Two modes: with Slot-Ziel empty
+        job's ready runs across in parallel, instead of one long serial batch. Two modes: with Slot target empty
         (the default), your free slots for a category are split across every ready job sharing that category at
         once, weighted by how much job time each job's ready runs actually need (not just how many runs), so a
         job with fewer but much longer runs gets more slots than a job with lots of quick ones - unbounded by any
-        day target, and the numbers across all of them add up to your real total free slots. With a Slot-Ziel
+        day target, and the numbers across all of them add up to your real total free slots. With a Slot target
         set, each job asks only for as many slots as it would need to finish its own ready runs within that many
         days (never more than it has ready runs); if the pool can cover every job's need, each job gets exactly
         that and leftover slots stay unused rather than being piled onto jobs that don't need them. If the pool
         is short, the same proportional/largest-remainder split rations the scarce slots by each job's own target
         need, still never giving a job more than it asked for. The "~Nd" next to the split is how many days that
         recommendation would actually take - always shown, in both modes. Orange means it missed the configured
-        Slot-Ziel because the pool ran short (the real number is still shown; nothing is hidden or auto-capped).
+        Slot target because the pool ran short (the real number is still shown; nothing is hidden or auto-capped).
       </Text>
     </Stack>
   )

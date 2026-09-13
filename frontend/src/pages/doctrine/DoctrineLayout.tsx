@@ -112,7 +112,7 @@ export default function DoctrineLayout() {
   const { data: assetSyncTime } = useQuery({ queryKey: ['doctrine', 'asset-sync-time'], queryFn: doctrineApi.assetSyncTime })
   const syncAssets = useAction('Sync Assets', doctrineApi.syncAssets, [
     ['doctrine', 'stockpile'], ['doctrine', 'asset-sync-time'],
-  ], { tier: 'live', effect: 'Lädt den ESI-Asset-Bestand der Scan-Charaktere live und aktualisiert die Stockpile-Übersicht.' })
+  ], { tier: 'live', effect: 'Loads the scan characters\' ESI asset stock live and updates the stockpile overview.' })
 
   return (
     <AppShell header={{ height: 56 }} navbar={{ width: 260, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding={{ base: 'xs', sm: 'md' }}>
@@ -142,7 +142,7 @@ export default function DoctrineLayout() {
               <Text size="xs" c="dimmed">{dateTime(syncTime?.synced_at)}</Text>
             </Group>
             <Tooltip
-              label={`Lädt Contracts der Contract-Charaktere live von ESI (läuft als Background-Job mit Fortschrittsanzeige). ${TIER_COPY.live}`}
+              label={`Loads contracts for the contract characters live from ESI (runs as a background job with progress). ${TIER_COPY.live}`}
               multiline w={280}
             >
               <Button size="xs" leftSection={<IconRefresh size={14} />} rightSection={<ActionTierIcon tier="live" />}

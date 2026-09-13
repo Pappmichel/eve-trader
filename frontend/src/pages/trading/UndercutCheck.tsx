@@ -11,7 +11,7 @@ import { isk } from '../../format'
 
 export default function UndercutCheck() {
   const check = useAction('Check Undercut Orders', tradingApi.checkUndercut, [],
-    { tier: 'live', effect: 'Vergleicht deine offenen Verkaufsorders live gegen das aktuelle Orderbuch der Struktur.' })
+    { tier: 'live', effect: 'Compares your open sell orders live against the structure\'s current order book.' })
   const data = check.data
 
   const columns = useMemo<ColumnDef<UndercutRow, any>[]>(() => [

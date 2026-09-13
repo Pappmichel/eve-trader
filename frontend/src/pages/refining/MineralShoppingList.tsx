@@ -31,7 +31,7 @@ export default function MineralShoppingList() {
   // Solved from the on-screen list rather than the saved one, so the button
   // always reflects what the user is looking at - no "save first" step.
   const optimize = useAction('Optimize', (r: MineralRequirement[]) => refiningApi.optimizeShoppingList(r), [],
-    { tier: 'live', effect: 'Löst die Kauf/Raffinerie-Mischung mit aktuellen Jita-Preisen (Cache mit Live-Fallback).' })
+    { tier: 'live', effect: 'Solves the buy/refine mix with current Jita prices (cached with live fallback).' })
 
   // GitHub issue #94: manual, one-directional pull of Production's
   // already-computed buy-list shortfall - reads GET /api/production/plan

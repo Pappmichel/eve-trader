@@ -23,7 +23,7 @@ function useUndercutColumns(competitorHeader: string) {
 
 export default function UndercutCheck() {
   const check = useAction('Check Undercut Orders', stationTradingApi.checkUndercut, [],
-    { tier: 'live', effect: 'Vergleicht deine offenen Jita-Orders live gegen das aktuelle Orderbuch.' })
+    { tier: 'live', effect: 'Compares your open Jita orders live against the current order book.' })
   const result = check.data
 
   const sellColumns = useUndercutColumns('Competitor Sell Price')

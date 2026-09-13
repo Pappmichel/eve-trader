@@ -9,9 +9,9 @@ import { IconCloud, IconDatabase } from '@tabler/icons-react'
 export type ActionNetworkTier = 'local' | 'cached' | 'live'
 
 export const TIER_COPY: Record<ActionNetworkTier, string> = {
-  local: 'Liest/schreibt nur lokal gespeicherte Daten - kein Aufruf an EVEs Server.',
-  cached: 'Nutzt einen kurz zwischengespeicherten Wert und ruft nur bei einem Cache-Miss live bei ESI/Goonmetrics ab.',
-  live: 'Ruft live EVEs ESI/Goonmetrics auf - kann mehrere Sekunden dauern und fehlschlagen, wenn der Dienst down ist.',
+  local: 'Reads/writes only locally stored data - no call to EVE\'s servers.',
+  cached: 'Uses a briefly cached value and only calls out live to ESI/Goonmetrics on a cache miss.',
+  live: 'Calls EVE\'s ESI/Goonmetrics live - can take several seconds and fail if the service is down.',
 }
 
 const ICON_BY_TIER: Partial<Record<ActionNetworkTier, { Icon: typeof IconCloud; color: string }>> = {

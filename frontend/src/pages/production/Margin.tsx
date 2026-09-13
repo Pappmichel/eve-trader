@@ -57,7 +57,7 @@ function ItemSearch() {
   )
   const [itemId, setItemId] = useState<string | null>(null)
   const search = useAction('Search Item Margin', (name: string) => productionApi.itemMargin(name), [],
-    { tier: 'live', effect: 'Preist dieses Item mit aktuellem Home-Preis (live ESI) und Jita-Preis (Cache mit Live-Fallback).' })
+    { tier: 'live', effect: 'Prices this item at the current Home price (live ESI) and Jita price (cached with live fallback).' })
 
   return (
     <Stack>

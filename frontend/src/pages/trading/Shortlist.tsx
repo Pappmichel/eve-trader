@@ -34,7 +34,7 @@ export default function Shortlist() {
   const toggleCap = useAction('Shortlist Cap', tradingApi.updateSettings, [['trading', 'settings']],
     { tier: 'local' })
   const recategorize = useAction('Recategorize', tradingApi.recategorizeShortlist, [['trading', 'shortlist', 'snapshot']],
-    { tier: 'local', effect: 'Reklassifiziert Drugs-vs-Implant lokal anhand bereits gespeicherter Kategoriedaten.' })
+    { tier: 'local', effect: 'Reclassifies Drugs-vs-Implant locally from already-stored category data.' })
 
   const activeCount = useMemo(() => (data ?? []).filter((r) => r.decision !== 'Inactive').length, [data])
 

@@ -21,7 +21,7 @@ export default function ReprocessingQuote() {
   const [paste, setPaste] = useState('')
   const [result, setResult] = useState<ReprocessingQuoteResult | null>(null)
   const quote = useAction('Get Quote', (text: string) => refiningApi.quoteReprocessing(text), [],
-    { tier: 'live', effect: 'Preist jedes eingefügte Item live über ESI (mit Goonmetrics-Fallback) an der C-J-Struktur.' })
+    { tier: 'live', effect: 'Prices every pasted item live via ESI (with a Goonmetrics fallback) at the C-J structure.' })
 
   const columns = useMemo<ColumnDef<ReprocessingQuoteRow, any>[]>(() => [
     { header: 'Item', accessorKey: 'name', size: 220 },

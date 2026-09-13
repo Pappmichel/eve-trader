@@ -85,16 +85,16 @@ export default function TradingLayout() {
 
   const buildUniverse = useAction('Load Market Groups', tradingApi.buildUniverse,
     [['trading', 'candidates', 'universe'], ['production', 'sde-freshness']],
-    { tier: 'live', effect: "Lädt EVEs komplette Marktgruppen-Struktur live von ESI." })
+    { tier: 'live', effect: 'Loads EVE\'s entire market group structure live from ESI.' })
   const buildFocused = useAction('Filter Candidates', tradingApi.buildFocused, [['trading', 'candidates', 'focused']],
-    { tier: 'local', effect: 'Filtert die zuletzt geladenen Marktgruppen lokal nach Kandidaten - lädt nichts neu von ESI.' })
+    { tier: 'local', effect: 'Filters the already-loaded market groups locally for candidates - loads nothing new from ESI.' })
   // Refresh Shortlist, Search+Add+Clean Up, and Run Complete Pipeline share
   // one background-job lock (POST returns immediately; this hook polls GET
   // .../status until status != running). A second click while one is running
   // is a 409 rather than a second thread.
   const tradingJob = useTradingPipelineJob()
   const reconcile = useAction('Reconcile Trades', tradingApi.reconcileTrades, [['trading', 'trades', 'realized']],
-    { tier: 'live', effect: 'Gleicht Wallet-Transaktionen live von ESI mit offenen Positionen ab.' })
+    { tier: 'live', effect: 'Matches wallet transactions live from ESI against open positions.' })
 
   return (
     <AppShell header={{ height: 56 }} navbar={{ width: 280, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding={{ base: 'xs', sm: 'md' }}>
@@ -135,14 +135,14 @@ export default function TradingLayout() {
           <div>
             <Title order={6} c="dimmed" tt="uppercase" mb="xs">Daily Workflow</Title>
             <Stack gap="xs">
-              <Tooltip label={liveJobTooltip('Lädt aktuelle Preise/Bestände live von ESI (mit Goonmetrics-Fallback) und aktualisiert die Shortlist.')} multiline w={280}>
+              <Tooltip label={liveJobTooltip('Loads current prices/stock live from ESI (with a Goonmetrics fallback) and updates the shortlist.')} multiline w={280}>
                 <Button size="xs" variant={tradingJob.isJob('refresh_shortlist') ? 'light' : 'default'}
                   leftSection={<ActionTierIcon tier="live" />}
                   onClick={() => tradingJob.startRefreshShortlist()}>
                   Refresh Shortlist
                 </Button>
               </Tooltip>
-              <Tooltip label={liveJobTooltip('Sucht live über Goonmetrics/ESI nach neuen Importkandidaten, fügt gute Treffer hinzu und bereinigt die Shortlist.')} multiline w={280}>
+              <Tooltip label={liveJobTooltip('Searches live via Goonmetrics/ESI for new import candidates, adds good hits, and cleans up the shortlist.')} multiline w={280}>
                 <Button size="xs" leftSection={<IconBolt size={14} />}
                   rightSection={<ActionTierIcon tier="live" />}
                   variant={tradingJob.isJob('refresh_and_prune') ? 'light' : undefined}
@@ -159,7 +159,7 @@ export default function TradingLayout() {
                   Reconcile Trades
                 </Button>
               </Tooltip>
-              <Tooltip label={liveJobTooltip('Führt Sync, Suche, Ergänzen und Aufräumen der Shortlist in einem Rutsch aus.')} multiline w={280}>
+              <Tooltip label={liveJobTooltip('Runs sync, search, add, and shortlist cleanup all in one go.')} multiline w={280}>
                 <Button size="xs" leftSection={<IconPlayerPlay size={14} />}
                   rightSection={<ActionTierIcon tier="live" />}
                   variant={tradingJob.isJob('pipeline') ? 'light' : 'default'}
@@ -197,7 +197,7 @@ export default function TradingLayout() {
                   Filter Candidates
                 </Button>
               </Tooltip>
-              <Tooltip label={liveJobTooltip('Wie Search+Add+Clean Up, aber durchsucht den kompletten Kandidaten-Pool statt eines 500er-Fensters.')} multiline w={280}>
+              <Tooltip label={liveJobTooltip('Same as Search+Add+Clean Up, but scans the entire candidate pool instead of a 500-item window.')} multiline w={280}>
                 <Button size="xs" variant="light" color="warn" leftSection={<IconSearch size={14} />}
                   rightSection={<ActionTierIcon tier="live" />}
                   onClick={() => tradingJob.startRefreshAndPrune(false)}>

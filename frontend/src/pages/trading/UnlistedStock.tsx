@@ -11,7 +11,7 @@ import { pct, qty } from '../../format'
 
 export default function UnlistedStock() {
   const check = useAction('Check Structure Stock Without Order', tradingApi.checkSellerUnlistedStock, [],
-    { tier: 'live', effect: 'Vergleicht deinen ESI-Asset-Bestand live mit den aktuell offenen Verkaufsorders.' })
+    { tier: 'live', effect: 'Compares your ESI asset stock live against currently open sell orders.' })
   const data = check.data
 
   const columns = useMemo<ColumnDef<UnlistedStockRow, any>[]>(() => [

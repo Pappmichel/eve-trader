@@ -40,7 +40,7 @@ export default function Invention() {
   const refreshPlan = useAction('Refresh Production', productionApi.refreshPlan, [
     ['production', 'plan'], ['production', 'stock-targets'], ['production', 'logistics'],
     ['production', 'invention', 't1-bpc-needs'],
-  ], { tier: 'live', effect: 'Berechnet die Buy/Build-Liste mit aktuellen Home-Preisen (live ESI) und Jita-Preisen (Cache mit Live-Fallback) neu.' })
+  ], { tier: 'live', effect: 'Recomputes the Buy/Build list with current Home prices (live ESI) and Jita prices (cached with live fallback).' })
 
   const { data: itemNameOptions } = useItemNameOptions()
   const blueprintOptions = useMemo(
@@ -54,7 +54,7 @@ export default function Invention() {
 
   const estimate = useAction('Compute Invention', () =>
     productionApi.estimateInvention(productName, decryptorChoice === 'Compare all' ? null : decryptorChoice), [],
-    { tier: 'live', effect: 'Preist Datacores/Decryptor/Relic mit aktuellem Home-Preis (live ESI) und Jita-Preis (Cache mit Live-Fallback).' })
+    { tier: 'live', effect: 'Prices datacores/decryptor/relic at the current Home price (live ESI) and Jita price (cached with live fallback).' })
 
   const sdeReady = sdeCounts && Object.values(sdeCounts).some((c) => c > 0)
 

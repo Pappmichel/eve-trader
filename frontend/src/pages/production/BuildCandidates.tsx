@@ -120,7 +120,7 @@ export default function BuildCandidates() {
           min={10} step={50} w={160}
         />
         <Tooltip
-          label={`Scannt jedes SDE-Item mit Preisen von ESI/Jita-Cache neu (Ergebnis wird einige Minuten gecacht) - läuft als Background-Job mit Fortschrittsanzeige. ${TIER_COPY.live}`}
+          label={`Rescans every SDE item with prices from ESI/the Jita cache (result cached for a few minutes) - runs as a background job with progress. ${TIER_COPY.live}`}
           multiline w={280}
         >
           <Button

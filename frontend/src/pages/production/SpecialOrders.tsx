@@ -360,7 +360,7 @@ function OrderDetail({ order }: { order: SpecialOrder }) {
     queryFn: () => productionApi.getSpecialOrder(order.order_id),
   })
   const compute = useAction('Compute Special Order', () => productionApi.computeSpecialOrder(order.order_id), [],
-    { tier: 'live', effect: 'Berechnet Buy/Build/Invention mit aktuellen Home-Preisen (live ESI) und Jita-Preisen (Cache mit Live-Fallback).' })
+    { tier: 'live', effect: 'Computes Buy/Build/Invention with current Home prices (live ESI) and Jita prices (cached with live fallback).' })
   const [preview, setPreview] = useState<SpecialOrderComputeResult | null>(null)
   const result = preview ?? compute.data
   const setNetAgainstStock = useAction('Save Special Order',
@@ -429,7 +429,7 @@ function CombinePanel({ orderIds, onClear }: { orderIds: string[]; onClear: () =
   const [netAgainstStock, setNetAgainstStock] = useState(false)
   const combine = useAction('Combine Special Orders',
     () => productionApi.computeCombinedSpecialOrders(orderIds, netAgainstStock), [],
-    { tier: 'live', effect: 'Berechnet Buy/Build/Invention für alle ausgewählten Orders zusammen mit aktuellen Home-/Jita-Preisen.' })
+    { tier: 'live', effect: 'Computes Buy/Build/Invention for all selected orders together with current Home/Jita prices.' })
   const result = combine.data
 
   return (

@@ -30,7 +30,7 @@ export default function StationTradingLayout() {
   )
   const refreshShortlist = useAction('Refresh Shortlist', stationTradingApi.refreshShortlist, [
     ['station-trading', 'shortlist'], ['station-trading', 'esi-sync-time'],
-  ], { tier: 'live', effect: 'Scannt Jita live über Goonmetrics/ESI nach neuen Spread-Kandidaten und preist die Shortlist neu.' })
+  ], { tier: 'live', effect: 'Scans Jita live via Goonmetrics/ESI for new spread candidates and reprices the shortlist.' })
 
   return (
     <AppShell header={{ height: 56 }} navbar={{ width: 300, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding={{ base: 'xs', sm: 'md' }}>

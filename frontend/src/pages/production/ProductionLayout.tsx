@@ -56,10 +56,10 @@ export default function ProductionLayout() {
   const syncEsi = useAction('Sync ESI Data', productionApi.syncEsi, [
     ['production', 'jobs'], ['production', 'slots'], ['production', 'market-status'], ['production', 'esi-sync-time'],
     ['production', 'blueprints'], ['production', 'stock-value'],
-  ], { tier: 'live', effect: 'Lädt Assets, Blueprints, Industry Jobs und Charakter-Slots live von ESI.' })
+  ], { tier: 'live', effect: 'Loads assets, blueprints, industry jobs, and character slots live from ESI.' })
   const refreshPlan = useAction('Refresh Production', productionApi.refreshPlan, [
     ['production', 'plan'], ['production', 'stock-targets'], ['production', 'logistics'],
-  ], { tier: 'live', effect: 'Berechnet die Buy/Build-Liste mit aktuellen Home-Preisen (live ESI) und Jita-Preisen (Cache mit Live-Fallback) neu.' })
+  ], { tier: 'live', effect: 'Recomputes the Buy/Build list with current Home prices (live ESI) and Jita prices (cached with live fallback).' })
 
   return (
     <AppShell header={{ height: 56 }} navbar={{ width: 300, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding={{ base: 'xs', sm: 'md' }}>
