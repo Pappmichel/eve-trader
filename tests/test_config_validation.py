@@ -285,3 +285,33 @@ def test_trading_and_production_settings_are_stored_under_separate_scopes(tenant
     finally:
         apply_config_overrides(TRADING_CONFIG, {"min_hit_rate": trading_original})
         apply_config_overrides(PRODUCTION_CONFIG, {"min_margin": production_original})
+
+
+def test_validate_accepts_optional_float_asset_plan_slot_days_target():
+    cfg = ProductionConfig()
+    validate_config_overrides(cfg, {"asset_plan_slot_days_target": None})
+    validate_config_overrides(cfg, {"asset_plan_slot_days_target": 3.5})
+    validate_config_overrides(cfg, {"asset_plan_slot_days_target": 3})  # int for a float field
+
+
+@pg_helpers.postgres_required()
+def test_do_update_settings_persists_asset_plan_slot_days_target(tenant):
+    # New Optional[float] ProductionConfig field - same persist-and-apply
+    # guarantee as the other Settings-page saves (tenant_settings merge +
+    # live PRODUCTION_CONFIG). None is a real stored value ("off"), not
+    # "key absent".
+    from eve_trader.production.config import PRODUCTION_CONFIG
+
+    original = PRODUCTION_CONFIG.asset_plan_slot_days_target
+    try:
+        production_actions.do_update_settings({"asset_plan_slot_days_target": 3.5})
+
+        assert PRODUCTION_CONFIG.asset_plan_slot_days_target == 3.5
+        assert storage.load_tenant_settings("production")["asset_plan_slot_days_target"] == 3.5
+
+        production_actions.do_update_settings({"asset_plan_slot_days_target": None})
+
+        assert PRODUCTION_CONFIG.asset_plan_slot_days_target is None
+        assert storage.load_tenant_settings("production")["asset_plan_slot_days_target"] is None
+    finally:
+        apply_config_overrides(PRODUCTION_CONFIG, {"asset_plan_slot_days_target": original})

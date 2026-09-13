@@ -125,6 +125,15 @@ class ProductionConfig:
     datacore_skill_1_level: int = 4
     datacore_skill_2_level: int = 4
 
+    # -- Asset-optimized build list (AssetPlanList) --
+    # Optional day-target for the slot-split recommendation: when set, each
+    # eligible ready job asks only for as many slots as it would need to
+    # finish its ready runs within this many days (see engine.
+    # _slots_needed_for_days_target). None (the default) keeps today's
+    # time-weighted proportional split with no day cap. Edited on the
+    # Asset-Optimized Build List page, not the general Settings tab.
+    asset_plan_slot_days_target: Optional[float] = None
+
     # -- Fuzzwork SDE --
     fuzzwork_csv_base: str = "https://www.fuzzwork.co.uk/dump/latest/csv/"
 

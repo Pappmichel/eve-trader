@@ -19,6 +19,7 @@ function job(partial: Partial<AssetPlanJob>): AssetPlanJob {
     margin: null,
     stock_coverage: null,
     recommended_slots: null,
+    days_to_complete_at_recommended_slots: null,
     blockers: [],
     ...partial,
   }

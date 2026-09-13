@@ -230,8 +230,18 @@ class AssetPlanJob:
     # for job_category in engine._SLOT_RECOMMENDATION_CATEGORIES (Reactions/
     # Advanced Components/Capital Components - user request 2026-08-15) and
     # only when runs_ready_now > 0 (nothing to split otherwise) - None
-    # everywhere else.
+    # everywhere else. When ProductionConfig.asset_plan_slot_days_target is
+    # set, the same allocator is reused but each job's weight *and* cap
+    # become its own days-target need instead of time-weight / ready-runs.
     recommended_slots: Optional[int] = None
+    # Calendar days the recommended_slots split would take to finish this
+    # job's ready runs (ready_seconds / recommended_slots / 86400). Always
+    # computed when recommended_slots is set and > 0 - not gated on
+    # asset_plan_slot_days_target being configured; that setting only
+    # changes how slots are allocated, not whether this number is shown.
+    # None when recommended_slots is 0 or None (job outside the
+    # recommendation categories, or the pool had zero free slots for it).
+    days_to_complete_at_recommended_slots: Optional[float] = None
     # Direct materials that still short this job (needed > covered). Empty
     # when every run is ready now. Display-only (Blocked-column tooltip);
     # never feeds sizing or slot-split math.
