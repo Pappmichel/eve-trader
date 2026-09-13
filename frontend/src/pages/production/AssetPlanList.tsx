@@ -151,7 +151,7 @@ export default function AssetPlanList() {
             step={1}
             w={280}
             disabled={!settings}
-            onChange={setDaysTargetDraft}
+            onChange={(v) => setDaysTargetDraft(v === '' ? '' : Number(v))}
             onBlur={() => saveDaysTarget.mutate(daysTargetDraft === '' ? null : Number(daysTargetDraft))}
           />
         </Group>
