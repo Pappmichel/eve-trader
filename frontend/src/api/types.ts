@@ -452,6 +452,16 @@ export interface ManualBlueprintCopyCostRow {
   cost_per_run: number
 }
 
+export interface AlchemyComparison {
+  product_type_id: number
+  product_type_name: string
+  normal_isk_per_hour: number | null
+  alchemy_isk_per_hour: number | null
+  alchemy_unrefined_type_id: number
+  alchemy_unrefined_type_name: string
+  scrapmetal_yield_pct: number
+}
+
 export interface BuildCandidate {
   type_id: number
   type_name: string
@@ -461,6 +471,7 @@ export interface BuildCandidate {
   daily_movement: number
   potential_daily_profit: number
   meta_level: number | null
+  alchemy_comparison?: AlchemyComparison | null
 }
 
 export interface ShipMarginRow {
@@ -548,6 +559,7 @@ export interface ProductionSettings {
   component_cost_index_override: number | null
   manufacturing_cost_index_override: number | null
   asset_plan_slot_days_target: number | null
+  alchemy_reactions_enabled: boolean
 }
 
 export interface ProducerCharacter {

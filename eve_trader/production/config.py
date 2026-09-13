@@ -134,6 +134,14 @@ class ProductionConfig:
     # Asset-Optimized Build List page, not the general Settings tab.
     asset_plan_slot_days_target: Optional[float] = None
 
+    # -- Alchemy reaction alternatives (informational only) --
+    alchemy_reactions_enabled: bool = False   # off by default - see engine.py's
+                                                # find_alchemy_alternative/compare_alchemy_profitability;
+                                                # when False, alchemy formulas are
+                                                # never looked up or suggested,
+                                                # behavior is identical to before
+                                                # this feature existed
+
     # -- Fuzzwork SDE --
     fuzzwork_csv_base: str = "https://www.fuzzwork.co.uk/dump/latest/csv/"
 

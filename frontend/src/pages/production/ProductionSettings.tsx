@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, Select, MultiSelect, Button, Card, Group, Center, Loader } from '@mantine/core'
+import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, Select, MultiSelect, Button, Card, Group, Center, Loader, Switch } from '@mantine/core'
 
 import { productionApi } from '../../api/client'
 import type { ProductionSettings as ProductionSettingsT } from '../../api/types'
@@ -149,6 +149,15 @@ export default function ProductionSettings() {
         <NumberInput label="Datacore skill 2" value={form.datacore_skill_2_level} min={0} max={5} step={1}
           onChange={(v) => set('datacore_skill_2_level', Number(v))} />
       </SimpleGrid>
+
+      <Title order={6} c="dimmed" tt="uppercase" mt="md">Reactions</Title>
+      <Switch label="Consider Alchemy reaction alternatives (Reaction Formulas that substitute a cheaper moon material)"
+        checked={form.alchemy_reactions_enabled}
+        onChange={(e) => set('alchemy_reactions_enabled', e.currentTarget.checked)} />
+      <Text size="xs" c="dimmed">
+        Informational only — Build Candidates for Reaction items show a side-by-side ISK/hour comparison
+        against the &quot;Unrefined&quot; alchemy path. This never changes which recipe is used to build.
+      </Text>
 
       <Button mt="md" w={240} onClick={() => save.mutate(form)} loading={save.isPending}>
         Save Settings
