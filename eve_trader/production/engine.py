@@ -363,7 +363,11 @@ def compare_alchemy_profitability(product_type_id: int, cfg: ProductionConfig = 
     Returns None if alchemy_reactions_enabled is False (feature-flag gate -
     see ProductionConfig), or if find_alchemy_alternative finds no pair.
     Never used to pick a recipe for real build/buy math - purely for
-    display (see AlchemyComparison's own docstring).
+    display (see AlchemyComparison's own docstring). Output value (normal
+    product and alchemy reprocess yields) is net of cfg.market_fees, same
+    factor margin_home / discover_build_candidates' potential_daily_profit
+    already apply - a raw .sell figure would sit ~5% too high next to
+    those columns on the same Build Candidates row.
 
     Optional `home`/`jita`/`cost_indices`/`adjusted_prices` let a batch
     caller (discover_build_candidates) reuse one already-fetched price
@@ -407,26 +411,34 @@ def compare_alchemy_profitability(product_type_id: int, cfg: ProductionConfig = 
         except Exception:  # noqa: BLE001 - job_cost falls back to 0, not a guess
             adjusted_prices = {}
 
+    fee_keep = 1 - cfg.market_fees
     normal_cost, normal_output_qty, normal_hours = _reaction_run_cost_and_time(
         normal, product_type_id, cfg, home, jita, cost_indices, adjusted_prices)
     output_prices = _current_material_prices(cfg, [product_type_id], home=home, jita=jita)
     normal_output_price = output_prices.get(product_type_id)
     normal_isk_per_hour = (
-        (normal_output_qty * normal_output_price.sell - normal_cost) / normal_hours
+        (normal_output_qty * normal_output_price.sell * fee_keep - normal_cost) / normal_hours
         if normal_output_price is not None and normal_cost is not None and normal_hours else None
     )
 
-    alchemy_cost, _alchemy_output_qty, alchemy_hours = _reaction_run_cost_and_time(
+    alchemy_cost, alchemy_output_qty, alchemy_hours = _reaction_run_cost_and_time(
         alchemy_recipe, unrefined_type_id, cfg, home, jita, cost_indices, adjusted_prices)
     yield_pct = scrapmetal_yield(refining_cfg)
     # Scrapmetal Processing only - structure/rig/security/implant have no
     # effect on this reprocessing step (real EVE mechanic, see
-    # refining.engine.scrapmetal_yield). One Unrefined unit per alchemy run.
-    reprocessed = apply_reprocessing_yield(unrefined_type_id, 1, yield_pct)
+    # refining.engine.scrapmetal_yield). Quantity is the alchemy recipe's
+    # own output per run (SDE product qty), not a hardcoded 1 - every
+    # currently known pair happens to produce 1 Unrefined, but a later
+    # formula with a different yield must still reprocess the full batch.
+    reprocess_qty = int(alchemy_output_qty)
+    reprocessed = (
+        apply_reprocessing_yield(unrefined_type_id, reprocess_qty, yield_pct)
+        if reprocess_qty > 0 else {}
+    )
     material_prices = _current_material_prices(cfg, list(reprocessed.keys()), home=home, jita=jita)
     have_all_prices = bool(reprocessed) and all(tid in material_prices for tid in reprocessed)
     alchemy_value = (
-        sum(qty * material_prices[tid].sell for tid, qty in reprocessed.items())
+        sum(qty * material_prices[tid].sell * fee_keep for tid, qty in reprocessed.items())
         if have_all_prices else None
     )
     alchemy_isk_per_hour = (

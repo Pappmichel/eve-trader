@@ -3524,25 +3524,14 @@ def test_compare_alchemy_profitability_caesarium_isk_per_hour(monkeypatch):
     from eve_trader.refining.config import RefiningConfig
 
     _install_caesarium_alchemy_sde(monkeypatch)
-    sells = {
-        _CADMIUM: 1000.0,
-        _CAESIUM: 2000.0,
-        _SCANDIUM: 100.0,
-        _OXYGEN_FB: 20000.0,
-        _HYDROGEN_FB: 10000.0,
-        _CAESARIUM: 5000.0,
-    }
-    home = {
-        tid: CurrentPrice(type_id=tid, updated="", buy=price * 0.9, sell=price)
-        for tid, price in sells.items()
-    }
     cfg = ProductionConfig(
         alchemy_reactions_enabled=True,
         jita_buy_broker_fee=0.0,
         haul_cost_per_m3=0.0,
+        market_fees=0.0,  # isolated quantity/time fixture; fee-netting has its own test
     )
     result = compare_alchemy_profitability(
-        _CAESARIUM, cfg, home=home, jita={}, cost_indices={}, adjusted_prices={},
+        _CAESARIUM, cfg, home=_caesarium_home_quotes(), jita={}, cost_indices={}, adjusted_prices={},
         refining_cfg=RefiningConfig(scrapmetal_processing_skill_level=5),
     )
     assert result is not None
@@ -3555,6 +3544,79 @@ def test_compare_alchemy_profitability_caesarium_isk_per_hour(monkeypatch):
     # alchemy: ((90*1000 + 19*5000) - (100*1000 + 100*100 + 5*10000)) / 6 = 4166.666...
     assert result.normal_isk_per_hour == pytest.approx(200_000.0)
     assert result.alchemy_isk_per_hour == pytest.approx(25_000.0 / 6.0)
+
+
+def _caesarium_home_quotes():
+    sells = {
+        _CADMIUM: 1000.0,
+        _CAESIUM: 2000.0,
+        _SCANDIUM: 100.0,
+        _OXYGEN_FB: 20000.0,
+        _HYDROGEN_FB: 10000.0,
+        _CAESARIUM: 5000.0,
+    }
+    return {
+        tid: CurrentPrice(type_id=tid, updated="", buy=price * 0.9, sell=price)
+        for tid, price in sells.items()
+    }
+
+
+def test_compare_alchemy_nets_market_fees_like_margin_home(monkeypatch):
+    """Output value (normal product and alchemy reprocess yields) must use
+    the same (1 - market_fees) factor as margin_home - otherwise the ISK/h
+    note sits ~5% too high next to potential_daily_profit on the same row."""
+    from eve_trader.refining.config import RefiningConfig
+
+    _install_caesarium_alchemy_sde(monkeypatch)
+    cfg = ProductionConfig(
+        alchemy_reactions_enabled=True,
+        jita_buy_broker_fee=0.0,
+        haul_cost_per_m3=0.0,
+        market_fees=0.05,
+    )
+    result = compare_alchemy_profitability(
+        _CAESARIUM, cfg, home=_caesarium_home_quotes(), jita={},
+        cost_indices={}, adjusted_prices={},
+        refining_cfg=RefiningConfig(scrapmetal_processing_skill_level=5),
+    )
+    assert result is not None
+    # normal: (200*5000*0.95 - 400000) / 3 = 183333.333...
+    # alchemy: ((90*1000 + 19*5000)*0.95 - 160000) / 6 = 2625
+    assert result.normal_isk_per_hour == pytest.approx((200 * 5000 * 0.95 - 400_000) / 3)
+    assert result.alchemy_isk_per_hour == pytest.approx((185_000 * 0.95 - 160_000) / 6)
+
+
+def test_compare_alchemy_reprocesses_full_recipe_output_qty(monkeypatch):
+    """Alchemy reprocess input is the recipe's own product qty, not a
+    hardcoded 1 - a formula that produced 2 Unrefined per run would
+    otherwise understate yield by half."""
+    from eve_trader.refining.config import RefiningConfig
+
+    _install_caesarium_alchemy_sde(monkeypatch)
+
+    def fake_bp(product_type_id):
+        if product_type_id == _CAESARIUM:
+            return (_NORMAL_BP, 11, 200.0)
+        if product_type_id == _UNREFINED:
+            return (_ALCHEMY_BP, 11, 2.0)
+        return None
+
+    monkeypatch.setattr(storage, "get_blueprint_for_product", fake_bp)
+    cfg = ProductionConfig(
+        alchemy_reactions_enabled=True,
+        jita_buy_broker_fee=0.0,
+        haul_cost_per_m3=0.0,
+        market_fees=0.0,
+    )
+    result = compare_alchemy_profitability(
+        _CAESARIUM, cfg, home=_caesarium_home_quotes(), jita={},
+        cost_indices={}, adjusted_prices={},
+        refining_cfg=RefiningConfig(scrapmetal_processing_skill_level=5),
+    )
+    assert result is not None
+    # 2 Unrefined @ 55%: floor(2*164*0.55)=180 Cadmium, floor(2*36*0.55)=39 Caesarium
+    # value 180*1000 + 39*5000 = 375000; cost still 160000; / 6h
+    assert result.alchemy_isk_per_hour == pytest.approx((375_000 - 160_000) / 6)
 
 
 @pg_helpers.postgres_required()
