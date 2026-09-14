@@ -31,7 +31,7 @@ import threading
 import time
 import urllib.parse
 import webbrowser
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Optional
 
@@ -70,6 +70,71 @@ ROLE_PREFIX_TOOL: dict[str, Optional[str]] = {
     for prefix in prefixes
 }
 ROLE_PREFIX_TOOL["gate"] = None
+
+
+# P5-07 / P5-08: every prefix that ever had a legacy, pre-multi-character
+# fixed-key TokenRecord (buyer/seller predate GitHub issue #46; doctrine/
+# doctrine-assets/trader never did their own fixed-key era, listed here for
+# completeness/defense-in-depth since they share this exact re-keying code
+# path). "gate" is excluded - it is identity-only (access_gate.py) and never
+# a TokenManager-stored key.
+_LEGACY_BARE_ROLE_PREFIXES: tuple[str, ...] = tuple(p for p in ROLE_PREFIX_TOOL if p != "gate")
+
+
+def _rekey_legacy_bare_roles(
+    tokens: dict[str, "TokenRecord"],
+) -> tuple[dict[str, "TokenRecord"], list[tuple[str, Optional[str]]]]:
+    """Re-keys any bare "buyer"/"seller"/"producer"/... TokenRecord (the
+    pre-multi-character storage key - see this module's own docstring) to
+    "prefix:character_id". The record's own character_id is already known
+    (resolved via ESI /oauth/verify at save time, see _to_record), so this
+    never needs a live lookup - purely a local dict rewrite.
+
+    Generalizes the one-time "producer" -> "producer:<id>" re-key
+    import_tokens_file already did (a single fixed "producer" key predates
+    multi-character tracking) to every role prefix, and to every load, not
+    just the one-time file-import cutover. The pre-existing design ("an old
+    token just keeps working under its original key until the user
+    removes/re-adds it", see _list_role_characters's own docstring) is what
+    a full-codebase security review confirmed broken two different ways:
+
+    - P5-07: validate_role_key_for_tool's canonical-only grammar (F-05/
+      P5-02) means a bare-keyed token can never be *removed* via the API
+      once added - "removes/re-adds it" stopped being possible the moment
+      that validation shipped, leaving the token stuck.
+    - P5-08: esi_client's per-auth_role caches (F-02, GitHub issue #103)
+      treat a bare "seller" as one principal, but it is only unique WITHIN
+      a tenant - two different characters (in the same or different
+      tenants) can each hold a legacy bare "seller" token and collide on
+      the same class-level cache key. Canonical prefix:character_id keys
+      are globally unique (EVE character IDs are never reused), closing
+      both at the source - every caller that resolves an `auth_role` for
+      an ESI call already does so via list_roles/get_record (see
+      actions._list_role_characters, production.esi_sync.
+      list_producer_characters), so migrating here reaches every one of
+      them without a separate cache-side fix.
+
+    Returns (possibly-rewritten tokens dict, list of (old_role, new_role)
+    changes - new_role is None when the bare row was a stale duplicate of
+    an already-canonical entry for the same character_id and was simply
+    dropped, mirroring import_tokens_file's own "if new_role not in
+    tokens" guard, rather than silently overwriting a live canonical
+    record). Callers that persist tokens (TokenManager._load,
+    import_tokens_file) use the returned changes to keep storage and the
+    in-memory dict from disagreeing about which key is authoritative."""
+    migrated = dict(tokens)
+    changes: list[tuple[str, Optional[str]]] = []
+    for role in list(migrated):
+        if role not in _LEGACY_BARE_ROLE_PREFIXES:
+            continue
+        record = migrated.pop(role)
+        new_role = f"{role}:{record.character_id}"
+        if new_role in migrated:
+            changes.append((role, None))
+        else:
+            migrated[new_role] = replace(record, role=new_role)
+            changes.append((role, new_role))
+    return migrated, changes
 
 
 def validate_role_key(role_key: str) -> str:
@@ -181,8 +246,23 @@ class TokenManager:
         by _ensure_loaded (first access) and by get_token's lock-protected
         re-check (a concurrent request may have already refreshed this exact
         role while we were waiting, so that check needs a genuinely fresh
-        read, not the cached one)."""
+        read, not the cached one).
+
+        P5-07 / P5-08: also self-heals any bare legacy role key still
+        sitting in storage (see _rekey_legacy_bare_roles's own docstring) -
+        every request builds a fresh TokenManager (this class's own
+        docstring), so the migration must be *persisted*, not just applied
+        to this instance's in-memory dict, or a later remove_token(new_role)
+        call on a different instance would target a storage row that still
+        doesn't exist under that key."""
         self._tokens = {role: TokenRecord(**rec) for role, rec in storage.load_all_tenant_tokens().items()}
+        self._tokens, changes = _rekey_legacy_bare_roles(self._tokens)
+        if changes:
+            with storage.batch_session():
+                for old_role, new_role in changes:
+                    if new_role is not None:
+                        storage.save_tenant_token(new_role, asdict(self._tokens[new_role]))
+                    storage.delete_tenant_token(old_role)
         self._loaded = True
 
     def _save_record(self, role: str) -> None:
@@ -382,7 +462,23 @@ class TokenManager:
     def remove_token(self, role: str) -> None:
         """Unconditional delete (idempotent at the DB layer - a role with no
         stored row is simply a no-op), not "check then delete" - no longer
-        needs a full load first the way the old whole-file rewrite did."""
+        needs a full load first the way the old whole-file rewrite did.
+
+        P5-07: deliberately does NOT call _ensure_loaded()/trigger
+        _rekey_legacy_bare_roles itself - every real (HTTP-validated) caller
+        already passes a canonical "prefix:character_id" role
+        (validate_role_key_for_tool rejects anything else before this is
+        ever reached), and the only way a caller can *know* that exact
+        character_id is from an earlier list call in the same tenant/
+        session, which has already loaded (and so already migrated/
+        persisted) this tenant's tokens - see _load()'s own docstring.
+        Self-loading here would be actively wrong for the one case where
+        `role` itself is still a bare legacy key: _load() would rename it
+        (e.g. "seller" -> "seller:42") *before* the pop/delete below ever
+        runs, so the delete would target the now-nonexistent old key and
+        silently fail to remove the (renamed, still-live) row - confirmed
+        by test_remove_token_is_idempotent_even_with_no_stored_row, which
+        exercises exactly this bare-key call shape directly."""
         self._tokens.pop(role, None)
         storage.delete_tenant_token(role)
 
@@ -391,22 +487,19 @@ def import_tokens_file(tenant_id: str, path: Optional[Path] = None) -> int:
     """One-time cutover helper (multi-tenant migration Phase 3b): reads a
     file-based tokens.json (the format TokenManager itself wrote before its
     Postgres cutover) and upserts every record into tenant_tokens for
-    `tenant_id`. Applies the same one-time "producer" -> "producer:<id>"
-    re-keying TokenManager's old _load() used to (a single fixed "producer"
-    role predates multi-character tracking) - a Postgres-backed
-    TokenManager never needs to understand that legacy on-disk shape again
-    once this has run. Idempotent - every write is an upsert, so re-running
-    this against the same file just overwrites with the same data. Returns
-    the number of records imported."""
+    `tenant_id`. Shares _rekey_legacy_bare_roles with TokenManager._load()
+    (P5-07 / P5-08) - every bare legacy role key in the file (not just a
+    fixed "producer", the original one-time re-key this used to do alone)
+    is normalized to "prefix:<character_id>" before it ever reaches
+    Postgres, so a Postgres-backed TokenManager never needs to understand
+    that legacy on-disk shape again once this has run. Idempotent - every
+    write is an upsert, so re-running this against the same file just
+    overwrites with the same data. Returns the number of records
+    imported."""
     path = path or OAUTH_CONFIG.token_store_path
     raw = json.loads(path.read_text(encoding="utf-8"))
     tokens = {role: TokenRecord(**rec) for role, rec in raw.items()}
-    old_producer = tokens.pop("producer", None)
-    if old_producer is not None:
-        new_role = f"producer:{old_producer.character_id}"
-        if new_role not in tokens:
-            old_producer.role = new_role
-            tokens[new_role] = old_producer
+    tokens, _changes = _rekey_legacy_bare_roles(tokens)
     with storage.tenant_context(tenant_id):
         for role, record in tokens.items():
             storage.save_tenant_token(role, asdict(record))
