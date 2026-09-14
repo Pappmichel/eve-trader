@@ -78,16 +78,24 @@ def test_bootstrap_creates_a_new_tenant_when_default_is_occupied(_apply_admin_sc
 
 def test_cli_bootstrap_requires_confirm(_apply_admin_schema):
     runner = CliRunner()
-    result = runner.invoke(main, ["admin", "bootstrap", "--character-id", "42"])
+    token = storage.set_current_tenant(storage.get_current_tenant())
+    try:
+        result = runner.invoke(main, ["admin", "bootstrap", "--character-id", "42"])
+    finally:
+        storage.reset_current_tenant(token)
     assert result.exit_code != 0
     assert "--confirm" in result.output
 
 
 def test_cli_bootstrap_with_confirm(_apply_admin_schema):
     runner = CliRunner()
-    result = runner.invoke(
-        main, ["admin", "bootstrap", "--character-id", "42", "--character-name", "Op", "--confirm"],
-    )
+    token = storage.set_current_tenant(storage.get_current_tenant())
+    try:
+        result = runner.invoke(
+            main, ["admin", "bootstrap", "--character-id", "42", "--character-name", "Op", "--confirm"],
+        )
+    finally:
+        storage.reset_current_tenant(token)
     assert result.exit_code == 0
     assert "Admin bootstrap ok" in result.output
     assert "admin" in storage.list_tool_grants_for_character(42)

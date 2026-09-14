@@ -3,12 +3,15 @@ belongs to the cookie's tenant; grants are only valid for that tenant.
 """
 from __future__ import annotations
 
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
 from eve_trader import access_gate, storage
 from eve_trader.api.app import create_app
 from eve_trader.config import ACCESS_CONFIG, OAUTH_CONFIG
+from itsdangerous.timed import TimestampSigner
 
 from . import pg_helpers
 from .pg_helpers import (  # noqa: F401
@@ -35,8 +38,18 @@ def _enable_gate(monkeypatch):
     monkeypatch.setattr(OAUTH_CONFIG, "session_secret_key", "test-secret-key")
 
 
-def _cookie(character_id, tenant_id, name="Pilot"):
-    token = access_gate.create_session_token(character_id, name, tenant_id)
+def _cookie(character_id, tenant_id, name="Pilot", *, issued_unix: int | None = None):
+    """If issued_unix is set, the cookie’s itsdangerous timestamp uses that
+    whole second (needed because the signer has 1s resolution)."""
+    if issued_unix is None:
+        token = access_gate.create_session_token(character_id, name, tenant_id)
+    else:
+        orig = TimestampSigner.get_timestamp
+        TimestampSigner.get_timestamp = lambda self: issued_unix  # type: ignore[method-assign]
+        try:
+            token = access_gate.create_session_token(character_id, name, tenant_id)
+        finally:
+            TimestampSigner.get_timestamp = orig  # type: ignore[method-assign]
     return {access_gate.SESSION_COOKIE_NAME: token}
 
 
@@ -122,7 +135,7 @@ def test_reassigned_character_old_cookie_is_401(monkeypatch, _apply_admin_schema
     tenant_c = storage.create_tenant("C")
     storage.add_tenant_registry_entry(tenant_a, 11, character_name="A")
     storage.set_tool_grant(11, "trading", tenant_a)
-    cookies = _cookie(11, tenant_a)
+    cookies = _cookie(11, tenant_a, issued_unix=int(time.time()) - 2)
     assert client.get("/api/trading/settings", cookies=cookies).status_code == 200
 
     storage.add_tenant_registry_entry(tenant_c, 11, character_name="A")
@@ -138,7 +151,7 @@ def test_sessions_valid_after_invalidates_old_cookie(monkeypatch, _apply_admin_s
     tenant_id = storage.create_tenant("A")
     storage.add_tenant_registry_entry(tenant_id, 11, character_name="A")
     storage.set_tool_grant(11, "trading", tenant_id)
-    cookies = _cookie(11, tenant_id)
+    cookies = _cookie(11, tenant_id, issued_unix=int(time.time()) - 2)
     assert client.get("/api/trading/settings", cookies=cookies).status_code == 200
 
     storage.revoke_sessions_for_character(11)
@@ -154,7 +167,7 @@ def test_logout_revokes_server_side(monkeypatch, _apply_admin_schema):
     tenant_id = storage.create_tenant("A")
     storage.add_tenant_registry_entry(tenant_id, 11, character_name="A")
     storage.set_tool_grant(11, "trading", tenant_id)
-    cookies = _cookie(11, tenant_id)
+    cookies = _cookie(11, tenant_id, issued_unix=int(time.time()) - 2)
 
     assert client.post("/api/gate/logout", cookies=cookies).status_code == 200
     assert client.get("/api/trading/settings", cookies=cookies).status_code == 401

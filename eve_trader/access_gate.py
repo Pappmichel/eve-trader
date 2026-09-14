@@ -131,7 +131,13 @@ def authorize_session_cookie(token: Optional[str], cfg: OAuthConfig = OAUTH_CONF
         sva = sessions_valid_after
         if getattr(sva, "tzinfo", None) is None:
             sva = sva.replace(tzinfo=timezone.utc)
-        if issued_at < sva:
+        # itsdangerous 2.2 records whole seconds. Comparing that to a
+        # microsecond TIMESTAMPTZ would reject a legitimate new cookie
+        # issued in the same second as revocation (logout then re-login).
+        # Cookies whose whole-second timestamp is strictly before
+        # sessions_valid_after are revoked; same-second is the signer’s
+        # resolution limit.
+        if issued_at < sva.replace(microsecond=0):
             return None
     return AuthorizedSession(
         character_id=int(character_id),
