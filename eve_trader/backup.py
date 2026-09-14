@@ -40,8 +40,11 @@ wrapper.
 """
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
+import threading
+import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -56,6 +59,14 @@ BACKUP_NAME_PREFIX = "eve_trader_backup_"
 # logging_setup.py's RotatingFileHandler.
 MAX_BACKUPS = 14
 
+log = logging.getLogger(__name__)
+_backup_lock = threading.Lock()
+
+
+class BackupError(RuntimeError):
+    """User-facing backup failure. pg_dump stderr and filesystem paths stay
+    in the process log, not in this message (F-NEW-04)."""
+
 PG_CONTAINER = os.getenv("EVE_TRADER_PG_CONTAINER", "eve-trader-pg")
 DOCKER_BIN = os.getenv("EVE_TRADER_DOCKER_BIN", "docker")
 PG_DB_NAME = "eve_trader"
@@ -65,11 +76,18 @@ def create_backup() -> dict:
     """Creates one timestamped .zip under BACKUP_DIR containing a pg_dump
     (`-Fc`) of the whole Postgres database plus config.yaml (if present),
     then prunes anything beyond MAX_BACKUPS. Returns the same shape as one
-    entry of list_backups()."""
+    entry of list_backups(). Serialized so parallel callers cannot collide
+    on a filename or race the retention prune."""
+    with _backup_lock:
+        return _create_backup_locked()
+
+
+def _create_backup_locked() -> dict:
     BACKUP_DIR.mkdir(exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
-    backup_path = BACKUP_DIR / f"{BACKUP_NAME_PREFIX}{ts}.zip"
-    tmp_dump_path = BACKUP_DIR / f".tmp_{ts}.dump"
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S-%fZ")
+    unique = uuid.uuid4().hex[:8]
+    backup_path = BACKUP_DIR / f"{BACKUP_NAME_PREFIX}{ts}_{unique}.zip"
+    tmp_dump_path = BACKUP_DIR / f".tmp_{ts}_{unique}.dump"
 
     if PG_CONTAINER:
         pg_dump_cmd = [DOCKER_BIN, "exec", PG_CONTAINER, "pg_dump", "-U", "postgres", "-d", PG_DB_NAME, "-Fc"]
@@ -90,7 +108,9 @@ def create_backup() -> dict:
                 stdout=dump_file, stderr=subprocess.PIPE, timeout=300,
             )
         if result.returncode != 0:
-            raise RuntimeError(f"pg_dump failed (exit {result.returncode}): {result.stderr.decode(errors='replace')}")
+            stderr_text = result.stderr.decode(errors="replace") if result.stderr else ""
+            log.error("pg_dump failed (exit %s): %s", result.returncode, stderr_text)
+            raise BackupError("Database backup failed.")
 
         with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.write(tmp_dump_path, arcname="eve_trader.dump")

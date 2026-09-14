@@ -537,14 +537,12 @@ class AccessConfig:
     scope-less EVE SSO login (see access_gate.py), before any other API
     route is reachable.
 
-    Off by default (access_gate_enabled=False) - same "opt-in, never starts
-    happening without the user explicitly asking" reasoning as
-    TradingConfig.scheduler_enabled: this app has run for months as a
-    trusted-localhost tool with zero login wall, and turning that on by
-    default would break every existing local dev workflow (README's
-    documented `uvicorn` + `npm run dev` flow) the moment this field shipped.
-    Meant to be flipped on specifically when hosting this somewhere reachable
-    beyond localhost.
+    On by default (access_gate_enabled=True). A gated multi-tenant
+    deployment must not ship with the login wall off. A trusted local
+    operator can still set access_gate_enabled: false in config.yaml
+    (filesystem/SSH only — never via the Settings page or a request
+    parameter). Admin recovery with the gate on is `eve-trader admin
+    bootstrap`, not disabling the gate.
 
     Used to hold the character/corp/alliance allowlist directly
     (allowed_character_ids/allowed_corporation_ids/allowed_alliance_ids) -
@@ -556,7 +554,7 @@ class AccessConfig:
     An authenticated session being able to flip its own gate would defeat
     the point of it; that should require actual filesystem/SSH access to
     config.yaml."""
-    access_gate_enabled: bool = False
+    access_gate_enabled: bool = True
 
 
 _trading_config_yaml_cache: dict[Path, TradingConfig] = {}

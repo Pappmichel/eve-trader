@@ -1,11 +1,11 @@
 """Admin tool: user/tool-grant management. A deliberate cross-tenant
-superadmin surface, not a per-tenant self-service page - only characters
-registered to storage.DEFAULT_TENANT_ID ever see the "admin" tool at all
-(see access_gate.tools_for), so every function in this module reads/writes
-across every tenant, same as storage.py's own tenant_registry_entries/
-tool_grants (both deliberately unscoped, not RLS'd - see docs/admin_
-schema.sql). Cross-cutting, like portfolio.py, but with do_* actions since
-this module (unlike portfolio.py) actually writes.
+superadmin surface, not a per-tenant self-service page. Reachable only to
+characters with an explicit "admin" tool grant (issued by another admin or
+by `do_bootstrap_admin` / `eve-trader admin bootstrap`). Every function in
+this module reads/writes across every tenant, same as storage.py's own
+tenant_registry_entries/tool_grants (both deliberately unscoped, not RLS'd
+- see docs/admin_schema.sql). Cross-cutting, like portfolio.py, but with
+do_* actions since this module (unlike portfolio.py) actually writes.
 
 Same actions-pattern every other tool follows (see CLAUDE.md's "Architecture:
 actions.py is the one entry point") - api/routers/admin.py calls these same
@@ -157,3 +157,63 @@ def do_set_tool_grants(character_id: int, tool_keys: list[str]) -> dict:
     for tool_key in tool_keys:
         storage.set_tool_grant(character_id, tool_key, user["tenant_id"])
     return {"character_id": character_id, "tool_keys": sorted(tool_keys)}
+
+
+def do_bootstrap_admin(
+    character_id: int,
+    character_name: str | None = None,
+    *,
+    confirm: bool = False,
+    all_tools: bool = False,
+) -> dict:
+    """CLI-only operator bootstrap (F-07 / F-NEW-02). Grants `admin` (and
+    optionally every tool) to `character_id` without an HTTP backdoor.
+
+    - Requires confirm=True (`--confirm` on the CLI) so a stray invocation
+      cannot silently create an admin.
+    - Never reassigns an already-registered character to a different tenant.
+    - If the character is new and DEFAULT_TENANT_ID has no occupant, they
+      are registered there; otherwise a dedicated tenant is created. That
+      UNIQUE (tenant_id) constraint is left in place (one character per
+      tenant) — it is not an admin-count limit.
+    - Idempotent: a second run on the same character re-grants the same
+      tools and does not create another tenant.
+    """
+    if not confirm:
+        raise ActionError(
+            "Refusing to bootstrap an admin without --confirm. "
+            "This grants the admin tool to the named character."
+        )
+    if not isinstance(character_id, int) or character_id <= 0:
+        raise ActionError("character_id must be a positive integer.")
+    name = (character_name or "").strip() or None
+
+    existing_tenant = storage.resolve_tenant_id(character_id)
+    created_tenant = False
+    if existing_tenant is None:
+        occupants = storage.list_tenant_registry_entries(storage.DEFAULT_TENANT_ID)
+        if not occupants:
+            tenant_id = storage.DEFAULT_TENANT_ID
+        else:
+            tenant_id = storage.create_tenant(name or f"Admin {character_id}")
+            created_tenant = True
+        storage.add_tenant_registry_entry(tenant_id, character_id, character_name=name)
+    else:
+        tenant_id = existing_tenant
+        if name is not None:
+            storage.add_tenant_registry_entry(tenant_id, character_id, character_name=name)
+
+    previous = storage.list_tool_grants_for_character(character_id)
+    tools = list(access_gate.ALL_TOOL_KEYS) if all_tools else ["admin"]
+    for tool_key in tools:
+        storage.set_tool_grant(character_id, tool_key, tenant_id)
+    granted = storage.list_tool_grants_for_character(character_id)
+    return {
+        "character_id": character_id,
+        "character_name": name,
+        "tenant_id": tenant_id,
+        "tool_keys": granted,
+        "created_tenant": created_tenant,
+        "already_registered": existing_tenant is not None,
+        "already_had_admin": "admin" in previous,
+    }

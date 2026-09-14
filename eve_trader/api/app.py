@@ -17,7 +17,7 @@ from starlette.responses import JSONResponse
 from starlette.types import Scope
 
 from .. import scheduler, storage, tenant_scope
-from ..access_gate import SESSION_COOKIE_NAME, read_session_token, tools_for
+from ..access_gate import SESSION_COOKIE_NAME, authorize_session_cookie
 from ..config import ACCESS_CONFIG, TRADING_CONFIG, apply_config_overrides
 from ..doctrine.config import DOCTRINE_CONFIG
 from ..production.config import PRODUCTION_CONFIG
@@ -63,13 +63,9 @@ _GATE_EXEMPT_PATHS = {
     "/api/gate/logout",
 }
 
-# Path prefix -> the tool_key a request under it requires (see access_gate.
-# tools_for). Only enforced while the gate is enabled - see dispatch() below;
-# a path with no matching prefix (e.g. /api/gate/*) is never tool-gated, only
-# session-gated. /api/auth/{role_prefix}/(start|consent) is handled
-# separately below (GitHub issue #57) - it doesn't share one fixed prefix
-# per tool the way these do, since the tool depends on the path's own
-# role_prefix segment.
+# Path prefix -> the tool_key a request under it requires (see
+# access_gate.authorize_session_cookie). Only enforced while the gate is
+# enabled.
 _TOOL_PATH_PREFIXES = {
     "/api/trading/": "trading",
     "/api/production/": "production",
@@ -91,7 +87,15 @@ _AUTH_START_PREFIX = "/api/auth/"
 _AUTH_GATED_SUFFIXES = ("/start", "/consent")
 
 
-def _required_tool_for_path(path: str) -> Optional[str]:
+def _is_docs_path(path: str) -> bool:
+    return path == "/openapi.json" or path.startswith("/docs") or path.startswith("/redoc")
+
+
+def _required_tool_for_path(path: str, method: str = "GET") -> Optional[str]:
+    # F-06: creating a backup prunes disaster-recovery retention. Listing
+    # does not. POST is admin-only; GET stays a portfolio read.
+    if path == "/api/portfolio/backups" and method.upper() == "POST":
+        return "admin"
     for prefix, tool_key in _TOOL_PATH_PREFIXES.items():
         if path.startswith(prefix):
             return tool_key
@@ -116,24 +120,28 @@ def _required_tool_for_path(path: str) -> Optional[str]:
 
 class AccessGateMiddleware(BaseHTTPMiddleware):
     """Gates every /api/* route behind a valid access-gate session cookie
-    once AccessConfig.access_gate_enabled is true (the check re-reads
-    ACCESS_CONFIG on every request rather than once at startup, so flipping
-    it in config.yaml + restarting is the only wiring needed, nothing here
-    needs to change). See access_gate.py's own module docstring for why this
-    exists, and auth.py's callback()/gate.py for the login flow that issues
-    the cookie this checks.
+    once AccessConfig.access_gate_enabled is true (on by default; the check
+    re-reads ACCESS_CONFIG on every request rather than once at startup, so
+    flipping it in config.yaml + restarting is the only wiring needed). See
+    access_gate.py's own module docstring for why this exists, and
+    auth.py's callback()/gate.py for the login flow that issues the cookie
+    this checks.
+
+    Session cookies are re-validated against tenant_registry_entries and
+    tool_grants on every request (access_gate.authorize_session_cookie) —
+    a signed cookie is not enough if the character was removed, reassigned,
+    or had sessions_valid_after advanced.
 
     Also - regardless of whether the gate is enabled - sets storage.py's
     ambient tenant_id contextvar for the duration of the request (reset in a
     finally, so it can never leak into a later, unrelated request on the
-    same worker): storage.DEFAULT_TENANT_ID when the gate is off (this app's
-    default - a trusted single operator, no login wall, see
-    docs/phase3_schema.sql's seed row) or on but the path is exempt/no
-    tenant resolution applies yet; the session cookie's own resolved
-    tenant_id when the gate is on and the cookie is valid. Every real
-    storage.py query needs a tenant now (see storage.connect()'s fail-closed
-    check) - without this, every request would 500 with "no tenant set"
-    regardless of the gate's own enabled/disabled state.
+    same worker): storage.DEFAULT_TENANT_ID when the gate is off (a trusted
+    single operator who turned it off in config.yaml) or on but the path is
+    exempt/no tenant resolution applies yet; the session cookie's own
+    resolved tenant_id when the gate is on and the cookie is valid. Every
+    real storage.py query needs a tenant now (see storage.connect()'s
+    fail-closed check) - without this, every request would 500 with "no
+    tenant set" regardless of the gate's own enabled/disabled state.
 
     Registered *after* CORSMiddleware below (Starlette's first-added
     middleware ends up outermost) so CORS preflight (OPTIONS) requests and
@@ -156,41 +164,31 @@ class AccessGateMiddleware(BaseHTTPMiddleware):
             return await self._call_with_default_tenant(call_next, request)
 
         path = request.url.path
+        if _is_docs_path(path):
+            session = authorize_session_cookie(request.cookies.get(SESSION_COOKIE_NAME))
+            if session is None:
+                return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+            return await call_next(request)
+
         if not path.startswith("/api/") or path in _GATE_EXEMPT_PATHS:
             # Exempt paths (the login flow itself, gate status/logout) never
             # had a tenant to resolve yet - /callback resolves its own via
             # storage.connect_unscoped() internally, doesn't need one set here.
             return await call_next(request)
 
-        token = request.cookies.get(SESSION_COOKIE_NAME)
-        data = read_session_token(token) if token else None
-        # A still-valid (unexpired, correctly-signed) cookie from before
-        # tenant_id was added to the session payload (multi-tenant migration
-        # Phase 3a) would decode successfully - itsdangerous only checks the
-        # signature/expiry, not the payload shape - but have no "tenant_id"
-        # key. Treat that the same as "not authenticated" (a stale cookie
-        # forcing a fresh login) rather than letting `data["tenant_id"]`
-        # raise KeyError into an unhandled 500 below.
-        tenant_id = data.get("tenant_id") if data else None
-        if tenant_id is None:
+        session = authorize_session_cookie(request.cookies.get(SESSION_COOKIE_NAME))
+        if session is None:
             return JSONResponse({"detail": "Not authenticated"}, status_code=401)
 
-        # Per-tool enforcement - a valid session only proves *who*, not
-        # *which tools*; this is the actual authorization check (see
-        # access_gate.tools_for's own docstring for why it's the one
-        # chokepoint both this and /api/gate/status's `tools` field use).
-        # Deliberately only reachable here, not left to the frontend's own
-        # tool-filtered Landing page - hiding a card doesn't stop a direct
-        # API call, only this does.
-        required_tool = _required_tool_for_path(path)
-        if required_tool is not None and required_tool not in tools_for(tenant_id, data["character_id"]):
+        required_tool = _required_tool_for_path(path, request.method)
+        if required_tool is not None and required_tool not in session.tool_keys:
             return JSONResponse({"detail": "Forbidden - missing tool grant"}, status_code=403)
 
         # Gate on - the request could genuinely be any of several different
         # real tenants, so their own TRADING_CONFIG/PRODUCTION_CONFIG must be
         # resolved fresh here, not left pointing at whichever tenant's
         # settings happened to be live last - see tenant_scope's own docstring.
-        with tenant_scope.enter_tenant(tenant_id):
+        with tenant_scope.enter_tenant(session.tenant_id):
             return await call_next(request)
 
     @staticmethod

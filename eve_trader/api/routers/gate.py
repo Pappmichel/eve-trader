@@ -9,10 +9,18 @@ versions, not worth the risk when reusing the existing one works fine).
 """
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Cookie, Response
 
-from ...access_gate import ALL_TOOL_KEYS, SESSION_COOKIE_NAME, clear_session_cookie, read_session_token, tools_for
+from ... import storage
+from ...access_gate import (
+    ALL_TOOL_KEYS, SESSION_COOKIE_NAME, authorize_session_cookie, clear_session_cookie,
+    read_session_token,
+)
 from ...config import ACCESS_CONFIG
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -25,30 +33,38 @@ def status(session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKI
 
     `tools` drives which cards Landing.tsx renders - purely informational,
     NOT the enforcement point (AccessGateMiddleware's own per-request check
-    is, see access_gate.tools_for's docstring for why both share that one
-    function). Gate disabled: every tool (same "no login wall, nothing to
-    filter" behavior this app had before tool grants existed at all). Gate
-    enabled but not logged in: no tools - nothing to show yet."""
-    data = read_session_token(session_cookie) if session_cookie else None
+    is, see access_gate.authorize_session_cookie). Gate disabled: every tool
+    (trusted local operator). Gate enabled: tools come from the same
+    registry+grant read as the middleware, so a revoked/reassigned cookie
+    reports logged out, not a stale tool list."""
     if not ACCESS_CONFIG.access_gate_enabled:
-        tools = list(ALL_TOOL_KEYS)
-    elif data is not None and data.get("tenant_id") is not None:
-        # A still-valid cookie from before tenant_id existed (see api/app.py's
-        # own comment on the same gap) has no tenant to resolve tools from -
-        # same "not authenticated enough" treatment, just degrading to an
-        # empty tools list here rather than a 401 (this endpoint is public).
-        tools = tools_for(data["tenant_id"], data["character_id"])
-    else:
-        tools = []
+        data = read_session_token(session_cookie) if session_cookie else None
+        return {
+            "enabled": False,
+            "logged_in": data is not None,
+            "character_name": data["character_name"] if data else None,
+            "tools": list(ALL_TOOL_KEYS),
+        }
+    session = authorize_session_cookie(session_cookie)
+    if session is None:
+        return {
+            "enabled": True, "logged_in": False, "character_name": None, "tools": [],
+        }
     return {
-        "enabled": ACCESS_CONFIG.access_gate_enabled,
-        "logged_in": data is not None,
-        "character_name": data["character_name"] if data else None,
-        "tools": tools,
+        "enabled": True,
+        "logged_in": True,
+        "character_name": session.character_name,
+        "tools": session.tool_keys,
     }
 
 
 @router.post("/logout")
-def logout(response: Response):
+def logout(response: Response, session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME)):
+    data = read_session_token(session_cookie) if session_cookie else None
+    if data and data.get("character_id") is not None:
+        try:
+            storage.revoke_sessions_for_character(int(data["character_id"]))
+        except Exception:
+            log.exception("session revoke on logout failed")
     clear_session_cookie(response)
     return {"ok": True}

@@ -53,6 +53,14 @@ def _session_cookie(character_id: int = 1, character_name: str = "Some Character
     return {access_gate.SESSION_COOKIE_NAME: token}
 
 
+def _provision(character_id: int = 1, tenant_id: str = _DEFAULT_TEST_TENANT_ID,
+               tools: tuple[str, ...] = (), name: str = "Some Character") -> None:
+    """Registry row + optional grants so authorize_session_cookie succeeds."""
+    storage.add_tenant_registry_entry(tenant_id, character_id, character_name=name)
+    for tool in tools:
+        storage.set_tool_grant(character_id, tool, tenant_id)
+
+
 @pytest.fixture
 def _wipe_registry():
     """Only requested by the 3 postgres_required callback tests below - a
@@ -76,7 +84,7 @@ def _wipe_tool_grants():
     # "before" assertion would then see instead of a clean slate) - wiped
     # here too rather than as its own separate fixture.
     if pg_helpers._postgres_available():
-        pg_helpers.wipe_tables("tool_grants", "tenant_role_consents")
+        pg_helpers.wipe_tables("tool_grants", "tenant_role_consents", "tenant_registry_entries")
     yield
 
 
@@ -105,7 +113,7 @@ def test_status_with_no_cookie_reports_logged_out(monkeypatch):
 @pg_helpers.postgres_required()
 def test_status_with_valid_cookie_reports_logged_in(monkeypatch, _apply_phase1_schema, _apply_admin_schema):
     _enable_gate(monkeypatch)
-    storage.set_tool_grant(1, "trading", _DEFAULT_TEST_TENANT_ID)
+    _provision(tools=("trading",), name="Test Character")
 
     resp = client.get("/api/gate/status", cookies=_session_cookie(character_name="Test Character"))
 
@@ -115,12 +123,15 @@ def test_status_with_valid_cookie_reports_logged_in(monkeypatch, _apply_phase1_s
 
 
 @pg_helpers.postgres_required()
-def test_status_default_tenant_reports_every_tool(monkeypatch, _apply_phase1_schema, _apply_admin_schema):
+def test_status_default_tenant_does_not_imply_every_tool(monkeypatch, _apply_phase1_schema, _apply_admin_schema):
+    # Inverted from the old DEFAULT_TENANT_ID bypass: admin is a normal grant.
     _enable_gate(monkeypatch)
+    _provision(tenant_id=storage.DEFAULT_TENANT_ID, tools=("trading",))
 
     resp = client.get("/api/gate/status", cookies=_session_cookie(tenant_id=storage.DEFAULT_TENANT_ID))
 
-    assert resp.json()["tools"] == list(access_gate.ALL_TOOL_KEYS)
+    assert resp.json()["tools"] == ["trading"]
+    assert "admin" not in resp.json()["tools"]
 
 
 def test_status_with_garbage_cookie_reports_logged_out_not_500(monkeypatch):
@@ -173,7 +184,7 @@ def test_middleware_allows_protected_routes_with_a_valid_session_when_enabled(
     # session alone isn't enough anymore (see access_gate.tools_for) - the
     # cookie's own character_id/tenant_id must also have a "trading" grant.
     _enable_gate(monkeypatch)
-    storage.set_tool_grant(1, "trading", _DEFAULT_TEST_TENANT_ID)
+    _provision(tools=("trading",))
 
     resp = client.get("/api/trading/settings", cookies=_session_cookie())
 
@@ -188,6 +199,7 @@ def test_middleware_rejects_a_valid_session_missing_the_required_tool_grant(
     # matching tool_grants row must be refused, not just filtered out of the
     # frontend's Landing page (hiding a card doesn't stop a direct API call).
     _enable_gate(monkeypatch)
+    _provision()  # registered, no grants → 403 not 401
 
     resp = client.get("/api/trading/settings", cookies=_session_cookie())
 
@@ -195,14 +207,16 @@ def test_middleware_rejects_a_valid_session_missing_the_required_tool_grant(
 
 
 @pg_helpers.postgres_required()
-def test_middleware_default_tenant_bypasses_the_tool_grant_check(monkeypatch, _apply_phase1_schema, _apply_phase2_schema):
-    # storage.DEFAULT_TENANT_ID's own users get every tool without an
-    # explicit tool_grants row (see access_gate.tools_for).
+def test_middleware_default_tenant_does_not_bypass_the_tool_grant_check(
+    monkeypatch, _apply_phase1_schema, _apply_phase2_schema, _apply_admin_schema
+):
+    # Inverted: DEFAULT_TENANT_ID no longer implies every tool.
     _enable_gate(monkeypatch)
+    _provision(tenant_id=storage.DEFAULT_TENANT_ID)
 
     resp = client.get("/api/trading/settings", cookies=_session_cookie(tenant_id=storage.DEFAULT_TENANT_ID))
 
-    assert resp.status_code == 200
+    assert resp.status_code == 403
 
 
 def test_middleware_rejects_not_500s_a_cookie_from_before_tenant_id_existed(monkeypatch):
@@ -324,6 +338,7 @@ def test_middleware_rejects_auth_start_missing_the_required_tool_grant(
     # /api/production/* call already does.
     _enable_gate(monkeypatch)
     monkeypatch.setattr(OAUTH_CONFIG, "client_id", "test-client-id")
+    _provision()
 
     resp = client.get("/api/auth/producer/start", cookies=_session_cookie())
 
@@ -336,7 +351,7 @@ def test_middleware_allows_auth_start_with_the_required_tool_grant(
 ):
     _enable_gate(monkeypatch)
     monkeypatch.setattr(OAUTH_CONFIG, "client_id", "test-client-id")
-    storage.set_tool_grant(1, "production", _DEFAULT_TEST_TENANT_ID)
+    _provision(tools=("production",))
 
     resp = client.get("/api/auth/producer/start", cookies=_session_cookie())
 
@@ -352,6 +367,7 @@ def test_middleware_rejects_auth_consent_missing_the_required_tool_grant(
     # through _required_tool_for_path ungated just because they were added
     # after that fix.
     _enable_gate(monkeypatch)
+    _provision()
 
     get_resp = client.get("/api/auth/producer/consent", cookies=_session_cookie())
     post_resp = client.post("/api/auth/producer/consent", cookies=_session_cookie())
@@ -365,7 +381,7 @@ def test_middleware_allows_auth_consent_with_the_required_tool_grant(
     monkeypatch, _apply_phase1_schema, _apply_phase2_schema, _apply_admin_schema
 ):
     _enable_gate(monkeypatch)
-    storage.set_tool_grant(1, "production", _DEFAULT_TEST_TENANT_ID)
+    _provision(tools=("production",))
 
     get_resp = client.get("/api/auth/producer/consent", cookies=_session_cookie())
     post_resp = client.post("/api/auth/producer/consent", cookies=_session_cookie())
@@ -379,7 +395,7 @@ def test_consent_status_round_trips_get_then_post_then_get(
     monkeypatch, _apply_phase1_schema, _apply_phase2_schema, _apply_admin_schema, _apply_role_consent_schema
 ):
     _enable_gate(monkeypatch)
-    storage.set_tool_grant(1, "production", _DEFAULT_TEST_TENANT_ID)
+    _provision(tools=("production",))
 
     before = client.get("/api/auth/producer/consent", cookies=_session_cookie())
     ack = client.post("/api/auth/producer/consent", cookies=_session_cookie())
@@ -398,6 +414,7 @@ def test_consent_rejects_the_gate_role_prefix(
     # role_consent_schema.sql's own comment on why a pre-login tenant can't
     # exist to attach a server-side record to.
     _enable_gate(monkeypatch)
+    _provision()
 
     resp = client.get("/api/auth/gate/consent", cookies=_session_cookie())
 
@@ -425,7 +442,7 @@ def test_start_login_rejects_an_unrecognized_role_prefix(monkeypatch):
 # --------------------------------- auth.py /start + /callback tenant threading (non-gate)
 @pg_helpers.postgres_required()
 def test_start_login_captures_the_ambient_tenant_into_pending(monkeypatch):
-    # Gate disabled (today's default) - AccessGateMiddleware sets
+    # Gate disabled (trusted-operator opt-out) - AccessGateMiddleware sets
     # DEFAULT_TENANT_ID unconditionally, and /start must capture exactly
     # that into _pending[state] for /callback (an exempt path with no
     # automatic ambient tenant) to pick back up.
@@ -454,6 +471,7 @@ def test_callback_buyer_branch_persists_the_token_under_the_correct_tenant(
     # "trading", same as every /api/trading/* route) - without this grant
     # the request 403s before ever reaching /start's own logic.
     storage.set_tool_grant(1, "trading", tenant_a)
+    storage.add_tenant_registry_entry(tenant_a, 1, character_name="Some Character")
 
     start_resp = client.get("/api/auth/buyer/start", cookies=_session_cookie(tenant_id=tenant_a))
     state = urllib.parse.parse_qs(urllib.parse.urlparse(start_resp.json()["url"]).query)["state"][0]

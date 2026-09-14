@@ -16,9 +16,9 @@ import { openRoleAccessConfirmModal } from '../roleAccessDescriptions'
 const GATE_CONSENT_KEY = 'eve-trader:gate-consent-acknowledged'
 
 // Only rendered once gateStatus.enabled is true (see AccessConfig.
-// access_gate_enabled - off by default) - a local/dev install with the gate
-// disabled never shows this at all, matching how it behaved before the
-// gate existed.
+// access_gate_enabled - on by default; a local/dev install that opts out
+// in config.yaml never shows this at all, matching how it behaved before
+// the gate existed).
 function AccessGateStatus() {
   const { data: gateStatus } = useQuery({ queryKey: ['gate', 'status'], queryFn: gateApi.status })
   const logout = useAction('Log Out', gateApi.logout, [['gate', 'status']])

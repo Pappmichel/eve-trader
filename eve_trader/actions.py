@@ -14,7 +14,7 @@ from typing import Optional
 import pandas as pd
 
 from . import backup, candidate_discovery, history_backtest, own_orders, storage
-from .auth import TokenManager
+from .auth import InvalidRoleKey, TokenManager, validate_role_key
 from .config import (OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, TradingConfig,
                      save_tenant_config_overrides)
 from .esi_client import ESIClient, ESIError
@@ -33,6 +33,13 @@ class ActionError(RuntimeError):
 
 class ConflictError(ActionError):
     """A conflicting in-progress operation already exists (HTTP 409)."""
+
+
+def _require_role_key(role_key: str) -> str:
+    try:
+        return validate_role_key(role_key)
+    except InvalidRoleKey as e:
+        raise ActionError(str(e)) from e
 
 
 def now_ts() -> str:
@@ -122,6 +129,7 @@ def do_list_seller_characters(oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> list[tup
 
 
 def do_remove_trading_character(role_key: str, oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
+    role_key = _require_role_key(role_key)
     TokenManager(oauth_cfg).remove_token(role_key)
     return {"removed": role_key}
 
@@ -143,6 +151,7 @@ def do_list_transaction_characters(oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> lis
 
 def do_wallet_transactions(role_key: str, lookback_days: Optional[int] = None,
                             cfg: TradingConfig = TRADING_CONFIG, oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> list[dict]:
+    role_key = _require_role_key(role_key)
     tm = TokenManager(oauth_cfg)
     record = tm.get_record(role_key)
     if record is None:
@@ -171,6 +180,7 @@ def do_wallet_balance(role_key: str, cfg: TradingConfig = TRADING_CONFIG, oauth_
     """Current ISK wallet balance for the Transactions tab's selected
     character - a live ESI call (no caching, matches character_wallet_
     transactions' own no-cache behavior), not something worth persisting."""
+    role_key = _require_role_key(role_key)
     tm = TokenManager(oauth_cfg)
     record = tm.get_record(role_key)
     if record is None:
@@ -1146,14 +1156,12 @@ def do_create_backup() -> dict:
     try:
         return backup.create_backup()
     except (OSError, RuntimeError) as e:
-        # RuntimeError covers a non-zero pg_dump exit (see backup.py's own
-        # create_backup) - confirmed real gap: this used to only catch
-        # OSError/sqlite3.Error (leftover from the pre-Postgres SQLite
-        # online-backup API), so a real pg_dump failure (Postgres
-        # unreachable, wrong password, ...) escaped as a raw 500 instead of
-        # the ActionError every other user-facing failure in this app
-        # converts to.
-        raise ActionError(f"Backup failed: {e}") from e
+        # RuntimeError covers BackupError (non-zero pg_dump) and unexpected
+        # failures. The exception chain keeps operator diagnostics in logs;
+        # the ActionError message is generic so an HTTP 400 cannot leak
+        # pg_dump stderr / paths / DSN details (F-NEW-04).
+        log.exception("backup failed")
+        raise ActionError("Backup failed.") from e
 
 
 def do_list_backups() -> dict:

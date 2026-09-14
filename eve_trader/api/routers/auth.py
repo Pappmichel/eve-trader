@@ -15,13 +15,15 @@ TokenManager persistence, since a gate login is never stored there.
 """
 from __future__ import annotations
 
+import logging
 import secrets
+import threading
 import time
 import urllib.parse
 from typing import Optional
 
 import requests
-from fastapi import APIRouter, Cookie, HTTPException, Response
+from fastapi import APIRouter, Cookie, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 
 from ... import storage
@@ -34,11 +36,17 @@ from ...station_trading import esi_sync as station_trading_esi_sync
 
 router = APIRouter()
 
-# state -> {verifier, role_prefix, scopes, multi}, pruned after use/on expiry.
-# Single local user/process - an in-memory dict is sufficient (same lifetime
-# assumption as the old approach's temporary HTTP server).
+log = logging.getLogger(__name__)
+
+# state -> {verifier, role_prefix, scopes, created_at, tenant_id, browser_nonce, client_ip}
+# In-memory is enough for a single process. Mutations go through _pending_lock
+# so concurrent /start + prune cannot raise "dictionary changed size during
+# iteration" or grow without bound (F-04 / F-NEW-01).
 _pending: dict[str, dict] = {}
+_pending_lock = threading.Lock()
 _PENDING_TTL = 600
+_PENDING_MAX = 256
+_PENDING_MAX_PER_IP = 8
 
 # Login-CSRF / session-fixation fix (found in a security audit 2026-08-23,
 # confirmed real gap): `state` above is only ever used as a server-side dict
@@ -59,11 +67,24 @@ _PENDING_TTL = 600
 _OAUTH_NONCE_COOKIE = "eve_trader_oauth_nonce"
 
 
-def _prune_pending() -> None:
-    now = time.time()
-    expired = [s for s, v in _pending.items() if now - v["created_at"] > _PENDING_TTL]
+def _prune_pending_locked(now: float) -> None:
+    """Caller holds _pending_lock. Iterate a snapshot of keys so a concurrent
+    reader cannot see a half-mutated dict, and prune is O(n) on the current
+    size (capped by _PENDING_MAX), not an unbounded historical list."""
+    expired = [s for s, v in list(_pending.items()) if now - v["created_at"] > _PENDING_TTL]
     for s in expired:
         _pending.pop(s, None)
+
+
+def _prune_pending() -> None:
+    with _pending_lock:
+        _prune_pending_locked(time.time())
+
+
+def _client_ip(request: Request) -> str:
+    if request.client is None:
+        return "unknown"
+    return request.client.host or "unknown"
 
 
 def _scopes_for(role_prefix: str) -> list[str]:
@@ -132,7 +153,7 @@ def acknowledge_consent(role_prefix: str):
 
 
 @router.get("/{role_prefix}/start")
-def start_login(role_prefix: str, response: Response):
+def start_login(role_prefix: str, request: Request, response: Response):
     """role_prefix: "buyer" | "seller" | "producer" | ... - every one of
     these is multi-character (GitHub issue #46: buyer/seller used to be a
     single fixed role each, now they follow the same "producer" scheme) -
@@ -141,12 +162,12 @@ def start_login(role_prefix: str, response: Response):
         raise HTTPException(400, f"Unknown role_prefix '{role_prefix}'.")
     if not OAUTH_CONFIG.client_id:
         raise HTTPException(500, "EVE_SSO_CLIENT_ID is not set (.env).")
-    _prune_pending()
     verifier, challenge = _make_pkce_pair()
     state = urllib.parse.quote(f"{role_prefix}-{time.time_ns()}")
     scopes = _scopes_for(role_prefix)
     browser_nonce = secrets.token_urlsafe(32)
-    _pending[state] = {
+    client_ip = _client_ip(request)
+    entry = {
         "verifier": verifier, "role_prefix": role_prefix, "scopes": scopes, "created_at": time.time(),
         # Stashed for /callback (an AccessGateMiddleware-exempt path with no
         # automatic ambient tenant of its own) to pick back up - guaranteed
@@ -157,7 +178,16 @@ def start_login(role_prefix: str, response: Response):
         # of /callback resolves its own tenant fresh via the registry).
         "tenant_id": storage.get_current_tenant(),
         "browser_nonce": browser_nonce,
+        "client_ip": client_ip,
     }
+    with _pending_lock:
+        _prune_pending_locked(time.time())
+        if len(_pending) >= _PENDING_MAX:
+            raise HTTPException(429, "Too many pending logins. Try again shortly.")
+        ip_count = sum(1 for v in _pending.values() if v.get("client_ip") == client_ip)
+        if ip_count >= _PENDING_MAX_PER_IP:
+            raise HTTPException(429, "Too many pending logins from this address.")
+        _pending[state] = entry
     # See _OAUTH_NONCE_COOKIE's own comment above for why this exists - same
     # secure-flag reasoning as access_gate.set_session_cookie (a bare-IP,
     # no-domain-yet deployment is still plain HTTP, so Secure=True there
@@ -189,7 +219,9 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
         resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
         return resp
 
-    pending = _pending.pop(state, None)
+    pending = None
+    with _pending_lock:
+        pending = _pending.pop(state, None)
     if pending is None:
         resp = RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?auth=error&message=state_expired_or_unknown")
         resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")

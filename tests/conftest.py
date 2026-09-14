@@ -17,7 +17,20 @@ runs that need it - see tests/pg_helpers.py for the fixture itself.
 """
 from __future__ import annotations
 
+import pytest
+
+from eve_trader.config import ACCESS_CONFIG
+
 from .pg_helpers import tenant_pair  # noqa: F401
+
+
+@pytest.fixture(autouse=True)
+def _disable_access_gate_by_default(monkeypatch):
+    """Production default is gate-on. Most tests exercise business logic
+    through the routers and assume the historical trusted-operator path.
+    Security tests that need the gate call _enable_gate / set True themselves
+    after this fixture."""
+    monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", False)
 
 # Note on storage.py's @lru_cache'd SDE-lookup functions (get_sde_type,
 # get_system_security, ...): before the multi-tenant cutover, `db_path` was

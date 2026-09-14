@@ -94,17 +94,16 @@ encryption_skill_level: 4
 datacore_skill_1_level: 4
 datacore_skill_2_level: 4
 
-# ---- Access gate (see eve_trader/access_gate.py) - off by default. When
-# enabled, every /api/* route requires an EVE SSO login (identity only, no
-# ESI scopes) that resolves to a character registered in the Postgres tenant
-# registry (character-only - corp/alliance registry entries were retired,
-# see storage.add_tenant_registry_entry / `eve-trader tenant add-entry`).
-# Needed before hosting this somewhere reachable beyond localhost; leave
-# disabled for a purely local install. Also needs SESSION_SECRET_KEY set in
-# .env (see .env.example) once enabled. Who's allowed in is managed via the
-# `eve-trader tenant` CLI commands or the Admin tool's "Add User", not via
-# this file.
-access_gate_enabled: false
+# ---- Access gate (see eve_trader/access_gate.py) - on by default. Every
+# /api/* route requires an EVE SSO login (identity only, no ESI scopes) that
+# resolves to a character registered in the Postgres tenant registry.
+# Disable only for a trusted local operator (filesystem/SSH, never via HTTP).
+# Also needs SESSION_SECRET_KEY set in .env (see .env.example). Who's allowed
+# in is managed via `eve-trader admin bootstrap` / `eve-trader tenant` / the
+# Admin tool's "Add User", not via this file. Bootstrap the first admin
+# *before* restarting a live host onto this default — see
+# docs/OPERATOR_SECURITY.md.
+access_gate_enabled: true
 
 # ---- Doctrine tool (see eve_trader/doctrine/config.py DoctrineConfig) ----
 # doctrine_structure_id: 123456789012  # where fitted-ship contracts/stockpile

@@ -25,6 +25,7 @@ import base64
 import hashlib
 import http.server
 import json
+import re
 import secrets
 import threading
 import time
@@ -38,6 +39,37 @@ import requests
 
 from . import storage
 from .config import OAUTH_CONFIG, OAuthConfig
+
+
+class InvalidRoleKey(ValueError):
+    """role_key is outside the canonical `prefix:character_id` domain."""
+
+
+# Canonical TokenManager / API role_key: one of the known prefixes, a colon,
+# then a positive integer character id. Rejects path/SQL/unicode/null/blank
+# by construction (F-05) — this is a domain, not just an injection denylist.
+_ROLE_KEY_RE = re.compile(
+    r"^(buyer|seller|producer|doctrine|doctrine-assets|trader):[1-9][0-9]{0,19}$"
+)
+ROLE_KEY_MAX_LENGTH = 48
+
+
+def validate_role_key(role_key: str) -> str:
+    """Returns `role_key` if it is a canonical stored-token key, else raises
+    InvalidRoleKey. Used on every HTTP-facing role_key argument."""
+    if not isinstance(role_key, str):
+        raise InvalidRoleKey("Invalid role_key.")
+    if len(role_key) > ROLE_KEY_MAX_LENGTH:
+        raise InvalidRoleKey("Invalid role_key.")
+    if "\x00" in role_key or role_key != role_key.strip():
+        raise InvalidRoleKey("Invalid role_key.")
+    try:
+        role_key.encode("ascii")
+    except UnicodeEncodeError as e:
+        raise InvalidRoleKey("Invalid role_key.") from e
+    if _ROLE_KEY_RE.fullmatch(role_key) is None:
+        raise InvalidRoleKey("Invalid role_key.")
+    return role_key
 
 
 @dataclass

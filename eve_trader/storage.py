@@ -35,6 +35,7 @@ import re
 import threading
 import uuid
 from contextlib import contextmanager
+from datetime import datetime
 from functools import lru_cache
 from typing import Iterable, Optional
 
@@ -367,13 +368,20 @@ def add_tenant_registry_entry(tenant_id: str, character_id: int, character_name:
                 "INSERT INTO tenant_registry_entries (entry_type, entry_id, tenant_id, character_name) "
                 "VALUES ('character', ?, ?, ?) "
                 "ON CONFLICT(entry_type, entry_id) DO UPDATE SET "
-                "tenant_id = excluded.tenant_id, character_name = excluded.character_name",
+                "tenant_id = excluded.tenant_id, character_name = excluded.character_name, "
+                "sessions_valid_after = CASE "
+                "WHEN tenant_registry_entries.tenant_id IS DISTINCT FROM excluded.tenant_id "
+                "THEN now() ELSE tenant_registry_entries.sessions_valid_after END",
                 (character_id, tenant_id, character_name),
             )
         else:
             conn.execute(
                 "INSERT INTO tenant_registry_entries (entry_type, entry_id, tenant_id) VALUES ('character', ?, ?) "
-                "ON CONFLICT(entry_type, entry_id) DO UPDATE SET tenant_id = excluded.tenant_id",
+                "ON CONFLICT(entry_type, entry_id) DO UPDATE SET "
+                "tenant_id = excluded.tenant_id, "
+                "sessions_valid_after = CASE "
+                "WHEN tenant_registry_entries.tenant_id IS DISTINCT FROM excluded.tenant_id "
+                "THEN now() ELSE tenant_registry_entries.sessions_valid_after END",
                 (character_id, tenant_id),
             )
 
@@ -491,16 +499,59 @@ def revoke_all_tool_grants(character_id: int) -> None:
 
 
 def list_tool_grants_for_character(character_id: int) -> list[str]:
-    """Returns every tool_key currently granted to `character_id` - the
-    plain per-character grant list only, does NOT apply the
-    DEFAULT_TENANT_ID "all tools" bypass (see gate.py's own status handler,
-    which checks that separately before falling back to this)."""
+    """Returns every tool_key currently granted to `character_id` across
+    every tenant. Prefer session_authorization() on the request path — that
+    one DB-read also checks the character still belongs to the session
+    tenant and only returns grants for that tenant."""
     with connect_unscoped() as conn:
         rows = conn.execute(
             "SELECT tool_key FROM tool_grants WHERE character_id = ? ORDER BY tool_key",
             (character_id,),
         ).fetchall()
     return [r[0] for r in rows]
+
+
+def session_authorization(character_id: int, tenant_id: str) -> Optional[tuple[list[str], Optional[datetime]]]:
+    """F-01 + F-03: one DB read. Returns (tool_keys, sessions_valid_after)
+    when `character_id` is registered as a character of `tenant_id`.
+    tool_keys is [] when the character is registered but has no grants for
+    that tenant. Returns None when there is no matching registry row
+    (character missing, or registered to a different tenant) — callers must
+    not treat that as "no grants".
+
+    JOIN conditions are load-bearing: e.tenant_id is the session tenant,
+    g.tenant_id = e.tenant_id so a grant issued under another tenant cannot
+    follow the character here."""
+    with connect_unscoped() as conn:
+        rows = conn.execute(
+            "SELECT g.tool_key, e.sessions_valid_after "
+            "FROM tenant_registry_entries e "
+            "LEFT JOIN tool_grants g "
+            "  ON g.character_id = e.entry_id "
+            " AND g.tenant_id = e.tenant_id "
+            "WHERE e.entry_type = 'character' "
+            "  AND e.entry_id = ? "
+            "  AND e.tenant_id = ?",
+            (character_id, tenant_id),
+        ).fetchall()
+    if not rows:
+        return None
+    sessions_valid_after = rows[0][1]
+    tool_keys = sorted({key for key, _sva in rows if key is not None})
+    return tool_keys, sessions_valid_after
+
+
+def revoke_sessions_for_character(character_id: int) -> None:
+    """Invalidates every still-unexpired session cookie for this character
+    by advancing sessions_valid_after. No-op if they are not registered.
+    Logout and explicit revocation use this; membership checks already
+    reject cookies whose tenant_id no longer matches the registry."""
+    with connect_unscoped() as conn:
+        conn.execute(
+            "UPDATE tenant_registry_entries SET sessions_valid_after = now() "
+            "WHERE entry_type = 'character' AND entry_id = ?",
+            (character_id,),
+        )
 
 
 def list_users_with_grants() -> list[dict]:
