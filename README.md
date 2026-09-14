@@ -37,9 +37,10 @@ Highlights:
 ## Setup
 
 ```bash
-python -m venv .venv && source .venv/bin/activate     # or .venv\Scripts\activate on Windows
-pip install -r requirements.txt
-pip install -e .                                       # installs the `eve-trader` command
+python3 -m venv .venv && source .venv/bin/activate     # or .venv\Scripts\activate on Windows
+# Python 3.10, 3.11 (CI), or 3.12. Install the lockfile, not open ranges:
+pip install -r requirements.lock
+pip install -e . --no-deps                             # installs the `eve-trader` command
 
 cp .env.example .env          # fill in EVE_SSO_CLIENT_ID (register at developers.eveonline.com)
 cp config.example.yaml config.yaml   # adjust structure_id, character names, thresholds
@@ -60,7 +61,8 @@ docker run -d --name eve-trader-pg -e POSTGRES_PASSWORD=devpassword \
 # phase1-3 - admin_schema.sql/doctrine_schema.sql/observability_schema.sql/
 # refining_schema.sql/role_consent_schema.sql/special_orders_schema.sql/
 # station_trading_schema.sql/sorting_schema.sql/
-# production_buy_list_schema.sql/pipeline_runs_schema.sql back
+# production_buy_list_schema.sql/pipeline_runs_schema.sql/
+# session_revocations_schema.sql back
 # the Admin/Doctrine/error-tracking/Ore & Minerals/role-consent/Special
 # Orders/Station Trading/Sorting features, and their routers are registered unconditionally, so
 # skipping them means 500s the moment you touch those tools, not just a
@@ -78,6 +80,7 @@ Get-Content docs\station_trading_schema.sql | docker exec -i eve-trader-pg psql 
 Get-Content docs\sorting_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
 Get-Content docs\production_buy_list_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
 Get-Content docs\pipeline_runs_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
+Get-Content docs\session_revocations_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
 ```
 
 (`phase1_schema.sql` creates the `eve_trader_app` role with the checked-in

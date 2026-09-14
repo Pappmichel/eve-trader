@@ -25,11 +25,17 @@ CREATE TABLE IF NOT EXISTS tenant_registry_entries (
 );
 
 -- The fixed default tenant - see storage.DEFAULT_TENANT_ID. Covers the
--- access-gate-disabled case (this app's default: a trusted single operator,
--- no login wall) so AccessGateMiddleware always has *some* tenant to set,
--- not just once a real multi-tenant login flow is in use.
+-- access-gate-disabled case (opt-in via config.yaml; the gate is on by
+-- default) so AccessGateMiddleware always has *some* tenant to set when
+-- there is no session cookie, and the CLI's trusted-operator path.
 INSERT INTO tenants (tenant_id, name)
 VALUES ('00000000-0000-0000-0000-000000000001', 'Default')
 ON CONFLICT (tenant_id) DO NOTHING;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON tenants, tenant_registry_entries TO eve_trader_app;
+
+-- F-01/F-03 session revocation timestamp. Also in admin_schema.sql so
+-- existing installs that already applied this file pick it up on the next
+-- deploy. NULL = never revoked (no global logout on migrate).
+ALTER TABLE tenant_registry_entries
+    ADD COLUMN IF NOT EXISTS sessions_valid_after TIMESTAMPTZ;

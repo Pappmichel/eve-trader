@@ -1,9 +1,9 @@
 """Admin tool routes - thin wrappers around admin.py's do_* functions. See
 that module's own docstring for why this is a deliberate cross-tenant
 superadmin surface - AccessGateMiddleware (api/app.py) is what actually
-restricts /api/admin/* to characters with the "admin" tool grant (only
-storage.DEFAULT_TENANT_ID's own users get that by default, see access_gate.
-tools_for); nothing in this router itself re-checks that."""
+restricts /api/admin/* to characters with the "admin" tool grant. Admin is
+a normal grant (CLI bootstrap or another admin); there is no DEFAULT_TENANT_ID
+bypass. Nothing in this router itself re-checks that."""
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException

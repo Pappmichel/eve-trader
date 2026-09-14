@@ -56,12 +56,13 @@ def main():
 def tenant():
     """Tenant provisioning. `create`/`add-entry`/`list` now also have a web
     equivalent (the Admin tool, eve_trader/admin.py + api/routers/admin.py -
-    reachable only to storage.DEFAULT_TENANT_ID's own users, see access_gate.
-    tools_for) - this CLI group stays useful for initial setup before a
-    server/session exists at all, and both paths call the exact same
+    reachable to characters with an explicit admin tool grant, see
+    access_gate.tools_for) - this CLI group stays useful for initial setup
+    before a server/session exists at all, and both paths call the exact same
     storage.py functions, so they can never drift apart. `import-tokens`/
     `migrate-sqlite` remain CLI-only - genuinely one-time, operator-run
-    commands with no UI equivalent."""
+    commands with no UI equivalent. First-admin recovery is
+    `eve-trader admin bootstrap`, not disabling the access gate."""
 
 
 @tenant.command("create")
@@ -215,6 +216,41 @@ def pipeline(safe: bool, rebuild_universe: bool):
     for step, result in results.items():
         click.echo(f"[{step}] {result}")
     click.echo("Pipeline complete. Review 'New Candidates' (add-to-shortlist) and the dashboard.")
+
+
+@main.group("admin")
+def admin_group():
+    """Operator-only admin recovery. There is no HTTP equivalent for
+    bootstrap — that is the point (F-07 / F-NEW-02)."""
+
+
+@admin_group.command("bootstrap")
+@click.option("--character-id", type=int, required=True, help="EVE character_id to grant admin.")
+@click.option("--character-name", default=None, help="Optional cached name for the Admin UI.")
+@click.option("--all-tools", is_flag=True, default=False,
+              help="Also grant every tool, not just admin. Default is admin only.")
+@click.option("--confirm", is_flag=True, default=False, help="Required. Prevents accidental grants.")
+def admin_bootstrap(character_id: int, character_name: str | None, all_tools: bool, confirm: bool):
+    """Grant the admin tool to a character over a local/SSH trust channel.
+
+    Run this BEFORE deploying a gate-enabled build onto a host that currently
+    relies on the DEFAULT_TENANT_ID bypass, or you will lock yourself out of
+    /api/admin. See docs/OPERATOR_SECURITY.md.
+    """
+    from . import admin as admin_mod
+    try:
+        result = admin_mod.do_bootstrap_admin(
+            character_id, character_name, confirm=confirm, all_tools=all_tools,
+        )
+    except actions.ActionError as e:
+        click.echo(str(e), err=True)
+        raise SystemExit(1) from e
+    click.echo(
+        f"Admin bootstrap ok: character {result['character_id']} "
+        f"tenant {result['tenant_id']} tools={result['tool_keys']} "
+        f"created_tenant={result['created_tenant']} "
+        f"already_had_admin={result['already_had_admin']}"
+    )
 
 
 if __name__ == "__main__":

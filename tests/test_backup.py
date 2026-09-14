@@ -61,10 +61,13 @@ def test_create_backup_produces_a_zip_with_dump_and_config(isolated_backup_dir):
 def test_create_backup_raises_and_cleans_up_on_pg_dump_failure(isolated_backup_dir, monkeypatch):
     backup_dir, config_path = isolated_backup_dir
     monkeypatch.setattr(backup.subprocess, "run",
-                         _fake_pg_dump_run(returncode=1, fake_stderr=b"connection refused"))
+                         _fake_pg_dump_run(returncode=1, fake_stderr=b"connection refused password=secret"))
 
-    with pytest.raises(RuntimeError, match="connection refused"):
+    with pytest.raises(backup.BackupError, match=r"^Database backup failed\.$") as ei:
         backup.create_backup()
+    assert "connection refused" not in str(ei.value)
+    assert "password" not in str(ei.value)
+    assert "secret" not in str(ei.value)
 
     # No partial/corrupt zip or orphaned .tmp_*.dump left behind.
     assert list(backup_dir.glob(f"{backup.BACKUP_NAME_PREFIX}*.zip")) == []
@@ -74,8 +77,8 @@ def test_create_backup_raises_and_cleans_up_on_pg_dump_failure(isolated_backup_d
 def test_create_backup_wraps_pg_dump_in_docker_exec_by_default(isolated_backup_dir, monkeypatch):
     calls = []
 
-    def _run(cmd, stdout=None, stderr=None, timeout=None):
-        calls.append(cmd)
+    def _run(cmd, stdout=None, stderr=None, timeout=None, shell=False):
+        calls.append({"cmd": cmd, "shell": shell})
         if stdout is not None:
             stdout.write(b"x")
         return _FakeCompletedProcess()
@@ -83,8 +86,10 @@ def test_create_backup_wraps_pg_dump_in_docker_exec_by_default(isolated_backup_d
 
     backup.create_backup()
 
-    assert calls[0][:2] == [backup.DOCKER_BIN, "exec"]
-    assert "pg_dump" in calls[0]
+    assert calls[0]["shell"] is False
+    assert isinstance(calls[0]["cmd"], list)
+    assert calls[0]["cmd"][:2] == [backup.DOCKER_BIN, "exec"]
+    assert "pg_dump" in calls[0]["cmd"]
 
 
 def test_create_backup_uses_bare_pg_dump_when_container_is_empty(isolated_backup_dir, monkeypatch):
@@ -94,8 +99,9 @@ def test_create_backup_uses_bare_pg_dump_when_container_is_empty(isolated_backup
     monkeypatch.setattr(backup, "PG_CONTAINER", "")
     calls = []
 
-    def _run(cmd, stdout=None, stderr=None, timeout=None):
+    def _run(cmd, stdout=None, stderr=None, timeout=None, shell=False):
         calls.append(cmd)
+        assert shell is False
         if stdout is not None:
             stdout.write(b"x")
         return _FakeCompletedProcess()
@@ -113,11 +119,9 @@ def test_list_backups_empty_when_none_exist(isolated_backup_dir):
 
 
 def _fake_clock(monkeypatch, start_hour=0):
-    # Backup filenames are second-resolution timestamps ("%Y-%m-%dT%H-%M-%SZ")
-    # - two real create_backup() calls within the same wall-clock second
-    # would collide on the same filename. A monotonically-advancing fake
-    # clock (1 hour/call) proves newest-first ordering and pruning without
-    # a real sleep() per call.
+    # Names also include microseconds + a uuid, so same-second calls no
+    # longer collide (F-NEW-03). A monotonically-advancing fake clock still
+    # makes newest-first ordering and pruning deterministic.
     import datetime as real_dt
     state = {"hour": start_hour}
 
@@ -150,3 +154,32 @@ def test_prune_keeps_only_max_backups(isolated_backup_dir, monkeypatch):
         backup.create_backup()
 
     assert len(backup.list_backups()) == 2
+
+
+def test_backup_names_are_unique_even_with_a_frozen_clock(isolated_backup_dir, monkeypatch):
+    import datetime as real_dt
+
+    class _FrozenDateTime(real_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return real_dt.datetime(2026, 1, 1, 12, 0, 0, tzinfo=real_dt.timezone.utc)
+
+    monkeypatch.setattr(backup, "datetime", _FrozenDateTime)
+    first = backup.create_backup()
+    second = backup.create_backup()
+    assert first["name"] != second["name"]
+    assert first["name"].startswith(backup.BACKUP_NAME_PREFIX)
+    assert second["name"].startswith(backup.BACKUP_NAME_PREFIX)
+
+
+def test_parallel_create_backup_does_not_collide_or_corrupt(isolated_backup_dir):
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _i: backup.create_backup(), range(8)))
+
+    names = [r["name"] for r in results]
+    assert len(names) == 8
+    assert len(set(names)) == 8
+    listed = {row["name"] for row in backup.list_backups()}
+    assert listed == set(names)

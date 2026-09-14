@@ -8,6 +8,10 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11']
     # Matches tests/pg_helpers.py's OWNER_DSN default exactly (postgres/
     # devpassword@localhost:5432/eve_trader) - the test suite's own
     # session-scoped autouse fixtures (_apply_phase1_schema etc.) apply
@@ -32,8 +36,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - run: python -m pip install -e .[test]
+          python-version: ${{ matrix.python-version }}
+      # Install the locked graph first so CI and production resolve the same
+      # versions (including itsdangerous==2.2.0). Then the editable package
+      # itself, without letting pip re-resolve pyproject ranges.
+      - run: python -m pip install -r requirements.lock
+      - run: python -m pip install -e . --no-deps
+      - run: python -m pip install pip-audit
+      - run: python -m pip_audit -r requirements.lock
       - run: python -m pytest
 
   frontend:

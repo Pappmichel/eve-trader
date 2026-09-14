@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import contextvars
 import copy
+import logging
 import os
 import typing
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Mapping
 
 import yaml
 from dotenv import load_dotenv
@@ -21,6 +22,12 @@ from dotenv import load_dotenv
 from . import storage
 
 load_dotenv()
+
+log = logging.getLogger(__name__)
+
+# Trusted-local/dev escape hatch for P5-05. Production deployments must not
+# set this. Checked at AccessConfig load time and by deploy/setup.sh.
+ACCESS_GATE_OFF_ENV = "EVE_TRADER_ALLOW_GATE_OFF"
 
 
 class ConfigProxy:
@@ -537,14 +544,14 @@ class AccessConfig:
     scope-less EVE SSO login (see access_gate.py), before any other API
     route is reachable.
 
-    Off by default (access_gate_enabled=False) - same "opt-in, never starts
-    happening without the user explicitly asking" reasoning as
-    TradingConfig.scheduler_enabled: this app has run for months as a
-    trusted-localhost tool with zero login wall, and turning that on by
-    default would break every existing local dev workflow (README's
-    documented `uvicorn` + `npm run dev` flow) the moment this field shipped.
-    Meant to be flipped on specifically when hosting this somewhere reachable
-    beyond localhost.
+    On by default (access_gate_enabled=True). A gated multi-tenant
+    deployment must not ship with the login wall off. Legacy config.yaml
+    files that still contain `access_gate_enabled: false` (the Phase-4-era
+    documented default) are forced on at load time unless the operator has
+    set EVE_TRADER_ALLOW_GATE_OFF=1 — that env var is the explicit
+    trusted-local/dev opt-out, never a request parameter. Admin recovery
+    with the gate on is `eve-trader admin bootstrap`, not disabling the
+    gate.
 
     Used to hold the character/corp/alliance allowlist directly
     (allowed_character_ids/allowed_corporation_ids/allowed_alliance_ids) -
@@ -556,7 +563,7 @@ class AccessConfig:
     An authenticated session being able to flip its own gate would defeat
     the point of it; that should require actual filesystem/SSH access to
     config.yaml."""
-    access_gate_enabled: bool = False
+    access_gate_enabled: bool = True
 
 
 _trading_config_yaml_cache: dict[Path, TradingConfig] = {}
@@ -588,19 +595,53 @@ def load_trading_config(path: Path = DEFAULT_CONFIG_PATH) -> TradingConfig:
     return copy.deepcopy(_trading_config_yaml_cache[path])
 
 
+def env_allows_gate_off(environ: Optional[Mapping[str, str]] = None) -> bool:
+    env = os.environ if environ is None else environ
+    return str(env.get(ACCESS_GATE_OFF_ENV, "")).strip().lower() in ("1", "true", "yes")
+
+
+def apply_access_gate_policy(
+    cfg: AccessConfig,
+    environ: Optional[Mapping[str, str]] = None,
+) -> AccessConfig:
+    """P5-05: a legacy production config with access_gate_enabled: false
+    cannot silently stay off after upgrade. Force the gate on unless
+    EVE_TRADER_ALLOW_GATE_OFF is an explicit true-ish value.
+
+    Does not invent an HTTP recovery path. Operators who need the gate off
+    for trusted local/dev set the env var (filesystem/SSH)."""
+    if cfg.access_gate_enabled:
+        return cfg
+    if env_allows_gate_off(environ):
+        return cfg
+    log.warning(
+        "access_gate_enabled is false in config, but %s is not set. "
+        "Enabling the access gate. Set %s=1 only for trusted local/dev; "
+        "do not use this as production recovery (use `eve-trader admin bootstrap`).",
+        ACCESS_GATE_OFF_ENV,
+        ACCESS_GATE_OFF_ENV,
+    )
+    cfg.access_gate_enabled = True
+    return cfg
+
+
 def load_access_config(path: Path = DEFAULT_CONFIG_PATH) -> AccessConfig:
     """Same config.yaml, loaded the same way as TradingConfig - a separate
     small dataclass rather than extra fields bolted onto TradingConfig
     because this is a cross-cutting, app-wide concern (protects Production's
     routes too, not just Trading's), same reasoning that already gave
-    OAuthConfig its own dataclass."""
+    OAuthConfig its own dataclass.
+
+    After applying yaml overrides, apply_access_gate_policy runs so a
+    leftover `access_gate_enabled: false` from a pre-Phase-4 install cannot
+    silently disable the gate (P5-05)."""
     cfg = AccessConfig()
     if path.exists():
         with open(path, "r", encoding="utf-8") as f:
             overrides = yaml.safe_load(f) or {}
         validate_config_overrides(cfg, overrides)
         apply_config_overrides(cfg, overrides)
-    return cfg
+    return apply_access_gate_policy(cfg)
 
 
 # TRADING_CONFIG is a ConfigProxy, not a plain TradingConfig instance - see

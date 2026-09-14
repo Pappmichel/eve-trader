@@ -33,8 +33,10 @@ if "%VENV_OK%"=="0" (
 )
 
 echo [Setup] Checking/installing Python dependencies...
-".venv\Scripts\python.exe" -m pip install -q -r requirements.txt
-".venv\Scripts\python.exe" -m pip install -q -e .
+REM Same lock strategy as CI and deploy: install the pinned graph, then the
+REM editable package without letting pip re-resolve pyproject.toml ranges.
+".venv\Scripts\python.exe" -m pip install -q -r requirements.lock
+".venv\Scripts\python.exe" -m pip install -q -e . --no-deps
 
 if not exist ".env" (
     echo [Setup] Copying .env.example to .env - please fill in EVE_SSO_CLIENT_ID!

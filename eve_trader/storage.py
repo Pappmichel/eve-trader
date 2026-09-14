@@ -35,6 +35,7 @@ import re
 import threading
 import uuid
 from contextlib import contextmanager
+from datetime import datetime
 from functools import lru_cache
 from typing import Iterable, Optional
 
@@ -314,7 +315,9 @@ def with_batch_session():
 @contextmanager
 def connect_unscoped():
     """A `connect()` sibling for the handful of genuinely tenant-independent
-    tables (`tenants`, `tenant_registry_entries` - see docs/phase3_schema.sql)
+    tables (`tenants`, `tenant_registry_entries`,
+    `character_session_revocations` - see docs/phase3_schema.sql /
+    docs/session_revocations_schema.sql)
     - checks out a pooled connection *without* requiring or setting an
     ambient tenant_id. Needed because resolving *which* tenant a visitor
     belongs to (storage.resolve_tenant_id, called from the OAuth callback's
@@ -351,6 +354,21 @@ def create_tenant(name: str) -> str:
     return str(row[0])
 
 
+def _upsert_character_session_revocation(conn, character_id: int) -> None:
+    """Stamp now() as a persistent lower bound for this character's cookies.
+    GREATEST keeps the later of an existing stamp and now() so a later
+    revoke cannot move the watermark backwards. Caller holds an unscoped
+    connection and commits."""
+    conn.execute(
+        "INSERT INTO character_session_revocations (character_id, sessions_valid_after) "
+        "VALUES (?, now()) "
+        "ON CONFLICT (character_id) DO UPDATE SET "
+        "sessions_valid_after = GREATEST("
+        "character_session_revocations.sessions_valid_after, excluded.sessions_valid_after)",
+        (character_id,),
+    )
+
+
 def add_tenant_registry_entry(tenant_id: str, character_id: int, character_name: Optional[str] = None) -> None:
     """Registers `character_id` as belonging to `tenant_id` - upsert, since
     re-registering an id to a different tenant is a legitimate
@@ -367,13 +385,20 @@ def add_tenant_registry_entry(tenant_id: str, character_id: int, character_name:
                 "INSERT INTO tenant_registry_entries (entry_type, entry_id, tenant_id, character_name) "
                 "VALUES ('character', ?, ?, ?) "
                 "ON CONFLICT(entry_type, entry_id) DO UPDATE SET "
-                "tenant_id = excluded.tenant_id, character_name = excluded.character_name",
+                "tenant_id = excluded.tenant_id, character_name = excluded.character_name, "
+                "sessions_valid_after = CASE "
+                "WHEN tenant_registry_entries.tenant_id IS DISTINCT FROM excluded.tenant_id "
+                "THEN now() ELSE tenant_registry_entries.sessions_valid_after END",
                 (character_id, tenant_id, character_name),
             )
         else:
             conn.execute(
                 "INSERT INTO tenant_registry_entries (entry_type, entry_id, tenant_id) VALUES ('character', ?, ?) "
-                "ON CONFLICT(entry_type, entry_id) DO UPDATE SET tenant_id = excluded.tenant_id",
+                "ON CONFLICT(entry_type, entry_id) DO UPDATE SET "
+                "tenant_id = excluded.tenant_id, "
+                "sessions_valid_after = CASE "
+                "WHEN tenant_registry_entries.tenant_id IS DISTINCT FROM excluded.tenant_id "
+                "THEN now() ELSE tenant_registry_entries.sessions_valid_after END",
                 (character_id, tenant_id),
             )
 
@@ -383,8 +408,13 @@ def remove_tenant_registry_entry(character_id: int) -> None:
     admin.do_remove_user, which also clears this character's tool_grants in
     the same call, since a grant for a character who can no longer log in at
     all is dead weight, not a meaningful "revoked but still registered"
-    state)."""
+    state).
+
+    Stamps character_session_revocations in the same transaction as the
+    DELETE so a later re-add cannot resurrect cookies issued before this
+    removal (P5-03)."""
     with connect_unscoped() as conn:
+        _upsert_character_session_revocation(conn, character_id)
         conn.execute(
             "DELETE FROM tenant_registry_entries WHERE entry_type = 'character' AND entry_id = ?",
             (character_id,),
@@ -491,16 +521,70 @@ def revoke_all_tool_grants(character_id: int) -> None:
 
 
 def list_tool_grants_for_character(character_id: int) -> list[str]:
-    """Returns every tool_key currently granted to `character_id` - the
-    plain per-character grant list only, does NOT apply the
-    DEFAULT_TENANT_ID "all tools" bypass (see gate.py's own status handler,
-    which checks that separately before falling back to this)."""
+    """Returns every tool_key currently granted to `character_id` across
+    every tenant. Prefer session_authorization() on the request path — that
+    one DB-read also checks the character still belongs to the session
+    tenant and only returns grants for that tenant."""
     with connect_unscoped() as conn:
         rows = conn.execute(
             "SELECT tool_key FROM tool_grants WHERE character_id = ? ORDER BY tool_key",
             (character_id,),
         ).fetchall()
     return [r[0] for r in rows]
+
+
+def session_authorization(character_id: int, tenant_id: str) -> Optional[tuple[list[str], Optional[datetime]]]:
+    """F-01 + F-03: one DB read. Returns (tool_keys, sessions_valid_after)
+    when `character_id` is registered as a character of `tenant_id`.
+    tool_keys is [] when the character is registered but has no grants for
+    that tenant. Returns None when there is no matching registry row
+    (character missing, or registered to a different tenant) — callers must
+    not treat that as "no grants".
+
+    JOIN conditions are load-bearing: e.tenant_id is the session tenant,
+    g.tenant_id = e.tenant_id so a grant issued under another tenant cannot
+    follow the character here. sessions_valid_after is the later of the
+    registry column and character_session_revocations (P5-03) — Postgres
+    GREATEST is NULL-hostile, so the CASE is required."""
+    with connect_unscoped() as conn:
+        rows = conn.execute(
+            "SELECT g.tool_key, "
+            "CASE "
+            "  WHEN e.sessions_valid_after IS NULL THEN r.sessions_valid_after "
+            "  WHEN r.sessions_valid_after IS NULL THEN e.sessions_valid_after "
+            "  ELSE GREATEST(e.sessions_valid_after, r.sessions_valid_after) "
+            "END "
+            "FROM tenant_registry_entries e "
+            "LEFT JOIN tool_grants g "
+            "  ON g.character_id = e.entry_id "
+            " AND g.tenant_id = e.tenant_id "
+            "LEFT JOIN character_session_revocations r "
+            "  ON r.character_id = e.entry_id "
+            "WHERE e.entry_type = 'character' "
+            "  AND e.entry_id = ? "
+            "  AND e.tenant_id = ?",
+            (character_id, tenant_id),
+        ).fetchall()
+    if not rows:
+        return None
+    sessions_valid_after = rows[0][1]
+    tool_keys = sorted({key for key, _sva in rows if key is not None})
+    return tool_keys, sessions_valid_after
+
+
+def revoke_sessions_for_character(character_id: int) -> None:
+    """Invalidates every still-unexpired session cookie for this character
+    by advancing sessions_valid_after on the registry row *and* on the
+    persistent character_session_revocations watermark (P5-03). The
+    persistent stamp is written even if they are not currently registered,
+    so a later add cannot resurrect a cookie issued before this call."""
+    with connect_unscoped() as conn:
+        _upsert_character_session_revocation(conn, character_id)
+        conn.execute(
+            "UPDATE tenant_registry_entries SET sessions_valid_after = now() "
+            "WHERE entry_type = 'character' AND entry_id = ?",
+            (character_id,),
+        )
 
 
 def list_users_with_grants() -> list[dict]:

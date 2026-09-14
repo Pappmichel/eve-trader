@@ -26,9 +26,10 @@ ALTER TABLE tenant_registry_entries ADD CONSTRAINT tenant_registry_entries_entry
 -- tool_grants: bewusst NICHT RLS-gescoped, same reasoning as tenants/
 -- tenant_registry_entries in phase3_schema.sql - these ARE the thing that
 -- answers "which tools can this character see", and the Admin tool is a
--- deliberate cross-tenant superadmin surface (only DEFAULT_TENANT_ID's own
--- users ever reach it - see admin.py's own module docstring), so it has to
--- read/write across tenant boundaries, which per-tenant RLS would block.
+-- deliberate cross-tenant superadmin surface (reached only with an explicit
+-- `admin` tool grant, via another admin or `eve-trader admin bootstrap` —
+-- there is no DEFAULT_TENANT_ID bypass), so it has to read/write across
+-- tenant boundaries, which per-tenant RLS would block.
 CREATE TABLE IF NOT EXISTS tool_grants (
     character_id BIGINT NOT NULL,
     tool_key TEXT NOT NULL,
@@ -38,6 +39,13 @@ CREATE TABLE IF NOT EXISTS tool_grants (
 );
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON tool_grants TO eve_trader_app;
+
+-- F-01/F-03: server-side session revocation. NULL means "never revoked" so
+-- existing cookies keep working after this column is added (no global
+-- logout). access_gate compares the itsdangerous cookie timestamp against
+-- this value; logout and tenant reassignment set it to now().
+ALTER TABLE tenant_registry_entries
+    ADD COLUMN IF NOT EXISTS sessions_valid_after TIMESTAMPTZ;
 
 -- ================================================== one tenant per character
 -- Every logged-in character gets its own dedicated tenant now - no sharing,

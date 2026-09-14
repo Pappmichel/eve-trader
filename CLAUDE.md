@@ -153,10 +153,15 @@ function or table after that migration (all 5 of its phases are done).
   used whenever there's no real per-request tenant to resolve: the CLI
   (`cli.py`'s `main()` sets it once per process - a trusted single
   operator, no login wall there at all) and every web request when
-  `AccessConfig.access_gate_enabled` is `False` (this app's default - it
-  ran for months as a single-operator tool with no login wall before the
-  multi-tenant migration). A real per-tenant login (gate enabled) resolves
-  and uses a different, real `tenant_id` from the registry instead.
+  `AccessConfig.access_gate_enabled` is `False` (only when
+  `EVE_TRADER_ALLOW_GATE_OFF` is set; a leftover `access_gate_enabled:
+  false` in `config.yaml` is forced on at load — see P5-05 /
+  `apply_access_gate_policy`. The gate itself is **on by default**). A real per-tenant login
+  (gate enabled) resolves and uses a different, real `tenant_id` from the
+  registry instead. `DEFAULT_TENANT_ID` does **not** imply any tool grant
+  (including `"admin"`). First-admin recovery is `eve-trader admin
+  bootstrap` (`admin.do_bootstrap_admin`), never an HTTP backdoor and never
+  flipping the gate off.
 - **One tenant per character, enforced at the DB level.**
   `tenant_registry_entries.tenant_id` has a `UNIQUE` constraint
   (`docs/admin_schema.sql`) - no two characters can ever share a tenant, by
@@ -255,30 +260,31 @@ function or table after that migration (all 5 of its phases are done).
 
 Two independent authorization layers, don't conflate them: **tenant_id**
 (RLS, "whose data") and **tool grants** (`tool_grants` table, "which tools
-can this specific character see/use"). A valid access-gate session only
-proves *who* - `AccessGateMiddleware` (`api/app.py`) is what actually
-enforces the second layer, via `access_gate.tools_for(tenant_id,
-character_id)` checked against a path-prefix-to-`tool_key` map
-(`_TOOL_PATH_PREFIXES`) before `call_next`. `/api/gate/status`'s own
-`tools` field (via the same `tools_for`, one chokepoint so the two can never
-disagree) is *informational only* - it's what `Landing.tsx` uses to decide
-which cards to render, but hiding a card there does not, by itself, block a
-direct API call; the middleware is the actual enforcement point. Both are
-no-ops while `AccessConfig.access_gate_enabled` is `False` (this app's
-default) - every tool is visible/usable, matching the pre-tool-grants
-behavior for local/trusted-single-operator installs.
+can this specific character see/use"). A valid access-gate session cookie
+is not enough by itself: `AccessGateMiddleware` (`api/app.py`) re-validates
+it on every gated request via `access_gate.authorize_session_cookie` (one
+DB read: `storage.session_authorization` joins `tenant_registry_entries` to
+`tool_grants` with `e.tenant_id = ?` and `g.tenant_id = e.tenant_id`, and
+to `character_session_revocations` so a registry DELETE cannot resurrect
+an old cookie). The
+character must still belong to the cookie's tenant, the itsdangerous issue
+timestamp must not precede `sessions_valid_after`, and the required
+`tool_key` must be in that tenant-scoped grant list. Missing registry row
+→ 401; registered but missing grant → 403. `/api/gate/status`'s own
+`tools` field uses the same `authorize_session_cookie` chokepoint so the
+Landing cards and the middleware cannot disagree. Both layers are no-ops
+while `AccessConfig.access_gate_enabled` is `False` (trusted local
+operator, filesystem/SSH only — not a request parameter).
 
 `tool_grants` (`character_id, tool_key, tenant_id`) is deliberately **not
 RLS-scoped**, same reasoning as `tenants`/`tenant_registry_entries`
 (`docs/phase3_schema.sql`) - queried via `storage.connect_unscoped()`. The
 Admin tool (`eve_trader/admin.py`'s `do_*` functions, `api/routers/
 admin.py`, tool_key `"admin"`) is a deliberate **cross-tenant superadmin**
-surface, not a per-tenant self-service page: `storage.DEFAULT_TENANT_ID`'s
-own users get every tool (including `"admin"`) automatically, with no
-`tool_grants` row needed (`access_gate.tools_for`'s own bypass) - the same
-"the operator is special, not just another tenant" pattern already used for
-the scheduler/backup job. No other tenant can reach `/admin` at all unless
-explicitly granted that tool_key by a Default-tenant admin.
+surface, not a per-tenant self-service page. `"admin"` is a normal grant
+(no `DEFAULT_TENANT_ID` bypass). First admin on a gated install is created
+with `eve-trader admin bootstrap` (see `docs/OPERATOR_SECURITY.md`). No
+other character can reach `/api/admin` unless they have that tool_key.
 
 `AccessGate` is character-only (`tenant_registry_entries.entry_type`
 CHECK-constrained to `'character'`, `docs/admin_schema.sql`) - corp/alliance
@@ -399,10 +405,12 @@ since RLS raises on a missing tenant setting rather than silently returning
 zero rows (see "Multi-tenant Postgres" below) - a non-bypassing role
 couldn't dump per-tenant tables at all. `EVE_TRADER_PG_CONTAINER`/
 `EVE_TRADER_DOCKER_BIN` env vars override the container name/`docker`
-binary path (default `"eve-trader-pg"`/`"docker"`). Reachable two ways: the
-"Backup Now" button on the Portfolio page (always available), and the
-scheduler's own global backup job (see above, opt-in via
-`DEFAULT_TENANT_ID`'s `backup_interval_hours`).
+binary path (default `"eve-trader-pg"`/`"docker"`). Listing backups is a
+portfolio read; **creating** a backup (which prunes `MAX_BACKUPS`) requires
+the `admin` grant while the gate is on, plus the scheduler's own global
+backup job (opt-in via `DEFAULT_TENANT_ID`'s `backup_interval_hours`).
+Filenames include microseconds and a uuid so two backups cannot collide;
+`pg_dump` stderr stays in the process log, not in the HTTP 400.
 
 ## "Theoretical ceiling" figures - not bugs
 

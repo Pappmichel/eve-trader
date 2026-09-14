@@ -231,9 +231,13 @@ class ESIClient:
     _region_order_stats_cache: dict[tuple[int, int], list[dict]] = {}
     _region_order_stats_cache_at: dict[tuple[int, int], float] = {}
     _region_order_stats_locks: dict[tuple[int, int], threading.Lock] = {}
-    _structure_book_cache: dict[int, list[dict]] = {}
-    _structure_book_cache_at: dict[int, float] = {}
-    _structure_book_locks: dict[int, threading.Lock] = {}
+    # Keyed by (structure_id, auth_role) — auth_role is the ESI principal
+    # (typically "seller:<char_id>"), not tenant_id. Two characters in the
+    # same tenant can have different docking/ESI rights; caching by tenant
+    # would reuse one principal's book (or 403) for the other (F-02).
+    _structure_book_cache: dict[tuple[int, str], list[dict]] = {}
+    _structure_book_cache_at: dict[tuple[int, str], float] = {}
+    _structure_book_locks: dict[tuple[int, str], threading.Lock] = {}
     _order_book_locks_guard = threading.Lock()  # protects creation of a new per-key lock only, never held during a fetch
 
     def __init__(self, cfg: TradingConfig = TRADING_CONFIG, tokens: Optional[TokenManager] = None):
@@ -621,20 +625,20 @@ class ESIClient:
         would otherwise each re-download it separately.
 
         Cached class-wide for _ORDER_BOOK_CACHE_TTL seconds, keyed by
-        structure_id (GitHub issue #103) - the book itself is the same real
-        data regardless of which authorized character's token fetched it, so
-        this also covers structure_order_stats_bulk and check_undercut
-        calling back-to-back (or two tenants sharing the same structure_id)
-        without each paying a full re-download."""
-        with self._lock_for_key(self._structure_book_locks, structure_id):
-            cached_at = self._structure_book_cache_at.get(structure_id, 0.0)
-            if structure_id in self._structure_book_cache and (time.time() - cached_at) < self._ORDER_BOOK_CACHE_TTL:
-                return list(self._structure_book_cache[structure_id])
+        (structure_id, auth_role). The book is the same market, but the
+        ESI response depends on which character's token fetched it
+        (docking/ACL). auth_role is that principal; tenant_id is not.
+        """
+        cache_key = (structure_id, auth_role)
+        with self._lock_for_key(self._structure_book_locks, cache_key):
+            cached_at = self._structure_book_cache_at.get(cache_key, 0.0)
+            if cache_key in self._structure_book_cache and (time.time() - cached_at) < self._ORDER_BOOK_CACHE_TTL:
+                return list(self._structure_book_cache[cache_key])
 
             orders = self._get_all_pages(f"/markets/structures/{structure_id}/",
                                           params={"datasource": "tranquility"}, auth_role=auth_role)
-            self._structure_book_cache[structure_id] = orders
-            self._structure_book_cache_at[structure_id] = time.time()
+            self._structure_book_cache[cache_key] = orders
+            self._structure_book_cache_at[cache_key] = time.time()
             return list(orders)
 
     def structure_order_stats_bulk(self, structure_id: int, type_ids: list[int],

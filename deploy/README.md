@@ -199,6 +199,7 @@ sudo -u postgres psql -d eve_trader -f docs/special_orders_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/sorting_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/production_buy_list_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/pipeline_runs_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/session_revocations_schema.sql
 ```
 `phase1_schema.sql` creates the `eve_trader_app` role with the **checked-in
 dev password** (`app_devpassword`) - fine for local dev, not for a real
@@ -267,16 +268,19 @@ access_gate_enabled: true
 ```
 Who's actually *allowed* through the gate is no longer a `config.yaml`
 allowlist (that was retired in the multi-tenant migration's Phase 3a) - it's
-now the Postgres tenant registry, provisioned via the admin CLI. **This
-step is the one that keeps you able to log in at all once the gate is on**
-- do it before restarting with `access_gate_enabled: true`:
+now the Postgres tenant registry plus `tool_grants`. **Bootstrap yourself
+before restarting onto this gate-enabled build**, or `/api/admin` will 403
+with no HTTP recovery path. There is no `DEFAULT_TENANT_ID` admin bypass:
 ```bash
 cd ~/eve-trader
-.venv/bin/eve-trader tenant create "My Deployment"   # prints a tenant_id - copy it
-.venv/bin/eve-trader tenant add-entry <tenant_id> --character <your_character_id>
+.venv/bin/eve-trader admin bootstrap \
+  --character-id <your_character_id> \
+  --character-name "Your Name" \
+  --all-tools \
+  --confirm
 ```
-(`eve-trader tenant list` shows every provisioned tenant and their
-registered characters, if you need to check later.)
+See `docs/OPERATOR_SECURITY.md`. (`eve-trader tenant list` still shows
+every provisioned tenant and their registered characters.)
 
 **At https://developers.eveonline.com/applications:** register a **new**
 EVE SSO application for this deployment (don't reuse the local-dev one - an
@@ -378,7 +382,9 @@ sudo -u postgres psql -d eve_trader -f docs/special_orders_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/sorting_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/production_buy_list_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/pipeline_runs_schema.sql
-.venv/bin/pip install -e .
+sudo -u postgres psql -d eve_trader -f docs/session_revocations_schema.sql
+.venv/bin/pip install -r requirements.lock
+.venv/bin/pip install -e . --no-deps
 cd frontend && npm ci && npm run build && cd ..
 sudo systemctl restart eve-trader
 ```

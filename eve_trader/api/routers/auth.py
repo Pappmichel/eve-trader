@@ -15,18 +15,20 @@ TokenManager persistence, since a gate login is never stored there.
 """
 from __future__ import annotations
 
+import logging
 import secrets
+import threading
 import time
 import urllib.parse
 from typing import Optional
 
 import requests
-from fastapi import APIRouter, Cookie, HTTPException, Response
+from fastapi import APIRouter, Cookie, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 
 from ... import storage
 from ...access_gate import set_session_cookie
-from ...auth import TokenManager, _make_pkce_pair
+from ...auth import ROLE_PREFIX_TOOL, TokenManager, _make_pkce_pair
 from ...config import OAUTH_CONFIG
 from ...doctrine import esi_sync as doctrine_esi_sync
 from ...production import esi_sync
@@ -34,11 +36,19 @@ from ...station_trading import esi_sync as station_trading_esi_sync
 
 router = APIRouter()
 
-# state -> {verifier, role_prefix, scopes, multi}, pruned after use/on expiry.
-# Single local user/process - an in-memory dict is sufficient (same lifetime
-# assumption as the old approach's temporary HTTP server).
+log = logging.getLogger(__name__)
+
+# state -> {verifier, role_prefix, scopes, created_at, tenant_id, browser_nonce, client_ip}
+# In-memory is enough for a single process. Mutations go through _pending_lock
+# so concurrent /start + prune cannot raise "dictionary changed size during
+# iteration" or grow without bound (F-04 / F-NEW-01 / P5-04). Fair eviction
+# is per-process: multiple uvicorn workers each have their own 256-slot
+# store. A shared Redis backend is out of scope for this design.
 _pending: dict[str, dict] = {}
+_pending_lock = threading.Lock()
 _PENDING_TTL = 600
+_PENDING_MAX = 256
+_PENDING_MAX_PER_IP = 8
 
 # Login-CSRF / session-fixation fix (found in a security audit 2026-08-23,
 # confirmed real gap): `state` above is only ever used as a server-side dict
@@ -59,11 +69,70 @@ _PENDING_TTL = 600
 _OAUTH_NONCE_COOKIE = "eve_trader_oauth_nonce"
 
 
-def _prune_pending() -> None:
-    now = time.time()
-    expired = [s for s, v in _pending.items() if now - v["created_at"] > _PENDING_TTL]
+def _prune_pending_locked(now: float) -> None:
+    """Caller holds _pending_lock. Iterate a snapshot of keys so a concurrent
+    reader cannot see a half-mutated dict, and prune is O(n) on the current
+    size (capped by _PENDING_MAX), not an unbounded historical list."""
+    expired = [s for s, v in list(_pending.items()) if now - v["created_at"] > _PENDING_TTL]
     for s in expired:
         _pending.pop(s, None)
+
+
+def _evict_from_heaviest_ip_locked() -> Optional[str]:
+    """Caller holds _pending_lock. Drop the oldest entry belonging to the IP
+    that currently occupies the most slots (tie-break: oldest created_at
+    among those IPs). Used only to admit a *new* source when global capacity
+    is full — an IP that already holds slots cannot trigger eviction of
+    others to grow its own share (P5-04). Returns the evicted state key."""
+    if not _pending:
+        return None
+    counts: dict[str, int] = {}
+    for v in _pending.values():
+        ip = v.get("client_ip") or "unknown"
+        counts[ip] = counts.get(ip, 0) + 1
+    max_count = max(counts.values())
+    heaviest = {ip for ip, n in counts.items() if n == max_count}
+    oldest_state = None
+    oldest_at = None
+    for s, v in _pending.items():
+        ip = v.get("client_ip") or "unknown"
+        if ip not in heaviest:
+            continue
+        created = v["created_at"]
+        if oldest_at is None or created < oldest_at:
+            oldest_at = created
+            oldest_state = s
+    if oldest_state is not None:
+        _pending.pop(oldest_state, None)
+    return oldest_state
+
+
+def _admit_pending_entry_locked(state: str, entry: dict) -> None:
+    """Caller holds _pending_lock. Prune, enforce per-IP and global bounds
+    with fair eviction for a new source, then insert. Raises HTTPException
+    429 when this source is at its per-IP cap or when this source already
+    occupies slots and the global cap is full."""
+    _prune_pending_locked(time.time())
+    client_ip = entry.get("client_ip") or "unknown"
+    ip_count = sum(1 for v in _pending.values() if (v.get("client_ip") or "unknown") == client_ip)
+    if ip_count >= _PENDING_MAX_PER_IP:
+        raise HTTPException(429, "Too many pending logins from this address.")
+    if len(_pending) >= _PENDING_MAX:
+        if ip_count > 0:
+            raise HTTPException(429, "Too many pending logins. Try again shortly.")
+        _evict_from_heaviest_ip_locked()
+    _pending[state] = entry
+
+
+def _prune_pending() -> None:
+    with _pending_lock:
+        _prune_pending_locked(time.time())
+
+
+def _client_ip(request: Request) -> str:
+    if request.client is None:
+        return "unknown"
+    return request.client.host or "unknown"
 
 
 def _scopes_for(role_prefix: str) -> list[str]:
@@ -80,25 +149,10 @@ def _scopes_for(role_prefix: str) -> list[str]:
     return list(OAUTH_CONFIG.scopes)
 
 
-# GitHub issue #57 (found in a full-codebase audit 2026-08-21): the tool_key
-# a /api/auth/{role_prefix}/start login requires - both the allowlist of
-# valid role_prefix values (start_login below rejects anything else, rather
-# than letting an arbitrary string become a permanent TokenManager role key)
-# and what api/app.py's AccessGateMiddleware checks a session's tool grants
-# against for this path, since /api/auth/ isn't covered by
-# _TOOL_PATH_PREFIXES's plain prefix match. "gate" maps to None - it's
-# identity-only and already fully exempt from the gate check via
-# api/app.py's _GATE_EXEMPT_PATHS, never reaching this mapping at all in
-# practice, but listed here so it's still a recognized/allowed role_prefix.
-ROLE_PREFIX_TOOL: dict[str, Optional[str]] = {
-    "buyer": "trading",
-    "seller": "trading",
-    "producer": "production",
-    "doctrine": "doctrine",
-    "doctrine-assets": "doctrine",
-    "trader": "station_trading",
-    "gate": None,
-}
+# GitHub issue #57 / P5-02: ROLE_PREFIX_TOOL lives in eve_trader.auth as the
+# single source of truth (tool grants for /start + /consent, and role_key
+# namespace ownership for TokenManager mutations). Re-exported here so
+# api/app.py's `from .routers import auth` path stays valid.
 
 
 @router.get("/{role_prefix}/consent")
@@ -132,7 +186,7 @@ def acknowledge_consent(role_prefix: str):
 
 
 @router.get("/{role_prefix}/start")
-def start_login(role_prefix: str, response: Response):
+def start_login(role_prefix: str, request: Request, response: Response):
     """role_prefix: "buyer" | "seller" | "producer" | ... - every one of
     these is multi-character (GitHub issue #46: buyer/seller used to be a
     single fixed role each, now they follow the same "producer" scheme) -
@@ -141,12 +195,12 @@ def start_login(role_prefix: str, response: Response):
         raise HTTPException(400, f"Unknown role_prefix '{role_prefix}'.")
     if not OAUTH_CONFIG.client_id:
         raise HTTPException(500, "EVE_SSO_CLIENT_ID is not set (.env).")
-    _prune_pending()
     verifier, challenge = _make_pkce_pair()
     state = urllib.parse.quote(f"{role_prefix}-{time.time_ns()}")
     scopes = _scopes_for(role_prefix)
     browser_nonce = secrets.token_urlsafe(32)
-    _pending[state] = {
+    client_ip = _client_ip(request)
+    entry = {
         "verifier": verifier, "role_prefix": role_prefix, "scopes": scopes, "created_at": time.time(),
         # Stashed for /callback (an AccessGateMiddleware-exempt path with no
         # automatic ambient tenant of its own) to pick back up - guaranteed
@@ -157,7 +211,10 @@ def start_login(role_prefix: str, response: Response):
         # of /callback resolves its own tenant fresh via the registry).
         "tenant_id": storage.get_current_tenant(),
         "browser_nonce": browser_nonce,
+        "client_ip": client_ip,
     }
+    with _pending_lock:
+        _admit_pending_entry_locked(state, entry)
     # See _OAUTH_NONCE_COOKIE's own comment above for why this exists - same
     # secure-flag reasoning as access_gate.set_session_cookie (a bare-IP,
     # no-domain-yet deployment is still plain HTTP, so Secure=True there
@@ -189,7 +246,9 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
         resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
         return resp
 
-    pending = _pending.pop(state, None)
+    pending = None
+    with _pending_lock:
+        pending = _pending.pop(state, None)
     if pending is None:
         resp = RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?auth=error&message=state_expired_or_unknown")
         resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")

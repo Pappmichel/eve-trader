@@ -17,7 +17,34 @@ runs that need it - see tests/pg_helpers.py for the fixture itself.
 """
 from __future__ import annotations
 
+import pytest
+
+from eve_trader.config import ACCESS_CONFIG, OAUTH_CONFIG
+
 from .pg_helpers import tenant_pair  # noqa: F401
+
+
+@pytest.fixture(autouse=True)
+def _access_gate_test_mode(request, monkeypatch):
+    """P5-06: gate posture is explicit per test, not a hidden global bypass.
+
+    Default (no marker, or `@pytest.mark.gate_off`): gate disabled, matching
+    the historical trusted-operator path most business-logic router tests
+    assume.
+
+    `@pytest.mark.gate_enforced`: production posture. Security/integration
+    modules that must fail if middleware stops enforcing the gate use this
+    marker so they cannot accidentally run with the default off switch.
+    """
+    if request.node.get_closest_marker("gate_off"):
+        monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", False)
+        return
+    if request.node.get_closest_marker("gate_enforced"):
+        monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", True)
+        if not OAUTH_CONFIG.session_secret_key:
+            monkeypatch.setattr(OAUTH_CONFIG, "session_secret_key", "test-secret-key")
+        return
+    monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", False)
 
 # Note on storage.py's @lru_cache'd SDE-lookup functions (get_sde_type,
 # get_system_security, ...): before the multi-tenant cutover, `db_path` was

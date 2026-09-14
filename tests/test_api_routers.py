@@ -1112,12 +1112,12 @@ def test_create_backup_action_error_maps_to_400(monkeypatch):
     from eve_trader import actions
 
     def boom():
-        raise ActionError("Backup failed: disk full")
+        raise ActionError("Backup failed.")
     monkeypatch.setattr(actions, "do_create_backup", boom)
 
     resp = client.post("/api/portfolio/backups")
     assert resp.status_code == 400
-    assert "disk full" in resp.json()["detail"]
+    assert resp.json()["detail"] == "Backup failed."
 
 
 # ------------------------------------------------------------------------ auth

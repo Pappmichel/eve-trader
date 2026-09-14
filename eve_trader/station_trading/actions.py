@@ -10,7 +10,7 @@ import requests
 
 from .. import storage
 from ..actions import ActionError
-from ..auth import TokenManager
+from ..auth import InvalidRoleKey, TokenManager, validate_role_key_for_tool
 from ..config import OAUTH_CONFIG, ConfigError, OAuthConfig, save_tenant_config_overrides
 from ..esi_client import ESIClient, ESIError
 from . import esi_sync
@@ -91,6 +91,10 @@ def do_list_trader_characters() -> list[tuple[str, int, str]]:
 
 
 def do_remove_trader_character(role_key: str) -> dict:
+    try:
+        role_key = validate_role_key_for_tool(role_key, "station_trading")
+    except InvalidRoleKey as e:
+        raise ActionError(str(e)) from e
     TokenManager(OAUTH_CONFIG).remove_token(role_key)
     return {"removed": role_key}
 
