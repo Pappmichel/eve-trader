@@ -52,9 +52,9 @@ export default function OreShortlist() {
 
   const columns = useMemo<ColumnDef<OreShortlistRow, any>[]>(() => [
     { header: 'Item', accessorKey: 'item', size: 200 },
-    { header: 'Family', accessorKey: 'family', size: 120, meta: { mobileHide: true } },
+    { header: 'Family', accessorKey: 'family', size: 120 },
     {
-      header: 'Type', accessorKey: 'is_ice', size: 80, meta: { mobileHide: true },
+      header: 'Type', accessorKey: 'is_ice', size: 80,
       cell: (i) => (i.getValue() ? 'Ice' : 'Ore'),
     },
     {
@@ -64,11 +64,11 @@ export default function OreShortlist() {
     { header: 'Yield %', accessorKey: 'yield_pct', size: 90, cell: (i) => pct(i.getValue()) },
     { header: 'Margin', accessorKey: 'margin', size: 90, cell: (i) => pct(i.getValue()) },
     { header: 'Profit / Unit', accessorKey: 'profit_per_unit', size: 120, cell: (i) => isk(i.getValue()) },
-    { header: 'Profit / m³', accessorKey: 'profit_per_m3', size: 110, cell: (i) => qty(i.getValue()), meta: { mobileHide: true } },
-    { header: 'Cost (Jita)', accessorKey: 'landed_cost', size: 120, cell: (i) => isk(i.getValue()), meta: { mobileHide: true } },
-    { header: 'Mineral Value (C-J)', accessorKey: 'net_sell', size: 150, cell: (i) => isk(i.getValue()), meta: { mobileHide: true } },
-    { header: 'Refining Tax', accessorKey: 'refining_tax', size: 110, cell: (i) => isk(i.getValue()), meta: { mobileHide: true } },
-    { header: 'Jita Listed Qty', accessorKey: 'sell_listed_qty', size: 130, cell: (i) => qty(i.getValue()), meta: { mobileHide: true } },
+    { header: 'Profit / m³', accessorKey: 'profit_per_m3', size: 110, cell: (i) => qty(i.getValue()) },
+    { header: 'Cost (Jita)', accessorKey: 'landed_cost', size: 120, cell: (i) => isk(i.getValue()) },
+    { header: 'Mineral Value (C-J)', accessorKey: 'net_sell', size: 150, cell: (i) => isk(i.getValue()) },
+    { header: 'Refining Tax', accessorKey: 'refining_tax', size: 110, cell: (i) => isk(i.getValue()) },
+    { header: 'Jita Listed Qty', accessorKey: 'sell_listed_qty', size: 130, cell: (i) => qty(i.getValue()) },
     {
       header: '', id: 'actions', size: 50, enableSorting: false,
       cell: (i) => {

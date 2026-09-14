@@ -58,7 +58,7 @@ export default function Transactions() {
     { header: 'Quantity', accessorKey: 'quantity', size: 110, cell: (i) => qty(i.getValue()) },
     { header: 'Unit Price', accessorKey: 'unit_price', size: 130, cell: (i) => isk(i.getValue()) },
     { header: 'Total', accessorKey: 'total', size: 140, cell: (i) => isk(i.getValue()) },
-    { header: 'Location', accessorKey: 'location_name', size: 220, meta: { mobileHide: true },
+    { header: 'Location', accessorKey: 'location_name', size: 220,
       cell: (i) => i.getValue() ?? '–' },
   ], [])
 

@@ -26,16 +26,16 @@ export default function ReprocessingQuote() {
   const columns = useMemo<ColumnDef<ReprocessingQuoteRow, any>[]>(() => [
     { header: 'Item', accessorKey: 'name', size: 220 },
     { header: 'Qty', accessorKey: 'quantity', size: 90, cell: (i) => qty(i.getValue()) },
-    { header: 'Category', accessorKey: 'category', size: 120, meta: { mobileHide: true } },
+    { header: 'Category', accessorKey: 'category', size: 120 },
     {
       header: 'Recommendation', accessorKey: 'decision', size: 150,
       cell: (i) => <Badge color={DECISION_COLOR[i.getValue() as string] ?? 'gray'} variant="light">{i.getValue()}</Badge>,
     },
     { header: 'Sell As-Is (C-J)', accessorKey: 'sell_as_is_value', size: 140, cell: (i) => isk(i.getValue()) },
     { header: 'Refined Value (C-J)', accessorKey: 'refined_value', size: 150, cell: (i) => isk(i.getValue()) },
-    { header: 'Refining Tax', accessorKey: 'refining_tax', size: 110, cell: (i) => isk(i.getValue()), meta: { mobileHide: true } },
+    { header: 'Refining Tax', accessorKey: 'refining_tax', size: 110, cell: (i) => isk(i.getValue()) },
     {
-      header: 'Note', accessorKey: 'error', size: 200, meta: { mobileHide: true },
+      header: 'Note', accessorKey: 'error', size: 200,
       cell: (i) => (i.getValue() ? <Text size="xs" c="dimmed">{i.getValue() as string}</Text> : null),
     },
   ], [])
