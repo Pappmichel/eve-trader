@@ -85,7 +85,6 @@ export default function SortingOverview() {
           </Group>
         )
       },
-      meta: { mobileHide: true },
     },
     {
       header: 'Wanted by', id: 'wanted_by_tool', size: 320,

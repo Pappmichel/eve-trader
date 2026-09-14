@@ -52,7 +52,7 @@ export default function Shortlist() {
 
   const columns = useMemo<ColumnDef<StationTradingShortlistRow, any>[]>(() => [
     { header: 'Item', accessorKey: 'name', size: 220 },
-    { header: 'Category', accessorKey: 'category', size: 130, meta: { mobileHide: true } },
+    { header: 'Category', accessorKey: 'category', size: 130 },
     { header: 'Spread', accessorKey: 'spread_pct', size: 90, cell: (i) => pct(i.getValue()) },
     { header: 'Avg Daily Volume', accessorKey: 'avg_daily_volume', size: 150, cell: (i) => qty(i.getValue()) },
     { header: 'Live Buy', accessorKey: 'live_buy', size: 120, cell: (i) => isk(i.getValue()) },
@@ -64,7 +64,7 @@ export default function Shortlist() {
         return <Text c={v != null && v < 0 ? 'danger' : undefined}>{isk(v)}</Text>
       },
     },
-    { header: 'Margin', accessorKey: 'margin', size: 100, cell: (i) => pct(i.getValue()), meta: { mobileHide: true } },
+    { header: 'Margin', accessorKey: 'margin', size: 100, cell: (i) => pct(i.getValue()) },
     {
       header: 'Profit / Day (market)', accessorKey: 'profit_per_day', size: 160,
       cell: (i) => {
@@ -72,7 +72,7 @@ export default function Shortlist() {
         return <Text c={v != null && v < 0 ? 'danger' : undefined}>{isk(v)}</Text>
       },
     },
-    { header: 'Discovered', accessorKey: 'discovered_at', size: 150, meta: { mobileHide: true } },
+    { header: 'Discovered', accessorKey: 'discovered_at', size: 150 },
     {
       header: '', id: 'actions', size: 50, enableSorting: false,
       cell: (i) => {

@@ -72,10 +72,10 @@ export default function MineralShoppingList() {
 
   const oreColumns = useMemo<ColumnDef<OrePurchase, any>[]>(() => [
     { header: 'Buy in Jita', accessorKey: 'item', size: 220 },
-    { header: 'Family', accessorKey: 'family', size: 130, meta: { mobileHide: true } },
+    { header: 'Family', accessorKey: 'family', size: 130 },
     { header: 'Units', accessorKey: 'units', size: 110, cell: (i) => qty(i.getValue()) },
-    { header: 'Portions', accessorKey: 'portions', size: 100, cell: (i) => qty(i.getValue()), meta: { mobileHide: true } },
-    { header: 'Volume (m3)', accessorKey: 'volume_m3', size: 120, cell: (i) => qty(i.getValue()), meta: { mobileHide: true } },
+    { header: 'Portions', accessorKey: 'portions', size: 100, cell: (i) => qty(i.getValue()) },
+    { header: 'Volume (m3)', accessorKey: 'volume_m3', size: 120, cell: (i) => qty(i.getValue()) },
     { header: 'Landed / Unit', accessorKey: 'landed_cost_per_unit', size: 130, cell: (i) => isk(i.getValue()) },
     { header: 'Total Cost', accessorKey: 'total_cost', size: 140, cell: (i) => isk(i.getValue()) },
   ], [])

@@ -11,25 +11,21 @@ import {
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon, Stack } from '@mantine/core'
-import { useMediaQuery } from '@mantine/hooks'
 import { IconSearch, IconDownload, IconColumns, IconX, IconAlertTriangle, IconRefresh } from '@tabler/icons-react'
 import { relativeTime } from '../format'
 
-// A column can opt into `meta: { mobileHide: true }` (see Shortlist.tsx/
-// Margin.tsx for real examples) - GitHub issue #52: below Mantine's `sm`
-// breakpoint, these columns are force-hidden on top of whatever the user
-// picked in the Columns menu, so a dense desktop table (10+ fixed-width
-// columns, see this file's own header comment on why columns are fixed-
-// width) doesn't force horizontal scrolling on a phone screen for its own
-// sake. Purely a display default, not persisted - the user's own Columns
-// menu choice (localStorage) always still applies on top once they're back
-// above the breakpoint. Unmarked columns behave exactly as before (still
-// horizontally scrollable on mobile) - this is opt-in per page, not a
-// blanket behavior change.
+// GitHub issue #52 used to force-hide columns marked `meta: { mobileHide:
+// true } }` below Mantine's `sm` breakpoint, on top of whatever the user
+// picked in the Columns menu - meant to spare a phone screen from a long
+// horizontal scroll, but confirmed real bug: it overrode the Columns menu
+// entirely (a "visible" checkbox the user could check but that never
+// actually showed the column on mobile), and simply left most of a dense
+// table unreachable rather than reachable-by-choice. Removed - every column
+// is now reachable by horizontal scroll or the Columns menu on any screen
+// size, same as desktop.
 declare module '@tanstack/react-table' {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   interface ColumnMeta<TData, TValue> {
-    mobileHide?: boolean
     // Native hover title for the cell. When omitted, DataTable stringifies
     // string/number cell values (the default "full text on hover" for
     // ellipsis-truncated cells). A column that renders custom content and
@@ -159,10 +155,6 @@ export function DataTable<T>({
   const [sorting, setSorting] = useState<SortingState>([])
   const [globalFilter, setGlobalFilter] = useState('')
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(() => loadPersistedVisibility(tableId))
-  // Mantine's `sm` breakpoint (768px) - same threshold AppShell's own navbar
-  // collapse already uses (see TradingLayout.tsx/ProductionLayout.tsx), so
-  // "mobile" means the same viewport width everywhere in the app.
-  const isMobile = useMediaQuery('(max-width: 48em)')
 
   // Ticks every 30s so the relative-time label below ("2m ago" -> "3m ago")
   // stays live without a full data refetch - cheap (one re-render, no
@@ -205,11 +197,7 @@ export function DataTable<T>({
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const rows = table.getRowModel().rows
-  // Mobile-hide is applied here, not folded into columnVisibility/localStorage
-  // - it must never overwrite the user's own persisted Columns-menu choice,
-  // and must stop applying the instant the viewport is wide enough again.
   const leafColumns = table.getVisibleLeafColumns()
-    .filter((col) => !(isMobile && col.columnDef.meta?.mobileHide))
   const allColumns = table.getAllLeafColumns()
 
   const virtualizer = useVirtualizer({
@@ -368,7 +356,7 @@ export function DataTable<T>({
           <Table.Thead>
             {table.getHeaderGroups().map((hg) => (
               <Table.Tr key={hg.id}>
-                {hg.headers.filter((h) => !(isMobile && h.column.columnDef.meta?.mobileHide)).map((h) => {
+                {hg.headers.map((h) => {
                   const sorted = h.column.getIsSorted()
                   const canSort = h.column.getCanSort()
                   const toggleSort = h.column.getToggleSortingHandler()
@@ -425,7 +413,6 @@ export function DataTable<T>({
                   return (
                     <Table.Tr key={row.id}>
                       {row.getVisibleCells()
-                        .filter((cell) => !(isMobile && cell.column.columnDef.meta?.mobileHide))
                         .map((cell) => (
                           <Table.Td
                             key={cell.id}
