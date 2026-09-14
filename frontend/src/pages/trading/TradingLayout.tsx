@@ -69,7 +69,16 @@ function RoleCharacters({ role, label }: { role: 'buyer' | 'seller'; label: stri
 }
 
 export default function TradingLayout() {
-  const [opened, { toggle }] = useDisclosure(true)
+  // Starts closed, not open - only `collapsed.mobile` (below) is driven by
+  // this state (desktop's navbar visibility is unaffected either way), but
+  // starting open meant the drawer covered the entire page on first mobile
+  // load, including the Shortlist table underneath, blocking touch/scroll
+  // input to it until the user found and tapped the burger - confirmed real
+  // bug (mobile "can't scroll the shortlist table right" report), and the
+  // same pattern across every tool layout, not just this one (see the other
+  // five `useDisclosure` call sites: Doctrine/Production/Ore/Sorting/Station
+  // Trading Layout).
+  const [opened, { toggle }] = useDisclosure(false)
   const location = useLocation()
   const navigate = useNavigate()
 

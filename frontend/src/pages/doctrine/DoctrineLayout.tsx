@@ -90,7 +90,13 @@ function CharacterGroup({ title, queryKey, listFn, ssoRolePrefix, removeFn }: {
 }
 
 export default function DoctrineLayout() {
-  const [opened, { toggle }] = useDisclosure(true)
+  // Starts closed, not open - only `collapsed.mobile` (below) is driven by
+  // this state (desktop's navbar visibility is unaffected either way), but
+  // starting open meant the drawer covered the entire page on first mobile
+  // load, including any table underneath, blocking touch/scroll input to it
+  // until the user found and tapped the burger - confirmed real bug across
+  // every tool layout (see the other five `useDisclosure` call sites).
+  const [opened, { toggle }] = useDisclosure(false)
   const location = useLocation()
   const navigate = useNavigate()
 
