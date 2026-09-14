@@ -3,7 +3,12 @@ from __future__ import annotations
 
 import pytest
 
-from eve_trader.actions import ActionError, do_remove_trading_character
+from eve_trader.actions import (
+    ActionError,
+    do_remove_trading_character,
+    do_wallet_balance,
+    do_wallet_transactions,
+)
 from eve_trader.auth import (
     InvalidRoleKey,
     ROLE_PREFIX_TOOL,
@@ -167,3 +172,16 @@ def test_station_trading_remove_rejects_producer(monkeypatch):
     with pytest.raises(ActionError, match="Invalid role_key"):
         do_remove_trader_character("producer:1")
     assert called == []
+
+
+def test_wallet_actions_reject_other_tool_role_without_lookup(monkeypatch):
+    looked = []
+    monkeypatch.setattr(
+        "eve_trader.actions.TokenManager.get_record",
+        lambda self, role: looked.append(role) or None,
+    )
+    with pytest.raises(ActionError, match="Invalid role_key"):
+        do_wallet_transactions("producer:1")
+    with pytest.raises(ActionError, match="Invalid role_key"):
+        do_wallet_balance("doctrine:1")
+    assert looked == []
