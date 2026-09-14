@@ -51,7 +51,8 @@ for f in phase1_schema.sql phase2_schema.sql phase3_schema.sql admin_schema.sql 
 done
 
 echo "==> Installing backend dependencies..."
-.venv/bin/pip install -e . -q
+.venv/bin/pip install -r requirements.lock -q
+.venv/bin/pip install -e . --no-deps -q
 
 echo "==> Building frontend..."
 cd "$APP_DIR/frontend"

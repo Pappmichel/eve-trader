@@ -13,8 +13,8 @@ fi
 source .venv/bin/activate
 
 echo "[Setup] Pruefe/installiere Python-Abhaengigkeiten..."
-pip install -q -r requirements.txt
-pip install -q -e .
+pip install -q -r requirements.lock
+pip install -q -e . --no-deps
 
 if [ ! -f ".env" ]; then
     echo "[Setup] Kopiere .env.example zu .env - bitte EVE_SSO_CLIENT_ID eintragen!"

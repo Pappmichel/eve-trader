@@ -8,7 +8,7 @@
 # see deploy/README.md) - this script does not fetch the code, only sets up
 # everything around it (system packages, venv, built frontend, systemd
 # service, nginx). Safe to re-run: every step either checks first or is
-# naturally idempotent (apt install, pip install -e ., npm ci).
+# naturally idempotent (apt install, pip install -r requirements.lock, npm ci).
 #
 # NOT tested against a real Oracle Cloud instance (no such environment
 # available while writing this) - written from the documented Ubuntu/nginx/
@@ -78,7 +78,8 @@ if [ ! -d .venv ]; then
     python3 -m venv .venv
 fi
 .venv/bin/pip install --upgrade pip -q
-.venv/bin/pip install -e . -q
+.venv/bin/pip install -r requirements.lock -q
+.venv/bin/pip install -e . --no-deps -q
 
 echo "==> Frontend build..."
 if [ -f "$APP_DIR/frontend/dist/index.html" ]; then

@@ -1,1 +1,4 @@
--e .[test]
+# Compatibility shim. Installs the locked graph in requirements.lock.
+# Then install the package itself without re-resolving ranges:
+#   pip install -e . --no-deps
+-r requirements.lock

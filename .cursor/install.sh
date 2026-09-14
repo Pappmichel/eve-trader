@@ -16,12 +16,13 @@ if ! command -v pg_ctlcluster >/dev/null 2>&1; then
     postgresql postgresql-contrib python3-venv
 fi
 
-# --- Python virtualenv + project (editable install, with test extras) ---
+# --- Python virtualenv + locked runtime (then the package, without re-resolving) ---
 if [ ! -d .venv ]; then
   python3 -m venv .venv
 fi
 ./.venv/bin/python -m pip install --upgrade pip
-./.venv/bin/pip install -e '.[test]'
+./.venv/bin/pip install -r requirements.lock
+./.venv/bin/pip install -e . --no-deps
 
 # --- Frontend dependencies (uses the committed package-lock.json) ---
 ( cd frontend && npm ci )

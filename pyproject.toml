@@ -7,24 +7,28 @@ license = { file = "LICENSE" }
 authors = [{ name = "Pappmichel" }]
 requires-python = ">=3.10"
 dependencies = [
-    "requests>=2.31",
-    "pandas>=2.0",
+    "requests>=2.31,<3",
+    "pandas>=2.0,<4",
     # Ore & Minerals' Mineral Shopping List (GitHub issue #93) solves a real
     # mixed-integer program (scipy.optimize.linprog/HiGHS, using the
     # `integrality` param added in scipy 1.9 - already covered by this pin)
     # for the cheapest whole-unit mix of ore-to-refine vs.
     # minerals-bought-outright - see eve_trader/refining/optimizer.py for why
     # a greedy ranking (or a relax-then-round LP) wasn't enough.
-    "scipy>=1.11",
-    "PyYAML>=6.0",
-    "ruamel.yaml>=0.18",
-    "python-dotenv>=1.0",
-    "click>=8.1",
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.30",
-    "itsdangerous>=2.1",
-    "psycopg[binary]>=3.2",
-    "psycopg_pool>=3.2",
+    "scipy>=1.11,<2",
+    "PyYAML>=6.0,<7",
+    "ruamel.yaml>=0.18,<0.20",
+    "python-dotenv>=1.0,<2",
+    "click>=8.1,<9",
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.30,<1",
+    # Session cookies (access_gate.py) use URLSafeTimedSerializer.loads
+    # return_timestamp=True, present in 2.2. Pin exact — a major bump is a
+    # session-security review, not a silent resolver move. Lockfile repeats
+    # this pin; see docs/DEPENDENCY_SECURITY.md.
+    "itsdangerous==2.2.0",
+    "psycopg[binary]>=3.2,<4",
+    "psycopg_pool>=3.2,<4",
 ]
 
 [project.optional-dependencies]

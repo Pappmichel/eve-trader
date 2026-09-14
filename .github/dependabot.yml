@@ -1,0 +1,15 @@
+# Weekly review of locked Python and GitHub Actions versions.
+# Dependabot opens a PR; it does not auto-merge. itsdangerous bumps in
+# particular need a session-cookie review (see docs/DEPENDENCY_SECURITY.md).
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

@@ -1,0 +1,57 @@
+# Locked runtime + test dependencies for reproducible installs.
+# Generated from the 2026-09-14 development environment. Do not resolve
+# these from pyproject.toml ranges in CI or production — install this file.
+#
+# itsdangerous is pinned to 2.2.0 (session-cookie signing / TimestampSigner
+# API used by access_gate.read_session_token). A major bump needs an explicit
+# review of URLSafeTimedSerializer.loads(..., return_timestamp=True).
+#
+# Regenerate after a reviewed upgrade:
+#   .venv/bin/pip install -e ".[test]"
+#   .venv/bin/pip freeze | grep -v '^-e' > requirements.lock
+# then re-run pip-audit and the test suite.
+#
+# Install:
+#   pip install -r requirements.lock
+#   pip install -e . --no-deps
+
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+certifi==2026.7.22
+charset-normalizer==3.5.1
+click==8.5.0
+fastapi==0.141.1
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+idna==3.19
+iniconfig==2.3.0
+itsdangerous==2.2.0
+numpy==2.5.3
+packaging==26.3
+pandas==3.0.5
+pluggy==1.6.0
+psycopg==3.3.5
+psycopg-binary==3.3.5
+psycopg-pool==3.3.1
+pydantic==2.13.5
+pydantic_core==2.46.5
+Pygments==2.21.0
+pytest==9.1.1
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.3
+PyYAML==6.0.3
+requests==2.34.2
+ruamel.yaml==0.19.1
+scipy==1.18.1
+six==1.17.0
+starlette==1.6.0
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+urllib3==2.7.0
+uvicorn==0.53.0
+uvloop==0.22.1
+watchfiles==1.2.0
+websockets==17.1

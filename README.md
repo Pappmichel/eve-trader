@@ -38,8 +38,8 @@ Highlights:
 
 ```bash
 python -m venv .venv && source .venv/bin/activate     # or .venv\Scripts\activate on Windows
-pip install -r requirements.txt
-pip install -e .                                       # installs the `eve-trader` command
+pip install -r requirements.lock
+pip install -e . --no-deps                             # installs the `eve-trader` command
 
 cp .env.example .env          # fill in EVE_SSO_CLIENT_ID (register at developers.eveonline.com)
 cp config.example.yaml config.yaml   # adjust structure_id, character names, thresholds
