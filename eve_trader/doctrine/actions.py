@@ -13,7 +13,7 @@ from typing import Iterable, Optional
 
 from .. import storage
 from ..actions import ActionError
-from ..auth import InvalidRoleKey, TokenManager, validate_role_key
+from ..auth import InvalidRoleKey, TokenManager, validate_role_key_for_tool
 from ..config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
 from . import engine, esi_sync
 from .config import DOCTRINE_CONFIG, DoctrineConfig, validate_doctrine_overrides
@@ -39,7 +39,7 @@ def do_list_doctrine_characters() -> list[tuple[str, int, str]]:
 
 def do_remove_doctrine_character(role_key: str) -> dict:
     try:
-        role_key = validate_role_key(role_key)
+        role_key = validate_role_key_for_tool(role_key, "doctrine")
     except InvalidRoleKey as e:
         raise ActionError(str(e)) from e
     TokenManager(OAUTH_CONFIG).remove_token(role_key)
@@ -55,7 +55,7 @@ def do_list_doctrine_asset_characters() -> list[tuple[str, int, str]]:
 
 def do_remove_doctrine_asset_character(role_key: str) -> dict:
     try:
-        role_key = validate_role_key(role_key)
+        role_key = validate_role_key_for_tool(role_key, "doctrine")
     except InvalidRoleKey as e:
         raise ActionError(str(e)) from e
     TokenManager(OAUTH_CONFIG).remove_token(role_key)

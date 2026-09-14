@@ -103,6 +103,26 @@ if [ ! -f config.yaml ]; then
     cp config.example.yaml config.yaml
     echo "    Created config.yaml from config.example.yaml - EDIT IT before starting the service."
 fi
+# P5-05: an existing install whose config.yaml still has the old
+# access_gate_enabled: false default is rewritten to true unless the
+# operator has explicitly set EVE_TRADER_ALLOW_GATE_OFF. Fresh copies of
+# config.example.yaml already have true.
+ALLOW_GATE_OFF="${EVE_TRADER_ALLOW_GATE_OFF:-}"
+if [ -f .env ]; then
+  _env_allow=$(grep -E '^[[:space:]]*EVE_TRADER_ALLOW_GATE_OFF=' .env | tail -n1 | cut -d= -f2- | tr -d '[:space:]"' | tr '[:upper:]' '[:lower:]' || true)
+  if [ -n "$_env_allow" ]; then
+    ALLOW_GATE_OFF="$_env_allow"
+  fi
+fi
+case "$(echo "${ALLOW_GATE_OFF:-}" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes) echo "    EVE_TRADER_ALLOW_GATE_OFF set - leaving config.yaml gate setting unchanged." ;;
+  *)
+    if [ -f config.yaml ] && grep -qE '^[[:space:]]*access_gate_enabled:[[:space:]]*false\b' config.yaml; then
+      sed -i 's/^[[:space:]]*access_gate_enabled:[[:space:]]*false\b/access_gate_enabled: true/' config.yaml
+      echo "    Rewrote access_gate_enabled: false -> true in config.yaml."
+    fi
+    ;;
+esac
 
 echo "==> systemd service..."
 sed -e "s|__APP_DIR__|$APP_DIR|g" -e "s|__APP_USER__|$APP_USER|g" \

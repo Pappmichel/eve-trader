@@ -53,6 +53,24 @@ _ROLE_KEY_RE = re.compile(
 )
 ROLE_KEY_MAX_LENGTH = 48
 
+# Authoritative tool ↔ role-prefix mapping (P5-02). Derived from the live
+# TokenManager prefixes and api/routers/auth.py's login roles — not invented
+# names. Ore & Minerals / refining / sorting / portfolio / admin have no
+# ESI role_key namespace. "gate" is identity-only and is never a stored
+# token key (excluded from _ROLE_KEY_RE).
+TOOL_ROLE_PREFIXES: dict[str, frozenset[str]] = {
+    "trading": frozenset({"buyer", "seller"}),
+    "production": frozenset({"producer"}),
+    "doctrine": frozenset({"doctrine", "doctrine-assets"}),
+    "station_trading": frozenset({"trader"}),
+}
+ROLE_PREFIX_TOOL: dict[str, Optional[str]] = {
+    prefix: tool
+    for tool, prefixes in TOOL_ROLE_PREFIXES.items()
+    for prefix in prefixes
+}
+ROLE_PREFIX_TOOL["gate"] = None
+
 
 def validate_role_key(role_key: str) -> str:
     """Returns `role_key` if it is a canonical stored-token key, else raises
@@ -68,6 +86,22 @@ def validate_role_key(role_key: str) -> str:
     except UnicodeEncodeError as e:
         raise InvalidRoleKey("Invalid role_key.") from e
     if _ROLE_KEY_RE.fullmatch(role_key) is None:
+        raise InvalidRoleKey("Invalid role_key.")
+    return role_key
+
+
+def validate_role_key_for_tool(role_key: str, tool_key: str) -> str:
+    """P5-02: syntactic validate_role_key plus tool-namespace ownership.
+
+    A trading caller may only manipulate buyer:/seller: keys; a production
+    caller only producer:; etc. Unknown tool_key or a prefix that belongs
+    to a different tool raises InvalidRoleKey — same generic message as
+    syntax failures, so the HTTP surface does not advertise the allowlist.
+    """
+    role_key = validate_role_key(role_key)
+    prefix = role_key.split(":", 1)[0]
+    allowed = TOOL_ROLE_PREFIXES.get(tool_key)
+    if allowed is None or prefix not in allowed:
         raise InvalidRoleKey("Invalid role_key.")
     return role_key
 

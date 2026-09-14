@@ -16,18 +16,19 @@ from itsdangerous.timed import TimestampSigner
 from . import pg_helpers
 from .pg_helpers import (  # noqa: F401
     _apply_admin_schema, _apply_phase1_schema, _apply_phase2_schema, _apply_phase3_schema,
+    _apply_session_revocations_schema,
 )
 
 psycopg = pytest.importorskip("psycopg")
 
-pytestmark = pg_helpers.postgres_required()
+pytestmark = [pg_helpers.postgres_required(), pytest.mark.gate_enforced]
 
 client = TestClient(create_app())
 
 
 @pytest.fixture(autouse=True)
 def _wipe():
-    pg_helpers.wipe_tables("tenant_registry_entries", "tool_grants")
+    pg_helpers.wipe_tables("tenant_registry_entries", "tool_grants", "character_session_revocations")
     with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
         conn.execute("DELETE FROM tenants WHERE tenant_id != %s", (storage.DEFAULT_TENANT_ID,))
     yield
@@ -244,3 +245,98 @@ def test_gate_cannot_be_disabled_via_request_params(monkeypatch, _apply_admin_sc
 def test_access_gate_defaults_to_enabled():
     from eve_trader.config import AccessConfig
     assert AccessConfig().access_gate_enabled is True
+
+
+def test_remove_and_readd_does_not_resurrect_old_cookie(monkeypatch, _apply_admin_schema,
+                                                        _apply_session_revocations_schema):
+    """P5-03: revoke → remove → re-add must not revive the old cookie."""
+    tenant_id = storage.create_tenant("A")
+    storage.add_tenant_registry_entry(tenant_id, 11, character_name="A")
+    storage.set_tool_grant(11, "trading", tenant_id)
+    cookies = _cookie(11, tenant_id, issued_unix=int(time.time()) - 2)
+    assert client.get("/api/trading/settings", cookies=cookies).status_code == 200
+
+    storage.revoke_sessions_for_character(11)
+    assert client.get("/api/trading/settings", cookies=cookies).status_code == 401
+
+    storage.remove_tenant_registry_entry(11)
+    assert client.get("/api/trading/settings", cookies=cookies).status_code == 401
+
+    storage.add_tenant_registry_entry(tenant_id, 11, character_name="A")
+    storage.set_tool_grant(11, "trading", tenant_id)
+    assert client.get("/api/trading/settings", cookies=cookies).status_code == 401
+
+    new_cookies = _cookie(11, tenant_id)
+    assert client.get("/api/trading/settings", cookies=new_cookies).status_code == 200
+
+
+def test_remove_without_explicit_revoke_still_kills_cookie_after_readd(
+    monkeypatch, _apply_admin_schema, _apply_session_revocations_schema,
+):
+    tenant_id = storage.create_tenant("A")
+    storage.add_tenant_registry_entry(tenant_id, 11, character_name="A")
+    storage.set_tool_grant(11, "trading", tenant_id)
+    cookies = _cookie(11, tenant_id, issued_unix=int(time.time()) - 2)
+    assert client.get("/api/trading/settings", cookies=cookies).status_code == 200
+
+    storage.remove_tenant_registry_entry(11)
+    storage.add_tenant_registry_entry(tenant_id, 11, character_name="A")
+    storage.set_tool_grant(11, "trading", tenant_id)
+    assert client.get("/api/trading/settings", cookies=cookies).status_code == 401
+
+
+def test_reassign_after_remove_readd_old_tenant_cookie_rejected(
+    monkeypatch, _apply_admin_schema, _apply_session_revocations_schema,
+):
+    tenant_a = storage.create_tenant("A")
+    tenant_b = storage.create_tenant("B")
+    storage.add_tenant_registry_entry(tenant_a, 11, character_name="A")
+    storage.set_tool_grant(11, "trading", tenant_a)
+    cookies_a = _cookie(11, tenant_a, issued_unix=int(time.time()) - 2)
+    assert client.get("/api/trading/settings", cookies=cookies_a).status_code == 200
+
+    storage.remove_tenant_registry_entry(11)
+    storage.add_tenant_registry_entry(tenant_a, 11, character_name="A")
+    storage.add_tenant_registry_entry(tenant_b, 11, character_name="A")
+    storage.set_tool_grant(11, "trading", tenant_b)
+
+    assert client.get("/api/trading/settings", cookies=cookies_a).status_code == 401
+    assert client.get("/api/trading/settings", cookies=_cookie(11, tenant_a)).status_code == 401
+    assert client.get("/api/trading/settings", cookies=_cookie(11, tenant_b)).status_code == 200
+
+
+def test_bootstrap_does_not_clear_revocation(monkeypatch, _apply_admin_schema,
+                                             _apply_session_revocations_schema):
+    from eve_trader import admin
+    tenant_id = storage.create_tenant("A")
+    storage.add_tenant_registry_entry(tenant_id, 11, character_name="A")
+    storage.set_tool_grant(11, "admin", tenant_id)
+    cookies = _cookie(11, tenant_id, issued_unix=int(time.time()) - 2)
+    assert client.get("/api/admin/tenants", cookies=cookies).status_code == 200
+
+    storage.revoke_sessions_for_character(11)
+    admin.do_bootstrap_admin(11, "A", confirm=True, all_tools=True)
+    assert client.get("/api/admin/tenants", cookies=cookies).status_code == 401
+    assert client.get("/api/admin/tenants", cookies=_cookie(11, tenant_id)).status_code == 200
+
+
+def test_revocation_survives_pool_reconnect(monkeypatch, _apply_admin_schema,
+                                            _apply_session_revocations_schema):
+    tenant_id = storage.create_tenant("A")
+    storage.add_tenant_registry_entry(tenant_id, 11, character_name="A")
+    storage.set_tool_grant(11, "trading", tenant_id)
+    cookies = _cookie(11, tenant_id, issued_unix=int(time.time()) - 2)
+    assert client.get("/api/trading/settings", cookies=cookies).status_code == 200
+
+    storage.revoke_sessions_for_character(11)
+    with psycopg.connect(pg_helpers.OWNER_DSN) as conn:
+        row = conn.execute(
+            "SELECT sessions_valid_after FROM character_session_revocations WHERE character_id = %s",
+            (11,),
+        ).fetchone()
+    assert row is not None and row[0] is not None
+
+    pool = storage._get_pool()
+    pool.close()
+    storage._pool = None
+    assert client.get("/api/trading/settings", cookies=cookies).status_code == 401

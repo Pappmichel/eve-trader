@@ -14,18 +14,19 @@ from eve_trader.config import ACCESS_CONFIG, OAUTH_CONFIG
 from . import pg_helpers
 from .pg_helpers import (  # noqa: F401
     _apply_admin_schema, _apply_phase1_schema, _apply_phase2_schema, _apply_phase3_schema,
+    _apply_session_revocations_schema,
 )
 
 psycopg = pytest.importorskip("psycopg")
 
-pytestmark = pg_helpers.postgres_required()
+pytestmark = [pg_helpers.postgres_required(), pytest.mark.gate_enforced]
 
 client = TestClient(create_app())
 
 
 @pytest.fixture(autouse=True)
 def _wipe():
-    pg_helpers.wipe_tables("tenant_registry_entries", "tool_grants")
+    pg_helpers.wipe_tables("tenant_registry_entries", "tool_grants", "character_session_revocations")
     with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
         conn.execute("DELETE FROM tenants WHERE tenant_id != %s", (storage.DEFAULT_TENANT_ID,))
     yield

@@ -33,6 +33,7 @@ _PHASE3_SCHEMA_SQL = _DOCS_DIR / "phase3_schema.sql"
 _ADMIN_SCHEMA_SQL = _DOCS_DIR / "admin_schema.sql"
 _ROLE_CONSENT_SCHEMA_SQL = _DOCS_DIR / "role_consent_schema.sql"
 _PIPELINE_RUNS_SCHEMA_SQL = _DOCS_DIR / "pipeline_runs_schema.sql"
+_SESSION_REVOCATIONS_SCHEMA_SQL = _DOCS_DIR / "session_revocations_schema.sql"
 
 
 @functools.lru_cache(maxsize=1)
@@ -125,11 +126,18 @@ def _apply_admin_schema(_apply_phase3_schema) -> None:
     """Same idea as _apply_phase1_schema, for docs/admin_schema.sql
     (tool_grants + tenant_registry_entries.character_name/character-only
     CHECK) - depends on _apply_phase3_schema, since it ALTERs
-    tenant_registry_entries, which that fixture is what creates."""
+    tenant_registry_entries, which that fixture is what creates.
+
+    Also applies docs/session_revocations_schema.sql (P5-03) so any test
+    that imports this fixture can run session_authorization without a
+    missing-relation fail-closed 401. The standalone
+    `_apply_session_revocations_schema` fixture remains for tests that
+    import it by name."""
     if not _postgres_available():
         return
     with psycopg.connect(OWNER_DSN, autocommit=True) as conn:
         conn.execute(_ADMIN_SCHEMA_SQL.read_text())
+        conn.execute(_SESSION_REVOCATIONS_SCHEMA_SQL.read_text())
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -153,6 +161,16 @@ def _apply_pipeline_runs_schema(_apply_phase1_schema) -> None:
         return
     with psycopg.connect(OWNER_DSN, autocommit=True) as conn:
         conn.execute(_PIPELINE_RUNS_SCHEMA_SQL.read_text())
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _apply_session_revocations_schema(_apply_phase1_schema) -> None:
+    """Persistent cookie revocation watermark (P5-03). Depends on
+    _apply_phase1_schema because GRANT targets eve_trader_app."""
+    if not _postgres_available():
+        return
+    with psycopg.connect(OWNER_DSN, autocommit=True) as conn:
+        conn.execute(_SESSION_REVOCATIONS_SCHEMA_SQL.read_text())
 
 
 @pytest.fixture

@@ -104,7 +104,7 @@ def _required_tool_for_path(path: str, method: str = "GET") -> Optional[str]:
     # character with a valid gate session regardless of tool grants - e.g. a
     # character granted only "trading" could still call
     # /api/auth/producer/start and register a live ESI token for
-    # Production. ROLE_PREFIX_TOOL (auth.py) is the single source of truth
+    # Production. ROLE_PREFIX_TOOL (eve_trader.auth) is the single source of truth
     # for which tool each role_prefix belongs to - "gate" maps to None
     # (identity-only, and already fully exempt via _GATE_EXEMPT_PATHS
     # before this function is ever reached for it) and an unrecognized

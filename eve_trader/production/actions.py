@@ -14,7 +14,7 @@ import requests
 
 from .. import storage
 from ..actions import ActionError
-from ..auth import InvalidRoleKey, TokenManager, validate_role_key
+from ..auth import InvalidRoleKey, TokenManager, validate_role_key_for_tool
 from ..config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
 from ..esi_client import ESIClient, ESIError
 from . import esi_sync, invention, jobs, order_integrity, pricing, sde
@@ -146,7 +146,7 @@ def do_list_producer_characters() -> list[tuple[str, int, str]]:
 
 def do_remove_producer_character(role_key: str) -> dict:
     try:
-        role_key = validate_role_key(role_key)
+        role_key = validate_role_key_for_tool(role_key, "production")
     except InvalidRoleKey as e:
         raise ActionError(str(e)) from e
     TokenManager(OAUTH_CONFIG).remove_token(role_key)

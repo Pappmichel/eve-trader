@@ -153,8 +153,10 @@ function or table after that migration (all 5 of its phases are done).
   used whenever there's no real per-request tenant to resolve: the CLI
   (`cli.py`'s `main()` sets it once per process - a trusted single
   operator, no login wall there at all) and every web request when
-  `AccessConfig.access_gate_enabled` is `False` (opt-in via `config.yaml`
-  over SSH; the gate itself is **on by default**). A real per-tenant login
+  `AccessConfig.access_gate_enabled` is `False` (only when
+  `EVE_TRADER_ALLOW_GATE_OFF` is set; a leftover `access_gate_enabled:
+  false` in `config.yaml` is forced on at load — see P5-05 /
+  `apply_access_gate_policy`. The gate itself is **on by default**). A real per-tenant login
   (gate enabled) resolves and uses a different, real `tenant_id` from the
   registry instead. `DEFAULT_TENANT_ID` does **not** imply any tool grant
   (including `"admin"`). First-admin recovery is `eve-trader admin
@@ -262,7 +264,9 @@ can this specific character see/use"). A valid access-gate session cookie
 is not enough by itself: `AccessGateMiddleware` (`api/app.py`) re-validates
 it on every gated request via `access_gate.authorize_session_cookie` (one
 DB read: `storage.session_authorization` joins `tenant_registry_entries` to
-`tool_grants` with `e.tenant_id = ?` and `g.tenant_id = e.tenant_id`). The
+`tool_grants` with `e.tenant_id = ?` and `g.tenant_id = e.tenant_id`, and
+to `character_session_revocations` so a registry DELETE cannot resurrect
+an old cookie). The
 character must still belong to the cookie's tenant, the itsdangerous issue
 timestamp must not precede `sessions_valid_after`, and the required
 `tool_key` must be in that tenant-scoped grant list. Missing registry row

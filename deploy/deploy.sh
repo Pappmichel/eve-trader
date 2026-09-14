@@ -46,13 +46,35 @@ echo "==> Applying Postgres schema (all files, idempotent)..."
 for f in phase1_schema.sql phase2_schema.sql phase3_schema.sql admin_schema.sql \
          doctrine_schema.sql observability_schema.sql refining_schema.sql \
          station_trading_schema.sql role_consent_schema.sql special_orders_schema.sql \
-         sorting_schema.sql production_buy_list_schema.sql pipeline_runs_schema.sql; do
+         sorting_schema.sql production_buy_list_schema.sql pipeline_runs_schema.sql \
+         session_revocations_schema.sql; do
     sudo -u postgres psql -d eve_trader -v ON_ERROR_STOP=1 -f "docs/$f"
 done
 
 echo "==> Installing backend dependencies..."
 .venv/bin/pip install -r requirements.lock -q
 .venv/bin/pip install -e . --no-deps -q
+
+echo "==> Migrating legacy access_gate_enabled: false (P5-05)..."
+# Runtime load_access_config also forces the gate on unless
+# EVE_TRADER_ALLOW_GATE_OFF is set. This rewrite makes the on-disk config
+# match that policy so a later reader of config.yaml is not misled.
+ALLOW_GATE_OFF="${EVE_TRADER_ALLOW_GATE_OFF:-}"
+if [ -f .env ]; then
+  _env_allow=$(grep -E '^[[:space:]]*EVE_TRADER_ALLOW_GATE_OFF=' .env | tail -n1 | cut -d= -f2- | tr -d '[:space:]"' | tr '[:upper:]' '[:lower:]' || true)
+  if [ -n "$_env_allow" ]; then
+    ALLOW_GATE_OFF="$_env_allow"
+  fi
+fi
+case "$(echo "${ALLOW_GATE_OFF:-}" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes) echo "    EVE_TRADER_ALLOW_GATE_OFF set - leaving config.yaml gate setting unchanged." ;;
+  *)
+    if [ -f config.yaml ] && grep -qE '^[[:space:]]*access_gate_enabled:[[:space:]]*false\b' config.yaml; then
+      sed -i 's/^[[:space:]]*access_gate_enabled:[[:space:]]*false\b/access_gate_enabled: true/' config.yaml
+      echo "    Rewrote access_gate_enabled: false -> true in config.yaml."
+    fi
+    ;;
+esac
 
 echo "==> Building frontend..."
 cd "$APP_DIR/frontend"

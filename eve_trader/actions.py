@@ -14,7 +14,7 @@ from typing import Optional
 import pandas as pd
 
 from . import backup, candidate_discovery, history_backtest, own_orders, storage
-from .auth import InvalidRoleKey, TokenManager, validate_role_key
+from .auth import InvalidRoleKey, TokenManager, validate_role_key_for_tool
 from .config import (OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, TradingConfig,
                      save_tenant_config_overrides)
 from .esi_client import ESIClient, ESIError
@@ -35,9 +35,9 @@ class ConflictError(ActionError):
     """A conflicting in-progress operation already exists (HTTP 409)."""
 
 
-def _require_role_key(role_key: str) -> str:
+def _require_role_key(role_key: str, tool_key: str) -> str:
     try:
-        return validate_role_key(role_key)
+        return validate_role_key_for_tool(role_key, tool_key)
     except InvalidRoleKey as e:
         raise ActionError(str(e)) from e
 
@@ -129,7 +129,7 @@ def do_list_seller_characters(oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> list[tup
 
 
 def do_remove_trading_character(role_key: str, oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
-    role_key = _require_role_key(role_key)
+    role_key = _require_role_key(role_key, "trading")
     TokenManager(oauth_cfg).remove_token(role_key)
     return {"removed": role_key}
 
@@ -151,7 +151,7 @@ def do_list_transaction_characters(oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> lis
 
 def do_wallet_transactions(role_key: str, lookback_days: Optional[int] = None,
                             cfg: TradingConfig = TRADING_CONFIG, oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> list[dict]:
-    role_key = _require_role_key(role_key)
+    role_key = _require_role_key(role_key, "trading")
     tm = TokenManager(oauth_cfg)
     record = tm.get_record(role_key)
     if record is None:
@@ -180,7 +180,7 @@ def do_wallet_balance(role_key: str, cfg: TradingConfig = TRADING_CONFIG, oauth_
     """Current ISK wallet balance for the Transactions tab's selected
     character - a live ESI call (no caching, matches character_wallet_
     transactions' own no-cache behavior), not something worth persisting."""
-    role_key = _require_role_key(role_key)
+    role_key = _require_role_key(role_key, "trading")
     tm = TokenManager(oauth_cfg)
     record = tm.get_record(role_key)
     if record is None:
