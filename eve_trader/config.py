@@ -29,13 +29,6 @@ log = logging.getLogger(__name__)
 # set this. Checked at AccessConfig load time and by deploy/setup.sh.
 ACCESS_GATE_OFF_ENV = "EVE_TRADER_ALLOW_GATE_OFF"
 
-import yaml
-from dotenv import load_dotenv
-
-from . import storage
-
-load_dotenv()
-
 
 class ConfigProxy:
     """Forwards attribute reads *and* writes to whatever config instance a

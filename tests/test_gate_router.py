@@ -31,7 +31,7 @@ from eve_trader.config import ACCESS_CONFIG, OAUTH_CONFIG
 from . import pg_helpers
 from .pg_helpers import (  # noqa: F401
     _apply_admin_schema, _apply_phase1_schema, _apply_phase2_schema, _apply_phase3_schema,
-    _apply_role_consent_schema, tenant_pair,
+    _apply_role_consent_schema, _apply_session_revocations_schema, tenant_pair,
 )
 
 client = TestClient(create_app())
@@ -67,9 +67,33 @@ def _wipe_registry():
     real DELETE against tenant_registry_entries, run both before and after
     so a leftover row from a previous run/test can't make
     resolve_tenant_id match unexpectedly."""
-    pg_helpers.wipe_tables("tenant_registry_entries")
+    pg_helpers.wipe_tables("tenant_registry_entries", "character_session_revocations")
     yield
-    pg_helpers.wipe_tables("tenant_registry_entries")
+    pg_helpers.wipe_tables("tenant_registry_entries", "character_session_revocations")
+
+
+def _wipe_auth_state() -> None:
+    # Module-level TestClient persists request `cookies=` across tests
+    # (Starlette warns about this). A leftover eve_trader_session from an
+    # earlier test can outrank a later cookies= argument, so the jar must
+    # be emptied independently of the Postgres wipe.
+    client.cookies.clear()
+    if not pg_helpers._postgres_available():
+        return
+    # P51-01 / P51-04: logout (and revoke_sessions_for_character) always
+    # upserts character_session_revocations, including for the default
+    # cookie character_id=1. itsdangerous timestamps are whole seconds;
+    # authorize_session_cookie rejects issued_at < sva.replace(microsecond=0).
+    # A watermark left by test_logout_clears_the_session_cookie plus a
+    # cookie issued in an earlier second is a deterministic 401. Python 3.10
+    # hits that second boundary more often when the module is run as a
+    # whole; individual tests pass because they never saw the prior logout.
+    pg_helpers.wipe_tables(
+        "tool_grants",
+        "tenant_role_consents",
+        "tenant_registry_entries",
+        "character_session_revocations",
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -83,9 +107,9 @@ def _wipe_tool_grants():
     # one test would leave an "already acknowledged" row a later test's own
     # "before" assertion would then see instead of a clean slate) - wiped
     # here too rather than as its own separate fixture.
-    if pg_helpers._postgres_available():
-        pg_helpers.wipe_tables("tool_grants", "tenant_role_consents", "tenant_registry_entries")
+    _wipe_auth_state()
     yield
+    _wipe_auth_state()
 
 
 # --------------------------------------------------------------- /gate/status
@@ -489,3 +513,19 @@ def test_callback_buyer_branch_persists_the_token_under_the_correct_tenant(
         assert record is not None and record.character_id == 42
     with storage.tenant_context(tenant_b):
         assert TokenManager().get_record("buyer:42") is None
+
+
+@pg_helpers.postgres_required()
+def test_auth_isolation_starts_with_empty_revocations_and_no_session_cookie(
+    _apply_admin_schema,
+):
+    """P51-01 / P51-04: placed last so a default-order module run exercises
+    logout and other cookie-using tests first. The autouse wipe must still
+    leave character_session_revocations empty and the TestClient jar empty
+    — otherwise later tests 401 on character 1 after a previous logout."""
+    import psycopg
+
+    assert access_gate.SESSION_COOKIE_NAME not in list(client.cookies.keys())
+    with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
+        n = conn.execute("SELECT count(*) FROM character_session_revocations").fetchone()[0]
+    assert n == 0

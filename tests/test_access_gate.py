@@ -24,8 +24,13 @@ def test_create_and_read_session_token_round_trips(cfg):
 
 def test_read_session_token_rejects_tampered_token(cfg):
     token = access_gate.create_session_token(1, "A", "tenant-abc", cfg)
-    tampered = token[:-1] + ("x" if token[-1] != "x" else "y")
+    # Change a character in the middle. A single trailing-character flip can
+    # still verify: URL-safe base64 padding makes the last symbol redundant
+    # for some signatures, which is a test flake, not an auth bypass.
+    mid = len(token) // 2
+    tampered = token[:mid] + ("A" if token[mid] != "A" else "B") + token[mid + 1:]
 
+    assert tampered != token
     assert access_gate.read_session_token(tampered, cfg) is None
 
 

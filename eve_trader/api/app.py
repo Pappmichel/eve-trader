@@ -63,6 +63,15 @@ _GATE_EXEMPT_PATHS = {
     "/api/gate/logout",
 }
 
+# /api routes that require a valid session when the gate is on, but no
+# tool grant. Middleware 401s without a cookie; `_required_tool_for_path`
+# returns None so any authenticated character may call them. Kept next to
+# the other classification tables so a new /api route cannot be added
+# without an explicit bucket (see tests/test_gate_route_coverage.py).
+_SESSION_ONLY_API_PREFIXES = (
+    "/api/errors",
+)
+
 # Path prefix -> the tool_key a request under it requires (see
 # access_gate.authorize_session_cookie). Only enforced while the gate is
 # enabled.
@@ -89,6 +98,21 @@ _AUTH_GATED_SUFFIXES = ("/start", "/consent")
 
 def _is_docs_path(path: str) -> bool:
     return path == "/openapi.json" or path.startswith("/docs") or path.startswith("/redoc")
+
+
+def _is_session_only_api_path(path: str) -> bool:
+    for prefix in _SESSION_ONLY_API_PREFIXES:
+        stripped = prefix.rstrip("/")
+        if path == stripped or path.startswith(stripped + "/"):
+            return True
+    return False
+
+
+def _is_auth_role_gated_path(path: str) -> bool:
+    """True for /api/auth/{role}/start and /consent, including FastAPI templates."""
+    if not path.startswith(_AUTH_START_PREFIX):
+        return False
+    return any(path.endswith(suffix) for suffix in _AUTH_GATED_SUFFIXES)
 
 
 def _required_tool_for_path(path: str, method: str = "GET") -> Optional[str]:

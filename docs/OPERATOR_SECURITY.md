@@ -82,7 +82,7 @@ tool so the operator can use Trading/Production/Portfolio immediately.
 1. Apply schema (including `docs/admin_schema.sql` / `docs/phase3_schema.sql`
    / `docs/session_revocations_schema.sql`).
 2. Install from `requirements.lock` (see `docs/DEPENDENCY_SECURITY.md`).
-   Python 3.10–3.12; CI uses 3.11.
+   Python 3.10–3.12; CI runs 3.10 and 3.11.
 3. Copy `config.example.yaml` → `config.yaml` (`access_gate_enabled: true`).
 4. Set `SESSION_SECRET_KEY` in `.env`.
 5. Bootstrap as above, then start the app and log in.

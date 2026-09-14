@@ -26,6 +26,7 @@ client = TestClient(create_app())
 
 @pytest.fixture(autouse=True)
 def _wipe():
+    client.cookies.clear()
     pg_helpers.wipe_tables("tenant_registry_entries", "tool_grants", "character_session_revocations")
     with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
         conn.execute("DELETE FROM tenants WHERE tenant_id != %s", (storage.DEFAULT_TENANT_ID,))

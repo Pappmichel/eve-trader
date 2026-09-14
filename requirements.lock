@@ -1,5 +1,5 @@
 # Locked runtime + test dependencies for reproducible installs.
-# Generated on Python 3.11 (CI). Must also install on 3.10 and 3.12.
+# Generated on Python 3.11 (CI also runs 3.10). Must also install on 3.12.
 # Do not resolve these from pyproject.toml ranges in CI or production —
 # install this file.
 #
@@ -12,7 +12,8 @@
 #   python3.11 -m venv /tmp/eve-lock && /tmp/eve-lock/bin/pip install -e ".[test]"
 #   /tmp/eve-lock/bin/pip freeze | grep -v '^-e' > requirements.lock
 # then re-run pip-audit and the test suite, and confirm a 3.10 venv can
-# pip install -r requirements.lock.
+# pip install -r requirements.lock. pip freeze on 3.11 omits exceptiongroup
+# and tomli; keep their python_version < "3.11" marker pins.
 #
 # Install:
 #   pip install -r requirements.lock
@@ -24,6 +25,8 @@ anyio==4.15.1
 certifi==2026.7.22
 charset-normalizer==3.5.1
 click==8.5.0
+# anyio (Starlette/FastAPI) on Python <3.11. Not installed on 3.11+.
+exceptiongroup==1.3.1; python_version < "3.11"
 fastapi==0.141.1
 h11==0.16.0
 httpcore==1.0.9
@@ -52,6 +55,8 @@ ruamel.yaml==0.19.1
 scipy==1.15.3
 six==1.17.0
 starlette==1.6.0
+# pytest on Python <3.11. Not installed on 3.11+.
+tomli==2.4.1; python_version < "3.11"
 typing-inspection==0.4.4
 typing_extensions==4.16.0
 tzdata==2026.4
