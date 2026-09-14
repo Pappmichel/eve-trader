@@ -18,7 +18,10 @@ const TABS = [
 ]
 
 export default function StationTradingLayout() {
-  const [opened, { toggle }] = useDisclosure(true)
+  // See DoctrineLayout.tsx's own comment on this same line - starting the
+  // mobile navbar drawer open covered the entire page (including any table)
+  // on first mobile load, blocking touch/scroll until the burger was tapped.
+  const [opened, { toggle }] = useDisclosure(false)
   const location = useLocation()
   const navigate = useNavigate()
 
