@@ -19,7 +19,7 @@ from .constants import HANGAR_DIVISION_FLAGS, RIG_TIERS, STRUCTURE_TYPES
 class ProductionConfig:
     # -- Settings tab equivalents --
     component_overbuild: float = 0.7      # extra buffer kept for build-chain components
-    bpc_inventory: float = 4.0            # BPC copies kept in stock (used once Invention lands)
+    bpc_inventory: float = 4.0            # multiplier: 4.0 = 400% BPC stockpile buffer (keep 4x needed BPC runs)
     market_fees: float = 0.0537           # sell-side broker fee + sales tax + SCC surcharge, subtracted
                                             # from margins (see engine.py _build_margin) - confirmed
                                             # against the in-game sell-order breakdown: SCC surcharge

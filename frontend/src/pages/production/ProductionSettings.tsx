@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, Select, MultiSelect, Button, Card, Group, Center, Loader, Switch } from '@mantine/core'
+import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, Select, MultiSelect, Button, Card, Group, Center, Loader, Switch, Tooltip } from '@mantine/core'
 
 import { productionApi } from '../../api/client'
 import type { ProductionSettings as ProductionSettingsT } from '../../api/types'
@@ -95,8 +95,10 @@ export default function ProductionSettings() {
           onChange={(v) => set('min_margin', Number(v) / 100)} />
         <NumberInput label="Minimum daily profit for Build Candidates (ISK)" value={form.min_daily_profit} min={0} step={1000}
           onChange={(v) => set('min_daily_profit', Number(v))} />
-        <NumberInput label="BPC inventory" value={form.bpc_inventory} min={0} step={1}
-          onChange={(v) => set('bpc_inventory', Number(v))} />
+        <Tooltip label="Keep this % of needed BPC runs on stock" multiline w={280}>
+          <NumberInput label="BPC stock buffer" suffix="%" decimalScale={2} value={form.bpc_inventory * 100} min={0} step={50}
+            onChange={(v) => set('bpc_inventory', Number(v) / 100)} />
+        </Tooltip>
       </SimpleGrid>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Market &amp; Location</Title>

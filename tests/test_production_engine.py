@@ -2620,7 +2620,10 @@ def test_plan_production_invention_list_nets_off_owned_bpc_runs(monkeypatch, ten
     owned = {110: 10, 120: 4}
     monkeypatch.setattr(storage, "available_blueprint_copies", lambda blueprint_id, loc: owned[blueprint_id])
 
-    cfg = ProductionConfig(min_margin=0.0)
+    # 1x buffer isolates owned-BPC netting against the manufacturing
+    # shortfall (the bug this test documents). The 4x stockpile-buffer
+    # tests live in test_invention_need_row_bpc_buffer_*.
+    cfg = ProductionConfig(min_margin=0.0, bpc_inventory=1.0)
     result = engine.plan_production(cfg)
 
     by_type = {row.type_id: row for row in result["invention_list"]}
@@ -2670,7 +2673,9 @@ def test_plan_production_invention_stockpile_pct_counts_market_targets_too(monke
     # of the 10 runs its Jita market target needs.
     monkeypatch.setattr(storage, "available_blueprint_copies", lambda blueprint_id, loc: 10)
 
-    cfg = ProductionConfig(min_margin=0.0)
+    # 1x buffer: owned runs fully covering the Jita market target must still
+    # show bpcs_needed=0. Default 4x would keep inventing a BPC buffer.
+    cfg = ProductionConfig(min_margin=0.0, bpc_inventory=1.0)
     result = engine.plan_production(cfg)
 
     row = next(r for r in result["invention_list"] if r.type_id == 10)
@@ -2798,6 +2803,76 @@ def test_plan_production_invention_t2_bpc_owned_does_not_share_sibling_t2(monkey
     by_type = {row.type_id: row for row in result["invention_list"]}
     assert by_type[10].t2_bpc_owned == 507
     assert by_type[20].t2_bpc_owned == 12
+
+
+@pg_helpers.postgres_required()
+def test_plan_production_invention_buffer_applies_when_item_is_fully_stocked(monkeypatch, tenant):
+    """Decision 2: bpc_inventory multiplies the stock-target quantity, not
+    today's missing. A fully-stocked T2 item with 0 owned BPCs still builds
+    a 4x BPC-on-hand buffer."""
+    stock_targets = [(10, "FullyStockedT2", 10, 0, 0)]
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_plan_context(stock_targets))
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech II", (110, 1, 1.0)))
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [])
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 10.0)  # missing == 0
+    monkeypatch.setattr(engine, "_buy_or_build_decision", lambda *a, **k: "Build")
+    monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: 1.0)
+    monkeypatch.setattr(engine, "margin_home", lambda *a, **k: 0.9)
+
+    def fake_chosen(blueprint_id):
+        return InventionResult(
+            t1_blueprint_type_id=200, t1_blueprint_name="Fake T1 BPO",
+            product_type_id=blueprint_id, product_name="Fake T2 Product", decryptor="None",
+            probability=1.0, output_runs=5.0, datacore_cost=0.0, decryptor_cost=0.0, relic_cost=0.0,
+            total_attempt_cost=0.0, expected_cost_per_success=0.0, expected_cost_per_run=0.0,
+            me=10, te=20, material_savings_per_run=0.0, net_cost_per_run=0.0,
+        )
+    monkeypatch.setattr(engine, "_tech_ii_mods",
+                         lambda type_id, blueprint_id, *a, **k: (1.0, 1.0, "None", fake_chosen(blueprint_id)))
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda blueprint_id, loc: 0)
+
+    cfg = ProductionConfig(min_margin=0.0, bpc_inventory=4.0)
+    result = engine.plan_production(cfg)
+    row = next(r for r in result["invention_list"] if r.type_id == 10)
+    assert row.runs_needed == 0  # display shortfall stays 0
+    assert row.bpc_target_runs == 40  # 4 * ceil(10 / 1)
+    assert row.bpcs_needed == 8  # ceil(40 / 5)
+    assert row.recommended_invention_runs == 8
+    assert row.t1_bpc_target_runs == 8  # 4 * ceil(ceil(10/5) / 1)
+
+
+@pg_helpers.postgres_required()
+def test_plan_special_order_invention_ignores_bpc_inventory_buffer(monkeypatch, tenant):
+    """A one-off order invents exactly the ordered quantity even when
+    cfg.bpc_inventory is the default 4.0."""
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_special_order_context())
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech II", (110, 1, 1.0)))
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [])
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_buy_or_build_decision", lambda *a, **k: "Build")
+
+    def fake_chosen(blueprint_id):
+        return InventionResult(
+            t1_blueprint_type_id=200, t1_blueprint_name="Fake T1 BPO",
+            product_type_id=blueprint_id, product_name="Fake T2 Product", decryptor="None",
+            probability=1.0, output_runs=5.0, datacore_cost=0.0, decryptor_cost=0.0, relic_cost=0.0,
+            total_attempt_cost=0.0, expected_cost_per_success=0.0, expected_cost_per_run=0.0,
+            me=10, te=20, material_savings_per_run=0.0, net_cost_per_run=0.0,
+        )
+    monkeypatch.setattr(engine, "_tech_ii_mods",
+                         lambda type_id, blueprint_id, *a, **k: (1.0, 1.0, "None", fake_chosen(blueprint_id)))
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda blueprint_id, loc: 0)
+
+    items = [(10, "OneOffT2", 10.0)]
+    result = engine.plan_special_order(
+        items, ProductionConfig(bpc_inventory=4.0, min_margin=0.0), net_against_stock=False)
+    row = next(r for r in result["invention_list"] if r.type_id == 10)
+    assert row.runs_needed == 10
+    assert row.bpc_target_runs == 10  # not 40
+    assert row.bpcs_needed == 2  # ceil(10 / 5), today's formula
+    assert row.recommended_invention_runs == 2
 
 
 @pg_helpers.postgres_required()
@@ -3343,13 +3418,91 @@ def test_distribution_recommendations_volume_m3_is_quantity_times_unit_volume(mo
     assert rows[0].volume_m3 == 3.5  # 7 units * 0.5 m3/unit
 
 
+# ------------------------------------------------------------- _invention_need_row BPC buffer
+def _patch_invention_need_row(monkeypatch, owned=0, probability=1.0, output_runs=1.0):
+    chosen = InventionResult(
+        t1_blueprint_type_id=200, t1_blueprint_name="Widget Blueprint",
+        product_type_id=110, product_name="T2 Widget", decryptor="None",
+        probability=probability, output_runs=output_runs,
+        datacore_cost=0.0, decryptor_cost=0.0, relic_cost=0.0,
+        total_attempt_cost=0.0, expected_cost_per_success=0.0, expected_cost_per_run=0.0,
+        me=2, te=4, material_savings_per_run=0.0, net_cost_per_run=0.0,
+    )
+    monkeypatch.setattr(engine, "_tech_ii_mods", lambda *a, **k: (1.0, 1.0, "None", chosen))
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda *a, **k: owned)
+    return chosen
+
+
+def _call_invention_need_row(missing, stockpile, multiplier, product_qty=1.0):
+    return engine._invention_need_row(
+        10, "T2 Widget", "Tech II", (110, 1, product_qty),
+        missing, stockpile, ProductionConfig(),
+        {}, {}, {}, {},
+        bpc_buffer_multiplier=multiplier,
+    )
+
+
+def test_invention_need_row_bpc_buffer_4x_with_zero_owned(monkeypatch):
+    _patch_invention_need_row(monkeypatch, owned=0, probability=0.5, output_runs=5.0)
+    row = _call_invention_need_row(missing=10, stockpile=10, multiplier=4.0)
+    assert row.runs_needed == 10
+    assert row.bpc_target_runs == 40  # 4 * ceil(10 / 1)
+    assert row.bpcs_needed == 8  # ceil(40 / 5)
+    assert row.recommended_invention_runs == 16  # ceil(8 / 0.5)
+    assert row.t1_bpc_target_runs == 16  # 4 * ceil(ceil(10/5) / 0.5) = 4 * 4
+    assert row.t2_bpc_owned == 0
+
+
+def test_invention_need_row_bpc_buffer_applies_when_missing_is_zero(monkeypatch):
+    """Decision 2: fully-stocked finished item still builds a BPC buffer."""
+    _patch_invention_need_row(monkeypatch, owned=0, probability=0.5, output_runs=5.0)
+    row = _call_invention_need_row(missing=0, stockpile=10, multiplier=4.0)
+    assert row.runs_needed == 0
+    assert row.bpc_target_runs == 40
+    assert row.bpcs_needed == 8
+    assert row.recommended_invention_runs == 16
+    assert row.t1_bpc_target_runs == 16
+
+
+def test_invention_need_row_owned_t2_nets_t2_target_not_t1_buffer(monkeypatch):
+    """Owned T2 BPC runs reduce inventions queued now, but the T1 forward
+    buffer is independent of how many T2 BPCs are currently owned (Decision 3).
+    Must not compound: t1_bpc_target_runs is 4x the BASE T1 runs, never 4x
+    recommended_invention_runs."""
+    _patch_invention_need_row(monkeypatch, owned=20, probability=0.5, output_runs=5.0)
+    row = _call_invention_need_row(missing=10, stockpile=10, multiplier=4.0)
+    assert row.bpc_target_runs == 40
+    assert row.t2_bpc_owned == 20
+    assert row.bpcs_needed == 4  # ceil((40 - 20) / 5)
+    assert row.recommended_invention_runs == 8  # ceil(4 / 0.5)
+    assert row.t1_bpc_target_runs == 16  # still 4x base (4), not 8 and not 4*8=32
+
+
+def test_invention_need_row_special_order_path_is_unchanged(monkeypatch):
+    """bpc_buffer_multiplier=1.0 and stockpile_quantity==missing: T2 target
+    equals today's runs_needed, so special orders match pre-buffer math."""
+    owned = 6
+    _patch_invention_need_row(monkeypatch, owned=owned, probability=0.5, output_runs=5.0)
+    missing = 10
+    row = _call_invention_need_row(missing=missing, stockpile=missing, multiplier=1.0)
+    runs_needed = 10  # ceil(10 / 1)
+    runs_still_needed = max(0, runs_needed - owned)  # 4
+    bpcs_needed = 1  # ceil(4 / 5)
+    recommended = 2  # ceil(1 / 0.5)
+    assert row.runs_needed == runs_needed
+    assert row.bpc_target_runs == runs_needed
+    assert row.bpcs_needed == bpcs_needed
+    assert row.recommended_invention_runs == recommended
+
+
 # ------------------------------------------------------------- invention_logistics
 def test_invention_logistics_needs_bpcs_decryptors_and_datacores(monkeypatch):
     from eve_trader.production.models import InventionNeedRow
     cfg = ProductionConfig(invention_location_id=5000)
     need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
                              t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
-                             output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
+                             output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6,
+                             t1_bpc_target_runs=6)
     monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id, product_type_id=None: {"datacores": [(300, 2), (301, 2)]})
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)  # real T1 blueprint, not a relic
@@ -3359,11 +3512,11 @@ def test_invention_logistics_needs_bpcs_decryptors_and_datacores(monkeypatch):
     rows = engine.invention_logistics([need], cfg)
 
     by_type = {r.type_id: r for r in rows}
-    # GitHub issue #14: every attempt (successful or not) fully consumes one
-    # T1 copy, so demand must track recommended_invention_runs (attempts),
-    # not bpcs_needed (successful inventions only) - bpcs_needed undercounts
-    # real consumption since failed attempts burn a copy too.
-    assert by_type[200].needed == 6.0  # recommended_invention_runs T1 copies, not bpcs_needed
+    # T1 "needed" is t1_bpc_target_runs (set equal to recommended here).
+    # Datacore/decryptor demand still tracks recommended_invention_runs
+    # (GitHub issue #14: every attempt consumes one T1 run AND one of each
+    # datacore/decryptor, including failed attempts).
+    assert by_type[200].needed == 6.0
     from eve_trader.production.constants import DECRYPTORS
     parity_type_id = DECRYPTORS["Parity"].type_id
     assert by_type[parity_type_id].needed == 6.0  # one decryptor per attempt
@@ -3381,7 +3534,8 @@ def test_invention_logistics_t1_blueprint_availability_uses_copy_count_not_gener
     cfg = ProductionConfig(invention_location_id=5000)
     need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
                              t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
-                             output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
+                             output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6,
+                             t1_bpc_target_runs=6)
     monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id, product_type_id=None: {"datacores": []})
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)  # real T1 blueprint, not a relic
@@ -3412,7 +3566,8 @@ def test_invention_logistics_relic_availability_uses_generic_stock_not_copy_coun
     cfg = ProductionConfig(invention_location_id=5000)
     need = InventionNeedRow(type_id=10, type_name="T3 Widget", t1_blueprint_type_id=302,
                              t1_blueprint_name="Intact Power Cores", decryptor="Parity", probability=0.26,
-                             output_runs=20, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
+                             output_runs=20, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6,
+                             t1_bpc_target_runs=6)
     monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id, product_type_id=None: {"datacores": []})
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: ANCIENT_RELIC_CATEGORY_ID)  # a relic
@@ -3437,7 +3592,8 @@ def test_invention_logistics_none_decryptor_does_not_demand_type_zero(monkeypatc
     cfg = ProductionConfig(invention_location_id=5000)
     need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
                              t1_blueprint_name="Widget Blueprint", decryptor="None", probability=0.5,
-                             output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
+                             output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6,
+                             t1_bpc_target_runs=6)
     monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id, product_type_id=None: {"datacores": []})
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)  # real T1 blueprint, not a relic
@@ -3454,7 +3610,8 @@ def test_invention_logistics_empty_without_location_configured(monkeypatch):
     cfg = ProductionConfig(invention_location_id=None)
     need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
                              t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
-                             output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
+                             output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6,
+                             t1_bpc_target_runs=6)
 
     assert engine.invention_logistics([need], cfg) == []
 
@@ -3469,6 +3626,56 @@ def test_invention_logistics_skips_rows_with_no_runs_needed(monkeypatch):
     assert engine.invention_logistics([need], cfg) == []
 
 
+def test_invention_logistics_t1_needed_uses_t1_bpc_target_runs_not_recommended(monkeypatch):
+    """Standing-target path: T1 stock is the independent forward buffer
+    (t1_bpc_target_runs), while datacores/decryptors still scale with the
+    inventions you actually queue now (recommended_invention_runs)."""
+    from eve_trader.production.models import InventionNeedRow
+    cfg = ProductionConfig(invention_location_id=5000)
+    need = InventionNeedRow(
+        type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
+        t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
+        output_runs=5, runs_needed=0, bpcs_needed=4, recommended_invention_runs=8,
+        t1_bpc_target_runs=16, bpc_target_runs=40,
+    )
+    monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id, product_type_id=None: {"datacores": [(300, 2)]})
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, **kwargs: 0.0)
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id, **kwargs: 0.0)
+
+    rows = engine.invention_logistics([need], cfg)
+    by_type = {r.type_id: r for r in rows}
+    assert by_type[200].needed == 16.0  # t1_bpc_target_runs, not recommended (8)
+    from eve_trader.production.constants import DECRYPTORS
+    parity_type_id = DECRYPTORS["Parity"].type_id
+    assert by_type[parity_type_id].needed == 8.0  # recommended_invention_runs
+    assert by_type[300].needed == 16.0  # 2 per attempt * 8 attempts, not 2*16
+
+
+def test_invention_logistics_t1_buffer_still_demanded_when_no_inventions_queued(monkeypatch):
+    """Fully-stocked T2 BPC buffer still keeps the independent T1 buffer;
+    datacores/decryptors are not demanded when nothing is being invented."""
+    from eve_trader.production.models import InventionNeedRow
+    cfg = ProductionConfig(invention_location_id=5000)
+    need = InventionNeedRow(
+        type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
+        t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
+        output_runs=5, runs_needed=0, bpcs_needed=0, recommended_invention_runs=0,
+        t1_bpc_target_runs=16, bpc_target_runs=40, t2_bpc_owned=40,
+    )
+    monkeypatch.setattr(storage, "get_invention_recipe", lambda t1_id, product_type_id=None: {"datacores": [(300, 2)]})
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, **kwargs: 0.0)
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id, **kwargs: 0.0)
+
+    rows = engine.invention_logistics([need], cfg)
+    by_type = {r.type_id: r for r in rows}
+    assert set(by_type) == {200}
+    assert by_type[200].needed == 16.0
+
+
 # ------------------------------------------------------------- t1_bpc_invention_needs
 def test_t1_bpc_invention_needs_reports_missing_copies_and_bpo_presence(monkeypatch):
     # GitHub issue #114: the T1-blueprint-only slice of invention_logistics'
@@ -3477,7 +3684,8 @@ def test_t1_bpc_invention_needs_reports_missing_copies_and_bpo_presence(monkeypa
     cfg = ProductionConfig(invention_location_id=5000)
     need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
                              t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
-                             output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
+                             output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6,
+                             t1_bpc_target_runs=6)
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)  # real T1 blueprint, not a relic
     monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id, **kwargs: 4.0)
@@ -3502,7 +3710,8 @@ def test_t1_bpc_invention_needs_relic_uses_generic_stock_and_never_shows_a_bpo(m
     cfg = ProductionConfig(invention_location_id=5000)
     need = InventionNeedRow(type_id=10, type_name="T3 Widget", t1_blueprint_type_id=302,
                              t1_blueprint_name="Intact Power Cores", decryptor="Parity", probability=0.26,
-                             output_runs=20, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
+                             output_runs=20, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6,
+                             t1_bpc_target_runs=6)
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: ANCIENT_RELIC_CATEGORY_ID)  # a relic
 
@@ -3533,10 +3742,12 @@ def test_t1_bpc_invention_needs_aggregates_across_stock_targets_sharing_a_t1_blu
     cfg = ProductionConfig(invention_location_id=5000)
     need_a = InventionNeedRow(type_id=10, type_name="T2 Widget A", t1_blueprint_type_id=200,
                                t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
-                               output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
+                               output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6,
+                             t1_bpc_target_runs=6)
     need_b = InventionNeedRow(type_id=11, type_name="T2 Widget B", t1_blueprint_type_id=200,
                                t1_blueprint_name="Widget Blueprint", decryptor="Attainment", probability=0.4,
-                               output_runs=1, runs_needed=4, bpcs_needed=4, recommended_invention_runs=10)
+                               output_runs=1, runs_needed=4, bpcs_needed=4, recommended_invention_runs=10,
+                               t1_bpc_target_runs=10)
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)  # real T1 blueprint, not a relic
     monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id, **kwargs: 0.0)
@@ -3545,7 +3756,7 @@ def test_t1_bpc_invention_needs_aggregates_across_stock_targets_sharing_a_t1_blu
     rows = engine.t1_bpc_invention_needs([need_a, need_b], cfg)
 
     assert len(rows) == 1
-    assert rows[0].needed == 16  # 6 + 10 attempts, both needing the same T1 blueprint
+    assert rows[0].needed == 16  # 6 + 10 t1_bpc_target_runs, both needing the same T1 blueprint
 
 
 def test_t1_bpc_invention_needs_stockpile_pct_uncapped_above_100(monkeypatch):
@@ -3556,7 +3767,8 @@ def test_t1_bpc_invention_needs_stockpile_pct_uncapped_above_100(monkeypatch):
     cfg = ProductionConfig(invention_location_id=5000)
     need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
                              t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
-                             output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
+                             output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6,
+                             t1_bpc_target_runs=6)
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)  # real T1 blueprint, not a relic
     monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id, **kwargs: 18.0)  # 3x needed (6)
@@ -3576,7 +3788,8 @@ def test_t1_bpc_invention_needs_empty_without_location_configured(monkeypatch):
     cfg = ProductionConfig(invention_location_id=None)
     need = InventionNeedRow(type_id=10, type_name="T2 Widget", t1_blueprint_type_id=200,
                              t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
-                             output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6)
+                             output_runs=2, runs_needed=10, bpcs_needed=5, recommended_invention_runs=6,
+                             t1_bpc_target_runs=6)
 
     assert engine.t1_bpc_invention_needs([need], cfg) == []
 
@@ -3589,6 +3802,34 @@ def test_t1_bpc_invention_needs_skips_rows_with_no_runs_needed(monkeypatch):
                              output_runs=2, runs_needed=0, bpcs_needed=0, recommended_invention_runs=0)
 
     assert engine.t1_bpc_invention_needs([need], cfg) == []
+
+
+def test_t1_bpc_invention_needs_sums_t1_bpc_target_runs_not_recommended(monkeypatch):
+    """plan_production path: T1 'needed' is the independent forward buffer,
+    summed per T1 blueprint, not recommended_invention_runs (which nets
+    owned T2 BPCs and would compound if used as the T1 target)."""
+    from eve_trader.production.models import InventionNeedRow
+    cfg = ProductionConfig(invention_location_id=5000)
+    need_a = InventionNeedRow(
+        type_id=10, type_name="T2 Widget A", t1_blueprint_type_id=200,
+        t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
+        output_runs=5, runs_needed=0, bpcs_needed=4, recommended_invention_runs=8,
+        t1_bpc_target_runs=16,
+    )
+    need_b = InventionNeedRow(
+        type_id=11, type_name="T2 Widget B", t1_blueprint_type_id=200,
+        t1_blueprint_name="Widget Blueprint", decryptor="Parity", probability=0.5,
+        output_runs=5, runs_needed=0, bpcs_needed=0, recommended_invention_runs=0,
+        t1_bpc_target_runs=8,
+    )
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id, **kwargs: 0.0)
+    monkeypatch.setattr(storage, "has_bpo_at_location", lambda type_id, location_id, **kwargs: False)
+
+    rows = engine.t1_bpc_invention_needs([need_a, need_b], cfg)
+    assert len(rows) == 1
+    assert rows[0].needed == 24  # 16 + 8 t1_bpc_target_runs, ignoring recommended 8 + 0
 
 
 # --------------------------------------------------------------------- Alchemy

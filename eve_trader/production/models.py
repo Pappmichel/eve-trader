@@ -92,9 +92,21 @@ class InventionNeedRow:
     decryptor: str
     probability: float
     output_runs: float       # BPC runs produced per successful invention
-    runs_needed: int         # total manufacturing runs the Bauliste requires
-    bpcs_needed: int         # ceil(max(0, runs_needed - t2_bpc_owned) / output_runs) - nets off owned-but-unbuilt BPC runs first
-    recommended_invention_runs: int  # ceil(bpcs_needed / probability) - expected attempts
+    runs_needed: int         # total manufacturing runs the Bauliste requires (pure shortfall: ceil(missing / product_qty); display-only, not the buffer target)
+    bpcs_needed: int         # ceil(max(0, bpc_target_runs - t2_bpc_owned) / output_runs) - nets off owned-but-unbuilt BPC runs against the buffered T2 target
+    recommended_invention_runs: int  # ceil(bpcs_needed / probability) - expected attempts to actually queue now
+    # Buffered T2 BPC-run target: ceil(bpc_inventory * ceil(stockpile_quantity / product_qty))
+    # on the standing-target path (plan_production), or equal to runs_needed on the
+    # special-order path (bpc_buffer_multiplier=1.0 and stockpile_quantity == missing).
+    # Independent of today's missing quantity - a fully-stocked item still keeps this
+    # BPC-on-hand buffer. See engine._invention_need_row.
+    bpc_target_runs: int = 0
+    # Independent T1 forward buffer: ceil(bpc_inventory * base T1 invention runs),
+    # where base T1 runs are sized from the unbuffered manufacturing target, never
+    # from recommended_invention_runs (that would compound 4x T2 * 4x T1 = 16x)
+    # and never netted against owned T2 BPCs. invention_logistics /
+    # t1_bpc_invention_needs sum this per t1_blueprint_type_id as T1 "needed".
+    t1_bpc_target_runs: int = 0
     # GitHub issue #114: total remaining *runs* across every owned copy of
     # the *invented* T2 blueprint (the invention recipe's own product_
     # type_id, not `type_id` above - that's the manufactured item), owned
@@ -142,7 +154,7 @@ class T1BpcInventionNeedRow:
     copy can be reprinted on site instead of imported/bought."""
     type_id: int
     name: str
-    needed: int       # total BPC copies/runs needed (recommended_invention_runs, summed across every stock target that invents from this T1 blueprint)
+    needed: int       # total T1 BPC runs to keep on stock (t1_bpc_target_runs, summed across every stock target that invents from this T1 blueprint - the independent 1x-base forward buffer, not recommended_invention_runs)
     available: int    # BPC copies currently at cfg.invention_location_id
     missing: int       # max(0, needed - available)
     bpo_present: bool  # an original BPO of this type sits at cfg.invention_location_id too
