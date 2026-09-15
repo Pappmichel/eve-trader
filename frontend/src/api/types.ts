@@ -399,6 +399,8 @@ export interface InventionNeedRow {
   recommended_invention_runs: number
   t2_bpc_owned: number
   stockpile_pct: number
+  bpc_target_runs: number
+  t1_bpc_target_runs: number
 }
 
 export interface T1BpcInventionNeedRow {

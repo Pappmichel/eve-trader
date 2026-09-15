@@ -65,6 +65,7 @@ export default function Invention() {
     { header: 'Success Chance', accessorKey: 'probability', size: 140, cell: (i) => pct(i.getValue()) },
     { header: 'Runs/BPC', accessorKey: 'output_runs', size: 110, cell: (i) => qty(i.getValue()) },
     { header: 'Runs Needed', accessorKey: 'runs_needed', size: 130, cell: (i) => qty(i.getValue()) },
+    { header: 'BPC Target (buffer)', accessorKey: 'bpc_target_runs', size: 170, cell: (i) => qty(i.getValue()) },
     { header: 'BPCs Needed', accessorKey: 'bpcs_needed', size: 130, cell: (i) => qty(i.getValue()) },
     { header: 'Recommended Invention Runs', accessorKey: 'recommended_invention_runs', size: 200, cell: (i) => qty(i.getValue()) },
     { header: 'T2 BPCs Owned', accessorKey: 't2_bpc_owned', size: 140, cell: (i) => qty(i.getValue()) },
@@ -139,8 +140,11 @@ export default function Invention() {
             <DataTable data={inventionNeeds} columns={needsColumns} maxHeight={360} dataUpdatedAt={planUpdatedAt} />
             <Text size="xs" c="dimmed" mt="xs">
               Covers <b>all</b> Tech II stock targets, including fully-stocked ones. Runs needed = missing
-              quantity ÷ quantity per run, rounded up. Recommended invention runs = BPCs needed ÷ success chance,
-              rounded up. T2 BPCs Owned = copies owned anywhere, not just at the invention station.
+              quantity ÷ quantity per run, rounded up (today&apos;s manufacturing shortfall). BPC Target
+              (buffer) = Settings&apos; BPC stock buffer × the stock-target quantity in runs, rounded up —
+              kept even when the finished item is already fully stocked. Recommended invention runs =
+              BPCs still needed after owned T2 BPC runs ÷ success chance, rounded up. T2 BPCs Owned =
+              remaining runs on copies owned anywhere, not just at the invention station.
             </Text>
           </>
         )}
@@ -161,10 +165,12 @@ export default function Invention() {
           <>
             <DataTable data={t1BpcNeeds} columns={t1BpcColumns} maxHeight={360} dataUpdatedAt={t1BpcUpdatedAt} />
             <Text size="xs" c="dimmed" mt="xs">
-              Just the T1 blueprint copies from the table above - the Logistics tab's combined Invention section also
-              mixes in decryptors and datacores, which made "how many BPC runs am I actually short" hard to see at a
-              glance. BPO On Site = whether an original BPO for that blueprint sits at the invention station too, so
-              a missing copy can be reprinted on site instead of imported.
+              Just the T1 blueprint copies needed as an independent stock buffer (Settings&apos; BPC stock
+              buffer × the base T1 invention runs, not compounded on top of the T2 buffer) - the Logistics
+              tab&apos;s combined Invention section also mixes in decryptors and datacores, which are sized
+              from inventions you actually queue now. BPO On Site = whether an original BPO for that
+              blueprint sits at the invention station too, so a missing copy can be reprinted on site
+              instead of imported.
             </Text>
           </>
         )}

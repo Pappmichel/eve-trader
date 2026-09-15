@@ -728,15 +728,24 @@ def _invention_need_row(type_id: int, type_name: str, activity: str,
                         bp: Optional[tuple[int, int, float]], missing: float,
                         stockpile_quantity: float, cfg: ProductionConfig,
                         home: dict, jita: dict, selected_decryptors: dict[int, str],
-                        t2_memo: dict[int, tuple[float, float, Optional[str], Optional[InventionResult]]]
+                        t2_memo: dict[int, tuple[float, float, Optional[str], Optional[InventionResult]]],
+                        bpc_buffer_multiplier: float = 1.0,
                         ) -> Optional[InventionNeedRow]:
     """One InventionNeedRow for a Tech II/III product, or None if it isn't
     invention-sourced. Reuses `_tech_ii_mods`' chosen InventionResult
     (grade x decryptor already optimized there) instead of re-resolving the
-    recipe. `missing` drives runs_needed; `stockpile_quantity` is the
-    stockpile_pct denominator (a stock target's backup+home+Jita total, or
-    a special order's ordered qty - plan_special_order measures stockpile
-    against the order itself, not a standing backup target).
+    recipe. `missing` drives runs_needed (pure manufacturing shortfall, for
+    display); `stockpile_quantity` is the buffer-target and stockpile_pct
+    denominator (a stock target's backup+home+Jita total, or a special
+    order's ordered qty - plan_special_order measures stockpile against the
+    order itself, not a standing backup target).
+
+    `bpc_buffer_multiplier` is ProductionConfig.bpc_inventory on the
+    standing-target path (default 4.0 = keep 4x needed BPC runs on stock)
+    and 1.0 on the special-order path so a one-off order invents exactly
+    the ordered quantity. With multiplier 1.0 and
+    stockpile_quantity == missing, t2_bpc_target_runs equals today's
+    runs_needed (special orders are unchanged).
 
     This is the only constructor of InventionNeedRow in production code
     (SF-7). CLI, API routers, and the frontend must not invent a second
@@ -759,18 +768,28 @@ def _invention_need_row(type_id: int, type_name: str, activity: str,
     # Raptor each showing 507).
     t2_bpc_owned = int(storage.available_blueprint_copies(blueprint_id, None))
     runs_needed = math.ceil(missing / product_qty) if missing > 0 else 0
-    runs_still_needed = max(0, runs_needed - t2_bpc_owned)
+    base_target_runs = math.ceil(stockpile_quantity / product_qty) if stockpile_quantity > 0 else 0
+    t2_bpc_target_runs = math.ceil(bpc_buffer_multiplier * base_target_runs)
+    runs_still_needed = max(0, t2_bpc_target_runs - t2_bpc_owned)
     bpcs_needed = math.ceil(runs_still_needed / chosen.output_runs) if runs_still_needed > 0 else 0
     recommended_runs = math.ceil(bpcs_needed / chosen.probability) if bpcs_needed > 0 else 0
-    target_stock_runs = math.ceil(stockpile_quantity / product_qty) if stockpile_quantity > 0 else 0
+    # T1 forward buffer is independent of owned T2 BPCs and is never
+    # compounded on top of recommended_invention_runs (that would be
+    # bpc_inventory^2). Sized from the unbuffered manufacturing target.
+    base_bpcs_needed = math.ceil(base_target_runs / chosen.output_runs) if base_target_runs > 0 else 0
+    base_t1_invention_runs = (
+        math.ceil(base_bpcs_needed / chosen.probability) if base_bpcs_needed > 0 else 0)
+    t1_bpc_target_runs = math.ceil(bpc_buffer_multiplier * base_t1_invention_runs)
     # Owning BPC runs against a zero configured target must not collapse to
     # a hardcoded 0% (same class of bug as backup_stock=0 hiding a real
     # market-listing target, 2026-08-31): the row is still on the Invention
     # table, T2 BPCs Owned is a real number, and a gray 0% badge next to it
     # reads as "you have none". 100% here means "covered relative to a
-    # nothing-to-cover target", not "exactly on target".
-    if target_stock_runs > 0:
-        stockpile_pct = max(0.0, t2_bpc_owned / target_stock_runs * 100)
+    # nothing-to-cover target", not "exactly on target". Denominator is the
+    # unbuffered manufacturing-run target (not bpc_target_runs): 400% with
+    # the default 4x buffer means the BPC stockpile is fully filled.
+    if base_target_runs > 0:
+        stockpile_pct = max(0.0, t2_bpc_owned / base_target_runs * 100)
     else:
         stockpile_pct = 100.0 if t2_bpc_owned > 0 else 0.0
     return InventionNeedRow(
@@ -780,6 +799,7 @@ def _invention_need_row(type_id: int, type_name: str, activity: str,
         runs_needed=runs_needed, bpcs_needed=bpcs_needed,
         recommended_invention_runs=recommended_runs,
         t2_bpc_owned=t2_bpc_owned, stockpile_pct=stockpile_pct,
+        bpc_target_runs=t2_bpc_target_runs, t1_bpc_target_runs=t1_bpc_target_runs,
     )
 
 
@@ -1497,9 +1517,10 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     'invention_list' (InventionNeedRow list, sorted by recommended invention
     runs desc - one row per *configured Tech II stock target* that's actually
     invention-sourced (has a decryptor), regardless of whether it's currently
-    missing or would be bought instead of built right now - runs_needed/
-    bpcs_needed/recommended_invention_runs are 0 for a target that's already
-    fully stocked).
+    missing or would be bought instead of built right now - runs_needed is 0
+    for a target that's already fully stocked, but bpc_target_runs /
+    recommended_invention_runs still size a BPC-on-hand buffer from
+    cfg.bpc_inventory x the stock-target quantity).
 
     Track B (2026-09-11): HTTP entry is do_refresh_production — see that
     docstring for the live timing and why this was not moved onto
@@ -1559,6 +1580,7 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             type_id, type_name, activity, bp, missing,
             backup_stock + (home_market_stock or 0) + (jita_market_stock or 0),
             cfg, home, jita, selected_decryptors, t2_memo,
+            bpc_buffer_multiplier=cfg.bpc_inventory,
         )
         if invention_row is not None:
             invention_list.append(invention_row)
@@ -1685,6 +1707,8 @@ def plan_special_order(items: list[tuple[int, str, float]], cfg: ProductionConfi
         # Tech II/III line item: same InventionNeedRow constructor as
         # plan_production (_invention_need_row). Stockpile % is against this
         # order's own quantity - there is no backup+home+Jita standing target.
+        # bpc_buffer_multiplier stays at the default 1.0: a one-off order
+        # invents exactly the ordered quantity, regardless of cfg.bpc_inventory.
         invention_row = _invention_need_row(
             type_id, type_name, activity, bp, missing, missing,
             cfg, home, jita, selected_decryptors, t2_memo,
@@ -3140,23 +3164,26 @@ def invention_logistics(invention_list: list[InventionNeedRow],
     """Datacores/decryptors/T1 BPC runs needed vs. what's sitting at the
     configured invention station (cfg.invention_location_id - GitHub issue
     #9), reusing LogisticsRow's existing "needed vs available at one
-    location" shape. Needs recommended_invention_runs (not bpcs_needed)
-    *runs* of the T1 blueprint itself (GitHub issue #14, previously
-    reversed): one invention attempt consumes exactly one *run* from a T1
-    BPC, whether that attempt succeeds or fails (confirmed against
+    location" shape. T1 BPC "needed" is t1_bpc_target_runs (the independent
+    forward buffer sized from the unbuffered manufacturing target - see
+    _invention_need_row), summed per t1_blueprint_type_id: keep that many
+    T1 runs on stock even when no invention job is queued right now.
+    Datacore/decryptor demand still scales with recommended_invention_runs
+    (consumed by the inventions you actually run now), not the T1 buffer.
+
+    One invention attempt consumes exactly one *run* from a T1 BPC, whether
+    that attempt succeeds or fails (confirmed against
     wiki.eveuniversity.org/Invention: "this BPC will be returned to you
     with one fewer run remaining on it. If it only has one run remaining,
     it will be consumed.") - a max-run copy is worth many attempts, a 1-run
     copy is worth exactly one, which is exactly why players don't always
     keep max-run copies on hand for this (the report that caught the
     original GitHub issue #14 confusion: "not always are max run copies
-    used"). bpcs_needed (ceil(runs_needed / output_runs), the number of
-    *successful* inventions needed) undercounts real T1-run consumption,
-    since every failed attempt burns a run too without producing anything -
-    recommended_invention_runs (ceil(bpcs_needed / probability), the full
-    attempt count) is the number already shown on the Invention tab as
-    "recommended attempts", so this now matches that number exactly (plus
-    whatever overbuild the user has already baked into it upstream).
+    used"). bpcs_needed (successful inventions needed) undercounts real
+    T1-run consumption, since every failed attempt burns a run too without
+    producing anything - recommended_invention_runs is the attempt count
+    already shown on the Invention tab, and datacore/decryptor demand
+    matches that number exactly.
 
     Availability for a genuine T1 blueprint goes through
     storage.available_blueprint_copies, not the generic esi_stock_at_location
@@ -3195,22 +3222,27 @@ def invention_logistics(invention_list: list[InventionNeedRow],
     demand: dict[int, float] = {}
     t1_blueprint_type_ids: set[int] = set()
     for need in invention_list:
-        if need.recommended_invention_runs <= 0:
+        t1_needed = need.t1_bpc_target_runs
+        rec = need.recommended_invention_runs
+        if t1_needed <= 0 and rec <= 0:
             continue
-        demand[need.t1_blueprint_type_id] = demand.get(need.t1_blueprint_type_id, 0.0) + need.recommended_invention_runs
-        t1_blueprint_type_ids.add(need.t1_blueprint_type_id)
+        if t1_needed > 0:
+            demand[need.t1_blueprint_type_id] = demand.get(need.t1_blueprint_type_id, 0.0) + t1_needed
+            t1_blueprint_type_ids.add(need.t1_blueprint_type_id)
 
+        if rec <= 0:
+            continue
         decryptor = DECRYPTORS.get(need.decryptor)
         # decryptor.type_id == 0 is the "None" entry's own sentinel (no
         # decryptor used) - not a real EVE item. SDE type_id 0 happens to be
         # named "#System", so without this guard it showed up as a bogus
         # demand row (GitHub issue #13).
         if decryptor is not None and decryptor.type_id != 0:
-            demand[decryptor.type_id] = demand.get(decryptor.type_id, 0.0) + need.recommended_invention_runs
+            demand[decryptor.type_id] = demand.get(decryptor.type_id, 0.0) + rec
 
         recipe = storage.get_invention_recipe(need.t1_blueprint_type_id)
         for datacore_id, datacore_qty in (recipe.get("datacores", []) if recipe else []):
-            demand[datacore_id] = demand.get(datacore_id, 0.0) + datacore_qty * need.recommended_invention_runs
+            demand[datacore_id] = demand.get(datacore_id, 0.0) + datacore_qty * rec
 
     rows = []
     for type_id, needed in demand.items():
@@ -3239,10 +3271,10 @@ def t1_bpc_invention_needs(invention_list: list[InventionNeedRow],
     and datacores into one flat LogisticsRow list, which makes "how many BPC
     runs am I short, and do I even own the BPO to print more" hard to see
     for the thing that actually matters most - the T1 BPC itself. This is
-    the T1-blueprint-only slice of the exact same demand accumulation
-    invention_logistics already does (same recommended_invention_runs-per-
-    attempt reasoning - see that function's own docstring), plus a
-    BPO-presence check invention_logistics has no reason to compute.
+    the T1-blueprint-only slice of invention_logistics' T1 demand
+    (t1_bpc_target_runs, the independent forward buffer - see that
+    function's own docstring), plus a BPO-presence check
+    invention_logistics has no reason to compute.
 
     Despite this function's own name, `type_id` here can also be a Tech III
     relic (production/constants.py's ANCIENT_RELIC_CATEGORY_ID) - see
@@ -3260,10 +3292,10 @@ def t1_bpc_invention_needs(invention_list: list[InventionNeedRow],
 
     needed_by_t1: dict[int, int] = {}
     for need in invention_list:
-        if need.recommended_invention_runs <= 0:
+        if need.t1_bpc_target_runs <= 0:
             continue
         needed_by_t1[need.t1_blueprint_type_id] = (
-            needed_by_t1.get(need.t1_blueprint_type_id, 0) + need.recommended_invention_runs)
+            needed_by_t1.get(need.t1_blueprint_type_id, 0) + need.t1_bpc_target_runs)
 
     rows = []
     for type_id, needed in needed_by_t1.items():

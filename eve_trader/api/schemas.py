@@ -294,6 +294,8 @@ class InventionNeedRow(_Base):
     recommended_invention_runs: int
     t2_bpc_owned: int
     stockpile_pct: float
+    bpc_target_runs: int = 0
+    t1_bpc_target_runs: int = 0
 
 
 class T1BpcInventionNeedRow(_Base):

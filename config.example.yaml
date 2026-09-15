@@ -55,7 +55,7 @@ backup_interval_hours: 24.0
 
 # ---- Production tool (see eve_trader/production/config.py ProductionConfig) ----
 component_overbuild: 0.7
-bpc_inventory: 4.0
+bpc_inventory: 4.0           # multiplier: 4.0 = 400% BPC stockpile buffer (keep 4x needed BPC runs)
 market_fees: 0.05
 min_margin: 0.15
 haul_cost_per_m3: 900.0
