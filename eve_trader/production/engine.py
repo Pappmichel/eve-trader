@@ -2539,31 +2539,54 @@ def _scan_build_candidates(cfg: ProductionConfig, client: Optional["GoonmetricsC
     `with` indentation over this entire body. Wrapped in one shared DB
     connection (storage.batch_session) for the same reason plan_production/
     plan_asset_optimized are - this walks up to ~19,400 SDE items, each
-    triggering several storage calls."""
-    ctx = _PlanContext(cfg)
-    existing_target_ids = {t[0] for t in ctx.stock_targets}
+    triggering several storage calls.
 
-    cost_memo: dict[int, Optional[float]] = {}
-    t2_memo: dict[int, tuple[float, float, Optional[str]]] = {}
-
+    classify_activity is run for every scanned item in a first pass, *before*
+    `_PlanContext` is built, so every real candidate (anything with a
+    blueprint at all, not just what happens to already be a stock target's
+    own sub-material) can be passed to it as `extra_type_ids` - without this,
+    `_PlanContext` only ever priced stock_targets' own material closure, so a
+    genuinely new, untracked candidate (unrelated to anything you already
+    build) could never get a home/Jita quote here at all, the exact same
+    root cause fixed for the Margin page's single-item search (see
+    item_margin_detail's docstring) - Discover Build Candidates could in
+    practice only ever surface candidates that doubled as an existing stock
+    target's own sub-material, defeating this scan's whole point of finding
+    something new. Scoped to *manufacturable* items only (not literally
+    every SDE row) to keep this a bounded widening rather than "price
+    everything" - Jita has no bulk-region endpoint (see pricing.jita_prices'
+    own docstring), so this does mean more individual ESI calls than before
+    on a cold cache; accepted deliberately, since this scan is already the
+    slow, ~19,400-item, progress-reported, TTL-cached path, not something on
+    a hot request path."""
     all_types = storage.load_sde_types_with_market_group()
     # Batch size chosen so a ~19,400-item scan reports ~20 progress updates -
     # frequent enough that "Batch X/Y" visibly moves (see useBackgroundJob.ts's
     # own generic batch/total_batches rendering, already shared with Doctrine
     # sync/Admin SDE refresh, no new frontend format needed), infrequent
     # enough that the progress writes themselves don't meaningfully slow the
-    # scan down.
+    # scan down. Attached to this classification pass, not the pricing pass
+    # below - classify_activity's own invention-recipe lookups are the
+    # genuinely slow, per-item part of this scan; the second pass below is
+    # just dict lookups/arithmetic over the same already-classified list.
     batch_size = 1000
     total_batches = max(1, math.ceil(len(all_types) / batch_size))
 
-    results = []
+    classified = []  # (type_id, type_name, meta_level, activity, bp)
     for i, (type_id, type_name, _volume, _market_group_id, meta_level, _category_id) in enumerate(all_types):
         if progress_callback is not None and i % batch_size == 0:
             _emit_progress(progress_callback, {"batch": i // batch_size + 1, "total_batches": total_batches})
-        if type_id in existing_target_ids:
-            continue
         activity, bp = classify_activity(type_id)
-        if bp is None:
+        classified.append((type_id, type_name, meta_level, activity, bp))
+
+    ctx = _PlanContext(cfg, extra_type_ids=[c[0] for c in classified if c[4] is not None])
+    existing_target_ids = {t[0] for t in ctx.stock_targets}
+    cost_memo: dict[int, Optional[float]] = {}
+    t2_memo: dict[int, tuple[float, float, Optional[str]]] = {}
+
+    results = []
+    for type_id, type_name, meta_level, activity, bp in classified:
+        if type_id in existing_target_ids or bp is None:
             continue
         home_quote = ctx.home.get(type_id)
         if home_quote is None or home_quote.buy <= 0 or home_quote.buy == home_quote.sell:
@@ -2747,13 +2770,21 @@ def _scan_ship_margins(cfg: ProductionConfig) -> list[dict]:
     reason _scan_build_candidates is (holds the cache lock across the whole
     scan, not just the read/write). Ships are a much smaller SDE slice than
     discover_build_candidates' full scan (~19,400 items), so this is cheap
-    by comparison even though it's not gated by margin/daily-profit at all."""
-    ctx = _PlanContext(cfg)
-    cost_memo: dict[int, Optional[float]] = {}
-    t2_memo: dict[int, tuple[float, float, Optional[str]]] = {}
-    excluded_market_groups = _descendant_market_group_ids(SPECIAL_EDITION_SHIPS_MARKET_GROUP_ID)
+    by comparison even though it's not gated by margin/daily-profit at all.
 
-    results = []
+    Collects every manufacturable ship's own type_id *before* building
+    `ctx`, and passes it as `extra_type_ids` - without this, `_PlanContext`
+    only prices stock_targets' own material closure, so any ship whose BOM
+    shares nothing with a tracked stock target (every Titan/Supercarrier
+    being the standing real-world case - their capital-specific materials
+    essentially never appear in another item's recipe) priced as
+    build_cost=None here too, the exact same root cause fixed for the
+    Margin page's single-item search (see item_margin_detail's docstring).
+    Cheap to widen this way: ships are already a small, bounded SDE slice
+    (see this function's own docstring above), unlike
+    _scan_build_candidates' full ~19,400-item universe."""
+    excluded_market_groups = _descendant_market_group_ids(SPECIAL_EDITION_SHIPS_MARKET_GROUP_ID)
+    ships = []  # (type_id, type_name, meta_level, activity)
     for type_id, type_name, _volume, market_group_id, meta_level, category_id in storage.load_sde_types_with_market_group():
         if category_id != SHIP_CATEGORY_ID:
             continue
@@ -2762,6 +2793,14 @@ def _scan_ship_margins(cfg: ProductionConfig) -> list[dict]:
         activity, bp = classify_activity(type_id)
         if bp is None:
             continue
+        ships.append((type_id, type_name, meta_level, activity))
+
+    ctx = _PlanContext(cfg, extra_type_ids=[s[0] for s in ships])
+    cost_memo: dict[int, Optional[float]] = {}
+    t2_memo: dict[int, tuple[float, float, Optional[str]]] = {}
+
+    results = []
+    for type_id, type_name, meta_level, activity in ships:
         build_cost = _unit_cost(type_id, cfg, ctx.home, ctx.jita, cost_memo, ctx.selected_decryptors,
                                  t2_memo, ctx.cost_indices, ctx.adjusted_prices)
         home_quote = ctx.home.get(type_id)

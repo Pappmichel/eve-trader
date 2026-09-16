@@ -998,8 +998,10 @@ class _FakePlanContext:
     1-3 - discover_build_candidates now requires that before even looking at
     margin (see MAX_PLAUSIBLE_BUILD_MARGIN's buy==sell synthetic-price
     rejection), so every test needs one unless it's specifically testing
-    that rejection."""
-    def __init__(self, cfg):
+    that rejection. Accepts (and ignores) `extra_type_ids` - both
+    _scan_build_candidates and _scan_ship_margins now pass every scanned
+    item's own type_id through it (see their own docstrings)."""
+    def __init__(self, cfg, extra_type_ids=()):
         self.stock_targets = [(1, "Already Tracked", 0, None, None)]
         self.manual_stock = {}
         self.manual_overrides = {}
@@ -1025,6 +1027,39 @@ def test_discover_build_candidates_skips_existing_stock_targets(monkeypatch, ten
     results = engine.discover_build_candidates(cfg, client=_FakeGmClient())
 
     assert [r["type_id"] for r in results] == [2]
+
+
+@pg_helpers.postgres_required()
+def test_scan_build_candidates_passes_manufacturable_type_ids_as_extra_type_ids(monkeypatch, tenant):
+    """Regression test for the same root cause item_margin_detail's own
+    regression test covers: _scan_build_candidates used to build
+    _PlanContext with no extra_type_ids, so a genuinely new candidate (not
+    itself a sub-material of an existing stock target) could never get a
+    home/Jita quote here at all - Discover Build Candidates could in
+    practice only ever surface candidates that doubled as an existing stock
+    target's own sub-material. Only manufacturable items (a real blueprint)
+    should be passed through, not literally every scanned SDE row."""
+    captured = {}
+
+    class _CapturingPlanContext(_FakePlanContext):
+        def __init__(self, cfg, extra_type_ids=()):
+            captured["extra_type_ids"] = list(extra_type_ids)
+            super().__init__(cfg, extra_type_ids)
+
+    monkeypatch.setattr(engine, "_PlanContext", _CapturingPlanContext)
+    monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: [
+        (1, "Buildable Widget", 1.0, 100, None, 7),
+        (2, "Another Buildable Widget", 1.0, 100, None, 7),
+        (3, "Raw Ore", 1.0, 100, None, 7),  # no blueprint - must be excluded
+    ])
+    monkeypatch.setattr(engine, "classify_activity",
+                         lambda type_id: ("Tech I", (999, 1, 1.0)) if type_id != 3 else ("Input", None))
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: 0.5)
+
+    engine.discover_build_candidates(ProductionConfig(min_margin=0.15), client=_FakeGmClient())
+
+    assert sorted(captured["extra_type_ids"]) == [1, 2]
 
 
 @pg_helpers.postgres_required()
@@ -1090,8 +1125,8 @@ def test_discover_build_candidates_rejects_buy_equals_sell_as_synthetic_price(mo
     # synthetic/fallback price (no real market for this item), not a
     # genuine live quote.
     class FakeContextWithDegeneratePrice(_FakePlanContext):
-        def __init__(self, cfg):
-            super().__init__(cfg)
+        def __init__(self, cfg, extra_type_ids=()):
+            super().__init__(cfg, extra_type_ids)
             self.home = {2: _fake_quote(2, buy=100.0, sell=100.0)}  # buy == sell
 
     monkeypatch.setattr(engine, "_PlanContext", FakeContextWithDegeneratePrice)
@@ -1491,6 +1526,35 @@ _FAKE_MARKET_GROUPS = [
 
 def _stub_market_groups(monkeypatch):
     monkeypatch.setattr(storage, "load_sde_market_groups", lambda: _FAKE_MARKET_GROUPS)
+
+
+@pg_helpers.postgres_required()
+def test_scan_ship_margins_passes_every_ship_type_id_as_extra_type_ids(monkeypatch, tenant):
+    """Regression test for the same root cause item_margin_detail's own
+    regression test covers: _scan_ship_margins used to build _PlanContext
+    with no extra_type_ids, so any ship whose BOM shares nothing with a
+    stock target (every Titan/Supercarrier) priced as build_cost=None on
+    the full Margin list too, not just the single-item search."""
+    _stub_market_groups(monkeypatch)
+    captured = {}
+
+    class _CapturingPlanContext(_FakePlanContext):
+        def __init__(self, cfg, extra_type_ids=()):
+            captured["extra_type_ids"] = list(extra_type_ids)
+            super().__init__(cfg, extra_type_ids)
+
+    monkeypatch.setattr(engine, "_PlanContext", _CapturingPlanContext)
+    monkeypatch.setattr(storage, "load_sde_types_with_market_group", lambda: [
+        (1, "Some Ship", 1.0, 100, None, engine.SHIP_CATEGORY_ID),
+        (2, "Another Ship", 1.0, 100, None, engine.SHIP_CATEGORY_ID),
+        (3, "Some Module", 1.0, 100, None, 7),  # not a ship - excluded
+    ])
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (999, 1, 1.0)))
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+
+    engine.discover_ship_margins(ProductionConfig())
+
+    assert sorted(captured["extra_type_ids"]) == [1, 2]
 
 
 @pg_helpers.postgres_required()
