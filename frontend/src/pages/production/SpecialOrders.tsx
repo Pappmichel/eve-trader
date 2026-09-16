@@ -67,6 +67,17 @@ function ComputeResultView({ result }: { result: SpecialOrderComputeResult }) {
     return result.buy_list.filter((e) => selCategories.includes(e.category ?? CATEGORY_UNKNOWN))
   }, [result.buy_list, selCategories])
   const totalCost = useMemo(() => filteredBuyList.reduce((sum, e) => sum + (e.total_price ?? 0), 0), [filteredBuyList])
+  // Total Job Cost = sum of each Build List row's facility fee (job_cost is
+  // per unit, quantity is the row's total produced units) - the Buy List's
+  // own Total Cost above is materials-only (what must be bought), so this is
+  // the other half of what a Special Order actually costs. Grand Total adds
+  // the two together; it deliberately reuses the (possibly category-
+  // filtered) Buy List total rather than introducing a second, differently-
+  // scoped buy figure on the same page.
+  const totalJobCost = useMemo(
+    () => result.build_list.reduce((sum, e) => sum + (e.job_cost ?? 0) * e.quantity, 0), [result.build_list],
+  )
+  const grandTotal = totalCost + totalJobCost
 
   const buyColumns = useMemo<ColumnDef<BuyListEntry, any>[]>(() => [
     { header: 'Item', accessorKey: 'type_name', size: 220 },
@@ -136,6 +147,14 @@ function ComputeResultView({ result }: { result: SpecialOrderComputeResult }) {
               <Card withBorder padding="sm" w={220}>
                 <Text size="xs" c="dimmed" tt="uppercase">Total Cost</Text>
                 <Title order={4} c="accent">{isk(totalCost)}</Title>
+              </Card>
+              <Card withBorder padding="sm" w={220}>
+                <Text size="xs" c="dimmed" tt="uppercase">Total Job Cost</Text>
+                <Title order={4} c="accent">{isk(totalJobCost)}</Title>
+              </Card>
+              <Card withBorder padding="sm" w={220}>
+                <Text size="xs" c="dimmed" tt="uppercase">Gesamt</Text>
+                <Title order={4} c="accent">{isk(grandTotal)}</Title>
               </Card>
               <MultiSelect
                 label="Category" data={categories} value={selCategories} onChange={setSelCategories}

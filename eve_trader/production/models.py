@@ -72,6 +72,11 @@ class BuildJobEntry:
     unit_build_cost: Optional[float]  # materials + facility fee, per unit - not the raw facility fee alone (see engine.py's own job_cost local var)
     decryptor: Optional[str] = None  # Tech II only: which decryptor's ME/TE was assumed
     job_category: Optional[str] = None  # "where do I start this" grouping - see engine.job_category
+    # Facility-fee-only slice of unit_build_cost, per unit (EIV * job_cost_rate,
+    # not divided out of unit_build_cost after the fact since t2_memo doesn't
+    # retain job_cost_rate separately - see engine._build_build_list). None
+    # under the same conditions unit_build_cost is None.
+    job_cost: Optional[float] = None
     # GitHub issue #38: margin if built and sold at the C-J (home) sell quote
     # right now (engine.margin_home) - deliberately not margin_jita,
     # Production sells only at C-J (see CLAUDE.md). None if there's no C-J
