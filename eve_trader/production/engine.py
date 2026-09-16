@@ -1551,10 +1551,18 @@ def _build_buy_list(buy_totals: dict[int, float], gross_demand: dict[int, float]
 
 def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: dict[int, Optional[float]],
                        t2_memo: dict[int, tuple[float, float, Optional[str]]],
-                       cfg: ProductionConfig, home: dict) -> list[BuildJobEntry]:
+                       cfg: ProductionConfig, home: dict,
+                       cost_indices: CostIndices, adjusted_prices: dict[int, float]) -> list[BuildJobEntry]:
     """Turns _expand_all's build_runs into BuildJobEntry rows, sorted by job
     time desc - factored out of plan_production, same reasoning as
-    _build_buy_list above."""
+    _build_buy_list above.
+
+    job_cost (per unit) is computed the same way as _unit_cost's own local
+    job_cost var - EIV (sum of each direct material's *base* qty times its
+    adjusted_price, not the ME-reduced qty/real price used for material
+    cost) times job_cost_rate, divided by product_qty - rather than reusing
+    unit_build_cost (which is materials+job combined and doesn't retain the
+    job-cost slice separately once cost_memo is populated)."""
     build_list = []
     for (blueprint_id, activity_id, product_type_id), runs in build_runs.items():
         sde_type = storage.get_sde_type(product_type_id)
@@ -1566,16 +1574,20 @@ def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: di
         product_activity = classify_activity(product_type_id)[0]
         if product_activity == "Tech II" and product_type_id in t2_memo:
             _, time_mult, decryptor_name, _ = t2_memo[product_type_id]
+            job_cost_rate = _job_cost_rate("Tech II", product_type_id, cfg, cost_indices)
         else:
-            _, time_mult, _ = _activity_mods(product_activity, product_type_id, cfg, {}, blueprint_id)
+            _, time_mult, job_cost_rate = _activity_mods(product_activity, product_type_id, cfg, cost_indices, blueprint_id)
             decryptor_name = None
         job_time = base_time * time_mult * runs
         unit_cost = cost_memo.get(product_type_id)
+        materials = storage.get_blueprint_materials(blueprint_id, activity_id)
+        eiv = sum(base_qty * adjusted_prices.get(material_id, 0.0) for material_id, base_qty in materials)
+        job_cost = (eiv * job_cost_rate) / product_qty if product_qty else None
         build_list.append(BuildJobEntry(
             type_id=product_type_id, type_name=name, blueprint_type_id=blueprint_id,
             activity=activity_label, quantity=runs * product_qty, job_runs=runs,
             job_time_seconds=job_time, unit_build_cost=unit_cost, decryptor=decryptor_name,
-            job_category=job_category(product_type_id),
+            job_category=job_category(product_type_id), job_cost=job_cost,
             # GitHub issue #38: margin_home, not margin_jita - Production
             # sells only at C-J, never Jita (see CLAUDE.md), so the
             # Bauliste's own margin must be the real C-J one, not the
@@ -1698,7 +1710,7 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                                           gross_demand)
 
     buy_list = _build_buy_list(buy_totals, gross_demand, cfg, home, jita)
-    build_list = _build_build_list(build_runs, cost_memo, t2_memo, cfg, home)
+    build_list = _build_build_list(build_runs, cost_memo, t2_memo, cfg, home, cost_indices, adjusted_prices)
 
     invention_list.sort(key=lambda e: e.recommended_invention_runs, reverse=True)
 
@@ -1847,7 +1859,7 @@ def plan_special_order(items: list[tuple[int, str, float]], cfg: ProductionConfi
                 buy_totals[type_id] = 0.0
 
     buy_list = _build_buy_list(buy_totals, gross_demand, cfg, home, jita)
-    build_list = _build_build_list(build_runs, cost_memo, t2_memo, cfg, home)
+    build_list = _build_build_list(build_runs, cost_memo, t2_memo, cfg, home, cost_indices, adjusted_prices)
     invention_list.sort(key=lambda e: e.recommended_invention_runs, reverse=True)
 
     stock_overlap_warning: list[StockOverlapWarningRow] = []

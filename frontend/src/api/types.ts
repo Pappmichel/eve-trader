@@ -247,6 +247,7 @@ export interface BuildJobEntry {
   unit_build_cost: number | null
   decryptor: string | null
   job_category: string | null
+  job_cost: number | null
   margin: number | null
 }
 

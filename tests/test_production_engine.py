@@ -2037,6 +2037,33 @@ def test_plan_special_order_no_margin_gate_unprofitable_item_still_appears(monke
 
 
 @pg_helpers.postgres_required()
+def test_plan_special_order_build_list_includes_job_cost(monkeypatch, tenant):
+    # Same job_cost wiring as plan_production's own
+    # test_plan_production_build_list_includes_job_cost, exercised through
+    # plan_special_order's own _PlanContext/_build_build_list call site.
+    ctx_cls = _make_fake_special_order_context()
+    real_init = ctx_cls.__init__
+
+    def fake_init(self, cfg, extra_type_ids=()):
+        real_init(self, cfg, extra_type_ids)
+        self.adjusted_prices = {99: 1000.0}
+    monkeypatch.setattr(ctx_cls, "__init__", fake_init)
+    monkeypatch.setattr(engine, "_PlanContext", ctx_cls)
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (110, 1, 1.0)))
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [(99, 10.0)])
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_buy_or_build_decision", lambda *a, **k: "Build")
+    monkeypatch.setattr(engine, "_job_cost_rate", lambda *a, **k: 0.05)
+
+    items = [(10, "Widget", 1.0)]
+    result = engine.plan_special_order(items, ProductionConfig(), net_against_stock=False)
+
+    build_by_id = {row.type_id: row for row in result["build_list"]}
+    assert build_by_id[10].job_cost == pytest.approx(500.0)
+
+
+@pg_helpers.postgres_required()
 def test_plan_special_order_net_against_stock_false_ignores_current_stock(monkeypatch, tenant):
     monkeypatch.setattr(engine, "_PlanContext", _make_fake_special_order_context())
     monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))  # plain Buy leaf
@@ -2799,6 +2826,39 @@ def test_plan_production_build_list_includes_margin_home(monkeypatch, tenant):
 
     build_by_id = {row.type_id: row for row in result["build_list"]}
     assert build_by_id[10].margin == pytest.approx(0.9)
+
+
+@pg_helpers.postgres_required()
+def test_plan_production_build_list_includes_job_cost(monkeypatch, tenant):
+    # Confirmed with the user 2026-09-16: the Special Order Buy List total is
+    # materials-only, so BuildJobEntry needs its own job_cost (the facility-
+    # fee-only slice of unit_build_cost, per unit) to show the other half of
+    # what a build actually costs. job_cost = EIV * job_cost_rate /
+    # product_qty, mirroring _unit_cost's own local job_cost var - EIV here
+    # is 10 units of material 99 at its adjusted_price (1000), times a
+    # (mocked) job_cost_rate of 0.05, over product_qty 1 -> 500.
+    stock_targets = [(10, "Widget", 1, 0, 0)]
+    ctx_cls = _make_fake_plan_context(stock_targets)
+    real_init = ctx_cls.__init__
+
+    def fake_init(self, cfg):
+        real_init(self, cfg)
+        self.adjusted_prices = {99: 1000.0}
+    monkeypatch.setattr(ctx_cls, "__init__", fake_init)
+    monkeypatch.setattr(engine, "_PlanContext", ctx_cls)
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech I", (110, 1, 1.0)))
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [(99, 10.0)])
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_buy_or_build_decision", lambda *a, **k: "Build")
+    monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: 1.0)
+    monkeypatch.setattr(engine, "_job_cost_rate", lambda *a, **k: 0.05)
+
+    cfg = ProductionConfig(min_margin=0.0)
+    result = engine.plan_production(cfg)
+
+    build_by_id = {row.type_id: row for row in result["build_list"]}
+    assert build_by_id[10].job_cost == pytest.approx(500.0)
 
 
 @pg_helpers.postgres_required()
