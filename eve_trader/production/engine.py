@@ -152,7 +152,7 @@ from .models import (
 
 MAX_DEPTH = 10
 
-CostIndices = dict[str, "dict[str, float] | float"]
+CostIndices = dict[str, "dict[str, float] | float | tuple[int, int]"]
 # {"component"|"manufacturing": {"manufacturing"|"reaction": rate}} - plus,
 # per job_category actually configured with a resolved-system structure in
 # Logistik (GitHub issue #12), a "category:<name>" entry of the same shape;
@@ -161,6 +161,20 @@ CostIndices = dict[str, "dict[str, float] | float"]
 # one a bare float, not a nested dict, since a manual override is a single
 # rate, not split by manufacturing/reaction the way a live system lookup
 # is - see _job_cost_rate/_PlanContext.
+#
+# Also carries a completely unrelated concern piggybacked onto the same
+# dict (confirmed with the user 2026-09-16): a "me_te_override:<type_id>"
+# entry, a (material_efficiency, time_efficiency) int tuple, one per
+# manually-registered row in manual_blueprint_me_te_overrides - see
+# _manual_me_te_override/_PlanContext. This isn't a cost index at all, but
+# reuses this same dict (rather than threading a whole new parameter
+# through every _activity_mods call site) for the exact same reason
+# "category:"/"override:" do: _PlanContext already loads it once and passes
+# this one object everywhere cost actually gets computed, and every *cheap*
+# call site (passing plain {} or a flat dict, no _PlanContext involved)
+# correctly sees no override at all - same "stays as cheap and storage-
+# independent as before" guarantee _job_cost_rate's own category lookup
+# already relies on.
 
 
 def _material_qty(base_qty: float, material_mult: float, runs: float) -> float:
@@ -674,6 +688,27 @@ def _owned_bpo_mods(blueprint_id: Optional[int]) -> Optional[tuple[float, float]
     return (1 - me / 100, 1 - te / 100)
 
 
+def _manual_me_te_override(type_id: int, cost_indices: CostIndices) -> Optional[tuple[float, float]]:
+    """Real (material_multiplier, time_multiplier) from a manually-registered
+    ME/TE override (the Blueprints page's third table - confirmed with the
+    user 2026-09-16), if one is set for `type_id` - None otherwise. Reads it
+    out of `cost_indices` (populated once by _PlanContext, see CostIndices'
+    own comment for why) rather than querying storage directly here - same
+    lazy-if-present, zero-extra-storage-calls shape as _job_cost_rate's own
+    "category:"/"override:" lookups, so every *cheap* _activity_mods caller
+    (passing plain {} or a flat dict, no _PlanContext involved) stays exactly
+    as storage-independent as before. `type_id` here is the *product*,
+    matching manual_blueprint_me_te_overrides' own convention (see its
+    schema comment) - not `blueprint_id`, unlike _owned_bpo_mods, since
+    _activity_mods already has `type_id` on hand for every caller
+    (blueprint_id is optional/not always available)."""
+    override = cost_indices.get(f"me_te_override:{type_id}")
+    if override is None:
+        return None
+    me, te = override
+    return (1 - me / 100, 1 - te / 100)
+
+
 def _activity_mods(activity: str, type_id: int, cfg: ProductionConfig,
                     cost_indices: CostIndices, blueprint_id: Optional[int] = None) -> tuple[float, float, float]:
     """Returns (material_multiplier, time_multiplier, job_cost_rate) for Tech I
@@ -682,18 +717,31 @@ def _activity_mods(activity: str, type_id: int, cfg: ProductionConfig,
     ME/TE - see _tech_ii_mods, which applies the same structure/rig
     multiplier to its per-item decryptor result.
 
-    For Tech I, prefers your actual owned BPO's real ME/TE (_owned_bpo_mods,
-    requires `blueprint_id`) over the flat "perfect research" (ME10/TE20)
-    baseline (constants.ACTIVITY_MODS) - callers that have `blueprint_id`
-    handy should always pass it; it's optional only because a couple of
-    call sites (e.g. logistics' _direct_material_mult) don't have easy access
-    to it. Reaction never uses owned-BPO data (real EVE mechanic: reactions
-    have no BPO research at all) - neither does Faction/Storyline/Officer/
-    Deadspace: their blueprints are always ME0/TE0 and can't be researched at
-    all (Faction confirmed with the user 2026-07-16; same treatment applied
-    to the other three, see classify_activity), so their flat
-    constants.ACTIVITY_MODS entry (1.00/1.00) is the one and only correct
-    value, not a fallback to override with owned data the way Tech I's
+    A manual ME/TE override (_manual_me_te_override, confirmed with the user
+    2026-09-16) is the top priority tier, checked first, for every activity
+    this function handles - not just Tech I. It's a deliberate, explicit
+    per-item entry, so it outranks even the fixed ME0/TE0 that Faction/
+    Storyline/Officer/Deadspace items would otherwise always get (e.g. a
+    Titan/Supercarrier hull whose real blueprint genuinely can't be
+    researched in-game, but whose actual known ME/TE - from a rented/
+    contracted copy, say - differs from the tool's own ME0/TE0 assumption);
+    same "an explicit per-item entry always wins over the app's inferred/
+    default value" precedent as manual_blueprint_copy_costs (GitHub issue
+    #40).
+
+    Absent a manual override, Tech I still prefers your actual owned BPO's
+    real ME/TE (_owned_bpo_mods, requires `blueprint_id`) over the flat
+    "perfect research" (ME10/TE20) baseline (constants.ACTIVITY_MODS) -
+    callers that have `blueprint_id` handy should always pass it; it's
+    optional only because a couple of call sites (e.g. logistics'
+    _direct_material_mult) don't have easy access to it. Reaction never uses
+    owned-BPO data (real EVE mechanic: reactions have no BPO research at
+    all) - neither does Faction/Storyline/Officer/Deadspace: their
+    blueprints are always ME0/TE0 and can't be researched at all (Faction
+    confirmed with the user 2026-07-16; same treatment applied to the other
+    three, see classify_activity), so their flat constants.ACTIVITY_MODS
+    entry (1.00/1.00) is the one and only correct value absent a manual
+    override, not a fallback to override with owned data the way Tech I's
     "assumes perfect research" baseline is."""
     base = ACTIVITY_MODS[activity]
     structure_profile = _structure_profile(activity, type_id)
@@ -703,7 +751,10 @@ def _activity_mods(activity: str, type_id: int, cfg: ProductionConfig,
     job_cost_rate = _job_cost_rate(activity, type_id, cfg, cost_indices)
 
     base_material_mult, base_time_mult = base.material_multiplier, base.time_multiplier
-    if activity == "Tech I":
+    manual = _manual_me_te_override(type_id, cost_indices)
+    if manual is not None:
+        base_material_mult, base_time_mult = manual
+    elif activity == "Tech I":
         owned = _owned_bpo_mods(blueprint_id)
         if owned is not None:
             base_material_mult, base_time_mult = owned
@@ -1510,6 +1561,11 @@ class _PlanContext:
         # own docstring for the full priority order).
         for category, value in storage.load_category_cost_index_overrides().items():
             self.cost_indices[f"override:{category}"] = value
+        # Manual per-blueprint ME/TE overrides (confirmed with the user
+        # 2026-09-16) - also a pure DB read, no ESI call. See CostIndices'
+        # own comment for why this lives in self.cost_indices at all.
+        for type_id, _type_name, me, te in storage.load_manual_blueprint_me_te_overrides():
+            self.cost_indices[f"me_te_override:{type_id}"] = (me, te)
         try:
             self.adjusted_prices = esi_client.get_adjusted_prices()
         except Exception:  # noqa: BLE001 - best-effort; falls back to 0 (job_cost=0), not a guess

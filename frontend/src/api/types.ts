@@ -455,6 +455,13 @@ export interface ManualBlueprintCopyCostRow {
   cost_per_run: number
 }
 
+export interface ManualBlueprintMeTeOverrideRow {
+  type_id: number
+  type_name: string
+  material_efficiency: number
+  time_efficiency: number
+}
+
 export interface AlchemyComparison {
   product_type_id: number
   product_type_name: string

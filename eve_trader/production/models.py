@@ -432,6 +432,19 @@ class ManualBlueprintCopyCostRow:
 
 
 @dataclass
+class ManualBlueprintMeTeOverrideRow:
+    """One manually-registered blueprint ME/TE override (confirmed with the
+    user 2026-09-16) - the Blueprints page's third table. `type_id` is the
+    *product* built from the blueprint, not the blueprint's own type_id (see
+    docs/phase1_schema.sql's manual_blueprint_me_te_overrides schema
+    comment)."""
+    type_id: int
+    type_name: str
+    material_efficiency: int
+    time_efficiency: int
+
+
+@dataclass
 class UnlistedStockRow:
     """A stock target with physical stock at cfg.home_location_id (C-J) but
     NO open sell order there at all - see production/actions.py do_unlisted_stock.

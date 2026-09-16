@@ -29,7 +29,7 @@ from .engine import (
     plan_production, plan_special_order, stock_value,
 )
 from .models import (
-    AssetLocationRow, BuildCandidate, ManualBlueprintCopyCostRow, OwnedBlueprintRow, ShipMarginRow,
+    AssetLocationRow, BuildCandidate, ManualBlueprintCopyCostRow, ManualBlueprintMeTeOverrideRow, OwnedBlueprintRow, ShipMarginRow,
     SpecialOrder, UnlistedStockRow,
 )
 
@@ -1205,6 +1205,71 @@ def do_update_manual_blueprint_copy_cost(type_id: int, purchase_cost: float, run
 
 def do_remove_manual_blueprint_copy_cost(type_id: int) -> dict:
     storage.delete_manual_blueprint_copy_cost(type_id)
+    invalidate_discover_cache()
+    invalidate_ship_margin_cache()
+    return {"removed": type_id}
+
+
+def _validate_me_te(material_efficiency: int, time_efficiency: int) -> None:
+    if not 0 <= material_efficiency <= 10:
+        raise ActionError("Material Efficiency must be between 0 and 10.")
+    if not 0 <= time_efficiency <= 20:
+        raise ActionError("Time Efficiency must be between 0 and 20.")
+
+
+def do_list_manual_blueprint_me_te_overrides() -> dict:
+    """Confirmed with the user 2026-09-16 - the Blueprints page's third
+    table: a fixed ME/TE for a blueprint's product, taking priority over
+    both the app's flat "assumes perfect research" baseline and any owned
+    BPO's real ME/TE (see engine._activity_mods' own docstring for the
+    full resolution chain)."""
+    rows = [
+        ManualBlueprintMeTeOverrideRow(
+            type_id=type_id, type_name=type_name,
+            material_efficiency=material_efficiency, time_efficiency=time_efficiency,
+        )
+        for type_id, type_name, material_efficiency, time_efficiency in storage.load_manual_blueprint_me_te_overrides()
+    ]
+    return {"rows": rows}
+
+
+def do_add_manual_blueprint_me_te_override(item_name: str, material_efficiency: int, time_efficiency: int) -> dict:
+    """Resolves `item_name` (exact match, same lookup do_add_manual_blueprint_
+    copy_cost uses) to a type_id and registers/updates its manual ME/TE
+    override. `item_name` is the *product* built from the blueprint, not the
+    blueprint's own name (matches manual_blueprint_me_te_overrides' own
+    schema - a blueprint's product is a stable 1:1 lookup either way)."""
+    _validate_me_te(material_efficiency, time_efficiency)
+    matches = storage.search_sde_types(item_name, limit=2)
+    exact = [m for m in matches if m[1].lower() == item_name.strip().lower()]
+    if not exact:
+        if not matches:
+            raise ActionError(f"No type found for '{item_name}'. Refresh SDE first?")
+        raise ActionError(f"No exact match for '{item_name}'. Did you mean: {matches[0][1]}?")
+    type_id, resolved_name = exact[0]
+
+    storage.upsert_manual_blueprint_me_te_override(type_id, resolved_name, material_efficiency, time_efficiency)
+    invalidate_discover_cache()  # build cost feeds directly into build-vs-buy decisions
+    invalidate_ship_margin_cache()
+    return {"type_id": type_id, "type_name": resolved_name,
+            "material_efficiency": material_efficiency, "time_efficiency": time_efficiency}
+
+
+def do_update_manual_blueprint_me_te_override(type_id: int, material_efficiency: int, time_efficiency: int) -> dict:
+    """Edits material_efficiency/time_efficiency for an already-registered
+    row in place (the Blueprints page's inline-editable table) - unlike
+    do_add_*, takes type_id directly instead of re-resolving an item name,
+    since the row already exists."""
+    _validate_me_te(material_efficiency, time_efficiency)
+    if not storage.update_manual_blueprint_me_te_override(type_id, material_efficiency, time_efficiency):
+        raise ActionError(f"No registered ME/TE override found for type_id {type_id}.")
+    invalidate_discover_cache()
+    invalidate_ship_margin_cache()
+    return {"type_id": type_id, "material_efficiency": material_efficiency, "time_efficiency": time_efficiency}
+
+
+def do_remove_manual_blueprint_me_te_override(type_id: int) -> dict:
+    storage.delete_manual_blueprint_me_te_override(type_id)
     invalidate_discover_cache()
     invalidate_ship_margin_cache()
     return {"removed": type_id}

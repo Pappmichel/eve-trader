@@ -1408,6 +1408,47 @@ def get_manual_blueprint_copy_cost_per_run(type_id: int) -> Optional[float]:
     return row[0] / row[1]
 
 
+def upsert_manual_blueprint_me_te_override(type_id: int, type_name: str, material_efficiency: int, time_efficiency: int) -> None:
+    """Confirmed with the user 2026-09-16 - registers/updates a fixed ME/TE
+    for a blueprint's product (see manual_blueprint_me_te_overrides' own
+    schema comment). `type_id` is the *product* built from that blueprint,
+    not the blueprint's own type_id."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO manual_blueprint_me_te_overrides (type_id, type_name, material_efficiency, time_efficiency) VALUES (?,?,?,?) "
+            "ON CONFLICT(tenant_id, type_id) DO UPDATE SET "
+            "type_name=excluded.type_name, material_efficiency=excluded.material_efficiency, time_efficiency=excluded.time_efficiency",
+            (type_id, type_name, material_efficiency, time_efficiency),
+        )
+
+
+def update_manual_blueprint_me_te_override(type_id: int, material_efficiency: int, time_efficiency: int) -> bool:
+    """Updates material_efficiency/time_efficiency for an already-registered
+    row, leaving type_name untouched. Returns False if no row exists for
+    `type_id` (the caller should raise ActionError, not silently insert a
+    name-less row)."""
+    with connect() as conn:
+        cur = conn.execute(
+            "UPDATE manual_blueprint_me_te_overrides SET material_efficiency=?, time_efficiency=? WHERE type_id=?",
+            (material_efficiency, time_efficiency, type_id),
+        )
+        return cur.rowcount > 0
+
+
+def load_manual_blueprint_me_te_overrides() -> list[tuple]:
+    """Returns [(type_id, type_name, material_efficiency, time_efficiency), ...]."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT type_id, type_name, material_efficiency, time_efficiency "
+            "FROM manual_blueprint_me_te_overrides ORDER BY type_name"
+        ).fetchall()
+
+
+def delete_manual_blueprint_me_te_override(type_id: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM manual_blueprint_me_te_overrides WHERE type_id = ?", (type_id,))
+
+
 def upsert_category_location(category: str, location_id: int) -> None:
     with connect() as conn:
         conn.execute(

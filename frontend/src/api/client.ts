@@ -205,6 +205,19 @@ export const productionApi = {
     ),
   removeManualBlueprintCopyCost: (typeId: number) =>
     del(`/api/production/blueprints/manual-copy-costs/${typeId}`),
+  manualBlueprintMeTeOverrides: () => get<T.ManualBlueprintMeTeOverrideRow[]>('/api/production/blueprints/manual-me-te-overrides'),
+  addManualBlueprintMeTeOverride: (itemName: string, materialEfficiency: number, timeEfficiency: number) =>
+    post<{ type_id: number; type_name: string; material_efficiency: number; time_efficiency: number }>(
+      '/api/production/blueprints/manual-me-te-overrides',
+      { item_name: itemName, material_efficiency: materialEfficiency, time_efficiency: timeEfficiency },
+    ),
+  updateManualBlueprintMeTeOverride: (typeId: number, materialEfficiency: number, timeEfficiency: number) =>
+    put<{ type_id: number; material_efficiency: number; time_efficiency: number }>(
+      `/api/production/blueprints/manual-me-te-overrides/${typeId}`,
+      { material_efficiency: materialEfficiency, time_efficiency: timeEfficiency },
+    ),
+  removeManualBlueprintMeTeOverride: (typeId: number) =>
+    del(`/api/production/blueprints/manual-me-te-overrides/${typeId}`),
   settings: () => get<T.ProductionSettings>('/api/production/settings'),
   updateSettings: (s: T.ProductionSettings) => post<T.ProductionSettings>('/api/production/settings', s),
   structureOptions: () => get<{ structure_types: string[]; rig_tiers: string[]; hangar_division_flags: string[] }>(
