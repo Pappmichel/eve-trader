@@ -17,6 +17,28 @@ cd "$APP_DIR"
 echo "==> Pulling latest code..."
 git pull
 
+# Self-modifying-script guard (confirmed real bug 2026-09-16, found live: a
+# freshly-added schema file - job_category_cost_index_overrides_schema.sql -
+# was silently skipped on the very run that pulled the commit adding it to
+# the loop below). bash opens this script's file descriptor once at process
+# start and keeps reading from it for the rest of the run - the git pull
+# above can rewrite this file's own later lines (like the schema-apply loop)
+# on disk, but the already-running interpreter doesn't re-open the file to
+# pick that up; it only sees the new content on a *separate*, later
+# invocation. Re-exec once against the now-current file so the rest of this
+# run is guaranteed to read whatever git pull just produced, not whatever
+# was on disk when this run started. Uses BASH_SOURCE[0], not $0 - same
+# reasoning APP_DIR above already relies on: $0 can be a path relative to
+# the caller's original cwd (e.g. invoked as `cd deploy && ./deploy.sh`),
+# which the `cd "$APP_DIR"` above would then resolve against the *wrong*
+# directory on re-exec; BASH_SOURCE[0] plus APP_DIR (already absolute) stays
+# correct regardless of how this script was invoked. The env var guards
+# against re-execing forever.
+if [ -z "${EVE_TRADER_DEPLOY_REEXECED:-}" ]; then
+    export EVE_TRADER_DEPLOY_REEXECED=1
+    exec "$APP_DIR/deploy/deploy.sh" "$@"
+fi
+
 echo "==> Applying Postgres schema (all files, idempotent)..."
 # Confirmed real bug (2026-08-30): this list was missing station_trading_
 # schema.sql - each schema file's own tenant_settings_scope_check widening

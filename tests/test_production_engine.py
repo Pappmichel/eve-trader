@@ -447,6 +447,39 @@ def test_plan_context_loads_manual_me_te_overrides(monkeypatch):
     assert ctx.cost_indices["me_te_override:11567"] == (8, 16)
 
 
+def test_plan_context_logs_and_falls_back_when_adjusted_prices_fetch_fails(monkeypatch, caplog):
+    # Confirmed real 2026-09-16: a failed ESI get_adjusted_prices() call used
+    # to fall back to {} completely silently - since EIV (and therefore
+    # every BuildJobEntry.job_cost) reads 0 for every item when
+    # adjusted_prices is empty, this looked exactly like "there's genuinely
+    # no job cost" with zero diagnostic trail. Must now log a warning
+    # (still falling back to {}, not raising - a transient ESI hiccup
+    # shouldn't block the whole plan).
+    from eve_trader import esi_client as esi_client_module
+    from eve_trader.production import pricing as pricing_module
+
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
+    monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
+    monkeypatch.setattr(storage, "load_manual_build_buy", lambda: {})
+    monkeypatch.setattr(storage, "load_selected_decryptors", lambda: {})
+    monkeypatch.setattr(storage, "load_category_system_ids", lambda: {})
+    monkeypatch.setattr(storage, "load_category_cost_index_overrides", lambda: {})
+    monkeypatch.setattr(storage, "load_manual_blueprint_me_te_overrides", lambda: [])
+    monkeypatch.setattr(pricing_module, "home_prices", lambda cfg, type_ids: {})
+    monkeypatch.setattr(pricing_module, "jita_prices", lambda type_ids: {})
+    monkeypatch.setattr(esi_client_module.ESIClient, "__init__", lambda self: None)
+
+    def _raise(self):
+        raise esi_client_module.ESIError("simulated ESI outage")
+    monkeypatch.setattr(esi_client_module.ESIClient, "get_adjusted_prices", _raise)
+
+    with caplog.at_level("WARNING", logger="eve_trader.production.engine"):
+        ctx = engine._PlanContext(ProductionConfig(component_system_id=None, manufacturing_system_id=None))
+
+    assert ctx.adjusted_prices == {}
+    assert "simulated ESI outage" in caplog.text
+
+
 def test_classify_activity_treats_low_meta_level_invented_item_as_tech_ii(monkeypatch):
     # Real bug found against live SDE data: a Tech III subsystem ("Loki Core
     # - Augmented Nuclear Reactor") has metaLevel=1 - genuinely invented
