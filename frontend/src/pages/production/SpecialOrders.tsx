@@ -110,6 +110,10 @@ function ComputeResultView({ result }: { result: SpecialOrderComputeResult }) {
     { header: 'Job Time (h)', id: 'hours', size: 110, accessorFn: (r) => r.job_time_seconds / 3600, cell: (i) => (i.getValue() as number).toFixed(2) },
     { header: 'Modeled Unit Cost', accessorKey: 'unit_build_cost', size: 150, cell: (i) => isk(i.getValue()) },
     {
+      header: 'Job Cost/Unit', accessorKey: 'job_cost', size: 140,
+      cell: (i) => (i.getValue() === null ? '–' : isk(i.getValue())),
+    },
+    {
       header: 'Margin', accessorKey: 'margin', size: 110,
       cell: (i) => {
         const v = i.getValue()
