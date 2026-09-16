@@ -65,6 +65,19 @@ def test_get_blueprint_for_product_prefers_published_blueprint(tenant):
     assert row == (46207, 11, 10000.0)
 
 
+def test_get_blueprint_for_product_normalizes_a_zero_quantity_row_to_one(tenant):
+    # Confirmed real bug (2026-09-16), found live: a handful of Fuzzwork
+    # industryActivityProducts.csv rows carry quantity=0 - never legitimate
+    # for a real producible blueprint. Left as 0, this silently propagated
+    # as a divide-by-zero risk into every caller that divides by product_qty
+    # (engine._build_build_list's own defensive fallback masked it as
+    # job_cost=None/"-" for the whole Build List, with zero error surfaced).
+    _insert_type(50000, "Broken Blueprint", published=1)
+    _insert_product(50000, 1, 50001, 0.0)
+
+    assert storage.get_blueprint_for_product(50001) == (50000, 1, 1.0)
+
+
 def test_get_blueprint_for_product_none_when_only_blueprint_is_unpublished(tenant):
     # Confirmed live 2026-08-19 (GitHub issue #7): Freki (32207) and Utu
     # (2834) both have meta_group_id=4 "Faction" (a genuinely buildable
