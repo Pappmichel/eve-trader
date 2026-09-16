@@ -6,7 +6,7 @@ import { IconTrash, IconCheck } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
-import type { ManualBlueprintCopyCostRow, OwnedBlueprintRow } from '../../api/types'
+import type { ManualBlueprintCopyCostRow, ManualBlueprintMeTeOverrideRow, OwnedBlueprintRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { SearchableSelect } from '../../components/SearchableSelect'
@@ -141,18 +141,20 @@ function ManualBlueprintCopyCostsSection() {
   )
 }
 
-// Inline cell editor for the manual-copy-costs table below - same
-// "local draft state, checkmark appears once it differs from the saved
-// value, click to save" pattern as StockTargets.tsx's own
-// EditableNumberCell/doctrine/DoctrineDetail.tsx's TargetEditor. Safe to key
-// state purely off the initial `value` prop (no resync effect needed) for
-// the same reason those components don't need one either - see DataTable's
-// `getRowId` prop (used below) for what actually *would* break this if it
-// were missing.
-function EditableCopyCostCell({ value, ariaLabel, min, isPending, onSave }: {
+// Inline cell editor shared by the manual-copy-costs and manual-me-te-
+// overrides tables below - same "local draft state, checkmark appears once
+// it differs from the saved value, click to save" pattern as
+// StockTargets.tsx's own EditableNumberCell/doctrine/DoctrineDetail.tsx's
+// TargetEditor. Safe to key state purely off the initial `value` prop (no
+// resync effect needed) for the same reason those components don't need
+// one either - see DataTable's `getRowId` prop (used below) for what
+// actually *would* break this if it were missing. `max` is optional
+// (purchase_cost/runs have none; ME/TE are capped at 10/20).
+function EditableCopyCostCell({ value, ariaLabel, min, max, isPending, onSave }: {
   value: number
   ariaLabel: string
   min: number
+  max?: number
   isPending: boolean
   onSave: (value: number) => void
 }) {
@@ -161,7 +163,7 @@ function EditableCopyCostCell({ value, ariaLabel, min, isPending, onSave }: {
   return (
     <Group gap={4} wrap="nowrap">
       <NumberInput value={draft} onChange={(v) => setDraft(v === '' ? min : Number(v))}
-        min={min} size="xs" w={110} aria-label={ariaLabel} />
+        min={min} max={max} size="xs" w={110} aria-label={ariaLabel} />
       {dirty && (
         <ActionIcon size="sm" variant="filled" color="accent" aria-label={`Save ${ariaLabel}`}
           onClick={() => onSave(draft)} loading={isPending}>
@@ -169,6 +171,140 @@ function EditableCopyCostCell({ value, ariaLabel, min, isPending, onSave }: {
         </ActionIcon>
       )}
     </Group>
+  )
+}
+
+const MANUAL_ME_TE_OVERRIDES_KEY = [['production', 'manual-blueprint-me-te-overrides']]
+
+// Confirmed with the user 2026-09-16: a fixed ME/TE for a blueprint whose
+// product can't be researched in-game (e.g. Zirnitra - a Precursor/Faction
+// Titan) or whose real owned BPO's ME/TE differs from what this app would
+// otherwise assume - takes priority over both the flat "perfect research"
+// baseline and any owned BPO's own ME/TE (see engine._activity_mods'
+// docstring for the full resolution chain). Same shape as
+// ManualBlueprintCopyCostsSection above - deliberately duplicates its
+// add-row/inline-edit/delete structure rather than sharing it, since a
+// shared abstraction over two different field sets (purchase_cost/runs vs.
+// material_efficiency/time_efficiency) would need more indirection than it
+// saves for just two tables.
+function ManualBlueprintMeTeOverridesSection() {
+  const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({
+    queryKey: ['production', 'manual-blueprint-me-te-overrides'], queryFn: productionApi.manualBlueprintMeTeOverrides,
+  })
+  const addOverride = useAction(
+    'Add ME/TE Override',
+    (args: { itemName: string; materialEfficiency: number; timeEfficiency: number }) =>
+      productionApi.addManualBlueprintMeTeOverride(args.itemName, args.materialEfficiency, args.timeEfficiency),
+    MANUAL_ME_TE_OVERRIDES_KEY,
+  )
+  const removeOverride = useAction('Remove ME/TE Override', productionApi.removeManualBlueprintMeTeOverride, MANUAL_ME_TE_OVERRIDES_KEY)
+  // Same one-shared-mutation-instance caveat as ManualBlueprintCopyCostsSection's
+  // own pendingTypeId/pendingEditTypeId above (GitHub issue #59).
+  const [pendingTypeId, setPendingTypeId] = useState<number | null>(null)
+  const updateOverride = useAction(
+    'Save ME/TE Override',
+    (args: { typeId: number; materialEfficiency: number; timeEfficiency: number }) =>
+      productionApi.updateManualBlueprintMeTeOverride(args.typeId, args.materialEfficiency, args.timeEfficiency),
+    MANUAL_ME_TE_OVERRIDES_KEY,
+  )
+  const [pendingEditTypeId, setPendingEditTypeId] = useState<number | null>(null)
+
+  const { data: itemNameOptions } = useItemNameOptions()
+  const overrideItemOptions = useMemo(
+    () => (itemNameOptions ?? []).map((t) => ({ value: String(t.type_id), label: t.type_name })),
+    [itemNameOptions],
+  )
+  const [itemId, setItemId] = useState<string | null>(null)
+  const [materialEfficiency, setMaterialEfficiency] = useState<number | ''>('')
+  const [timeEfficiency, setTimeEfficiency] = useState<number | ''>('')
+
+  const columns = useMemo<ColumnDef<ManualBlueprintMeTeOverrideRow, any>[]>(() => [
+    { header: 'Item', accessorKey: 'type_name', size: 260 },
+    {
+      header: 'ME', accessorKey: 'material_efficiency', size: 140,
+      cell: (i) => (
+        <EditableCopyCostCell value={i.getValue()} ariaLabel={`Material Efficiency for ${i.row.original.type_name}`}
+          min={0} max={10} isPending={updateOverride.isPending && pendingEditTypeId === i.row.original.type_id}
+          onSave={(v) => {
+            setPendingEditTypeId(i.row.original.type_id)
+            updateOverride.mutate({ typeId: i.row.original.type_id, materialEfficiency: v, timeEfficiency: i.row.original.time_efficiency })
+          }} />
+      ),
+    },
+    {
+      header: 'TE', accessorKey: 'time_efficiency', size: 140,
+      cell: (i) => (
+        <EditableCopyCostCell value={i.getValue()} ariaLabel={`Time Efficiency for ${i.row.original.type_name}`}
+          min={0} max={20} isPending={updateOverride.isPending && pendingEditTypeId === i.row.original.type_id}
+          onSave={(v) => {
+            setPendingEditTypeId(i.row.original.type_id)
+            updateOverride.mutate({ typeId: i.row.original.type_id, materialEfficiency: i.row.original.material_efficiency, timeEfficiency: v })
+          }} />
+      ),
+    },
+    {
+      header: '', id: 'actions', size: 60, enableSorting: false,
+      cell: (i) => (
+        <ActionIcon size="sm" variant="subtle" color="danger"
+          onClick={() => modals.openConfirmModal({
+            title: 'Remove ME/TE override',
+            children: <Text size="sm">Remove the registered ME/TE override for {i.row.original.type_name}?</Text>,
+            labels: { confirm: 'Remove', cancel: 'Cancel' },
+            confirmProps: { color: 'danger' },
+            onConfirm: () => { setPendingTypeId(i.row.original.type_id); removeOverride.mutate(i.row.original.type_id) },
+          })}
+          loading={removeOverride.isPending && pendingTypeId === i.row.original.type_id}>
+          <IconTrash size={14} />
+        </ActionIcon>
+      ),
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ], [removeOverride, pendingTypeId, updateOverride, pendingEditTypeId])
+
+  return (
+    <div>
+      <Title order={5} mb="xs">Blueprint ME/TE Overrides</Title>
+      <Text size="sm" c="dimmed" mb="sm">
+        Set a fixed ME/TE for a blueprint's product - takes priority over both the "assumes perfect research"
+        default and any owned BPO's own ME/TE, including for blueprints that can't actually be researched
+        in-game (Faction/Officer/Storyline/Deadspace).
+      </Text>
+
+      <Card withBorder mb="sm">
+        <Group grow align="flex-end">
+          <SearchableSelect label="Item name" placeholder="Search item…" data={overrideItemOptions} value={itemId} onChange={setItemId} />
+          <NumberInput label="ME" value={materialEfficiency}
+            onChange={(v) => setMaterialEfficiency(v === '' ? '' : Number(v))} min={0} max={10} />
+          <NumberInput label="TE" value={timeEfficiency}
+            onChange={(v) => setTimeEfficiency(v === '' ? '' : Number(v))} min={0} max={20} />
+          <Button
+            disabled={!itemId || materialEfficiency === '' || timeEfficiency === ''}
+            loading={addOverride.isPending}
+            onClick={() => addOverride.mutate(
+              {
+                itemName: overrideItemOptions.find((o) => o.value === itemId)?.label ?? '',
+                materialEfficiency: Number(materialEfficiency), timeEfficiency: Number(timeEfficiency),
+              },
+              { onSuccess: () => { setItemId(null); setMaterialEfficiency(''); setTimeEfficiency('') } },
+            )}
+          >
+            Add
+          </Button>
+        </Group>
+      </Card>
+
+      {isLoading ? (
+        <DataTable data={[]} columns={columns} isLoading maxHeight={300} />
+      ) : isError ? (
+        <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={300} />
+      ) : !data || data.length === 0 ? (
+        <Text c="dimmed" size="sm">None registered yet.</Text>
+      ) : (
+        <DataTable data={data} columns={columns} tableId="manual-blueprint-me-te-overrides"
+          exportFilename="manual-blueprint-me-te-overrides" getRowId={(r) => String(r.type_id)} maxHeight={300}
+          dataUpdatedAt={dataUpdatedAt} />
+      )}
+    </div>
   )
 }
 
@@ -201,6 +337,9 @@ export default function Blueprints() {
 
       <Divider />
       <ManualBlueprintCopyCostsSection />
+
+      <Divider />
+      <ManualBlueprintMeTeOverridesSection />
     </Stack>
   )
 }

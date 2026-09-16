@@ -338,6 +338,88 @@ def test_remove_manual_blueprint_copy_cost_passes_type_id(monkeypatch):
     assert captured == {"type_id": 34}
 
 
+def test_get_manual_blueprint_me_te_overrides(monkeypatch):
+    from eve_trader.production.models import ManualBlueprintMeTeOverrideRow
+    monkeypatch.setattr(production_actions, "do_list_manual_blueprint_me_te_overrides", lambda: {"rows": [
+        ManualBlueprintMeTeOverrideRow(type_id=11567, type_name="Leviathan", material_efficiency=8, time_efficiency=16),
+    ]})
+    resp = client.get("/api/production/blueprints/manual-me-te-overrides")
+    assert resp.status_code == 200
+    assert resp.json() == [{
+        "type_id": 11567, "type_name": "Leviathan", "material_efficiency": 8, "time_efficiency": 16,
+    }]
+
+
+def test_add_manual_blueprint_me_te_override_passes_body_fields(monkeypatch):
+    captured = {}
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        return {"type_id": 11567, "type_name": "Leviathan",
+                 "material_efficiency": kwargs["material_efficiency"], "time_efficiency": kwargs["time_efficiency"]}
+    monkeypatch.setattr(production_actions, "do_add_manual_blueprint_me_te_override", _capture)
+
+    resp = client.post("/api/production/blueprints/manual-me-te-overrides",
+                        json={"item_name": "Leviathan", "material_efficiency": 8, "time_efficiency": 16})
+
+    assert resp.status_code == 200
+    assert captured == {"item_name": "Leviathan", "material_efficiency": 8, "time_efficiency": 16}
+
+
+def test_add_manual_blueprint_me_te_override_action_error_maps_to_400(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise ActionError("No exact match for 'Nowhere'. Did you mean: Somewhere?")
+    monkeypatch.setattr(production_actions, "do_add_manual_blueprint_me_te_override", _raise)
+
+    resp = client.post("/api/production/blueprints/manual-me-te-overrides",
+                        json={"item_name": "Nowhere", "material_efficiency": 0, "time_efficiency": 0})
+
+    assert resp.status_code == 400
+    assert "Nowhere" in resp.json()["detail"]
+
+
+def test_update_manual_blueprint_me_te_override_passes_body_fields(monkeypatch):
+    captured = {}
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        return {"type_id": kwargs["type_id"], "material_efficiency": kwargs["material_efficiency"],
+                "time_efficiency": kwargs["time_efficiency"]}
+    monkeypatch.setattr(production_actions, "do_update_manual_blueprint_me_te_override", _capture)
+
+    resp = client.put("/api/production/blueprints/manual-me-te-overrides/11567",
+                       json={"material_efficiency": 10, "time_efficiency": 20})
+
+    assert resp.status_code == 200
+    assert captured == {"type_id": 11567, "material_efficiency": 10, "time_efficiency": 20}
+
+
+def test_update_manual_blueprint_me_te_override_action_error_maps_to_400(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise ActionError("No registered ME/TE override found for type_id 11567.")
+    monkeypatch.setattr(production_actions, "do_update_manual_blueprint_me_te_override", _raise)
+
+    resp = client.put("/api/production/blueprints/manual-me-te-overrides/11567",
+                       json={"material_efficiency": 0, "time_efficiency": 0})
+
+    assert resp.status_code == 400
+    assert "11567" in resp.json()["detail"]
+
+
+def test_remove_manual_blueprint_me_te_override_passes_type_id(monkeypatch):
+    captured = {}
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        return {"removed": kwargs["type_id"]}
+    monkeypatch.setattr(production_actions, "do_remove_manual_blueprint_me_te_override", _capture)
+
+    resp = client.delete("/api/production/blueprints/manual-me-te-overrides/11567")
+
+    assert resp.status_code == 200
+    assert captured == {"type_id": 11567}
+
+
 def test_set_system_action_error_maps_to_400(monkeypatch):
     def _raise(*args, **kwargs):
         raise ActionError("Solarsystem 'Nowhere' nicht gefunden. Exakter Name?")

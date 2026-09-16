@@ -220,6 +220,37 @@ CREATE POLICY tenant_isolation ON manual_blueprint_copy_costs
     USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 
+-- Manual per-blueprint ME/TE override (confirmed with the user 2026-09-16) -
+-- lets a user enter a fixed ME/TE for a blueprint's product, regardless of
+-- whether they own a real BPO with that research level, or whether the
+-- blueprint is one of the four non-researchable categories engine.py's own
+-- classify_activity/ACTIVITY_MODS otherwise pins at ME0/TE0 (Faction/
+-- Storyline/Officer/Deadspace) - the top-priority entry in _activity_mods'
+-- own ME/TE resolution chain, same "an explicit per-item entry always wins
+-- over the app's inferred/default value" precedent as
+-- manual_blueprint_copy_costs (GitHub issue #40) directly above. type_id is
+-- the *product* built from the blueprint, matching that same table's own
+-- convention - a blueprint's product is a stable 1:1 lookup
+-- (storage.get_blueprint_for_product) either way. material_efficiency/
+-- time_efficiency are stored as the raw 0-10/0-20 ME/TE levels (not
+-- pre-converted multipliers) so the Blueprints page can display/edit them
+-- in the same units EVE itself uses - engine.py converts to a multiplier
+-- (1 - level/100) at read time, same formula _owned_bpo_mods already uses
+-- for a real owned BPO's ME/TE.
+CREATE TABLE IF NOT EXISTS manual_blueprint_me_te_overrides (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    type_id INTEGER NOT NULL,
+    type_name TEXT NOT NULL,
+    material_efficiency INTEGER NOT NULL,
+    time_efficiency INTEGER NOT NULL,
+    PRIMARY KEY (tenant_id, type_id)
+);
+ALTER TABLE manual_blueprint_me_te_overrides ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON manual_blueprint_me_te_overrides;
+CREATE POLICY tenant_isolation ON manual_blueprint_me_te_overrides
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
 CREATE TABLE IF NOT EXISTS shortlist (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
     item_id INTEGER NOT NULL,

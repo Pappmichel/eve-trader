@@ -573,6 +573,47 @@ def test_get_manual_blueprint_copy_cost_per_run_none_when_not_registered(tenant)
     assert storage.get_manual_blueprint_copy_cost_per_run(TYPE_ID) is None
 
 
+def test_manual_blueprint_me_te_override_round_trips(tenant):
+    storage.upsert_manual_blueprint_me_te_override(TYPE_ID, "Leviathan", material_efficiency=8, time_efficiency=16)
+
+    rows = storage.load_manual_blueprint_me_te_overrides()
+
+    assert rows == [(TYPE_ID, "Leviathan", 8, 16)]
+
+
+def test_manual_blueprint_me_te_override_upsert_updates_existing_row(tenant):
+    storage.upsert_manual_blueprint_me_te_override(TYPE_ID, "Leviathan", material_efficiency=8, time_efficiency=16)
+    storage.upsert_manual_blueprint_me_te_override(TYPE_ID, "Leviathan", material_efficiency=10, time_efficiency=20)
+
+    rows = storage.load_manual_blueprint_me_te_overrides()
+
+    assert rows == [(TYPE_ID, "Leviathan", 10, 20)]
+
+
+def test_manual_blueprint_me_te_override_update_existing_row(tenant):
+    storage.upsert_manual_blueprint_me_te_override(TYPE_ID, "Leviathan", material_efficiency=8, time_efficiency=16)
+
+    updated = storage.update_manual_blueprint_me_te_override(TYPE_ID, material_efficiency=10, time_efficiency=20)
+
+    assert updated is True
+    assert storage.load_manual_blueprint_me_te_overrides() == [(TYPE_ID, "Leviathan", 10, 20)]
+
+
+def test_manual_blueprint_me_te_override_update_missing_row_returns_false(tenant):
+    updated = storage.update_manual_blueprint_me_te_override(TYPE_ID, material_efficiency=10, time_efficiency=20)
+
+    assert updated is False
+    assert storage.load_manual_blueprint_me_te_overrides() == []
+
+
+def test_manual_blueprint_me_te_override_delete(tenant):
+    storage.upsert_manual_blueprint_me_te_override(TYPE_ID, "Leviathan", material_efficiency=8, time_efficiency=16)
+
+    storage.delete_manual_blueprint_me_te_override(TYPE_ID)
+
+    assert storage.load_manual_blueprint_me_te_overrides() == []
+
+
 def test_replace_character_slots_preserves_excluded_flag_across_resync(tenant):
     # GitHub issue #39: replace_character_slots is an UPSERT, not
     # delete+reinsert - a character's excluded_from_planning flag must

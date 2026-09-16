@@ -182,6 +182,40 @@ def remove_manual_blueprint_copy_cost(type_id: int):
     return _wrap(actions.do_remove_manual_blueprint_copy_cost, type_id=type_id)
 
 
+@router.get("/blueprints/manual-me-te-overrides", response_model=list[schemas.ManualBlueprintMeTeOverrideRow])
+def get_manual_blueprint_me_te_overrides():
+    # Storage-only - no live ESI/Goonmetrics.
+    return actions.do_list_manual_blueprint_me_te_overrides()["rows"]
+
+
+class AddManualBlueprintMeTeOverrideRequest(BaseModel):
+    item_name: str
+    material_efficiency: int
+    time_efficiency: int
+
+
+@router.post("/blueprints/manual-me-te-overrides")
+def add_manual_blueprint_me_te_override(req: AddManualBlueprintMeTeOverrideRequest):
+    return _wrap(actions.do_add_manual_blueprint_me_te_override, item_name=req.item_name,
+                 material_efficiency=req.material_efficiency, time_efficiency=req.time_efficiency)
+
+
+class UpdateManualBlueprintMeTeOverrideRequest(BaseModel):
+    material_efficiency: int
+    time_efficiency: int
+
+
+@router.put("/blueprints/manual-me-te-overrides/{type_id}")
+def update_manual_blueprint_me_te_override(type_id: int, req: UpdateManualBlueprintMeTeOverrideRequest):
+    return _wrap(actions.do_update_manual_blueprint_me_te_override, type_id=type_id,
+                 material_efficiency=req.material_efficiency, time_efficiency=req.time_efficiency)
+
+
+@router.delete("/blueprints/manual-me-te-overrides/{type_id}")
+def remove_manual_blueprint_me_te_override(type_id: int):
+    return _wrap(actions.do_remove_manual_blueprint_me_te_override, type_id=type_id)
+
+
 @router.get("/producer-characters")
 def get_producer_characters():
     # Token-store listing (get_record, no refresh) - no live ESI.

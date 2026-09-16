@@ -377,6 +377,76 @@ def test_faction_is_always_me0_te0_and_ignores_owned_bpo_data(monkeypatch, tenan
     assert round(time_mult, 4) == 1.00
 
 
+@pg_helpers.postgres_required()
+def test_manual_me_te_override_wins_over_owned_bpo_for_tech_i(monkeypatch, tenant):
+    # Confirmed with the user 2026-09-16: a manual per-blueprint ME/TE
+    # override (the Blueprints page's third table) is the top-priority entry
+    # in _activity_mods' own resolution chain - it must win even over a real
+    # owned BPO's own (better-for-material, worse-for-time) ME/TE.
+    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id: (10, 6))
+    cfg = ProductionConfig()
+    cost_indices = {"me_te_override:1": (7, 14)}
+
+    material_mult, time_mult, _ = _activity_mods("Tech I", type_id=1, cfg=cfg, cost_indices=cost_indices, blueprint_id=2)
+    assert round(material_mult, 4) == 0.93  # 1 - 7/100
+    assert round(time_mult, 4) == 0.86      # 1 - 14/100
+
+
+@pg_helpers.postgres_required()
+def test_manual_me_te_override_wins_over_faction_flat_me0_te0(monkeypatch, tenant):
+    # Same top-priority behavior, but for a Faction/Officer/Storyline/
+    # Deadspace item - these are otherwise permanently pinned at ME0/TE0
+    # (see test_faction_is_always_me0_te0_and_ignores_owned_bpo_data above),
+    # but a deliberate manual override (e.g. Zirnitra - a Precursor/Faction
+    # Titan whose real blueprint can't be researched in-game, but whose
+    # actual known ME/TE differs from the tool's own ME0/TE0 assumption)
+    # must still take priority.
+    cfg = ProductionConfig()
+    cost_indices = {"me_te_override:1": (10, 20)}
+
+    material_mult, time_mult, _ = _activity_mods("Faction", type_id=1, cfg=cfg, cost_indices=cost_indices, blueprint_id=2)
+    assert round(material_mult, 4) == 0.90  # 1 - 10/100
+    assert round(time_mult, 4) == 0.80      # 1 - 20/100
+
+
+@pg_helpers.postgres_required()
+def test_manual_me_te_override_absent_falls_back_to_existing_chain(monkeypatch, tenant):
+    # No "me_te_override:<type_id>" entry for this type_id - must fall
+    # through to the existing owned-BPO/flat-baseline chain unchanged.
+    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id: (10, 6))
+    cfg = ProductionConfig()
+    cost_indices = {"me_te_override:999": (0, 0)}  # a different type_id - must not apply here
+
+    material_mult, time_mult, _ = _activity_mods("Tech I", type_id=1, cfg=cfg, cost_indices=cost_indices, blueprint_id=2)
+    assert round(material_mult, 4) == 0.90  # owned BPO's ME10
+    assert round(time_mult, 4) == 0.94      # owned BPO's TE6
+
+
+def test_plan_context_loads_manual_me_te_overrides(monkeypatch):
+    # _PlanContext must fold storage.load_manual_blueprint_me_te_overrides()
+    # into cost_indices under "me_te_override:<type_id>" keys - the shape
+    # _manual_me_te_override actually reads.
+    from eve_trader import esi_client as esi_client_module
+    from eve_trader.production import pricing as pricing_module
+
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
+    monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
+    monkeypatch.setattr(storage, "load_manual_build_buy", lambda: {})
+    monkeypatch.setattr(storage, "load_selected_decryptors", lambda: {})
+    monkeypatch.setattr(storage, "load_category_system_ids", lambda: {})
+    monkeypatch.setattr(storage, "load_category_cost_index_overrides", lambda: {})
+    monkeypatch.setattr(storage, "load_manual_blueprint_me_te_overrides",
+                         lambda: [(11567, "Leviathan", 8, 16)])
+    monkeypatch.setattr(pricing_module, "home_prices", lambda cfg, type_ids: {})
+    monkeypatch.setattr(pricing_module, "jita_prices", lambda type_ids: {})
+    monkeypatch.setattr(esi_client_module.ESIClient, "__init__", lambda self: None)
+    monkeypatch.setattr(esi_client_module.ESIClient, "get_adjusted_prices", lambda self: {})
+
+    ctx = engine._PlanContext(ProductionConfig(component_system_id=None, manufacturing_system_id=None))
+
+    assert ctx.cost_indices["me_te_override:11567"] == (8, 16)
+
+
 def test_classify_activity_treats_low_meta_level_invented_item_as_tech_ii(monkeypatch):
     # Real bug found against live SDE data: a Tech III subsystem ("Loki Core
     # - Augmented Nuclear Reactor") has metaLevel=1 - genuinely invented
@@ -881,6 +951,7 @@ def test_plan_context_populates_category_cost_indices_sharing_fetches_by_system(
     monkeypatch.setattr(storage, "load_category_system_ids",
                          lambda: {"Reactions": 30000142, "Capital Components": 30000142, "Equipment": 30000144})
     monkeypatch.setattr(storage, "load_category_cost_index_overrides", lambda: {})
+    monkeypatch.setattr(storage, "load_manual_blueprint_me_te_overrides", lambda: [])
     monkeypatch.setattr(pricing_module, "home_prices", lambda cfg, type_ids: {})
     monkeypatch.setattr(pricing_module, "jita_prices", lambda type_ids: {})
     monkeypatch.setattr(goonmetrics_client_module.GoonmetricsClient, "__init__", lambda self: None)
@@ -919,6 +990,7 @@ def test_plan_context_home_prices_exclude_a_live_confirmed_empty_market(monkeypa
     monkeypatch.setattr(storage, "load_selected_decryptors", lambda: {})
     monkeypatch.setattr(storage, "load_category_system_ids", lambda: {})
     monkeypatch.setattr(storage, "load_category_cost_index_overrides", lambda: {})
+    monkeypatch.setattr(storage, "load_manual_blueprint_me_te_overrides", lambda: [])
     monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Buy", None))  # no blueprint - closure is just {587}
 
     monkeypatch.setattr(esi_sync_module, "list_producer_characters", lambda: [("producer:1", 1, "TestChar")])

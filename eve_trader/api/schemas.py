@@ -349,6 +349,13 @@ class ManualBlueprintCopyCostRow(_Base):
     cost_per_run: float
 
 
+class ManualBlueprintMeTeOverrideRow(_Base):
+    type_id: int
+    type_name: str
+    material_efficiency: int
+    time_efficiency: int
+
+
 class ProductionUnlistedStockRow(_Base):
     """Distinct name from the Trading tool's UnlistedStockRow (same file,
     both schemas live here) - see production/models.py's UnlistedStockRow."""
