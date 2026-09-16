@@ -238,6 +238,7 @@ export const productionApi = {
   inventionLogistics: () => get<T.LogisticsRow[]>('/api/production/logistics/invention'),
   t1BpcInventionNeeds: () => get<T.T1BpcInventionNeedRow[]>('/api/production/invention/t1-bpc-needs'),
   structureNames: () => get<Record<string, string | null>>('/api/production/logistics/structure-names'),
+  structureSystemIds: () => get<Record<string, number | null>>('/api/production/logistics/structure-system-ids'),
   resolveStructureName: (locationId: number, force = false) =>
     post<{ location_id: number; name: string | null; cached: boolean }>(
       '/api/production/logistics/resolve-structure-name', { location_id: locationId, force },

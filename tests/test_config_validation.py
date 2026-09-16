@@ -191,6 +191,18 @@ def test_validate_production_overrides_rejects_unknown_rig_tier():
         validate_production_overrides({"component_rig_tier": "T3-Rig"})
 
 
+def test_validate_production_overrides_accepts_known_supercapital_structure_type():
+    # Titan/Supercarrier's own structure profile (confirmed with the user
+    # 2026-09-16) - same validation path as reaction/component/manufacturing,
+    # just a fourth field name.
+    validate_production_overrides({"supercapital_structure_type": "Sotiyo (XL Engineering Complex)"})
+
+
+def test_validate_production_overrides_rejects_unknown_supercapital_rig_tier():
+    with pytest.raises(ConfigError, match="supercapital_rig_tier"):
+        validate_production_overrides({"supercapital_rig_tier": "T3-Rig"})
+
+
 def test_validate_production_overrides_accepts_known_hangar_flags():
     validate_production_overrides({"stock_hangar_flags": ["Hangar", "CorpSAG1"]})
 

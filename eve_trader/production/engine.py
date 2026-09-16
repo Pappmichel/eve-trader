@@ -30,8 +30,13 @@ ME/TE stacks in two independently-stacking layers (see constants.py):
    ProductionConfig.reaction_structure_type/reaction_rig_tier (typically a
    Refinery), the item groups covered by the two capital/advanced-component
    ME rigs (constants.COMPONENT_GROUP_IDS) use component_structure_type/
-   component_rig_tier, everything else uses manufacturing_structure_type/
-   manufacturing_rig_tier - you may well run three different structures.
+   component_rig_tier, Titan/Supercarrier hulls (constants.SHIP_SIZE_
+   GROUP_IDS["Super Capital Ship"] - confirmed with the user 2026-09-16:
+   these need a genuinely bigger structure than the rest of "Capital Ship",
+   a real EVE build-location restriction, not just a display grouping) use
+   supercapital_structure_type/supercapital_rig_tier, everything else uses
+   manufacturing_structure_type/manufacturing_rig_tier - you may well run
+   four different structures.
    Rig bonuses additionally scale with the security status of the system the
    structure sits in (real EVE mechanic, confirmed via rig dogma attributes),
    but Engineering Complex and Refinery/reactor rigs use two *different*
@@ -466,6 +471,19 @@ def _is_component(type_id: int) -> bool:
     return group_id in COMPONENT_GROUP_IDS
 
 
+def _is_supercapital(type_id: int) -> bool:
+    """True if `type_id` is a Titan or Supercarrier hull (constants.
+    SHIP_SIZE_GROUP_IDS["Super Capital Ship"]) - confirmed with the user
+    2026-09-16: these need a genuinely bigger structure than the rest of
+    the "Capital Ship" bucket (Rorqual/Carrier/Dreadnought/FAX/Lancer
+    Dreadnought), a real EVE build-location restriction - not built at a
+    regular capital-ship structure at all, only a dedicated supercapital-
+    capable one. See _structure_profile."""
+    sde_type = storage.get_sde_type(type_id)
+    group_id = sde_type[1] if sde_type else None
+    return group_id in SHIP_SIZE_GROUP_IDS["Super Capital Ship"]
+
+
 def job_category(type_id: int) -> Optional[str]:
     """Which of the "where do I start this job" buckets `type_id` belongs to
     - Reactions / Advanced Components / Capital Components / Equipment /
@@ -502,13 +520,24 @@ def job_category(type_id: int) -> Optional[str]:
 def _structure_profile(activity: str, type_id: int) -> str:
     """Which structure/rig setting applies: reactions use the reaction profile
     (typically a Refinery), rig-covered component groups use the component
-    profile (an Engineering Complex with the component ME rigs), everything
-    else uses the manufacturing profile - each independently configurable
-    (ProductionConfig.reaction_/component_/manufacturing_structure_type +
-    _rig_tier), since you may well build in three different structures."""
+    profile (an Engineering Complex with the component ME rigs), Titan/
+    Supercarrier hulls use the supercapital profile (confirmed with the user
+    2026-09-16 - see _is_supercapital), everything else uses the
+    manufacturing profile - each independently configurable
+    (ProductionConfig.reaction_/component_/supercapital_/manufacturing_
+    structure_type + _rig_tier), since you may well build in four different
+    structures. supercapital is checked after component (not before) since
+    the two group sets are disjoint by construction (COMPONENT_GROUP_IDS
+    vs. SHIP_SIZE_GROUP_IDS["Super Capital Ship"] - components and ship
+    hulls never overlap), so the order between them doesn't actually matter,
+    but component is the pre-existing check and this keeps its diff minimal."""
     if activity == "Reaction":
         return "reaction"
-    return "component" if _is_component(type_id) else "manufacturing"
+    if _is_component(type_id):
+        return "component"
+    if _is_supercapital(type_id):
+        return "supercapital"
+    return "manufacturing"
 
 
 def _structure_rig(profile: str, cfg: ProductionConfig) -> tuple[str, str]:
@@ -516,6 +545,8 @@ def _structure_rig(profile: str, cfg: ProductionConfig) -> tuple[str, str]:
         return cfg.reaction_structure_type, cfg.reaction_rig_tier
     if profile == "component":
         return cfg.component_structure_type, cfg.component_rig_tier
+    if profile == "supercapital":
+        return cfg.supercapital_structure_type, cfg.supercapital_rig_tier
     return cfg.manufacturing_structure_type, cfg.manufacturing_rig_tier
 
 

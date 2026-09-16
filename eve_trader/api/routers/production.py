@@ -208,6 +208,8 @@ class ProductionSettings(BaseModel):
     reaction_rig_tier: str
     component_structure_type: str
     component_rig_tier: str
+    supercapital_structure_type: str
+    supercapital_rig_tier: str
     manufacturing_structure_type: str
     manufacturing_rig_tier: str
     encryption_skill_level: int
@@ -338,6 +340,20 @@ def get_structure_names():
     this is always fast; use POST resolve-structure-name to (re-)resolve
     one, or Sync ESI Data for the proactive bulk discovery pass."""
     return {str(loc_id): name for loc_id, name in storage.list_cached_structure_names()}
+
+
+@router.get("/logistics/structure-system-ids")
+def get_structure_system_ids():
+    """Every location_id this tenant has cached a structure resolution for,
+    mapped to its solar_system_id (null if never captured) - a separate
+    endpoint from GET structure-names above (rather than folding this into
+    that one's response shape) since that one is shared across Trading/
+    Production/Doctrine Settings and changing its shape would ripple into
+    every consumer; this is Logistik-specific. Lets the Logistik page's
+    "resolve" link appear even when the structure's name is already known
+    but its system isn't (storage.list_structure_system_ids - see that
+    function's own docstring for why a name-only check can't tell)."""
+    return {str(loc_id): system_id for loc_id, system_id in storage.list_structure_system_ids()}
 
 
 class ResolveStructureNameRequest(BaseModel):

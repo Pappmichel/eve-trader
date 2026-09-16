@@ -79,12 +79,16 @@ manufacturing_system_id: null
 # Where you build - see production/constants.py STRUCTURE_TYPES / RIG_TIERS for
 # the full option lists. These stack multiplicatively (real EVE mechanic).
 # Split by build profile, one level finer than the system cost index above:
-# reactions, rig-covered components, and everything else can each be built in
-# a different structure with a different rig installed.
+# reactions, rig-covered components, Titan/Supercarrier hulls (a genuinely
+# bigger structure than a regular Capital Ship build, real EVE build-location
+# restriction), and everything else can each be built in a different
+# structure with a different rig installed.
 reaction_structure_type: "Citadel (no bonuses)"
 reaction_rig_tier: "No Rig"
 component_structure_type: "Citadel (no bonuses)"
 component_rig_tier: "No Rig"
+supercapital_structure_type: "Citadel (no bonuses)"
+supercapital_rig_tier: "No Rig"
 manufacturing_structure_type: "Citadel (no bonuses)"
 manufacturing_rig_tier: "No Rig"
 

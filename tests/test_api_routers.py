@@ -414,6 +414,20 @@ def test_get_structure_names_returns_full_tenant_cache(monkeypatch):
     assert resp.json() == {"1049588174021": "C-J Keepstar", "123": None}
 
 
+def test_get_structure_system_ids_returns_full_tenant_cache(monkeypatch):
+    # Confirmed live 2026-09-16 - separate endpoint from structure-names
+    # above, so the Logistik page can tell "name known, system also known"
+    # apart from "name known, system still missing" (see storage.
+    # list_structure_system_ids' own docstring for why that distinction
+    # matters).
+    monkeypatch.setattr(storage, "list_structure_system_ids", lambda: [(1049588174021, 30000142), (123, None)])
+
+    resp = client.get("/api/production/logistics/structure-system-ids")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"1049588174021": 30000142, "123": None}
+
+
 def test_asset_plan_is_isolated_per_tenant(monkeypatch):
     # Real bug, confirmed live 2026-08-26: _last_asset_plan used to be a
     # single bare Optional[dict], not tenant-keyed - whichever tenant last

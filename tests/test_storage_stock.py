@@ -464,6 +464,25 @@ def test_get_structure_system_id_none_when_never_resolved(tenant):
     assert storage.get_structure_system_id(LOCATION_ID) is None
 
 
+def test_list_structure_system_ids_covers_resolved_and_unresolved_alike(tenant):
+    # Backs GET /logistics/structure-system-ids (confirmed live 2026-09-16 -
+    # the Logistik page's "resolve" link only ever appeared when a
+    # structure's *name* was unknown, never when just its solar_system_id
+    # was still missing, leaving one stuck with no way to trigger a
+    # re-resolve from the UI at all). Name known + system known, name known
+    # + system missing (the exact stuck state), and never-attempted - all
+    # three distinguishable, not just "known or not".
+    storage.set_cached_structure_name(LOCATION_ID, "C-J Keepstar", solar_system_id=30000142)
+    other_location = 1000000000002
+    storage.set_cached_structure_name(other_location, "L5-UWT - CEZ T1 Capitals")  # name only, no system yet
+
+    result = dict(storage.list_structure_system_ids())
+
+    assert result[LOCATION_ID] == 30000142
+    assert result[other_location] is None
+    assert 1000000000003 not in result  # never attempted at all - absent, not None
+
+
 def test_load_category_system_ids_joins_category_locations_and_structure_names(tenant):
     storage.upsert_category_location("Reactions", LOCATION_ID)
     storage.set_cached_structure_name(LOCATION_ID, "C-J Keepstar", solar_system_id=30000142)

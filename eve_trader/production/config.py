@@ -111,12 +111,17 @@ class ProductionConfig:
     # above (see production/constants.py STRUCTURE_TYPES / RIG_TIERS /
     # engine.py _structure_profile): reactions typically run in a Refinery,
     # rig-covered component groups in an Engineering Complex with the
-    # component ME rigs, everything else in a separate Engineering Complex -
-    # each can have its own structure + rig.
+    # component ME rigs, Titan/Supercarrier hulls need a genuinely bigger
+    # structure than the rest of "Capital Ship" (confirmed with the user
+    # 2026-09-16 - a real EVE build-location restriction, e.g. only a Sotiyo,
+    # not a smaller Engineering Complex), everything else in a separate
+    # Engineering Complex - each can have its own structure + rig.
     reaction_structure_type: str = "Citadel (no bonuses)"
     reaction_rig_tier: str = "No Rig"
     component_structure_type: str = "Citadel (no bonuses)"
     component_rig_tier: str = "No Rig"
+    supercapital_structure_type: str = "Citadel (no bonuses)"
+    supercapital_rig_tier: str = "No Rig"
     manufacturing_structure_type: str = "Citadel (no bonuses)"
     manufacturing_rig_tier: str = "No Rig"
 
@@ -146,8 +151,9 @@ class ProductionConfig:
     fuzzwork_csv_base: str = "https://www.fuzzwork.co.uk/dump/latest/csv/"
 
 
-_STRUCTURE_TYPE_FIELDS = ("reaction_structure_type", "component_structure_type", "manufacturing_structure_type")
-_RIG_TIER_FIELDS = ("reaction_rig_tier", "component_rig_tier", "manufacturing_rig_tier")
+_STRUCTURE_TYPE_FIELDS = ("reaction_structure_type", "component_structure_type",
+                          "supercapital_structure_type", "manufacturing_structure_type")
+_RIG_TIER_FIELDS = ("reaction_rig_tier", "component_rig_tier", "supercapital_rig_tier", "manufacturing_rig_tier")
 
 
 def validate_production_overrides(overrides: dict) -> None:

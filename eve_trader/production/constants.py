@@ -393,6 +393,7 @@ JOB_CATEGORIES: tuple[str, ...] = (
     "Medium Ships",
     "Large Ships",
     "Capital Ship",
+    "Super Capital Ship",
 )
 
 # T3 Strategic Cruiser subsystems (Core/Defensive/Offensive/Propulsion) count
@@ -458,6 +459,18 @@ SHIP_SIZE_GROUP_IDS: dict[str, frozenset] = {
         485,   # Dreadnought
         1538,  # Force Auxiliary
         4594,  # Lancer Dreadnought
+    }),
+    # Titans and Supercarriers - deliberately split out of "Capital Ship"
+    # (confirmed with the user 2026-09-16): these need a genuinely bigger
+    # structure than the rest of "Capital Ship" (Rorqual/Carrier/Dreadnought/
+    # FAX/Lancer Dreadnought) - a real EVE build-location restriction, not
+    # just a display grouping. This is the same reasoning that already splits
+    # "Capital Components" from "Advanced Components" by which rig they
+    # need (see COMPONENT_GROUP_IDS' own comment) - here it's engine.py's
+    # _structure_profile/_structure_rig that now treat this group as its own
+    # "supercapital" profile (ProductionConfig.supercapital_structure_type/
+    # _rig_tier), not just this job-category bucket.
+    "Super Capital Ship": frozenset({
         659,   # Supercarrier
         30,    # Titan
     }),

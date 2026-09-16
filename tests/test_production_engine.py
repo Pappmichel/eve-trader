@@ -504,6 +504,50 @@ def test_job_category_treats_basic_capital_components_as_capital(monkeypatch):
     assert engine.job_category(100) == "Capital Components"
 
 
+def test_job_category_splits_titan_and_supercarrier_into_their_own_bucket(monkeypatch):
+    # Confirmed with the user 2026-09-16: Titans/Supercarriers can't be
+    # built at a regular Capital Ship structure at all (real EVE build-
+    # location restriction), only at a dedicated supercapital-capable one -
+    # they need their own Logistik category, separate from Rorqual/Carrier/
+    # Dreadnought/FAX/Lancer Dreadnought's "Capital Ship".
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (999, 1, 1.0))
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda blueprint_id: ())
+    for type_id, group_id, name in [(3764, 30, "Leviathan"), (23917, 659, "Nyx")]:
+        monkeypatch.setattr(storage, "get_sde_type",
+                             lambda tid, group_id=group_id, name=name: (tid, group_id, name, 100.0, 1, 1884, None, None))
+        assert engine.job_category(type_id) == "Super Capital Ship"
+
+
+def test_job_category_keeps_regular_capital_ships_as_capital_ship(monkeypatch):
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (999, 1, 1.0))
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda blueprint_id: ())
+    monkeypatch.setattr(
+        storage, "get_sde_type",
+        lambda type_id: (19720, 485, "Revelation", 100.0, 1, 1884, None, None),  # Dreadnought
+    )
+
+    assert engine.job_category(19720) == "Capital Ship"
+
+
+def test_structure_profile_uses_supercapital_for_titan_and_supercarrier(monkeypatch):
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 30, "Leviathan", 100.0, 1, 1884, None, None))
+    assert engine._structure_profile("Tech I", 3764) == "supercapital"
+
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 659, "Nyx", 100.0, 1, 1884, None, None))
+    assert engine._structure_profile("Tech I", 23917) == "supercapital"
+
+
+def test_structure_profile_keeps_manufacturing_for_regular_capital_ships(monkeypatch):
+    # Dreadnought - "Capital Ship" (not split out), never "supercapital".
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 485, "Revelation", 100.0, 1, 1884, None, None))
+    assert engine._structure_profile("Tech I", 19720) == "manufacturing"
+
+
+def test_structure_rig_reads_supercapital_config_fields():
+    cfg = ProductionConfig(supercapital_structure_type="Sotiyo (XL Engineering Complex)", supercapital_rig_tier="T2-Rig")
+    assert engine._structure_rig("supercapital", cfg) == ("Sotiyo (XL Engineering Complex)", "T2-Rig")
+
+
 def test_unit_cost_detail_returns_build_cost_and_buy_price_separately(monkeypatch):
     # unit_cost_detail exists so a caller (Doctrine's Shopping List) can show
     # Build cost and Buy price side by side, not just _unit_cost's own
