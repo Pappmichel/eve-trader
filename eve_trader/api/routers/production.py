@@ -291,6 +291,11 @@ def get_category_locations():
     return storage.load_category_locations()
 
 
+@router.get("/logistics/cost-index-overrides")
+def get_category_cost_index_overrides():
+    return storage.load_category_cost_index_overrides()
+
+
 @router.get("/logistics", response_model=list[schemas.LogisticsRow])
 def get_logistics_status():
     plan = _last_plan.get(_tenant_key())
@@ -519,6 +524,21 @@ def set_category_location(req: CategoryLocationRequest):
 @router.delete("/logistics/locations/{category}")
 def clear_category_location(category: str):
     return _wrap(actions.do_clear_category_location, category=category)
+
+
+class CategoryCostIndexOverrideRequest(BaseModel):
+    category: str
+    value: float
+
+
+@router.post("/logistics/cost-index-overrides")
+def set_category_cost_index_override(req: CategoryCostIndexOverrideRequest):
+    return _wrap(actions.do_set_category_cost_index_override, category=req.category, value=req.value)
+
+
+@router.delete("/logistics/cost-index-overrides/{category}")
+def clear_category_cost_index_override(category: str):
+    return _wrap(actions.do_clear_category_cost_index_override, category=category)
 
 
 @router.get("/logistics/location-options")

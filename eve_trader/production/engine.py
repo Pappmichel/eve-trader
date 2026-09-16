@@ -152,11 +152,15 @@ from .models import (
 
 MAX_DEPTH = 10
 
-CostIndices = dict[str, dict[str, float]]
+CostIndices = dict[str, "dict[str, float] | float"]
 # {"component"|"manufacturing": {"manufacturing"|"reaction": rate}} - plus,
 # per job_category actually configured with a resolved-system structure in
-# Logistik (GitHub issue #12), a "category:<name>" entry of the same shape -
-# see _job_cost_rate/_PlanContext.
+# Logistik (GitHub issue #12), a "category:<name>" entry of the same shape;
+# plus, per job_category with its own per-category cost-index override
+# (confirmed with the user 2026-09-16), an "override:<name>" entry - this
+# one a bare float, not a nested dict, since a manual override is a single
+# rate, not split by manufacturing/reaction the way a live system lookup
+# is - see _job_cost_rate/_PlanContext.
 
 
 def _material_qty(base_qty: float, material_mult: float, runs: float) -> float:
@@ -599,35 +603,53 @@ def _job_cost_rate(activity: str, type_id: int, cfg: ProductionConfig, cost_indi
 
     cfg.reaction_cost_index_override/component_cost_index_override/
     manufacturing_cost_index_override (confirmed with the user 2026-08-27)
-    outrank everything above, including the per-category lookup - a manual
-    value always wins when set, skipping the category/system lookup
-    entirely (not just as a tiebreaker), so it works even with no system
-    configured at all. Three fields, not two, because the "component"
-    profile alone actually needs both a reaction rate and a manufacturing
-    rate (see esi_activity below) - there's deliberately no override for
-    the "manufacturing" profile's own reaction rate, since that combination
-    is never read by any code path (Reaction jobs always resolve to the
-    "component" profile, never "manufacturing")."""
+    outrank the category/system lookup below - a manual value always wins
+    when set, skipping the category/system lookup entirely (not just as a
+    tiebreaker), so it works even with no system configured at all. Three
+    fields, not two, because the "component" profile alone actually needs
+    both a reaction rate and a manufacturing rate (see esi_activity below) -
+    there's deliberately no override for the "manufacturing" profile's own
+    reaction rate, since that combination is never read by any code path
+    (Reaction jobs always resolve to the "component" profile, never
+    "manufacturing").
+
+    A per-category override (GitHub issue, confirmed with the user
+    2026-09-16 - storage.job_category_cost_index_overrides, stashed into
+    cost_indices under an "override:<name>" key by _PlanContext, same
+    lazy-lookup-only-if-present shape as "category:<name>" below) outranks
+    even those three flat fields - it's strictly finer-grained (any of the
+    JOB_CATEGORIES buckets individually, e.g. "Super Capital Ship"
+    separately from "Capital Ship", which the flat fields can't express
+    since both currently share one "manufacturing" override), so a more
+    specific value set here should always win over a broader one. Falls
+    through to the flat fields (and everything below) when no override is
+    set for that specific category."""
     structure_type, rig_tier = _structure_rig(_structure_profile(activity, type_id), cfg)
     cost_mult, _, _ = structure_rig_multiplier(structure_type, rig_tier)
     esi_activity = "reaction" if activity == "Reaction" else "manufacturing"
     is_component_profile = activity == "Reaction" or _is_component(type_id)
 
-    if activity == "Reaction":
-        override = cfg.reaction_cost_index_override
-    elif is_component_profile:
-        override = cfg.component_cost_index_override
-    else:
-        override = cfg.manufacturing_cost_index_override
+    category = None
+    if any(key.startswith("category:") or key.startswith("override:") for key in cost_indices):
+        category = job_category(type_id)
 
-    if override is not None:
-        index = override
+    category_override = cost_indices.get(f"override:{category}") if category is not None else None
+
+    if activity == "Reaction":
+        flat_override = cfg.reaction_cost_index_override
+    elif is_component_profile:
+        flat_override = cfg.component_cost_index_override
+    else:
+        flat_override = cfg.manufacturing_cost_index_override
+
+    if category_override is not None:
+        index = category_override
+    elif flat_override is not None:
+        index = flat_override
     else:
         index = None
-        if any(key.startswith("category:") for key in cost_indices):
-            category = job_category(type_id)
-            if category is not None:
-                index = cost_indices.get(f"category:{category}", {}).get(esi_activity)
+        if category is not None:
+            index = cost_indices.get(f"category:{category}", {}).get(esi_activity)
         if index is None:
             system_profile = "component" if is_component_profile else "manufacturing"
             index = cost_indices.get(system_profile, {}).get(esi_activity)
@@ -1480,6 +1502,14 @@ class _PlanContext:
             if system_id not in system_indices_by_id:
                 system_indices_by_id[system_id] = pricing.system_cost_indices_for(esi_client, system_id)
             self.cost_indices[f"category:{category}"] = system_indices_by_id[system_id]
+        # Per-category cost-index overrides (confirmed with the user
+        # 2026-09-16) - a pure DB read, no ESI call, so this is cheap
+        # regardless of how many categories have one set. _job_cost_rate
+        # prefers these "override:<name>" entries over everything else,
+        # including the flat *_cost_index_override fields above (see its
+        # own docstring for the full priority order).
+        for category, value in storage.load_category_cost_index_overrides().items():
+            self.cost_indices[f"override:{category}"] = value
         try:
             self.adjusted_prices = esi_client.get_adjusted_prices()
         except Exception:  # noqa: BLE001 - best-effort; falls back to 0 (job_cost=0), not a guess

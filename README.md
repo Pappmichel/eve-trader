@@ -62,8 +62,8 @@ docker run -d --name eve-trader-pg -e POSTGRES_PASSWORD=devpassword \
 # refining_schema.sql/role_consent_schema.sql/special_orders_schema.sql/
 # station_trading_schema.sql/sorting_schema.sql/
 # production_buy_list_schema.sql/pipeline_runs_schema.sql/
-# session_revocations_schema.sql back
-# the Admin/Doctrine/error-tracking/Ore & Minerals/role-consent/Special
+# session_revocations_schema.sql/job_category_cost_index_overrides_schema.sql
+# back the Admin/Doctrine/error-tracking/Ore & Minerals/role-consent/Special
 # Orders/Station Trading/Sorting features, and their routers are registered unconditionally, so
 # skipping them means 500s the moment you touch those tools, not just a
 # missing feature:
@@ -81,6 +81,7 @@ Get-Content docs\sorting_schema.sql | docker exec -i eve-trader-pg psql -U postg
 Get-Content docs\production_buy_list_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
 Get-Content docs\pipeline_runs_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
 Get-Content docs\session_revocations_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
+Get-Content docs\job_category_cost_index_overrides_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
 ```
 
 (`phase1_schema.sql` creates the `eve_trader_app` role with the checked-in

@@ -285,6 +285,31 @@ def do_clear_category_location(category: str) -> dict:
     return {"category": category}
 
 
+def do_set_category_cost_index_override(category: str, value: float) -> dict:
+    """Per-category ISK job-cost-index override (confirmed with the user
+    2026-09-16) - see storage.upsert_category_cost_index_override and
+    engine.py's _job_cost_rate for the priority this slots into (higher
+    than the existing flat reaction_/component_/manufacturing_cost_index_
+    override fields, see do_set_cost_index_override above - not a
+    replacement for those, an additional finer-grained layer). No cache to
+    invalidate here, unlike do_set_category_location's location-cache
+    dependency - _PlanContext reads this fresh on every plan/margin call,
+    nothing caches it across calls."""
+    if category not in JOB_CATEGORIES:
+        raise ActionError(f"Unknown category '{category}'. Options: {', '.join(JOB_CATEGORIES)}")
+    storage.upsert_category_cost_index_override(category, value)
+    return {"category": category, "cost_index_override": value}
+
+
+def do_clear_category_cost_index_override(category: str) -> dict:
+    storage.delete_category_cost_index_override(category)
+    return {"category": category}
+
+
+def do_list_category_cost_index_overrides() -> dict:
+    return {"overrides": storage.load_category_cost_index_overrides()}
+
+
 def do_add_category_location_option(category: str, location_id: int) -> dict:
     if category not in JOB_CATEGORIES:
         raise ActionError(f"Unknown category '{category}'. Options: {', '.join(JOB_CATEGORIES)}")

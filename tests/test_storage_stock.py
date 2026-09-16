@@ -496,6 +496,31 @@ def test_load_category_system_ids_joins_category_locations_and_structure_names(t
     assert result == {"Reactions": 30000142}
 
 
+def test_category_cost_index_override_round_trips(tenant):
+    # Confirmed with the user 2026-09-16 - finer-grained than the flat
+    # reaction_/component_/manufacturing_cost_index_override ProductionConfig
+    # fields, see engine.py's _job_cost_rate.
+    storage.upsert_category_cost_index_override("Reactions", 0.0014)
+    storage.upsert_category_cost_index_override("Super Capital Ship", 0.02)
+
+    assert storage.load_category_cost_index_overrides() == {"Reactions": 0.0014, "Super Capital Ship": 0.02}
+
+
+def test_category_cost_index_override_upsert_replaces_not_duplicates(tenant):
+    storage.upsert_category_cost_index_override("Reactions", 0.0014)
+    storage.upsert_category_cost_index_override("Reactions", 0.05)
+
+    assert storage.load_category_cost_index_overrides() == {"Reactions": 0.05}
+
+
+def test_delete_category_cost_index_override_removes_it(tenant):
+    storage.upsert_category_cost_index_override("Reactions", 0.0014)
+
+    storage.delete_category_cost_index_override("Reactions")
+
+    assert storage.load_category_cost_index_overrides() == {}
+
+
 def test_manual_blueprint_copy_cost_round_trips(tenant):
     # GitHub issue #40.
     storage.upsert_manual_blueprint_copy_cost(TYPE_ID, "Tritanium", purchase_cost=1_000_000.0, runs=10)
