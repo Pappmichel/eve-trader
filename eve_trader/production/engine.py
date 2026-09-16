@@ -123,6 +123,7 @@ instead of summed into one number.
 """
 from __future__ import annotations
 
+import logging
 import math
 import threading
 import time
@@ -149,6 +150,8 @@ from .models import (
     InventionResult, InventoryRow, LogisticsRow, MarketStatusRow, SpecialOrderLineItem, StockOverlapWarningRow,
     T1BpcInventionNeedRow,
 )
+
+log = logging.getLogger("eve_trader.production.engine")
 
 MAX_DEPTH = 10
 
@@ -1568,7 +1571,17 @@ class _PlanContext:
             self.cost_indices[f"me_te_override:{type_id}"] = (me, te)
         try:
             self.adjusted_prices = esi_client.get_adjusted_prices()
-        except Exception:  # noqa: BLE001 - best-effort; falls back to 0 (job_cost=0), not a guess
+        except Exception as e:  # noqa: BLE001 - best-effort; falls back to {} (job_cost=0 everywhere), not a guess
+            # Confirmed real 2026-09-16: this used to fail silently - EIV (and
+            # therefore every BuildJobEntry.job_cost/"Total Job Cost") reads
+            # 0 for every item when adjusted_prices is empty, which looks
+            # exactly like "there's no job cost" instead of "ESI's adjusted-
+            # price data is currently unavailable". A real job_cost is never
+            # actually 0 (job_cost_rate alone already includes a nonzero
+            # facility_tax_rate + SCC_SURCHARGE_RATE - see _job_cost_rate),
+            # so a silent, unlogged {} here was invisible until the Total Job
+            # Cost/Gesamt fields gave it somewhere to show up.
+            log.warning("ESI get_adjusted_prices() failed (%s) - job_cost will read 0 for this plan.", e)
             self.adjusted_prices = {}
 
 
