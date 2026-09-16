@@ -1028,12 +1028,19 @@ def do_unlisted_stock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     # context+memo pair across its ~19,400-item scan. Public
     # item_margin_detail is unchanged (Margin page still wants a fresh
     # context for a single lookup).
+    #
+    # extra_type_ids covers every unlisted row's own type_id (same reason
+    # item_margin_detail now passes its own searched type_id, see that
+    # function's docstring) - without it, an unlisted row whose BOM shares
+    # nothing with stock_targets (an owned-but-unlisted Titan/Supercarrier,
+    # same failure mode) would silently price as None instead of its real
+    # build cost.
     ctx = None
     cost_memo: dict[int, float | None] = {}
     t2_memo: dict[int, tuple[float, float, str | None]] = {}
     if unlisted:
         try:
-            ctx = _PlanContext(cfg)
+            ctx = _PlanContext(cfg, extra_type_ids=[type_id for type_id, _name, _qty in unlisted])
         except (ESIError, requests.RequestException):
             ctx = None
 
