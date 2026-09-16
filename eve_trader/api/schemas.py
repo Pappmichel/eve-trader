@@ -191,6 +191,7 @@ class BuildJobEntry(_Base):
     unit_build_cost: Optional[float]
     decryptor: Optional[str] = None
     job_category: Optional[str] = None
+    job_cost: Optional[float] = None
     margin: Optional[float] = None
 
 
