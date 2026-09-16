@@ -646,6 +646,35 @@ def test_compute_special_order_success(monkeypatch):
     }
 
 
+def test_compute_special_order_response_includes_job_cost(monkeypatch):
+    # Regression test for a real live bug (2026-09-16): schemas.BuildJobEntry
+    # (the Pydantic response_model used by this endpoint) didn't declare
+    # job_cost - FastAPI's response_model silently drops any attribute not
+    # declared in the schema, so job_cost from the real production.models.
+    # BuildJobEntry dataclass never reached the client at all, showing "-"
+    # for every Build List row despite engine.py computing a real nonzero
+    # value (confirmed live via a direct do_compute_special_order call).
+    # A response test with an empty build_list (as the other tests here
+    # use) can't catch this - a field only gets silently dropped when
+    # there's an actual row to serialize.
+    from eve_trader.production.models import BuildJobEntry
+
+    monkeypatch.setattr(production_actions, "do_compute_special_order", lambda order_id: {
+        "line_items": [], "buy_list": [],
+        "build_list": [BuildJobEntry(
+            type_id=1, type_name="Widget", blueprint_type_id=2, activity="Manufacturing",
+            quantity=1.0, job_runs=1, job_time_seconds=100.0, unit_build_cost=500.0,
+            job_cost=123.45,
+        )],
+        "invention_list": [], "stock_overlap_warning": [],
+    })
+
+    resp = client.post("/api/production/special-orders/order-1/compute")
+
+    assert resp.status_code == 200
+    assert resp.json()["build_list"][0]["job_cost"] == 123.45
+
+
 def test_compute_special_order_action_error_maps_to_400(monkeypatch):
     def _raise(order_id):
         raise ActionError("Special order missing not found.")
