@@ -2918,7 +2918,21 @@ def get_blueprint_for_product(product_type_id: int) -> Optional[tuple[int, int, 
     buildable, confirmed live 2026-08-19) isn't actually buildable by any
     player either; the extra `blueprint_type_id` tiebreak keeps the choice
     deterministic if several published blueprints somehow tie. Cached - see
-    get_sde_type."""
+    get_sde_type.
+
+    Confirmed real bug (2026-09-16): a handful of rows in Fuzzwork's
+    industryActivityProducts.csv (the source for sde_blueprint_products,
+    see production/sde.py's refresh_sde) carry quantity=0 - never a
+    legitimate value for a real producible blueprint (every actual EVE
+    manufacturing/reaction job yields at least 1 unit per run). Left as-is,
+    this silently propagated as a divide-by-zero risk into every caller
+    that divides by this tuple's own product_qty (_unit_cost/
+    unit_cost_detail would raise ZeroDivisionError outright; engine.
+    _build_build_list's own defensive `if product_qty else None` masked it
+    instead, silently showing job_cost as "-" for the whole Build List with
+    no error at all). Normalized to 1 here, once, at the source - every
+    caller across the codebase gets a trustworthy quantity without
+    duplicating this same guard."""
     with connect() as conn:
         row = conn.execute(
             "SELECT p.blueprint_type_id, p.activity_id, p.quantity FROM sde_blueprint_products p "
@@ -2927,6 +2941,8 @@ def get_blueprint_for_product(product_type_id: int) -> Optional[tuple[int, int, 
             "ORDER BY p.activity_id, p.blueprint_type_id LIMIT 1",
             (product_type_id,),
         ).fetchone()
+    if row is not None and row[2] <= 0:
+        row = (row[0], row[1], 1.0)
     return row
 
 
