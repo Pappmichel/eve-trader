@@ -734,6 +734,65 @@ def test_job_cost_rate_component_and_reaction_overrides_are_not_mixed_up(monkeyp
     assert round(component_rate, 6) == round(0.22 * 1.0 + cfg.facility_tax_rate + SCC_SURCHARGE_RATE, 6)
 
 
+def test_job_cost_rate_per_category_override_wins_over_flat_manual_override(monkeypatch):
+    # Confirmed with the user 2026-09-16: a per-category override (Logistik,
+    # storage.job_category_cost_index_overrides) is strictly finer-grained
+    # than the flat reaction_/component_/manufacturing_cost_index_override
+    # fields, so it must win over one even when both are set - a more
+    # specific value should always beat a broader one, same reasoning
+    # test_job_cost_rate_manual_override_wins_over_category_index already
+    # established for override-over-live-system-lookup.
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (500, 11, 1.0))  # Reaction
+    cfg = ProductionConfig(reaction_cost_index_override=0.42)
+    cost_indices = {"override:Reactions": 0.55}
+
+    _, _, job_cost_rate = _activity_mods("Reaction", type_id=1, cfg=cfg, cost_indices=cost_indices, blueprint_id=2)
+
+    expected = 0.55 * 1.0 + cfg.facility_tax_rate + SCC_SURCHARGE_RATE
+    assert round(job_cost_rate, 6) == round(expected, 6)
+
+
+def test_job_cost_rate_per_category_override_wins_over_category_system_index(monkeypatch):
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (500, 11, 1.0))
+    cfg = ProductionConfig()
+    cost_indices = {"category:Reactions": {"reaction": 0.20}, "override:Reactions": 0.55}
+
+    _, _, job_cost_rate = _activity_mods("Reaction", type_id=1, cfg=cfg, cost_indices=cost_indices, blueprint_id=2)
+
+    expected = 0.55 * 1.0 + cfg.facility_tax_rate + SCC_SURCHARGE_RATE
+    assert round(job_cost_rate, 6) == round(expected, 6)
+
+
+def test_job_cost_rate_falls_back_to_flat_override_when_no_matching_category_override(monkeypatch):
+    # An "override:" entry exists, but for a *different* category than this
+    # item's own - must fall through to the flat manual override, same
+    # "some entries exist but not for me" fallback behavior the category-
+    # system-index lookup already has.
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (500, 11, 1.0))
+    cfg = ProductionConfig(reaction_cost_index_override=0.42)
+    cost_indices = {"override:Capital Components": 0.55}  # a different category
+
+    _, _, job_cost_rate = _activity_mods("Reaction", type_id=1, cfg=cfg, cost_indices=cost_indices, blueprint_id=2)
+
+    expected = 0.42 * 1.0 + cfg.facility_tax_rate + SCC_SURCHARGE_RATE
+    assert round(job_cost_rate, 6) == round(expected, 6)
+
+
+def test_job_cost_rate_job_category_lookup_fires_for_override_only_entries_too(monkeypatch):
+    # The cheap-call-sites guard (see test_job_cost_rate_skips_job_category_
+    # lookup_when_no_category_entries_present) must also fire for "override:"
+    # entries, not just "category:" ones - regression guard against a narrower
+    # check that only looked for the "category:" prefix.
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (500, 11, 1.0))
+    cfg = ProductionConfig()
+    cost_indices = {"override:Reactions": 0.55}  # no "category:" entry at all
+
+    _, _, job_cost_rate = _activity_mods("Reaction", type_id=1, cfg=cfg, cost_indices=cost_indices, blueprint_id=2)
+
+    expected = 0.55 * 1.0 + cfg.facility_tax_rate + SCC_SURCHARGE_RATE
+    assert round(job_cost_rate, 6) == round(expected, 6)
+
+
 def test_job_cost_rate_manufacturing_override_applies_to_non_component_items(monkeypatch):
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 999, "Some Ship", 0.01, 1, 1, 0, None))
     cfg = ProductionConfig(manufacturing_cost_index_override=0.07)
@@ -821,6 +880,7 @@ def test_plan_context_populates_category_cost_indices_sharing_fetches_by_system(
     monkeypatch.setattr(storage, "load_selected_decryptors", lambda: {})
     monkeypatch.setattr(storage, "load_category_system_ids",
                          lambda: {"Reactions": 30000142, "Capital Components": 30000142, "Equipment": 30000144})
+    monkeypatch.setattr(storage, "load_category_cost_index_overrides", lambda: {})
     monkeypatch.setattr(pricing_module, "home_prices", lambda cfg, type_ids: {})
     monkeypatch.setattr(pricing_module, "jita_prices", lambda type_ids: {})
     monkeypatch.setattr(goonmetrics_client_module.GoonmetricsClient, "__init__", lambda self: None)
@@ -858,6 +918,7 @@ def test_plan_context_home_prices_exclude_a_live_confirmed_empty_market(monkeypa
     monkeypatch.setattr(storage, "load_manual_build_buy", lambda: {})
     monkeypatch.setattr(storage, "load_selected_decryptors", lambda: {})
     monkeypatch.setattr(storage, "load_category_system_ids", lambda: {})
+    monkeypatch.setattr(storage, "load_category_cost_index_overrides", lambda: {})
     monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Buy", None))  # no blueprint - closure is just {587}
 
     monkeypatch.setattr(esi_sync_module, "list_producer_characters", lambda: [("producer:1", 1, "TestChar")])

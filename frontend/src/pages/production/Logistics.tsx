@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Title, Text, Stack, Button, Group, Select, SimpleGrid, ActionIcon, UnstyledButton } from '@mantine/core'
+import { Card, Title, Text, Stack, Button, Group, Select, SimpleGrid, ActionIcon, UnstyledButton, NumberInput } from '@mantine/core'
 import { modals } from '@mantine/modals'
 import { IconX } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
@@ -17,6 +17,7 @@ export default function Logistics() {
   const { data: categories, isLoading: categoriesLoading } = useQuery({ queryKey: ['production', 'job-categories'], queryFn: productionApi.jobCategories })
   const { data: locations, isLoading: locationsLoading } = useQuery({ queryKey: ['production', 'category-locations'], queryFn: productionApi.categoryLocations })
   const { data: locationOptions } = useQuery({ queryKey: ['production', 'category-location-options'], queryFn: productionApi.categoryLocationOptions })
+  const { data: costIndexOverrides } = useQuery({ queryKey: ['production', 'category-cost-index-overrides'], queryFn: productionApi.categoryCostIndexOverrides })
   const { data: structureNames } = useQuery({ queryKey: ['production', 'structure-names'], queryFn: productionApi.structureNames })
   const { data: structureSystemIds } = useQuery({ queryKey: ['production', 'structure-system-ids'], queryFn: productionApi.structureSystemIds })
   const { data: rows, isError } = useQuery({
@@ -123,6 +124,33 @@ export default function Logistics() {
     ['production', 'structure-names'], ['production', 'structure-system-ids'],
   ])
 
+  // Per-category ISK job-cost-index override (confirmed with the user
+  // 2026-09-16) - finer-grained than the flat reaction/component/
+  // manufacturing fields on the Settings page, see engine.py's
+  // _job_cost_rate for the priority this slots into. Stored/displayed as a
+  // percentage in the UI, same convention as the Settings page's own cost
+  // index override fields - persisted as a fraction (value/100).
+  const [overrideDraft, setOverrideDraft] = useState<Record<string, string>>({})
+  useEffect(() => {
+    if (!costIndexOverrides) return
+    setOverrideDraft((d) => {
+      const next = { ...d }
+      for (const [cat, val] of Object.entries(costIndexOverrides)) {
+        if (!(cat in next)) next[cat] = String(val * 100)
+      }
+      return next
+    })
+  }, [costIndexOverrides])
+
+  const saveCostIndexOverride = useAction('Cost Index Override Saved',
+    (args: { category: string; value: number }) => productionApi.setCategoryCostIndexOverride(args.category, args.value), [
+    ['production', 'category-cost-index-overrides'],
+  ])
+  const [pendingOverrideCategory, setPendingOverrideCategory] = useState<string | null>(null)
+  const clearCostIndexOverride = useAction('Cost Index Override Removed', productionApi.clearCategoryCostIndexOverride, [
+    ['production', 'category-cost-index-overrides'],
+  ])
+
   const grouped = useMemo(() => {
     const map = new Map<string, LogisticsRow[]>()
     for (const r of rows ?? []) {
@@ -184,7 +212,10 @@ export default function Logistics() {
         <Text size="xs" c="dimmed" mb="sm">
           Structure/location ID per job category (only the ID matters, not the system prefix in the name, which can
           change). Leave empty for categories you don't want to track. The name resolves automatically after saving,
-          using a producer character with docking rights/access to the structure.
+          using a producer character with docking rights/access to the structure. Cost index override, if set, is
+          the highest-priority ISK job-cost-index source for that category - it beats even this structure's own
+          live system index and the flat Settings-page overrides, so use it when you need a category's rate to
+          differ from what its assigned system would otherwise give it. Leave blank to use the live system index.
         </Text>
         <SimpleGrid cols={3}>
           {(categories ?? []).map((cat) => {
@@ -290,6 +321,42 @@ export default function Logistics() {
                     })()}
                   </Text>
                 )}
+                <Group align="flex-end" gap="xs" mt={4}>
+                  <NumberInput
+                    label="Cost index override" placeholder="Auto" suffix="%" decimalScale={2} min={0} max={100} step={0.1}
+                    value={overrideDraft[cat] ?? ''}
+                    onChange={(v) => setOverrideDraft((d) => ({ ...d, [cat]: v === '' ? '' : String(v) }))}
+                    style={{ flex: 1 }} size="xs"
+                  />
+                  <Button
+                    size="xs" variant="default"
+                    disabled={overrideDraft[cat] == null || overrideDraft[cat] === ''}
+                    loading={saveCostIndexOverride.isPending && pendingOverrideCategory === cat}
+                    onClick={() => {
+                      setPendingOverrideCategory(cat)
+                      saveCostIndexOverride.mutate({ category: cat, value: Number(overrideDraft[cat]) / 100 })
+                    }}
+                  >
+                    Save
+                  </Button>
+                  {costIndexOverrides?.[cat] != null && (
+                    <ActionIcon
+                      size="lg" variant="subtle" color="danger" aria-label="Remove cost index override"
+                      loading={clearCostIndexOverride.isPending && pendingOverrideCategory === cat}
+                      onClick={() => {
+                        setPendingOverrideCategory(cat)
+                        setOverrideDraft((d) => {
+                          const next = { ...d }
+                          delete next[cat]
+                          return next
+                        })
+                        clearCostIndexOverride.mutate(cat)
+                      }}
+                    >
+                      <IconX size={16} />
+                    </ActionIcon>
+                  )}
+                </Group>
               </div>
             )
           })}

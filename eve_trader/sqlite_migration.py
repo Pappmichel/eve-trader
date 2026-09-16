@@ -125,6 +125,7 @@ KNOWN_NON_MIGRATED_TABLES: dict[str, str] = {
     "sorting_intake_sources": "Postgres-native (never existed in the pre-migration SQLite schema)",
     "production_buy_list": "Postgres-native (never existed in the pre-migration SQLite schema) - latest plan_production buy list for Sorting",
     "pipeline_runs": "Postgres-native (background Search+Add+Clean Up status - never existed in the pre-migration SQLite schema)",
+    "job_category_cost_index_overrides": "Postgres-native (confirmed with the user 2026-09-16 - never existed in the pre-migration SQLite schema)",
 }
 
 

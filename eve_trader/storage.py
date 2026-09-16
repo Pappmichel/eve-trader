@@ -1428,6 +1428,31 @@ def delete_category_location(category: str) -> None:
         conn.execute("DELETE FROM job_category_locations WHERE category = ?", (category,))
 
 
+def upsert_category_cost_index_override(category: str, cost_index_override: float) -> None:
+    """Per-category ISK job-cost-index override (confirmed with the user
+    2026-09-16) - finer-grained than ProductionConfig's flat reaction_/
+    component_/manufacturing_cost_index_override fields, which this doesn't
+    replace (see engine.py's _job_cost_rate for the priority order both
+    slot into). Same upsert shape as upsert_category_location above."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO job_category_cost_index_overrides (category, cost_index_override) VALUES (?,?) "
+            "ON CONFLICT(tenant_id, category) DO UPDATE SET cost_index_override=excluded.cost_index_override",
+            (category, cost_index_override),
+        )
+
+
+def load_category_cost_index_overrides() -> dict[str, float]:
+    with connect() as conn:
+        rows = conn.execute("SELECT category, cost_index_override FROM job_category_cost_index_overrides").fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+def delete_category_cost_index_override(category: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM job_category_cost_index_overrides WHERE category = ?", (category,))
+
+
 def add_category_location_option(category: str, location_id: int) -> None:
     with connect() as conn:
         conn.execute(

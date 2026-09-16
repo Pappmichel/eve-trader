@@ -228,6 +228,11 @@ export const productionApi = {
   setCategoryLocation: (category: string, locationId: number) =>
     post('/api/production/logistics/locations', { category, location_id: locationId }),
   clearCategoryLocation: (category: string) => del(`/api/production/logistics/locations/${encodeURIComponent(category)}`),
+  categoryCostIndexOverrides: () => get<Record<string, number>>('/api/production/logistics/cost-index-overrides'),
+  setCategoryCostIndexOverride: (category: string, value: number) =>
+    post('/api/production/logistics/cost-index-overrides', { category, value }),
+  clearCategoryCostIndexOverride: (category: string) =>
+    del(`/api/production/logistics/cost-index-overrides/${encodeURIComponent(category)}`),
   categoryLocationOptions: () => get<Record<string, number[]>>('/api/production/logistics/location-options'),
   addCategoryLocationOption: (category: string, locationId: number) =>
     post('/api/production/logistics/location-options', { category, location_id: locationId }),

@@ -200,6 +200,7 @@ sudo -u postgres psql -d eve_trader -f docs/sorting_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/production_buy_list_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/pipeline_runs_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/session_revocations_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/job_category_cost_index_overrides_schema.sql
 ```
 `phase1_schema.sql` creates the `eve_trader_app` role with the **checked-in
 dev password** (`app_devpassword`) - fine for local dev, not for a real
@@ -383,6 +384,7 @@ sudo -u postgres psql -d eve_trader -f docs/sorting_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/production_buy_list_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/pipeline_runs_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/session_revocations_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/job_category_cost_index_overrides_schema.sql
 .venv/bin/pip install -r requirements.lock
 .venv/bin/pip install -e . --no-deps
 cd frontend && npm ci && npm run build && cd ..
