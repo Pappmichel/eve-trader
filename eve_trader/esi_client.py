@@ -722,6 +722,18 @@ class ESIClient:
             if (ESIClient._adjusted_prices_cache is None
                     or (now - ESIClient._adjusted_prices_cache_at) > cache_seconds):
                 rows = self._get("/markets/prices/", params={"datasource": "tranquility"})
+                # Confirmed real (2026-09-16): a genuine response always
+                # covers thousands of published types - a 200 response that
+                # happens to carry zero rows is an ESI-side anomaly, not a
+                # documented/expected shape. Treat it the same as a real
+                # fetch failure (raise, don't cache) rather than caching a
+                # known-bad empty result for the full cache_seconds window -
+                # that used to silently zero every BuildJobEntry.job_cost
+                # for up to an hour with no error anywhere (production/
+                # engine.py's _PlanContext already logs+falls back on this
+                # exception, see its own comment).
+                if not rows:
+                    raise ESIError("ESI /markets/prices/ returned zero rows - treating as a failed fetch.")
                 ESIClient._adjusted_prices_cache = {
                     row["type_id"]: row["adjusted_price"] for row in rows if "adjusted_price" in row
                 }

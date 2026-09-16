@@ -1129,7 +1129,11 @@ def _base_runs(cfg: ProductionConfig, home: dict, jita: dict, manual_overrides: 
             material_mult, _, _, _ = _tech_ii_mods(type_id, blueprint_id, activity_id, cfg, home, jita,
                                                     selected_decryptors, t2_memo)
         else:
-            material_mult, _, _ = _activity_mods(activity, type_id, cfg, {}, blueprint_id)
+            # cost_indices (a real param of the enclosing _base_runs, not {}) so a manual
+            # ME/TE override affects this sizing baseline too - see _expand_all's own
+            # docstring for the same fix/reasoning; _base_runs feeds only the overbuild
+            # buffer, not real demand, but should still reflect the same material_mult.
+            material_mult, _, _ = _activity_mods(activity, type_id, cfg, cost_indices, blueprint_id)
         for material_id, base_qty in storage.get_blueprint_materials(blueprint_id, activity_id):
             expand(material_id, _material_qty(base_qty, material_mult, runs), depth + 1)
 
@@ -1176,6 +1180,7 @@ def _expand_all(seed_missing: dict[int, float], cfg: ProductionConfig, home: dic
                  gross_demand: Optional[dict[int, float]] = None,
                  ignore_current_stock: bool = False,
                  component_overbuild: Optional[float] = None,
+                 cost_indices: Optional[CostIndices] = None,
                  ) -> tuple[dict[int, float], dict[tuple[int, int, int], int]]:
     """Resolves every stock target's `seed_missing` quantity into buy_totals
     ({type_id: qty}) and build_runs ({(blueprint_id, activity_id, product_type_id): runs}),
@@ -1264,8 +1269,21 @@ def _expand_all(seed_missing: dict[int, float], cfg: ProductionConfig, home: dic
     `stock_used` is a running ledger (seeded by the caller for
     top-level stock targets, mutated here for everything below them) so a
     component needed by two different branches doesn't have the same
-    physical stock counted against both of them."""
+    physical stock counted against both of them.
+
+    `cost_indices`, if given, is threaded into each material_mult's own
+    _activity_mods call below (confirmed real bug, 2026-09-16: this used to
+    always pass {} instead, so a manual per-blueprint ME/TE override - which
+    lives inside this same dict, see CostIndices' own comment - silently had
+    zero effect on the actual material quantities a plan computes, only on
+    cost estimates elsewhere that never drove real demand). Defaults to None
+    (treated as {}) for callers that genuinely have no live cost_indices to
+    offer (this function's own tests included) - job_cost_rate itself still
+    isn't needed here (only material_mult drives sub-material quantities),
+    so a missing/empty cost_indices still falls back cleanly to the flat
+    baseline, same as before."""
     effective_overbuild = cfg.component_overbuild if component_overbuild is None else component_overbuild
+    cost_indices = cost_indices or {}
     buy_totals: dict[int, float] = {}
     build_runs: dict[tuple[int, int, int], int] = {}
     buffered_parents: set[int] = set()
@@ -1292,8 +1310,9 @@ def _expand_all(seed_missing: dict[int, float], cfg: ProductionConfig, home: dic
                                                         selected_decryptors, t2_memo)
             else:
                 # job_cost_rate isn't needed here (only material_mult drives sub-material
-                # quantities) - {} makes _activity_mods fall back cleanly without a live lookup.
-                material_mult, _, _ = _activity_mods(activity, type_id, cfg, {}, blueprint_id)
+                # quantities) - cost_indices is passed anyway (not {}) so a manual ME/TE
+                # override (see this function's own docstring) still reaches material_mult.
+                material_mult, _, _ = _activity_mods(activity, type_id, cfg, cost_indices, blueprint_id)
             parent_base_runs = _parent_base_runs_for_buffer(type_id, base_runs, buffered_parents)
             for material_id, base_qty in storage.get_blueprint_materials(blueprint_id, activity_id):
                 gross_needed = _material_qty(base_qty, material_mult, runs)
@@ -1776,7 +1795,7 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 
     buy_totals, build_runs = _expand_all(seed_missing, cfg, home, jita, manual_overrides, cost_memo,
                                           selected_decryptors, t2_memo, manual_stock, stock_used, base_runs,
-                                          gross_demand)
+                                          gross_demand, cost_indices=cost_indices)
 
     buy_list = _build_buy_list(buy_totals, gross_demand, cfg, home, jita)
     build_list = _build_build_list(build_runs, cost_memo, t2_memo, cfg, home, cost_indices, adjusted_prices)
@@ -1898,7 +1917,7 @@ def plan_special_order(items: list[tuple[int, str, float]], cfg: ProductionConfi
     buy_totals, build_runs = _expand_all(seed_missing, cfg, home, jita, manual_overrides, cost_memo,
                                           selected_decryptors, t2_memo, manual_stock, stock_used, base_runs,
                                           gross_demand, ignore_current_stock=not net_against_stock,
-                                          component_overbuild=0.0)
+                                          component_overbuild=0.0, cost_indices=cost_indices)
 
     # Confirmed with the user (2026-09-02): a material fully covered by
     # current stock (net_needed <= 0, so _expand_all never queues it into a
@@ -2269,7 +2288,10 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             if activity == "Tech II" and type_id in t2_memo:
                 material_mult, time_mult, decryptor_name, _ = t2_memo[type_id]
             else:
-                material_mult, time_mult, _ = _activity_mods(activity, type_id, cfg, {}, blueprint_id)
+                # cost_indices (the real ctx.cost_indices in scope here, not {}) so a manual
+                # ME/TE override affects this Bauliste's material quantities too - see
+                # _expand_all's own docstring for the same fix/reasoning.
+                material_mult, time_mult, _ = _activity_mods(activity, type_id, cfg, cost_indices, blueprint_id)
                 decryptor_name = None
             activity_label = "Reaction" if activity_id == ACTIVITY_REACTION else "Manufacturing"
             job_meta[type_id] = (blueprint_id, activity_id, product_qty, activity_label, decryptor_name, time_mult)
@@ -3088,7 +3110,7 @@ def _structural_material_closure(seed_type_ids: Iterable[int]) -> set[int]:
 
 def build_material_tree(type_id: int, quantity: float, cfg: ProductionConfig, home: dict, jita: dict,
                          selected_decryptors: dict[int, str], t2_memo: dict[int, tuple[float, float, Optional[str]]],
-                         depth: int = 0) -> dict:
+                         depth: int = 0, cost_indices: Optional[CostIndices] = None) -> dict:
     """Recursive, hierarchical material tree for one root item - shows the
     FULL recipe (Invention -> Components -> ... -> base minerals) exactly as
     the blueprint defines it, unlike the flat Bauliste/Buy List (which pools
@@ -3101,10 +3123,15 @@ def build_material_tree(type_id: int, quantity: float, cfg: ProductionConfig, ho
 
     Same ME/decryptor logic as everywhere else (_activity_mods/_tech_ii_mods)
     so the quantities shown here can't drift from what the Bauliste itself
-    would compute for the same item. Stops at a bought (no blueprint) leaf,
+    would compute for the same item - including a manual ME/TE override
+    (confirmed real bug, 2026-09-16: `cost_indices` defaults to None/{} here
+    since this function doesn't build a real _PlanContext at all, but the
+    caller can still pass the override-only slice of one - see
+    do_build_material_tree). Stops at a bought (no blueprint) leaf,
     or at MAX_DEPTH (matches _unit_cost's own recursion cap - a real BOM
     never legitimately goes this deep, so hitting it means a bad blueprint
     reference, not a genuinely deeper tree)."""
+    cost_indices = cost_indices or {}
     sde_type = storage.get_sde_type(type_id)
     type_name = sde_type[2] if sde_type else str(type_id)
     activity, bp = classify_activity(type_id)
@@ -3122,14 +3149,15 @@ def build_material_tree(type_id: int, quantity: float, cfg: ProductionConfig, ho
                                                               selected_decryptors, t2_memo)
         node["decryptor"] = decryptor_name
     else:
-        material_mult, _, _ = _activity_mods(activity, type_id, cfg, {}, blueprint_id)
+        material_mult, _, _ = _activity_mods(activity, type_id, cfg, cost_indices, blueprint_id)
 
     materials = storage.get_blueprint_materials(blueprint_id, activity_id)
     runs = math.ceil(quantity / product_qty) if product_qty > 0 else 0
     for material_id, base_qty in materials:
         material_qty = _material_qty(base_qty, material_mult, runs)
         node["children"].append(
-            build_material_tree(material_id, material_qty, cfg, home, jita, selected_decryptors, t2_memo, depth + 1)
+            build_material_tree(material_id, material_qty, cfg, home, jita, selected_decryptors, t2_memo,
+                                 depth + 1, cost_indices)
         )
     return node
 

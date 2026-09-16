@@ -1,6 +1,6 @@
 import pytest
 
-from eve_trader.esi_client import ESIClient
+from eve_trader.esi_client import ESIClient, ESIError
 
 
 @pytest.fixture(autouse=True)
@@ -52,6 +52,26 @@ def test_get_adjusted_prices_filters_to_requested_type_ids(monkeypatch):
     result = ESIClient().get_adjusted_prices(type_ids=[34, 999])
 
     assert result == {34: 5.5, 999: 0}  # missing id defaults to 0, not KeyError
+
+
+def test_get_adjusted_prices_raises_and_never_caches_an_empty_response(monkeypatch):
+    # Confirmed real 2026-09-16: a 200 response with zero rows is an ESI-side
+    # anomaly (a genuine response always covers thousands of published
+    # types), but used to be cached as a "successful" empty result for the
+    # full cache_seconds window - silently zeroing every job_cost for up to
+    # an hour with no error anywhere. Must raise instead of caching {}, and
+    # a later call (once ESI is healthy again) must retry rather than being
+    # stuck on the earlier empty result.
+    calls = _fake_get(monkeypatch, {"/markets/prices/": []})
+
+    with pytest.raises(ESIError):
+        ESIClient().get_adjusted_prices()
+
+    assert calls["/markets/prices/"] == 1
+    assert ESIClient._adjusted_prices_cache is None  # never cached
+
+    _fake_get(monkeypatch, {"/markets/prices/": [{"type_id": 34, "adjusted_price": 5.5}]})
+    assert ESIClient().get_adjusted_prices() == {34: 5.5}  # retries cleanly
 
 
 def test_get_system_cost_indices_caches_across_fresh_client_instances(monkeypatch):

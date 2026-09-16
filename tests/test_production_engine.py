@@ -2022,6 +2022,41 @@ def test_expand_all_component_overbuild_param_overrides_cfg(_expand_all_bom):
     assert buy_totals[5] == 110
 
 
+@pg_helpers.postgres_required()
+def test_expand_all_applies_manual_me_override_to_real_material_quantities(monkeypatch, tenant):
+    # Confirmed real bug 2026-09-16, reported live: _expand_all - the
+    # function that actually decides real material quantities (unlike
+    # _unit_cost/_build_build_list, which only ever drive cost estimates) -
+    # used to always pass {} to _activity_mods for material_mult, so a
+    # manual per-blueprint ME/TE override (which lives inside cost_indices,
+    # see CostIndices' own comment) had zero effect on a Special Order's
+    # actual Buy List quantities, even after recompute. _activity_mods
+    # itself is deliberately NOT mocked here (only its own storage-touching
+    # helpers are) so this exercises the real priority-chain wiring, not a
+    # stand-in.
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: (
+        ("Tech I", (200, 1, 1.0)) if type_id == 1 else ("Input", None)))
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [(2, 10.0)])
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: None)
+    monkeypatch.setattr(storage, "get_system_security", lambda system_id: 0.5)
+    monkeypatch.setattr(engine, "_buy_or_build_decision",
+                         lambda type_id, cfg, home, jita, manual_overrides, cost_memo, bp, depth: "Buy" if bp is None else "Build")
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_stock_on_hand", lambda *a, **k: 0.0)
+
+    cfg = ProductionConfig(component_overbuild=0.0)
+
+    buy_no_override, _ = engine._expand_all({1: 1.0}, cfg, {}, {}, {}, {}, {}, {}, {}, {}, {})
+    # ME 50 sets the base material_mult to 1 - 50/100 = 0.5, well below Tech
+    # I's flat "assumes perfect research" baseline (ME10 -> 0.90).
+    buy_with_override, _ = engine._expand_all({1: 1.0}, cfg, {}, {}, {}, {}, {}, {}, {}, {}, {},
+                                               cost_indices={"me_te_override:1": (50, 0)})
+
+    assert buy_no_override[2] == 9     # base_qty 10 * flat Tech I material_mult 0.90, no override
+    assert buy_with_override[2] == 5   # base_qty 10 * override material_mult 0.5, override applied
+
+
 def test_expand_all_ignore_current_stock_treats_every_material_as_zero_on_hand(monkeypatch, _expand_all_bom):
     # plan_special_order's net_against_stock=False ("from scratch") mode -
     # even though real stock is on hand (Common: 5 units), ignore_current_stock=True
@@ -2118,6 +2153,43 @@ def test_plan_special_order_ignores_cfg_component_overbuild(monkeypatch, tenant)
     # 1 unit x 10 Common per unit = 10, exactly - not 17 (1.7x with the
     # standing-Bauliste buffer applied).
     assert {row.type_id: row.quantity for row in result["buy_list"]} == {999: 10.0}
+
+
+@pg_helpers.postgres_required()
+def test_plan_special_order_material_demand_reflects_manual_me_override(monkeypatch, tenant):
+    # End-to-end regression test for the same bug as _expand_all's own
+    # test_expand_all_applies_manual_me_override_to_real_material_quantities,
+    # exercised through the real plan_special_order/_expand_all wiring -
+    # reported live: a Special Order's Buy List quantity didn't change
+    # after setting a manual ME override for the built item, even after
+    # recompute. _activity_mods is deliberately NOT mocked (unlike this
+    # file's other plan_special_order tests) so the real priority-chain
+    # lookup runs.
+    ctx_cls = _make_fake_special_order_context()
+    real_init = ctx_cls.__init__
+
+    def fake_init(self, cfg, extra_type_ids=()):
+        real_init(self, cfg, extra_type_ids)
+        self.cost_indices = {"me_te_override:10": (50, 0)}  # ME 50 -> material_mult 0.5
+    monkeypatch.setattr(ctx_cls, "__init__", fake_init)
+    monkeypatch.setattr(engine, "_PlanContext", ctx_cls)
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: (
+        ("Tech I", (110, 1, 1.0)) if type_id == 10 else ("Input", None)))
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [(999, 10)])
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: None)
+    monkeypatch.setattr(storage, "get_system_security", lambda system_id: 0.5)
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_buy_or_build_decision",
+                         lambda type_id, cfg, home, jita, manual_overrides, cost_memo, bp, depth: "Buy" if bp is None else "Build")
+
+    items = [(10, "Widget", 1.0)]
+    result = engine.plan_special_order(items, ProductionConfig(), net_against_stock=False)
+
+    # 1 unit x 10 base qty x 0.5 material_mult (ME 50 override) = 5, not the
+    # Tech I flat-baseline 9 (ME10 -> material_mult 0.90) the bug used to
+    # silently fall back to regardless of the override.
+    assert {row.type_id: row.quantity for row in result["buy_list"]} == {999: 5.0}
 
 
 @pg_helpers.postgres_required()
