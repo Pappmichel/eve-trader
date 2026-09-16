@@ -2817,8 +2817,21 @@ def item_margin_detail(type_id: int, type_name: str, cfg: ProductionConfig = PRO
     cheap cost profile as the existing Material Tree feature) - a fresh
     _PlanContext every call, unlike discover_ship_margins' cached whole-
     catalog scan. Multi-item callers (do_unlisted_stock) must use
-    _item_margin_detail_with_context with a shared context instead."""
-    ctx = _PlanContext(cfg)
+    _item_margin_detail_with_context with a shared context instead.
+
+    Passes `type_id` itself as `extra_type_ids` (same pattern
+    plan_special_order uses) so `_PlanContext`'s bulk price fetch covers
+    *this* item's own material closure, not just whatever's already
+    reachable from stock_targets - without it, searching an item whose BOM
+    shares nothing with your tracked stock targets (any Titan/Supercarrier,
+    whose capital-specific materials are essentially never part of another
+    tracked item's recipe) left every one of its materials unpriced, so
+    _unit_cost's buy-price fallback returned None all the way up and
+    build_cost showed as empty - not because the item genuinely has no
+    computable build cost, just because nothing had asked ESI/Goonmetrics
+    for its materials' prices yet (confirmed live, GitHub issue Leviathan/
+    capital-ship margin search 2026-09-16)."""
+    ctx = _PlanContext(cfg, extra_type_ids=[type_id])
     cost_memo: dict[int, Optional[float]] = {}
     t2_memo: dict[int, tuple[float, float, Optional[str]]] = {}
     return _item_margin_detail_with_context(type_id, type_name, cfg, ctx, cost_memo, t2_memo)

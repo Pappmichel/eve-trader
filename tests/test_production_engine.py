@@ -939,6 +939,37 @@ def test_build_margin_dispatches_to_home_when_no_jita_target(monkeypatch):
     assert engine._build_margin(1, 100.0, jita_target=0.0, home={}, jita={}, cfg=cfg) == 0.1
 
 
+@pg_helpers.postgres_required()
+def test_item_margin_detail_passes_searched_type_id_as_extra_type_ids(monkeypatch, tenant):
+    """Regression test: a Margin-page search for an item that isn't (and
+    shares no materials with) any stock target - a Titan/Supercarrier being
+    the real-world case that surfaced this - used to build build_cost=None
+    every time, because _PlanContext's bulk price fetch only ever covered
+    stock_targets' own material closure, never the searched item's. Confirmed
+    live 2026-09-16 (Leviathan margin search)."""
+    captured = {}
+
+    class _CapturingPlanContext:
+        def __init__(self, cfg, extra_type_ids=()):
+            captured["extra_type_ids"] = list(extra_type_ids)
+            self.stock_targets = []
+            self.manual_stock = {}
+            self.manual_overrides = {}
+            self.selected_decryptors = {}
+            self.home = {}
+            self.jita = {}
+            self.cost_indices = {}
+            self.adjusted_prices = {}
+
+    monkeypatch.setattr(engine, "_PlanContext", _CapturingPlanContext)
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: None)
+
+    engine.item_margin_detail(3514, "Leviathan", ProductionConfig())
+
+    assert captured["extra_type_ids"] == [3514]
+
+
 class _FakeGmClient:
     """Stub for GoonmetricsClient - avoids a real Goonmetrics history call in
     discover_build_candidates' second (post-margin-gate) pass. `movement_by_type`
