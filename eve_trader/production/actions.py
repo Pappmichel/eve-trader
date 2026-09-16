@@ -772,8 +772,18 @@ def do_build_material_tree(type_name: str, quantity: float = 1.0,
     jita = pricing.jita_prices(type_ids)
     selected_decryptors = storage.load_selected_decryptors()
     t2_memo: dict = {}
+    # This function doesn't build a real _PlanContext (no ESI system-cost-
+    # index/adjusted-price calls needed - the tree never shows job cost) -
+    # but a manual ME/TE override must still apply here too (confirmed real
+    # bug 2026-09-16, see build_material_tree's own docstring), so load just
+    # that override-only slice of what _PlanContext would otherwise build.
+    cost_indices = {
+        f"me_te_override:{override_type_id}": (me, te)
+        for override_type_id, _name, me, te in storage.load_manual_blueprint_me_te_overrides()
+    }
 
-    return build_material_tree(type_id, quantity, cfg, home, jita, selected_decryptors, t2_memo)
+    return build_material_tree(type_id, quantity, cfg, home, jita, selected_decryptors, t2_memo,
+                                cost_indices=cost_indices)
 
 
 def do_search_item_locations(item_name: str) -> dict:
