@@ -552,6 +552,8 @@ export interface ProductionSettings {
   reaction_rig_tier: string
   component_structure_type: string
   component_rig_tier: string
+  supercapital_structure_type: string
+  supercapital_rig_tier: string
   manufacturing_structure_type: string
   manufacturing_rig_tier: string
   encryption_skill_level: number

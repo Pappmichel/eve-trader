@@ -18,6 +18,7 @@ export default function Logistics() {
   const { data: locations, isLoading: locationsLoading } = useQuery({ queryKey: ['production', 'category-locations'], queryFn: productionApi.categoryLocations })
   const { data: locationOptions } = useQuery({ queryKey: ['production', 'category-location-options'], queryFn: productionApi.categoryLocationOptions })
   const { data: structureNames } = useQuery({ queryKey: ['production', 'structure-names'], queryFn: productionApi.structureNames })
+  const { data: structureSystemIds } = useQuery({ queryKey: ['production', 'structure-system-ids'], queryFn: productionApi.structureSystemIds })
   const { data: rows, isError } = useQuery({
     queryKey: ['production', 'logistics'], queryFn: productionApi.logisticsStatus, retry: false,
   })
@@ -119,7 +120,7 @@ export default function Logistics() {
   ])
   const resolveName = useAction('Name Resolved', (locationId: number) =>
     productionApi.resolveStructureName(locationId, true), [
-    ['production', 'structure-names'],
+    ['production', 'structure-names'], ['production', 'structure-system-ids'],
   ])
 
   const grouped = useMemo(() => {
@@ -189,6 +190,16 @@ export default function Logistics() {
           {(categories ?? []).map((cat) => {
             const savedId = locations?.[cat]
             const resolvedName = savedId != null ? structureNames?.[String(savedId)] : undefined
+            // Name known but solar_system_id still missing (see
+            // storage.list_structure_system_ids' own docstring for why -
+            // a structure resolved before GitHub issue #12, or from an ESI
+            // response that didn't include one, gets permanently stuck here
+            // otherwise, with no way to trigger a re-resolve from the UI at
+            // all: get_cached_structure_name's was_cached check only looks
+            // at `name`, so every non-force resolve attempt short-circuits
+            // on the cached name and never retries the system lookup).
+            const systemMissing = savedId != null && !!resolvedName &&
+              (structureSystemIds?.[String(savedId)] ?? null) == null
             const options = locationOptions?.[cat] ?? []
             return (
               <div key={cat}>
@@ -258,10 +269,9 @@ export default function Logistics() {
                   )}
                 </Group>
                 {savedId != null && (
-                  <Text size="xs" c={resolvedName ? 'dimmed' : 'warn'} mt={4}>
-                    {resolvedName ? resolvedName : (
-                      <>
-                        Name unknown -{' '}
+                  <Text size="xs" c={resolvedName && !systemMissing ? 'dimmed' : 'warn'} mt={4}>
+                    {(() => {
+                      const resolveLink = (
                         <UnstyledButton
                           c="accent"
                           style={{ display: 'inline', textDecoration: 'underline', fontSize: 'var(--mantine-font-size-xs)' }}
@@ -269,8 +279,15 @@ export default function Logistics() {
                         >
                           resolve
                         </UnstyledButton>
-                      </>
-                    )}
+                      )
+                      if (!resolvedName) return <>Name unknown - {resolveLink}</>
+                      // System unresolved (see systemMissing's own comment
+                      // above) - still show the known name, but with the
+                      // resolve link this repo's own bug otherwise hides
+                      // whenever a name happens to already be cached.
+                      if (systemMissing) return <>{resolvedName} (system unknown) - {resolveLink}</>
+                      return resolvedName
+                    })()}
                   </Text>
                 )}
               </div>

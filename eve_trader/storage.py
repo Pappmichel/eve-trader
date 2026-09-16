@@ -1530,6 +1530,23 @@ def list_cached_structure_names() -> list[tuple[int, Optional[str]]]:
         return conn.execute("SELECT location_id, name FROM structure_names ORDER BY name").fetchall()
 
 
+def list_structure_system_ids() -> list[tuple[int, Optional[int]]]:
+    """Every location_id this tenant has ever attempted to resolve a
+    structure name for, alongside whatever solar_system_id (GitHub issue
+    #12) was actually captured for it - None for a location resolved before
+    that field existed (or a resolve whose ESI response didn't include
+    one), not just for a never-attempted one. Backs GET /logistics/
+    structure-system-ids, which the Logistik page uses to tell "fully
+    resolved" apart from "name known, system still missing" - a plain name-
+    only check (get_cached_structure_name's own was_cached semantics)
+    can't distinguish those two states, which is exactly why a structure
+    stuck in the latter one had no way to trigger a re-resolve from the UI
+    at all (confirmed live, 2026-09-16 - see do_resolve_structure_name's
+    own `force` docstring)."""
+    with connect() as conn:
+        return conn.execute("SELECT location_id, solar_system_id FROM structure_names").fetchall()
+
+
 def set_cached_structure_name(location_id: int, name: Optional[str], solar_system_id: Optional[int] = None) -> None:
     """solar_system_id (GitHub issue #12) is best-effort - do_resolve_
     structure_name passes it whenever the ESI response it just resolved

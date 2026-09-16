@@ -124,8 +124,9 @@ export default function ProductionSettings() {
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Where You Build</Title>
       <Text size="xs" c="dimmed">
         Structure base bonus and rig bonus stack multiplicatively. Split by reactions / components (Tech II/capital
-        components, tools, data interfaces, Tech III components) / manufacturing (everything else) - you can build
-        in three different structures.
+        components, tools, data interfaces, Tech III components) / supercapitals (Titan/Supercarrier hulls - these
+        need a genuinely bigger structure than a regular Capital Ship build) / manufacturing (everything else) -
+        you can build in four different structures.
       </Text>
       <SimpleGrid cols={2}>
         <Select label="Structure - Reactions" data={structureOptions.structure_types} value={form.reaction_structure_type}
@@ -136,6 +137,10 @@ export default function ProductionSettings() {
           onChange={(v) => v && set('component_structure_type', v)} />
         <Select label="Rig - Components" data={structureOptions.rig_tiers} value={form.component_rig_tier}
           onChange={(v) => v && set('component_rig_tier', v)} />
+        <Select label="Structure - Supercapitals (Titan/Supercarrier)" data={structureOptions.structure_types} value={form.supercapital_structure_type}
+          onChange={(v) => v && set('supercapital_structure_type', v)} />
+        <Select label="Rig - Supercapitals (Titan/Supercarrier)" data={structureOptions.rig_tiers} value={form.supercapital_rig_tier}
+          onChange={(v) => v && set('supercapital_rig_tier', v)} />
         <Select label="Structure - Manufacturing (everything else)" data={structureOptions.structure_types} value={form.manufacturing_structure_type}
           onChange={(v) => v && set('manufacturing_structure_type', v)} />
         <Select label="Rig - Manufacturing (everything else)" data={structureOptions.rig_tiers} value={form.manufacturing_rig_tier}
