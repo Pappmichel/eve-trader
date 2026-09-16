@@ -1068,6 +1068,7 @@ def _expand_all(seed_missing: dict[int, float], cfg: ProductionConfig, home: dic
                  base_runs: dict[int, float],
                  gross_demand: Optional[dict[int, float]] = None,
                  ignore_current_stock: bool = False,
+                 component_overbuild: Optional[float] = None,
                  ) -> tuple[dict[int, float], dict[tuple[int, int, int], int]]:
     """Resolves every stock target's `seed_missing` quantity into buy_totals
     ({type_id: qty}) and build_runs ({(blueprint_id, activity_id, product_type_id): runs}),
@@ -1080,6 +1081,21 @@ def _expand_all(seed_missing: dict[int, float], cfg: ProductionConfig, home: dic
     whatever's currently sitting in the hangar. Default False preserves
     today's behavior exactly for plan_production/plan_asset_optimized, the
     only two callers this had before.
+
+    `component_overbuild`, if given, overrides `cfg.component_overbuild` for
+    the whole call - used by plan_special_order, which passes `0.0`
+    explicitly (GitHub issue, confirmed with the user 2026-09-16): the
+    "keep a buffer instead of being built down to exactly zero" stock
+    cushion (see the buffer math below) is a standing-Bauliste concept -
+    it makes sense for stock_targets, which get replenished run after run
+    and benefit from never quite hitting zero, but not for a one-off order
+    ("I need exactly 1 Leviathan for this order"), which has no ongoing
+    replenishment to cushion at all. Default None reads cfg.component_
+    overbuild exactly as before for plan_production/plan_asset_optimized -
+    this parameter only exists so plan_special_order can opt out without
+    mutating/copying `cfg` itself (which may be the live ConfigProxy
+    singleton, not a plain dataclass instance - dataclasses.replace() would
+    not work safely on it).
 
     `gross_demand`, if given, is mutated in place with each material's total
     *pre-stock-netting* pooled demand (this round's `target`, before
@@ -1142,6 +1158,7 @@ def _expand_all(seed_missing: dict[int, float], cfg: ProductionConfig, home: dic
     top-level stock targets, mutated here for everything below them) so a
     component needed by two different branches doesn't have the same
     physical stock counted against both of them."""
+    effective_overbuild = cfg.component_overbuild if component_overbuild is None else component_overbuild
     buy_totals: dict[int, float] = {}
     build_runs: dict[tuple[int, int, int], int] = {}
     buffered_parents: set[int] = set()
@@ -1175,7 +1192,7 @@ def _expand_all(seed_missing: dict[int, float], cfg: ProductionConfig, home: dic
                 gross_needed = _material_qty(base_qty, material_mult, runs)
                 if gross_needed <= 0:
                     continue
-                overbuild = 0.0 if material_id in manual_overrides else cfg.component_overbuild
+                overbuild = 0.0 if material_id in manual_overrides else effective_overbuild
                 buffer = overbuild * base_qty * material_mult * parent_base_runs
                 next_level[material_id] = next_level.get(material_id, 0.0) + gross_needed + buffer
 
@@ -1646,8 +1663,21 @@ def plan_special_order(items: list[tuple[int, str, float]], cfg: ProductionConfi
     can never drift apart on *how* they price or decide build-vs-buy - only
     on *what* demand they start from and how stock is (or isn't) netted.
 
-    Two deliberate differences from plan_production, confirmed with the
+    Three deliberate differences from plan_production, confirmed with the
     user:
+    - No component_overbuild buffer: _expand_all is called with
+      component_overbuild=0.0 (confirmed 2026-09-16, found while diagnosing
+      a cost mismatch against an external reference tool for a Leviathan
+      order - the ~70% stock-cushion buffer applied to every build-chain
+      level, see _expand_all's own docstring, was silently inflating a
+      one-off order's material/job quantities by roughly (1 +
+      component_overbuild) per buffered level). That cushion exists so a
+      *standing* Bauliste doesn't get built down to exactly zero run after
+      run - a one-off order has no ongoing replenishment to cushion, so it
+      should reflect exactly what this order needs, no more. plan_
+      production/plan_asset_optimized are unaffected (still read cfg.
+      component_overbuild as before) - this is scoped to plan_special_
+      order's own _expand_all call only.
     - No margin gate: an order must be fulfilled regardless of whether
       building clears cfg.min_margin - margin is still visible on each
       BuildJobEntry, just never used to drop an item from the result.
@@ -1725,7 +1755,8 @@ def plan_special_order(items: list[tuple[int, str, float]], cfg: ProductionConfi
 
     buy_totals, build_runs = _expand_all(seed_missing, cfg, home, jita, manual_overrides, cost_memo,
                                           selected_decryptors, t2_memo, manual_stock, stock_used, base_runs,
-                                          gross_demand, ignore_current_stock=not net_against_stock)
+                                          gross_demand, ignore_current_stock=not net_against_stock,
+                                          component_overbuild=0.0)
 
     # Confirmed with the user (2026-09-02): a material fully covered by
     # current stock (net_needed <= 0, so _expand_all never queues it into a

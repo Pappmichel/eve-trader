@@ -1793,6 +1793,25 @@ def test_expand_all_still_pools_multiple_edges_to_the_same_material_within_one_r
     assert buy_totals[5] == 110  # Mineral: 1:1 with Common's runs, no buffer
 
 
+def test_expand_all_component_overbuild_param_overrides_cfg(_expand_all_bom):
+    # plan_special_order's own opt-out (confirmed 2026-09-16, found while
+    # diagnosing a Leviathan cost mismatch against an external reference
+    # tool): passing component_overbuild=0.0 explicitly must suppress the
+    # buffer even when cfg.component_overbuild is nonzero.
+    cfg = ProductionConfig(component_overbuild=0.5)  # nonzero in cfg
+    stock_targets = [(1, "ItemA", 1, 0, 0), (2, "ItemB", 1, 0, 0)]
+    base_runs = engine._base_runs(cfg, {}, {}, {}, {}, {}, {}, {}, {}, stock_targets)
+
+    buy_totals, build_runs = engine._expand_all(
+        {1: 1.0, 2: 1.0}, cfg, {}, {}, {}, {}, {}, {}, {}, {}, base_runs,
+        component_overbuild=0.0)
+
+    # Same totals as the cfg.component_overbuild=0.0 case (see the pooling
+    # test above) - the explicit param wins over cfg's own nonzero value.
+    assert build_runs[(103, 1, 3)] == 110
+    assert buy_totals[5] == 110
+
+
 def test_expand_all_ignore_current_stock_treats_every_material_as_zero_on_hand(monkeypatch, _expand_all_bom):
     # plan_special_order's net_against_stock=False ("from scratch") mode -
     # even though real stock is on hand (Common: 5 units), ignore_current_stock=True
@@ -1857,6 +1876,38 @@ def test_plan_special_order_pools_a_shared_material_across_two_line_items(monkey
     assert result["buy_list"][0].type_id == 999
     assert result["buy_list"][0].quantity == 8.0  # 5 (Widget A) + 3 (Widget B), pooled once
     assert [li.type_id for li in result["line_items"]] == [10, 20]
+
+
+@pg_helpers.postgres_required()
+def test_plan_special_order_ignores_cfg_component_overbuild(monkeypatch, tenant):
+    # Regression test (confirmed with the user 2026-09-16, found while
+    # diagnosing a Leviathan special-order cost mismatch against an
+    # external reference tool): plan_special_order must plan a one-off
+    # order's material demand with NO stock-cushion buffer, even when
+    # cfg.component_overbuild is the real, nonzero default (0.7) - that
+    # cushion exists so a *standing* Bauliste doesn't get built down to
+    # exactly zero run after run; a one-off order has no ongoing
+    # replenishment to cushion, so its own buy_list should reflect exactly
+    # 1:1 what the order's BOM needs, not demand x 1.7.
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_special_order_context())
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: (
+        ("Tech I", (110, 1, 1.0)) if type_id == 10 else ("Input", None)))
+    monkeypatch.setattr(storage, "get_blueprint_materials",
+                         lambda blueprint_id, activity_id: [(999, 10)])  # 10x Common per unit
+    monkeypatch.setattr(engine, "_activity_mods",
+                         lambda activity, type_id, cfg, cost_indices, blueprint_id=None: (1.0, 1.0, 0.0))
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_buy_or_build_decision",
+                         lambda type_id, cfg, home, jita, manual_overrides, cost_memo, bp, depth: "Buy" if bp is None else "Build")
+
+    items = [(10, "Widget", 1.0)]
+    cfg = ProductionConfig(component_overbuild=ProductionConfig().component_overbuild)  # real default, 0.7
+    result = engine.plan_special_order(items, cfg, net_against_stock=False)
+
+    # 1 unit x 10 Common per unit = 10, exactly - not 17 (1.7x with the
+    # standing-Bauliste buffer applied).
+    assert {row.type_id: row.quantity for row in result["buy_list"]} == {999: 10.0}
 
 
 @pg_helpers.postgres_required()
