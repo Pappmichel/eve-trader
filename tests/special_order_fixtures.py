@@ -25,6 +25,7 @@ _PHASE1_SCHEMA_SQL = _DOCS / "phase1_schema.sql"
 _PHASE2_SCHEMA_SQL = _DOCS / "phase2_schema.sql"
 _REFINING_SCHEMA_SQL = _DOCS / "refining_schema.sql"
 _SPECIAL_ORDERS_SCHEMA_SQL = _DOCS / "special_orders_schema.sql"
+_JOB_CATEGORY_COST_INDEX_OVERRIDES_SCHEMA_SQL = _DOCS / "job_category_cost_index_overrides_schema.sql"
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -36,6 +37,12 @@ def _apply_special_orders_schema():
     `refining_schema.sql`, which itself ALTERs `tenant_settings` from phase2.
     A Cloud Agent VM that already ran other test modules hid this; GitHub
     Actions starts empty and does not.
+
+    Also applies job_category_cost_index_overrides_schema.sql: every real
+    special-order/production plan builds a _PlanContext, which unconditionally
+    reads storage.load_category_cost_index_overrides() (engine.py) - so every
+    phase_c/d/e/f/g module importing this fixture needs that table to exist on
+    a fresh CI database, not just the modules that assert on it directly.
     """
     if not pg_helpers._postgres_available():
         return
@@ -44,6 +51,7 @@ def _apply_special_orders_schema():
         conn.execute(_PHASE2_SCHEMA_SQL.read_text(encoding="utf-8"))
         conn.execute(_REFINING_SCHEMA_SQL.read_text(encoding="utf-8"))
         conn.execute(_SPECIAL_ORDERS_SCHEMA_SQL.read_text(encoding="utf-8"))
+        conn.execute(_JOB_CATEGORY_COST_INDEX_OVERRIDES_SCHEMA_SQL.read_text(encoding="utf-8"))
 
 MINERAL = 34
 COMPONENT = 91201

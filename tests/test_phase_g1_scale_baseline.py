@@ -9,7 +9,7 @@ import pytest
 from eve_trader.production import actions
 
 from . import pg_helpers, special_order_fixtures as fx
-from .pg_helpers import tenant, _apply_phase1_schema, _apply_job_category_cost_index_overrides_schema  # noqa: F401
+from .pg_helpers import tenant  # noqa: F401
 from .special_order_fixtures import _apply_special_orders_schema  # noqa: F401
 
 pytestmark = [pg_helpers.postgres_required(), pytest.mark.release]
