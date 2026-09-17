@@ -1444,13 +1444,18 @@ def _build_buy_list(buy_totals: dict[int, float], gross_demand: dict[int, float]
     price desc - factored out of plan_production so plan_special_order can
     build the exact same shape from its own buy_totals/gross_demand without
     duplicating this loop."""
-    # The real SDE item category (Ship/Module/Charge/Material/...), not
-    # job_category (the Bauliste's own "where do I start this job"
-    # grouping) - job_category is None for anything without a blueprint,
-    # which is most of what actually ends up on a Buy List (raw minerals,
-    # datacores, PI materials, ...), so it would leave this column empty
-    # for most rows. Category names loaded once per call (48 rows, not
-    # per-item) - get_type_category itself is already @lru_cache'd.
+    # Prefer job_category (the "which structure/rig do I build this in"
+    # bucket - "Capital Components", "Advanced Components", ship sizes, ...)
+    # whenever it's set, falling back to the real SDE item category name
+    # (Ship/Module/Material/...) otherwise. A buildable component's true SDE
+    # category is "Commodity" (CCP files every construction component there),
+    # which reads misleadingly for something you actually build - so a row we
+    # can classify by its build/rig bucket shows that instead (user request).
+    # job_category is None for anything without a blueprint (raw minerals,
+    # datacores, PI materials, ... - most of a Buy List), and those correctly
+    # keep their SDE category rather than an empty cell. Both lookups are
+    # @lru_cache'd (job_category via classify_activity's cached SDE reads,
+    # get_type_category directly); category_names is loaded once per call.
     category_names = storage.load_sde_category_names()
     buy_list = []
     for type_id, quantity in buy_totals.items():
@@ -1465,7 +1470,7 @@ def _build_buy_list(buy_totals: dict[int, float], gross_demand: dict[int, float]
             on_hand_pct=on_hand_pct,
             total_price=(unit_price * quantity) if unit_price is not None else None,
             buy_from=pricing.buy_source(type_id, home, jita, volume, cfg),
-            category=category_names.get(storage.get_type_category(type_id)),
+            category=job_category(type_id) or category_names.get(storage.get_type_category(type_id)),
         ))
     buy_list.sort(key=lambda e: e.total_price or 0, reverse=True)
     return buy_list
