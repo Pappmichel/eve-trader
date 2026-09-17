@@ -34,6 +34,7 @@ _ADMIN_SCHEMA_SQL = _DOCS_DIR / "admin_schema.sql"
 _ROLE_CONSENT_SCHEMA_SQL = _DOCS_DIR / "role_consent_schema.sql"
 _PIPELINE_RUNS_SCHEMA_SQL = _DOCS_DIR / "pipeline_runs_schema.sql"
 _SESSION_REVOCATIONS_SCHEMA_SQL = _DOCS_DIR / "session_revocations_schema.sql"
+_JOB_CATEGORY_COST_INDEX_OVERRIDES_SCHEMA_SQL = _DOCS_DIR / "job_category_cost_index_overrides_schema.sql"
 
 
 @functools.lru_cache(maxsize=1)
@@ -171,6 +172,18 @@ def _apply_session_revocations_schema(_apply_phase1_schema) -> None:
         return
     with psycopg.connect(OWNER_DSN, autocommit=True) as conn:
         conn.execute(_SESSION_REVOCATIONS_SCHEMA_SQL.read_text())
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _apply_job_category_cost_index_overrides_schema(_apply_phase1_schema) -> None:
+    """Same idea as _apply_phase1_schema, for
+    docs/job_category_cost_index_overrides_schema.sql (per-Logistik-category
+    ISK job-cost-index override) - depends on _apply_phase1_schema because its
+    GRANT targets the eve_trader_app role."""
+    if not _postgres_available():
+        return
+    with psycopg.connect(OWNER_DSN, autocommit=True) as conn:
+        conn.execute(_JOB_CATEGORY_COST_INDEX_OVERRIDES_SCHEMA_SQL.read_text())
 
 
 @pytest.fixture

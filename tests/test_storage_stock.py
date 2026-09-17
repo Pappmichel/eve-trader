@@ -4,7 +4,7 @@ from pathlib import Path
 from eve_trader import storage
 
 from . import pg_helpers
-from .pg_helpers import _apply_phase1_schema, tenant  # noqa: F401
+from .pg_helpers import _apply_phase1_schema, _apply_job_category_cost_index_overrides_schema, tenant  # noqa: F401
 
 psycopg = pytest.importorskip("psycopg")
 
