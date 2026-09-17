@@ -56,7 +56,7 @@ export default function OreSettings() {
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Ore/Ice Family Skills</Title>
       <Text size="xs" c="dimmed">
         One skill per ore/ice family (e.g. "Veldspar Processing" covers Veldspar/Concentrated Veldspar/Dense
-        Veldspar) - a family missing here is treated as level 0.
+        Veldspar) - a family missing here is assumed maxed (level 5). Add one only to record a lower level.
       </Text>
       {families.length > 0 && (
         <Table>
