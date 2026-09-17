@@ -54,9 +54,12 @@ class BuyListEntry:
     # complete picture even when everything's already on hand).
     on_hand_pct: float = 0.0
     buy_from: Optional[str] = None  # "C-J" | "Jita" | None (no sell order anywhere)
-    # Real SDE item category (Ship/Module/Charge/Material/...) - see
-    # engine._build_buy_list's own comment for why this isn't job_category
-    # (None for most buyable items, which have no blueprint of their own).
+    # Build/rig bucket (job_category: "Capital Components", "Advanced
+    # Components", ship sizes, ...) when the item is classifiable that way,
+    # else the real SDE item category name (Ship/Module/Material/...). A
+    # buildable component's true SDE category is the misleading "Commodity",
+    # so build/rig-classifiable rows show that bucket instead - see
+    # engine._build_buy_list's own comment.
     category: Optional[str] = None
 
 

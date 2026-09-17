@@ -2928,11 +2928,12 @@ def _make_fake_plan_context(stock_targets, manual_stock=None):
 
 
 @pg_helpers.postgres_required()
-def test_plan_production_buy_list_includes_real_sde_category_not_job_category(monkeypatch, tenant):
-    # Buy List's own "category" is the real SDE item category (Ship/Module/
-    # Material/...), deliberately not job_category - job_category is None
-    # for anything without a blueprint, which is most of what actually ends
-    # up on a Buy List (a raw mineral here has no blueprint at all).
+def test_plan_production_buy_list_falls_back_to_sde_category_when_no_job_category(monkeypatch, tenant):
+    # Buy List's "category" prefers the build/rig bucket (job_category) but
+    # falls back to the real SDE item category name for anything job_category
+    # can't classify - job_category is None for anything without a blueprint,
+    # which is most of what actually ends up on a Buy List (a raw mineral here
+    # has no blueprint at all), so it correctly shows "Material", not empty.
     stock_targets = [(34, "Tritanium", 1, 0, 0)]
     monkeypatch.setattr(engine, "_PlanContext", _make_fake_plan_context(stock_targets))
     monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))  # no blueprint -> job_category is None
@@ -2944,6 +2945,30 @@ def test_plan_production_buy_list_includes_real_sde_category_not_job_category(mo
     result = engine.plan_production(ProductionConfig())
 
     assert {row.type_id: row.category for row in result["buy_list"]} == {34: "Material"}
+
+
+def test_build_buy_list_prefers_job_category_over_commodity_sde_category(monkeypatch):
+    # A buildable construction component (e.g. Capital Jump Bridge Array) is
+    # filed under the misleading SDE category "Commodity" by CCP, even though
+    # it's built with a specific structure/rig - so the Buy List shows its
+    # build/rig bucket (job_category) instead. Raw materials with no such
+    # bucket still fall back to the SDE category name (see the fallback test
+    # above). This exercises _build_buy_list's category branch directly.
+    monkeypatch.setattr(engine, "job_category", lambda tid: {24545: "Capital Components"}.get(tid))
+    monkeypatch.setattr(storage, "get_sde_type", lambda tid: (
+        tid, 0, {24545: "Capital Jump Bridge Array", 34: "Tritanium"}[tid], 1.0, 1, 0, 0, None))
+    monkeypatch.setattr(storage, "get_type_category", lambda tid: {24545: 17, 34: 4}[tid])
+    monkeypatch.setattr(storage, "load_sde_category_names", lambda: {17: "Commodity", 4: "Material"})
+    monkeypatch.setattr(engine, "_haul_volume", lambda tid, cfg: 1.0)
+    monkeypatch.setattr(engine.pricing, "buy_price", lambda *a, **k: 10.0)
+    monkeypatch.setattr(engine.pricing, "buy_source", lambda *a, **k: "Jita")
+
+    buy_totals = {24545: 5.0, 34: 100.0}
+    rows = engine._build_buy_list(buy_totals, dict(buy_totals), ProductionConfig(), {}, {})
+
+    by_id = {row.type_id: row.category for row in rows}
+    assert by_id[24545] == "Capital Components"  # job_category, not "Commodity"
+    assert by_id[34] == "Material"  # no job_category -> SDE category fallback
 
 
 @pg_helpers.postgres_required()
