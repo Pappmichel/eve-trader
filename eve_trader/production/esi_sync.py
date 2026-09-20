@@ -3,11 +3,13 @@ cache tables (see storage.py), so engine.py can compute current stock instead
 of relying on manual entry alone.
 
 Fetch is `eve_trader.esi_data.orchestrator.do_sync_for_tool("production")`.
-This module keeps `list_producer_characters` (sidebar + token listing until
-Phase 4) and opportunistic group-3 structure-name resolution
-(`_discover_structure_names`). Sequential corp claim (one corp, members
-retried in order, Director vs Accountant/Trader independent) lives in the
-orchestrator so two characters cannot race to claim the same corp.
+This module keeps character/capability listing (`list_shared_producer_
+characters`/`list_capability_characters` - `list_producer_characters` is
+superseded, see its own docstring) and opportunistic group-3
+structure-name resolution (`_discover_structure_names`). Sequential corp
+claim (one corp, members retried in order, Director vs Accountant/Trader
+independent) lives in the orchestrator so two characters cannot race to
+claim the same corp.
 """
 from __future__ import annotations
 
@@ -52,19 +54,103 @@ def list_producer_characters(tm: TokenManager | None = None) -> list[tuple[str, 
     """Returns (role_key, character_id, character_name) for every registered
     producer character, e.g. [("producer:2112625428", 2112625428, "Some Character")].
 
-    Uses get_record (no refresh), not get_token - this runs on every
-    "characters" sidebar render and at the top of every sync_esi() call, so
-    one character with a dead refresh token (revoked access, re-registered
-    SSO app, ...) must not take the whole list down. sync_esi() itself
-    already refreshes/uses each token independently, per-character, inside
-    its own try/except (see its docstring) - that's the right place for a
-    refresh failure to surface as "skipped", not here."""
+    Superseded (docs/ESI_ACCESS_PLAN.md Known gap 4, closed): every caller
+    this module used to have has moved to `list_shared_producer_characters`/
+    `list_capability_characters` below, which key off `esi_sharing`/
+    `esi_character_capabilities` instead of the legacy `producer:` token
+    prefix - a character added via the Characters page's own add-a-
+    character path (`esi:<id>`, gap 1) never holds a `producer:` token, so
+    this listing is permanently blind to them regardless of sharing. Kept
+    only because deleting a function with real test coverage on a whim is
+    its own risk; do not add a new caller of this one.
+
+    Uses get_record (no refresh), not get_token - a dead refresh token
+    (revoked access, re-registered SSO app, ...) must not take the whole
+    list down."""
     tm = tm or TokenManager(OAUTH_CONFIG)
     out = []
     for role in tm.list_roles(PRODUCTION_ROLE_PREFIX):
         record = tm.get_record(role)
         if record is not None:
             out.append((role, record.character_id, record.character_name))
+    return out
+
+
+def list_shared_producer_characters(tm: TokenManager | None = None) -> list[tuple[str, int, str]]:
+    """Returns (auth_role, character_id, character_name) for every character
+    currently sharing Assets and/or Market Orders with `production` -
+    the sharing-based replacement for `list_producer_characters` (Known
+    gap 4). Used wherever Production live-reads a shared character's own
+    data: `do_unlisted_stock`, the Characters/Producers sidebar
+    (`do_list_producer_characters`), and `sync_esi`'s own "nothing shared
+    yet" guard.
+
+    Not for Group-3 access capabilities (structure name resolution,
+    structure market book) - decision 9 says those have no tool dimension
+    ("any tool asks the Access layer 'which characters can provide this',
+    not 'is this shared with me'") - see `list_capability_characters` for
+    those.
+
+    `auth_role` is resolved via the Phase 4 selector (largest-matching-
+    scope token, same tie-break as everywhere else), preferring a token
+    that can read Assets, falling back to one that can read Market Orders.
+    A character who shares but holds no token carrying either scope (needs
+    Re-authorize) is omitted, not raised - same "skip, don't abort" shape
+    every other partial-failure path in this module already has."""
+    from ..esi_data.access import shared_owner_ids
+    from ..esi_data.selector import select_auth_role
+
+    tm = tm or TokenManager(OAUTH_CONFIG)
+    char_ids = sorted(
+        set(shared_owner_ids("assets", "production", "character"))
+        | set(shared_owner_ids("market_orders", "production", "character"))
+    )
+    out = []
+    for character_id in char_ids:
+        role = (
+            select_auth_role(character_id, "esi-assets.read_assets.v1", tokens=tm)
+            or select_auth_role(character_id, "esi-markets.read_character_orders.v1", tokens=tm)
+        )
+        if role is None:
+            continue
+        record = tm.get_record(role)
+        out.append((role, character_id, record.character_name if record else str(character_id)))
+    return out
+
+
+def list_capability_characters(capability_key: str, tm: TokenManager | None = None) -> list[tuple[str, int, str]]:
+    """Returns (auth_role, character_id, character_name) for every character
+    with `capability_key` ticked (Access section, Characters page) and a
+    token that actually carries its scope - the capability-based
+    counterpart to `list_shared_producer_characters` (Known gap 4). Group 3
+    has no tool dimension (decision 9), so this is gated on
+    `esi_character_capabilities`, not `esi_sharing`. Used by
+    `do_resolve_structure_name`, `pricing.home_prices`/`jita_prices`
+    (`structure_market_book`), and `sync_esi`'s opportunistic structure-name
+    discovery (`structure_name_resolution`).
+
+    A character with the capability ticked but no token carrying its scope
+    (needs Re-authorize) is omitted, not raised, same as
+    `list_shared_producer_characters`. Raises `ValueError` for an unknown
+    `capability_key` - a typo here is a programming error, not a runtime
+    "nothing shared yet" case."""
+    from ..esi_data.registry import ACCESS_CAPABILITIES
+    from ..esi_data.selector import select_auth_role
+
+    cap = next((c for c in ACCESS_CAPABILITIES if c.key == capability_key), None)
+    if cap is None:
+        raise ValueError(f"unknown capability {capability_key!r}")
+    tm = tm or TokenManager(OAUTH_CONFIG)
+    char_ids = sorted({
+        cid for cid, key in storage.list_esi_character_capabilities() if key == capability_key
+    })
+    out = []
+    for character_id in char_ids:
+        role = select_auth_role(character_id, cap.character_scope, tokens=tm)
+        if role is None:
+            continue
+        record = tm.get_record(role)
+        out.append((role, character_id, record.character_name if record else str(character_id)))
     return out
 
 
@@ -150,7 +236,9 @@ def _discover_structure_names(client: ESIClient, all_assets: list[dict], corp_ro
                 resolved_count += 1
 
     if unresolved:
-        characters = list_producer_characters()
+        # structure_name_resolution capability, not producer sharing - see
+        # list_capability_characters' own docstring (Known gap 4, closed).
+        characters = list_capability_characters("structure_name_resolution")
         for loc_id in list(unresolved):
             name = None
             solar_system_id = None
@@ -170,40 +258,21 @@ def _discover_structure_names(client: ESIClient, all_assets: list[dict], corp_ro
 
 
 def sync_esi() -> dict:
-    """Pulls assets/industry jobs/blueprints/sell orders/skills for every
-    registered producer character, plus each character's corp-level data
-    (Director role for assets/jobs/blueprints, Accountant/Trader for orders -
-    tracked independently per corp, see the comment below). Every ESI call
-    is wrapped in its own try/except: one character missing a scope, or one
-    corp lacking a role, must not abort the whole sync - it's reported per-
-    character/per-corp in the returned dict (e.g. "skipped (re-add
-    character?)") instead of raised, so a partial sync still updates
-    whatever data it *could* fetch rather than updating nothing at all.
-
-    Two phases: Phase A (_fetch_character_data, parallelized across every
-    registered character - see its own docstring) fetches everything that's
-    independent per character. Phase B (below, sequential, in the same
-    original per-character order) handles corp-level data, which stays
-    sequential deliberately - unlike Phase A, it's stateful *across*
-    characters (only fetch a given corp's assets/jobs/blueprints/orders
-    once, retried with the *next* character sharing that corp if an earlier
-    one lacked the Director/Accountant/Trader role - "if several of your
-    characters share a corp, it's retried with each one in turn until it
-    succeeds", see this module's own top docstring) - parallelizing that
-    retry-until-success sequencing would risk two characters racing to
-    "claim" the same corp at once. Corp count is typically small (a handful
-    at most, regardless of how many characters are registered), so this
-    sequential half is cheap either way - almost all of sync_esi()'s wall
-    time scales with character *count*, which Phase A already parallelizes.
-
-    Phase C (_discover_structure_names) is still opportunistic group-3
-    name resolution after the orchestrator writes assets — not an
-    orchestrator kind."""
+    """Guards on sharing, then delegates the real character/corp fetch to
+    the orchestrator (`do_sync_for_tool("production")` - per-owner
+    parallelism, sequential corp-role claim, freshness, the per-owner
+    guard, all live there now, not in this module - see
+    docs/ESI_ACCESS_PLAN.md Phase 3). This function's own remaining job is
+    the guard, plus opportunistic group-3 structure-name resolution
+    (`_discover_structure_names`) afterward - not an orchestrator kind,
+    since it has no freshness/sharing dimension of its own (decision 9)."""
     from ..esi_data.orchestrator import do_sync_for_tool
 
     tm = TokenManager(OAUTH_CONFIG)
-    characters = list_producer_characters(tm)
-    if not characters:
+    # Sharing-based guard (Known gap 4, closed) - "is anyone actually
+    # sharing Production data" is a different question from "who can help
+    # resolve a structure name" (capability-based, below).
+    if not list_shared_producer_characters(tm):
         raise ActionError(
             "No Production character shared yet. Share Assets (and the other Production kinds you need) on the Characters page."
         )
@@ -215,8 +284,11 @@ def sync_esi() -> dict:
             location_ids.append({"location_id": loc_id})
         for loc_id, in conn.execute("SELECT DISTINCT location_id FROM corp_assets"):
             location_ids.append({"location_id": loc_id})
+    # structure_name_resolution capability characters, not producer sharing
+    # (Known gap 4, closed) - a character resolves structure names for
+    # Production without ever sharing Assets/Market Orders with it.
     corp_roles: dict[int, str] = {}
-    for role, character_id, _name in characters:
+    for role, character_id, _name in list_capability_characters("structure_name_resolution", tm):
         try:
             corporation_id = client.character_public_info(character_id)["corporation_id"]
         except ESIError:
