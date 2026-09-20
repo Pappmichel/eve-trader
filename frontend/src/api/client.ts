@@ -92,9 +92,10 @@ const patch = <TResp>(path: string, body?: unknown) =>
 const del = <TResp>(path: string) => request<TResp>(path, { method: 'DELETE' })
 
 // ------------------------------------------------------------------- auth
+// Identity-only gate login. Prefix /api/auth/{role_prefix}/start is gone
+// (Phase 9) — ESI tokens are re-authorized from the Characters page.
 export const authApi = {
-  start: (rolePrefix: string) => get<{ url: string }>(`/api/auth/${rolePrefix}/start`),
-  accessPreview: (rolePrefix: string) => get<T.AccessPreview>(`/api/auth/${rolePrefix}/access-preview`),
+  start: () => get<{ url: string }>('/api/auth/gate/start'),
 }
 
 // -------------------------------------------------------------- access gate
@@ -265,9 +266,6 @@ export const productionApi = {
   // No refreshSde() here, deliberately - moved to adminApi below (GitHub
   // issue #34): the SDE cache is global/shared, not per-tenant, so
   // triggering a refresh is a cross-tenant-impacting action.
-  // No addCharacter() here, deliberately - Add Character uses the same
-  // redirect-based EVE SSO flow buyer/seller login does (see
-  // ProductionLayout.tsx: authApi.start('producer')), not a POST action.
   removeCharacter: (roleKey: string) => del(`/api/production/auth/character/${roleKey}`),
   syncEsi: () => post<Record<string, unknown>>('/api/production/esi/sync'),
   esiSyncTime: () => get<{ synced_at: string | null }>('/api/production/esi/sync-time'),
@@ -405,15 +403,10 @@ export const doctrineApi = {
     get<{ rows: T.ShoppingListRow[] }>(`/api/doctrine/shopping-list${doctrineId ? `?doctrine_id=${doctrineId}` : ''}`),
 
   characters: () => get<T.DoctrineCharacter[]>('/api/doctrine/characters'),
-  // No addCharacter() here, deliberately - see DoctrineLayout.tsx's
-  // CharacterGroup, which uses the same redirect-based EVE SSO flow
-  // buyer/seller login does (authApi.start('doctrine')), not a POST action.
   removeCharacter: (roleKey: string) => del(`/api/doctrine/characters/${roleKey}`),
 
-  // Separate character group, authed for esi-assets scopes rather than
-  // esi-contracts ones - see doctrine/esi_sync.py's own module docstring.
-  // No addAssetCharacter() here either, same reasoning as above
-  // (authApi.start('doctrine-assets')).
+  // Separate character group - see doctrine/esi_sync.py's module docstring.
+  // Add/re-auth lives on the Characters page, not a second SSO start here.
   assetCharacters: () => get<T.DoctrineCharacter[]>('/api/doctrine/asset-characters'),
   removeAssetCharacter: (roleKey: string) => del(`/api/doctrine/asset-characters/${roleKey}`),
 
@@ -467,8 +460,6 @@ export const stationTradingApi = {
     post<T.StationTradingSettings>('/api/station-trading/settings', s),
   esiSyncTime: () => get<{ synced_at: string | null }>('/api/station-trading/esi/sync-time'),
 
-  // No addCharacter() here, deliberately - Add Character uses the same
-  // redirect-based EVE SSO flow every other role does (authApi.start('trader')).
   traderCharacters: () => get<T.ProducerCharacter[]>('/api/station-trading/trader-characters'),
   removeCharacter: (roleKey: string) => del(`/api/station-trading/auth/character/${roleKey}`),
 }
@@ -501,8 +492,11 @@ export const adminApi = {
 
 // -------------------------------------------------------------- characters
 export const charactersApi = {
+  owners: () => get<T.EsiTokenCharacter[]>('/api/characters/owners'),
   sharing: (toolKey?: string) =>
     get<T.EsiSharingRow[]>(toolKey ? `/api/characters/sharing?tool_key=${encodeURIComponent(toolKey)}` : '/api/characters/sharing'),
+  freshness: () => get<T.EsiFreshnessRow[]>('/api/characters/freshness'),
+  capabilities: () => get<T.EsiCapabilityRow[]>('/api/characters/capabilities'),
   setSharing: (body: {
     owner_type: string
     owner_id: number
@@ -510,6 +504,11 @@ export const charactersApi = {
     tool_key: string
     enabled: boolean
   }) => post<T.EsiSharingRow & { enabled: boolean }>('/api/characters/sharing', body),
+  setCapability: (body: {
+    character_id: number
+    capability_key: string
+    enabled: boolean
+  }) => post<T.EsiCapabilityRow & { enabled: boolean }>('/api/characters/capabilities', body),
   accessPreview: (characterId: number, extraKinds: string[] = []) =>
     get<T.AccessPreview>(
       `/api/characters/access-preview?character_id=${characterId}`
@@ -519,6 +518,10 @@ export const charactersApi = {
     get<{ url: string }>(
       `/api/characters/reauth/start?character_id=${characterId}`
       + (extraKinds.length ? `&extra_kinds=${encodeURIComponent(extraKinds.join(','))}` : ''),
+    ),
+  sync: (toolKey?: string) =>
+    post<Record<string, unknown>>(
+      toolKey ? `/api/characters/sync?tool_key=${encodeURIComponent(toolKey)}` : '/api/characters/sync',
     ),
 }
 

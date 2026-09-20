@@ -35,20 +35,21 @@ const TABS = [
 
 // GitHub issue #46: buyer/seller support multiple characters now (more
 // registered characters = more available order slots), not one fixed
-// role each - lists every registered character for `role` with a Remove
-// button, plus an "Add Character" login button, same shape
-// ProductionLayout.tsx already uses for producer characters.
+// role each. List + remove only; ESI login is the Characters page.
 function RoleCharacters({ role, label }: { role: 'buyer' | 'seller'; label: string }) {
   const fetchCharacters = role === 'buyer' ? tradingApi.buyerCharacters : tradingApi.sellerCharacters
-  const { characters, addCharacter, startLogin, removeCharacter, isRemoving } = useRoleCharacters(
-    ['trading', 'characters', role], fetchCharacters, tradingApi.removeCharacter, role,
+  const { characters, removeCharacter, isRemoving } = useRoleCharacters(
+    ['trading', 'characters', role], fetchCharacters, tradingApi.removeCharacter,
   )
 
   return (
     <div>
       <Title order={6} c="dimmed" tt="uppercase" mb="xs">{label}</Title>
       {characters.length === 0 && (
-        <Badge color="danger" variant="light" mb="xs">not logged in</Badge>
+        <Badge color="danger" variant="light" mb="xs">none shared</Badge>
+      )}
+      {characters.length === 0 && (
+        <Text size="xs" c="dimmed" mb="xs">Share Wallet and Market Orders on the Characters page.</Text>
       )}
       <Stack gap={4} mb="xs">
         {characters.map((c) => (
@@ -61,9 +62,6 @@ function RoleCharacters({ role, label }: { role: 'buyer' | 'seller'; label: stri
           </Group>
         ))}
       </Stack>
-      <Button size="xs" variant="default" onClick={() => startLogin()} loading={addCharacter.isPending}>
-        Add {label}
-      </Button>
     </div>
   )
 }

@@ -205,7 +205,7 @@ def sync_esi() -> dict:
     characters = list_producer_characters(tm)
     if not characters:
         raise ActionError(
-            "No producer character logged in yet. Use 'Add Character' in the sidebar."
+            "No Production character shared yet. Share Assets (and the other Production kinds you need) on the Characters page."
         )
     result = do_sync_for_tool("production")
     client = ESIClient(tokens=tm)

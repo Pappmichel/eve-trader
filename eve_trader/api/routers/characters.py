@@ -1,7 +1,7 @@
 """Characters tool routes — thin wrappers around esi_data.actions do_*
-(docs/ESI_ACCESS_PLAN.md Phase 6). No Characters page in this phase;
-the frontend that consumes the confirm-dialog payload and Admin auto-tick
-lands with the grant. Phase 9 adds the page.
+(docs/ESI_ACCESS_PLAN.md Phase 6). The Characters page that consumes
+these (confirm-dialog payload, sharing toggles, Admin auto-tick) is
+Phase 9.
 """
 from __future__ import annotations
 

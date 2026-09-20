@@ -53,13 +53,13 @@ export default function ProductionLayout() {
   // freshness/counts info below stays - still legitimately informs this
   // tenant's own Production sidebar, just no longer paired with a button
   // that would refresh it for every tenant at once.
-  const { characters, addCharacter, startLogin, removeCharacter, isRemoving } = useRoleCharacters(
-    ['production', 'characters'], productionApi.producerCharacters, productionApi.removeCharacter, 'producer',
+  const { characters, removeCharacter, isRemoving } = useRoleCharacters(
+    ['production', 'characters'], productionApi.producerCharacters, productionApi.removeCharacter,
   )
-  const syncEsi = useAction('Sync ESI Data', productionApi.syncEsi, [
+  const syncEsi = useAction('Refresh what I need', productionApi.syncEsi, [
     ['production', 'jobs'], ['production', 'slots'], ['production', 'market-status'], ['production', 'esi-sync-time'],
     ['production', 'blueprints'], ['production', 'stock-value'],
-  ], { tier: 'live', effect: 'Loads assets, blueprints, industry jobs, and character slots live from ESI.' })
+  ], { tier: 'live', effect: 'Refreshes the ESI snapshots shared with Production.' })
   const refreshPlan = useAction('Refresh Production', productionApi.refreshPlan, [
     ['production', 'plan'], ['production', 'stock-targets'], ['production', 'logistics'],
   ], { tier: 'live', effect: 'Recomputes the Buy/Build list with current Home prices (live ESI) and Jita prices (cached with live fallback).' })
@@ -83,7 +83,7 @@ export default function ProductionLayout() {
 
       <AppShell.Navbar p={0} style={{ display: 'flex', flexDirection: 'column' }}>
         {/* Pinned above the scrollable character list below - stays reachable
-            no matter how many producer characters are authorized (the bug
+            no matter how many characters are authorized (the bug
             this fixes: the compute button used to be the last item in one
             long scrolling stack, pushed off-screen by a long character list). */}
         <div style={{ padding: 'var(--mantine-spacing-md)', borderBottom: '1px solid var(--mantine-color-dark-4)' }}>
@@ -125,13 +125,18 @@ export default function ProductionLayout() {
                 <Title order={6} c="dimmed" tt="uppercase">ESI Sync</Title>
                 <Text size="xs" c="dimmed">{dateTime(syncTime?.synced_at)}</Text>
               </Group>
+              {characters.length === 0 && (
+                <Text size="xs" c="dimmed" mb="xs">
+                  Share Assets, Jobs, Blueprints, Market Orders, and Skills with Production on the Characters page.
+                </Text>
+              )}
               {characters.map((c) => (
                 <Group key={c.role_key} justify="space-between" mb={4}>
                   <Text size="sm" fw={600}>{c.character_name}</Text>
                   <Button size="xs" variant="subtle" color="danger"
                     onClick={() => modals.openConfirmModal({
                       title: 'Remove character',
-                      children: <Text size="sm">Remove {c.character_name} from Production? You can log them back in any time.</Text>,
+                      children: <Text size="sm">Remove {c.character_name} from Production? This drops this tool&apos;s token key. Sharing stays on the Characters page.</Text>,
                       labels: { confirm: 'Remove', cancel: 'Cancel' },
                       confirmProps: { color: 'danger' },
                       onConfirm: () => removeCharacter(c.role_key),
@@ -142,14 +147,11 @@ export default function ProductionLayout() {
                 </Group>
               ))}
               <Stack gap="xs" mt="xs">
-                <Button size="xs" variant="default" onClick={() => startLogin()} loading={addCharacter.isPending}>
-                  Add Character
-                </Button>
                 <Tooltip label={syncEsi.tooltip} disabled={!syncEsi.tooltip} multiline w={280}>
                   <Button size="xs" variant="default" disabled={characters.length === 0}
                     leftSection={syncEsi.tierIcon}
                     onClick={() => syncEsi.mutate()} loading={syncEsi.isPending}>
-                    Sync ESI Data
+                    Refresh what I need
                   </Button>
                 </Tooltip>
               </Stack>

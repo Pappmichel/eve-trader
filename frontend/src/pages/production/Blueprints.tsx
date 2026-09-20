@@ -330,7 +330,7 @@ export default function Blueprints() {
       ) : isError ? (
         <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />
       ) : !data || data.length === 0 ? (
-        <HintCard>No blueprints found - or not synced yet ('Sync ESI Data' in the sidebar).</HintCard>
+        <HintCard>No blueprints found - or not synced yet (&apos;Refresh what I need&apos; in the sidebar).</HintCard>
       ) : (
         <DataTable data={data} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
       )}

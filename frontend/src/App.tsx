@@ -79,6 +79,7 @@ const SortingOverview = lazy(() => import('./pages/sorting/SortingOverview'))
 const SortingSettings = lazy(() => import('./pages/sorting/SortingSettings'))
 
 const AdminPage = lazy(() => import('./pages/admin/AdminPage'))
+const CharactersPage = lazy(() => import('./pages/characters/CharactersPage'))
 
 function RouteFallback() {
   return (
@@ -184,6 +185,7 @@ function App() {
           <Routes>
             <Route path="/" element={<Landing />} />
             <Route path="/portfolio" element={<Portfolio />} />
+            <Route path="/characters" element={<CharactersPage />} />
             <Route path="/admin" element={<AdminPage />} />
 
             <Route path="/trading" element={<TradingLayout />}>

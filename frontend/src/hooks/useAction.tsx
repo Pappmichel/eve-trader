@@ -95,7 +95,7 @@ export function warnIfPricedViaFallback(result: unknown): void {
   if (result && typeof result === 'object' && (result as Record<string, unknown>).priced_via_fallback) {
     notifications.show({
       title: 'Structure prices used the Goonmetrics fallback',
-      message: 'No seller was logged in, or the real order book was unavailable - prices are a less precise '
+      message: 'No seller token was available, or the real order book was unavailable - prices are a less precise '
         + 'community snapshot (best bid/ask, not a real order-book percentile) until this refreshes normally.',
       color: 'warn',
     })

@@ -22,15 +22,10 @@ from .parser import FittingParseError
 
 
 # ---------------------------------------------------------------------- auth
-# No do_auth_doctrine() here, deliberately - a doctrine character logs in via
-# the same redirect-based EVE SSO flow buyer/seller/producer already use
-# (GET /api/auth/doctrine/start -> EVE SSO -> /api/auth/callback, see
-# api/routers/auth.py's _scopes_for and DoctrineLayout.tsx's CharacterList).
-# A do_* action here would need TokenManager.get_token_interactive_multi's
-# old server-side webbrowser.open()-plus-local-HTTP-server flow, which binds
-# its own listener on the exact host:port the running backend already uses -
-# confirmed real bug live: works only by accident in local dev, always fails
-# on a real deployment ("Cannot assign requested address").
+# No do_auth_doctrine() here, deliberately - ESI login is the Characters
+# page (`/api/characters/reauth/start`), not a prefix `/start` and not
+# TokenManager.get_token_interactive_multi's old server-side
+# webbrowser.open()-plus-local-HTTP-server flow.
 
 
 def do_list_doctrine_characters() -> list[tuple[str, int, str]]:

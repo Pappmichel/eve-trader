@@ -625,6 +625,28 @@ export interface EsiSharingRow {
   tool_key: string
 }
 
+export interface EsiFreshnessRow {
+  owner_type: string
+  owner_id: number
+  data_kind: string
+  last_success_at: string | null
+  last_attempt_at: string | null
+  last_error: string | null
+}
+
+export interface EsiCapabilityRow {
+  character_id: number
+  capability_key: string
+}
+
+export interface EsiTokenCharacter {
+  character_id: number
+  character_name: string
+  write_role: string
+  character_has_token_pool: boolean
+  roles: string[]
+}
+
 export interface AdminTenant {
   tenant_id: string
   name: string

@@ -1,8 +1,8 @@
-// Confirm-before-login modal. Prefix logins (useRoleCharacters) and
-// Characters re-auth fetch a registry-derived payload from the backend
-// (`added` highlights kinds that are not on any existing token). Identity-
-// only `gate` stays a static localStorage dialog on Landing — it requests
-// no game data and has no tenant at the moment the dialog is shown.
+// Confirm-before-login modal. Characters re-auth fetches a registry-derived
+// payload from `/api/characters/access-preview` (`added` highlights kinds
+// that are not on any existing token). Identity-only `gate` stays a static
+// localStorage dialog on Landing — it requests no game data and has no
+// tenant at the moment the dialog is shown.
 import { List, Stack, Text } from '@mantine/core'
 import { modals } from '@mantine/modals'
 

@@ -868,13 +868,15 @@ def test_check_undercut_success(monkeypatch):
 
 def test_check_undercut_action_error_maps_to_400(monkeypatch):
     def _raise(*args, **kwargs):
-        raise ActionError("Seller character isn't logged in yet (Login → Seller).")
+        raise ActionError(
+            "No seller character shared yet. Share Market Orders with Trading on the Characters page."
+        )
     monkeypatch.setattr(actions, "do_check_undercut", _raise)
 
     resp = client.post("/api/trading/seller/undercut")
 
     assert resp.status_code == 400
-    assert "Seller" in resp.json()["detail"]
+    assert "seller character" in resp.json()["detail"]
 
 
 def test_check_seller_unlisted_stock_includes_sell_volume_and_margin(monkeypatch):

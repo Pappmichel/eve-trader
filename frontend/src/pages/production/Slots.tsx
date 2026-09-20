@@ -47,7 +47,7 @@ export default function Slots() {
   if (isLoading) return <Text c="dimmed">Loading…</Text>
   if (!data || data.length === 0) {
     return (
-      <HintCard>No character slot data yet - run <b>Sync ESI Data</b> in the sidebar.</HintCard>
+      <HintCard>No character slot data yet - run <b>Refresh what I need</b> in the sidebar.</HintCard>
     )
   }
 

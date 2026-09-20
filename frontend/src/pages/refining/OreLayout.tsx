@@ -47,10 +47,11 @@ export default function OreLayout() {
       <AppShell.Navbar p="md">
         <Stack gap="md">
           <div>
-            <Title order={6} c="dimmed" tt="uppercase" mb="xs">Login</Title>
+            <Title order={6} c="dimmed" tt="uppercase" mb="xs">Characters</Title>
             <Text size="xs" c="dimmed">
-              Buys compressed ore/ice at Jita, sells refined minerals at C-J - reuses Trading's own Seller
-              character login (Trading → Login → Seller), no separate login needed here.
+              Buys compressed ore/ice at Jita, sells refined minerals at C-J. Reuses Trading&apos;s
+              shared seller tokens — share Market Orders and Wallet with Trading on the Characters
+              page; there is no separate login here.
             </Text>
           </div>
 

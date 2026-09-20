@@ -20,11 +20,10 @@ const GATE_CONSENT_KEY = 'eve-trader:gate-consent-acknowledged'
 function AccessGateStatus() {
   const { data: gateStatus } = useQuery({ queryKey: ['gate', 'status'], queryFn: gateApi.status })
   const logout = useAction('Log Out', gateApi.logout, [['gate', 'status']])
-  // /api/auth/gate/start returns {url}, same as every other LoginButton in
-  // this app (see TradingLayout.tsx) - not itself a redirect, so it has to
-  // be fetched and navigated to manually, not linked to directly.
+  // /api/auth/gate/start returns {url}; this page navigates to it, same as
+  // the Characters page Re-authorize button.
   const login = useAction('Login', async () => {
-    const { url } = await authApi.start('gate')
+    const { url } = await authApi.start()
     window.location.href = url
   })
 
@@ -129,9 +128,11 @@ export default function Landing() {
           description="See what's sitting in Wareneingang hangars and which tool still wants it." />
       </SimpleGrid>
 
-      <SimpleGrid cols={{ base: 1, xs: 2 }} spacing="md" mt="md">
+      <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }} spacing="md" mt="md">
         <ToolCard tools={tools} toolKey="portfolio" to="/portfolio" title="Portfolio Overview"
           description="Combined read-only snapshot of Trading realized profit and Production stock value." />
+        <ToolCard tools={tools} toolKey="characters" to="/characters" title="Characters"
+          description="Who is logged in for ESI data, which tools may read it, and which scopes still need a re-authorize." />
         <ToolCard tools={tools} toolKey="admin" to="/admin" title="Admin"
           description="Manage tenants, users, and which tools each character can see." />
       </SimpleGrid>

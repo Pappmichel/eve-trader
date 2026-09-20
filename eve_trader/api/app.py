@@ -87,13 +87,6 @@ _TOOL_PATH_PREFIXES = {
     "/api/characters/": "characters",
 }
 
-_AUTH_START_PREFIX = "/api/auth/"
-# Every /api/auth/{role_prefix}/<suffix> route that reveals or acts on a
-# specific tool's login role needs the same tool-grant check as /start -
-# /access-preview (the confirm-dialog payload, Phase 5) must not fall
-# through ungated the way /consent used to before it was retired.
-_AUTH_GATED_SUFFIXES = ("/start", "/access-preview")
-
 
 def _is_docs_path(path: str) -> bool:
     return path == "/openapi.json" or path.startswith("/docs") or path.startswith("/redoc")
@@ -107,11 +100,11 @@ def _is_session_only_api_path(path: str) -> bool:
     return False
 
 
-def _is_auth_role_gated_path(path: str) -> bool:
-    """True for /api/auth/{role}/start and /access-preview, including FastAPI templates."""
-    if not path.startswith(_AUTH_START_PREFIX):
-        return False
-    return any(path.endswith(suffix) for suffix in _AUTH_GATED_SUFFIXES)
+def _is_auth_role_gated_path(_path: str) -> bool:
+    """Prefix `/api/auth/{role}/start` and `/access-preview` were removed in
+    Phase 9. Kept so the classification matrix still has an explicit bucket
+    for that shape (always false for live routes)."""
+    return False
 
 
 def _required_tool_for_path(path: str, method: str = "GET") -> Optional[str]:
@@ -122,22 +115,6 @@ def _required_tool_for_path(path: str, method: str = "GET") -> Optional[str]:
     for prefix, tool_key in _TOOL_PATH_PREFIXES.items():
         if path.startswith(prefix):
             return tool_key
-    # GitHub issue #57 (found in a full-codebase audit 2026-08-21, confirmed
-    # real gap): /api/auth/{role_prefix}/start used to be reachable by any
-    # character with a valid gate session regardless of tool grants - e.g. a
-    # character granted only "trading" could still call
-    # /api/auth/producer/start and register a live ESI token for
-    # Production. ROLE_PREFIX_TOOL (eve_trader.auth) is the single source of truth
-    # for which tool each role_prefix belongs to - "gate" maps to None
-    # (identity-only, and already fully exempt via _GATE_EXEMPT_PATHS
-    # before this function is ever reached for it) and an unrecognized
-    # role_prefix also maps to None here (the route handler itself rejects
-    # it with a 400 - see auth.start_login), never silently granted access.
-    if path.startswith(_AUTH_START_PREFIX):
-        for suffix in _AUTH_GATED_SUFFIXES:
-            if path.endswith(suffix):
-                role_prefix = path[len(_AUTH_START_PREFIX):-len(suffix)]
-                return auth.ROLE_PREFIX_TOOL.get(role_prefix)
     return None
 
 

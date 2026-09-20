@@ -129,15 +129,10 @@ def do_check_sde_freshness(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     return {**freshness, "trading_universe_stale": trading_universe_stale, "trading_universe_built_at": universe_built_at}
 
 
-# No do_auth_add_producer_character() here, deliberately - removed (real bug,
-# confirmed live via the identical Doctrine-tool code path): a producer
-# character logs in via the redirect-based EVE SSO flow buyer/seller already
-# use (GET /api/auth/producer/start -> EVE SSO -> /api/auth/callback, see
-# api/routers/auth.py's _scopes_for and ProductionLayout.tsx), never via
-# TokenManager.get_token_interactive_multi's old server-side
-# webbrowser.open()-plus-local-HTTP-server flow, which binds its own
-# listener on the exact host:port the running backend already uses - works
-# only by accident in local dev, always fails on a real deployment.
+# No do_auth_add_producer_character() here, deliberately - ESI login is the
+# Characters page (`/api/characters/reauth/start`), not a prefix `/start`
+# and not TokenManager.get_token_interactive_multi's old server-side
+# webbrowser.open()-plus-local-HTTP-server flow.
 
 
 def do_list_producer_characters() -> list[tuple[str, int, str]]:
@@ -354,7 +349,7 @@ def do_resolve_structure_name(location_id: int, force: bool = False) -> dict:
 
     characters = esi_sync.list_producer_characters()
     if not characters:
-        raise ActionError("No producer character logged in yet.")
+        raise ActionError("No Production character shared yet.")
 
     client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))
     name = None
@@ -972,7 +967,7 @@ def do_unlisted_stock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         raise ActionError("No stock targets configured.")
     characters = esi_sync.list_producer_characters()
     if not characters:
-        raise ActionError("No producer character logged in yet.")
+        raise ActionError("No Production character shared yet.")
 
     client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))
     stock_qty: dict[int, float] = {}

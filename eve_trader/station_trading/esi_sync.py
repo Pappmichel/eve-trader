@@ -1,7 +1,8 @@
 """Character registration for the Station Trading tool's own "trader" role -
-see api/routers/auth.py's ROLE_PREFIX_TOOL/_scopes_for for how a role_prefix
-becomes a real login, and production/esi_sync.py's PRODUCTION_ROLE_PREFIX/
-list_producer_characters for the precedent this mirrors.
+see eve_trader.auth.ROLE_PREFIX_TOOL / validate_role_key_for_tool for how a
+stored prefix key is namespaced to this tool, and production/esi_sync.py's
+PRODUCTION_ROLE_PREFIX/list_producer_characters for the precedent this
+mirrors. HTTP login is the Characters page, not a prefix `/start`.
 
 Unlike Production, there's no sync_esi()-style bulk pull here: nothing this
 tool computes is worth caching ahead of time (own orders and skill levels
