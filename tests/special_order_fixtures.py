@@ -191,6 +191,15 @@ def patch_planner_network(monkeypatch, home=None, jita=None) -> None:
     monkeypatch.setattr(engine.pricing, "home_prices", lambda cfg, type_ids: home_map)
     monkeypatch.setattr(engine.pricing, "jita_prices", lambda type_ids: jita_map)
     monkeypatch.setattr(pricing, "system_cost_indices_for", lambda *a, **k: {})
+    # Known gap 3 (docs/ESI_ACCESS_PLAN.md): engine.py's stock/blueprint
+    # readers now resolve Production's esi_sharing rows before reading
+    # character_assets/character_blueprints/character_sell_orders. This
+    # planner test suite seeds those tables directly (storage.replace_assets
+    # with no owner_character_id, no sharing row of its own - it's testing
+    # the special-order netting math, not sharing) - stub the resolver to
+    # (None, None) ("unfiltered") so those seeded rows still count, the same
+    # way they did before Gap 3 was closed.
+    monkeypatch.setattr(engine, "shared_production_owner_ids", lambda data_kind: (None, None))
 
     class _FakeESIClient:
         def __init__(self, *args, **kwargs):

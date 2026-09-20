@@ -684,7 +684,7 @@ def _owned_bpo_mods(blueprint_id: Optional[int]) -> Optional[tuple[float, float]
     ME/TE instead (_tech_ii_mods), never a BPO's own stat."""
     if blueprint_id is None:
         return None
-    best = storage.get_owned_bpo_best_me_te(blueprint_id)
+    best = _owned_bpo_best_me_te(blueprint_id)
     if best is None:
         return None
     me, te = best
@@ -873,7 +873,7 @@ def _invention_need_row(type_id: int, type_name: str, activity: str,
     # get_invention_recipe's unfiltered fetchone used to return one sibling
     # for both rows, so both counted the same T2 BPC runs (live: Crow and
     # Raptor each showing 507).
-    t2_bpc_owned = int(storage.available_blueprint_copies(blueprint_id, None))
+    t2_bpc_owned = int(_available_blueprint_copies(blueprint_id, None))
     runs_needed = math.ceil(missing / product_qty) if missing > 0 else 0
     base_target_runs = math.ceil(stockpile_quantity / product_qty) if stockpile_quantity > 0 else 0
     t2_bpc_target_runs = math.ceil(bpc_buffer_multiplier * base_target_runs)
@@ -1353,6 +1353,115 @@ def invalidate_production_locations_cache() -> None:
     invalidation calls out too."""
 
 
+# Third caching shape (see CLAUDE.md's Caching pattern section): a single
+# lock guarding a small process-wide dict, plus explicit invalidation from
+# the one write path that can make it stale - same shape _discover_cache/
+# invalidate_discover_cache already use just above, for the same reason.
+# Not a TTL cache: _current_stock/_stock_on_hand/_total_missing call
+# shared_production_owner_ids once per type_id from inside a demand loop
+# (Logistik, invention needs, Buy/Build) that can run over hundreds of
+# materials in one request - an indexed SELECT on esi_sharing is cheap
+# once, not hundreds of times per request. A TTL would let a just-toggled
+# Characters-page sharing row keep leaking into/out of Production's stock
+# figures for the rest of the window; explicit invalidation on the one
+# write path (esi_data.actions.do_set_sharing) does not have that gap.
+_owner_ids_cache: dict[tuple[Optional[str], str], tuple[list[int], list[int]]] = {}
+_owner_ids_cache_lock = threading.Lock()
+
+
+def shared_production_owner_ids(data_kind: str) -> tuple[list[int], list[int]]:
+    """(shared character ids, shared corporation ids) this tenant has
+    currently shared with Production for `data_kind` - docs/ESI_ACCESS_PLAN.md
+    Known gap 3. Production reads the shared snapshot tables
+    (character_assets/corp_assets, character_industry_jobs/corp_industry_jobs,
+    character_blueprints/corp_blueprints, character_sell_orders) directly
+    via storage.py's own SQL rather than through the fail-closed accessor
+    (`esi_data.access.read_esi`) - the accessor loads every matching row into
+    Python, and several of these reads run once per type_id inside a demand
+    loop (Logistik, invention needs), where that would be a real performance
+    regression. This resolves the same sharing rows the accessor itself
+    would check and hands storage.py's `owner_character_ids`/
+    `owner_corporation_ids` filter the ids to restrict the SQL to.
+
+    Exported (not `_`-prefixed) since production/actions.py and
+    production/jobs.py call it too - every direct reader of those tables
+    lives in the `production` package, not just this module. Cached per
+    (tenant_id, data_kind) - see the cache's own comment just above for
+    why this needs explicit invalidation rather than a TTL."""
+    tenant_id = storage.get_current_tenant()
+    key = (tenant_id, data_kind)
+    with _owner_ids_cache_lock:
+        cached = _owner_ids_cache.get(key)
+    if cached is not None:
+        return cached
+    from ..esi_data.access import shared_owner_ids
+    result = (
+        shared_owner_ids(data_kind, "production", "character"),
+        shared_owner_ids(data_kind, "production", "corporation"),
+    )
+    with _owner_ids_cache_lock:
+        _owner_ids_cache[key] = result
+    return result
+
+
+def invalidate_shared_production_owner_ids_cache(all_tenants: bool = False) -> None:
+    """Called from esi_data.actions.do_set_sharing - the one write path
+    that can change what shared_production_owner_ids returns. `all_tenants`
+    mirrors invalidate_discover_cache's own flag (tests, a process-wide
+    reset); the per-tenant case drops every data_kind for the current
+    tenant, since one sharing toggle can be for any of assets/industry_jobs/
+    blueprints/market_orders and this cache is cheap enough to just refetch
+    on the next call either way."""
+    with _owner_ids_cache_lock:
+        if all_tenants:
+            _owner_ids_cache.clear()
+            return
+        tenant_id = storage.get_current_tenant()
+        for key in [k for k in _owner_ids_cache if k[0] == tenant_id]:
+            _owner_ids_cache.pop(key, None)
+
+
+# Thin wrappers around the storage.py readers Known gap 3 names - each
+# resolves shared_production_owner_ids for the right data_kind (cached, see
+# above) and forwards every other argument unchanged. Every direct call to
+# the underlying storage.py function from this module goes through one of
+# these instead, so a call site cannot accidentally read unfiltered.
+def _stock_at_location(type_id: int, location_id: Optional[int], **kwargs) -> float:
+    char_ids, corp_ids = shared_production_owner_ids("assets")
+    return storage.esi_stock_at_location(
+        type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids, **kwargs)
+
+
+def _sell_order_qty_at_location(type_id: int, location_id: int) -> float:
+    char_ids, corp_ids = shared_production_owner_ids("market_orders")
+    return storage.sell_order_qty_at_location(
+        type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
+
+
+def _sell_order_qty_in_region(type_id: int, region_id: int) -> float:
+    char_ids, corp_ids = shared_production_owner_ids("market_orders")
+    return storage.sell_order_qty_in_region(
+        type_id, region_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
+
+
+def _owned_bpo_best_me_te(blueprint_type_id: int) -> Optional[tuple[int, int]]:
+    char_ids, corp_ids = shared_production_owner_ids("blueprints")
+    return storage.get_owned_bpo_best_me_te(
+        blueprint_type_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
+
+
+def _available_blueprint_copies(type_id: int, location_id: Optional[int]) -> float:
+    char_ids, corp_ids = shared_production_owner_ids("blueprints")
+    return storage.available_blueprint_copies(
+        type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
+
+
+def _has_bpo_at_location(type_id: int, location_id: int) -> bool:
+    char_ids, corp_ids = shared_production_owner_ids("blueprints")
+    return storage.has_bpo_at_location(
+        type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
+
+
 def _current_stock(type_id: int, manual_stock: dict[int, float], cfg: ProductionConfig,
                     bp: Optional[tuple[int, int, float]]) -> float:
     """manual entry + ESI assets at *every* location (location_id=None -
@@ -1376,7 +1485,7 @@ def _current_stock(type_id: int, manual_stock: dict[int, float], cfg: Production
     per-tool hangar divisions can narrow this to just Production's own
     division(s) instead of counting Trading/Doctrine/Ore & Minerals' stock
     sitting in the same corp-wide location too (see production/config.py's
-    own comment on that field). storage.esi_stock_at_location(type_id, None)
+    own comment on that field). _stock_at_location(type_id, None)
     already exists exactly for this (its own docstring: "None = all
     locations"), and already excludes NON_STOCK_LOCATION_FLAGS (AssetSafety/
     Deliveries/CorpMarket/...) regardless of location, so this doesn't trade
@@ -1386,7 +1495,7 @@ def _current_stock(type_id: int, manual_stock: dict[int, float], cfg: Production
     cfg.home_location_id (C-J) - that hangar is unsortiertes staging, not
     Production Ist. The same owner+flag at any other location still counts."""
     total = manual_stock.get(type_id, 0)
-    total += storage.esi_stock_at_location(
+    total += _stock_at_location(
         type_id, None, allowed_flags=cfg.stock_hangar_flags,
         exclude_intake_at_location_id=cfg.home_location_id)
     incoming = storage.esi_incoming_industry_qty(type_id)
@@ -1418,7 +1527,7 @@ def _stock_on_hand(type_id: int, manual_stock: dict[int, float], cfg: Production
     readiness signal needs this on-hand-only number instead - see
     plan_asset_optimized's Phase B for the split ledger this requires
     (stock_used vs. stock_used_on_hand)."""
-    return manual_stock.get(type_id, 0) + storage.esi_stock_at_location(
+    return manual_stock.get(type_id, 0) + _stock_at_location(
         type_id, None, allowed_flags=cfg.stock_hangar_flags,
         exclude_intake_at_location_id=cfg.home_location_id)
 
@@ -1467,7 +1576,7 @@ def _total_missing(type_id: int, backup_stock: float, home_market_stock: Optiona
     surplus_stock = max(0.0, current_stock - backup_stock)  # owned units left over once the backup reserve is covered
     if home_market_stock:
         home_listed = (
-            storage.sell_order_qty_at_location(type_id, cfg.home_location_id)
+            _sell_order_qty_at_location(type_id, cfg.home_location_id)
             if cfg.home_location_id is not None else 0.0
         )
         home_short = max(0.0, home_market_stock - home_listed)
@@ -1475,7 +1584,7 @@ def _total_missing(type_id: int, backup_stock: float, home_market_stock: Optiona
         missing += home_short - applied
         surplus_stock -= applied
     if jita_market_stock:
-        jita_listed = storage.sell_order_qty_in_region(type_id, TRADING_CONFIG.jita_region_id)
+        jita_listed = _sell_order_qty_in_region(type_id, TRADING_CONFIG.jita_region_id)
         jita_short = max(0.0, jita_market_stock - jita_listed)
         applied = min(surplus_stock, jita_short)
         missing += jita_short - applied
@@ -2463,10 +2572,10 @@ def market_status(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[MarketStatu
         _, bp = classify_activity(type_id)
         backup_current = _current_stock(type_id, manual_stock, cfg, bp)
         home_listed = (
-            storage.sell_order_qty_at_location(type_id, cfg.home_location_id)
+            _sell_order_qty_at_location(type_id, cfg.home_location_id)
             if cfg.home_location_id is not None else 0.0
         )
-        jita_listed = storage.sell_order_qty_in_region(type_id, TRADING_CONFIG.jita_region_id)
+        jita_listed = _sell_order_qty_in_region(type_id, TRADING_CONFIG.jita_region_id)
         rows.append(MarketStatusRow(
             type_id=type_id, type_name=type_name,
             backup_target=backup_target, backup_current=backup_current,
@@ -3270,7 +3379,7 @@ def logistics_status(build_list: list[BuildJobEntry], cfg: ProductionConfig = PR
     rows = []
     for (category, material_id), needed in demand.items():
         location_id = category_locations[category]
-        available = storage.esi_stock_at_location(
+        available = _stock_at_location(
             material_id, location_id, exclude_intake_at_location_id=cfg.home_location_id)
         missing = max(0.0, needed - available)
         sde_type = storage.get_sde_type(material_id)
@@ -3281,7 +3390,7 @@ def logistics_status(build_list: list[BuildJobEntry], cfg: ProductionConfig = PR
         pull_from_available = None
         if missing > 0:
             if warehouse_location_id is not None and warehouse_location_id != location_id:
-                warehouse_stock = storage.esi_stock_at_location(
+                warehouse_stock = _stock_at_location(
                     material_id, warehouse_location_id,
                     exclude_intake_at_location_id=cfg.home_location_id)
                 if warehouse_stock > 0:
@@ -3292,14 +3401,14 @@ def logistics_status(build_list: list[BuildJobEntry], cfg: ProductionConfig = PR
                         continue
                     other_category = next(c for c, loc in category_locations.items() if loc == other_location_id)
                     other_demand = demand.get((other_category, material_id), 0.0)
-                    stock = storage.esi_stock_at_location(
+                    stock = _stock_at_location(
                         material_id, other_location_id,
                         exclude_intake_at_location_id=cfg.home_location_id)
                     surplus = max(0.0, stock - other_demand)
                     if surplus > 0 and (pull_from_available is None or surplus > pull_from_available):
                         pull_from_location_id, pull_from_available = other_location_id, surplus
                 for orphaned_location_id in orphaned_locations_by_category[category]:
-                    stock = storage.esi_stock_at_location(
+                    stock = _stock_at_location(
                         material_id, orphaned_location_id,
                         exclude_intake_at_location_id=cfg.home_location_id)
                     if stock > 0 and (pull_from_available is None or stock > pull_from_available):
@@ -3351,7 +3460,7 @@ def distribution_recommendations(build_list: list[BuildJobEntry],
         location_id = category_locations[category]
         if location_id == source_location_id:
             continue  # already sourced locally, nothing to move
-        available = storage.esi_stock_at_location(
+        available = _stock_at_location(
             material_id, location_id, exclude_intake_at_location_id=cfg.home_location_id)
         missing = max(0.0, needed - available)
         if missing > 0:
@@ -3359,7 +3468,7 @@ def distribution_recommendations(build_list: list[BuildJobEntry],
 
     rows = []
     for material_id, shortfalls in shortfalls_by_material.items():
-        remaining_from_warehouse = storage.esi_stock_at_location(
+        remaining_from_warehouse = _stock_at_location(
             material_id, source_location_id, exclude_intake_at_location_id=cfg.home_location_id)
         sde_type = storage.get_sde_type(material_id)
         name = sde_type[2] if sde_type else str(material_id)
@@ -3393,7 +3502,7 @@ def distribution_recommendations(build_list: list[BuildJobEntry],
                     continue
                 if other_location_id not in surplus_remaining:
                     other_demand = demand.get((other_category, material_id), 0.0)
-                    other_stock = storage.esi_stock_at_location(
+                    other_stock = _stock_at_location(
                         material_id, other_location_id,
                         exclude_intake_at_location_id=cfg.home_location_id)
                     surplus_remaining[other_location_id] = max(0.0, other_stock - other_demand)
@@ -3506,9 +3615,9 @@ def invention_logistics(invention_list: list[InventionNeedRow],
     for type_id, needed in demand.items():
         is_real_blueprint = type_id in t1_blueprint_type_ids and storage.get_type_category(type_id) != ANCIENT_RELIC_CATEGORY_ID
         if is_real_blueprint:
-            available = storage.available_blueprint_copies(type_id, cfg.invention_location_id)
+            available = _available_blueprint_copies(type_id, cfg.invention_location_id)
         else:
-            available = storage.esi_stock_at_location(
+            available = _stock_at_location(
                 type_id, cfg.invention_location_id,
                 exclude_intake_at_location_id=cfg.home_location_id)
         sde_type = storage.get_sde_type(type_id)
@@ -3559,17 +3668,17 @@ def t1_bpc_invention_needs(invention_list: list[InventionNeedRow],
     for type_id, needed in needed_by_t1.items():
         is_relic = storage.get_type_category(type_id) == ANCIENT_RELIC_CATEGORY_ID
         available = int(
-            storage.esi_stock_at_location(
+            _stock_at_location(
                 type_id, cfg.invention_location_id,
                 exclude_intake_at_location_id=cfg.home_location_id) if is_relic
-            else storage.available_blueprint_copies(type_id, cfg.invention_location_id)
+            else _available_blueprint_copies(type_id, cfg.invention_location_id)
         )
         sde_type = storage.get_sde_type(type_id)
         name = sde_type[2] if sde_type else str(type_id)
         rows.append(T1BpcInventionNeedRow(
             type_id=type_id, name=name, needed=needed, available=available,
             missing=max(0, needed - available),
-            bpo_present=storage.has_bpo_at_location(type_id, cfg.invention_location_id),
+            bpo_present=_has_bpo_at_location(type_id, cfg.invention_location_id),
             stockpile_pct=(available / needed * 100) if needed > 0 else 0.0,
         ))
     rows.sort(key=lambda r: -r.missing)

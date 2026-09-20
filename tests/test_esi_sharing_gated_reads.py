@@ -1,9 +1,14 @@
 """Caller-level sharing gates (decision 9): own_orders and reconciliation
-must not live-fetch an owner that is not shared with Trading.
+must not live-fetch an owner that is not shared with Trading. Known gap 3
+(docs/ESI_ACCESS_PLAN.md) is the same class of bug on the Production/
+Sorting side - storage.py's own readers now take an owner-id filter (see
+storage._owner_id_clause) and production/engine.py resolves it via
+shared_production_owner_ids before calling them.
 
 The accessor's own isolation test still stands; these cover the product
 paths that previously swallowed AccessorError/RuntimeError and fell back
-to unfiltered ESI.
+to unfiltered ESI, plus (Gap 3 section below) the storage-level readers
+that never went through the accessor at all.
 """
 from __future__ import annotations
 
@@ -19,6 +24,7 @@ from eve_trader.own_orders import (
     fetch_buyer_already_covered,
     fetch_seller_stock_without_order,
 )
+from eve_trader.production import engine as production_engine
 from eve_trader.trade_reconciliation import (
     collect_trading_wallet_streams,
     reconcile_realized_trades,
@@ -349,3 +355,195 @@ def test_shared_wallet_snapshot_skips_live_esi(tenant, monkeypatch):
     assert client.char_txn_calls == []
     assert client.corp_txn_calls == []
     assert {t["_wallet_owner_id"] for t in txns} == {ALICE, BOB}
+
+
+# ---------------------------------------------------------------- gap 3
+# Known gap 3 (docs/ESI_ACCESS_PLAN.md): Production's own storage.py readers
+# never went through the accessor at all - storage.esi_stock_at_location/
+# assets_at_flag/list_industry_jobs/load_owned_blueprints/sell_order_qty_*/
+# get_owned_bpo_best_me_te/available_blueprint_copies/has_bpo_at_location/
+# search_item_stock_locations now take an owner-id filter
+# (storage._owner_id_clause), and production/engine.py resolves it via
+# shared_production_owner_ids (esi_data.access.shared_owner_ids) before
+# calling them - the same shape as own_orders/trade_reconciliation's own
+# is_shared/read_esi gate above, just at the SQL level instead of the
+# accessor's Python-level row filter (a per-type_id demand loop calling the
+# accessor's read_esi would load every shared row on every iteration).
+GAP3_ALICE = 3001
+GAP3_BOB = 3002
+GAP3_CORP = 4001
+
+
+@pytest.fixture(autouse=True)
+def _wipe_gap3_tables():
+    pg_helpers.wipe_tables(
+        "character_blueprints", "corp_blueprints",
+        "character_industry_jobs", "corp_industry_jobs",
+        "character_sell_orders", "corp_assets",
+    )
+    production_engine.invalidate_shared_production_owner_ids_cache(all_tenants=True)
+    yield
+    pg_helpers.wipe_tables(
+        "character_blueprints", "corp_blueprints",
+        "character_industry_jobs", "corp_industry_jobs",
+        "character_sell_orders", "corp_assets",
+    )
+    production_engine.invalidate_shared_production_owner_ids_cache(all_tenants=True)
+
+
+def test_esi_stock_at_location_owner_filter_excludes_unshared_character(tenant):
+    storage.replace_assets("character_assets", [
+        (1, TYPE_ID, JITA_STATION, "Hangar", 5, 0, "Alice"),
+    ], owner_character_id=GAP3_ALICE)
+    storage.replace_assets("character_assets", [
+        (2, TYPE_ID, JITA_STATION, "Hangar", 7, 0, "Bob"),
+    ], owner_character_id=GAP3_BOB)
+
+    unfiltered = storage.esi_stock_at_location(TYPE_ID, None)
+    assert unfiltered == 12.0
+
+    only_alice = storage.esi_stock_at_location(
+        TYPE_ID, None, owner_character_ids=[GAP3_ALICE], owner_corporation_ids=[],
+    )
+    assert only_alice == 5.0
+
+    nobody_shared = storage.esi_stock_at_location(
+        TYPE_ID, None, owner_character_ids=[], owner_corporation_ids=[],
+    )
+    assert nobody_shared == 0.0
+
+
+def test_assets_at_flag_owner_filter_excludes_unshared_corp(tenant):
+    storage.replace_assets("corp_assets", [
+        (1, TYPE_ID, JITA_STATION, "Hangar", 3, 0, "Test Corp"),
+    ], owner_corporation_id=GAP3_CORP)
+
+    unfiltered = storage.assets_at_flag("Hangar", tables=("corp_assets",))
+    assert unfiltered == [(TYPE_ID, 3.0)]
+
+    filtered_out = storage.assets_at_flag(
+        "Hangar", tables=("corp_assets",),
+        owner_character_ids=[], owner_corporation_ids=[],
+    )
+    assert filtered_out == []
+
+    kept = storage.assets_at_flag(
+        "Hangar", tables=("corp_assets",),
+        owner_character_ids=[], owner_corporation_ids=[GAP3_CORP],
+    )
+    assert kept == [(TYPE_ID, 3.0)]
+
+
+def test_list_industry_jobs_owner_filter_excludes_unshared_character(tenant):
+    storage.replace_industry_jobs("character_industry_jobs", [
+        (900, 1, 100, TYPE_ID, 1, None, "active", "2026-01-01T00:00:00Z",
+         "2026-01-01T00:00:00Z", GAP3_ALICE, "Alice"),
+    ], owner_character_id=GAP3_ALICE)
+    storage.replace_industry_jobs("character_industry_jobs", [
+        (901, 1, 100, TYPE_ID, 1, None, "active", "2026-01-01T00:00:00Z",
+         "2026-01-01T00:00:00Z", GAP3_BOB, "Bob"),
+    ], owner_character_id=GAP3_BOB)
+
+    assert len(storage.list_industry_jobs()) == 2
+    only_alice = storage.list_industry_jobs(
+        owner_character_ids=[GAP3_ALICE], owner_corporation_ids=[],
+    )
+    assert [j[0] for j in only_alice] == [900]
+
+
+def test_load_owned_blueprints_owner_filter_excludes_unshared_character(tenant):
+    storage.replace_blueprints("character_blueprints", [
+        (10, TYPE_ID, JITA_STATION, "Hangar", -1, 10, 20, -1),
+    ], owner_character_id=GAP3_ALICE)
+    storage.replace_blueprints("character_blueprints", [
+        (11, TYPE_ID, JITA_STATION, "Hangar", -1, 0, 0, -1),
+    ], owner_character_id=GAP3_BOB)
+
+    assert len(storage.load_owned_blueprints()) == 2
+    only_alice = storage.load_owned_blueprints(
+        owner_character_ids=[GAP3_ALICE], owner_corporation_ids=[],
+    )
+    assert only_alice == [(TYPE_ID, -1, 10, 20, -1)]
+
+
+def test_get_owned_bpo_best_me_te_owner_filter(tenant):
+    storage.replace_blueprints("character_blueprints", [
+        (10, TYPE_ID, JITA_STATION, "Hangar", -1, 10, 20, -1),
+    ], owner_character_id=GAP3_ALICE)
+
+    assert storage.get_owned_bpo_best_me_te(TYPE_ID) == (10, 20)
+    assert storage.get_owned_bpo_best_me_te(
+        TYPE_ID, owner_character_ids=[], owner_corporation_ids=[],
+    ) is None
+    assert storage.get_owned_bpo_best_me_te(
+        TYPE_ID, owner_character_ids=[GAP3_ALICE], owner_corporation_ids=[],
+    ) == (10, 20)
+
+
+def test_available_blueprint_copies_and_has_bpo_owner_filter(tenant):
+    storage.replace_blueprints("character_blueprints", [
+        (10, TYPE_ID, JITA_STATION, "Hangar", -1, 0, 0, -1),   # BPO
+        (11, TYPE_ID, JITA_STATION, "Hangar", -1, 4, 8, 5),    # BPC, 5 runs
+    ], owner_character_id=GAP3_ALICE)
+
+    assert storage.available_blueprint_copies(TYPE_ID, None) == 5.0
+    assert storage.available_blueprint_copies(
+        TYPE_ID, None, owner_character_ids=[], owner_corporation_ids=[],
+    ) == 0.0
+
+    assert storage.has_bpo_at_location(TYPE_ID, JITA_STATION) is True
+    assert storage.has_bpo_at_location(
+        TYPE_ID, JITA_STATION, owner_character_ids=[], owner_corporation_ids=[],
+    ) is False
+
+
+def test_sell_order_qty_owner_filter_excludes_unshared_corp(tenant):
+    storage.replace_sell_orders([
+        (5001, TYPE_ID, JITA_STATION, 10000002, 25.0, "Test Corp (corp)"),
+    ], owner_corporation_id=GAP3_CORP, owner_name="Test Corp (corp)")
+
+    assert storage.sell_order_qty_at_location(TYPE_ID, JITA_STATION) == 25.0
+    assert storage.sell_order_qty_at_location(
+        TYPE_ID, JITA_STATION, owner_character_ids=[], owner_corporation_ids=[],
+    ) == 0.0
+    assert storage.sell_order_qty_in_region(TYPE_ID, 10000002) == 25.0
+    assert storage.sell_order_qty_in_region(
+        TYPE_ID, 10000002, owner_character_ids=[], owner_corporation_ids=[GAP3_CORP],
+    ) == 25.0
+
+
+def test_shared_production_owner_ids_resolves_sharing_and_caches(tenant, monkeypatch):
+    """production/engine.py's own resolver - real sharing rows in, and the
+    process-wide cache (invalidate_shared_production_owner_ids_cache) must
+    not serve a stale answer across a sharing toggle."""
+    assert production_engine.shared_production_owner_ids("assets") == ([], [])
+
+    _share("character", GAP3_ALICE, "assets", tool_key="production")
+    _share("corporation", GAP3_CORP, "assets", tool_key="production")
+    # Still cached from the call above - a toggle mid-request must not
+    # silently apply until the cache is invalidated.
+    assert production_engine.shared_production_owner_ids("assets") == ([], [])
+
+    production_engine.invalidate_shared_production_owner_ids_cache()
+    char_ids, corp_ids = production_engine.shared_production_owner_ids("assets")
+    assert char_ids == [GAP3_ALICE]
+    assert corp_ids == [GAP3_CORP]
+
+    # A different data_kind is unaffected either way.
+    assert production_engine.shared_production_owner_ids("blueprints") == ([], [])
+
+
+def test_production_stock_helpers_respect_sharing_end_to_end(tenant):
+    """The actual wiring (_stock_at_location -> shared_production_owner_ids
+    -> esi_sharing), not just the storage-level filter in isolation."""
+    production_engine.invalidate_shared_production_owner_ids_cache()
+    storage.replace_assets("character_assets", [
+        (1, TYPE_ID, JITA_STATION, "Hangar", 9, 0, "Alice"),
+    ], owner_character_id=GAP3_ALICE)
+
+    assert production_engine._stock_at_location(TYPE_ID, None) == 0.0
+
+    _share("character", GAP3_ALICE, "assets", tool_key="production")
+    production_engine.invalidate_shared_production_owner_ids_cache()
+
+    assert production_engine._stock_at_location(TYPE_ID, None) == 9.0

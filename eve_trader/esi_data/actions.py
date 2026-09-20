@@ -189,6 +189,15 @@ def do_set_sharing(
         storage.upsert_esi_sharing(owner_type, owner_id, data_kind, tool_key)
     else:
         storage.delete_esi_sharing(owner_type, owner_id, data_kind, tool_key)
+    if tool_key == "production":
+        # production/engine.py caches shared_production_owner_ids (Known
+        # gap 3, docs/ESI_ACCESS_PLAN.md) rather than re-querying esi_sharing
+        # on every type_id in a demand loop - this is the one write path
+        # that can make that cache stale. Lazy import: this module must not
+        # depend on the production package at module level (esi_data is a
+        # cross-cutting package - see CLAUDE.md's "Two tools, one backend").
+        from ..production.engine import invalidate_shared_production_owner_ids_cache
+        invalidate_shared_production_owner_ids_cache()
     return {
         "owner_type": owner_type, "owner_id": int(owner_id),
         "data_kind": data_kind, "tool_key": tool_key, "enabled": enabled,

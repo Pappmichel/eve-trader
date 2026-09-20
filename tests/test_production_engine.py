@@ -53,6 +53,21 @@ def _reset_discover_cache():
 
 
 @pytest.fixture(autouse=True)
+def _stub_shared_production_owner_ids(monkeypatch):
+    # Known gap 3 (docs/ESI_ACCESS_PLAN.md): engine.py's storage readers now
+    # resolve sharing via shared_production_owner_ids (storage.connect(),
+    # real Postgres) before calling storage.esi_stock_at_location/
+    # sell_order_qty_*/get_owned_bpo_best_me_te/available_blueprint_copies/
+    # has_bpo_at_location. Almost every test in this file monkeypatches
+    # those storage.* functions directly and has no tenant/Postgres context
+    # at all - stub the resolver to (None, None) ("unfiltered", the same
+    # default every storage.* function itself falls back to) so it never
+    # touches storage.connect(). A test that specifically wants to exercise
+    # the sharing filter overrides this fixture's monkeypatch itself.
+    monkeypatch.setattr(engine, "shared_production_owner_ids", lambda data_kind: (None, None))
+
+
+@pytest.fixture(autouse=True)
 def _reset_ship_margin_cache():
     # Same reasoning as _reset_discover_cache above, for engine._ship_margin_cache.
     engine.invalidate_ship_margin_cache()
@@ -104,7 +119,7 @@ def test_current_stock_checks_every_location_not_a_curated_set(monkeypatch):
     # confirm _current_stock passes None through, not a specific location.
     calls = []
 
-    def fake_esi_stock(type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None):
+    def fake_esi_stock(type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None, **kwargs):
         calls.append({"location_id": location_id, "exclude": exclude_intake_at_location_id})
         return 1_572_335.0
 
@@ -149,7 +164,7 @@ def test_current_stock_does_not_count_configured_sorting_intake(monkeypatch, ten
 
 def _no_listings(monkeypatch):
     monkeypatch.setattr(storage, "sell_order_qty_at_location", lambda type_id, location_id, **kwargs: 0.0)
-    monkeypatch.setattr(storage, "sell_order_qty_in_region", lambda type_id, region_id: 0.0)
+    monkeypatch.setattr(storage, "sell_order_qty_in_region", lambda type_id, region_id, **kwargs: 0.0)
 
 
 def test_market_status_skips_items_with_no_market_target(monkeypatch):
@@ -162,7 +177,7 @@ def test_market_status_skips_items_with_no_market_target(monkeypatch):
     cfg = ProductionConfig(home_location_id=1000000000001)
     _no_listings(monkeypatch)
     monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
-    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None: 0.0)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None, **kwargs: 0.0)
     monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id: {"runs": 0, "jobs": 0})
     monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [
@@ -224,7 +239,7 @@ def test_total_missing_still_nets_against_already_listed_quantity(monkeypatch):
     # against the target, not just one or the other.
     cfg = ProductionConfig(home_location_id=1000000000001)
     monkeypatch.setattr(storage, "sell_order_qty_at_location", lambda type_id, location_id, **kwargs: 5.0)
-    monkeypatch.setattr(storage, "sell_order_qty_in_region", lambda type_id, region_id: 0.0)
+    monkeypatch.setattr(storage, "sell_order_qty_in_region", lambda type_id, region_id, **kwargs: 0.0)
 
     missing = _total_missing(1, backup_stock=0.0, home_market_stock=20.0, jita_market_stock=None,
                               current_stock=10.0, cfg=cfg)
@@ -248,7 +263,7 @@ def test_market_listing_shortfall_excludes_backup_only_targets(monkeypatch):
     cfg = ProductionConfig(home_location_id=1000000000001)
     _no_listings(monkeypatch)
     monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
-    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None: 0.0)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None, **kwargs: 0.0)
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [
         (1, "Backup only", 10.0, None, None),
         (2, "Home listing", 0.0, 20.0, None),
@@ -267,7 +282,7 @@ def test_market_listing_shortfall_unit_covering_backup_is_not_double_counted_for
     cfg = ProductionConfig(home_location_id=1000000000001)
     _no_listings(monkeypatch)
     monkeypatch.setattr(storage, "load_manual_stock", lambda: {1: 10.0})
-    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None: 0.0)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None, **kwargs: 0.0)
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [(1, "Item", 10.0, 10.0, None)])
 
     wanted = market_listing_shortfall_by_type(cfg)
@@ -280,7 +295,7 @@ def test_market_listing_shortfall_surplus_after_backup_covers_market(monkeypatch
     cfg = ProductionConfig(home_location_id=1000000000001)
     _no_listings(monkeypatch)
     monkeypatch.setattr(storage, "load_manual_stock", lambda: {1: 12.0})
-    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None: 0.0)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None, **kwargs: 0.0)
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [(1, "Item", 5.0, 5.0, 5.0)])
 
     # 5 to backup, 5 to home, 2 left for jita -> jita still 3 short. Backup
@@ -294,9 +309,9 @@ def test_market_listing_shortfall_zero_when_listings_already_cover_targets(monke
 
     cfg = ProductionConfig(home_location_id=1000000000001)
     monkeypatch.setattr(storage, "sell_order_qty_at_location", lambda type_id, location_id, **kwargs: 20.0)
-    monkeypatch.setattr(storage, "sell_order_qty_in_region", lambda type_id, region_id: 0.0)
+    monkeypatch.setattr(storage, "sell_order_qty_in_region", lambda type_id, region_id, **kwargs: 0.0)
     monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
-    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None: 0.0)
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None, **kwargs: 0.0)
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [(1, "Item", 0.0, 20.0, None)])
 
     assert market_listing_shortfall_by_type(cfg) == {}
@@ -343,7 +358,7 @@ def test_tech_iii_falls_back_to_flat_baseline_without_override(monkeypatch, tena
 def test_tech_i_uses_owned_bpo_me_te_when_available(monkeypatch, tenant):
     # Owned BPO is ME10/TE6 (better ME than the flat "perfect" TE20 baseline
     # assumes, worse TE) - real owned data must win over the flat assumption.
-    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id: (10, 6))
+    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id, **kwargs: (10, 6))
     cfg = ProductionConfig()  # default structure = "Citadel (no bonuses)" -> no extra bonus
 
     material_mult, time_mult, _ = _activity_mods("Tech I", type_id=1, cfg=cfg, cost_indices={}, blueprint_id=2)
@@ -353,7 +368,7 @@ def test_tech_i_uses_owned_bpo_me_te_when_available(monkeypatch, tenant):
 
 @pg_helpers.postgres_required()
 def test_tech_i_falls_back_to_flat_baseline_when_bpo_not_owned(monkeypatch, tenant):
-    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id: None)
+    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id, **kwargs: None)
     cfg = ProductionConfig()
 
     material_mult, time_mult, _ = _activity_mods("Tech I", type_id=1, cfg=cfg, cost_indices={}, blueprint_id=2)
@@ -369,7 +384,7 @@ def test_faction_is_always_me0_te0_and_ignores_owned_bpo_data(monkeypatch, tenan
     # returned something else (it never legitimately would for a real
     # Faction BPO), it must be ignored; ACTIVITY_MODS["Faction"] (1.00/1.00,
     # i.e. no reduction) is the one and only correct value, not a fallback.
-    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id: (10, 6))
+    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id, **kwargs: (10, 6))
     cfg = ProductionConfig()
 
     material_mult, time_mult, _ = _activity_mods("Faction", type_id=1, cfg=cfg, cost_indices={}, blueprint_id=2)
@@ -383,7 +398,7 @@ def test_manual_me_te_override_wins_over_owned_bpo_for_tech_i(monkeypatch, tenan
     # override (the Blueprints page's third table) is the top-priority entry
     # in _activity_mods' own resolution chain - it must win even over a real
     # owned BPO's own (better-for-material, worse-for-time) ME/TE.
-    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id: (10, 6))
+    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id, **kwargs: (10, 6))
     cfg = ProductionConfig()
     cost_indices = {"me_te_override:1": (7, 14)}
 
@@ -413,7 +428,7 @@ def test_manual_me_te_override_wins_over_faction_flat_me0_te0(monkeypatch, tenan
 def test_manual_me_te_override_absent_falls_back_to_existing_chain(monkeypatch, tenant):
     # No "me_te_override:<type_id>" entry for this type_id - must fall
     # through to the existing owned-BPO/flat-baseline chain unchanged.
-    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id: (10, 6))
+    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id, **kwargs: (10, 6))
     cfg = ProductionConfig()
     cost_indices = {"me_te_override:999": (0, 0)}  # a different type_id - must not apply here
 
@@ -663,7 +678,7 @@ def test_unit_cost_detail_returns_build_cost_and_buy_price_separately(monkeypatc
     monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda blueprint_id: ())
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (100, 958, "Plain Tech I Thing", 40.0, 1, 1125, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 99)  # not a ship - plain SDE volume path
-    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id: None)
+    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id, **kwargs: None)
     monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [])
     monkeypatch.setattr(storage, "get_manual_blueprint_copy_cost_per_run", lambda type_id: None)
 
@@ -686,7 +701,7 @@ def test_unit_cost_detail_adds_amortized_manual_bpc_cost_per_unit(monkeypatch):
     monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda blueprint_id: ())
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (100, 958, "Plain Tech I Thing", 40.0, 1, 1125, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 99)
-    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id: None)
+    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id, **kwargs: None)
     monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [])
     # 1,000,000 ISK copy good for 10 runs -> 100,000 ISK/run -> 50,000 ISK/unit (2 units/run)
     monkeypatch.setattr(storage, "get_manual_blueprint_copy_cost_per_run", lambda type_id: 1_000_000.0 / 10)
@@ -720,7 +735,7 @@ def test_unit_cost_detail_returns_buy_only_when_not_buildable(monkeypatch):
 def test_reaction_never_uses_owned_bpo_data(monkeypatch):
     # Reactions have no BPO research in real EVE - _owned_bpo_mods must never
     # be consulted for them, even if the lookup would return something.
-    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id: (10, 10))
+    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda blueprint_id, **kwargs: (10, 10))
     cfg = ProductionConfig()
 
     material_mult, time_mult, _ = _activity_mods("Reaction", type_id=1, cfg=cfg, cost_indices={}, blueprint_id=2)
@@ -3131,7 +3146,7 @@ def test_plan_production_invention_list_nets_off_owned_bpc_runs(monkeypatch, ten
     # 110 = FullyCoveredByOwnedBpc's blueprint_id (100 + type_id 10), owns
     # all 10 runs it needs; 120 = PartiallyCoveredByOwnedBpc's, owns 4 of 10.
     owned = {110: 10, 120: 4}
-    monkeypatch.setattr(storage, "available_blueprint_copies", lambda blueprint_id, loc: owned[blueprint_id])
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda blueprint_id, loc, **kwargs: owned[blueprint_id])
 
     # 1x buffer isolates owned-BPC netting against the manufacturing
     # shortfall (the bug this test documents). The 4x stockpile-buffer
@@ -3184,7 +3199,7 @@ def test_plan_production_invention_stockpile_pct_counts_market_targets_too(monke
                          lambda type_id, blueprint_id, *a, **k: (1.0, 1.0, "None", fake_chosen(blueprint_id)))
     # 110 = MarketOnlyStockTarget's blueprint_id (100 + type_id 10), owns 10
     # of the 10 runs its Jita market target needs.
-    monkeypatch.setattr(storage, "available_blueprint_copies", lambda blueprint_id, loc: 10)
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda blueprint_id, loc, **kwargs: 10)
 
     # 1x buffer: owned runs fully covering the Jita market target must still
     # show bpcs_needed=0. Default 4x would keep inventing a BPC buffer.
@@ -3225,7 +3240,7 @@ def test_plan_production_invention_stockpile_pct_uncapped_above_100(monkeypatch,
                          lambda type_id, blueprint_id, *a, **k: (1.0, 1.0, "None", fake_chosen(blueprint_id)))
     # 110 = OverInventedStockTarget's blueprint_id (100 + type_id 10), owns
     # 30 runs against a backup_stock target of only 10 - 3x over target.
-    monkeypatch.setattr(storage, "available_blueprint_copies", lambda blueprint_id, loc: 30)
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda blueprint_id, loc, **kwargs: 30)
 
     cfg = ProductionConfig(min_margin=0.0)
     result = engine.plan_production(cfg)
@@ -3265,7 +3280,7 @@ def test_plan_production_invention_stockpile_pct_owned_bpcs_not_zero_when_target
         )
     monkeypatch.setattr(engine, "_tech_ii_mods",
                          lambda type_id, blueprint_id, *a, **k: (1.0, 1.0, "None", fake_chosen(blueprint_id)))
-    monkeypatch.setattr(storage, "available_blueprint_copies", lambda blueprint_id, loc: 140)
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda blueprint_id, loc, **kwargs: 140)
 
     cfg = ProductionConfig(min_margin=0.0)
     result = engine.plan_production(cfg)
@@ -3308,7 +3323,7 @@ def test_plan_production_invention_t2_bpc_owned_does_not_share_sibling_t2(monkey
     monkeypatch.setattr(engine, "_tech_ii_mods",
                          lambda type_id, blueprint_id, *a, **k: (1.0, 1.0, "None", fake_chosen(blueprint_id)))
     owned = {110: 507, 120: 12}
-    monkeypatch.setattr(storage, "available_blueprint_copies", lambda blueprint_id, loc: owned.get(blueprint_id, 0))
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda blueprint_id, loc, **kwargs: owned.get(blueprint_id, 0))
 
     cfg = ProductionConfig(min_margin=0.0)
     result = engine.plan_production(cfg)
@@ -3343,7 +3358,7 @@ def test_plan_production_invention_buffer_applies_when_item_is_fully_stocked(mon
         )
     monkeypatch.setattr(engine, "_tech_ii_mods",
                          lambda type_id, blueprint_id, *a, **k: (1.0, 1.0, "None", fake_chosen(blueprint_id)))
-    monkeypatch.setattr(storage, "available_blueprint_copies", lambda blueprint_id, loc: 0)
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda blueprint_id, loc, **kwargs: 0)
 
     cfg = ProductionConfig(min_margin=0.0, bpc_inventory=4.0)
     result = engine.plan_production(cfg)
@@ -3376,7 +3391,7 @@ def test_plan_special_order_invention_ignores_bpc_inventory_buffer(monkeypatch, 
         )
     monkeypatch.setattr(engine, "_tech_ii_mods",
                          lambda type_id, blueprint_id, *a, **k: (1.0, 1.0, "None", fake_chosen(blueprint_id)))
-    monkeypatch.setattr(storage, "available_blueprint_copies", lambda blueprint_id, loc: 0)
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda blueprint_id, loc, **kwargs: 0)
 
     items = [(10, "OneOffT2", 10.0)]
     result = engine.plan_special_order(
@@ -4085,7 +4100,7 @@ def test_invention_logistics_relic_availability_uses_generic_stock_not_copy_coun
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: ANCIENT_RELIC_CATEGORY_ID)  # a relic
 
-    def _available_blueprint_copies(type_id, location_id):
+    def _available_blueprint_copies(type_id, location_id, **kwargs):
         raise AssertionError("must not call available_blueprint_copies for a Tech III relic type_id")
     monkeypatch.setattr(storage, "available_blueprint_copies", _available_blueprint_copies)
     monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, **kwargs: 4.0)
@@ -4228,7 +4243,7 @@ def test_t1_bpc_invention_needs_relic_uses_generic_stock_and_never_shows_a_bpo(m
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: ANCIENT_RELIC_CATEGORY_ID)  # a relic
 
-    def _available_blueprint_copies(type_id, location_id):
+    def _available_blueprint_copies(type_id, location_id, **kwargs):
         raise AssertionError("must not call available_blueprint_copies for a Tech III relic type_id")
     monkeypatch.setattr(storage, "available_blueprint_copies", _available_blueprint_copies)
     monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, **kwargs: 4.0)

@@ -2,6 +2,8 @@
 output_value pricing (same C-J-sell-falling-back-to-Jita convention as
 engine.stock_value, see tests/test_stock_value.py for that precedent).
 """
+import pytest
+
 from eve_trader import storage
 from eve_trader.esi_client import ESIClient, ESIError
 from eve_trader.goonmetrics_client import CurrentPrice, GoonmetricsClient
@@ -14,9 +16,20 @@ def _job(job_id, activity_id, blueprint_type_id, product_type_id, type_name, run
             None, status, "2026-01-02T00:00:00Z", "2026-01-01T00:00:00Z", "Some Character")
 
 
+@pytest.fixture(autouse=True)
+def _stub_shared_job_owner_ids(monkeypatch):
+    # Known gap 3 (docs/ESI_ACCESS_PLAN.md): jobs.py resolves sharing via
+    # _shared_job_owner_ids (storage.connect(), real Postgres) before
+    # calling storage.list_industry_jobs - both tests below monkeypatch
+    # that directly and have no tenant/Postgres context, so stub the
+    # resolver to (None, None) ("unfiltered", storage.list_industry_jobs'
+    # own default) rather than touch storage.connect().
+    monkeypatch.setattr(jobs, "_shared_job_owner_ids", lambda: (None, None))
+
+
 def test_output_value_prices_at_home_sell_falling_back_to_jita(monkeypatch):
     cfg = ProductionConfig(home_market="TestMarket")
-    monkeypatch.setattr(storage, "list_industry_jobs", lambda: [
+    monkeypatch.setattr(storage, "list_industry_jobs", lambda **kwargs: [
         _job(1, 1, 101, 10, "Has Home Price", runs=2),
         _job(2, 1, 102, 20, "Jita Only", runs=3),
         _job(3, 1, 103, 30, "No Price Anywhere", runs=1),
@@ -55,7 +68,7 @@ def test_output_value_is_none_for_jobs_without_a_product(monkeypatch):
     # Research/copying jobs have no product_type_id, hence no quantity -
     # output_value must stay None rather than pricing a nonexistent quantity.
     cfg = ProductionConfig(home_market="TestMarket")
-    monkeypatch.setattr(storage, "list_industry_jobs", lambda: [
+    monkeypatch.setattr(storage, "list_industry_jobs", lambda **kwargs: [
         (1, 5, 101, None, None, 1, None, "active", "2026-01-02T00:00:00Z", "2026-01-01T00:00:00Z", "Some Character"),
     ])
     monkeypatch.setattr(storage, "get_product_quantity", lambda bp, act, prod: 5.0)
