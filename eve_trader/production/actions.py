@@ -136,7 +136,13 @@ def do_check_sde_freshness(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 
 
 def do_list_producer_characters() -> list[tuple[str, int, str]]:
-    return esi_sync.list_producer_characters()
+    # docs/ESI_ACCESS_PLAN.md Known gap 4 (closed): sharing-based listing -
+    # see list_shared_producer_characters' own docstring. Remove (below)
+    # still only accepts a producer:* role_key; a character listed here
+    # under an esi:<id> key correctly cannot be "removed" through this
+    # endpoint (that key may be shared with other tools too) - the frontend
+    # points such a character at the Characters page instead.
+    return esi_sync.list_shared_producer_characters()
 
 
 def do_remove_producer_character(role_key: str) -> dict:
@@ -341,15 +347,23 @@ def do_resolve_structure_name(location_id: int, force: bool = False) -> dict:
 
     A character added before esi-universe.read_structures.v1/
     esi-corporations.read_structures.v1 existed needs to be re-added (remove +
-    add again) before either path works for it."""
+    add again) before either path works for it.
+
+    Characters come from the "structure_name_resolution" Access capability
+    (docs/ESI_ACCESS_PLAN.md Known gap 4, closed), not producer sharing -
+    Group 3 has no tool dimension (decision 9): a character can resolve
+    structure names for Production without sharing Assets/Market Orders
+    with it, and vice versa."""
     if not force:
         was_cached, cached_name = storage.get_cached_structure_name(location_id)
         if was_cached:
             return {"location_id": location_id, "name": cached_name, "cached": True}
 
-    characters = esi_sync.list_producer_characters()
+    characters = esi_sync.list_capability_characters("structure_name_resolution")
     if not characters:
-        raise ActionError("No Production character shared yet.")
+        raise ActionError(
+            "No character has ticked Structure name resolution yet (Characters page, Access section)."
+        )
 
     client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))
     name = None
@@ -967,7 +981,10 @@ def do_unlisted_stock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     stock_targets = storage.load_stock_targets()
     if not stock_targets:
         raise ActionError("No stock targets configured.")
-    characters = esi_sync.list_producer_characters()
+    # docs/ESI_ACCESS_PLAN.md Known gap 4 (closed): sharing-based, not the
+    # legacy producer:* prefix - a character shared via the newer esi:<id>
+    # key (Characters page add-a-character path) must not be invisible here.
+    characters = esi_sync.list_shared_producer_characters()
     if not characters:
         raise ActionError("No Production character shared yet.")
 

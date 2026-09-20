@@ -1041,7 +1041,7 @@ def test_plan_context_home_prices_exclude_a_live_confirmed_empty_market(monkeypa
     monkeypatch.setattr(storage, "load_manual_blueprint_me_te_overrides", lambda: [])
     monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Buy", None))  # no blueprint - closure is just {587}
 
-    monkeypatch.setattr(esi_sync_module, "list_producer_characters", lambda: [("producer:1", 1, "TestChar")])
+    monkeypatch.setattr(esi_sync_module, "list_capability_characters", lambda capability_key: [("esi:1", 1, "TestChar")])
     monkeypatch.setattr(esi_client_module.ESIClient, "structure_order_stats_bulk",
                          lambda self, location_id, type_ids, auth_role: {
                              587: OrderStats(sell_percentile=None, sell_volume=0.0, buy_percentile=None, buy_volume=0.0),

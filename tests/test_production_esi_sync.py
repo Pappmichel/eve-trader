@@ -88,7 +88,7 @@ def test_discover_structure_names_falls_back_to_per_character_resolve(monkeypatc
     # e.g. it belongs to a different corp than any registered character's,
     # only reachable via one character's own docking history.
     monkeypatch.setattr(storage, "get_cached_structure_names", lambda ids: {i: (False, None) for i in ids})
-    monkeypatch.setattr(esi_sync, "list_producer_characters", lambda: [("producer:1", 1, "TestChar")])
+    monkeypatch.setattr(esi_sync, "list_capability_characters", lambda capability_key: [("esi:1", 1, "TestChar")])
     monkeypatch.setattr(ESIClient, "corporation_structures", lambda self, corporation_id, auth_role: [])
     monkeypatch.setattr(ESIClient, "get_structure_name", lambda self, structure_id, auth_role:
                          {"name": "Someone Else's Citadel", "solar_system_id": 30002187})
@@ -104,7 +104,7 @@ def test_discover_structure_names_falls_back_to_per_character_resolve(monkeypatc
 
 def test_discover_structure_names_unresolvable_id_is_cached_as_failed(monkeypatch):
     monkeypatch.setattr(storage, "get_cached_structure_names", lambda ids: {i: (False, None) for i in ids})
-    monkeypatch.setattr(esi_sync, "list_producer_characters", lambda: [("producer:1", 1, "TestChar")])
+    monkeypatch.setattr(esi_sync, "list_capability_characters", lambda capability_key: [("esi:1", 1, "TestChar")])
     monkeypatch.setattr(ESIClient, "corporation_structures", lambda self, corporation_id, auth_role: [])
 
     def _fail(self, structure_id, auth_role):

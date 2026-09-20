@@ -133,17 +133,32 @@ export default function ProductionLayout() {
               {characters.map((c) => (
                 <Group key={c.role_key} justify="space-between" mb={4}>
                   <Text size="sm" fw={600}>{c.character_name}</Text>
-                  <Button size="xs" variant="subtle" color="danger"
-                    onClick={() => modals.openConfirmModal({
-                      title: 'Remove character',
-                      children: <Text size="sm">Remove {c.character_name} from Production? This drops this tool&apos;s token key. Sharing stays on the Characters page.</Text>,
-                      labels: { confirm: 'Remove', cancel: 'Cancel' },
-                      confirmProps: { color: 'danger' },
-                      onConfirm: () => removeCharacter(c.role_key),
-                    })}
-                    loading={isRemoving(c.role_key)}>
-                    Remove
-                  </Button>
+                  {c.role_key.startsWith('producer:') ? (
+                    <Button size="xs" variant="subtle" color="danger"
+                      onClick={() => modals.openConfirmModal({
+                        title: 'Remove character',
+                        children: <Text size="sm">Remove {c.character_name} from Production? This drops this tool&apos;s token key. Sharing stays on the Characters page.</Text>,
+                        labels: { confirm: 'Remove', cancel: 'Cancel' },
+                        confirmProps: { color: 'danger' },
+                        onConfirm: () => removeCharacter(c.role_key),
+                      })}
+                      loading={isRemoving(c.role_key)}>
+                      Remove
+                    </Button>
+                  ) : (
+                    // This character is listed here because it shares
+                    // Assets/Market Orders with Production (docs/
+                    // ESI_ACCESS_PLAN.md Known gap 4), not because it holds
+                    // a dedicated producer:* token - its esi:<id> key may
+                    // be shared with other tools too, so this sidebar
+                    // cannot safely delete it. Unshare on the Characters
+                    // page instead.
+                    <Tooltip label="Shared via the Characters page - unshare there, not here" multiline w={220}>
+                      <Button size="xs" variant="subtle" color="gray" disabled>
+                        Unshare on Characters
+                      </Button>
+                    </Tooltip>
+                  )}
                 </Group>
               ))}
               <Stack gap="xs" mt="xs">

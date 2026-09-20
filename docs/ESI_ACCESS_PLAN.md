@@ -1806,25 +1806,73 @@ sharing lookup and cache invalidation, and one end-to-end test through
 `production_engine._stock_at_location` proving an unshared character's
 assets read as zero until shared.
 
-**4. `do_unlisted_stock` discovers "producer characters" by legacy prefix,
-not by sharing.** Found while closing gap 3, not fixed there — a
-different shape of bug (which *owners* Production even looks at, not
-whether a snapshot table read is filtered) and outside that gap's scope.
-`esi_sync.list_producer_characters` still calls `tm.list_roles("producer")`
-— the pre-migration token-pool prefix, unrelated to `esi_sharing`. Its own
-module docstring says it's kept "until Phase 4"; Phase 4 (the token
-selector, PR #176) has since landed, so that comment is stale, not a
+**4. ~~`do_unlisted_stock` discovers "producer characters" by legacy
+prefix, not by sharing.~~ Closed.** Found while closing gap 3, fixed
+separately — a different shape of bug (which *owners* Production even
+looks at, not whether a snapshot table read is filtered).
+`esi_sync.list_producer_characters` called `tm.list_roles("producer")` —
+the pre-migration token-pool prefix, unrelated to `esi_sharing`. Its own
+module docstring said it was kept "until Phase 4"; Phase 4 (the token
+selector, PR #176) had already landed, so that comment was stale, not a
 still-valid deferral. Concretely: a character who shares Assets/Market
-Orders with `production` today, but never held a legacy `producer:<id>`
-token (e.g. a character added via `esi:<id>` — the Characters page's own
-add-a-character path, gap 1), is invisible to
-`do_unlisted_stock` regardless of sharing — it live-fetches only
-`producer:*` token holders, not `shared_production_owner_ids`'s
-character list. `list_producer_characters` also backs
-`production/pricing.py` and `production/actions.py`'s `do_list_producer_characters`
-(the Characters/Producers sidebar) — same prefix-only listing, same gap.
-Not assessed here whether every one of those call sites needs the same
-fix or a narrower one; flagged for a decision, not fixed.
+Orders with `production` but never held a legacy `producer:<id>` token
+(e.g. added via `esi:<id>` — the Characters page's own add-a-character
+path, gap 1) was invisible to `do_unlisted_stock` regardless of sharing.
+
+The gap's own writeup deferred whether every `list_producer_characters`
+caller needed the *same* fix. It doesn't — two different questions were
+being answered by one function:
+
+- **"Is this character's owned data (Assets/Market Orders) shared with
+  Production?"** — a sharing question. `do_unlisted_stock`, the
+  Characters/Producers sidebar (`do_list_producer_characters`), and
+  `sync_esi`'s own "nothing shared yet" guard all ask this. Fixed by
+  `list_shared_producer_characters()` — resolves
+  `shared_owner_ids("assets"/"market_orders", "production", "character")`,
+  then the Phase 4 selector (`select_auth_role`, preferring an
+  Assets-scoped token, falling back to Market-Orders-scoped) for an
+  actual usable `auth_role`. A character who shares but holds no
+  scope-carrying token (needs Re-authorize) is omitted, not raised —
+  same "skip, don't abort" shape every partial-failure path in this
+  module already has.
+- **"Can this character supply a structure name / a live structure order
+  book?"** — a Group-3 access-capability question, which decision 9
+  already says has *no tool dimension* ("any tool asks the Access layer
+  'which characters can provide this', not 'is this shared with me'").
+  `do_resolve_structure_name`, `production/pricing.py`'s `home_prices`
+  (`esi-markets.structure_markets.v1`), and `sync_esi`'s own opportunistic
+  structure-name discovery all ask this — and were *also* wrongly using
+  the producer-sharing-shaped prefix listing, a second instance of the
+  same underlying bug the gap's writeup didn't separate out. Fixed by
+  `list_capability_characters(capability_key)` — resolves
+  `storage.list_esi_character_capabilities()` filtered to that key, then
+  the Phase 4 selector for the capability's own `character_scope`.
+
+`list_producer_characters` itself is kept, not deleted (real test
+coverage, no remaining caller worth the risk of a blind removal), with
+its docstring pointing at both replacements.
+
+One more thing the switch to `esi:<id>`-keyed characters surfaces:
+`do_remove_producer_character` still only accepts a `producer:*`
+`role_key` (`TOOL_ROLE_PREFIXES["production"]`) and hard-deletes the
+whole token. That's correct for a legacy `producer:<id>` key (Production's
+own, single-tool key), but would be actively wrong for an `esi:<id>` key,
+which decision 2 says may be shared across *every* tool a character has
+data with — deleting it on Production's own "Remove" button would drop
+Doctrine/Trading/Sorting's access to that character too, not just
+Production's. Left as-is rather than reinterpreting "Remove" to mean
+"unshare" (a bigger, riskier behaviour change to a very visible existing
+button, for every `producer:*` character too, not just the new case).
+The Characters/Producers sidebar instead shows a disabled "Unshare on
+Characters" button for an `esi:<id>`-keyed row, pointing at the
+Characters page instead of offering a delete that isn't safe here.
+
+Test coverage: `tests/test_production_character_discovery.py` — both new
+functions against real `esi_sharing`/`esi_character_capabilities` rows
+(includes the exact regression scenario: an `esi:<id>`-only character
+must be discovered), the auth-role preference/fallback order, an
+unknown-capability `ValueError`, and one end-to-end test proving
+`sync_esi`'s guard no longer trips on an `esi:<id>`-shared character.
 
 ## Explicitly out of scope
 

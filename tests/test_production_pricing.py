@@ -67,7 +67,7 @@ HOME_CFG = ProductionConfig(home_market="c-j6mt", home_location_id=1049588174021
 
 
 def test_home_prices_uses_live_esi_when_producer_character_succeeds(monkeypatch):
-    monkeypatch.setattr(esi_sync, "list_producer_characters", lambda: [("producer:1", 1, "TestChar")])
+    monkeypatch.setattr(esi_sync, "list_capability_characters", lambda capability_key: [("esi:1", 1, "TestChar")])
     monkeypatch.setattr(ESIClient, "structure_order_stats_bulk", lambda self, location_id, type_ids, auth_role: {
         587: OrderStats(sell_percentile=1234.5, sell_volume=10.0, buy_percentile=1000.0, buy_volume=5.0),
     })
@@ -86,7 +86,7 @@ def test_home_prices_reports_empty_market_as_zero_sell_not_a_stale_goonmetrics_p
     # zero sell orders for right now - the live ESI check must win, and a
     # confirmed-empty market must resolve to sell=0.0 (excluded by every
     # downstream `> 0` check), not the stale Goonmetrics number.
-    monkeypatch.setattr(esi_sync, "list_producer_characters", lambda: [("producer:1", 1, "TestChar")])
+    monkeypatch.setattr(esi_sync, "list_capability_characters", lambda capability_key: [("esi:1", 1, "TestChar")])
     monkeypatch.setattr(ESIClient, "structure_order_stats_bulk", lambda self, location_id, type_ids, auth_role: {
         587: OrderStats(sell_percentile=None, sell_volume=0.0, buy_percentile=None, buy_volume=0.0),
     })
@@ -99,7 +99,7 @@ def test_home_prices_reports_empty_market_as_zero_sell_not_a_stale_goonmetrics_p
 
 
 def test_home_prices_falls_back_to_goonmetrics_when_every_producer_character_fails(monkeypatch):
-    monkeypatch.setattr(esi_sync, "list_producer_characters", lambda: [("producer:1", 1, "A"), ("producer:2", 2, "B")])
+    monkeypatch.setattr(esi_sync, "list_capability_characters", lambda capability_key: [("esi:1", 1, "A"), ("esi:2", 2, "B")])
 
     def _fail(self, location_id, type_ids, auth_role):
         raise ESIError("no docking access")
@@ -113,7 +113,7 @@ def test_home_prices_falls_back_to_goonmetrics_when_every_producer_character_fai
 
 
 def test_home_prices_falls_back_to_goonmetrics_when_no_producer_characters(monkeypatch):
-    monkeypatch.setattr(esi_sync, "list_producer_characters", lambda: [])
+    monkeypatch.setattr(esi_sync, "list_capability_characters", lambda capability_key: [])
     monkeypatch.setattr(ESIClient, "structure_order_stats_bulk", lambda *a, **k:
                          pytest.fail("must not attempt ESI with no producer characters"))
     monkeypatch.setattr(GoonmetricsClient, "current_prices", lambda self, market:
