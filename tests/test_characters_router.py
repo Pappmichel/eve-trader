@@ -23,6 +23,8 @@ from .pg_helpers import (  # noqa: F401
     _apply_admin_schema, _apply_esi_access_schema, _apply_phase1_schema,
     _apply_phase2_schema, _apply_phase3_schema,
 )
+from .test_doctrine_storage import _apply_doctrine_schema  # noqa: F401
+from .test_storage_refining import _apply_refining_schema  # noqa: F401
 
 psycopg = pytest.importorskip("psycopg")
 
@@ -67,6 +69,7 @@ def _wipe():
 
 def test_characters_routes_403_without_characters_grant_production_still_200(
     monkeypatch, _apply_admin_schema, _apply_esi_access_schema,
+    _apply_doctrine_schema, _apply_refining_schema,
 ):
     _enable_gate(monkeypatch)
     _provision(tools=("production",))
@@ -75,11 +78,11 @@ def test_characters_routes_403_without_characters_grant_production_still_200(
     denied = client.get("/api/characters/sharing", cookies=cookies)
     assert denied.status_code == 403
 
-    # stock-targets is a phase1 table (empty is a valid 200). /sde/counts
-    # needs sde_type_slots, which CI Postgres does not create.
-    prod = client.get("/api/production/stock-targets", cookies=cookies)
+    # /sde/counts is a real Production read (storage.sde_row_counts). It
+    # counts sde_type_slots (doctrine_schema.sql) and sde_type_materials
+    # (refining_schema.sql); the other tests in this module do not hit it.
+    prod = client.get("/api/production/sde/counts", cookies=cookies)
     assert prod.status_code == 200
-    assert prod.json() == []
 
 
 def test_characters_grant_can_toggle_sharing_and_read_preview(
