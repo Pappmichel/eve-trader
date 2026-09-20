@@ -1446,18 +1446,15 @@ Landed: Phase 8 (#169), 0 (#171), 1 (#172), 2 (#173), 3a (#174),
 3b (#175), 4 (#176), 7 (#177), 5+6 (#178), 9 (#179), 9a (#180),
 gap 3 closure (#182), gap 4 closure (#183), gap 2 closure (this PR).
 
-Read **"Known gaps after Phase 9"** below before starting. Of the four
-gaps recorded there, three are closed (gap 1: adding a character that
-does not already hold a token; gap 2: the Corporations "access via"
-column and its role warning; gap 3: Production/Sorting reading the shared
-snapshot tables without a sharing filter) and one is still open (gap 4:
-`do_unlisted_stock`/the Characters sidebar discovering producer
-characters by legacy prefix instead of by sharing — closed on a separate
-branch, not yet merged as of this one). None of the four blocks this
-cutover (the backfill brings every pre-existing character across), but
-the open one will surprise you if you meet it first on deploy day, and
-gap 2's closure adds a deploy-day prerequisite of its own (see its own
-entry below).
+Read **"Known gaps after Phase 9"** below before starting. All four gaps
+recorded there are now closed: gap 1 (adding a character that does not
+already hold a token), gap 2 (the Corporations "access via" column and
+its role warning), gap 3 (Production/Sorting reading the shared snapshot
+tables without a sharing filter), and gap 4 (`do_unlisted_stock`/the
+Characters sidebar discovering producer characters by legacy prefix
+instead of by sharing). None blocked this cutover (the backfill brings
+every pre-existing character across), but gap 2's closure adds a
+deploy-day prerequisite of its own (see its own entry below).
 
 ### Prerequisites
 
@@ -1659,14 +1656,10 @@ What to check, in this order, and what a correct result looks like.
 
 ## Known gaps after Phase 9
 
-Gap 1 (an add-a-character path), gap 2 (the Corporations "access via"
-column and role warning), and gap 3 (Production/Sorting reading the
-shared snapshot tables without a sharing filter) have since been closed.
-Gap 4 was found while closing gap 3 and is a different bug in the same
-area (which owners Production looks at, not whether a read is filtered);
-it is closed on a separate branch not yet merged as of this one. All four
-are recorded here rather than in a merged PR description, which is where
-such notes go to die.
+All four gaps below are closed. Gap 4 was found while closing gap 3 and
+is a different bug in the same area (which owners Production looks at,
+not whether a read is filtered). Recorded here rather than in a merged PR
+description, which is where such notes go to die.
 
 **1. ~~There is no add-a-new-character path.~~ Closed (Phase 9a).**
 Before this, `/api/characters/reauth/start` required a `character_id` and
