@@ -1,8 +1,6 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
-import { authApi } from '../api/client'
-import { openAccessConfirmModal } from '../roleAccessDescriptions'
 import { useAction } from './useAction'
 
 export interface RoleCharacter {
@@ -11,46 +9,16 @@ export interface RoleCharacter {
   character_name: string
 }
 
-// GitHub issue #69 (found in a full-codebase audit 2026-08-21): the
-// "fetch a role's registered characters, log in another via redirect-based
-// EVE SSO, remove one with its own per-row loading state" pattern was
-// implemented three separate times (TradingLayout.tsx, ProductionLayout.tsx,
-// DoctrineLayout.tsx) with only minor prop differences - and only two of
-// the three copies got the per-row-loading-state fix (see GitHub issue #59)
-// before this existed, which is exactly the drift duplication invites.
-// Shares the stateful logic only, not rendering - each page still owns its
-// own JSX/styling (Trading uses a Badge + text Button, Doctrine uses an
-// ActionIcon + trash icon, Production integrates into a denser sidebar
-// section), since those three call sites genuinely want different layouts;
-// what should never drift again is the mutation/pending-state wiring
-// itself.
+// List + remove for this tool's registered owners. SSO start lives only on
+// the Characters page (docs/ESI_ACCESS_PLAN.md Phase 9) — this hook must
+// not open a second login path into the app.
 export function useRoleCharacters(
   queryKey: string[],
   fetchFn: () => Promise<RoleCharacter[]>,
   removeFn: (roleKey: string) => Promise<unknown>,
-  ssoRolePrefix: string,
 ) {
   const { data } = useQuery({ queryKey, queryFn: fetchFn })
   const characters = data ?? []
-
-  // Same redirect-based EVE SSO flow every one of the three original call
-  // sites used - navigates the whole page to EVE SSO and back via
-  // api/routers/auth.py's /callback route, rather than the old server-side
-  // webbrowser.open() + blocking-local-HTTP-server flow (which only worked
-  // when the backend and browser happened to be on the same machine, and
-  // tied up the request thread for minutes - confirmed real bug on a real
-  // deployment).
-  const addCharacter = useAction('Login', async () => {
-    const { url } = await authApi.start(ssoRolePrefix)
-    window.location.href = url
-  })
-
-  // Always show what this SSO round will request (decision 10). There is
-  // no stored per-prefix acknowledgement — the bundle is variable.
-  const startLogin = async () => {
-    const preview = await authApi.accessPreview(ssoRolePrefix)
-    openAccessConfirmModal(preview, () => addCharacter.mutate())
-  }
 
   const removeCharacter = useAction('Remove Character', removeFn, [queryKey])
   // One shared mutation instance is reused across every character's Remove
@@ -67,8 +35,6 @@ export function useRoleCharacters(
 
   return {
     characters,
-    addCharacter,
-    startLogin,
     removeCharacter: removeCharacterAt,
     isRemoving,
   }

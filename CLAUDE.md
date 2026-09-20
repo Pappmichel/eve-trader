@@ -40,8 +40,8 @@ fittings, `eve_trader/doctrine/`), **Ore & Minerals** (ore/ice
 import-refine-sell, reprocessing quotes, mineral shopping list,
 `eve_trader/refining/`, GitHub issue #90), **Station Trading**,
 **Sorting**, and **Characters** (`tool_key "characters"` — the
-tenant-facing surface for ESI access; grant, router, and confirm-dialog
-payload landed in Phase 6 of `docs/ESI_ACCESS_PLAN.md`; the page is Phase 9)
+tenant-facing surface for ESI access; grant and router landed in Phase 6
+of `docs/ESI_ACCESS_PLAN.md`; the Characters page is Phase 9)
 — plus the cross-tenant **Admin** tool
 (`eve_trader/admin.py`, see "Tool permissions & Admin" below), which
 isn't tenant-facing at all. **Portfolio** is also a tenant-facing tool
@@ -313,8 +313,10 @@ other character can reach `/api/admin` unless they have that tool_key.
 ESI-consuming tool is selected — UI only; `admin.do_set_tool_grants` stays
 replace-not-merge and does not insert `"characters"` on the server. The
 Characters router (`/api/characters/`) is gated on that grant via
-`_TOOL_PATH_PREFIXES`. Prefix `/api/auth/{role_prefix}/start` stays until
-Phase 9 removes the sidebar callers.
+`_TOOL_PATH_PREFIXES`. Prefix `/api/auth/{role_prefix}/start` is gone (Phase 9). ESI tokens are
+re-authorized from `/api/characters/reauth/start`. Token *storage* still
+uses prefix keys (`producer:<id>`, …); `ROLE_PREFIX_TOOL` /
+`validate_role_key_for_tool` still own those namespaces for DELETE.
 
 `AccessGate` is character-only (`tenant_registry_entries.entry_type`
 CHECK-constrained to `'character'`, `docs/admin_schema.sql`) - corp/alliance

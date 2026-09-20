@@ -26,7 +26,7 @@ const TABS = [
 const SYNC_RESULT_KEYS: string[][] = [
   ['doctrine', 'status'], ['doctrine', 'contracts'], ['doctrine', 'contract-history'], ['doctrine', 'sync-time'],
 ]
-const SYNC_LABELS = { sync_contracts: 'Sync Contracts' }
+const SYNC_LABELS = { sync_contracts: 'Refresh what I need' }
 
 // A fitting/detail sub-page (path has extra segments beyond a known tab)
 // still highlights its parent tab - Tabs.value requires an exact match
@@ -45,25 +45,22 @@ function activeTab(pathname: string): string {
   return '/doctrine/doctrines'
 }
 
-// Shared by both character groups below - only the query key, ssoRolePrefix,
-// and remove-fn differ between "characters authed to read contracts" and
-// "characters authed to scan their own inventory" (see doctrine/esi_sync.py's
-// own module docstring for why these stay two separate EVE SSO character
-// groups rather than one, each with its own narrower scope grant).
-function CharacterGroup({ title, queryKey, listFn, ssoRolePrefix, removeFn }: {
+function CharacterGroup({ title, queryKey, listFn, removeFn }: {
   title: string
   queryKey: string[]
   listFn: () => Promise<RoleCharacter[]>
-  ssoRolePrefix: string
   removeFn: (roleKey: string) => Promise<unknown>
 }) {
-  const { characters, addCharacter, startLogin, removeCharacter, isRemoving } = useRoleCharacters(
-    queryKey, listFn, removeFn, ssoRolePrefix,
+  const { characters, removeCharacter, isRemoving } = useRoleCharacters(
+    queryKey, listFn, removeFn,
   )
 
   return (
     <div>
       <Title order={6} c="dimmed" tt="uppercase" mb="xs">{title}</Title>
+      {characters.length === 0 && (
+        <Text size="xs" c="dimmed">Share on the Characters page.</Text>
+      )}
       <Stack gap="xs">
         {characters.map((c) => (
           <Group key={c.role_key} justify="space-between" wrap="nowrap">
@@ -71,7 +68,7 @@ function CharacterGroup({ title, queryKey, listFn, ssoRolePrefix, removeFn }: {
             <ActionIcon size="sm" variant="subtle" color="danger"
               onClick={() => modals.openConfirmModal({
                 title: 'Remove character',
-                children: <Text size="sm">Remove {c.character_name} from {title}? You can log them back in any time.</Text>,
+                children: <Text size="sm">Remove {c.character_name} from {title}? This drops this tool&apos;s token key. Sharing stays on the Characters page.</Text>,
                 labels: { confirm: 'Remove', cancel: 'Cancel' },
                 confirmProps: { color: 'danger' },
                 onConfirm: () => removeCharacter(c.role_key),
@@ -81,9 +78,6 @@ function CharacterGroup({ title, queryKey, listFn, ssoRolePrefix, removeFn }: {
             </ActionIcon>
           </Group>
         ))}
-        <Button size="xs" variant="default" onClick={() => startLogin()} loading={addCharacter.isPending}>
-          Add Character
-        </Button>
       </Stack>
     </div>
   )
@@ -106,7 +100,7 @@ export default function DoctrineLayout() {
     fetchStatus: doctrineApi.syncContractsStatus,
     resultKeys: SYNC_RESULT_KEYS,
     labels: SYNC_LABELS,
-    defaultLabel: 'Sync Contracts',
+    defaultLabel: 'Refresh what I need',
     // Same reasoning as Admin's SDE refresh - contract sync now reports
     // per-item batch progress, so a tighter poll shows real movement
     // instead of just "Running…" for its (typically short) duration.
@@ -118,7 +112,7 @@ export default function DoctrineLayout() {
   const { data: assetSyncTime } = useQuery({ queryKey: ['doctrine', 'asset-sync-time'], queryFn: doctrineApi.assetSyncTime })
   const syncAssets = useAction('Sync Assets', doctrineApi.syncAssets, [
     ['doctrine', 'stockpile'], ['doctrine', 'asset-sync-time'],
-  ], { tier: 'live', effect: 'Loads the scan characters\' ESI asset stock live and updates the stockpile overview.' })
+  ], { tier: 'live', effect: 'Refreshes the ESI asset snapshots shared with Doctrine.' })
 
   return (
     <AppShell header={{ height: 56 }} navbar={{ width: 260, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding={{ base: 'xs', sm: 'md' }}>
@@ -140,7 +134,7 @@ export default function DoctrineLayout() {
       <AppShell.Navbar p="md">
         <Stack gap="md">
           <CharacterGroup title="Contract Characters" queryKey={['doctrine', 'characters']}
-            listFn={doctrineApi.characters} ssoRolePrefix="doctrine" removeFn={doctrineApi.removeCharacter} />
+            listFn={doctrineApi.characters} removeFn={doctrineApi.removeCharacter} />
 
           <div>
             <Group justify="space-between" mb="xs" wrap="nowrap">
@@ -148,13 +142,13 @@ export default function DoctrineLayout() {
               <Text size="xs" c="dimmed">{dateTime(syncTime?.synced_at)}</Text>
             </Group>
             <Tooltip
-              label={`Loads contracts for the contract characters live from ESI (runs as a background job with progress). ${TIER_COPY.live}`}
+              label={`Refreshes the contract snapshots this tool is shared (runs as a background job with progress). ${TIER_COPY.live}`}
               multiline w={280}
             >
               <Button size="xs" leftSection={<IconRefresh size={14} />} rightSection={<ActionTierIcon tier="live" />}
                 variant={syncRunning ? 'light' : undefined}
                 onClick={() => syncStart.mutate()}>
-                Sync Contracts
+                Refresh what I need
               </Button>
             </Tooltip>
             {syncRunning && (
@@ -167,7 +161,7 @@ export default function DoctrineLayout() {
           <Divider />
 
           <CharacterGroup title="Asset-Scanning Characters" queryKey={['doctrine', 'asset-characters']}
-            listFn={doctrineApi.assetCharacters} ssoRolePrefix="doctrine-assets" removeFn={doctrineApi.removeAssetCharacter} />
+            listFn={doctrineApi.assetCharacters} removeFn={doctrineApi.removeAssetCharacter} />
 
           <div>
             <Group justify="space-between" mb="xs" wrap="nowrap">
@@ -177,7 +171,7 @@ export default function DoctrineLayout() {
             <Tooltip label={syncAssets.tooltip} disabled={!syncAssets.tooltip} multiline w={280}>
               <Button size="xs" leftSection={<IconRefresh size={14} />} rightSection={syncAssets.tierIcon}
                 onClick={() => syncAssets.mutate()} loading={syncAssets.isPending}>
-                Sync Assets
+                Refresh what I need
               </Button>
             </Tooltip>
           </div>

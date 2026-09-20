@@ -3,8 +3,8 @@
 Covers the same daily trading workflow as the browser UI, one command per
 step, plus a `pipeline` command that runs the whole thing. All actual logic
 lives in actions.py so the dashboard (browser UI) uses the exact same code.
-Character login is web-only (Characters re-auth / prefix `/start` until
-Phase 9); there is no `eve-trader auth --role` command.
+Character login is web-only (`/api/characters/reauth/start` from the
+Characters page); there is no `eve-trader auth --role` command.
 
 Examples:
     eve-trader build-universe

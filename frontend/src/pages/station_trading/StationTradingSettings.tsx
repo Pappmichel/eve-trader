@@ -62,7 +62,7 @@ export default function StationTradingSettings() {
 
       <Title order={6} c="dimmed" tt="uppercase" mt="xl">Skills (live, per trader character)</Title>
       {!skills || skills.length === 0 ? (
-        <Text size="xs" c="dimmed">No trader characters registered yet - see Add Character on the left.</Text>
+        <Text size="xs" c="dimmed">No trader characters registered yet - share Skills with Station Trading on the Characters page.</Text>
       ) : (
         <Table>
           <Table.Thead>

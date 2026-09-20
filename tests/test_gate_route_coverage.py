@@ -122,7 +122,7 @@ def test_every_api_route_has_a_gate_classification():
     assert unclassified == [], (
         "New /api routes must be classified before they ship: add a "
         "_TOOL_PATH_PREFIXES entry, a _GATE_EXEMPT_PATHS entry, an "
-        "_AUTH_GATED_SUFFIXES match, or a _SESSION_ONLY_API_PREFIXES "
+        "_SESSION_ONLY_API_PREFIXES "
         f"prefix. Unclassified: {unclassified}"
     )
     assert any(bucket == "session_only" for _, _, bucket in classified)
@@ -157,11 +157,14 @@ def test_walker_sees_normal_and_dynamic_and_method_specific_routes():
 
 def test_walker_sees_included_auth_router_templates():
     paths = {(method, path) for method, path in _iter_http_routes(create_app())}
-    assert ("GET", "/api/auth/{role_prefix}/start") in paths
-    assert ("GET", "/api/auth/{role_prefix}/access-preview") in paths
+    assert ("GET", "/api/auth/gate/start") in paths
+    assert ("GET", "/api/auth/callback") in paths
     assert ("GET", "/api/characters/sharing") in paths
-    assert _classify("GET", "/api/auth/{role_prefix}/start") == "auth_role_tool"
+    assert ("GET", "/api/auth/{role_prefix}/start") not in paths
+    assert ("GET", "/api/auth/{role_prefix}/access-preview") not in paths
+    assert _classify("GET", "/api/auth/gate/start") == "exempt"
     assert _classify("GET", "/api/characters/sharing") == "tool:characters"
+    assert _classify("GET", "/api/characters/reauth/start") == "tool:characters"
 
 
 def test_walker_sees_nested_router_include():

@@ -118,7 +118,7 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG, progress_callback=None
     tm = TokenManager(OAUTH_CONFIG)
     characters = list_doctrine_characters(tm)
     if not characters:
-        raise ActionError("No doctrine character logged in yet. Use 'Add Character' in the sidebar.")
+        raise ActionError("No Doctrine character shared yet. Share Contracts on the Characters page.")
 
     existing_by_id = {row[0]: row for row in storage.load_doctrine_contracts()}
     result = do_sync_for_tool("doctrine", extra={"structure_id": structure_id})
@@ -196,7 +196,7 @@ def sync_assets() -> dict:
     characters = list_doctrine_asset_characters(tm)
     if not characters:
         raise ActionError(
-            "No asset-scanning character logged in yet. Use 'Add Character' under Stockpile in the sidebar."
+            "No Doctrine character shared yet. Share Assets with Doctrine on the Characters page."
         )
     extra = {}
     structure_id = DOCTRINE_CONFIG.effective_structure_id

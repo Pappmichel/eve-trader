@@ -1,9 +1,7 @@
 """Characters-tool `do_*` functions (docs/ESI_ACCESS_PLAN.md Phase 6).
 
-UI-agnostic, no FastAPI imports. The Characters router and (later) the
-Characters page call these; prefix-login `/start` still exists until
-Phase 9 removes the sidebar callers, and asks `do_access_preview` for
-the confirm-dialog payload.
+UI-agnostic, no FastAPI imports. The Characters router and page call
+these. Prefix-login `/start` is gone as of Phase 9.
 
 This module imports no tool package. Requested SSO scopes are passed in
 by the caller (auth.py already knows each prefix's bundle).

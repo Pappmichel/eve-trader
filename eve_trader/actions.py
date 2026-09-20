@@ -720,7 +720,9 @@ def do_check_seller_unlisted_stock(cfg: TradingConfig = TRADING_CONFIG,
     tm = TokenManager(oauth_cfg)
     seller_characters = _list_role_characters(tm, "seller")
     if not seller_characters:
-        raise ActionError("Seller character isn't logged in yet (Login → Seller).")
+        raise ActionError(
+            "No seller character shared yet. Share Market Orders with Trading on the Characters page."
+        )
     client = ESIClient(cfg, tm)
     shortlist_item_ids = {i.item_id for i in storage.load_shortlist() if i.item_id}
 
@@ -734,8 +736,8 @@ def do_check_seller_unlisted_stock(cfg: TradingConfig = TRADING_CONFIG,
         # esi-assets.read_assets.v1 was added to the shared scope list -
         # surface a fixable message instead of a raw 401/500.
         raise ActionError(
-            f"ESI access failed ({e}). If a seller was logged in before "
-            "esi-assets.read_assets.v1 existed: log in via 'Login Seller' again once."
+            f"ESI access failed ({e}). If a seller was authorized before "
+            "esi-assets.read_assets.v1 existed, Re-authorize that character on the Characters page."
         ) from e
 
     unlisted_type_ids = [entry["type_id"] for entry in unlisted]
@@ -799,7 +801,9 @@ def do_check_undercut(cfg: TradingConfig = TRADING_CONFIG, oauth_cfg: OAuthConfi
     tm = TokenManager(oauth_cfg)
     seller_characters = _list_role_characters(tm, "seller")
     if not seller_characters:
-        raise ActionError("Seller character isn't logged in yet (Login → Seller).")
+        raise ActionError(
+            "No seller character shared yet. Share Market Orders with Trading on the Characters page."
+        )
     client = ESIClient(cfg, tm)
 
     try:

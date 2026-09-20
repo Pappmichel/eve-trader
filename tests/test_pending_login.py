@@ -35,7 +35,7 @@ def test_concurrent_insert_and_prune_does_not_raise(monkeypatch):
 
     def _one(_i):
         try:
-            resp = client.get("/api/auth/buyer/start")
+            resp = client.get("/api/auth/gate/start")
             assert resp.status_code in (200, 429)
         except Exception as e:  # noqa: BLE001 - we want any RuntimeError
             errors.append(e)
@@ -52,7 +52,7 @@ def test_max_capacity_returns_429(monkeypatch):
     monkeypatch.setattr(auth_router, "_PENDING_MAX", 3)
     monkeypatch.setattr(auth_router, "_PENDING_MAX_PER_IP", 100)
 
-    codes = [client.get("/api/auth/buyer/start").status_code for _ in range(5)]
+    codes = [client.get("/api/auth/gate/start").status_code for _ in range(5)]
     assert codes.count(200) == 3
     assert codes.count(429) == 2
     with auth_router._pending_lock:
@@ -65,7 +65,7 @@ def test_per_ip_limit_returns_429(monkeypatch):
     monkeypatch.setattr(auth_router, "_PENDING_MAX", 100)
     monkeypatch.setattr(auth_router, "_PENDING_MAX_PER_IP", 2)
 
-    codes = [client.get("/api/auth/buyer/start").status_code for _ in range(4)]
+    codes = [client.get("/api/auth/gate/start").status_code for _ in range(4)]
     assert codes.count(200) == 2
     assert 429 in codes
 
@@ -74,9 +74,9 @@ def test_expired_entries_are_pruned(monkeypatch):
     monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", False)
     monkeypatch.setattr(OAUTH_CONFIG, "client_id", "test-client-id")
     monkeypatch.setattr(auth_router, "_PENDING_TTL", 0.01)
-    assert client.get("/api/auth/buyer/start").status_code == 200
+    assert client.get("/api/auth/gate/start").status_code == 200
     time.sleep(0.03)
-    assert client.get("/api/auth/buyer/start").status_code == 200
+    assert client.get("/api/auth/gate/start").status_code == 200
     with auth_router._pending_lock:
         assert len(auth_router._pending) == 1
 
@@ -108,9 +108,9 @@ def test_expired_entries_are_reclaimed_at_capacity(monkeypatch):
     monkeypatch.setattr(auth_router, "_PENDING_MAX", 3)
     monkeypatch.setattr(auth_router, "_PENDING_TTL", 0.01)
     for _ in range(3):
-        assert client.get("/api/auth/buyer/start").status_code == 200
+        assert client.get("/api/auth/gate/start").status_code == 200
     time.sleep(0.03)
-    assert client.get("/api/auth/buyer/start").status_code == 200
+    assert client.get("/api/auth/gate/start").status_code == 200
     with auth_router._pending_lock:
         assert len(auth_router._pending) == 1
 
@@ -123,11 +123,11 @@ def test_one_ip_cannot_consume_capacity_from_a_new_source(monkeypatch):
     monkeypatch.setattr(auth_router, "_client_ip", lambda _req: current["ip"])
 
     for _ in range(4):
-        assert client.get("/api/auth/buyer/start").status_code == 200
-    assert client.get("/api/auth/buyer/start").status_code == 429
+        assert client.get("/api/auth/gate/start").status_code == 200
+    assert client.get("/api/auth/gate/start").status_code == 429
 
     current["ip"] = "10.0.0.2"
-    assert client.get("/api/auth/buyer/start").status_code == 200
+    assert client.get("/api/auth/gate/start").status_code == 200
     with auth_router._pending_lock:
         assert len(auth_router._pending) == 4
         ips = [v["client_ip"] for v in auth_router._pending.values()]
@@ -153,7 +153,7 @@ def test_same_ip_at_global_cap_does_not_evict_others(monkeypatch):
     monkeypatch.setattr(OAUTH_CONFIG, "client_id", "test-client-id")
     monkeypatch.setattr(auth_router, "_PENDING_MAX", 3)
     monkeypatch.setattr(auth_router, "_PENDING_MAX_PER_IP", 100)
-    codes = [client.get("/api/auth/buyer/start").status_code for _ in range(5)]
+    codes = [client.get("/api/auth/gate/start").status_code for _ in range(5)]
     assert codes.count(200) == 3
     assert codes.count(429) == 2
     with auth_router._pending_lock:

@@ -65,7 +65,7 @@ export default function Jobs() {
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
   if (isError) return <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />
   if (!data || data.length === 0) {
-    return <HintCard>No active industry jobs - or not synced yet ('Sync ESI Data' in the sidebar).</HintCard>
+    return <HintCard>No active industry jobs - or not synced yet (&apos;Refresh what I need&apos; in the sidebar).</HintCard>
   }
 
   const soonCount = jobs.filter((j) => j.remaining_seconds !== null && j.remaining_seconds >= 0

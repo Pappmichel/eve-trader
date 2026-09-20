@@ -159,7 +159,9 @@ def do_check_undercut(cfg: StationTradingConfig = STATION_TRADING_CONFIG,
     tm = TokenManager(oauth_cfg)
     traders = [(character_id, role) for role, character_id, _name in esi_sync.list_trader_characters(tm)]
     if not traders:
-        raise ActionError("No trader characters registered yet - add one first.")
+        raise ActionError(
+            "No Station Trading character shared yet. Share Skills and Market Orders on the Characters page."
+        )
     client = ESIClient(tokens=tm)
     try:
         sell_rows = check_undercut_pooled(traders, client, cfg)

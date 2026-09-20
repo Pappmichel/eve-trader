@@ -63,7 +63,7 @@ export default function Transactions() {
   ], [])
 
   if (!characters || characters.length === 0) {
-    return <HintCard>No buyer/seller characters logged in yet. Log in a character on the Overview page to see its wallet transactions here.</HintCard>
+    return <HintCard>No characters shared with Trading yet. Share Wallet on the Characters page to see wallet transactions here.</HintCard>
   }
 
   return (

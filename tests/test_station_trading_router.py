@@ -94,13 +94,15 @@ def test_check_undercut_calls_action(monkeypatch):
 
 def test_check_undercut_action_error_maps_to_400(monkeypatch):
     def _raise():
-        raise ActionError("No trader characters registered yet - add one first.")
+        raise ActionError(
+            "No Station Trading character shared yet. Share Skills and Market Orders on the Characters page."
+        )
     monkeypatch.setattr(station_trading_actions, "do_check_undercut", _raise)
 
     resp = client.post("/api/station-trading/undercut/check")
 
     assert resp.status_code == 400
-    assert "No trader characters" in resp.json()["detail"]
+    assert "Station Trading character" in resp.json()["detail"]
 
 
 def test_remove_trader_character_calls_action(monkeypatch):

@@ -68,7 +68,7 @@ export default function Stockpile() {
       )}
 
       {!isLoading && data && !data.assets_available && (
-        <HintCard>No asset data yet - add an asset-scanning character in the sidebar and run <b>Sync Assets</b>.</HintCard>
+        <HintCard>No asset data yet - share Assets with Doctrine on the Characters page and run <b>Refresh what I need</b>.</HintCard>
       )}
 
       {!isLoading && data?.assets_available && rows.length === 0 && (

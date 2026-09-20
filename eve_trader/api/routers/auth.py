@@ -28,13 +28,9 @@ from fastapi.responses import RedirectResponse
 
 from ... import storage
 from ...access_gate import set_session_cookie
-from ...auth import ROLE_PREFIX_TOOL, TokenManager, _make_pkce_pair
+from ...auth import TokenManager, _make_pkce_pair
 from ...config import OAUTH_CONFIG
-from ...doctrine import esi_sync as doctrine_esi_sync
-from ...esi_data import actions as esi_actions
 from ...esi_data.selector import delete_strict_subset_tokens, reauth_write_role
-from ...production import esi_sync
-from ...station_trading import esi_sync as station_trading_esi_sync
 
 router = APIRouter()
 
@@ -137,36 +133,6 @@ def _client_ip(request: Request) -> str:
     return request.client.host or "unknown"
 
 
-def _scopes_for(role_prefix: str) -> list[str]:
-    if role_prefix == "producer":
-        return esi_sync.PRODUCTION_SCOPES
-    if role_prefix == "doctrine":
-        return doctrine_esi_sync.DOCTRINE_SCOPES
-    if role_prefix == "doctrine-assets":
-        return doctrine_esi_sync.DOCTRINE_ASSET_SCOPES
-    if role_prefix == "trader":
-        return station_trading_esi_sync.STATION_TRADING_SCOPES
-    if role_prefix == "gate":
-        return []  # identity only - see access_gate.py
-    return list(OAUTH_CONFIG.scopes)
-
-
-# GitHub issue #57 / P5-02: ROLE_PREFIX_TOOL lives in eve_trader.auth as the
-# single source of truth (tool grants for /start + /access-preview, and
-# role_key namespace ownership for TokenManager mutations). Re-exported
-# here so api/app.py's `from .routers import auth` path stays valid.
-
-
-_PREFIX_PREVIEW_TITLES = {
-    "buyer": "Trading — Buyer Character",
-    "seller": "Trading — Seller Character",
-    "producer": "Production — Producer Character",
-    "doctrine": "Doctrine — Contract Character",
-    "doctrine-assets": "Doctrine — Stockpile Character",
-    "trader": "Station Trading — Trader Character",
-}
-
-
 def begin_oauth(
     request: Request,
     response: Response,
@@ -177,8 +143,9 @@ def begin_oauth(
 ) -> dict:
     """Admit a pending SSO round and return the EVE authorize URL.
 
-    Used by prefix `/start` (until Phase 9) and Characters re-auth
+    Used by identity-only `/gate/start` and Characters re-auth
     (`role_prefix="reauth"` plus `extra["reauth_character_id"]`).
+    Prefix `/start` was removed in Phase 9.
     """
     if not OAUTH_CONFIG.client_id:
         raise HTTPException(500, "EVE_SSO_CLIENT_ID is not set (.env).")
@@ -190,12 +157,11 @@ def begin_oauth(
         "verifier": verifier, "role_prefix": role_prefix, "scopes": list(scopes),
         "created_at": time.time(),
         # Stashed for /callback (an AccessGateMiddleware-exempt path with no
-        # automatic ambient tenant of its own) to pick back up - guaranteed
-        # non-None here for buyer/seller/producer (their /start routes are
-        # NOT gate-exempt, so the middleware has already set a real tenant
-        # by the time this handler runs); may be None for role_prefix="gate"
-        # (that one *is* exempt, by design - harmless, since the gate branch
-        # of /callback resolves its own tenant fresh via the registry).
+        # automatic ambient tenant of its own) to pick back up. Characters
+        # re-auth is not gate-exempt, so the middleware has already set a
+        # real tenant; may be None for role_prefix="gate" (that one *is*
+        # exempt, by design - harmless, since the gate branch of /callback
+        # resolves its own tenant fresh via the registry).
         "tenant_id": storage.get_current_tenant(),
         "browser_nonce": browser_nonce,
         "client_ip": client_ip,
@@ -224,34 +190,11 @@ def begin_oauth(
     return {"url": f"{OAUTH_CONFIG.authorize_url}?{urllib.parse.urlencode(params)}"}
 
 
-@router.get("/{role_prefix}/access-preview")
-def access_preview(role_prefix: str):
-    """Confirm-dialog payload for a prefix login (Phase 5). Always shown;
-    there is no stored acknowledgement. `gate` is identity-only and stays
-    on Landing localStorage — it does not use this endpoint."""
-    if role_prefix not in ROLE_PREFIX_TOOL:
-        raise HTTPException(400, f"Unknown role_prefix '{role_prefix}'.")
-    if role_prefix == "gate":
-        raise HTTPException(400, "gate access is described client-side, not via this endpoint.")
-    return esi_actions.do_access_preview(
-        _scopes_for(role_prefix),
-        title=_PREFIX_PREVIEW_TITLES.get(role_prefix, "Confirm data access"),
-    )
-
-
-@router.get("/{role_prefix}/start")
-def start_login(role_prefix: str, request: Request, response: Response):
-    """role_prefix: "buyer" | "seller" | "producer" | ... - every one of
-    these is multi-character (GitHub issue #46: buyer/seller used to be a
-    single fixed role each, now they follow the same "producer" scheme) -
-    the final role is resolved after login as f"{role_prefix}:<char_id>".
-    Prefix /start stays until Phase 9 removes the sidebar callers."""
-    if role_prefix not in ROLE_PREFIX_TOOL:
-        raise HTTPException(400, f"Unknown role_prefix '{role_prefix}'.")
-    return begin_oauth(
-        request, response,
-        role_prefix=role_prefix, scopes=_scopes_for(role_prefix),
-    )
+@router.get("/gate/start")
+def start_gate_login(request: Request, response: Response):
+    """Identity-only access-gate login. ESI data-access re-auth is
+    `/api/characters/reauth/start` (gated on tool_key characters)."""
+    return begin_oauth(request, response, role_prefix="gate", scopes=[])
 
 
 @router.get("/callback")
@@ -378,4 +321,4 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
 # (GitHub issue #46), so "logged in y/n" is no longer a meaningful answer -
 # the Trading router's own /buyer-characters and /seller-characters (mirrors
 # Production's /producer-characters) list every registered character per
-# role instead. See TradingLayout.tsx's LoginButton for the frontend side.
+# role instead. ESI login is the Characters page, not a prefix /start.

@@ -28,8 +28,8 @@ export default function StationTradingLayout() {
   const { data: syncTime } = useQuery({
     queryKey: ['station-trading', 'esi-sync-time'], queryFn: stationTradingApi.esiSyncTime,
   })
-  const { characters, addCharacter, startLogin, removeCharacter, isRemoving } = useRoleCharacters(
-    ['station-trading', 'characters'], stationTradingApi.traderCharacters, stationTradingApi.removeCharacter, 'trader',
+  const { characters, removeCharacter, isRemoving } = useRoleCharacters(
+    ['station-trading', 'characters'], stationTradingApi.traderCharacters, stationTradingApi.removeCharacter,
   )
   const refreshShortlist = useAction('Refresh Shortlist', stationTradingApi.refreshShortlist, [
     ['station-trading', 'shortlist'], ['station-trading', 'esi-sync-time'],
@@ -66,8 +66,8 @@ export default function StationTradingLayout() {
                 <Text size="xs" c="dimmed">{dateTime(syncTime?.synced_at)}</Text>
               </Group>
               <Text size="xs" c="dimmed" mb="xs">
-                Buying and selling on Jita's own order book - a separate login from Trading's buyer/seller
-                characters, since this needs your skill levels too.
+                Buying and selling on Jita&apos;s own order book. Share Skills and Market Orders
+                with Station Trading on the Characters page.
               </Text>
               {characters.map((c) => (
                 <Group key={c.role_key} justify="space-between" mb={4}>
@@ -75,7 +75,7 @@ export default function StationTradingLayout() {
                   <Button size="xs" variant="subtle" color="danger"
                     onClick={() => modals.openConfirmModal({
                       title: 'Remove character',
-                      children: <Text size="sm">Remove {c.character_name} from Station Trading? You can log them back in any time.</Text>,
+                      children: <Text size="sm">Remove {c.character_name} from Station Trading? This drops this tool&apos;s token key. Sharing stays on the Characters page.</Text>,
                       labels: { confirm: 'Remove', cancel: 'Cancel' },
                       confirmProps: { color: 'danger' },
                       onConfirm: () => removeCharacter(c.role_key),
@@ -85,9 +85,6 @@ export default function StationTradingLayout() {
                   </Button>
                 </Group>
               ))}
-              <Button size="xs" variant="default" mt="xs" onClick={() => startLogin()} loading={addCharacter.isPending}>
-                Add Character
-              </Button>
             </div>
 
             <Divider />

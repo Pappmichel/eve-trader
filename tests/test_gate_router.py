@@ -345,140 +345,74 @@ def test_callback_gate_branch_denied_character_redirects_without_a_cookie(
 
 
 @pg_helpers.postgres_required()
-def test_middleware_rejects_auth_start_missing_the_required_tool_grant(
+def test_prefix_auth_start_and_access_preview_are_gone(
     monkeypatch, _apply_phase1_schema, _apply_phase2_schema, _apply_admin_schema
 ):
-    # GitHub issue #57 (found in a full-codebase audit 2026-08-21, confirmed
-    # real gap): /api/auth/{role_prefix}/start used to be reachable by any
-    # character with a valid gate session regardless of tool grants - a
-    # character granted only "trading" could still register a live ESI
-    # token for Production via /api/auth/producer/start. No tool_grants row
-    # at all here, so this must 403 the same way a direct
-    # /api/production/* call already does.
-    _enable_gate(monkeypatch)
-    monkeypatch.setattr(OAUTH_CONFIG, "client_id", "test-client-id")
-    _provision()
-
-    resp = client.get("/api/auth/producer/start", cookies=_session_cookie())
-
-    assert resp.status_code == 403
-
-
-@pg_helpers.postgres_required()
-def test_middleware_allows_auth_start_with_the_required_tool_grant(
-    monkeypatch, _apply_phase1_schema, _apply_phase2_schema, _apply_admin_schema
-):
+    # Phase 9: prefix `/start` and `/access-preview` are removed, not 410'd
+    # with a working body. A production grant must not mint a producer token.
     _enable_gate(monkeypatch)
     monkeypatch.setattr(OAUTH_CONFIG, "client_id", "test-client-id")
     _provision(tools=("production",))
+    cookies = _session_cookie()
 
-    resp = client.get("/api/auth/producer/start", cookies=_session_cookie())
-
-    assert resp.status_code == 200
-
-
-@pg_helpers.postgres_required()
-def test_middleware_rejects_auth_access_preview_missing_the_required_tool_grant(
-    monkeypatch, _apply_phase1_schema, _apply_phase2_schema, _apply_admin_schema
-):
-    _enable_gate(monkeypatch)
-    _provision()
-
-    resp = client.get("/api/auth/producer/access-preview", cookies=_session_cookie())
-
-    assert resp.status_code == 403
+    assert client.get("/api/auth/producer/start", cookies=cookies).status_code == 404
+    assert client.get("/api/auth/buyer/start", cookies=cookies).status_code == 404
+    assert client.get("/api/auth/producer/access-preview", cookies=cookies).status_code == 404
+    assert client.get("/api/auth/gate/access-preview", cookies=cookies).status_code == 404
 
 
-@pg_helpers.postgres_required()
-def test_middleware_allows_auth_access_preview_with_the_required_tool_grant(
-    monkeypatch, _apply_phase1_schema, _apply_phase2_schema, _apply_admin_schema
-):
-    _enable_gate(monkeypatch)
-    _provision(tools=("production",))
-
-    resp = client.get("/api/auth/producer/access-preview", cookies=_session_cookie())
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["title"]
-    assert any(item["key"] == "assets" and item["added"] is True for item in body["items"])
-
-
-@pg_helpers.postgres_required()
-def test_access_preview_rejects_the_gate_role_prefix(
-    monkeypatch, _apply_phase1_schema, _apply_phase2_schema, _apply_admin_schema
-):
-    _enable_gate(monkeypatch)
-    _provision()
-
-    resp = client.get("/api/auth/gate/access-preview", cookies=_session_cookie())
-
-    assert resp.status_code == 400
-
-
-def test_access_preview_rejects_an_unknown_role_prefix():
-    resp = client.get("/api/auth/not-a-real-role/access-preview")
-    assert resp.status_code == 400
-
-
-def test_start_login_rejects_an_unrecognized_role_prefix(monkeypatch):
-    # GitHub issue #57: role_prefix used to be accepted verbatim with no
-    # allowlist, becoming a permanent TokenManager role key for an arbitrary
-    # string. Gate disabled here - this is start_login's own validation, not
-    # the tool-grant check (see the two tests above for that).
+def test_unrecognized_role_prefix_start_is_gone(monkeypatch):
     monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", False)
     monkeypatch.setattr(OAUTH_CONFIG, "client_id", "test-client-id")
-
-    resp = client.get("/api/auth/not-a-real-role/start")
-
-    assert resp.status_code == 400
+    assert client.get("/api/auth/not-a-real-role/start").status_code == 404
+    assert client.get("/api/auth/not-a-real-role/access-preview").status_code == 404
 
 
 # --------------------------------- auth.py /start + /callback tenant threading (non-gate)
 @pg_helpers.postgres_required()
-def test_start_login_captures_the_ambient_tenant_into_pending(monkeypatch):
+def test_gate_start_captures_the_ambient_tenant_into_pending(monkeypatch):
     # Gate disabled (trusted-operator opt-out) - AccessGateMiddleware sets
-    # DEFAULT_TENANT_ID unconditionally, and /start must capture exactly
+    # DEFAULT_TENANT_ID unconditionally, and /gate/start must capture exactly
     # that into _pending[state] for /callback (an exempt path with no
     # automatic ambient tenant) to pick back up.
     monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", False)
     monkeypatch.setattr(OAUTH_CONFIG, "client_id", "test-client-id")
 
-    resp = client.get("/api/auth/buyer/start")
+    resp = client.get("/api/auth/gate/start")
     state = urllib.parse.parse_qs(urllib.parse.urlparse(resp.json()["url"]).query)["state"][0]
 
     assert auth_router._pending[state]["tenant_id"] == storage.DEFAULT_TENANT_ID
 
 
 @pg_helpers.postgres_required()
-def test_callback_buyer_branch_persists_the_token_under_the_correct_tenant(
+def test_callback_prefix_branch_persists_the_token_under_the_captured_tenant(
     monkeypatch, _apply_phase1_schema, _apply_phase2_schema, _apply_admin_schema, tenant_pair
 ):
-    # The real fix this session adds: /callback's non-gate branches used to
-    # have no tenant context at all (an AccessGateMiddleware-exempt path) -
-    # a buyer/seller/producer login must land under the same tenant whose
-    # already-authenticated session initiated /start, not some other tenant.
+    # Prefix HTTP /start is gone; /callback still honors a pending entry's
+    # tenant_id so a Characters re-auth (or a leftover prefix-shaped pending
+    # from tests) cannot land in the wrong tenant.
     tenant_a, tenant_b = tenant_pair
     monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", True)
     monkeypatch.setattr(OAUTH_CONFIG, "session_secret_key", "test-secret-key")
     monkeypatch.setattr(OAUTH_CONFIG, "client_id", "test-client-id")
-    # GitHub issue #57: /api/auth/buyer/start is tool-gated now (requires
-    # "trading", same as every /api/trading/* route) - without this grant
-    # the request 403s before ever reaching /start's own logic.
-    storage.set_tool_grant(1, "trading", tenant_a)
+    storage.set_tool_grant(1, "characters", tenant_a)
     storage.add_tenant_registry_entry(tenant_a, 1, character_name="Some Character")
 
-    start_resp = client.get("/api/auth/buyer/start", cookies=_session_cookie(tenant_id=tenant_a))
-    state = urllib.parse.parse_qs(urllib.parse.urlparse(start_resp.json()["url"]).query)["state"][0]
-
+    state = "test-prefix-tenant"
+    auth_router._pending[state] = {
+        "verifier": "v", "role_prefix": "buyer", "scopes": ["esi-wallet.read_character_wallet.v1"],
+        "created_at": time.time(), "browser_nonce": "n", "client_ip": "t",
+        "tenant_id": tenant_a,
+    }
     monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
     monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (42, "Buyer Char")))
 
-    resp = client.get("/api/auth/callback", params={"code": "abc", "state": state}, follow_redirects=False)
+    resp = client.get(
+        "/api/auth/callback", params={"code": "abc", "state": state},
+        cookies={auth_router._OAUTH_NONCE_COOKIE: "n"}, follow_redirects=False,
+    )
 
     assert "auth=success" in resp.headers["location"]
-    # GitHub issue #46: buyer/seller are multi-character now - the token
-    # lands under "buyer:<char_id>", not a single fixed "buyer" key.
     with storage.tenant_context(tenant_a):
         record = TokenManager().get_record("buyer:42")
         assert record is not None and record.character_id == 42

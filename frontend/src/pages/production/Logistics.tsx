@@ -98,8 +98,8 @@ export default function Logistics() {
       await productionApi.resolveStructureName(args.locationId)
     } catch {
       // Confirmed real bug: the location assignment above already succeeded
-      // and persisted - a name-resolution failure (e.g. "No producer
-      // character logged in yet") is a separate, best-effort step (the name
+      // and persisted - a name-resolution failure (e.g. "No Production
+      // character shared yet") is a separate, best-effort step (the name
       // has its own manual "resolve" retry link once savedId is set) and
       // must not make this whole action report as a failure when the actual
       // save it was for went through fine.
@@ -212,7 +212,7 @@ export default function Logistics() {
         <Text size="xs" c="dimmed" mb="sm">
           Structure/location ID per job category (only the ID matters, not the system prefix in the name, which can
           change). Leave empty for categories you don't want to track. The name resolves automatically after saving,
-          using a producer character with docking rights/access to the structure. Cost index override, if set, is
+          using a character with docking rights/access to the structure. Cost index override, if set, is
           the highest-priority ISK job-cost-index source for that category - it beats even this structure's own
           live system index and the flat Settings-page overrides, so use it when you need a category's rate to
           differ from what its assigned system would otherwise give it. Leave blank to use the live system index.

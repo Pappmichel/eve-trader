@@ -1,8 +1,8 @@
-"""Phase 6 Characters router + grant isolation.
+"""Phase 6 Characters router + grant isolation; Phase 9 removes prefix /start.
 
 A session with production but not characters 403s /api/characters/* and
 still 200s Production reads. A session with characters can toggle sharing
-and fetch a confirm-dialog payload. Prefix /start stays until Phase 9.
+and fetch a confirm-dialog payload. Prefix /start is gone.
 """
 from __future__ import annotations
 
@@ -119,13 +119,12 @@ def test_characters_grant_can_toggle_sharing_and_read_preview(
     assert by_key["wallet"]["added"] is True
 
 
-def test_prefix_start_still_exists_for_sidebar_callers(monkeypatch, _apply_admin_schema):
+def test_prefix_start_is_gone(monkeypatch, _apply_admin_schema):
     _enable_gate(monkeypatch)
     monkeypatch.setattr(OAUTH_CONFIG, "client_id", "test-client-id")
     _provision(tools=("production",))
     resp = client.get("/api/auth/producer/start", cookies=_session_cookie())
-    assert resp.status_code == 200
-    assert "url" in resp.json()
+    assert resp.status_code == 404
 
 
 def test_reauth_start_requires_characters_grant(monkeypatch, _apply_admin_schema):

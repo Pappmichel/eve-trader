@@ -67,8 +67,8 @@ def test_filters_goonmetrics_response_to_only_the_requested_type_ids(monkeypatch
     assert set(stats) == {34}
 
 
-def test_raises_when_no_seller_and_no_fallback_market_configured():
-    with pytest.raises(ESIError, match="No seller/producer character logged in"):
+def test_raises_when_no_sharing_character_and_no_fallback_market_configured():
+    with pytest.raises(ESIError, match="No character shares the structure market book"):
         ESIClient().structure_order_stats_bulk_or_goonmetrics(
             1000, [34], auth_role=None, goonmetrics_market_slug=None)
 

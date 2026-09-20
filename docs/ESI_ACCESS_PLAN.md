@@ -220,6 +220,10 @@ not a sidebar copy-pasted into every tool layout.
    Access warning, not a Corporations-table column. Same five-state
    cells, same per-tool popover, same sharing table with
    `owner_type='corporation'`.
+
+   **Not delivered as of Phase 9 — see "Known gaps" below.** "Access via"
+   renders `—` and the per-row role warning does not exist. The corp-role
+   captions are static text.
 3. **Access.** Rows = capability (structure name resolution, structure
    market book). Columns show which characters can provide it. No
    freshness, no scheduling, no per-tool sharing; on or off.
@@ -941,16 +945,17 @@ internal shortcut.
 - Error strings that still say "Add Character in the sidebar" can wait
   for Phase 9, but new orchestrator errors must not add more of them.
 
-**Status:** **3b** (this PR) — doctrine asset-table merge. 3a (fetchers,
-orchestrator, fail-closed accessor, wallet consumer, NULL-id sweep) is
-merged (PR #174). Doctrine reads shared `character_assets` /
-`corp_assets` through `read_esi(..., tool_key="doctrine")`. The
-`if tool_key == "doctrine"` transitional branch in `_read_assets` is
-gone, as are `fetch_doctrine_*` / dual-write. No frontend. No Phase 4
-token selector. CI gate is the accessor isolation test (including
-Production-only unreachable through doctrine), the Doctrine-only-tenant
-Stockpile standalone test, schema copy+drop+idempotent tests, the
-sqlite drift-guard, and full `pytest`.
+**Status:** landed, PR #175 (merged 2026-09-20). Doctrine asset-table
+merge. 3a (fetchers, orchestrator, fail-closed accessor, wallet
+consumer, NULL-id sweep) is merged (PR #174). Doctrine reads shared
+`character_assets` / `corp_assets` through `read_esi(...,
+tool_key="doctrine")`. The `if tool_key == "doctrine"` transitional
+branch in `_read_assets` is gone, as are `fetch_doctrine_*` /
+dual-write. No frontend. No Phase 4 token selector. CI gate is the
+accessor isolation test (including Production-only unreachable
+through doctrine), the Doctrine-only-tenant Stockpile standalone
+test, schema copy+drop+idempotent tests, the sqlite drift-guard,
+and full `pytest`.
 
 **Done when:** unit tests drive the orchestrator with a fake `ESIClient`
 across two owners and two kinds — success, mid-kind failure (decision
@@ -1004,8 +1009,8 @@ stable for `ESIClient` caches.
   owners; pool hint is true iff the character has more than one
   row.
 
-**Status:** this PR. The orchestrator no longer resolves tokens by
-prefix: `_run_character_owner` and
+**Status:** landed, PR #176 (merged 2026-09-20). The orchestrator no
+longer resolves tokens by prefix: `_run_character_owner` and
 `_run_corporation_kinds_for_members` call `select_auth_role` (via
 `TokenManager.list_records`, not `list_roles(prefix)` /
 `_list_token_characters` / `_auth_roles_for`). A missing scope is
@@ -1016,8 +1021,7 @@ no dry-run, no rollback. CI gate is
 re-auth-needed tests, and full `pytest`. The live GET of the
 Characters status row with the pool hint needs Phase 6's endpoint,
 Phase 9's render, and real tokens — it is **not** a mid-flight
-gate. That confirmation is appended to the Deployment checklist
-below.
+gate. That confirmation is on the Deployment checklist below.
 
 **Done when:** those tests pass. `ESIClient.structure_orders_raw`
 still caches by the selected `auth_role` — selector stability is
@@ -1059,16 +1063,16 @@ Phase 6.
   must not 404 on `/consent`. Sequence with Phase 6/9 so the frontend
   never calls a deleted endpoint.
 
-**Status:** this PR (with Phase 6). Consent table, storage helpers, and
-`/consent` endpoints are gone. Confirm dialog is always shown and
-reads a registry-derived payload (`added` highlights kinds not on any
-existing token). `gate` keeps Landing `localStorage`. Prefix `/start`
-callers (`useRoleCharacters`) fetch `/access-preview` so they never
-404 on the deleted `/consent` routes. CI gate is grep-clean of the
-retired names outside this plan (the `DROP TABLE IF EXISTS` in
-`esi_access_schema.sql` is the remaining operational mention),
-drift-guard, and the preview tests. The live SSO round that adds
-Wallet is on the Deployment checklist.
+**Status:** landed, PR #178 (merged 2026-09-20, with Phase 6). Consent
+table, storage helpers, and `/consent` endpoints are gone. Confirm
+dialog is always shown and reads a registry-derived payload
+(`added` highlights kinds not on any existing token). `gate` keeps
+Landing `localStorage`. Prefix `/start` callers were removed in
+Phase 9; Characters re-auth fetches `/api/characters/access-preview`.
+CI gate is grep-clean of the retired names outside this plan (the
+`DROP TABLE IF EXISTS` in `esi_access_schema.sql` is the remaining
+operational mention), drift-guard, and the preview tests. The live
+SSO round that adds Wallet is on the Deployment checklist.
 
 **Done when:** grep for `tenant_role_consents`, `has_role_consent`,
 `role_consent_schema`, `consentStatus`, `acknowledgeConsent` is empty
@@ -1132,20 +1136,20 @@ don't exist.
   The Characters UI's "legacy pool merges on the next re-auth"
   promise depends on this call. Do not invent a second cleanup.
 
-**Status:** this PR (with Phase 5). `ALL_TOOL_KEYS` includes
-`"characters"`. `/api/characters/` is gated on that grant.
-`esi_data/actions.py` holds sharing/capability toggles, access
-preview, reauth scope union, and sync. Prefix `/start` stays until
-Phase 9 removes sidebar callers (so those buttons do not 404);
-Characters re-auth is `/api/characters/reauth/start` and writes via
+**Status:** landed, PR #178 (merged 2026-09-20, with Phase 5).
+`ALL_TOOL_KEYS` includes `"characters"`. `/api/characters/` is gated
+on that grant. `esi_data/actions.py` holds sharing/capability
+toggles, access preview, reauth scope union, and sync. Prefix
+`/start` stayed through this PR so sidebar callers did not 404;
+Phase 9 removes those callers and the endpoint. Characters re-auth
+is `/api/characters/reauth/start` and writes via
 `reauth_write_role` / `delete_strict_subset_tokens`.
 `eve-trader auth --role` is removed. Admin auto-ticks `"characters"`
 in the UI only (`do_set_tool_grants` is still replace, not merge).
-No Characters page (Phase 9). Per-tool character-list endpoints keep
-prefix listing until Phase 9 removes the sidebars; sharing already
-gates ESI reads. CI gate is the 403/200 isolation test, preview
-highlight tests, and full `pytest`. Live curl against a logged-in
-tenant is on the Deployment checklist.
+Per-tool character-list endpoints keep prefix listing; sharing
+already gates ESI reads. CI gate is the 403/200 isolation test,
+preview highlight tests, and full `pytest`. Live curl against a
+logged-in tenant is on the Deployment checklist.
 
 **Done when:** a real HTTP session with `"production"` but not
 `"characters"` gets 403 on `/api/characters/*` and still 200s
@@ -1317,6 +1321,22 @@ highlights, tool view, admin auto-tick) is a lie until 0–7 exist.
   the Deployment checklist when it lands, which is when they can
   actually be performed.
 
+**Status:** this PR. Characters page at `/characters` (grant
+`"characters"`), four sections in the specified order, five-state
+cells, per-tool popover, re-authorize, sync everything, pool hint
+from `character_has_token_pool`, decision-4 sentence on the page.
+Landing ToolCard, QuickNav, `App.tsx` route. Admin `ALL_TOOL_KEYS`
+copy and auto-tick were already in Phase 6 — verified, not rebuilt.
+Per-tool Add Character sidebars are gone; tool sync buttons stay,
+labelled "Refresh what I need". `useRoleCharacters` is list+remove
+only. Prefix `/api/auth/{role_prefix}/start` and
+`/access-preview` are removed; `/api/auth/gate/start` stays.
+`ROLE_PREFIX_TOOL` / `_ROLE_KEY_RE` / `validate_role_key_for_tool`
+remain for token-storage prefix keys and per-tool DELETE. CI gate
+is full `pytest`, `tsc -b`, and frontend vitest for the page
+chrome / five-state cells / grant-hidden card. Real-token flows
+are on the Deployment checklist, not a phase gate.
+
 **Done when:** the local browser flows above have been exercised
 against a local backend; Playwright or a throwaway `_verify_*.mjs`
 is deleted after, not left in the repo; full `pytest` still green.
@@ -1338,9 +1358,9 @@ deploys once at the end.
   Lives in this package, not in a tool package. The orchestrator
   asks it for an `auth_role` given `(character_id, required_scope)`;
   it does not pick a prefix.
-- `eve_trader/api/routers/auth.py` — `_scopes_for`, `/start` /
-  `/callback` / `/consent`, `_pending` dict. Consent and prefix
-  `/start` die here.
+- `eve_trader/api/routers/auth.py` — `/gate/start` / `/callback`,
+  `begin_oauth`, `_pending` dict. Consent and prefix `/start` die
+  here. Characters re-auth is `/api/characters/reauth/start`.
 - `eve_trader/access_gate.py` — `ALL_TOOL_KEYS` (grows to nine).
 - `eve_trader/api/app.py` — `_TOOL_PATH_PREFIXES`,
   `_required_tool_for_path` (today maps `{role_prefix}/start` via
@@ -1418,96 +1438,100 @@ lands, not a mid-flight action.
 
 This rebuild is deployed only once, when every phase is complete.
 There is no re-auth of real characters, no reconcile against live
-ESI, and no production-database work between phases. Everything that
-can only be confirmed against the live deployment is therefore
-collected here as it is built.
+ESI, and no production-database work between phases. Work this list
+top to bottom on deploy day. Parenthetical PR numbers are provenance,
+not a second order to follow.
 
-Each phase **appends its own items to this list as it lands**. This
-list is the deliverable at the end — not something reconstructed
-from PR descriptions afterwards. Work it top to bottom on deploy
-day.
+Landed: Phase 8 (#169), 0 (#171), 1 (#172), 2 (#173), 3a (#174),
+3b (#175), 4 (#176), 7 (#177), 5+6 (#178), 9 (this PR).
 
-Phase 8 (landed, PR #169), Phase 1 (landed, PR #172), Phase 2
-(landed, PR #173), Phase 3a (landed, PR #174), Phase 4 (landed,
-PR #176), and Phase 7 (landed, PR #177) have items below. Phases 5
-and 6 (this PR) add the confirm-dialog / Wallet-highlight SSO round
-and the live-app curl of the Characters grant isolation. Remaining
-phases add their
-own rows when they merge; do not invent them here.
+Read **"Known gaps after Phase 9"** below before starting. Two things
+the Characters page describes do not work yet — adding a character that
+does not already hold a token, and the Corporations "access via" column.
+Neither blocks this cutover (the backfill brings every pre-existing
+character across), but both will surprise you if you meet them first on
+deploy day.
 
 ### Prerequisites
 
 Outside the repo: EVE developer portal, app registration, anything
 the operator cannot do from a git pull.
 
-- **Phase 8.** Verify `esi-wallet.read_corporation_wallets.v1` is
-  enabled for the app in the EVE developer portal. Already done
-  2026-09-20. The deploy target uses the same app registration, so
-  this is a verify, not an enable.
+- Verify `esi-wallet.read_corporation_wallets.v1` is enabled for the
+  app in the EVE developer portal. Already done 2026-09-20. The
+  deploy target uses the same app registration, so this is a verify,
+  not an enable.
 
 ### Schema to apply, in order
 
 Apply each named file the same way existing `docs/*_schema.sql`
 files are applied (`deploy/deploy.sh`, README, `.cursor/start.sh`).
 
-- **Phase 1.** `docs/esi_access_schema.sql` — after
+- `docs/esi_access_schema.sql` — after
   `job_category_cost_index_overrides_schema.sql` in the existing apply
-  order (`deploy/deploy.sh`, `deploy/README.md`, root `README.md`,
-  `.cursor/start.sh`). Sharing, freshness, group-3 capabilities,
-  wallet snapshot tables, owner-id columns. Idempotent. Phase 8 added
-  no schema file.
-- **Phase 5.** Re-apply `docs/esi_access_schema.sql` (idempotent). The
-  file now starts with `DROP TABLE IF EXISTS tenant_role_consents`.
-  There is no separate schema file; `docs/role_consent_schema.sql` is
-  deleted. New installs never create the table.
+  order. Sharing, freshness, group-3 capabilities, wallet snapshot
+  tables, owner-id columns. Starts with
+  `DROP TABLE IF EXISTS tenant_role_consents` (`docs/role_consent_schema.sql`
+  is deleted; new installs never create that table). Also copies any
+  remaining `doctrine_character_assets` / `doctrine_corp_assets` rows
+  into `character_assets` / `corp_assets` (prefer an already
+  owner-id-stamped shared-table row; otherwise take the incoming
+  doctrine row) and DROPs the doctrine tables. Idempotent:
+  re-applying is a no-op once consents and doctrine asset tables are
+  gone; `doctrine_schema.sql` no longer recreates them.
 
 ### One-time data migrations
 
-Name the function, whether it is idempotent, and whether it is
-per-tenant. Run after schema, before depending on the new shape.
+Run after schema, before anything depends on sharing rows (the
+accessor, Characters UI, tool syncs).
 
-- **Phase 1.** `eve_trader.esi_data.backfill.backfill_conservative_sharing`.
+- `eve_trader.esi_data.backfill.backfill_conservative_sharing`.
   Idempotent (`ON CONFLICT DO NOTHING` on the sharing / capability
-  PKs). Per-tenant: run once per tenant after schema, before anything
-  depends on sharing rows (Phase 3's accessor, Characters UI). CLI:
-  `eve-trader tenant backfill-esi-sharing --tenant-id …`. Resolves each
-  character's `corporation_id` via `character_public_info` (public, no
-  auth) so producer / doctrine / doctrine-assets prefixes get the corp
-  sharing rows decision 13 specifies. A failed lookup falls back to
-  character-only sharing for that character and logs a warning naming
-  it; the CLI prints those character ids. `corporation_ids` is an
-  override for tests and network-free runs, not on the CLI. Phase 8
-  added no migration function. Reconcile Trades is a wholesale replace
-  of `realized_trades` (see Post-deploy verification), not a schema or
+  PKs). Per-tenant: `eve-trader tenant backfill-esi-sharing --tenant-id …`.
+  Resolves each character's `corporation_id` via `character_public_info`
+  (public, no auth) so producer / doctrine / doctrine-assets prefixes
+  get the corp sharing rows decision 13 specifies. A failed lookup
+  falls back to character-only sharing for that character and logs a
+  warning naming it; the CLI prints those character ids.
+  `corporation_ids` is an override for tests and network-free runs,
+  not on the CLI. Reconcile Trades is a wholesale replace of
+  `realized_trades` (see Post-deploy verification), not a schema or
   data migration.
 
 ### Re-authorizations required
 
 What silently degrades until the named characters re-auth. These are
-easy to miss precisely because they do not fail loudly.
+easy to miss precisely because they do not fail loudly. Use the
+Characters page **Re-authorize** button (one SSO round per character,
+`/api/characters/reauth/start`). Prefix `/api/auth/{role_prefix}/start`
+is gone.
 
-- **Phase 8.** Every buyer and every seller character needs a
-  one-time re-auth to pick up `esi-wallet.read_corporation_wallets.v1`.
-  Until then, corp-wallet ESI calls 403 and are skipped non-fatally;
-  character-wallet matching still runs, so realized profit looks
-  complete and is missing every corp-funded fill. That silent skip
-  is why this is on the checklist. Same pattern
-  `PRODUCTION_SCOPES` already documents for
-  `esi-markets.structure_markets.v1`. Not required of producer
-  characters: the scope is on `OAuthConfig.scopes` (buyer/seller
-  login) only, not on `PRODUCTION_SCOPES`.
+- Every character that was a buyer or seller needs a re-auth to pick
+  up `esi-wallet.read_corporation_wallets.v1`. Until then, corp-wallet
+  ESI calls 403 and are skipped non-fatally; character-wallet matching
+  still runs, so realized profit looks complete and is missing every
+  corp-funded fill. Not required of producer-only characters: the
+  scope was on `OAuthConfig.scopes` (buyer/seller login) only.
+- Any character with a pending-re-auth cell (a ticked kind whose
+  scopes are not on any token) needs the same Re-authorize. Wallet
+  should show as `(new)` in the confirm dialog when it is being
+  added; there is no "once per role" copy. The dialog body is the
+  registry payload from `/api/characters/access-preview`.
+- A multi-prefix character (token pool hint on) is merged on this
+  same re-auth: `delete_strict_subset_tokens` runs after the write.
+  There is no batch re-keying.
 
 ### Config to set or review after deploy
 
-- **Phase 8 (optional).** `TradingConfig.wallet_division_ids`. Empty
-  default means all seven ESI wallet divisions. Settings UI is the
-  "Corp wallet divisions included in Reconcile Trades" MultiSelect
-  (placeholder "All divisions"). Leave empty unless the operator
-  wants Reconcile Trades to page a subset.
-- **Phase 7.** `TradingConfig.esi_frequent_interval_hours` (default 1),
+- `TradingConfig.wallet_division_ids` (optional). Empty default means
+  all seven ESI wallet divisions. Settings UI is the "Corp wallet
+  divisions included in Reconcile Trades" MultiSelect (placeholder
+  "All divisions"). Leave empty unless the operator wants Reconcile
+  Trades to page a subset.
+- `TradingConfig.esi_frequent_interval_hours` (default 1),
   `esi_normal_interval_hours` (6), `esi_rare_interval_hours` (24),
   `esi_stale_clear_multiples` (3). Settings UI is Trading → ESI
-  freshness. Defaults match today's Production 6h cadence for the
+  freshness. Defaults match the old Production 6h cadence for the
   normal tier. `production_sync_interval_hours` /
   `doctrine_sync_interval_hours` in a leftover `config.yaml` are
   ignored (unknown keys are skipped). `scheduler_enabled` is still
@@ -1515,109 +1539,128 @@ easy to miss precisely because they do not fail loudly.
 
 ### Post-deploy verification
 
-What to check, and what a correct result looks like.
+What to check, in this order, and what a correct result looks like.
 
-- **Phase 5.** Same SSO round as Re-authorizations: Wallet is
-  highlighted `(new)`, no "once per role" copy. The dialog body is
-  the registry payload from `/access-preview`, not a static per-prefix
-  bundle.
-- **Phase 6.** Logged into a tenant with `"production"` but not
-  `"characters"`: `GET /api/characters/sharing` is 403; a Production
-  read (`GET /api/production/sde/counts`) is 200. A session with
-  `"characters"` can `POST /api/characters/sharing` and
-  `GET /api/characters/access-preview`. Prefix
-  `/api/auth/producer/start` still exists until Phase 9 (sidebar
-  callers). `GET /api/characters/owners` for a multi-prefix character
-  is one row with `character_has_token_pool: true`.
-- **Phase 1.** After the backfill, for a tenant with a character that
-  was both `producer` and `doctrine-assets`: `esi_sharing` has Assets
-  rows for both `production` and `doctrine`, and none for `sorting`.
-  `esi_character_capabilities` has the Access ticks implied by those
-  prefixes, and those capability keys do not appear as
-  `esi_sharing.data_kind`. Unmatched `sorting_intake_sources` rows
-  still exist with `owner_name` only.
-- **Phase 8.** After the buyer/seller re-auth above, run Reconcile
-  Trades. `save_realized_trades` wholesale-replaces `realized_trades`,
-  so previously reconciled periods do not pick up corp fills until
-  that fresh run — historical rows are replaced, not patched. Correct
-  result: a known corp-funded sell that reconciliation previously
-  missed now appears in Realized Trades. This is Phase 8's original
-  "done when" live check; it could not be performed in a token-less
-  build environment and lives here rather than staying unsatisfied
-  on the phase.
-- **Phase 2.** After deploy, the first successful Production ESI sync
-  of each producer character (and Doctrine `sync_assets` /
-  `sync_contracts` of each doctrine-assets / doctrine character)
-  stamps `owner_character_id` / `owner_corporation_id` on that
-  owner's snapshot rows and deletes that owner's leftover NULL-id
-  rows that can be attributed by `owner_name` (assets, sell orders),
-  `installer_id` (character jobs), or `source_role` (contracts). A
-  failed first sync does **not** wipe that owner (decision 6);
-  previous (possibly NULL-id) rows stay until a successful replace or
-  the age-limit clear (Phase 3 caller, Phase 7 config). After every
-  registered owner has succeeded once, leftover NULL-id rows in
-  `character_blueprints` / `corp_blueprints` / `corp_industry_jobs`
-  are vanished items that could not be attributed without touching
-  another owner; they do not collide on later syncs (incoming PKs).
-  Correct result: a second sync of the same owner does not
-  UniqueViolation on `(item_id, owner_name)`, and a Production-only
-  sync of character A leaves character B's rows in the same table.
-- **Phase 3a.** After conservative sharing is backfilled, run one
-  Production ESI sync (`do_sync_esi` / `do_sync_for_tool("production")`)
-  and one Trading-shaped sync (`do_sync_for_tool("trading")`) per
-  tenant. Correct result: `esi_freshness` has a `last_success_at` per
-  (owner, kind) that actually fetched; `esi_wallet_transactions` /
-  `esi_wallet_journal` are populated for buyer/seller characters
-  shared with Trading. Then run Reconcile Trades: it must consume those
-  snapshots (no second ESI wallet page for owners that have rows). A
-  first reconcile *before* that wallet fetch still pages ESI **for
-  owners that are shared with Trading and have an empty snapshot**.
-  Owners with no sharing row are omitted — there is no live-ESI bypass,
-  which is why the Phase 1 backfill (above, under One-time data
-  migrations) must run before anything depends on sharing rows. Local
-  development without a backfill sees empty Trading asset/wallet reads;
-  that is intended. After a fully successful orchestrator pass,
-  leftover NULL-id rows in `character_blueprints` / `corp_blueprints` /
-  `corp_industry_jobs` are gone (the sweep); a pass where any owner
-  failed must leave them. Age-limit clear is now a caller of
-  `clear_stale_owner_kind` with hardcoded tier hours (frequent 1h /
-  normal 6h / rare 24h) and `DEFAULT_STALE_CLEAR_MULTIPLES=3` — there
-  is no `TradingConfig` field until Phase 7. Doctrine asset tables are
-  still present until 3b.
-- **Phase 3b.** Applying `docs/esi_access_schema.sql` copies remaining
-  `doctrine_character_assets` / `doctrine_corp_assets` rows into
-  `character_assets` / `corp_assets` (prefer an already owner-id-stamped
-  shared-table row over an unstamped doctrine row; otherwise take the
-  incoming doctrine row) and DROPs the doctrine tables. Re-applying is a
-  no-op once they are gone — `doctrine_schema.sql` no longer recreates
-  them. Doctrine Stockpile then reads only through
-  `read_esi(..., tool_key="doctrine")`. A tenant with no producer and no
-  Production data is correct as long as the character's Assets are shared
-  with doctrine (Phase 1 backfill already does this for `doctrine-assets`
-  prefixes). After this cutover, `\dt` / `information_schema` must not
-  list `doctrine_character_assets` or `doctrine_corp_assets`. This is a
-  real cutover, not a no-op apply.
-- **Phase 4.** After the Characters status endpoint exists (Phase 6)
-  and the UI renders it (Phase 9), a live `GET` of that endpoint for
-  a tenant that still has a multi-prefix character (e.g. both
-  `producer:<id>` and `doctrine-assets:<id>`) must show that
-  character as **one row** with the pool hint set. The hint is the
-  backend flag `character_has_token_pool`, not a frontend count of
-  prefixes. A character with a single `tenant_tokens` row must have
-  the hint unset. There is no token re-keying in Phase 4; the pool
-  is expected to remain until the next re-auth (Phase 6 `/start`
-  calling `delete_strict_subset_tokens`). This is Phase 4's original
-  "done when" live check; it could not be performed without that
-  endpoint or real tokens and lives here rather than staying
-  unsatisfied on the phase.
-- **Phase 7.** With `scheduler_enabled` on `DEFAULT_TENANT_ID`, the
-  first tick after deploy runs `esi_data_sync` (`do_sync_due`), not
-  `production_sync` / `doctrine_contract_sync`. Portfolio shows "ESI
-  data sync". A kind fetched by a manual Production/Doctrine/Trading
-  Sync is not refetched on that tick. Reconcile Trades after a wallet
-  snapshot exists must not page ESI for that owner. There is no
-  live-token mid-flight gate; this is the real-tenant confirmation
-  of the suite's due-kind / snapshot-skip tests.
+1. **Schema cutover.** `\dt` / `information_schema` must not list
+   `doctrine_character_assets`, `doctrine_corp_assets`, or
+   `tenant_role_consents`. Doctrine Stockpile reads only through
+   `read_esi(..., tool_key="doctrine")`. A tenant with no producer
+   and no Production data is correct as long as the character's
+   Assets are shared with doctrine (the conservative backfill
+   already does this for `doctrine-assets` prefixes).
+
+2. **Conservative backfill.** For a tenant with a character that was
+   both `producer` and `doctrine-assets`: `esi_sharing` has Assets
+   rows for both `production` and `doctrine`, and none for `sorting`.
+   `esi_character_capabilities` has the Access ticks implied by those
+   prefixes, and those capability keys do not appear as
+   `esi_sharing.data_kind`. Unmatched `sorting_intake_sources` rows
+   still exist with `owner_name` only.
+
+3. **Grant isolation (live curl).** Logged into a tenant with
+   `"production"` but not `"characters"`: `GET /api/characters/sharing`
+   is 403; a Production read (`GET /api/production/sde/counts`) is
+   200. A session with `"characters"` can `POST /api/characters/sharing`
+   and `GET /api/characters/access-preview`. Prefix
+   `/api/auth/producer/start` is 404.
+
+4. **Owners + pool hint.** `GET /api/characters/owners` for a
+   multi-prefix character (e.g. both `producer:<id>` and
+   `doctrine-assets:<id>`) is **one row** with
+   `character_has_token_pool: true`. The Characters page renders that
+   as the pool hint; do not infer it by counting prefixes. A character
+   with a single `tenant_tokens` row must have the hint unset. The
+   pool remains until the next re-auth (step above).
+
+5. **First ESI sync per owner.** Run one Production refresh
+   (`do_sync_esi` / `do_sync_for_tool("production")`) and one
+   Trading-shaped sync (`do_sync_for_tool("trading")`) per tenant,
+   or **Sync everything** on the Characters page. Correct result:
+   `esi_freshness` has a `last_success_at` per (owner, kind) that
+   actually fetched; `esi_wallet_transactions` / `esi_wallet_journal`
+   are populated for characters shared with Trading; snapshot rows
+   have `owner_character_id` / `owner_corporation_id` and that
+   owner's leftover NULL-id rows that can be attributed by
+   `owner_name` (assets, sell orders), `installer_id` (character
+   jobs), or `source_role` (contracts) are gone. A failed first sync
+   does **not** wipe that owner (decision 6). After every registered
+   owner has succeeded once, leftover NULL-id rows in
+   `character_blueprints` / `corp_blueprints` / `corp_industry_jobs`
+   are vanished items that could not be attributed without touching
+   another owner. A second sync of the same owner must not
+   UniqueViolation on `(item_id, owner_name)`, and a Production-only
+   sync of character A leaves character B's rows in the same table.
+   Then run Reconcile Trades: it must consume those wallet snapshots
+   (no second ESI wallet page for owners that have rows). A first
+   reconcile *before* that wallet fetch still pages ESI **for owners
+   that are shared with Trading and have an empty snapshot**. Owners
+   with no sharing row are omitted — there is no live-ESI bypass,
+   which is why the backfill must run first. Local development
+   without a backfill sees empty Trading asset/wallet reads; that is
+   intended.
+
+6. **Corp-wallet fills.** After the buyer/seller re-auth above, run
+   Reconcile Trades. `save_realized_trades` wholesale-replaces
+   `realized_trades`, so previously reconciled periods do not pick up
+   corp fills until that fresh run. Correct result: a known
+   corp-funded sell that reconciliation previously missed now appears
+   in Realized Trades.
+
+7. **Scheduler.** With `scheduler_enabled` on `DEFAULT_TENANT_ID`,
+   the first tick after deploy runs `esi_data_sync` (`do_sync_due`),
+   not `production_sync` / `doctrine_contract_sync`. Portfolio shows
+   "ESI data sync". A kind fetched by a manual tool "Refresh what I
+   need" is not refetched on that tick. Reconcile Trades after a
+   wallet snapshot exists must not page ESI for that owner.
+
+8. **Characters page against live sharing (needs real tokens).** A real
+   SSO re-auth with a highlighted new scope (`(new)` in the confirm
+   dialog; no "once per role" copy). The pool hint on a genuinely
+   multi-prefix character (`character_has_token_pool: true`, not a
+   frontend count). Tool view against live sharing rows after the
+   conservative backfill (Sorting has no Assets source until someone
+   ticks it). Confirm a Production page still sees shared assets and
+   does not see unshared ones. The page chrome, five-state cells,
+   popover toggle, grant-hidden Landing card, and section order are
+   Phase 9's local browser gate, not this step.
+
+## Known gaps after Phase 9
+
+The rebuild is complete against every phase's own brief. These two
+things the UI *describes* are not delivered. They are recorded here
+rather than in a merged PR description, which is where such notes go
+to die.
+
+**1. There is no add-a-new-character path.** `/api/characters/reauth/start`
+requires a `character_id`, and prefix `/api/auth/{role_prefix}/start` was
+removed in Phase 9. A character therefore only appears on the Characters
+page once it already holds a token — which the Phase 1 conservative
+backfill arranges for every character that existed before the cutover,
+but nothing arranges for a new one. The empty state is copy-only.
+
+Shape of the fix, if it is taken: an SSO start with no `character_id`
+requesting **no scopes** (identity only, the same shape `gate` already
+uses), and a `/callback` branch that resolves the character from the
+returned token and writes it under `reauth_write_role(character_id)` —
+which Phase 4 already built and which returns `esi:<id>` for an unknown
+character. Two SSO rounds to get a useful character (add, then tick and
+re-authorize) is the honest consequence of settled decision 1: only
+ticked scopes are ever requested.
+
+**2. The Corporations table cannot name its access character or warn on
+a missing in-game role.** `do_list_token_characters` returns no
+`corporation_id`, and `TokenRecord` does not carry one, so "access via"
+renders `—`.
+
+These halves differ in cost. The **column** is cheap: resolve each
+character's corporation via `ESIClient.character_public_info` — public,
+unauthenticated, and already used for exactly this in
+`trade_reconciliation._corps_for_characters` and in the Phase 1 backfill.
+The **role warning** is not: ESI does not expose a character's corporation
+roles without `esi-characters.read_corporation_roles.v1`, which nothing in
+this app requests and which would need the same dev-portal step Phase 8
+needed. Until then a live 403, surfaced per corp in the sync result, stays
+the real check.
 
 ## Explicitly out of scope
 
