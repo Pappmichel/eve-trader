@@ -15,7 +15,7 @@ from eve_trader import storage
 from eve_trader.auth import TokenRecord
 from eve_trader.esi_client import ESIError
 from eve_trader.esi_data import orchestrator
-from eve_trader.esi_data.orchestrator import do_sync_for_tool
+from eve_trader.esi_data.orchestrator import do_sync_due, do_sync_for_tool
 from eve_trader.esi_data.selector import REAUTH_NEEDED
 
 from . import pg_helpers
@@ -367,6 +367,46 @@ def test_orchestrator_records_reauth_needed_and_keeps_processing_other_owners(te
             (ALICE,),
         ).fetchone()
     assert err is None
+
+
+def test_do_sync_due_fetches_only_kinds_past_their_interval(tenant):
+    _share("character", ALICE, "assets", "production")
+    _share("character", ALICE, "industry_jobs", "production")
+    _tokens((ALICE, "Alice"))
+    storage.upsert_esi_freshness("character", ALICE, "assets", success=True)
+    client = FakeClient(
+        assets={ALICE: [_asset(1, ALICE)]},
+        jobs={ALICE: [_job(11, ALICE)]},
+    )
+    result = do_sync_due(client=client)
+    assert result["ok"] is True
+    assert client.asset_calls == []
+    assert client.job_calls == [ALICE]
+    assert _count("character_assets", owner_character_id=ALICE) == 0
+    assert _count("character_industry_jobs", owner_character_id=ALICE) == 1
+
+
+def test_manual_tool_sync_pushes_back_the_next_scheduled_fetch(tenant):
+    _share("character", ALICE, "assets", "production")
+    _share("character", ALICE, "industry_jobs", "production")
+    _tokens((ALICE, "Alice"))
+    first = FakeClient(
+        assets={ALICE: [_asset(1, ALICE)]},
+        jobs={ALICE: [_job(11, ALICE)]},
+    )
+    assert do_sync_for_tool("production", client=first)["ok"] is True
+    assert sorted(first.asset_calls) == [ALICE]
+    assert sorted(first.job_calls) == [ALICE]
+    second = FakeClient(
+        assets={ALICE: [_asset(2, ALICE)]},
+        jobs={ALICE: [_job(12, ALICE)]},
+    )
+    result = do_sync_due(client=second)
+    assert result["ok"] is True
+    assert second.asset_calls == []
+    assert second.job_calls == []
+    assert _count("character_assets", owner_character_id=ALICE) == 1
+    assert _count("character_industry_jobs", owner_character_id=ALICE) == 1
 
 
 def test_orchestrator_picks_largest_scope_token_not_a_prefix(tenant):

@@ -9,22 +9,24 @@ from __future__ import annotations
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from typing import Optional
 
 from .. import storage
 from ..access_gate import ALL_TOOL_KEYS
 from ..auth import TokenManager, TokenRecord
-from ..config import OAUTH_CONFIG
+from ..config import OAUTH_CONFIG, TRADING_CONFIG
 from ..esi_client import ESIClient, ESIError
 from .fetchers import fetcher_for
 from .registry import OWNED_DATA_KINDS, TIER_FREQUENT, TIER_NORMAL, TIER_RARE
 from .selector import REAUTH_NEEDED, select_auth_role
-from .stale import DEFAULT_STALE_CLEAR_MULTIPLES, clear_stale_owner_kind
+from .stale import clear_stale_owner_kind
 
 log = logging.getLogger(__name__)
 
-# Hardcoded until Phase 7 adds TradingConfig.esi_*_interval_hours. Matches
-# today's production_sync_interval_hours=6 for the normal tier.
+# Dataclass defaults on TradingConfig.esi_*_interval_hours. _tier_hours
+# reads the live config; this dict is the documented fallback matching
+# those defaults (frequent 1h / normal 6h / rare 24h).
 DEFAULT_TIER_INTERVAL_HOURS = {
     TIER_FREQUENT: 1.0,
     TIER_NORMAL: 6.0,
@@ -60,7 +62,39 @@ def _end_owner(owner_type: str, owner_id: int) -> None:
 
 
 def _tier_hours(data_kind: str) -> float:
-    return DEFAULT_TIER_INTERVAL_HOURS[_KIND_TIER[data_kind]]
+    cfg = TRADING_CONFIG
+    by_tier = {
+        TIER_FREQUENT: cfg.esi_frequent_interval_hours,
+        TIER_NORMAL: cfg.esi_normal_interval_hours,
+        TIER_RARE: cfg.esi_rare_interval_hours,
+    }
+    return by_tier[_KIND_TIER[data_kind]]
+
+
+def _stale_clear_multiples() -> float:
+    return TRADING_CONFIG.esi_stale_clear_multiples
+
+
+def _hours_since_success(iso_or_dt, now: Optional[datetime] = None) -> float:
+    if iso_or_dt is None:
+        return float("inf")
+    if isinstance(iso_or_dt, str):
+        since = datetime.fromisoformat(iso_or_dt.replace("Z", "+00:00"))
+    else:
+        since = iso_or_dt
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
+    clock = now or datetime.now(timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+    return (clock - since).total_seconds() / 3600.0
+
+
+def _kind_is_due(
+    owner_type: str, owner_id: int, data_kind: str, *, now: Optional[datetime] = None,
+) -> bool:
+    last = storage.get_esi_freshness_success_at(owner_type, owner_id, data_kind)
+    return _hours_since_success(last, now) >= _tier_hours(data_kind)
 
 
 def _required_scope(data_kind: str, owner_type: str) -> Optional[str]:
@@ -132,7 +166,7 @@ def _record_failure(owner_type: str, owner_id: int, data_kind: str, error: BaseE
         clear_stale_owner_kind(
             owner_type, owner_id, data_kind,
             tier_interval_hours=_tier_hours(data_kind),
-            stale_clear_multiples=DEFAULT_STALE_CLEAR_MULTIPLES,
+            stale_clear_multiples=_stale_clear_multiples(),
             owner_name=None,
         )
     except Exception:  # noqa: BLE001 - stale clear must not hide the fetch error
@@ -435,3 +469,24 @@ def do_sync_all(*, client: Optional[ESIClient] = None, extra: Optional[dict] = N
     """
     sharing = storage.list_esi_sharing()
     return _sync(sharing, client=client, tool_key=None, extra=extra)
+
+
+def do_sync_due(
+    *,
+    client: Optional[ESIClient] = None,
+    extra: Optional[dict] = None,
+    now: Optional[datetime] = None,
+) -> dict:
+    """Refresh every shared (owner, kind) whose last_success_at is older
+    than that kind's freshness-tier interval (or missing).
+
+    Manual `do_sync_for_tool` / `do_sync_all` still fetch regardless of
+    due-ness and stamp freshness, which pushes those pairs past the next
+    scheduled tick. The scheduler calls this once per tenant.
+    """
+    sharing = storage.list_esi_sharing()
+    due = [
+        row for row in sharing
+        if _kind_is_due(row[0], row[1], row[2], now=now)
+    ]
+    return _sync(due, client=client, tool_key=None, extra=extra)

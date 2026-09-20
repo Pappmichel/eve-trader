@@ -31,6 +31,7 @@ from .access import AccessorError, is_shared, read_esi, shared_owner_ids
 from .orchestrator import (
     DEFAULT_TIER_INTERVAL_HOURS,
     do_sync_all,
+    do_sync_due,
     do_sync_for_tool,
 )
 from .selector import (
@@ -66,6 +67,7 @@ __all__ = (
     "shared_owner_ids",
     "DEFAULT_TIER_INTERVAL_HOURS",
     "do_sync_all",
+    "do_sync_due",
     "do_sync_for_tool",
     "REAUTH_NEEDED",
     "character_has_token_pool",

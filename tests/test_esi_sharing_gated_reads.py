@@ -314,3 +314,38 @@ def test_collect_wallet_missing_tenant_propagates():
             [(ALICE, "buyer")], [(BOB, "seller")],
             WalletClient(), TradingConfig(),
         )
+
+
+def test_shared_wallet_snapshot_skips_live_esi(tenant, monkeypatch):
+    """Phase 3a made reconcile a snapshot consumer; Phase 7 keeps do_pipeline
+    off the live wallet page when rows exist.
+    """
+    monkeypatch.setattr(
+        "eve_trader.trade_reconciliation.storage.get_station_ids_in_region",
+        lambda region_id: frozenset({JITA_STATION}),
+    )
+    cfg = TradingConfig(lookback_days=30)
+    _share("character", ALICE, "wallet")
+    _share("character", BOB, "wallet")
+    storage.replace_wallet_transactions(
+        [(0, 1, _iso(2), TYPE_ID, JITA_STATION, 1000.0, 10, True, 1)],
+        owner_type="character", owner_id=ALICE,
+    )
+    storage.replace_wallet_transactions(
+        [(0, 2, _iso(1), TYPE_ID, JITA_STATION, 1200.0, 10, False, 2)],
+        owner_type="character", owner_id=BOB,
+    )
+    storage.replace_wallet_journal(
+        [(0, 2, _iso(1), "market_transaction", -12000.0)],
+        owner_type="character", owner_id=BOB,
+    )
+    client = WalletClient({
+        ALICE: [_buy_txn(ALICE)],
+        BOB: [_sell_txn(cfg, BOB)],
+    })
+    txns, _journal = collect_trading_wallet_streams(
+        [(ALICE, "buyer")], [(BOB, "seller")], client, cfg,
+    )
+    assert client.char_txn_calls == []
+    assert client.corp_txn_calls == []
+    assert {t["_wallet_owner_id"] for t in txns} == {ALICE, BOB}

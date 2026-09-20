@@ -161,7 +161,9 @@ def do_sync_esi() -> dict:
     /api/production/esi/sync returned 400 in 0.001s before any ESI. Not
     migrated to pipeline_runner — re-measure if a real character roster
     ever hits a proxy timeout (Trading's original reason for a background
-    job). Scheduler still calls this in-process."""
+    job). The scheduler's ESI job is esi_data.orchestrator.do_sync_due;
+    this remains the Production-page Sync button (do_sync_for_tool plus
+    cache invalidation)."""
     result = esi_sync.sync_esi()
     storage.set_esi_sync_time("production", datetime.now(timezone.utc).isoformat())
     # Owned-BPO ME/TE (storage.get_owned_bpo_best_me_te, used by _owned_bpo_mods

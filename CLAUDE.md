@@ -383,7 +383,7 @@ background daemon thread, started from `api/app.py`'s FastAPI lifespan.
 Whether it starts at all is an operator-level decision, read once at boot
 from `DEFAULT_TENANT_ID`'s own `TradingConfig.scheduler_enabled` (**off by
 default**) - see "Multi-tenant Postgres" below for what `DEFAULT_TENANT_ID`
-means. Each tick, `trading_pipeline`/`production_sync` run once **per
+means. Each tick, `trading_pipeline` / `esi_data_sync` run once **per
 tenant** (`storage.list_tenants()`, each fully scoped via `tenant_scope.
 enter_tenant`) - a tenant's own `scheduler_enabled`/interval fields decide
 independently whether *their* jobs run that tick, via
@@ -397,19 +397,42 @@ inviting a second tenant. `backup` stays a single **global**,
 unscoped job (`_check_and_run_backup_job`) - one `pg_dump` already covers
 every tenant's data in one shot, nothing to iterate; its own interval/
 enabled check reads `DEFAULT_TENANT_ID`'s config, same operator-level
-reasoning as the thread's own on/off switch.
+reasoning as the thread's own on/off switch. The Jita price cache is the
+other global/unscoped job.
 
-Both per-tenant jobs reuse an existing "when did this last happen" source
-instead of separate scheduler-specific persistence: `storage.esi_sync_state`
-(already written by `do_pipeline`/`do_sync_esi`). The backup job reuses the
-newest backup file's own mtime (`backup.list_backups()`). A manual run/
-backup from the UI correctly counts either way and pushes back the next
-scheduled one. `last_run_status` is `{tenant_id: {job_name: {...}}}` for the
-two per-tenant jobs; a separate `_backup_status` (not tenant-keyed) covers
-the global one. Adding a fourth *per-tenant* scheduled job means adding one
-interval field to `TradingConfig` (plus a `_FIELD_RANGES` entry, `(0, None)`,
-in `config.py`) and one `if _hours_since(...) >= cfg.x: _run_job(tenant_id,
-...)` line in `_check_and_run_due_jobs_for_tenant` - no other wiring needed.
+`esi_data_sync` is one orchestrator call (`do_sync_due`) that internally
+decides which (owner, kind) pairs are due given `esi_freshness.last_success_at`
+and the three freshness-tier intervals (`esi_frequent_interval_hours` /
+`esi_normal_interval_hours` / `esi_rare_interval_hours`). A failed fetch
+passes `TradingConfig.esi_stale_clear_multiples` into the existing
+`clear_stale_owner_kind` (do not re-derive that clear). Manual tool syncs
+(`do_sync_for_tool`) stamp freshness and push those pairs past the next
+scheduled fetch. `last_run_status` stays job-named (`esi_data_sync`);
+per-kind state lives on `esi_freshness`. `get_status()` reports
+`esi_data_sync.last_run_at` from `storage.newest_esi_freshness_success_at()`
+(`MAX(last_success_at)` for this tenant, `None` if nothing has ever
+succeeded) — not `_run_job`'s tick `ran_at`, because that job runs every
+five minutes and usually fetches nothing. `last_error` still comes from
+`last_run_status`. Portfolio shows the three tier intervals under
+`tier_interval_hours`; `interval_hours` is null for this job.
+`trading_pipeline` is **not** an ESI-owner sync: it still runs
+`do_pipeline` (candidate/shortlist + reconcile). Reconcile consumes wallet snapshots when present and only
+live-pages ESI for a shared owner whose snapshot is empty.
+`production_sync_interval_hours` / `doctrine_sync_interval_hours` are
+retired as ESI intervals.
+
+`trading_pipeline` still reuses `storage.esi_sync_state` (written by
+`do_pipeline`). The backup job reuses the newest backup file's own mtime
+(`backup.list_backups()`). A manual pipeline/backup from the UI correctly
+counts either way and pushes back the next scheduled one. `last_run_status`
+is `{tenant_id: {job_name: {...}}}` for the two per-tenant jobs; a separate
+`_backup_status` (not tenant-keyed) covers the global backup, and
+`_jita_price_cache_status` the other. Adding another *per-tenant* scheduled
+job that is not ESI-owner sync still means adding one interval field to
+`TradingConfig` (plus a `_FIELD_RANGES` entry, `(0, None)`, in `config.py`)
+and one `if _hours_since(...) >= cfg.x: _run_job(tenant_id, ...)` line in
+`_check_and_run_due_jobs_for_tenant`. Do not add a fourth tool-shaped ESI
+job; extend `do_sync_due` / the registry instead.
 
 ## Backup
 

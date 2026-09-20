@@ -176,6 +176,10 @@ export interface TradingSettings {
   buyer_character_name: string | null
   seller_character_name: string | null
   wallet_division_ids: number[]
+  esi_frequent_interval_hours: number
+  esi_normal_interval_hours: number
+  esi_rare_interval_hours: number
+  esi_stale_clear_multiples: number
 }
 
 export interface PipelineRunProgress {
@@ -627,9 +631,15 @@ export interface ErrorLogRow {
 }
 
 export interface SchedulerJobStatus {
-  interval_hours: number
+  interval_hours: number | null
   last_run_at: string | null
   last_error: string | null
+  /** Present on esi_data_sync: the three freshness-tier cadences. */
+  tier_interval_hours?: {
+    frequent: number
+    normal: number
+    rare: number
+  }
 }
 
 export interface SchedulerStatus {
@@ -637,8 +647,7 @@ export interface SchedulerStatus {
   running: boolean
   jobs: {
     trading_pipeline: SchedulerJobStatus
-    production_sync: SchedulerJobStatus
-    doctrine_contract_sync: SchedulerJobStatus
+    esi_data_sync: SchedulerJobStatus
     backup: SchedulerJobStatus
     jita_price_cache: SchedulerJobStatus
   }

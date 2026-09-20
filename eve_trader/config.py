@@ -206,9 +206,11 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "component_cost_index_override": (0, 1),
     "manufacturing_cost_index_override": (0, 1),
     "trading_pipeline_interval_hours": (0, None),
-    "production_sync_interval_hours": (0, None),
+    "esi_frequent_interval_hours": (0, None),
+    "esi_normal_interval_hours": (0, None),
+    "esi_rare_interval_hours": (0, None),
+    "esi_stale_clear_multiples": (0, None),
     "backup_interval_hours": (0, None),
-    "doctrine_sync_interval_hours": (0, None),
     "jita_price_cache_interval_hours": (0, None),
     # -- Doctrine tool (see doctrine/config.py's DoctrineConfig) --
     "doctrine_structure_id": (1, None),
@@ -492,19 +494,23 @@ class TradingConfig:
 
     # -- Background scheduler (see scheduler.py) --
     # Off by default: an in-process background thread that, once enabled,
-    # periodically runs actions.do_pipeline (Trading) and
-    # production.actions.do_sync_esi (Production) on their own intervals
-    # while the backend process stays running - so routine maintenance
-    # happens without either tool's "Refresh"/"Sync ESI" button being
-    # clicked by hand. Previously nothing in this app ran on any kind of
-    # schedule at all. Opt-in rather than on-by-default since this is a
-    # credentials-handling tool making its own ESI calls in the background -
-    # that should never start happening without the user explicitly asking.
+    # periodically runs actions.do_pipeline (Trading candidate/shortlist
+    # work, not an ESI-owner sync) and esi_data.orchestrator.do_sync_due
+    # (one call that internally decides which (owner, kind) pairs are due
+    # given the three freshness-tier intervals). Opt-in rather than
+    # on-by-default since this is a credentials-handling tool making its
+    # own ESI calls in the background.
     scheduler_enabled: bool = False
     trading_pipeline_interval_hours: float = 24.0     # do_pipeline(safe=True) - no universe rebuild
-    production_sync_interval_hours: float = 6.0        # production do_sync_esi
+    # Freshness tiers (docs/ESI_ACCESS_PLAN.md Phase 7 / decision 5).
+    # production_sync_interval_hours / doctrine_sync_interval_hours used
+    # to be the ESI cadences; they are retired. Defaults match the
+    # orchestrator's DEFAULT_TIER_INTERVAL_HOURS (1 / 6 / 24).
+    esi_frequent_interval_hours: float = 1.0
+    esi_normal_interval_hours: float = 6.0
+    esi_rare_interval_hours: float = 24.0
+    esi_stale_clear_multiples: float = 3.0            # passed into clear_stale_owner_kind
     backup_interval_hours: float = 24.0                # backup.create_backup() - see backup.py
-    doctrine_sync_interval_hours: float = 12.0          # doctrine do_sync_contracts
     jita_price_cache_interval_hours: float = 1.0        # production.jita_price_cache.refresh_jita_price_cache()
 
 

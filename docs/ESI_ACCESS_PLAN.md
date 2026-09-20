@@ -1171,6 +1171,29 @@ intervals.
   Characters UI.
 - Backup and Jita price cache stay global/unscoped, unchanged.
 
+**Status:** this PR. `do_sync_due` filters sharing rows by
+`esi_freshness.last_success_at` vs the three
+`TradingConfig.esi_*_interval_hours` fields. The scheduler's
+per-tenant ESI job is `esi_data_sync` calling that once; trading
+pipeline stays for candidate/shortlist + reconcile.
+`esi_stale_clear_multiples` is passed into the existing
+`clear_stale_owner_kind` (signature unchanged).
+`production_sync_interval_hours` / `doctrine_sync_interval_hours`
+are removed from `TradingConfig` (leftover keys in `config.yaml`
+are ignored). Settings UI exposes the four new fields. `do_pipeline`
+does not page ESI wallet when a shared owner's snapshot has rows
+(`collect_trading_wallet_streams`). Portfolio "last run" for
+`esi_data_sync` is `storage.newest_esi_freshness_success_at()`
+(`MAX(esi_freshness.last_success_at)`), not the five-minute tick
+stamp; `interval_hours` is null and the three tiers sit under
+`tier_interval_hours`. CI gate is
+`tests/test_scheduler.py` (job name `esi_data_sync`, freshness vs
+tick readout), the
+due-kind / manual-sync-pushes-back orchestrator tests, the snapshot
+wallet skip, and full `pytest`. No schema file. No live-token
+confirmation — the scheduler tick against a real tenant is appended
+to the Deployment checklist below.
+
 **Done when:** with the scheduler enabled against a test tenant,
 only due kinds fetch (fake clock / monkeypatched `last_success_at`);
 a manual tool sync updates freshness and pushes back the next
@@ -1383,8 +1406,11 @@ Phase 8 (landed, PR #169), Phase 1 (landed, PR #172), and Phase 2
 post-deploy rows for the first orchestrator sync, wallet-snapshot
 reconcile, the age-limit clear caller, and the NULL-id sweep. Phase 3b
 adds the doctrine asset-table cutover. Phase 4 adds the live GET of
-the Characters status pool hint (needs the Phase 6 endpoint). Remaining
-phases add their own rows when they merge; do not invent them here.
+the Characters status pool hint (needs the Phase 6 endpoint). Phase 7
+adds a config-review row for the three tier intervals and stale-clear
+multiples, and a post-deploy note that the first scheduler tick is
+`esi_data_sync` not the retired tool jobs. Remaining phases add their
+own rows when they merge; do not invent them here.
 
 ### Prerequisites
 
@@ -1451,6 +1477,14 @@ easy to miss precisely because they do not fail loudly.
   "Corp wallet divisions included in Reconcile Trades" MultiSelect
   (placeholder "All divisions"). Leave empty unless the operator
   wants Reconcile Trades to page a subset.
+- **Phase 7.** `TradingConfig.esi_frequent_interval_hours` (default 1),
+  `esi_normal_interval_hours` (6), `esi_rare_interval_hours` (24),
+  `esi_stale_clear_multiples` (3). Settings UI is Trading → ESI
+  freshness. Defaults match today's Production 6h cadence for the
+  normal tier. `production_sync_interval_hours` /
+  `doctrine_sync_interval_hours` in a leftover `config.yaml` are
+  ignored (unknown keys are skipped). `scheduler_enabled` is still
+  the operator-level thread switch on `DEFAULT_TENANT_ID`.
 
 ### Post-deploy verification
 
@@ -1537,6 +1571,14 @@ What to check, and what a correct result looks like.
   "done when" live check; it could not be performed without that
   endpoint or real tokens and lives here rather than staying
   unsatisfied on the phase.
+- **Phase 7.** With `scheduler_enabled` on `DEFAULT_TENANT_ID`, the
+  first tick after deploy runs `esi_data_sync` (`do_sync_due`), not
+  `production_sync` / `doctrine_contract_sync`. Portfolio shows "ESI
+  data sync". A kind fetched by a manual Production/Doctrine/Trading
+  Sync is not refetched on that tick. Reconcile Trades after a wallet
+  snapshot exists must not page ESI for that owner. There is no
+  live-token mid-flight gate; this is the real-tenant confirmation
+  of the suite's due-kind / snapshot-skip tests.
 
 ## Explicitly out of scope
 
