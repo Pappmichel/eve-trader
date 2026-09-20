@@ -93,7 +93,7 @@ function SharingCell({
   )
 
   return (
-    <Popover opened={opened} onChange={setOpened} position="bottom" withArrow shadow="md" width={260}>
+    <Popover opened={opened} onChange={setOpened} position="right-start" withArrow shadow="md" width={260} withinPortal>
       <Popover.Target>
         <Button
           size="compact-xs"
