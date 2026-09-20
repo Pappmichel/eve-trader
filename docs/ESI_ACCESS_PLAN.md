@@ -269,7 +269,7 @@ on upgrade. There is no rewrite of `tenant_tokens.role` from
 The fetcher picks one token that carries the required scope,
 **deterministically**: largest scope set (cardinality of the normalized
 scope set), then lexically first role key. Determinism is load-bearing
-for `ESIClient`'s per-`auth_role` caches (`_structure_orders_raw_cache`
+for `ESIClient`'s per-`auth_role` caches (`_structure_book_cache`
 is keyed by `(structure_id, auth_role)` in `esi_client.py`) — picking a
 different role key for the same character on adjacent calls would split
 that cache and look like a miss.
@@ -679,7 +679,7 @@ Phase 4 they ask the selector for `(auth_role, character_id)` given
 pick a prefix. The selector's deterministic choice is what keeps
 structure-market caches stable.
 
-### Fail-closed accessor shape
+### Fail-closed accessor shape (built in Phase 3)
 
 Sketch, not an implementation — names can move, the contract cannot:
 
@@ -729,9 +729,13 @@ ships):
 2. **Phases 0–4 as one block.** Registry without schema is a dictionary;
    schema without partitioned writes still wipes whole tables; writes
    without fetchers have no producer; fetchers without the selector
-   still think in prefixes. The block has to land together to be
-   meaningfully testable. Internal PRs inside the block are fine;
-   exposing a half-migrated read path to the UI is not.
+   still think in prefixes. Inside the block the fail-closed accessor
+   (Phase 3) must land **before** the doctrine asset-table merge (also
+   Phase 3): an unfiltered Doctrine read against the merged tables
+   would count Production characters' assets and change stockpile
+   figures. The block has to land together to be meaningfully
+   testable. Internal PRs inside the block are fine; exposing a
+   half-migrated read path to the UI is not.
 3. **Phases 5–7.** Consent, API/grant/gate, scheduler. These are the
    "the rest of the app now talks to `esi_data`" cutover. Tokens still
    work; conservative sharing is already in place from the 0–4 block.
@@ -814,14 +818,14 @@ drift-guard is green, and a dry-run backfill against a copy of real
 (including "producer + doctrine-assets of the same id ⇒ Assets shared
 with both tools, not with Sorting").
 
-### Phase 2 — Partitioned writes, merge the doctrine asset tables
+### Phase 2 — Partitioned writes
 
-**Rationale.** Doctrine's asset tables are a second copy of the same
-rows. Merging them after partitioned writes exist means Doctrine and
-Production can both write an owner's partition without a wholesale
-wipe of the other tool's characters. Merging them *before* partitioned
-writes would make `sync_esi`'s `DELETE FROM character_assets` destroy
-Doctrine-only characters the first time Production syncs.
+**Rationale.** Today's wholesale `DELETE FROM {table}` wipes every
+owner. Partitioned writes by owner id are the prerequisite for Phase
+3's doctrine-table merge: merging *before* partitioned writes would
+make `sync_esi`'s `DELETE FROM character_assets` destroy Doctrine-only
+characters the first time Production syncs. The merge itself waits
+for Phase 3's accessor — see that phase.
 
 **Includes:**
 
@@ -831,36 +835,30 @@ Doctrine-only characters the first time Production syncs.
   predicate.
 - Failed fetch: skip the delete (decision 6). Age-limit clear is a
   separate pass using the freshness row and the one multiple-knob.
-- Copy `doctrine_character_assets` / `doctrine_corp_assets` into
-  `character_assets` / `corp_assets` (`ON CONFLICT DO NOTHING` or
-  equivalent; they are PK-identical on `(item_id, owner_name)` today,
-  and after Phase 1 should conflict on the id-aware key). Doctrine
-  read paths (`doctrine/engine.py`'s
-  `tables=("doctrine_character_assets", "doctrine_corp_assets")`)
-  switch to the shared tables **through the accessor** once Phase 0–4's
-  accessor exists; until then, a temporary read of the shared tables
-  with Doctrine's current unfiltered call is acceptable inside this
-  block but must not ship past Phase 4.
-- Drop the doctrine asset tables (and their `KNOWN_NON_MIGRATED_TABLES`
-  entries) in the same schema change that completes the copy, so there
-  is no window where two writers target different tables.
 - `replace_character_slots` stays an UPSERT (issue #39).
 
 **Done when:** a test writes Production-shaped asset rows for character
 A and Doctrine-shaped rows for character B into the shared table via
 the partitioned replace, then a Production-only replace of A does not
 delete B; a failed replace of A leaves A's previous rows; an aged-out
-failed A is cleared; doctrine tables are gone; `#39` slot-exclusion
-test still passes.
+failed A is cleared; `#39` slot-exclusion test still passes. Doctrine
+tables are still present — the merge is Phase 3.
 
-### Phase 3 — Fetch layer + orchestrator
+### Phase 3 — Fetch layer, orchestrator, accessor
 
 **Rationale.** Today's fetch lives in three tool modules with three
 ideas of "for every character in `list_roles(prefix)`". The
 orchestrator is what makes sharing, freshness, partitioned writes, and
 the per-owner guard actually run. Fetchers stay thin so adding Wallet
 (Phase 8, if it hasn't already) or a future data kind is a registry
-row plus one `ESIClient` wrapper, not a fourth `esi_sync.py`.
+row plus one `ESIClient` wrapper, not a fourth `esi_sync.py`. This
+phase also **builds** the fail-closed accessor (decision 9) — no other
+phase's Includes does. The doctrine asset-table merge lands here,
+after that accessor: an unfiltered Doctrine read against the merged
+`character_assets` / `corp_assets` would count Production characters'
+assets too (conservative migration shares `doctrine-assets` with
+`doctrine` only). That changes stockpile figures a user sees, not an
+internal shortcut.
 
 **Includes:**
 
@@ -877,6 +875,22 @@ row plus one `ESIClient` wrapper, not a fourth `esi_sync.py`.
   / `do_sync_contracts` / `do_sync_assets` become wrappers that call
   `do_sync_for_tool` with their own key (and then run tool-specific
   post-processing: slots, contract matching).
+- Fail-closed accessor (decision 9): requires a consuming `tool_key`;
+  raises when it is missing or unknown; returns only rows with a
+  matching sharing row. Same shape as `storage.connect()` on a
+  missing tenant. All raw ESI snapshot reads go through it.
+- Then merge: copy `doctrine_character_assets` / `doctrine_corp_assets`
+  into `character_assets` / `corp_assets` (PK-identical on
+  `(item_id, owner_name)` today; after Phase 1 they conflict on the
+  id-aware key). Prefer the fresher row when the same `item_id`
+  exists in both with different quantities (synced at different
+  times); it self-corrects on the next sync either way. Doctrine read
+  paths (`doctrine/engine.py`'s
+  `tables=("doctrine_character_assets", "doctrine_corp_assets")`)
+  switch to the shared tables **through the accessor** in the same
+  change. Drop the doctrine asset tables (and their
+  `KNOWN_NON_MIGRATED_TABLES` entries) in that same schema change, so
+  there is no window where two writers target different tables.
 - Error strings that still say "Add Character in the sidebar" can wait
   for Phase 9, but new orchestrator errors must not add more of them.
 
@@ -884,9 +898,13 @@ row plus one `ESIClient` wrapper, not a fourth `esi_sync.py`.
 across two owners and two kinds — success, mid-kind failure (decision
 6), overlapping manual+scheduled call (guard), and
 `tool_key="production"` refreshing only what Production is shared.
-`production/esi_sync.py` / `doctrine/esi_sync.py` no longer call
-`replace_assets` / `character_assets()` themselves. Full `pytest`
-green.
+The accessor raises when `tool_key` is missing or unknown, returns
+only rows with a matching sharing row, and is covered by the
+permanent isolation test from decision 9. Doctrine tables are gone;
+a Production-only owner's assets are unreachable through
+`tool_key="doctrine"`. `production/esi_sync.py` /
+`doctrine/esi_sync.py` no longer call `replace_assets` /
+`character_assets()` themselves. Full `pytest` green.
 
 ### Phase 4 — Token selector
 
