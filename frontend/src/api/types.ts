@@ -631,9 +631,15 @@ export interface ErrorLogRow {
 }
 
 export interface SchedulerJobStatus {
-  interval_hours: number
+  interval_hours: number | null
   last_run_at: string | null
   last_error: string | null
+  /** Present on esi_data_sync: the three freshness-tier cadences. */
+  tier_interval_hours?: {
+    frequent: number
+    normal: number
+    rare: number
+  }
 }
 
 export interface SchedulerStatus {

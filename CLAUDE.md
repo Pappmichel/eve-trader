@@ -408,9 +408,15 @@ passes `TradingConfig.esi_stale_clear_multiples` into the existing
 `clear_stale_owner_kind` (do not re-derive that clear). Manual tool syncs
 (`do_sync_for_tool`) stamp freshness and push those pairs past the next
 scheduled fetch. `last_run_status` stays job-named (`esi_data_sync`);
-per-kind state lives on `esi_freshness`. `trading_pipeline` is **not** an
-ESI-owner sync: it still runs `do_pipeline` (candidate/shortlist +
-reconcile). Reconcile consumes wallet snapshots when present and only
+per-kind state lives on `esi_freshness`. `get_status()` reports
+`esi_data_sync.last_run_at` from `storage.newest_esi_freshness_success_at()`
+(`MAX(last_success_at)` for this tenant, `None` if nothing has ever
+succeeded) — not `_run_job`'s tick `ran_at`, because that job runs every
+five minutes and usually fetches nothing. `last_error` still comes from
+`last_run_status`. Portfolio shows the three tier intervals under
+`tier_interval_hours`; `interval_hours` is null for this job.
+`trading_pipeline` is **not** an ESI-owner sync: it still runs
+`do_pipeline` (candidate/shortlist + reconcile). Reconcile consumes wallet snapshots when present and only
 live-pages ESI for a shared owner whose snapshot is empty.
 `production_sync_interval_hours` / `doctrine_sync_interval_hours` are
 retired as ESI intervals.

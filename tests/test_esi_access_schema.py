@@ -131,6 +131,27 @@ def test_freshness_two_tenants_same_owner_kind(tenant_pair):
         assert conn.execute("SELECT last_error FROM esi_freshness").fetchall() == [("err-a",)]
 
 
+def test_newest_esi_freshness_success_at_is_max_across_kinds(tenant_pair):
+    tenant_a, tenant_b = tenant_pair
+    with storage.tenant_context(tenant_a):
+        assert storage.newest_esi_freshness_success_at() is None
+        storage.upsert_esi_freshness(
+            "character", 1, "assets", success=True, now="2026-09-01T00:00:00+00:00",
+        )
+        storage.upsert_esi_freshness(
+            "character", 1, "wallet", success=True, now="2026-09-10T12:00:00+00:00",
+        )
+        storage.upsert_esi_freshness(
+            "character", 2, "skills", success=False, error="nope",
+            now="2026-09-19T00:00:00+00:00",
+        )
+        newest = storage.newest_esi_freshness_success_at()
+    assert newest is not None
+    assert newest.startswith("2026-09-10")
+    with storage.tenant_context(tenant_b):
+        assert storage.newest_esi_freshness_success_at() is None
+
+
 def test_capabilities_have_no_tool_key_column(_apply_esi_access_schema):
     with psycopg.connect(pg_helpers.OWNER_DSN) as conn:
         cols = {

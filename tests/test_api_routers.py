@@ -1215,7 +1215,11 @@ def test_get_scheduler_status(monkeypatch):
         "enabled": True, "running": True,
         "jobs": {
             "trading_pipeline": {"interval_hours": 24.0, "last_run_at": "2026-07-17T08:06:35", "last_error": None},
-            "esi_data_sync": {"interval_hours": 6.0, "last_run_at": None, "last_error": "no auth"},
+            "esi_data_sync": {
+                "interval_hours": None,
+                "tier_interval_hours": {"frequent": 1.0, "normal": 6.0, "rare": 24.0},
+                "last_run_at": None, "last_error": "no auth",
+            },
         },
     })
     resp = client.get("/api/portfolio/scheduler-status")

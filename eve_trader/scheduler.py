@@ -251,7 +251,14 @@ def get_status() -> dict:
     own last_run_status slot - "backup"'s interval_hours is shown from this
     same ambient tenant's perspective for convenience, though the value
     that actually governs the global backup job's timing is always
-    DEFAULT_TENANT_ID's (see _check_and_run_backup_job)."""
+    DEFAULT_TENANT_ID's (see _check_and_run_backup_job). `esi_data_sync.last_run_at`
+    is the newest `esi_freshness.last_success_at` for this tenant (None if
+    nothing has ever succeeded), not `_run_job`'s tick timestamp — that job
+    runs every five minutes and usually fetches nothing. `esi_data_sync.last_error`
+    still comes from `last_run_status`. The three freshness-tier intervals
+    are under `tier_interval_hours`; `interval_hours` is null because this
+    job has no single cadence.
+    """
     tenant_id = storage.get_current_tenant()
     tenant_jobs = last_run_status.get(tenant_id, {}) if tenant_id else {}
     backups = backup.list_backups()
@@ -265,8 +272,13 @@ def get_status() -> dict:
                 "last_error": tenant_jobs.get("trading_pipeline", {}).get("error"),
             },
             "esi_data_sync": {
-                "interval_hours": TRADING_CONFIG.esi_normal_interval_hours,
-                "last_run_at": tenant_jobs.get("esi_data_sync", {}).get("ran_at"),
+                "interval_hours": None,
+                "tier_interval_hours": {
+                    "frequent": TRADING_CONFIG.esi_frequent_interval_hours,
+                    "normal": TRADING_CONFIG.esi_normal_interval_hours,
+                    "rare": TRADING_CONFIG.esi_rare_interval_hours,
+                },
+                "last_run_at": storage.newest_esi_freshness_success_at(),
                 "last_error": tenant_jobs.get("esi_data_sync", {}).get("error"),
             },
             "backup": {

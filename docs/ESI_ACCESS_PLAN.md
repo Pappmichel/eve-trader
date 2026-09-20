@@ -1182,8 +1182,13 @@ pipeline stays for candidate/shortlist + reconcile.
 are removed from `TradingConfig` (leftover keys in `config.yaml`
 are ignored). Settings UI exposes the four new fields. `do_pipeline`
 does not page ESI wallet when a shared owner's snapshot has rows
-(`collect_trading_wallet_streams`). CI gate is
-`tests/test_scheduler.py` (job name `esi_data_sync`), the
+(`collect_trading_wallet_streams`). Portfolio "last run" for
+`esi_data_sync` is `storage.newest_esi_freshness_success_at()`
+(`MAX(esi_freshness.last_success_at)`), not the five-minute tick
+stamp; `interval_hours` is null and the three tiers sit under
+`tier_interval_hours`. CI gate is
+`tests/test_scheduler.py` (job name `esi_data_sync`, freshness vs
+tick readout), the
 due-kind / manual-sync-pushes-back orchestrator tests, the snapshot
 wallet skip, and full `pytest`. No schema file. No live-token
 confirmation — the scheduler tick against a real tenant is appended

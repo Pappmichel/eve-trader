@@ -9,7 +9,10 @@ from eve_trader.config import TradingConfig
 from eve_trader.esi_data import orchestrator as esi_orchestrator
 
 from . import pg_helpers
-from .pg_helpers import _apply_phase1_schema, _apply_phase2_schema, tenant_pair  # noqa: F401
+from .pg_helpers import (  # noqa: F401
+    _apply_esi_access_schema, _apply_phase1_schema, _apply_phase2_schema,
+    tenant, tenant_pair,
+)
 
 
 def _fake_enter_tenant(cfg: TradingConfig):
@@ -243,13 +246,21 @@ def test_start_is_noop_when_default_tenant_disabled(monkeypatch):
     assert scheduler._thread is None
 
 
-def test_get_status_reflects_disabled_config(monkeypatch):
+def _stub_get_status_deps(monkeypatch, *, freshness=None):
+    """Keep get_status() off Postgres except when a test wants the real
+    newest_esi_freshness_success_at read."""
     monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: None)
+    monkeypatch.setattr(storage, "newest_esi_freshness_success_at", lambda: freshness)
     monkeypatch.setattr(backup, "list_backups", lambda: [])
     monkeypatch.setattr(scheduler.jita_price_cache, "last_updated_at", lambda: None)
+
+
+def test_get_status_reflects_disabled_config(monkeypatch):
+    _stub_get_status_deps(monkeypatch)
     token = config._trading_config_var.set(TradingConfig(
         scheduler_enabled=False, trading_pipeline_interval_hours=12.0,
-        esi_normal_interval_hours=6.0, jita_price_cache_interval_hours=2.0))
+        esi_frequent_interval_hours=1.0, esi_normal_interval_hours=6.0,
+        esi_rare_interval_hours=24.0, jita_price_cache_interval_hours=2.0))
     try:
         status = scheduler.get_status()
     finally:
@@ -258,7 +269,10 @@ def test_get_status_reflects_disabled_config(monkeypatch):
     assert status["enabled"] is False
     assert status["jobs"]["trading_pipeline"]["interval_hours"] == 12.0
     assert status["jobs"]["trading_pipeline"]["last_run_at"] is None
-    assert status["jobs"]["esi_data_sync"]["interval_hours"] == 6.0
+    esi = status["jobs"]["esi_data_sync"]
+    assert esi["interval_hours"] is None
+    assert esi["tier_interval_hours"] == {"frequent": 1.0, "normal": 6.0, "rare": 24.0}
+    assert esi["last_run_at"] is None
     assert "production_sync" not in status["jobs"]
     assert "doctrine_contract_sync" not in status["jobs"]
     assert status["jobs"]["backup"]["last_run_at"] is None
@@ -267,13 +281,65 @@ def test_get_status_reflects_disabled_config(monkeypatch):
 
 
 def test_get_status_reports_last_backup_time(monkeypatch):
-    monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: None)
+    _stub_get_status_deps(monkeypatch)
     ts = dt.datetime.now(dt.timezone.utc).isoformat()
     monkeypatch.setattr(backup, "list_backups", lambda: [{"name": "b", "created_at": ts, "size_bytes": 1}])
 
     status = scheduler.get_status()
 
     assert status["jobs"]["backup"]["last_run_at"] == ts
+
+
+def test_get_status_esi_last_run_at_is_freshness_not_tick(monkeypatch):
+    # The job runs every tick even when nothing is due; the reported
+    # last_run_at must stay on the newest real fetch, not _run_job's stamp.
+    stale = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=2)).isoformat()
+    _stub_get_status_deps(monkeypatch, freshness=stale)
+    monkeypatch.setattr(storage, "get_esi_sync_time",
+                        lambda scope: dt.datetime.now(dt.timezone.utc).isoformat())
+    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda: None)
+    monkeypatch.setattr(actions, "do_pipeline", lambda safe=True: None)
+
+    scheduler.last_run_status.clear()
+    cfg = TradingConfig(scheduler_enabled=True, trading_pipeline_interval_hours=24.0)
+    scheduler._check_and_run_due_jobs_for_tenant("test-tenant", cfg)
+
+    tick = scheduler.last_run_status["test-tenant"]["esi_data_sync"]["ran_at"]
+    assert tick is not None
+    assert scheduler._hours_since(tick) < 0.01
+
+    with storage.tenant_context("test-tenant"):
+        status = scheduler.get_status()
+    reported = status["jobs"]["esi_data_sync"]["last_run_at"]
+    assert reported == stale
+    assert reported != tick
+    assert scheduler._hours_since(reported) > 24
+
+
+def test_get_status_esi_last_error_still_from_run_job(monkeypatch):
+    _stub_get_status_deps(monkeypatch, freshness=None)
+
+    def boom():
+        raise RuntimeError("orchestrator exploded")
+
+    monkeypatch.setattr(esi_orchestrator, "do_sync_due", boom)
+    monkeypatch.setattr(actions, "do_pipeline", lambda safe=True: None)
+
+    scheduler.last_run_status.clear()
+    cfg = TradingConfig(scheduler_enabled=True, trading_pipeline_interval_hours=24.0)
+    scheduler._check_and_run_due_jobs_for_tenant("test-tenant", cfg)
+
+    with storage.tenant_context("test-tenant"):
+        status = scheduler.get_status()
+    assert status["jobs"]["esi_data_sync"]["last_error"] == "orchestrator exploded"
+    assert status["jobs"]["esi_data_sync"]["last_run_at"] is None
+
+
+def test_get_status_esi_last_run_at_none_when_never_synced(monkeypatch):
+    _stub_get_status_deps(monkeypatch, freshness=None)
+    status = scheduler.get_status()
+    assert status["jobs"]["esi_data_sync"]["last_run_at"] is None
+    assert status["jobs"]["esi_data_sync"]["last_error"] is None
 
 
 # --------------------------------------------------- real Postgres, per-tenant iteration
@@ -304,3 +370,38 @@ def test_check_and_run_due_jobs_iterates_tenants_independently(
     assert calls == [tenant_a]
     assert tenant_a in scheduler.last_run_status
     assert tenant_b not in scheduler.last_run_status
+
+
+@pg_helpers.postgres_required()
+def test_get_status_esi_last_run_at_from_real_freshness_rows(
+    monkeypatch, _apply_esi_access_schema, tenant,
+):
+    # Empty table: never-synced renders as None, not an error-shaped miss.
+    monkeypatch.setattr(storage, "get_esi_sync_time",
+                        lambda scope: dt.datetime.now(dt.timezone.utc).isoformat())
+    monkeypatch.setattr(backup, "list_backups", lambda: [])
+    monkeypatch.setattr(scheduler.jita_price_cache, "last_updated_at", lambda: None)
+    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda: None)
+
+    assert scheduler.get_status()["jobs"]["esi_data_sync"]["last_run_at"] is None
+
+    older = "2026-09-01T00:00:00+00:00"
+    newer = "2026-09-10T12:00:00+00:00"
+    storage.upsert_esi_freshness("character", 1, "assets", success=True, now=older)
+    storage.upsert_esi_freshness("character", 1, "wallet", success=True, now=newer)
+    storage.upsert_esi_freshness(
+        "character", 2, "skills", success=False, error="nope",
+        now="2026-09-19T00:00:00+00:00",
+    )
+
+    scheduler.last_run_status.clear()
+    cfg = TradingConfig(scheduler_enabled=True, trading_pipeline_interval_hours=24.0)
+    scheduler._check_and_run_due_jobs_for_tenant(tenant, cfg)
+
+    tick = scheduler.last_run_status[tenant]["esi_data_sync"]["ran_at"]
+    reported = scheduler.get_status()["jobs"]["esi_data_sync"]["last_run_at"]
+    assert reported is not None
+    assert reported != tick
+    assert reported.startswith("2026-09-10")
+    assert scheduler._hours_since(reported) > 24
+    assert scheduler._hours_since(tick) < 0.01
