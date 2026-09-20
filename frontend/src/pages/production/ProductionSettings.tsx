@@ -91,6 +91,10 @@ export default function ProductionSettings() {
           onChange={(v) => set('market_fees', Number(v) / 100)} />
         <NumberInput label="Broker's fee buy" suffix="%" decimalScale={2} value={form.jita_buy_broker_fee * 100} min={0} max={100} step={0.1}
           onChange={(v) => set('jita_buy_broker_fee', Number(v) / 100)} />
+        <Tooltip label="Job-fee facility tax charged by the structure you build in, on top of the system cost index and the fixed 4% SCC surcharge. Fixed at 0.25% for NPC stations; a player-owned structure's owner can set their own rate." multiline w={280}>
+          <NumberInput label="Facility tax" suffix="%" decimalScale={2} value={form.facility_tax_rate * 100} min={0} max={100} step={0.05}
+            onChange={(v) => set('facility_tax_rate', Number(v) / 100)} />
+        </Tooltip>
         <NumberInput label="Minimum margin for build list" suffix="%" decimalScale={2} value={form.min_margin * 100} min={0} step={1}
           onChange={(v) => set('min_margin', Number(v) / 100)} />
         <NumberInput label="Minimum daily profit for Build Candidates (ISK)" value={form.min_daily_profit} min={0} step={1000}
