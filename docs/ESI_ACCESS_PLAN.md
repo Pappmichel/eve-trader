@@ -114,11 +114,11 @@ via a registered character, not a second login type.
 
 ### Data kinds
 
-Three groups. The registry (Phase 0) is the source of truth for names,
+Three groups (6 + 1 + 2 = 9). The registry (Phase 0) is the source of truth for names,
 scopes, consuming tools, corp in-game roles, and freshness-tier defaults.
 This section is the vocabulary that registry encodes.
 
-**Group 1 — owned data, character *and* corporation variant (7):**
+**Group 1 — owned data, character *and* corporation variant (6):**
 
 | Data kind        | Character scope                                      | Corporation scope                                        | Corp in-game role                          |
 |------------------|------------------------------------------------------|----------------------------------------------------------|--------------------------------------------|
@@ -127,19 +127,19 @@ This section is the vocabulary that registry encodes.
 | Blueprints       | `esi-characters.read_blueprints.v1`                  | `esi-corporations.read_blueprints.v1`                    | Director                                   |
 | Market Orders    | `esi-markets.read_character_orders.v1`               | `esi-markets.read_corporation_orders.v1`                 | Accountant or Trader                       |
 | Contracts        | `esi-contracts.read_character_contracts.v1`          | `esi-contracts.read_corporation_contracts.v1`            | (whatever ESI already requires today)      |
-| Structures       | `esi-universe.read_structures.v1`                    | `esi-corporations.read_structures.v1`                    | Station Manager                            |
 | Wallet           | `esi-wallet.read_character_wallet.v1`                | `esi-wallet.read_corporation_wallets.v1`                 | Accountant                                 |
 
 The corp-role column is what the Corporations UI warns on, not a new
 ESI check this app invents. `ESIClient.corporation_assets` /
 `corporation_industry_jobs` / `corporation_blueprints` already document
-Director; `corporation_orders` already documents Accountant or Trader;
-`corporation_structures` already documents Station Manager. Wallet's
-Accountant requirement matches ESI's corporation-wallets endpoint (Phase
-8 lands that endpoint; it does not exist in `esi_client.py` today).
-Contracts keep whatever `ESIClient.corporation_contracts` already
-requires — do not invent a Director-or-otherwise role for it here just
-to fill the table.
+Director; `corporation_orders` already documents Accountant or Trader.
+Wallet's Accountant requirement matches ESI's corporation-wallets
+endpoint (Phase 8 lands that endpoint; it does not exist in
+`esi_client.py` today). Contracts keep whatever
+`ESIClient.corporation_contracts` already requires — do not invent a
+Director-or-otherwise role for it here just to fill the table.
+Station Manager lives with structure name resolution in group 3, not
+here: a resolved name is not a per-character snapshot (see below).
 
 **Group 2 — owned data, character only (1):**
 
@@ -151,21 +151,26 @@ Used today for Production's `character_slots` (via
 `job_slots_from_skills`) and Station Trading's live order-slot display.
 No corporation variant.
 
-**Group 3 — access, not ownership (1 data kind, two capability rows in the UI):**
+**Group 3 — access capabilities (2), not owned data:**
 
-| Capability                 | Scope                                  |
-|----------------------------|----------------------------------------|
-| Structure name resolution  | `esi-universe.read_structures.v1`      |
-| Structure market book      | `esi-markets.structure_markets.v1`     |
+| Capability                 | Character scope                         | Corporation scope                         | Corp in-game role |
+|----------------------------|-----------------------------------------|-------------------------------------------|-------------------|
+| Structure name resolution  | `esi-universe.read_structures.v1`       | `esi-corporations.read_structures.v1`     | Station Manager   |
+| Structure market book      | `esi-markets.structure_markets.v1`      | —                                         | —                 |
 
 These are on or off for a character. They have **no freshness, no
-scheduling, no per-tool sharing**. They do not produce rows this app
-owns; they authorize a live ESI call (resolve a structure id; read a
-structure's order book). Structure name resolution shares a scope with
-the character variant of Structures in group 1 — the registry must
-treat that as one scope requested once, not two independent SSO grants.
-The Access UI still shows both capability rows, because they are
-different *uses*.
+scheduling, no per-tool sharing**. Structure name resolution is one
+capability carrying both scopes, not two kinds and not a group-1
+snapshot. A resolved name is tenant-wide reference data
+(`storage.structure_names`), cached indefinitely once resolved and
+populated opportunistically from asset location ids
+(`production/esi_sync.py`'s `_discover_structure_names`). It is not a
+per-character snapshot. Purging it when a character's sharing is
+removed would destroy knowledge that is still correct and that other
+tools legitimately display. Structure market book is the same shape:
+it authorizes a live ESI call, it does not own rows.
+`ESIClient.corporation_structures` already documents Station Manager;
+the Access UI is where that warning lives.
 
 Consuming tools, as the registry's starting set (strings only — see
 settled decision 8). This is derived from what the code actually reads
@@ -177,12 +182,11 @@ today, not from what a tool's sidebar happens to offer:
 - **Blueprints:** `production`.
 - **Market Orders:** `trading`, `production`, `station_trading`.
 - **Contracts:** `doctrine`.
-- **Structures:** `production`, `doctrine`.
 - **Wallet:** `trading`.
 - **Skills:** `production`, `station_trading`.
-- **Structure Markets (group 3):** no tool dimension — any tool that
-  needs a structure book asks the Access layer "which characters can
-  provide this", not "is this shared with me".
+- **Group 3 (both capabilities):** no tool dimension — any tool that
+  needs a structure name or a structure book asks the Access layer
+  "which characters can provide this", not "is this shared with me".
 
 `refining` and `portfolio` do not consume raw ESI character/corp data
 today (`portfolio` reads derived tables; Ore & Minerals is Goonmetrics +
@@ -196,10 +200,8 @@ A single Characters page (`/characters`, gated on `tool_key "characters"`),
 not a sidebar copy-pasted into every tool layout.
 
 1. **Characters.** Rows = registered characters. Columns = the seven
-   group-1 owned data kinds (Skills is character-only and belongs here
-   too as an eighth column, or as a trailing column on the same grid —
-   it is owned data with a tool dimension, not an Access capability).
-   Each cell is five-state:
+   owned data kinds (the six group-1 kinds plus Skills). Each cell is
+   five-state:
    - not shared
    - shared with all capable tools
    - shared with some (badge `"2/4"` — shared-count / capable-count)
@@ -209,13 +211,15 @@ not a sidebar copy-pasted into every tool layout.
    Clicking a cell opens a popover with **one toggle per tool that can
    consume that data kind** (from the registry). Toggling writes or
    deletes one sharing row; it does not itself call ESI.
-2. **Corporations.** Same owned-data columns. Corp data is reached
-   through a member character, so an extra **"access via \<character\>"**
-   column names which registered character is currently providing that
-   corp, plus a **warning when no registered character holds the needed
-   in-game role** (Director / Accountant or Trader / Accountant /
-   Station Manager, per the table above). Same five-state cells, same
-   per-tool popover, same sharing table with `owner_type='corporation'`.
+2. **Corporations.** The same six group-1 columns (Skills has no corp
+   variant). Corp data is reached through a member character, so an extra
+   **"access via \<character\>"** column names which registered character
+   is currently providing that corp, plus a **warning when no registered
+   character holds the needed in-game role** (Director / Accountant or
+   Trader / Accountant, per the group-1 table). Station Manager is an
+   Access warning, not a Corporations-table column. Same five-state
+   cells, same per-tool popover, same sharing table with
+   `owner_type='corporation'`.
 3. **Access.** Rows = capability (structure name resolution, structure
    market book). Columns show which characters can provide it. No
    freshness, no scheduling, no per-tool sharing; on or off.
@@ -346,9 +350,9 @@ not per `esi_sync_state.scope` of `'trading'` / `'production'` /
 `'doctrine'`.
 
 Three configurable **freshness tiers** (`frequent` / `normal` / `rare`)
-replace nine per-kind interval fields. The registry assigns each owned
+replace seven per-kind interval fields. The registry assigns each owned
 data kind a default tier; `TradingConfig` (or a small dedicated config
-surface — one place, not nine) exposes three interval hours, one per
+surface — one place, not seven) exposes three interval hours, one per
 tier. Group 3 capabilities are not scheduled.
 
 Suggested default mapping (registry data, adjustable without a code
@@ -357,7 +361,7 @@ change to the orchestrator):
 - **frequent:** Market Orders, Wallet (the inputs that go stale inside
   a session)
 - **normal:** Assets, Industry Jobs, Contracts
-- **rare:** Blueprints, Skills, Structures
+- **rare:** Blueprints, Skills
 
 Tool sync buttons stay. They mean "refresh every (owner, kind) shared
 with this tool", not "run this tool's old `sync_esi`". The Characters
@@ -391,7 +395,7 @@ that kind's tier interval — **then** clear that owner's partition.
 The multiple is the same knob for every tier (e.g. `esi_stale_clear_multiples`,
 default something like 3: frequent data that has failed for 3× its
 interval is dropped; rare data gets a proportionally longer grace).
-Do not add nine per-kind timeouts.
+Do not add seven per-kind timeouts.
 
 The Characters cell's **error** state is this freshness row's
 `last_error` while rows still exist; after the clear, the cell reads
@@ -402,7 +406,7 @@ visible failure mode we are keeping.
 
 Not the owner × data-kind cross product. `storage._get_pool()` is
 `max_size=10` (Phase-1-era default, `CLAUDE.md`). An owner × kind
-cross product with a dozen characters and seven kinds would queue on
+cross product with a dozen characters and seven owned kinds would queue on
 the pool and look like a hang; one task per owner with kinds run
 sequentially inside it stays well under that cap even with a handful
 of concurrent owners.
@@ -438,7 +442,7 @@ New top-level package `eve_trader/esi_data/` holding:
   `import`s Production to ask "do you consume assets?" reintroduces the
   coupling this package exists to break)
 - the **fetchers** (thin wrappers around existing `ESIClient` methods,
-  one per data kind × owner_type)
+  one per owned data kind × owner_type; group 3 is not a fetcher)
 - the **orchestrator** (owner tasks, freshness, partitioned writes,
   per-owner guard, "sync what this tool needs" / "sync everything")
 - the Characters **`do_*` actions** (list owners, toggle sharing, start
@@ -565,9 +569,9 @@ Prefix → tool, from `auth.ROLE_PREFIX_TOOL` as it exists today:
 
 | Old prefix         | Shared with        | Data kinds implied by that prefix's current scope bundle |
 |--------------------|--------------------|----------------------------------------------------------|
-| `buyer`, `seller`  | `trading`          | Market Orders, Wallet, Assets, Structure Markets         |
-| `producer`         | `production`       | Assets, Industry Jobs, Blueprints, Market Orders, Skills, Structures, Structure Markets |
-| `doctrine`         | `doctrine`         | Contracts, Structures                                    |
+| `buyer`, `seller`  | `trading`          | Market Orders, Wallet, Assets; Access: structure market book |
+| `producer`         | `production`       | Assets, Industry Jobs, Blueprints, Market Orders, Skills; Access: structure name resolution, structure market book |
+| `doctrine`         | `doctrine`         | Contracts; Access: structure name resolution             |
 | `doctrine-assets`  | `doctrine`         | Assets                                                   |
 | `trader`           | `station_trading`  | Market Orders, Skills                                    |
 | `gate`             | (not a token)      | nothing                                                  |
@@ -586,7 +590,9 @@ those sharing rows.
 Corp sharing is inferred the same way: if a prefix's bundle included
 the corp variant (producer, doctrine, doctrine-assets), the corp the
 character belongs to gets the corresponding corp sharing rows for
-that tool, still not widened to other tools.
+that tool, still not widened to other tools. Access capabilities
+implied by a prefix are ticked on for that character, not written as
+sharing rows.
 
 ## Carry-forward hazards
 
@@ -752,10 +758,11 @@ registry does not import them to ask.
   tier, and group-3 capabilities.
 - A unit test (no Postgres) asserts: every consuming tool_key is in
   `ALL_TOOL_KEYS`; every scope string appears in some fetcher-facing
-  mapping; group 3 has no consuming-tool list; Skills has no corp
-  variant; `esi-universe.read_structures.v1` is requested once even
-  though it serves both Structures (char) and structure name
-  resolution.
+  mapping; group 1 has six kinds, group 2 has Skills, group 3 has two
+  capabilities and no consuming-tool list; Skills has no corp
+  variant; structure name resolution is one capability carrying both
+  `esi-universe.read_structures.v1` and
+  `esi-corporations.read_structures.v1`.
 - `CLAUDE.md`'s module-layout paragraph names `eve_trader/esi_data/` as
   the third cross-cutting package and names Characters as a
   tenant-facing tool. This file stays the design history.
@@ -780,7 +787,8 @@ still what writes them.
   composite-PK + RLS.
 - `owner_character_id` / `owner_corporation_id` on every ESI snapshot
   table that will be partitioned (assets, jobs, blueprints, orders,
-  contracts, wallet once Phase 8 has added it, `character_slots`).
+  contracts, wallet once Phase 8 has added it, `character_slots` —
+  not `structure_names`, which is tenant-wide reference data).
   BIGINT, matching the ESI-object-id width lesson from
   `MULTI_TENANT_PLAN.md` Phase 1 (Postgres `INTEGER` is 32-bit; EVE
   character ids fit, but *do not* use `INTEGER` for "any ESI id"
@@ -859,7 +867,9 @@ row plus one `ESIClient` wrapper, not a fourth `esi_sync.py`.
 - Fetchers for every group-1 and group-2 kind, character and corp
   variants, calling the existing `ESIClient` methods (Wallet corp
   variant exists only after Phase 8 — if Phase 8 already shipped,
-  just consume it).
+  just consume it). Group 3 is not an orchestrator kind: name
+  resolution stays opportunistic (`_discover_structure_names`
+  filling `structure_names`).
 - Orchestrator: one task per owner, kinds sequential, each owner
   wrapped in `batch_session()` + `with_current_tenant` for pool
   workers, per-owner guard, freshness update, age-limit clear.
@@ -1015,7 +1025,7 @@ intervals.
 - `_check_and_run_due_jobs_for_tenant` calls the orchestrator's
   "run whatever is due" once per tenant, not three tool jobs.
   `last_run_status` can stay job-named (`esi_data_sync`) — do not
-  explode it into nine per-kind status dicts in the portfolio
+  explode it into seven per-kind status dicts in the portfolio
   readout; per-kind state lives on the freshness table and the
   Characters UI.
 - Backup and Jita price cache stay global/unscoped, unchanged.
