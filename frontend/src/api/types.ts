@@ -551,6 +551,7 @@ export interface ProductionSettings {
   min_margin: number
   min_daily_profit: number
   haul_cost_per_m3: number
+  facility_tax_rate: number
   home_market: string | null
   home_location_id: number | null
   distribution_source_location_id: number | null
