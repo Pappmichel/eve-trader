@@ -2,7 +2,7 @@ import pytest
 
 from eve_trader import storage
 from eve_trader.actions import ActionError
-from eve_trader.config import ConfigError, TradingConfig, apply_config_overrides, validate_config_overrides
+from eve_trader.config import ConfigError, TradingConfig, apply_config_overrides, validate_config_overrides, validate_trading_overrides
 from eve_trader.production import actions as production_actions
 from eve_trader.production.config import ProductionConfig, validate_production_overrides
 
@@ -227,6 +227,27 @@ def test_validate_doctrine_overrides_rejects_unknown_hangar_flag():
 
     with pytest.raises(ConfigError, match="stockpile_hangar_flags"):
         validate_doctrine_overrides({"stockpile_hangar_flags": ["NotARealFlag"]})
+
+
+def test_validate_trading_overrides_accepts_known_wallet_divisions():
+    validate_trading_overrides({"wallet_division_ids": [1, 7]})
+
+
+def test_validate_trading_overrides_accepts_empty_wallet_divisions():
+    validate_trading_overrides({"wallet_division_ids": []})
+
+
+def test_validate_trading_overrides_rejects_unknown_wallet_division():
+    with pytest.raises(ConfigError, match="wallet_division_ids"):
+        validate_trading_overrides({"wallet_division_ids": [1, 8]})
+
+
+def test_do_update_settings_rejects_bad_wallet_division_as_action_error():
+    from eve_trader import actions
+
+    cfg = TradingConfig()
+    with pytest.raises(ActionError, match="wallet_division_ids"):
+        actions.do_update_settings({"wallet_division_ids": [0]}, cfg=cfg)
 
 
 def test_do_update_settings_rejects_bad_hangar_flag_as_action_error_production():

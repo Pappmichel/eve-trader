@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, TagsInput, Button, Center, Loader } from '@mantine/core'
+import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, TagsInput, Button, Center, Loader, MultiSelect } from '@mantine/core'
 
 import { tradingApi } from '../../api/client'
 import type { TradingSettings as TradingSettingsT } from '../../api/types'
@@ -11,6 +11,10 @@ import { StructureIdField } from '../../components/StructureIdField'
 
 export default function TradingSettings() {
   const { data } = useQuery({ queryKey: ['trading', 'settings'], queryFn: tradingApi.settings })
+  const { data: divisionOptions } = useQuery({
+    queryKey: ['trading', 'wallet-division-options'],
+    queryFn: tradingApi.walletDivisionOptions,
+  })
   const { data: structureNames } = useStructureNameOptions()
   const [form, setForm] = useState<TradingSettingsT | null>(null)
   useEffect(() => { if (data) setForm(data) }, [data])
@@ -21,7 +25,7 @@ export default function TradingSettings() {
   // page during the initial fetch, unlike every other page in the app which
   // shows a DataTable skeleton or this same Loader/Center while its primary
   // query is in flight - on a slow connection this looked broken, not loading.
-  if (!form) return <Center h={200}><Loader color="accent" /></Center>
+  if (!form || !divisionOptions) return <Center h={200}><Loader color="accent" /></Center>
 
   const set = <K extends keyof TradingSettingsT>(key: K, value: TradingSettingsT[K]) =>
     setForm((f) => (f ? { ...f, [key]: value } : f))
@@ -99,6 +103,19 @@ export default function TradingSettings() {
         <TextInput label="Seller name (structure)" value={form.seller_character_name ?? ''} autoComplete="off"
           onChange={(e) => set('seller_character_name', e.currentTarget.value)} />
       </SimpleGrid>
+
+      <Title order={6} c="dimmed" tt="uppercase" mt="md">Corp wallets</Title>
+      <Text size="xs" c="dimmed">
+        Corp-funded market orders are recorded on the corporation wallet, not the placing character&apos;s
+        personal wallet, so Reconcile Trades would miss them without this. Select which of the seven ESI
+        wallet divisions to page. Leave empty to read every division (the default). The fetching character
+        needs the Accountant or Junior Accountant role in that corp — not Director, and not Station Manager.
+      </Text>
+      <MultiSelect label="Corp wallet divisions included in Reconcile Trades"
+        data={divisionOptions.wallet_division_ids.map((id) => ({ value: String(id), label: `Division ${id}` }))}
+        value={(form.wallet_division_ids ?? []).map(String)}
+        onChange={(v) => set('wallet_division_ids', v.map(Number))}
+        placeholder="All divisions" clearable />
 
       <Button mt="md" w={240} onClick={() => save.mutate(form)} loading={save.isPending}>
         Save Settings

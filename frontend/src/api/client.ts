@@ -120,6 +120,9 @@ export const tradingApi = {
   realizedTrades: () => get<T.RealizedTrade[]>('/api/trading/trades/realized'),
   settings: () => get<T.TradingSettings>('/api/trading/settings'),
   updateSettings: (s: T.TradingSettings) => post<T.TradingSettings>('/api/trading/settings', s),
+  walletDivisionOptions: () => get<{ wallet_division_ids: number[] }>(
+    '/api/trading/settings/wallet-division-options',
+  ),
   esiSyncTime: () => get<{ synced_at: string | null }>('/api/trading/esi/sync-time'),
 
   buildUniverse: () => post<{ count: number }>('/api/trading/universe/build'),

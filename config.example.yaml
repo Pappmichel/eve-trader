@@ -38,6 +38,10 @@ chunk_size: 25
 # seller_character_name: "Your Seller Toon"
 
 lookback_days: 30
+# Corp wallet divisions to include in Reconcile Trades (ESI divisions 1-7).
+# Empty (the default) = all seven. Same "empty means all" pattern as
+# Production's stock_hangar_flags.
+# wallet_division_ids: []
 
 # ---- Background scheduler (see eve_trader/scheduler.py) - off by default.
 # When enabled, the backend runs the Trading pipeline (do_pipeline, safe mode),

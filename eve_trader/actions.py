@@ -16,7 +16,7 @@ import pandas as pd
 from . import backup, candidate_discovery, history_backtest, own_orders, storage
 from .auth import InvalidRoleKey, TokenManager, validate_role_key_for_tool
 from .config import (OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, TradingConfig,
-                     save_tenant_config_overrides)
+                     save_tenant_config_overrides, validate_trading_overrides)
 from .esi_client import ESIClient, ESIError
 from .goonmetrics_client import GoonmetricsClient
 from .models import Candidate, ShortlistItem, ShortlistRow, UndercutRow, UnlistedStockRow
@@ -194,6 +194,7 @@ def do_update_settings(updates: dict, cfg: TradingConfig = TRADING_CONFIG) -> di
     """Persists `updates` to tenant_settings and applies them to the live
     TRADING_CONFIG immediately (see Settings tab in the dashboard)."""
     try:
+        validate_trading_overrides(updates)
         save_tenant_config_overrides("trading", updates, cfg, cfg_type=TradingConfig)
     except ConfigError as e:
         raise ActionError(str(e)) from e
