@@ -1523,7 +1523,7 @@ What to check, and what a correct result looks like.
   bundle.
 - **Phase 6.** Logged into a tenant with `"production"` but not
   `"characters"`: `GET /api/characters/sharing` is 403; a Production
-  read (`GET /api/production/sde/counts`) is 200. A session with
+  read (`GET /api/production/stock-targets`) is 200. A session with
   `"characters"` can `POST /api/characters/sharing` and
   `GET /api/characters/access-preview`. Prefix
   `/api/auth/producer/start` still exists until Phase 9 (sidebar

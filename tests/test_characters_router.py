@@ -75,8 +75,11 @@ def test_characters_routes_403_without_characters_grant_production_still_200(
     denied = client.get("/api/characters/sharing", cookies=cookies)
     assert denied.status_code == 403
 
-    prod = client.get("/api/production/sde/counts", cookies=cookies)
+    # stock-targets is a phase1 table (empty is a valid 200). /sde/counts
+    # needs sde_type_slots, which CI Postgres does not create.
+    prod = client.get("/api/production/stock-targets", cookies=cookies)
     assert prod.status_code == 200
+    assert prod.json() == []
 
 
 def test_characters_grant_can_toggle_sharing_and_read_preview(
