@@ -21,7 +21,7 @@ from eve_trader.config import ACCESS_CONFIG, OAUTH_CONFIG
 from . import pg_helpers
 from .pg_helpers import (  # noqa: F401
     _apply_admin_schema, _apply_esi_access_schema, _apply_phase1_schema,
-    _apply_phase2_schema,
+    _apply_phase2_schema, _apply_phase3_schema,
 )
 
 psycopg = pytest.importorskip("psycopg")

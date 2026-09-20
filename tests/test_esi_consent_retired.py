@@ -6,8 +6,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 _SKIP_DIRS = {
-    ".git", ".venv", "node_modules", "__pycache__", "dist", "frontend/dist",
+    ".git", ".venv", "node_modules", "__pycache__", "dist", ".pytest_cache",
+    "eve_trader.egg-info",
 }
+_SKIP_NAMES = {"test_esi_consent_retired.py"}
 _SKIP_SUFFIXES = {".pyc", ".png", ".jpg", ".webp", ".ico", ".woff", ".woff2"}
 
 _FORBIDDEN = (
@@ -26,6 +28,8 @@ def _iter_source_files():
         if not path.is_file():
             continue
         if any(part in _SKIP_DIRS for part in path.parts):
+            continue
+        if path.name in _SKIP_NAMES:
             continue
         if path.suffix in _SKIP_SUFFIXES:
             continue
