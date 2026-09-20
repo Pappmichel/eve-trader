@@ -7,13 +7,16 @@ sweep (clean pass vs any-failure no-op).
 from __future__ import annotations
 
 import threading
+from dataclasses import asdict
 
 import pytest
 
 from eve_trader import storage
+from eve_trader.auth import TokenRecord
 from eve_trader.esi_client import ESIError
 from eve_trader.esi_data import orchestrator
 from eve_trader.esi_data.orchestrator import do_sync_for_tool
+from eve_trader.esi_data.selector import REAUTH_NEEDED
 
 from . import pg_helpers
 from .pg_helpers import (  # noqa: F401
@@ -28,6 +31,9 @@ ALICE = 1001
 BOB = 1002
 TYPE_ID = 34
 LOCATION_ID = 1000000000001
+ASSETS_SCOPE = "esi-assets.read_assets.v1"
+JOBS_SCOPE = "esi-industry.read_character_jobs.v1"
+PRODUCER_SCOPES = f"{ASSETS_SCOPE} {JOBS_SCOPE}"
 
 
 @pytest.fixture(autouse=True)
@@ -39,6 +45,7 @@ def _wipe():
         "character_sell_orders", "character_slots",
         "esi_sharing", "esi_freshness",
         "esi_wallet_transactions", "esi_wallet_journal",
+        "tenant_tokens",
     )
     yield
     orchestrator._in_flight.clear()
@@ -53,12 +60,17 @@ def _share(owner_type: str, owner_id: int, data_kind: str, tool_key: str) -> Non
         )
 
 
-def _tokens(*chars: tuple[int, str]):
-    """`(character_id, name)` -> orchestrator token tuples."""
-    return [
-        (f"producer:{cid}", cid, name, "producer")
-        for cid, name in chars
-    ]
+def _tokens(*chars: tuple[int, str], scopes: str = PRODUCER_SCOPES):
+    """Seed real tenant_tokens rows. The orchestrator asks the selector,
+    not a prefix listing.
+    """
+    for cid, name in chars:
+        role = f"producer:{cid}"
+        storage.save_tenant_token(role, asdict(TokenRecord(
+            role=role, character_id=cid, character_name=name,
+            access_token="a", refresh_token="r", expires_at=9999999999.0,
+            scopes=scopes,
+        )))
 
 
 def _asset(item_id, owner_id):
@@ -84,16 +96,20 @@ class FakeClient:
         self.job_error_for = set(job_error_for or ())
         self.asset_calls: list[int] = []
         self.job_calls: list[int] = []
+        self.asset_roles: list[str] = []
+        self.job_roles: list[str] = []
         self._asset_hook = None
 
     def character_assets(self, character_id, auth_role):
         if self._asset_hook:
             self._asset_hook(character_id)
         self.asset_calls.append(character_id)
+        self.asset_roles.append(auth_role)
         return list(self.assets.get(character_id, []))
 
     def character_industry_jobs(self, character_id, auth_role):
         self.job_calls.append(character_id)
+        self.job_roles.append(auth_role)
         if character_id in self.job_error_for:
             raise ESIError("jobs 403")
         return list(self.jobs.get(character_id, []))
@@ -123,9 +139,7 @@ def test_orchestrator_two_owners_two_kinds_success(tenant, monkeypatch):
     _share("character", ALICE, "industry_jobs", "production")
     _share("character", BOB, "assets", "production")
     _share("character", BOB, "industry_jobs", "production")
-    monkeypatch.setattr(orchestrator, "_list_token_characters", lambda tm: _tokens(
-        (ALICE, "Alice"), (BOB, "Bob"),
-    ))
+    _tokens((ALICE, "Alice"), (BOB, "Bob"))
     client = FakeClient(
         assets={ALICE: [_asset(1, ALICE)], BOB: [_asset(2, BOB)]},
         jobs={ALICE: [_job(11, ALICE)], BOB: [_job(12, BOB)]},
@@ -153,9 +167,7 @@ def test_orchestrator_mid_kind_failure_rolls_back_that_owner(tenant, monkeypatch
     _share("character", ALICE, "industry_jobs", "production")
     _share("character", BOB, "assets", "production")
     _share("character", BOB, "industry_jobs", "production")
-    monkeypatch.setattr(orchestrator, "_list_token_characters", lambda tm: _tokens(
-        (ALICE, "Alice"), (BOB, "Bob"),
-    ))
+    _tokens((ALICE, "Alice"), (BOB, "Bob"))
     client = FakeClient(
         assets={ALICE: [_asset(1, ALICE)], BOB: [_asset(2, BOB)]},
         jobs={BOB: [_job(12, BOB)]},
@@ -186,7 +198,7 @@ def test_orchestrator_mid_kind_failure_rolls_back_that_owner(tenant, monkeypatch
 
 def test_orchestrator_overlapping_call_skips_in_flight_owner(tenant, monkeypatch):
     _share("character", ALICE, "assets", "production")
-    monkeypatch.setattr(orchestrator, "_list_token_characters", lambda tm: _tokens((ALICE, "Alice")))
+    _tokens((ALICE, "Alice"))
     started = threading.Event()
     release = threading.Event()
     client = FakeClient(assets={ALICE: [_asset(1, ALICE)]})
@@ -228,9 +240,7 @@ def test_null_id_sweep_skipped_when_any_owner_in_flight(tenant, monkeypatch):
         )
     _share("character", ALICE, "assets", "production")
     _share("character", BOB, "assets", "production")
-    monkeypatch.setattr(orchestrator, "_list_token_characters", lambda tm: _tokens(
-        (ALICE, "Alice"), (BOB, "Bob"),
-    ))
+    _tokens((ALICE, "Alice"), (BOB, "Bob"))
     started = threading.Event()
     release = threading.Event()
     client = FakeClient(assets={ALICE: [_asset(1, ALICE)], BOB: [_asset(2, BOB)]})
@@ -270,9 +280,7 @@ def test_null_id_sweep_skipped_when_any_owner_in_flight(tenant, monkeypatch):
 def test_orchestrator_production_tool_refreshes_only_production_sharing(tenant, monkeypatch):
     _share("character", ALICE, "assets", "production")
     _share("character", BOB, "assets", "doctrine")
-    monkeypatch.setattr(orchestrator, "_list_token_characters", lambda tm: _tokens(
-        (ALICE, "Alice"), (BOB, "Bob"),
-    ))
+    _tokens((ALICE, "Alice"), (BOB, "Bob"))
     client = FakeClient(assets={ALICE: [_asset(1, ALICE)], BOB: [_asset(2, BOB)]})
     do_sync_for_tool("production", client=client)
     assert client.asset_calls == [ALICE]
@@ -300,7 +308,7 @@ def test_null_id_sweep_runs_after_clean_pass(tenant, monkeypatch):
             "VALUES (3, 1, 34, 1, 'active', '2026-01-01T00:00:00Z', 'ghost')"
         )
     _share("character", ALICE, "assets", "production")
-    monkeypatch.setattr(orchestrator, "_list_token_characters", lambda tm: _tokens((ALICE, "Alice")))
+    _tokens((ALICE, "Alice"))
     result = do_sync_for_tool("production", client=FakeClient(assets={ALICE: []}))
     assert result["ok"] is True
     assert result["null_id_sweep"] is not None
@@ -319,9 +327,71 @@ def test_null_id_sweep_skipped_after_a_failure(tenant, monkeypatch):
         )
     _share("character", ALICE, "assets", "production")
     _share("character", ALICE, "industry_jobs", "production")
-    monkeypatch.setattr(orchestrator, "_list_token_characters", lambda tm: _tokens((ALICE, "Alice")))
+    _tokens((ALICE, "Alice"))
     client = FakeClient(assets={ALICE: [_asset(1, ALICE)]}, job_error_for={ALICE})
     result = do_sync_for_tool("production", client=client)
     assert result["ok"] is False
     assert result["null_id_sweep"] is None
     assert _count("character_blueprints") == 1
+
+
+def test_orchestrator_records_reauth_needed_and_keeps_processing_other_owners(tenant):
+    """No token holding a kind's scope is not a fetch failure: that owner ×
+    kind is marked re-auth-needed and other owners still run.
+    """
+    _share("character", ALICE, "assets", "production")
+    _share("character", ALICE, "industry_jobs", "production")
+    _share("character", BOB, "assets", "production")
+    _share("character", BOB, "industry_jobs", "production")
+    _tokens((ALICE, "Alice"), scopes=ASSETS_SCOPE)
+    _tokens((BOB, "Bob"), scopes=PRODUCER_SCOPES)
+    client = FakeClient(
+        assets={ALICE: [_asset(1, ALICE)], BOB: [_asset(2, BOB)]},
+        jobs={ALICE: [_job(11, ALICE)], BOB: [_job(12, BOB)]},
+    )
+    result = do_sync_for_tool("production", client=client)
+    assert result["ok"] is True
+    alice = next(r for r in result["owners"] if r["owner_id"] == ALICE)
+    assert alice["ok"] is True
+    assert alice["kinds"]["assets"]["written"] == 1
+    assert alice["kinds"]["industry_jobs"] == REAUTH_NEEDED
+    assert _count("character_assets", owner_character_id=ALICE) == 1
+    assert _count("character_industry_jobs", owner_character_id=ALICE) == 0
+    assert _count("character_assets", owner_character_id=BOB) == 1
+    assert _count("character_industry_jobs", owner_character_id=BOB) == 1
+    assert ALICE not in client.job_calls
+    with storage.connect() as conn:
+        err = conn.execute(
+            "SELECT last_error FROM esi_freshness "
+            "WHERE owner_type = 'character' AND owner_id = ? AND data_kind = 'industry_jobs'",
+            (ALICE,),
+        ).fetchone()
+    assert err is None
+
+
+def test_orchestrator_picks_largest_scope_token_not_a_prefix(tenant):
+    """Two keys for one character: the orchestrator asks the selector,
+    so the larger scope set wins rather than a `producer:` listing.
+    """
+    _share("character", ALICE, "assets", "production")
+    _share("character", ALICE, "industry_jobs", "production")
+    storage.save_tenant_token("doctrine-assets:1001", asdict(TokenRecord(
+        role="doctrine-assets:1001", character_id=ALICE, character_name="Alice",
+        access_token="a", refresh_token="r", expires_at=9999999999.0,
+        scopes=ASSETS_SCOPE,
+    )))
+    storage.save_tenant_token("producer:1001", asdict(TokenRecord(
+        role="producer:1001", character_id=ALICE, character_name="Alice",
+        access_token="a", refresh_token="r", expires_at=9999999999.0,
+        scopes=PRODUCER_SCOPES,
+    )))
+    client = FakeClient(
+        assets={ALICE: [_asset(1, ALICE)]},
+        jobs={ALICE: [_job(11, ALICE)]},
+    )
+    result = do_sync_for_tool("production", client=client)
+    assert result["ok"] is True
+    assert client.asset_roles == ["producer:1001"]
+    assert client.job_roles == ["producer:1001"]
+    assert _count("character_assets", owner_character_id=ALICE) == 1
+    assert _count("character_industry_jobs", owner_character_id=ALICE) == 1

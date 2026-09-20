@@ -1,8 +1,8 @@
 """ESI fetch orchestrator: one task per owner, kinds sequential inside it.
 
-Sharing decides *what* to refresh; prefix listings still resolve tokens
-(Phase 4 replaces that). Group 3 is not an orchestrator kind. This module
-imports no tool package.
+Sharing decides *what* to refresh; the token selector picks `auth_role`
+for a given (character, required scope). Group 3 is not an orchestrator
+kind. This module imports no tool package.
 """
 from __future__ import annotations
 
@@ -13,12 +13,12 @@ from typing import Optional
 
 from .. import storage
 from ..access_gate import ALL_TOOL_KEYS
-from ..auth import TOOL_ROLE_PREFIXES, TokenManager
+from ..auth import TokenManager, TokenRecord
 from ..config import OAUTH_CONFIG
 from ..esi_client import ESIClient, ESIError
-from .backfill import prefixes_holding_kind
 from .fetchers import fetcher_for
 from .registry import OWNED_DATA_KINDS, TIER_FREQUENT, TIER_NORMAL, TIER_RARE
+from .selector import REAUTH_NEEDED, select_auth_role
 from .stale import DEFAULT_STALE_CLEAR_MULTIPLES, clear_stale_owner_kind
 
 log = logging.getLogger(__name__)
@@ -32,6 +32,7 @@ DEFAULT_TIER_INTERVAL_HOURS = {
 }
 
 _KIND_TIER = {k.key: k.freshness_tier for k in OWNED_DATA_KINDS}
+_KIND_BY_KEY = {k.key: k for k in OWNED_DATA_KINDS}
 
 # Per-owner in-process guard (decision 7): a manual tool sync and the
 # scheduler must not process the same owner concurrently.
@@ -62,51 +63,38 @@ def _tier_hours(data_kind: str) -> float:
     return DEFAULT_TIER_INTERVAL_HOURS[_KIND_TIER[data_kind]]
 
 
-def _list_token_characters(tm: TokenManager) -> list[tuple[str, int, str, str]]:
-    """`(role, character_id, character_name, prefix)` from today's prefix
-    listings. One character with several prefixes appears once per role.
+def _required_scope(data_kind: str, owner_type: str) -> Optional[str]:
+    spec = _KIND_BY_KEY.get(data_kind)
+    if spec is None:
+        return None
+    if owner_type == "character":
+        return spec.character_scope
+    return spec.corporation_scope
+
+
+def _list_known_characters(tm: TokenManager) -> list[TokenRecord]:
+    """Unique characters this tenant has any token for, first-seen order.
+
+    Not a prefix listing: every stored row counts, whatever its key.
     """
-    out: list[tuple[str, int, str, str]] = []
-    for prefixes in TOOL_ROLE_PREFIXES.values():
-        for prefix in prefixes:
-            for role in tm.list_roles(prefix):
-                record = tm.get_record(role)
-                if record is not None:
-                    out.append((role, record.character_id, record.character_name, prefix))
+    seen: set[int] = set()
+    out: list[TokenRecord] = []
+    for rec in tm.list_records():
+        if rec.character_id in seen:
+            continue
+        seen.add(rec.character_id)
+        out.append(rec)
     return out
 
 
-def _auth_roles_for(
-    character_id: int,
-    data_kind: str,
-    owner_type: str,
-    tokens: list[tuple[str, int, str, str]],
-) -> list[str]:
-    """Roles for this character that historically carried `data_kind`, in
-    prefix-grant order, then any remaining role for the same character."""
-    preferred = set(prefixes_holding_kind(data_kind, owner_type))
-    roles: list[str] = []
-    seen: set[str] = set()
-    for role, cid, _name, prefix in tokens:
-        if cid != character_id or prefix not in preferred or role in seen:
-            continue
-        seen.add(role)
-        roles.append(role)
-    for role, cid, _name, _prefix in tokens:
-        if cid == character_id and role not in seen:
-            seen.add(role)
-            roles.append(role)
-    return roles
-
-
 def _display_name(
-    owner_type: str, owner_id: int, tokens: list[tuple[str, int, str, str]],
+    owner_type: str, owner_id: int, characters: list[TokenRecord],
     corp_names: dict[int, str],
 ) -> str:
     if owner_type == "character":
-        for _role, cid, name, _prefix in tokens:
-            if cid == owner_id:
-                return name or str(owner_id)
+        for rec in characters:
+            if rec.character_id == owner_id:
+                return rec.character_name or str(owner_id)
         return str(owner_id)
     name = corp_names.get(owner_id) or str(owner_id)
     return f"{name} (corp)"
@@ -176,8 +164,9 @@ def _run_character_owner(
     client: ESIClient,
     owner_id: int,
     kinds: list[str],
-    tokens: list[tuple[str, int, str, str]],
+    characters: list[TokenRecord],
     extra: dict,
+    tokens: TokenManager,
 ) -> dict:
     owner_type = "character"
     if not _try_begin_owner(owner_type, owner_id):
@@ -185,37 +174,29 @@ def _run_character_owner(
             "owner_type": owner_type, "owner_id": owner_id,
             "skipped": "in_flight", "kinds": {}, "ok": True,
         }
-    owner_name = _display_name(owner_type, owner_id, tokens, {})
+    owner_name = _display_name(owner_type, owner_id, characters, {})
     kind_report: dict = {}
     failed: Optional[tuple[str, BaseException]] = None
     try:
         with storage.batch_session():
             for data_kind in kinds:
-                roles = _auth_roles_for(owner_id, data_kind, owner_type, tokens)
-                if not roles:
-                    err = RuntimeError(f"no token for character {owner_id} kind {data_kind}")
-                    kind_report[data_kind] = f"skipped ({err})"
-                    failed = (data_kind, err)
-                    raise err
-                last_error: Optional[BaseException] = None
-                wrote = None
-                for role in roles:
-                    try:
-                        wrote = _run_kind(
-                            client=client, data_kind=data_kind, owner_type=owner_type,
-                            owner_id=owner_id, auth_role=role, owner_name=owner_name,
-                            extra=extra,
-                        )
-                        last_error = None
-                        break
-                    except ESIError as e:
-                        last_error = e
-                        continue
-                if last_error is not None or wrote is None:
-                    err = last_error or RuntimeError("fetch returned nothing")
-                    kind_report[data_kind] = f"skipped ({err})"
-                    failed = (data_kind, err)
-                    raise err
+                scope = _required_scope(data_kind, owner_type)
+                role = select_auth_role(owner_id, scope, tokens=tokens) if scope else None
+                if role is None:
+                    # Distinguishable from a fetch failure and from "nothing
+                    # shared": Characters will map this to pending re-auth.
+                    kind_report[data_kind] = REAUTH_NEEDED
+                    continue
+                try:
+                    wrote = _run_kind(
+                        client=client, data_kind=data_kind, owner_type=owner_type,
+                        owner_id=owner_id, auth_role=role, owner_name=owner_name,
+                        extra=extra,
+                    )
+                except ESIError as e:
+                    kind_report[data_kind] = f"skipped ({e})"
+                    failed = (data_kind, e)
+                    raise
                 _record_success(owner_type, owner_id, data_kind)
                 kind_report[data_kind] = wrote
     except Exception as e:  # noqa: BLE001 - owner task must not abort the pass
@@ -244,13 +225,16 @@ def _run_corporation_kinds_for_members(
     client: ESIClient,
     corp_id: int,
     kinds: list[str],
-    members: list[tuple[str, int, str]],
+    members: list[TokenRecord],
     corp_name: str,
     extra: dict,
+    tokens: TokenManager,
 ) -> dict:
     """Sequential member retry. Each kind is claimed independently so a
     Director who cannot read orders still contributes assets/jobs/bps, and a
     later Accountant fills orders (and a later Junior_Accountant, wallet).
+    Each member's `auth_role` comes from the selector for that kind's corp
+    scope — not from a prefix listing.
     """
     owner_type = "corporation"
     if not _try_begin_owner(owner_type, corp_id):
@@ -264,9 +248,15 @@ def _run_corporation_kinds_for_members(
     try:
         with storage.batch_session():
             for data_kind in kinds:
+                scope = _required_scope(data_kind, owner_type)
                 last_error: Optional[BaseException] = None
                 wrote = None
-                for role, _cid, _cname in members:
+                any_candidate = False
+                for rec in members:
+                    role = select_auth_role(rec.character_id, scope, tokens=tokens) if scope else None
+                    if role is None:
+                        continue
+                    any_candidate = True
                     try:
                         wrote = _run_kind(
                             client=client, data_kind=data_kind, owner_type=owner_type,
@@ -278,6 +268,9 @@ def _run_corporation_kinds_for_members(
                     except ESIError as e:
                         last_error = e
                         continue
+                if not any_candidate:
+                    kind_report[data_kind] = REAUTH_NEEDED
+                    continue
                 if last_error is not None or wrote is None:
                     failed_kinds[data_kind] = str(last_error or "no member could fetch")
                     kind_report[data_kind] = f"skipped ({failed_kinds[data_kind]})"
@@ -333,7 +326,7 @@ def _sync(
     extra: Optional[dict] = None,
 ) -> dict:
     tm = TokenManager(OAUTH_CONFIG)
-    tokens = _list_token_characters(tm)
+    characters = _list_known_characters(tm)
     esi = client or ESIClient(tokens=tm)
     char_owners, corp_owners = _owners_from_sharing(sharing)
 
@@ -345,35 +338,28 @@ def _sync(
             kinds = _kinds_for_owner(sharing, "character", owner_id)
             return _run_character_owner(
                 client=esi, owner_id=owner_id, kinds=kinds,
-                tokens=tokens, extra=fetch_extra,
+                characters=characters, extra=fetch_extra, tokens=tm,
             )
 
         wrapped = storage.with_current_tenant(_one_char)
         with ThreadPoolExecutor(max_workers=min(8, len(char_owners))) as pool:
-            # list() preserves sharing/token order, which is what the sequential
-            # corp-claim pass below uses as member order.
             char_results = list(pool.map(wrapped, char_owners))
 
     # Corp membership from public info, in character-list order. Sequential
     # across corps AND across members of one corp — parallelizing that races
     # two characters to claim the same corp.
-    members_by_corp: dict[int, list[tuple[str, int, str]]] = {}
+    members_by_corp: dict[int, list[TokenRecord]] = {}
     corp_names: dict[int, str] = {}
-    seen_member: set[tuple[int, str]] = set()
-    for role, cid, cname, _prefix in tokens:
+    for rec in characters:
         try:
-            info = esi.character_public_info(cid)
+            info = esi.character_public_info(rec.character_id)
         except Exception:  # noqa: BLE001 - skip this character's corp
             continue
         corp_id = info.get("corporation_id") if isinstance(info, dict) else None
         if not corp_id:
             continue
         corp_id = int(corp_id)
-        key = (cid, role)
-        if key in seen_member:
-            continue
-        seen_member.add(key)
-        members_by_corp.setdefault(corp_id, []).append((role, cid, cname))
+        members_by_corp.setdefault(corp_id, []).append(rec)
         if corp_id not in corp_names:
             try:
                 corp_names[corp_id] = esi.corporation_public_info(corp_id).get("name", str(corp_id))
@@ -387,7 +373,7 @@ def _sync(
         corp_results.append(_run_corporation_kinds_for_members(
             client=esi, corp_id=corp_id, kinds=kinds, members=members,
             corp_name=corp_names.get(corp_id, str(corp_id)),
-            extra=fetch_extra,
+            extra=fetch_extra, tokens=tm,
         ))
 
     all_results = char_results + corp_results
