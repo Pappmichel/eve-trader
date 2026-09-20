@@ -9,7 +9,8 @@ from eve_trader import storage
 
 from . import pg_helpers
 from .pg_helpers import (
-    _apply_admin_schema, _apply_phase1_schema, _apply_phase2_schema, _apply_phase3_schema,  # noqa: F401
+    _apply_admin_schema, _apply_esi_access_schema, _apply_phase1_schema,  # noqa: F401
+    _apply_phase2_schema, _apply_phase3_schema,
     tenant, tenant_pair,
 )
 
@@ -23,11 +24,12 @@ LOCATION_ID = 1000000000001
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _apply_sorting_schema(_apply_phase1_schema, _apply_phase2_schema):
+def _apply_sorting_schema(_apply_phase1_schema, _apply_phase2_schema, _apply_esi_access_schema):
     if not pg_helpers._postgres_available():
         return
     with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
         conn.execute(_SORTING_SCHEMA_SQL.read_text(encoding="utf-8"))
+        conn.execute(pg_helpers._ESI_ACCESS_SCHEMA_SQL.read_text(encoding="utf-8"))
 
 
 @pytest.fixture(autouse=True)

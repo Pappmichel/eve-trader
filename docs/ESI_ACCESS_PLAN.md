@@ -836,11 +836,11 @@ still what writes them.
   a matching asset owner still exists; rows that cannot be matched
   are left with `owner_name` only and logged, not deleted.
 
-**Status:** this PR. CI gate is isolation tests covering every new
+**Status:** landed, PR #172 (merged 2026-09-20). CI gate is isolation tests covering every new
 table, the decision-13 backfill test (including two prefixes on the
 same `character_id` and Sorting-gets-nothing), drift-guard, and
 idempotent apply against local Postgres. Deployment-checklist items
-for the schema file and the conservative backfill are appended below.
+for the schema file and the conservative backfill are below.
 
 **Done when:** schema applies idempotently against the real local
 Postgres (`eve-trader-pg`), isolation tests cover the new tables
@@ -867,7 +867,19 @@ for Phase 3's accessor — see that phase.
   predicate.
 - Failed fetch: skip the delete (decision 6). Age-limit clear is a
   separate pass using the freshness row and the one multiple-knob.
+  The clear function is `eve_trader.esi_data.stale.clear_stale_owner_kind`
+  with `stale_clear_multiples` as a parameter (default
+  `DEFAULT_STALE_CLEAR_MULTIPLES = 3`). It has no caller until Phase
+  3's orchestrator. Do **not** add a `TradingConfig` field here —
+  Phase 7 adds `esi_stale_clear_multiples` and wires it.
 - `replace_character_slots` stays an UPSERT (issue #39).
+
+**Status:** this PR. CI gate is the partitioned-write tests (NULL-id
+transition, Production replace of A does not delete B, failed skip,
+age-limit clear) plus #39's slot-exclusion test. The first
+Production/Doctrine ESI sync after deploy is the owner-id transition;
+that post-deploy verification is appended below. No new schema file
+and no `TradingConfig` field.
 
 **Done when:** a test writes Production-shaped asset rows for character
 A and Doctrine-shaped rows for character B into the shared table via
@@ -1083,7 +1095,13 @@ intervals.
 
 - Three config fields (frequent / normal / rare hours) + the one
   stale-clear multiple (decision 6). `_FIELD_RANGES` entries
-  `(0, None)`. Retire
+  `(0, None)`. **Phase 2 already built**
+  `eve_trader.esi_data.stale.clear_stale_owner_kind` with
+  `stale_clear_multiples` as a parameter defaulting to
+  `DEFAULT_STALE_CLEAR_MULTIPLES` (3). This phase adds
+  `TradingConfig.esi_stale_clear_multiples` and **passes it into that
+  function** — do not add the config field a second time, and do not
+  re-derive the clear. Retire
   `production_sync_interval_hours` and
   `doctrine_sync_interval_hours` as *ESI* intervals. Keep
   `trading_pipeline_interval_hours` if `do_pipeline`'s
@@ -1296,7 +1314,8 @@ list is the deliverable at the end — not something reconstructed
 from PR descriptions afterwards. Work it top to bottom on deploy
 day.
 
-Phase 8 (landed, PR #169) and Phase 1 (this PR) have items below.
+Phase 8 (landed, PR #169) and Phase 1 (landed, PR #172) have items below.
+Phase 2 adds a post-deploy verification row for the owner-id transition.
 Remaining phases add their own rows when they merge; do not invent
 them here.
 
@@ -1386,6 +1405,23 @@ What to check, and what a correct result looks like.
   "done when" live check; it could not be performed in a token-less
   build environment and lives here rather than staying unsatisfied
   on the phase.
+- **Phase 2.** After deploy, the first successful Production ESI sync
+  of each producer character (and Doctrine `sync_assets` /
+  `sync_contracts` of each doctrine-assets / doctrine character)
+  stamps `owner_character_id` / `owner_corporation_id` on that
+  owner's snapshot rows and deletes that owner's leftover NULL-id
+  rows that can be attributed by `owner_name` (assets, sell orders),
+  `installer_id` (character jobs), or `source_role` (contracts). A
+  failed first sync does **not** wipe that owner (decision 6);
+  previous (possibly NULL-id) rows stay until a successful replace or
+  the age-limit clear (Phase 3 caller, Phase 7 config). After every
+  registered owner has succeeded once, leftover NULL-id rows in
+  `character_blueprints` / `corp_blueprints` / `corp_industry_jobs`
+  are vanished items that could not be attributed without touching
+  another owner; they do not collide on later syncs (incoming PKs).
+  Correct result: a second sync of the same owner does not
+  UniqueViolation on `(item_id, owner_name)`, and a Production-only
+  sync of character A leaves character B's rows in the same table.
 
 ## Explicitly out of scope
 

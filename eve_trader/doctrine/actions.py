@@ -349,8 +349,9 @@ def do_validate_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG,
     fitting (do_update_fitting, scoped to affected contract_ids) and as its
     own standalone action for a full re-run (`contract_ids` None).
 
-    replace_doctrine_sync_snapshot is wholesale, so untouched contracts are
-    written through with their existing items/deviations rather than dropped."""
+    replace_doctrine_sync_snapshot is partitioned by owner; this path still
+    writes every loaded contract through (grouped by source_role when owner
+    ids are omitted) so untouched contracts are not dropped."""
     candidates = engine.load_match_candidates()
     contracts = engine.contract_rows_from_db(storage.list_doctrine_contracts())
     target_ids = set(contract_ids) if contract_ids is not None else None

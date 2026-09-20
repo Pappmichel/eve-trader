@@ -64,11 +64,11 @@ def test_sync_esi_merges_personal_and_corp_sell_orders(monkeypatch):
     monkeypatch.setattr(ESIClient, "resolve_names", lambda self, ids: {})
 
     saved_orders = []
-    monkeypatch.setattr(storage, "replace_sell_orders", lambda rows: saved_orders.extend(rows))
-    monkeypatch.setattr(storage, "replace_assets", lambda table, rows: None)
-    monkeypatch.setattr(storage, "replace_industry_jobs", lambda table, rows: None)
-    monkeypatch.setattr(storage, "replace_blueprints", lambda table, rows: None)
-    monkeypatch.setattr(storage, "replace_character_slots", lambda rows: None)
+    monkeypatch.setattr(storage, "replace_sell_orders", lambda rows, **kwargs: saved_orders.extend(rows))
+    monkeypatch.setattr(storage, "replace_assets", lambda table, rows, **kwargs: None)
+    monkeypatch.setattr(storage, "replace_industry_jobs", lambda table, rows, **kwargs: None)
+    monkeypatch.setattr(storage, "replace_blueprints", lambda table, rows, **kwargs: None)
+    monkeypatch.setattr(storage, "replace_character_slots", lambda rows, **kwargs: None)
 
     result = esi_sync.sync_esi()
 
@@ -105,11 +105,11 @@ def test_sync_esi_corp_orders_role_failure_does_not_block_personal_orders(monkey
     monkeypatch.setattr(ESIClient, "resolve_names", lambda self, ids: {})
 
     saved_orders = []
-    monkeypatch.setattr(storage, "replace_sell_orders", lambda rows: saved_orders.extend(rows))
-    monkeypatch.setattr(storage, "replace_assets", lambda table, rows: None)
-    monkeypatch.setattr(storage, "replace_industry_jobs", lambda table, rows: None)
-    monkeypatch.setattr(storage, "replace_blueprints", lambda table, rows: None)
-    monkeypatch.setattr(storage, "replace_character_slots", lambda rows: None)
+    monkeypatch.setattr(storage, "replace_sell_orders", lambda rows, **kwargs: saved_orders.extend(rows))
+    monkeypatch.setattr(storage, "replace_assets", lambda table, rows, **kwargs: None)
+    monkeypatch.setattr(storage, "replace_industry_jobs", lambda table, rows, **kwargs: None)
+    monkeypatch.setattr(storage, "replace_blueprints", lambda table, rows, **kwargs: None)
+    monkeypatch.setattr(storage, "replace_character_slots", lambda rows, **kwargs: None)
 
     result = esi_sync.sync_esi()
 
@@ -163,11 +163,11 @@ def test_sync_esi_character_public_info_failure_does_not_discard_the_whole_run(m
 
     saved_char_assets = []
     monkeypatch.setattr(storage, "replace_assets",
-                         lambda table, rows: saved_char_assets.extend(rows) if table == "character_assets" else None)
-    monkeypatch.setattr(storage, "replace_industry_jobs", lambda table, rows: None)
-    monkeypatch.setattr(storage, "replace_blueprints", lambda table, rows: None)
-    monkeypatch.setattr(storage, "replace_sell_orders", lambda rows: None)
-    monkeypatch.setattr(storage, "replace_character_slots", lambda rows: None)
+                         lambda table, rows, **kwargs: saved_char_assets.extend(rows) if table == "character_assets" else None)
+    monkeypatch.setattr(storage, "replace_industry_jobs", lambda table, rows, **kwargs: None)
+    monkeypatch.setattr(storage, "replace_blueprints", lambda table, rows, **kwargs: None)
+    monkeypatch.setattr(storage, "replace_sell_orders", lambda rows, **kwargs: None)
+    monkeypatch.setattr(storage, "replace_character_slots", lambda rows, **kwargs: None)
 
     result = esi_sync.sync_esi()
 
@@ -212,11 +212,11 @@ def test_sync_esi_fetches_characters_own_data_concurrently(monkeypatch):
     monkeypatch.setattr(ESIClient, "character_public_info", fail_public_info)
     monkeypatch.setattr(ESIClient, "resolve_names", lambda self, ids: {})
 
-    monkeypatch.setattr(storage, "replace_assets", lambda table, rows: None)
-    monkeypatch.setattr(storage, "replace_industry_jobs", lambda table, rows: None)
-    monkeypatch.setattr(storage, "replace_blueprints", lambda table, rows: None)
-    monkeypatch.setattr(storage, "replace_sell_orders", lambda rows: None)
-    monkeypatch.setattr(storage, "replace_character_slots", lambda rows: None)
+    monkeypatch.setattr(storage, "replace_assets", lambda table, rows, **kwargs: None)
+    monkeypatch.setattr(storage, "replace_industry_jobs", lambda table, rows, **kwargs: None)
+    monkeypatch.setattr(storage, "replace_blueprints", lambda table, rows, **kwargs: None)
+    monkeypatch.setattr(storage, "replace_sell_orders", lambda rows, **kwargs: None)
+    monkeypatch.setattr(storage, "replace_character_slots", lambda rows, **kwargs: None)
 
     start = time_module.monotonic()
     result = esi_sync.sync_esi()
