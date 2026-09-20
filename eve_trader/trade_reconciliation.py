@@ -28,10 +28,20 @@ journal (and vice versa). RealizedTrade has no seller character id; corp
 sells join the same structure-sell FIFO pool as personal sells, and corp
 buys join the same Jita-buy pool.
 
+This path assumes a single-member corp. Corp fills are counted regardless of
+which member placed the order — reconciliation filters only by location
+(Jita-region buys, cfg.structure_id sells), never by placing character.
+That is correct here; in a shared corp those fills would pull other members'
+trades into realized profit and into average_daily_sold_by_type, which
+feeds "Profit / Day" on the shortlist.
+
 Corp access follows production/esi_sync.py: the corp is reached through a
 member character, retried with each registered character of that corp until
-one has Accountant/Junior_Accountant, and a corp no registered character
-can serve is skipped non-fatally rather than raising.
+one can read at least one configured wallet division, and a corp no
+registered character can serve is skipped non-fatally rather than raising.
+A member that can read some but not all configured divisions is used as-is;
+unread divisions are not topped up from a later member (that would re-fetch
+the readable ones and double-count).
 """
 from __future__ import annotations
 
@@ -155,6 +165,10 @@ def fetch_recent_transactions(character_id: int, auth_role: str, client: ESIClie
     return in_window
 
 
+def _fmt_divisions(ids: list[int]) -> str:
+    return ", ".join(str(i) for i in ids)
+
+
 def _wallet_divisions(cfg: TradingConfig) -> tuple[int, ...]:
     """Empty wallet_division_ids means all seven ESI divisions, matching
     ProductionConfig.stock_hangar_flags' empty-means-all behaviour."""
@@ -168,9 +182,9 @@ def fetch_recent_corporation_transactions(corporation_id: int, division: int, au
     """Pages corporation_wallet_transactions via `from_id` (same cursor
     scheme as fetch_recent_transactions). ESI's per-call cap is 2500 for
     this endpoint too (swagger maxItems, confirmed 2026-09-20) so
-    WALLET_TRANSACTIONS_PAGE_SIZE is shared. Raises ESIError — the corp
-    retry loop in fetch_corporation_wallet_streams decides whether to try
-    another member character or skip the corp."""
+    WALLET_TRANSACTIONS_PAGE_SIZE is shared. Raises ESIError —
+    fetch_corporation_wallet_streams catches that per division so one
+    unread wallet does not discard the others."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
     all_txns: list[dict] = []
     from_id: Optional[int] = None
@@ -248,39 +262,66 @@ def fetch_corporation_wallet_streams(characters: list[tuple[int, str]], client: 
     """Corp wallet transactions + namespaced journal amounts for every corp
     a registered buyer/seller belongs to.
 
-    Each corp is fetched once. Member characters are tried in list order
-    until one can read the wallets (Accountant / Junior_Accountant + the
-    corp-wallets scope). A corp no registered character can serve is
-    skipped non-fatally — character-wallet matching still runs.
+    Each corp is fetched once. Member characters are tried in list order.
+    A member is usable if it can read any configured division
+    (Accountant / Junior_Accountant + the corp-wallets scope, and any
+    in-game per-division wallet grant); remaining unread divisions are
+    logged as a partial miss and are not topped up from a later member
+    (that would re-fetch the readable divisions and double-count). A
+    member that cannot read any configured division is skipped and the
+    next member is tried. A corp no registered character can serve at all
+    is skipped non-fatally — character-wallet matching still runs.
     """
     divisions = _wallet_divisions(cfg)
     txns: list[dict] = []
     journal: dict[tuple, float] = {}
     for corporation_id, members in _corps_for_characters(characters, client).items():
-        fetched = False
-        last_error: Optional[BaseException] = None
-        for _character_id, role in members:
-            try:
-                corp_txns: list[dict] = []
-                for division in divisions:
+        fetched_any = False
+        member_failures: list[str] = []
+        for character_id, role in members:
+            readable: list[int] = []
+            unread: list[int] = []
+            corp_txns: list[dict] = []
+            last_error: Optional[BaseException] = None
+            for division in divisions:
+                try:
                     corp_txns.extend(fetch_recent_corporation_transactions(
                         corporation_id, division, role, client, txn_lookback_days))
-            except ESIError as e:
-                last_error = e
+                except ESIError as e:
+                    last_error = e
+                    unread.append(division)
+                    continue
+                readable.append(division)
+            if not readable:
+                member_failures.append(
+                    f"character {character_id} ({role}): {last_error}")
                 continue
-            for division in divisions:
+            for division in readable:
                 for jid, amount in fetch_recent_corporation_journal_entries(
                     corporation_id, division, role, client, journal_lookback_days,
                 ).items():
                     journal[("corporation", corporation_id, division, jid)] = amount
             txns.extend(corp_txns)
-            fetched = True
+            fetched_any = True
+            if unread:
+                log.warning(
+                    "Corporation %s wallet: character %s (%s) could read "
+                    "divisions %s but not %s; using the readable divisions "
+                    "only (not retrying another member — that would "
+                    "double-count). Last unread error: %s",
+                    corporation_id, character_id, role,
+                    _fmt_divisions(readable), _fmt_divisions(unread),
+                    last_error,
+                )
             break
-        if not fetched:
+        if not fetched_any:
             log.warning(
-                "Skipping corporation %s wallet: no registered character has "
-                "Accountant/Junior_Accountant (or the corp-wallets scope). Last error: %s",
-                corporation_id, last_error,
+                "Skipping corporation %s wallet: no registered character "
+                "could read any of configured divisions %s "
+                "(Accountant/Junior_Accountant plus corp-wallets scope, "
+                "and per-division wallet access). Tried: %s",
+                corporation_id, _fmt_divisions(list(divisions)),
+                "; ".join(member_failures) or "no members",
             )
     return txns, journal
 

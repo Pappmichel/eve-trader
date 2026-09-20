@@ -455,6 +455,7 @@ not just a labeling issue:
   chunked` pattern and was never affected by either bug. The `sell_volume`
   field itself is unchanged and still legitimately shown as "Listed Qty"
   (own column) - it's just never used for the Profit/Day multiplication.
+  Corp-wallet reconciliation assumes a single-member corp (see `trade_reconciliation.py`); a shared corp would mix other members' fills into realized profit and `average_daily_sold_by_type` (the figure #51 briefly used for Profit / Day before #100 switched it to market-wide volume).
 
 ## Real SDE data drives classification, not heuristics
 

@@ -561,3 +561,51 @@ def test_reconcile_configured_wallet_divisions_only(monkeypatch):
         client=client, item_names={}, item_volumes={}, cfg=cfg,
     )
     assert [c[1] for c in client.corp_txn_calls] == [2, 5]
+
+
+def test_reconcile_partial_division_access_keeps_readable_fills(monkeypatch, caplog):
+    """A 403 on later wallet divisions must not discard the division that
+    succeeded, and must not fall through to another member (that would
+    re-fetch the readable division and double-count)."""
+    monkeypatch.setattr(trade_reconciliation.storage, "get_station_ids_in_region",
+                         lambda region_id: frozenset({JITA_4_4_STATION_ID}))
+    cfg = TradingConfig(lookback_days=30, structure_sell_haircut=1.0, jita_buy_broker_fee=0.0)
+
+    class PartialClient(FakeClient):
+        def corporation_wallet_transactions(self, corporation_id, division, auth_role, from_id=None):
+            self.corp_txn_calls.append((corporation_id, division, auth_role, from_id))
+            if division != 1:
+                raise ESIError("HTTP 403: character does not have the required role")
+            if from_id is not None:
+                return []
+            return list(self._corp_txns.get((corporation_id, division), []))
+
+        def corporation_wallet_journal(self, corporation_id, division, auth_role):
+            if division != 1:
+                raise ESIError("HTTP 403: character does not have the required role")
+            return list(self._corp_journal.get((corporation_id, division), []))
+
+    corp_buy = {"is_buy": True, "type_id": 100, "date": _iso(2), "unit_price": 1000.0, "quantity": 10,
+                "location_id": JITA_4_4_STATION_ID, "transaction_id": 9001}
+    corp_sell = {"is_buy": False, "type_id": 100, "date": _iso(1), "unit_price": 1200.0, "quantity": 10,
+                 "location_id": cfg.structure_id, "transaction_id": 9002}
+    client = PartialClient(
+        buyer_txns=[], seller_txns=[],
+        character_corps={1: 99, 2: 99},
+        corp_txns={(99, 1): [corp_buy, corp_sell]},
+    )
+
+    with caplog.at_level("WARNING", logger="eve_trader.trade_reconciliation"):
+        trades = reconcile_realized_trades(
+            buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
+            client=client, item_names={100: "Widget"}, item_volumes={100: 0.0}, cfg=cfg,
+        )
+
+    assert len(trades) == 1
+    assert trades[0].matched_qty == 10
+    assert round(trades[0].realized_profit, 2) == round((1200.0 - 1000.0) * 10, 2)
+    first_page = [c for c in client.corp_txn_calls if c[3] is None]
+    assert [c[1] for c in first_page] == list(WALLET_DIVISION_IDS)
+    assert {c[2] for c in client.corp_txn_calls} == {"buyer"}
+    assert "could read divisions 1 but not 2, 3, 4, 5, 6, 7" in caplog.text
+    assert "could read any of configured divisions" not in caplog.text
