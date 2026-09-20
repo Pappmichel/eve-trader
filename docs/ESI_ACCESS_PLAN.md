@@ -874,7 +874,7 @@ for Phase 3's accessor — see that phase.
   Phase 7 adds `esi_stale_clear_multiples` and wires it.
 - `replace_character_slots` stays an UPSERT (issue #39).
 
-**Status:** this PR. CI gate is the partitioned-write tests (NULL-id
+**Status:** landed, PR #173 (merged 2026-09-20). CI gate is the partitioned-write tests (NULL-id
 transition, Production replace of A does not delete B, failed skip,
 age-limit clear) plus #39's slot-exclusion test. The first
 Production/Doctrine ESI sync after deploy is the owner-id transition;
@@ -940,6 +940,32 @@ internal shortcut.
   there is no window where two writers target different tables.
 - Error strings that still say "Add Character in the sidebar" can wait
   for Phase 9, but new orchestrator errors must not add more of them.
+
+**Status:** this PR is **3a** (fetchers, orchestrator, fail-closed
+accessor, wallet consumer, NULL-id sweep). Doctrine asset-table merge
+is **3b** and waits until 3a is merged — the accessor must exist before
+those tables land in `character_assets` / `corp_assets`. No frontend.
+No Phase 4 token selector: the orchestrator still resolves tokens
+through today's prefix listings. Wallet decision (this PR):
+`do_reconcile_trades` calls `collect_trading_wallet_streams`, which is
+per-owner and sharing-gated via `is_shared` / `read_esi` with
+`tool_key="trading"`. No sharing row → that owner is omitted (no live
+ESI). Sharing row + empty snapshot → live-fetch that owner only.
+`AccessorError` and `storage.connect()`'s missing-tenant `RuntimeError`
+propagate. Phase 8 tests still call `reconcile_realized_trades` with
+`snapshot_txns=None` (unrestricted live path) and are unchanged. The
+Phase 1 conservative backfill is a hard prerequisite — no escape hatch
+when sharing rows are missing. A fetcher with no consumer would be dead
+weight, and Wallet reads have to be sharing-gated anyway. CI gate is the
+orchestrator unit tests, the permanent accessor isolation test, both
+NULL-id sweep tests, caller-level sharing-gate tests, and full `pytest`.
+No new schema file and no `TradingConfig` field (age-limit clear uses
+`DEFAULT_STALE_CLEAR_MULTIPLES` and hardcoded tier hours; Phase 7 wires
+config). Production/Sorting/Doctrine *engine* snapshot reads still go
+through `storage` primitives in 3a (converting them without sharing
+rows in every existing test would empty those tools); new consumers and
+wallet/own-orders go through the accessor. Doctrine engine switches in
+3b.
 
 **Done when:** unit tests drive the orchestrator with a fake `ESIClient`
 across two owners and two kinds — success, mid-kind failure (decision
@@ -1314,10 +1340,11 @@ list is the deliverable at the end — not something reconstructed
 from PR descriptions afterwards. Work it top to bottom on deploy
 day.
 
-Phase 8 (landed, PR #169) and Phase 1 (landed, PR #172) have items below.
-Phase 2 adds a post-deploy verification row for the owner-id transition.
-Remaining phases add their own rows when they merge; do not invent
-them here.
+Phase 8 (landed, PR #169), Phase 1 (landed, PR #172), and Phase 2
+(landed, PR #173) have items below. Phase 3a adds post-deploy rows for
+the first orchestrator sync, wallet-snapshot reconcile, the age-limit
+clear caller, and the NULL-id sweep. Remaining phases add their own
+rows when they merge; do not invent them here.
 
 ### Prerequisites
 
@@ -1422,6 +1449,28 @@ What to check, and what a correct result looks like.
   Correct result: a second sync of the same owner does not
   UniqueViolation on `(item_id, owner_name)`, and a Production-only
   sync of character A leaves character B's rows in the same table.
+- **Phase 3a.** After conservative sharing is backfilled, run one
+  Production ESI sync (`do_sync_esi` / `do_sync_for_tool("production")`)
+  and one Trading-shaped sync (`do_sync_for_tool("trading")`) per
+  tenant. Correct result: `esi_freshness` has a `last_success_at` per
+  (owner, kind) that actually fetched; `esi_wallet_transactions` /
+  `esi_wallet_journal` are populated for buyer/seller characters
+  shared with Trading. Then run Reconcile Trades: it must consume those
+  snapshots (no second ESI wallet page for owners that have rows). A
+  first reconcile *before* that wallet fetch still pages ESI **for
+  owners that are shared with Trading and have an empty snapshot**.
+  Owners with no sharing row are omitted — there is no live-ESI bypass,
+  which is why the Phase 1 backfill (above, under One-time data
+  migrations) must run before anything depends on sharing rows. Local
+  development without a backfill sees empty Trading asset/wallet reads;
+  that is intended. After a fully successful orchestrator pass,
+  leftover NULL-id rows in `character_blueprints` / `corp_blueprints` /
+  `corp_industry_jobs` are gone (the sweep); a pass where any owner
+  failed must leave them. Age-limit clear is now a caller of
+  `clear_stale_owner_kind` with hardcoded tier hours (frequent 1h /
+  normal 6h / rare 24h) and `DEFAULT_STALE_CLEAR_MULTIPLES=3` — there
+  is no `TradingConfig` field until Phase 7. Doctrine asset tables are
+  still present (3b).
 
 ## Explicitly out of scope
 

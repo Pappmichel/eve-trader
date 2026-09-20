@@ -16,6 +16,23 @@ from .esi_client import ESIClient
 JITA_SOLAR_SYSTEM_ID = 30000142  # stable, never changes - distinct from cfg.jita_region_id (The Forge region)
 
 
+def _character_assets(character_id: int, auth_role: str, client: ESIClient) -> list[dict]:
+    """Assets for this character as a Trading read of the Assets kind.
+
+    Sharing is fail-closed (decision 9): no sharing row means this tool
+    does not see the character, even live from ESI. A sharing row with an
+    empty snapshot still live-fetches, but only that owner. AccessorError
+    and storage.connect()'s missing-tenant RuntimeError propagate.
+    """
+    from .esi_data.access import is_shared, read_esi
+    if not is_shared("assets", "trading", "character", character_id):
+        return []
+    rows = read_esi("assets", "trading", owner_type="character", owner_id=character_id)
+    if rows:
+        return rows
+    return client.character_assets(character_id, auth_role=auth_role)
+
+
 def fetch_own_sell_orders(character_id: int, auth_role: str, client: ESIClient,
                            cfg: TradingConfig = TRADING_CONFIG) -> dict[int, float]:
     """Returns {item_id: remaining_volume} for open SELL orders at cfg.structure_id.
@@ -129,7 +146,7 @@ def fetch_seller_stock_without_order_pooled(sellers: list[tuple[int, str]], clie
     asset_qty: dict[int, float] = defaultdict(float)
     sell_remaining: dict[int, float] = defaultdict(float)
     for character_id, auth_role in sellers:
-        assets = client.character_assets(character_id, auth_role=auth_role)
+        assets = _character_assets(character_id, auth_role, client)
         for a in assets:
             type_id = a.get("type_id")
             if type_id not in shortlist_item_ids:
@@ -209,7 +226,7 @@ def fetch_buyer_already_covered(character_id: int, auth_role: str, client: ESICl
             covered.add(o["type_id"])
 
     jita_stations = storage.get_station_ids_in_system(JITA_SOLAR_SYSTEM_ID)
-    assets = client.character_assets(character_id, auth_role=auth_role)
+    assets = _character_assets(character_id, auth_role, client)
     for a in assets:
         if a.get("location_id") in jita_stations or a.get("location_id") == cfg.structure_id:
             covered.add(a["type_id"])

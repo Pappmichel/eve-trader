@@ -2,33 +2,21 @@
 cache tables (see storage.py), so engine.py can compute current stock instead
 of relying on manual entry alone.
 
-Supports multiple characters: each is authorized separately (TokenManager.
-get_token_interactive_multi stores them as "producer:<character_id>") and
-sync_esi() pulls all of them, merging into one combined asset/job/blueprint
-picture (item_id is globally unique across characters, so merging is safe).
-Corp-level calls need that character to hold the Director role in-game; if
-none of your registered characters in a given corp have it, that corp's data
-is skipped (not fatal). If several of your characters share a corp, it's
-retried with each one in turn until it succeeds - so if you add both a
-Director and a non-Director alt from the same corp, tracking works regardless
-of which one you added first.
-
-There's no such thing as authorizing a corporation directly in EVE's SSO -
-corp-level scopes are always granted through a member character. To track a
-corp, add a character (via get_token_interactive_multi) who belongs to it and
-holds the Director role for the endpoints that need it.
+Fetch is `eve_trader.esi_data.orchestrator.do_sync_for_tool("production")`.
+This module keeps `list_producer_characters` (sidebar + token listing until
+Phase 4) and opportunistic group-3 structure-name resolution
+(`_discover_structure_names`). Sequential corp claim (one corp, members
+retried in order, Director vs Accountant/Trader independent) lives in the
+orchestrator so two characters cannot race to claim the same corp.
 """
 from __future__ import annotations
-
-from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
 
 from .. import storage
 from ..actions import ActionError
 from ..auth import TokenManager
 from ..config import OAUTH_CONFIG
 from ..esi_client import ESIClient, ESIError
-from .constants import ACTIVITY_REACTION, job_slots_from_skills
+from .constants import ACTIVITY_REACTION
 
 PRODUCTION_ROLE_PREFIX = "producer"
 
@@ -80,14 +68,6 @@ def list_producer_characters(tm: TokenManager | None = None) -> list[tuple[str, 
     return out
 
 
-def _asset_rows(assets: list[dict]) -> list[tuple]:
-    return [
-        (a["item_id"], a["type_id"], a["location_id"], a["location_flag"],
-         a["quantity"], int(bool(a.get("is_blueprint_copy"))), a.get("owner_name"))
-        for a in assets
-    ]
-
-
 _LIVE_REACTION_ACTIVITY_ID = 9  # see _normalize_activity_id
 
 
@@ -117,100 +97,6 @@ def _industry_job_rows(jobs: list[dict], installer_names: dict[int, str]) -> lis
          j.get("installer_id"), installer_names.get(j.get("installer_id"), str(j.get("installer_id"))))
         for j in jobs
     ]
-
-
-def _blueprint_rows(bps: list[dict]) -> list[tuple]:
-    return [
-        (b["item_id"], b["type_id"], b["location_id"], b["location_flag"], b["quantity"],
-         b["material_efficiency"], b["time_efficiency"], b["runs"])
-        for b in bps
-    ]
-
-
-def _sell_order_rows(orders: list[dict], character_name: str) -> list[tuple]:
-    return [
-        (o["order_id"], o["type_id"], o["location_id"], o["region_id"], o["volume_remain"], character_name)
-        for o in orders if not o.get("is_buy_order")
-    ]
-
-
-def _fetch_character_data(client: ESIClient, role: str, character_id: int, character_name: str) -> dict:
-    """Everything about ONE character that doesn't depend on any *other*
-    character - own assets/jobs/blueprints/skills/orders, plus (read-only,
-    doesn't fetch anything corp-level itself) which corp they belong to.
-    This is the independent, parallelizable half of sync_esi()'s per-
-    character work (see sync_esi's own docstring for why the corp-level
-    half stays sequential) - confirmed real gap (2026-08-16): this used to
-    run strictly one character at a time even though each character's own
-    ESI calls don't depend on any other character's at all, purely network-
-    latency-bound (18 registered characters x up to 6 sequential ESI calls
-    each, confirmed real account data) - a textbook case for
-    ThreadPoolExecutor, same "independent, latency-bound work" shape
-    goonmetrics_client.py's price_history_chunked and esi_client.py's
-    _get_all_pages already use.
-
-    Sharing one ESIClient (and its one requests.Session) across threads here
-    is the same pattern goonmetrics_client.py's price_history_chunked
-    already relies on for the same reason; ESI's error-limit budget
-    (ESIClient._error_limit_lock) and TokenManager's refresh-on-expiry path
-    (TokenManager._refresh_lock) are both already class-level-locked
-    specifically to support concurrent callers - this isn't a new
-    thread-safety requirement, just the first caller to actually exercise
-    it with more than one thread."""
-    per_character: dict = {}
-    assets: list[dict] = []
-    jobs: list[dict] = []
-    bps: list[dict] = []
-    sell_rows: list[tuple] = []
-    slot_row: Optional[tuple] = None
-    corporation_id: Optional[int] = None
-    corp_name: Optional[str] = None
-
-    try:
-        assets = client.character_assets(character_id, auth_role=role)
-        jobs = client.character_industry_jobs(character_id, auth_role=role)
-        bps = client.character_blueprints(character_id, auth_role=role)
-    except ESIError as e:
-        return {
-            "character_name": character_name, "role": role, "character_id": character_id,
-            "assets": [], "jobs": [], "bps": [], "sell_rows": [], "slot_row": None,
-            "corporation_id": None, "corp_name": None, "per_character": f"Error: {e}",
-        }
-    for a in assets:
-        a["owner_name"] = character_name
-    per_character = {"assets": len(assets), "industry_jobs": len(jobs), "blueprints": len(bps)}
-
-    try:
-        skills = client.character_skills(character_id, auth_role=role)
-        levels = {s["skill_id"]: s["active_skill_level"] for s in skills.get("skills", [])}
-        slots = job_slots_from_skills(levels)
-        slot_row = (character_name, slots["manufacturing"], slots["reaction"], slots["science"])
-        per_character["slots"] = slots
-    except ESIError as e:
-        # Separate scope (esi-skills.read_skills.v1) - a character added
-        # before this scope existed won't have it until re-added.
-        per_character["slots"] = f"skipped (re-add character? {e})"
-
-    try:
-        orders = client.character_orders(character_id, auth_role=role)
-        sell_rows = _sell_order_rows(orders, character_name)
-        per_character["sell_orders"] = len(sell_rows)
-    except ESIError as e:
-        # Separate scope (esi-markets.read_character_orders.v1) - a character
-        # added before this scope existed won't have it until re-added.
-        per_character["sell_orders"] = f"skipped (re-add character? {e})"
-
-    try:
-        corporation_id = client.character_public_info(character_id)["corporation_id"]
-        corp_name = client.corporation_public_info(corporation_id).get("name", str(corporation_id))
-    except ESIError as e:
-        per_character["corp"] = f"skipped (public info fetch failed: {e})"
-
-    return {
-        "character_name": character_name, "role": role, "character_id": character_id,
-        "assets": assets, "jobs": jobs, "bps": bps, "sell_rows": sell_rows, "slot_row": slot_row,
-        "corporation_id": corporation_id, "corp_name": corp_name, "per_character": per_character,
-    }
 
 
 def _discover_structure_names(client: ESIClient, all_assets: list[dict], corp_roles: dict[int, str]) -> dict:
@@ -310,152 +196,31 @@ def sync_esi() -> dict:
     sequential half is cheap either way - almost all of sync_esi()'s wall
     time scales with character *count*, which Phase A already parallelizes.
 
-    Phase C (_discover_structure_names, after Phase B) proactively resolves
-    any not-yet-cached structure IDs found in this sync's own asset data -
-    additive and non-fatal like everything else here, never affects whether
-    the rest of the sync succeeds."""
+    Phase C (_discover_structure_names) is still opportunistic group-3
+    name resolution after the orchestrator writes assets — not an
+    orchestrator kind."""
+    from ..esi_data.orchestrator import do_sync_for_tool
+
     tm = TokenManager(OAUTH_CONFIG)
     characters = list_producer_characters(tm)
     if not characters:
         raise ActionError(
             "No producer character logged in yet. Use 'Add Character' in the sidebar."
         )
+    result = do_sync_for_tool("production")
     client = ESIClient(tokens=tm)
-
-    # storage.with_current_tenant: pool workers don't inherit contextvars
-    # from this thread - if a character's token happens to be expired right
-    # now, _fetch_character_data's ESI calls would otherwise refresh it from
-    # inside a worker thread with no ambient tenant set, 500ing with "no
-    # current tenant set" (see storage.with_current_tenant's own docstring).
-    with ThreadPoolExecutor(max_workers=min(8, len(characters))) as pool:
-        # list(), not as_completed() - preserves `characters`' original order
-        # so Phase B's "first character in the original list order claims
-        # this corp" behavior is unchanged from the old sequential version.
-        char_results = list(pool.map(
-            storage.with_current_tenant(lambda c: _fetch_character_data(client, c[0], c[1], c[2])), characters,
-        ))
-
-    all_char_assets: list[dict] = []
-    all_char_jobs: list[dict] = []
-    all_corp_assets: list[dict] = []
-    all_corp_jobs: list[dict] = []
-    slot_rows: list[tuple] = []
-    corp_payloads: dict[int, dict] = {}
-    corp_order_payloads: dict[int, tuple[str, list[tuple]]] = {}
-
-    per_character: dict = {}
-    per_corporation: dict = {}
-    corp_orders_done: set[str] = set()
+    location_ids: list[dict] = []
+    with storage.connect() as conn:
+        for loc_id, in conn.execute("SELECT DISTINCT location_id FROM character_assets"):
+            location_ids.append({"location_id": loc_id})
+        for loc_id, in conn.execute("SELECT DISTINCT location_id FROM corp_assets"):
+            location_ids.append({"location_id": loc_id})
     corp_roles: dict[int, str] = {}
-
-    for r in char_results:
-        character_name = r["character_name"]
-        per_character[character_name] = r["per_character"]
-        all_char_assets.extend(r["assets"])
-        all_char_jobs.extend(r["jobs"])
-        if r["slot_row"] is not None:
-            slot_rows.append(r["slot_row"])
-
-        corporation_id, corp_name, role = r["corporation_id"], r["corp_name"], r["role"]
-        if corporation_id is None:
-            continue  # this character's own public-info fetch failed - already recorded above
-
-        # First-registered-character-per-corp wins, tried once by
-        # _discover_structure_names below - corporation_structures needs
-        # Station_Manager specifically (not Director), so a character
-        # without it just gets an ESIError there, non-fatal, same as every
-        # other per-corp call in this loop.
-        corp_roles.setdefault(corporation_id, role)
-
-        # Assets/jobs/blueprints need the Director role; orders need
-        # Accountant or Trader instead - tracked independently (not as one
-        # all-or-nothing block) so a character with one role but not the
-        # other still contributes whichever half it can, and a later
-        # character in the same corp can still fill in the other half.
-        if not isinstance(per_corporation.get(corp_name), dict):
-            try:
-                corp_assets = client.corporation_assets(corporation_id, auth_role=role)
-                corp_jobs = client.corporation_industry_jobs(corporation_id, auth_role=role)
-                corp_bps = client.corporation_blueprints(corporation_id, auth_role=role)
-            except ESIError as e:
-                # Don't give up on this corp for good - a later character in the
-                # loop might hold the Director role this one doesn't.
-                per_corporation[corp_name] = f"skipped for {character_name} (missing Director role? {e})"
-            else:
-                for a in corp_assets:
-                    a["owner_name"] = f"{corp_name} (corp)"
-                all_corp_assets.extend(corp_assets)
-                all_corp_jobs.extend(corp_jobs)
-                corp_payloads[corporation_id] = {
-                    "name": corp_name, "assets": corp_assets, "jobs": corp_jobs, "bps": corp_bps,
-                }
-                per_corporation[corp_name] = {
-                    "assets": len(corp_assets), "industry_jobs": len(corp_jobs), "blueprints": len(corp_bps),
-                }
-
-        if corp_name not in corp_orders_done:
-            try:
-                corp_orders = client.corporation_orders(corporation_id, auth_role=role)
-            except ESIError:
-                pass  # a later character in this corp might hold Accountant/Trader
-            else:
-                corp_orders_done.add(corp_name)
-                sell_rows = _sell_order_rows(corp_orders, f"{corp_name} (corp)")
-                corp_order_payloads[corporation_id] = (corp_name, sell_rows)
-                if isinstance(per_corporation.get(corp_name), dict):
-                    per_corporation[corp_name]["corp_sell_orders"] = len(sell_rows)
-
-    structure_names = _discover_structure_names(client, all_char_assets + all_corp_assets, corp_roles)
-
-    installer_ids = {j.get("installer_id") for j in all_char_jobs + all_corp_jobs if j.get("installer_id")}
-    installer_names = client.resolve_names(list(installer_ids))
-
-    # Temporary: write per owner so a failed fetch does not wipe another
-    # owner's rows (decision 6). Phase 3 replaces both fetch paths; do not
-    # invest in structure here.
-    for r in char_results:
-        if isinstance(r["per_character"], str):
+    for role, character_id, _name in characters:
+        try:
+            corporation_id = client.character_public_info(character_id)["corporation_id"]
+        except ESIError:
             continue
-        cid = r["character_id"]
-        name = r["character_name"]
-        storage.replace_assets(
-            "character_assets", _asset_rows(r["assets"]),
-            owner_character_id=cid, owner_name=name,
-        )
-        storage.replace_industry_jobs(
-            "character_industry_jobs", _industry_job_rows(r["jobs"], installer_names),
-            owner_character_id=cid,
-        )
-        storage.replace_blueprints(
-            "character_blueprints", _blueprint_rows(r["bps"]),
-            owner_character_id=cid,
-        )
-        sell_status = r["per_character"].get("sell_orders")
-        if not isinstance(sell_status, str):
-            storage.replace_sell_orders(
-                r["sell_rows"], owner_character_id=cid, owner_name=name,
-            )
-
-    for corp_id, payload in corp_payloads.items():
-        label = f"{payload['name']} (corp)"
-        storage.replace_assets(
-            "corp_assets", _asset_rows(payload["assets"]),
-            owner_corporation_id=corp_id, owner_name=label,
-        )
-        storage.replace_industry_jobs(
-            "corp_industry_jobs", _industry_job_rows(payload["jobs"], installer_names),
-            owner_corporation_id=corp_id,
-        )
-        storage.replace_blueprints(
-            "corp_blueprints", _blueprint_rows(payload["bps"]),
-            owner_corporation_id=corp_id,
-        )
-
-    for corp_id, (corp_name, sell_rows) in corp_order_payloads.items():
-        storage.replace_sell_orders(
-            sell_rows, owner_corporation_id=corp_id, owner_name=f"{corp_name} (corp)",
-        )
-
-    storage.replace_character_slots(slot_rows)
-
-    return {"characters": per_character, "corporations": per_corporation, "structure_names": structure_names}
+        corp_roles.setdefault(corporation_id, role)
+    result["structure_names"] = _discover_structure_names(client, location_ids, corp_roles)
+    return result

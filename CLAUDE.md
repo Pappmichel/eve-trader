@@ -20,13 +20,18 @@ These two are the original pair this section's title/history refers to.
 `eve_trader/portfolio.py` and `eve_trader/scheduler.py` deliberately span
 *just* them. Character-centric ESI access is a **third cross-cutting
 package**, `eve_trader/esi_data/` (`docs/ESI_ACCESS_PLAN.md`): the
-data-kind registry lives here now; fetchers, the orchestrator, and
-Characters `do_*` actions land in later phases of that plan. It names
-tools as strings and imports no tool package — the same precedent as
+data-kind registry, fetchers, orchestrator (`do_sync_for_tool` /
+`do_sync_all`), and fail-closed accessor (`read_esi`, `is_shared`) live here.
+Characters `do_*` actions land in Phase 6. It names tools as strings
+and imports no tool package — the same precedent as
 `auth.TOOL_ROLE_PREFIXES` and `access_gate.ALL_TOOL_KEYS`. Do not put
 ESI-owner sync back into `portfolio.py` or a tool's `esi_sync.py` by
 re-deriving a prefix-per-tool layout from a stale reading of this
-paragraph.
+paragraph. Tool `do_sync_esi` / `do_sync_contracts` / `do_sync_assets`
+are wrappers around `do_sync_for_tool` plus tool-specific post-processing
+(slots are written by the skills fetcher; Doctrine matching stays in
+`doctrine/esi_sync.py`). Token selection is still today's prefix
+listings until Phase 4.
 
 The app has since grown more tenant-facing tools that follow the exact
 same `do_*`-actions/router/RLS pattern described in the rest of this

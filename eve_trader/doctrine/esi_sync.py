@@ -1,28 +1,19 @@
-"""ESI sync for the Doctrine tool - two entirely independent flows sharing
-this one module because they're both "Doctrine's own ESI sync", nothing
-more:
+"""ESI sync for the Doctrine tool - two wrappers around the Phase 3
+orchestrator, plus tool-specific post-processing:
 
-1. Contract sync (Phase 2 spec E.3, Phase 3 spec D.3's error table): pulls
-   character + corporation item_exchange contracts for every registered
-   "doctrine:<character_id>" character, pre-filters to this app's own
-   structure before ever fetching a contract's items (items are 1 ESI call
-   per contract), matches each surviving contract against the active
-   Fitting pool (doctrine/engine.py), and writes one full snapshot.
-2. Asset sync (sync_assets, below): pulls character + corporation assets
-   for every registered "doctrine-assets:<character_id>" character into
-   Doctrine's own doctrine_character_assets/doctrine_corp_assets tables -
-   deliberately a second, separate character-auth group from #1, not the
-   same "doctrine" role and not a read of Production's own asset tables (an
-   earlier design that assumed Stockpile could depend on Production ever
-   being set up - reversed after real use: a Doctrine-only tenant must be
-   able to use Stockpile standalone). Splitting the two ESI scope groups
-   also means a character that should only ever read contracts is never
-   asked to grant asset-read access, and vice versa.
+1. Contract sync: `do_sync_for_tool("doctrine")` writes the snapshot
+   (structure pre-filter happens in the contracts fetcher before the
+   per-contract items call). Matching against fittings and finished-
+   contract history stay here.
+2. Asset sync: the same `do_sync_for_tool("doctrine")` call. Until
+   Phase 3b, owners shared only with doctrine still write
+   doctrine_character_assets / doctrine_corp_assets. A Doctrine-only
+   tenant must be able to use Stockpile standalone — that property is
+   now the sharing row, not a second table (the tables remain until 3b).
 """
 from __future__ import annotations
 
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -30,11 +21,9 @@ from .. import storage
 from ..actions import ActionError, _emit_progress
 from ..auth import TokenManager
 from ..config import OAUTH_CONFIG
-from ..esi_client import ESIClient, ESIError
-from . import engine
+from ..esi_client import ESIClient
 from .config import DOCTRINE_CONFIG, DoctrineConfig
 from .constants import CONTRACT_TYPE_ITEM_EXCHANGE, FINISHED_CONTRACT_STATUSES, SYNCABLE_CONTRACT_STATUSES
-from .models import ContractItemRow
 
 log = logging.getLogger("eve_trader.doctrine.esi_sync")
 
@@ -113,32 +102,13 @@ def _issued_by_own_identity(contract: dict, character_id: int, corporation_id: O
     )
 
 
-def _fetch_character_contracts(client: ESIClient, role: str, character_id: int) -> dict:
-    """One character's own contracts + (best-effort) corporation_id - errors
-    are returned, not raised, so one bad token/scope only drops that
-    character (Phase 3 spec D.3's degradation table)."""
-    result: dict = {"role": role, "contracts": [], "corporation_id": None, "error": None}
-    try:
-        result["contracts"] = client.character_contracts(character_id, auth_role=role)
-    except ESIError as e:
-        result["error"] = str(e)
-        return result
-    try:
-        result["corporation_id"] = client.character_public_info(character_id)["corporation_id"]
-    except ESIError:
-        pass  # corp contracts just won't be attempted for this character
-    return result
-
-
 def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG, progress_callback=None) -> dict:
-    """Phase 2 spec E.3, full flow. Raises ActionError only if no doctrine
-    character is registered at all, or the structure isn't configured -
-    every per-character/per-contract failure degrades into the returned
-    report instead (Phase 3 spec D.3).
+    """Fetch is the Phase 3 orchestrator (`do_sync_for_tool("doctrine")`).
+    Matching against fittings and finished-contract history stay here —
+    they are tool-specific, not owned-data writes."""
+    from ..esi_data.orchestrator import do_sync_for_tool
+    from .actions import do_validate_contracts
 
-    progress_callback is optional so the scheduler/CLI in-process path
-    (do_sync_contracts with no callback) is unchanged; the HTTP background
-    job passes pipeline_runner's status writer."""
     structure_id = cfg.effective_structure_id
     if structure_id is None:
         raise ActionError(
@@ -151,266 +121,56 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG, progress_callback=None
     if not characters:
         raise ActionError("No doctrine character logged in yet. Use 'Add Character' in the sidebar.")
 
-    client = ESIClient(tokens=tm)
-    per_character: dict = {}
-    # (raw_contract, source_role, for_corporation, corporation_id) -
-    # corporation_id is the corp the contract-list call itself used (the
-    # required path param for corporation_contract_items below) - already
-    # filtered via _issued_by_own_identity above to only contracts this
-    # corp/character actually issued, not merely assigned to them.
-    all_contracts: list[tuple[dict, str, bool, Optional[int]]] = []
-    seen_contract_ids: set[int] = set()
-    corp_contracts_done: dict[int, list[dict]] = {}
-    corp_error_by_id: dict[int, str] = {}
-    # (raw_contract, source_role) for contracts that just finished (GitHub
-    # issue #19) - collected from the same already-fetched raw contract
-    # lists as all_contracts above, no extra ESI calls. Deliberately its own
-    # seen-set, not shared with seen_contract_ids: a contract could in
-    # principle show up as "outstanding" via one character's view and
-    # "finished" via another's in the same sync (a small race on ESI's own
-    # side), and both sets independently dedupe against themselves only.
-    all_history_contracts: list[tuple[dict, str]] = []
-    seen_history_ids: set[int] = set()
-    successful_chars: dict[int, str] = {}
-    successful_corps: dict[int, str] = {}
-
-    for role, character_id, character_name in characters:
-        result = _fetch_character_contracts(client, role, character_id)
-        if result["error"] is not None:
-            per_character[character_name] = f"skipped ({result['error']})"
-            continue
-        successful_chars[character_id] = role
-        char_contracts = [c for c in result["contracts"]
-                          if _passes_prefilter(c, structure_id)
-                          and _issued_by_own_identity(c, character_id, result["corporation_id"])]
-        for c in char_contracts:
-            if c["contract_id"] not in seen_contract_ids:
-                seen_contract_ids.add(c["contract_id"])
-                all_contracts.append((c, role, False, None))
-        for c in result["contracts"]:
-            if (_passes_history_filter(c, structure_id)
-                    and _issued_by_own_identity(c, character_id, result["corporation_id"])
-                    and c["contract_id"] not in seen_history_ids):
-                seen_history_ids.add(c["contract_id"])
-                all_history_contracts.append((c, role))
-        per_character[character_name] = {"contracts_seen": len(result["contracts"]),
-                                          "contracts_matched_filter": len(char_contracts)}
-
-        corporation_id = result["corporation_id"]
-        if corporation_id is None or corporation_id in corp_contracts_done or corporation_id in corp_error_by_id:
-            continue
-        try:
-            corp_raw = client.corporation_contracts(corporation_id, auth_role=role)
-        except ESIError as e:
-            corp_error_by_id[corporation_id] = str(e)  # a later character in this corp might have access
-            continue
-        corp_contracts_done[corporation_id] = corp_raw
-        successful_corps[corporation_id] = role
-        corp_filtered = [c for c in corp_raw
-                         if _passes_prefilter(c, structure_id)
-                         and _issued_by_own_identity(c, character_id, corporation_id)]
-        for c in corp_filtered:
-            if c["contract_id"] not in seen_contract_ids:
-                seen_contract_ids.add(c["contract_id"])
-                all_contracts.append((c, role, True, corporation_id))
-        for c in corp_raw:
-            if (_passes_history_filter(c, structure_id)
-                    and _issued_by_own_identity(c, character_id, corporation_id)
-                    and c["contract_id"] not in seen_history_ids):
-                seen_history_ids.add(c["contract_id"])
-                all_history_contracts.append((c, role))
-
-    if not all_contracts and not per_character:
-        raise ActionError("No doctrine character's contracts could be fetched - check tokens/scopes.")
-
-    # Phase 2 E.3 point 3: only fetch items for contracts that are new or
-    # whose status changed since the last snapshot - an already-known,
-    # unchanged contract's items are immutable in ESI and just carried
-    # forward from the existing snapshot instead.
     existing_by_id = {row[0]: row for row in storage.load_doctrine_contracts()}
-    to_fetch: list[tuple[dict, str, bool, Optional[int]]] = []
-    carried_items: dict[int, list[tuple]] = {}
-    for raw, role, for_corp, corp_id in all_contracts:
-        cid = raw["contract_id"]
-        existing = existing_by_id.get(cid)
-        if existing is not None and existing[5] == raw.get("status"):
-            carried_items[cid] = storage.load_doctrine_contract_items(cid)
-        else:
-            to_fetch.append((raw, role, for_corp, corp_id))
+    result = do_sync_for_tool("doctrine", extra={"structure_id": structure_id})
+    match_result = do_validate_contracts(cfg)
 
-    def _fetch_items(entry: tuple[dict, str, bool, Optional[int]]) -> tuple[int, Optional[list[dict]], Optional[str]]:
-        raw, role, for_corp, corp_id = entry
-        cid = raw["contract_id"]
-        try:
-            if for_corp:
-                items = client.corporation_contract_items(corp_id, cid, auth_role=role)
-            else:
-                character_id = next(c_id for r, c_id, _n in characters if r == role)
-                items = client.character_contract_items(character_id, cid, auth_role=role)
-            return cid, items, None
-        except ESIError as e:
-            return cid, None, str(e)
-
-    fetched_items: dict[int, list[dict]] = {}
-    fetch_errors: dict[int, str] = {}
-    if to_fetch:
-        total = len(to_fetch)
-        wrapped = storage.with_current_tenant(_fetch_items)
-        with ThreadPoolExecutor(max_workers=min(8, total)) as pool:
-            futures = [pool.submit(wrapped, entry) for entry in to_fetch]
-            for i, fut in enumerate(as_completed(futures), start=1):
-                cid, items, error = fut.result()
-                if error is not None:
-                    fetch_errors[cid] = error
-                else:
-                    fetched_items[cid] = items or []
-                _emit_progress(progress_callback, {
-                    "phase": "sync",
-                    "batch": i,
-                    "total_batches": total,
-                    "message": "Fetching contract items",
-                })
-
-    # Contracts whose items fetch failed this run are dropped from this
-    # snapshot entirely (Phase 3 spec D.3: never write a contract with no
-    # items - that would look like a real "invalid" doctrine violation
-    # instead of a transient data gap). They're simply retried next sync.
-    usable = [(raw, role, for_corp, corp_id) for raw, role, for_corp, corp_id in all_contracts
-              if raw["contract_id"] in carried_items or raw["contract_id"] in fetched_items]
-
-    candidates = engine.load_match_candidates()
-    contract_rows: list[tuple] = []
-    item_rows: list[tuple] = []
-    deviation_rows: list[tuple] = []
-    synced_at = datetime.now(timezone.utc).isoformat()
-    no_hull_match_count = 0
-    contract_owner: dict[int, tuple[str, int, str]] = {}
-    role_to_char_id = {role: cid for role, cid, _name in characters}
-
-    for raw, role, for_corp, corp_id in usable:
-        cid = raw["contract_id"]
-        raw_items = carried_items.get(cid)
-        if raw_items is not None:
-            items = [ContractItemRow(cid, record_id, type_id, qty, bool(is_incl), bool(is_single))
-                     for record_id, type_id, qty, is_incl, is_single in raw_items]
-        else:
-            items = [ContractItemRow(cid, it["record_id"], it["type_id"], it["quantity"],
-                                      it.get("is_included", True), it.get("is_singleton", False))
-                     for it in fetched_items[cid]]
-
-        matched_fitting_id, score, deviations, status = engine.match_and_validate_contract(
-            cid, raw.get("title"), items, candidates, cfg)
-
-        if status == engine.NO_HULL_MATCH:
-            # Not a Doctrine ship sale at all (no known fitting's hull present,
-            # included+singleton) - never persisted, see engine.NO_HULL_MATCH's
-            # own docstring for why this is distinct from a genuine "unmatched"
-            # near-miss.
-            no_hull_match_count += 1
+    role_by_character = {cid: role for role, cid, _name in characters}
+    fallback_role = characters[0][0] if characters else ""
+    finished: list[tuple[dict, str]] = []
+    seen_history: set[int] = set()
+    for owner in result.get("owners") or []:
+        kinds = owner.get("kinds") or {}
+        contracts = kinds.get("contracts")
+        if not isinstance(contracts, dict):
             continue
-
-        contract_rows.append((
-            cid, role, for_corp, raw.get("issuer_id"), raw.get("start_location_id"), raw.get("status"),
-            raw.get("title"), raw.get("price"), raw.get("date_expired"), matched_fitting_id, score,
-            status, synced_at,
-        ))
-        for it in items:
-            item_rows.append((cid, it.record_id, it.type_id, it.quantity, it.is_included, it.is_singleton))
-        for d in deviations:
-            deviation_rows.append((cid, d.type_id, d.kind, d.expected_qty, d.actual_qty, d.severity))
-        if for_corp:
-            contract_owner[cid] = ("corporation", corp_id, role)
+        if owner.get("owner_type") == "character":
+            role = role_by_character.get(owner.get("owner_id"), fallback_role)
         else:
-            contract_owner[cid] = ("character", role_to_char_id[role], role)
+            role = fallback_role
+        for raw in contracts.get("finished") or []:
+            cid = raw.get("contract_id")
+            if cid in seen_history:
+                continue
+            seen_history.add(cid)
+            finished.append((raw, role))
 
-    # GitHub issue #19: record every newly-finished contract into permanent
-    # history before replace_doctrine_sync_snapshot below drops it from the
-    # active table - reuses whichever fitting this contract was already
-    # matched against while it was still outstanding (existing_by_id, loaded
-    # above from the *previous* sync's snapshot) rather than re-fetching/
-    # re-matching its items, which are immutable now anyway. fitting_name/
-    # hull_type_id are denormalized here (captured once, from whatever the
-    # fitting looks like right now) rather than resolved live at read time -
-    # see doctrine_contract_history's own schema comment for why.
-    acceptor_ids = {c.get("acceptor_id") for c, _role in all_history_contracts if c.get("acceptor_id")}
+    client = ESIClient(tokens=tm)
+    acceptor_ids = {c.get("acceptor_id") for c, _role in finished if c.get("acceptor_id")}
     acceptor_names = client.resolve_names(list(acceptor_ids)) if acceptor_ids else {}
     history_rows: list[tuple] = []
-    for raw, role in all_history_contracts:
+    for raw, role in finished:
         cid = raw["contract_id"]
         existing = existing_by_id.get(cid)
-        fitting_id = existing[9] if existing is not None else None  # _CONTRACT_COLUMNS' matched_fitting_id
+        fitting_id = existing[9] if existing is not None else None
         if fitting_id is None:
-            # GitHub issue #37: _passes_history_filter only checks finished +
-            # Item Exchange + our own structure - a contract that never
-            # matched any doctrine fitting (someone else's unrelated item
-            # sale at the same structure, or a doctrine sale that was already
-            # finished the very first time we ever saw it) isn't a doctrine
-            # contract at all and shouldn't clutter permanent history.
             continue
         fitting_row = storage.get_fitting(fitting_id)
         if fitting_row is None:
             continue
-        fitting_name, hull_type_id = fitting_row[2], fitting_row[4]  # _FITTING_COLUMNS' name/hull_type_id
+        fitting_name, hull_type_id = fitting_row[2], fitting_row[4]
         acceptor_id = raw.get("acceptor_id")
         history_rows.append((
             cid, role, fitting_id, fitting_name, hull_type_id, raw.get("title"), raw.get("price"),
             acceptor_id, acceptor_names.get(acceptor_id) if acceptor_id is not None else None,
             raw.get("date_issued"), raw.get("date_completed"),
         ))
-
-    with storage.batch_session():
-        # Temporary: write per owner so a failed fetch does not wipe another
-        # owner's rows (decision 6). Phase 3 replaces both fetch paths; do
-        # not invest in structure here.
-        grouped: dict[tuple, dict] = {}
-        items_by: dict[int, list[tuple]] = {}
-        for it in item_rows:
-            items_by.setdefault(it[0], []).append(it)
-        devs_by: dict[int, list[tuple]] = {}
-        for d in deviation_rows:
-            devs_by.setdefault(d[0], []).append(d)
-        for row in contract_rows:
-            kind, oid, role = contract_owner[row[0]]
-            g = grouped.setdefault((kind, oid, role), {"contracts": [], "items": [], "devs": []})
-            g["contracts"].append(row)
-            g["items"].extend(items_by.get(row[0], []))
-            g["devs"].extend(devs_by.get(row[0], []))
-        written_chars: set[int] = set()
-        written_corps: set[int] = set()
-        for (kind, oid, role), g in grouped.items():
-            if kind == "character":
-                storage.replace_doctrine_sync_snapshot(
-                    g["contracts"], g["items"], g["devs"],
-                    owner_character_id=oid, owner_name=role,
-                )
-                written_chars.add(oid)
-            else:
-                storage.replace_doctrine_sync_snapshot(
-                    g["contracts"], g["items"], g["devs"],
-                    owner_corporation_id=oid, owner_name=role,
-                )
-                written_corps.add(oid)
-        for char_id, role in successful_chars.items():
-            if char_id not in written_chars:
-                storage.replace_doctrine_sync_snapshot(
-                    [], [], [], owner_character_id=char_id, owner_name=role,
-                )
-        for corp_id, role in successful_corps.items():
-            if corp_id not in written_corps:
-                storage.replace_doctrine_sync_snapshot(
-                    [], [], [], owner_corporation_id=corp_id, owner_name=role,
-                )
-        storage.upsert_doctrine_contract_history(history_rows)
-        storage.set_esi_sync_time("doctrine", synced_at)
-
-    return {
-        "characters": per_character,
-        "contracts_synced": len(contract_rows),
-        "contracts_dropped_this_run": len(all_contracts) - len(usable),
-        "contracts_no_relevant_hull": no_hull_match_count,
-        "corp_errors": {str(k): v for k, v in corp_error_by_id.items()},
-        "item_fetch_errors": {str(k): v for k, v in fetch_errors.items()},
-    }
+    storage.upsert_doctrine_contract_history(history_rows)
+    storage.set_esi_sync_time("doctrine", datetime.now(timezone.utc).isoformat())
+    _emit_progress(progress_callback, {"phase": "sync", "message": "Matching contracts"})
+    result["contracts_synced"] = match_result.get("revalidated", match_result.get("contracts_synced"))
+    result["history_written"] = len(history_rows)
+    return result
 
 
 # =========================================================== asset sync (Stockpile)
@@ -427,108 +187,22 @@ def list_doctrine_asset_characters(tm: Optional[TokenManager] = None) -> list[tu
     return out
 
 
-def _asset_rows(assets: list[dict]) -> list[tuple]:
-    return [
-        (a["item_id"], a["type_id"], a["location_id"], a["location_flag"],
-         a["quantity"], int(bool(a.get("is_blueprint_copy"))), a.get("owner_name"))
-        for a in assets
-    ]
-
-
-def _fetch_character_assets(client: ESIClient, role: str, character_id: int, character_name: str) -> dict:
-    """The parallelizable, per-character half of sync_assets (Phase A) -
-    mirrors production/esi_sync.py's _fetch_character_data, narrowed to just
-    assets + the corp lookup the corp-asset half (Phase B, sequential) needs."""
-    result: dict = {"character_name": character_name, "character_id": character_id, "role": role,
-                     "assets": [], "corporation_id": None, "error": None}
-    try:
-        assets = client.character_assets(character_id, auth_role=role)
-    except ESIError as e:
-        result["error"] = str(e)
-        return result
-    for a in assets:
-        a["owner_name"] = character_name
-    result["assets"] = assets
-    try:
-        result["corporation_id"] = client.character_public_info(character_id)["corporation_id"]
-    except ESIError:
-        pass  # corp assets just won't be attempted for this character
-    return result
-
-
 def sync_assets() -> dict:
-    """Doctrine's own independent asset sync (Stockpile's Ist side) - see
-    this module's own top docstring point 2 for why this is deliberately
-    separate from Production's do_sync_esi/sync_esi, even though the
-    mechanics are nearly identical. Same two-phase shape as production/
-    esi_sync.py's sync_esi (see its own docstring for the full reasoning):
-    Phase A (parallel, per character) fetches each character's own assets;
-    Phase B (sequential) fetches each distinct corp's assets once, retried
-    with a later character in the same corp if an earlier one lacks the
-    Director role."""
+    """Delegates the fetch to the Phase 3 orchestrator. Sharing with
+    `tool_key="doctrine"` is what keeps a Doctrine-only tenant's stockpile
+    independent of Production (the property these tables existed for)."""
+    from ..esi_data.orchestrator import do_sync_for_tool
+
     tm = TokenManager(OAUTH_CONFIG)
     characters = list_doctrine_asset_characters(tm)
     if not characters:
         raise ActionError(
             "No asset-scanning character logged in yet. Use 'Add Character' under Stockpile in the sidebar."
         )
-    client = ESIClient(tokens=tm)
-
-    with ThreadPoolExecutor(max_workers=min(8, len(characters))) as pool:
-        char_results = list(pool.map(
-            storage.with_current_tenant(lambda c: _fetch_character_assets(client, c[0], c[1], c[2])), characters,
-        ))
-
-    all_char_assets: list[dict] = []
-    all_corp_assets: list[dict] = []
-    per_character: dict = {}
-    per_corporation: dict = {}
-    corp_done: set[int] = set()
-    corp_error: dict[int, str] = {}
-    corp_payloads: dict[int, tuple[str, list[dict]]] = {}
-
-    for r in char_results:
-        character_name = r["character_name"]
-        if r["error"] is not None:
-            per_character[character_name] = f"skipped ({r['error']})"
-            continue
-        all_char_assets.extend(r["assets"])
-        per_character[character_name] = {"assets": len(r["assets"])}
-
-        corporation_id = r["corporation_id"]
-        if corporation_id is None or corporation_id in corp_done or corporation_id in corp_error:
-            continue
-        try:
-            corp_assets = client.corporation_assets(corporation_id, auth_role=r["role"])
-        except ESIError as e:
-            corp_error[corporation_id] = str(e)  # a later character in this corp might have the Director role
-            continue
-        try:
-            corp_name = client.corporation_public_info(corporation_id).get("name", str(corporation_id))
-        except ESIError:
-            corp_name = str(corporation_id)
-        for a in corp_assets:
-            a["owner_name"] = f"{corp_name} (corp)"
-        corp_done.add(corporation_id)
-        all_corp_assets.extend(corp_assets)
-        corp_payloads[corporation_id] = (corp_name, corp_assets)
-        per_corporation[corp_name] = {"assets": len(corp_assets)}
-
-    # Temporary: write per owner so a failed fetch does not wipe another
-    # owner's rows (decision 6). Phase 3 replaces both fetch paths; do not
-    # invest in structure here.
-    for r in char_results:
-        if r["error"] is not None:
-            continue
-        storage.replace_assets(
-            "doctrine_character_assets", _asset_rows(r["assets"]),
-            owner_character_id=r["character_id"], owner_name=r["character_name"],
-        )
-    for corp_id, (corp_name, corp_assets) in corp_payloads.items():
-        storage.replace_assets(
-            "doctrine_corp_assets", _asset_rows(corp_assets),
-            owner_corporation_id=corp_id, owner_name=f"{corp_name} (corp)",
-        )
+    extra = {}
+    structure_id = DOCTRINE_CONFIG.effective_structure_id
+    if structure_id is not None:
+        extra["structure_id"] = structure_id
+    result = do_sync_for_tool("doctrine", extra=extra or None)
     storage.set_esi_sync_time("doctrine_assets", datetime.now(timezone.utc).isoformat())
-
-    return {"characters": per_character, "corporations": per_corporation}
+    return result
