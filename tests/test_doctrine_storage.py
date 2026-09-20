@@ -6,7 +6,9 @@ from eve_trader import storage
 from eve_trader.doctrine import actions
 
 from . import pg_helpers
-from .pg_helpers import _apply_phase1_schema, _apply_phase2_schema, tenant, tenant_pair  # noqa: F401
+from .pg_helpers import (  # noqa: F401
+    _apply_esi_access_schema, _apply_phase1_schema, _apply_phase2_schema, tenant, tenant_pair,
+)
 
 psycopg = pytest.importorskip("psycopg")
 
@@ -17,17 +19,20 @@ _SORTING_SCHEMA_SQL = Path(__file__).resolve().parent.parent / "docs" / "sorting
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _apply_doctrine_schema(_apply_phase1_schema, _apply_phase2_schema):
+def _apply_doctrine_schema(_apply_phase1_schema, _apply_phase2_schema, _apply_esi_access_schema):
     """docs/doctrine_schema.sql, applied once per session via the owner role
     - same pattern as _apply_phase2_schema/_apply_phase3_schema (see
     pg_helpers.py). Depends on _apply_phase2_schema too, not just phase1 -
     this file's own ALTER TABLE tenant_settings widening needs that table
-    to already exist."""
+    to already exist. Re-applies esi_access_schema so owner-id columns
+    land on the just-created doctrine/sorting tables (that file's DO-block
+    only ALTERs tables that already exist)."""
     if not pg_helpers._postgres_available():
         return
     with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
         conn.execute(_DOCTRINE_SCHEMA_SQL.read_text(encoding="utf-8"))
         conn.execute(_SORTING_SCHEMA_SQL.read_text(encoding="utf-8"))
+        conn.execute(pg_helpers._ESI_ACCESS_SCHEMA_SQL.read_text(encoding="utf-8"))
 
 
 def test_doctrine_and_fitting_crud(tenant):

@@ -94,6 +94,12 @@ def _apply_phase1_schema() -> None:
         return
     with psycopg.connect(OWNER_DSN, autocommit=True) as conn:
         conn.execute(_PHASE1_SCHEMA_SQL.read_text())
+        # Phase 1 of the ESI access rebuild (docs/esi_access_schema.sql)
+        # landed on main; replace_* INSERTs stamp owner-id columns, so the
+        # Postgres test baseline always includes that file. Idempotent.
+        # Doctrine/sorting fixtures re-apply it after creating those tables
+        # so the DO-block ALTERs land on them too.
+        conn.execute(_ESI_ACCESS_SCHEMA_SQL.read_text())
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -189,12 +195,9 @@ def _apply_job_category_cost_index_overrides_schema(_apply_phase1_schema) -> Non
 
 @pytest.fixture(scope="session")
 def _apply_esi_access_schema(_apply_phase1_schema) -> None:
-    """docs/esi_access_schema.sql (sharing / freshness / capabilities /
-    wallet snapshots / owner-id columns). Not session-autouse: doctrine and sorting tables
-    are created by those tools' own fixtures, and this file's DO-block
-    ALTERs them only when they already exist. Tests that need the new
-    tables import this fixture; the drift-guard re-applies it after
-    doctrine/sorting so those owner-id columns land too."""
+    """docs/esi_access_schema.sql. `_apply_phase1_schema` already applies
+    it for production tables; import this (and re-apply after creating
+    doctrine/sorting tables) so those tools' owner-id ALTERs land."""
     if not _postgres_available():
         return
     with psycopg.connect(OWNER_DSN, autocommit=True) as conn:

@@ -1752,36 +1752,321 @@ def _resolve_hangar_flags(rows: list[tuple], location_index: int = 2, flag_index
 
 
 # --------------------------------------------------- Production: ESI-derived stock
-def replace_assets(table: str, rows: list[tuple]) -> None:
+# Character-centric ESI access Phase 2: every per-owner snapshot write
+# deletes only that owner's partition, then inserts that owner's rows
+# (with owner-id columns populated). Never `DELETE FROM {table}` with no
+# owner predicate. Failed fetch is the caller's job: do not call these
+# (decision 6). replace_character_slots stays an UPSERT (#39).
+
+_CHAR_ASSET_TABLES = frozenset({
+    "character_assets", "doctrine_character_assets",
+})
+_CORP_ASSET_TABLES = frozenset({
+    "corp_assets", "doctrine_corp_assets",
+})
+_ASSET_TABLES = _CHAR_ASSET_TABLES | _CORP_ASSET_TABLES
+_CHAR_JOB_TABLES = frozenset({"character_industry_jobs"})
+_CORP_JOB_TABLES = frozenset({"corp_industry_jobs"})
+_JOB_TABLES = _CHAR_JOB_TABLES | _CORP_JOB_TABLES
+_CHAR_BP_TABLES = frozenset({"character_blueprints"})
+_CORP_BP_TABLES = frozenset({"corp_blueprints"})
+_BP_TABLES = _CHAR_BP_TABLES | _CORP_BP_TABLES
+
+
+def _int_in_clause(ids: list[int]) -> tuple[str, list[int]]:
+    if not ids:
+        return "", []
+    return "(" + ",".join("?" * len(ids)) + ")", list(ids)
+
+
+def _delete_owner_partition(
+    conn,
+    table: str,
+    *,
+    id_column: str,
+    owner_id: Optional[int],
+    name_column: Optional[str] = None,
+    owner_name: Optional[str] = None,
+    null_pk_column: Optional[str] = None,
+    null_pk_values: Optional[list[int]] = None,
+) -> None:
+    """Delete this owner's rows, including pre-Phase-1 NULL-id rows that
+    can be attributed to them without touching another owner.
+
+    Identity for NULL-id rows is `name_column = owner_name` (assets,
+    sell orders, character jobs via installer_id) and/or incoming
+    primary keys (`null_pk_column IN (...)`) for tables that have no
+    name (blueprints, corp jobs) — that second arm only prevents the
+    insert colliding; vanished NULL-id rows on those tables cannot be
+    attributed safely.
+    """
+    if owner_id is None and owner_name is None and not null_pk_values:
+        raise ValueError(f"refusing unqualified DELETE FROM {table}")
+    clauses: list[str] = []
+    params: list = []
+    if owner_id is not None:
+        clauses.append(f"{id_column} = ?")
+        params.append(owner_id)
+    # `owner_name` is the identity value: a string (assets, orders,
+    # source_role; empty string is a real stored owner_name) or an int
+    # (character jobs' installer_id).
+    if name_column and owner_name is not None:
+        if owner_id is not None:
+            clauses.append(f"({id_column} IS NULL AND {name_column} = ?)")
+        else:
+            clauses.append(f"{name_column} = ?")
+        params.append(owner_name)
+    if null_pk_column and null_pk_values:
+        in_sql, in_params = _int_in_clause(null_pk_values)
+        if owner_id is not None:
+            clauses.append(f"({id_column} IS NULL AND {null_pk_column} IN {in_sql})")
+        else:
+            clauses.append(f"{null_pk_column} IN {in_sql}")
+        params.extend(in_params)
+    if not clauses:
+        raise ValueError(f"refusing unqualified DELETE FROM {table}")
+    conn.execute(f"DELETE FROM {table} WHERE {' OR '.join(clauses)}", params)
+
+
+def _delete_doctrine_contract_partition(
+    conn,
+    *,
+    owner_character_id: Optional[int] = None,
+    owner_corporation_id: Optional[int] = None,
+    owner_name: Optional[str] = None,
+    incoming_ids: Optional[list[int]] = None,
+    for_corporation: Optional[bool] = None,
+) -> None:
+    """Delete one owner's doctrine_contracts rows and their items/deviations.
+
+    Character identity for NULL-id rows is `source_role`; corp NULL-id rows
+    also match incoming contract_ids so the insert cannot collide. Vanished
+    NULL-id corp contracts with a different source_role cannot be attributed
+    without touching another owner.
+    """
+    incoming_ids = incoming_ids or []
+    clauses: list[str] = []
+    params: list = []
+    if owner_character_id is not None:
+        clauses.append("owner_character_id = ?")
+        params.append(owner_character_id)
+        if owner_name:
+            clauses.append(
+                "(owner_character_id IS NULL AND source_role = ? AND for_corporation = false)"
+            )
+            params.append(owner_name)
+    elif owner_corporation_id is not None:
+        clauses.append("owner_corporation_id = ?")
+        params.append(owner_corporation_id)
+        if owner_name:
+            clauses.append(
+                "(owner_corporation_id IS NULL AND source_role = ? AND for_corporation = true)"
+            )
+            params.append(owner_name)
+        if incoming_ids:
+            in_sql, in_params = _int_in_clause(incoming_ids)
+            clauses.append(f"(owner_corporation_id IS NULL AND contract_id IN {in_sql})")
+            params.extend(in_params)
+    elif owner_name:
+        if for_corporation is True:
+            clauses.append("source_role = ? AND for_corporation = true")
+        elif for_corporation is False:
+            clauses.append("source_role = ? AND for_corporation = false")
+        else:
+            clauses.append("source_role = ?")
+        params.append(owner_name)
+    else:
+        raise ValueError("refusing unqualified DELETE FROM doctrine_contracts")
+    if not clauses:
+        raise ValueError("refusing unqualified DELETE FROM doctrine_contracts")
+    where = " OR ".join(clauses)
+    conn.execute(
+        "DELETE FROM doctrine_contract_deviations WHERE contract_id IN "
+        f"(SELECT contract_id FROM doctrine_contracts WHERE {where})",
+        params,
+    )
+    conn.execute(
+        "DELETE FROM doctrine_contract_items WHERE contract_id IN "
+        f"(SELECT contract_id FROM doctrine_contracts WHERE {where})",
+        params,
+    )
+    conn.execute(f"DELETE FROM doctrine_contracts WHERE {where}", params)
+
+
+def delete_owner_snapshot_rows(
+    table: str,
+    *,
+    owner_character_id: Optional[int] = None,
+    owner_corporation_id: Optional[int] = None,
+    owner_name: Optional[str] = None,
+) -> None:
+    """Clear one owner's partition (age-limit stale clear, tests)."""
+    allowed = _ASSET_TABLES | _JOB_TABLES | _BP_TABLES | {
+        "character_sell_orders", "esi_wallet_transactions", "esi_wallet_journal",
+        "doctrine_contracts",
+    }
+    if table not in allowed:
+        raise ValueError(f"not a per-owner snapshot table: {table}")
+    with connect() as conn:
+        if table in ("esi_wallet_transactions", "esi_wallet_journal"):
+            col = "owner_character_id" if owner_character_id is not None else "owner_corporation_id"
+            oid = owner_character_id if owner_character_id is not None else owner_corporation_id
+            if oid is None:
+                raise ValueError(f"refusing unqualified DELETE FROM {table}")
+            conn.execute(f"DELETE FROM {table} WHERE {col} = ?", (oid,))
+            return
+        if table == "doctrine_contracts":
+            _delete_doctrine_contract_partition(
+                conn,
+                owner_character_id=owner_character_id,
+                owner_corporation_id=owner_corporation_id,
+                owner_name=owner_name,
+                incoming_ids=[],
+            )
+            return
+        is_character = (
+            table in _CHAR_ASSET_TABLES
+            or table in _CHAR_JOB_TABLES
+            or table in _CHAR_BP_TABLES
+            or (table == "character_sell_orders" and owner_corporation_id is None)
+        )
+        id_column = "owner_character_id" if is_character else "owner_corporation_id"
+        owner_id = owner_character_id if is_character else owner_corporation_id
+        if table in _CHAR_JOB_TABLES:
+            name_column: Optional[str] = "installer_id"
+            name_value: Optional[object] = owner_character_id
+        elif table in _ASSET_TABLES:
+            name_column, name_value = "owner_name", owner_name
+        elif table == "character_sell_orders":
+            name_column, name_value = "character_name", owner_name
+        else:
+            name_column, name_value = None, None
+        _delete_owner_partition(
+            conn, table, id_column=id_column, owner_id=owner_id,
+            name_column=name_column, owner_name=name_value,
+        )
+
+
+def replace_assets(
+    table: str,
+    rows: list[tuple],
+    *,
+    owner_character_id: Optional[int] = None,
+    owner_corporation_id: Optional[int] = None,
+    owner_name: Optional[str] = None,
+) -> None:
     """`rows`: (item_id, type_id, location_id, location_flag, quantity,
     is_blueprint_copy, owner_name) - resolved_location_id (GitHub issue #4/
     #20) and resolved_hangar_flag (the corp-hangar-division flag a nested
     item should actually be counted under - see _resolve_hangar_flags) are
     both computed here, not by the caller, so every existing/future caller
     (esi_sync.py, doctrine/esi_sync.py, tests) gets them automatically just
-    by going through this one function."""
-    assert table in ("character_assets", "corp_assets", "doctrine_character_assets", "doctrine_corp_assets")
-    resolved_locations = _resolve_locations(rows, location_index=2)
-    resolved_flags = _resolve_hangar_flags(rows, location_index=2, flag_index=3, type_index=1)
+    by going through this one function.
+
+    Partitioned by owner (Phase 2). `owner_character_id` /
+    `owner_corporation_id` are stamped on every insert so the table
+    converges after one successful sync per owner. NULL-id pre-deploy
+    rows for *this* owner are included in the delete via `owner_name`;
+    another owner's NULL-id rows are not.
+    """
+    assert table in _ASSET_TABLES
+    is_character = table in _CHAR_ASSET_TABLES
+    if owner_character_id is None and owner_corporation_id is None:
+        if not rows:
+            raise ValueError(f"refusing unqualified DELETE FROM {table}")
+        by_name: dict[str, list[tuple]] = {}
+        for row in rows:
+            by_name.setdefault(row[6] or "", []).append(row)
+        for name, group in by_name.items():
+            _replace_assets_one(
+                table, group, is_character=is_character,
+                owner_character_id=None, owner_corporation_id=None, owner_name=name,
+            )
+        return
+    if owner_name is None and rows:
+        owner_name = rows[0][6]
+    _replace_assets_one(
+        table, rows, is_character=is_character,
+        owner_character_id=owner_character_id,
+        owner_corporation_id=owner_corporation_id,
+        owner_name=owner_name,
+    )
+
+
+def _replace_assets_one(
+    table: str,
+    rows: list[tuple],
+    *,
+    is_character: bool,
+    owner_character_id: Optional[int],
+    owner_corporation_id: Optional[int],
+    owner_name: Optional[str],
+) -> None:
+    resolved_locations = _resolve_locations(rows, location_index=2) if rows else []
+    resolved_flags = _resolve_hangar_flags(rows, location_index=2, flag_index=3, type_index=1) if rows else []
+    id_column = "owner_character_id" if is_character else "owner_corporation_id"
+    owner_id = owner_character_id if is_character else owner_corporation_id
+    insert_char = owner_character_id if is_character else None
+    insert_corp = owner_corporation_id if not is_character else None
     with connect() as conn:
-        conn.execute(f"DELETE FROM {table}")
+        _delete_owner_partition(
+            conn, table, id_column=id_column, owner_id=owner_id,
+            name_column="owner_name", owner_name=owner_name,
+        )
         conn.executemany(
             f"INSERT INTO {table} (item_id, type_id, location_id, location_flag, quantity, "
-            "is_blueprint_copy, owner_name, resolved_location_id, resolved_hangar_flag) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
-            [row + (loc, flag) for row, loc, flag in zip(rows, resolved_locations, resolved_flags)],
+            "is_blueprint_copy, owner_name, resolved_location_id, resolved_hangar_flag, "
+            "owner_character_id, owner_corporation_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                row + (loc, flag, insert_char, insert_corp)
+                for row, loc, flag in zip(rows, resolved_locations, resolved_flags)
+            ],
         )
 
 
-def replace_industry_jobs(table: str, rows: list[tuple]) -> None:
-    assert table in ("character_industry_jobs", "corp_industry_jobs")
+def replace_industry_jobs(
+    table: str,
+    rows: list[tuple],
+    *,
+    owner_character_id: Optional[int] = None,
+    owner_corporation_id: Optional[int] = None,
+) -> None:
+    assert table in _JOB_TABLES
+    is_character = table in _CHAR_JOB_TABLES
+    if owner_character_id is None and owner_corporation_id is None and rows:
+        if is_character:
+            by_installer: dict[int, list[tuple]] = {}
+            for row in rows:
+                by_installer.setdefault(int(row[9]), []).append(row)
+            for installer_id, group in by_installer.items():
+                replace_industry_jobs(
+                    table, group, owner_character_id=installer_id,
+                )
+            return
+        raise ValueError("replace_industry_jobs on corp tables requires owner_corporation_id")
+    id_column = "owner_character_id" if is_character else "owner_corporation_id"
+    owner_id = owner_character_id if is_character else owner_corporation_id
+    insert_char = owner_character_id if is_character else None
+    insert_corp = owner_corporation_id if not is_character else None
     with connect() as conn:
-        conn.execute(f"DELETE FROM {table}")
+        if is_character:
+            _delete_owner_partition(
+                conn, table, id_column=id_column, owner_id=owner_id,
+                name_column="installer_id", owner_name=owner_character_id,
+            )
+        else:
+            _delete_owner_partition(
+                conn, table, id_column=id_column, owner_id=owner_id,
+                null_pk_column="job_id",
+                null_pk_values=[int(r[0]) for r in rows],
+            )
         conn.executemany(
             f"INSERT INTO {table} (job_id, activity_id, blueprint_type_id, product_type_id, runs, "
-            "output_location_id, status, end_date, start_date, installer_id, installer_name) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            rows,
+            "output_location_id, status, end_date, start_date, installer_id, installer_name, "
+            "owner_character_id, owner_corporation_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [row + (insert_char, insert_corp) for row in rows],
         )
 
 
@@ -1796,7 +2081,12 @@ def replace_character_slots(rows: list[tuple]) -> None:
     hit for other synced tables. Still removes rows for characters no
     longer registered (same end result delete+reinsert had for anyone not
     in `rows`), just via an explicit NOT IN delete instead of wiping
-    everything first."""
+    everything first.
+
+    Phase 2 partitioned writes do NOT convert this to delete-by-owner: a
+    rewrite that made slots "consistent with the other tables" would
+    re-break #39. Skills still update slot counts; they must not recreate
+    the row."""
     with connect() as conn:
         names = [r[0] for r in rows]
         if names:
@@ -1863,7 +2153,13 @@ def list_industry_jobs() -> list[tuple]:
     return rows
 
 
-def replace_blueprints(table: str, rows: list[tuple]) -> None:
+def replace_blueprints(
+    table: str,
+    rows: list[tuple],
+    *,
+    owner_character_id: Optional[int] = None,
+    owner_corporation_id: Optional[int] = None,
+) -> None:
     """`rows`: (item_id, type_id, location_id, location_flag, quantity,
     material_efficiency, time_efficiency, runs). resolved_location_id
     (GitHub issue #20 - a BPC sitting inside a container read as "missing"
@@ -1877,12 +2173,25 @@ def replace_blueprints(table: str, rows: list[tuple]) -> None:
     each of character/corp, so this is always fresh, not stale, in the one
     real caller. If the matching asset table is empty (e.g. this function
     called standalone, as in tests), every row simply resolves to its own
-    unwrapped location_id - never worse than the pre-fix behavior."""
-    assert table in ("character_blueprints", "corp_blueprints")
-    asset_table = "character_assets" if table == "character_blueprints" else "corp_assets"
+    unwrapped location_id - never worse than the pre-fix behavior.
+
+    Partitioned by owner (Phase 2). Blueprints have no owner_name; NULL-id
+    rows that collide with an incoming item_id are deleted, but vanished
+    NULL-id rows cannot be attributed without touching another owner."""
+    assert table in _BP_TABLES
+    is_character = table in _CHAR_BP_TABLES
+    asset_table = "character_assets" if is_character else "corp_assets"
+    id_column = "owner_character_id" if is_character else "owner_corporation_id"
+    owner_id = owner_character_id if is_character else owner_corporation_id
+    insert_char = owner_character_id if is_character else None
+    insert_corp = owner_corporation_id if not is_character else None
     with connect() as conn:
         parent_of = dict(conn.execute(f"SELECT item_id, location_id FROM {asset_table}").fetchall())
-        conn.execute(f"DELETE FROM {table}")
+        _delete_owner_partition(
+            conn, table, id_column=id_column, owner_id=owner_id,
+            null_pk_column="item_id",
+            null_pk_values=[int(r[0]) for r in rows],
+        )
         resolved_rows = []
         for row in rows:
             root = row[2]  # location_id
@@ -1890,21 +2199,67 @@ def replace_blueprints(table: str, rows: list[tuple]) -> None:
             while root in parent_of and hops < 10:
                 root = parent_of[root]
                 hops += 1
-            resolved_rows.append(row + (root,))
+            resolved_rows.append(row + (root, insert_char, insert_corp))
         conn.executemany(
             f"INSERT INTO {table} (item_id, type_id, location_id, location_flag, quantity, "
-            "material_efficiency, time_efficiency, runs, resolved_location_id) VALUES (?,?,?,?,?,?,?,?,?)",
+            "material_efficiency, time_efficiency, runs, resolved_location_id, "
+            "owner_character_id, owner_corporation_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             resolved_rows,
         )
 
 
-def replace_sell_orders(rows: list[tuple]) -> None:
+def replace_sell_orders(
+    rows: list[tuple],
+    *,
+    owner_character_id: Optional[int] = None,
+    owner_corporation_id: Optional[int] = None,
+    owner_name: Optional[str] = None,
+) -> None:
+    """`rows`: (order_id, type_id, location_id, region_id, volume_remain,
+    character_name). Corp orders use `character_name = "{corp} (corp)"` and
+    `    owner_corporation_id`. Partitioned by owner (Phase 2)."""
+    if owner_character_id is None and owner_corporation_id is None:
+        if not rows:
+            raise ValueError("refusing unqualified DELETE FROM character_sell_orders")
+        by_name: dict[str, list[tuple]] = {}
+        for row in rows:
+            by_name.setdefault(row[5] or "", []).append(row)
+        for name, group in by_name.items():
+            _replace_sell_orders_one(
+                group, owner_character_id=None, owner_corporation_id=None,
+                owner_name=name,
+            )
+        return
+    if owner_name is None and rows:
+        owner_name = rows[0][5]
+    _replace_sell_orders_one(
+        rows, owner_character_id=owner_character_id,
+        owner_corporation_id=owner_corporation_id, owner_name=owner_name,
+    )
+
+
+def _replace_sell_orders_one(
+    rows: list[tuple],
+    *,
+    owner_character_id: Optional[int],
+    owner_corporation_id: Optional[int],
+    owner_name: Optional[str],
+) -> None:
+    is_character = owner_corporation_id is None
+    id_column = "owner_character_id" if is_character else "owner_corporation_id"
+    owner_id = owner_character_id if is_character else owner_corporation_id
+    insert_char = owner_character_id if is_character else None
+    insert_corp = owner_corporation_id if not is_character else None
     with connect() as conn:
-        conn.execute("DELETE FROM character_sell_orders")
+        _delete_owner_partition(
+            conn, "character_sell_orders", id_column=id_column, owner_id=owner_id,
+            name_column="character_name", owner_name=owner_name,
+        )
         conn.executemany(
             "INSERT INTO character_sell_orders (order_id, type_id, location_id, region_id, "
-            "volume_remain, character_name) VALUES (?,?,?,?,?,?)",
-            rows,
+            "volume_remain, character_name, owner_character_id, owner_corporation_id) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            [row + (insert_char, insert_corp) for row in rows],
         )
 
 
@@ -3380,26 +3735,101 @@ def load_doctrine_contract_deviations(contract_id: int) -> list[tuple]:
         ).fetchall()
 
 
-def replace_doctrine_sync_snapshot(contracts: list[tuple], items: list[tuple], deviations: list[tuple]) -> None:
-    """Wholesale-replaces all three doctrine-contract tables in one
-    transaction (via connect()'s own commit-on-exit - wrap the caller in
-    storage.batch_session() if it does other writes too) - Phase 3 spec
-    E.3's "one storage.batch_session() write... full-snapshot semantics
-    like Production's asset sync": a contract that's disappeared (accepted/
-    expired/deleted since the last sync) simply isn't in `contracts`
-    anymore and is gone from the table, no separate cleanup step needed.
+def replace_doctrine_sync_snapshot(
+    contracts: list[tuple],
+    items: list[tuple],
+    deviations: list[tuple],
+    *,
+    owner_character_id: Optional[int] = None,
+    owner_corporation_id: Optional[int] = None,
+    owner_name: Optional[str] = None,
+) -> None:
+    """Replaces one owner's doctrine-contract snapshot (Phase 2).
 
     contracts: rows matching _CONTRACT_COLUMNS (minus tenant_id).
     items: (contract_id, record_id, type_id, quantity, is_included, is_singleton).
-    deviations: (contract_id, type_id, kind, expected_qty, actual_qty, severity)."""
+    deviations: (contract_id, type_id, kind, expected_qty, actual_qty, severity).
+
+    When owner ids are omitted (tests, do_validate_contracts), groups by
+    (for_corporation, source_role) and preserves any owner ids already on
+    those rows so a re-validate does not undo Phase 2 convergence.
+    """
+    if owner_character_id is None and owner_corporation_id is None and owner_name is None:
+        groups: dict[tuple, list[tuple]] = {}
+        for row in contracts:
+            key = (bool(row[2]), row[1] or "")
+            groups.setdefault(key, []).append(row)
+        if not groups:
+            return
+        items_by: dict[int, list[tuple]] = {}
+        for it in items:
+            items_by.setdefault(it[0], []).append(it)
+        devs_by: dict[int, list[tuple]] = {}
+        for d in deviations:
+            devs_by.setdefault(d[0], []).append(d)
+        for (for_corp, role), group in groups.items():
+            cids = {r[0] for r in group}
+            _replace_doctrine_sync_one(
+                group,
+                [it for cid in cids for it in items_by.get(cid, [])],
+                [d for cid in cids for d in devs_by.get(cid, [])],
+                owner_character_id=None,
+                owner_corporation_id=None,
+                owner_name=role or None,
+                for_corporation=for_corp,
+            )
+        return
+    _replace_doctrine_sync_one(
+        contracts, items, deviations,
+        owner_character_id=owner_character_id,
+        owner_corporation_id=owner_corporation_id,
+        owner_name=owner_name,
+        for_corporation=True if owner_corporation_id is not None else (
+            False if owner_character_id is not None else None
+        ),
+    )
+
+
+def _replace_doctrine_sync_one(
+    contracts: list[tuple],
+    items: list[tuple],
+    deviations: list[tuple],
+    *,
+    owner_character_id: Optional[int],
+    owner_corporation_id: Optional[int],
+    owner_name: Optional[str],
+    for_corporation: Optional[bool],
+) -> None:
+    insert_char = owner_character_id
+    insert_corp = owner_corporation_id
     with connect() as conn:
-        conn.execute("DELETE FROM doctrine_contract_deviations")
-        conn.execute("DELETE FROM doctrine_contract_items")
-        conn.execute("DELETE FROM doctrine_contracts")
+        existing_owners = {
+            r[0]: (r[1], r[2])
+            for r in conn.execute(
+                "SELECT contract_id, owner_character_id, owner_corporation_id FROM doctrine_contracts"
+            ).fetchall()
+        }
+        _delete_doctrine_contract_partition(
+            conn,
+            owner_character_id=owner_character_id,
+            owner_corporation_id=owner_corporation_id,
+            owner_name=owner_name,
+            incoming_ids=[int(r[0]) for r in contracts],
+            for_corporation=for_corporation,
+        )
+        stamped = []
+        for row in contracts:
+            char_id, corp_id = insert_char, insert_corp
+            if char_id is None and corp_id is None:
+                prev = existing_owners.get(row[0])
+                if prev is not None:
+                    char_id, corp_id = prev
+            stamped.append(row + (char_id, corp_id))
+        cols = ", ".join(_CONTRACT_COLUMNS) + ", owner_character_id, owner_corporation_id"
+        placeholders = ", ".join("?" for _ in _CONTRACT_COLUMNS) + ",?,?"
         conn.executemany(
-            f"INSERT INTO doctrine_contracts ({', '.join(_CONTRACT_COLUMNS)}) "
-            f"VALUES ({', '.join('?' for _ in _CONTRACT_COLUMNS)})",
-            contracts,
+            f"INSERT INTO doctrine_contracts ({cols}) VALUES ({placeholders})",
+            stamped,
         )
         conn.executemany(
             "INSERT INTO doctrine_contract_items (contract_id, record_id, type_id, quantity, is_included, "

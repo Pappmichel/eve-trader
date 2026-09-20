@@ -26,6 +26,7 @@ from .registry import (
     fetcher_scope_map,
 )
 from .backfill import backfill_conservative_sharing
+from .stale import DEFAULT_STALE_CLEAR_MULTIPLES, clear_stale_owner_kind
 
 __all__ = (
     "ACCESS_CAPABILITIES",
@@ -42,4 +43,6 @@ __all__ = (
     "consuming_tool_keys",
     "fetcher_scope_map",
     "backfill_conservative_sharing",
+    "DEFAULT_STALE_CLEAR_MULTIPLES",
+    "clear_stale_owner_kind",
 )

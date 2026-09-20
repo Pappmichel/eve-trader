@@ -337,12 +337,11 @@ def sync_esi() -> dict:
 
     all_char_assets: list[dict] = []
     all_char_jobs: list[dict] = []
-    all_char_bps: list[dict] = []
-    all_sell_orders: list[tuple] = []
     all_corp_assets: list[dict] = []
     all_corp_jobs: list[dict] = []
-    all_corp_bps: list[dict] = []
     slot_rows: list[tuple] = []
+    corp_payloads: dict[int, dict] = {}
+    corp_order_payloads: dict[int, tuple[str, list[tuple]]] = {}
 
     per_character: dict = {}
     per_corporation: dict = {}
@@ -354,8 +353,6 @@ def sync_esi() -> dict:
         per_character[character_name] = r["per_character"]
         all_char_assets.extend(r["assets"])
         all_char_jobs.extend(r["jobs"])
-        all_char_bps.extend(r["bps"])
-        all_sell_orders.extend(r["sell_rows"])
         if r["slot_row"] is not None:
             slot_rows.append(r["slot_row"])
 
@@ -389,7 +386,9 @@ def sync_esi() -> dict:
                     a["owner_name"] = f"{corp_name} (corp)"
                 all_corp_assets.extend(corp_assets)
                 all_corp_jobs.extend(corp_jobs)
-                all_corp_bps.extend(corp_bps)
+                corp_payloads[corporation_id] = {
+                    "name": corp_name, "assets": corp_assets, "jobs": corp_jobs, "bps": corp_bps,
+                }
                 per_corporation[corp_name] = {
                     "assets": len(corp_assets), "industry_jobs": len(corp_jobs), "blueprints": len(corp_bps),
                 }
@@ -402,7 +401,7 @@ def sync_esi() -> dict:
             else:
                 corp_orders_done.add(corp_name)
                 sell_rows = _sell_order_rows(corp_orders, f"{corp_name} (corp)")
-                all_sell_orders.extend(sell_rows)
+                corp_order_payloads[corporation_id] = (corp_name, sell_rows)
                 if isinstance(per_corporation.get(corp_name), dict):
                     per_corporation[corp_name]["corp_sell_orders"] = len(sell_rows)
 
@@ -411,13 +410,52 @@ def sync_esi() -> dict:
     installer_ids = {j.get("installer_id") for j in all_char_jobs + all_corp_jobs if j.get("installer_id")}
     installer_names = client.resolve_names(list(installer_ids))
 
-    storage.replace_assets("character_assets", _asset_rows(all_char_assets))
-    storage.replace_industry_jobs("character_industry_jobs", _industry_job_rows(all_char_jobs, installer_names))
-    storage.replace_blueprints("character_blueprints", _blueprint_rows(all_char_bps))
-    storage.replace_sell_orders(all_sell_orders)
-    storage.replace_assets("corp_assets", _asset_rows(all_corp_assets))
-    storage.replace_industry_jobs("corp_industry_jobs", _industry_job_rows(all_corp_jobs, installer_names))
-    storage.replace_blueprints("corp_blueprints", _blueprint_rows(all_corp_bps))
+    # Temporary: write per owner so a failed fetch does not wipe another
+    # owner's rows (decision 6). Phase 3 replaces both fetch paths; do not
+    # invest in structure here.
+    for r in char_results:
+        if isinstance(r["per_character"], str):
+            continue
+        cid = r["character_id"]
+        name = r["character_name"]
+        storage.replace_assets(
+            "character_assets", _asset_rows(r["assets"]),
+            owner_character_id=cid, owner_name=name,
+        )
+        storage.replace_industry_jobs(
+            "character_industry_jobs", _industry_job_rows(r["jobs"], installer_names),
+            owner_character_id=cid,
+        )
+        storage.replace_blueprints(
+            "character_blueprints", _blueprint_rows(r["bps"]),
+            owner_character_id=cid,
+        )
+        sell_status = r["per_character"].get("sell_orders")
+        if not isinstance(sell_status, str):
+            storage.replace_sell_orders(
+                r["sell_rows"], owner_character_id=cid, owner_name=name,
+            )
+
+    for corp_id, payload in corp_payloads.items():
+        label = f"{payload['name']} (corp)"
+        storage.replace_assets(
+            "corp_assets", _asset_rows(payload["assets"]),
+            owner_corporation_id=corp_id, owner_name=label,
+        )
+        storage.replace_industry_jobs(
+            "corp_industry_jobs", _industry_job_rows(payload["jobs"], installer_names),
+            owner_corporation_id=corp_id,
+        )
+        storage.replace_blueprints(
+            "corp_blueprints", _blueprint_rows(payload["bps"]),
+            owner_corporation_id=corp_id,
+        )
+
+    for corp_id, (corp_name, sell_rows) in corp_order_payloads.items():
+        storage.replace_sell_orders(
+            sell_rows, owner_corporation_id=corp_id, owner_name=f"{corp_name} (corp)",
+        )
+
     storage.replace_character_slots(slot_rows)
 
     return {"characters": per_character, "corporations": per_corporation, "structure_names": structure_names}

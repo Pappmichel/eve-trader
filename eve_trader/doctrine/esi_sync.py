@@ -171,12 +171,15 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG, progress_callback=None
     # side), and both sets independently dedupe against themselves only.
     all_history_contracts: list[tuple[dict, str]] = []
     seen_history_ids: set[int] = set()
+    successful_chars: dict[int, str] = {}
+    successful_corps: dict[int, str] = {}
 
     for role, character_id, character_name in characters:
         result = _fetch_character_contracts(client, role, character_id)
         if result["error"] is not None:
             per_character[character_name] = f"skipped ({result['error']})"
             continue
+        successful_chars[character_id] = role
         char_contracts = [c for c in result["contracts"]
                           if _passes_prefilter(c, structure_id)
                           and _issued_by_own_identity(c, character_id, result["corporation_id"])]
@@ -202,6 +205,7 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG, progress_callback=None
             corp_error_by_id[corporation_id] = str(e)  # a later character in this corp might have access
             continue
         corp_contracts_done[corporation_id] = corp_raw
+        successful_corps[corporation_id] = role
         corp_filtered = [c for c in corp_raw
                          if _passes_prefilter(c, structure_id)
                          and _issued_by_own_identity(c, character_id, corporation_id)]
@@ -271,7 +275,7 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG, progress_callback=None
     # snapshot entirely (Phase 3 spec D.3: never write a contract with no
     # items - that would look like a real "invalid" doctrine violation
     # instead of a transient data gap). They're simply retried next sync.
-    usable = [(raw, role, for_corp) for raw, role, for_corp, _corp_id in all_contracts
+    usable = [(raw, role, for_corp, corp_id) for raw, role, for_corp, corp_id in all_contracts
               if raw["contract_id"] in carried_items or raw["contract_id"] in fetched_items]
 
     candidates = engine.load_match_candidates()
@@ -280,8 +284,10 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG, progress_callback=None
     deviation_rows: list[tuple] = []
     synced_at = datetime.now(timezone.utc).isoformat()
     no_hull_match_count = 0
+    contract_owner: dict[int, tuple[str, int, str]] = {}
+    role_to_char_id = {role: cid for role, cid, _name in characters}
 
-    for raw, role, for_corp in usable:
+    for raw, role, for_corp, corp_id in usable:
         cid = raw["contract_id"]
         raw_items = carried_items.get(cid)
         if raw_items is not None:
@@ -312,6 +318,10 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG, progress_callback=None
             item_rows.append((cid, it.record_id, it.type_id, it.quantity, it.is_included, it.is_singleton))
         for d in deviations:
             deviation_rows.append((cid, d.type_id, d.kind, d.expected_qty, d.actual_qty, d.severity))
+        if for_corp:
+            contract_owner[cid] = ("corporation", corp_id, role)
+        else:
+            contract_owner[cid] = ("character", role_to_char_id[role], role)
 
     # GitHub issue #19: record every newly-finished contract into permanent
     # history before replace_doctrine_sync_snapshot below drops it from the
@@ -349,7 +359,47 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG, progress_callback=None
         ))
 
     with storage.batch_session():
-        storage.replace_doctrine_sync_snapshot(contract_rows, item_rows, deviation_rows)
+        # Temporary: write per owner so a failed fetch does not wipe another
+        # owner's rows (decision 6). Phase 3 replaces both fetch paths; do
+        # not invest in structure here.
+        grouped: dict[tuple, dict] = {}
+        items_by: dict[int, list[tuple]] = {}
+        for it in item_rows:
+            items_by.setdefault(it[0], []).append(it)
+        devs_by: dict[int, list[tuple]] = {}
+        for d in deviation_rows:
+            devs_by.setdefault(d[0], []).append(d)
+        for row in contract_rows:
+            kind, oid, role = contract_owner[row[0]]
+            g = grouped.setdefault((kind, oid, role), {"contracts": [], "items": [], "devs": []})
+            g["contracts"].append(row)
+            g["items"].extend(items_by.get(row[0], []))
+            g["devs"].extend(devs_by.get(row[0], []))
+        written_chars: set[int] = set()
+        written_corps: set[int] = set()
+        for (kind, oid, role), g in grouped.items():
+            if kind == "character":
+                storage.replace_doctrine_sync_snapshot(
+                    g["contracts"], g["items"], g["devs"],
+                    owner_character_id=oid, owner_name=role,
+                )
+                written_chars.add(oid)
+            else:
+                storage.replace_doctrine_sync_snapshot(
+                    g["contracts"], g["items"], g["devs"],
+                    owner_corporation_id=oid, owner_name=role,
+                )
+                written_corps.add(oid)
+        for char_id, role in successful_chars.items():
+            if char_id not in written_chars:
+                storage.replace_doctrine_sync_snapshot(
+                    [], [], [], owner_character_id=char_id, owner_name=role,
+                )
+        for corp_id, role in successful_corps.items():
+            if corp_id not in written_corps:
+                storage.replace_doctrine_sync_snapshot(
+                    [], [], [], owner_corporation_id=corp_id, owner_name=role,
+                )
         storage.upsert_doctrine_contract_history(history_rows)
         storage.set_esi_sync_time("doctrine", synced_at)
 
@@ -389,8 +439,8 @@ def _fetch_character_assets(client: ESIClient, role: str, character_id: int, cha
     """The parallelizable, per-character half of sync_assets (Phase A) -
     mirrors production/esi_sync.py's _fetch_character_data, narrowed to just
     assets + the corp lookup the corp-asset half (Phase B, sequential) needs."""
-    result: dict = {"character_name": character_name, "role": role, "assets": [],
-                     "corporation_id": None, "error": None}
+    result: dict = {"character_name": character_name, "character_id": character_id, "role": role,
+                     "assets": [], "corporation_id": None, "error": None}
     try:
         assets = client.character_assets(character_id, auth_role=role)
     except ESIError as e:
@@ -435,6 +485,7 @@ def sync_assets() -> dict:
     per_corporation: dict = {}
     corp_done: set[int] = set()
     corp_error: dict[int, str] = {}
+    corp_payloads: dict[int, tuple[str, list[dict]]] = {}
 
     for r in char_results:
         character_name = r["character_name"]
@@ -460,10 +511,24 @@ def sync_assets() -> dict:
             a["owner_name"] = f"{corp_name} (corp)"
         corp_done.add(corporation_id)
         all_corp_assets.extend(corp_assets)
+        corp_payloads[corporation_id] = (corp_name, corp_assets)
         per_corporation[corp_name] = {"assets": len(corp_assets)}
 
-    storage.replace_assets("doctrine_character_assets", _asset_rows(all_char_assets))
-    storage.replace_assets("doctrine_corp_assets", _asset_rows(all_corp_assets))
+    # Temporary: write per owner so a failed fetch does not wipe another
+    # owner's rows (decision 6). Phase 3 replaces both fetch paths; do not
+    # invest in structure here.
+    for r in char_results:
+        if r["error"] is not None:
+            continue
+        storage.replace_assets(
+            "doctrine_character_assets", _asset_rows(r["assets"]),
+            owner_character_id=r["character_id"], owner_name=r["character_name"],
+        )
+    for corp_id, (corp_name, corp_assets) in corp_payloads.items():
+        storage.replace_assets(
+            "doctrine_corp_assets", _asset_rows(corp_assets),
+            owner_corporation_id=corp_id, owner_name=f"{corp_name} (corp)",
+        )
     storage.set_esi_sync_time("doctrine_assets", datetime.now(timezone.utc).isoformat())
 
     return {"characters": per_character, "corporations": per_corporation}
