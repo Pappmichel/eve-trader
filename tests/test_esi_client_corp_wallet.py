@@ -6,11 +6,12 @@ from eve_trader.production.esi_sync import PRODUCTION_SCOPES
 CORP_WALLET_SCOPE = "esi-wallet.read_corporation_wallets.v1"
 
 
-def test_corp_wallet_scope_is_not_wired_until_portal_confirmation():
-    """Requesting a scope the EVE developer portal has not enabled makes SSO
-    reject the entire login with invalid_scope. Phase 8 implements the
-    client methods but must not add this scope to any live scope list yet."""
-    assert CORP_WALLET_SCOPE not in OAUTH_CONFIG.scopes
+def test_corp_wallet_scope_is_on_trading_login_not_production():
+    """Portal-enabled: buyer/seller SSO now requests the corp-wallets scope.
+    Production has no wallet consumer, so PRODUCTION_SCOPES must stay
+    without it — adding it there would force every producer re-auth for a
+    scope Production never calls."""
+    assert CORP_WALLET_SCOPE in OAUTH_CONFIG.scopes
     assert CORP_WALLET_SCOPE not in PRODUCTION_SCOPES
 
 

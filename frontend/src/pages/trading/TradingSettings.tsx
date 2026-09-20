@@ -110,6 +110,7 @@ export default function TradingSettings() {
         personal wallet, so Reconcile Trades would miss them without this. Select which of the seven ESI
         wallet divisions to page. Leave empty to read every division (the default). The fetching character
         needs the Accountant or Junior Accountant role in that corp — not Director, and not Station Manager.
+        A buyer or seller added before this scope existed needs a one-time re-login before corp fills appear.
       </Text>
       <MultiSelect label="Corp wallet divisions included in Reconcile Trades"
         data={divisionOptions.wallet_division_ids.map((id) => ({ value: String(id), label: `Division ${id}` }))}

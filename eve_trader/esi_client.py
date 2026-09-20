@@ -944,10 +944,12 @@ class ESIClient:
         Requires esi-wallet.read_corporation_wallets.v1 plus the in-game
         Accountant or Junior_Accountant role (NOT Director, which
         corporation_assets/jobs/blueprints use, and NOT Station_Manager,
-        which corporation_structures uses). That scope is intentionally
-        absent from OAuthConfig.scopes / PRODUCTION_SCOPES until it is
-        enabled for this app in the EVE developer portal — requesting it
-        before then makes SSO reject the entire login with invalid_scope.
+        which corporation_structures uses). That scope is on
+        OAuthConfig.scopes (buyer/seller login); a character added before
+        it existed needs to be re-added before corp-wallet fetches succeed
+        for it — until then ESI 403s and trade_reconciliation skips the
+        corp non-fatally. Not on PRODUCTION_SCOPES (Production has no
+        wallet consumer).
         """
         params = {"datasource": "tranquility"}
         if from_id is not None:
@@ -967,8 +969,8 @@ class ESIClient:
         2026-09-20: journal has `page` + X-Pages, transactions have
         `from_id` and no X-Pages). `division` is 1-7. Same scope and
         Accountant / Junior_Accountant role as
-        corporation_wallet_transactions; see that method for why the scope
-        is not on OAuthConfig.scopes yet.
+        corporation_wallet_transactions (scope is on OAuthConfig.scopes;
+        see that method for the re-auth note).
 
         trade_reconciliation uses this the same way it uses
         character_wallet_journal: a wallet-transaction's `journal_ref_id`

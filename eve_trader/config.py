@@ -563,19 +563,19 @@ class OAuthConfig:
     # login with "invalid_scope", so don't add more here unless you also
     # enable them for your app at https://developers.eveonline.com/applications
     # AND actually use the corresponding ESI endpoint in esi_client.py.
-    #
-    # esi-wallet.read_corporation_wallets.v1 is deliberately NOT in this
-    # tuple yet. ESIClient.corporation_wallet_transactions/journal exist
-    # (Phase 8 corp-wallet reconcile) but adding the scope before it is
-    # enabled for this app in the developer portal makes SSO reject every
-    # buyer/seller login, not just the new feature. After the portal
-    # checkbox is confirmed, add it here; affected characters then need a
-    # one-time re-auth — the same pattern PRODUCTION_SCOPES already
-    # documents for esi-markets.structure_markets.v1.
     scopes: tuple = (
         "esi-markets.read_character_orders.v1",   # ESIClient.character_orders
         "esi-markets.structure_markets.v1",        # ESIClient.structure_order_stats
         "esi-wallet.read_character_wallet.v1",     # ESIClient.character_wallet_transactions
+        "esi-wallet.read_corporation_wallets.v1",  # ESIClient.corporation_wallet_transactions/journal
+                                                    # (Phase 8 corp-wallet reconcile). A buyer/seller
+                                                    # added before this existed needs to be re-added
+                                                    # before corp-funded fills appear in Realized
+                                                    # Trades; until then those ESI calls 403 and are
+                                                    # skipped non-fatally. Same re-auth pattern
+                                                    # PRODUCTION_SCOPES already documents for
+                                                    # structure_markets. Not on PRODUCTION_SCOPES:
+                                                    # Production has no wallet consumer.
         "esi-assets.read_assets.v1",                # ESIClient.character_assets (own_orders.fetch_buyer_already_covered,
                                                      # own_orders.fetch_seller_stock_without_order)
     )
