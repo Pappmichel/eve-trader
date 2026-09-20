@@ -10,24 +10,38 @@ temporary, self-deleting note left when a session ends mid-task (e.g.
 continuing on a different computer with no access to this machine's Claude
 memory) and takes priority over re-deriving current status from scratch.
 
-## Two tools, one backend (plus Doctrine, Ore & Minerals, and Admin)
+## Two tools, one backend (plus Doctrine, Ore & Minerals, Station Trading, Sorting, Characters, and Admin)
 
 - **Trading**: buys in Jita, sells at a private player structure ("C-J").
 - **Production**: Tech I/II/Reaction manufacturing planning for the same C-J
   structure - buy-vs-build, stock targets, invention.
 
-These two are the original pair this section's title/history refers to -
-`eve_trader/portfolio.py` and `eve_trader/scheduler.py` are the only modules
-that deliberately span *just* them. The app has since grown two more
-tenant-facing tools that follow the exact same `do_*`-actions/router/RLS
-pattern described in the rest of this file: **Doctrine** (fitted-ship
-contract/stockpile tracking against EFT fittings, `eve_trader/doctrine/`)
-and **Ore & Minerals** (ore/ice import-refine-sell, reprocessing quotes,
-mineral shopping list, `eve_trader/refining/`, GitHub issue #90) - plus the
-cross-tenant **Admin** tool (`eve_trader/admin.py`, see "Tool permissions &
-Admin" below), which isn't tenant-facing at all.
+These two are the original pair this section's title/history refers to.
+`eve_trader/portfolio.py` and `eve_trader/scheduler.py` deliberately span
+*just* them. Character-centric ESI access is a **third cross-cutting
+package**, `eve_trader/esi_data/` (`docs/ESI_ACCESS_PLAN.md`): the
+data-kind registry lives here now; fetchers, the orchestrator, and
+Characters `do_*` actions land in later phases of that plan. It names
+tools as strings and imports no tool package — the same precedent as
+`auth.TOOL_ROLE_PREFIXES` and `access_gate.ALL_TOOL_KEYS`. Do not put
+ESI-owner sync back into `portfolio.py` or a tool's `esi_sync.py` by
+re-deriving a prefix-per-tool layout from a stale reading of this
+paragraph.
 
-All four tenant-facing tools share one FastAPI backend (`eve_trader/api/`),
+The app has since grown more tenant-facing tools that follow the exact
+same `do_*`-actions/router/RLS pattern described in the rest of this
+file: **Doctrine** (fitted-ship contract/stockpile tracking against EFT
+fittings, `eve_trader/doctrine/`), **Ore & Minerals** (ore/ice
+import-refine-sell, reprocessing quotes, mineral shopping list,
+`eve_trader/refining/`, GitHub issue #90), **Station Trading**,
+**Sorting**, and **Characters** (`tool_key "characters"` — the
+tenant-facing surface for ESI access; the grant itself lands in Phase 6
+of `docs/ESI_ACCESS_PLAN.md`) — plus the cross-tenant **Admin** tool
+(`eve_trader/admin.py`, see "Tool permissions & Admin" below), which
+isn't tenant-facing at all. **Portfolio** is also a tenant-facing tool
+(`tool_key "portfolio"`); it reads derived tables, not raw ESI.
+
+All tenant-facing tools share one FastAPI backend (`eve_trader/api/`),
 one Postgres store (`eve_trader/storage.py`, multi-tenant - see
 "Multi-tenant Postgres" below), and one React/TypeScript frontend
 (`frontend/src/`).
@@ -97,6 +111,8 @@ reasoning: `api/routers/portfolio.py` calls
 `portfolio.py`/`scheduler.py` are the cross-cutting modules that
 deliberately span both tools (see "Two tools, one backend" above) - there's
 no natural `do_*` home for either without picking one tool arbitrarily.
+Characters `do_*` will live in `eve_trader/esi_data/` (see
+`docs/ESI_ACCESS_PLAN.md`), not in `portfolio.py`.
 `cli.py`'s `tenant import-tokens`/`migrate-sqlite` commands call `storage`/
 `sqlite_migration` directly - both are genuinely one-time, operator-run
 commands with no web/API equivalent at all, so there's no router on the
