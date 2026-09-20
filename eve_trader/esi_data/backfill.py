@@ -6,9 +6,12 @@ that prefix, and leaves tokens in place. Idempotent (`ON CONFLICT DO
 NOTHING`). No tool-package imports — prefix → (tool, kinds, capabilities)
 is data here, the same strings as the registry.
 
-Corp sharing is written only when a corporation_id is supplied for that
-character (tokens do not store one). The live cutover resolves those ids;
-this function does not call ESI.
+Corp sharing needs a corporation_id. Tokens do not store one; the
+default path resolves it via `ESIClient.character_public_info` (public,
+no auth — same shape as `trade_reconciliation._corps_for_characters`).
+`corporation_ids` is an override: a supplied character is not looked
+up. A failed lookup falls back to character-only sharing for that
+character (logged), it is not the normal path.
 """
 from __future__ import annotations
 
@@ -81,12 +84,58 @@ def _role_prefix(role: str) -> Optional[str]:
     return role
 
 
+def _corporation_id_for(
+    character_id: int,
+    *,
+    needs_corp: bool,
+    overrides: dict[int, int],
+    cache: dict[int, Optional[int]],
+    client,
+    missing_corp: list[int],
+):
+    """Override wins and skips ESI. Otherwise public-info, cached per
+    character. `client` is an ESIClient or None; created by the caller
+    on first use so a network-free override run never constructs one.
+    """
+    if character_id in overrides:
+        return overrides[character_id]
+    if not needs_corp:
+        return None
+    if character_id in cache:
+        return cache[character_id]
+    try:
+        info = client.character_public_info(character_id)
+    except Exception:  # noqa: BLE001 - character-only fallback; do not abort the tenant
+        log.warning(
+            "Conservative sharing: character %s: public-info fetch failed; "
+            "character rows written, corp rows skipped",
+            character_id, exc_info=True,
+        )
+        cache[character_id] = None
+        missing_corp.append(character_id)
+        return None
+    corp_id = info.get("corporation_id") if isinstance(info, dict) else None
+    if not corp_id:
+        log.warning(
+            "Conservative sharing: character %s: public-info returned no "
+            "corporation_id; character rows written, corp rows skipped",
+            character_id,
+        )
+        cache[character_id] = None
+        missing_corp.append(character_id)
+        return None
+    cache[character_id] = int(corp_id)
+    return cache[character_id]
+
+
 def backfill_conservative_sharing(
     corporation_ids: Optional[dict[int, int]] = None,
 ) -> dict:
     """Insert sharing + capability rows for the current tenant from
-    `tenant_tokens`. `corporation_ids` maps character_id → corporation_id
-    for corp sharing; omitted characters get character rows only (logged).
+    `tenant_tokens`. Resolves each character's corporation_id via
+    `character_public_info` when a prefix has corp kinds.
+    `corporation_ids` is an override (tests / network-free runs): a
+    supplied character is not looked up.
 
     Also fills snapshot owner-id columns where a name/id match exists, and
     `sorting_intake_sources` owner ids. Unmatched intake rows keep
@@ -94,12 +143,16 @@ def backfill_conservative_sharing(
 
     Returns counts for tests / the CLI. Safe to re-run.
     """
-    corporation_ids = corporation_ids or {}
+    from ..esi_client import ESIClient  # local import: avoids a hard dependency for callers that don't need it
+
+    overrides = dict(corporation_ids or {})
     tokens = storage.load_all_tenant_tokens()
     sharing_attempted = 0
     capabilities_attempted = 0
     skipped_prefixes: list[str] = []
     missing_corp: list[int] = []
+    resolved_cache: dict[int, Optional[int]] = {}
+    client = None
 
     with storage.connect() as conn:
         for role, record in tokens.items():
@@ -124,14 +177,26 @@ def backfill_conservative_sharing(
                     (character_id, cap),
                 )
                 capabilities_attempted += 1
-            corp_id = corporation_ids.get(character_id)
+            if grant.corp_kinds and character_id not in overrides and client is None:
+                client = ESIClient()
+            corp_id = _corporation_id_for(
+                character_id,
+                needs_corp=bool(grant.corp_kinds),
+                overrides=overrides,
+                cache=resolved_cache,
+                client=client,
+                missing_corp=missing_corp,
+            )
             if grant.corp_kinds and corp_id is None:
-                missing_corp.append(character_id)
-                log.warning(
-                    "Conservative sharing: character %s prefix %s has corp kinds "
-                    "but no corporation_id; character rows written, corp rows skipped",
-                    character_id, prefix,
-                )
+                # Warning already emitted by the lookup (or override omitted
+                # a needed id). Keep the list unique for the CLI.
+                if character_id not in missing_corp:
+                    missing_corp.append(character_id)
+                    log.warning(
+                        "Conservative sharing: character %s prefix %s has corp kinds "
+                        "but no corporation_id; character rows written, corp rows skipped",
+                        character_id, prefix,
+                    )
             elif corp_id is not None:
                 for kind in grant.corp_kinds:
                     conn.execute(

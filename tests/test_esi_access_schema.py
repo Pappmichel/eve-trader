@@ -209,6 +209,28 @@ def test_character_wallet_rejects_nonzero_division(tenant_pair):
             )
 
 
+def test_wallet_owner_ids_must_agree_with_pk(tenant_pair):
+    tenant_a, _tenant_b = tenant_pair
+    when = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
+        with pytest.raises(Exception):
+            conn.execute(
+                _WALLET_TXN_SQL,
+                ("character", 42, 0, 1001, when, 34, 60003760, 1.0, 1, True, 1, 456, None),
+            )
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
+        with pytest.raises(Exception):
+            conn.execute(
+                _WALLET_JOURNAL_SQL,
+                ("corporation", 99, 1, 5001, when, "market_transaction", -1.0, 42, 99),
+            )
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
+        conn.execute(
+            _WALLET_TXN_SQL,
+            ("character", 42, 0, 1001, when, 34, 60003760, 1.0, 1, True, 1, 42, None),
+        )
+
+
 def test_owner_id_columns_are_bigint(
     _apply_doctrine_schema, _apply_sorting_schema, _apply_esi_access_schema,
 ):

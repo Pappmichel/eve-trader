@@ -123,6 +123,11 @@ def tenant_backfill_esi_sharing(tenant_id: str | None):
         f"Backfilled tenant {tid}: {result['sharing_inserts_attempted']} sharing "
         f"insert(s) attempted from {result['tokens']} token(s)."
     )
+    missing = result["characters_missing_corporation_id"]
+    if missing:
+        click.echo(
+            f"  character-only (public-info lookup failed): {missing}"
+        )
 
 
 @main.command("migrate-sqlite")

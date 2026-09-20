@@ -1331,11 +1331,15 @@ per-tenant. Run after schema, before depending on the new shape.
   Idempotent (`ON CONFLICT DO NOTHING` on the sharing / capability
   PKs). Per-tenant: run once per tenant after schema, before anything
   depends on sharing rows (Phase 3's accessor, Characters UI). CLI:
-  `eve-trader tenant backfill-esi-sharing --tenant-id …`. Optional
-  `corporation_ids` map is not on the CLI; omitted characters get
-  character sharing only (logged). Does not call ESI. Phase 8 added
-  no migration function. Reconcile Trades is a wholesale replace of
-  `realized_trades` (see Post-deploy verification), not a schema or
+  `eve-trader tenant backfill-esi-sharing --tenant-id …`. Resolves each
+  character's `corporation_id` via `character_public_info` (public, no
+  auth) so producer / doctrine / doctrine-assets prefixes get the corp
+  sharing rows decision 13 specifies. A failed lookup falls back to
+  character-only sharing for that character and logs a warning naming
+  it; the CLI prints those character ids. `corporation_ids` is an
+  override for tests and network-free runs, not on the CLI. Phase 8
+  added no migration function. Reconcile Trades is a wholesale replace
+  of `realized_trades` (see Post-deploy verification), not a schema or
   data migration.
 
 ### Re-authorizations required

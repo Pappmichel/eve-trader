@@ -104,6 +104,17 @@ CREATE TABLE IF NOT EXISTS esi_wallet_transactions (
     CONSTRAINT esi_wallet_transactions_division_check CHECK (
         (owner_type = 'character' AND division = 0)
         OR (owner_type = 'corporation' AND division BETWEEN 1 AND 7)
+    ),
+    -- Partition columns stay (Phase 2's delete helper is generic across
+    -- snapshot tables). The CHECK ties them to the PK so a character row
+    -- cannot carry a different owner_character_id, or a corp id.
+    CONSTRAINT esi_wallet_transactions_owner_ids_check CHECK (
+        (owner_type = 'character'
+         AND owner_character_id = owner_id
+         AND owner_corporation_id IS NULL)
+        OR (owner_type = 'corporation'
+            AND owner_corporation_id = owner_id
+            AND owner_character_id IS NULL)
     )
 );
 ALTER TABLE esi_wallet_transactions ENABLE ROW LEVEL SECURITY;
@@ -118,6 +129,20 @@ CREATE INDEX IF NOT EXISTS idx_esi_wallet_transactions_owner_corporation
     ON esi_wallet_transactions (owner_corporation_id);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON esi_wallet_transactions TO eve_trader_app;
+
+-- Inline CHECK above is what a fresh CREATE TABLE gets. Postgres has no
+-- ADD CONSTRAINT IF NOT EXISTS; DROP/ADD is the idempotent way to attach
+-- the same check to a table this file already created before the
+-- constraint existed (this PR's first revision).
+ALTER TABLE esi_wallet_transactions DROP CONSTRAINT IF EXISTS esi_wallet_transactions_owner_ids_check;
+ALTER TABLE esi_wallet_transactions ADD CONSTRAINT esi_wallet_transactions_owner_ids_check CHECK (
+    (owner_type = 'character'
+     AND owner_character_id = owner_id
+     AND owner_corporation_id IS NULL)
+    OR (owner_type = 'corporation'
+        AND owner_corporation_id = owner_id
+        AND owner_character_id IS NULL)
+);
 
 CREATE TABLE IF NOT EXISTS esi_wallet_journal (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
@@ -134,6 +159,14 @@ CREATE TABLE IF NOT EXISTS esi_wallet_journal (
     CONSTRAINT esi_wallet_journal_division_check CHECK (
         (owner_type = 'character' AND division = 0)
         OR (owner_type = 'corporation' AND division BETWEEN 1 AND 7)
+    ),
+    CONSTRAINT esi_wallet_journal_owner_ids_check CHECK (
+        (owner_type = 'character'
+         AND owner_character_id = owner_id
+         AND owner_corporation_id IS NULL)
+        OR (owner_type = 'corporation'
+            AND owner_corporation_id = owner_id
+            AND owner_character_id IS NULL)
     )
 );
 ALTER TABLE esi_wallet_journal ENABLE ROW LEVEL SECURITY;
@@ -148,6 +181,16 @@ CREATE INDEX IF NOT EXISTS idx_esi_wallet_journal_owner_corporation
     ON esi_wallet_journal (owner_corporation_id);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON esi_wallet_journal TO eve_trader_app;
+
+ALTER TABLE esi_wallet_journal DROP CONSTRAINT IF EXISTS esi_wallet_journal_owner_ids_check;
+ALTER TABLE esi_wallet_journal ADD CONSTRAINT esi_wallet_journal_owner_ids_check CHECK (
+    (owner_type = 'character'
+     AND owner_character_id = owner_id
+     AND owner_corporation_id IS NULL)
+    OR (owner_type = 'corporation'
+        AND owner_corporation_id = owner_id
+        AND owner_character_id IS NULL)
+);
 
 -- ====================================================== owner ids on ESI snapshot tables
 -- Nullable for the duration of the backfill (existing rows). Partitioned
@@ -194,9 +237,12 @@ CREATE INDEX IF NOT EXISTS idx_character_slots_owner_character
     ON character_slots (owner_character_id);
 
 -- Doctrine / Sorting tables may not exist yet if this file is applied
--- before those schemas. Re-running this file after them (the deploy
--- loop always re-runs every file) adds the columns. CREATE TABLE IF NOT
--- EXISTS in those files will not add columns to an already-created table.
+-- before those schemas. Deploy order has esi_access_schema.sql last, so
+-- these ALTERs run today; a later reordering of the apply loop produces
+-- a silent no-op here, not an error. Re-running this file after them
+-- (the deploy loop always re-runs every file) adds the columns. CREATE
+-- TABLE IF NOT EXISTS in those files will not add columns to an
+-- already-created table.
 DO $$
 BEGIN
     IF EXISTS (

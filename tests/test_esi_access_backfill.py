@@ -40,6 +40,18 @@ def _wipe(tenant, _apply_sorting_then_esi):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _block_live_esi(monkeypatch):
+    """Default path resolves corp ids via public-info. Tests that do not
+    opt into a fake client must stay network-free; a raise is the
+    documented failed-lookup fallback."""
+    def _boom(self, character_id):
+        raise RuntimeError(f"ESI blocked in backfill tests (character {character_id})")
+    monkeypatch.setattr(
+        "eve_trader.esi_client.ESIClient.character_public_info", _boom,
+    )
+
+
 def _token(role: str, character_id: int, name: str) -> None:
     storage.save_tenant_token(role, asdict(TokenRecord(
         role=role, character_id=character_id, character_name=name,
@@ -161,3 +173,55 @@ def test_character_asset_owner_id_filled_from_token_name(tenant):
             "SELECT owner_character_id FROM character_assets WHERE item_id = ?", (1,),
         ).fetchone()[0]
     assert cid == 42
+
+
+def test_public_info_resolution_writes_decision_13_corp_sharing(tenant, monkeypatch):
+    _token("producer:42", 42, "Pilot")
+    _token("doctrine-assets:42", 42, "Pilot")
+    calls: list[int] = []
+
+    def fake_info(self, character_id):
+        calls.append(character_id)
+        return {"corporation_id": 99}
+
+    monkeypatch.setattr(
+        "eve_trader.esi_client.ESIClient.character_public_info", fake_info,
+    )
+    backfill_conservative_sharing()
+    assert calls == [42]
+    rows = _sharing_rows()
+    corp_assets = {tool for owner_type, owner_id, kind, tool in rows
+                   if owner_type == "corporation" and owner_id == 99 and kind == "assets"}
+    assert corp_assets == {"production", "doctrine"}
+    corp_kinds = {kind for owner_type, owner_id, kind, _ in rows
+                  if owner_type == "corporation" and owner_id == 99}
+    assert corp_kinds == {"assets", "industry_jobs", "blueprints", "market_orders"}
+
+
+def test_failed_corp_lookup_is_character_only_and_logged(tenant, caplog):
+    _token("producer:42", 42, "Pilot")
+    with caplog.at_level("WARNING", logger="eve_trader.esi_data.backfill"):
+        result = backfill_conservative_sharing()
+    rows = _sharing_rows()
+    assert all(owner_type == "character" for owner_type, *_ in rows)
+    assert 42 in result["characters_missing_corporation_id"]
+    assert "character 42" in caplog.text
+    assert "corp rows skipped" in caplog.text
+
+
+def test_corporation_ids_override_skips_esi(tenant, monkeypatch):
+    _token("producer:42", 42, "Pilot")
+    calls: list[int] = []
+
+    def fake_info(self, character_id):
+        calls.append(character_id)
+        raise AssertionError("override must not call ESI")
+
+    monkeypatch.setattr(
+        "eve_trader.esi_client.ESIClient.character_public_info", fake_info,
+    )
+    backfill_conservative_sharing(corporation_ids={42: 77})
+    assert calls == []
+    rows = _sharing_rows()
+    corp_ids = {owner_id for owner_type, owner_id, *_ in rows if owner_type == "corporation"}
+    assert corp_ids == {77}
