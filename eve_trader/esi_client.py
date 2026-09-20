@@ -700,8 +700,9 @@ class ESIClient:
                     for p in prices if p.type_id in wanted
                 }, True
         if auth_role is None:
-            raise ESIError("No seller/producer character logged in, and no Goonmetrics fallback "
-                            "market configured (structure_market_slug).")
+            raise ESIError("No character shares the structure market book, and no Goonmetrics "
+                            "fallback market configured (structure_market_slug). Enable "
+                            "\"Structure market book\" for a character on the Characters page.")
         raise ESIError(f"{last_error} (No Goonmetrics fallback market configured either.)")
 
     def region_market_history(self, region_id: int, type_id: int) -> list[dict]:
