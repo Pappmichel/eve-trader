@@ -2263,6 +2263,161 @@ def _replace_sell_orders_one(
         )
 
 
+def list_esi_sharing(tool_key: Optional[str] = None) -> list[tuple[str, int, str, str]]:
+    """`(owner_type, owner_id, data_kind, tool_key)` for the current tenant.
+
+    `tool_key` None returns every sharing row. The accessor filters with the
+    same columns; this listing is the orchestrator's "what to refresh".
+    """
+    with connect() as conn:
+        if tool_key is None:
+            rows = conn.execute(
+                "SELECT owner_type, owner_id, data_kind, tool_key FROM esi_sharing "
+                "ORDER BY owner_type, owner_id, data_kind, tool_key"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT owner_type, owner_id, data_kind, tool_key FROM esi_sharing "
+                "WHERE tool_key = ? "
+                "ORDER BY owner_type, owner_id, data_kind",
+                (tool_key,),
+            ).fetchall()
+    return [(r[0], int(r[1]), r[2], r[3]) for r in rows]
+
+
+def upsert_esi_freshness(
+    owner_type: str,
+    owner_id: int,
+    data_kind: str,
+    *,
+    success: bool,
+    error: Optional[str] = None,
+    now: Optional[str] = None,
+) -> None:
+    """Per-(owner, kind) freshness (decision 5). Success advances
+    `last_success_at` and clears `last_error`. Failure records `last_error`
+    and leaves `last_success_at` unchanged so the age-limit clear still
+    measures time since the last good fetch (decision 6)."""
+    from datetime import datetime, timezone
+    ts = now or datetime.now(timezone.utc).isoformat()
+    last_success = ts if success else None
+    last_error = None if success else (error or "fetch failed")
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO esi_freshness "
+            "(owner_type, owner_id, data_kind, last_success_at, last_attempt_at, last_error) "
+            "VALUES (?,?,?,?,?,?) "
+            "ON CONFLICT (tenant_id, owner_type, owner_id, data_kind) DO UPDATE SET "
+            "last_attempt_at = excluded.last_attempt_at, "
+            "last_success_at = COALESCE(excluded.last_success_at, esi_freshness.last_success_at), "
+            "last_error = excluded.last_error",
+            (owner_type, owner_id, data_kind, last_success, ts, last_error),
+        )
+
+
+def replace_wallet_transactions(
+    rows: list[tuple],
+    *,
+    owner_type: str,
+    owner_id: int,
+) -> None:
+    """`rows`: (division, transaction_id, date, type_id, location_id,
+    unit_price, quantity, is_buy, journal_ref_id). Partitioned by owner.
+    Character rows use division 0; corp rows use ESI divisions 1-7."""
+    is_character = owner_type == "character"
+    insert_char = owner_id if is_character else None
+    insert_corp = None if is_character else owner_id
+    id_column = "owner_character_id" if is_character else "owner_corporation_id"
+    with connect() as conn:
+        conn.execute(
+            f"DELETE FROM esi_wallet_transactions WHERE {id_column} = ?",
+            (owner_id,),
+        )
+        conn.executemany(
+            "INSERT INTO esi_wallet_transactions ("
+            "owner_type, owner_id, division, transaction_id, date, type_id, "
+            "location_id, unit_price, quantity, is_buy, journal_ref_id, "
+            "owner_character_id, owner_corporation_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (owner_type, owner_id, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8],
+                 insert_char, insert_corp)
+                for r in rows
+            ],
+        )
+
+
+def replace_wallet_journal(
+    rows: list[tuple],
+    *,
+    owner_type: str,
+    owner_id: int,
+) -> None:
+    """`rows`: (division, journal_id, date, ref_type, amount)."""
+    is_character = owner_type == "character"
+    insert_char = owner_id if is_character else None
+    insert_corp = None if is_character else owner_id
+    id_column = "owner_character_id" if is_character else "owner_corporation_id"
+    with connect() as conn:
+        conn.execute(
+            f"DELETE FROM esi_wallet_journal WHERE {id_column} = ?",
+            (owner_id,),
+        )
+        conn.executemany(
+            "INSERT INTO esi_wallet_journal ("
+            "owner_type, owner_id, division, journal_id, date, ref_type, amount, "
+            "owner_character_id, owner_corporation_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            [
+                (owner_type, owner_id, r[0], r[1], r[2], r[3], r[4], insert_char, insert_corp)
+                for r in rows
+            ],
+        )
+
+
+def upsert_character_slot_row(
+    character_name: str,
+    manufacturing_slots: int,
+    reaction_slots: int,
+    science_slots: int,
+    owner_character_id: Optional[int] = None,
+) -> None:
+    """One-character UPSERT for the skills fetcher. Does not delete other
+    characters' rows — `replace_character_slots`' NOT IN wipe would otherwise
+    drop every producer who was not in this owner task (issue #39)."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO character_slots "
+            "(character_name, manufacturing_slots, reaction_slots, science_slots, "
+            "owner_character_id) "
+            "VALUES (?,?,?,?,?) "
+            "ON CONFLICT (character_name) DO UPDATE SET "
+            "manufacturing_slots=excluded.manufacturing_slots, "
+            "reaction_slots=excluded.reaction_slots, "
+            "science_slots=excluded.science_slots, "
+            "owner_character_id=COALESCE(excluded.owner_character_id, "
+            "character_slots.owner_character_id)",
+            (character_name, manufacturing_slots, reaction_slots, science_slots,
+             owner_character_id),
+        )
+
+
+def sweep_unattributed_null_owner_ids() -> dict[str, int]:
+    """Delete leftover NULL-id rows in tables Phase 2 could not attribute
+    (`character_blueprints`, `corp_blueprints`, `corp_industry_jobs`). Only
+    the orchestrator calls this, and only after a fully successful pass —
+    a failed owner would otherwise lose rows (decision 6)."""
+    deleted: dict[str, int] = {}
+    with connect() as conn:
+        for table in ("character_blueprints", "corp_blueprints", "corp_industry_jobs"):
+            cur = conn.execute(
+                f"DELETE FROM {table} "
+                "WHERE owner_character_id IS NULL AND owner_corporation_id IS NULL"
+            )
+            deleted[table] = cur.rowcount if cur.rowcount is not None else 0
+    return deleted
+
+
 def sell_order_qty_at_location(type_id: int, location_id: int) -> float:
     with connect() as conn:
         row = conn.execute(

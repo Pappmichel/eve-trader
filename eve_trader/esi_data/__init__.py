@@ -1,5 +1,5 @@
-"""Character-centric ESI access: registry, and later fetchers / orchestrator
-/ Characters `do_*` (`docs/ESI_ACCESS_PLAN.md`).
+"""Character-centric ESI access: registry, fetchers, orchestrator, accessor
+(`docs/ESI_ACCESS_PLAN.md`). Characters `do_*` land in Phase 6.
 
 This package is the third cross-cutting module alongside `portfolio.py`
 and `scheduler.py`. It names tools as strings and imports no tool
@@ -25,8 +25,14 @@ from .registry import (
     consuming_tool_keys,
     fetcher_scope_map,
 )
-from .backfill import backfill_conservative_sharing
+from .backfill import backfill_conservative_sharing, prefixes_holding_kind
 from .stale import DEFAULT_STALE_CLEAR_MULTIPLES, clear_stale_owner_kind
+from .access import AccessorError, read_esi
+from .orchestrator import (
+    DEFAULT_TIER_INTERVAL_HOURS,
+    do_sync_all,
+    do_sync_for_tool,
+)
 
 __all__ = (
     "ACCESS_CAPABILITIES",
@@ -43,6 +49,12 @@ __all__ = (
     "consuming_tool_keys",
     "fetcher_scope_map",
     "backfill_conservative_sharing",
+    "prefixes_holding_kind",
     "DEFAULT_STALE_CLEAR_MULTIPLES",
     "clear_stale_owner_kind",
+    "AccessorError",
+    "read_esi",
+    "DEFAULT_TIER_INTERVAL_HOURS",
+    "do_sync_all",
+    "do_sync_for_tool",
 )

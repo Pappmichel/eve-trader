@@ -76,6 +76,21 @@ _PREFIX_GRANT: dict[str, _PrefixGrant] = {
 }
 
 
+def prefixes_holding_kind(data_kind: str, owner_type: str) -> tuple[str, ...]:
+    """Token prefixes whose conservative grant includes `data_kind`.
+
+    Phase 3's orchestrator still resolves tokens through today's prefix
+    listings; Phase 4 replaces this with the token selector. Order follows
+    `_PREFIX_GRANT` insertion (producer before doctrine-assets for assets).
+    """
+    out: list[str] = []
+    for prefix, grant in _PREFIX_GRANT.items():
+        kinds = grant.character_kinds if owner_type == "character" else grant.corp_kinds
+        if data_kind in kinds:
+            out.append(prefix)
+    return tuple(out)
+
+
 def _role_prefix(role: str) -> Optional[str]:
     if role == "gate":
         return None

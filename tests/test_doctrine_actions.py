@@ -294,21 +294,13 @@ def test_do_update_fitting_cargo_tolerance_only_revalidates_own_contracts(monkey
     assert match_ids == [1]
 
 
-def test_do_sync_contracts_emits_increasing_batch_progress(monkeypatch):
-    """Track A: each finished contract-item fetch reports batch/total_batches."""
+def test_do_sync_contracts_emits_matching_progress(monkeypatch):
+    """Item-fetch progress moved into the orchestrator/fetcher. The doctrine
+    wrapper still reports matching as its own post-processing phase."""
     from eve_trader.auth import TokenRecord
     from eve_trader.doctrine.config import DoctrineConfig
 
-    structure_id = 1000000000001
-    cfg = DoctrineConfig(doctrine_structure_id=structure_id)
-    contracts = [
-        {
-            "contract_id": cid, "type": "item_exchange", "status": "outstanding",
-            "start_location_id": structure_id, "issuer_id": 42, "issuer_corporation_id": 500,
-            "title": f"c{cid}", "price": 1.0, "date_expired": None,
-        }
-        for cid in (101, 102, 103)
-    ]
+    cfg = DoctrineConfig(doctrine_structure_id=1000000000001)
 
     class FakeTM:
         def __init__(self, *a, **k):
@@ -323,55 +315,25 @@ def test_do_sync_contracts_emits_increasing_batch_progress(monkeypatch):
                 access_token="x", refresh_token="y", expires_at=9e9, scopes="",
             )
 
-    class FakeClient:
-        def __init__(self, tokens=None):
-            pass
-
-        def character_contracts(self, character_id, auth_role=None):
-            return contracts
-
-        def character_public_info(self, character_id):
-            return {"corporation_id": 500}
-
-        def corporation_contracts(self, corporation_id, auth_role=None):
-            return []
-
-        def character_contract_items(self, character_id, contract_id, auth_role=None):
-            return [{"record_id": 1, "type_id": 1000, "quantity": 1,
-                     "is_included": True, "is_singleton": True}]
-
-        def resolve_names(self, ids):
-            return {}
-
     monkeypatch.setattr(esi_sync, "TokenManager", FakeTM)
-    monkeypatch.setattr(esi_sync, "ESIClient", FakeClient)
     monkeypatch.setattr(storage, "load_doctrine_contracts", lambda: [])
-    monkeypatch.setattr(storage, "load_doctrine_contract_items", lambda cid: [])
-    monkeypatch.setattr(storage, "with_current_tenant", lambda fn: fn)
-    monkeypatch.setattr(engine, "load_match_candidates", lambda: [])
     monkeypatch.setattr(
-        engine, "match_and_validate_contract",
-        lambda *a, **k: (None, 0.0, [], engine.NO_HULL_MATCH),
+        "eve_trader.esi_data.orchestrator.do_sync_for_tool",
+        lambda *a, **k: {"owners": []},
     )
-
-    @contextmanager
-    def _batch():
-        yield
-
-    monkeypatch.setattr(storage, "batch_session", _batch)
-    monkeypatch.setattr(storage, "replace_doctrine_sync_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "eve_trader.doctrine.actions.do_validate_contracts",
+        lambda cfg=None: {"revalidated": 0},
+    )
     monkeypatch.setattr(storage, "upsert_doctrine_contract_history", lambda *a, **k: None)
     monkeypatch.setattr(storage, "set_esi_sync_time", lambda *a, **k: None)
+    monkeypatch.setattr(esi_sync, "ESIClient", lambda tokens=None: type(
+        "C", (), {"resolve_names": staticmethod(lambda ids: {})}
+    )())
 
     seen = []
-    # cfg passed explicitly: the function default is the live ConfigProxy
-    # (tenant settings), which may have no structure_id in unit tests.
     esi_sync.sync_contracts(cfg=cfg, progress_callback=seen.append)
-
-    assert [p["batch"] for p in seen] == [1, 2, 3]
-    assert all(p["phase"] == "sync" for p in seen)
-    assert all(p["total_batches"] == 3 for p in seen)
-    assert all(p["message"] == "Fetching contract items" for p in seen)
+    assert seen == [{"phase": "sync", "message": "Matching contracts"}]
 
 
 def test_do_sync_contracts_forwards_progress_callback(monkeypatch):

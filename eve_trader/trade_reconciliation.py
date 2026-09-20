@@ -326,10 +326,59 @@ def fetch_corporation_wallet_streams(characters: list[tuple[int, str]], client: 
     return txns, journal
 
 
+def _iso_date(value) -> str:
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def _txn_from_snapshot(row: dict) -> dict:
+    owner_type = row["owner_type"]
+    division = row["division"]
+    return {
+        "transaction_id": row["transaction_id"],
+        "date": _iso_date(row["date"]),
+        "type_id": row["type_id"],
+        "location_id": row["location_id"],
+        "unit_price": row["unit_price"],
+        "quantity": row["quantity"],
+        "is_buy": bool(row["is_buy"]),
+        "journal_ref_id": row["journal_ref_id"],
+        "_wallet_kind": owner_type,
+        "_wallet_owner_id": int(row["owner_id"]),
+        "_wallet_division": None if owner_type == "character" else int(division),
+    }
+
+
+def load_trading_wallet_snapshots() -> tuple[Optional[list[dict]], Optional[dict[tuple, float]]]:
+    """Return (transactions, journal_key->amount) via the fail-closed
+    accessor when Trading has wallet sharing and a snapshot exists.
+    `(None, None)` means the caller should page ESI (tests, pre-backfill,
+    or first reconcile before a wallet fetch has written anything)."""
+    from .esi_data.access import AccessorError, read_esi
+    try:
+        txns = read_esi("wallet", "trading", table="transactions")
+        journal_rows = read_esi("wallet", "trading", table="journal")
+    except (AccessorError, RuntimeError):
+        return None, None
+    if not txns:
+        return None, None
+    journal: dict[tuple, float] = {}
+    for entry in journal_rows:
+        if entry.get("ref_type") != _MARKET_TRANSACTION_REF_TYPE:
+            continue
+        owner_type = entry["owner_type"]
+        division = None if owner_type == "character" else entry["division"]
+        journal[(owner_type, int(entry["owner_id"]), division, entry["journal_id"])] = entry["amount"]
+    return [_txn_from_snapshot(t) for t in txns], journal
+
+
 def reconcile_realized_trades(buyer_characters: list[tuple[int, str]], seller_characters: list[tuple[int, str]],
                                client: ESIClient, item_names: dict[int, str],
                                item_volumes: dict[int, float],
-                               cfg: TradingConfig = TRADING_CONFIG) -> list[RealizedTrade]:
+                               cfg: TradingConfig = TRADING_CONFIG,
+                               snapshot_txns: Optional[list[dict]] = None,
+                               snapshot_journal: Optional[dict] = None) -> list[RealizedTrade]:
     """Matches every buyer character's Jita buy transactions against every
     seller character's structure sell transactions per type_id, FIFO, within
     cfg.lookback_days, then the same for corporation-wallet fills of any corp
@@ -346,37 +395,58 @@ def reconcile_realized_trades(buyer_characters: list[tuple[int, str]], seller_ch
     sell_lookback = cfg.lookback_days
     sell_cutoff = datetime.now(timezone.utc) - timedelta(days=sell_lookback)
 
-    buys = []
-    for character_id, role in buyer_characters:
-        buys.extend(fetch_recent_transactions(character_id, role, client, buy_lookback))
-    sells = []
-    for character_id, role in seller_characters:
-        sells.extend(fetch_recent_transactions(character_id, role, client, sell_lookback))
-
-    # PB-03: real post-tax proceeds, namespaced by wallet so a character
-    # journal id cannot satisfy a corp sell (or vice versa). See
-    # fetch_recent_journal_entries / _ASSUMED_TAX_RATE_IN_DEFAULT_HAIRCUT.
+    buys: list[dict] = []
+    sells: list[dict] = []
     journal_amount_by_key: dict[tuple, float] = {}
-    for character_id, role in seller_characters:
-        for jid, amount in fetch_recent_journal_entries(
-            character_id, role, client, sell_lookback,
-        ).items():
-            journal_amount_by_key[("character", character_id, None, jid)] = amount
 
-    seen_pairs: list[tuple[int, str]] = []
-    seen: set[tuple[int, str]] = set()
-    for pair in list(buyer_characters) + list(seller_characters):
-        if pair not in seen:
-            seen.add(pair)
-            seen_pairs.append(pair)
-    corp_txns, corp_journal = fetch_corporation_wallet_streams(
-        seen_pairs, client, buy_lookback, sell_lookback, cfg)
-    journal_amount_by_key.update(corp_journal)
-    for t in corp_txns:
-        if t.get("is_buy"):
-            buys.append(t)
-        elif _parse_iso(t["date"]) >= sell_cutoff:
-            sells.append(t)
+    if snapshot_txns is not None:
+        buyer_ids = {cid for cid, _role in buyer_characters}
+        seller_ids = {cid for cid, _role in seller_characters}
+        buy_cutoff = datetime.now(timezone.utc) - timedelta(days=buy_lookback)
+        for t in snapshot_txns:
+            kind = t.get("_wallet_kind", "character")
+            owner_id = t.get("_wallet_owner_id")
+            if kind == "character":
+                if owner_id in buyer_ids and t.get("is_buy") and _parse_iso(t["date"]) >= buy_cutoff:
+                    buys.append(t)
+                if owner_id in seller_ids and not t.get("is_buy") and _parse_iso(t["date"]) >= sell_cutoff:
+                    sells.append(t)
+            else:
+                if t.get("is_buy") and _parse_iso(t["date"]) >= buy_cutoff:
+                    buys.append(t)
+                elif not t.get("is_buy") and _parse_iso(t["date"]) >= sell_cutoff:
+                    sells.append(t)
+        if snapshot_journal:
+            journal_amount_by_key.update(snapshot_journal)
+    else:
+        for character_id, role in buyer_characters:
+            buys.extend(fetch_recent_transactions(character_id, role, client, buy_lookback))
+        for character_id, role in seller_characters:
+            sells.extend(fetch_recent_transactions(character_id, role, client, sell_lookback))
+
+        # PB-03: real post-tax proceeds, namespaced by wallet so a character
+        # journal id cannot satisfy a corp sell (or vice versa). See
+        # fetch_recent_journal_entries / _ASSUMED_TAX_RATE_IN_DEFAULT_HAIRCUT.
+        for character_id, role in seller_characters:
+            for jid, amount in fetch_recent_journal_entries(
+                character_id, role, client, sell_lookback,
+            ).items():
+                journal_amount_by_key[("character", character_id, None, jid)] = amount
+
+        seen_pairs: list[tuple[int, str]] = []
+        seen: set[tuple[int, str]] = set()
+        for pair in list(buyer_characters) + list(seller_characters):
+            if pair not in seen:
+                seen.add(pair)
+                seen_pairs.append(pair)
+        corp_txns, corp_journal = fetch_corporation_wallet_streams(
+            seen_pairs, client, buy_lookback, sell_lookback, cfg)
+        journal_amount_by_key.update(corp_journal)
+        for t in corp_txns:
+            if t.get("is_buy"):
+                buys.append(t)
+            elif _parse_iso(t["date"]) >= sell_cutoff:
+                sells.append(t)
 
     # Confirmed real bug: unlike `sells` (correctly scoped to cfg.structure_id
     # below), `buys` had no location filter at all - any wallet transaction
