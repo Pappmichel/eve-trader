@@ -10,7 +10,7 @@ from eve_trader import sqlite_migration
 from . import pg_helpers
 from .pg_helpers import (  # noqa: F401
     _apply_phase1_schema, _apply_phase2_schema, _apply_pipeline_runs_schema, _apply_role_consent_schema,
-    _apply_job_category_cost_index_overrides_schema,
+    _apply_job_category_cost_index_overrides_schema, _apply_esi_access_schema,
 )
 from .test_doctrine_storage import _apply_doctrine_schema  # noqa: F401
 from .test_storage_refining import _apply_refining_schema  # noqa: F401
@@ -27,7 +27,12 @@ def test_per_tenant_tables_list_matches_the_real_schema(_apply_doctrine_schema, 
                                                           _apply_role_consent_schema, _apply_special_orders_schema,
                                                           _apply_sorting_schema, _apply_production_buy_list_schema,
                                                           _apply_pipeline_runs_schema,
-                                                          _apply_job_category_cost_index_overrides_schema):
+                                                          _apply_job_category_cost_index_overrides_schema,
+                                                          _apply_esi_access_schema):
+    # Re-apply after doctrine/sorting so this file's DO-block ALTERs land
+    # on those tables. Idempotent.
+    with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
+        conn.execute(pg_helpers._ESI_ACCESS_SCHEMA_SQL.read_text())
     # Every table with a "tenant_isolation" RLS policy is either an
     # actively-migrated table (_PER_TENANT_TABLES) or a documented,
     # deliberate exclusion (KNOWN_NON_MIGRATED_TABLES) - a table falling

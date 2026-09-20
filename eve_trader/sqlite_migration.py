@@ -127,6 +127,11 @@ KNOWN_NON_MIGRATED_TABLES: dict[str, str] = {
     "pipeline_runs": "Postgres-native (background Search+Add+Clean Up status - never existed in the pre-migration SQLite schema)",
     "job_category_cost_index_overrides": "Postgres-native (confirmed with the user 2026-09-16 - never existed in the pre-migration SQLite schema)",
     "manual_blueprint_me_te_overrides": "Postgres-native (confirmed with the user 2026-09-16 - never existed in the pre-migration SQLite schema)",
+    "esi_sharing": "Postgres-native (ESI access plan Phase 1 - sharing relation, never existed in the pre-migration SQLite schema)",
+    "esi_freshness": "Postgres-native (ESI access plan Phase 1 - per-owner freshness, never existed in the pre-migration SQLite schema)",
+    "esi_character_capabilities": "Postgres-native (ESI access plan Phase 1 - group-3 Access capabilities, never existed in the pre-migration SQLite schema)",
+    "esi_wallet_transactions": "Postgres-native (ESI access plan Phase 1 - wallet snapshot, never existed in the pre-migration SQLite schema)",
+    "esi_wallet_journal": "Postgres-native (ESI access plan Phase 1 - wallet journal snapshot, never existed in the pre-migration SQLite schema)",
 }
 
 

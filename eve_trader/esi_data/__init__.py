@@ -25,6 +25,7 @@ from .registry import (
     consuming_tool_keys,
     fetcher_scope_map,
 )
+from .backfill import backfill_conservative_sharing
 
 __all__ = (
     "ACCESS_CAPABILITIES",
@@ -40,4 +41,5 @@ __all__ = (
     "all_registry_scopes",
     "consuming_tool_keys",
     "fetcher_scope_map",
+    "backfill_conservative_sharing",
 )

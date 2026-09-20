@@ -35,6 +35,7 @@ _ROLE_CONSENT_SCHEMA_SQL = _DOCS_DIR / "role_consent_schema.sql"
 _PIPELINE_RUNS_SCHEMA_SQL = _DOCS_DIR / "pipeline_runs_schema.sql"
 _SESSION_REVOCATIONS_SCHEMA_SQL = _DOCS_DIR / "session_revocations_schema.sql"
 _JOB_CATEGORY_COST_INDEX_OVERRIDES_SCHEMA_SQL = _DOCS_DIR / "job_category_cost_index_overrides_schema.sql"
+_ESI_ACCESS_SCHEMA_SQL = _DOCS_DIR / "esi_access_schema.sql"
 
 
 @functools.lru_cache(maxsize=1)
@@ -184,6 +185,20 @@ def _apply_job_category_cost_index_overrides_schema(_apply_phase1_schema) -> Non
         return
     with psycopg.connect(OWNER_DSN, autocommit=True) as conn:
         conn.execute(_JOB_CATEGORY_COST_INDEX_OVERRIDES_SCHEMA_SQL.read_text())
+
+
+@pytest.fixture(scope="session")
+def _apply_esi_access_schema(_apply_phase1_schema) -> None:
+    """docs/esi_access_schema.sql (sharing / freshness / capabilities /
+    wallet snapshots / owner-id columns). Not session-autouse: doctrine and sorting tables
+    are created by those tools' own fixtures, and this file's DO-block
+    ALTERs them only when they already exist. Tests that need the new
+    tables import this fixture; the drift-guard re-applies it after
+    doctrine/sorting so those owner-id columns land too."""
+    if not _postgres_available():
+        return
+    with psycopg.connect(OWNER_DSN, autocommit=True) as conn:
+        conn.execute(_ESI_ACCESS_SCHEMA_SQL.read_text())
 
 
 @pytest.fixture

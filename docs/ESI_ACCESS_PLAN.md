@@ -127,17 +127,17 @@ This section is the vocabulary that registry encodes.
 | Blueprints       | `esi-characters.read_blueprints.v1`                  | `esi-corporations.read_blueprints.v1`                    | Director                                   |
 | Market Orders    | `esi-markets.read_character_orders.v1`               | `esi-markets.read_corporation_orders.v1`                 | Accountant or Trader                       |
 | Contracts        | `esi-contracts.read_character_contracts.v1`          | `esi-contracts.read_corporation_contracts.v1`            | (whatever ESI already requires today)      |
-| Wallet           | `esi-wallet.read_character_wallet.v1`                | `esi-wallet.read_corporation_wallets.v1`                 | Accountant                                 |
+| Wallet           | `esi-wallet.read_character_wallet.v1`                | `esi-wallet.read_corporation_wallets.v1`                 | Accountant or Junior_Accountant            |
 
 The corp-role column is what the Corporations UI warns on, not a new
 ESI check this app invents. `ESIClient.corporation_assets` /
 `corporation_industry_jobs` / `corporation_blueprints` already document
 Director; `corporation_orders` already documents Accountant or Trader.
-Wallet's Accountant requirement matches ESI's corporation-wallets
-endpoint (Phase 8 lands that endpoint; it does not exist in
-`esi_client.py` today). Contracts keep whatever
-`ESIClient.corporation_contracts` already requires — do not invent a
-Director-or-otherwise role for it here just to fill the table.
+Wallet's Accountant or Junior_Accountant requirement matches ESI's
+corporation-wallets endpoint (Phase 8 landed that endpoint; swagger
+lists both roles identically on the corp wallet routes). Contracts keep
+whatever `ESIClient.corporation_contracts` already requires — do not
+invent a Director-or-otherwise role for it here just to fill the table.
 Station Manager lives with structure name resolution in group 3, not
 here: a resolved name is not a per-character snapshot (see below).
 
@@ -216,7 +216,7 @@ not a sidebar copy-pasted into every tool layout.
    **"access via \<character\>"** column names which registered character
    is currently providing that corp, plus a **warning when no registered
    character holds the needed in-game role** (Director / Accountant or
-   Trader / Accountant, per the group-1 table). Station Manager is an
+   Trader / Accountant or Junior_Accountant, per the group-1 table). Station Manager is an
    Access warning, not a Corporations-table column. Same five-state
    cells, same per-tool popover, same sharing table with
    `owner_type='corporation'`.
@@ -758,12 +758,12 @@ pattern). The registry is pure data and imports no tool package so the
 dependency arrow is one-way: tools name themselves as strings, the
 registry does not import them to ask.
 
-**Status:** this PR. CI gate is the registry unit test (no Postgres)
-plus this paragraph's CLAUDE.md update. There is no live-deployment
-confirmation for this phase — the registry is vocabulary, not a live
-ESI or database change — so nothing is appended to the Deployment
-checklist. That is not a dropped verify; there is nothing live to
-confirm.
+**Status:** landed, PR #171 (merged 2026-09-20). CI gate is the
+registry unit test (no Postgres) plus this paragraph's CLAUDE.md
+update. There is no live-deployment confirmation for this phase —
+the registry is vocabulary, not a live ESI or database change — so
+nothing is appended to the Deployment checklist. That is not a
+dropped verify; there is nothing live to confirm.
 
 **Done when:**
 
@@ -802,12 +802,27 @@ still what writes them.
   composite-PK + RLS.
 - `owner_character_id` / `owner_corporation_id` on every ESI snapshot
   table that will be partitioned (assets, jobs, blueprints, orders,
-  contracts, wallet once Phase 8 has added it, `character_slots` —
-  not `structure_names`, which is tenant-wide reference data).
+  contracts, wallet snapshots below, `character_slots` — not
+  `structure_names`, which is tenant-wide reference data). Includes
+  `character_slots` even though its write path stays an UPSERT (it is
+  PK'd on `character_name` today, the same rename trap) and the
+  doctrine asset twins (Phase 3's merge maps rows by owner id).
   BIGINT, matching the ESI-object-id width lesson from
   `MULTI_TENANT_PLAN.md` Phase 1 (Postgres `INTEGER` is 32-bit; EVE
   character ids fit, but *do not* use `INTEGER` for "any ESI id"
   out of habit — `item_id` already had to become `BIGINT`).
+- Wallet snapshot tables `esi_wallet_transactions` and
+  `esi_wallet_journal`. Phase 8 added **no** wallet table — it pages
+  ESI live inside `trade_reconciliation`. The Phase 0 registry still
+  lists `wallet` as an owned kind (frequent) and decision 5 says
+  `do_reconcile_trades` becomes a consumer of already-fetched
+  snapshots. The consume shape is already determined by that module
+  (transaction fields plus journal `id`→`amount`, namespaced
+  character vs corporation+division), so the tables land here rather
+  than waiting on Phase 3. Empty until Phase 3's fetcher writes them;
+  today's wholesale reconcile still pages ESI. Character wallets use
+  `division = 0` (NOT NULL; NULL cannot be in the PK); corp wallets
+  use ESI divisions 1–7.
 - Character-capability storage for group 3 (on/off per character, no
   `tool_key`). Could be columns on a small `esi_characters` overlay
   or a two-row-per-character table; either is fine so long as it is
@@ -820,6 +835,12 @@ still what writes them.
   hazard). Existing rows backfilled from current `owner_name` where
   a matching asset owner still exists; rows that cannot be matched
   are left with `owner_name` only and logged, not deleted.
+
+**Status:** this PR. CI gate is isolation tests covering every new
+table, the decision-13 backfill test (including two prefixes on the
+same `character_id` and Sorting-gets-nothing), drift-guard, and
+idempotent apply against local Postgres. Deployment-checklist items
+for the schema file and the conservative backfill are appended below.
 
 **Done when:** schema applies idempotently against the real local
 Postgres (`eve-trader-pg`), isolation tests cover the new tables
@@ -875,10 +896,13 @@ internal shortcut.
 
 - Fetchers for every group-1 and group-2 kind, character and corp
   variants, calling the existing `ESIClient` methods (Wallet corp
-  variant exists only after Phase 8 — if Phase 8 already shipped,
-  just consume it). Group 3 is not an orchestrator kind: name
-  resolution stays opportunistic (`_discover_structure_names`
-  filling `structure_names`).
+  variant shipped in Phase 8). Wallet snapshot tables
+  `esi_wallet_transactions` / `esi_wallet_journal` already exist from
+  Phase 1; their shape is `trade_reconciliation`'s consume contract.
+  Phase 3's wallet fetcher writes those tables — it does not invent a
+  second shape, and it does not create the tables. Group 3 is not an
+  orchestrator kind: name resolution stays opportunistic
+  (`_discover_structure_names` filling `structure_names`).
 - Orchestrator: one task per owner, kinds sequential, each owner
   wrapped in `batch_session()` + `with_current_tenant` for pool
   workers, per-owner guard, freshness update, age-limit clear.
@@ -1107,7 +1131,8 @@ the variable-bundle re-auth UI, and it is the same "character added
 before this scope existed needs to be re-added" pattern
 `PRODUCTION_SCOPES` already documents for `structure_markets`.
 Under the new model (once 0–9 land) Wallet's corp variant is just
-another group-1 kind with Accountant as the in-game role.
+another group-1 kind with Accountant or Junior_Accountant as the
+in-game role.
 
 **Status:** landed, PR #169 (merged 2026-09-20).
 
@@ -1206,7 +1231,8 @@ deploys once at the end.
 - `eve_trader/admin.py` — `do_set_tool_grants` replace semantics
   (decision 11: do not change).
 - `eve_trader/sqlite_migration.py` — `KNOWN_NON_MIGRATED_TABLES`
-  (add sharing/freshness; remove `tenant_role_consents` and the
+  (add sharing/freshness/capabilities/wallet snapshots; remove
+  `tenant_role_consents` and the
   doctrine asset tables when they go).
 - `frontend/src/hooks/useRoleCharacters.ts`,
   `frontend/src/roleAccessDescriptions.tsx`,
@@ -1270,8 +1296,9 @@ list is the deliverable at the end — not something reconstructed
 from PR descriptions afterwards. Work it top to bottom on deploy
 day.
 
-Only Phase 8 is seeded today (landed, PR #169). Phases 0–7 and 9 add
-their own rows when those phases merge; do not invent them here.
+Phase 8 (landed, PR #169) and Phase 1 (this PR) have items below.
+Remaining phases add their own rows when they merge; do not invent
+them here.
 
 ### Prerequisites
 
@@ -1288,16 +1315,28 @@ the operator cannot do from a git pull.
 Apply each named file the same way existing `docs/*_schema.sql`
 files are applied (`deploy/deploy.sh`, README, `.cursor/start.sh`).
 
-- None from landed phases. Phase 8 added no schema file.
+- **Phase 1.** `docs/esi_access_schema.sql` — after
+  `job_category_cost_index_overrides_schema.sql` in the existing apply
+  order (`deploy/deploy.sh`, `deploy/README.md`, root `README.md`,
+  `.cursor/start.sh`). Sharing, freshness, group-3 capabilities,
+  wallet snapshot tables, owner-id columns. Idempotent. Phase 8 added
+  no schema file.
 
 ### One-time data migrations
 
 Name the function, whether it is idempotent, and whether it is
 per-tenant. Run after schema, before depending on the new shape.
 
-- None from landed phases. Phase 8 added no migration function.
-  Reconcile Trades is a wholesale replace of `realized_trades` (see
-  Post-deploy verification), not a schema or data migration.
+- **Phase 1.** `eve_trader.esi_data.backfill.backfill_conservative_sharing`.
+  Idempotent (`ON CONFLICT DO NOTHING` on the sharing / capability
+  PKs). Per-tenant: run once per tenant after schema, before anything
+  depends on sharing rows (Phase 3's accessor, Characters UI). CLI:
+  `eve-trader tenant backfill-esi-sharing --tenant-id …`. Optional
+  `corporation_ids` map is not on the CLI; omitted characters get
+  character sharing only (logged). Does not call ESI. Phase 8 added
+  no migration function. Reconcile Trades is a wholesale replace of
+  `realized_trades` (see Post-deploy verification), not a schema or
+  data migration.
 
 ### Re-authorizations required
 
@@ -1327,6 +1366,13 @@ easy to miss precisely because they do not fail loudly.
 
 What to check, and what a correct result looks like.
 
+- **Phase 1.** After the backfill, for a tenant with a character that
+  was both `producer` and `doctrine-assets`: `esi_sharing` has Assets
+  rows for both `production` and `doctrine`, and none for `sorting`.
+  `esi_character_capabilities` has the Access ticks implied by those
+  prefixes, and those capability keys do not appear as
+  `esi_sharing.data_kind`. Unmatched `sorting_intake_sources` rows
+  still exist with `owner_name` only.
 - **Phase 8.** After the buyer/seller re-auth above, run Reconcile
   Trades. `save_realized_trades` wholesale-replaces `realized_trades`,
   so previously reconciled periods do not pick up corp fills until
