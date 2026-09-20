@@ -754,6 +754,13 @@ pattern). The registry is pure data and imports no tool package so the
 dependency arrow is one-way: tools name themselves as strings, the
 registry does not import them to ask.
 
+**Status:** this PR. CI gate is the registry unit test (no Postgres)
+plus this paragraph's CLAUDE.md update. There is no live-deployment
+confirmation for this phase — the registry is vocabulary, not a live
+ESI or database change — so nothing is appended to the Deployment
+checklist. That is not a dropped verify; there is nothing live to
+confirm.
+
 **Done when:**
 
 - `eve_trader/esi_data/` exists with a registry module that lists every
