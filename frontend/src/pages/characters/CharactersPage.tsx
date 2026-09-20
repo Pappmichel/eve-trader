@@ -158,8 +158,10 @@ function CharactersSection({
       </Text>
       {owners.length === 0 ? (
         <Text size="sm" c="dimmed">
-          No ESI characters registered yet. Characters appear here once they have a data-access token.
-          Configure sharing on this page; there is no per-tool character login any more.
+          No ESI characters registered yet. Press &quot;Add character&quot; above and log in with EVE SSO —
+          that first round is identity only. Tick the data kinds you want afterwards and press
+          Re-authorize to grant their scopes. Configure sharing on this page; there is no per-tool
+          character login any more.
         </Text>
       ) : (
         <div style={{ overflowX: 'auto' }}>
@@ -469,6 +471,13 @@ export default function CharactersPage() {
     CHARACTERS_KEYS,
     { tier: 'live', effect: 'Refreshes every owned data kind for every owner this tenant has shared.' },
   )
+  const addCharacter = useAction(
+    'Add character',
+    async () => {
+      const { url } = await charactersApi.addStart()
+      window.location.href = url
+    },
+  )
   const [reauthPendingId, setReauthPendingId] = useState<number | null>(null)
   const reauth = useAction(
     'Re-authorize',
@@ -519,6 +528,15 @@ export default function CharactersPage() {
           <Title order={1}>Characters</Title>
         </div>
         <Group gap="xs">
+          <Tooltip
+            multiline
+            w={280}
+            label="Logs a new character in with EVE SSO. The first round asks for no scopes at all — tick their data kinds here afterwards and press Re-authorize to grant them."
+          >
+            <Button size="xs" onClick={() => addCharacter.mutate()} loading={addCharacter.isPending}>
+              Add character
+            </Button>
+          </Tooltip>
           <Tooltip label={syncAll.tooltip} disabled={!syncAll.tooltip} multiline w={280}>
             <Button size="xs" variant="default" onClick={() => syncAll.mutate()} loading={syncAll.isPending}>
               Sync everything

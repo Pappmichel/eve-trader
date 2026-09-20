@@ -519,6 +519,7 @@ export const charactersApi = {
       `/api/characters/reauth/start?character_id=${characterId}`
       + (extraKinds.length ? `&extra_kinds=${encodeURIComponent(extraKinds.join(','))}` : ''),
     ),
+  addStart: () => get<{ url: string }>('/api/characters/add/start'),
   sync: (toolKey?: string) =>
     post<Record<string, unknown>>(
       toolKey ? `/api/characters/sync?tool_key=${encodeURIComponent(toolKey)}` : '/api/characters/sync',

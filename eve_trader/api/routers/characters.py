@@ -106,6 +106,20 @@ def reauth_start(
     )
 
 
+@router.get("/add/start")
+def add_start(request: Request, response: Response):
+    """Register a character that holds no token yet.
+
+    Identity only - no scopes, the same shape `/api/auth/gate/start` uses.
+    Settled decision 1 requests only ticked scopes, and a character with no
+    sharing rows has none, so adding is deliberately two SSO rounds: this
+    one creates the row, then ticking data kinds and pressing Re-authorize
+    grants their scopes. `/callback` resolves who logged in and writes via
+    `reauth_write_role`, so no `character_id` is needed up front.
+    """
+    return auth.begin_oauth(request, response, role_prefix="reauth", scopes=[])
+
+
 @router.post("/sync")
 def sync(tool_key: Optional[str] = None):
     return _wrap(esi_actions.do_sync, tool_key=tool_key)

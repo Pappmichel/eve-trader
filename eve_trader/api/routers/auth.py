@@ -143,8 +143,10 @@ def begin_oauth(
 ) -> dict:
     """Admit a pending SSO round and return the EVE authorize URL.
 
-    Used by identity-only `/gate/start` and Characters re-auth
-    (`role_prefix="reauth"` plus `extra["reauth_character_id"]`).
+    Used by identity-only `/gate/start`, Characters re-auth
+    (`role_prefix="reauth"` plus `extra["reauth_character_id"]`) and
+    Characters add (`role_prefix="reauth"`, no `reauth_character_id`,
+    `scopes=[]` - whoever logs in is the character being added).
     Prefix `/start` was removed in Phase 9.
     """
     if not OAUTH_CONFIG.client_id:
@@ -269,9 +271,16 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
         resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
         return resp
 
-    expected_reauth = pending.get("reauth_character_id")
-    if expected_reauth is not None:
-        if int(character_id) != int(expected_reauth):
+    # Both Characters SSO rounds land here: re-authorize (an existing
+    # character, `reauth_character_id` set - the returned character must
+    # match it) and add (no `reauth_character_id` - whoever logs in is the
+    # character being added, identity-only, no scopes). Both write through
+    # reauth_write_role, which reuses an existing key for that character
+    # and otherwise mints `esi:<id>` (decision 2: no re-keying).
+    if role_prefix == "reauth":
+        expected_reauth = pending.get("reauth_character_id")
+        is_add = expected_reauth is None
+        if not is_add and int(character_id) != int(expected_reauth):
             resp = RedirectResponse(
                 f"{OAUTH_CONFIG.frontend_origin}/?auth=error&message=character_mismatch"
             )
@@ -279,6 +288,21 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
             return resp
         tenant_id = pending.get("tenant_id") or storage.DEFAULT_TENANT_ID
         with storage.tenant_context(tenant_id):
+            # The add round carries no scopes, so writing it over a token
+            # this character already holds would silently strip every
+            # scope they had - reauth_write_role reuses that same key.
+            # Adding an already-registered character is therefore a no-op,
+            # not a write: the Characters page already lists them, and
+            # Re-authorize is the way to change their scopes.
+            if is_add and any(
+                r.character_id == int(character_id) for r in tm.list_records()
+            ):
+                resp = RedirectResponse(
+                    f"{OAUTH_CONFIG.frontend_origin}/?auth=success&added=existing"
+                    f"&character={urllib.parse.quote(character_name)}"
+                )
+                resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
+                return resp
             final_role = reauth_write_role(character_id)
             record = tm._to_record(
                 final_role, token_json, " ".join(pending["scopes"]),
