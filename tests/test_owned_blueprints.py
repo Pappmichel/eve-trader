@@ -1,9 +1,25 @@
+import pytest
+
 from eve_trader import storage
 from eve_trader.production import actions
 
 
+@pytest.fixture(autouse=True)
+def _stub_shared_production_owner_ids(monkeypatch):
+    # Known gap 3 (docs/ESI_ACCESS_PLAN.md): do_list_owned_blueprints
+    # resolves sharing via shared_production_owner_ids (storage.connect(),
+    # real Postgres) before calling storage.load_owned_blueprints - both
+    # tests here monkeypatch that directly and have no tenant/Postgres
+    # context, so stub the resolver to (None, None) ("unfiltered",
+    # storage.load_owned_blueprints' own default). actions.py imports the
+    # name directly (`from .engine import shared_production_owner_ids`),
+    # so the patch target is actions.shared_production_owner_ids, not
+    # engine.shared_production_owner_ids - a separate binding.
+    monkeypatch.setattr(actions, "shared_production_owner_ids", lambda data_kind: (None, None))
+
+
 def test_groups_identical_specs_and_labels_bpo_vs_bpc(monkeypatch):
-    monkeypatch.setattr(storage, "load_owned_blueprints", lambda: [
+    monkeypatch.setattr(storage, "load_owned_blueprints", lambda **kwargs: [
         (100, -1, 10, 20, -1),   # BPO, ME10/TE20
         (100, -1, 10, 20, -1),   # another identical BPO -> grouped with the above
         (100, -1, 4, 8, 5),      # BPC, ME4/TE8, 5 runs remaining
@@ -34,7 +50,7 @@ def test_groups_identical_specs_and_labels_bpo_vs_bpc(monkeypatch):
 
 
 def test_unknown_type_falls_back_to_type_id_as_name(monkeypatch):
-    monkeypatch.setattr(storage, "load_owned_blueprints", lambda: [(999, -1, 10, 20, -1)])
+    monkeypatch.setattr(storage, "load_owned_blueprints", lambda **kwargs: [(999, -1, 10, 20, -1)])
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: None)
 
     rows = actions.do_list_owned_blueprints()["rows"]

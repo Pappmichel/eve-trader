@@ -211,7 +211,20 @@ def _intake_from_sources(production_cfg: ProductionConfig = PRODUCTION_CONFIG,
     character has ever had cargo in, and a Wareneingang source means the
     copy of it sitting at C-J specifically, not a character's Jita "Hangar"
     or any other station's. Empty sources list -> empty dicts, not an
-    error."""
+    error.
+
+    Also restricted to characters/corps actually shared with Sorting for
+    Assets (docs/ESI_ACCESS_PLAN.md Known gap 3) - an intake source names an
+    owner by `owner_name` only (no id column of its own), so this filters
+    on the asset rows' own owner_character_id/owner_corporation_id via
+    storage.assets_at_flag's owner-id parameters instead of resolving
+    owner_name to an id itself. An intake source whose owner has since been
+    unticked on the Characters page stops counting, same as every other
+    tool's reads - it still shows up in the sources list (Settings still
+    lets you remove it), it just contributes 0 until re-shared."""
+    from ..esi_data.access import shared_owner_ids
+    char_ids = shared_owner_ids("assets", "sorting", "character")
+    corp_ids = shared_owner_ids("assets", "sorting", "corporation")
     totals: dict[int, float] = {}
     by_source: dict[int, list[dict]] = {}
     for source_id, source_kind, owner_name, hangar_flag, label in storage.load_sorting_intake_sources():
@@ -220,7 +233,8 @@ def _intake_from_sources(production_cfg: ProductionConfig = PRODUCTION_CONFIG,
         else:
             tables = ("corp_assets",)
         items = storage.assets_at_flag(hangar_flag, tables=tables, owner_name=owner_name,
-                                        location_id=production_cfg.home_location_id)
+                                        location_id=production_cfg.home_location_id,
+                                        owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
         source_label = _source_label(source_kind, owner_name, hangar_flag, label)
         for type_id, qty in items:
             totals[type_id] = totals.get(type_id, 0.0) + qty

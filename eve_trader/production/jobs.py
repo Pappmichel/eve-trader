@@ -19,6 +19,21 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def _shared_job_owner_ids() -> tuple[list[int], list[int]]:
+    """(shared character ids, shared corporation ids) - docs/ESI_ACCESS_PLAN.md
+    Known gap 3. Lazy import: `.engine` imports `character_slot_overview`
+    from this module, so a module-level import back here would be
+    circular - this module calls `esi_data.access.shared_owner_ids`
+    directly instead of engine.py's cached `shared_production_owner_ids`,
+    since both callers below call this once per function, not per type_id
+    inside a loop, so there's no repeated-query cost to cache away."""
+    from ..esi_data.access import shared_owner_ids
+    return (
+        shared_owner_ids("industry_jobs", "production", "character"),
+        shared_owner_ids("industry_jobs", "production", "corporation"),
+    )
+
+
 def list_current_jobs(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[IndustryJobRow]:
     """Every active character + corp industry job, one row per job (not
     aggregated by item), sorted by soonest-completing first.
@@ -29,7 +44,8 @@ def list_current_jobs(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[Industr
     already None for those, see IndustryJobRow's own docstring) or if
     neither market has a sell quote for it, so a temporary data gap shows as
     "no value" rather than silently as 0."""
-    jobs = storage.list_industry_jobs()
+    char_ids, corp_ids = _shared_job_owner_ids()
+    jobs = storage.list_industry_jobs(owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
     # Only the distinct products these jobs actually output need pricing -
     # see pricing.home_prices/jita_prices' own docstrings for why callers
     # must scope type_ids explicitly now.
@@ -80,8 +96,11 @@ def character_slot_overview() -> list[CharacterSlotRow]:
     that character across both personal and corp jobs (corp jobs still draw
     on the installing character's own slots)."""
     used: dict[tuple[str, str], int] = {}
+    char_ids, corp_ids = _shared_job_owner_ids()
     for (_job_id, activity_id, _bp, _product, _name, _runs, _loc,
-         status, _end, _start, installer_name) in storage.list_industry_jobs():
+         status, _end, _start, installer_name) in storage.list_industry_jobs(
+        owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
+    ):
         if status not in ("active", "paused", "ready"):
             continue
         category = ACTIVITY_SLOT_CATEGORY.get(activity_id)

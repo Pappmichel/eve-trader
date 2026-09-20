@@ -26,7 +26,7 @@ from .engine import (
     distribution_recommendations, get_cached_discover_results, invention_logistics, item_margin_detail,
     invalidate_discover_cache, invalidate_ship_margin_cache, t1_bpc_invention_needs,
     invalidate_production_locations_cache, logistics_status, market_status, plan_asset_optimized,
-    plan_production, plan_special_order, stock_value,
+    plan_production, plan_special_order, shared_production_owner_ids, stock_value,
 )
 from .models import (
     AssetLocationRow, BuildCandidate, ManualBlueprintCopyCostRow, ManualBlueprintMeTeOverrideRow, OwnedBlueprintRow, ShipMarginRow,
@@ -797,7 +797,9 @@ def do_search_item_locations(item_name: str) -> dict:
         raise ActionError(f"No exact match for '{item_name}'. Did you mean: {matches[0][1]}?")
     type_id, resolved_name = exact[0]
 
-    rows = storage.search_item_stock_locations(type_id)
+    char_ids, corp_ids = shared_production_owner_ids("assets")
+    rows = storage.search_item_stock_locations(
+        type_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
     locations = [
         AssetLocationRow(location_id=location_id, location_name=location_name,
                           owner_name=owner_name, quantity=quantity)
@@ -1135,8 +1137,11 @@ def do_list_owned_blueprints() -> dict:
     by any explicit is_blueprint_copy flag (that field only exists on the
     *asset* tables, not the blueprint tables - see esi_sync.py's
     _blueprint_rows)."""
+    char_ids, corp_ids = shared_production_owner_ids("blueprints")
     grouped: dict[tuple, int] = {}
-    for type_id, quantity, material_efficiency, time_efficiency, runs in storage.load_owned_blueprints():
+    for type_id, quantity, material_efficiency, time_efficiency, runs in storage.load_owned_blueprints(
+        owner_character_ids=char_ids, owner_corporation_ids=corp_ids,
+    ):
         is_original = runs == -1
         key = (type_id, is_original, material_efficiency, time_efficiency, None if is_original else runs)
         # ESI's `quantity` field for a blueprint item is usually a sentinel
