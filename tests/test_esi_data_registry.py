@@ -86,10 +86,12 @@ def test_group_2_is_skills_with_no_corp_variant():
     assert skills.character_scope == "esi-skills.read_skills.v1"
 
 
-def test_group_3_has_two_capabilities_and_no_consuming_tool_list():
-    assert len(ACCESS_CAPABILITIES) == 2
+def test_group_3_has_three_capabilities_and_no_consuming_tool_list():
+    # corporation_roles added for docs/ESI_ACCESS_PLAN.md Known gap 2 (the
+    # Corporations table's role warning).
+    assert len(ACCESS_CAPABILITIES) == 3
     assert {c.key for c in ACCESS_CAPABILITIES} == {
-        "structure_name_resolution", "structure_market_book",
+        "structure_name_resolution", "structure_market_book", "corporation_roles",
     }
     for cap in ACCESS_CAPABILITIES:
         assert isinstance(cap, AccessCapability)

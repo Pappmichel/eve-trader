@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import {
   Badge, Button, Container, Divider, Group, Popover, Stack, Switch, Table, Text, Title, Tooltip,
 } from '@mantine/core'
@@ -7,7 +7,9 @@ import { Link } from 'react-router-dom'
 import { useQueries, useQuery } from '@tanstack/react-query'
 
 import { charactersApi } from '../../api/client'
-import type { AccessPreview, EsiCapabilityRow, EsiFreshnessRow, EsiSharingRow, EsiTokenCharacter } from '../../api/types'
+import type {
+  AccessPreview, CorporationRoleCheckResult, EsiCapabilityRow, EsiFreshnessRow, EsiSharingRow, EsiTokenCharacter,
+} from '../../api/types'
 import {
   ACCESS_CAPABILITIES,
   CHARACTER_KINDS,
@@ -228,29 +230,83 @@ function CharactersSection({
   )
 }
 
+function RoleWarningBadge({
+  corpId,
+  dataKind,
+  roleCheck,
+}: {
+  corpId: number
+  dataKind: string
+  roleCheck: CorporationRoleCheckResult | undefined
+}) {
+  const corp = roleCheck?.corporations.find((c) => c.corporation_id === corpId)
+  const entry = corp?.data_kinds[dataKind]
+  if (!entry || entry.has_role !== false) return null
+  return (
+    <Tooltip
+      multiline
+      w={260}
+      label={`No checked character holds ${formatCorpRoles(entry.required_roles)} in this corp. `
+        + (corp && corp.unchecked_characters.length > 0
+          ? `Not checked: ${corp.unchecked_characters.join(', ')}.`
+          : 'Tick Corporation roles for a member on the Access table to check more characters.')}
+    >
+      <Badge size="xs" color="danger" variant="light" mt={4}>role missing</Badge>
+    </Tooltip>
+  )
+}
+
 function CorporationsSection({
   corpIds,
+  owners,
   sharing,
   freshness,
   onToggle,
   pendingToggle,
+  roleCheck,
+  onCheckRoles,
+  checkRolesAction,
 }: {
   corpIds: number[]
+  owners: EsiTokenCharacter[]
   sharing: EsiSharingRow[]
   freshness: EsiFreshnessRow[]
   onToggle: (ownerType: string, ownerId: number, dataKind: string, toolKey: string, enabled: boolean) => void
   pendingToggle: string | null
+  roleCheck: CorporationRoleCheckResult | undefined
+  onCheckRoles: () => void
+  checkRolesAction: { isPending: boolean; tooltip?: string; tierIcon?: ReactNode }
 }) {
+  const charactersByCorp = useMemo(() => {
+    const map = new Map<number, string[]>()
+    for (const owner of owners) {
+      if (owner.corporation_id == null) continue
+      const names = map.get(owner.corporation_id) ?? []
+      names.push(owner.character_name || `#${owner.character_id}`)
+      map.set(owner.corporation_id, names)
+    }
+    return map
+  }, [owners])
+
   return (
     <div>
-      <Title order={2} mb="xs">Corporations</Title>
+      <Group justify="space-between" align="flex-start" mb="xs" wrap="nowrap">
+        <Title order={2}>Corporations</Title>
+        <Tooltip label={checkRolesAction.tooltip} disabled={!checkRolesAction.tooltip} multiline w={280}>
+          <Button size="xs" variant="default" leftSection={checkRolesAction.tierIcon}
+            onClick={onCheckRoles} loading={checkRolesAction.isPending}>
+            Check corp roles
+          </Button>
+        </Tooltip>
+      </Group>
       <Text size="sm" c="dimmed" mb="xs">
         Corp snapshots are reached through a registered member character, not a second login.
         EVE requires {formatCorpRoles(['Director'])} for assets, jobs, and blueprints;
         {' '}{formatCorpRoles(['Accountant', 'Trader'])} for market orders;
         {' '}{formatCorpRoles(['Accountant', 'Junior_Accountant'])} for wallet.
-        This page does not receive in-game roles from the owners payload, so it cannot tick a
-        per-row &quot;no character holds this role&quot; warning — a live ESI 403 is still the check.
+        A &quot;role missing&quot; badge below only appears for a corp with at least one member who has
+        ticked Corporation roles (Access table) and re-authorized — otherwise a live ESI 403 stays
+        the real check.
       </Text>
       {corpIds.length === 0 ? (
         <Text size="sm" c="dimmed">No corporation sharing or freshness rows yet.</Text>
@@ -274,7 +330,9 @@ function CorporationsSection({
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
-            {corpIds.map((corpId) => (
+            {corpIds.map((corpId) => {
+              const accessVia = charactersByCorp.get(corpId) ?? []
+              return (
               <Table.Tr key={corpId}>
                 <Table.Td>
                   <Text size="sm" fw={600}>Corporation {corpId}</Text>
@@ -292,13 +350,21 @@ function CorporationsSection({
                       onToggle={(toolKey, enabled) =>
                         onToggle('corporation', corpId, k.key, toolKey, enabled)}
                     />
+                    <div>
+                      <RoleWarningBadge corpId={corpId} dataKind={k.key} roleCheck={roleCheck} />
+                    </div>
                   </Table.Td>
                 ))}
                 <Table.Td>
-                  <Text size="sm" c="dimmed">—</Text>
+                  {accessVia.length > 0 ? (
+                    <Text size="sm">{accessVia.join(', ')}</Text>
+                  ) : (
+                    <Text size="sm" c="dimmed">—</Text>
+                  )}
                 </Table.Td>
               </Table.Tr>
-            ))}
+              )
+            })}
           </Table.Tbody>
         </Table>
         </div>
@@ -471,6 +537,20 @@ export default function CharactersPage() {
     CHARACTERS_KEYS,
     { tier: 'live', effect: 'Refreshes every owned data kind for every owner this tenant has shared.' },
   )
+  const [roleCheck, setRoleCheck] = useState<CorporationRoleCheckResult | undefined>(undefined)
+  const checkCorporationRoles = useAction(
+    'Check corp roles',
+    async () => {
+      const result = await charactersApi.checkCorporationRoles()
+      setRoleCheck(result)
+      return result
+    },
+    [],
+    {
+      tier: 'live',
+      effect: 'Live-fetches roles for every character with Corporation roles ticked (Access table) and re-authorized.',
+    },
+  )
   const addCharacter = useAction(
     'Add character',
     async () => {
@@ -562,10 +642,14 @@ export default function CharactersPage() {
         <Divider />
         <CorporationsSection
           corpIds={corpIds}
+          owners={owners}
           sharing={sharing}
           freshness={freshness}
           onToggle={toggleSharing}
           pendingToggle={pendingToggle}
+          roleCheck={roleCheck}
+          onCheckRoles={() => checkCorporationRoles.mutate()}
+          checkRolesAction={checkCorporationRoles}
         />
         <Divider />
         <AccessSection

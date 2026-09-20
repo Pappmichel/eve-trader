@@ -20,6 +20,7 @@ from __future__ import annotations
 import pytest
 
 from eve_trader.config import ACCESS_CONFIG, OAUTH_CONFIG
+from eve_trader.esi_client import ESIClient
 
 from .pg_helpers import tenant_pair  # noqa: F401
 
@@ -45,6 +46,23 @@ def _access_gate_test_mode(request, monkeypatch):
             monkeypatch.setattr(OAUTH_CONFIG, "session_secret_key", "test-secret-key")
         return
     monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", False)
+
+
+@pytest.fixture(autouse=True)
+def _reset_character_public_info_cache():
+    """ESIClient.character_public_info's cache (docs/ESI_ACCESS_PLAN.md
+    Known gap 2) is class-wide and keyed only by character_id, unscoped by
+    tenant or test - many test files reuse the same small set of numeric
+    character ids (1001/1002/...) with *different* monkeypatched
+    corporation_ids, so a stale cross-test hit here would be a real,
+    silent-failure-shaped bug, not just a performance nit. Unlike the SDE-
+    lookup caches' own reverted blanket-clear fixture (see the note just
+    below), clearing this one costs nothing for the ~vast majority of
+    tests that never call character_public_info at all - it's a plain
+    dict.clear() under a lock, no I/O, not a forced real connection."""
+    ESIClient.clear_character_public_info_cache()
+    yield
+    ESIClient.clear_character_public_info_cache()
 
 # Note on storage.py's @lru_cache'd SDE-lookup functions (get_sde_type,
 # get_system_security, ...): before the multi-tenant cutover, `db_path` was

@@ -240,6 +240,22 @@ class ESIClient:
     _structure_book_locks: dict[tuple[int, str], threading.Lock] = {}
     _order_book_locks_guard = threading.Lock()  # protects creation of a new per-key lock only, never held during a fetch
 
+    # Class-level, per-character-id-locked cache for character_public_info
+    # (docs/ESI_ACCESS_PLAN.md Known gap 2's "access via" column) - same
+    # per-key-lock shape as _region_order_stats_cache above (multiple
+    # independent keys, see CLAUDE.md's Caching pattern section), reusing
+    # _lock_for_key/_order_book_locks_guard rather than a second lock-
+    # creation helper. A character's corporation_id is public data, so
+    # sharing this cache across tenants (like the order-book caches) can't
+    # reintroduce a cross-tenant leak. Longer TTL than the order-book
+    # caches - this is rendered on every Characters page load, not
+    # decision-critical order-book data, and a corp move is rare - 1 hour,
+    # not 30s.
+    _CHARACTER_PUBLIC_INFO_CACHE_TTL = 3600  # seconds
+    _character_public_info_cache: dict[int, dict] = {}
+    _character_public_info_cache_at: dict[int, float] = {}
+    _character_public_info_locks: dict[int, threading.Lock] = {}
+
     def __init__(self, cfg: TradingConfig = TRADING_CONFIG, tokens: Optional[TokenManager] = None):
         self.cfg = cfg
         self.tokens = tokens or TokenManager()
@@ -268,6 +284,15 @@ class ESIClient:
             cls._region_order_stats_cache_at.clear()
             cls._structure_book_cache.clear()
             cls._structure_book_cache_at.clear()
+
+    @classmethod
+    def clear_character_public_info_cache(cls) -> None:
+        """Forces the next character_public_info call (for every
+        character_id - class-wide) to re-fetch - exists for tests, same
+        reason clear_price_caches/clear_order_book_caches do."""
+        with cls._order_book_locks_guard:
+            cls._character_public_info_cache.clear()
+            cls._character_public_info_cache_at.clear()
 
     @classmethod
     def _lock_for_key(cls, locks: dict, key) -> threading.Lock:
@@ -813,12 +838,45 @@ class ESIClient:
                                     params={"datasource": "tranquility"}, auth_role=auth_role)
 
     def character_public_info(self, character_id: int) -> dict:
-        """Public endpoint, no auth - used to resolve corporation_id for corp-level calls."""
-        return self._get(f"/characters/{character_id}/", params={"datasource": "tranquility"})
+        """Public endpoint, no auth - used to resolve corporation_id for
+        corp-level calls (and, docs/ESI_ACCESS_PLAN.md Known gap 2, the
+        Characters page's "access via" column).
+
+        Cached class-wide for _CHARACTER_PUBLIC_INFO_CACHE_TTL seconds,
+        keyed by character_id - see that constant's own comment. Every
+        existing caller (trade_reconciliation._corps_for_characters,
+        esi_data/backfill.py) benefits from this too, not just the new
+        column - both can call this once per character multiple times in
+        the same run."""
+        key = character_id
+        with self._lock_for_key(self._character_public_info_locks, key):
+            cached_at = self._character_public_info_cache_at.get(key, 0.0)
+            if (key in self._character_public_info_cache
+                    and (time.time() - cached_at) < self._CHARACTER_PUBLIC_INFO_CACHE_TTL):
+                return self._character_public_info_cache[key]
+            info = self._get(f"/characters/{character_id}/", params={"datasource": "tranquility"})
+            self._character_public_info_cache[key] = info
+            self._character_public_info_cache_at[key] = time.time()
+            return info
 
     def corporation_public_info(self, corporation_id: int) -> dict:
         """Public endpoint, no auth - used to resolve a corp's name for display."""
         return self._get(f"/corporations/{corporation_id}/", params={"datasource": "tranquility"})
+
+    def character_roles(self, character_id: int, auth_role: str) -> dict:
+        """Requires esi-characters.read_corporation_roles.v1 (the
+        "corporation_roles" Access capability, docs/ESI_ACCESS_PLAN.md
+        Known gap 2 - the Corporations table's role warning). Returns the
+        raw ESI shape: {"roles": [...], "roles_at_base": [...],
+        "roles_at_hq": [...], "roles_at_other": [...]} - callers use the
+        base "roles" list (HQ-independent, e.g. "Director"/"Accountant"),
+        matching the corp_roles tuples the registry already uses elsewhere
+        (production/esi_data/registry.py's OwnedDataKind.corp_roles). Not
+        cached - a stale role warning defeats its own purpose (same
+        reasoning the plan document gives for why this stayed a live check
+        rather than an opportunistic sync-time fill)."""
+        return self._get(f"/characters/{character_id}/roles/",
+                          params={"datasource": "tranquility"}, auth_role=auth_role)
 
     # ------------------------------------------------- assets / industry / BPs
     def character_assets(self, character_id: int, auth_role: str) -> list[dict]:

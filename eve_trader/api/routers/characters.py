@@ -123,3 +123,13 @@ def add_start(request: Request, response: Response):
 @router.post("/sync")
 def sync(tool_key: Optional[str] = None):
     return _wrap(esi_actions.do_sync, tool_key=tool_key)
+
+
+@router.post("/corporation-roles/check")
+def check_corporation_roles():
+    """Known gap 2 (docs/ESI_ACCESS_PLAN.md): the Corporations table's role
+    warning. Live ESI (per-character role fetch, gated on the
+    "corporation_roles" capability) - POST, same convention as every other
+    live-ESI action in this app (e.g. production's resolve-structure-name),
+    not folded into the page's own GET load."""
+    return _wrap(esi_actions.do_check_corporation_roles)

@@ -1444,17 +1444,20 @@ not a second order to follow.
 
 Landed: Phase 8 (#169), 0 (#171), 1 (#172), 2 (#173), 3a (#174),
 3b (#175), 4 (#176), 7 (#177), 5+6 (#178), 9 (#179), 9a (#180),
-gap 3 closure (this PR).
+gap 3 closure (#182), gap 4 closure (#183), gap 2 closure (this PR).
 
 Read **"Known gaps after Phase 9"** below before starting. Of the four
-gaps recorded there, two are closed (gap 1: adding a character that does
-not already hold a token; gap 3: Production/Sorting reading the shared
-snapshot tables without a sharing filter) and two are open (gap 2: the
-Corporations "access via" column; gap 4: `do_unlisted_stock`/the
-Characters sidebar discovering producer characters by legacy prefix
-instead of by sharing). None of the four blocks this cutover (the
-backfill brings every pre-existing character across), but the open ones
-will surprise you if you meet them first on deploy day.
+gaps recorded there, three are closed (gap 1: adding a character that
+does not already hold a token; gap 2: the Corporations "access via"
+column and its role warning; gap 3: Production/Sorting reading the shared
+snapshot tables without a sharing filter) and one is still open (gap 4:
+`do_unlisted_stock`/the Characters sidebar discovering producer
+characters by legacy prefix instead of by sharing — closed on a separate
+branch, not yet merged as of this one). None of the four blocks this
+cutover (the backfill brings every pre-existing character across), but
+the open one will surprise you if you meet it first on deploy day, and
+gap 2's closure adds a deploy-day prerequisite of its own (see its own
+entry below).
 
 ### Prerequisites
 
@@ -1465,6 +1468,13 @@ the operator cannot do from a git pull.
   app in the EVE developer portal. Already done 2026-09-20. The
   deploy target uses the same app registration, so this is a verify,
   not an enable.
+- Verify `esi-characters.read_corporation_roles.v1` is enabled for the
+  app in the EVE developer portal (gap 2's role-warning capability,
+  `"corporation_roles"`). Not yet confirmed against the deploy target as
+  of this PR - unlike the wallet scope above, this one needs a real
+  enable check, not just a verify, before ticking the capability for a
+  real character. Requesting an un-enabled scope fails that character's
+  SSO round, not just this one feature - confirm before relying on it.
 
 ### Schema to apply, in order
 
@@ -1649,11 +1659,12 @@ What to check, in this order, and what a correct result looks like.
 
 ## Known gaps after Phase 9
 
-Gap 1 (an add-a-character path) and gap 3 (Production/Sorting reading
-the shared snapshot tables without a sharing filter) have since been
-closed. Gap 2 is a UI promise the backend cannot keep yet. Gap 4 was
-found while closing gap 3 and is a different bug in the same area (which
-owners Production looks at, not whether a read is filtered). All four
+Gap 1 (an add-a-character path), gap 2 (the Corporations "access via"
+column and role warning), and gap 3 (Production/Sorting reading the
+shared snapshot tables without a sharing filter) have since been closed.
+Gap 4 was found while closing gap 3 and is a different bug in the same
+area (which owners Production looks at, not whether a read is filtered);
+it is closed on a separate branch not yet merged as of this one. All four
 are recorded here rather than in a merged PR description, which is where
 such notes go to die.
 
@@ -1680,20 +1691,69 @@ who already holds a token would silently strip every scope they have.
 Adding an already-registered character is therefore a deliberate no-op —
 `/callback` redirects with `added=existing` and writes nothing.
 
-**2. The Corporations table cannot name its access character or warn on
-a missing in-game role.** `do_list_token_characters` returns no
-`corporation_id`, and `TokenRecord` does not carry one, so "access via"
-renders `—`.
+**2. ~~The Corporations table cannot name its access character or warn on
+a missing in-game role.~~ Closed.** `do_list_token_characters` returned no
+`corporation_id`, and `TokenRecord` didn't carry one, so "access via"
+always rendered `—` and there was no way to warn that no registered
+character actually held a needed corp role.
 
-These halves differ in cost. The **column** is cheap: resolve each
-character's corporation via `ESIClient.character_public_info` — public,
-unauthenticated, and already used for exactly this in
-`trade_reconciliation._corps_for_characters` and in the Phase 1 backfill.
-The **role warning** is not: ESI does not expose a character's corporation
-roles without `esi-characters.read_corporation_roles.v1`, which nothing in
-this app requests and which would need the same dev-portal step Phase 8
-needed. Until then a live 403, surfaced per corp in the sync result, stays
-the real check.
+The two halves differed in cost and were closed differently.
+
+**The column** was cheap: `do_list_token_characters` now resolves each
+character's `corporation_id` via `ESIClient.character_public_info` —
+public, unauthenticated, already used for exactly this in
+`trade_reconciliation._corps_for_characters` and the Phase 1 backfill.
+Cached class-wide on `ESIClient` (`_character_public_info_cache`, 1 hour
+TTL, per-character-id lock — same shape as the order-book caches, see
+CLAUDE.md's Caching pattern section) so rendering this on every Characters
+page load doesn't mean a live ESI round trip per character every time;
+every existing caller of `character_public_info` benefits too, not just
+this one. The Corporations table's "Access via" column now lists the
+registered character name(s) whose `corporation_id` matches that row,
+computed client-side from the same owners payload the Characters section
+already has.
+
+**The role warning** needed a new scope,
+`esi-characters.read_corporation_roles.v1` — nothing in this app requested
+it before. Added as a new Group-3 access capability, `"corporation_roles"`
+(`ACCESS_CAPABILITIES`, no corp variant — each member reports their own
+roles, there is no "corp's roles" endpoint), tickable per character on the
+existing Access table exactly like `structure_name_resolution`/
+`structure_market_book` already are — no new UI section needed, the table
+already iterates the registry. `ESIClient.character_roles(character_id,
+auth_role)` is the new live call (`GET /characters/{id}/roles/`), **not
+cached** — a stale role warning defeats its own purpose, same reasoning
+this section already gave for why the live-403 fallback existed at all.
+
+`do_check_corporation_roles()` (`POST /api/characters/corporation-roles/
+check` — a live-ESI action, so POST, same convention as every other one in
+this app, e.g. Production's resolve-structure-name; not folded into the
+page's own GET load) groups every registered character by
+`corporation_id`, and for each corp checks every member who has
+`corporation_roles` ticked **and** a token actually carrying the scope
+(needs Re-authorize otherwise, silently skipped like every other partial-
+failure path in this codebase). For each Group-1 kind with `corp_roles`
+set (Assets/Industry Jobs/Blueprints → Director; Market Orders →
+Accountant or Trader; Wallet → Accountant or Junior_Accountant),
+`has_role` is `true`/`false` when at least one member's roles were
+actually checked, or `null` ("cannot verify") when none were — a corp
+nobody has opted into checking never shows a false "missing" badge, it
+just stays silent, exactly matching the live-403 fallback's own
+conservatism. The Corporations page renders a "role missing" badge only
+for the `false` case, with a tooltip naming which characters weren't
+checked.
+
+**Deploy-day step**: verify `esi-characters.read_corporation_roles.v1` is
+enabled for the app in the EVE developer portal (same one-time step Phase
+8 needed for the corp-wallet scope) before relying on this — requesting an
+un-enabled scope fails the SSO round for whoever ticks the capability.
+
+Test coverage: `tests/test_esi_characters_actions.py` — `corporation_id`
+resolution (success and best-effort-`None`-on-failure),
+`do_check_corporation_roles`'s true/false/null cases, the ticked-but-no-
+scope skip, and a two-character-covers-two-roles scenario proving the
+check is corp-wide, not per-character. `CharactersPage.ui.test.tsx` covers
+the "Access via" column and the role-missing badge end to end.
 
 **3. ~~Only Doctrine and Trading read through the accessor.~~ Closed.**
 Phase 3's brief said "All raw ESI snapshot reads go through it", but only

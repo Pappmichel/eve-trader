@@ -22,6 +22,7 @@ vi.mock('../../api/client', () => ({
     reauthStart: vi.fn(),
     addStart: vi.fn(),
     sync: vi.fn(),
+    checkCorporationRoles: vi.fn(),
   },
   ApiError: class ApiError extends Error {
     status: number
@@ -59,6 +60,7 @@ describe('Characters page', () => {
         write_role: 'producer:1',
         character_has_token_pool: true,
         roles: ['producer:1', 'doctrine-assets:1'],
+        corporation_id: 99,
       },
     ])
     vi.mocked(charactersApi.sharing).mockResolvedValue([
@@ -98,6 +100,7 @@ describe('Characters page', () => {
     expect(screen.getByRole('button', { name: 'assets 2/4' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'wallet re-auth' })).toBeInTheDocument()
     expect(screen.getByText('Corporation 99')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Check corp roles' })).toBeInTheDocument()
     expect(screen.getByText('Structure name resolution')).toBeInTheDocument()
     expect(screen.getByText('Structure market book')).toBeInTheDocument()
     expect(screen.getByText('Sorting has no Assets source')).toBeInTheDocument()
@@ -119,6 +122,45 @@ describe('Characters page', () => {
       tool_key: 'sorting',
       enabled: true,
     })
+  })
+
+  it('shows a role-missing badge after Check corp roles reports has_role: false', async () => {
+    vi.mocked(charactersApi.owners).mockResolvedValue([
+      {
+        character_id: 1, character_name: 'Alice', write_role: 'esi:1',
+        character_has_token_pool: false, roles: ['esi:1'], corporation_id: 99,
+      },
+    ])
+    vi.mocked(charactersApi.sharing).mockResolvedValue([
+      { owner_type: 'corporation', owner_id: 99, data_kind: 'wallet', tool_key: 'trading' },
+    ])
+    vi.mocked(charactersApi.freshness).mockResolvedValue([])
+    vi.mocked(charactersApi.capabilities).mockResolvedValue([])
+    vi.mocked(charactersApi.checkCorporationRoles).mockResolvedValue({
+      corporations: [{
+        corporation_id: 99,
+        checked_characters: ['Alice'],
+        unchecked_characters: [],
+        data_kinds: {
+          assets: { required_roles: ['Director'], has_role: false },
+          industry_jobs: { required_roles: ['Director'], has_role: false },
+          blueprints: { required_roles: ['Director'], has_role: false },
+          market_orders: { required_roles: ['Accountant', 'Trader'], has_role: false },
+          wallet: { required_roles: ['Accountant', 'Junior_Accountant'], has_role: true },
+        },
+      }],
+    })
+
+    const user = userEvent.setup()
+    renderPage()
+
+    expect(await screen.findByText('Corporation 99')).toBeInTheDocument()
+    expect(screen.queryByText('role missing')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Check corp roles' }))
+
+    expect(await screen.findAllByText('role missing')).toHaveLength(4)  // every kind but wallet
+    expect(vi.mocked(charactersApi.checkCorporationRoles)).toHaveBeenCalledTimes(1)
   })
 
   it('offers Add character on the empty state and sends the browser to the SSO url', async () => {
