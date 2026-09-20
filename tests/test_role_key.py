@@ -28,6 +28,7 @@ VALID = (
     "doctrine:99",
     "doctrine-assets:99",
     "trader:123456789012345",
+    "esi:1001",
 )
 
 
@@ -114,6 +115,8 @@ def test_validate_role_key_for_tool_accepts_owned_prefix(key, tool):
     ("doctrine:1", "station_trading"),
     ("buyer:1", "refining"),
     ("ore:1", "trading"),
+    ("esi:1", "production"),
+    ("esi:1", "trading"),
 ])
 def test_validate_role_key_for_tool_rejects_cross_tool_and_unknown(key, tool):
     with pytest.raises(InvalidRoleKey):

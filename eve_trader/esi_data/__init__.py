@@ -33,6 +33,14 @@ from .orchestrator import (
     do_sync_all,
     do_sync_for_tool,
 )
+from .selector import (
+    REAUTH_NEEDED,
+    character_has_token_pool,
+    delete_strict_subset_tokens,
+    normalize_scopes,
+    reauth_write_role,
+    select_auth_role,
+)
 
 __all__ = (
     "ACCESS_CAPABILITIES",
@@ -59,4 +67,10 @@ __all__ = (
     "DEFAULT_TIER_INTERVAL_HOURS",
     "do_sync_all",
     "do_sync_for_tool",
+    "REAUTH_NEEDED",
+    "character_has_token_pool",
+    "delete_strict_subset_tokens",
+    "normalize_scopes",
+    "reauth_write_role",
+    "select_auth_role",
 )

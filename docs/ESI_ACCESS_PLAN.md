@@ -973,17 +973,51 @@ stable for `ESIClient` caches.
 
 **Includes:**
 
-- Given `(character_id, required_scope)` (and optionally a set of
-  scopes), pick a token by largest normalized scope set, then
-  lexically first role key.
-- Strict-subset token deletion after a successful re-auth write.
-- The Characters-UI hint is a backend flag ("this character_id has
-  more than one `tenant_tokens` row"), not a frontend guess.
-- No re-keying migration (decision 2). Tests cover: two keys for one
-  id with overlapping scopes pick the larger; equal size picks
-  lexical; a new superset write deletes strict subsets; equal-scope
-  duplicates survive until a superset write; normalization treats
-  `"b a"` and `"a  b a"` as the same set.
+- Given `(character_id, required_scope)`, **filter first** to that
+  character's tokens whose normalized scope set CONTAINS the
+  required scope; among those, pick the largest set; tie-break on
+  the lexically first role key. Picking the largest-scope token
+  first and then checking the scope is wrong: a character can hold
+  a broad token that lacks exactly the scope you need alongside a
+  narrow one that has it. Signature:
+  `select_auth_role(character_id, required_scope) -> Optional[str]`.
+  Returns `None` when no token carries the scope — do not raise.
+- Strict-subset token deletion after a successful re-auth write
+  (`delete_strict_subset_tokens`). Equal sets are left alone.
+- `reauth_write_role(character_id)`: reuse the lexically first
+  existing key for that id, else `esi:<id>`. Built and tested here;
+  Phase 6's re-auth `/start` is the caller (see Phase 6 Includes).
+- The Characters-UI hint is a backend flag
+  (`character_has_token_pool`: "this character_id has more than one
+  `tenant_tokens` row"), not a frontend guess. Phase 9 renders it.
+- `_ROLE_KEY_RE` gains the `esi` prefix. Nothing writes an `esi:`
+  key yet. `_rekey_legacy_bare_roles` is not touched. No rewrite of
+  `tenant_tokens.role` (decision 2).
+- Tests cover: two keys for one id with overlapping scopes pick the
+  larger; a broad token lacking the required scope loses to a
+  narrow one that has it; equal size picks lexical; same inputs
+  return the same role key across 100 calls; a new superset write
+  deletes strict subsets; equal-scope duplicates survive until a
+  superset write; normalization treats `"b a"` and `"a  b a"` as
+  the same set; no token for the scope → orchestrator records
+  re-auth-needed for that owner × kind and keeps processing other
+  owners; pool hint is true iff the character has more than one
+  row.
+
+**Status:** this PR. The orchestrator no longer resolves tokens by
+prefix: `_run_character_owner` and
+`_run_corporation_kinds_for_members` call `select_auth_role` (via
+`TokenManager.list_records`, not `list_roles(prefix)` /
+`_list_token_characters` / `_auth_roles_for`). A missing scope is
+`REAUTH_NEEDED` on that owner × kind, non-fatal, same shape as
+Phase 8's corp missing-role skip. No `tenant_tokens.role` rewrite,
+no dry-run, no rollback. CI gate is
+`tests/test_esi_token_selector.py`, the orchestrator wiring /
+re-auth-needed tests, and full `pytest`. The live GET of the
+Characters status row with the pool hint needs Phase 6's endpoint,
+Phase 9's render, and real tokens — it is **not** a mid-flight
+gate. That confirmation is appended to the Deployment checklist
+below.
 
 **Done when:** those tests pass. `ESIClient.structure_orders_raw`
 still caches by the selected `auth_role` — selector stability is
@@ -1075,6 +1109,17 @@ don't exist.
   without a flag day) or are deleted in the same PR as Phase 9.
   Prefer the first: signature unchanged, source underneath changes
   (decision 12 applied to the web).
+- **Hand-off from Phase 4 (already built, not called until this
+  phase's `/start` write path):** `reauth_write_role(character_id)`
+  is which key a re-auth writes to — reuse the lexically first
+  existing key for that id, else `esi:<id>`. Do not pick a key
+  independently in the router.
+- **Hand-off from Phase 4 (already built, not called until this
+  phase's `/start` write path):** after a successful superset
+  write, call `delete_strict_subset_tokens(character_id)`. Equal
+  scope sets survive; they collapse on the next superset write.
+  The Characters UI's "legacy pool merges on the next re-auth"
+  promise depends on this call. Do not invent a second cleanup.
 
 **Done when:** a real HTTP session with `"production"` but not
 `"characters"` gets 403 on `/api/characters/*` and still 200s
@@ -1233,9 +1278,17 @@ deploys once at the end.
 ## Critical files
 
 - `eve_trader/auth.py` — `TokenRecord`, `ROLE_PREFIX_TOOL`,
-  `TOOL_ROLE_PREFIXES`, `_ROLE_KEY_RE`, `TokenManager` persistence
-  to `tenant_tokens`, legacy re-key of bare `"buyer"`/`"seller"`.
-  Selector (Phase 4) lives next to this, not in a tool package.
+  `TOOL_ROLE_PREFIXES`, `_ROLE_KEY_RE` (includes `esi:` as of
+  Phase 4; nothing writes that prefix until Phase 6),
+  `TokenManager.list_records`, persistence to `tenant_tokens`,
+  legacy re-key of bare `"buyer"`/`"seller"` (`_rekey_legacy_bare_roles`
+  is unrelated to Phase 4 and is not touched).
+- `eve_trader/esi_data/selector.py` — Phase 4 token selector
+  (`select_auth_role`, `reauth_write_role`,
+  `delete_strict_subset_tokens`, `character_has_token_pool`).
+  Lives in this package, not in a tool package. The orchestrator
+  asks it for an `auth_role` given `(character_id, required_scope)`;
+  it does not pick a prefix.
 - `eve_trader/api/routers/auth.py` — `_scopes_for`, `/start` /
   `/callback` / `/consent`, `_pending` dict. Consent and prefix
   `/start` die here.
@@ -1329,8 +1382,9 @@ Phase 8 (landed, PR #169), Phase 1 (landed, PR #172), and Phase 2
 (landed, PR #173) have items below. Phase 3a (landed, PR #174) adds
 post-deploy rows for the first orchestrator sync, wallet-snapshot
 reconcile, the age-limit clear caller, and the NULL-id sweep. Phase 3b
-adds the doctrine asset-table cutover. Remaining phases add their own
-rows when they merge; do not invent them here.
+adds the doctrine asset-table cutover. Phase 4 adds the live GET of
+the Characters status pool hint (needs the Phase 6 endpoint). Remaining
+phases add their own rows when they merge; do not invent them here.
 
 ### Prerequisites
 
@@ -1470,6 +1524,19 @@ What to check, and what a correct result looks like.
   prefixes). After this cutover, `\dt` / `information_schema` must not
   list `doctrine_character_assets` or `doctrine_corp_assets`. This is a
   real cutover, not a no-op apply.
+- **Phase 4.** After the Characters status endpoint exists (Phase 6)
+  and the UI renders it (Phase 9), a live `GET` of that endpoint for
+  a tenant that still has a multi-prefix character (e.g. both
+  `producer:<id>` and `doctrine-assets:<id>`) must show that
+  character as **one row** with the pool hint set. The hint is the
+  backend flag `character_has_token_pool`, not a frontend count of
+  prefixes. A character with a single `tenant_tokens` row must have
+  the hint unset. There is no token re-keying in Phase 4; the pool
+  is expected to remain until the next re-auth (Phase 6 `/start`
+  calling `delete_strict_subset_tokens`). This is Phase 4's original
+  "done when" live check; it could not be performed without that
+  endpoint or real tokens and lives here rather than staying
+  unsatisfied on the phase.
 
 ## Explicitly out of scope
 

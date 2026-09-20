@@ -48,8 +48,10 @@ class InvalidRoleKey(ValueError):
 # Canonical TokenManager / API role_key: one of the known prefixes, a colon,
 # then a positive integer character id. Rejects path/SQL/unicode/null/blank
 # by construction (F-05) — this is a domain, not just an injection denylist.
+# `esi` is the Phase 4 grammar for a character-centric key; nothing writes
+# one until Phase 6. Existing producer:/seller:/… keys stay valid.
 _ROLE_KEY_RE = re.compile(
-    r"^(buyer|seller|producer|doctrine|doctrine-assets|trader):[1-9][0-9]{0,19}$"
+    r"^(buyer|seller|producer|doctrine|doctrine-assets|trader|esi):[1-9][0-9]{0,19}$"
 )
 ROLE_KEY_MAX_LENGTH = 48
 
@@ -458,6 +460,16 @@ class TokenManager:
         get_token_interactive_multi), e.g. every registered "producer:<id>"."""
         self._ensure_loaded()
         return [role for role in self._tokens if role.startswith(f"{prefix}:")]
+
+    def list_records(self) -> list[TokenRecord]:
+        """Every stored token for the current tenant, regardless of prefix.
+
+        The Phase 4 selector uses this instead of walking `list_roles` per
+        prefix. Prefix keys stay in the pool (decision 2); this listing
+        does not rewrite them.
+        """
+        self._ensure_loaded()
+        return list(self._tokens.values())
 
     def remove_token(self, role: str) -> None:
         """Unconditional delete (idempotent at the DB layer - a role with no
