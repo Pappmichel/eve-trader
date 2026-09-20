@@ -220,6 +220,10 @@ not a sidebar copy-pasted into every tool layout.
    Access warning, not a Corporations-table column. Same five-state
    cells, same per-tool popover, same sharing table with
    `owner_type='corporation'`.
+
+   **Not delivered as of Phase 9 — see "Known gaps" below.** "Access via"
+   renders `—` and the per-row role warning does not exist. The corp-role
+   captions are static text.
 3. **Access.** Rows = capability (structure name resolution, structure
    market book). Columns show which characters can provide it. No
    freshness, no scheduling, no per-tool sharing; on or off.
@@ -1441,6 +1445,13 @@ not a second order to follow.
 Landed: Phase 8 (#169), 0 (#171), 1 (#172), 2 (#173), 3a (#174),
 3b (#175), 4 (#176), 7 (#177), 5+6 (#178), 9 (this PR).
 
+Read **"Known gaps after Phase 9"** below before starting. Two things
+the Characters page describes do not work yet — adding a character that
+does not already hold a token, and the Corporations "access via" column.
+Neither blocks this cutover (the backfill brings every pre-existing
+character across), but both will surprise you if you meet them first on
+deploy day.
+
 ### Prerequisites
 
 Outside the repo: EVE developer portal, app registration, anything
@@ -1612,6 +1623,44 @@ What to check, in this order, and what a correct result looks like.
    does not see unshared ones. The page chrome, five-state cells,
    popover toggle, grant-hidden Landing card, and section order are
    Phase 9's local browser gate, not this step.
+
+## Known gaps after Phase 9
+
+The rebuild is complete against every phase's own brief. These two
+things the UI *describes* are not delivered. They are recorded here
+rather than in a merged PR description, which is where such notes go
+to die.
+
+**1. There is no add-a-new-character path.** `/api/characters/reauth/start`
+requires a `character_id`, and prefix `/api/auth/{role_prefix}/start` was
+removed in Phase 9. A character therefore only appears on the Characters
+page once it already holds a token — which the Phase 1 conservative
+backfill arranges for every character that existed before the cutover,
+but nothing arranges for a new one. The empty state is copy-only.
+
+Shape of the fix, if it is taken: an SSO start with no `character_id`
+requesting **no scopes** (identity only, the same shape `gate` already
+uses), and a `/callback` branch that resolves the character from the
+returned token and writes it under `reauth_write_role(character_id)` —
+which Phase 4 already built and which returns `esi:<id>` for an unknown
+character. Two SSO rounds to get a useful character (add, then tick and
+re-authorize) is the honest consequence of settled decision 1: only
+ticked scopes are ever requested.
+
+**2. The Corporations table cannot name its access character or warn on
+a missing in-game role.** `do_list_token_characters` returns no
+`corporation_id`, and `TokenRecord` does not carry one, so "access via"
+renders `—`.
+
+These halves differ in cost. The **column** is cheap: resolve each
+character's corporation via `ESIClient.character_public_info` — public,
+unauthenticated, and already used for exactly this in
+`trade_reconciliation._corps_for_characters` and in the Phase 1 backfill.
+The **role warning** is not: ESI does not expose a character's corporation
+roles without `esi-characters.read_corporation_roles.v1`, which nothing in
+this app requests and which would need the same dev-portal step Phase 8
+needed. Until then a live 403, surfaced per corp in the sync result, stays
+the real check.
 
 ## Explicitly out of scope
 
