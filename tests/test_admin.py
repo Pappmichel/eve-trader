@@ -103,6 +103,16 @@ def test_do_set_tool_grants_replaces_not_merges(monkeypatch):
     assert storage.list_tool_grants_for_character(42) == ["admin", "production"]
 
 
+def test_do_set_tool_grants_does_not_auto_add_characters(monkeypatch):
+    # Decision 11: Admin UI auto-ticks "characters"; the API does not.
+    monkeypatch.setattr(ESIClient, "character_search", lambda self, name: 42)
+    admin.do_add_user("Some Pilot")
+
+    admin.do_set_tool_grants(42, ["production"])
+
+    assert storage.list_tool_grants_for_character(42) == ["production"]
+
+
 def test_do_set_tool_grants_rejects_unknown_tool_key(monkeypatch):
     monkeypatch.setattr(ESIClient, "character_search", lambda self, name: 42)
     admin.do_add_user("Some Pilot")

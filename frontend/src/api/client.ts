@@ -94,10 +94,7 @@ const del = <TResp>(path: string) => request<TResp>(path, { method: 'DELETE' })
 // ------------------------------------------------------------------- auth
 export const authApi = {
   start: (rolePrefix: string) => get<{ url: string }>(`/api/auth/${rolePrefix}/start`),
-  // "gate" isn't valid here - its consent is tracked client-side (see
-  // Landing.tsx), never via these two - the backend itself 400s if asked.
-  consentStatus: (rolePrefix: string) => get<{ acknowledged: boolean }>(`/api/auth/${rolePrefix}/consent`),
-  acknowledgeConsent: (rolePrefix: string) => post<{ acknowledged: boolean }>(`/api/auth/${rolePrefix}/consent`),
+  accessPreview: (rolePrefix: string) => get<T.AccessPreview>(`/api/auth/${rolePrefix}/access-preview`),
 }
 
 // -------------------------------------------------------------- access gate
@@ -500,6 +497,29 @@ export const adminApi = {
     post<{ cached_type_ids: number; updated_at: string | null }>('/api/admin/jita-price-cache/refresh'),
   // GitHub issue #88 - cross-tenant, same reasoning as everything else here.
   errors: (limit = 200) => get<T.ErrorLogRow[]>(`/api/admin/errors?limit=${limit}`),
+}
+
+// -------------------------------------------------------------- characters
+export const charactersApi = {
+  sharing: (toolKey?: string) =>
+    get<T.EsiSharingRow[]>(toolKey ? `/api/characters/sharing?tool_key=${encodeURIComponent(toolKey)}` : '/api/characters/sharing'),
+  setSharing: (body: {
+    owner_type: string
+    owner_id: number
+    data_kind: string
+    tool_key: string
+    enabled: boolean
+  }) => post<T.EsiSharingRow & { enabled: boolean }>('/api/characters/sharing', body),
+  accessPreview: (characterId: number, extraKinds: string[] = []) =>
+    get<T.AccessPreview>(
+      `/api/characters/access-preview?character_id=${characterId}`
+      + (extraKinds.length ? `&extra_kinds=${encodeURIComponent(extraKinds.join(','))}` : ''),
+    ),
+  reauthStart: (characterId: number, extraKinds: string[] = []) =>
+    get<{ url: string }>(
+      `/api/characters/reauth/start?character_id=${characterId}`
+      + (extraKinds.length ? `&extra_kinds=${encodeURIComponent(extraKinds.join(','))}` : ''),
+    ),
 }
 
 // ------------------------------------------------------------------ errors

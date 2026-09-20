@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { authApi } from '../api/client'
-import { openRoleAccessConfirmModal } from '../roleAccessDescriptions'
+import { openAccessConfirmModal } from '../roleAccessDescriptions'
 import { useAction } from './useAction'
 
 export interface RoleCharacter {
@@ -45,21 +45,11 @@ export function useRoleCharacters(
     window.location.href = url
   })
 
-  // First login for this role_prefix (per tenant, tracked server-side -
-  // see docs/role_consent_schema.sql) shows a confirm modal describing what
-  // ESI data this role actually reads before ever redirecting to EVE SSO;
-  // once acknowledged, later logins for the same role (a second character,
-  // or re-adding one) skip straight to the redirect.
+  // Always show what this SSO round will request (decision 10). There is
+  // no stored per-prefix acknowledgement — the bundle is variable.
   const startLogin = async () => {
-    const { acknowledged } = await authApi.consentStatus(ssoRolePrefix)
-    if (acknowledged) {
-      addCharacter.mutate()
-      return
-    }
-    openRoleAccessConfirmModal(ssoRolePrefix, async () => {
-      await authApi.acknowledgeConsent(ssoRolePrefix)
-      addCharacter.mutate()
-    })
+    const preview = await authApi.accessPreview(ssoRolePrefix)
+    openAccessConfirmModal(preview, () => addCharacter.mutate())
   }
 
   const removeCharacter = useAction('Remove Character', removeFn, [queryKey])

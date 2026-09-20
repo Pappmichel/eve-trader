@@ -92,9 +92,6 @@ def _classify(method: str, path: str) -> str | None:
     if tool is not None:
         return f"tool:{tool}"
     if _is_auth_role_gated_path(path):
-        # FastAPI template /api/auth/{role_prefix}/start|consent — tool is
-        # resolved from ROLE_PREFIX_TOOL at request time, not from the
-        # template string.
         return "auth_role_tool"
     if _is_session_only_api_path(path):
         return "session_only"
@@ -161,9 +158,10 @@ def test_walker_sees_normal_and_dynamic_and_method_specific_routes():
 def test_walker_sees_included_auth_router_templates():
     paths = {(method, path) for method, path in _iter_http_routes(create_app())}
     assert ("GET", "/api/auth/{role_prefix}/start") in paths
-    assert ("GET", "/api/auth/{role_prefix}/consent") in paths
-    assert ("POST", "/api/auth/{role_prefix}/consent") in paths
+    assert ("GET", "/api/auth/{role_prefix}/access-preview") in paths
+    assert ("GET", "/api/characters/sharing") in paths
     assert _classify("GET", "/api/auth/{role_prefix}/start") == "auth_role_tool"
+    assert _classify("GET", "/api/characters/sharing") == "tool:characters"
 
 
 def test_walker_sees_nested_router_include():

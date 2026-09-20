@@ -717,31 +717,6 @@ def delete_tenant_token(role: str) -> None:
         conn.execute("DELETE FROM tenant_tokens WHERE role = ?", (role,))
 
 
-# ------------------------------------------------------- role login consent
-def has_role_consent(role_prefix: str) -> bool:
-    """Whether the current tenant has already acknowledged what ESI data a
-    given login role_prefix reads - api/routers/auth.py's /start route uses
-    this (via the frontend's confirm-before-redirect modal) to skip showing
-    the confirmation again once a tenant has seen it for that role."""
-    with connect() as conn:
-        row = conn.execute(
-            "SELECT 1 FROM tenant_role_consents WHERE role_prefix = ?", (role_prefix,)
-        ).fetchone()
-    return row is not None
-
-
-def record_role_consent(role_prefix: str) -> None:
-    """Idempotent - re-acknowledging an already-recorded role_prefix is a
-    no-op (ON CONFLICT DO NOTHING), not an error or a timestamp bump; the
-    original acknowledged_at is what matters, not the most recent one."""
-    with connect() as conn:
-        conn.execute(
-            "INSERT INTO tenant_role_consents (role_prefix) VALUES (?) "
-            "ON CONFLICT (tenant_id, role_prefix) DO NOTHING",
-            (role_prefix,),
-        )
-
-
 # --------------------------------------------------------------------- writes
 def upsert_shortlist(items: Iterable[ShortlistItem]) -> None:
     with connect() as conn:
@@ -2283,6 +2258,76 @@ def list_esi_sharing(tool_key: Optional[str] = None) -> list[tuple[str, int, str
                 (tool_key,),
             ).fetchall()
     return [(r[0], int(r[1]), r[2], r[3]) for r in rows]
+
+
+def upsert_esi_sharing(
+    owner_type: str, owner_id: int, data_kind: str, tool_key: str,
+) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO esi_sharing (owner_type, owner_id, data_kind, tool_key) "
+            "VALUES (?,?,?,?) ON CONFLICT DO NOTHING",
+            (owner_type, owner_id, data_kind, tool_key),
+        )
+
+
+def delete_esi_sharing(
+    owner_type: str, owner_id: int, data_kind: str, tool_key: str,
+) -> None:
+    with connect() as conn:
+        conn.execute(
+            "DELETE FROM esi_sharing "
+            "WHERE owner_type = ? AND owner_id = ? AND data_kind = ? AND tool_key = ?",
+            (owner_type, owner_id, data_kind, tool_key),
+        )
+
+
+def list_esi_freshness() -> list[tuple]:
+    """`(owner_type, owner_id, data_kind, last_success_at, last_attempt_at, last_error)`."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_type, owner_id, data_kind, last_success_at, "
+            "last_attempt_at, last_error FROM esi_freshness "
+            "ORDER BY owner_type, owner_id, data_kind"
+        ).fetchall()
+    out = []
+    for r in rows:
+        success = r[3]
+        attempt = r[4]
+        out.append((
+            r[0], int(r[1]), r[2],
+            success.isoformat() if hasattr(success, "isoformat") else success,
+            attempt.isoformat() if hasattr(attempt, "isoformat") else attempt,
+            r[5],
+        ))
+    return out
+
+
+def list_esi_character_capabilities() -> list[tuple[int, str]]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT character_id, capability_key FROM esi_character_capabilities "
+            "ORDER BY character_id, capability_key"
+        ).fetchall()
+    return [(int(r[0]), r[1]) for r in rows]
+
+
+def upsert_esi_character_capability(character_id: int, capability_key: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO esi_character_capabilities (character_id, capability_key) "
+            "VALUES (?,?) ON CONFLICT DO NOTHING",
+            (character_id, capability_key),
+        )
+
+
+def delete_esi_character_capability(character_id: int, capability_key: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "DELETE FROM esi_character_capabilities "
+            "WHERE character_id = ? AND capability_key = ?",
+            (character_id, capability_key),
+        )
 
 
 def upsert_esi_freshness(

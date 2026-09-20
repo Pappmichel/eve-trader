@@ -116,7 +116,14 @@ function JitaPriceCacheSection() {
 // Mirrors access_gate.ALL_TOOL_KEYS (eve_trader/access_gate.py) - kept in
 // sync by hand, same as every other small fixed-vocabulary list already
 // hardcoded on the frontend elsewhere in this app.
-const ALL_TOOL_KEYS = ['trading', 'production', 'doctrine', 'refining', 'station_trading', 'sorting', 'portfolio', 'admin']
+const ALL_TOOL_KEYS = ['trading', 'production', 'doctrine', 'refining', 'station_trading', 'sorting', 'portfolio', 'admin', 'characters']
+const ESI_CONSUMING_TOOLS = ['trading', 'production', 'doctrine', 'station_trading', 'sorting']
+
+function withAutoCharacters(keys: string[]): string[] {
+  const hasEsi = keys.some((k) => ESI_CONSUMING_TOOLS.includes(k))
+  if (hasEsi && !keys.includes('characters')) return [...keys, 'characters']
+  return keys
+}
 
 // Read-only - tenants are always created implicitly as part of "Add User"
 // below (one dedicated tenant per character, enforced at the DB level, see
@@ -155,22 +162,37 @@ function UserToolCheckboxes({ user }: { user: AdminUser }) {
   const dirty = toolKeys.slice().sort().join(',') !== user.tool_keys.slice().sort().join(',')
   const saveTools = useAction('Save Tools', () => adminApi.setToolGrants(user.character_id, toolKeys),
     [['admin', 'users']])
+  const hasEsi = toolKeys.some((k) => ESI_CONSUMING_TOOLS.includes(k))
 
   return (
-    <Group gap="sm" wrap="wrap">
-      <Checkbox.Group value={toolKeys} onChange={setToolKeys}>
-        <Group gap="xs">
-          {ALL_TOOL_KEYS.map((key) => (
-            <Checkbox key={key} value={key} label={key} size="xs" />
-          ))}
-        </Group>
-      </Checkbox.Group>
-      {dirty && (
-        <Button size="compact-xs" onClick={() => saveTools.mutate()} loading={saveTools.isPending}>
-          Save
-        </Button>
+    <Stack gap={4}>
+      <Group gap="sm" wrap="wrap">
+        <Checkbox.Group value={toolKeys} onChange={(next) => setToolKeys(withAutoCharacters(next))}>
+          <Group gap="xs">
+            {ALL_TOOL_KEYS.map((key) => (
+              <Checkbox
+                key={key}
+                value={key}
+                label={key}
+                size="xs"
+                disabled={key === 'characters' && hasEsi}
+              />
+            ))}
+          </Group>
+        </Checkbox.Group>
+        {dirty && (
+          <Button size="compact-xs" onClick={() => saveTools.mutate()} loading={saveTools.isPending}>
+            Save
+          </Button>
+        )}
+      </Group>
+      {hasEsi && (
+        <Text size="xs" c="dimmed">
+          Characters is auto-ticked while an ESI-consuming tool is granted — the Characters
+          page is how that tool&apos;s data-access is configured.
+        </Text>
       )}
-    </Group>
+    </Stack>
   )
 }
 

@@ -5,14 +5,12 @@ import { useQuery } from '@tanstack/react-query'
 
 import { authApi, gateApi } from '../api/client'
 import { useAction } from '../hooks/useAction'
-import { openRoleAccessConfirmModal } from '../roleAccessDescriptions'
+import { openGateAccessConfirmModal } from '../roleAccessDescriptions'
 
-// Browser-local, not the server-side per-tenant tracking every other role
-// uses (see docs/role_consent_schema.sql) - before a first gate login
-// there's no tenant yet to attach a server-side record to at all (that's
-// what this very login resolves). Purely a friction-reducer for repeat
-// explicit logins from the same browser; gate reads no game data at all,
-// so there's no real access being hidden if this is ever empty/cleared.
+// Browser-local acknowledgement for the identity-only gate login. Before a
+// first gate login there's no tenant yet to attach a server-side record
+// to (that's what this login resolves). Repeat logins from the same
+// browser skip the dialog; gate reads no game data.
 const GATE_CONSENT_KEY = 'eve-trader:gate-consent-acknowledged'
 
 // Only rendered once gateStatus.enabled is true (see AccessConfig.
@@ -42,7 +40,7 @@ function AccessGateStatus() {
       login.mutate()
       return
     }
-    openRoleAccessConfirmModal('gate', () => {
+    openGateAccessConfirmModal(() => {
       try {
         localStorage.setItem(GATE_CONSENT_KEY, '1')
       } catch {

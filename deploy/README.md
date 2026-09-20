@@ -178,11 +178,8 @@ schema file's own version of this same constraint is narrower/stale - skip
 this file and re-running an earlier one can silently leave the constraint
 missing entirely, not just outdated, since a DROP CONSTRAINT can succeed
 even when the following ADD CONSTRAINT then fails - confirmed real,
-2026-08-30), and `role_consent_schema.sql` creates `tenant_role_consents`
-(skipping this makes every `/api/auth/{role_prefix}/consent` call - the
-first-login data-access confirmation - fail with `relation
-"tenant_role_consents" does not exist`, which the frontend's confirm modal
-has no fallback for):
+2026-08-30). Applying `esi_access_schema.sql` drops the retired
+per-prefix consent table if it still exists:
 ```bash
 cd ~/eve-trader
 sudo -u postgres psql -c "CREATE DATABASE eve_trader;"
@@ -194,7 +191,6 @@ sudo -u postgres psql -d eve_trader -f docs/doctrine_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/observability_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/refining_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/station_trading_schema.sql
-sudo -u postgres psql -d eve_trader -f docs/role_consent_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/special_orders_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/sorting_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/production_buy_list_schema.sql
@@ -379,7 +375,6 @@ sudo -u postgres psql -d eve_trader -f docs/doctrine_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/observability_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/refining_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/station_trading_schema.sql
-sudo -u postgres psql -d eve_trader -f docs/role_consent_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/special_orders_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/sorting_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/production_buy_list_schema.sql

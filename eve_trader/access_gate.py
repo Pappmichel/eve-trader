@@ -40,7 +40,10 @@ SESSION_MAX_AGE_SECONDS = 30 * 24 * 3600  # 30 days
 
 # Every tool this app has. "admin" is a normal tool grant, issued by the
 # Admin UI or `eve-trader admin bootstrap` — not implied by DEFAULT_TENANT_ID.
-ALL_TOOL_KEYS = ("trading", "production", "doctrine", "refining", "station_trading", "sorting", "portfolio", "admin")
+# "characters" is the ninth grant (docs/ESI_ACCESS_PLAN.md decision 11):
+# Admin's checkboxes auto-tick it in the UI only; do_set_tool_grants stays
+# replace-not-merge and does not special-case it.
+ALL_TOOL_KEYS = ("trading", "production", "doctrine", "refining", "station_trading", "sorting", "portfolio", "admin", "characters")
 
 
 @dataclass(frozen=True)

@@ -22,7 +22,7 @@ from ..config import ACCESS_CONFIG, TRADING_CONFIG, apply_config_overrides
 from ..doctrine.config import DOCTRINE_CONFIG
 from ..production.config import PRODUCTION_CONFIG
 from .routers import (
-    admin, auth, doctrine, errors, gate, portfolio, production, refining, sorting, station_trading, trading,
+    admin, auth, characters, doctrine, errors, gate, portfolio, production, refining, sorting, station_trading, trading,
 )
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
@@ -84,16 +84,15 @@ _TOOL_PATH_PREFIXES = {
     "/api/sorting/": "sorting",
     "/api/portfolio/": "portfolio",
     "/api/admin/": "admin",
+    "/api/characters/": "characters",
 }
 
 _AUTH_START_PREFIX = "/api/auth/"
 # Every /api/auth/{role_prefix}/<suffix> route that reveals or acts on a
 # specific tool's login role needs the same tool-grant check as /start -
-# /consent (GET status, POST acknowledge - the role-login data-access
-# confirmation, see auth.py's own get_consent_status/acknowledge_consent)
-# was added after #57's own fix and would otherwise silently fall through
-# this function to None (ungated) the exact same way /start used to.
-_AUTH_GATED_SUFFIXES = ("/start", "/consent")
+# /access-preview (the confirm-dialog payload, Phase 5) must not fall
+# through ungated the way /consent used to before it was retired.
+_AUTH_GATED_SUFFIXES = ("/start", "/access-preview")
 
 
 def _is_docs_path(path: str) -> bool:
@@ -109,7 +108,7 @@ def _is_session_only_api_path(path: str) -> bool:
 
 
 def _is_auth_role_gated_path(path: str) -> bool:
-    """True for /api/auth/{role}/start and /consent, including FastAPI templates."""
+    """True for /api/auth/{role}/start and /access-preview, including FastAPI templates."""
     if not path.startswith(_AUTH_START_PREFIX):
         return False
     return any(path.endswith(suffix) for suffix in _AUTH_GATED_SUFFIXES)
@@ -280,6 +279,7 @@ def create_app() -> FastAPI:
     app.include_router(station_trading.router, prefix="/api/station-trading", tags=["station_trading"])
     app.include_router(sorting.router, prefix="/api/sorting", tags=["sorting"])
     app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
+    app.include_router(characters.router, prefix="/api/characters", tags=["characters"])
     app.include_router(errors.router, prefix="/api/errors", tags=["errors"])
 
     if FRONTEND_DIST.exists():

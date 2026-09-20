@@ -31,7 +31,7 @@ from eve_trader.config import ACCESS_CONFIG, OAUTH_CONFIG
 from . import pg_helpers
 from .pg_helpers import (  # noqa: F401
     _apply_admin_schema, _apply_phase1_schema, _apply_phase2_schema, _apply_phase3_schema,
-    _apply_role_consent_schema, _apply_session_revocations_schema, tenant_pair,
+    _apply_session_revocations_schema, tenant_pair,
 )
 
 client = TestClient(create_app())
@@ -90,7 +90,6 @@ def _wipe_auth_state() -> None:
     # whole; individual tests pass because they never saw the prior logout.
     pg_helpers.wipe_tables(
         "tool_grants",
-        "tenant_role_consents",
         "tenant_registry_entries",
         "character_session_revocations",
     )
@@ -102,11 +101,7 @@ def _wipe_tool_grants():
     # a real tool_grants row for character_id=1 (the _session_cookie default)
     # under _DEFAULT_TEST_TENANT_ID; without wiping between tests, a grant
     # set by one test would silently let a later "missing grant" test pass
-    # through instead of 403ing as expected. tenant_role_consents has the
-    # exact same problem for the consent round-trip tests below (a POST in
-    # one test would leave an "already acknowledged" row a later test's own
-    # "before" assertion would then see instead of a clean slate) - wiped
-    # here too rather than as its own separate fixture.
+    # through instead of 403ing as expected.
     _wipe_auth_state()
     yield
     _wipe_auth_state()
@@ -383,70 +378,46 @@ def test_middleware_allows_auth_start_with_the_required_tool_grant(
 
 
 @pg_helpers.postgres_required()
-def test_middleware_rejects_auth_consent_missing_the_required_tool_grant(
+def test_middleware_rejects_auth_access_preview_missing_the_required_tool_grant(
     monkeypatch, _apply_phase1_schema, _apply_phase2_schema, _apply_admin_schema
 ):
-    # Same gap class as #57's own /start fix, for the newer /consent
-    # endpoints (role-login data-access confirmation) - these must not fall
-    # through _required_tool_for_path ungated just because they were added
-    # after that fix.
     _enable_gate(monkeypatch)
     _provision()
 
-    get_resp = client.get("/api/auth/producer/consent", cookies=_session_cookie())
-    post_resp = client.post("/api/auth/producer/consent", cookies=_session_cookie())
+    resp = client.get("/api/auth/producer/access-preview", cookies=_session_cookie())
 
-    assert get_resp.status_code == 403
-    assert post_resp.status_code == 403
+    assert resp.status_code == 403
 
 
 @pg_helpers.postgres_required()
-def test_middleware_allows_auth_consent_with_the_required_tool_grant(
+def test_middleware_allows_auth_access_preview_with_the_required_tool_grant(
     monkeypatch, _apply_phase1_schema, _apply_phase2_schema, _apply_admin_schema
 ):
     _enable_gate(monkeypatch)
     _provision(tools=("production",))
 
-    get_resp = client.get("/api/auth/producer/consent", cookies=_session_cookie())
-    post_resp = client.post("/api/auth/producer/consent", cookies=_session_cookie())
+    resp = client.get("/api/auth/producer/access-preview", cookies=_session_cookie())
 
-    assert get_resp.status_code == 200
-    assert post_resp.status_code == 200
-
-
-@pg_helpers.postgres_required()
-def test_consent_status_round_trips_get_then_post_then_get(
-    monkeypatch, _apply_phase1_schema, _apply_phase2_schema, _apply_admin_schema, _apply_role_consent_schema
-):
-    _enable_gate(monkeypatch)
-    _provision(tools=("production",))
-
-    before = client.get("/api/auth/producer/consent", cookies=_session_cookie())
-    ack = client.post("/api/auth/producer/consent", cookies=_session_cookie())
-    after = client.get("/api/auth/producer/consent", cookies=_session_cookie())
-
-    assert before.json() == {"acknowledged": False}
-    assert ack.json() == {"acknowledged": True}
-    assert after.json() == {"acknowledged": True}
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["title"]
+    assert any(item["key"] == "assets" and item["added"] is True for item in body["items"])
 
 
 @pg_helpers.postgres_required()
-def test_consent_rejects_the_gate_role_prefix(
-    monkeypatch, _apply_phase1_schema, _apply_phase2_schema, _apply_admin_schema, _apply_role_consent_schema
+def test_access_preview_rejects_the_gate_role_prefix(
+    monkeypatch, _apply_phase1_schema, _apply_phase2_schema, _apply_admin_schema
 ):
-    # "gate" consent is tracked client-side (localStorage) - see
-    # role_consent_schema.sql's own comment on why a pre-login tenant can't
-    # exist to attach a server-side record to.
     _enable_gate(monkeypatch)
     _provision()
 
-    resp = client.get("/api/auth/gate/consent", cookies=_session_cookie())
+    resp = client.get("/api/auth/gate/access-preview", cookies=_session_cookie())
 
     assert resp.status_code == 400
 
 
-def test_consent_rejects_an_unknown_role_prefix():
-    resp = client.get("/api/auth/not-a-real-role/consent")
+def test_access_preview_rejects_an_unknown_role_prefix():
+    resp = client.get("/api/auth/not-a-real-role/access-preview")
     assert resp.status_code == 400
 
 

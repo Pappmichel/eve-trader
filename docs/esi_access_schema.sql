@@ -14,6 +14,11 @@
 --   local dev:  Get-Content docs\esi_access_schema.sql | docker exec -i eve-trader-pg psql -U postgres -d eve_trader
 --   live:       sudo -u postgres psql -d eve_trader -f docs/esi_access_schema.sql
 
+-- Phase 5: drop the retired per-prefix consent table. Idempotent so a
+-- live install that once applied that schema file loses the table here;
+-- new installs never create it.
+DROP TABLE IF EXISTS tenant_role_consents;
+
 -- ====================================================== per-tenant: sharing
 -- Composite-PK bucket: two tenants can both share character 123's assets
 -- with production. Group 3 does NOT live here (no tool dimension).

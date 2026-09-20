@@ -606,6 +606,25 @@ export interface GateStatus {
   tools: string[]
 }
 
+export interface AccessPreviewItem {
+  key: string
+  label: string
+  group: number
+  added: boolean
+}
+
+export interface AccessPreview {
+  title: string
+  items: AccessPreviewItem[]
+}
+
+export interface EsiSharingRow {
+  owner_type: string
+  owner_id: number
+  data_kind: string
+  tool_key: string
+}
+
 export interface AdminTenant {
   tenant_id: string
   name: string
