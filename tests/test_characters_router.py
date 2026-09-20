@@ -197,3 +197,80 @@ def test_reauth_callback_writes_via_reauth_write_role_and_rejects_mismatch(
         assert kept is not None
         assert "esi-wallet.read_character_wallet.v1" in kept.scopes
         assert TokenManager().get_record(f"producer:{ALICE}") is None
+
+
+def _add_start_state(cookies) -> str:
+    start = client.get("/api/characters/add/start", cookies=cookies)
+    assert start.status_code == 200
+    return urllib.parse.parse_qs(urllib.parse.urlparse(start.json()["url"]).query)["state"][0]
+
+
+def test_add_start_requires_characters_grant(monkeypatch, _apply_admin_schema):
+    _enable_gate(monkeypatch)
+    monkeypatch.setattr(OAUTH_CONFIG, "client_id", "test-client-id")
+    _provision(tools=("production",))
+    resp = client.get("/api/characters/add/start", cookies=_session_cookie())
+    assert resp.status_code == 403
+
+
+def test_add_start_registers_a_character_that_holds_no_token_yet(
+    monkeypatch, _apply_admin_schema,
+):
+    """The add round is identity-only (decision 1 requests only ticked
+    scopes, and a character with no sharing rows has none), so it lands an
+    `esi:<id>` record with an empty scope string - enough for the
+    Characters page to list the row and for Re-authorize to take over.
+    """
+    _enable_gate(monkeypatch)
+    monkeypatch.setattr(OAUTH_CONFIG, "client_id", "test-client-id")
+    _provision(tools=("characters",))
+
+    state = _add_start_state(_session_cookie())
+    assert "reauth_character_id" not in auth_router._pending[state]
+    assert auth_router._pending[state]["scopes"] == []
+
+    monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
+    monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (ALICE, "Alice")))
+    ok = client.get(
+        "/api/auth/callback", params={"code": "abc", "state": state}, follow_redirects=False,
+    )
+    assert "auth=success" in ok.headers["location"]
+
+    with storage.tenant_context(_TENANT):
+        record = TokenManager().get_record(f"esi:{ALICE}")
+        assert record is not None
+        assert record.character_id == ALICE
+        assert record.scopes.strip() == ""
+
+
+def test_add_round_does_not_strip_the_scopes_of_an_already_registered_character(
+    monkeypatch, _apply_admin_schema,
+):
+    """`reauth_write_role` reuses this character's existing key, so writing
+    the scope-less add round over it would wipe every scope they hold.
+    Adding someone already registered is a no-op instead.
+    """
+    _enable_gate(monkeypatch)
+    monkeypatch.setattr(OAUTH_CONFIG, "client_id", "test-client-id")
+    _provision(tools=("characters",))
+
+    with storage.tenant_context(_TENANT):
+        storage.save_tenant_token(f"esi:{ALICE}", asdict(TokenRecord(
+            role=f"esi:{ALICE}", character_id=ALICE, character_name="Alice",
+            access_token="a", refresh_token="r", expires_at=9999999999.0,
+            scopes="esi-assets.read_assets.v1",
+        )))
+
+    state = _add_start_state(_session_cookie())
+    monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
+    monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (ALICE, "Alice")))
+    ok = client.get(
+        "/api/auth/callback", params={"code": "abc", "state": state}, follow_redirects=False,
+    )
+    assert "added=existing" in ok.headers["location"]
+
+    with storage.tenant_context(_TENANT):
+        record = TokenManager().get_record(f"esi:{ALICE}")
+        assert record is not None
+        assert record.scopes == "esi-assets.read_assets.v1"
+        assert record.access_token == "a"

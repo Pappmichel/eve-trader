@@ -1446,11 +1446,12 @@ Landed: Phase 8 (#169), 0 (#171), 1 (#172), 2 (#173), 3a (#174),
 3b (#175), 4 (#176), 7 (#177), 5+6 (#178), 9 (this PR).
 
 Read **"Known gaps after Phase 9"** below before starting. Two things
-the Characters page describes do not work yet — adding a character that
-does not already hold a token, and the Corporations "access via" column.
-Neither blocks this cutover (the backfill brings every pre-existing
-character across), but both will surprise you if you meet them first on
-deploy day.
+the Characters page describes were open after Phase 9 — adding a
+character that does not already hold a token (since closed, see gap 1)
+and the Corporations "access via" column (still open). Neither blocks
+this cutover (the backfill brings every pre-existing character across),
+but the remaining one will surprise you if you meet it first on deploy
+day.
 
 ### Prerequisites
 
@@ -1626,26 +1627,33 @@ What to check, in this order, and what a correct result looks like.
 
 ## Known gaps after Phase 9
 
-The rebuild is complete against every phase's own brief. These two
-things the UI *describes* are not delivered. They are recorded here
-rather than in a merged PR description, which is where such notes go
-to die.
+The rebuild is complete against every phase's own brief. Of the two
+things the UI *described* but did not deliver, gap 1 has since been
+closed; gap 2 stands. They are recorded here rather than in a merged PR
+description, which is where such notes go to die.
 
-**1. There is no add-a-new-character path.** `/api/characters/reauth/start`
-requires a `character_id`, and prefix `/api/auth/{role_prefix}/start` was
-removed in Phase 9. A character therefore only appears on the Characters
-page once it already holds a token — which the Phase 1 conservative
-backfill arranges for every character that existed before the cutover,
-but nothing arranges for a new one. The empty state is copy-only.
+**1. ~~There is no add-a-new-character path.~~ Closed (Phase 9a).**
+Before this, `/api/characters/reauth/start` required a `character_id` and
+prefix `/api/auth/{role_prefix}/start` was gone, so a character only ever
+appeared on the Characters page once it already held a token — which the
+Phase 1 conservative backfill arranges for every pre-cutover character,
+but nothing arranged for a new one.
 
-Shape of the fix, if it is taken: an SSO start with no `character_id`
-requesting **no scopes** (identity only, the same shape `gate` already
-uses), and a `/callback` branch that resolves the character from the
-returned token and writes it under `reauth_write_role(character_id)` —
-which Phase 4 already built and which returns `esi:<id>` for an unknown
-character. Two SSO rounds to get a useful character (add, then tick and
-re-authorize) is the honest consequence of settled decision 1: only
-ticked scopes are ever requested.
+`GET /api/characters/add/start` (tool_key `characters`, "Add character" in
+the page header) now starts an SSO round with **no scopes at all**,
+identity only, the same shape `gate` uses, and with no
+`reauth_character_id` in the pending entry. `/callback`'s `reauth` branch
+covers both rounds: whoever logs in is the character, written under
+`reauth_write_role(character_id)` — Phase 4's helper, which returns
+`esi:<id>` for an unknown character. **Two SSO rounds** to get a useful
+character (add, then tick data kinds and press Re-authorize) is the honest
+consequence of settled decision 1: only ticked scopes are ever requested.
+
+One guard is load-bearing: because the add round carries no scopes and
+`reauth_write_role` *reuses* an existing key, writing it over a character
+who already holds a token would silently strip every scope they have.
+Adding an already-registered character is therefore a deliberate no-op —
+`/callback` redirects with `added=existing` and writes nothing.
 
 **2. The Corporations table cannot name its access character or warn on
 a missing in-game role.** `do_list_token_characters` returns no

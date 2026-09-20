@@ -20,6 +20,7 @@ vi.mock('../../api/client', () => ({
     setCapability: vi.fn(),
     accessPreview: vi.fn(),
     reauthStart: vi.fn(),
+    addStart: vi.fn(),
     sync: vi.fn(),
   },
   ApiError: class ApiError extends Error {
@@ -101,6 +102,7 @@ describe('Characters page', () => {
     expect(screen.getByText('Structure market book')).toBeInTheDocument()
     expect(screen.getByText('Sorting has no Assets source')).toBeInTheDocument()
     expect(screen.getByText('Trading has no Assets source')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add character' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Sync everything' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Re-authorize' })).toBeInTheDocument()
 
@@ -117,5 +119,32 @@ describe('Characters page', () => {
       tool_key: 'sorting',
       enabled: true,
     })
+  })
+
+  it('offers Add character on the empty state and sends the browser to the SSO url', async () => {
+    vi.mocked(charactersApi.owners).mockResolvedValue([])
+    vi.mocked(charactersApi.sharing).mockResolvedValue([])
+    vi.mocked(charactersApi.freshness).mockResolvedValue([])
+    vi.mocked(charactersApi.capabilities).mockResolvedValue([])
+    vi.mocked(charactersApi.addStart).mockResolvedValue({ url: 'https://login.eveonline.com/v2/oauth/authorize?x=1' })
+
+    // jsdom's own window.location is not assignable; the page does a plain
+    // `window.location.href = url` (same as Re-authorize), so stub it.
+    const assigned: string[] = []
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { get href() { return '' }, set href(v: string) { assigned.push(v) } },
+    })
+
+    const user = userEvent.setup()
+    renderPage()
+
+    expect(await screen.findByText(/No ESI characters registered yet/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Add character' }))
+
+    await vi.waitFor(() => {
+      expect(assigned).toEqual(['https://login.eveonline.com/v2/oauth/authorize?x=1'])
+    })
+    expect(vi.mocked(charactersApi.addStart)).toHaveBeenCalledTimes(1)
   })
 })
