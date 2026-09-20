@@ -87,7 +87,9 @@ def test_set_sharing_toggles_and_rejects_non_consuming_tool(tenant):
         esi_actions.do_set_sharing("character", ALICE, "not_a_kind", "production", True)
 
 
-def test_list_token_characters_flags_a_pool(tenant):
+def test_list_token_characters_flags_a_pool(tenant, monkeypatch):
+    from eve_trader.esi_client import ESIClient
+    monkeypatch.setattr(ESIClient, "character_public_info", lambda self, character_id: {"corporation_id": 9001})
     _save_token(ALICE, f"producer:{ALICE}", ASSETS_SCOPE)
     _save_token(ALICE, f"doctrine-assets:{ALICE}", ASSETS_SCOPE)
     rows = esi_actions.do_list_token_characters()
@@ -95,3 +97,111 @@ def test_list_token_characters_flags_a_pool(tenant):
     assert rows[0]["character_id"] == ALICE
     assert rows[0]["character_has_token_pool"] is True
     assert rows[0]["write_role"] == f"doctrine-assets:{ALICE}"
+
+
+# --------------------------------------------------------------- Known gap 2
+
+
+def test_list_token_characters_includes_corporation_id(tenant, monkeypatch):
+    from eve_trader.esi_client import ESIClient
+    monkeypatch.setattr(ESIClient, "character_public_info", lambda self, character_id: {"corporation_id": 9001})
+    _save_token(ALICE, f"esi:{ALICE}", ASSETS_SCOPE)
+
+    rows = esi_actions.do_list_token_characters()
+
+    assert rows[0]["corporation_id"] == 9001
+
+
+def test_list_token_characters_corporation_id_is_none_on_lookup_failure(tenant, monkeypatch):
+    from eve_trader.esi_client import ESIClient
+
+    def _boom(self, character_id):
+        raise Exception("ESI unreachable")  # noqa: BLE001 - simulating an arbitrary live-ESI failure
+    monkeypatch.setattr(ESIClient, "character_public_info", _boom)
+    _save_token(ALICE, f"esi:{ALICE}", ASSETS_SCOPE)
+
+    rows = esi_actions.do_list_token_characters()
+
+    assert rows[0]["corporation_id"] is None
+
+
+BOB = 1002
+CORP = 9001
+
+
+def _tick_roles_capability(character_id):
+    from eve_trader import storage
+    storage.upsert_esi_character_capability(character_id, "corporation_roles")
+
+
+def test_check_corporation_roles_reports_true_when_a_checked_member_holds_it(tenant, monkeypatch):
+    from eve_trader.esi_client import ESIClient
+    monkeypatch.setattr(ESIClient, "character_public_info", lambda self, character_id: {"corporation_id": CORP})
+    monkeypatch.setattr(ESIClient, "character_roles", lambda self, character_id, auth_role: {"roles": ["Director"]})
+    _save_token(ALICE, f"esi:{ALICE}", "esi-characters.read_corporation_roles.v1")
+    _tick_roles_capability(ALICE)
+
+    result = esi_actions.do_check_corporation_roles()
+
+    corp = result["corporations"][0]
+    assert corp["corporation_id"] == CORP
+    assert corp["checked_characters"] == ["Alice"]
+    assert corp["data_kinds"]["assets"] == {"required_roles": ["Director"], "has_role": True}
+    assert corp["data_kinds"]["market_orders"] == {
+        "required_roles": ["Accountant", "Trader"], "has_role": False,
+    }
+
+
+def test_check_corporation_roles_reports_none_when_nobody_is_checked(tenant, monkeypatch):
+    from eve_trader.esi_client import ESIClient
+    monkeypatch.setattr(ESIClient, "character_public_info", lambda self, character_id: {"corporation_id": CORP})
+    _save_token(ALICE, f"esi:{ALICE}", ASSETS_SCOPE)
+    # Capability never ticked for Alice.
+
+    result = esi_actions.do_check_corporation_roles()
+
+    corp = result["corporations"][0]
+    assert corp["checked_characters"] == []
+    assert corp["unchecked_characters"] == ["Alice"]
+    assert corp["data_kinds"]["assets"] == {"required_roles": ["Director"], "has_role": None}
+
+
+def test_check_corporation_roles_skips_ticked_character_whose_token_lacks_the_scope(tenant, monkeypatch):
+    from eve_trader.esi_client import ESIClient
+    monkeypatch.setattr(ESIClient, "character_public_info", lambda self, character_id: {"corporation_id": CORP})
+    monkeypatch.setattr(ESIClient, "character_roles", lambda self, character_id, auth_role:
+                         pytest.fail("must not call character_roles with no scope-holding token"))
+    _save_token(ALICE, f"esi:{ALICE}", ASSETS_SCOPE)  # ticked, but no corporation_roles scope yet
+    _tick_roles_capability(ALICE)
+
+    result = esi_actions.do_check_corporation_roles()
+
+    corp = result["corporations"][0]
+    assert corp["unchecked_characters"] == ["Alice"]
+    assert corp["data_kinds"]["assets"]["has_role"] is None
+
+
+def test_check_corporation_roles_second_corp_member_covers_a_missing_role(tenant, monkeypatch):
+    """Alice (Director) and Bob (Accountant) in the same corp - Assets is
+    covered by Alice, Market Orders by Bob, each corp-wide, not per
+    character."""
+    from eve_trader.esi_client import ESIClient
+    monkeypatch.setattr(ESIClient, "character_public_info", lambda self, character_id: {"corporation_id": CORP})
+
+    def _roles(self, character_id, auth_role):
+        return {"roles": ["Director"] if character_id == ALICE else ["Accountant"]}
+    monkeypatch.setattr(ESIClient, "character_roles", _roles)
+    _save_token(ALICE, f"esi:{ALICE}", "esi-characters.read_corporation_roles.v1")
+    _tick_roles_capability(ALICE)
+    _save_token(BOB, f"esi:{BOB}", "esi-characters.read_corporation_roles.v1", name="Bob")
+    _tick_roles_capability(BOB)
+
+    result = esi_actions.do_check_corporation_roles()
+
+    corp = result["corporations"][0]
+    assert corp["checked_characters"] == ["Alice", "Bob"]
+    assert corp["data_kinds"]["assets"]["has_role"] is True
+    assert corp["data_kinds"]["market_orders"]["has_role"] is True
+    # wallet's corp_roles is (Accountant, Junior_Accountant) - Bob's
+    # Accountant role covers this too, not just market_orders.
+    assert corp["data_kinds"]["wallet"]["has_role"] is True

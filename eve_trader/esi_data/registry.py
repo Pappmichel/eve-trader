@@ -148,6 +148,18 @@ ACCESS_CAPABILITIES: tuple[AccessCapability, ...] = (
         corporation_scope=None,
         corp_roles=(),
     ),
+    AccessCapability(
+        key="corporation_roles",
+        label="Corporation roles",
+        # docs/ESI_ACCESS_PLAN.md Known gap 2 (the Corporations table's
+        # role warning): ESI does not expose a character's corp roles
+        # without this scope, and nothing in this app requested it before
+        # gap 2 closed. Character-only - there is no separate "corporation
+        # roles of corporation X" endpoint; each member reports their own.
+        character_scope="esi-characters.read_corporation_roles.v1",
+        corporation_scope=None,
+        corp_roles=(),
+    ),
 )
 
 

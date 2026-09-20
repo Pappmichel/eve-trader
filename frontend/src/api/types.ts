@@ -645,6 +645,20 @@ export interface EsiTokenCharacter {
   write_role: string
   character_has_token_pool: boolean
   roles: string[]
+  /** Known gap 2 (docs/ESI_ACCESS_PLAN.md) - null if the live lookup failed. */
+  corporation_id: number | null
+}
+
+/** Known gap 2's role warning - POST /api/characters/corporation-roles/check. */
+export interface CorporationRoleCheck {
+  corporation_id: number
+  checked_characters: string[]
+  unchecked_characters: string[]
+  data_kinds: Record<string, { required_roles: string[]; has_role: boolean | null }>
+}
+
+export interface CorporationRoleCheckResult {
+  corporations: CorporationRoleCheck[]
 }
 
 export interface AdminTenant {

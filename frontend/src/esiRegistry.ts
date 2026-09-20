@@ -69,6 +69,11 @@ export const ACCESS_CAPABILITIES: readonly AccessCapability[] = [
     label: 'Structure market book',
     corpRoles: [],
   },
+  {
+    key: 'corporation_roles',
+    label: 'Corporation roles',
+    corpRoles: [],
+  },
 ]
 
 export const TOOL_LABELS: Record<string, string> = {

@@ -16,7 +16,7 @@ from ..auth import TokenManager
 from ..config import OAUTH_CONFIG
 from . import orchestrator
 from .registry import ACCESS_CAPABILITIES, OWNED_DATA_KINDS, consuming_tool_keys
-from .selector import character_has_token_pool, normalize_scopes, reauth_write_role
+from .selector import character_has_token_pool, normalize_scopes, reauth_write_role, select_auth_role
 
 
 class ActionError(RuntimeError):
@@ -142,8 +142,24 @@ def do_list_capabilities() -> list[dict]:
     ]
 
 
+def _cached_corporation_id(client, character_id: int) -> Optional[int]:
+    """Best-effort corporation_id for `character_id` via the cached,
+    public, unauthenticated character_public_info - never raises (docs/
+    ESI_ACCESS_PLAN.md Known gap 2). None on any failure/missing field;
+    callers treat that as "cannot resolve", not an error."""
+    try:
+        info = client.character_public_info(character_id)
+    except Exception:  # noqa: BLE001 - best-effort; a page load must not 500 on one character's lookup failing
+        return None
+    corp_id = info.get("corporation_id") if isinstance(info, dict) else None
+    return int(corp_id) if corp_id else None
+
+
 def do_list_token_characters() -> list[dict]:
+    from ..esi_client import ESIClient
+
     tm = TokenManager(OAUTH_CONFIG)
+    client = ESIClient(tokens=tm)
     by_id: dict[int, dict] = {}
     for rec in tm.list_records():
         slot = by_id.setdefault(rec.character_id, {
@@ -162,8 +178,90 @@ def do_list_token_characters() -> list[dict]:
             "write_role": reauth_write_role(cid),
             "character_has_token_pool": character_has_token_pool(cid),
             "roles": sorted(slot["roles"]),
+            # Known gap 2's "access via" column - the corporation this
+            # character belongs to, cached (ESIClient.character_public_info),
+            # public data, best-effort (None if the lookup fails).
+            "corporation_id": _cached_corporation_id(client, cid),
         })
     return out
+
+
+def do_check_corporation_roles() -> dict:
+    """Known gap 2's role warning: for every corp a registered character
+    belongs to, and every Group-1 data kind with corp_roles set (Assets/
+    Industry Jobs/Blueprints -> Director; Market Orders -> Accountant or
+    Trader; Wallet -> Accountant or Junior_Accountant), whether at least
+    one member whose roles were actually checked holds a needed role.
+
+    A character's roles are only checked when they have the
+    "corporation_roles" capability ticked (Access section, Characters
+    page) AND a token carrying esi-characters.read_corporation_roles.v1 -
+    live ESI, not cached (a stale role warning defeats its own purpose).
+    A corp with zero checked members reports has_role=None ("cannot
+    verify") for every kind, never a false "missing" - matches the
+    fallback this replaces ("a live 403 stays the real check": silence
+    when unverifiable, not an alarm).
+
+    Returns {"corporations": [{"corporation_id", "checked_characters",
+    "unchecked_characters", "data_kinds": {kind_key: {"required_roles",
+    "has_role"}}}]} - only for corp_roles-bearing kinds, only for corps
+    with at least one registered member."""
+    from ..esi_client import ESIClient, ESIError
+
+    tm = TokenManager(OAUTH_CONFIG)
+    client = ESIClient(tokens=tm)
+    cap = _CAP_BY_KEY["corporation_roles"]
+
+    members_by_corp: dict[int, list[tuple[int, str]]] = {}
+    for rec in tm.list_records():
+        corp_id = _cached_corporation_id(client, rec.character_id)
+        if corp_id is None:
+            continue
+        pair = (rec.character_id, rec.character_name)
+        bucket = members_by_corp.setdefault(corp_id, [])
+        if pair not in bucket:
+            bucket.append(pair)
+
+    role_kinds = [k for k in OWNED_DATA_KINDS if k.corp_roles]
+    capable_ids = {
+        cid for cid, key in storage.list_esi_character_capabilities() if key == "corporation_roles"
+    }
+
+    corporations = []
+    for corp_id, members in sorted(members_by_corp.items()):
+        checked_roles: set[str] = set()
+        checked_names: list[str] = []
+        unchecked_names: list[str] = []
+        for character_id, character_name in members:
+            role = (select_auth_role(character_id, cap.character_scope, tokens=tm)
+                    if character_id in capable_ids else None)
+            if role is None:
+                unchecked_names.append(character_name)
+                continue
+            try:
+                roles_resp = client.character_roles(character_id, auth_role=role)
+            except ESIError:
+                unchecked_names.append(character_name)
+                continue
+            checked_roles.update(roles_resp.get("roles") or [])
+            checked_names.append(character_name)
+
+        data_kinds = {}
+        for kind in role_kinds:
+            if not checked_names:
+                data_kinds[kind.key] = {"required_roles": list(kind.corp_roles), "has_role": None}
+            else:
+                data_kinds[kind.key] = {
+                    "required_roles": list(kind.corp_roles),
+                    "has_role": bool(checked_roles & set(kind.corp_roles)),
+                }
+        corporations.append({
+            "corporation_id": corp_id,
+            "checked_characters": sorted(checked_names),
+            "unchecked_characters": sorted(unchecked_names),
+            "data_kinds": data_kinds,
+        })
+    return {"corporations": corporations}
 
 
 def do_set_sharing(

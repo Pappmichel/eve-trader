@@ -524,6 +524,8 @@ export const charactersApi = {
     post<Record<string, unknown>>(
       toolKey ? `/api/characters/sync?tool_key=${encodeURIComponent(toolKey)}` : '/api/characters/sync',
     ),
+  checkCorporationRoles: () =>
+    post<T.CorporationRoleCheckResult>('/api/characters/corporation-roles/check'),
 }
 
 // ------------------------------------------------------------------ errors
