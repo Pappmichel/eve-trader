@@ -6,8 +6,8 @@ def test_do_resolve_structure_name_captures_solar_system_id_from_corp_structures
     # GitHub issue #12/#21: solar_system_id (needed for per-category cost
     # index lookups) used to be discarded entirely - only `name` was ever
     # read out of either ESI path's response.
-    monkeypatch.setattr(esi_sync, "list_producer_characters",
-                         lambda: [("producer:1", 1, "Alice")])
+    monkeypatch.setattr(esi_sync, "list_capability_characters",
+                         lambda capability_key: [("esi:1", 1, "Alice")])
     monkeypatch.setattr(esi_client.ESIClient, "character_public_info", lambda self, cid: {"corporation_id": 99})
     monkeypatch.setattr(esi_client.ESIClient, "corporation_structures", lambda self, corp_id, auth_role: [
         {"structure_id": 60000000001, "name": "C-J Keepstar", "solar_system_id": 30000142},
@@ -28,8 +28,8 @@ def test_do_resolve_structure_name_captures_solar_system_id_from_docking_history
     # Path 1 (corp structures) fails to find it - falls back to path 2
     # (ESIClient.get_structure_name, now returning the raw dict instead of
     # just a name string) - solar_system_id must still be captured there.
-    monkeypatch.setattr(esi_sync, "list_producer_characters",
-                         lambda: [("producer:1", 1, "Alice")])
+    monkeypatch.setattr(esi_sync, "list_capability_characters",
+                         lambda capability_key: [("esi:1", 1, "Alice")])
     monkeypatch.setattr(esi_client.ESIClient, "character_public_info", lambda self, cid: {"corporation_id": 99})
     monkeypatch.setattr(esi_client.ESIClient, "corporation_structures", lambda self, corp_id, auth_role: [])
     monkeypatch.setattr(esi_client.ESIClient, "get_structure_name", lambda self, loc_id, auth_role: {

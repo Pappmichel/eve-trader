@@ -85,7 +85,13 @@ def home_prices(cfg: ProductionConfig, type_ids: list[int]) -> dict[int, Current
         from ..config import OAUTH_CONFIG
         try:
             esi_client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))
-            for role, _character_id, _name in esi_sync.list_producer_characters():
+            # Group 3 ("structure_market_book"), not producer sharing
+            # (docs/ESI_ACCESS_PLAN.md Known gap 4, closed) - this needs a
+            # character with esi-markets.structure_markets.v1 ticked on the
+            # Characters page's Access table, not one sharing Assets/Market
+            # Orders with production; those are unrelated facts about the
+            # same character.
+            for role, _character_id, _name in esi_sync.list_capability_characters("structure_market_book"):
                 try:
                     stats = esi_client.structure_order_stats_bulk(cfg.home_location_id, type_ids, auth_role=role)
                 except ESIError:

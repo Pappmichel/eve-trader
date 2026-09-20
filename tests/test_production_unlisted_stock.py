@@ -67,7 +67,7 @@ def test_live_fetches_assets_and_orders_and_flags_unlisted_stock(monkeypatch, te
         (1, "No Order At All", 0, 50, None),
         (2, "Fully Listed", 0, 50, None),
     ])
-    monkeypatch.setattr(actions.esi_sync, "list_producer_characters",
+    monkeypatch.setattr(actions.esi_sync, "list_shared_producer_characters",
                          lambda: [("producer:1", 1, "TestChar")])
     monkeypatch.setattr(TokenManager, "__init__", lambda self, *a, **kw: None)
 
@@ -121,7 +121,7 @@ def test_margin_lookup_goonmetrics_failure_degrades_to_none_not_500(monkeypatch,
 
     cfg = ProductionConfig(home_location_id=HOME_LOCATION_ID)
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [(1, "No Order At All", 0, 50, None)])
-    monkeypatch.setattr(actions.esi_sync, "list_producer_characters",
+    monkeypatch.setattr(actions.esi_sync, "list_shared_producer_characters",
                          lambda: [("producer:1", 1, "TestChar")])
     monkeypatch.setattr(TokenManager, "__init__", lambda self, *a, **kw: None)
     monkeypatch.setattr(ESIClient, "character_assets", lambda self, character_id, auth_role: [
@@ -148,7 +148,7 @@ def test_corp_hangar_stock_with_only_a_corp_order_is_not_flagged_unlisted(monkey
     # this must count as "listed", not get flagged as unlisted stock.
     cfg = ProductionConfig(home_location_id=HOME_LOCATION_ID)
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [(1, "Corp Hangar Item", 0, 50, None)])
-    monkeypatch.setattr(actions.esi_sync, "list_producer_characters",
+    monkeypatch.setattr(actions.esi_sync, "list_shared_producer_characters",
                          lambda: [("producer:1", 1, "TestChar")])
     monkeypatch.setattr(TokenManager, "__init__", lambda self, *a, **kw: None)
 
@@ -177,7 +177,7 @@ def test_backup_only_stock_target_is_never_flagged_as_unlisted(monkeypatch):
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [
         (1, "Augmentation Decryptor", 300, None, None),
     ])
-    monkeypatch.setattr(actions.esi_sync, "list_producer_characters",
+    monkeypatch.setattr(actions.esi_sync, "list_shared_producer_characters",
                          lambda: [("producer:1", 1, "TestChar")])
     monkeypatch.setattr(TokenManager, "__init__", lambda self, *a, **kw: None)
 
@@ -201,7 +201,7 @@ def test_corp_order_role_failure_does_not_block_corp_asset_role_success(monkeypa
     # prevent the other from being fetched and used.
     cfg = ProductionConfig(home_location_id=HOME_LOCATION_ID)
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [(1, "Corp Hangar Item", 0, 50, None)])
-    monkeypatch.setattr(actions.esi_sync, "list_producer_characters",
+    monkeypatch.setattr(actions.esi_sync, "list_shared_producer_characters",
                          lambda: [("producer:1", 1, "TestChar")])
     monkeypatch.setattr(TokenManager, "__init__", lambda self, *a, **kw: None)
 
@@ -233,7 +233,7 @@ def test_corp_order_role_failure_does_not_block_corp_asset_role_success(monkeypa
 
 
 def _stub_unlisted_esi(monkeypatch, characters, assets_by_char, orders_by_char=None):
-    monkeypatch.setattr(actions.esi_sync, "list_producer_characters", lambda: characters)
+    monkeypatch.setattr(actions.esi_sync, "list_shared_producer_characters", lambda: characters)
     monkeypatch.setattr(TokenManager, "__init__", lambda self, *a, **kw: None)
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 0, f"Item {type_id}"))
     orders_by_char = orders_by_char or {}
