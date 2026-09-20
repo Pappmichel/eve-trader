@@ -109,6 +109,27 @@ def tenant_import_tokens(tenant_id: str | None, path: str | None):
     click.echo(f"Imported {count} token(s) into tenant {tenant_id or storage.DEFAULT_TENANT_ID}.")
 
 
+@tenant.command("backfill-esi-sharing")
+@click.option("--tenant-id", default=None, help="Tenant to backfill (default: the fixed default tenant).")
+def tenant_backfill_esi_sharing(tenant_id: str | None):
+    """One-time conservative ESI sharing backfill (docs/ESI_ACCESS_PLAN.md
+    decision 13). Idempotent and per-tenant. No web equivalent — same
+    operator-run shape as `tenant import-tokens`."""
+    from .esi_data.backfill import backfill_conservative_sharing
+    tid = tenant_id or storage.DEFAULT_TENANT_ID
+    with storage.tenant_context(tid):
+        result = backfill_conservative_sharing()
+    click.echo(
+        f"Backfilled tenant {tid}: {result['sharing_inserts_attempted']} sharing "
+        f"insert(s) attempted from {result['tokens']} token(s)."
+    )
+    missing = result["characters_missing_corporation_id"]
+    if missing:
+        click.echo(
+            f"  character-only (public-info lookup failed): {missing}"
+        )
+
+
 @main.command("migrate-sqlite")
 @click.argument("db_path", type=click.Path(exists=True))
 @click.option("--tenant-id", default=None, help="Tenant to migrate into (default: the fixed default tenant).")
