@@ -22,8 +22,8 @@ DEFAULT_STALE_CLEAR_MULTIPLES = 3
 # UPSERT so excluded_from_planning survives a re-sync (GitHub issue #39).
 _KIND_TABLES: dict[str, dict[str, tuple[str, ...]]] = {
     "assets": {
-        "character": ("character_assets", "doctrine_character_assets"),
-        "corporation": ("corp_assets", "doctrine_corp_assets"),
+        "character": ("character_assets",),
+        "corporation": ("corp_assets",),
     },
     "industry_jobs": {
         "character": ("character_industry_jobs",),

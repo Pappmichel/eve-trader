@@ -279,3 +279,75 @@ BEGIN
     END IF;
 END
 $$;
+
+-- Phase 3b: copy leftover doctrine asset tables into the shared pair, then
+-- drop them. Idempotent: a fresh install never creates these tables
+-- (doctrine_schema.sql stopped creating them in the same change), so this
+-- is a no-op there. On an existing deploy the copy runs as the owner role
+-- (bypasses RLS) and preserves tenant_id. PK is (item_id, owner_name).
+-- Conflict = the same item dual-synced into both table pairs. Prefer an
+-- already owner-id-stamped shared-table row over an unstamped doctrine
+-- row; otherwise take the incoming doctrine row. Next orchestrator sync
+-- self-corrects either way (docs/ESI_ACCESS_PLAN.md Phase 3).
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'doctrine_character_assets'
+    ) THEN
+        INSERT INTO character_assets (
+            tenant_id, item_id, type_id, location_id, location_flag, quantity,
+            is_blueprint_copy, owner_name, resolved_location_id, resolved_hangar_flag,
+            owner_character_id, owner_corporation_id
+        )
+        SELECT
+            tenant_id, item_id, type_id, location_id, location_flag, quantity,
+            is_blueprint_copy, owner_name, resolved_location_id, resolved_hangar_flag,
+            owner_character_id, owner_corporation_id
+        FROM doctrine_character_assets
+        ON CONFLICT (item_id, owner_name) DO UPDATE SET
+            tenant_id = EXCLUDED.tenant_id,
+            type_id = EXCLUDED.type_id,
+            location_id = EXCLUDED.location_id,
+            location_flag = EXCLUDED.location_flag,
+            quantity = EXCLUDED.quantity,
+            is_blueprint_copy = EXCLUDED.is_blueprint_copy,
+            resolved_location_id = EXCLUDED.resolved_location_id,
+            resolved_hangar_flag = EXCLUDED.resolved_hangar_flag,
+            owner_character_id = EXCLUDED.owner_character_id,
+            owner_corporation_id = EXCLUDED.owner_corporation_id
+        WHERE character_assets.owner_character_id IS NULL
+           OR EXCLUDED.owner_character_id IS NOT NULL;
+        DROP TABLE doctrine_character_assets;
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'doctrine_corp_assets'
+    ) THEN
+        INSERT INTO corp_assets (
+            tenant_id, item_id, type_id, location_id, location_flag, quantity,
+            is_blueprint_copy, owner_name, resolved_location_id, resolved_hangar_flag,
+            owner_character_id, owner_corporation_id
+        )
+        SELECT
+            tenant_id, item_id, type_id, location_id, location_flag, quantity,
+            is_blueprint_copy, owner_name, resolved_location_id, resolved_hangar_flag,
+            owner_character_id, owner_corporation_id
+        FROM doctrine_corp_assets
+        ON CONFLICT (item_id, owner_name) DO UPDATE SET
+            tenant_id = EXCLUDED.tenant_id,
+            type_id = EXCLUDED.type_id,
+            location_id = EXCLUDED.location_id,
+            location_flag = EXCLUDED.location_flag,
+            quantity = EXCLUDED.quantity,
+            is_blueprint_copy = EXCLUDED.is_blueprint_copy,
+            resolved_location_id = EXCLUDED.resolved_location_id,
+            resolved_hangar_flag = EXCLUDED.resolved_hangar_flag,
+            owner_character_id = EXCLUDED.owner_character_id,
+            owner_corporation_id = EXCLUDED.owner_corporation_id
+        WHERE corp_assets.owner_corporation_id IS NULL
+           OR EXCLUDED.owner_corporation_id IS NOT NULL;
+        DROP TABLE doctrine_corp_assets;
+    END IF;
+END
+$$;

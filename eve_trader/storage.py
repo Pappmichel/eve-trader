@@ -1759,10 +1759,10 @@ def _resolve_hangar_flags(rows: list[tuple], location_index: int = 2, flag_index
 # (decision 6). replace_character_slots stays an UPSERT (#39).
 
 _CHAR_ASSET_TABLES = frozenset({
-    "character_assets", "doctrine_character_assets",
+    "character_assets",
 })
 _CORP_ASSET_TABLES = frozenset({
-    "corp_assets", "doctrine_corp_assets",
+    "corp_assets",
 })
 _ASSET_TABLES = _CHAR_ASSET_TABLES | _CORP_ASSET_TABLES
 _CHAR_JOB_TABLES = frozenset({"character_industry_jobs"})
@@ -1960,8 +1960,8 @@ def replace_assets(
     #20) and resolved_hangar_flag (the corp-hangar-division flag a nested
     item should actually be counted under - see _resolve_hangar_flags) are
     both computed here, not by the caller, so every existing/future caller
-    (esi_sync.py, doctrine/esi_sync.py, tests) gets them automatically just
-    by going through this one function.
+    (esi_sync.py, tests) gets them automatically just by going through this
+    one function.
 
     Partitioned by owner (Phase 2). `owner_character_id` /
     `owner_corporation_id` are stamped on every insert so the table
@@ -2463,10 +2463,12 @@ def esi_stock_at_location(type_id: int, location_id: Optional[int],
     to `location_id` (None = all locations - useful when the home structure's
     numeric ID isn't configured). Excludes NON_STOCK_LOCATION_FLAGS (see above).
 
-    `tables` defaults to Production's own ESI-synced asset tables - pass
-    `("doctrine_character_assets", "doctrine_corp_assets")` for Doctrine's
-    own independent asset sync (doctrine/esi_sync.py's sync_assets) instead;
-    same column shape either way, just a different source table pair.
+    `tables` defaults to the shared ESI-synced asset tables
+    (`character_assets` / `corp_assets`). Doctrine Stockpile does **not**
+    pass a second table pair — it reads through the fail-closed accessor
+    (`read_esi("assets", "doctrine")`) and sums with
+    `esi_stock_from_asset_rows`. An unfiltered Doctrine read of the merged
+    tables would count Production characters' assets too.
 
     `allowed_flags`: when a non-empty tuple, an *additional*
     `resolved_hangar_flag IN (...)` filter restricting the count to just
@@ -2563,6 +2565,56 @@ def esi_stock_at_location_bulk(type_ids: list[int], location_id: Optional[int],
             for tid, qty in rows:
                 if tid in totals:
                     totals[tid] += qty
+    return totals
+
+
+def esi_stock_from_asset_rows(
+    rows: list[dict],
+    type_ids: list[int],
+    location_id: Optional[int],
+    allowed_flags: Optional[tuple[str, ...]] = None,
+    exclude_intake_at_location_id: Optional[int] = None,
+) -> dict[int, float]:
+    """Same filters as esi_stock_at_location_bulk, applied to already-fetched
+    accessor rows instead of querying asset tables. Doctrine Stockpile uses
+    this after `read_esi("assets", "doctrine")` so Production-only owners
+    cannot leak into Ist. Missing ids map to 0.0. Empty `type_ids` is `{}`.
+    """
+    unique = list(dict.fromkeys(type_ids))
+    if not unique:
+        return {}
+    wanted = set(unique)
+    non_stock = set(NON_STOCK_LOCATION_FLAGS)
+    allowed = set(allowed_flags) if allowed_flags else None
+    intake_pairs: set[tuple[str, str]] = set()
+    if exclude_intake_at_location_id is not None:
+        intake_pairs = {
+            (owner_name, hangar_flag)
+            for _id, _kind, owner_name, hangar_flag, _label in load_sorting_intake_sources()
+            if owner_name is not None
+        }
+    totals = {tid: 0.0 for tid in unique}
+    for row in rows:
+        type_id = row.get("type_id")
+        if type_id not in wanted:
+            continue
+        flag = row.get("location_flag")
+        if flag is not None and flag in non_stock:
+            continue
+        resolved_loc = row.get("resolved_location_id")
+        if location_id is not None and resolved_loc != location_id:
+            continue
+        resolved_flag = row.get("resolved_hangar_flag")
+        if allowed is not None and resolved_flag not in allowed:
+            continue
+        if (
+            exclude_intake_at_location_id is not None
+            and resolved_loc == exclude_intake_at_location_id
+            and (row.get("owner_name"), resolved_flag) in intake_pairs
+        ):
+            continue
+        qty = row.get("quantity") or 0
+        totals[type_id] += qty
     return totals
 
 
@@ -4091,21 +4143,15 @@ def list_hull_type_names() -> list[str]:
 
 
 def has_any_doctrine_synced_assets() -> bool:
-    """True if either doctrine_character_assets or doctrine_corp_assets has
-    at least one row for this tenant - Doctrine's Stockpile feature syncs
-    its own independent asset cache (doctrine/esi_sync.py's sync_assets,
-    via its own "doctrine-assets"-prefixed characters) rather than reading
-    Production's (an earlier design, reversed after real use: Stockpile
-    must work standalone, without requiring Production to ever be set up),
-    so "no assets at all yet" (never synced) has to be distinguished from
-    "assets synced, this type just isn't in stock" (a real shortfall) -
-    see doctrine/engine.py's stockpile status, which reports
-    assets_available=False (a gray ampel) only in the former case."""
-    with connect() as conn:
-        row = conn.execute(
-            "SELECT EXISTS(SELECT 1 FROM doctrine_character_assets) OR EXISTS(SELECT 1 FROM doctrine_corp_assets)"
-        ).fetchone()
-    return bool(row[0])
+    """True if the fail-closed accessor returns any asset rows shared with
+    doctrine. Distinguishes "no assets at all yet" (never synced, or nothing
+    shared with doctrine — gray ampel) from "assets synced, this type just
+    isn't in stock" (a real shortfall). Production-only owners do not count:
+    sharing, not a second table pair, is what keeps a Doctrine-only tenant
+    standalone.
+    """
+    from .esi_data.access import read_esi
+    return bool(read_esi("assets", "doctrine"))
 
 
 # ------------------------------------------------------------- Special Orders (Production tool)

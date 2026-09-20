@@ -14,7 +14,7 @@ from eve_trader import storage
 
 from . import pg_helpers
 from .pg_helpers import (  # noqa: F401
-    _apply_esi_access_schema, _apply_phase1_schema, _apply_phase2_schema,
+    _apply_esi_access_schema, _apply_phase1_schema, _apply_phase2_schema, tenant,
 )
 from .test_doctrine_storage import _apply_doctrine_schema  # noqa: F401
 from .test_storage_sorting import _apply_sorting_schema  # noqa: F401
@@ -235,8 +235,6 @@ def test_owner_id_columns_are_bigint(
     _apply_doctrine_schema, _apply_sorting_schema, _apply_esi_access_schema,
 ):
     extra = (
-        "doctrine_character_assets",
-        "doctrine_corp_assets",
         "doctrine_contracts",
         "sorting_intake_sources",
     )
@@ -276,3 +274,101 @@ def test_schema_applies_idempotently(_apply_esi_access_schema):
     with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
         conn.execute(pg_helpers._ESI_ACCESS_SCHEMA_SQL.read_text())
         conn.execute(pg_helpers._ESI_ACCESS_SCHEMA_SQL.read_text())
+
+
+_LEFTOVER_ASSET_DDL = """
+CREATE TABLE {table} (
+    tenant_id UUID NOT NULL,
+    item_id BIGINT NOT NULL,
+    type_id INTEGER,
+    location_id BIGINT,
+    location_flag TEXT,
+    quantity INTEGER,
+    is_blueprint_copy INTEGER,
+    owner_name TEXT NOT NULL,
+    resolved_location_id BIGINT,
+    resolved_hangar_flag TEXT,
+    PRIMARY KEY (item_id, owner_name)
+)
+"""
+
+
+def _insert_leftover_asset(conn, table, *, tenant_id, item_id, qty, owner_name):
+    # Owner-id columns are added by esi_access_schema.sql's first DO block
+    # before the copy; leftover tables from a pre-3b deploy may lack them.
+    conn.execute(
+        f"INSERT INTO {table} (tenant_id, item_id, type_id, location_id, location_flag, "
+        "quantity, is_blueprint_copy, owner_name, resolved_location_id, resolved_hangar_flag) "
+        "VALUES (%s, %s, 34, 1000000000001, 'Hangar', %s, 0, %s, 1000000000001, 'Hangar')",
+        (tenant_id, item_id, qty, owner_name),
+    )
+
+
+def test_doctrine_asset_tables_are_copied_then_dropped(_apply_esi_access_schema, tenant):
+    """Phase 3b cutover: leftover doctrine tables copy into the shared pair
+    (prefer a stamped shared-table row) and are dropped. Re-apply is a no-op.
+    """
+    tenant_id = tenant
+    pg_helpers.wipe_tables("character_assets", "corp_assets")
+    with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
+        conn.execute("DROP TABLE IF EXISTS doctrine_character_assets")
+        conn.execute("DROP TABLE IF EXISTS doctrine_corp_assets")
+        conn.execute(_LEFTOVER_ASSET_DDL.format(table="doctrine_character_assets"))
+        conn.execute(_LEFTOVER_ASSET_DDL.format(table="doctrine_corp_assets"))
+        _insert_leftover_asset(
+            conn, "doctrine_character_assets", tenant_id=tenant_id,
+            item_id=1, qty=10, owner_name="Alice",
+        )
+        _insert_leftover_asset(
+            conn, "doctrine_corp_assets", tenant_id=tenant_id,
+            item_id=2, qty=20, owner_name="Corp (corp)",
+        )
+        # Stamped shared-table row for the same (item_id, owner_name) as the
+        # doctrine character row — copy must keep 99, not overwrite with 10.
+        conn.execute(
+            "INSERT INTO character_assets (tenant_id, item_id, type_id, location_id, location_flag, "
+            "quantity, is_blueprint_copy, owner_name, resolved_location_id, resolved_hangar_flag, "
+            "owner_character_id) VALUES (%s, 1, 34, 1000000000001, 'Hangar', 99, 0, 'Alice', "
+            "1000000000001, 'Hangar', 1001)",
+            (tenant_id,),
+        )
+        conn.execute(pg_helpers._ESI_ACCESS_SCHEMA_SQL.read_text())
+        gone = conn.execute(
+            "SELECT tablename FROM pg_tables WHERE schemaname = 'public' "
+            "AND tablename IN ('doctrine_character_assets', 'doctrine_corp_assets')"
+        ).fetchall()
+        assert gone == []
+        alice = conn.execute(
+            "SELECT quantity, owner_character_id FROM character_assets WHERE item_id = 1"
+        ).fetchone()
+        assert alice[0] == 99 and alice[1] == 1001
+        corp = conn.execute(
+            "SELECT quantity FROM corp_assets WHERE item_id = 2"
+        ).fetchone()
+        assert corp[0] == 20
+        # Idempotent: tables are gone, second apply does not error.
+        conn.execute(pg_helpers._ESI_ACCESS_SCHEMA_SQL.read_text())
+
+
+def test_doctrine_copy_takes_incoming_when_shared_row_is_unstamped(_apply_esi_access_schema, tenant):
+    tenant_id = tenant
+    pg_helpers.wipe_tables("character_assets")
+    with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
+        conn.execute("DROP TABLE IF EXISTS doctrine_character_assets")
+        conn.execute(_LEFTOVER_ASSET_DDL.format(table="doctrine_character_assets"))
+        _insert_leftover_asset(
+            conn, "doctrine_character_assets", tenant_id=tenant_id,
+            item_id=3, qty=7, owner_name="Bob",
+        )
+        conn.execute(
+            "INSERT INTO character_assets (tenant_id, item_id, type_id, location_id, location_flag, "
+            "quantity, is_blueprint_copy, owner_name, resolved_location_id, resolved_hangar_flag) "
+            "VALUES (%s, 3, 34, 1000000000001, 'Hangar', 1, 0, 'Bob', 1000000000001, 'Hangar')",
+            (tenant_id,),
+        )
+        conn.execute(pg_helpers._ESI_ACCESS_SCHEMA_SQL.read_text())
+        bob = conn.execute(
+            "SELECT quantity FROM character_assets WHERE item_id = 3"
+        ).fetchone()
+        assert bob[0] == 7
+

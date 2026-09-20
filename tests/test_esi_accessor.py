@@ -122,3 +122,25 @@ def test_accessor_is_also_tenant_scoped(tenant_pair):
         rows = read_esi("assets", "production")
     assert len(rows) == 1
     assert rows[0]["quantity"] == 99
+
+
+def test_production_only_owner_is_unreachable_through_doctrine(tenant):
+    """Phase 3b done-when: after the doctrine tables merge into the shared
+    pair, a Production-only owner's assets are unreachable through
+    tool_key='doctrine'.
+    """
+    storage.replace_assets(
+        "character_assets",
+        [_asset_row(1, 10, "Alice")],
+        owner_character_id=ALICE, owner_name="Alice",
+    )
+    _share(ALICE, "production")
+    _share(BOB, "doctrine")
+    storage.replace_assets(
+        "character_assets",
+        [_asset_row(2, 20, "Bob")],
+        owner_character_id=BOB, owner_name="Bob",
+    )
+
+    assert {r["owner_character_id"] for r in read_esi("assets", "doctrine")} == {BOB}
+    assert {r["owner_character_id"] for r in read_esi("assets", "production")} == {ALICE}

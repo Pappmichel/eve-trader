@@ -12,6 +12,7 @@ from typing import Optional
 from .. import storage
 from ..config import TRADING_CONFIG
 from ..esi_client import ESIClient, ESIError, OrderStats
+from ..esi_data.access import read_esi
 from . import parser, validation
 from .config import DOCTRINE_CONFIG, DoctrineConfig
 from .constants import AMPEL_GRAY, EXACT_SECTIONS
@@ -192,8 +193,13 @@ def _slot_of(type_id: int) -> Optional[str]:
 def stockpile_rows_for_doctrine(doctrine_id: Optional[str] = None,
                                  cfg: DoctrineConfig = DOCTRINE_CONFIG) -> tuple[list[StockpileRow], bool]:
     """Phase 3 spec C - returns (rows, assets_available). Only ever computed
-    live (never persisted, Phase 2 B.2's own note on StockpileRow)."""
-    assets_available = storage.has_any_doctrine_synced_assets()
+    live (never persisted, Phase 2 B.2's own note on StockpileRow).
+    Asset Ist is the rows `read_esi("assets", "doctrine")` returns, filtered
+    with the same location / hangar / intake rules Production uses — never
+    an unfiltered read of the shared tables.
+    """
+    asset_rows = read_esi("assets", "doctrine")
+    assets_available = bool(asset_rows)
     location_id = cfg.effective_stockpile_location_id
 
     candidates = load_match_candidates()
@@ -229,9 +235,8 @@ def stockpile_rows_for_doctrine(doctrine_id: Optional[str] = None,
         ordered_soll.append((c.fitting.fitting_id, soll))
 
     type_ids = {t for _fid, soll in ordered_soll for t in soll}
-    available_by_type = storage.esi_stock_at_location_bulk(
-        list(type_ids), location_id,
-        tables=("doctrine_character_assets", "doctrine_corp_assets"),
+    available_by_type = storage.esi_stock_from_asset_rows(
+        asset_rows, list(type_ids), location_id,
         allowed_flags=cfg.stockpile_hangar_flags,
         exclude_intake_at_location_id=PRODUCTION_CONFIG.home_location_id)
     sde_by_id = storage.get_sde_types_bulk(list(type_ids))

@@ -254,86 +254,17 @@ CREATE POLICY tenant_isolation ON doctrine_contract_history
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 
 -- ================================================== per-tenant: own asset sync
--- Doctrine's own ESI-synced asset cache - deliberately NOT a read of
--- Production's character_assets/corp_assets (an earlier design decision,
--- reversed after real use: Stockpile must work standalone, without
--- requiring Production to have ever been set up/synced). Column-only
--- bucket, same shape/reasoning as character_assets/corp_assets
--- (phase1_schema.sql) - including that file's PK, (item_id, owner_name),
--- not item_id alone: confirmed live (2026-09-08) that CCP's item_id for a
--- non-singleton (stackable) asset is NOT guaranteed globally unique across
--- different owners at the same location - see phase1_schema.sql's own
--- comment on character_assets for the concrete repro. Doctrine's own sync
--- hits the same real characters/locations Production's does, so the same
--- collision applies here even though it hadn't been observed on this table
--- specifically yet; tenant_id is still a plain column + RLS policy like
--- every other per-tenant table.
-
-CREATE TABLE IF NOT EXISTS doctrine_character_assets (
-    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
-    item_id BIGINT NOT NULL,
-    type_id INTEGER,
-    location_id BIGINT,
-    location_flag TEXT,
-    quantity INTEGER,
-    is_blueprint_copy INTEGER,
-    owner_name TEXT NOT NULL,
-    resolved_location_id BIGINT,
-    resolved_hangar_flag TEXT,
-    PRIMARY KEY (item_id, owner_name)
-);
--- Live migration: see phase1_schema.sql's character_assets comment - same
--- widening, same reasoning, no legacy NULL owner_name rows to worry about.
-ALTER TABLE doctrine_character_assets ALTER COLUMN owner_name SET NOT NULL;
-ALTER TABLE doctrine_character_assets DROP CONSTRAINT IF EXISTS doctrine_character_assets_pkey;
-ALTER TABLE doctrine_character_assets ADD CONSTRAINT doctrine_character_assets_pkey
-    PRIMARY KEY (item_id, owner_name);
--- Same resolved_location_id shape as phase1_schema.sql's character_assets/
--- corp_assets (GitHub issue #4/#20) - both go through storage.replace_assets,
--- which computes this the same way regardless of which pair of tables it's
--- called for. Same for resolved_hangar_flag (hangar-sorting feature) - see
--- phase1_schema.sql's character_assets comment / storage._resolve_hangar_flags.
-ALTER TABLE doctrine_character_assets ADD COLUMN IF NOT EXISTS resolved_location_id BIGINT;
-ALTER TABLE doctrine_character_assets ADD COLUMN IF NOT EXISTS resolved_hangar_flag TEXT;
-DROP INDEX IF EXISTS idx_doctrine_character_assets_type_location;
-CREATE INDEX IF NOT EXISTS idx_doctrine_character_assets_type_resolved_location
-    ON doctrine_character_assets (type_id, resolved_location_id);
-ALTER TABLE doctrine_character_assets ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_isolation ON doctrine_character_assets;
-CREATE POLICY tenant_isolation ON doctrine_character_assets
-    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
-    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
-
-CREATE TABLE IF NOT EXISTS doctrine_corp_assets (
-    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
-    item_id BIGINT NOT NULL,
-    type_id INTEGER,
-    location_id BIGINT,
-    location_flag TEXT,
-    quantity INTEGER,
-    is_blueprint_copy INTEGER,
-    owner_name TEXT NOT NULL,
-    resolved_location_id BIGINT,
-    resolved_hangar_flag TEXT,
-    PRIMARY KEY (item_id, owner_name)
-);
-ALTER TABLE doctrine_corp_assets ALTER COLUMN owner_name SET NOT NULL;
-ALTER TABLE doctrine_corp_assets DROP CONSTRAINT IF EXISTS doctrine_corp_assets_pkey;
-ALTER TABLE doctrine_corp_assets ADD CONSTRAINT doctrine_corp_assets_pkey PRIMARY KEY (item_id, owner_name);
-ALTER TABLE doctrine_corp_assets ADD COLUMN IF NOT EXISTS resolved_location_id BIGINT;
-ALTER TABLE doctrine_corp_assets ADD COLUMN IF NOT EXISTS resolved_hangar_flag TEXT;
-DROP INDEX IF EXISTS idx_doctrine_corp_assets_type_location;
-CREATE INDEX IF NOT EXISTS idx_doctrine_corp_assets_type_resolved_location
-    ON doctrine_corp_assets (type_id, resolved_location_id);
-ALTER TABLE doctrine_corp_assets ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_isolation ON doctrine_corp_assets;
-CREATE POLICY tenant_isolation ON doctrine_corp_assets
-    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
-    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+-- doctrine_character_assets / doctrine_corp_assets lived here until Phase 3b
+-- (docs/ESI_ACCESS_PLAN.md). They were column- and PK-identical to
+-- character_assets / corp_assets so a Doctrine-only tenant did not depend
+-- on Production. Character-centric sharing replaces that second table pair:
+-- register the character, share Assets with doctrine, and Stockpile reads
+-- the shared tables through the fail-closed accessor (tool_key="doctrine").
+-- CREATE is gone so a full re-apply of every schema file cannot recreate
+-- the tables after esi_access_schema.sql has copied and dropped them.
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON
     sde_type_slots, doctrines, doctrine_fittings, doctrine_fitting_items,
     doctrine_fitting_parse_issues, doctrine_contracts, doctrine_contract_items,
-    doctrine_contract_deviations, doctrine_character_assets, doctrine_corp_assets,
-    doctrine_contract_history
+    doctrine_contract_deviations, doctrine_contract_history
     TO eve_trader_app;
