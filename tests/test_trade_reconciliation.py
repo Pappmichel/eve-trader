@@ -3,7 +3,8 @@ import datetime as dt
 import pandas as pd
 
 from eve_trader import trade_reconciliation
-from eve_trader.config import TradingConfig
+from eve_trader.config import TradingConfig, WALLET_DIVISION_IDS
+from eve_trader.esi_client import ESIError
 from eve_trader.trade_reconciliation import average_daily_sold_by_type, reconcile_realized_trades
 
 JITA_4_4_STATION_ID = 60003760  # real EVE station ID, used as the test's "Jita" location
@@ -11,23 +12,58 @@ JITA_4_4_STATION_ID = 60003760  # real EVE station ID, used as the test's "Jita"
 
 class FakeClient:
     """Minimal ESIClient double - character_wallet_transactions/
-    character_wallet_journal are used by reconcile_realized_trades. Single-
-    page fixture data (a real call chain with from_id pagination is covered
-    separately in test_fetch_recent_transactions_pages.py) - always returns
-    the full fixture on the first (from_id=None) call and nothing on any
-    follow-up call, same as a real character with fewer than 2500 total
+    character_wallet_journal are used by reconcile_realized_trades, plus
+    character_public_info / corporation_wallet_* for the corp-wallet merge.
+    Single-page fixture data (a real call chain with from_id pagination is
+    covered separately in test_wallet_transaction_pagination.py) - always
+    returns the full fixture on the first (from_id=None) call and nothing on
+    any follow-up call, same as a real character with fewer than 2500 total
     transactions. `journal_entries` defaults to {} (empty per character) -
     every existing test exercises the fully-modeled fallback path unless it
-    explicitly opts into PB-03's real-tax path by passing journal data."""
-    def __init__(self, buyer_txns, seller_txns, journal_entries=None):
+    explicitly opts into PB-03's real-tax path by passing journal data.
+
+    Corp methods default to "this character has no corporation_id", so
+    existing character-only tests never touch corp wallets. Pass
+    `character_corps` / `corp_txns` / `corp_journal` to opt in; set
+    `corp_error=ESIError(...)` to simulate a missing Accountant role.
+    """
+    def __init__(self, buyer_txns, seller_txns, journal_entries=None,
+                 character_corps=None, corp_txns=None, corp_journal=None,
+                 corp_error=None):
         self._by_char = {1: buyer_txns, 2: seller_txns}
         self._journal_by_char = journal_entries or {}
+        self._character_corps = character_corps or {}
+        # (corporation_id, division) -> list[txn]
+        self._corp_txns = corp_txns or {}
+        # (corporation_id, division) -> list[journal entry]
+        self._corp_journal = corp_journal or {}
+        self._corp_error = corp_error
+        self.corp_txn_calls: list[tuple] = []
+        self.character_txn_by_id: dict[int, list] = dict(self._by_char)
 
     def character_wallet_transactions(self, character_id, auth_role, from_id=None):
-        return self._by_char[character_id] if from_id is None else []
+        txns = self.character_txn_by_id.get(character_id, self._by_char.get(character_id, []))
+        return txns if from_id is None else []
 
     def character_wallet_journal(self, character_id, auth_role):
         return self._journal_by_char.get(character_id, [])
+
+    def character_public_info(self, character_id):
+        corp_id = self._character_corps.get(character_id)
+        return {"corporation_id": corp_id} if corp_id else {}
+
+    def corporation_wallet_transactions(self, corporation_id, division, auth_role, from_id=None):
+        self.corp_txn_calls.append((corporation_id, division, auth_role, from_id))
+        if self._corp_error is not None:
+            raise self._corp_error
+        if from_id is not None:
+            return []
+        return list(self._corp_txns.get((corporation_id, division), []))
+
+    def corporation_wallet_journal(self, corporation_id, division, auth_role):
+        if self._corp_error is not None:
+            raise self._corp_error
+        return list(self._corp_journal.get((corporation_id, division), []))
 
 
 def _iso(days_ago: int) -> str:
@@ -333,3 +369,243 @@ def test_reconcile_accepts_buys_anywhere_in_the_forge_not_just_jita_itself(monke
     )
 
     assert len(trades) == 1
+
+
+def test_reconcile_matches_corp_funded_fill_absent_from_character_wallet(monkeypatch):
+    """The Phase 8 bug: a corp-wallet sell never appears in the placing
+    character's personal wallet, so character-only reconcile dropped it."""
+    monkeypatch.setattr(trade_reconciliation.storage, "get_station_ids_in_region",
+                         lambda region_id: frozenset({JITA_4_4_STATION_ID}))
+    cfg = TradingConfig(lookback_days=30, structure_sell_haircut=1.0, jita_buy_broker_fee=0.0)
+    corp_buy = {"is_buy": True, "type_id": 100, "date": _iso(2), "unit_price": 1000.0, "quantity": 10,
+                "location_id": JITA_4_4_STATION_ID, "transaction_id": 9001, "journal_ref_id": 1}
+    corp_sell = {"is_buy": False, "type_id": 100, "date": _iso(1), "unit_price": 1200.0, "quantity": 10,
+                 "location_id": cfg.structure_id, "transaction_id": 9002, "journal_ref_id": 2}
+    client = FakeClient(
+        buyer_txns=[], seller_txns=[],
+        character_corps={1: 99, 2: 99},
+        corp_txns={(99, 1): [corp_buy, corp_sell]},
+    )
+
+    trades = reconcile_realized_trades(
+        buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
+        client=client, item_names={100: "Widget"}, item_volumes={100: 0.0}, cfg=cfg,
+    )
+
+    assert len(trades) == 1
+    assert trades[0].matched_qty == 10
+    assert round(trades[0].realized_profit, 2) == round((1200.0 - 1000.0) * 10, 2)
+
+
+def test_reconcile_mixed_character_and_corp_period_does_not_double_count(monkeypatch):
+    """A mixed window: personal fill and corp fill of different types both
+    match, and a shared-corp buyer+seller pair fetches that corp once so the
+    corp fill is not counted twice."""
+    monkeypatch.setattr(trade_reconciliation.storage, "get_station_ids_in_region",
+                         lambda region_id: frozenset({JITA_4_4_STATION_ID}))
+    cfg = TradingConfig(lookback_days=30, structure_sell_haircut=1.0, jita_buy_broker_fee=0.0)
+    char_buy = {"is_buy": True, "type_id": 100, "date": _iso(2), "unit_price": 1000.0, "quantity": 10,
+                "location_id": JITA_4_4_STATION_ID, "transaction_id": 1}
+    char_sell = {"is_buy": False, "type_id": 100, "date": _iso(1), "unit_price": 1200.0, "quantity": 10,
+                 "location_id": cfg.structure_id, "transaction_id": 2}
+    corp_buy = {"is_buy": True, "type_id": 200, "date": _iso(2), "unit_price": 500.0, "quantity": 4,
+                "location_id": JITA_4_4_STATION_ID, "transaction_id": 1}
+    corp_sell = {"is_buy": False, "type_id": 200, "date": _iso(1), "unit_price": 800.0, "quantity": 4,
+                 "location_id": cfg.structure_id, "transaction_id": 2}
+    client = FakeClient(
+        buyer_txns=[char_buy], seller_txns=[char_sell],
+        character_corps={1: 99, 2: 99},
+        corp_txns={(99, 1): [corp_buy, corp_sell]},
+    )
+
+    trades = reconcile_realized_trades(
+        buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
+        client=client, item_names={100: "Widget", 200: "Gadget"},
+        item_volumes={100: 0.0, 200: 0.0}, cfg=cfg,
+    )
+
+    by_type = {t.type_id: t for t in trades}
+    assert set(by_type) == {100, 200}
+    assert by_type[100].matched_qty == 10
+    assert by_type[200].matched_qty == 4
+    assert {call[0] for call in client.corp_txn_calls} == {99}
+    assert {call[2] for call in client.corp_txn_calls} == {"buyer"}
+    assert len([c for c in client.corp_txn_calls if c[3] is None]) == len(WALLET_DIVISION_IDS)
+
+
+def test_reconcile_skips_corp_without_accountant_and_keeps_character_fills(monkeypatch):
+    """Missing Accountant/Junior_Accountant (or the unwired corp-wallets
+    scope) must skip that corp non-fatally — character matching still runs."""
+    monkeypatch.setattr(trade_reconciliation.storage, "get_station_ids_in_region",
+                         lambda region_id: frozenset({JITA_4_4_STATION_ID}))
+    cfg = TradingConfig(lookback_days=30, structure_sell_haircut=1.0, jita_buy_broker_fee=0.0)
+    buys = [{"is_buy": True, "type_id": 100, "date": _iso(2), "unit_price": 1000.0, "quantity": 10,
+             "location_id": JITA_4_4_STATION_ID, "transaction_id": 1}]
+    sells = [{"is_buy": False, "type_id": 100, "date": _iso(1), "unit_price": 1200.0, "quantity": 10,
+              "location_id": cfg.structure_id, "transaction_id": 2}]
+    client = FakeClient(
+        buys, sells,
+        character_corps={1: 99, 2: 99},
+        corp_txns={(99, 1): [
+            {"is_buy": False, "type_id": 200, "date": _iso(1), "unit_price": 9999.0, "quantity": 50,
+             "location_id": cfg.structure_id, "transaction_id": 9002},
+        ]},
+        corp_error=ESIError("HTTP 403: character does not have the required role"),
+    )
+
+    trades = reconcile_realized_trades(
+        buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
+        client=client, item_names={100: "Widget", 200: "Gadget"},
+        item_volumes={100: 0.0, 200: 0.0}, cfg=cfg,
+    )
+
+    assert len(trades) == 1
+    assert trades[0].type_id == 100
+
+
+def test_reconcile_retries_corp_with_later_character_that_has_accountant(monkeypatch):
+    monkeypatch.setattr(trade_reconciliation.storage, "get_station_ids_in_region",
+                         lambda region_id: frozenset({JITA_4_4_STATION_ID}))
+    cfg = TradingConfig(lookback_days=30, structure_sell_haircut=1.0, jita_buy_broker_fee=0.0)
+
+    class RetryClient(FakeClient):
+        def corporation_wallet_transactions(self, corporation_id, division, auth_role, from_id=None):
+            self.corp_txn_calls.append((corporation_id, division, auth_role, from_id))
+            if auth_role == "buyer":
+                raise ESIError("HTTP 403: missing Accountant")
+            if from_id is not None:
+                return []
+            return list(self._corp_txns.get((corporation_id, division), []))
+
+        def corporation_wallet_journal(self, corporation_id, division, auth_role):
+            if auth_role == "buyer":
+                raise ESIError("HTTP 403: missing Accountant")
+            return list(self._corp_journal.get((corporation_id, division), []))
+
+    corp_buy = {"is_buy": True, "type_id": 100, "date": _iso(2), "unit_price": 1000.0, "quantity": 10,
+                "location_id": JITA_4_4_STATION_ID, "transaction_id": 9001}
+    corp_sell = {"is_buy": False, "type_id": 100, "date": _iso(1), "unit_price": 1200.0, "quantity": 10,
+                 "location_id": cfg.structure_id, "transaction_id": 9002}
+    client = RetryClient(
+        buyer_txns=[], seller_txns=[],
+        character_corps={1: 99, 2: 99},
+        corp_txns={(99, 1): [corp_buy, corp_sell]},
+    )
+
+    trades = reconcile_realized_trades(
+        buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
+        client=client, item_names={100: "Widget"}, item_volumes={100: 0.0}, cfg=cfg,
+    )
+
+    assert len(trades) == 1
+    assert any(call[2] == "seller" for call in client.corp_txn_calls)
+
+
+def test_reconcile_uses_corp_journal_not_character_journal_for_corp_sell(monkeypatch):
+    """A character journal entry whose id collides with a corp
+    journal_ref_id must not supply the corp sell's post-tax proceeds."""
+    monkeypatch.setattr(trade_reconciliation.storage, "get_station_ids_in_region",
+                         lambda region_id: frozenset({JITA_4_4_STATION_ID}))
+    cfg = TradingConfig(lookback_days=30, structure_sell_haircut=0.9463)
+    corp_buy = {"is_buy": True, "type_id": 100, "date": _iso(2), "unit_price": 1000.0, "quantity": 10,
+                "location_id": JITA_4_4_STATION_ID, "transaction_id": 9001}
+    corp_sell = {"is_buy": False, "type_id": 100, "date": _iso(1), "unit_price": 1200.0, "quantity": 10,
+                 "location_id": cfg.structure_id, "transaction_id": 9002, "journal_ref_id": 555}
+    client = FakeClient(
+        buyer_txns=[], seller_txns=[],
+        journal_entries={2: [{"id": 555, "ref_type": "market_transaction", "amount": 1.0, "date": _iso(1)}]},
+        character_corps={1: 99, 2: 99},
+        corp_txns={(99, 1): [corp_buy, corp_sell]},
+        corp_journal={(99, 1): [
+            {"id": 555, "ref_type": "market_transaction", "amount": 11000.0, "date": _iso(1)},
+        ]},
+    )
+
+    trades = reconcile_realized_trades(
+        buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
+        client=client, item_names={100: "Widget"}, item_volumes={100: 0.0}, cfg=cfg,
+    )
+
+    assert len(trades) == 1
+    expected_net_sell = (11000.0 / 10) * (0.9463 + trade_reconciliation._ASSUMED_TAX_RATE_IN_DEFAULT_HAIRCUT)
+    expected_landed = 1000.0 * (1 + cfg.jita_buy_broker_fee)
+    profit_per_unit = trades[0].realized_profit / trades[0].matched_qty
+    assert round(profit_per_unit, 4) == round(expected_net_sell - expected_landed, 4)
+
+
+def test_reconcile_empty_wallet_division_ids_reads_all_seven(monkeypatch):
+    monkeypatch.setattr(trade_reconciliation.storage, "get_station_ids_in_region",
+                         lambda region_id: frozenset({JITA_4_4_STATION_ID}))
+    cfg = TradingConfig(lookback_days=30, wallet_division_ids=())
+    client = FakeClient(
+        buyer_txns=[], seller_txns=[],
+        character_corps={1: 99, 2: 99},
+    )
+    reconcile_realized_trades(
+        buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
+        client=client, item_names={}, item_volumes={}, cfg=cfg,
+    )
+    assert [c[1] for c in client.corp_txn_calls] == list(WALLET_DIVISION_IDS)
+
+
+def test_reconcile_configured_wallet_divisions_only(monkeypatch):
+    monkeypatch.setattr(trade_reconciliation.storage, "get_station_ids_in_region",
+                         lambda region_id: frozenset({JITA_4_4_STATION_ID}))
+    cfg = TradingConfig(lookback_days=30, wallet_division_ids=(2, 5))
+    client = FakeClient(
+        buyer_txns=[], seller_txns=[],
+        character_corps={1: 99, 2: 99},
+    )
+    reconcile_realized_trades(
+        buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
+        client=client, item_names={}, item_volumes={}, cfg=cfg,
+    )
+    assert [c[1] for c in client.corp_txn_calls] == [2, 5]
+
+
+def test_reconcile_partial_division_access_keeps_readable_fills(monkeypatch, caplog):
+    """A 403 on later wallet divisions must not discard the division that
+    succeeded, and must not fall through to another member (that would
+    re-fetch the readable division and double-count)."""
+    monkeypatch.setattr(trade_reconciliation.storage, "get_station_ids_in_region",
+                         lambda region_id: frozenset({JITA_4_4_STATION_ID}))
+    cfg = TradingConfig(lookback_days=30, structure_sell_haircut=1.0, jita_buy_broker_fee=0.0)
+
+    class PartialClient(FakeClient):
+        def corporation_wallet_transactions(self, corporation_id, division, auth_role, from_id=None):
+            self.corp_txn_calls.append((corporation_id, division, auth_role, from_id))
+            if division != 1:
+                raise ESIError("HTTP 403: character does not have the required role")
+            if from_id is not None:
+                return []
+            return list(self._corp_txns.get((corporation_id, division), []))
+
+        def corporation_wallet_journal(self, corporation_id, division, auth_role):
+            if division != 1:
+                raise ESIError("HTTP 403: character does not have the required role")
+            return list(self._corp_journal.get((corporation_id, division), []))
+
+    corp_buy = {"is_buy": True, "type_id": 100, "date": _iso(2), "unit_price": 1000.0, "quantity": 10,
+                "location_id": JITA_4_4_STATION_ID, "transaction_id": 9001}
+    corp_sell = {"is_buy": False, "type_id": 100, "date": _iso(1), "unit_price": 1200.0, "quantity": 10,
+                 "location_id": cfg.structure_id, "transaction_id": 9002}
+    client = PartialClient(
+        buyer_txns=[], seller_txns=[],
+        character_corps={1: 99, 2: 99},
+        corp_txns={(99, 1): [corp_buy, corp_sell]},
+    )
+
+    with caplog.at_level("WARNING", logger="eve_trader.trade_reconciliation"):
+        trades = reconcile_realized_trades(
+            buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
+            client=client, item_names={100: "Widget"}, item_volumes={100: 0.0}, cfg=cfg,
+        )
+
+    assert len(trades) == 1
+    assert trades[0].matched_qty == 10
+    assert round(trades[0].realized_profit, 2) == round((1200.0 - 1000.0) * 10, 2)
+    first_page = [c for c in client.corp_txn_calls if c[3] is None]
+    assert [c[1] for c in first_page] == list(WALLET_DIVISION_IDS)
+    assert {c[2] for c in client.corp_txn_calls} == {"buyer"}
+    assert "could read divisions 1 but not 2, 3, 4, 5, 6, 7" in caplog.text
+    assert "could read any of configured divisions" not in caplog.text

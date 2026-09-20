@@ -101,7 +101,7 @@ deployment, see `deploy/README.md`.)
    of both up front if you'll use both tools:
    - Trading: `esi-markets.read_character_orders.v1`,
      `esi-markets.structure_markets.v1`, `esi-wallet.read_character_wallet.v1`,
-     `esi-assets.read_assets.v1`.
+     `esi-wallet.read_corporation_wallets.v1`, `esi-assets.read_assets.v1`.
    - Production: `esi-assets.read_assets.v1`, `esi-assets.read_corporation_assets.v1`,
      `esi-industry.read_character_jobs.v1`, `esi-industry.read_corporation_jobs.v1`,
      `esi-characters.read_blueprints.v1`, `esi-corporations.read_blueprints.v1`,

@@ -270,6 +270,25 @@ def validate_config_overrides(cfg: Any, overrides: dict[str, Any], cfg_type: Opt
         _check_range(key, value)
 
 
+def validate_trading_overrides(overrides: dict[str, Any]) -> None:
+    """Enum-checks TradingConfig fields whose valid values are a closed set
+    the generic type/range checks cannot see — same extra layer as
+    validate_production_overrides for stock_hangar_flags. Empty
+    wallet_division_ids is valid (all seven divisions)."""
+    if "wallet_division_ids" not in overrides:
+        return
+    values = overrides["wallet_division_ids"]
+    if not isinstance(values, (list, tuple)):
+        return  # validate_config_overrides raises the type error
+    # Type already checked by validate_config_overrides; this is membership.
+    bad = [d for d in values if d not in WALLET_DIVISION_IDS]
+    if bad:
+        raise ConfigError(
+            f"wallet_division_ids: {bad!r} are not known corp wallet divisions. "
+            f"Options: {', '.join(str(i) for i in WALLET_DIVISION_IDS)}"
+        )
+
+
 def apply_config_overrides(cfg: Any, overrides: dict[str, Any]) -> None:
     """Applies already-validated `overrides` onto `cfg` - call
     validate_config_overrides first; this half never raises on a bad value,
@@ -283,6 +302,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 DATA_DIR = PROJECT_ROOT / "data"
 DATA_DIR.mkdir(exist_ok=True)
+
+# ESI corporation wallet divisions are numbered 1-7 (confirmed against
+# esi-swagger-specs latest, 2026-09-20: path param `division` minimum=1
+# maximum=7; GET /corporations/{id}/wallets/ maxItems=7). TradingConfig.
+# wallet_division_ids is validated against this list — an empty tuple (the
+# field's default) means "no filter", i.e. all seven, matching
+# ProductionConfig.stock_hangar_flags' empty-means-all behaviour.
+WALLET_DIVISION_IDS: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7)
 
 
 @dataclass
@@ -433,6 +460,13 @@ class TradingConfig:
 
     # -- Realized trade history --
     lookback_days: int = 30
+    # Which corporation wallet divisions Reconcile Trades pages. ESI exposes
+    # seven numbered divisions (1-7; swagger path param minimum=1 maximum=7).
+    # Empty tuple (the default) = no filter, i.e. all seven — same
+    # "empty means all" pattern as ProductionConfig.stock_hangar_flags.
+    # Only meaningful once a buyer/seller character holds Accountant /
+    # Junior_Accountant and the corp-wallets scope is on their token.
+    wallet_division_ids: tuple[int, ...] = ()
 
     # -- API endpoints --
     esi_base: str = "https://esi.evetech.net/latest"
@@ -533,6 +567,15 @@ class OAuthConfig:
         "esi-markets.read_character_orders.v1",   # ESIClient.character_orders
         "esi-markets.structure_markets.v1",        # ESIClient.structure_order_stats
         "esi-wallet.read_character_wallet.v1",     # ESIClient.character_wallet_transactions
+        "esi-wallet.read_corporation_wallets.v1",  # ESIClient.corporation_wallet_transactions/journal
+                                                    # (Phase 8 corp-wallet reconcile). A buyer/seller
+                                                    # added before this existed needs to be re-added
+                                                    # before corp-funded fills appear in Realized
+                                                    # Trades; until then those ESI calls 403 and are
+                                                    # skipped non-fatally. Same re-auth pattern
+                                                    # PRODUCTION_SCOPES already documents for
+                                                    # structure_markets. Not on PRODUCTION_SCOPES:
+                                                    # Production has no wallet consumer.
         "esi-assets.read_assets.v1",                # ESIClient.character_assets (own_orders.fetch_buyer_already_covered,
                                                      # own_orders.fetch_seller_stock_without_order)
     )
@@ -590,6 +633,7 @@ def load_trading_config(path: Path = DEFAULT_CONFIG_PATH) -> TradingConfig:
             with open(path, "r", encoding="utf-8") as f:
                 overrides = yaml.safe_load(f) or {}
             validate_config_overrides(cfg, overrides)  # fail fast, at startup, with the specific bad field named
+            validate_trading_overrides(overrides)
             apply_config_overrides(cfg, overrides)
         _trading_config_yaml_cache[path] = cfg
     return copy.deepcopy(_trading_config_yaml_cache[path])

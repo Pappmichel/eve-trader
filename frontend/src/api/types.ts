@@ -175,6 +175,7 @@ export interface TradingSettings {
   structure_market_slug: string | null
   buyer_character_name: string | null
   seller_character_name: string | null
+  wallet_division_ids: number[]
 }
 
 export interface PipelineRunProgress {

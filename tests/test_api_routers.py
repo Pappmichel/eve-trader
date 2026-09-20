@@ -198,6 +198,14 @@ def test_get_trading_settings():
     assert "structure_sell_haircut" in body
     assert "skip_grace_period_days" in body
     assert "max_shortlist_growth_per_run" in body
+    assert "wallet_division_ids" in body
+    assert body["wallet_division_ids"] == []
+
+
+def test_get_wallet_division_options():
+    resp = client.get("/api/trading/settings/wallet-division-options")
+    assert resp.status_code == 200
+    assert resp.json() == {"wallet_division_ids": [1, 2, 3, 4, 5, 6, 7]}
 
 
 # ---------------------------------------------------------------- production

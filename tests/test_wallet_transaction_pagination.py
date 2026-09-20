@@ -1,6 +1,10 @@
 import datetime as dt
 
-from eve_trader.trade_reconciliation import WALLET_TRANSACTIONS_PAGE_SIZE, fetch_recent_transactions
+from eve_trader.trade_reconciliation import (
+    WALLET_TRANSACTIONS_PAGE_SIZE,
+    fetch_recent_corporation_transactions,
+    fetch_recent_transactions,
+)
 
 
 def _txn(transaction_id: int, days_ago: int) -> dict:
@@ -64,3 +68,31 @@ def test_stops_once_a_page_reaches_past_the_cutoff():
 
     assert len(result) == WALLET_TRANSACTIONS_PAGE_SIZE + 1  # page1 + only the 10-days-ago row of page2
     assert len(client.calls) == 2  # never fetches a hypothetical page 3
+
+
+class CorpPagingFakeClient:
+    """Same from_id-by-call-count fixture as PagingFakeClient, for the
+    corporation wallet transactions endpoint."""
+    def __init__(self, pages):
+        self.pages = pages
+        self.calls = []
+
+    def corporation_wallet_transactions(self, corporation_id, division, auth_role, from_id=None):
+        self.calls.append((corporation_id, division, from_id))
+        return self.pages[len(self.calls) - 1] if len(self.calls) <= len(self.pages) else []
+
+
+def test_corp_wallet_pages_past_first_batch_when_still_within_window():
+    page1 = [_txn(i, days_ago=1) for i in range(WALLET_TRANSACTIONS_PAGE_SIZE)]
+    page2 = [_txn(i, days_ago=5) for i in range(50)]
+    client = CorpPagingFakeClient([page1, page2])
+
+    result = fetch_recent_corporation_transactions(99, 3, "seller:1", client, lookback_days=30)
+
+    assert len(result) == WALLET_TRANSACTIONS_PAGE_SIZE + 50
+    assert len(client.calls) == 2
+    assert client.calls[0] == (99, 3, None)
+    assert client.calls[1] == (99, 3, 0)
+    assert all(t["_wallet_kind"] == "corporation" for t in result)
+    assert all(t["_wallet_owner_id"] == 99 for t in result)
+    assert all(t["_wallet_division"] == 3 for t in result)

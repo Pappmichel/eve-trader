@@ -928,6 +928,61 @@ class ESIClient:
         return self._get_all_pages(f"/characters/{character_id}/wallet/journal/",
                                     params={"datasource": "tranquility"}, auth_role=auth_role)
 
+    def corporation_wallet_transactions(self, corporation_id: int, division: int, auth_role: str,
+                                         from_id: Optional[int] = None) -> list[dict]:
+        """GET /corporations/{corporation_id}/wallets/{division}/transactions/
+
+        One of the seven corporation wallet divisions (ESI path param
+        `division` minimum=1 maximum=7, swagger maxItems=7 on the wallets
+        list; confirmed against esi-swagger-specs latest, 2026-09-20).
+        Returns up to 2500 transactions (same maxItems as the character
+        endpoint), most recent first. Cursor pagination via `from_id` — NOT
+        page/X-Pages — so this cannot use _get_all_pages; trade_reconciliation.
+        fetch_recent_corporation_transactions loops it the same way
+        fetch_recent_transactions loops character_wallet_transactions.
+
+        Requires esi-wallet.read_corporation_wallets.v1 plus the in-game
+        Accountant or Junior_Accountant role (NOT Director, which
+        corporation_assets/jobs/blueprints use, and NOT Station_Manager,
+        which corporation_structures uses). That scope is on
+        OAuthConfig.scopes (buyer/seller login); a character added before
+        it existed needs to be re-added before corp-wallet fetches succeed
+        for it — until then ESI 403s and trade_reconciliation skips the
+        corp non-fatally. Not on PRODUCTION_SCOPES (Production has no
+        wallet consumer).
+        """
+        params = {"datasource": "tranquility"}
+        if from_id is not None:
+            params["from_id"] = from_id
+        return self._get(
+            f"/corporations/{corporation_id}/wallets/{division}/transactions/",
+            params=params, auth_role=auth_role,
+        )
+
+    def corporation_wallet_journal(self, corporation_id: int, division: int, auth_role: str) -> list[dict]:
+        """GET /corporations/{corporation_id}/wallets/{division}/journal/
+
+        Standard page/X-Pages pagination (_get_all_pages), unlike
+        corporation_wallet_transactions' from_id cursor scheme — the two
+        corp-wallet endpoints differ the same way the two character-wallet
+        endpoints already do (confirmed against esi-swagger-specs latest,
+        2026-09-20: journal has `page` + X-Pages, transactions have
+        `from_id` and no X-Pages). `division` is 1-7. Same scope and
+        Accountant / Junior_Accountant role as
+        corporation_wallet_transactions (scope is on OAuthConfig.scopes;
+        see that method for the re-auth note).
+
+        trade_reconciliation uses this the same way it uses
+        character_wallet_journal: a wallet-transaction's `journal_ref_id`
+        links 1:1 to the `market_transaction` journal entry whose `amount`
+        is the real ISK credited after sales tax. Lookup is wallet-local
+        (this division's journal, never a character journal).
+        """
+        return self._get_all_pages(
+            f"/corporations/{corporation_id}/wallets/{division}/journal/",
+            params={"datasource": "tranquility"}, auth_role=auth_role,
+        )
+
     def character_skills(self, character_id: int, auth_role: str) -> dict:
         """Requires esi-skills.read_skills.v1. Returns {"skills": [{"skill_id",
         "active_skill_level", ...}], "total_sp", ...} - used to derive industry
