@@ -22,7 +22,7 @@ These two are the original pair this section's title/history refers to.
 package**, `eve_trader/esi_data/` (`docs/ESI_ACCESS_PLAN.md`): the
 data-kind registry, fetchers, orchestrator (`do_sync_for_tool` /
 `do_sync_all`), and fail-closed accessor (`read_esi`, `is_shared`) live here.
-Characters `do_*` actions land in Phase 6. It names tools as strings
+Characters `do_*` actions live in `esi_data/actions.py`. It names tools as strings
 and imports no tool package — the same precedent as
 `auth.TOOL_ROLE_PREFIXES` and `access_gate.ALL_TOOL_KEYS`. Do not put
 ESI-owner sync back into `portfolio.py` or a tool's `esi_sync.py` by
@@ -40,8 +40,9 @@ fittings, `eve_trader/doctrine/`), **Ore & Minerals** (ore/ice
 import-refine-sell, reprocessing quotes, mineral shopping list,
 `eve_trader/refining/`, GitHub issue #90), **Station Trading**,
 **Sorting**, and **Characters** (`tool_key "characters"` — the
-tenant-facing surface for ESI access; the grant itself lands in Phase 6
-of `docs/ESI_ACCESS_PLAN.md`) — plus the cross-tenant **Admin** tool
+tenant-facing surface for ESI access; grant, router, and confirm-dialog
+payload landed in Phase 6 of `docs/ESI_ACCESS_PLAN.md`; the page is Phase 9)
+— plus the cross-tenant **Admin** tool
 (`eve_trader/admin.py`, see "Tool permissions & Admin" below), which
 isn't tenant-facing at all. **Portfolio** is also a tenant-facing tool
 (`tool_key "portfolio"`); it reads derived tables, not raw ESI.
@@ -306,6 +307,14 @@ surface, not a per-tenant self-service page. `"admin"` is a normal grant
 (no `DEFAULT_TENANT_ID` bypass). First admin on a gated install is created
 with `eve-trader admin bootstrap` (see `docs/OPERATOR_SECURITY.md`). No
 other character can reach `/api/admin` unless they have that tool_key.
+
+`"characters"` is a normal ninth grant in `ALL_TOOL_KEYS` (no
+`DEFAULT_TENANT_ID` bypass). Admin's tool checkboxes auto-tick it when any
+ESI-consuming tool is selected — UI only; `admin.do_set_tool_grants` stays
+replace-not-merge and does not insert `"characters"` on the server. The
+Characters router (`/api/characters/`) is gated on that grant via
+`_TOOL_PATH_PREFIXES`. Prefix `/api/auth/{role_prefix}/start` stays until
+Phase 9 removes the sidebar callers.
 
 `AccessGate` is character-only (`tenant_registry_entries.entry_type`
 CHECK-constrained to `'character'`, `docs/admin_schema.sql`) - corp/alliance

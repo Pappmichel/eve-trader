@@ -1059,6 +1059,17 @@ Phase 6.
   must not 404 on `/consent`. Sequence with Phase 6/9 so the frontend
   never calls a deleted endpoint.
 
+**Status:** this PR (with Phase 6). Consent table, storage helpers, and
+`/consent` endpoints are gone. Confirm dialog is always shown and
+reads a registry-derived payload (`added` highlights kinds not on any
+existing token). `gate` keeps Landing `localStorage`. Prefix `/start`
+callers (`useRoleCharacters`) fetch `/access-preview` so they never
+404 on the deleted `/consent` routes. CI gate is grep-clean of the
+retired names outside this plan (the `DROP TABLE IF EXISTS` in
+`esi_access_schema.sql` is the remaining operational mention),
+drift-guard, and the preview tests. The live SSO round that adds
+Wallet is on the Deployment checklist.
+
 **Done when:** grep for `tenant_role_consents`, `has_role_consent`,
 `role_consent_schema`, `consentStatus`, `acknowledgeConsent` is empty
 outside this plan file and git history; drift-guard green. A re-auth
@@ -1121,6 +1132,21 @@ don't exist.
   The Characters UI's "legacy pool merges on the next re-auth"
   promise depends on this call. Do not invent a second cleanup.
 
+**Status:** this PR (with Phase 5). `ALL_TOOL_KEYS` includes
+`"characters"`. `/api/characters/` is gated on that grant.
+`esi_data/actions.py` holds sharing/capability toggles, access
+preview, reauth scope union, and sync. Prefix `/start` stays until
+Phase 9 removes sidebar callers (so those buttons do not 404);
+Characters re-auth is `/api/characters/reauth/start` and writes via
+`reauth_write_role` / `delete_strict_subset_tokens`.
+`eve-trader auth --role` is removed. Admin auto-ticks `"characters"`
+in the UI only (`do_set_tool_grants` is still replace, not merge).
+No Characters page (Phase 9). Per-tool character-list endpoints keep
+prefix listing until Phase 9 removes the sidebars; sharing already
+gates ESI reads. CI gate is the 403/200 isolation test, preview
+highlight tests, and full `pytest`. Live curl against a logged-in
+tenant is on the Deployment checklist.
+
 **Done when:** a real HTTP session with `"production"` but not
 `"characters"` gets 403 on `/api/characters/*` and still 200s
 Production reads of data that *is* shared; a session with
@@ -1171,7 +1197,7 @@ intervals.
   Characters UI.
 - Backup and Jita price cache stay global/unscoped, unchanged.
 
-**Status:** this PR. `do_sync_due` filters sharing rows by
+**Status:** landed, PR #177 (merged 2026-09-20). `do_sync_due` filters sharing rows by
 `esi_freshness.last_success_at` vs the three
 `TradingConfig.esi_*_interval_hours` fields. The scheduler's
 per-tenant ESI job is `esi_data_sync` calling that once; trading
@@ -1401,15 +1427,12 @@ list is the deliverable at the end — not something reconstructed
 from PR descriptions afterwards. Work it top to bottom on deploy
 day.
 
-Phase 8 (landed, PR #169), Phase 1 (landed, PR #172), and Phase 2
-(landed, PR #173) have items below. Phase 3a (landed, PR #174) adds
-post-deploy rows for the first orchestrator sync, wallet-snapshot
-reconcile, the age-limit clear caller, and the NULL-id sweep. Phase 3b
-adds the doctrine asset-table cutover. Phase 4 adds the live GET of
-the Characters status pool hint (needs the Phase 6 endpoint). Phase 7
-adds a config-review row for the three tier intervals and stale-clear
-multiples, and a post-deploy note that the first scheduler tick is
-`esi_data_sync` not the retired tool jobs. Remaining phases add their
+Phase 8 (landed, PR #169), Phase 1 (landed, PR #172), Phase 2
+(landed, PR #173), Phase 3a (landed, PR #174), Phase 4 (landed,
+PR #176), and Phase 7 (landed, PR #177) have items below. Phases 5
+and 6 (this PR) add the confirm-dialog / Wallet-highlight SSO round
+and the live-app curl of the Characters grant isolation. Remaining
+phases add their
 own rows when they merge; do not invent them here.
 
 ### Prerequisites
@@ -1433,6 +1456,10 @@ files are applied (`deploy/deploy.sh`, README, `.cursor/start.sh`).
   `.cursor/start.sh`). Sharing, freshness, group-3 capabilities,
   wallet snapshot tables, owner-id columns. Idempotent. Phase 8 added
   no schema file.
+- **Phase 5.** Re-apply `docs/esi_access_schema.sql` (idempotent). The
+  file now starts with `DROP TABLE IF EXISTS tenant_role_consents`.
+  There is no separate schema file; `docs/role_consent_schema.sql` is
+  deleted. New installs never create the table.
 
 ### One-time data migrations
 
@@ -1490,6 +1517,18 @@ easy to miss precisely because they do not fail loudly.
 
 What to check, and what a correct result looks like.
 
+- **Phase 5.** Same SSO round as Re-authorizations: Wallet is
+  highlighted `(new)`, no "once per role" copy. The dialog body is
+  the registry payload from `/access-preview`, not a static per-prefix
+  bundle.
+- **Phase 6.** Logged into a tenant with `"production"` but not
+  `"characters"`: `GET /api/characters/sharing` is 403; a Production
+  read (`GET /api/production/sde/counts`) is 200. A session with
+  `"characters"` can `POST /api/characters/sharing` and
+  `GET /api/characters/access-preview`. Prefix
+  `/api/auth/producer/start` still exists until Phase 9 (sidebar
+  callers). `GET /api/characters/owners` for a multi-prefix character
+  is one row with `character_has_token_pool: true`.
 - **Phase 1.** After the backfill, for a tenant with a character that
   was both `producer` and `doctrine-assets`: `esi_sharing` has Assets
   rows for both `production` and `doctrine`, and none for `sorting`.

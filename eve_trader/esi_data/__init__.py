@@ -1,5 +1,5 @@
-"""Character-centric ESI access: registry, fetchers, orchestrator, accessor
-(`docs/ESI_ACCESS_PLAN.md`). Characters `do_*` land in Phase 6.
+"""Character-centric ESI access: registry, fetchers, orchestrator, accessor,
+Characters `do_*` (`docs/ESI_ACCESS_PLAN.md`).
 
 This package is the third cross-cutting module alongside `portfolio.py`
 and `scheduler.py`. It names tools as strings and imports no tool

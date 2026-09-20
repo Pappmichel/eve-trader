@@ -111,6 +111,7 @@ def test_every_consuming_tool_key_is_in_all_tool_keys():
     for key in consuming_tool_keys():
         assert key in allowed, key
     # Management / non-consumers stay out of the consuming set.
+    assert "characters" in ALL_TOOL_KEYS
     assert "admin" not in consuming_tool_keys()
     assert "characters" not in consuming_tool_keys()
     assert "refining" not in consuming_tool_keys()

@@ -3,10 +3,10 @@
 Covers the same daily trading workflow as the browser UI, one command per
 step, plus a `pipeline` command that runs the whole thing. All actual logic
 lives in actions.py so the dashboard (browser UI) uses the exact same code.
+Character login is web-only (Characters re-auth / prefix `/start` until
+Phase 9); there is no `eve-trader auth --role` command.
 
 Examples:
-    eve-trader auth --role buyer
-    eve-trader auth --role seller
     eve-trader build-universe
     eve-trader build-focused
     eve-trader find-new-candidates --safe
@@ -143,14 +143,6 @@ def migrate_sqlite(db_path: str, tenant_id: str | None):
     for table, count in counts.items():
         click.echo(f"  {table}: {count} row(s)")
     click.echo(f"Migrated {sum(counts.values())} total row(s) into tenant {tenant_id or storage.DEFAULT_TENANT_ID}.")
-
-
-@main.command()
-@click.option("--role", type=click.Choice(["buyer", "seller"]), required=True)
-def auth(role: str):
-    """Authorize a character via EVE SSO (opens a browser)."""
-    result = actions.do_auth(role)
-    click.echo(f"Authorized [{role}]: {result['character_name']} ({result['character_id']})")
 
 
 @main.command("build-universe")
