@@ -314,7 +314,11 @@ ESI-consuming tool is selected — UI only; `admin.do_set_tool_grants` stays
 replace-not-merge and does not insert `"characters"` on the server. The
 Characters router (`/api/characters/`) is gated on that grant via
 `_TOOL_PATH_PREFIXES`. Prefix `/api/auth/{role_prefix}/start` is gone (Phase 9). ESI tokens are
-re-authorized from `/api/characters/reauth/start`. Token *storage* still
+re-authorized from `/api/characters/reauth/start`; a character that holds
+no token yet is registered from `/api/characters/add/start` (identity
+only, no scopes — an already-registered character is a deliberate no-op
+there, since the scope-less write would clobber the key
+`reauth_write_role` reuses). Token *storage* still
 uses prefix keys (`producer:<id>`, …); `ROLE_PREFIX_TOOL` /
 `validate_role_key_for_tool` still own those namespaces for DELETE.
 

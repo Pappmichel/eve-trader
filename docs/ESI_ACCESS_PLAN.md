@@ -1443,7 +1443,7 @@ top to bottom on deploy day. Parenthetical PR numbers are provenance,
 not a second order to follow.
 
 Landed: Phase 8 (#169), 0 (#171), 1 (#172), 2 (#173), 3a (#174),
-3b (#175), 4 (#176), 7 (#177), 5+6 (#178), 9 (this PR).
+3b (#175), 4 (#176), 7 (#177), 5+6 (#178), 9 (#179), 9a (#180).
 
 Read **"Known gaps after Phase 9"** below before starting. Two things
 the Characters page describes were open after Phase 9 — adding a
@@ -1521,6 +1521,13 @@ is gone.
 - A multi-prefix character (token pool hint on) is merged on this
   same re-auth: `delete_strict_subset_tokens` runs after the write.
   There is no batch re-keying.
+- A character the backfill did not bring across (a genuinely new one)
+  is registered with **Add character** (`/api/characters/add/start`),
+  not Re-authorize — that first round asks for no scopes, so ticking
+  data kinds and pressing Re-authorize is still required afterwards.
+  Pressing it for a character who already holds a token is a no-op
+  (`added=existing`), deliberately: the add round has no scopes and
+  would otherwise overwrite theirs.
 
 ### Config to set or review after deploy
 
@@ -1549,6 +1556,15 @@ What to check, in this order, and what a correct result looks like.
    and no Production data is correct as long as the character's
    Assets are shared with doctrine (the conservative backfill
    already does this for `doctrine-assets` prefixes).
+
+1b. **Production stock delta (see Known gap 3).** Before the first
+   post-deploy sync, record `esi_stock_at_location` totals for a few
+   Production materials. After it, compare. A tenant with Doctrine-only
+   characters holding stock at the Production home structure will see
+   those totals rise: Production reads the merged asset tables without a
+   sharing filter, and Phase 3b merged Doctrine's rows into them. That
+   is the gap, not a sync bug — do not "fix" it by unticking sharing,
+   which those readers ignore.
 
 2. **Conservative backfill.** For a tenant with a character that was
    both `producer` and `doctrine-assets`: `esi_sharing` has Assets
@@ -1627,10 +1643,11 @@ What to check, in this order, and what a correct result looks like.
 
 ## Known gaps after Phase 9
 
-The rebuild is complete against every phase's own brief. Of the two
-things the UI *described* but did not deliver, gap 1 has since been
-closed; gap 2 stands. They are recorded here rather than in a merged PR
-description, which is where such notes go to die.
+Gap 1 (an add-a-character path) has since been closed. Gap 2 is a UI
+promise the backend cannot keep yet. Gap 3 came out of the pre-deploy
+review and is the one with a visible effect on real numbers — read it
+before the cutover. All three are recorded here rather than in a merged
+PR description, which is where such notes go to die.
 
 **1. ~~There is no add-a-new-character path.~~ Closed (Phase 9a).**
 Before this, `/api/characters/reauth/start` required a `character_id` and
@@ -1669,6 +1686,50 @@ roles without `esi-characters.read_corporation_roles.v1`, which nothing in
 this app requests and which would need the same dev-portal step Phase 8
 needed. Until then a live 403, surfaced per corp in the sync result, stays
 the real check.
+
+**3. Only Doctrine and Trading read through the accessor. Production,
+Sorting and Station Trading still read the snapshot tables directly.**
+Phase 3's brief says "All raw ESI snapshot reads go through it", and the
+permanent isolation test (decision 9) proves the accessor itself is
+fail-closed — but only three call sites were actually migrated:
+`doctrine/engine.py` (`read_esi("assets", "doctrine")`),
+`own_orders._character_assets` and `trade_reconciliation`
+(`collect_trading_wallet_streams`). Everything else still goes through
+`storage.esi_stock_at_location` / `assets_at_flag` / `list_industry_jobs`
+/ `load_owned_blueprints` / the `character_sell_orders` sums, which have
+no `tool_key` and no sharing filter.
+
+Two consequences, in order of how much they matter:
+
+- **Production's stock figures now include Doctrine-only characters.**
+  This is a behaviour change introduced by Phase 3b, not a pre-existing
+  one: `doctrine_character_assets` / `doctrine_corp_assets` used to be a
+  separate table pair, so a `doctrine-assets`-only character never
+  reached `storage.esi_stock_at_location`'s default
+  `("character_assets", "corp_assets")`. After the merge it does. This is
+  exactly the failure mode the Phase 3 brief called out for Doctrine
+  ("an unfiltered Doctrine read against the merged tables would count
+  Production characters' assets too") and fixed on the Doctrine side
+  only. A tenant whose Doctrine characters hold stock at the Production
+  home structure, in a counted hangar flag, will see Production's
+  available-stock numbers go up on deploy day with no corresponding
+  change in what it actually owns. Worth checking against a real tenant
+  before the cutover; a single-character tenant is unaffected.
+- **The Characters page over-promises for those tools.** Unticking
+  Assets / Industry Jobs / Blueprints / Market Orders for `production`,
+  `sorting` or `station_trading` writes the sharing row and changes what
+  the *orchestrator fetches*, but does not change what those tools
+  *read* from rows already in the table. "Tool view" reports the sharing
+  relation, which is the intent, not those tools' effective reads.
+
+Shape of the fix: the same one Doctrine already got — each of those
+readers takes a `tool_key` and resolves its owner ids through
+`shared_owner_ids(...)`, rather than a second filter bolted onto
+`storage`. `esi_stock_at_location`'s `tables=` parameter is the seam;
+Doctrine's `esi_stock_from_asset_rows` is the pattern to copy.
+Sizeable but mechanical, and it does not block the cutover — the
+conservative backfill shares every pre-existing prefix's kinds with
+that prefix's tool, so nothing a tenant reads today disappears.
 
 ## Explicitly out of scope
 
