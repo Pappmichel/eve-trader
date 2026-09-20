@@ -739,9 +739,13 @@ ships):
 3. **Phases 5–7.** Consent, API/grant/gate, scheduler. These are the
    "the rest of the app now talks to `esi_data`" cutover. Tokens still
    work; conservative sharing is already in place from the 0–4 block.
-4. **Phase 9 last.** Frontend. Backend can be live-verified with curl /
-   the existing layouts' leftover "Add Character" buttons until the
-   Characters page replaces them.
+4. **Phase 9 last.** Frontend. Backend live-verify that needs real
+   tokens or real tenant data (curl against a logged-in session,
+   leftover "Add Character" buttons, a known corp-wallet fill) is
+   collected on the Deployment checklist as each phase lands, not
+   performed mid-flight — this rebuild deploys once, when every
+   phase is complete. Phase 9 still goes last because every backend
+   contract the UI needs is a lie until 0–7 exist.
 
 ### Phase 0 — Registry / vocabulary
 
@@ -934,12 +938,15 @@ stable for `ESIClient` caches.
   duplicates survive until a superset write; normalization treats
   `"b a"` and `"a  b a"` as the same set.
 
-**Done when:** those tests pass, and a live `GET` of whatever status
-endpoint Phase 6 will own (or a temporary debug helper, deleted
-before merge) shows a real multi-prefix character as one row with the
-hint set. `ESIClient.structure_orders_raw` still caches by the
-selected `auth_role` — selector stability is covered by asserting the
-same inputs return the same role key across 100 calls.
+**Done when:** those tests pass. `ESIClient.structure_orders_raw`
+still caches by the selected `auth_role` — selector stability is
+covered by asserting the same inputs return the same role key across
+100 calls. A live `GET` of whatever status endpoint Phase 6 will own,
+showing a real multi-prefix character as one row with the hint set,
+needs real tokens and is **not** a mid-flight gate: this rebuild
+deploys once at the end. That confirmation is not dropped; this
+phase appends it to the Deployment checklist when it lands, which is
+when it can actually be performed.
 
 ### Phase 5 — Retire consent
 
@@ -973,9 +980,15 @@ Phase 6.
 
 **Done when:** grep for `tenant_role_consents`, `has_role_consent`,
 `role_consent_schema`, `consentStatus`, `acknowledgeConsent` is empty
-outside this plan file and git history; drift-guard green; a re-auth
-of a character that is adding Wallet shows Wallet highlighted and
-does not show a "you'll only see this once per role" line.
+outside this plan file and git history; drift-guard green. A re-auth
+of a character that is adding Wallet, showing Wallet highlighted and
+not showing a "you'll only see this once per role" line, needs a real
+SSO round and is **not** a mid-flight gate: this rebuild deploys once
+at the end. That confirmation is not dropped; this phase appends it
+to the Deployment checklist when it lands, which is when it can
+actually be performed. The dialog copy itself (no "once per role",
+new kinds highlighted from the registry payload) stays a phase gate
+via tests and grep — that does not need live tokens.
 
 ### Phase 6 — API, router, grant, gate mapping
 
@@ -1021,10 +1034,15 @@ don't exist.
 Production reads of data that *is* shared; a session with
 `"characters"` can toggle sharing and get a confirm-dialog payload;
 `/api/auth/producer/start` is gone; `pytest` including the new
-isolation test is green; live curl against localhost:8000 matches
-the unit tests (this repo's "live-verify before declaring done"
-rule — a settings-save-shaped bug was already caught only at this
-layer once).
+isolation test is green. Those session/403/200 checks are the
+test-suite gate (router tests against a running app in CI or the
+local suite), not a logged-in curl against a live tenant. Live curl
+against the deployed app — the same "live-verify before declaring
+done" discipline in `CLAUDE.md` that once caught a settings-save bug
+only at the Pydantic layer — is **not** dropped and is **not** a
+mid-flight gate: this rebuild deploys once at the end. This phase
+appends that live-app curl to the Deployment checklist when it
+lands, which is when it can actually be performed.
 
 ### Phase 7 — Scheduler
 
@@ -1091,15 +1109,22 @@ before this scope existed needs to be re-added" pattern
 Under the new model (once 0–9 land) Wallet's corp variant is just
 another group-1 kind with Accountant as the in-game role.
 
+**Status:** landed, PR #169 (merged 2026-09-20).
+
 **Done when:** `ESIClient` has corporation wallet transaction/journal
 (division-aware; ESI exposes per-division wallets),
 `trade_reconciliation` matches corp-wallet sells the same way it
 matches character-wallet sells (including the real-tax journal
-path), tests cover a corp-funded fill that is absent from the
-character wallet, and a live reconcile against a character that has
-re-authed with the new scope sees a known corp sell that previously
-did not appear. No Characters UI, no sharing table, no registry
-required for this phase.
+path), and tests cover a corp-funded fill that is absent from the
+character wallet. That is the CI / test-suite gate; it is what
+PR #169 shipped. A live reconcile against a character that has
+re-authed with the new scope, seeing a known corp sell that
+previously did not appear, needs real ESI tokens and is **not** a
+mid-flight gate: this rebuild deploys once at the end. That
+confirmation is not dropped — it is Phase 8's original "done when"
+item, relocated to the Deployment checklist below, which is when it
+can actually be performed. No Characters UI, no sharing table, no
+registry required for this phase.
 
 ### Phase 9 — Frontend
 
@@ -1126,17 +1151,30 @@ highlights, tool view, admin auto-tick) is a lie until 0–7 exist.
   a second login path.
 - Grep-clean user-facing strings (carry-forward hazard): no "Add
   Character in the sidebar", no "once per role".
-- Browser verification of the actual flows, not a single screenshot
-  (`CLAUDE.md` live-verify discipline, and this repo's UI rule):
-  toggle a cell, see pending re-auth, run the confirm dialog with a
-  highlighted new kind, confirm Tool view updates, confirm a
-  Production page still sees shared assets and does not see
-  unshared ones, confirm Admin auto-ticks Characters, confirm a
-  user without the grant does not see the card.
+- Browser verification of what is genuinely local (local frontend
+  against a local backend, no real tenant data and no real ESI
+  tokens required): Characters page chrome and empty states, four
+  sections, five-state cells as UI, Landing ToolCard / QuickNav /
+  route, Admin auto-tick checkbox and disabled-grant copy, a user
+  without the Characters grant does not see the card, tool sidebars
+  gone. Not a single screenshot (`CLAUDE.md` live-verify discipline,
+  and this repo's UI rule). Playwright or a throwaway
+  `_verify_*.mjs` is deleted after, not left in the repo.
+- Browser verification that needs real tenant data and real tokens
+  is **not** a mid-flight gate and is **not** dropped: toggle a cell
+  and see pending re-auth, run the confirm dialog with a highlighted
+  new kind (real SSO), confirm Tool view updates against live
+  sharing rows, confirm a Production page still sees shared assets
+  and does not see unshared ones. This phase appends those items to
+  the Deployment checklist when it lands, which is when they can
+  actually be performed.
 
-**Done when:** those flows have been exercised in a real browser
-against the real backend; Playwright or a throwaway `_verify_*.mjs`
+**Done when:** the local browser flows above have been exercised
+against a local backend; Playwright or a throwaway `_verify_*.mjs`
 is deleted after, not left in the repo; full `pytest` still green.
+The real-token / real-tenant flows are on the Deployment checklist
+(appended when this phase lands), not a phase gate: this rebuild
+deploys once at the end.
 
 ## Critical files
 
@@ -1196,18 +1234,108 @@ finished: it is the test that would catch a regression in the single
 most important new guarantee (tool A never reads owner data that was
 not shared with it).
 
-Run the full existing `pytest` suite after each phase. Live-verify
-mutating HTTP against `localhost:8000` and frontend changes in a real
-browser before calling the phase done (`CLAUDE.md`). Phase 8 in
-particular is only done when a known corp-wallet fill that
-reconciliation currently misses appears after the new fetch, not when
-the client method has a unit test with a fake payload.
+Run the full existing `pytest` suite after each phase. That, plus
+whatever is genuinely local (local Postgres, local frontend against a
+local backend with no real tokens), is the phase gate.
 
-Do not push to `main` or deploy from this plan. Cutover of a live
-tenant (when to run the conservative backfill against real
-`tenant_tokens`) is a later operator decision, as it was for the
-multi-tenant migration. The backfill itself is written and proven
-against a copy first.
+Live-verify that needs real characters, real ESI tokens, or the
+production database — mutating HTTP against a logged-in live tenant,
+a known corp-wallet fill appearing in Realized Trades, a real SSO
+re-auth — cannot gate a phase under the constraint that this rebuild
+deploys once, when every phase is complete. Those checks are **not**
+dropped. They are the same `CLAUDE.md` "live-verify before declaring
+done" discipline, relocated to the Deployment checklist below, which
+is the point where they can actually be performed. A later reader
+should not treat a phase's quieter "done when" as the repo abandoning
+that rule.
+
+Individual phases may merge to `main` as they complete (Phase 8 did).
+Do not treat a merge as a deploy. Cutover of the live tenant is a
+single operator pass through the Deployment checklist once the
+rebuild is ready. The conservative sharing backfill is written and
+proven against a copy first (Phase 1); running it against live
+`tenant_tokens` is a checklist item that phase will append when it
+lands, not a mid-flight action.
+
+## Deployment checklist
+
+This rebuild is deployed only once, when every phase is complete.
+There is no re-auth of real characters, no reconcile against live
+ESI, and no production-database work between phases. Everything that
+can only be confirmed against the live deployment is therefore
+collected here as it is built.
+
+Each phase **appends its own items to this list as it lands**. This
+list is the deliverable at the end — not something reconstructed
+from PR descriptions afterwards. Work it top to bottom on deploy
+day.
+
+Only Phase 8 is seeded today (landed, PR #169). Phases 0–7 and 9 add
+their own rows when those phases merge; do not invent them here.
+
+### Prerequisites
+
+Outside the repo: EVE developer portal, app registration, anything
+the operator cannot do from a git pull.
+
+- **Phase 8.** Verify `esi-wallet.read_corporation_wallets.v1` is
+  enabled for the app in the EVE developer portal. Already done
+  2026-09-20. The deploy target uses the same app registration, so
+  this is a verify, not an enable.
+
+### Schema to apply, in order
+
+Apply each named file the same way existing `docs/*_schema.sql`
+files are applied (`deploy/deploy.sh`, README, `.cursor/start.sh`).
+
+- None from landed phases. Phase 8 added no schema file.
+
+### One-time data migrations
+
+Name the function, whether it is idempotent, and whether it is
+per-tenant. Run after schema, before depending on the new shape.
+
+- None from landed phases. Phase 8 added no migration function.
+  Reconcile Trades is a wholesale replace of `realized_trades` (see
+  Post-deploy verification), not a schema or data migration.
+
+### Re-authorizations required
+
+What silently degrades until the named characters re-auth. These are
+easy to miss precisely because they do not fail loudly.
+
+- **Phase 8.** Every buyer and every seller character needs a
+  one-time re-auth to pick up `esi-wallet.read_corporation_wallets.v1`.
+  Until then, corp-wallet ESI calls 403 and are skipped non-fatally;
+  character-wallet matching still runs, so realized profit looks
+  complete and is missing every corp-funded fill. That silent skip
+  is why this is on the checklist. Same pattern
+  `PRODUCTION_SCOPES` already documents for
+  `esi-markets.structure_markets.v1`. Not required of producer
+  characters: the scope is on `OAuthConfig.scopes` (buyer/seller
+  login) only, not on `PRODUCTION_SCOPES`.
+
+### Config to set or review after deploy
+
+- **Phase 8 (optional).** `TradingConfig.wallet_division_ids`. Empty
+  default means all seven ESI wallet divisions. Settings UI is the
+  "Corp wallet divisions included in Reconcile Trades" MultiSelect
+  (placeholder "All divisions"). Leave empty unless the operator
+  wants Reconcile Trades to page a subset.
+
+### Post-deploy verification
+
+What to check, and what a correct result looks like.
+
+- **Phase 8.** After the buyer/seller re-auth above, run Reconcile
+  Trades. `save_realized_trades` wholesale-replaces `realized_trades`,
+  so previously reconciled periods do not pick up corp fills until
+  that fresh run — historical rows are replaced, not patched. Correct
+  result: a known corp-funded sell that reconciliation previously
+  missed now appears in Realized Trades. This is Phase 8's original
+  "done when" live check; it could not be performed in a token-less
+  build environment and lives here rather than staying unsatisfied
+  on the phase.
 
 ## Explicitly out of scope
 
