@@ -120,10 +120,9 @@ def _run_kind(
     owner_id: int,
     auth_role: str,
     owner_name: str,
-    doctrine_assets: bool,
     extra: dict,
 ) -> dict:
-    fn = fetcher_for(data_kind, owner_type, doctrine_assets=doctrine_assets)
+    fn = fetcher_for(data_kind, owner_type)
     return fn(client, owner_id, auth_role, owner_name, **extra)
 
 
@@ -172,22 +171,12 @@ def _kinds_for_owner(
     return kinds
 
 
-def _tools_for_owner_kind(
-    sharing: list[tuple[str, int, str, str]], owner_type: str, owner_id: int, data_kind: str,
-) -> set[str]:
-    return {
-        tool for ot, oid, kind, tool in sharing
-        if ot == owner_type and oid == owner_id and kind == data_kind
-    }
-
-
 def _run_character_owner(
     *,
     client: ESIClient,
     owner_id: int,
     kinds: list[str],
     tokens: list[tuple[str, int, str, str]],
-    sharing: list[tuple[str, int, str, str]],
     extra: dict,
 ) -> dict:
     owner_type = "character"
@@ -208,25 +197,16 @@ def _run_character_owner(
                     kind_report[data_kind] = f"skipped ({err})"
                     failed = (data_kind, err)
                     raise err
-                doctrine_assets = (
-                    data_kind == "assets"
-                    and "doctrine" in _tools_for_owner_kind(sharing, owner_type, owner_id, data_kind)
-                    and "production" not in _tools_for_owner_kind(sharing, owner_type, owner_id, data_kind)
-                    and "sorting" not in _tools_for_owner_kind(sharing, owner_type, owner_id, data_kind)
-                    and "trading" not in _tools_for_owner_kind(sharing, owner_type, owner_id, data_kind)
-                )
                 last_error: Optional[BaseException] = None
                 wrote = None
-                used_role: Optional[str] = None
                 for role in roles:
                     try:
                         wrote = _run_kind(
                             client=client, data_kind=data_kind, owner_type=owner_type,
                             owner_id=owner_id, auth_role=role, owner_name=owner_name,
-                            doctrine_assets=doctrine_assets, extra=extra,
+                            extra=extra,
                         )
                         last_error = None
-                        used_role = role
                         break
                     except ESIError as e:
                         last_error = e
@@ -238,19 +218,6 @@ def _run_character_owner(
                     raise err
                 _record_success(owner_type, owner_id, data_kind)
                 kind_report[data_kind] = wrote
-                # A character shared with both production and doctrine still
-                # needs the doctrine asset tables filled until Phase 3b.
-                if (
-                    data_kind == "assets"
-                    and not doctrine_assets
-                    and used_role is not None
-                    and "doctrine" in _tools_for_owner_kind(sharing, owner_type, owner_id, data_kind)
-                ):
-                    _run_kind(
-                        client=client, data_kind=data_kind, owner_type=owner_type,
-                        owner_id=owner_id, auth_role=used_role, owner_name=owner_name,
-                        doctrine_assets=True, extra=extra,
-                    )
     except Exception as e:  # noqa: BLE001 - owner task must not abort the pass
         if failed is None:
             failed = ("?", e)
@@ -278,7 +245,6 @@ def _run_corporation_kinds_for_members(
     corp_id: int,
     kinds: list[str],
     members: list[tuple[str, int, str]],
-    sharing: list[tuple[str, int, str, str]],
     corp_name: str,
     extra: dict,
 ) -> dict:
@@ -298,25 +264,16 @@ def _run_corporation_kinds_for_members(
     try:
         with storage.batch_session():
             for data_kind in kinds:
-                doctrine_assets = (
-                    data_kind == "assets"
-                    and "doctrine" in _tools_for_owner_kind(sharing, owner_type, corp_id, data_kind)
-                    and "production" not in _tools_for_owner_kind(sharing, owner_type, corp_id, data_kind)
-                    and "sorting" not in _tools_for_owner_kind(sharing, owner_type, corp_id, data_kind)
-                    and "trading" not in _tools_for_owner_kind(sharing, owner_type, corp_id, data_kind)
-                )
                 last_error: Optional[BaseException] = None
                 wrote = None
-                used_role: Optional[str] = None
                 for role, _cid, _cname in members:
                     try:
                         wrote = _run_kind(
                             client=client, data_kind=data_kind, owner_type=owner_type,
                             owner_id=corp_id, auth_role=role, owner_name=owner_name,
-                            doctrine_assets=doctrine_assets, extra=extra,
+                            extra=extra,
                         )
                         last_error = None
-                        used_role = role
                         break
                     except ESIError as e:
                         last_error = e
@@ -329,17 +286,6 @@ def _run_corporation_kinds_for_members(
                     raise RuntimeError(failed_kinds[data_kind])
                 _record_success(owner_type, corp_id, data_kind)
                 kind_report[data_kind] = wrote
-                if (
-                    data_kind == "assets"
-                    and not doctrine_assets
-                    and used_role is not None
-                    and "doctrine" in _tools_for_owner_kind(sharing, owner_type, corp_id, data_kind)
-                ):
-                    _run_kind(
-                        client=client, data_kind="assets", owner_type=owner_type,
-                        owner_id=corp_id, auth_role=used_role, owner_name=owner_name,
-                        doctrine_assets=True, extra=extra,
-                    )
     except Exception as e:  # noqa: BLE001
         if not failed_kinds:
             failed_kinds["?"] = str(e)
@@ -399,7 +345,7 @@ def _sync(
             kinds = _kinds_for_owner(sharing, "character", owner_id)
             return _run_character_owner(
                 client=esi, owner_id=owner_id, kinds=kinds,
-                tokens=tokens, sharing=sharing, extra=fetch_extra,
+                tokens=tokens, extra=fetch_extra,
             )
 
         wrapped = storage.with_current_tenant(_one_char)
@@ -440,7 +386,7 @@ def _sync(
         members = members_by_corp.get(corp_id) or []
         corp_results.append(_run_corporation_kinds_for_members(
             client=esi, corp_id=corp_id, kinds=kinds, members=members,
-            sharing=sharing, corp_name=corp_names.get(corp_id, str(corp_id)),
+            corp_name=corp_names.get(corp_id, str(corp_id)),
             extra=fetch_extra,
         ))
 
@@ -484,8 +430,7 @@ def do_sync_for_tool(
     `extra` is forwarded to fetchers (Doctrine passes `structure_id` so
     the contracts fetcher can pre-filter before the per-contract items
     call). Kinds still run once per owner; `_kinds_for_owner` unique's
-    them. The full sharing list is kept so dual-write until 3b can see
-    every consuming tool.
+    them.
     """
     if not tool_key:
         raise RuntimeError("do_sync_for_tool requires a tool_key")
@@ -499,9 +444,8 @@ def do_sync_all(*, client: Optional[ESIClient] = None, extra: Optional[dict] = N
     """Refresh every shared (owner, kind) for the current tenant.
 
     Pass the full sharing list, not a per-(owner, kind) first-tool
-    slice: `_kinds_for_owner` already runs each kind once, and
-    `_tools_for_owner_kind` needs every consuming tool (doctrine
-    dual-write until 3b).
+    slice: `_kinds_for_owner` already runs each kind once, unioned
+    across every consuming tool.
     """
     sharing = storage.list_esi_sharing()
     return _sync(sharing, client=client, tool_key=None, extra=extra)

@@ -144,29 +144,6 @@ def fetch_corporation_assets(
     return {"written": len(assets), "location_ids": [a["location_id"] for a in assets]}
 
 
-def fetch_doctrine_character_assets(
-    client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
-) -> dict:
-    """Doctrine still has its own asset tables until Phase 3b's merge."""
-    assets = client.character_assets(owner_id, auth_role=auth_role)
-    storage.replace_assets(
-        "doctrine_character_assets", _asset_rows(assets, owner_name),
-        owner_character_id=owner_id, owner_name=owner_name,
-    )
-    return {"written": len(assets), "location_ids": [a["location_id"] for a in assets]}
-
-
-def fetch_doctrine_corporation_assets(
-    client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
-) -> dict:
-    assets = client.corporation_assets(owner_id, auth_role=auth_role)
-    storage.replace_assets(
-        "doctrine_corp_assets", _asset_rows(assets, owner_name),
-        owner_corporation_id=owner_id, owner_name=owner_name,
-    )
-    return {"written": len(assets), "location_ids": [a["location_id"] for a in assets]}
-
-
 # ----------------------------------------------------------- industry jobs
 def fetch_character_industry_jobs(
     client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
@@ -497,8 +474,6 @@ def fetch_corporation_contracts(
 
 
 # Registry-driven dispatch: (kind, owner_type) -> fetcher.
-# Assets have two writers until Phase 3b (shared tables + doctrine tables).
-# The orchestrator picks which asset fetcher to call from the consuming tool.
 FETCHERS: dict[tuple[str, str], Callable] = {
     ("assets", "character"): fetch_character_assets,
     ("assets", "corporation"): fetch_corporation_assets,
@@ -515,15 +490,7 @@ FETCHERS: dict[tuple[str, str], Callable] = {
     ("contracts", "corporation"): fetch_corporation_contracts,
 }
 
-DOCTRINE_ASSET_FETCHERS: dict[tuple[str, str], Callable] = {
-    ("assets", "character"): fetch_doctrine_character_assets,
-    ("assets", "corporation"): fetch_doctrine_corporation_assets,
-}
-
-
-def fetcher_for(data_kind: str, owner_type: str, *, doctrine_assets: bool = False) -> Callable:
-    if doctrine_assets and data_kind == "assets":
-        return DOCTRINE_ASSET_FETCHERS[(data_kind, owner_type)]
+def fetcher_for(data_kind: str, owner_type: str) -> Callable:
     fn = FETCHERS.get((data_kind, owner_type))
     if fn is None:
         raise KeyError(f"no fetcher for {(data_kind, owner_type)}")

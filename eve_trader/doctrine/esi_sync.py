@@ -5,11 +5,10 @@ orchestrator, plus tool-specific post-processing:
    (structure pre-filter happens in the contracts fetcher before the
    per-contract items call). Matching against fittings and finished-
    contract history stay here.
-2. Asset sync: the same `do_sync_for_tool("doctrine")` call. Until
-   Phase 3b, owners shared only with doctrine still write
-   doctrine_character_assets / doctrine_corp_assets. A Doctrine-only
-   tenant must be able to use Stockpile standalone — that property is
-   now the sharing row, not a second table (the tables remain until 3b).
+2. Asset sync: the same `do_sync_for_tool("doctrine")` call writes
+   character_assets / corp_assets. Sharing with `tool_key="doctrine"`
+   is what keeps a Doctrine-only tenant's stockpile independent of
+   Production (the property the doctrine asset tables existed for).
 """
 from __future__ import annotations
 
@@ -190,7 +189,7 @@ def list_doctrine_asset_characters(tm: Optional[TokenManager] = None) -> list[tu
 def sync_assets() -> dict:
     """Delegates the fetch to the Phase 3 orchestrator. Sharing with
     `tool_key="doctrine"` is what keeps a Doctrine-only tenant's stockpile
-    independent of Production (the property these tables existed for)."""
+    independent of Production."""
     from ..esi_data.orchestrator import do_sync_for_tool
 
     tm = TokenManager(OAUTH_CONFIG)

@@ -77,14 +77,14 @@ def test_stockpile_rows_for_doctrine_excludes_intake_at_production_home(monkeypa
 
     captured = {}
 
-    def fake_esi_bulk(type_ids, location_id, tables=(), allowed_flags=None, exclude_intake_at_location_id=None):
+    def fake_stock(rows, type_ids, location_id, allowed_flags=None, exclude_intake_at_location_id=None):
         captured["exclude"] = exclude_intake_at_location_id
-        captured["tables"] = tables
         captured["type_ids"] = list(type_ids)
+        captured["rows"] = rows
         return {tid: 0.0 for tid in type_ids}
 
-    monkeypatch.setattr(storage, "esi_stock_at_location_bulk", fake_esi_bulk)
-    monkeypatch.setattr(storage, "has_any_doctrine_synced_assets", lambda: True)
+    monkeypatch.setattr(engine, "read_esi", lambda *a, **k: [{"type_id": MODULE}])
+    monkeypatch.setattr(storage, "esi_stock_from_asset_rows", fake_stock)
     monkeypatch.setattr(storage, "list_doctrines", lambda: [("d1", "Doctrine 1")])
     monkeypatch.setattr(storage, "list_doctrine_contracts", lambda fitting_id=None, fitting_ids=None: [])
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Module", 1.0, 1, 1, 0, None))
@@ -105,7 +105,7 @@ def test_stockpile_rows_for_doctrine_excludes_intake_at_production_home(monkeypa
 
     assert assets_available is True
     assert captured["exclude"] == PRODUCTION_CONFIG.home_location_id
-    assert captured["tables"] == ("doctrine_character_assets", "doctrine_corp_assets")
+    assert captured["rows"] == [{"type_id": MODULE}]
     assert any(r.type_id == MODULE and r.shortfall > 0 for r in rows)
 
 
@@ -118,7 +118,7 @@ def test_stockpile_rows_for_doctrine_uses_bulk_lookups_not_per_fitting(monkeypat
         contract_calls.append((fitting_id, tuple(fitting_ids) if fitting_ids is not None else None))
         return []
 
-    def fake_stock_bulk(type_ids, location_id, tables=(), allowed_flags=None, exclude_intake_at_location_id=None):
+    def fake_stock(rows, type_ids, location_id, allowed_flags=None, exclude_intake_at_location_id=None):
         stock_calls.append(tuple(type_ids))
         return {tid: 0.0 for tid in type_ids}
 
@@ -126,10 +126,10 @@ def test_stockpile_rows_for_doctrine_uses_bulk_lookups_not_per_fitting(monkeypat
         sde_calls.append(tuple(type_ids))
         return {tid: (tid, 1, "Module", 1.0, 1, 1, 0, None) for tid in type_ids}
 
+    monkeypatch.setattr(engine, "read_esi", lambda *a, **k: [{"type_id": MODULE}])
     monkeypatch.setattr(storage, "list_doctrine_contracts", fake_contracts)
-    monkeypatch.setattr(storage, "esi_stock_at_location_bulk", fake_stock_bulk)
+    monkeypatch.setattr(storage, "esi_stock_from_asset_rows", fake_stock)
     monkeypatch.setattr(storage, "get_sde_types_bulk", fake_sde_bulk)
-    monkeypatch.setattr(storage, "has_any_doctrine_synced_assets", lambda: True)
     monkeypatch.setattr(storage, "list_doctrines", lambda: [("d1", "Doctrine 1")])
 
     items = [FittingItem("f1", 1, "low", MODULE, 1)]

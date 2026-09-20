@@ -33,7 +33,6 @@ BOB_ID = 1002
 def _wipe(_apply_doctrine_schema, _apply_esi_access_schema):
     pg_helpers.wipe_tables(
         "character_assets", "corp_assets",
-        "doctrine_character_assets", "doctrine_corp_assets",
         "character_industry_jobs", "corp_industry_jobs",
         "character_blueprints", "corp_blueprints",
         "character_sell_orders",
@@ -84,22 +83,6 @@ def test_null_owner_id_partitioned_replace_does_not_pk_collide_or_touch_other_ow
     assert alice[0][0] == "Alice" and alice[0][1] == 99 and alice[0][2] == ALICE_ID
     assert len(bob) == 1
     assert bob[0][0] == "Bob" and bob[0][1] == 20 and bob[0][2] is None
-
-
-def test_null_owner_id_doctrine_assets_same_transition(tenant):
-    storage.replace_assets("doctrine_character_assets", [
-        _asset(1, 10, "Alice"),
-        _asset(2, 20, "Bob"),
-    ])
-    storage.replace_assets(
-        "doctrine_character_assets",
-        [_asset(1, 7, "Alice")],
-        owner_character_id=ALICE_ID, owner_name="Alice",
-    )
-    alice = _owner_ids("doctrine_character_assets", 1)
-    bob = _owner_ids("doctrine_character_assets", 2)
-    assert alice[0][1] == 7 and alice[0][2] == ALICE_ID
-    assert bob[0][1] == 20 and bob[0][2] is None
 
 
 def test_production_replace_of_a_does_not_delete_b(tenant):

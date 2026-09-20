@@ -119,12 +119,7 @@ def _filter_ids(ids: list[int], owner_id_filter) -> list[int]:
 
 
 def _read_assets(tool_key: str, owner_type, owner_id) -> list[dict]:
-    # Until Phase 3b, Doctrine still reads its own tables. Other consumers
-    # read the shared character_assets / corp_assets pair.
-    if tool_key == "doctrine":
-        char_table, corp_table = "doctrine_character_assets", "doctrine_corp_assets"
-    else:
-        char_table, corp_table = "character_assets", "corp_assets"
+    char_table, corp_table = "character_assets", "corp_assets"
     out: list[dict] = []
     cols = (
         "item_id, type_id, location_id, location_flag, quantity, "

@@ -941,31 +941,16 @@ internal shortcut.
 - Error strings that still say "Add Character in the sidebar" can wait
   for Phase 9, but new orchestrator errors must not add more of them.
 
-**Status:** this PR is **3a** (fetchers, orchestrator, fail-closed
-accessor, wallet consumer, NULL-id sweep). Doctrine asset-table merge
-is **3b** and waits until 3a is merged — the accessor must exist before
-those tables land in `character_assets` / `corp_assets`. No frontend.
-No Phase 4 token selector: the orchestrator still resolves tokens
-through today's prefix listings. Wallet decision (this PR):
-`do_reconcile_trades` calls `collect_trading_wallet_streams`, which is
-per-owner and sharing-gated via `is_shared` / `read_esi` with
-`tool_key="trading"`. No sharing row → that owner is omitted (no live
-ESI). Sharing row + empty snapshot → live-fetch that owner only.
-`AccessorError` and `storage.connect()`'s missing-tenant `RuntimeError`
-propagate. Phase 8 tests still call `reconcile_realized_trades` with
-`snapshot_txns=None` (unrestricted live path) and are unchanged. The
-Phase 1 conservative backfill is a hard prerequisite — no escape hatch
-when sharing rows are missing. A fetcher with no consumer would be dead
-weight, and Wallet reads have to be sharing-gated anyway. CI gate is the
-orchestrator unit tests, the permanent accessor isolation test, both
-NULL-id sweep tests, caller-level sharing-gate tests, and full `pytest`.
-No new schema file and no `TradingConfig` field (age-limit clear uses
-`DEFAULT_STALE_CLEAR_MULTIPLES` and hardcoded tier hours; Phase 7 wires
-config). Production/Sorting/Doctrine *engine* snapshot reads still go
-through `storage` primitives in 3a (converting them without sharing
-rows in every existing test would empty those tools); new consumers and
-wallet/own-orders go through the accessor. Doctrine engine switches in
-3b.
+**Status:** **3b** (this PR) — doctrine asset-table merge. 3a (fetchers,
+orchestrator, fail-closed accessor, wallet consumer, NULL-id sweep) is
+merged (PR #174). Doctrine reads shared `character_assets` /
+`corp_assets` through `read_esi(..., tool_key="doctrine")`. The
+`if tool_key == "doctrine"` transitional branch in `_read_assets` is
+gone, as are `fetch_doctrine_*` / dual-write. No frontend. No Phase 4
+token selector. CI gate is the accessor isolation test (including
+Production-only unreachable through doctrine), the Doctrine-only-tenant
+Stockpile standalone test, schema copy+drop+idempotent tests, the
+sqlite drift-guard, and full `pytest`.
 
 **Done when:** unit tests drive the orchestrator with a fake `ESIClient`
 across two owners and two kinds — success, mid-kind failure (decision
@@ -1341,9 +1326,10 @@ from PR descriptions afterwards. Work it top to bottom on deploy
 day.
 
 Phase 8 (landed, PR #169), Phase 1 (landed, PR #172), and Phase 2
-(landed, PR #173) have items below. Phase 3a adds post-deploy rows for
-the first orchestrator sync, wallet-snapshot reconcile, the age-limit
-clear caller, and the NULL-id sweep. Remaining phases add their own
+(landed, PR #173) have items below. Phase 3a (landed, PR #174) adds
+post-deploy rows for the first orchestrator sync, wallet-snapshot
+reconcile, the age-limit clear caller, and the NULL-id sweep. Phase 3b
+adds the doctrine asset-table cutover. Remaining phases add their own
 rows when they merge; do not invent them here.
 
 ### Prerequisites
@@ -1470,7 +1456,20 @@ What to check, and what a correct result looks like.
   `clear_stale_owner_kind` with hardcoded tier hours (frequent 1h /
   normal 6h / rare 24h) and `DEFAULT_STALE_CLEAR_MULTIPLES=3` — there
   is no `TradingConfig` field until Phase 7. Doctrine asset tables are
-  still present (3b).
+  still present until 3b.
+- **Phase 3b.** Applying `docs/esi_access_schema.sql` copies remaining
+  `doctrine_character_assets` / `doctrine_corp_assets` rows into
+  `character_assets` / `corp_assets` (prefer an already owner-id-stamped
+  shared-table row over an unstamped doctrine row; otherwise take the
+  incoming doctrine row) and DROPs the doctrine tables. Re-applying is a
+  no-op once they are gone — `doctrine_schema.sql` no longer recreates
+  them. Doctrine Stockpile then reads only through
+  `read_esi(..., tool_key="doctrine")`. A tenant with no producer and no
+  Production data is correct as long as the character's Assets are shared
+  with doctrine (Phase 1 backfill already does this for `doctrine-assets`
+  prefixes). After this cutover, `\dt` / `information_schema` must not
+  list `doctrine_character_assets` or `doctrine_corp_assets`. This is a
+  real cutover, not a no-op apply.
 
 ## Explicitly out of scope
 

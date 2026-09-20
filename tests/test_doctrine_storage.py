@@ -4,6 +4,11 @@ import pytest
 
 from eve_trader import storage
 from eve_trader.doctrine import actions
+from eve_trader.doctrine import engine
+from eve_trader.doctrine.config import DoctrineConfig
+from eve_trader.doctrine.engine import _Candidate
+from eve_trader.doctrine.models import Fitting, FittingItem
+from eve_trader.esi_data.access import read_esi
 
 from . import pg_helpers
 from .pg_helpers import (  # noqa: F401
@@ -212,69 +217,146 @@ def test_contracts_are_tenant_isolated_even_with_same_contract_id(tenant_pair):
 
 @pytest.fixture(autouse=True)
 def _wipe_doctrine_assets():
-    # doctrine_character_assets/doctrine_corp_assets are column-only-bucket
-    # tables (PK = item_id alone - same shape as Production's own
-    # character_assets/corp_assets, see test_storage_stock.py's own _wipe
-    # fixture for why that matters across tests reusing small item_ids).
-    # character_assets is wiped here too - a couple of tests below write
-    # directly into it (to prove Doctrine's own reads ignore Production's
-    # tables) with the same small hardcoded item_ids test_storage_stock.py
-    # uses; without wiping it here, a leftover row from an earlier session
-    # collides on the physical PK the next time this file runs (confirmed
-    # real flake: replace_assets' own DELETE is RLS-scoped to the *current*
-    # tenant, but item_id's PK isn't tenant-scoped, so a different tenant's
-    # already-committed row isn't deleted and blocks the INSERT).
+    # character_assets/corp_assets are column-only-bucket tables (PK =
+    # (item_id, owner_name) - see test_storage_stock.py's own _wipe fixture).
+    # A leftover row from an earlier session collides on the physical PK.
     pg_helpers.wipe_tables(
-        "doctrine_character_assets", "doctrine_corp_assets", "character_assets", "corp_assets",
-        "sorting_intake_sources",
+        "character_assets", "corp_assets",
+        "esi_sharing", "sorting_intake_sources",
     )
     yield
+
+
+def _share(owner_type: str, owner_id: int, data_kind: str, tool_key: str) -> None:
+    with storage.connect() as conn:
+        conn.execute(
+            "INSERT INTO esi_sharing (owner_type, owner_id, data_kind, tool_key) "
+            "VALUES (?,?,?,?) ON CONFLICT DO NOTHING",
+            (owner_type, owner_id, data_kind, tool_key),
+        )
 
 
 def test_has_any_doctrine_synced_assets_false_until_synced(tenant):
     assert storage.has_any_doctrine_synced_assets() is False
 
-    storage.replace_assets("doctrine_character_assets", [(1, 34, 1000000000001, "Hangar", 100, 0, "pilot")])
+    storage.replace_assets(
+        "character_assets",
+        [(1, 34, 1000000000001, "Hangar", 100, 0, "pilot")],
+        owner_character_id=1001, owner_name="pilot",
+    )
+    # Rows exist but nothing is shared with doctrine — fail-closed.
+    assert storage.has_any_doctrine_synced_assets() is False
 
+    _share("character", 1001, "assets", "doctrine")
     assert storage.has_any_doctrine_synced_assets() is True
 
 
-def test_has_any_doctrine_synced_assets_ignores_productions_own_tables(tenant):
-    # Doctrine's Stockpile must work standalone, without Production ever
-    # having synced anything - the whole point of the architecture reversal
-    # this table pair exists for (see has_any_doctrine_synced_assets' own
-    # docstring in storage.py).
-    storage.replace_assets("character_assets", [(1, 34, 1000000000001, "Hangar", 100, 0, "pilot")])
+def test_has_any_doctrine_synced_assets_ignores_production_only_owners(tenant):
+    # Doctrine's Stockpile must work standalone: Production-shared assets
+    # must not count as "doctrine has synced" (decision 9).
+    storage.replace_assets(
+        "character_assets",
+        [(1, 34, 1000000000001, "Hangar", 100, 0, "pilot")],
+        owner_character_id=1001, owner_name="pilot",
+    )
+    _share("character", 1001, "assets", "production")
 
     assert storage.has_any_doctrine_synced_assets() is False
 
 
-def test_esi_stock_at_location_reads_doctrines_own_asset_tables(tenant):
+def test_esi_stock_from_asset_rows_matches_location_bulk_filters(tenant):
     type_id, location_id = 34, 1000000000001
-    storage.replace_assets("doctrine_character_assets", [(1, type_id, location_id, "Hangar", 100, 0, "pilot")])
-    storage.replace_assets("doctrine_corp_assets", [(2, type_id, location_id, "Hangar", 50, 0, "My Corp (corp)")])
-    # Production's own tables have unrelated stock at the same location -
-    # must not leak into a Doctrine-scoped read.
-    storage.replace_assets("character_assets", [(3, type_id, location_id, "Hangar", 999, 0, "pilot")])
+    storage.replace_assets(
+        "character_assets",
+        [(1, type_id, location_id, "Hangar", 100, 0, "pilot")],
+        owner_character_id=1001, owner_name="pilot",
+    )
+    storage.replace_assets(
+        "corp_assets",
+        [(2, type_id, location_id, "Hangar", 50, 0, "My Corp (corp)")],
+        owner_corporation_id=2001, owner_name="My Corp (corp)",
+    )
+    _share("character", 1001, "assets", "doctrine")
+    _share("corporation", 2001, "assets", "doctrine")
+    # Production-only extra stock at the same location must not leak.
+    storage.replace_assets(
+        "character_assets",
+        [(3, type_id, location_id, "Hangar", 999, 0, "producer")],
+        owner_character_id=1002, owner_name="producer",
+    )
+    _share("character", 1002, "assets", "production")
 
-    doctrine_tables = ("doctrine_character_assets", "doctrine_corp_assets")
-    assert storage.esi_stock_at_location(type_id, location_id, tables=doctrine_tables) == 150
+    rows = read_esi("assets", "doctrine")
+    assert storage.esi_stock_from_asset_rows(rows, [type_id], location_id)[type_id] == 150
 
 
 def test_doctrine_esi_stock_excludes_sorting_intake_at_home(tenant):
     type_id, location_id = 34, 1000000000001
-    storage.replace_assets("doctrine_character_assets", [
-        (1, type_id, location_id, "Hangar", 100, 0, "pappmichl5"),
-        (2, type_id, location_id, "CorpSAG1", 25, 0, "pappmichl5"),
-    ])
+    storage.replace_assets(
+        "character_assets",
+        [
+            (1, type_id, location_id, "Hangar", 100, 0, "pappmichl5"),
+            (2, type_id, location_id, "CorpSAG1", 25, 0, "pappmichl5"),
+        ],
+        owner_character_id=1001, owner_name="pappmichl5",
+    )
+    _share("character", 1001, "assets", "doctrine")
     storage.add_sorting_intake_source("character", "Hangar", owner_name="pappmichl5")
-    doctrine_tables = ("doctrine_character_assets", "doctrine_corp_assets")
+    rows = read_esi("assets", "doctrine")
 
-    assert storage.esi_stock_at_location(type_id, location_id, tables=doctrine_tables) == 125
-    assert storage.esi_stock_at_location(
-        type_id, location_id, tables=doctrine_tables,
-        exclude_intake_at_location_id=location_id,
-    ) == 25
+    assert storage.esi_stock_from_asset_rows(rows, [type_id], location_id)[type_id] == 125
+    assert storage.esi_stock_from_asset_rows(
+        rows, [type_id], location_id, exclude_intake_at_location_id=location_id,
+    )[type_id] == 25
+
+
+def test_doctrine_only_tenant_stockpile_standalone(tenant, monkeypatch):
+    """No producer, no Production data shared with doctrine: Stockpile Ist
+    still counts a character whose Assets are shared with doctrine.
+    Production-only stock at the same location does not inflate the number.
+    """
+    type_id, location_id = 34, 1000000000001
+    doctrine_char, producer_char = 9001, 9002
+    storage.replace_assets(
+        "character_assets",
+        [(1, type_id, location_id, "Hangar", 100, 0, "pilot")],
+        owner_character_id=doctrine_char, owner_name="pilot",
+    )
+    _share("character", doctrine_char, "assets", "doctrine")
+    storage.replace_assets(
+        "character_assets",
+        [(2, type_id, location_id, "Hangar", 999, 0, "producer")],
+        owner_character_id=producer_char, owner_name="producer",
+    )
+    _share("character", producer_char, "assets", "production")
+
+    fitting = Fitting(
+        fitting_id="f1", doctrine_id="d1", name="Fit 1", hull_type_id=1000,
+        raw_eft="", contract_target=0, stockpile_target=200,
+    )
+    items = [FittingItem("f1", 1, "low", type_id, 1)]
+    from eve_trader.doctrine.validation import build_contract_soll
+    exact, consume = build_contract_soll(items)
+    cand = _Candidate(fitting=fitting, exact_soll=exact, consume_soll=consume, items=items)
+    monkeypatch.setattr(engine, "load_match_candidates", lambda: [cand])
+    monkeypatch.setattr(storage, "list_doctrines", lambda: [("d1", "Doctrine 1")])
+    monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **k: [])
+    monkeypatch.setattr(
+        storage, "get_sde_types_bulk",
+        lambda type_ids: {tid: (tid, 1, "Module", 1.0, 1, 1, 0, None) for tid in type_ids},
+    )
+    monkeypatch.setattr(storage, "get_type_slot", lambda type_id: "low")
+    monkeypatch.setattr(storage, "load_sorting_intake_sources", lambda: [])
+
+    rows, assets_available = engine.stockpile_rows_for_doctrine(
+        cfg=DoctrineConfig(stockpile_location_id=location_id, doctrine_structure_id=location_id),
+    )
+    assert assets_available is True
+    matching = [r for r in rows if r.type_id == type_id]
+    assert matching
+    # required = 200; doctrine-shared Ist = 100; production 999 must not count.
+    assert matching[0].available == 100
+    assert matching[0].shortfall == 100
 
 
 def _history_row(**overrides) -> tuple:
