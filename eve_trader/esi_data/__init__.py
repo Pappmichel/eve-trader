@@ -27,7 +27,7 @@ from .registry import (
 )
 from .backfill import backfill_conservative_sharing, prefixes_holding_kind
 from .stale import DEFAULT_STALE_CLEAR_MULTIPLES, clear_stale_owner_kind
-from .access import AccessorError, read_esi
+from .access import AccessorError, is_shared, read_esi, shared_owner_ids
 from .orchestrator import (
     DEFAULT_TIER_INTERVAL_HOURS,
     do_sync_all,
@@ -53,7 +53,9 @@ __all__ = (
     "DEFAULT_STALE_CLEAR_MULTIPLES",
     "clear_stale_owner_kind",
     "AccessorError",
+    "is_shared",
     "read_esi",
+    "shared_owner_ids",
     "DEFAULT_TIER_INTERVAL_HOURS",
     "do_sync_all",
     "do_sync_for_tool",

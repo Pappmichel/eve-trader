@@ -1,8 +1,19 @@
+import pytest
+
 from eve_trader import actions, storage
 from eve_trader.auth import TokenManager, TokenRecord
 from eve_trader.config import TradingConfig
 from eve_trader.models import ShortlistItem
 from eve_trader.own_orders import fetch_seller_stock_without_order
+
+
+@pytest.fixture(autouse=True)
+def _shared_empty_snapshot(monkeypatch):
+    """These tests cover unlisted-stock logic, not sharing. Treat the
+    seller as shared-with-trading and snapshot-empty so the live ESI
+    fallback (the historical fixture) still runs."""
+    monkeypatch.setattr("eve_trader.esi_data.access.is_shared", lambda *a, **k: True)
+    monkeypatch.setattr("eve_trader.esi_data.access.read_esi", lambda *a, **k: [])
 
 
 class FakeClient:

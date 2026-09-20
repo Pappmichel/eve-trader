@@ -446,9 +446,13 @@ def _sync(
 
     all_results = char_results + corp_results
     any_failed = any(not r.get("ok", True) for r in all_results if r.get("skipped") != "in_flight")
+    any_in_flight = any(r.get("skipped") == "in_flight" for r in all_results)
     attempted = [r for r in all_results if r.get("skipped") != "in_flight"]
     sweep = None
-    if attempted and not any_failed:
+    # Decision 6: do not sweep if any owner failed *or* is still in flight
+    # on a concurrent pass (that pass may yet fail and would otherwise lose
+    # this owner's pre-Phase-1 NULL-id rows).
+    if attempted and not any_failed and not any_in_flight:
         sweep = storage.sweep_unattributed_null_owner_ids()
 
     per_character = {

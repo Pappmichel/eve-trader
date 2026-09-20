@@ -18,13 +18,16 @@ JITA_SOLAR_SYSTEM_ID = 30000142  # stable, never changes - distinct from cfg.jit
 
 def _character_assets(character_id: int, auth_role: str, client: ESIClient) -> list[dict]:
     """Assets for this character as a Trading read of the Assets kind.
-    Snapshot via the fail-closed accessor when sharing+rows exist; live ESI
-    otherwise (tests, pre-backfill, first pull before a sync)."""
-    from .esi_data.access import AccessorError, read_esi
-    try:
-        rows = read_esi("assets", "trading", owner_type="character", owner_id=character_id)
-    except (AccessorError, RuntimeError):
-        rows = []
+
+    Sharing is fail-closed (decision 9): no sharing row means this tool
+    does not see the character, even live from ESI. A sharing row with an
+    empty snapshot still live-fetches, but only that owner. AccessorError
+    and storage.connect()'s missing-tenant RuntimeError propagate.
+    """
+    from .esi_data.access import is_shared, read_esi
+    if not is_shared("assets", "trading", "character", character_id):
+        return []
+    rows = read_esi("assets", "trading", owner_type="character", owner_id=character_id)
     if rows:
         return rows
     return client.character_assets(character_id, auth_role=auth_role)

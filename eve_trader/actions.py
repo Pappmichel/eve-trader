@@ -23,7 +23,8 @@ from .models import Candidate, ShortlistItem, ShortlistRow, UndercutRow, Unliste
 from .shortlist import (NO_MARKET_DATA_DECISION, SKIP_DECISION, _decision, audit_shortlist, average_market_daily_volume,
                          evaluate_shortlist, summary_counts, top_imports_by_daily_profit)
 from .trade_reconciliation import (
-    fetch_recent_transactions, load_trading_wallet_snapshots,
+    collect_trading_wallet_streams,
+    fetch_recent_transactions,
     reconcile_realized_trades, summarize_realized,
 )
 
@@ -1086,15 +1087,17 @@ def do_reconcile_trades(cfg: TradingConfig = TRADING_CONFIG,
     item_names = {i.item_id: i.item for i in items}
     item_volumes = {i.item_id: i.volume_m3 for i in items}
 
-    # Wallet snapshots via the accessor when a fetch has already written
-    # them. Empty/unavailable falls back to paging ESI so Phase 8 tests
-    # and a first reconcile before the orchestrator has run still work.
-    snapshot_txns, snapshot_journal = load_trading_wallet_snapshots()
-
-    # Pooled across every registered buyer/seller character (GitHub issue
-    # #46) - every buyer's Jita buys are matched against every seller's
-    # structure sells, not paired 1:1 by character.
+    # Per-owner: unshared wallets are omitted; shared+empty snapshots
+    # live-fetch that owner only. AccessorError / missing-tenant raise.
     try:
+        snapshot_txns, snapshot_journal = collect_trading_wallet_streams(
+            [(cid, role) for role, cid, _name in buyer_characters],
+            [(cid, role) for role, cid, _name in seller_characters],
+            client, cfg,
+        )
+        # Pooled across every registered buyer/seller character (GitHub issue
+        # #46) - every buyer's Jita buys are matched against every seller's
+        # structure sells, not paired 1:1 by character.
         trades = reconcile_realized_trades(
             [(cid, role) for role, cid, _name in buyer_characters],
             [(cid, role) for role, cid, _name in seller_characters],

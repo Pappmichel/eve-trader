@@ -45,6 +45,7 @@ def test_do_reconcile_trades_converts_esierror_to_actionerror(monkeypatch):
                         lambda tm, prefix: [("buyer", 1, "B")] if prefix == "buyer" else [("seller", 2, "S")])
     monkeypatch.setattr(actions.storage, "load_shortlist", lambda: [])
     monkeypatch.setattr(actions, "ESIClient", lambda *a, **k: object())
+    monkeypatch.setattr(actions, "collect_trading_wallet_streams", lambda *a, **k: ([], {}))
 
     def boom(*a, **k):
         raise ESIError("401 unauthorized")

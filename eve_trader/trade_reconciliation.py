@@ -258,7 +258,9 @@ def _corps_for_characters(characters: list[tuple[int, str]],
 
 def fetch_corporation_wallet_streams(characters: list[tuple[int, str]], client: ESIClient,
                                       txn_lookback_days: int, journal_lookback_days: int,
-                                      cfg: TradingConfig) -> tuple[list[dict], dict[tuple, float]]:
+                                      cfg: TradingConfig,
+                                      corps: Optional[dict[int, list[tuple[int, str]]]] = None,
+                                      ) -> tuple[list[dict], dict[tuple, float]]:
     """Corp wallet transactions + namespaced journal amounts for every corp
     a registered buyer/seller belongs to.
 
@@ -275,7 +277,9 @@ def fetch_corporation_wallet_streams(characters: list[tuple[int, str]], client: 
     divisions = _wallet_divisions(cfg)
     txns: list[dict] = []
     journal: dict[tuple, float] = {}
-    for corporation_id, members in _corps_for_characters(characters, client).items():
+    if corps is None:
+        corps = _corps_for_characters(characters, client)
+    for corporation_id, members in corps.items():
         fetched_any = False
         member_failures: list[str] = []
         for character_id, role in members:
@@ -350,27 +354,102 @@ def _txn_from_snapshot(row: dict) -> dict:
     }
 
 
-def load_trading_wallet_snapshots() -> tuple[Optional[list[dict]], Optional[dict[tuple, float]]]:
-    """Return (transactions, journal_key->amount) via the fail-closed
-    accessor when Trading has wallet sharing and a snapshot exists.
-    `(None, None)` means the caller should page ESI (tests, pre-backfill,
-    or first reconcile before a wallet fetch has written anything)."""
-    from .esi_data.access import AccessorError, read_esi
-    try:
-        txns = read_esi("wallet", "trading", table="transactions")
-        journal_rows = read_esi("wallet", "trading", table="journal")
-    except (AccessorError, RuntimeError):
-        return None, None
-    if not txns:
-        return None, None
+def _journal_from_snapshot(rows: list[dict]) -> dict[tuple, float]:
     journal: dict[tuple, float] = {}
-    for entry in journal_rows:
+    for entry in rows:
         if entry.get("ref_type") != _MARKET_TRANSACTION_REF_TYPE:
             continue
         owner_type = entry["owner_type"]
         division = None if owner_type == "character" else entry["division"]
         journal[(owner_type, int(entry["owner_id"]), division, entry["journal_id"])] = entry["amount"]
-    return [_txn_from_snapshot(t) for t in txns], journal
+    return journal
+
+
+def collect_trading_wallet_streams(
+    buyer_characters: list[tuple[int, str]],
+    seller_characters: list[tuple[int, str]],
+    client: ESIClient,
+    cfg: TradingConfig = TRADING_CONFIG,
+) -> tuple[list[dict], dict[tuple, float]]:
+    """Per-owner wallet rows for Trading, sharing-gated (decision 9).
+
+    For each character and each corporation derived from them:
+    - no sharing row → omit that owner, do not live-fetch
+    - sharing row, snapshot present → use the snapshot
+    - sharing row, snapshot empty → live-fetch that owner only
+
+    AccessorError and storage.connect()'s missing-tenant RuntimeError
+    propagate. Always returns lists (possibly empty), never `(None, None)`.
+    `reconcile_realized_trades(..., snapshot_txns=None)` stays the
+    unrestricted live path used by Phase 8 tests.
+    """
+    from .esi_data.access import is_shared, read_esi
+
+    buy_lookback = cfg.lookback_days * _BUY_LOOKBACK_MULTIPLIER
+    sell_lookback = cfg.lookback_days
+    txns: list[dict] = []
+    journal: dict[tuple, float] = {}
+
+    roles_by_id: dict[int, str] = {}
+    buyer_ids = {cid for cid, _role in buyer_characters}
+    seller_ids = {cid for cid, _role in seller_characters}
+    for cid, role in list(buyer_characters) + list(seller_characters):
+        roles_by_id.setdefault(cid, role)
+
+    for character_id, role in roles_by_id.items():
+        if not is_shared("wallet", "trading", "character", character_id):
+            continue
+        snap = read_esi(
+            "wallet", "trading", owner_type="character", owner_id=character_id,
+            table="transactions",
+        )
+        journal_rows = read_esi(
+            "wallet", "trading", owner_type="character", owner_id=character_id,
+            table="journal",
+        )
+        if snap:
+            txns.extend(_txn_from_snapshot(t) for t in snap)
+            journal.update(_journal_from_snapshot(journal_rows))
+            continue
+        lookback = buy_lookback if character_id in buyer_ids else sell_lookback
+        txns.extend(fetch_recent_transactions(character_id, role, client, lookback))
+        if character_id in seller_ids:
+            for jid, amount in fetch_recent_journal_entries(
+                character_id, role, client, sell_lookback,
+            ).items():
+                journal[("character", character_id, None, jid)] = amount
+
+    seen_pairs: list[tuple[int, str]] = []
+    seen: set[tuple[int, str]] = set()
+    for pair in list(buyer_characters) + list(seller_characters):
+        if pair not in seen:
+            seen.add(pair)
+            seen_pairs.append(pair)
+    discovered = _corps_for_characters(seen_pairs, client)
+    live_corps: dict[int, list[tuple[int, str]]] = {}
+    for corporation_id, members in discovered.items():
+        if not is_shared("wallet", "trading", "corporation", corporation_id):
+            continue
+        snap = read_esi(
+            "wallet", "trading", owner_type="corporation", owner_id=corporation_id,
+            table="transactions",
+        )
+        journal_rows = read_esi(
+            "wallet", "trading", owner_type="corporation", owner_id=corporation_id,
+            table="journal",
+        )
+        if snap:
+            txns.extend(_txn_from_snapshot(t) for t in snap)
+            journal.update(_journal_from_snapshot(journal_rows))
+            continue
+        live_corps[corporation_id] = members
+    if live_corps:
+        corp_txns, corp_journal = fetch_corporation_wallet_streams(
+            seen_pairs, client, buy_lookback, sell_lookback, cfg, corps=live_corps,
+        )
+        txns.extend(corp_txns)
+        journal.update(corp_journal)
+    return txns, journal
 
 
 def reconcile_realized_trades(buyer_characters: list[tuple[int, str]], seller_characters: list[tuple[int, str]],

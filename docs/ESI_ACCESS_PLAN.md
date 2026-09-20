@@ -947,13 +947,18 @@ is **3b** and waits until 3a is merged — the accessor must exist before
 those tables land in `character_assets` / `corp_assets`. No frontend.
 No Phase 4 token selector: the orchestrator still resolves tokens
 through today's prefix listings. Wallet decision (this PR):
-`do_reconcile_trades` consumes snapshots through `read_esi(...,
-tool_key="trading")` when a fetch has written rows; otherwise it pages
-ESI (Phase 8 tests and a first reconcile before the orchestrator has
-run). A fetcher with no consumer would be dead weight, and Wallet reads
-have to be sharing-gated anyway. Phase 8 reconciliation tests are
-unchanged. CI gate is the orchestrator unit tests, the permanent
-accessor isolation test, both NULL-id sweep tests, and full `pytest`.
+`do_reconcile_trades` calls `collect_trading_wallet_streams`, which is
+per-owner and sharing-gated via `is_shared` / `read_esi` with
+`tool_key="trading"`. No sharing row → that owner is omitted (no live
+ESI). Sharing row + empty snapshot → live-fetch that owner only.
+`AccessorError` and `storage.connect()`'s missing-tenant `RuntimeError`
+propagate. Phase 8 tests still call `reconcile_realized_trades` with
+`snapshot_txns=None` (unrestricted live path) and are unchanged. The
+Phase 1 conservative backfill is a hard prerequisite — no escape hatch
+when sharing rows are missing. A fetcher with no consumer would be dead
+weight, and Wallet reads have to be sharing-gated anyway. CI gate is the
+orchestrator unit tests, the permanent accessor isolation test, both
+NULL-id sweep tests, caller-level sharing-gate tests, and full `pytest`.
 No new schema file and no `TradingConfig` field (age-limit clear uses
 `DEFAULT_STALE_CLEAR_MULTIPLES` and hardcoded tier hours; Phase 7 wires
 config). Production/Sorting/Doctrine *engine* snapshot reads still go
@@ -1452,8 +1457,13 @@ What to check, and what a correct result looks like.
   `esi_wallet_journal` are populated for buyer/seller characters
   shared with Trading. Then run Reconcile Trades: it must consume those
   snapshots (no second ESI wallet page for owners that have rows). A
-  first reconcile *before* that wallet fetch still pages ESI so the
-  button does not go empty. After a fully successful orchestrator pass,
+  first reconcile *before* that wallet fetch still pages ESI **for
+  owners that are shared with Trading and have an empty snapshot**.
+  Owners with no sharing row are omitted — there is no live-ESI bypass,
+  which is why the Phase 1 backfill (above, under One-time data
+  migrations) must run before anything depends on sharing rows. Local
+  development without a backfill sees empty Trading asset/wallet reads;
+  that is intended. After a fully successful orchestrator pass,
   leftover NULL-id rows in `character_blueprints` / `corp_blueprints` /
   `corp_industry_jobs` are gone (the sweep); a pass where any owner
   failed must leave them. Age-limit clear is now a caller of

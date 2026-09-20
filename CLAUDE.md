@@ -21,7 +21,7 @@ These two are the original pair this section's title/history refers to.
 *just* them. Character-centric ESI access is a **third cross-cutting
 package**, `eve_trader/esi_data/` (`docs/ESI_ACCESS_PLAN.md`): the
 data-kind registry, fetchers, orchestrator (`do_sync_for_tool` /
-`do_sync_all`), and fail-closed accessor (`read_esi`) live here.
+`do_sync_all`), and fail-closed accessor (`read_esi`, `is_shared`) live here.
 Characters `do_*` actions land in Phase 6. It names tools as strings
 and imports no tool package — the same precedent as
 `auth.TOOL_ROLE_PREFIXES` and `access_gate.ALL_TOOL_KEYS`. Do not put

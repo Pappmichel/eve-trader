@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from eve_trader import storage
-from eve_trader.esi_data.access import AccessorError, read_esi
+from eve_trader.esi_data.access import AccessorError, is_shared, read_esi
 
 from . import pg_helpers
 from .pg_helpers import (  # noqa: F401
@@ -57,6 +57,19 @@ def test_read_esi_requires_a_consuming_tool_key(tenant):
         read_esi("assets", "not_a_tool")
     with pytest.raises(AccessorError, match="unknown data_kind"):
         read_esi("not_a_kind", "production")
+
+
+def test_is_shared_requires_a_consuming_tool_key(tenant):
+    with pytest.raises(AccessorError, match="tool_key"):
+        is_shared("assets", None, "character", ALICE)
+    with pytest.raises(AccessorError, match="unknown tool_key"):
+        is_shared("assets", "not_a_tool", "character", ALICE)
+    with pytest.raises(AccessorError, match="unknown data_kind"):
+        is_shared("not_a_kind", "production", "character", ALICE)
+    assert is_shared("assets", "production", "character", ALICE) is False
+    _share(ALICE, "production")
+    assert is_shared("assets", "production", "character", ALICE) is True
+    assert is_shared("assets", "trading", "character", ALICE) is False
 
 
 def test_unshared_owner_is_unreachable_through_the_accessor(tenant):

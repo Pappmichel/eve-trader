@@ -218,6 +218,55 @@ def test_orchestrator_overlapping_call_skips_in_flight_owner(tenant, monkeypatch
     assert skipped and skipped[0]["owners"][0].get("skipped") == "in_flight"
 
 
+def test_null_id_sweep_skipped_when_any_owner_in_flight(tenant, monkeypatch):
+    with storage.connect() as conn:
+        conn.execute(
+            "INSERT INTO character_blueprints "
+            "(item_id, type_id, location_id, location_flag, quantity, "
+            "material_efficiency, time_efficiency, runs) "
+            "VALUES (1, 34, 1, 'Hangar', -1, 0, 0, 0)"
+        )
+    _share("character", ALICE, "assets", "production")
+    _share("character", BOB, "assets", "production")
+    monkeypatch.setattr(orchestrator, "_list_token_characters", lambda tm: _tokens(
+        (ALICE, "Alice"), (BOB, "Bob"),
+    ))
+    started = threading.Event()
+    release = threading.Event()
+    client = FakeClient(assets={ALICE: [_asset(1, ALICE)], BOB: [_asset(2, BOB)]})
+    tid = storage.get_current_tenant()
+
+    def hook(character_id):
+        if character_id == ALICE:
+            started.set()
+            release.wait(timeout=5)
+
+    client._asset_hook = hook
+    second = []
+
+    def other():
+        with storage.tenant_context(tid):
+            second.append(do_sync_for_tool(
+                "production",
+                client=FakeClient(assets={ALICE: [], BOB: [_asset(2, BOB)]}),
+            ))
+
+    def first_run():
+        with storage.tenant_context(tid):
+            do_sync_for_tool("production", client=client)
+
+    t = threading.Thread(target=other)
+    first = threading.Thread(target=first_run)
+    first.start()
+    assert started.wait(timeout=5)
+    t.start()
+    t.join(timeout=5)
+    assert second and second[0]["null_id_sweep"] is None
+    assert _count("character_blueprints") == 1
+    release.set()
+    first.join(timeout=5)
+
+
 def test_orchestrator_production_tool_refreshes_only_production_sharing(tenant, monkeypatch):
     _share("character", ALICE, "assets", "production")
     _share("character", BOB, "assets", "doctrine")

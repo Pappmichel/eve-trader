@@ -27,8 +27,8 @@ class AccessorError(RuntimeError):
 def _require_tool_key(tool_key: Optional[str]) -> str:
     if tool_key is None or tool_key == "":
         raise AccessorError(
-            "read_esi requires a consuming tool_key - refusing an unfiltered "
-            "ESI snapshot read rather than risk returning rows no tool is "
+            "ESI accessor requires a consuming tool_key - refusing an "
+            "unfiltered ESI read rather than risk returning rows no tool is "
             "shared with"
         )
     if tool_key not in ALL_TOOL_KEYS:
@@ -44,6 +44,29 @@ def _shared_owner_ids(data_kind: str, tool_key: str, owner_type: str) -> list[in
             (data_kind, tool_key, owner_type),
         ).fetchall()
     return [int(r[0]) for r in rows]
+
+
+def shared_owner_ids(data_kind: str, tool_key: str, owner_type: str) -> list[int]:
+    """Owner ids of `owner_type` this `tool_key` may read for `data_kind`.
+
+    `tool_key` is required and unknown keys/kinds raise — same contract as
+    `read_esi`. An empty list means "shared with nobody", not "unfiltered".
+    """
+    tool_key = _require_tool_key(tool_key)
+    if data_kind not in _KIND_BY_KEY:
+        raise AccessorError(f"unknown data_kind {data_kind!r}")
+    if owner_type not in ("character", "corporation"):
+        raise AccessorError(f"unknown owner_type {owner_type!r}")
+    return _shared_owner_ids(data_kind, tool_key, owner_type)
+
+
+def is_shared(data_kind: str, tool_key: str, owner_type: str, owner_id: int) -> bool:
+    """True iff `(owner_type, owner_id, data_kind, tool_key)` has a sharing row.
+
+    Missing/unknown `tool_key` or `data_kind` raises. Absence of a row is
+    False, not an error — the caller must not then live-fetch ESI.
+    """
+    return int(owner_id) in shared_owner_ids(data_kind, tool_key, owner_type)
 
 
 def _select_in(conn, sql: str, ids: list[int], extra: tuple = ()) -> list[tuple]:
