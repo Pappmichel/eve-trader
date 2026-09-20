@@ -1444,7 +1444,7 @@ not a second order to follow.
 
 Landed: Phase 8 (#169), 0 (#171), 1 (#172), 2 (#173), 3a (#174),
 3b (#175), 4 (#176), 7 (#177), 5+6 (#178), 9 (#179), 9a (#180),
-gap 3 closure (#182), gap 4 closure (#183), gap 2 closure (this PR).
+gap 3 closure (#182), gap 4 closure (#183), gap 2 closure (#184).
 
 Read **"Known gaps after Phase 9"** below before starting. All four gaps
 recorded there are now closed: gap 1 (adding a character that does not
@@ -1467,11 +1467,8 @@ the operator cannot do from a git pull.
   not an enable.
 - Verify `esi-characters.read_corporation_roles.v1` is enabled for the
   app in the EVE developer portal (gap 2's role-warning capability,
-  `"corporation_roles"`). Not yet confirmed against the deploy target as
-  of this PR - unlike the wallet scope above, this one needs a real
-  enable check, not just a verify, before ticking the capability for a
-  real character. Requesting an un-enabled scope fails that character's
-  SSO round, not just this one feature - confirm before relying on it.
+  `"corporation_roles"`). Already done 2026-09-20, same app registration
+  as the wallet scope above, so this is a verify, not an enable.
 
 ### Schema to apply, in order
 
@@ -1736,10 +1733,11 @@ conservatism. The Corporations page renders a "role missing" badge only
 for the `false` case, with a tooltip naming which characters weren't
 checked.
 
-**Deploy-day step**: verify `esi-characters.read_corporation_roles.v1` is
+**Deploy-day step**: `esi-characters.read_corporation_roles.v1` must be
 enabled for the app in the EVE developer portal (same one-time step Phase
-8 needed for the corp-wallet scope) before relying on this — requesting an
-un-enabled scope fails the SSO round for whoever ticks the capability.
+8 needed for the corp-wallet scope) — requesting an un-enabled scope fails
+the SSO round for whoever ticks the capability. Enabled 2026-09-20; the
+Prerequisites list above carries this as a verify.
 
 Test coverage: `tests/test_esi_characters_actions.py` — `corporation_id`
 resolution (success and best-effort-`None`-on-failure),

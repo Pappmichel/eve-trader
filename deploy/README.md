@@ -363,7 +363,9 @@ cd eve-trader
 Bundles the sequence below into one idempotent script (git pull, every
 schema file, backend deps, frontend build, restart, then a verification
 check) - safe to re-run even when a given update didn't touch the schema or
-the frontend. Equivalent to running by hand:
+the frontend. It deliberately does **not** run one-time data migrations;
+the ESI access cutover needs one, see the section right below.
+Equivalent to running by hand:
 ```bash
 cd eve-trader
 git pull                      # or re-rsync
@@ -400,6 +402,57 @@ idempotent (`IF NOT EXISTS` everywhere, role creation guarded against
 `duplicate_object`) - re-running one that has nothing new to add is a
 harmless no-op, so there's no reason to ever skip one on the assumption
 "that file hasn't changed."
+
+## One-time: ESI access cutover
+
+Only for the first deploy that carries the ESI access rebuild
+(`docs/ESI_ACCESS_PLAN.md`). `deploy/deploy.sh` applies
+`esi_access_schema.sql` like every other schema file, but the **one-time
+conservative sharing backfill is a separate, operator-run step it does not
+do** - it is per-tenant and makes live ESI calls, neither of which belongs
+in a script that runs on every update.
+
+Run it once per tenant, after the schema, before relying on any
+ESI-derived page:
+```bash
+cd eve-trader
+.venv/bin/eve-trader tenant list                       # the tenant ids
+.venv/bin/eve-trader tenant backfill-esi-sharing --tenant-id <id>
+```
+Omitting `--tenant-id` targets the fixed default tenant. The command is
+idempotent (`ON CONFLICT DO NOTHING`), so re-running it is a no-op.
+
+**Skipping this does not raise - it empties pages.** Every raw-ESI read now
+goes through the fail-closed accessor: an owner with no `esi_sharing` row
+is simply omitted, and there is no live-ESI bypass behind it. So a deploy
+with the schema applied but no backfill leaves Trading, Production and
+Doctrine reporting *no data* rather than an error, which looks like a
+broken sync rather than a missing migration. It also resolves each
+character's `corporation_id` via public ESI to write the corp-level sharing
+rows; a character whose lookup fails falls back to character-only sharing
+and is named in the command's own output.
+
+Two follow-ups after the backfill, both silent-degradation shaped rather
+than loud:
+- Every character that was a buyer or seller must re-authorize once
+  (Characters page → **Re-authorize**) to pick up
+  `esi-wallet.read_corporation_wallets.v1`. Until they do, corp-wallet
+  calls 403 and are skipped non-fatally, so realized profit looks complete
+  while missing every corp-funded fill. Re-run Reconcile Trades afterwards
+  - it wholesale-replaces `realized_trades`, so already-reconciled periods
+  do not pick up corp fills until that fresh run.
+- Both scopes this rebuild added
+  (`esi-wallet.read_corporation_wallets.v1` and, for the Characters page's
+  corp-role warning, `esi-characters.read_corporation_roles.v1`) must be
+  enabled on the app registration in the EVE developer portal. Both were
+  enabled 2026-09-20. Requesting a scope that is not enabled fails the
+  whole SSO round for that character, not just the one feature.
+
+`docs/ESI_ACCESS_PLAN.md`'s "Deploy checklist" section is the full
+version - prerequisites, schema order, the re-authorizations, config to
+review, and a numbered post-deploy verification pass. Work that list
+top to bottom on cutover day; this section is only the part that is easy
+to miss because `deploy.sh` does not do it for you.
 
 ## Logs
 
