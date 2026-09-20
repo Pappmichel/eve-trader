@@ -2315,6 +2315,22 @@ def upsert_esi_freshness(
         )
 
 
+def get_esi_freshness_success_at(
+    owner_type: str, owner_id: int, data_kind: str,
+) -> Optional[str]:
+    """`last_success_at` for this owner × kind, or None if missing / never succeeded."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT last_success_at FROM esi_freshness "
+            "WHERE owner_type = ? AND owner_id = ? AND data_kind = ?",
+            (owner_type, owner_id, data_kind),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    ts = row[0]
+    return ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+
+
 def replace_wallet_transactions(
     rows: list[tuple],
     *,

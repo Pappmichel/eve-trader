@@ -121,6 +121,10 @@ class TradingSettings(BaseModel):
     buyer_character_name: Optional[str] = None
     seller_character_name: Optional[str] = None
     wallet_division_ids: tuple[int, ...] = ()
+    esi_frequent_interval_hours: float = 1.0
+    esi_normal_interval_hours: float = 6.0
+    esi_rare_interval_hours: float = 24.0
+    esi_stale_clear_multiples: float = 3.0
 
 
 @router.get("/settings", response_model=TradingSettings)

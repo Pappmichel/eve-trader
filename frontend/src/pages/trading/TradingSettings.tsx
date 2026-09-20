@@ -121,6 +121,26 @@ export default function TradingSettings() {
         onChange={(v) => set('wallet_division_ids', v.map(Number))}
         placeholder="All divisions" clearable />
 
+      <Title order={6} c="dimmed" tt="uppercase" mt="md">ESI freshness</Title>
+      <Text size="xs" c="dimmed">
+        How often the background scheduler re-fetches each data kind, and how many
+        missed intervals before a failed owner&apos;s snapshot is cleared. A manual
+        Sync from any tool stamps freshness and pushes that owner × kind past the
+        next scheduled fetch. Frequent: market orders and wallet. Normal: assets,
+        jobs, contracts. Rare: blueprints and skills.
+      </Text>
+      <SimpleGrid cols={2}>
+        <NumberInput label="Frequent interval (hours)" value={form.esi_frequent_interval_hours} min={0} step={0.5}
+          onChange={(v) => set('esi_frequent_interval_hours', Number(v))} />
+        <NumberInput label="Normal interval (hours)" value={form.esi_normal_interval_hours} min={0} step={0.5}
+          onChange={(v) => set('esi_normal_interval_hours', Number(v))} />
+        <NumberInput label="Rare interval (hours)" value={form.esi_rare_interval_hours} min={0} step={1}
+          onChange={(v) => set('esi_rare_interval_hours', Number(v))} />
+        <NumberInput label="Stale-clear multiples" value={form.esi_stale_clear_multiples} min={0} step={1}
+          description="Clear an owner's snapshot after this many missed intervals of failed fetches."
+          onChange={(v) => set('esi_stale_clear_multiples', Number(v))} />
+      </SimpleGrid>
+
       <Button mt="md" w={240} onClick={() => save.mutate(form)} loading={save.isPending}>
         Save Settings
       </Button>

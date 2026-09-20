@@ -159,6 +159,20 @@ def test_validate_rejects_skill_level_above_five():
         validate_config_overrides(cfg, {"encryption_skill_level": 6})
 
 
+def test_validate_accepts_esi_freshness_interval_fields():
+    cfg = TradingConfig()
+    validate_config_overrides(cfg, {
+        "esi_frequent_interval_hours": 1,
+        "esi_normal_interval_hours": 6.0,
+        "esi_rare_interval_hours": 24,
+        "esi_stale_clear_multiples": 3,
+    })
+    with pytest.raises(ConfigError, match="esi_stale_clear_multiples"):
+        validate_config_overrides(cfg, {"esi_stale_clear_multiples": -1})
+    assert not hasattr(cfg, "production_sync_interval_hours")
+    assert not hasattr(cfg, "doctrine_sync_interval_hours")
+
+
 def test_validate_ignores_range_for_fields_with_no_declared_bounds():
     cfg = TradingConfig()
     validate_config_overrides(cfg, {"buyer_character_name": "anything at all"})

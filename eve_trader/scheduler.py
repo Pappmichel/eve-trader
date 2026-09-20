@@ -1,22 +1,24 @@
 """Lightweight in-process background scheduler - a single daemon thread that
 wakes up periodically and runs whichever registered job is due, based on each
-job's own last-run timestamp. trading_pipeline/production_sync reuse storage.
-esi_sync_state (the table do_pipeline and production's do_sync_esi already
-write to via set_esi_sync_time) as the "when did this last run" source; the
-backup job reuses the newest backup file's own mtime the same way (see
-backup.list_backups) - no separate scheduler-specific persistence needed
-anywhere, and a run triggered manually from the UI also counts, correctly
-pushing back the next scheduled run either way.
+job's own last-run timestamp. trading_pipeline reuses storage.esi_sync_state
+(the table do_pipeline already writes via set_esi_sync_time) as the "when
+did this last run" source; esi_data_sync asks the orchestrator
+(`do_sync_due`) which (owner, kind) pairs are due given esi_freshness and
+the three tier intervals. The backup job reuses the newest backup file's
+own mtime the same way (see backup.list_backups) - no separate
+scheduler-specific persistence needed anywhere, and a run triggered
+manually from the UI also counts: do_pipeline writes esi_sync_state, a
+manual tool sync stamps esi_freshness and pushes those pairs past the
+next scheduled fetch.
 
 Deliberately not a real scheduling library (APScheduler etc.): this app has
-exactly three jobs, all already idempotent and already isolate their own
-failures internally (do_pipeline wraps each step in try/except; do_sync_esi
-wraps each character/corp fetch in try/except; create_backup either fully
-succeeds or raises, nothing partial to isolate) - a stdlib thread + sleep
-loop covers this without a new dependency.
+a handful of jobs, all already idempotent and already isolate their own
+failures internally (do_pipeline wraps each step in try/except; do_sync_due
+isolates per owner; create_backup either fully succeeds or raises) - a
+stdlib thread + sleep loop covers this without a new dependency.
 
-Multi-tenant (Phase 4 of docs/MULTI_TENANT_PLAN.md): trading_pipeline/
-production_sync run once per tick *per tenant* (storage.list_tenants()),
+Multi-tenant (Phase 4 of docs/MULTI_TENANT_PLAN.md): trading_pipeline /
+esi_data_sync run once per tick *per tenant* (storage.list_tenants()),
 each fully scoped via tenant_scope.enter_tenant - a tenant's own
 TradingConfig.scheduler_enabled/interval fields decide whether *their* jobs
 run, independently of any other tenant. backup stays a single **global**,
@@ -63,10 +65,10 @@ _thread: threading.Thread | None = None
 _stop_event = threading.Event()
 
 # {tenant_id: {job_name: {"ran_at": iso str, "error": str | None}}} - last
-# outcome of each tenant's trading_pipeline/production_sync (whether
+# outcome of each tenant's trading_pipeline/esi_data_sync (whether
 # triggered by the scheduler or not, for the "ran_at" part - see
 # get_status), surfaced via the portfolio router for a small status readout
-# in the UI.
+# in the UI. Per-kind ESI state lives on esi_freshness, not here.
 last_run_status: dict[str, dict[str, dict]] = {}
 
 # The global backup job's own last outcome - not tenant-keyed, since backup
@@ -142,18 +144,16 @@ def _run_job(tenant_id: Optional[str], name: str, fn) -> None:
 
 
 def _check_and_run_due_jobs_for_tenant(tenant_id: str, cfg: TradingConfig) -> None:
-    """The per-tenant trading_pipeline/production_sync check - takes `cfg`
+    """The per-tenant trading_pipeline / esi_data_sync check - takes `cfg`
     explicitly (rather than reading the ambient TRADING_CONFIG itself) so
     it stays directly unit-testable the way it already was pre-Phase-4;
     the caller (_check_and_run_due_jobs) is what resolves `cfg` for
     `tenant_id` via tenant_scope.enter_tenant before calling this."""
-    # Lazy imports: actions.py, production/actions.py, and doctrine/actions.py
-    # all import from this same config module - importing them at module
-    # load time would risk a circular import; deferring to call time avoids
-    # that without restructuring any of the three actions modules.
+    # Lazy imports: actions.py and esi_data.orchestrator import from this
+    # same config module - importing them at module load time would risk a
+    # circular import; deferring to call time avoids that.
     from . import actions
-    from .doctrine import actions as doctrine_actions
-    from .production import actions as production_actions
+    from .esi_data import orchestrator as esi_orchestrator
 
     if not cfg.scheduler_enabled:
         return
@@ -161,11 +161,8 @@ def _check_and_run_due_jobs_for_tenant(tenant_id: str, cfg: TradingConfig) -> No
     if _hours_since(storage.get_esi_sync_time("trading")) >= cfg.trading_pipeline_interval_hours:
         _run_job(tenant_id, "trading_pipeline", lambda: actions.do_pipeline(safe=True))
 
-    if _hours_since(storage.get_esi_sync_time("production")) >= cfg.production_sync_interval_hours:
-        _run_job(tenant_id, "production_sync", production_actions.do_sync_esi)
-
-    if _hours_since(storage.get_esi_sync_time("doctrine")) >= cfg.doctrine_sync_interval_hours:
-        _run_job(tenant_id, "doctrine_contract_sync", doctrine_actions.do_sync_contracts)
+    # One orchestrator call; due-ness is per (owner, kind) inside do_sync_due.
+    _run_job(tenant_id, "esi_data_sync", esi_orchestrator.do_sync_due)
 
 
 def _check_and_run_backup_job() -> None:
@@ -267,15 +264,10 @@ def get_status() -> dict:
                 "last_run_at": storage.get_esi_sync_time("trading"),
                 "last_error": tenant_jobs.get("trading_pipeline", {}).get("error"),
             },
-            "production_sync": {
-                "interval_hours": TRADING_CONFIG.production_sync_interval_hours,
-                "last_run_at": storage.get_esi_sync_time("production"),
-                "last_error": tenant_jobs.get("production_sync", {}).get("error"),
-            },
-            "doctrine_contract_sync": {
-                "interval_hours": TRADING_CONFIG.doctrine_sync_interval_hours,
-                "last_run_at": storage.get_esi_sync_time("doctrine"),
-                "last_error": tenant_jobs.get("doctrine_contract_sync", {}).get("error"),
+            "esi_data_sync": {
+                "interval_hours": TRADING_CONFIG.esi_normal_interval_hours,
+                "last_run_at": tenant_jobs.get("esi_data_sync", {}).get("ran_at"),
+                "last_error": tenant_jobs.get("esi_data_sync", {}).get("error"),
             },
             "backup": {
                 "interval_hours": TRADING_CONFIG.backup_interval_hours,

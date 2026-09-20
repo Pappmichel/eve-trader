@@ -82,14 +82,16 @@ export default function Portfolio() {
               </Group>
               <Stack gap="xs">
                 <SchedulerJobRow label="Trading pipeline" job={scheduler.jobs.trading_pipeline} />
-                <SchedulerJobRow label="Production ESI sync" job={scheduler.jobs.production_sync} />
+                <SchedulerJobRow label="ESI data sync" job={scheduler.jobs.esi_data_sync} />
                 <SchedulerJobRow label="Backup" job={scheduler.jobs.backup} />
                 <SchedulerJobRow label="Jita price cache" job={scheduler.jobs.jita_price_cache} />
               </Stack>
               {!scheduler.enabled && (
                 <Text size="xs" c="dimmed" mt="sm">
                   Off by default - enable it in Settings to run these automatically instead of clicking
-                  "Run Complete Pipeline" / "Sync ESI" / "Backup Now" by hand.
+                  "Run Complete Pipeline" / "Sync ESI" / "Backup Now" by hand. ESI data sync fetches
+                  only (owner, kind) pairs whose freshness interval has elapsed; a manual tool Sync
+                  stamps freshness and pushes those pairs back.
                 </Text>
               )}
             </Card>

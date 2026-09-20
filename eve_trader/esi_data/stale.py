@@ -1,10 +1,9 @@
 """Age-limit clear for per-owner ESI snapshot partitions (decision 6).
 
-Phase 2 builds the function with `stale_clear_multiples` as a parameter
-(default `DEFAULT_STALE_CLEAR_MULTIPLES`). Phase 7 adds
-`TradingConfig.esi_stale_clear_multiples` and wires it here — do not add
-that config field in this phase. The orchestrator that actually calls
-this lands in Phase 3.
+`stale_clear_multiples` is a parameter (default
+`DEFAULT_STALE_CLEAR_MULTIPLES`). Phase 7 added
+`TradingConfig.esi_stale_clear_multiples`; the orchestrator passes it
+in. Do not add the field a second time or re-derive the clear.
 """
 from __future__ import annotations
 

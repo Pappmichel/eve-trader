@@ -44,17 +44,18 @@ lookback_days: 30
 # wallet_division_ids: []
 
 # ---- Background scheduler (see eve_trader/scheduler.py) - off by default.
-# When enabled, the backend runs the Trading pipeline (do_pipeline, safe mode),
-# the Production ESI sync (do_sync_esi), and a DB/config backup (see
-# eve_trader/backup.py) on their own intervals for as long as the process
-# stays running, instead of only when you click "Run Complete Pipeline" /
-# "Sync ESI" / "Backup Now" by hand. Status (last run, last error) is shown
-# on the Portfolio page. A manual "Backup Now" is always available there too,
-# regardless of this setting.
+# When enabled, the backend runs the Trading pipeline (do_pipeline, safe
+# mode — candidate/shortlist + reconcile, not an ESI-owner sync) and one
+# ESI data sync (esi_data.orchestrator.do_sync_due) that fetches only
+# (owner, kind) pairs whose freshness interval has elapsed. Backup and
+# the Jita price cache stay global/unscoped. Status is on the Portfolio
+# page. A manual "Backup Now" is always available there too.
 scheduler_enabled: false
 trading_pipeline_interval_hours: 24.0
-production_sync_interval_hours: 6.0
-doctrine_sync_interval_hours: 12.0
+esi_frequent_interval_hours: 1.0
+esi_normal_interval_hours: 6.0
+esi_rare_interval_hours: 24.0
+esi_stale_clear_multiples: 3.0
 backup_interval_hours: 24.0
 
 # ---- Production tool (see eve_trader/production/config.py ProductionConfig) ----

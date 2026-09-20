@@ -6,8 +6,7 @@ import pytest
 
 from eve_trader import actions, backup, config, scheduler, storage
 from eve_trader.config import TradingConfig
-from eve_trader.doctrine import actions as doctrine_actions
-from eve_trader.production import actions as production_actions
+from eve_trader.esi_data import orchestrator as esi_orchestrator
 
 from . import pg_helpers
 from .pg_helpers import _apply_phase1_schema, _apply_phase2_schema, tenant_pair  # noqa: F401
@@ -84,29 +83,29 @@ def test_check_and_run_due_jobs_for_tenant_runs_when_never_synced(monkeypatch):
     monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: None)
     calls = []
     monkeypatch.setattr(actions, "do_pipeline", lambda safe=True: calls.append("trading"))
-    monkeypatch.setattr(production_actions, "do_sync_esi", lambda: calls.append("production"))
-    monkeypatch.setattr(doctrine_actions, "do_sync_contracts", lambda: calls.append("doctrine"))
+    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda: calls.append("esi"))
 
-    cfg = TradingConfig(scheduler_enabled=True, trading_pipeline_interval_hours=24.0, production_sync_interval_hours=6.0,
-                         doctrine_sync_interval_hours=12.0)
+    scheduler.last_run_status.clear()
+    cfg = TradingConfig(scheduler_enabled=True, trading_pipeline_interval_hours=24.0)
     scheduler._check_and_run_due_jobs_for_tenant("test-tenant", cfg)
 
-    assert set(calls) == {"trading", "production", "doctrine"}
+    assert calls == ["trading", "esi"]
+    assert "esi_data_sync" in scheduler.last_run_status["test-tenant"]
+    assert "production_sync" not in scheduler.last_run_status["test-tenant"]
 
 
-def test_check_and_run_due_jobs_for_tenant_skips_when_recently_run(monkeypatch):
+def test_check_and_run_due_jobs_for_tenant_skips_pipeline_when_recently_run(monkeypatch):
     just_now = dt.datetime.now(dt.timezone.utc).isoformat()
     monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: just_now)
     calls = []
     monkeypatch.setattr(actions, "do_pipeline", lambda safe=True: calls.append("trading"))
-    monkeypatch.setattr(production_actions, "do_sync_esi", lambda: calls.append("production"))
-    monkeypatch.setattr(doctrine_actions, "do_sync_contracts", lambda: calls.append("doctrine"))
+    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda: calls.append("esi"))
 
-    cfg = TradingConfig(trading_pipeline_interval_hours=24.0, production_sync_interval_hours=6.0,
-                         doctrine_sync_interval_hours=12.0)
+    cfg = TradingConfig(scheduler_enabled=True, trading_pipeline_interval_hours=24.0)
     scheduler._check_and_run_due_jobs_for_tenant("test-tenant", cfg)
 
-    assert calls == []
+    # Pipeline is interval-gated; esi_data_sync always runs and decides internally.
+    assert calls == ["esi"]
 
 
 def test_check_and_run_due_jobs_for_tenant_skips_entirely_when_disabled(monkeypatch):
@@ -115,11 +114,9 @@ def test_check_and_run_due_jobs_for_tenant_skips_entirely_when_disabled(monkeypa
     monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: None)
     calls = []
     monkeypatch.setattr(actions, "do_pipeline", lambda safe=True: calls.append("trading"))
-    monkeypatch.setattr(production_actions, "do_sync_esi", lambda: calls.append("production"))
-    monkeypatch.setattr(doctrine_actions, "do_sync_contracts", lambda: calls.append("doctrine"))
+    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda: calls.append("esi"))
 
-    cfg = TradingConfig(scheduler_enabled=False, trading_pipeline_interval_hours=24.0,
-                         production_sync_interval_hours=6.0, doctrine_sync_interval_hours=12.0)
+    cfg = TradingConfig(scheduler_enabled=False, trading_pipeline_interval_hours=24.0)
     scheduler._check_and_run_due_jobs_for_tenant("test-tenant", cfg)
 
     assert calls == []
@@ -133,14 +130,12 @@ def test_check_and_run_due_jobs_for_tenant_one_job_failing_does_not_block_the_ot
         raise RuntimeError("no auth")
 
     monkeypatch.setattr(actions, "do_pipeline", failing_pipeline)
-    monkeypatch.setattr(production_actions, "do_sync_esi", lambda: calls.append("production"))
-    monkeypatch.setattr(doctrine_actions, "do_sync_contracts", lambda: calls.append("doctrine"))
+    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda: calls.append("esi"))
 
-    cfg = TradingConfig(scheduler_enabled=True, trading_pipeline_interval_hours=24.0, production_sync_interval_hours=6.0,
-                         doctrine_sync_interval_hours=12.0)
+    cfg = TradingConfig(scheduler_enabled=True, trading_pipeline_interval_hours=24.0)
     scheduler._check_and_run_due_jobs_for_tenant("test-tenant", cfg)  # must not raise
 
-    assert set(calls) == {"production", "doctrine"}
+    assert calls == ["esi"]
 
 
 def test_hours_since_last_backup_is_infinite_with_no_backups(monkeypatch):
@@ -253,7 +248,8 @@ def test_get_status_reflects_disabled_config(monkeypatch):
     monkeypatch.setattr(backup, "list_backups", lambda: [])
     monkeypatch.setattr(scheduler.jita_price_cache, "last_updated_at", lambda: None)
     token = config._trading_config_var.set(TradingConfig(
-        scheduler_enabled=False, trading_pipeline_interval_hours=12.0, jita_price_cache_interval_hours=2.0))
+        scheduler_enabled=False, trading_pipeline_interval_hours=12.0,
+        esi_normal_interval_hours=6.0, jita_price_cache_interval_hours=2.0))
     try:
         status = scheduler.get_status()
     finally:
@@ -262,6 +258,9 @@ def test_get_status_reflects_disabled_config(monkeypatch):
     assert status["enabled"] is False
     assert status["jobs"]["trading_pipeline"]["interval_hours"] == 12.0
     assert status["jobs"]["trading_pipeline"]["last_run_at"] is None
+    assert status["jobs"]["esi_data_sync"]["interval_hours"] == 6.0
+    assert "production_sync" not in status["jobs"]
+    assert "doctrine_contract_sync" not in status["jobs"]
     assert status["jobs"]["backup"]["last_run_at"] is None
     assert status["jobs"]["jita_price_cache"]["interval_hours"] == 2.0
     assert status["jobs"]["jita_price_cache"]["last_run_at"] is None
@@ -293,8 +292,7 @@ def test_check_and_run_due_jobs_iterates_tenants_independently(
     monkeypatch.setattr(backup, "list_backups", lambda: [{"name": "b", "created_at": dt.datetime.now(dt.timezone.utc).isoformat(), "size_bytes": 1}])  # backup not due
     calls = []
     monkeypatch.setattr(actions, "do_pipeline", lambda safe=True: calls.append(storage.get_current_tenant()))
-    monkeypatch.setattr(production_actions, "do_sync_esi", lambda: None)
-    monkeypatch.setattr(doctrine_actions, "do_sync_contracts", lambda: None)
+    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda: None)
 
     with storage.tenant_context(tenant_a):
         storage.save_tenant_settings("trading", {"scheduler_enabled": True, "trading_pipeline_interval_hours": 24.0})
