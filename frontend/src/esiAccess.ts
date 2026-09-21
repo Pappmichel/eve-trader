@@ -68,6 +68,26 @@ export function deriveCellState(args: {
   return { kind: 'some', sharedCount, capableCount, lastError: null }
 }
 
+export function characterRemovalImpact(
+  characterId: number,
+  sharing: EsiSharingRow[],
+  capabilities: EsiCapabilityRow[],
+): { tools: string[]; capabilityKeys: string[] } {
+  const tools = new Set<string>()
+  for (const row of sharing) {
+    if (row.owner_type === 'character' && row.owner_id === characterId) {
+      tools.add(row.tool_key)
+    }
+  }
+  const known = CONSUMING_TOOL_KEYS.filter((key) => tools.has(key))
+  const unknown = [...tools].filter((key) => !(CONSUMING_TOOL_KEYS as readonly string[]).includes(key)).sort()
+  const capabilityKeys = [...new Set(
+    capabilities.filter((row) => row.character_id === characterId).map((row) => row.capability_key),
+  )].sort()
+  return { tools: [...known, ...unknown], capabilityKeys }
+}
+
+
 export function extraKindsForCharacter(
   characterId: number,
   sharing: EsiSharingRow[],

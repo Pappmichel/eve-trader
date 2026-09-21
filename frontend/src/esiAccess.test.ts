@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   buildToolView,
+  characterRemovalImpact,
   corporationIdsFrom,
   deriveCellState,
   extraKindsForCharacter,
@@ -109,5 +110,17 @@ describe('tool view / extra kinds', () => {
 
   it('lists corporation ids from sharing and freshness, not from a frontend count of prefixes', () => {
     expect(corporationIdsFrom(sharing, [])).toEqual([99])
+  })
+
+    it('summarizes the tools and access capabilities a character currently holds', () => {
+    expect(characterRemovalImpact(1, sharing, capabilities)).toEqual({
+      tools: ['production', 'doctrine'],
+      capabilityKeys: ['structure_market_book'],
+    })
+    // Corporation sharing is not this character's; a missing id is empty.
+    expect(characterRemovalImpact(99, sharing, capabilities)).toEqual({
+      tools: [],
+      capabilityKeys: [],
+    })
   })
 })

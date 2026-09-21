@@ -241,3 +241,52 @@ def test_check_corporation_roles_second_corp_member_covers_a_missing_role(tenant
     # wallet's corp_roles is (Accountant, Junior_Accountant) - Bob's
     # Accountant role covers this too, not just market_orders.
     assert corp["data_kinds"]["wallet"]["has_role"] is True
+
+
+def test_remove_token_character_deletes_only_that_characters_tokens(tenant):
+    from eve_trader import storage
+    from eve_trader.auth import TokenManager
+
+    _save_token(ALICE, f"buyer:{ALICE}", ASSETS_SCOPE)
+    _save_token(ALICE, f"producer:{ALICE}", ASSETS_SCOPE)
+    _save_token(BOB, f"esi:{BOB}", ASSETS_SCOPE, name="Bob")
+    storage.upsert_esi_sharing("character", ALICE, "assets", "production")
+    storage.upsert_esi_sharing("character", ALICE, "wallet", "trading")
+    storage.upsert_esi_sharing("character", BOB, "assets", "doctrine")
+    storage.upsert_esi_character_capability(ALICE, "structure_market_book")
+    storage.upsert_esi_character_capability(BOB, "structure_name_resolution")
+
+    result = esi_actions.do_remove_token_character(ALICE)
+
+    assert result == {
+        "removed": ALICE,
+        "character_name": "Alice",
+        "roles": [f"buyer:{ALICE}", f"producer:{ALICE}"],
+        "shared_tools": ["production", "trading"],
+        "capabilities": ["structure_market_book"],
+    }
+    tm = TokenManager()
+    assert tm.get_record(f"buyer:{ALICE}") is None
+    assert tm.get_record(f"producer:{ALICE}") is None
+    bob = tm.get_record(f"esi:{BOB}")
+    assert bob is not None
+    assert bob.character_id == BOB
+    # Sharing and capabilities stay — re-adding Alice restores the matrix
+    # without re-ticking (admin.do_remove_user analogue).
+    sharing = {(r["owner_id"], r["data_kind"], r["tool_key"]) for r in esi_actions.do_list_sharing()}
+    assert (ALICE, "assets", "production") in sharing
+    assert (ALICE, "wallet", "trading") in sharing
+    assert (BOB, "assets", "doctrine") in sharing
+    caps = {(r["character_id"], r["capability_key"]) for r in esi_actions.do_list_capabilities()}
+    assert (ALICE, "structure_market_book") in caps
+    assert (BOB, "structure_name_resolution") in caps
+
+
+def test_remove_token_character_unknown_raises(tenant):
+    with pytest.raises(ActionError, match="No ESI token stored"):
+        esi_actions.do_remove_token_character(ALICE)
+
+
+def test_remove_token_character_rejects_non_positive_id():
+    with pytest.raises(ActionError, match="Invalid character_id"):
+        esi_actions.do_remove_token_character(0)

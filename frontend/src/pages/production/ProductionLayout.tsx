@@ -2,7 +2,6 @@ import { AppShell, Badge, Burger, Stack, Title, Text, Button, Group, Container, 
 import { useDisclosure } from '@mantine/hooks'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { modals } from '@mantine/modals'
 import { spotlight } from '@mantine/spotlight'
 import { IconArrowLeft, IconSearch } from '@tabler/icons-react'
 
@@ -53,8 +52,8 @@ export default function ProductionLayout() {
   // freshness/counts info below stays - still legitimately informs this
   // tenant's own Production sidebar, just no longer paired with a button
   // that would refresh it for every tenant at once.
-  const { characters, removeCharacter, isRemoving } = useRoleCharacters(
-    ['production', 'characters'], productionApi.producerCharacters, productionApi.removeCharacter,
+  const { characters } = useRoleCharacters(
+    ['production', 'characters'], productionApi.producerCharacters,
   )
   const syncEsi = useAction('Refresh what I need', productionApi.syncEsi, [
     ['production', 'jobs'], ['production', 'slots'], ['production', 'market-status'], ['production', 'esi-sync-time'],
@@ -131,36 +130,11 @@ export default function ProductionLayout() {
                 </Text>
               )}
               {characters.map((c) => (
-                <Group key={c.role_key} justify="space-between" mb={4}>
-                  <Text size="sm" fw={600}>{c.character_name}</Text>
-                  {c.role_key.startsWith('producer:') ? (
-                    <Button size="xs" variant="subtle" color="danger"
-                      onClick={() => modals.openConfirmModal({
-                        title: 'Remove character',
-                        children: <Text size="sm">Remove {c.character_name} from Production? This drops this tool&apos;s token key. Sharing stays on the Characters page.</Text>,
-                        labels: { confirm: 'Remove', cancel: 'Cancel' },
-                        confirmProps: { color: 'danger' },
-                        onConfirm: () => removeCharacter(c.role_key),
-                      })}
-                      loading={isRemoving(c.role_key)}>
-                      Remove
-                    </Button>
-                  ) : (
-                    // This character is listed here because it shares
-                    // Assets/Market Orders with Production (docs/
-                    // ESI_ACCESS_PLAN.md Known gap 4), not because it holds
-                    // a dedicated producer:* token - its esi:<id> key may
-                    // be shared with other tools too, so this sidebar
-                    // cannot safely delete it. Unshare on the Characters
-                    // page instead.
-                    <Tooltip label="Shared via the Characters page - unshare there, not here" multiline w={220}>
-                      <Button size="xs" variant="subtle" color="gray" disabled>
-                        Unshare on Characters
-                      </Button>
-                    </Tooltip>
-                  )}
-                </Group>
+                <Text key={c.role_key} size="sm" fw={600} mb={4}>{c.character_name}</Text>
               ))}
+              <Text size="xs" c="dimmed" mb="xs">
+                To drop a character&apos;s token, use the Characters page.
+              </Text>
               <Stack gap="xs" mt="xs">
                 <Tooltip label={syncEsi.tooltip} disabled={!syncEsi.tooltip} multiline w={280}>
                   <Button size="xs" variant="default" disabled={characters.length === 0}

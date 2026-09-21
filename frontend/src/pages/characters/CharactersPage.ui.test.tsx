@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MantineProvider } from '@mantine/core'
 import { ModalsProvider } from '@mantine/modals'
 import { Notifications } from '@mantine/notifications'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
@@ -23,6 +23,7 @@ vi.mock('../../api/client', () => ({
     addStart: vi.fn(),
     sync: vi.fn(),
     checkCorporationRoles: vi.fn(),
+    removeCharacter: vi.fn(),
   },
   ApiError: class ApiError extends Error {
     status: number
@@ -113,6 +114,7 @@ describe('Characters page', () => {
     expect(screen.getByRole('button', { name: 'Add character' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Sync everything' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Re-authorize' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove' })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'assets 2/4' }))
     expect(await screen.findByText('Toggling writes or deletes one sharing row. It does not call ESI.')).toBeInTheDocument()
@@ -194,5 +196,52 @@ describe('Characters page', () => {
       expect(assigned).toEqual(['https://login.eveonline.com/v2/oauth/authorize?x=1'])
     })
     expect(vi.mocked(charactersApi.addStart)).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows shared tools and access capabilities in the Remove confirm dialog, then deletes the character', async () => {
+    vi.mocked(charactersApi.owners).mockResolvedValue([
+      {
+        character_id: 1,
+        character_name: 'Alice',
+        write_role: 'buyer:1',
+        character_has_token_pool: false,
+        roles: ['buyer:1'],
+        corporation_id: 99,
+        corporation_name: 'Test Corp',
+      },
+    ])
+    vi.mocked(charactersApi.sharing).mockResolvedValue([
+      { owner_type: 'character', owner_id: 1, data_kind: 'assets', tool_key: 'production' },
+      { owner_type: 'character', owner_id: 1, data_kind: 'wallet', tool_key: 'trading' },
+      { owner_type: 'corporation', owner_id: 99, data_kind: 'wallet', tool_key: 'trading' },
+    ])
+    vi.mocked(charactersApi.freshness).mockResolvedValue([])
+    vi.mocked(charactersApi.capabilities).mockResolvedValue([
+      { character_id: 1, capability_key: 'structure_market_book' },
+    ])
+    vi.mocked(charactersApi.removeCharacter).mockResolvedValue({
+      removed: 1,
+      character_name: 'Alice',
+      roles: ['buyer:1'],
+      shared_tools: ['production', 'trading'],
+      capabilities: ['structure_market_book'],
+    })
+
+    const user = userEvent.setup()
+    renderPage()
+
+    expect(await screen.findByRole('button', { name: 'Remove' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Remove' }))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText(/Remove Alice/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/Shared with: Trading, Production/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/Access: Structure market book/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/Sharing ticks and Access capabilities stay/)).toBeInTheDocument()
+
+    await user.click(within(dialog).getByRole('button', { name: 'Remove' }))
+    await vi.waitFor(() => {
+      expect(vi.mocked(charactersApi.removeCharacter).mock.calls[0][0]).toBe(1)
+    })
   })
 })

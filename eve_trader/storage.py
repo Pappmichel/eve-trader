@@ -2399,24 +2399,57 @@ def newest_esi_freshness_success_at() -> Optional[str]:
     return ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
 
 
+def _wallet_corp_divisions_to_replace(
+    rows: list[tuple], divisions: Optional[list[int]],
+) -> list[int]:
+    """Corp wallet DELETE is scoped to the divisions this write covers.
+    Infer from `rows` when the caller did not pass an explicit list (empty
+    readable-but-empty divisions must be passed explicitly, or they would
+    be left untouched). An empty result means "write nothing": do not
+    DELETE the corp's other divisions."""
+    if divisions is not None:
+        return list(divisions)
+    seen: dict[int, None] = {}
+    for row in rows:
+        seen.setdefault(int(row[0]), None)
+    return list(seen)
+
+
 def replace_wallet_transactions(
     rows: list[tuple],
     *,
     owner_type: str,
     owner_id: int,
+    divisions: Optional[list[int]] = None,
 ) -> None:
     """`rows`: (division, transaction_id, date, type_id, location_id,
     unit_price, quantity, is_buy, journal_ref_id). Partitioned by owner.
-    Character rows use division 0; corp rows use ESI divisions 1-7."""
+    Character rows use division 0; corp rows use ESI divisions 1-7.
+
+    Character owners always replace the whole partition (division 0).
+    Corporation owners replace only `divisions` (or the divisions present
+    in `rows` when that is omitted) so an unread division keeps its
+    existing snapshot.
+    """
     is_character = owner_type == "character"
     insert_char = owner_id if is_character else None
     insert_corp = None if is_character else owner_id
     id_column = "owner_character_id" if is_character else "owner_corporation_id"
     with connect() as conn:
-        conn.execute(
-            f"DELETE FROM esi_wallet_transactions WHERE {id_column} = ?",
-            (owner_id,),
-        )
+        if is_character:
+            conn.execute(
+                f"DELETE FROM esi_wallet_transactions WHERE {id_column} = ?",
+                (owner_id,),
+            )
+        else:
+            target = _wallet_corp_divisions_to_replace(rows, divisions)
+            if not target:
+                return
+            conn.execute(
+                f"DELETE FROM esi_wallet_transactions WHERE {id_column} = ? "
+                "AND division = ANY(?)",
+                (owner_id, target),
+            )
         conn.executemany(
             "INSERT INTO esi_wallet_transactions ("
             "owner_type, owner_id, division, transaction_id, date, type_id, "
@@ -2436,17 +2469,31 @@ def replace_wallet_journal(
     *,
     owner_type: str,
     owner_id: int,
+    divisions: Optional[list[int]] = None,
 ) -> None:
-    """`rows`: (division, journal_id, date, ref_type, amount)."""
+    """`rows`: (division, journal_id, date, ref_type, amount).
+
+    Same character-vs-corp DELETE scoping as `replace_wallet_transactions`.
+    """
     is_character = owner_type == "character"
     insert_char = owner_id if is_character else None
     insert_corp = None if is_character else owner_id
     id_column = "owner_character_id" if is_character else "owner_corporation_id"
     with connect() as conn:
-        conn.execute(
-            f"DELETE FROM esi_wallet_journal WHERE {id_column} = ?",
-            (owner_id,),
-        )
+        if is_character:
+            conn.execute(
+                f"DELETE FROM esi_wallet_journal WHERE {id_column} = ?",
+                (owner_id,),
+            )
+        else:
+            target = _wallet_corp_divisions_to_replace(rows, divisions)
+            if not target:
+                return
+            conn.execute(
+                f"DELETE FROM esi_wallet_journal WHERE {id_column} = ? "
+                "AND division = ANY(?)",
+                (owner_id, target),
+            )
         conn.executemany(
             "INSERT INTO esi_wallet_journal ("
             "owner_type, owner_id, division, journal_id, date, ref_type, amount, "

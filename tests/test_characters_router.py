@@ -57,13 +57,13 @@ def _wipe():
     client.cookies.clear()
     pg_helpers.wipe_tables(
         "tool_grants", "tenant_registry_entries", "character_session_revocations",
-        "esi_sharing", "tenant_tokens",
+        "esi_sharing", "esi_character_capabilities", "tenant_tokens",
     )
     yield
     client.cookies.clear()
     pg_helpers.wipe_tables(
         "tool_grants", "tenant_registry_entries", "character_session_revocations",
-        "esi_sharing", "tenant_tokens",
+        "esi_sharing", "esi_character_capabilities", "tenant_tokens",
     )
 
 
@@ -274,3 +274,62 @@ def test_add_round_does_not_strip_the_scopes_of_an_already_registered_character(
         assert record is not None
         assert record.scopes == "esi-assets.read_assets.v1"
         assert record.access_token == "a"
+
+
+def test_delete_owner_requires_characters_grant(monkeypatch, _apply_admin_schema, _apply_esi_access_schema):
+    _enable_gate(monkeypatch)
+    _provision(tools=("production",))
+    resp = client.delete(f"/api/characters/owners/{ALICE}", cookies=_session_cookie())
+    assert resp.status_code == 403
+
+
+def test_delete_owner_removes_every_token_for_that_character_only(
+    monkeypatch, _apply_admin_schema, _apply_esi_access_schema,
+):
+    _enable_gate(monkeypatch)
+    _provision(tools=("characters",))
+    cookies = _session_cookie()
+    bob = 1002
+
+    with storage.tenant_context(_TENANT):
+        storage.save_tenant_token(f"buyer:{ALICE}", asdict(TokenRecord(
+            role=f"buyer:{ALICE}", character_id=ALICE, character_name="Alice",
+            access_token="a", refresh_token="r", expires_at=9999999999.0,
+            scopes="esi-assets.read_assets.v1",
+        )))
+        storage.save_tenant_token(f"producer:{ALICE}", asdict(TokenRecord(
+            role=f"producer:{ALICE}", character_id=ALICE, character_name="Alice",
+            access_token="a", refresh_token="r", expires_at=9999999999.0,
+            scopes="esi-assets.read_assets.v1",
+        )))
+        storage.save_tenant_token(f"esi:{bob}", asdict(TokenRecord(
+            role=f"esi:{bob}", character_id=bob, character_name="Bob",
+            access_token="b", refresh_token="r", expires_at=9999999999.0,
+            scopes="esi-assets.read_assets.v1",
+        )))
+        storage.upsert_esi_sharing("character", ALICE, "assets", "production")
+        storage.upsert_esi_character_capability(ALICE, "structure_market_book")
+
+    resp = client.delete(f"/api/characters/owners/{ALICE}", cookies=cookies)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["removed"] == ALICE
+    assert body["roles"] == [f"buyer:{ALICE}", f"producer:{ALICE}"]
+    assert body["shared_tools"] == ["production"]
+    assert body["capabilities"] == ["structure_market_book"]
+
+    with storage.tenant_context(_TENANT):
+        assert TokenManager().get_record(f"buyer:{ALICE}") is None
+        assert TokenManager().get_record(f"producer:{ALICE}") is None
+        assert TokenManager().get_record(f"esi:{bob}") is not None
+        sharing = storage.list_esi_sharing()
+        assert ("character", ALICE, "assets", "production") in sharing
+        assert (ALICE, "structure_market_book") in storage.list_esi_character_capabilities()
+
+
+def test_delete_owner_unknown_character_is_400(monkeypatch, _apply_admin_schema, _apply_esi_access_schema):
+    _enable_gate(monkeypatch)
+    _provision(tools=("characters",))
+    resp = client.delete(f"/api/characters/owners/{ALICE}", cookies=_session_cookie())
+    assert resp.status_code == 400
+    assert "No ESI token stored" in resp.json()["detail"]

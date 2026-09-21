@@ -497,6 +497,8 @@ export const adminApi = {
 // -------------------------------------------------------------- characters
 export const charactersApi = {
   owners: () => get<T.EsiTokenCharacter[]>('/api/characters/owners'),
+  removeCharacter: (characterId: number) =>
+    del<T.EsiRemovedCharacter>(`/api/characters/owners/${characterId}`),
   sharing: (toolKey?: string) =>
     get<T.EsiSharingRow[]>(toolKey ? `/api/characters/sharing?tool_key=${encodeURIComponent(toolKey)}` : '/api/characters/sharing'),
   freshness: () => get<T.EsiFreshnessRow[]>('/api/characters/freshness'),

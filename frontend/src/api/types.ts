@@ -196,7 +196,7 @@ export interface PipelineRunStatus {
   run_id: string | null
   job_name?: string
   tool?: string
-  status: 'idle' | 'running' | 'succeeded' | 'failed'
+  status: 'idle' | 'running' | 'succeeded' | 'failed' | 'degraded'
   started_at?: string | null
   updated_at?: string | null
   finished_at?: string | null
@@ -649,6 +649,15 @@ export interface EsiTokenCharacter {
   corporation_id: number | null
   /** Resolved display name for corporation_id above - null if the live lookup failed. */
   corporation_name: string | null
+}
+
+/** DELETE /api/characters/owners/{character_id} — tokens dropped; sharing/capabilities kept. */
+export interface EsiRemovedCharacter {
+  removed: number
+  character_name: string
+  roles: string[]
+  shared_tools: string[]
+  capabilities: string[]
 }
 
 /** Known gap 2's role warning - POST /api/characters/corporation-roles/check. */

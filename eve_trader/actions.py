@@ -1306,6 +1306,43 @@ def do_reconcile_trades(cfg: TradingConfig = TRADING_CONFIG,
     return {"matched_trades": len(trades), **summary}
 
 
+# Steps do_pipeline isolates. Present in the result dict only when that
+# step actually ran (build_universe/build_focused are opt-in via
+# rebuild_universe; a failure in that combined try records build_universe
+# only). pipeline_runner maps mixed success+failure onto status=degraded.
+PIPELINE_STEP_KEYS = (
+    "build_universe",
+    "build_focused",
+    "refresh_and_prune_candidates",
+    "reconcile_trades",
+)
+
+
+def pipeline_failed_steps(results: dict) -> dict[str, str]:
+    """Step name -> error text for isolated do_pipeline steps that recorded
+    an error. Ignores extra keys (failed_steps itself, summaries) so the
+    runner can re-derive the same map from a persisted result dict."""
+    failed: dict[str, str] = {}
+    for name in PIPELINE_STEP_KEYS:
+        value = results.get(name)
+        if isinstance(value, dict) and "error" in value:
+            failed[name] = str(value["error"])
+    return failed
+
+
+def pipeline_outcome(results: dict) -> str:
+    """Terminal pipeline_runs status implied by an isolated do_pipeline
+    result: succeeded (no step errors), degraded (some but not all attempted
+    steps failed), failed (every attempted step recorded an error)."""
+    attempted = [name for name in PIPELINE_STEP_KEYS if name in results]
+    failed = pipeline_failed_steps(results)
+    if not failed:
+        return "succeeded"
+    if attempted and len(failed) >= len(attempted):
+        return "failed"
+    return "degraded"
+
+
 def do_pipeline(safe: bool = True, rebuild_universe: bool = False,
                  progress_callback=None) -> dict:
     """Runs the daily workflow. `rebuild_universe` re-crawls the *entire* ESI
@@ -1321,6 +1358,12 @@ def do_pipeline(safe: bool = True, rebuild_universe: bool = False,
     silently requiring a separate manual step afterwards (confirmed bug: this
     used to call do_refresh_shortlist + do_find_new_candidates only, so
     "Run Complete Pipeline" never added or pruned anything).
+
+    Isolation is retained: this function never re-raises a per-step
+    ActionError/ESIError. Failed steps are recorded as
+    results[step]["error"] and, when any exist, as results["failed_steps"]
+    so pipeline_runner can persist status=degraded (or failed, if every
+    attempted step errored) instead of a false succeeded.
     """
     results = {}
 
@@ -1348,4 +1391,7 @@ def do_pipeline(safe: bool = True, rebuild_universe: bool = False,
     except (ActionError, ESIError) as e:
         results["reconcile_trades"] = {"error": str(e)}
 
+    failed = pipeline_failed_steps(results)
+    if failed:
+        results["failed_steps"] = failed
     return results
