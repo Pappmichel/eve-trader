@@ -20,6 +20,11 @@ from eve_trader.doctrine.actions import do_remove_doctrine_character
 from eve_trader.production.actions import do_remove_producer_character
 from eve_trader.station_trading.actions import do_remove_trader_character
 
+from . import pg_helpers
+from .pg_helpers import (  # noqa: F401
+    _apply_esi_access_schema, _apply_phase1_schema, _apply_phase2_schema, tenant,
+)
+
 
 VALID = (
     "buyer:1",
@@ -188,3 +193,60 @@ def test_wallet_actions_reject_other_tool_role_without_lookup(monkeypatch):
     with pytest.raises(ActionError, match="Invalid role_key"):
         do_wallet_balance("doctrine:1")
     assert looked == []
+
+
+# --------------------------------------------------------------- esi: wallet reads
+# Confirmed real bug 2026-09-21: an esi:<id> character (added via the
+# Characters page) correctly appears in list_shared_trading_characters's
+# sharing-based Transactions-tab picker, but do_wallet_transactions/
+# do_wallet_balance still gated on TOOL_ROLE_PREFIXES["trading"]
+# (buyer/seller only), so selecting it always raised "Invalid role_key" -
+# no transactions ever loaded for a shared, re-authed seller.
+
+
+@pg_helpers.postgres_required()
+def test_wallet_transactions_esi_key_rejected_without_wallet_sharing(tenant, _apply_esi_access_schema):  # noqa: F811
+    from dataclasses import asdict
+
+    from eve_trader import storage
+    from eve_trader.auth import TokenRecord
+
+    rec = TokenRecord(
+        role="esi:1001", character_id=1001, character_name="Alice",
+        access_token="a", refresh_token="r", expires_at=9999999999.0,
+        scopes="esi-wallet.read_character_wallet.v1",
+    )
+    storage.save_tenant_token("esi:1001", asdict(rec))
+
+    with pytest.raises(ActionError, match="has not shared Wallet"):
+        do_wallet_transactions("esi:1001")
+    with pytest.raises(ActionError, match="has not shared Wallet"):
+        do_wallet_balance("esi:1001")
+
+
+@pg_helpers.postgres_required()
+def test_wallet_transactions_esi_key_accepted_once_wallet_shared(tenant, _apply_esi_access_schema, monkeypatch):  # noqa: F811
+    from dataclasses import asdict
+
+    from eve_trader import storage
+    from eve_trader.auth import TokenRecord
+
+    rec = TokenRecord(
+        role="esi:1001", character_id=1001, character_name="Alice",
+        access_token="a", refresh_token="r", expires_at=9999999999.0,
+        scopes="esi-wallet.read_character_wallet.v1",
+    )
+    storage.save_tenant_token("esi:1001", asdict(rec))
+    storage.upsert_esi_sharing("character", 1001, "wallet", "trading")
+
+    monkeypatch.setattr(
+        "eve_trader.actions.fetch_recent_transactions",
+        lambda character_id, auth_role, client, lookback_days: [],
+    )
+    assert do_wallet_transactions("esi:1001") == []
+
+    monkeypatch.setattr(
+        "eve_trader.esi_client.ESIClient.character_wallet_balance",
+        lambda self, character_id, auth_role: 123.0,
+    )
+    assert do_wallet_balance("esi:1001") == {"role_key": "esi:1001", "balance": 123.0}

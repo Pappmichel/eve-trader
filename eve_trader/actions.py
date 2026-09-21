@@ -14,7 +14,8 @@ from typing import Optional
 import pandas as pd
 
 from . import candidate_discovery, history_backtest, own_orders, storage
-from .auth import InvalidRoleKey, TokenManager, validate_role_key_for_tool
+from .auth import (InvalidRoleKey, TOOL_ROLE_PREFIXES, TokenManager, validate_role_key,
+                    validate_role_key_for_tool)
 from .config import (OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, TradingConfig,
                      save_tenant_config_overrides, validate_trading_overrides)
 from .esi_client import ESIClient, ESIError
@@ -44,6 +45,49 @@ def _require_role_key(role_key: str, tool_key: str) -> str:
         return validate_role_key_for_tool(role_key, tool_key)
     except InvalidRoleKey as e:
         raise ActionError(str(e)) from e
+
+
+def _require_trading_wallet_role_key(role_key: str) -> str:
+    """role_key check for the Transactions tab's two live-ESI reads
+    (do_wallet_transactions/do_wallet_balance) - deliberately NOT
+    `_require_role_key(role_key, "trading")`.
+
+    buyer:/seller: predate the sharing model - that prefix itself was the
+    only way to add a Trading character, so the token's mere existence
+    under it has always been sufficient authorization here (unchanged
+    below). An `esi:<id>` key (added via the Characters page) has no such
+    guarantee - list_shared_trading_characters (this module) already
+    made esi:-keyed characters correctly show up in the Transactions
+    tab's character picker (sharing-based), but selecting one hit this
+    function's old `_require_role_key(role_key, "trading")` call, which
+    only ever accepted `TOOL_ROLE_PREFIXES["trading"]` (buyer/seller) -
+    confirmed real bug 2026-09-21 (a shared, re-authed seller's
+    transactions never loaded). Fixed by accepting `esi:` here too, gated
+    on an explicit "wallet" sharing check (the same one
+    trade_reconciliation.collect_trading_wallet_streams already applies
+    for reconciliation) since sharing is the only authorization signal an
+    esi: key carries - unlike do_remove_trading_character, which
+    deliberately keeps the buyer:/seller:-only gate (an esi: key may be
+    shared with other tools too and must stay removable only from the
+    Characters page, matching TradingLayout.tsx's disabled "Unshare on
+    Characters" button)."""
+    try:
+        role_key = validate_role_key(role_key)
+    except InvalidRoleKey as e:
+        raise ActionError(str(e)) from e
+    prefix = role_key.split(":", 1)[0]
+    if prefix in TOOL_ROLE_PREFIXES["trading"]:
+        return role_key
+    if prefix != "esi":
+        raise ActionError("Invalid role_key.")
+    from .esi_data.access import is_shared
+    character_id = int(role_key.split(":", 1)[1])
+    if not is_shared("wallet", "trading", "character", character_id):
+        raise ActionError(
+            "This character has not shared Wallet with Trading yet - "
+            "share it on the Characters page to see transactions/balance."
+        )
+    return role_key
 
 
 def now_ts() -> str:
@@ -210,7 +254,7 @@ def do_list_transaction_characters(oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> lis
 
 def do_wallet_transactions(role_key: str, lookback_days: Optional[int] = None,
                             cfg: TradingConfig = TRADING_CONFIG, oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> list[dict]:
-    role_key = _require_role_key(role_key, "trading")
+    role_key = _require_trading_wallet_role_key(role_key)
     tm = TokenManager(oauth_cfg)
     record = tm.get_record(role_key)
     if record is None:
@@ -239,7 +283,7 @@ def do_wallet_balance(role_key: str, cfg: TradingConfig = TRADING_CONFIG, oauth_
     """Current ISK wallet balance for the Transactions tab's selected
     character - a live ESI call (no caching, matches character_wallet_
     transactions' own no-cache behavior), not something worth persisting."""
-    role_key = _require_role_key(role_key, "trading")
+    role_key = _require_trading_wallet_role_key(role_key)
     tm = TokenManager(oauth_cfg)
     record = tm.get_record(role_key)
     if record is None:
