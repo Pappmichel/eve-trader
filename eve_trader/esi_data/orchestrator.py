@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Optional
 
-from .. import storage, tenant_scope
+from .. import storage
 from ..access_gate import ALL_TOOL_KEYS
 from ..auth import TokenManager, TokenRecord
 from ..config import OAUTH_CONFIG, TRADING_CONFIG
@@ -410,6 +410,11 @@ def _sync(
     fetch_extra = extra or {}
     char_results: list[dict] = []
     if char_owners:
+        # Local import: tenant_scope pulls production/doctrine/refining/
+        # station_trading config modules. esi_data must not load those at
+        # import time (test_importing_registry_does_not_load_tool_packages).
+        from .. import tenant_scope
+
         # Capture on this thread: worker threads do not inherit
         # contextvars (confirmed live twice in this project). enter_tenant
         # is the chokepoint that sets storage's tenant *and* the five
