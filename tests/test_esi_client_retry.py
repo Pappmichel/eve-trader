@@ -8,6 +8,7 @@ import time
 
 import requests
 
+from eve_trader.auth import TokenManager, TokenRecord
 from eve_trader.esi_client import ESIClient, ESIError
 
 
@@ -135,3 +136,59 @@ def test_post_response_converts_transport_failure_to_esierror(monkeypatch):
         assert "read timed out" in str(e)
     except requests.RequestException:
         assert False, "transport failure must not leak as RequestException"
+
+
+def _expired_token_manager(role: str = "producer:1") -> TokenManager:
+    """In-memory TokenManager so this file stays Postgres-free. `_loaded`
+    skips storage; expires_at=0 forces get_token onto _refresh."""
+    tm = TokenManager()
+    tm._loaded = True
+    tm._tokens[role] = TokenRecord(
+        role=role, character_id=1, character_name="Alice",
+        access_token="stale", refresh_token="revoked", expires_at=0.0,
+        scopes="esi-assets.read_assets.v1",
+    )
+    return tm
+
+
+def _invalid_grant_response(url: str) -> requests.Response:
+    resp = requests.Response()
+    resp.status_code = 400
+    resp.reason = "Bad Request"
+    resp.url = url
+    resp._content = b'{"error":"invalid_grant"}'
+    return resp
+
+
+def test_get_response_converts_dead_refresh_token_to_esierror(monkeypatch):
+    # TokenManager._refresh calls resp.raise_for_status(), so a revoked
+    # refresh token used to leak as requests.HTTPError past every
+    # except ESIError handler. Fail fast (not retried like a 502).
+    _no_sleep(monkeypatch)
+    esi_calls = []
+    refresh_calls = []
+
+    def fake_get(self, url, params=None, headers=None, timeout=30):
+        esi_calls.append(url)
+        return _FakeResp(200)
+
+    def fake_post(url, data=None, headers=None, timeout=30, **kwargs):
+        refresh_calls.append(data)
+        return _invalid_grant_response(url)
+
+    monkeypatch.setattr(requests.Session, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    try:
+        ESIClient(tokens=_expired_token_manager())._get_response(
+            "/characters/1/assets/", auth_role="producer:1", retries=3,
+        )
+        assert False, "expected ESIError"
+    except ESIError as e:
+        message = str(e)
+        assert "Token refresh failed for role 'producer:1'" in message
+        assert "Re-authorize this character" in message
+    except requests.HTTPError:
+        assert False, "dead refresh token must not leak as HTTPError"
+    assert len(refresh_calls) == 1  # not retried like a 502
+    assert esi_calls == []  # never reached the ESI GET

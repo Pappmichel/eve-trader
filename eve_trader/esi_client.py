@@ -357,7 +357,25 @@ class ESIClient:
         url = path_or_url if path_or_url.startswith("http") else f"{self.cfg.esi_base}{path_or_url}"
         headers = {}
         if auth_role:
-            headers.update(self.tokens.auth_header(auth_role))
+            try:
+                headers.update(self.tokens.auth_header(auth_role))
+            except requests.HTTPError as e:
+                # Confirmed real bug: TokenManager._refresh calls
+                # resp.raise_for_status(), so a revoked/expired refresh token
+                # raised requests.HTTPError (not this codebase's ESIError).
+                # auth_header sat outside the retry try block below, so the
+                # exception escaped every except ESIError handler —
+                # orchestrator character/corp loops never stamped
+                # esi_freshness.last_error (Characters page showed nothing),
+                # and a dead token on the first corp member aborted the
+                # whole corporation before a later member with a valid
+                # Director token was tried. A dead refresh token is not
+                # transient — fail fast as ESIError so the user can
+                # re-authorize that character; do not retry it like a 502.
+                raise ESIError(
+                    f"Token refresh failed for role '{auth_role}': {e}. "
+                    f"Re-authorize this character."
+                ) from e
         for attempt in range(1, retries + 1):
             self._await_error_budget()
             try:
