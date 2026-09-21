@@ -277,6 +277,7 @@ class AssetPlanJob(_Base):
     job_category: Optional[str] = None
     margin: Optional[float] = None
     stock_coverage: Optional[float] = None
+    unlock_time_seconds: float = 0.0
     recommended_slots: Optional[int] = None
     days_to_complete_at_recommended_slots: Optional[float] = None
     blockers: list[AssetPlanBlocker] = []

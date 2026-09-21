@@ -226,24 +226,45 @@ class AssetPlanJob:
     # Deliberately *not* factored into the jobs list's own sort order (still
     # job_runs desc) - see engine.plan_asset_optimized's docstring for why -
     # but it *is* factored into recommended_slots below (user request
-    # 2026-09-22): the lower this is, the earlier this job claims its slots.
+    # 2026-09-22), as the tie-break under unlock_time_seconds: the lower
+    # this is, the earlier this job claims its slots among equally-unlocking
+    # jobs.
     stock_coverage: Optional[float] = None
+    # How much currently-blocked job time (seconds) elsewhere in the plan
+    # would newly become workable if this job's own product became
+    # available - user request 2026-09-22 ("priorisieren, dass in der
+    # naechsten Stage moeglichst viele Jobs moeglich werden ... jobtime
+    # gewichtet"), computed by engine._unlock_time_by_type. Credits a parent
+    # job's *blocked* time (job_time_seconds scaled to just the
+    # (job_runs - runs_ready_now) portion, not its full build time) to
+    # whichever of that parent's own blockers is the *sole remaining one in
+    # its own category* (Reactions/Advanced Components/Capital Components -
+    # a raw-buy material or anything else without a job_category is dropped
+    # before that check and never credited) - so a Reaction feeding a
+    # Component counts (cross-category, the motivating example), but a
+    # second unresolved same-category blocker on that same parent withholds
+    # credit from both until only one is left. 0.0 (not None) for a job
+    # that unlocks nothing right now, including every job outside the slot-
+    # recommendation categories (this is only ever consulted for
+    # recommended_slots priority below).
+    unlock_time_seconds: float = 0.0
     # How many of your currently-free character job slots (see
     # engine._free_slots_by_category) to use for this job's ready runs.
-    # Claimed in stock_coverage order - the eligible ready job with the
-    # *least of itself already on hand* claims its own full need first, the
-    # next-lowest-coverage job claims what's left, and so on
-    # (engine._allocate_slots_by_coverage) - so a single depleted job can
-    # take the whole pool and leave a better-stocked job sharing the same
-    # category at 0 this round, on purpose (confirmed real user correction
-    # 2026-09-22, superseding an earlier time-weighted-proportional split -
-    # see _allocate_slots_by_coverage's own docstring for the full history).
-    # Each job's own "need" (the ceiling _allocate_slots_by_coverage can
-    # hand it) is runs_ready_now by default, or, when
-    # ProductionConfig.asset_plan_slot_days_target is set, its own
-    # days-target need instead (_slots_needed_for_days_target) - never more
-    # than it has ready runs to put on them either way. Only set for
-    # job_category in engine._SLOT_RECOMMENDATION_CATEGORIES (Reactions/
+    # Claimed by unlock_time_seconds descending first, stock_coverage
+    # ascending as the tie-break - the eligible ready job that would unblock
+    # the most job time elsewhere claims its own full need first, ties
+    # going to whichever has the *least of itself already on hand*, and so
+    # on (engine._allocate_slots_by_priority) - so a single job can take the
+    # whole pool and leave every other job sharing the same category at 0
+    # this round, on purpose (confirmed real user correction 2026-09-22,
+    # superseding an earlier coverage-only version, which itself superseded
+    # a time-weighted-proportional split - see _allocate_slots_by_priority's
+    # own docstring for the full history). Each job's own "need" (the
+    # ceiling _allocate_slots_by_priority can hand it) is runs_ready_now by
+    # default, or, when ProductionConfig.asset_plan_slot_days_target is set,
+    # its own days-target need instead (_slots_needed_for_days_target) -
+    # never more than it has ready runs to put on them either way. Only set
+    # for job_category in engine._SLOT_RECOMMENDATION_CATEGORIES (Reactions/
     # Advanced Components/Capital Components - user request 2026-08-15) and
     # only when runs_ready_now > 0 (nothing to split otherwise) - None
     # everywhere else.

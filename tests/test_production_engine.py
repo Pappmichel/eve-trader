@@ -7,12 +7,15 @@ from eve_trader.storage import save_latest_buy_list as _save_latest_buy_list_imp
 from eve_trader.goonmetrics_client import CurrentPrice
 from eve_trader.production import engine
 from eve_trader.production.config import ProductionConfig
-from eve_trader.production.constants import ANCIENT_RELIC_CATEGORY_ID, SCC_SURCHARGE_RATE, ACTIVITY_MODS, rig_security_multiplier
+from eve_trader.production.constants import (
+    ANCIENT_RELIC_CATEGORY_ID, SCC_SURCHARGE_RATE, ACTIVITY_MODS, ACTIVITY_MANUFACTURING, ACTIVITY_REACTION,
+    rig_security_multiplier,
+)
 from eve_trader.production.engine import (
     _activity_mods, _material_qty, _structural_material_closure, _tech_ii_mods, _total_missing, classify_activity,
     compare_alchemy_profitability, find_alchemy_alternative,
 )
-from eve_trader.production.models import AlchemyComparison, CharacterSlotRow, InventionResult
+from eve_trader.production.models import AlchemyComparison, AssetPlanJob, CharacterSlotRow, InventionResult
 
 from . import pg_helpers
 from .pg_helpers import _apply_phase1_schema, tenant, tenant_pair  # noqa: F401
@@ -2632,54 +2635,256 @@ def test_free_slots_by_category_excludes_flagged_characters(monkeypatch):
     assert totals == {"Reactions": 3}  # Bob's 5 free slots excluded entirely
 
 
-def test_allocate_slots_by_coverage_fills_lowest_coverage_first():
-    # User request 2026-09-22: the job with the least of itself already on
-    # hand claims its entire cap before the next one gets anything - not a
-    # proportional split across all three.
-    result = engine._allocate_slots_by_coverage([(1, 10, 0.5), (2, 20, 0.1), (3, 70, 0.9)], available=10)
+def test_allocate_slots_by_priority_fills_lowest_coverage_first_when_unlock_ties():
+    # User request 2026-09-22 (coverage priority): with every unlock_time_seconds
+    # tied at 0.0, this degenerates to pure coverage ordering - the job with
+    # the least of itself already on hand claims its entire cap before the
+    # next one gets anything, not a proportional split across all three.
+    result = engine._allocate_slots_by_priority(
+        [(1, 10, 0.0, 0.5), (2, 20, 0.0, 0.1), (3, 70, 0.0, 0.9)], available=10)
 
     assert result == {1: 0, 2: 10, 3: 0}  # item 2 (lowest coverage) alone takes the whole pool
 
 
-def test_allocate_slots_by_coverage_moves_to_next_job_once_a_cap_is_filled():
-    # Lowest-coverage job (2) is fully satisfied by its own cap (3), leaving
-    # 7 slots for the next-lowest (1, cap 10, only gets 7), and nothing left
-    # for the highest-coverage job (3).
-    result = engine._allocate_slots_by_coverage([(1, 10, 0.5), (2, 3, 0.1), (3, 5, 0.9)], available=10)
+def test_allocate_slots_by_priority_favors_higher_unlock_time_over_lower_coverage():
+    # User request 2026-09-22 (unlock priority): item 1 has by far the worse
+    # coverage (0.9), but item 2 unlocks far more blocked job time elsewhere
+    # (500s vs 10s) - unlock_time_seconds wins, coverage never gets consulted
+    # since the two aren't tied on it.
+    result = engine._allocate_slots_by_priority(
+        [(1, 10, 10.0, 0.1), (2, 10, 500.0, 0.9)], available=10)
+
+    assert result == {1: 0, 2: 10}
+
+
+def test_allocate_slots_by_priority_moves_to_next_job_once_a_cap_is_filled():
+    # Highest-priority job (2, tied unlock_time_seconds but lowest coverage)
+    # is fully satisfied by its own cap (3), leaving 7 slots for the next
+    # (1, cap 10, only gets 7), and nothing left for the lowest-priority job
+    # (3).
+    result = engine._allocate_slots_by_priority(
+        [(1, 10, 0.0, 0.5), (2, 3, 0.0, 0.1), (3, 5, 0.0, 0.9)], available=10)
 
     assert result == {1: 7, 2: 3, 3: 0}
     assert sum(result.values()) == 10
 
 
-def test_allocate_slots_by_coverage_never_exceeds_a_jobs_own_need():
+def test_allocate_slots_by_priority_never_exceeds_a_jobs_own_need():
     # A huge pool (100) against small caps (2+3+5=10 total) must still cap
     # at each job's own need, not force-allocate the full pool regardless -
-    # same guarantee the old proportional allocator gave.
-    result = engine._allocate_slots_by_coverage([(1, 2, 0.1), (2, 3, 0.2), (3, 5, 0.3)], available=100)
+    # same guarantee the earlier allocator versions gave.
+    result = engine._allocate_slots_by_priority(
+        [(1, 2, 0.0, 0.1), (2, 3, 0.0, 0.2), (3, 5, 0.0, 0.3)], available=100)
 
     assert result == {1: 2, 2: 3, 3: 5}  # every job's own need is covered; nothing wasted trying to exceed it
 
 
-def test_allocate_slots_by_coverage_empty_or_zero_pool():
-    assert engine._allocate_slots_by_coverage([], available=10) == {}
-    assert engine._allocate_slots_by_coverage([(1, 5, 0.0)], available=0) == {1: 0}
+def test_allocate_slots_by_priority_empty_or_zero_pool():
+    assert engine._allocate_slots_by_priority([], available=10) == {}
+    assert engine._allocate_slots_by_priority([(1, 5, 0.0, 0.0)], available=0) == {1: 0}
 
 
-def test_allocate_slots_by_coverage_none_coverage_sorts_last():
+def test_allocate_slots_by_priority_none_coverage_sorts_last_within_a_tie():
     # None (shouldn't happen for a real job - see AssetPlanJob.stock_coverage's
     # docstring) is treated as least urgent, not as if it were 0.0 - it must
-    # not jump ahead of jobs with a real, known coverage value.
-    result = engine._allocate_slots_by_coverage([(1, 5, None), (2, 3, 0.9)], available=5)
+    # not jump ahead of jobs with a real, known coverage value, when both are
+    # tied on unlock_time_seconds.
+    result = engine._allocate_slots_by_priority([(1, 5, 0.0, None), (2, 3, 0.0, 0.9)], available=5)
 
     assert result == {1: 2, 2: 3}  # item 2 (known, however high) still claims first
 
 
-def test_allocate_slots_by_coverage_ties_preserve_input_order():
-    # Equal coverage falls back to the order claims were given in (stable
-    # sort) - deterministic, not sorted by type_id or claim size.
-    result = engine._allocate_slots_by_coverage([(1, 5, 0.5), (2, 5, 0.5)], available=7)
+def test_allocate_slots_by_priority_ties_preserve_input_order():
+    # Equal unlock_time_seconds and equal coverage falls back to the order
+    # claims were given in (stable sort) - deterministic, not sorted by
+    # type_id or claim size.
+    result = engine._allocate_slots_by_priority([(1, 5, 0.0, 0.5), (2, 5, 0.0, 0.5)], available=7)
 
     assert result == {1: 5, 2: 2}
+
+
+def _make_asset_plan_job(monkeypatch, type_id, job_runs, runs_ready_now, job_time_seconds, blocker_type_ids,
+                          categories):
+    """Minimal AssetPlanJob for _unlock_time_by_type unit tests - blockers
+    are built from bare type_ids (needed/covered values don't matter to
+    _unlock_time_by_type, only which materials are still short and their
+    own job_category). `categories` maps type_id -> job_category() return
+    value (None = not buildable, dropped before grouping)."""
+    from eve_trader.production.models import AssetPlanBlocker
+    monkeypatch.setattr(engine, "job_category", lambda tid: categories.get(tid))
+    return AssetPlanJob(
+        type_id=type_id, type_name=f"Item{type_id}", blueprint_type_id=type_id, activity="Reaction",
+        quantity=job_runs, job_runs=job_runs, runs_ready_now=runs_ready_now, job_time_seconds=job_time_seconds,
+        unit_build_cost=None,
+        blockers=[AssetPlanBlocker(type_id=b, type_name=f"Item{b}", needed=1.0, covered=0.0) for b in blocker_type_ids],
+    )
+
+
+def test_unlock_time_by_type_credits_sole_same_category_blocker(monkeypatch):
+    # Parent P (job_runs=10, runs_ready_now=4, job_time_seconds=1000) has one
+    # blocker (material 1, category "Reactions"). Blocked runs = 6, so
+    # material 1 should be credited 1000 * 6/10 = 600.0 seconds.
+    parent = _make_asset_plan_job(
+        monkeypatch, type_id=99, job_runs=10, runs_ready_now=4, job_time_seconds=1000.0,
+        blocker_type_ids=[1], categories={1: "Reactions"},
+    )
+    result = engine._unlock_time_by_type({99: parent})
+
+    assert result == {1: pytest.approx(600.0)}
+
+
+def test_unlock_time_by_type_withholds_credit_with_two_same_category_blockers(monkeypatch):
+    # Parent has two still-short "Reactions"-category blockers (1 and 2) -
+    # neither is the *sole* remaining one in its category, so neither earns
+    # credit yet (user request 2026-09-22: "mehrere reaction blocker werden
+    # beruecksichtigt" - only a lone same-category blocker counts).
+    parent = _make_asset_plan_job(
+        monkeypatch, type_id=99, job_runs=10, runs_ready_now=0, job_time_seconds=1000.0,
+        blocker_type_ids=[1, 2], categories={1: "Reactions", 2: "Reactions"},
+    )
+    result = engine._unlock_time_by_type({99: parent})
+
+    assert result == {}
+
+
+def test_unlock_time_by_type_ignores_non_buildable_blockers(monkeypatch):
+    # Parent has a "Reactions" blocker (1) and a raw-buy material blocker
+    # (9, job_category None - nothing with a blueprint at all). The raw
+    # material is dropped before grouping, leaving material 1 as the sole
+    # remaining *buildable* blocker in its category - it still earns credit,
+    # and the raw material is never credited (job_category None entirely
+    # excluded from consideration - user-confirmed 2026-09-22).
+    parent = _make_asset_plan_job(
+        monkeypatch, type_id=99, job_runs=10, runs_ready_now=0, job_time_seconds=1000.0,
+        blocker_type_ids=[1, 9], categories={1: "Reactions", 9: None},
+    )
+    result = engine._unlock_time_by_type({99: parent})
+
+    assert result == {1: pytest.approx(1000.0)}
+
+
+def test_unlock_time_by_type_allows_cross_category_unlock(monkeypatch):
+    # The blocking material's category (Reactions) need not match the
+    # parent's own category (Advanced Components) - this is the motivating
+    # "Reactions for Components" example. Parent has exactly one
+    # Reactions-category blocker (1), so it's credited regardless of the
+    # parent's own, unrelated category.
+    from eve_trader.production.models import AssetPlanBlocker
+    monkeypatch.setattr(engine, "job_category", lambda tid: {1: "Reactions"}.get(tid))
+    parent = AssetPlanJob(
+        type_id=50, type_name="ComponentA", blueprint_type_id=50, activity="Manufacturing",
+        job_category="Advanced Components", quantity=10, job_runs=10, runs_ready_now=0, job_time_seconds=1000.0,
+        unit_build_cost=None,
+        blockers=[AssetPlanBlocker(type_id=1, type_name="Item1", needed=1.0, covered=0.0)],
+    )
+    result = engine._unlock_time_by_type({50: parent})
+
+    assert result == {1: pytest.approx(1000.0)}
+
+
+def test_unlock_time_by_type_sums_credit_across_multiple_parents(monkeypatch):
+    # One job (material 1) is the sole same-category blocker for two
+    # different parents - credit accumulates rather than being overwritten.
+    parent_a = _make_asset_plan_job(
+        monkeypatch, type_id=91, job_runs=10, runs_ready_now=0, job_time_seconds=1000.0,
+        blocker_type_ids=[1], categories={1: "Reactions"},
+    )
+    parent_b = _make_asset_plan_job(
+        monkeypatch, type_id=92, job_runs=4, runs_ready_now=0, job_time_seconds=400.0,
+        blocker_type_ids=[1], categories={1: "Reactions"},
+    )
+    result = engine._unlock_time_by_type({91: parent_a, 92: parent_b})
+
+    assert result == {1: pytest.approx(1400.0)}
+
+
+def test_unlock_time_by_type_no_blockers_or_no_blocked_runs_credits_nothing(monkeypatch):
+    monkeypatch.setattr(engine, "job_category", lambda tid: "Reactions")
+    fully_ready = _make_asset_plan_job(
+        monkeypatch, type_id=93, job_runs=10, runs_ready_now=10, job_time_seconds=1000.0,
+        blocker_type_ids=[1], categories={1: "Reactions"},
+    )
+    no_blockers = _make_asset_plan_job(
+        monkeypatch, type_id=94, job_runs=10, runs_ready_now=0, job_time_seconds=1000.0,
+        blocker_type_ids=[], categories={},
+    )
+    result = engine._unlock_time_by_type({93: fully_ready, 94: no_blockers})
+
+    assert result == {}
+
+
+@pg_helpers.postgres_required()
+def test_plan_asset_optimized_slot_priority_favors_unlock_time_over_coverage(monkeypatch, tenant):
+    # User request 2026-09-22: a Reaction that's the sole thing still
+    # blocking a Component job should outrank a better-stocked Reaction that
+    # unlocks nothing, even though the unblocking Reaction's own coverage
+    # (0.9) is far better than the other's (0.0) - unlock_time_seconds beats
+    # coverage, not the other way around. This is the end-to-end version of
+    # the motivating "Reactions for Components" example, built through the
+    # real dependency-tree expansion rather than hand-built AssetPlanJobs.
+    #
+    # ComponentA (stock target, backup=5, Advanced Components) needs 10
+    # units of ReactionX per run - 50 units total for 5 runs. ReactionX has
+    # 45 "incoming" units (_current_stock, informational coverage = 0.9) but
+    # 0 physically on hand right now (_stock_on_hand), so ComponentA is
+    # still fully blocked on it today (runs_ready_now=0) - a real, common
+    # scenario (stock counted as incoming from an already-running job isn't
+    # available to click "start" with yet). ReactionY is an unrelated stock
+    # target (backup=20, nothing on hand - coverage 0.0) that nothing else
+    # depends on.
+    bp_by_id = {10: (1000, ACTIVITY_MANUFACTURING, 1), 1: (101, ACTIVITY_REACTION, 1), 2: (102, ACTIVITY_REACTION, 1)}
+    classify_by_id = {10: ("Tech I", bp_by_id[10]), 1: ("Reaction", bp_by_id[1]), 2: ("Reaction", bp_by_id[2])}
+    materials_by_bp = {(1000, ACTIVITY_MANUFACTURING): [(1, 10.0)]}
+    current_stock_by_id = {10: 0.0, 1: 45.0, 2: 0.0}
+    stock_on_hand_by_id = {1: 0.0}
+    names = {10: "ComponentA", 1: "ReactionX", 2: "ReactionY"}
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: classify_by_id[type_id])
+    monkeypatch.setattr(
+        storage, "get_blueprint_materials",
+        lambda blueprint_id, activity_id: materials_by_bp.get((blueprint_id, activity_id), []),
+    )
+    monkeypatch.setattr(engine, "_activity_mods", lambda *a, **k: (1.0, 1.0, 0.0))
+    monkeypatch.setattr(engine, "_buy_or_build_decision", lambda *a, **k: "Build")
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: None)
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, names[type_id], 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "get_blueprint_time", lambda blueprint_id, activity_id: 100.0)
+    monkeypatch.setattr(engine, "_current_stock", lambda type_id, *a, **k: current_stock_by_id[type_id])
+    monkeypatch.setattr(engine, "_stock_on_hand", lambda type_id, *a, **k: stock_on_hand_by_id.get(type_id, 0.0))
+    monkeypatch.setattr(engine, "job_category", lambda type_id: {
+        10: "Advanced Components", 1: "Reactions", 2: "Reactions",
+    }.get(type_id))
+    monkeypatch.setattr(engine, "character_slot_overview", lambda: [
+        CharacterSlotRow(character_name="Alice", job_type="Reactions", total_slots=10, used_slots=0, free_slots=10),
+        CharacterSlotRow(character_name="Alice", job_type="Manufacturing", total_slots=10, used_slots=0, free_slots=10),
+    ])
+
+    stock_targets = [(10, "ComponentA", 5, 0, 0), (2, "ReactionY", 20, 0, 0)]
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_plan_context(stock_targets))
+
+    cfg = ProductionConfig(component_overbuild=0.0)
+    result = engine.plan_asset_optimized(cfg)
+
+    jobs_by_id = {job.type_id: job for job in result["jobs"]}
+    component = jobs_by_id[10]
+    assert component.job_runs == 5
+    assert component.runs_ready_now == 0  # fully blocked on ReactionX right now
+    assert [b.type_id for b in component.blockers] == [1]
+
+    reaction_x = jobs_by_id[1]
+    assert reaction_x.job_runs == 5   # shortfall = 50 - 45 = 5 units -> 5 runs
+    assert reaction_x.runs_ready_now == 5  # its own recipe has no materials - fully ready
+    assert reaction_x.stock_coverage == pytest.approx(0.9)
+    assert reaction_x.unlock_time_seconds == pytest.approx(500.0)  # ComponentA's own blocked job time
+
+    reaction_y = jobs_by_id[2]
+    assert reaction_y.stock_coverage == pytest.approx(0.0)
+    assert reaction_y.unlock_time_seconds == pytest.approx(0.0)
+
+    # ReactionX wins the pool despite far worse... no, far *better* coverage
+    # (0.9 vs 0.0) - unlock_time_seconds is consulted first and isn't tied.
+    assert reaction_x.recommended_slots == 5  # its own cap (runs_ready_now)
+    assert reaction_y.recommended_slots == 5  # remaining pool (10 - 5)
 
 
 @pg_helpers.postgres_required()
