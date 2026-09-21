@@ -155,6 +155,22 @@ def _cached_corporation_id(client, character_id: int) -> Optional[int]:
     return int(corp_id) if corp_id else None
 
 
+def _cached_corporation_name(client, corp_id: Optional[int]) -> Optional[str]:
+    """Best-effort corporation name for `corp_id` via the cached, public,
+    unauthenticated corporation_public_info - mirrors _cached_corporation_id
+    above (never raises, None on any failure/missing corp_id/missing field;
+    the Characters page falls back to displaying the raw ID when this is
+    None)."""
+    if not corp_id:
+        return None
+    try:
+        info = client.corporation_public_info(corp_id)
+    except Exception:  # noqa: BLE001 - best-effort; a page load must not 500 on one corp's lookup failing
+        return None
+    name = info.get("name") if isinstance(info, dict) else None
+    return str(name) if name else None
+
+
 def do_list_token_characters() -> list[dict]:
     from ..esi_client import ESIClient
 
@@ -172,6 +188,7 @@ def do_list_token_characters() -> list[dict]:
             slot["character_name"] = rec.character_name
     out = []
     for cid, slot in sorted(by_id.items()):
+        corp_id = _cached_corporation_id(client, cid)
         out.append({
             "character_id": cid,
             "character_name": slot["character_name"],
@@ -181,7 +198,12 @@ def do_list_token_characters() -> list[dict]:
             # Known gap 2's "access via" column - the corporation this
             # character belongs to, cached (ESIClient.character_public_info),
             # public data, best-effort (None if the lookup fails).
-            "corporation_id": _cached_corporation_id(client, cid),
+            "corporation_id": corp_id,
+            # Resolved display name for corporation_id above (also cached,
+            # public, best-effort) - the Characters page used to show the
+            # raw corporation_id with no name at all (confirmed real gap
+            # 2026-09-21).
+            "corporation_name": _cached_corporation_name(client, corp_id),
         })
     return out
 

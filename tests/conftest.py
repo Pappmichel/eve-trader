@@ -61,8 +61,10 @@ def _reset_character_public_info_cache():
     tests that never call character_public_info at all - it's a plain
     dict.clear() under a lock, no I/O, not a forced real connection."""
     ESIClient.clear_character_public_info_cache()
+    ESIClient.clear_corporation_public_info_cache()
     yield
     ESIClient.clear_character_public_info_cache()
+    ESIClient.clear_corporation_public_info_cache()
 
 # Note on storage.py's @lru_cache'd SDE-lookup functions (get_sde_type,
 # get_system_security, ...): before the multi-tenant cutover, `db_path` was

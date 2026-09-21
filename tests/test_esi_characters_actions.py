@@ -125,6 +125,42 @@ def test_list_token_characters_corporation_id_is_none_on_lookup_failure(tenant, 
     assert rows[0]["corporation_id"] is None
 
 
+def test_list_token_characters_includes_corporation_name(tenant, monkeypatch):
+    from eve_trader.esi_client import ESIClient
+    monkeypatch.setattr(ESIClient, "character_public_info", lambda self, character_id: {"corporation_id": 9001})
+    monkeypatch.setattr(ESIClient, "corporation_public_info", lambda self, corporation_id: {"name": "Test Corp"})
+    _save_token(ALICE, f"esi:{ALICE}", ASSETS_SCOPE)
+
+    rows = esi_actions.do_list_token_characters()
+
+    assert rows[0]["corporation_name"] == "Test Corp"
+
+
+def test_list_token_characters_corporation_name_is_none_on_lookup_failure(tenant, monkeypatch):
+    from eve_trader.esi_client import ESIClient
+    monkeypatch.setattr(ESIClient, "character_public_info", lambda self, character_id: {"corporation_id": 9001})
+
+    def _boom(self, corporation_id):
+        raise Exception("ESI unreachable")  # noqa: BLE001 - simulating an arbitrary live-ESI failure
+    monkeypatch.setattr(ESIClient, "corporation_public_info", _boom)
+    _save_token(ALICE, f"esi:{ALICE}", ASSETS_SCOPE)
+
+    rows = esi_actions.do_list_token_characters()
+
+    assert rows[0]["corporation_name"] is None
+
+
+def test_list_token_characters_corporation_name_is_none_without_corporation_id(tenant, monkeypatch):
+    from eve_trader.esi_client import ESIClient
+    monkeypatch.setattr(ESIClient, "character_public_info", lambda self, character_id: {})
+    _save_token(ALICE, f"esi:{ALICE}", ASSETS_SCOPE)
+
+    rows = esi_actions.do_list_token_characters()
+
+    assert rows[0]["corporation_id"] is None
+    assert rows[0]["corporation_name"] is None
+
+
 BOB = 1002
 CORP = 9001
 

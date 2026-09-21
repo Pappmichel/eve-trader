@@ -61,6 +61,7 @@ describe('Characters page', () => {
         character_has_token_pool: true,
         roles: ['producer:1', 'doctrine-assets:1'],
         corporation_id: 99,
+        corporation_name: 'Test Corp',
       },
     ])
     vi.mocked(charactersApi.sharing).mockResolvedValue([
@@ -102,7 +103,8 @@ describe('Characters page', () => {
     expect(screen.getByText('re-auth needed')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'assets 2/4' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'wallet re-auth' })).toBeInTheDocument()
-    expect(screen.getByText('Corporation 99')).toBeInTheDocument()
+    expect(screen.getByText('Test Corp')).toBeInTheDocument()
+    expect(screen.queryByText('Corporation 99')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Check corp roles' })).toBeInTheDocument()
     expect(screen.getByText('Structure name resolution')).toBeInTheDocument()
     expect(screen.getByText('Structure market book')).toBeInTheDocument()
@@ -132,6 +134,7 @@ describe('Characters page', () => {
       {
         character_id: 1, character_name: 'Alice', write_role: 'esi:1',
         character_has_token_pool: false, roles: ['esi:1'], corporation_id: 99,
+        corporation_name: null,
       },
     ])
     vi.mocked(charactersApi.sharing).mockResolvedValue([

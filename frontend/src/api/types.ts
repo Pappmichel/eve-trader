@@ -647,6 +647,8 @@ export interface EsiTokenCharacter {
   roles: string[]
   /** Known gap 2 (docs/ESI_ACCESS_PLAN.md) - null if the live lookup failed. */
   corporation_id: number | null
+  /** Resolved display name for corporation_id above - null if the live lookup failed. */
+  corporation_name: string | null
 }
 
 /** Known gap 2's role warning - POST /api/characters/corporation-roles/check. */

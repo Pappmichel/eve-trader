@@ -299,6 +299,19 @@ function CorporationsSection({
     return map
   }, [owners])
 
+  // Resolved corp name (best-effort, ESIClient.corporation_public_info) -
+  // falls back to the raw ID below when the lookup failed for every owner
+  // sharing that corp (rare: a public endpoint, only fails on ESI outage).
+  const corpNameById = useMemo(() => {
+    const map = new Map<number, string>()
+    for (const owner of owners) {
+      if (owner.corporation_id != null && owner.corporation_name) {
+        map.set(owner.corporation_id, owner.corporation_name)
+      }
+    }
+    return map
+  }, [owners])
+
   return (
     <div>
       <Group justify="space-between" align="flex-start" mb="xs" wrap="nowrap">
@@ -346,7 +359,7 @@ function CorporationsSection({
               return (
               <Table.Tr key={corpId}>
                 <Table.Td>
-                  <Text size="sm" fw={600}>Corporation {corpId}</Text>
+                  <Text size="sm" fw={600}>{corpNameById.get(corpId) ?? `Corporation ${corpId}`}</Text>
                 </Table.Td>
                 {GROUP_1_KINDS.map((k) => (
                   <Table.Td key={k.key}>

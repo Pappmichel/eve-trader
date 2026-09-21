@@ -256,6 +256,15 @@ class ESIClient:
     _character_public_info_cache_at: dict[int, float] = {}
     _character_public_info_locks: dict[int, threading.Lock] = {}
 
+    # Same shape/TTL as character_public_info above, for corporation_public_
+    # info - rendered on every Characters page load too (the Corporations
+    # table's name column), and a corp's own name changes about as rarely
+    # as a character's corp membership does.
+    _CORPORATION_PUBLIC_INFO_CACHE_TTL = 3600  # seconds
+    _corporation_public_info_cache: dict[int, dict] = {}
+    _corporation_public_info_cache_at: dict[int, float] = {}
+    _corporation_public_info_locks: dict[int, threading.Lock] = {}
+
     def __init__(self, cfg: TradingConfig = TRADING_CONFIG, tokens: Optional[TokenManager] = None):
         self.cfg = cfg
         self.tokens = tokens or TokenManager()
@@ -293,6 +302,15 @@ class ESIClient:
         with cls._order_book_locks_guard:
             cls._character_public_info_cache.clear()
             cls._character_public_info_cache_at.clear()
+
+    @classmethod
+    def clear_corporation_public_info_cache(cls) -> None:
+        """Forces the next corporation_public_info call (for every
+        corporation_id - class-wide) to re-fetch - exists for tests, same
+        reason clear_character_public_info_cache does."""
+        with cls._order_book_locks_guard:
+            cls._corporation_public_info_cache.clear()
+            cls._corporation_public_info_cache_at.clear()
 
     @classmethod
     def _lock_for_key(cls, locks: dict, key) -> threading.Lock:
@@ -860,8 +878,26 @@ class ESIClient:
             return info
 
     def corporation_public_info(self, corporation_id: int) -> dict:
-        """Public endpoint, no auth - used to resolve a corp's name for display."""
-        return self._get(f"/corporations/{corporation_id}/", params={"datasource": "tranquility"})
+        """Public endpoint, no auth - used to resolve a corp's name for
+        display (the Characters page's Corporations table used to show the
+        raw corporation_id instead - confirmed real gap 2026-09-21).
+
+        Cached class-wide for _CORPORATION_PUBLIC_INFO_CACHE_TTL seconds,
+        keyed by corporation_id - same shape as character_public_info
+        above, for the same reason (rendered on every Characters page load;
+        also already used by orchestrator.py's corp-membership pass and
+        do_resolve_structure_name's corp-name lookup, both of which now
+        benefit too)."""
+        key = corporation_id
+        with self._lock_for_key(self._corporation_public_info_locks, key):
+            cached_at = self._corporation_public_info_cache_at.get(key, 0.0)
+            if (key in self._corporation_public_info_cache
+                    and (time.time() - cached_at) < self._CORPORATION_PUBLIC_INFO_CACHE_TTL):
+                return self._corporation_public_info_cache[key]
+            info = self._get(f"/corporations/{corporation_id}/", params={"datasource": "tranquility"})
+            self._corporation_public_info_cache[key] = info
+            self._corporation_public_info_cache_at[key] = time.time()
+            return info
 
     def character_roles(self, character_id: int, auth_role: str) -> dict:
         """Requires esi-characters.read_corporation_roles.v1 (the
