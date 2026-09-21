@@ -179,8 +179,13 @@ def test_get_response_converts_dead_refresh_token_to_esierror(monkeypatch):
     monkeypatch.setattr(requests.Session, "get", fake_get)
     monkeypatch.setattr(requests, "post", fake_post)
 
+    tm = _expired_token_manager()
+    # get_token re-calls _load() after the refresh lock; skip storage so
+    # this file stays Postgres-free while still exercising real _refresh.
+    monkeypatch.setattr(tm, "_load", lambda: None)
+
     try:
-        ESIClient(tokens=_expired_token_manager())._get_response(
+        ESIClient(tokens=tm)._get_response(
             "/characters/1/assets/", auth_role="producer:1", retries=3,
         )
         assert False, "expected ESIError"
