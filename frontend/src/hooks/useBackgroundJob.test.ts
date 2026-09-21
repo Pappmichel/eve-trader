@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { renderHook, waitFor } from '@testing-library/react'
 import { notifications } from '@mantine/notifications'
-import type { ReactNode } from 'react'
+import { createElement, type ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { PipelineRunStatus } from '../api/types'
@@ -71,7 +71,7 @@ describe('formatDegradedJobMessage', () => {
 
 function makeWrapper(queryClient: QueryClient) {
   return function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    return createElement(QueryClientProvider, { client: queryClient }, children)
   }
 }
 
