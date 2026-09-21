@@ -182,26 +182,42 @@ def test_station_trading_remove_rejects_producer(monkeypatch):
     assert called == []
 
 
-def test_wallet_actions_reject_other_tool_role_without_lookup(monkeypatch):
+def test_wallet_actions_reject_syntactically_invalid_role(monkeypatch):
+    """Syntax rejection (F-05) still applies before any storage/sharing
+    lookup - unlike a real prefix (producer/doctrine/...), which is now
+    accepted pending a wallet-sharing check (see the esi:/producer: tests
+    below), a malformed key is never valid input at all."""
     looked = []
     monkeypatch.setattr(
         "eve_trader.actions.TokenManager.get_record",
         lambda self, role: looked.append(role) or None,
     )
     with pytest.raises(ActionError, match="Invalid role_key"):
-        do_wallet_transactions("producer:1")
+        do_wallet_transactions("../producer:1")
     with pytest.raises(ActionError, match="Invalid role_key"):
-        do_wallet_balance("doctrine:1")
+        do_wallet_balance("not-a-real-prefix:1")
     assert looked == []
 
 
-# --------------------------------------------------------------- esi: wallet reads
-# Confirmed real bug 2026-09-21: an esi:<id> character (added via the
-# Characters page) correctly appears in list_shared_trading_characters's
-# sharing-based Transactions-tab picker, but do_wallet_transactions/
-# do_wallet_balance still gated on TOOL_ROLE_PREFIXES["trading"]
-# (buyer/seller only), so selecting it always raised "Invalid role_key" -
-# no transactions ever loaded for a shared, re-authed seller.
+# --------------------------------------------------------------- wallet reads for
+# --------------------------------------------------- any sharing-qualified prefix
+# Confirmed real bug 2026-09-21, in two stages:
+#
+# 1. An esi:<id> character (added via the Characters page) correctly
+#    appears in list_shared_trading_characters's sharing-based
+#    Transactions-tab picker, but do_wallet_transactions/do_wallet_balance
+#    still gated on TOOL_ROLE_PREFIXES["trading"] (buyer/seller only), so
+#    selecting it always raised "Invalid role_key".
+#
+# 2. Fixing just "esi:" wasn't enough, confirmed live the same day with a
+#    real character: esi_data.selector.select_auth_role (used by
+#    list_shared_trading_characters) picks a token by scope, not by which
+#    tool originally created it - a character added via Production's
+#    login (producer:<id>) that later shares Wallet with Trading from the
+#    Characters page still resolves to its producer: key here, which the
+#    esi:-only fix still rejected. See _require_trading_wallet_role_key's
+#    own docstring for the general fix (any valid prefix, gated on a
+#    "wallet" sharing row).
 
 
 @pg_helpers.postgres_required()
@@ -250,3 +266,34 @@ def test_wallet_transactions_esi_key_accepted_once_wallet_shared(tenant, _apply_
         lambda self, character_id, auth_role: 123.0,
     )
     assert do_wallet_balance("esi:1001") == {"role_key": "esi:1001", "balance": 123.0}
+
+
+@pg_helpers.postgres_required()
+def test_wallet_transactions_producer_key_accepted_once_wallet_shared(tenant, _apply_esi_access_schema, monkeypatch):  # noqa: F811
+    """The exact real-world case confirmed 2026-09-21: a character added
+    via Production's login (producer:<id>, never re-authed through the
+    Characters page) that later shares Wallet with Trading - resolves to
+    its producer: key in list_shared_trading_characters (select_auth_role
+    picks by scope, not by prefix), so the wallet reads must accept it
+    too, not just buyer:/seller:/esi:."""
+    from dataclasses import asdict
+
+    from eve_trader import storage
+    from eve_trader.auth import TokenRecord
+
+    rec = TokenRecord(
+        role="producer:1560510246", character_id=1560510246, character_name="pappmichl",
+        access_token="a", refresh_token="r", expires_at=9999999999.0,
+        scopes="esi-wallet.read_character_wallet.v1 esi-assets.read_assets.v1",
+    )
+    storage.save_tenant_token("producer:1560510246", asdict(rec))
+
+    with pytest.raises(ActionError, match="has not shared Wallet"):
+        do_wallet_transactions("producer:1560510246")
+
+    storage.upsert_esi_sharing("character", 1560510246, "wallet", "trading")
+    monkeypatch.setattr(
+        "eve_trader.actions.fetch_recent_transactions",
+        lambda character_id, auth_role, client, lookback_days: [],
+    )
+    assert do_wallet_transactions("producer:1560510246") == []

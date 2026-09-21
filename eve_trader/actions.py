@@ -14,8 +14,7 @@ from typing import Optional
 import pandas as pd
 
 from . import candidate_discovery, history_backtest, own_orders, storage
-from .auth import (InvalidRoleKey, TOOL_ROLE_PREFIXES, TokenManager, validate_role_key,
-                    validate_role_key_for_tool)
+from .auth import InvalidRoleKey, TokenManager, validate_role_key, validate_role_key_for_tool
 from .config import (OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, TradingConfig,
                      save_tenant_config_overrides, validate_trading_overrides)
 from .esi_client import ESIClient, ESIError
@@ -52,34 +51,35 @@ def _require_trading_wallet_role_key(role_key: str) -> str:
     (do_wallet_transactions/do_wallet_balance) - deliberately NOT
     `_require_role_key(role_key, "trading")`.
 
-    buyer:/seller: predate the sharing model - that prefix itself was the
-    only way to add a Trading character, so the token's mere existence
-    under it has always been sufficient authorization here (unchanged
-    below). An `esi:<id>` key (added via the Characters page) has no such
-    guarantee - list_shared_trading_characters (this module) already
-    made esi:-keyed characters correctly show up in the Transactions
-    tab's character picker (sharing-based), but selecting one hit this
-    function's old `_require_role_key(role_key, "trading")` call, which
-    only ever accepted `TOOL_ROLE_PREFIXES["trading"]` (buyer/seller) -
-    confirmed real bug 2026-09-21 (a shared, re-authed seller's
-    transactions never loaded). Fixed by accepting `esi:` here too, gated
-    on an explicit "wallet" sharing check (the same one
+    First attempt (2026-09-21) only widened this to accept buyer:/
+    seller:/esi: - still wrong, confirmed live the same day: the role_key
+    that reaches here is whatever list_shared_trading_characters's own
+    esi_data.selector.select_auth_role picked for a *sharing*-qualified
+    character, and that selector deliberately considers every token this
+    character holds regardless of which tool originally created it
+    (esi_data/selector.py's own docstring: "Fetchers pick one token that
+    carries the required scope, never a prefix") - a character added via
+    Production's login keeps its `producer:<id>` key forever even after
+    later sharing Wallet with Trading from the Characters page, and
+    that's the key selected here if it happens to carry the widest
+    scope set. Restricting this function to any fixed prefix allowlist
+    (buyer/seller/esi, or any other subset) will always be one prefix
+    behind whatever `select_auth_role` can actually return.
+
+    So: accept any syntactically valid role_key (`validate_role_key` -
+    the full F-05 domain, all seven prefixes), then gate purely on the
+    "wallet" sharing row for the resolved character_id (the same check
     trade_reconciliation.collect_trading_wallet_streams already applies
-    for reconciliation) since sharing is the only authorization signal an
-    esi: key carries - unlike do_remove_trading_character, which
-    deliberately keeps the buyer:/seller:-only gate (an esi: key may be
-    shared with other tools too and must stay removable only from the
-    Characters page, matching TradingLayout.tsx's disabled "Unshare on
-    Characters" button)."""
+    for reconciliation) - sharing, not prefix, is what actually
+    authorizes a wallet read here. do_remove_trading_character is
+    unaffected by this - it deliberately keeps its own buyer:/seller:-
+    only gate (a token from another tool must stay removable only from
+    the Characters page, matching TradingLayout.tsx's disabled "Unshare
+    on Characters" button for anything outside that pair)."""
     try:
         role_key = validate_role_key(role_key)
     except InvalidRoleKey as e:
         raise ActionError(str(e)) from e
-    prefix = role_key.split(":", 1)[0]
-    if prefix in TOOL_ROLE_PREFIXES["trading"]:
-        return role_key
-    if prefix != "esi":
-        raise ActionError("Invalid role_key.")
     from .esi_data.access import is_shared
     character_id = int(role_key.split(":", 1)[1])
     if not is_shared("wallet", "trading", "character", character_id):
