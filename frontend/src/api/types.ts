@@ -196,7 +196,7 @@ export interface PipelineRunStatus {
   run_id: string | null
   job_name?: string
   tool?: string
-  status: 'idle' | 'running' | 'succeeded' | 'failed'
+  status: 'idle' | 'running' | 'succeeded' | 'failed' | 'degraded'
   started_at?: string | null
   updated_at?: string | null
   finished_at?: string | null

@@ -2,7 +2,7 @@
 import pytest
 
 from eve_trader import storage
-from eve_trader.pipeline_runner import JOB_REFRESH_AND_PRUNE
+from eve_trader.pipeline_runner import JOB_PIPELINE, JOB_REFRESH_AND_PRUNE
 
 from . import pg_helpers
 from .pg_helpers import _apply_phase1_schema, _apply_pipeline_runs_schema, tenant, tenant_pair  # noqa: F401
@@ -65,3 +65,18 @@ def test_latest_pipeline_run_filters_by_tool(tenant, _apply_pipeline_runs_schema
     latest_doctrine = storage.get_latest_pipeline_run(tool="doctrine")
     assert latest_trading["job_name"] == JOB_REFRESH_AND_PRUNE
     assert latest_doctrine["job_name"] == "sync_contracts"
+
+
+def test_finish_pipeline_run_accepts_degraded(tenant, _apply_pipeline_runs_schema):
+    """The status CHECK must allow 'degraded' — a hand-applied older
+    constraint would CheckViolation here even if unit tests mocked storage."""
+    run_id = storage.start_pipeline_run(JOB_PIPELINE)
+    storage.finish_pipeline_run(
+        run_id, "degraded",
+        result={"failed_steps": {"refresh_and_prune_candidates": "ESI timeout"}},
+        error="refresh_and_prune_candidates: ESI timeout",
+    )
+    latest = storage.get_latest_pipeline_run(JOB_PIPELINE)
+    assert latest["status"] == "degraded"
+    assert latest["error"] == "refresh_and_prune_candidates: ESI timeout"
+    assert latest["result"]["failed_steps"]["refresh_and_prune_candidates"] == "ESI timeout"

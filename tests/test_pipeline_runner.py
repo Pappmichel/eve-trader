@@ -341,3 +341,77 @@ def test_sde_refresh_worker_forwards_increasing_progress(monkeypatch):
     assert [p["batch"] for p in progresses] == [1, 2]
     assert all(p["phase"] == "run" for p in progresses)
     assert finished == [("succeeded", {"sde_types": 2})]
+
+
+def test_pipeline_worker_marks_degraded_when_one_step_fails(monkeypatch):
+    """Isolated step errors must not look like a full success — that hid
+    a frozen ESI-sync timestamp behind a green Done toast."""
+    from contextlib import contextmanager
+
+    from eve_trader import actions
+
+    monkeypatch.setattr(
+        actions, "do_refresh_and_prune_candidates",
+        lambda safe=True, progress_callback=None: (_ for _ in ()).throw(
+            actions.ActionError("ESI timeout")),
+    )
+    monkeypatch.setattr(
+        actions, "do_reconcile_trades",
+        lambda: {"matched_trades": 2},
+    )
+    finished = []
+    monkeypatch.setattr(
+        storage, "finish_pipeline_run",
+        lambda run_id, status, result=None, error=None: finished.append(
+            (status, result, error)),
+    )
+    monkeypatch.setattr(storage, "update_pipeline_run_progress", lambda *a, **k: None)
+
+    @contextmanager
+    def _enter(tenant_id):
+        yield
+
+    monkeypatch.setattr(pipeline_runner.tenant_scope, "enter_tenant", _enter)
+    pipeline_runner._run_pipeline(_TENANT_ID, "run-p", True, False)
+
+    assert len(finished) == 1
+    status, result, error = finished[0]
+    assert status == "degraded"
+    assert "ESI timeout" in error
+    assert result["refresh_and_prune_candidates"]["error"] == "ESI timeout"
+    assert result["reconcile_trades"] == {"matched_trades": 2}
+    assert result["failed_steps"]["refresh_and_prune_candidates"] == "ESI timeout"
+
+
+def test_pipeline_worker_marks_succeeded_when_every_step_ok(monkeypatch):
+    from contextlib import contextmanager
+
+    from eve_trader import actions
+
+    monkeypatch.setattr(
+        actions, "do_refresh_and_prune_candidates",
+        lambda safe=True, progress_callback=None: {"ok": True},
+    )
+    monkeypatch.setattr(actions, "do_reconcile_trades", lambda: {"matched_trades": 1})
+    finished = []
+    monkeypatch.setattr(
+        storage, "finish_pipeline_run",
+        lambda run_id, status, result=None, error=None: finished.append(
+            (status, result, error)),
+    )
+    monkeypatch.setattr(storage, "update_pipeline_run_progress", lambda *a, **k: None)
+
+    @contextmanager
+    def _enter(tenant_id):
+        yield
+
+    monkeypatch.setattr(pipeline_runner.tenant_scope, "enter_tenant", _enter)
+    pipeline_runner._run_pipeline(_TENANT_ID, "run-ok", True, False)
+
+    assert len(finished) == 1
+    status, result, error = finished[0]
+    assert status == "succeeded"
+    assert error is None
+    assert "failed_steps" not in result
+    assert result["refresh_and_prune_candidates"] == {"ok": True}
+    assert result["reconcile_trades"] == {"matched_trades": 1}

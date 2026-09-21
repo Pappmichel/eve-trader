@@ -1,5 +1,3 @@
-import pytest
-
 from eve_trader import actions
 from eve_trader.esi_client import ESIError
 
@@ -21,6 +19,8 @@ def test_pipeline_step_isolation_survives_esi_error_in_reconcile_trades(monkeypa
 
     assert result["refresh_and_prune_candidates"] == {"ok": True}
     assert "error" in result["reconcile_trades"]
+    assert result["failed_steps"]["reconcile_trades"] == "420 rate limited"
+    assert actions.pipeline_outcome(result) == "degraded"
 
 
 def test_pipeline_step_isolation_survives_action_error_in_reconcile_trades(monkeypatch):
@@ -34,6 +34,61 @@ def test_pipeline_step_isolation_survives_action_error_in_reconcile_trades(monke
 
     assert result["refresh_and_prune_candidates"] == {"ok": True}
     assert "error" in result["reconcile_trades"]
+    assert actions.pipeline_outcome(result) == "degraded"
+
+
+def test_pipeline_refresh_failure_still_runs_reconcile_and_reports_failed_steps(monkeypatch):
+    ran = []
+
+    def boom(safe=True, progress_callback=None):
+        raise actions.ActionError("shortlist ESI failed")
+
+    monkeypatch.setattr(actions, "do_refresh_and_prune_candidates", boom)
+    monkeypatch.setattr(
+        actions, "do_reconcile_trades",
+        lambda: ran.append("reconcile") or {"matched_trades": 0},
+    )
+
+    result = actions.do_pipeline(safe=True)
+
+    assert ran == ["reconcile"]
+    assert result["failed_steps"]["refresh_and_prune_candidates"] == "shortlist ESI failed"
+    assert result["reconcile_trades"] == {"matched_trades": 0}
+    assert actions.pipeline_outcome(result) == "degraded"
+
+
+def test_pipeline_full_success_has_no_failed_steps(monkeypatch):
+    monkeypatch.setattr(
+        actions, "do_refresh_and_prune_candidates",
+        lambda safe=True, progress_callback=None: {"ok": True},
+    )
+    monkeypatch.setattr(actions, "do_reconcile_trades", lambda: {"ok": True})
+
+    result = actions.do_pipeline(safe=True)
+
+    assert "failed_steps" not in result
+    assert result["refresh_and_prune_candidates"] == {"ok": True}
+    assert result["reconcile_trades"] == {"ok": True}
+    assert actions.pipeline_outcome(result) == "succeeded"
+
+
+def test_pipeline_all_attempted_steps_failing_is_failed_outcome(monkeypatch):
+    monkeypatch.setattr(
+        actions, "do_refresh_and_prune_candidates",
+        lambda safe=True, progress_callback=None: (_ for _ in ()).throw(
+            actions.ActionError("refresh down")),
+    )
+    monkeypatch.setattr(
+        actions, "do_reconcile_trades",
+        lambda: (_ for _ in ()).throw(actions.ActionError("reconcile down")),
+    )
+
+    result = actions.do_pipeline(safe=True)
+
+    assert set(result["failed_steps"]) == {
+        "refresh_and_prune_candidates", "reconcile_trades",
+    }
+    assert actions.pipeline_outcome(result) == "failed"
 
 
 def test_do_reconcile_trades_converts_esierror_to_actionerror(monkeypatch):
