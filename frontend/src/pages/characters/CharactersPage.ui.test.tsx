@@ -97,6 +97,9 @@ describe('Characters page', () => {
     expect(screen.getByText(/Derived tables \(realized trades, shortlists, production plans\) are not filtered by it/)).toBeInTheDocument()
     expect((await screen.findAllByText('Alice')).length).toBeGreaterThan(0)
     expect(screen.getByText('token pool')).toBeInTheDocument()
+    // Alice's access preview has wallet added:true (ticked, not yet on any
+    // token) - the row-level badge surfaces that without opening a popover.
+    expect(screen.getByText('re-auth needed')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'assets 2/4' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'wallet re-auth' })).toBeInTheDocument()
     expect(screen.getByText('Corporation 99')).toBeInTheDocument()

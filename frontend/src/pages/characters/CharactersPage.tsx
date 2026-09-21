@@ -192,6 +192,17 @@ function CharactersSection({
                           <Badge size="xs" color="warn" variant="light">token pool</Badge>
                         </Tooltip>
                       )}
+                      {pending.size > 0 && (
+                        <Tooltip
+                          multiline
+                          w={280}
+                          label={`Ticked but not yet on any token, needs Re-authorize: ${
+                            [...pending].map((key) => kindByKey(key)?.label ?? key).join(', ')
+                          }`}
+                        >
+                          <Badge size="xs" color="warn" variant="filled">re-auth needed</Badge>
+                        </Tooltip>
+                      )}
                     </Group>
                   </Table.Td>
                   {CHARACTER_KINDS.map((k) => (
