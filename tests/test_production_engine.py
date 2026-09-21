@@ -2583,11 +2583,11 @@ def test_plan_asset_optimized_recommends_slot_split_for_eligible_categories_only
     # User request 2026-08-15: recommend how many free character job slots to
     # split a job's ready runs across, but only for Reactions/Advanced
     # Components/Capital Components - not Equipment/Ships/etc. Only one
-    # eligible job in the pool here, so the proportional allocator (see the
-    # dedicated fairness test below) degenerates to "give it the whole pool,
-    # capped at its own ready runs" - ItemP (Reactions, 5 ready runs) and
-    # ItemQ (Equipment, 5 ready runs) share the same setup otherwise, so only
-    # ItemP should get a recommendation at all.
+    # eligible job in the pool here, so the coverage-priority allocator (see
+    # the dedicated priority tests below) degenerates to "give it the whole
+    # pool, capped at its own ready runs" - ItemP (Reactions, 5 ready runs)
+    # and ItemQ (Equipment, 5 ready runs) share the same setup otherwise, so
+    # only ItemP should get a recommendation at all.
     bp_by_id = {1: (101, 11, 1), 2: (102, 11, 1)}  # activity_id 11 = Reaction
     monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Reaction", bp_by_id[type_id]))
     monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [])
@@ -2632,65 +2632,73 @@ def test_free_slots_by_category_excludes_flagged_characters(monkeypatch):
     assert totals == {"Reactions": 3}  # Bob's 5 free slots excluded entirely
 
 
-def test_allocate_slots_proportionally_splits_by_relative_size_with_no_remainder():
-    # weight == cap here (no time-vs-run-count distinction being tested).
-    result = engine._allocate_slots_proportionally([(1, 10.0, 10), (2, 20.0, 20), (3, 70.0, 70)], available=10)
+def test_allocate_slots_by_coverage_fills_lowest_coverage_first():
+    # User request 2026-09-22: the job with the least of itself already on
+    # hand claims its entire cap before the next one gets anything - not a
+    # proportional split across all three.
+    result = engine._allocate_slots_by_coverage([(1, 10, 0.5), (2, 20, 0.1), (3, 70, 0.9)], available=10)
 
-    assert result == {1: 1, 2: 2, 3: 7}
+    assert result == {1: 0, 2: 10, 3: 0}  # item 2 (lowest coverage) alone takes the whole pool
+
+
+def test_allocate_slots_by_coverage_moves_to_next_job_once_a_cap_is_filled():
+    # Lowest-coverage job (2) is fully satisfied by its own cap (3), leaving
+    # 7 slots for the next-lowest (1, cap 10, only gets 7), and nothing left
+    # for the highest-coverage job (3).
+    result = engine._allocate_slots_by_coverage([(1, 10, 0.5), (2, 3, 0.1), (3, 5, 0.9)], available=10)
+
+    assert result == {1: 7, 2: 3, 3: 0}
     assert sum(result.values()) == 10
 
 
-def test_allocate_slots_proportionally_distributes_the_rounding_remainder():
-    # 3 equal-sized jobs sharing 10 slots: 10/3 = 3.33 each - floor gives 3
-    # each (9 total), the 1 leftover slot (from rounding down) must still be
-    # handed out, not silently dropped.
-    result = engine._allocate_slots_proportionally([(1, 5.0, 5), (2, 5.0, 5), (3, 5.0, 5)], available=10)
+def test_allocate_slots_by_coverage_never_exceeds_a_jobs_own_need():
+    # A huge pool (100) against small caps (2+3+5=10 total) must still cap
+    # at each job's own need, not force-allocate the full pool regardless -
+    # same guarantee the old proportional allocator gave.
+    result = engine._allocate_slots_by_coverage([(1, 2, 0.1), (2, 3, 0.2), (3, 5, 0.3)], available=100)
 
-    assert sum(result.values()) == 10
-    assert all(v >= 3 for v in result.values())
-    assert sorted(result.values()) == [3, 3, 4]
+    assert result == {1: 2, 2: 3, 3: 5}  # every job's own need is covered; nothing wasted trying to exceed it
 
 
-def test_allocate_slots_proportionally_never_exceeds_a_jobs_own_need():
-    # Real user correction (2026-08-16): the whole point is that the pool
-    # gets split *across* competing jobs - but a job also can't usefully be
-    # handed more slots than it has ready runs to fill them with. A huge
-    # pool (100) against small caps (2+3+5=10 total) must cap at each job's
-    # own need, not force-allocate the full pool regardless.
-    result = engine._allocate_slots_proportionally([(1, 2.0, 2), (2, 3.0, 3), (3, 5.0, 5)], available=100)
-
-    assert result == {1: 2, 2: 3, 3: 5}  # each capped at its own need, nothing wasted trying to exceed it
+def test_allocate_slots_by_coverage_empty_or_zero_pool():
+    assert engine._allocate_slots_by_coverage([], available=10) == {}
+    assert engine._allocate_slots_by_coverage([(1, 5, 0.0)], available=0) == {1: 0}
 
 
-def test_allocate_slots_proportionally_empty_or_zero_pool():
-    assert engine._allocate_slots_proportionally([], available=10) == {}
-    assert engine._allocate_slots_proportionally([(1, 5.0, 5)], available=0) == {1: 0}
+def test_allocate_slots_by_coverage_none_coverage_sorts_last():
+    # None (shouldn't happen for a real job - see AssetPlanJob.stock_coverage's
+    # docstring) is treated as least urgent, not as if it were 0.0 - it must
+    # not jump ahead of jobs with a real, known coverage value.
+    result = engine._allocate_slots_by_coverage([(1, 5, None), (2, 3, 0.9)], available=5)
+
+    assert result == {1: 2, 2: 3}  # item 2 (known, however high) still claims first
 
 
-def test_allocate_slots_proportionally_weights_by_time_not_run_count():
-    # Second real user correction (2026-08-16): weight is time_needed
-    # (runs_ready_now x per-run time), not runs_ready_now alone - a job's
-    # own runs_ready_now is still its *cap* (3rd tuple element), but no
-    # longer also its weight. Job A: 10 ready runs at 100s each (weight
-    # 1000, cap 10). Job B: 90 ready runs at 1s each (weight 90, cap 90).
-    # Under old run-count weighting (10 vs 90) B would dominate (9 vs 1) -
-    # under time weighting (1000 vs 90) A dominates instead, since A's ready
-    # runs need far more total job-time to clear.
-    result = engine._allocate_slots_proportionally([(1, 1000.0, 10), (2, 90.0, 90)], available=10)
+def test_allocate_slots_by_coverage_ties_preserve_input_order():
+    # Equal coverage falls back to the order claims were given in (stable
+    # sort) - deterministic, not sorted by type_id or claim size.
+    result = engine._allocate_slots_by_coverage([(1, 5, 0.5), (2, 5, 0.5)], available=7)
 
-    assert result == {1: 9, 2: 1}
-    assert sum(result.values()) == 10
+    assert result == {1: 5, 2: 2}
 
 
 @pg_helpers.postgres_required()
-def test_plan_asset_optimized_splits_slots_proportionally_across_competing_ready_jobs(monkeypatch, tenant):
-    # Real user correction (2026-08-16): the pool must be split *across*
-    # every ready job sharing it, not each job recommended the pool as if it
-    # were the only one wanting it - three jobs with 10/20/70 ready runs
-    # sharing 10 Reaction slots must split proportionally (1/2/7 - see the
-    # dedicated _allocate_slots_proportionally tests above for the algorithm
-    # itself), summing to the real pool total, not "10" shown three times.
+def test_plan_asset_optimized_slot_priority_favors_lowest_stock_coverage_first(monkeypatch, tenant):
+    # User request 2026-09-22: slots are claimed in stock_coverage order, not
+    # split proportionally across every ready job at once. Three jobs with
+    # 10/20/70 ready runs but distinct coverage - ItemA 0.0 (nothing on
+    # hand), ItemB 0.5, ItemC 0.9 - sharing 15 Reaction slots: ItemA (lowest
+    # coverage) claims its own full need (10) first, the leftover 5 spills
+    # to the next-lowest (ItemB), and ItemC (best stocked) gets nothing this
+    # round even though it has by far the most ready runs.
+    #
+    # Backup targets are scaled up (40/700, not a flat 20/70) so that
+    # current_stock can simultaneously produce the desired coverage
+    # (current/backup) *and* leave the desired missing quantity
+    # (backup - current, what actually drives ready runs) unchanged -
+    # backup=need/(1-coverage), current=coverage*backup.
     bp_by_id = {1: (101, 11, 1), 2: (102, 11, 1), 3: (103, 11, 1)}
+    current_stock_by_id = {1: 0.0, 2: 20.0, 3: 630.0}  # coverage vs backup 10/40/700 -> 0.0/0.5/0.9
     monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Reaction", bp_by_id[type_id]))
     monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [])
     monkeypatch.setattr(engine, "_activity_mods", lambda *a, **k: (1.0, 1.0, 0.0))
@@ -2699,38 +2707,44 @@ def test_plan_asset_optimized_splits_slots_proportionally_across_competing_ready
     monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: None)
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "get_blueprint_time", lambda blueprint_id, activity_id: 100.0)
-    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
-    monkeypatch.setattr(engine, "_stock_on_hand", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_current_stock", lambda type_id, *a, **k: current_stock_by_id[type_id])
+    monkeypatch.setattr(engine, "_stock_on_hand", lambda type_id, *a, **k: current_stock_by_id[type_id])
     monkeypatch.setattr(engine, "job_category", lambda type_id: "Reactions")
     monkeypatch.setattr(engine, "character_slot_overview", lambda: [
-        CharacterSlotRow(character_name="Alice", job_type="Reactions", total_slots=10, used_slots=0, free_slots=10),
+        CharacterSlotRow(character_name="Alice", job_type="Reactions", total_slots=15, used_slots=0, free_slots=15),
     ])
 
-    stock_targets = [(1, "ItemA", 10, 0, 0), (2, "ItemB", 20, 0, 0), (3, "ItemC", 70, 0, 0)]
+    stock_targets = [(1, "ItemA", 10, 0, 0), (2, "ItemB", 40, 0, 0), (3, "ItemC", 700, 0, 0)]
     monkeypatch.setattr(engine, "_PlanContext", _make_fake_plan_context(stock_targets))
 
     cfg = ProductionConfig(component_overbuild=0.0)
     result = engine.plan_asset_optimized(cfg)
 
     jobs_by_id = {job.type_id: job for job in result["jobs"]}
-    assert jobs_by_id[1].recommended_slots == 1
-    assert jobs_by_id[2].recommended_slots == 2
-    assert jobs_by_id[3].recommended_slots == 7
-    total = sum(j.recommended_slots for j in jobs_by_id.values())
-    assert total == 10  # sums to the real pool, not each job claiming all 10 independently
+    assert (jobs_by_id[1].runs_ready_now, jobs_by_id[2].runs_ready_now, jobs_by_id[3].runs_ready_now) == (10, 20, 70)
+    assert (jobs_by_id[1].stock_coverage, jobs_by_id[2].stock_coverage, jobs_by_id[3].stock_coverage) == (0.0, 0.5, 0.9)
+    assert jobs_by_id[1].recommended_slots == 10  # lowest coverage - its full need first
+    assert jobs_by_id[2].recommended_slots == 5   # next-lowest - whatever's left
+    assert jobs_by_id[3].recommended_slots == 0   # best-stocked - nothing this round
+    assert sum(j.recommended_slots for j in jobs_by_id.values()) == 15  # sums to the real pool
 
 
 @pg_helpers.postgres_required()
-def test_plan_asset_optimized_weights_slot_split_by_job_time_not_run_count(monkeypatch, tenant):
-    # Second real user correction (2026-08-16): "es soll ... die benötigte
-    # zeit gewichtet werden. Jobs die mehr jobtime benötigen, sollen mehr
-    # slots bekommen." ItemA has few ready runs (10) but each run takes 100s
-    # (per-run time from get_blueprint_time); ItemB has many ready runs (90)
-    # but each takes only 1s. By raw run count B would dominate (90 vs 10);
-    # by total time needed A dominates instead (1000 vs 90 job-seconds) -
-    # end to end through plan_asset_optimized, not just the allocator unit.
+def test_plan_asset_optimized_slot_priority_ignores_job_time_uses_coverage_only(monkeypatch, tenant):
+    # Confirms the older time-weighted behavior (2026-08-16: "jobs needing
+    # more total job-time should get more slots") is gone, not just
+    # renamed - superseded 2026-09-22. ItemA has few ready runs (10) but
+    # each run takes 100s (far more total job-time, 1000s); ItemB has many
+    # ready runs (90) at 1s each (only 90s total). Under the old algorithm A
+    # would have dominated (9 vs 1 slots) purely on job-time. Here ItemB is
+    # given the lower stock_coverage instead, and claims the entire pool
+    # despite needing far less total job-time - proving time no longer
+    # factors into slot priority at all, only stock_coverage does.
+    # Backup targets scaled up the same way as the test above, so ItemA's
+    # coverage (0.9) doesn't eat into its stated 10 ready runs.
     bp_by_id = {1: (101, 11, 1), 2: (102, 11, 1)}
     time_by_bp = {101: 100.0, 102: 1.0}
+    current_stock_by_id = {1: 90.0, 2: 0.0}  # coverage vs backup 100/90 -> 0.9/0.0
     monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Reaction", bp_by_id[type_id]))
     monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [])
     monkeypatch.setattr(engine, "_activity_mods", lambda *a, **k: (1.0, 1.0, 0.0))
@@ -2739,14 +2753,14 @@ def test_plan_asset_optimized_weights_slot_split_by_job_time_not_run_count(monke
     monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: None)
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "get_blueprint_time", lambda blueprint_id, activity_id: time_by_bp[blueprint_id])
-    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
-    monkeypatch.setattr(engine, "_stock_on_hand", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_current_stock", lambda type_id, *a, **k: current_stock_by_id[type_id])
+    monkeypatch.setattr(engine, "_stock_on_hand", lambda type_id, *a, **k: current_stock_by_id[type_id])
     monkeypatch.setattr(engine, "job_category", lambda type_id: "Reactions")
     monkeypatch.setattr(engine, "character_slot_overview", lambda: [
         CharacterSlotRow(character_name="Alice", job_type="Reactions", total_slots=10, used_slots=0, free_slots=10),
     ])
 
-    stock_targets = [(1, "ItemA", 10, 0, 0), (2, "ItemB", 90, 0, 0)]
+    stock_targets = [(1, "ItemA", 100, 0, 0), (2, "ItemB", 90, 0, 0)]
     monkeypatch.setattr(engine, "_PlanContext", _make_fake_plan_context(stock_targets))
 
     cfg = ProductionConfig(component_overbuild=0.0)
@@ -2755,8 +2769,8 @@ def test_plan_asset_optimized_weights_slot_split_by_job_time_not_run_count(monke
     jobs_by_id = {job.type_id: job for job in result["jobs"]}
     assert jobs_by_id[1].runs_ready_now == 10
     assert jobs_by_id[2].runs_ready_now == 90
-    assert jobs_by_id[1].recommended_slots == 9  # fewer ready runs, but far more total job-time
-    assert jobs_by_id[2].recommended_slots == 1  # more ready runs, but each is nearly instant
+    assert jobs_by_id[1].recommended_slots == 0    # far more total job-time, but better stocked - nothing
+    assert jobs_by_id[2].recommended_slots == 10   # nearly instant runs, but lowest coverage - claims all
     assert sum(j.recommended_slots for j in jobs_by_id.values()) == 10
 
 
@@ -2781,14 +2795,18 @@ def test_slots_needed_for_days_target_non_positive_is_max_parallelism():
 
 
 def _ready_reaction_plan(monkeypatch, stock_targets, free_slots, cfg, time_by_type=None,
-                         job_category_by_id=None):
+                         job_category_by_id=None, current_stock_by_id=None):
     """Minimal plan_asset_optimized setup for slot-recommendation tests:
     every stock target is a fully-ready job (no materials). time_by_type is
     per-type-id blueprint time in seconds (default 100). job_category_by_id
-    defaults every type to Reactions."""
+    defaults every type to Reactions. current_stock_by_id overrides the
+    default 0.0-for-everyone stock (and therefore stock_coverage), keyed by
+    type_id - needed for tests where slot *priority order* matters, not
+    just the pool size."""
     bp_by_id = {tid: (100 + tid, 11, 1) for tid, *_ in stock_targets}
     times = time_by_type or {}
     cats = job_category_by_id or {}
+    stocks = current_stock_by_id or {}
     monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Reaction", bp_by_id[type_id]))
     monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: [])
     monkeypatch.setattr(engine, "_activity_mods", lambda *a, **k: (1.0, 1.0, 0.0))
@@ -2800,8 +2818,8 @@ def _ready_reaction_plan(monkeypatch, stock_targets, free_slots, cfg, time_by_ty
         storage, "get_blueprint_time",
         lambda blueprint_id, activity_id: times.get(blueprint_id - 100, 100.0),
     )
-    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
-    monkeypatch.setattr(engine, "_stock_on_hand", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_current_stock", lambda type_id, *a, **k: stocks.get(type_id, 0.0))
+    monkeypatch.setattr(engine, "_stock_on_hand", lambda type_id, *a, **k: stocks.get(type_id, 0.0))
     monkeypatch.setattr(engine, "job_category", lambda type_id: cats.get(type_id, "Reactions"))
     monkeypatch.setattr(engine, "character_slot_overview", lambda: [
         CharacterSlotRow(character_name="Alice", job_type="Reactions",
@@ -2814,29 +2832,38 @@ def _ready_reaction_plan(monkeypatch, stock_targets, free_slots, cfg, time_by_ty
 
 
 @pg_helpers.postgres_required()
-def test_plan_asset_optimized_days_target_none_matches_time_weighted_split(monkeypatch, tenant):
-    # Scenario 1 / regression guard: asset_plan_slot_days_target=None is the
-    # default and must stay byte-identical to the existing time-weighted
-    # split (the dedicated tests above). Explicit None here, same 10/20/70
-    # ready runs sharing 10 Reaction slots -> 1/2/7.
+def test_plan_asset_optimized_days_target_none_uses_coverage_order_with_uncapped_need(monkeypatch, tenant):
+    # Scenario 1 / regression guard: asset_plan_slot_days_target=None means
+    # each job's own cap is simply its uncapped runs_ready_now - priority
+    # order is still stock_coverage ascending (see the dedicated priority
+    # tests above). ItemA (lowest coverage, 0.0) claims its own full need
+    # (10) from the 10-slot pool before ItemB/ItemC (higher coverage) get a
+    # look-in at all.
+    # Backup targets scaled up (40/700, not a flat 20/70) so coverage and
+    # ready-run count can be set independently - see the dedicated priority
+    # test above for the same reasoning.
     cfg = ProductionConfig(component_overbuild=0.0, asset_plan_slot_days_target=None)
     result = _ready_reaction_plan(
         monkeypatch,
-        [(1, "ItemA", 10, 0, 0), (2, "ItemB", 20, 0, 0), (3, "ItemC", 70, 0, 0)],
+        [(1, "ItemA", 10, 0, 0), (2, "ItemB", 40, 0, 0), (3, "ItemC", 700, 0, 0)],
         free_slots=10, cfg=cfg,
+        current_stock_by_id={1: 0.0, 2: 20.0, 3: 630.0},  # coverage 0.0 / 0.5 / 0.9
     )
     jobs_by_id = {job.type_id: job for job in result["jobs"]}
-    assert jobs_by_id[1].recommended_slots == 1
-    assert jobs_by_id[2].recommended_slots == 2
-    assert jobs_by_id[3].recommended_slots == 7
+    assert (jobs_by_id[1].runs_ready_now, jobs_by_id[2].runs_ready_now, jobs_by_id[3].runs_ready_now) == (10, 20, 70)
+    assert jobs_by_id[1].recommended_slots == 10
+    assert jobs_by_id[2].recommended_slots == 0
+    assert jobs_by_id[3].recommended_slots == 0
     assert sum(j.recommended_slots for j in jobs_by_id.values()) == 10
 
 
 @pg_helpers.postgres_required()
 def test_plan_asset_optimized_days_target_surplus_gives_each_job_exactly_its_need(monkeypatch, tenant):
     # Scenario 2: every job's own 1-day need (5 + 3 = 8) fits in 20 free
-    # slots. Each job gets exactly its target_cap - leftover free slots stay
-    # unallocated rather than being piled onto jobs that don't need them.
+    # slots, so coverage order doesn't change the outcome - each job gets
+    # exactly its target_cap regardless of which claims first, and leftover
+    # free slots stay unallocated rather than being piled onto jobs that
+    # don't need them.
     day = 86400.0
     cfg = ProductionConfig(component_overbuild=0.0, asset_plan_slot_days_target=1.0)
     result = _ready_reaction_plan(
@@ -2853,42 +2880,55 @@ def test_plan_asset_optimized_days_target_surplus_gives_each_job_exactly_its_nee
 
 
 @pg_helpers.postgres_required()
-def test_plan_asset_optimized_days_target_scarcity_rations_by_need_without_exceeding_cap(monkeypatch, tenant):
-    # Scenario 3: own 1-day needs are 2 + 8 = 10 against only 5 free slots.
-    # Same allocator, weight == cap == target need -> proportional 1/4, and
-    # no job receives more than its own target_cap even though both miss
-    # the ideal.
+def test_plan_asset_optimized_days_target_scarcity_fills_lowest_coverage_need_first(monkeypatch, tenant):
+    # Scenario 3: own 1-day needs are 2 (ItemA) + 8 (ItemB) against only 5
+    # free slots - can't cover both. ItemB is given the lower stock_coverage
+    # (0.0 vs ItemA's 0.5), so it claims the scarce pool first: takes all 5
+    # (still short of its own need of 8), leaving ItemA - the better-stocked
+    # job - at 0 this round, even though ItemA's own need (2) would have
+    # fit easily. This is the deliberate "fully finish what's most urgent,
+    # not spread thin" behavior (2026-09-22) - no job ever exceeds its own
+    # target_cap either way. ItemA's backup is scaled up (4, not 2) so its
+    # 0.5 coverage doesn't also shrink its own need below the stated 2.
     day = 86400.0
     cfg = ProductionConfig(component_overbuild=0.0, asset_plan_slot_days_target=1.0)
     result = _ready_reaction_plan(
         monkeypatch,
-        [(1, "ItemA", 2, 0, 0), (2, "ItemB", 8, 0, 0)],
+        [(1, "ItemA", 4, 0, 0), (2, "ItemB", 8, 0, 0)],
         free_slots=5, cfg=cfg, time_by_type={1: day, 2: day},
+        current_stock_by_id={1: 2.0, 2: 0.0},  # coverage 0.5 / 0.0
     )
     jobs_by_id = {job.type_id: job for job in result["jobs"]}
-    assert jobs_by_id[1].recommended_slots == 1
-    assert jobs_by_id[2].recommended_slots == 4
-    assert jobs_by_id[1].recommended_slots <= 2
-    assert jobs_by_id[2].recommended_slots <= 8
+    assert (jobs_by_id[1].runs_ready_now, jobs_by_id[2].runs_ready_now) == (2, 8)
+    assert jobs_by_id[1].recommended_slots == 0
+    assert jobs_by_id[2].recommended_slots == 5
+    assert jobs_by_id[2].recommended_slots <= 8  # never exceeds its own target_cap
     assert sum(j.recommended_slots for j in jobs_by_id.values()) == 5
 
 
 @pg_helpers.postgres_required()
 def test_plan_asset_optimized_days_to_complete_computed_in_both_modes(monkeypatch, tenant):
     # Informational in both modes whenever recommended_slots > 0 - not gated
-    # on asset_plan_slot_days_target. Default time-weighted 10/20/70 split
-    # of 10 slots (1/2/7) all finish in 1000s = 1000/86400 days. Days-target
-    # surplus case: 5 slots for 5 * 86400s of work -> exactly 1.0 day.
+    # on asset_plan_slot_days_target. Default coverage-priority 10/5/0 split
+    # of 15 slots (see the dedicated priority test above) gives ItemA and
+    # ItemB each a distinct days-to-complete, and None for ItemC (0 slots).
+    # Days-target surplus case: 5 slots for 5 * 86400s of work -> exactly
+    # 1.0 day.
     cfg_default = ProductionConfig(component_overbuild=0.0, asset_plan_slot_days_target=None)
     default = _ready_reaction_plan(
         monkeypatch,
-        [(1, "ItemA", 10, 0, 0), (2, "ItemB", 20, 0, 0), (3, "ItemC", 70, 0, 0)],
-        free_slots=10, cfg=cfg_default,
+        [(1, "ItemA", 10, 0, 0), (2, "ItemB", 40, 0, 0), (3, "ItemC", 700, 0, 0)],
+        free_slots=15, cfg=cfg_default,
+        current_stock_by_id={1: 0.0, 2: 20.0, 3: 630.0},  # coverage 0.0 / 0.5 / 0.9 (backup scaled up - see above)
     )
-    expected_days = 1000.0 / 86400.0
-    for job in default["jobs"]:
-        assert job.recommended_slots > 0
-        assert job.days_to_complete_at_recommended_slots == pytest.approx(expected_days)
+    jobs_by_id = {job.type_id: job for job in default["jobs"]}
+    assert (jobs_by_id[1].runs_ready_now, jobs_by_id[2].runs_ready_now) == (10, 20)
+    assert jobs_by_id[1].recommended_slots == 10
+    assert jobs_by_id[1].days_to_complete_at_recommended_slots == pytest.approx((10 * 100.0 / 10) / 86400)
+    assert jobs_by_id[2].recommended_slots == 5
+    assert jobs_by_id[2].days_to_complete_at_recommended_slots == pytest.approx((20 * 100.0 / 5) / 86400)
+    assert jobs_by_id[3].recommended_slots == 0
+    assert jobs_by_id[3].days_to_complete_at_recommended_slots is None
 
     day = 86400.0
     cfg_target = ProductionConfig(component_overbuild=0.0, asset_plan_slot_days_target=1.0)
