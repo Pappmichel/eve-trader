@@ -651,6 +651,15 @@ export interface EsiTokenCharacter {
   corporation_name: string | null
 }
 
+/** DELETE /api/characters/owners/{character_id} — tokens dropped; sharing/capabilities kept. */
+export interface EsiRemovedCharacter {
+  removed: number
+  character_name: string
+  roles: string[]
+  shared_tools: string[]
+  capabilities: string[]
+}
+
 /** Known gap 2's role warning - POST /api/characters/corporation-roles/check. */
 export interface CorporationRoleCheck {
   corporation_id: number

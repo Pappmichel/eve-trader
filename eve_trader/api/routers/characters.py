@@ -44,6 +44,11 @@ def list_owners():
     return esi_actions.do_list_token_characters()
 
 
+@router.delete("/owners/{character_id}")
+def remove_owner(character_id: int):
+    return _wrap(esi_actions.do_remove_token_character, character_id=character_id)
+
+
 class SetSharingRequest(BaseModel):
     owner_type: str
     owner_id: int

@@ -1,6 +1,5 @@
 import { AppShell, Burger, Stack, Title, Text, Button, Group, Badge, Tabs, Container, Divider, Tooltip } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
-import { modals } from '@mantine/modals'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { spotlight } from '@mantine/spotlight'
@@ -41,11 +40,11 @@ const TABS = [
 // now return the identical list, since the sharing model has no buyer-vs-
 // seller distinction; see actions.list_shared_trading_characters's own
 // docstring) - rendering them as two separate sections would just show
-// every character twice. List + remove only; ESI login is the Characters
-// page.
+// every character twice. List only; ESI login and token removal are the
+// Characters page.
 function RoleCharacters() {
-  const { characters, removeCharacter, isRemoving } = useRoleCharacters(
-    ['trading', 'characters', 'shared'], tradingApi.sellerCharacters, tradingApi.removeCharacter,
+  const { characters } = useRoleCharacters(
+    ['trading', 'characters', 'shared'], tradingApi.sellerCharacters,
   )
 
   return (
@@ -59,35 +58,12 @@ function RoleCharacters() {
       )}
       <Stack gap={4} mb="xs">
         {characters.map((c) => (
-          <Group key={c.role_key} justify="space-between" wrap="nowrap">
-            <Text size="sm" fw={600}>{c.character_name}</Text>
-            {c.role_key.startsWith('buyer:') || c.role_key.startsWith('seller:') ? (
-              <Button size="xs" variant="subtle" color="danger"
-                onClick={() => modals.openConfirmModal({
-                  title: 'Remove character',
-                  children: <Text size="sm">Remove {c.character_name} from Trading? This drops this tool&apos;s token key. Sharing stays on the Characters page.</Text>,
-                  labels: { confirm: 'Remove', cancel: 'Cancel' },
-                  confirmProps: { color: 'danger' },
-                  onConfirm: () => removeCharacter(c.role_key),
-                })}
-                loading={isRemoving(c.role_key)}>
-                Remove
-              </Button>
-            ) : (
-              // Listed here because it shares Wallet/Market Orders/Assets
-              // with Trading, not because it holds a dedicated buyer:*/
-              // seller:* token - its esi:<id> key may be shared with other
-              // tools too, so this sidebar cannot safely delete it.
-              // Unshare on the Characters page instead.
-              <Tooltip label="Shared via the Characters page - unshare there, not here" multiline w={220}>
-                <Button size="xs" variant="subtle" color="gray" disabled>
-                  Unshare on Characters
-                </Button>
-              </Tooltip>
-            )}
-          </Group>
+          <Text key={c.role_key} size="sm" fw={600}>{c.character_name}</Text>
         ))}
       </Stack>
+      <Text size="xs" c="dimmed">
+        To drop a character&apos;s token, use the Characters page.
+      </Text>
     </div>
   )
 }

@@ -2,7 +2,6 @@ import { AppShell, Burger, Stack, Title, Text, Button, Group, Container, Tabs, S
 import { useDisclosure } from '@mantine/hooks'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { modals } from '@mantine/modals'
 import { IconArrowLeft, IconRefresh } from '@tabler/icons-react'
 
 import { stationTradingApi } from '../../api/client'
@@ -28,8 +27,8 @@ export default function StationTradingLayout() {
   const { data: syncTime } = useQuery({
     queryKey: ['station-trading', 'esi-sync-time'], queryFn: stationTradingApi.esiSyncTime,
   })
-  const { characters, removeCharacter, isRemoving } = useRoleCharacters(
-    ['station-trading', 'characters'], stationTradingApi.traderCharacters, stationTradingApi.removeCharacter,
+  const { characters } = useRoleCharacters(
+    ['station-trading', 'characters'], stationTradingApi.traderCharacters,
   )
   const refreshShortlist = useAction('Refresh Shortlist', stationTradingApi.refreshShortlist, [
     ['station-trading', 'shortlist'], ['station-trading', 'esi-sync-time'],
@@ -70,35 +69,11 @@ export default function StationTradingLayout() {
                 with Station Trading on the Characters page.
               </Text>
               {characters.map((c) => (
-                <Group key={c.role_key} justify="space-between" mb={4}>
-                  <Text size="sm" fw={600}>{c.character_name}</Text>
-                  {c.role_key.startsWith('trader:') ? (
-                    <Button size="xs" variant="subtle" color="danger"
-                      onClick={() => modals.openConfirmModal({
-                        title: 'Remove character',
-                        children: <Text size="sm">Remove {c.character_name} from Station Trading? This drops this tool&apos;s token key. Sharing stays on the Characters page.</Text>,
-                        labels: { confirm: 'Remove', cancel: 'Cancel' },
-                        confirmProps: { color: 'danger' },
-                        onConfirm: () => removeCharacter(c.role_key),
-                      })}
-                      loading={isRemoving(c.role_key)}>
-                      Remove
-                    </Button>
-                  ) : (
-                    // Listed here because it shares Market Orders/Skills
-                    // with Station Trading, not because it holds a
-                    // dedicated trader:* token - its esi:<id> key may be
-                    // shared with other tools too, so this sidebar cannot
-                    // safely delete it. Unshare on the Characters page
-                    // instead.
-                    <Tooltip label="Shared via the Characters page - unshare there, not here" multiline w={220}>
-                      <Button size="xs" variant="subtle" color="gray" disabled>
-                        Unshare on Characters
-                      </Button>
-                    </Tooltip>
-                  )}
-                </Group>
+                <Text key={c.role_key} size="sm" fw={600} mb={4}>{c.character_name}</Text>
               ))}
+              <Text size="xs" c="dimmed" mb="xs">
+                To drop a character&apos;s token, use the Characters page.
+              </Text>
             </div>
 
             <Divider />
