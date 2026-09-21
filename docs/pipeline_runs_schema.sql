@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
     job_name TEXT NOT NULL,
     tool TEXT NOT NULL DEFAULT 'trading',
-    status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed')),
+    status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed', 'degraded')),
     started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     finished_at TIMESTAMPTZ,
@@ -79,6 +79,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS pipeline_runs_one_running_per_tenant
     WHERE status = 'running';
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON pipeline_runs TO eve_trader_app;
+
+-- Inline CHECK above is what a fresh CREATE TABLE gets. Postgres has no
+-- ADD CONSTRAINT IF NOT EXISTS; DROP/ADD is the idempotent way to attach
+-- the same check to a table this file already created before 'degraded'
+-- existed (a pipeline run where isolated steps mixed success and failure).
+-- Additive only / Idempotent - every statement is safe to re-run.
+ALTER TABLE pipeline_runs DROP CONSTRAINT IF EXISTS pipeline_runs_status_check;
+ALTER TABLE pipeline_runs ADD CONSTRAINT pipeline_runs_status_check
+    CHECK (status IN ('running', 'succeeded', 'failed', 'degraded'));
 
 -- Cleanup rotation cursor on shortlist (Phase 3 of the Search+Add+Clean Up
 -- scale work). NULL = never refreshed, so newly added items are priced first.

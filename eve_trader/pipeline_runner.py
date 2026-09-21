@@ -227,13 +227,35 @@ def _execute(tenant_id: str, run_id: str, work: Worker) -> None:
 
         try:
             result = work(progress_cb)
-            storage.finish_pipeline_run(run_id, "succeeded", result=result)
+            status, error = _status_for_result(result)
+            storage.finish_pipeline_run(run_id, status, result=result, error=error)
         except Exception as e:  # noqa: BLE001 - the HTTP request already returned
             log.exception("Pipeline run %s failed", run_id)
             try:
                 storage.finish_pipeline_run(run_id, "failed", error=str(e))
             except Exception:  # noqa: BLE001
                 log.exception("Failed to persist pipeline failure for run %s", run_id)
+
+
+def _status_for_result(result: object) -> tuple[str, str | None]:
+    """Maps a worker return value to (pipeline_runs.status, error text).
+
+    Isolated do_pipeline steps never raise - they land as nested
+    ``{"error": ...}`` plus ``failed_steps``. A mixed success/failure
+    result is ``degraded`` (not ``succeeded``); every attempted step
+    failing is ``failed``. Other jobs have no isolated steps, so a
+    non-raising return is still ``succeeded``.
+    """
+    if not isinstance(result, dict):
+        return "succeeded", None
+    from .actions import pipeline_failed_steps, pipeline_outcome
+    if "refresh_and_prune_candidates" not in result and "failed_steps" not in result:
+        return "succeeded", None
+    failed = pipeline_failed_steps(result)
+    if not failed:
+        return "succeeded", None
+    error = "; ".join(f"{name}: {msg}" for name, msg in failed.items())
+    return pipeline_outcome(result), error
 
 
 def _run_refresh_and_prune(tenant_id: str, run_id: str, safe: bool) -> None:

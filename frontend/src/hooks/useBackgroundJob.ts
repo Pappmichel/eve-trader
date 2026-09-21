@@ -5,6 +5,38 @@ import { notifications } from '@mantine/notifications'
 import { ApiError } from '../api/client'
 import type { PipelineRunProgress, PipelineRunStatus } from '../api/types'
 
+/** Only `running` is in-flight. `degraded` is terminal (partial failure). */
+export function shouldPollBackgroundJob(status: string | undefined): boolean {
+  return status === 'running'
+}
+
+function isErrorRecord(value: unknown): value is { error: unknown } {
+  return typeof value === 'object' && value !== null && 'error' in value
+}
+
+export function formatDegradedJobMessage(status: PipelineRunStatus): string {
+  const result = status.result
+  const failedRaw = result?.failed_steps
+  if (failedRaw && typeof failedRaw === 'object' && !Array.isArray(failedRaw)) {
+    const entries = Object.entries(failedRaw as Record<string, unknown>)
+      .filter(([, err]) => err != null && String(err).length > 0)
+    if (entries.length > 0) {
+      return entries.map(([step, err]) => `${step}: ${String(err)}`).join('\n')
+    }
+  }
+  if (result) {
+    const parts: string[] = []
+    for (const [key, value] of Object.entries(result)) {
+      if (key === 'failed_steps') continue
+      if (isErrorRecord(value) && value.error != null && String(value.error).length > 0) {
+        parts.push(`${key}: ${String(value.error)}`)
+      }
+    }
+    if (parts.length > 0) return parts.join('\n')
+  }
+  return status.error || 'Some steps failed.'
+}
+
 export function formatBackgroundProgress(
   progress: PipelineRunProgress | null | undefined,
   jobName?: string | null,
@@ -77,7 +109,9 @@ export function useBackgroundJob(opts: {
   const statusQuery = useQuery({
     queryKey,
     queryFn: fetchStatus,
-    refetchInterval: (query) => (query.state.data?.status === 'running' ? pollIntervalMs : false),
+    refetchInterval: (query) => (
+      shouldPollBackgroundJob(query.state.data?.status) ? pollIntervalMs : false
+    ),
     refetchOnWindowFocus: true,
   })
 
@@ -85,12 +119,23 @@ export function useBackgroundJob(opts: {
     const status = statusQuery.data?.status
     const prev = prevStatus.current
     const label = (statusQuery.data?.job_name && labels[statusQuery.data.job_name]) || defaultLabel
-    if (prev === 'running' && status === 'succeeded') {
-      notifications.show({ title: label, message: 'Done', color: 'accent' })
+    const applySucceededSideEffects = () => {
       onSucceeded?.(statusQuery.data as PipelineRunStatus)
       for (const key of resultKeys) {
         queryClient.invalidateQueries({ queryKey: key })
       }
+    }
+    if (prev === 'running' && status === 'succeeded') {
+      notifications.show({ title: label, message: 'Done', color: 'accent' })
+      applySucceededSideEffects()
+    }
+    if (prev === 'running' && status === 'degraded') {
+      notifications.show({
+        title: `${label} - Partial failure`,
+        message: formatDegradedJobMessage(statusQuery.data as PipelineRunStatus),
+        color: 'warn',
+      })
+      applySucceededSideEffects()
     }
     if (prev === 'running' && status === 'failed') {
       notifications.show({
