@@ -197,3 +197,38 @@ def test_get_response_converts_dead_refresh_token_to_esierror(monkeypatch):
         assert False, "dead refresh token must not leak as HTTPError"
     assert len(refresh_calls) == 1  # not retried like a 502
     assert esi_calls == []  # never reached the ESI GET
+
+
+def test_get_response_converts_refresh_transport_failure_to_esierror(monkeypatch):
+    """`_refresh`'s requests.post can fail with Timeout/ConnectionError,
+    which are siblings of HTTPError (both RequestException), not subclasses.
+    An HTTPError-only handler here let those leak exactly like the revoked
+    token above did - verified live 2026-09-21 - so the orchestrator never
+    stamped esi_freshness and a corp's first member still aborted the whole
+    corporation."""
+    _no_sleep(monkeypatch)
+    esi_calls = []
+
+    def fake_get(self, url, params=None, headers=None, timeout=30):
+        esi_calls.append(url)
+        return _FakeResp(200)
+
+    def fake_post(url, data=None, headers=None, timeout=30, **kwargs):
+        raise requests.ConnectionError("connection reset during refresh")
+
+    monkeypatch.setattr(requests.Session, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    tm = _expired_token_manager()
+    monkeypatch.setattr(tm, "_load", lambda: None)
+
+    try:
+        ESIClient(tokens=tm)._get_response(
+            "/characters/1/assets/", auth_role="producer:1", retries=3,
+        )
+        assert False, "expected ESIError"
+    except ESIError as e:
+        assert "Token refresh failed for role 'producer:1'" in str(e)
+    except requests.RequestException:
+        assert False, "a transport failure during refresh must not leak"
+    assert esi_calls == []  # never reached the ESI GET

@@ -359,7 +359,7 @@ class ESIClient:
         if auth_role:
             try:
                 headers.update(self.tokens.auth_header(auth_role))
-            except requests.HTTPError as e:
+            except requests.RequestException as e:
                 # Confirmed real bug: TokenManager._refresh calls
                 # resp.raise_for_status(), so a revoked/expired refresh token
                 # raised requests.HTTPError (not this codebase's ESIError).
@@ -372,6 +372,15 @@ class ESIClient:
                 # Director token was tried. A dead refresh token is not
                 # transient — fail fast as ESIError so the user can
                 # re-authorize that character; do not retry it like a 502.
+                #
+                # RequestException, not just HTTPError: _refresh's
+                # requests.post can equally raise Timeout/ConnectionError
+                # (siblings of HTTPError, not subclasses), which leaked the
+                # exact same way - verified live 2026-09-21 against the
+                # HTTPError-only version of this handler. Both still fail
+                # fast here rather than retrying; a transient refresh
+                # outage resolves on the next scheduled sync, and the
+                # freshness row now records why this one did not run.
                 raise ESIError(
                     f"Token refresh failed for role '{auth_role}': {e}. "
                     f"Re-authorize this character."
