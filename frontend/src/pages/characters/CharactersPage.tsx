@@ -2,6 +2,7 @@ import { useMemo, useState, type ReactNode } from 'react'
 import {
   Badge, Button, Container, Divider, Group, Popover, Stack, Switch, Table, Text, Title, Tooltip,
 } from '@mantine/core'
+import { modals } from '@mantine/modals'
 import { IconArrowLeft } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import { useQueries, useQuery } from '@tanstack/react-query'
@@ -14,12 +15,14 @@ import {
   ACCESS_CAPABILITIES,
   CHARACTER_KINDS,
   GROUP_1_KINDS,
+  capabilityByKey,
   formatCorpRoles,
   kindByKey,
   toolLabel,
 } from '../../esiRegistry'
 import {
   buildToolView,
+  characterRemovalImpact,
   corporationIdsFrom,
   deriveCellState,
   extraKindsForCharacter,
@@ -142,6 +145,8 @@ function CharactersSection({
   pendingToggle,
   onReauth,
   reauthPendingId,
+  onRemove,
+  removePendingId,
 }: {
   owners: EsiTokenCharacter[]
   sharing: EsiSharingRow[]
@@ -151,6 +156,8 @@ function CharactersSection({
   pendingToggle: string | null
   onReauth: (owner: EsiTokenCharacter) => void
   reauthPendingId: number | null
+  onRemove: (owner: EsiTokenCharacter) => void
+  removePendingId: number | null
 }) {
   return (
     <div>
@@ -221,14 +228,25 @@ function CharactersSection({
                     </Table.Td>
                   ))}
                   <Table.Td>
-                    <Button
-                      size="compact-xs"
-                      variant="default"
-                      loading={reauthPendingId === owner.character_id}
-                      onClick={() => onReauth(owner)}
-                    >
-                      Re-authorize
-                    </Button>
+                    <Group gap="xs" wrap="nowrap">
+                      <Button
+                        size="compact-xs"
+                        variant="default"
+                        loading={reauthPendingId === owner.character_id}
+                        onClick={() => onReauth(owner)}
+                      >
+                        Re-authorize
+                      </Button>
+                      <Button
+                        size="compact-xs"
+                        variant="subtle"
+                        color="danger"
+                        loading={removePendingId === owner.character_id}
+                        onClick={() => onRemove(owner)}
+                      >
+                        Remove
+                      </Button>
+                    </Group>
                   </Table.Td>
                 </Table.Tr>
               )
@@ -595,6 +613,12 @@ export default function CharactersPage() {
       }
     },
   )
+  const [removePendingId, setRemovePendingId] = useState<number | null>(null)
+  const removeCharacter = useAction(
+    'Remove character',
+    charactersApi.removeCharacter,
+    CHARACTERS_KEYS,
+  )
 
   const corpIds = corporationIdsFrom(sharing, freshness)
 
@@ -621,6 +645,41 @@ export default function CharactersPage() {
       : { title: 'Confirm ESI access', items: [] as AccessPreview['items'] }
     openAccessConfirmModal(preview, () => {
       reauth.mutate({ characterId: owner.character_id, extraKinds: extra })
+    })
+  }
+
+  const startRemove = (owner: EsiTokenCharacter) => {
+    const impact = characterRemovalImpact(owner.character_id, sharing, capabilities)
+    const name = owner.character_name || `#${owner.character_id}`
+    const toolNames = impact.tools.length > 0
+      ? impact.tools.map((key) => toolLabel(key)).join(', ')
+      : 'not currently shared with any tool'
+    const capNames = impact.capabilityKeys.length > 0
+      ? impact.capabilityKeys.map((key) => capabilityByKey(key)?.label ?? key).join(', ')
+      : 'no Access capabilities ticked'
+    modals.openConfirmModal({
+      title: 'Remove character',
+      children: (
+        <Stack gap="xs">
+          <Text size="sm">
+            Remove {name}? This deletes every ESI token for this character.
+            They disappear from this page until you add them again.
+          </Text>
+          <Text size="sm">Shared with: {toolNames}</Text>
+          <Text size="sm">Access: {capNames}</Text>
+          <Text size="sm" c="dimmed">
+            Sharing ticks and Access capabilities stay, so adding this character again
+            restores them without re-ticking. Last-synced snapshots stay.
+            This is not a per-tool unshare.
+          </Text>
+        </Stack>
+      ),
+      labels: { confirm: 'Remove', cancel: 'Cancel' },
+      confirmProps: { color: 'danger' },
+      onConfirm: () => {
+        setRemovePendingId(owner.character_id)
+        removeCharacter.mutate(owner.character_id, { onSettled: () => setRemovePendingId(null) })
+      },
     })
   }
 
@@ -662,6 +721,8 @@ export default function CharactersPage() {
           pendingToggle={pendingToggle}
           onReauth={startReauth}
           reauthPendingId={reauthPendingId}
+          onRemove={startRemove}
+          removePendingId={removePendingId}
         />
         <Divider />
         <CorporationsSection

@@ -149,6 +149,8 @@ def test_walker_sees_normal_and_dynamic_routes():
     paths = {(method, path) for method, path in _iter_http_routes(create_app())}
     assert ("GET", "/api/trading/settings") in paths
     assert ("DELETE", "/api/trading/auth/character/{role_key}") in paths
+    assert ("DELETE", "/api/characters/owners/{character_id}") in paths
+    assert _classify("DELETE", "/api/characters/owners/1001") == "tool:characters"
     # Backups moved to /api/admin/backups (confirmed real misplacement
     # 2026-09-21, see admin.do_create_backup's own docstring) - GET and
     # POST both classify as "admin" now via the plain prefix table, no
@@ -170,6 +172,7 @@ def test_walker_sees_included_auth_router_templates():
     assert _classify("GET", "/api/auth/gate/start") == "exempt"
     assert _classify("GET", "/api/characters/sharing") == "tool:characters"
     assert _classify("GET", "/api/characters/reauth/start") == "tool:characters"
+    assert _classify("DELETE", "/api/characters/owners/1001") == "tool:characters"
 
 
 def test_walker_sees_nested_router_include():

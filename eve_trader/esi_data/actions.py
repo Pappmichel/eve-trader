@@ -208,6 +208,62 @@ def do_list_token_characters() -> list[dict]:
     return out
 
 
+def do_remove_token_character(character_id: int) -> dict:
+    """Drop every ESI token for `character_id`.
+
+    Character-centric, not prefix-centric: a re-auth-merged `buyer:<id>`
+    (or `doctrine:<id>`, `esi:<id>`, ...) is this character's only key and
+    may be feeding every tool they share with, so a per-tool "Remove" that
+    deletes by prefix would also drop Production/Doctrine/Sorting. Removal
+    belongs here, where the sharing matrix is visible.
+
+    `esi_sharing` (this character's owner rows) and
+    `esi_character_capabilities` are deliberately KEPT, matching
+    `admin.do_remove_user` not deleting the orphaned tenant's data.
+    Re-adding the same character via Add character restores the matrix
+    without re-ticking. Snapshot tables and `esi_freshness` are also left
+    intact (decision 4: sharing filters reads, it does not erase last
+    week's snapshots). Corporation sharing rows are not this character's
+    and are never touched.
+
+    Listings that resolve a token (`do_list_token_characters`,
+    `list_shared_*_characters`) omit the character immediately.
+    """
+    try:
+        character_id = int(character_id)
+    except (TypeError, ValueError) as e:
+        raise ActionError(f"Invalid character_id {character_id!r}") from e
+    if character_id <= 0:
+        raise ActionError(f"Invalid character_id {character_id}.")
+
+    tm = TokenManager(OAUTH_CONFIG)
+    records = [r for r in tm.list_records() if r.character_id == character_id]
+    if not records:
+        raise ActionError(f"No ESI token stored for character {character_id}.")
+
+    roles = sorted({r.role for r in records})
+    name = next((r.character_name for r in records if r.character_name), str(character_id))
+    shared_tools = sorted({
+        tk for ot, oid, _kind, tk in storage.list_esi_sharing()
+        if ot == "character" and int(oid) == character_id
+    })
+    capabilities = sorted({
+        key for cid, key in storage.list_esi_character_capabilities()
+        if int(cid) == character_id
+    })
+
+    for role in roles:
+        tm.remove_token(role)
+
+    return {
+        "removed": character_id,
+        "character_name": name,
+        "roles": roles,
+        "shared_tools": shared_tools,
+        "capabilities": capabilities,
+    }
+
+
 def do_check_corporation_roles() -> dict:
     """Known gap 2's role warning: for every corp a registered character
     belongs to, and every Group-1 data kind with corp_roles set (Assets/
