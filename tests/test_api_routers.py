@@ -1230,37 +1230,9 @@ def test_get_scheduler_status(monkeypatch):
     assert resp.json()["jobs"]["esi_data_sync"]["last_error"] == "no auth"
 
 
-def test_get_backups(monkeypatch):
-    from eve_trader import actions
-    monkeypatch.setattr(actions, "do_list_backups", lambda: {"rows": [
-        {"name": "eve_trader_backup_x.zip", "created_at": "2026-07-17T08:00:00+00:00", "size_bytes": 1234},
-    ]})
-    resp = client.get("/api/portfolio/backups")
-    assert resp.status_code == 200
-    assert resp.json()[0]["name"] == "eve_trader_backup_x.zip"
-
-
-def test_create_backup(monkeypatch):
-    from eve_trader import actions
-    monkeypatch.setattr(actions, "do_create_backup", lambda: {
-        "name": "eve_trader_backup_x.zip", "created_at": "2026-07-17T08:00:00+00:00", "size_bytes": 1234,
-    })
-    resp = client.post("/api/portfolio/backups")
-    assert resp.status_code == 200
-    assert resp.json()["size_bytes"] == 1234
-
-
-def test_create_backup_action_error_maps_to_400(monkeypatch):
-    from eve_trader.actions import ActionError
-    from eve_trader import actions
-
-    def boom():
-        raise ActionError("Backup failed.")
-    monkeypatch.setattr(actions, "do_create_backup", boom)
-
-    resp = client.post("/api/portfolio/backups")
-    assert resp.status_code == 400
-    assert resp.json()["detail"] == "Backup failed."
+# Backup routes moved to /api/admin/backups (confirmed real misplacement
+# 2026-09-21, see admin.do_create_backup's own docstring) - their router
+# tests moved to test_admin_router.py alongside the rest of /api/admin/*.
 
 
 # ------------------------------------------------------------------------ auth

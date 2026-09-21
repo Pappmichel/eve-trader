@@ -108,10 +108,11 @@ def _is_auth_role_gated_path(_path: str) -> bool:
 
 
 def _required_tool_for_path(path: str, method: str = "GET") -> Optional[str]:
-    # F-06: creating a backup prunes disaster-recovery retention. Listing
-    # does not. POST is admin-only; GET stays a portfolio read.
-    if path == "/api/portfolio/backups" and method.upper() == "POST":
-        return "admin"
+    # F-06's one-off exception here (POST /api/portfolio/backups required
+    # "admin" even though the path lived under /api/portfolio/) is gone -
+    # both backup routes moved to /api/admin/backups (confirmed real
+    # misplacement 2026-09-21, see admin.do_create_backup's own docstring),
+    # so the plain prefix table below already covers them correctly.
     for prefix, tool_key in _TOOL_PATH_PREFIXES.items():
         if path.startswith(prefix):
             return tool_key

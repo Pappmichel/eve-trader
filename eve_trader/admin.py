@@ -13,13 +13,17 @@ do_* functions, no logic duplicated in the router.
 """
 from __future__ import annotations
 
+import logging
+
 import requests
 
-from . import access_gate, storage
+from . import access_gate, backup, storage
 from .actions import ActionError
 from .esi_client import ESIError
 from .production import jita_price_cache, sde
 from .production.engine import invalidate_discover_cache, invalidate_ship_margin_cache
+
+log = logging.getLogger("eve_trader.admin")
 
 
 def do_list_tenants() -> list[dict]:
@@ -217,3 +221,37 @@ def do_bootstrap_admin(
         "already_registered": existing_tenant is not None,
         "already_had_admin": "admin" in previous,
     }
+
+
+def do_create_backup() -> dict:
+    """Backs up the whole Postgres database (every tenant, via pg_dump) plus
+    config.yaml into a single timestamped .zip (see backup.py) - this app's
+    only persistence (no git repo) so this is the only way to recover from a
+    lost/corrupted disk short of redoing every ESI sync and Settings change
+    by hand.
+
+    Moved here from actions.py/the Portfolio page (confirmed real
+    misplacement 2026-09-21): one pg_dump already covers every tenant's
+    data in one shot (backup.py's own docstring), so creating a backup is a
+    cross-tenant-impacting action - same reasoning as do_start_refresh_sde/
+    do_refresh_jita_price_cache above, not a per-tenant Portfolio button.
+    The access gate already required the "admin" grant for this via a
+    one-off exception in api/app.py's _required_tool_for_path (F-06) before
+    this move; that exception is gone now that the route lives under
+    /api/admin/ like everything else here."""
+    try:
+        return backup.create_backup()
+    except (OSError, RuntimeError) as e:
+        # RuntimeError covers BackupError (non-zero pg_dump) and unexpected
+        # failures. The exception chain keeps operator diagnostics in logs;
+        # the ActionError message is generic so an HTTP 400 cannot leak
+        # pg_dump stderr / paths / DSN details (F-NEW-04).
+        log.exception("backup failed")
+        raise ActionError("Backup failed.") from e
+
+
+def do_list_backups() -> dict:
+    """Read-only - kept alongside do_create_backup above rather than left on
+    Portfolio, since a backups list with no admin nearby to act on it isn't
+    useful to a non-admin tenant."""
+    return {"rows": backup.list_backups()}

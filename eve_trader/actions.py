@@ -13,7 +13,7 @@ from typing import Optional
 
 import pandas as pd
 
-from . import backup, candidate_discovery, history_backtest, own_orders, storage
+from . import candidate_discovery, history_backtest, own_orders, storage
 from .auth import InvalidRoleKey, TokenManager, validate_role_key_for_tool
 from .config import (OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, TradingConfig,
                      save_tenant_config_overrides, validate_trading_overrides)
@@ -1226,24 +1226,3 @@ def do_pipeline(safe: bool = True, rebuild_universe: bool = False,
         results["reconcile_trades"] = {"error": str(e)}
 
     return results
-
-
-def do_create_backup() -> dict:
-    """Backs up the whole Postgres database (every tenant, via pg_dump) plus
-    config.yaml into a single timestamped .zip (see backup.py) - this app's
-    only persistence (no git repo) so this is the only way to recover from a
-    lost/corrupted disk short of redoing every ESI sync and Settings change
-    by hand."""
-    try:
-        return backup.create_backup()
-    except (OSError, RuntimeError) as e:
-        # RuntimeError covers BackupError (non-zero pg_dump) and unexpected
-        # failures. The exception chain keeps operator diagnostics in logs;
-        # the ActionError message is generic so an HTTP 400 cannot leak
-        # pg_dump stderr / paths / DSN details (F-NEW-04).
-        log.exception("backup failed")
-        raise ActionError("Backup failed.") from e
-
-
-def do_list_backups() -> dict:
-    return {"rows": backup.list_backups()}

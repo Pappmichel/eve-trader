@@ -336,8 +336,6 @@ export const productionApi = {
 export const portfolioApi = {
   overview: () => get<T.PortfolioOverview>('/api/portfolio/overview'),
   schedulerStatus: () => get<T.SchedulerStatus>('/api/portfolio/scheduler-status'),
-  backups: () => get<T.BackupInfo[]>('/api/portfolio/backups'),
-  createBackup: () => post<T.BackupInfo>('/api/portfolio/backups'),
 }
 
 // -------------------------------------------------------------- doctrine
@@ -488,6 +486,12 @@ export const adminApi = {
     post<{ cached_type_ids: number; updated_at: string | null }>('/api/admin/jita-price-cache/refresh'),
   // GitHub issue #88 - cross-tenant, same reasoning as everything else here.
   errors: (limit = 200) => get<T.ErrorLogRow[]>(`/api/admin/errors?limit=${limit}`),
+  // Moved from portfolioApi (confirmed real misplacement 2026-09-21, see
+  // admin.do_create_backup's own docstring) - one pg_dump already covers
+  // every tenant's data in one shot, same cross-tenant-impacting reasoning
+  // as everything else here.
+  backups: () => get<T.BackupInfo[]>('/api/admin/backups'),
+  createBackup: () => post<T.BackupInfo>('/api/admin/backups'),
 }
 
 // -------------------------------------------------------------- characters

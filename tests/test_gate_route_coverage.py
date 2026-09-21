@@ -145,14 +145,19 @@ def test_unclassified_api_path_is_rejected_by_the_matrix():
     assert _classify("GET", path) is None
 
 
-def test_walker_sees_normal_and_dynamic_and_method_specific_routes():
+def test_walker_sees_normal_and_dynamic_routes():
     paths = {(method, path) for method, path in _iter_http_routes(create_app())}
     assert ("GET", "/api/trading/settings") in paths
     assert ("DELETE", "/api/trading/auth/character/{role_key}") in paths
-    assert ("GET", "/api/portfolio/backups") in paths
-    assert ("POST", "/api/portfolio/backups") in paths
-    assert _classify("GET", "/api/portfolio/backups") == "tool:portfolio"
-    assert _classify("POST", "/api/portfolio/backups") == "tool:admin"
+    # Backups moved to /api/admin/backups (confirmed real misplacement
+    # 2026-09-21, see admin.do_create_backup's own docstring) - GET and
+    # POST both classify as "admin" now via the plain prefix table, no
+    # method-specific exception needed anymore (the one that used to live
+    # in _required_tool_for_path for /api/portfolio/backups is gone).
+    assert ("GET", "/api/admin/backups") in paths
+    assert ("POST", "/api/admin/backups") in paths
+    assert _classify("GET", "/api/admin/backups") == "tool:admin"
+    assert _classify("POST", "/api/admin/backups") == "tool:admin"
 
 
 def test_walker_sees_included_auth_router_templates():

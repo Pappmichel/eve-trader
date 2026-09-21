@@ -113,6 +113,55 @@ function JitaPriceCacheSection() {
   )
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+// Moved from the Portfolio page (confirmed real misplacement 2026-09-21) -
+// one pg_dump already covers every tenant's data in one shot (backup.py's
+// own docstring), so creating a backup is a cross-tenant-impacting action,
+// same "not a per-tenant button" reasoning as SdeDataSection/
+// JitaPriceCacheSection above. This also let api/app.py drop a one-off
+// gate exception (F-06) that used to require "admin" for just this one
+// path while it lived under /api/portfolio/.
+function BackupsSection() {
+  const { data: backups } = useQuery({ queryKey: ['admin', 'backups'], queryFn: adminApi.backups })
+  const createBackup = useAction('Backup Now', adminApi.createBackup, [['admin', 'backups']])
+
+  return (
+    <div>
+      <Group justify="space-between" mb="xs" wrap="nowrap">
+        <Title order={4}>Backups</Title>
+        <Button size="xs" loading={createBackup.isPending} onClick={() => createBackup.mutate()}>
+          Backup Now
+        </Button>
+      </Group>
+      <Text size="sm" c="dimmed" mb="xs">
+        Backs up the full database (every tenant) plus config.yaml. Kept under data/backups/; the oldest are
+        pruned automatically once there are more than 14.
+      </Text>
+      {backups && backups.length === 0 && (
+        <Text size="sm" c="dimmed">No backups yet.</Text>
+      )}
+      {backups && backups.length > 0 && (
+        <Stack gap={4}>
+          {backups.slice(0, 5).map((b) => (
+            <Group key={b.name} justify="space-between">
+              <Text size="xs" ff="monospace">{b.name}</Text>
+              <Text size="xs" c="dimmed">{dateTime(b.created_at)} - {formatBytes(b.size_bytes)}</Text>
+            </Group>
+          ))}
+          {backups.length > 5 && (
+            <Text size="xs" c="dimmed">+ {backups.length - 5} more in data/backups/</Text>
+          )}
+        </Stack>
+      )}
+    </div>
+  )
+}
+
 // Mirrors access_gate.ALL_TOOL_KEYS (eve_trader/access_gate.py) - kept in
 // sync by hand, same as every other small fixed-vocabulary list already
 // hardcoded on the frontend elsewhere in this app.
@@ -326,6 +375,8 @@ export default function AdminPage() {
         <SdeDataSection />
         <Divider />
         <JitaPriceCacheSection />
+        <Divider />
+        <BackupsSection />
         <Divider />
         <TenantSection />
         <Divider />

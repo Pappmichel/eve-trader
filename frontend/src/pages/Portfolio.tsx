@@ -1,11 +1,10 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { Container, Title, Text, SimpleGrid, Card, Group, Stack, Button, Loader, Center, Badge } from '@mantine/core'
 import { IconArrowLeft } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 
 import { portfolioApi } from '../api/client'
 import { HintCard } from '../components/HintCard'
-import { useAction } from '../hooks/useAction'
 import { isk, qty, pct, dateTime } from '../format'
 import type { SchedulerJobStatus } from '../api/types'
 
@@ -32,12 +31,6 @@ function SchedulerJobRow({ label, job }: { label: string; job: SchedulerJobStatu
   )
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}
-
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <Card withBorder padding="lg" radius="md">
@@ -49,11 +42,8 @@ function Stat({ label, value, hint }: { label: string; value: string; hint?: str
 }
 
 export default function Portfolio() {
-  const queryClient = useQueryClient()
   const { data, isLoading } = useQuery({ queryKey: ['portfolio', 'overview'], queryFn: portfolioApi.overview })
   const { data: scheduler } = useQuery({ queryKey: ['portfolio', 'scheduler-status'], queryFn: portfolioApi.schedulerStatus })
-  const { data: backups } = useQuery({ queryKey: ['portfolio', 'backups'], queryFn: portfolioApi.backups })
-  const createBackup = useAction('Backup Now', portfolioApi.createBackup)
 
   return (
     <Container size="md" py="xl">
@@ -100,49 +90,19 @@ export default function Portfolio() {
               {!scheduler.enabled && (
                 <Text size="xs" c="dimmed" mt="sm">
                   Off by default - enable it in Settings to run these automatically instead of clicking
-                  "Run Complete Pipeline" / "Sync ESI" / "Backup Now" by hand. ESI data sync fetches
-                  only (owner, kind) pairs whose freshness interval has elapsed; a manual tool Sync
-                  stamps freshness and pushes those pairs back.
+                  "Run Complete Pipeline" / "Sync ESI" by hand, or "Backup Now" on the Admin page. ESI
+                  data sync fetches only (owner, kind) pairs whose freshness interval has elapsed; a
+                  manual tool Sync stamps freshness and pushes those pairs back.
                 </Text>
               )}
             </Card>
           )}
 
-          <Card withBorder padding="lg" radius="md">
-            <Group justify="space-between" mb="sm">
-              <Title order={6} c="dimmed" tt="uppercase">Backups</Title>
-              <Button
-                size="xs" loading={createBackup.isPending}
-                onClick={() => createBackup.mutate(undefined, {
-                  onSuccess: () => queryClient.invalidateQueries({ queryKey: ['portfolio', 'backups'] }),
-                })}
-              >
-                Backup Now
-              </Button>
-            </Group>
-            <Text size="xs" c="dimmed" mb="sm">
-              Backs up the full database plus config.yaml. Kept under data/backups/; the oldest are pruned
-              automatically once there are more than 14.
-            </Text>
-            {backups && backups.length === 0 && (
-              <Text size="sm" c="dimmed">No backups yet.</Text>
-            )}
-            {backups && backups.length > 0 && (
-              <Stack gap={4}>
-                {backups.slice(0, 5).map((b) => (
-                  <Group key={b.name} justify="space-between">
-                    <Text size="xs" ff="monospace">{b.name}</Text>
-                    <Text size="xs" c="dimmed">{dateTime(b.created_at)} - {formatBytes(b.size_bytes)}</Text>
-                  </Group>
-                ))}
-                {backups.length > 5 && (
-                  <Text size="xs" c="dimmed">+ {backups.length - 5} more in data/backups/</Text>
-                )}
-              </Stack>
-            )}
-          </Card>
-
-          <HintCard>Everything above is read-only except "Backup Now", which writes a new file under data/backups/.</HintCard>
+          <HintCard>
+            Everything above is read-only. Backups moved to the Admin tool - one pg_dump already covers
+            every tenant's data in one shot, so creating one is a cross-tenant-impacting action, not a
+            per-tenant Portfolio button.
+          </HintCard>
         </Stack>
       )}
     </Container>

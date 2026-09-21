@@ -189,3 +189,39 @@ def test_list_errors_passes_limit_query_param(monkeypatch):
 
     assert resp.status_code == 200
     assert captured == {"limit": 50}
+
+
+# Moved from test_api_routers.py (confirmed real misplacement 2026-09-21,
+# see admin.do_create_backup's own docstring) - backups are now admin-only,
+# not a Portfolio route.
+def test_list_backups(monkeypatch):
+    monkeypatch.setattr(admin, "do_list_backups", lambda: {"rows": [
+        {"name": "eve_trader_backup_x.zip", "created_at": "2026-07-17T08:00:00+00:00", "size_bytes": 1234},
+    ]})
+
+    resp = client.get("/api/admin/backups")
+
+    assert resp.status_code == 200
+    assert resp.json()[0]["name"] == "eve_trader_backup_x.zip"
+
+
+def test_create_backup(monkeypatch):
+    monkeypatch.setattr(admin, "do_create_backup", lambda: {
+        "name": "eve_trader_backup_x.zip", "created_at": "2026-07-17T08:00:00+00:00", "size_bytes": 1234,
+    })
+
+    resp = client.post("/api/admin/backups")
+
+    assert resp.status_code == 200
+    assert resp.json()["size_bytes"] == 1234
+
+
+def test_create_backup_action_error_maps_to_400(monkeypatch):
+    def boom():
+        raise ActionError("Backup failed.")
+    monkeypatch.setattr(admin, "do_create_backup", boom)
+
+    resp = client.post("/api/admin/backups")
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Backup failed."

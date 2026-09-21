@@ -464,10 +464,17 @@ since RLS raises on a missing tenant setting rather than silently returning
 zero rows (see "Multi-tenant Postgres" below) - a non-bypassing role
 couldn't dump per-tenant tables at all. `EVE_TRADER_PG_CONTAINER`/
 `EVE_TRADER_DOCKER_BIN` env vars override the container name/`docker`
-binary path (default `"eve-trader-pg"`/`"docker"`). Listing backups is a
-portfolio read; **creating** a backup (which prunes `MAX_BACKUPS`) requires
-the `admin` grant while the gate is on, plus the scheduler's own global
-backup job (opt-in via `DEFAULT_TENANT_ID`'s `backup_interval_hours`).
+binary path (default `"eve-trader-pg"`/`"docker"`). Both listing and
+creating a backup live in the Admin tool (`admin.do_list_backups`/
+`admin.do_create_backup`, `/api/admin/backups`) - moved off the Portfolio
+page (confirmed real misplacement 2026-09-21): one `pg_dump` already
+covers every tenant's data in one shot, so this is cross-tenant-impacting,
+same reasoning as `/sde/refresh`/`/jita-price-cache/refresh` in that same
+module. Both routes require the `admin` grant while the gate is on - no
+more read/write split needing a one-off exception in `api/app.py`'s
+`_required_tool_for_path` (the old `F-06` carve-out, now gone) - plus the
+scheduler's own global backup job (opt-in via `DEFAULT_TENANT_ID`'s
+`backup_interval_hours`).
 Filenames include microseconds and a uuid so two backups cannot collide;
 `pg_dump` stderr stays in the process log, not in the HTTP 400.
 

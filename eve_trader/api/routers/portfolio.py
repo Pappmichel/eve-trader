@@ -8,7 +8,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from .. import schemas
-from ... import actions, portfolio, scheduler
+from ... import portfolio, scheduler
 from ...actions import ActionError
 
 router = APIRouter()
@@ -25,22 +25,14 @@ def _wrap(fn, **kwargs):
 def get_portfolio_overview():
     # GitHub issue #65 (found in a full-codebase audit 2026-08-21): now
     # goes through _wrap like every other read endpoint, for consistency -
-    # neither this nor do_list_backups below currently raises ActionError,
-    # but a future change to either that starts raising one would otherwise
-    # silently regress to a raw 500 instead of a clean 400.
+    # portfolio_overview doesn't currently raise ActionError, but a future
+    # change that starts raising one would otherwise silently regress to a
+    # raw 500 instead of a clean 400. Backups moved to the Admin tool
+    # (confirmed real misplacement 2026-09-21, see admin.do_create_backup's
+    # own docstring) - this router no longer touches actions.py at all.
     return _wrap(portfolio.portfolio_overview)
 
 
 @router.get("/scheduler-status")
 def get_scheduler_status():
     return scheduler.get_status()
-
-
-@router.get("/backups")
-def get_backups():
-    return _wrap(actions.do_list_backups)["rows"]
-
-
-@router.post("/backups")
-def create_backup():
-    return _wrap(actions.do_create_backup)

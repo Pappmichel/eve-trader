@@ -98,3 +98,19 @@ def refresh_jita_price_cache():
 def list_errors(limit: int = 200):
     # In-process error_log ring buffer - no live ESI/Goonmetrics.
     return error_log.do_list_errors(limit=limit)
+
+
+# Moved from api/routers/portfolio.py (confirmed real misplacement
+# 2026-09-21) - creating a backup is cross-tenant-impacting (one pg_dump
+# covers every tenant, backup.py's own docstring), same reasoning as
+# /sde/refresh and /jita-price-cache/refresh above. This also removes the
+# one-off gate exception api/app.py's _required_tool_for_path used to need
+# just for this path (F-06) - /api/admin/ already requires "admin".
+@router.get("/backups")
+def list_backups():
+    return _wrap(admin.do_list_backups)["rows"]
+
+
+@router.post("/backups")
+def create_backup():
+    return _wrap(admin.do_create_backup)
