@@ -241,7 +241,7 @@ describe('Characters page', () => {
 
     await user.click(within(dialog).getByRole('button', { name: 'Remove' }))
     await vi.waitFor(() => {
-      expect(vi.mocked(charactersApi.removeCharacter)).toHaveBeenCalledWith(1)
+      expect(vi.mocked(charactersApi.removeCharacter).mock.calls[0][0]).toBe(1)
     })
   })
 })
