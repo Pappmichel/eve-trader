@@ -15,6 +15,7 @@ import requests
 
 from eve_trader import storage
 from eve_trader.auth import TokenManager, TokenRecord
+from eve_trader.config import TRADING_CONFIG, TradingConfig
 from eve_trader.esi_client import ESIClient, ESIError
 from eve_trader.esi_data import orchestrator
 from eve_trader.esi_data.orchestrator import (
@@ -561,3 +562,58 @@ def test_dead_refresh_token_stamps_freshness_last_error_for_kind(tenant, monkeyp
     assert "Token refresh failed for role 'producer:1001'" in err
     assert "Re-authorize this character" in err
     assert "?" not in {r[0] for r in rows}
+
+
+def test_character_worker_thread_sees_tenant_trading_overrides(tenant, monkeypatch):
+    """ThreadPoolExecutor workers do not inherit ConfigProxy ContextVars.
+
+    storage.with_current_tenant only copies tenant_id, so _record_failure
+    used to compute the stale-clear window from config.yaml / dataclass
+    defaults. A tenant who raised esi_stale_clear_multiples (or a tier
+    interval) could then have an owner's snapshot deleted too early.
+    enter_tenant inside the worker is the chokepoint that loads
+    tenant_settings onto TRADING_CONFIG.
+    """
+    default = TradingConfig()
+    assert default.esi_stale_clear_multiples == 3.0
+    assert default.esi_normal_interval_hours == 6.0
+    storage.save_tenant_settings("trading", {
+        "esi_stale_clear_multiples": 9.0,
+        "esi_normal_interval_hours": 12.0,
+    })
+    # tenant_context (the test fixture) does not resolve configs — the
+    # submitting thread still sees the shared default instance, which is
+    # exactly what a with_current_tenant-only worker used to see.
+    assert TRADING_CONFIG.esi_stale_clear_multiples == default.esi_stale_clear_multiples
+    assert TRADING_CONFIG.esi_normal_interval_hours == default.esi_normal_interval_hours
+
+    caller_thread = threading.current_thread().name
+    captured: dict = {}
+
+    def spy(*args, **kwargs):
+        captured["stale_clear_multiples"] = kwargs["stale_clear_multiples"]
+        captured["tier_interval_hours"] = kwargs["tier_interval_hours"]
+        captured["thread"] = threading.current_thread().name
+        captured["tenant"] = storage.get_current_tenant()
+        captured["live_multiples"] = TRADING_CONFIG.esi_stale_clear_multiples
+        captured["live_normal"] = TRADING_CONFIG.esi_normal_interval_hours
+        return False
+
+    monkeypatch.setattr(orchestrator, "clear_stale_owner_kind", spy)
+
+    _share("character", ALICE, "assets", "production")
+    _tokens((ALICE, "Alice"))
+    client = FakeClient(assets={ALICE: [_asset(1, ALICE)]})
+
+    def boom(*_args, **_kwargs):
+        raise ESIError("assets 500")
+
+    client.character_assets = boom
+    result = do_sync_for_tool("production", client=client)
+    assert result["ok"] is False
+    assert captured["stale_clear_multiples"] == 9.0
+    assert captured["tier_interval_hours"] == 12.0
+    assert captured["live_multiples"] == 9.0
+    assert captured["live_normal"] == 12.0
+    assert captured["tenant"] == tenant
+    assert captured["thread"] != caller_thread

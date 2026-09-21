@@ -237,40 +237,58 @@ def fetch_character_wallet(
 
 
 def fetch_corporation_wallet(
-    client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
+    client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **kwargs,
 ) -> dict:
-    """Partial-division: a member that can read some but not all divisions
-    is used as-is (Phase 8). Zero readable divisions is a failed fetch
-    (skip the delete, decision 6)."""
+    """Union readable divisions across every candidate member role.
+
+    A Junior Accountant may only see division 1; an Accountant listed
+    later may see 2-7. Trying one role and stopping (Phase 8's original
+    shape) let the replace wipe unread divisions. `candidate_auth_roles`
+    is the orchestrator's full member list for this corp; a single
+    `auth_role` (direct call, or one member) still works. Zero readable
+    divisions is a failed fetch (skip the delete, decision 6).
+    """
+    roles = [r for r in (kwargs.get("candidate_auth_roles") or ()) if r]
+    if not roles:
+        roles = [auth_role]
+    unread = list(WALLET_DIVISION_IDS)
     txn_rows: list[tuple] = []
     journal_rows: list[tuple] = []
     readable: list[int] = []
     last_error: Optional[BaseException] = None
-    for division in WALLET_DIVISION_IDS:
-        try:
-            txns = _page_wallet_transactions(
-                lambda from_id, d=division: client.corporation_wallet_transactions(
-                    owner_id, d, auth_role=auth_role, from_id=from_id,
+    for role in roles:
+        if not unread:
+            break
+        still_unread: list[int] = []
+        for division in unread:
+            try:
+                txns = _page_wallet_transactions(
+                    lambda from_id, d=division, r=role: client.corporation_wallet_transactions(
+                        owner_id, d, auth_role=r, from_id=from_id,
+                    )
                 )
-            )
-            journal = client.corporation_wallet_journal(
-                owner_id, division, auth_role=auth_role,
-            )
-        except ESIError as e:
-            last_error = e
-            continue
-        readable.append(division)
-        txn_rows.extend(_wallet_txn_rows(txns, division))
-        journal_rows.extend(_wallet_journal_rows(journal, division))
+                journal = client.corporation_wallet_journal(
+                    owner_id, division, auth_role=role,
+                )
+            except ESIError as e:
+                last_error = e
+                still_unread.append(division)
+                continue
+            readable.append(division)
+            txn_rows.extend(_wallet_txn_rows(txns, division))
+            journal_rows.extend(_wallet_journal_rows(journal, division))
+        unread = still_unread
     if not readable:
         if last_error is not None:
             raise last_error
         raise ESIError("no corporation wallet division readable")
     storage.replace_wallet_transactions(
         txn_rows, owner_type="corporation", owner_id=owner_id,
+        divisions=readable,
     )
     storage.replace_wallet_journal(
         journal_rows, owner_type="corporation", owner_id=owner_id,
+        divisions=readable,
     )
     return {"written": len(txn_rows), "journal": len(journal_rows), "divisions": readable}
 

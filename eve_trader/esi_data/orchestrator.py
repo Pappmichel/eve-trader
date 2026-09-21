@@ -143,9 +143,19 @@ def _run_kind(
     auth_role: str,
     owner_name: str,
     extra: dict,
+    candidate_auth_roles: Optional[list[str]] = None,
 ) -> dict:
+    """Generic (kind, owner_type) dispatch. `candidate_auth_roles` is
+    wallet-only: corp wallets need every member who holds the scope so
+    unread divisions can be filled in, but every other fetcher still
+    takes exactly one `auth_role`. Forwarded as a kwarg the generic
+    fetchers already swallow via `**_kwargs`.
+    """
     fn = fetcher_for(data_kind, owner_type)
-    return fn(client, owner_id, auth_role, owner_name, **extra)
+    kwargs = dict(extra)
+    if candidate_auth_roles:
+        kwargs["candidate_auth_roles"] = candidate_auth_roles
+    return fn(client, owner_id, auth_role, owner_name, **kwargs)
 
 
 def _record_success(owner_type: str, owner_id: int, data_kind: str) -> None:
@@ -269,6 +279,12 @@ def _run_corporation_kinds_for_members(
     later Accountant fills orders (and a later Junior_Accountant, wallet).
     Each member's `auth_role` comes from the selector for that kind's corp
     scope — not from a prefix listing.
+
+    Wallet is the one kind that is not first-success-wins: a Junior
+    Accountant may read only division 1, and breaking there would let
+    the destructive replace wipe divisions 2-7. Collect every member
+    who holds the corp-wallet scope and let the fetcher union their
+    readable divisions into one write.
     """
     owner_type = "corporation"
     if not _try_begin_owner(owner_type, corp_id):
@@ -286,22 +302,49 @@ def _run_corporation_kinds_for_members(
                 last_error: Optional[BaseException] = None
                 wrote = None
                 any_candidate = False
-                for rec in members:
-                    role = select_auth_role(rec.character_id, scope, tokens=tokens) if scope else None
-                    if role is None:
+                if data_kind == "wallet":
+                    candidate_roles: list[str] = []
+                    seen_roles: set[str] = set()
+                    for rec in members:
+                        role = (
+                            select_auth_role(rec.character_id, scope, tokens=tokens)
+                            if scope else None
+                        )
+                        if role is None or role in seen_roles:
+                            continue
+                        seen_roles.add(role)
+                        candidate_roles.append(role)
+                    if not candidate_roles:
+                        kind_report[data_kind] = REAUTH_NEEDED
                         continue
                     any_candidate = True
                     try:
                         wrote = _run_kind(
                             client=client, data_kind=data_kind, owner_type=owner_type,
-                            owner_id=corp_id, auth_role=role, owner_name=owner_name,
-                            extra=extra,
+                            owner_id=corp_id, auth_role=candidate_roles[0],
+                            owner_name=owner_name, extra=extra,
+                            candidate_auth_roles=candidate_roles,
                         )
                         last_error = None
-                        break
                     except ESIError as e:
                         last_error = e
-                        continue
+                else:
+                    for rec in members:
+                        role = select_auth_role(rec.character_id, scope, tokens=tokens) if scope else None
+                        if role is None:
+                            continue
+                        any_candidate = True
+                        try:
+                            wrote = _run_kind(
+                                client=client, data_kind=data_kind, owner_type=owner_type,
+                                owner_id=corp_id, auth_role=role, owner_name=owner_name,
+                                extra=extra,
+                            )
+                            last_error = None
+                            break
+                        except ESIError as e:
+                            last_error = e
+                            continue
                 if not any_candidate:
                     kind_report[data_kind] = REAUTH_NEEDED
                     continue
@@ -367,13 +410,29 @@ def _sync(
     fetch_extra = extra or {}
     char_results: list[dict] = []
     if char_owners:
+        # Local import: tenant_scope pulls production/doctrine/refining/
+        # station_trading config modules. esi_data must not load those at
+        # import time (test_importing_registry_does_not_load_tool_packages).
+        from .. import tenant_scope
+
+        # Capture on this thread: worker threads do not inherit
+        # contextvars (confirmed live twice in this project). enter_tenant
+        # is the chokepoint that sets storage's tenant *and* the five
+        # ConfigProxy ContextVars; with_current_tenant only copies
+        # tenant_id, so _tier_hours / _stale_clear_multiples inside a
+        # worker would otherwise read config.yaml defaults.
+        tenant_id = storage.get_current_tenant()
+        if not tenant_id:
+            raise RuntimeError("ESI character sync requires a tenant in scope")
+
         def _one_char(pair: tuple[str, int]) -> dict:
-            _ot, owner_id = pair
-            kinds = _kinds_for_owner(sharing, "character", owner_id)
-            return _run_character_owner(
-                client=esi, owner_id=owner_id, kinds=kinds,
-                characters=characters, extra=fetch_extra, tokens=tm,
-            )
+            with tenant_scope.enter_tenant(tenant_id):
+                _ot, owner_id = pair
+                kinds = _kinds_for_owner(sharing, "character", owner_id)
+                return _run_character_owner(
+                    client=esi, owner_id=owner_id, kinds=kinds,
+                    characters=characters, extra=fetch_extra, tokens=tm,
+                )
 
         # 4, not 8 (confirmed real incident 2026-09-21): each worker holds
         # its own storage.batch_session() connection open for its whole
@@ -387,9 +446,8 @@ def _sync(
         # (usually well under 10 owners) just as parallel in practice while
         # leaving most of the pool free for the rest of the app even in the
         # worst case where every worker is simultaneously slow.
-        wrapped = storage.with_current_tenant(_one_char)
         with ThreadPoolExecutor(max_workers=min(4, len(char_owners))) as pool:
-            char_results = list(pool.map(wrapped, char_owners))
+            char_results = list(pool.map(_one_char, char_owners))
 
     # Corp membership from public info, in character-list order. Sequential
     # across corps AND across members of one corp — parallelizing that races
