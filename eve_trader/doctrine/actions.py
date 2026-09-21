@@ -273,6 +273,27 @@ def _type_name(type_id: int) -> str:
     return row[2] if row else str(type_id)
 
 
+def _character_names_by_role_key() -> dict[str, str]:
+    """role_key -> character name for every token this tenant holds, any
+    prefix.
+
+    Contract/history rows store the `source_role` that synced them, and
+    since the sharing migration that is whatever
+    esi_sync.list_shared_doctrine_characters resolved via
+    esi_data.selector.select_auth_role - which picks a token by scope, not
+    by prefix, so it is routinely `esi:<id>` or another tool's key, not
+    `doctrine:<id>`. Building this map from the old prefix-scanning
+    list_doctrine_characters() left every such row without a name (blank
+    "Character" column, confirmed 2026-09-21). Reading TokenManager's own
+    records covers legacy and new keys alike with no union to keep in
+    sync."""
+    return {
+        rec.role: rec.character_name
+        for rec in TokenManager(OAUTH_CONFIG).list_records()
+        if rec.character_name
+    }
+
+
 def do_get_fitting_detail(fitting_id: str) -> dict:
     fitting, items = engine.load_fitting_with_items(fitting_id)
     issue_rows = storage.load_fitting_parse_issues(fitting_id)
@@ -408,10 +429,9 @@ def do_get_shopping_list(doctrine_id: Optional[str] = None, cfg: DoctrineConfig 
 def do_list_contracts(fitting_id: Optional[str] = None, status: Optional[str] = None) -> dict:
     contracts = engine.contract_rows_from_db(storage.list_doctrine_contracts(fitting_id=fitting_id, status=status))
 
-    # source_role is an ESI-token role key ("doctrine:<character_id>", see
-    # esi_sync.DOCTRINE_ROLE_PREFIX) - resolve it to the character's actual
-    # name for display rather than leaving the raw string on screen.
-    character_names = {role_key: name for role_key, _character_id, name in esi_sync.list_doctrine_characters()}
+    # source_role is an ESI-token role key - resolve it to the character's
+    # actual name for display rather than leaving the raw string on screen.
+    character_names = _character_names_by_role_key()
     # Hull comes from the matched fitting, if any - an unmatched contract
     # doesn't authoritatively identify which of possibly-several relevant
     # hulls it's for, so it stays blank rather than guessing from its items.
@@ -452,7 +472,7 @@ def do_contract_history() -> dict:
     source_character_name (same role-key resolution do_list_contracts above
     already does) need resolving here."""
     rows = storage.load_doctrine_contract_history()
-    character_names = {role_key: name for role_key, _character_id, name in esi_sync.list_doctrine_characters()}
+    character_names = _character_names_by_role_key()
     result = []
     for (contract_id, source_role, fitting_id, fitting_name, hull_type_id, title, price, acceptor_id,
          acceptor_name, date_issued, date_completed) in rows:

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import Optional
 
 from . import storage
 from .config import TRADING_CONFIG, TradingConfig
@@ -52,7 +53,8 @@ def fetch_own_sell_orders(character_id: int, auth_role: str, client: ESIClient,
 
 
 def check_undercut_pooled(sellers: list[tuple[int, str]], client: ESIClient,
-                           cfg: TradingConfig = TRADING_CONFIG) -> list[dict]:
+                           cfg: TradingConfig = TRADING_CONFIG,
+                           book_auth_role: Optional[str] = None) -> list[dict]:
     """Same idea as check_undercut, but pools every registered seller
     character's own orders together (GitHub issue #46: multiple seller
     characters share the same structure's order slots) - `sellers` is a list
@@ -93,11 +95,15 @@ def check_undercut_pooled(sellers: list[tuple[int, str]], client: ESIClient,
         if type_id not in my_best_price or o["price"] < my_best_price[type_id]:
             my_best_price[type_id] = o["price"]
 
-    # The structure's order book is one shared/global fetch - any one of the
-    # registered sellers with docking access can retrieve it, so the first
-    # one passed in is enough (matches structure_order_stats_bulk's own
-    # "pick any one seller" reasoning in actions.py).
-    all_orders = client.structure_orders_raw(cfg.structure_id, auth_role=sellers[0][1])
+    # The structure's order book is one shared/global fetch - any one
+    # character with the "Structure market book" capability and docking
+    # access can retrieve it. That capability lookup needs storage/tenant
+    # scope, which this module deliberately does not have (it is pure
+    # compute over what the caller hands it), so the caller resolves it:
+    # `book_auth_role` comes from actions.structure_book_auth_role, and
+    # falls back to the first seller when nobody has the capability ticked.
+    all_orders = client.structure_orders_raw(
+        cfg.structure_id, auth_role=book_auth_role or sellers[0][1])
     competitor_best: dict[int, float] = {}
     for o in all_orders:
         if o.get("is_buy_order") or o.get("order_id") in my_order_ids:

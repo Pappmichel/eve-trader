@@ -6,6 +6,7 @@ do_* function in this app follows)."""
 from contextlib import contextmanager
 
 from eve_trader import storage
+from eve_trader.auth import TokenManager, TokenRecord
 from eve_trader.doctrine import actions, engine, esi_sync
 from eve_trader.doctrine.models import ParsedFitting
 
@@ -34,8 +35,8 @@ def _fitting_db_row(**overrides) -> tuple:
 def test_do_list_contracts_resolves_source_role_to_character_name(monkeypatch):
     monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **kwargs: [_contract_db_row()])
     monkeypatch.setattr(storage, "list_active_fittings", lambda: [])
-    monkeypatch.setattr(esi_sync, "list_doctrine_characters",
-                         lambda: [("doctrine:1560510246", 1560510246, "pappmichl")])
+    monkeypatch.setattr(actions, "_character_names_by_role_key",
+                         lambda: {"doctrine:1560510246": "pappmichl"})
 
     result = actions.do_list_contracts()
 
@@ -46,11 +47,31 @@ def test_do_list_contracts_resolves_source_role_to_character_name(monkeypatch):
 def test_do_list_contracts_falls_back_to_raw_role_key_when_character_unknown(monkeypatch):
     monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **kwargs: [_contract_db_row()])
     monkeypatch.setattr(storage, "list_active_fittings", lambda: [])
-    monkeypatch.setattr(esi_sync, "list_doctrine_characters", lambda: [])  # character since removed
+    monkeypatch.setattr(actions, "_character_names_by_role_key", lambda: {})  # character since removed
 
     result = actions.do_list_contracts()
 
     assert result["rows"][0]["source_character_name"] is None
+
+
+def test_do_list_contracts_resolves_a_non_doctrine_prefixed_source_role(monkeypatch):
+    """Confirmed real bug 2026-09-21: since the sharing migration, the
+    syncing character's role_key is whatever select_auth_role picked (by
+    scope, not prefix), so source_role is routinely `esi:<id>` or another
+    tool's key. The name map used to come from the prefix-scanning
+    list_doctrine_characters(), which never contained those - the
+    Character column silently went blank."""
+    monkeypatch.setattr(storage, "list_doctrine_contracts",
+                         lambda **kwargs: [_contract_db_row(source_role="esi:1560510246")])
+    monkeypatch.setattr(storage, "list_active_fittings", lambda: [])
+    monkeypatch.setattr(TokenManager, "list_records", lambda self: [
+        TokenRecord(role="esi:1560510246", character_id=1560510246, character_name="pappmichl",
+                    access_token="a", refresh_token="r", expires_at=9999999999.0, scopes="s"),
+    ])
+
+    result = actions.do_list_contracts()
+
+    assert result["rows"][0]["source_character_name"] == "pappmichl"
 
 
 def test_do_list_contracts_resolves_hull_from_matched_fitting(monkeypatch):
@@ -58,7 +79,7 @@ def test_do_list_contracts_resolves_hull_from_matched_fitting(monkeypatch):
                          lambda **kwargs: [_contract_db_row(matched_fitting_id="f1")])
     monkeypatch.setattr(storage, "list_active_fittings", lambda: [_fitting_db_row(fitting_id="f1", hull_type_id=1000)])
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Rifter", 20.0, 1, 1, 0, None))
-    monkeypatch.setattr(esi_sync, "list_doctrine_characters", lambda: [])
+    monkeypatch.setattr(actions, "_character_names_by_role_key", lambda: {})
 
     result = actions.do_list_contracts()
 
@@ -71,7 +92,7 @@ def test_do_list_contracts_blank_hull_when_unmatched(monkeypatch):
                          lambda **kwargs: [_contract_db_row(matched_fitting_id=None)])
     monkeypatch.setattr(storage, "list_active_fittings", lambda: [_fitting_db_row(fitting_id="f1")])
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Rifter", 20.0, 1, 1, 0, None))
-    monkeypatch.setattr(esi_sync, "list_doctrine_characters", lambda: [])
+    monkeypatch.setattr(actions, "_character_names_by_role_key", lambda: {})
 
     result = actions.do_list_contracts()
 
@@ -96,8 +117,8 @@ def test_do_contract_history_resolves_hull_name_and_character_name(monkeypatch):
     # source_character_name need resolving here.
     monkeypatch.setattr(storage, "load_doctrine_contract_history", lambda: [_history_db_row()])
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Rifter", 20.0, 1, 1, 0, None))
-    monkeypatch.setattr(esi_sync, "list_doctrine_characters",
-                         lambda: [("doctrine:1560510246", 1560510246, "pappmichl")])
+    monkeypatch.setattr(actions, "_character_names_by_role_key",
+                         lambda: {"doctrine:1560510246": "pappmichl"})
 
     result = actions.do_contract_history()
 
@@ -123,7 +144,7 @@ def test_do_contract_history_converts_real_datetime_columns_to_iso_strings(monke
         date_issued=dt.datetime(2026, 8, 1, tzinfo=dt.timezone.utc),
         date_completed=dt.datetime(2026, 8, 2, tzinfo=dt.timezone.utc),
     )])
-    monkeypatch.setattr(esi_sync, "list_doctrine_characters", lambda: [])
+    monkeypatch.setattr(actions, "_character_names_by_role_key", lambda: {})
 
     result = actions.do_contract_history()
 
@@ -144,7 +165,7 @@ def test_do_contract_history_converts_real_uuid_fitting_id_to_string(monkeypatch
     fitting_uuid = uuid.UUID("516e466c-9ec3-4d4f-a8b1-bc87e8b41ed7")
     monkeypatch.setattr(storage, "load_doctrine_contract_history",
                          lambda: [_history_db_row(fitting_id=fitting_uuid, hull_type_id=None)])
-    monkeypatch.setattr(esi_sync, "list_doctrine_characters", lambda: [])
+    monkeypatch.setattr(actions, "_character_names_by_role_key", lambda: {})
 
     result = actions.do_contract_history()
 
@@ -157,7 +178,7 @@ def test_do_contract_history_blank_hull_when_fitting_unknown(monkeypatch):
     # for it.
     monkeypatch.setattr(storage, "load_doctrine_contract_history",
                          lambda: [_history_db_row(fitting_id=None, fitting_name=None, hull_type_id=None)])
-    monkeypatch.setattr(esi_sync, "list_doctrine_characters", lambda: [])
+    monkeypatch.setattr(actions, "_character_names_by_role_key", lambda: {})
 
     result = actions.do_contract_history()
 

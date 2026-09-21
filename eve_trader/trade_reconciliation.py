@@ -370,7 +370,7 @@ def collect_trading_wallet_streams(
     seller_characters: list[tuple[int, str]],
     client: ESIClient,
     cfg: TradingConfig = TRADING_CONFIG,
-) -> tuple[list[dict], dict[tuple, float]]:
+) -> tuple[list[dict], dict[tuple, float], int]:
     """Per-owner wallet rows for Trading, sharing-gated (decision 9).
 
     For each character and each corporation derived from them:
@@ -382,6 +382,19 @@ def collect_trading_wallet_streams(
     propagate. Always returns lists (possibly empty), never `(None, None)`.
     `reconcile_realized_trades(..., snapshot_txns=None)` stays the
     unrestricted live path used by Phase 8 tests.
+
+    The third element is how many owners (characters + corporations) were
+    actually readable, i.e. passed the sharing gate. Callers need this to
+    tell "read every shared wallet, there were no trades in the window"
+    (empty result is the truth) from "every owner was skipped because
+    nothing shares Wallet with Trading" (empty result is an access
+    problem). Confirmed real, destructive bug 2026-09-21: the two were
+    indistinguishable, and do_reconcile_trades feeds the result straight
+    into storage.save_realized_trades, which DELETEs the whole table
+    before inserting - so a tenant who shared only Market Orders (not
+    Wallet) silently wiped their entire realized-trade history the next
+    time Reconcile Trades ran, and Portfolio/Profit-per-Day went to
+    zero with `matched_trades: 0` looking like "nothing to match".
     """
     from .esi_data.access import is_shared, read_esi
 
@@ -396,9 +409,11 @@ def collect_trading_wallet_streams(
     for cid, role in list(buyer_characters) + list(seller_characters):
         roles_by_id.setdefault(cid, role)
 
+    readable_owners = 0
     for character_id, role in roles_by_id.items():
         if not is_shared("wallet", "trading", "character", character_id):
             continue
+        readable_owners += 1
         snap = read_esi(
             "wallet", "trading", owner_type="character", owner_id=character_id,
             table="transactions",
@@ -430,6 +445,7 @@ def collect_trading_wallet_streams(
     for corporation_id, members in discovered.items():
         if not is_shared("wallet", "trading", "corporation", corporation_id):
             continue
+        readable_owners += 1
         snap = read_esi(
             "wallet", "trading", owner_type="corporation", owner_id=corporation_id,
             table="transactions",
@@ -449,7 +465,7 @@ def collect_trading_wallet_streams(
         )
         txns.extend(corp_txns)
         journal.update(corp_journal)
-    return txns, journal
+    return txns, journal, readable_owners
 
 
 def reconcile_realized_trades(buyer_characters: list[tuple[int, str]], seller_characters: list[tuple[int, str]],

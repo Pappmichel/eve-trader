@@ -11,7 +11,7 @@ from typing import Optional
 import requests
 
 from .. import storage
-from ..actions import ActionError, list_shared_trading_characters
+from ..actions import ActionError, list_shared_trading_characters, structure_book_auth_role
 from ..auth import TokenManager
 from ..config import OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, TradingConfig, save_tenant_config_overrides
 from ..esi_client import ESIClient, ESIError
@@ -38,16 +38,23 @@ def now_ts() -> str:
 
 
 def _seller_role(tm: TokenManager) -> Optional[str]:
-    """Reuses Trading's own shared-character list - no Ore-specific login
-    (see module docstring). Any one character sharing Market Orders/Wallet/
-    Assets with Trading is enough (GitHub issue #46's own multi-character
-    precedent). Sharing-based since 2026-09-21 (bug found alongside Known
-    gap 4: the old `tm.list_roles("seller")`/legacy-bare-key lookup was
-    blind to a character added via the Characters page's add-a-character
-    path, same as Trading's own do_list_seller_characters was) - see
-    actions.list_shared_trading_characters's own docstring."""
-    characters = list_shared_trading_characters(tm)
-    return characters[0][0] if characters else None
+    """auth_role for the C-J structure order book - no Ore-specific login
+    (see module docstring).
+
+    Both call sites use this purely for structure_order_stats_bulk_or_
+    goonmetrics, so it resolves the "Structure market book" capability
+    (actions.structure_book_auth_role), not just "the first character
+    sharing anything with Trading". Two successive fixes here: the original
+    `tm.list_roles("seller")`/legacy-bare-key lookup was blind to a
+    character added via the Characters page (Known-gap-4 class, fixed
+    2026-09-21), and its sharing-based replacement was still the wrong
+    fact - Market Orders/Wallet/Assets sharing never implies
+    esi-markets.structure_markets.v1, so an install whose capability
+    character was not the arbitrary first entry silently fell back to
+    Goonmetrics (same day, found in review). Trading's shortlist, Unlisted
+    Stock and Undercut Check, Production's home_prices and Doctrine's
+    shopping list all resolve it the same way now."""
+    return structure_book_auth_role(list_shared_trading_characters(tm))
 
 
 def do_add_ore_to_shortlist() -> dict:

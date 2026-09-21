@@ -199,7 +199,7 @@ def test_reconcile_omits_unshared_character_wallet(tenant, monkeypatch):
         ALICE: [_buy_txn(ALICE)],
         BOB: [_sell_txn(cfg, BOB)],
     })
-    txns, journal = collect_trading_wallet_streams(
+    txns, journal, _readable = collect_trading_wallet_streams(
         [(ALICE, "buyer")], [(BOB, "seller")], client, cfg,
     )
     assert client.char_txn_calls == [ALICE]
@@ -231,7 +231,7 @@ def test_reconcile_omits_unshared_corporation_wallet(tenant, monkeypatch):
         character_corps={ALICE: CORP},
         corp_txns={(CORP, 1): [corp_sell]},
     )
-    txns, journal = collect_trading_wallet_streams(
+    txns, journal, _readable = collect_trading_wallet_streams(
         [(ALICE, "buyer")], [(BOB, "seller")], client, cfg,
     )
     assert client.corp_txn_calls == []
@@ -263,7 +263,7 @@ def test_shared_corp_with_empty_snapshot_live_fetches(tenant, monkeypatch):
         character_corps={ALICE: CORP},
         corp_txns={(CORP, 1): [corp_sell]},
     )
-    txns, journal = collect_trading_wallet_streams(
+    txns, journal, _readable = collect_trading_wallet_streams(
         [(ALICE, "buyer")], [(ALICE, "seller")], client, cfg,
     )
     assert any(c[0] == CORP for c in client.corp_txn_calls)
@@ -288,7 +288,7 @@ def test_shared_wallet_with_empty_snapshot_live_fetches(tenant, monkeypatch):
         ALICE: [_buy_txn(ALICE)],
         BOB: [_sell_txn(cfg, BOB)],
     })
-    txns, journal = collect_trading_wallet_streams(
+    txns, journal, _readable = collect_trading_wallet_streams(
         [(ALICE, "buyer")], [(BOB, "seller")], client, cfg,
     )
     assert sorted(client.char_txn_calls) == [ALICE, BOB]
@@ -349,7 +349,7 @@ def test_shared_wallet_snapshot_skips_live_esi(tenant, monkeypatch):
         ALICE: [_buy_txn(ALICE)],
         BOB: [_sell_txn(cfg, BOB)],
     })
-    txns, _journal = collect_trading_wallet_streams(
+    txns, _journal, _readable = collect_trading_wallet_streams(
         [(ALICE, "buyer")], [(BOB, "seller")], client, cfg,
     )
     assert client.char_txn_calls == []

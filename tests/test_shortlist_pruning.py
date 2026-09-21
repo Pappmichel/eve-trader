@@ -223,6 +223,7 @@ def test_refresh_shortlist_prices_jita_in_oldest_first_batches(monkeypatch):
 
     monkeypatch.setattr(storage, "load_shortlist", lambda: items)
     monkeypatch.setattr(actions, "list_shared_trading_characters", lambda tm: [])
+    monkeypatch.setattr(actions, "structure_book_auth_role", lambda chars=None: "seller:1")
     monkeypatch.setattr(ESIClient, "region_order_stats_bulk", fake_bulk)
     monkeypatch.setattr(
         ESIClient, "structure_order_stats_bulk_or_goonmetrics",
@@ -255,6 +256,7 @@ def _cleanup_refresh_mocks(monkeypatch, items, fake_bulk, previous_rows=None, ma
 
     monkeypatch.setattr(storage, "load_shortlist", lambda: items)
     monkeypatch.setattr(actions, "list_shared_trading_characters", lambda tm: [])
+    monkeypatch.setattr(actions, "structure_book_auth_role", lambda chars=None: "seller:1")
     monkeypatch.setattr(ESIClient, "region_order_stats_bulk", fake_bulk)
     monkeypatch.setattr(
         ESIClient, "structure_order_stats_bulk_or_goonmetrics",

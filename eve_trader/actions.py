@@ -231,6 +231,36 @@ def list_shared_trading_characters(tm: TokenManager | None = None,
     return out
 
 
+def structure_book_auth_role(fallback_characters: list[tuple[str, int, str]] | None = None) -> Optional[str]:
+    """auth_role for reading a player structure's order book, or None.
+
+    Reading `/markets/structures/` needs `esi-markets.structure_markets.v1`
+    plus live docking access - that is Group 3 "Structure market book" on
+    the Characters page's Access table (`esi_character_capabilities`), an
+    unrelated fact from whether a character shares Market Orders / Wallet /
+    Assets with Trading. Confirmed real bug 2026-09-21: every Trading-side
+    structure-book call picked `seller_characters[0]` out of the
+    sharing-based list instead, so a tenant whose capability character was
+    not that arbitrary first entry (the list is ordered by character_id) got
+    "Could not fetch the structure's order book" or a silent Goonmetrics
+    fallback while a perfectly good token sat unused. Production
+    (production/pricing.home_prices) and Doctrine (doctrine/engine) already
+    resolve it this way.
+
+    `fallback_characters` keeps the pre-capability behaviour available for
+    an install that has not ticked the capability for anyone yet: the old
+    "first shared Trading character" guess is still better than not trying
+    at all, and the callers all degrade gracefully when the call fails.
+    """
+    from .production import esi_sync as production_esi_sync
+
+    for role, _character_id, _name in production_esi_sync.list_capability_characters("structure_market_book"):
+        return role
+    if fallback_characters:
+        return fallback_characters[0][0]
+    return None
+
+
 def do_list_buyer_characters(oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> list[tuple[str, int, str]]:
     return list_shared_trading_characters(oauth_cfg=oauth_cfg)
 
@@ -246,10 +276,37 @@ def do_remove_trading_character(role_key: str, oauth_cfg: OAuthConfig = OAUTH_CO
 
 
 def do_list_transaction_characters(oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> list[tuple[str, int, str]]:
-    """Every character sharing Trading data (Transactions tab's character
-    picker - buyer/seller merged into one sharing-based list, see
-    list_shared_trading_characters)."""
-    return list_shared_trading_characters(oauth_cfg=oauth_cfg)
+    """The Transactions tab's character picker: characters sharing **Wallet**
+    with Trading specifically, resolved to a wallet-scoped token.
+
+    Deliberately narrower than list_shared_trading_characters, which unions
+    Market Orders / Wallet / Assets sharing and prefers a market-orders
+    token. Everything this picker feeds (do_wallet_transactions /
+    do_wallet_balance) is a wallet call, so the wider list produced two
+    confirmed failures 2026-09-21:
+    - a character sharing only Market Orders or Assets was listed, and
+      Transactions.tsx auto-selects the first entry, so the tab opened
+      straight onto an HTTP 400 from _require_trading_wallet_role_key's
+      Wallet-sharing check;
+    - a character sharing Wallet whose widest token happens to be
+      scope-narrower (e.g. a `trader:<id>` key: character orders + skills,
+      no wallet) was resolved to that token, and the wallet call then
+      failed as a bare ESIError -> HTTP 500.
+    Selecting on the wallet scope alone fixes both: a listed character is
+    one this tab can actually read.
+    """
+    from .esi_data.access import shared_owner_ids
+    from .esi_data.selector import select_auth_role
+
+    tm = TokenManager(oauth_cfg)
+    out = []
+    for character_id in sorted(set(shared_owner_ids("wallet", "trading", "character"))):
+        role = select_auth_role(character_id, "esi-wallet.read_character_wallet.v1", tokens=tm)
+        if role is None:
+            continue  # shares Wallet but holds no wallet-scoped token: needs Re-authorize
+        record = tm.get_record(role)
+        out.append((role, character_id, record.character_name if record else str(character_id)))
+    return out
 
 
 def do_wallet_transactions(role_key: str, lookback_days: Optional[int] = None,
@@ -653,16 +710,16 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
     #   character rather than aborting cleanup.
     try:
         # The structure's order book is one shared/global fetch - any one
-        # registered seller with docking access can retrieve it, so the
-        # first one is enough (GitHub issue #46). Falls back to a
-        # Goonmetrics current-price snapshot (cfg.structure_market_slug) when
-        # no seller is logged in at all, or the real call fails (lost
+        # character with the "Structure market book" capability and docking
+        # access can retrieve it (see structure_book_auth_role). Falls back
+        # to a Goonmetrics current-price snapshot (cfg.structure_market_slug)
+        # when nobody can read it at all, or the real call fails (lost
         # docking access, ESI outage) - see structure_order_stats_bulk_or_
         # goonmetrics's own docstring for why this is safe here but NOT used
         # by check_undercut.
         structure_stats_by_item, priced_via_fallback = client.structure_order_stats_bulk_or_goonmetrics(
             cfg.structure_id, priced_item_ids,
-            auth_role=seller_characters[0][0] if seller_characters else None,
+            auth_role=structure_book_auth_role(seller_characters),
             goonmetrics_market_slug=cfg.structure_market_slug)
     except ESIError as e:
         # esi-markets.structure_markets.v1 additionally requires the seller
@@ -848,12 +905,15 @@ def do_check_seller_unlisted_stock(cfg: TradingConfig = TRADING_CONFIG,
     if unlisted_type_ids:
         try:
             # The structure's order book is a shared/global fetch - any one
-            # seller with docking access is enough (GitHub issue #46).
+            # character with the "Structure market book" capability and
+            # docking access is enough (see structure_book_auth_role).
             structure_stats_by_item = client.structure_order_stats_bulk(
-                cfg.structure_id, unlisted_type_ids, auth_role=seller_characters[0][0])
+                cfg.structure_id, unlisted_type_ids,
+                auth_role=structure_book_auth_role(seller_characters))
         except ESIError as e:
             raise ActionError(f"Could not fetch the structure's order book ({e}). "
-                               f"Does the seller character still have docking access?") from e
+                               f"Does a character with \"Structure market book\" ticked on the "
+                               f"Characters page still have docking access?") from e
         try:
             # region_order_stats_bulk isolates per-type ESIError, but a
             # thread-pool/transport failure that escapes that still used to
@@ -911,7 +971,8 @@ def do_check_undercut(cfg: TradingConfig = TRADING_CONFIG, oauth_cfg: OAuthConfi
         # - a cheaper order from one of your own other seller characters
         # doesn't count as "undercut".
         undercut = own_orders.check_undercut_pooled(
-            [(cid, role) for role, cid, _name in seller_characters], client, cfg)
+            [(cid, role) for role, cid, _name in seller_characters], client, cfg,
+            book_auth_role=structure_book_auth_role(seller_characters))
     except ESIError as e:
         raise ActionError(f"ESI access failed ({e}).") from e
 
@@ -1200,11 +1261,29 @@ def do_reconcile_trades(cfg: TradingConfig = TRADING_CONFIG,
     # Per-owner: unshared wallets are omitted; shared+empty snapshots
     # live-fetch that owner only. AccessorError / missing-tenant raise.
     try:
-        snapshot_txns, snapshot_journal = collect_trading_wallet_streams(
+        snapshot_txns, snapshot_journal, readable_owners = collect_trading_wallet_streams(
             [(cid, role) for role, cid, _name in buyer_characters],
             [(cid, role) for role, cid, _name in seller_characters],
             client, cfg,
         )
+        # Refuse to "reconcile" when not one wallet was readable. Every
+        # shared character can pass the guard above on Market Orders or
+        # Assets sharing alone, while collect_trading_wallet_streams gates
+        # each owner on *Wallet* sharing specifically - so the result would
+        # be a perfectly empty, perfectly silent [], which
+        # storage.save_realized_trades turns into DELETE FROM
+        # realized_trades with nothing to insert. Confirmed real 2026-09-21:
+        # that wipes the entire realized-trade history (and with it
+        # Portfolio's realized profit and every Shortlist "Profit / Day")
+        # on a config that never shared a wallet. A genuine zero-match run
+        # with at least one readable wallet still saves [], which is
+        # correct - the emptiness is then the actual answer.
+        if readable_owners == 0:
+            raise ActionError(
+                "No character or corporation shares Wallet with Trading, so there is "
+                "nothing to reconcile - share Wallet on the Characters page. "
+                "(Existing realized trades were left untouched.)"
+            )
         # Pooled across every registered buyer/seller character (GitHub issue
         # #46) - every buyer's Jita buys are matched against every seller's
         # structure sells, not paired 1:1 by character.

@@ -21,6 +21,7 @@ def test_refresh_shortlist_surfaces_priced_via_fallback(monkeypatch):
     monkeypatch.setattr(storage, "load_shortlist",
                          lambda: [ShortlistItem(item="Test", item_id=34, category="X", volume_m3=1.0, meta_level=5)])
     monkeypatch.setattr(actions, "list_shared_trading_characters", lambda tm: [])
+    monkeypatch.setattr(actions, "structure_book_auth_role", lambda chars=None: "seller:1")
     monkeypatch.setattr(ESIClient, "region_order_stats_bulk", lambda self, region_id, type_ids: {})
     monkeypatch.setattr(ESIClient, "structure_order_stats_bulk_or_goonmetrics",
                          lambda self, structure_id, type_ids, auth_role, goonmetrics_market_slug: ({}, True))
@@ -40,6 +41,7 @@ def test_refresh_shortlist_no_fallback_when_seller_logged_in(monkeypatch):
     monkeypatch.setattr(storage, "load_shortlist",
                          lambda: [ShortlistItem(item="Test", item_id=34, category="X", volume_m3=1.0, meta_level=5)])
     monkeypatch.setattr(actions, "list_shared_trading_characters", lambda tm: [("seller", 1, "Seller One")])
+    monkeypatch.setattr(actions, "structure_book_auth_role", lambda chars=None: "seller:1")
     monkeypatch.setattr(actions.own_orders, "fetch_own_sell_orders", lambda char_id, role, client, cfg: {})
     # Buyer/seller are now the same shared-characters list (see
     # list_shared_trading_characters), so this "seller" record also flows

@@ -45,7 +45,7 @@ def test_do_reconcile_trades_converts_esierror_to_actionerror(monkeypatch):
                         lambda tm: [("buyer", 1, "B"), ("seller", 2, "S")])
     monkeypatch.setattr(actions.storage, "load_shortlist", lambda: [])
     monkeypatch.setattr(actions, "ESIClient", lambda *a, **k: object())
-    monkeypatch.setattr(actions, "collect_trading_wallet_streams", lambda *a, **k: ([], {}))
+    monkeypatch.setattr(actions, "collect_trading_wallet_streams", lambda *a, **k: ([], {}, 1))
 
     def boom(*a, **k):
         raise ESIError("401 unauthorized")
@@ -56,3 +56,52 @@ def test_do_reconcile_trades_converts_esierror_to_actionerror(monkeypatch):
         assert False, "expected ActionError"
     except actions.ActionError as e:
         assert "ESI access failed" in str(e)
+
+
+def test_do_reconcile_trades_refuses_to_wipe_history_when_no_wallet_is_readable(monkeypatch):
+    """Confirmed real, destructive bug 2026-09-21: every character can pass
+    the "shared with Trading" guard on Market Orders or Assets sharing
+    alone, while collect_trading_wallet_streams gates each owner on *Wallet*
+    sharing - so it returned a silent ([], {}), reconcile matched nothing,
+    and storage.save_realized_trades([]) (DELETE-then-insert) wiped the
+    entire realized-trade history with `matched_trades: 0` looking like
+    "nothing to match"."""
+    saved = []
+    monkeypatch.setattr(actions.TokenManager, "__init__", lambda self, *a, **k: None)
+    monkeypatch.setattr(actions, "list_shared_trading_characters",
+                        lambda tm: [("buyer:1", 1, "B")])
+    monkeypatch.setattr(actions.storage, "load_shortlist", lambda: [])
+    monkeypatch.setattr(actions, "ESIClient", lambda *a, **k: object())
+    # 0 readable owners - nothing shares Wallet, so the empty result is an
+    # access problem, not the truth about this tenant's trades.
+    monkeypatch.setattr(actions, "collect_trading_wallet_streams", lambda *a, **k: ([], {}, 0))
+    monkeypatch.setattr(actions.storage, "save_realized_trades",
+                        lambda trades, run_ts: saved.append(trades))
+
+    try:
+        actions.do_reconcile_trades()
+        assert False, "expected ActionError"
+    except actions.ActionError as e:
+        assert "shares Wallet with Trading" in str(e)
+    assert saved == [], "must not touch realized_trades when no wallet was readable"
+
+
+def test_do_reconcile_trades_still_saves_an_empty_run_when_a_wallet_was_readable(monkeypatch):
+    """The other side of the guard above: a readable wallet that genuinely
+    has no matching trades in the window must still save [] (the wholesale
+    replace is correct there - the emptiness is the real answer)."""
+    saved = []
+    monkeypatch.setattr(actions.TokenManager, "__init__", lambda self, *a, **k: None)
+    monkeypatch.setattr(actions, "list_shared_trading_characters",
+                        lambda tm: [("buyer:1", 1, "B")])
+    monkeypatch.setattr(actions.storage, "load_shortlist", lambda: [])
+    monkeypatch.setattr(actions, "ESIClient", lambda *a, **k: object())
+    monkeypatch.setattr(actions, "collect_trading_wallet_streams", lambda *a, **k: ([], {}, 1))
+    monkeypatch.setattr(actions, "reconcile_realized_trades", lambda *a, **k: [])
+    monkeypatch.setattr(actions.storage, "save_realized_trades",
+                        lambda trades, run_ts: saved.append(trades))
+
+    result = actions.do_reconcile_trades()
+
+    assert result["matched_trades"] == 0
+    assert saved == [[]]

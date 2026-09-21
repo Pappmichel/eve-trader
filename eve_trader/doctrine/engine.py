@@ -372,19 +372,26 @@ def shopping_list_rows(doctrine_id: Optional[str] = None, cfg: DoctrineConfig = 
         jita_stats = {}
     home_stats: dict[int, OrderStats] = {}
     structure_id = cfg.effective_structure_id
-    # GitHub issue #46: Trading's seller token is no longer a single fixed
-    # "seller" key - multiple seller characters can be registered as
-    # "seller:<char_id>". Any one with docking access is enough here, so
-    # just pick the first registered one (falling back to the legacy "seller"
-    # key for a not-yet-re-logged-in single-seller setup, same fallback
-    # actions.py's own _list_role_characters uses).
-    seller_role = next(iter(esi.tokens.list_roles("seller")), None) or (
-        "seller" if esi.tokens.has_token("seller") else None)
-    if structure_id is not None and seller_role is not None:
-        try:
-            home_stats = esi.structure_order_stats_bulk(structure_id, type_ids, auth_role=seller_role)
-        except ESIError:
-            home_stats = {}  # no docking access right now - degrade, don't break the page
+    # Group 3 ("structure_market_book"), not a "seller:" prefix scan
+    # (docs/ESI_ACCESS_PLAN.md Known gap 4 - this call site was missed when
+    # the rest of Doctrine moved to sharing/capability lookups, confirmed
+    # 2026-09-21): reading a structure's order book needs a character with
+    # esi-markets.structure_markets.v1 ticked on the Characters page's
+    # Access table, which is an unrelated fact from which token prefix that
+    # character happens to be stored under - a character whose only token is
+    # producer:<id> or esi:<id> was silently invisible here, so this leg fell
+    # back to trusting Goonmetrics even with a perfectly good token
+    # available. Iterate-and-try-each, exactly as production/pricing.py's
+    # home_prices does for the same structure_order_stats_bulk call.
+    if structure_id is not None:
+        from ..production import esi_sync as production_esi_sync
+        for role, _character_id, _name in production_esi_sync.list_capability_characters(
+                "structure_market_book"):
+            try:
+                home_stats = esi.structure_order_stats_bulk(structure_id, type_ids, auth_role=role)
+            except ESIError:
+                continue  # no docking access for this one - try the next
+            break
 
     result = []
     for row in aggregated:
