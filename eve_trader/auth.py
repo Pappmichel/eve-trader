@@ -225,12 +225,37 @@ class TokenManager:
     # same time - from both seeing the same near-expiry token, both POSTing
     # a refresh, and racing to overwrite each other's saved record. Guards
     # get_token's check-expired -> refresh -> save sequence.
-    _refresh_lock = threading.Lock()
+    #
+    # Per-role, not one lock for every role (confirmed real incident
+    # 2026-09-21): the ESI orchestrator's per-owner ThreadPoolExecutor calls
+    # get_token for up to 8 different characters concurrently, each while
+    # holding its own open storage.batch_session() connection (Decision 7 -
+    # a per-owner sync must roll back atomically, so that connection has to
+    # stay open across the owner's whole fetch). A single global lock meant
+    # only one of those 8 refreshes could even start at a time, so the other
+    # 7 sat holding their DB connections just waiting for someone else's
+    # unrelated character's SSO round trip - with enough characters due for
+    # refresh at once (e.g. right after a mass backfill), that serialized
+    # queue alone was enough to exceed the connection pool's max_size and
+    # take the whole app down (PoolTimeout on every other request, including
+    # login). A per-role lock lets independent characters' refreshes proceed
+    # in parallel again; same _lock_for_key shape as esi_client.py's
+    # per-character-id/per-region locks - _refresh_locks_guard is only ever
+    # held for the dict lookup/insert, never across a refresh itself.
+    _refresh_locks_guard = threading.Lock()
+    _refresh_locks: dict[str, threading.Lock] = {}
 
     def __init__(self, cfg: OAuthConfig = OAUTH_CONFIG):
         self.cfg = cfg
         self._tokens: dict[str, TokenRecord] = {}
         self._loaded = False
+
+    @classmethod
+    def _refresh_lock_for(cls, role: str) -> threading.Lock:
+        with cls._refresh_locks_guard:
+            if role not in cls._refresh_locks:
+                cls._refresh_locks[role] = threading.Lock()
+            return cls._refresh_locks[role]
 
     # ---------------------------------------------------------------- storage
     def _ensure_loaded(self) -> None:
@@ -425,7 +450,7 @@ class TokenManager:
                 f"e.g.: `eve-trader auth --role {role}`."
             )
         if record.is_expired():
-            with self._refresh_lock:
+            with self._refresh_lock_for(role):
                 # Re-load + re-check after acquiring the lock - a concurrent
                 # request may have already refreshed (and saved) this exact
                 # role while we were waiting, in which case just use that

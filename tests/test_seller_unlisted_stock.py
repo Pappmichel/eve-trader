@@ -1,7 +1,7 @@
 import pytest
 
 from eve_trader import actions, storage
-from eve_trader.auth import TokenManager, TokenRecord
+from eve_trader.auth import TokenManager
 from eve_trader.config import TradingConfig
 from eve_trader.models import ShortlistItem
 from eve_trader.own_orders import fetch_seller_stock_without_order
@@ -108,15 +108,8 @@ def test_do_check_seller_unlisted_stock_includes_deactivated_shortlist_items(mon
         ShortlistItem(item="Active Item", item_id=1, category="Material", volume_m3=1.0, active=True),
         ShortlistItem(item="Deactivated Item", item_id=2, category="Material", volume_m3=1.0, active=False),
     ])
-    seller_record = TokenRecord(
-        role="seller:99", character_id=99, character_name="Seller", access_token="x",
-        refresh_token="y", expires_at=0.0, scopes="",
-    )
     monkeypatch.setattr(TokenManager, "__init__", lambda self, cfg=None: setattr(self, "cfg", cfg))
-    monkeypatch.setattr(TokenManager, "has_token", lambda self, role: True)
-    monkeypatch.setattr(TokenManager, "list_roles", lambda self, prefix: ["seller:99"] if prefix == "seller" else [])
-    monkeypatch.setattr(TokenManager, "get_record", lambda self, role: seller_record if role == "seller:99" else None)
-    monkeypatch.setattr(TokenManager, "get_token", lambda self, role: seller_record)
+    monkeypatch.setattr(actions, "list_shared_trading_characters", lambda tm: [("seller:99", 99, "Seller")])
 
     captured = {}
 

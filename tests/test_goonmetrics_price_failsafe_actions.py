@@ -20,7 +20,7 @@ def test_refresh_shortlist_surfaces_priced_via_fallback(monkeypatch):
     cfg = TradingConfig(structure_id=1000, structure_market_slug="my-structure")
     monkeypatch.setattr(storage, "load_shortlist",
                          lambda: [ShortlistItem(item="Test", item_id=34, category="X", volume_m3=1.0, meta_level=5)])
-    monkeypatch.setattr(actions, "_list_role_characters", lambda tm, prefix: [])
+    monkeypatch.setattr(actions, "list_shared_trading_characters", lambda tm: [])
     monkeypatch.setattr(ESIClient, "region_order_stats_bulk", lambda self, region_id, type_ids: {})
     monkeypatch.setattr(ESIClient, "structure_order_stats_bulk_or_goonmetrics",
                          lambda self, structure_id, type_ids, auth_role, goonmetrics_market_slug: ({}, True))
@@ -39,9 +39,14 @@ def test_refresh_shortlist_no_fallback_when_seller_logged_in(monkeypatch):
     cfg = TradingConfig(structure_id=1000, structure_market_slug="my-structure")
     monkeypatch.setattr(storage, "load_shortlist",
                          lambda: [ShortlistItem(item="Test", item_id=34, category="X", volume_m3=1.0, meta_level=5)])
-    monkeypatch.setattr(actions, "_list_role_characters", lambda tm, prefix: [("seller", 1, "Seller One")]
-                         if prefix == "seller" else [])
+    monkeypatch.setattr(actions, "list_shared_trading_characters", lambda tm: [("seller", 1, "Seller One")])
     monkeypatch.setattr(actions.own_orders, "fetch_own_sell_orders", lambda char_id, role, client, cfg: {})
+    # Buyer/seller are now the same shared-characters list (see
+    # list_shared_trading_characters), so this "seller" record also flows
+    # through the buyer branch - mock it too rather than hitting a real
+    # unmocked ESI call.
+    monkeypatch.setattr(actions.own_orders, "fetch_buyer_already_covered",
+                         lambda char_id, role, client, cfg: set())
     monkeypatch.setattr(ESIClient, "region_order_stats_bulk", lambda self, region_id, type_ids: {})
     monkeypatch.setattr(ESIClient, "structure_order_stats_bulk_or_goonmetrics",
                          lambda self, structure_id, type_ids, auth_role, goonmetrics_market_slug: ({}, False))

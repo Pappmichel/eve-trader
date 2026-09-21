@@ -45,11 +45,12 @@ function activeTab(pathname: string): string {
   return '/doctrine/doctrines'
 }
 
-function CharacterGroup({ title, queryKey, listFn, removeFn }: {
+function CharacterGroup({ title, queryKey, listFn, removeFn, legacyPrefix }: {
   title: string
   queryKey: string[]
   listFn: () => Promise<RoleCharacter[]>
   removeFn: (roleKey: string) => Promise<unknown>
+  legacyPrefix: string
 }) {
   const { characters, removeCharacter, isRemoving } = useRoleCharacters(
     queryKey, listFn, removeFn,
@@ -65,17 +66,30 @@ function CharacterGroup({ title, queryKey, listFn, removeFn }: {
         {characters.map((c) => (
           <Group key={c.role_key} justify="space-between" wrap="nowrap">
             <Text size="sm">{c.character_name}</Text>
-            <ActionIcon size="sm" variant="subtle" color="danger"
-              onClick={() => modals.openConfirmModal({
-                title: 'Remove character',
-                children: <Text size="sm">Remove {c.character_name} from {title}? This drops this tool&apos;s token key. Sharing stays on the Characters page.</Text>,
-                labels: { confirm: 'Remove', cancel: 'Cancel' },
-                confirmProps: { color: 'danger' },
-                onConfirm: () => removeCharacter(c.role_key),
-              })}
-              loading={isRemoving(c.role_key)}>
-              <IconTrash size={14} />
-            </ActionIcon>
+            {c.role_key.startsWith(`${legacyPrefix}:`) ? (
+              <ActionIcon size="sm" variant="subtle" color="danger"
+                onClick={() => modals.openConfirmModal({
+                  title: 'Remove character',
+                  children: <Text size="sm">Remove {c.character_name} from {title}? This drops this tool&apos;s token key. Sharing stays on the Characters page.</Text>,
+                  labels: { confirm: 'Remove', cancel: 'Cancel' },
+                  confirmProps: { color: 'danger' },
+                  onConfirm: () => removeCharacter(c.role_key),
+                })}
+                loading={isRemoving(c.role_key)}>
+                <IconTrash size={14} />
+              </ActionIcon>
+            ) : (
+              // Listed here because it shares the relevant data kind with
+              // Doctrine, not because it holds a dedicated legacy token -
+              // its esi:<id> key may be shared with other tools too, so
+              // this sidebar cannot safely delete it. Unshare on the
+              // Characters page instead.
+              <Tooltip label="Shared via the Characters page - unshare there, not here" multiline w={220}>
+                <ActionIcon size="sm" variant="subtle" color="gray" disabled>
+                  <IconTrash size={14} />
+                </ActionIcon>
+              </Tooltip>
+            )}
           </Group>
         ))}
       </Stack>
@@ -134,7 +148,7 @@ export default function DoctrineLayout() {
       <AppShell.Navbar p="md">
         <Stack gap="md">
           <CharacterGroup title="Contract Characters" queryKey={['doctrine', 'characters']}
-            listFn={doctrineApi.characters} removeFn={doctrineApi.removeCharacter} />
+            listFn={doctrineApi.characters} removeFn={doctrineApi.removeCharacter} legacyPrefix="doctrine" />
 
           <div>
             <Group justify="space-between" mb="xs" wrap="nowrap">
@@ -161,7 +175,7 @@ export default function DoctrineLayout() {
           <Divider />
 
           <CharacterGroup title="Asset-Scanning Characters" queryKey={['doctrine', 'asset-characters']}
-            listFn={doctrineApi.assetCharacters} removeFn={doctrineApi.removeAssetCharacter} />
+            listFn={doctrineApi.assetCharacters} removeFn={doctrineApi.removeAssetCharacter} legacyPrefix="doctrine-assets" />
 
           <div>
             <Group justify="space-between" mb="xs" wrap="nowrap">

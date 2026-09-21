@@ -375,8 +375,20 @@ def _sync(
                 characters=characters, extra=fetch_extra, tokens=tm,
             )
 
+        # 4, not 8 (confirmed real incident 2026-09-21): each worker holds
+        # its own storage.batch_session() connection open for its whole
+        # per-owner fetch (Decision 7's atomic-rollback-per-owner needs
+        # that), against a pool of only 10 (storage.py's ConnectionPool
+        # max_size). 8 concurrent owners already used most of the pool on
+        # their own before anything went wrong; combined with a slow patch
+        # (mass token refresh right after a backfill, or a slow ESI
+        # response), that left too little headroom for every other request
+        # (a login, a page load) needing a connection. 4 keeps a normal tick
+        # (usually well under 10 owners) just as parallel in practice while
+        # leaving most of the pool free for the rest of the app even in the
+        # worst case where every worker is simultaneously slow.
         wrapped = storage.with_current_tenant(_one_char)
-        with ThreadPoolExecutor(max_workers=min(8, len(char_owners))) as pool:
+        with ThreadPoolExecutor(max_workers=min(4, len(char_owners))) as pool:
             char_results = list(pool.map(wrapped, char_owners))
 
     # Corp membership from public info, in character-list order. Sequential

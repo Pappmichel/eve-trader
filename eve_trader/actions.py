@@ -124,12 +124,75 @@ def _list_role_characters(tm: TokenManager, prefix: str) -> list[tuple[str, int,
     return out
 
 
+def list_shared_trading_characters(tm: TokenManager | None = None,
+                                    oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> list[tuple[str, int, str]]:
+    """Returns (auth_role, character_id, character_name) for every character
+    currently sharing Market Orders, Wallet, and/or Assets with `trading` -
+    the sharing-based replacement for `_list_role_characters(tm, "buyer"/
+    "seller")` (bug found 2026-09-21 while investigating a stuck connection
+    pool: same class as docs/ESI_ACCESS_PLAN.md's Known gap 4, just never
+    migrated for Trading - a character added via the Characters page's
+    add-a-character path (`esi:<id>`) was invisible here regardless of
+    sharing, so the Trading page kept showing "no seller shared" for a
+    character that clearly had Wallet/Market Orders shared).
+
+    Buyer and Seller used to be two separate token-prefix namespaces
+    (`buyer:<id>`/`seller:<id>`) requesting the *identical* scope bundle
+    (OAuthConfig.scopes) - the distinction was never a real ESI permission
+    difference, just which literal role a character happened to register
+    under. The sharing model has no equivalent slot for that (sharing is
+    per data_kind/tool_key, not per "acts as buyer" vs "acts as seller"),
+    so this single list now covers both - every caller that used to ask for
+    "sellers" or "buyers" separately gets the same shared-with-trading list
+    and lets its own per-character filtering (e.g. fetch_own_sell_orders
+    only ever finds sell orders; fetch_buyer_already_covered only ever
+    finds buy orders) naturally no-op for a character that has none of
+    that kind. The one place this isn't purely cosmetic is
+    do_reconcile_trades's collect_trading_wallet_streams, which used
+    buyer/seller membership to pick a shorter/longer transaction lookback
+    window and whether to fetch journal entries - passing this same list as
+    both its buyer_characters and seller_characters arguments there
+    deliberately makes every shared character use the longer (buyer)
+    lookback and always fetch journal, a safe superset of the old
+    behavior (never misses data, may do marginally more ESI paging) rather
+    than trying to guess which role a character "really" is.
+
+    `auth_role` is resolved via the Phase 4 selector (largest-matching-
+    scope token, same tie-break as everywhere else), preferring a token
+    that can read Market Orders, then Wallet, then Assets. A character who
+    shares but holds no token carrying any of those scopes (needs
+    Re-authorize) is omitted, not raised - same "skip, don't abort" shape
+    Known gap 4's production.esi_sync.list_shared_producer_characters
+    already established."""
+    from .esi_data.access import shared_owner_ids
+    from .esi_data.selector import select_auth_role
+
+    tm = tm or TokenManager(oauth_cfg)
+    char_ids = sorted(
+        set(shared_owner_ids("market_orders", "trading", "character"))
+        | set(shared_owner_ids("wallet", "trading", "character"))
+        | set(shared_owner_ids("assets", "trading", "character"))
+    )
+    out = []
+    for character_id in char_ids:
+        role = (
+            select_auth_role(character_id, "esi-markets.read_character_orders.v1", tokens=tm)
+            or select_auth_role(character_id, "esi-wallet.read_character_wallet.v1", tokens=tm)
+            or select_auth_role(character_id, "esi-assets.read_assets.v1", tokens=tm)
+        )
+        if role is None:
+            continue
+        record = tm.get_record(role)
+        out.append((role, character_id, record.character_name if record else str(character_id)))
+    return out
+
+
 def do_list_buyer_characters(oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> list[tuple[str, int, str]]:
-    return _list_role_characters(TokenManager(oauth_cfg), "buyer")
+    return list_shared_trading_characters(oauth_cfg=oauth_cfg)
 
 
 def do_list_seller_characters(oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> list[tuple[str, int, str]]:
-    return _list_role_characters(TokenManager(oauth_cfg), "seller")
+    return list_shared_trading_characters(oauth_cfg=oauth_cfg)
 
 
 def do_remove_trading_character(role_key: str, oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
@@ -139,18 +202,10 @@ def do_remove_trading_character(role_key: str, oauth_cfg: OAuthConfig = OAUTH_CO
 
 
 def do_list_transaction_characters(oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> list[tuple[str, int, str]]:
-    """Every buyer + seller character (Transactions tab's character picker
-    pools both roles, since either can have wallet transactions worth
-    viewing) - deduped by character_id the same way _list_role_characters
-    itself dedupes a legacy single-key entry against a multi-key one."""
-    tm = TokenManager(oauth_cfg)
-    out = []
-    seen_ids = set()
-    for role, cid, name in _list_role_characters(tm, "buyer") + _list_role_characters(tm, "seller"):
-        if cid not in seen_ids:
-            out.append((role, cid, name))
-            seen_ids.add(cid)
-    return out
+    """Every character sharing Trading data (Transactions tab's character
+    picker - buyer/seller merged into one sharing-based list, see
+    list_shared_trading_characters)."""
+    return list_shared_trading_characters(oauth_cfg=oauth_cfg)
 
 
 def do_wallet_transactions(role_key: str, lookback_days: Optional[int] = None,
@@ -486,7 +541,8 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
     if not items:
         raise ActionError("Shortlist is empty.")
     tm = TokenManager(oauth_cfg)
-    seller_characters = _list_role_characters(tm, "seller")
+    shared_characters = list_shared_trading_characters(tm)
+    seller_characters = shared_characters
     client = ESIClient(cfg, tm)
 
     meta_backfill = _backfill_meta_levels(items, client)
@@ -509,7 +565,7 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
             log.warning("Could not fetch seller %s own sell orders (%s) - skipping this seller.",
                         seller_character_id, e)
 
-    buyer_characters = _list_role_characters(tm, "buyer")
+    buyer_characters = shared_characters
     buyer_already_covered_ids: frozenset[int] = frozenset()
     if buyer_characters:
         covered: set[int] = set()
@@ -718,10 +774,10 @@ def do_check_seller_unlisted_stock(cfg: TradingConfig = TRADING_CONFIG,
     - always a fresh live read, since this is a lightweight one-shot check,
     not a recurring pipeline step."""
     tm = TokenManager(oauth_cfg)
-    seller_characters = _list_role_characters(tm, "seller")
+    seller_characters = list_shared_trading_characters(tm)
     if not seller_characters:
         raise ActionError(
-            "No seller character shared yet. Share Market Orders with Trading on the Characters page."
+            "No character shared yet. Share Market Orders/Wallet/Assets with Trading on the Characters page."
         )
     client = ESIClient(cfg, tm)
     shortlist_item_ids = {i.item_id for i in storage.load_shortlist() if i.item_id}
@@ -799,10 +855,10 @@ def do_check_undercut(cfg: TradingConfig = TRADING_CONFIG, oauth_cfg: OAuthConfi
     fresh live check, same one-shot (not cached/persisted) shape as
     do_check_seller_unlisted_stock."""
     tm = TokenManager(oauth_cfg)
-    seller_characters = _list_role_characters(tm, "seller")
+    seller_characters = list_shared_trading_characters(tm)
     if not seller_characters:
         raise ActionError(
-            "No seller character shared yet. Share Market Orders with Trading on the Characters page."
+            "No character shared yet. Share Market Orders/Wallet/Assets with Trading on the Characters page."
         )
     client = ESIClient(cfg, tm)
 
@@ -1081,10 +1137,16 @@ def shortlist_skip_deactivation_days(cfg: TradingConfig = TRADING_CONFIG) -> dic
 def do_reconcile_trades(cfg: TradingConfig = TRADING_CONFIG,
                          oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
     tm = TokenManager(oauth_cfg)
-    buyer_characters = _list_role_characters(tm, "buyer")
-    seller_characters = _list_role_characters(tm, "seller")
-    if not (buyer_characters and seller_characters):
-        raise ActionError("At least one buyer and one seller character need to be logged in.")
+    # Buyer/seller merged into one sharing-based list (see
+    # list_shared_trading_characters's own docstring) - passed as both
+    # arguments below so collect_trading_wallet_streams treats every shared
+    # character with the longer (buyer) lookback window and always fetches
+    # journal, a safe superset of the old buyer-only/seller-only split.
+    shared_characters = list_shared_trading_characters(tm)
+    buyer_characters = shared_characters
+    seller_characters = shared_characters
+    if not shared_characters:
+        raise ActionError("At least one character needs to be shared with Trading (Characters page).")
     client = ESIClient(cfg, tm)
 
     items = storage.load_shortlist()

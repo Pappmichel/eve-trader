@@ -11,7 +11,7 @@ from typing import Optional
 import requests
 
 from .. import storage
-from ..actions import ActionError
+from ..actions import ActionError, list_shared_trading_characters
 from ..auth import TokenManager
 from ..config import OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, TradingConfig, save_tenant_config_overrides
 from ..esi_client import ESIClient, ESIError
@@ -38,12 +38,16 @@ def now_ts() -> str:
 
 
 def _seller_role(tm: TokenManager) -> Optional[str]:
-    """Reuses Trading's own seller role/token - no Ore-specific login (see
-    module docstring). Any one registered seller with docking access is
-    enough (GitHub issue #46's own multi-character precedent) - falls back
-    to the legacy fixed "seller" key for a not-yet-re-logged-in setup, same
-    fallback doctrine/engine.py's own seller-role lookup uses."""
-    return next(iter(tm.list_roles("seller")), None) or ("seller" if tm.has_token("seller") else None)
+    """Reuses Trading's own shared-character list - no Ore-specific login
+    (see module docstring). Any one character sharing Market Orders/Wallet/
+    Assets with Trading is enough (GitHub issue #46's own multi-character
+    precedent). Sharing-based since 2026-09-21 (bug found alongside Known
+    gap 4: the old `tm.list_roles("seller")`/legacy-bare-key lookup was
+    blind to a character added via the Characters page's add-a-character
+    path, same as Trading's own do_list_seller_characters was) - see
+    actions.list_shared_trading_characters's own docstring."""
+    characters = list_shared_trading_characters(tm)
+    return characters[0][0] if characters else None
 
 
 def do_add_ore_to_shortlist() -> dict:

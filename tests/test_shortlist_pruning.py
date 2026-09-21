@@ -222,7 +222,7 @@ def test_refresh_shortlist_prices_jita_in_oldest_first_batches(monkeypatch):
         return {}
 
     monkeypatch.setattr(storage, "load_shortlist", lambda: items)
-    monkeypatch.setattr(actions, "_list_role_characters", lambda tm, prefix: [])
+    monkeypatch.setattr(actions, "list_shared_trading_characters", lambda tm: [])
     monkeypatch.setattr(ESIClient, "region_order_stats_bulk", fake_bulk)
     monkeypatch.setattr(
         ESIClient, "structure_order_stats_bulk_or_goonmetrics",
@@ -254,7 +254,7 @@ def _cleanup_refresh_mocks(monkeypatch, items, fake_bulk, previous_rows=None, ma
     from eve_trader.goonmetrics_client import GoonmetricsClient
 
     monkeypatch.setattr(storage, "load_shortlist", lambda: items)
-    monkeypatch.setattr(actions, "_list_role_characters", lambda tm, prefix: [])
+    monkeypatch.setattr(actions, "list_shared_trading_characters", lambda tm: [])
     monkeypatch.setattr(ESIClient, "region_order_stats_bulk", fake_bulk)
     monkeypatch.setattr(
         ESIClient, "structure_order_stats_bulk_or_goonmetrics",

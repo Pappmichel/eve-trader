@@ -29,7 +29,7 @@ from .parser import FittingParseError
 
 
 def do_list_doctrine_characters() -> list[tuple[str, int, str]]:
-    return esi_sync.list_doctrine_characters()
+    return esi_sync.list_shared_doctrine_characters()
 
 
 def do_remove_doctrine_character(role_key: str) -> dict:
@@ -45,7 +45,7 @@ def do_list_doctrine_asset_characters() -> list[tuple[str, int, str]]:
     """Separate character group from do_list_doctrine_characters - see
     esi_sync.py's own module docstring for why asset-scanning characters
     are kept distinct from contract-reading ones."""
-    return esi_sync.list_doctrine_asset_characters()
+    return esi_sync.list_shared_doctrine_asset_characters()
 
 
 def do_remove_doctrine_asset_character(role_key: str) -> dict:

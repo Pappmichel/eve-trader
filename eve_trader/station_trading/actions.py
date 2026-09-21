@@ -87,7 +87,7 @@ def _build_shortlist_rows(rows: list[tuple[int, float, float, str, bool]],
 
 # ---------------------------------------------------------- trader characters
 def do_list_trader_characters() -> list[tuple[str, int, str]]:
-    return esi_sync.list_trader_characters()
+    return esi_sync.list_shared_trader_characters()
 
 
 def do_remove_trader_character(role_key: str) -> dict:
@@ -157,7 +157,7 @@ def do_check_undercut(cfg: StationTradingConfig = STATION_TRADING_CONFIG,
     See undercut.py's own docstring for why both sides need their own live
     ESI order-book fetch rather than a Goonmetrics snapshot."""
     tm = TokenManager(oauth_cfg)
-    traders = [(character_id, role) for role, character_id, _name in esi_sync.list_trader_characters(tm)]
+    traders = [(character_id, role) for role, character_id, _name in esi_sync.list_shared_trader_characters(tm)]
     if not traders:
         raise ActionError(
             "No Station Trading character shared yet. Share Skills and Market Orders on the Characters page."
@@ -183,7 +183,7 @@ def do_get_skill_summary(oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> list[dict]:
     tm = TokenManager(oauth_cfg)
     client = ESIClient(tokens=tm)
     summaries = []
-    for role, character_id, character_name in esi_sync.list_trader_characters(tm):
+    for role, character_id, character_name in esi_sync.list_shared_trader_characters(tm):
         try:
             skills = client.character_skills(character_id, auth_role=role)
         except ESIError as e:

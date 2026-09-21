@@ -44,17 +44,41 @@ DOCTRINE_ASSET_SCOPES = [
 
 
 def list_doctrine_characters(tm: Optional[TokenManager] = None) -> list[tuple[str, int, str]]:
-    """Returns (role_key, character_id, character_name) for every registered
-    doctrine character - same get_record (no refresh) pattern as
-    production/esi_sync.py's list_producer_characters, for the same reason
-    (this runs on every "characters" sidebar render, one dead token must
-    not take the whole list down)."""
+    """Deprecated (bug found 2026-09-21, same class as docs/
+    ESI_ACCESS_PLAN.md's Known gap 4): discovers by the legacy
+    `doctrine:<id>` token prefix, so a character added via the Characters
+    page's add-a-character path (`esi:<id>`, gap 1) is invisible here
+    regardless of sharing. Superseded by list_shared_doctrine_characters
+    below. Kept only because deleting a function with real test coverage on
+    a whim is its own risk; do not add a new caller of this one."""
     tm = tm or TokenManager(OAUTH_CONFIG)
     out = []
     for role in tm.list_roles(DOCTRINE_ROLE_PREFIX):
         record = tm.get_record(role)
         if record is not None:
             out.append((role, record.character_id, record.character_name))
+    return out
+
+
+def list_shared_doctrine_characters(tm: Optional[TokenManager] = None) -> list[tuple[str, int, str]]:
+    """Returns (auth_role, character_id, character_name) for every character
+    currently sharing Contracts with `doctrine` - the sharing-based
+    replacement for `list_doctrine_characters` (Known-gap-4-class bug,
+    closed 2026-09-21). Same shape as production/esi_sync.py's
+    `list_shared_producer_characters` - see that function's own docstring
+    for the full reasoning."""
+    from ..esi_data.access import shared_owner_ids
+    from ..esi_data.selector import select_auth_role
+
+    tm = tm or TokenManager(OAUTH_CONFIG)
+    char_ids = sorted(shared_owner_ids("contracts", "doctrine", "character"))
+    out = []
+    for character_id in char_ids:
+        role = select_auth_role(character_id, "esi-contracts.read_character_contracts.v1", tokens=tm)
+        if role is None:
+            continue
+        record = tm.get_record(role)
+        out.append((role, character_id, record.character_name if record else str(character_id)))
     return out
 
 
@@ -116,7 +140,7 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG, progress_callback=None
         )
 
     tm = TokenManager(OAUTH_CONFIG)
-    characters = list_doctrine_characters(tm)
+    characters = list_shared_doctrine_characters(tm)
     if not characters:
         raise ActionError("No Doctrine character shared yet. Share Contracts on the Characters page.")
 
@@ -174,15 +198,35 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG, progress_callback=None
 
 # =========================================================== asset sync (Stockpile)
 def list_doctrine_asset_characters(tm: Optional[TokenManager] = None) -> list[tuple[str, int, str]]:
-    """Returns (role_key, character_id, character_name) for every registered
-    asset-scanning character - same get_record (no refresh) pattern as
-    list_doctrine_characters above, for the same reason."""
+    """Deprecated - same Known-gap-4-class bug as list_doctrine_characters
+    above, for the `doctrine-assets:<id>` prefix. Superseded by
+    list_shared_doctrine_asset_characters below."""
     tm = tm or TokenManager(OAUTH_CONFIG)
     out = []
     for role in tm.list_roles(DOCTRINE_ASSET_ROLE_PREFIX):
         record = tm.get_record(role)
         if record is not None:
             out.append((role, record.character_id, record.character_name))
+    return out
+
+
+def list_shared_doctrine_asset_characters(tm: Optional[TokenManager] = None) -> list[tuple[str, int, str]]:
+    """Returns (auth_role, character_id, character_name) for every character
+    currently sharing Assets with `doctrine` - the sharing-based
+    replacement for `list_doctrine_asset_characters` (Known-gap-4-class
+    bug, closed 2026-09-21)."""
+    from ..esi_data.access import shared_owner_ids
+    from ..esi_data.selector import select_auth_role
+
+    tm = tm or TokenManager(OAUTH_CONFIG)
+    char_ids = sorted(shared_owner_ids("assets", "doctrine", "character"))
+    out = []
+    for character_id in char_ids:
+        role = select_auth_role(character_id, "esi-assets.read_assets.v1", tokens=tm)
+        if role is None:
+            continue
+        record = tm.get_record(role)
+        out.append((role, character_id, record.character_name if record else str(character_id)))
     return out
 
 
@@ -193,7 +237,7 @@ def sync_assets() -> dict:
     from ..esi_data.orchestrator import do_sync_for_tool
 
     tm = TokenManager(OAUTH_CONFIG)
-    characters = list_doctrine_asset_characters(tm)
+    characters = list_shared_doctrine_asset_characters(tm)
     if not characters:
         raise ActionError(
             "No Doctrine character shared yet. Share Assets with Doctrine on the Characters page."

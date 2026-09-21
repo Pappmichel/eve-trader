@@ -1,5 +1,6 @@
 import { AppShell, Burger, Stack, Title, Text, Button, Group, Badge, Tabs, Container, Divider, Tooltip } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
+import { modals } from '@mantine/modals'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { spotlight } from '@mantine/spotlight'
@@ -33,32 +34,57 @@ const TABS = [
   { path: '/trading/settings', label: 'Settings' },
 ]
 
-// GitHub issue #46: buyer/seller support multiple characters now (more
-// registered characters = more available order slots), not one fixed
-// role each. List + remove only; ESI login is the Characters page.
-function RoleCharacters({ role, label }: { role: 'buyer' | 'seller'; label: string }) {
-  const fetchCharacters = role === 'buyer' ? tradingApi.buyerCharacters : tradingApi.sellerCharacters
+// GitHub issue #46: multiple characters supported (more registered
+// characters = more available order slots). Buyer/Seller merged into one
+// sharing-based list server-side (bug found 2026-09-21, same class as
+// docs/ESI_ACCESS_PLAN.md's Known gap 4 - buyerCharacters/sellerCharacters
+// now return the identical list, since the sharing model has no buyer-vs-
+// seller distinction; see actions.list_shared_trading_characters's own
+// docstring) - rendering them as two separate sections would just show
+// every character twice. List + remove only; ESI login is the Characters
+// page.
+function RoleCharacters() {
   const { characters, removeCharacter, isRemoving } = useRoleCharacters(
-    ['trading', 'characters', role], fetchCharacters, tradingApi.removeCharacter,
+    ['trading', 'characters', 'shared'], tradingApi.sellerCharacters, tradingApi.removeCharacter,
   )
 
   return (
     <div>
-      <Title order={6} c="dimmed" tt="uppercase" mb="xs">{label}</Title>
+      <Title order={6} c="dimmed" tt="uppercase" mb="xs">Shared with Trading</Title>
       {characters.length === 0 && (
         <Badge color="danger" variant="light" mb="xs">none shared</Badge>
       )}
       {characters.length === 0 && (
-        <Text size="xs" c="dimmed" mb="xs">Share Wallet and Market Orders on the Characters page.</Text>
+        <Text size="xs" c="dimmed" mb="xs">Share Wallet, Market Orders, and/or Assets on the Characters page.</Text>
       )}
       <Stack gap={4} mb="xs">
         {characters.map((c) => (
           <Group key={c.role_key} justify="space-between" wrap="nowrap">
             <Text size="sm" fw={600}>{c.character_name}</Text>
-            <Button size="xs" variant="subtle" color="danger"
-              onClick={() => removeCharacter(c.role_key)} loading={isRemoving(c.role_key)}>
-              Remove
-            </Button>
+            {c.role_key.startsWith('buyer:') || c.role_key.startsWith('seller:') ? (
+              <Button size="xs" variant="subtle" color="danger"
+                onClick={() => modals.openConfirmModal({
+                  title: 'Remove character',
+                  children: <Text size="sm">Remove {c.character_name} from Trading? This drops this tool&apos;s token key. Sharing stays on the Characters page.</Text>,
+                  labels: { confirm: 'Remove', cancel: 'Cancel' },
+                  confirmProps: { color: 'danger' },
+                  onConfirm: () => removeCharacter(c.role_key),
+                })}
+                loading={isRemoving(c.role_key)}>
+                Remove
+              </Button>
+            ) : (
+              // Listed here because it shares Wallet/Market Orders/Assets
+              // with Trading, not because it holds a dedicated buyer:*/
+              // seller:* token - its esi:<id> key may be shared with other
+              // tools too, so this sidebar cannot safely delete it.
+              // Unshare on the Characters page instead.
+              <Tooltip label="Shared via the Characters page - unshare there, not here" multiline w={220}>
+                <Button size="xs" variant="subtle" color="gray" disabled>
+                  Unshare on Characters
+                </Button>
+              </Tooltip>
+            )}
           </Group>
         ))}
       </Stack>
@@ -122,8 +148,7 @@ export default function TradingLayout() {
 
       <AppShell.Navbar p="md">
         <Stack gap="md">
-          <RoleCharacters role="buyer" label="Buyer" />
-          <RoleCharacters role="seller" label="Seller" />
+          <RoleCharacters />
 
           <Divider />
 

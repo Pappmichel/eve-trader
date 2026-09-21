@@ -297,25 +297,11 @@ def test_do_update_fitting_cargo_tolerance_only_revalidates_own_contracts(monkey
 def test_do_sync_contracts_emits_matching_progress(monkeypatch):
     """Item-fetch progress moved into the orchestrator/fetcher. The doctrine
     wrapper still reports matching as its own post-processing phase."""
-    from eve_trader.auth import TokenRecord
     from eve_trader.doctrine.config import DoctrineConfig
 
     cfg = DoctrineConfig(doctrine_structure_id=1000000000001)
 
-    class FakeTM:
-        def __init__(self, *a, **k):
-            pass
-
-        def list_roles(self, prefix):
-            return ["doctrine:42"]
-
-        def get_record(self, role):
-            return TokenRecord(
-                role=role, character_id=42, character_name="Pilot",
-                access_token="x", refresh_token="y", expires_at=9e9, scopes="",
-            )
-
-    monkeypatch.setattr(esi_sync, "TokenManager", FakeTM)
+    monkeypatch.setattr(esi_sync, "list_shared_doctrine_characters", lambda tm: [("doctrine:42", 42, "Pilot")])
     monkeypatch.setattr(storage, "load_doctrine_contracts", lambda: [])
     monkeypatch.setattr(
         "eve_trader.esi_data.orchestrator.do_sync_for_tool",

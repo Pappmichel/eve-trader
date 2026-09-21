@@ -29,8 +29,8 @@ from eve_trader.esi_client import ESIClient
 
 from . import pg_helpers
 from .pg_helpers import (  # noqa: F401
-    _apply_admin_schema, _apply_phase1_schema, _apply_phase2_schema, _apply_phase3_schema,
-    _apply_session_revocations_schema,
+    _apply_admin_schema, _apply_esi_access_schema, _apply_phase1_schema, _apply_phase2_schema,
+    _apply_phase3_schema, _apply_session_revocations_schema,
 )
 
 psycopg = pytest.importorskip("psycopg")
@@ -65,10 +65,16 @@ def _cookie(character_id, tenant_id, name="Pilot"):
 def _seed_legacy_bare_token(tenant_id: str, character_id: int, character_name: str = "Legacy Seller") -> None:
     record = TokenRecord(
         role="seller", character_id=character_id, character_name=character_name,
-        access_token="a", refresh_token="r", expires_at=9999999999.0, scopes="",
+        access_token="a", refresh_token="r", expires_at=9999999999.0,
+        scopes="esi-markets.read_character_orders.v1",
     )
     with storage.tenant_context(tenant_id):
         storage.save_tenant_token("seller", asdict(record))
+        # The Seller-characters listing is sharing-based now (bug found
+        # 2026-09-21, same class as Known gap 4) - mirrors what the real
+        # conservative backfill does for a legacy seller:* token, so this
+        # helper's caller still shows up via list_shared_trading_characters.
+        storage.upsert_esi_sharing("character", character_id, "market_orders", "trading")
 
 
 def _trading_session(character_id: int, character_name: str = "T"):
@@ -79,7 +85,7 @@ def _trading_session(character_id: int, character_name: str = "T"):
 
 
 # --------------------------------------------------------------------- P5-07
-def test_bare_role_key_is_still_rejected_directly(_apply_admin_schema):
+def test_bare_role_key_is_still_rejected_directly(_apply_admin_schema, _apply_esi_access_schema):
     """Unchanged, by design: a literal bare "seller" is not, and was never
     meant to be, a valid HTTP role_key - validate_role_key_for_tool's
     canonical-only grammar (F-05) rejects it regardless of what's in
@@ -93,7 +99,7 @@ def test_bare_role_key_is_still_rejected_directly(_apply_admin_schema):
     assert resp.status_code == 400
 
 
-def test_legacy_token_is_removable_after_the_character_list_migrates_it(_apply_admin_schema):
+def test_legacy_token_is_removable_after_the_character_list_migrates_it(_apply_admin_schema, _apply_esi_access_schema):
     """The actual P5-07 attack scenario, closed end-to-end: a legacy
     bare-keyed token, reached the exact way a real operator would - load
     the character list (as Trading's own "Seller characters" panel does on
@@ -119,7 +125,7 @@ def test_legacy_token_is_removable_after_the_character_list_migrates_it(_apply_a
     assert listed_after.json() == []
 
 
-def test_two_tenants_each_holding_a_legacy_bare_token_do_not_collide_on_removal(_apply_admin_schema):
+def test_two_tenants_each_holding_a_legacy_bare_token_do_not_collide_on_removal(_apply_admin_schema, _apply_esi_access_schema):
     """Confirms the migration is per-tenant, not global: tenant A removing
     their (now-canonical) "seller:11" must never touch tenant B's own
     "seller:22", even though both started out stored under the identical
@@ -142,7 +148,7 @@ def test_two_tenants_each_holding_a_legacy_bare_token_do_not_collide_on_removal(
 
 
 # --------------------------------------------------------------------- P5-08
-def test_legacy_bare_auth_role_no_longer_collides_once_migrated(monkeypatch):
+def test_legacy_bare_auth_role_no_longer_collides_once_migrated(monkeypatch, _apply_esi_access_schema):
     """Before P5-07/P5-08: two different characters, each still holding a
     legacy bare "seller" token, would resolve to the identical auth_role
     string "seller" and collide on esi_client's (structure_id, auth_role)

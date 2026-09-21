@@ -72,17 +72,31 @@ export default function StationTradingLayout() {
               {characters.map((c) => (
                 <Group key={c.role_key} justify="space-between" mb={4}>
                   <Text size="sm" fw={600}>{c.character_name}</Text>
-                  <Button size="xs" variant="subtle" color="danger"
-                    onClick={() => modals.openConfirmModal({
-                      title: 'Remove character',
-                      children: <Text size="sm">Remove {c.character_name} from Station Trading? This drops this tool&apos;s token key. Sharing stays on the Characters page.</Text>,
-                      labels: { confirm: 'Remove', cancel: 'Cancel' },
-                      confirmProps: { color: 'danger' },
-                      onConfirm: () => removeCharacter(c.role_key),
-                    })}
-                    loading={isRemoving(c.role_key)}>
-                    Remove
-                  </Button>
+                  {c.role_key.startsWith('trader:') ? (
+                    <Button size="xs" variant="subtle" color="danger"
+                      onClick={() => modals.openConfirmModal({
+                        title: 'Remove character',
+                        children: <Text size="sm">Remove {c.character_name} from Station Trading? This drops this tool&apos;s token key. Sharing stays on the Characters page.</Text>,
+                        labels: { confirm: 'Remove', cancel: 'Cancel' },
+                        confirmProps: { color: 'danger' },
+                        onConfirm: () => removeCharacter(c.role_key),
+                      })}
+                      loading={isRemoving(c.role_key)}>
+                      Remove
+                    </Button>
+                  ) : (
+                    // Listed here because it shares Market Orders/Skills
+                    // with Station Trading, not because it holds a
+                    // dedicated trader:* token - its esi:<id> key may be
+                    // shared with other tools too, so this sidebar cannot
+                    // safely delete it. Unshare on the Characters page
+                    // instead.
+                    <Tooltip label="Shared via the Characters page - unshare there, not here" multiline w={220}>
+                      <Button size="xs" variant="subtle" color="gray" disabled>
+                        Unshare on Characters
+                      </Button>
+                    </Tooltip>
+                  )}
                 </Group>
               ))}
             </div>
