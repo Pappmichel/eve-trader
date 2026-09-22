@@ -10,39 +10,23 @@ import type { ColumnDef } from '@tanstack/react-table'
 
 import { adminApi, productionApi } from '../../api/client'
 import { useAction } from '../../hooks/useAction'
-import { useBackgroundJob, useBackgroundJobStart } from '../../hooks/useBackgroundJob'
 import { ActionTierIcon, TIER_COPY } from '../../components/ActionTierIcon'
 import { dateTime } from '../../format'
 import type { AdminTenant, AdminUser, ErrorLogRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 
-const SDE_RESULT_KEYS: string[][] = [['production', 'sde', 'counts'], ['production', 'sde-freshness']]
-const SDE_LABELS = { sde_refresh: 'Refresh SDE' }
-
 // GitHub issue #34: the SDE cache is global/shared across every tenant, so
-// refreshing it is a cross-tenant-impacting action - moved here from
+// previewing/applying it is a cross-tenant-impacting action - moved here from
 // Production's own sidebar, which only ever exposed it per-tenant. The
 // read-only freshness/counts queries stay on productionApi (still real
 // per-request reads, just happen to reflect global data), only the mutating
-// refresh action itself lives under adminApi.
+// preview/apply flow lives under adminApi.
 function SdeDataSection() {
   const { data: sdeCounts } = useQuery({ queryKey: ['production', 'sde', 'counts'], queryFn: productionApi.sdeCounts })
   const { data: sdeFreshness } = useQuery({
     queryKey: ['production', 'sde-freshness'], queryFn: productionApi.sdeFreshness,
     staleTime: Infinity, refetchOnWindowFocus: false, retry: false,
   })
-  const sdeJob = useBackgroundJob({
-    queryKey: ['admin', 'pipeline', 'sde-refresh'],
-    fetchStatus: adminApi.refreshSdeStatus,
-    resultKeys: SDE_RESULT_KEYS,
-    labels: SDE_LABELS,
-    defaultLabel: 'Refresh SDE',
-    // SDE refresh typically finishes in seconds (~6s in this environment) -
-    // the default 4s poll would often show only "Running…" then Done.
-    pollIntervalMs: 1000,
-  })
-  const refreshSde = useBackgroundJobStart(sdeJob, () => adminApi.refreshSde())
-  const sdeRunning = sdeJob.runningStatus || refreshSde.isPending
 
   return (
     <div>
@@ -67,18 +51,13 @@ function SdeDataSection() {
           ))}
         </Group>
       )}
-      <Tooltip label={`Loads blueprint materials/products/times live from Fuzzwork (runs as a background job with progress), global across every tenant. ${TIER_COPY.live}`}
+      <Tooltip label={`Loads blueprint materials/products/times live from Fuzzwork, then shows a diff to apply. Global across every tenant. ${TIER_COPY.live}`}
         multiline w={300}>
-        <Button size="xs" variant={sdeRunning ? 'light' : 'default'} rightSection={<ActionTierIcon tier="live" />}
-          onClick={() => refreshSde.mutate()}>
-          Refresh SDE
+        <Button component={Link} to="/admin/sde-preview" size="xs" variant="default"
+          rightSection={<ActionTierIcon tier="live" />}>
+          SDE-Update prüfen
         </Button>
       </Tooltip>
-      {sdeRunning && (
-        <Text size="xs" c="dimmed" mt={4}>
-          {sdeJob.formatProgress(sdeJob.status?.progress, sdeJob.jobName)}
-        </Text>
-      )}
     </div>
   )
 }

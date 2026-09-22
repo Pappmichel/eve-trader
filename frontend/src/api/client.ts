@@ -263,7 +263,7 @@ export const productionApi = {
       '/api/production/logistics/resolve-structure-name', { location_id: locationId, force },
     ),
 
-  // No refreshSde() here, deliberately - moved to adminApi below (GitHub
+  // No previewSde() here, deliberately - moved to adminApi below (GitHub
   // issue #34): the SDE cache is global/shared, not per-tenant, so
   // triggering a refresh is a cross-tenant-impacting action.
   removeCharacter: (roleKey: string) => del(`/api/production/auth/character/${roleKey}`),
@@ -476,11 +476,12 @@ export const adminApi = {
       `/api/admin/users/${characterId}/tools`, { tool_keys: toolKeys },
     ),
   // GitHub issue #34: moved here from productionApi - the SDE cache is
-  // global/shared across every tenant, so triggering a refresh is a
+  // global/shared across every tenant, so triggering a preview/apply is a
   // cross-tenant-impacting action, not a per-tenant Production one.
-  refreshSde: () => post<T.PipelineRunStatus>('/api/admin/sde/refresh'),
-  refreshSdeStatus: () => get<T.PipelineRunStatus>('/api/admin/sde/refresh/status'),
-  // Same cross-tenant-cache reasoning as refreshSde above - see
+  previewSde: () => post<T.PipelineRunStatus>('/api/admin/sde/preview'),
+  previewSdeStatus: () => get<T.PipelineRunStatus>('/api/admin/sde/preview/status'),
+  applySde: () => post<T.SdeApplyResult>('/api/admin/sde/apply'),
+  // Same cross-tenant-cache reasoning as previewSde above - see
   // production/jita_price_cache.py's own docstring.
   refreshJitaPriceCache: () =>
     post<{ cached_type_ids: number; updated_at: string | null }>('/api/admin/jita-price-cache/refresh'),
