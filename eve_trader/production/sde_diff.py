@@ -6,6 +6,8 @@ exactly the leftover/test blueprints that have bitten this tool before.
 """
 from __future__ import annotations
 
+import struct
+
 from .constants import ACTIVITY_COPYING, ACTIVITY_INVENTION, ACTIVITY_MANUFACTURING, ACTIVITY_REACTION
 from .sde import FetchedSde
 
@@ -43,6 +45,23 @@ _FETCHED_COUNT_ATTR = {
     "sde_type_slots": "type_slots",
     "sde_type_materials": "type_materials",
 }
+
+
+def _pg_real(value):
+    """Round-trip through Postgres REAL (float4). sde_* float columns are
+    REAL, so a CSV value like 65449847 comes back as 65449848 after apply;
+    comparing the raw Python float would flag a phantom change."""
+    if value is None:
+        return None
+    return struct.unpack("f", struct.pack("f", float(value)))[0]
+
+
+def _floats_differ(old, new) -> bool:
+    if old is None and new is None:
+        return False
+    if old is None or new is None:
+        return True
+    return _pg_real(old) != _pg_real(new)
 
 
 def _rows(snapshot: dict, key: str) -> list:
@@ -92,8 +111,12 @@ def build_diff(fetched: FetchedSde, snapshot: dict) -> dict:
         old = old_types[type_id]
         changes = {}
         for field_name, idx in _ITEM_COMPARE_FIELDS:
-            if old[idx] != row[idx]:
-                changes[field_name] = [old[idx], row[idx]]
+            old_val, new_val = old[idx], row[idx]
+            if field_name == "volume":
+                if _floats_differ(old_val, new_val):
+                    changes[field_name] = [old_val, new_val]
+            elif old_val != new_val:
+                changes[field_name] = [old_val, new_val]
         if changes:
             changed_items.append({"type_id": type_id, "name": row[2], "changes": changes})
     for type_id, row in old_types.items():
@@ -157,7 +180,7 @@ def build_diff(fetched: FetchedSde, snapshot: dict) -> dict:
             new_qty = new_materials.get(key)
             if old_qty is None and new_qty is None:
                 continue
-            if old_qty is not None and new_qty is not None and old_qty == new_qty:
+            if old_qty is not None and new_qty is not None and not _floats_differ(old_qty, new_qty):
                 continue
             materials.append({
                 "material_type_id": key[2],
@@ -172,7 +195,7 @@ def build_diff(fetched: FetchedSde, snapshot: dict) -> dict:
         if old_product is not None and new_product is not None:
             old_pid, old_qty = old_product
             new_pid, new_qty = new_product
-            if old_pid != new_pid or old_qty != new_qty:
+            if old_pid != new_pid or _floats_differ(old_qty, new_qty):
                 products = {"old_qty": old_qty, "new_qty": new_qty}
         elif old_product is not None or new_product is not None:
             old_qty = 0.0 if old_product is None else old_product[1]
@@ -183,7 +206,7 @@ def build_diff(fetched: FetchedSde, snapshot: dict) -> dict:
         for activity_id in _TIME_ACTIVITY_ORDER:
             old_t = old_time.get((bp_id, activity_id))
             new_t = new_time.get((bp_id, activity_id))
-            if old_t is not None and new_t is not None and old_t != new_t:
+            if old_t is not None and new_t is not None and _floats_differ(old_t, new_t):
                 time_change = {"old": old_t, "new": new_t}
                 break
 
@@ -194,7 +217,7 @@ def build_diff(fetched: FetchedSde, snapshot: dict) -> dict:
         for pid in sorted(pids):
             old_p = old_prob.get((bp_id, pid))
             new_p = new_prob.get((bp_id, pid))
-            if old_p is not None and new_p is not None and old_p != new_p:
+            if old_p is not None and new_p is not None and _floats_differ(old_p, new_p):
                 invention_probability = {"old": old_p, "new": new_p}
                 break
 

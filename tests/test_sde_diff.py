@@ -129,6 +129,18 @@ def test_build_diff_new_blueprint_type_is_new_item_not_changed_blueprint():
     assert diff["changed_blueprints"] == []
 
 
+def test_build_diff_ignores_postgres_real_volume_roundtrip():
+    # Live Fuzzwork values around 6.5e7 cannot be represented in float32;
+    # sde_types.volume is REAL, so a just-applied dump must not show up as
+    # changed on the next preview.
+    old = _snapshot(types=[_type(21094, "Cynosural Field", volume=65449848.0)])
+    fetched = FetchedSde(types=[_type(21094, "Cynosural Field", volume=65449847.0)])
+    diff = build_diff(fetched, old)
+    assert diff["changed_items"] == []
+    assert diff["new_items"] == []
+    assert diff["removed_items"] == []
+
+
 def test_build_diff_table_deltas_skip_types_and_blueprint_tables():
     fetched = FetchedSde(
         groups=[(1, 6, "Frigate")],
