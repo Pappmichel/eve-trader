@@ -190,9 +190,10 @@ export default function AssetPlanList() {
         job can take the entire free-slot pool for a category and leave everything else sharing it at 0 this
         round, on purpose: the goal is to fully finish what unblocks the most downstream work (or, failing that,
         what's most depleted) rather than spread every job forward a little. Only a job's <i>sole remaining</i>
-        same-category blocker (another Reaction, Advanced, or Capital Component - never a raw-buy material) earns
-        unlock credit; a job still short on something else, or sharing the blocker with another still-missing job
-        of the same kind, earns none yet. Two modes control each job's own "need" (the ceiling it can claim): with
+        same-category blocker earns unlock credit - "category" here is any buildable grouping (Reaction, Advanced/
+        Capital Component, Equipment, a ship size, ...), never a raw-buy material; a job still short on something
+        else in that same category, or sharing the blocker with another still-missing job of the same kind, earns
+        none yet. Two modes control each job's own "need" (the ceiling it can claim): with
         Slot target empty (the default), a job's need is simply its own ready runs, uncapped. With a Slot target
         set, each job's need instead becomes however many slots it would take to finish its own ready runs within
         that many days (never more than it has ready runs) - priority order still decides who claims first, so if

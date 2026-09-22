@@ -278,8 +278,13 @@ class AssetPlanJob:
     # recommendation categories, or the pool had zero free slots for it).
     days_to_complete_at_recommended_slots: Optional[float] = None
     # Direct materials that still short this job (needed > covered). Empty
-    # when every run is ready now. Display-only (Blocked-column tooltip);
-    # never feeds sizing or slot-split math.
+    # when every run is ready now. Originally display-only (Blocked-column
+    # tooltip) and still never feeds this job's *own* sizing/readiness - but
+    # since 2026-09-22, engine._unlock_time_by_type reads every *other*
+    # job's blockers list to compute this job's own unlock_time_seconds
+    # (recommended_slots priority) - see that function's docstring. Keep
+    # this list populated/accurate even in a future fast path that doesn't
+    # need it for display; the slot-priority feature depends on it too now.
     blockers: list[AssetPlanBlocker] = field(default_factory=list)
 
 

@@ -2147,21 +2147,28 @@ def _unlock_time_by_type(jobs: dict[int, AssetPlanJob]) -> dict[int, float]:
     primary priority key.
 
     A parent job P credits its *sole remaining same-category blocker* only -
-    grouping P.blockers by the blocking material's own job_category
-    (Reactions/Advanced Components/Capital Components) and crediting a
-    category group only when exactly one blocker remains in it. Blockers
-    with no job_category (a pure buy material, PI output, a skillbook -
-    nothing with a blueprint at all) are dropped before grouping and never
-    credited - user-confirmed: only *buildable* blockers count, and only
-    within their own category, so a Reaction can unlock a Component (cross-
-    category, matches the "Reactions for Components" example that prompted
-    this) but a raw-mineral shortage on the same job never blocks the
-    credit, and a second unresolved Reaction blocker on the same job
-    prevents crediting either one until only one is left. The credited
-    amount is P's own *blocked* job time - job_time_seconds scaled down to
-    just the (job_runs - runs_ready_now) portion - not P's full build time,
-    since only the newly-workable portion should count toward "how much
-    gets unlocked", not time that was already startable regardless.
+    grouping P.blockers by whatever engine.job_category() returns for the
+    blocking material (Reactions/Advanced Components/Capital Components/
+    Equipment/a ship-size bucket/etc. - job_category's own full bucket list,
+    not narrowed to the three slot-recommendation categories here) and
+    crediting a category group only when exactly one blocker remains in it.
+    Blockers with no job_category at all (a pure buy material, PI output, a
+    skillbook - nothing with a blueprint) are dropped before grouping and
+    never credited - user-confirmed: only *buildable* blockers count, and
+    only within their own category, so a Reaction can unlock a Component
+    (cross-category between P and its blocker, matches the "Reactions for
+    Components" example that prompted this) but a raw-mineral shortage on
+    the same job never blocks the credit, and a second unresolved Reaction
+    blocker on the same job prevents crediting either one until only one is
+    left. (A credited job outside Reactions/Advanced/Capital Components -
+    e.g. Equipment - is harmless today: _allocate_slots_by_priority is only
+    ever consulted for jobs in _SLOT_RECOMMENDATION_CATEGORIES, so the
+    credit just sits unused on that job's own unlock_time_seconds.) The
+    credited amount is P's own *blocked* job time - job_time_seconds scaled
+    down to just the (job_runs - runs_ready_now) portion - not P's full
+    build time, since only the newly-workable portion should count toward
+    "how much gets unlocked", not time that was already startable
+    regardless.
 
     A single job can accumulate credit from multiple parents (summed) -
     e.g. one Reaction feeding into three different Component jobs that are
@@ -2223,7 +2230,6 @@ def _allocate_slots_by_priority(
     rather than jumping the queue on an unknown value."""
     if available <= 0 or not claims:
         return {type_id: 0 for type_id, *_ in claims}
-    caps = {type_id: cap for type_id, cap, _, _ in claims}
     order = sorted(
         claims,
         key=lambda c: (-c[2], c[3] is None, c[3] if c[3] is not None else 0.0),
