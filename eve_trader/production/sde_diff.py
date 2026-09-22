@@ -23,31 +23,6 @@ _TIME_ACTIVITY_ORDER = (
     ACTIVITY_MANUFACTURING, ACTIVITY_REACTION, ACTIVITY_INVENTION, ACTIVITY_COPYING,
 )
 
-# Row-count deltas skip types (shown as new/removed/changed items) and the
-# blueprint tables (shown as changed_blueprints).
-_DELTA_TABLES = (
-    "sde_groups",
-    "sde_market_groups",
-    "sde_invention_probability",
-    "sde_solar_systems",
-    "sde_stations",
-    "sde_categories",
-    "sde_type_slots",
-    "sde_type_materials",
-)
-
-_FETCHED_COUNT_ATTR = {
-    "sde_groups": "groups",
-    "sde_market_groups": "market_groups",
-    "sde_invention_probability": "invention_probability",
-    "sde_solar_systems": "solar_systems",
-    "sde_stations": "stations",
-    "sde_categories": "categories",
-    "sde_type_slots": "type_slots",
-    "sde_type_materials": "type_materials",
-}
-
-
 def _pg_real(value):
     """Round-trip through Postgres REAL (float4). sde_* float columns are
     REAL, so a CSV value like 65449847 comes back as 65449848 after apply;
@@ -86,6 +61,100 @@ def _primary_product(products: dict[tuple[int, int], tuple[int, float]], bp_id: 
         return None
     matches.sort(key=lambda item: item[0])
     return matches[0][1]
+
+
+def _key_str(key) -> str:
+    if isinstance(key, tuple):
+        return ":".join(str(part) for part in key)
+    return str(key)
+
+
+def _diff_rows(old_rows, new_rows, key_fn, name_fn, fields) -> dict:
+    """new/removed/changed for one table. `fields` is (name, index, is_float).
+    A row in both snapshots with equal fields is omitted."""
+    old_by_key = {key_fn(row): row for row in old_rows}
+    new_by_key = {key_fn(row): row for row in new_rows}
+    new = []
+    removed = []
+    changed = []
+    for key, row in new_by_key.items():
+        label = name_fn(row)
+        key_s = _key_str(key)
+        if key not in old_by_key:
+            new.append({"key": key_s, "name": label})
+            continue
+        old = old_by_key[key]
+        changes = {}
+        for field_name, idx, is_float in fields:
+            old_val, new_val = old[idx], row[idx]
+            if is_float:
+                if _floats_differ(old_val, new_val):
+                    changes[field_name] = [old_val, new_val]
+            elif old_val != new_val:
+                changes[field_name] = [old_val, new_val]
+        if changes:
+            changed.append({"key": key_s, "name": label, "changes": changes})
+    for key, row in old_by_key.items():
+        if key not in new_by_key:
+            removed.append({"key": _key_str(key), "name": name_fn(row)})
+    return {"new": new, "removed": removed, "changed": changed}
+
+
+def _other_tables(fetched: FetchedSde, snapshot: dict, new_types: dict, old_types: dict) -> dict:
+    """Row diffs for the eight tables that are not types or blueprint
+    materials/products/time. Invention probability is also summarized per
+    blueprint inside changed_blueprints; both views are kept."""
+    def type_label(type_id: int) -> str:
+        return _type_name(int(type_id), new_types, old_types)
+
+    specs = (
+        (
+            "sde_groups", fetched.groups,
+            lambda row: int(row[0]), lambda row: row[2],
+            (("category_id", 1, False), ("group_name", 2, False)),
+        ),
+        (
+            "sde_market_groups", fetched.market_groups,
+            lambda row: int(row[0]), lambda row: row[2],
+            (("parent_group_id", 1, False), ("market_group_name", 2, False)),
+        ),
+        (
+            "sde_solar_systems", fetched.solar_systems,
+            lambda row: int(row[0]), lambda row: row[1],
+            (("name", 1, False), ("security", 2, True), ("region_id", 3, False)),
+        ),
+        (
+            "sde_stations", fetched.stations,
+            lambda row: int(row[0]), lambda row: row[2],
+            (("system_id", 1, False), ("station_name", 2, False)),
+        ),
+        (
+            "sde_categories", fetched.categories,
+            lambda row: int(row[0]), lambda row: row[1],
+            (("category_name", 1, False),),
+        ),
+        (
+            "sde_type_slots", fetched.type_slots,
+            lambda row: int(row[0]), lambda row: type_label(row[0]),
+            (("slot", 1, False),),
+        ),
+        (
+            "sde_type_materials", fetched.type_materials,
+            lambda row: (int(row[0]), int(row[1])),
+            lambda row: f"{type_label(row[0])} → {type_label(row[1])}",
+            (("quantity", 2, True),),
+        ),
+        (
+            "sde_invention_probability", fetched.invention_probability,
+            lambda row: (int(row[0]), int(row[1])),
+            lambda row: f"{type_label(row[0])} → {type_label(row[1])}",
+            (("probability", 2, True),),
+        ),
+    )
+    return {
+        table: _diff_rows(_rows(snapshot, table), new_rows, key_fn, name_fn, fields)
+        for table, new_rows, key_fn, name_fn, fields in specs
+    }
 
 
 def _blueprint_ids(*row_groups: list) -> set[int]:
@@ -249,21 +318,10 @@ def build_diff(fetched: FetchedSde, snapshot: dict) -> dict:
             "invention_probability": invention_probability,
         })
 
-    counts = snapshot.get("counts") or {}
-    table_deltas = {}
-    for table in _DELTA_TABLES:
-        attr = _FETCHED_COUNT_ATTR[table]
-        new_count = len(getattr(fetched, attr))
-        if table in counts:
-            old_count = int(counts[table])
-        else:
-            old_count = len(_rows(snapshot, table))
-        table_deltas[table] = {"old": old_count, "new": new_count}
-
     return {
         "new_items": new_items,
         "removed_items": removed_items,
         "changed_items": changed_items,
         "changed_blueprints": changed_blueprints,
-        "table_deltas": table_deltas,
+        "other_tables": _other_tables(fetched, snapshot, new_types, old_types),
     }

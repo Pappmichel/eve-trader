@@ -28,8 +28,13 @@ function isSdeDiff(value: unknown): value is SdeDiff {
     && Array.isArray(v.removed_items)
     && Array.isArray(v.changed_items)
     && Array.isArray(v.changed_blueprints)
-    && typeof v.table_deltas === 'object'
-    && v.table_deltas !== null
+    && typeof v.other_tables === 'object'
+    && v.other_tables !== null
+    && !Array.isArray(v.other_tables)
+}
+
+function rowKey(row: { key?: string; type_id?: number }): string {
+  return row.key ?? String(row.type_id)
 }
 
 function formatValue(value: unknown): string {
@@ -39,12 +44,12 @@ function formatValue(value: unknown): string {
 
 const ITEM_COLUMNS: ColumnDef<SdeDiffItem, unknown>[] = [
   { header: 'Name', accessorKey: 'name', size: 280 },
-  { header: 'Type ID', accessorKey: 'type_id', size: 120 },
+  { header: 'ID', id: 'id', size: 140, accessorFn: (row) => row.key ?? row.type_id },
 ]
 
 const CHANGED_ITEM_COLUMNS: ColumnDef<SdeChangedItem, unknown>[] = [
   { header: 'Name', accessorKey: 'name', size: 240 },
-  { header: 'Type ID', accessorKey: 'type_id', size: 100 },
+  { header: 'ID', id: 'id', size: 120, accessorFn: (row) => row.key ?? row.type_id },
   {
     header: 'Changes',
     id: 'changes',
@@ -64,21 +69,21 @@ function ItemList({ items, tableId }: { items: SdeDiffItem[]; tableId: string })
       columns={ITEM_COLUMNS}
       tableId={tableId}
       exportFilename={tableId}
-      getRowId={(row) => String(row.type_id)}
+      getRowId={(row) => rowKey(row)}
       maxHeight={360}
     />
   )
 }
 
-function ChangedItemList({ items }: { items: SdeChangedItem[] }) {
+function ChangedItemList({ items, tableId }: { items: SdeChangedItem[]; tableId: string }) {
   if (items.length === 0) return <Text size="sm" c="dimmed">None.</Text>
   return (
     <DataTable
       data={items}
       columns={CHANGED_ITEM_COLUMNS}
-      tableId="sde-preview-changed-items"
-      exportFilename="sde-changed-items"
-      getRowId={(row) => String(row.type_id)}
+      tableId={tableId}
+      exportFilename={tableId}
+      getRowId={(row) => rowKey(row)}
       maxHeight={360}
     />
   )
@@ -218,10 +223,15 @@ export default function SdePreviewPage() {
     () => [...(diff?.changed_blueprints ?? [])].sort((a, b) => a.product_name.localeCompare(b.product_name)),
     [diff],
   )
-  const deltaRows = useMemo(() => {
+  const otherTables = useMemo(() => {
     if (!diff) return []
-    return Object.entries(diff.table_deltas)
-      .map(([table, row]) => ({ table, old: row.old, new: row.new, delta: row.new - row.old }))
+    return Object.entries(diff.other_tables)
+      .map(([table, rows]) => ({
+        table,
+        newRows: [...rows.new].sort(byName),
+        removedRows: [...rows.removed].sort(byName),
+        changedRows: [...rows.changed].sort(byName),
+      }))
       .sort((a, b) => a.table.localeCompare(b.table))
   }, [diff])
 
@@ -280,7 +290,9 @@ export default function SdePreviewPage() {
               </Accordion.Item>
               <Accordion.Item value="changed">
                 <Accordion.Control>Changed Items ({changedItems.length})</Accordion.Control>
-                <Accordion.Panel><ChangedItemList items={changedItems} /></Accordion.Panel>
+                <Accordion.Panel>
+                  <ChangedItemList items={changedItems} tableId="sde-preview-changed-items" />
+                </Accordion.Panel>
               </Accordion.Item>
               <Accordion.Item value="blueprints">
                 <Accordion.Control>Changed Blueprints ({changedBlueprints.length})</Accordion.Control>
@@ -303,26 +315,31 @@ export default function SdePreviewPage() {
 
             <div>
               <Title order={4} mb="xs">Other Tables</Title>
-              <Table>
-                <Table.Thead>
-                  <Table.Tr>
-                    <Table.Th>Table</Table.Th>
-                    <Table.Th>Old</Table.Th>
-                    <Table.Th>New</Table.Th>
-                    <Table.Th>Delta</Table.Th>
-                  </Table.Tr>
-                </Table.Thead>
-                <Table.Tbody>
-                  {deltaRows.map((row) => (
-                    <Table.Tr key={row.table}>
-                      <Table.Td>{row.table}</Table.Td>
-                      <Table.Td>{row.old.toLocaleString('en-US')}</Table.Td>
-                      <Table.Td>{row.new.toLocaleString('en-US')}</Table.Td>
-                      <Table.Td>{row.delta.toLocaleString('en-US')}</Table.Td>
-                    </Table.Tr>
-                  ))}
-                </Table.Tbody>
-              </Table>
+              <Accordion multiple>
+                {otherTables.map((entry) => (
+                  <Accordion.Item value={entry.table} key={entry.table}>
+                    <Accordion.Control>
+                      {entry.table} ({entry.newRows.length} new, {entry.removedRows.length} removed, {entry.changedRows.length} changed)
+                    </Accordion.Control>
+                    <Accordion.Panel>
+                      <Stack gap="sm">
+                        <div>
+                          <Text size="sm" fw={600} mb={4}>New ({entry.newRows.length})</Text>
+                          <ItemList items={entry.newRows} tableId={`sde-preview-${entry.table}-new`} />
+                        </div>
+                        <div>
+                          <Text size="sm" fw={600} mb={4}>Removed ({entry.removedRows.length})</Text>
+                          <ItemList items={entry.removedRows} tableId={`sde-preview-${entry.table}-removed`} />
+                        </div>
+                        <div>
+                          <Text size="sm" fw={600} mb={4}>Changed ({entry.changedRows.length})</Text>
+                          <ChangedItemList items={entry.changedRows} tableId={`sde-preview-${entry.table}-changed`} />
+                        </div>
+                      </Stack>
+                    </Accordion.Panel>
+                  </Accordion.Item>
+                ))}
+              </Accordion>
             </div>
           </>
         )}

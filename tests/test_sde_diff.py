@@ -212,27 +212,138 @@ def test_build_diff_ignores_postgres_real_volume_roundtrip():
     assert diff["removed_items"] == []
 
 
-def test_build_diff_table_deltas_skip_types_and_blueprint_tables():
+_OTHER_TABLES = (
+    "sde_groups",
+    "sde_market_groups",
+    "sde_solar_systems",
+    "sde_stations",
+    "sde_categories",
+    "sde_type_slots",
+    "sde_type_materials",
+    "sde_invention_probability",
+)
+
+
+def test_build_diff_other_tables_skip_types_and_blueprint_tables():
     fetched = FetchedSde(
         groups=[(1, 6, "Frigate")],
         categories=[(6, "Ship")],
         type_slots=[(123, "high")],
     )
-    snapshot = _snapshot(counts={
-        "sde_groups": 0,
-        "sde_market_groups": 0,
-        "sde_solar_systems": 0,
-        "sde_stations": 0,
-        "sde_categories": 0,
-        "sde_type_slots": 0,
-        "sde_type_materials": 0,
-    })
+    diff = build_diff(fetched, _snapshot())
+    other = diff["other_tables"]
+    assert "sde_types" not in other
+    assert "sde_blueprint_materials" not in other
+    assert "sde_blueprint_products" not in other
+    assert "sde_blueprint_time" not in other
+    assert set(other) == set(_OTHER_TABLES)
+    assert other["sde_groups"]["new"] == [{"key": "1", "name": "Frigate"}]
+    assert other["sde_categories"]["new"] == [{"key": "6", "name": "Ship"}]
+    assert other["sde_type_slots"]["new"] == [{"key": "123", "name": "123"}]
+    assert other["sde_invention_probability"] == {"new": [], "removed": [], "changed": []}
+
+
+def test_build_diff_sde_groups_new_removed_changed_skips_unchanged():
+    snapshot = _snapshot()
+    snapshot["sde_groups"] = [
+        (1, 6, "Frigate"),
+        (2, 6, "Destroyer"),
+        (3, 7, "Ore"),
+    ]
+    fetched = FetchedSde(groups=[
+        (1, 6, "Frigate"),
+        (2, 8, "Destroyers"),
+        (4, 6, "Cruiser"),
+    ])
+
+    groups = build_diff(fetched, snapshot)["other_tables"]["sde_groups"]
+
+    assert groups["new"] == [{"key": "4", "name": "Cruiser"}]
+    assert groups["removed"] == [{"key": "3", "name": "Ore"}]
+    assert groups["changed"] == [{
+        "key": "2",
+        "name": "Destroyers",
+        "changes": {
+            "category_id": [6, 8],
+            "group_name": ["Destroyer", "Destroyers"],
+        },
+    }]
+    assert "1" not in {row["key"] for row in groups["new"] + groups["removed"] + groups["changed"]}
+
+
+def test_build_diff_sde_type_materials_composite_key_and_real_quantity():
+    trit = _type(34, "Tritanium")
+    pyro = _type(35, "Pyerite")
+    mex = _type(36, "Mexallon")
+    veld = _type(1230, "Veldspar")
+    snapshot = _snapshot(types=[trit, pyro, mex, veld])
+    snapshot["sde_type_materials"] = [
+        (1230, 34, 415.0),
+        (1230, 35, 100.0),
+        (1230, 36, 10.0),
+    ]
+    fetched = FetchedSde(
+        types=[trit, pyro, mex, veld],
+        type_materials=[
+            # Postgres REAL cannot tell 65449847 from 65449848.
+            (1230, 34, 65449847.0),
+            (1230, 35, 100.0),
+            (1228, 34, 50.0),
+        ],
+    )
+    snapshot["sde_type_materials"][0] = (1230, 34, 65449848.0)
+
+    rows = build_diff(fetched, snapshot)["other_tables"]["sde_type_materials"]
+
+    assert rows["new"] == [{"key": "1228:34", "name": "1228 → Tritanium"}]
+    assert rows["removed"] == [{"key": "1230:36", "name": "Veldspar → Mexallon"}]
+    assert rows["changed"] == []
+    assert "1230:35" not in {row["key"] for row in rows["new"] + rows["removed"] + rows["changed"]}
+
+    fetched_changed = FetchedSde(
+        types=[trit, pyro, mex, veld],
+        type_materials=[
+            (1230, 34, 400.0),
+            (1230, 35, 100.0),
+            (1230, 36, 10.0),
+        ],
+    )
+    changed = build_diff(fetched_changed, snapshot)["other_tables"]["sde_type_materials"]
+    assert changed["new"] == []
+    assert changed["removed"] == []
+    assert changed["changed"] == [{
+        "key": "1230:34",
+        "name": "Veldspar → Tritanium",
+        "changes": {"quantity": [65449848.0, 400.0]},
+    }]
+
+
+def test_build_diff_sde_invention_probability_composite_key_not_deduped():
+    bp = _type(999, "Rifter Blueprint")
+    rifter_ii = _type(588, "Rifter II")
+    stabber_ii = _type(589, "Stabber II")
+    snapshot = _snapshot(
+        types=[bp, rifter_ii, stabber_ii],
+        probability=[(999, 588, 0.3), (999, 589, 0.2)],
+    )
+    fetched = FetchedSde(
+        types=[bp, rifter_ii, stabber_ii, _type(1000, "Stabber Blueprint")],
+        invention_probability=[
+            (999, 588, 0.42),
+            (1000, 589, 0.15),
+        ],
+    )
+
     diff = build_diff(fetched, snapshot)
-    assert "sde_types" not in diff["table_deltas"]
-    assert "sde_blueprint_materials" not in diff["table_deltas"]
-    assert "sde_blueprint_products" not in diff["table_deltas"]
-    assert "sde_blueprint_time" not in diff["table_deltas"]
-    assert diff["table_deltas"]["sde_groups"] == {"old": 0, "new": 1}
-    assert diff["table_deltas"]["sde_categories"] == {"old": 0, "new": 1}
-    assert diff["table_deltas"]["sde_type_slots"] == {"old": 0, "new": 1}
-    assert diff["table_deltas"]["sde_invention_probability"] == {"old": 0, "new": 0}
+    rows = diff["other_tables"]["sde_invention_probability"]
+
+    assert rows["new"] == [{"key": "1000:589", "name": "Stabber Blueprint → Stabber II"}]
+    assert rows["removed"] == [{"key": "999:589", "name": "Rifter Blueprint → Stabber II"}]
+    assert rows["changed"] == [{
+        "key": "999:588",
+        "name": "Rifter Blueprint → Rifter II",
+        "changes": {"probability": [0.3, 0.42]},
+    }]
+    # The per-blueprint summary still reports the same probability change.
+    assert len(diff["changed_blueprints"]) == 1
+    assert diff["changed_blueprints"][0]["invention_probability"] == {"old": 0.3, "new": 0.42}

@@ -688,12 +688,15 @@ export interface AdminUser {
 }
 
 export interface SdeDiffItem {
-  type_id: number
+  /** Present on item rows. Other tables use `key` (a string, composite keys joined with ":"). */
+  type_id?: number
+  key?: string
   name: string
 }
 
 export interface SdeChangedItem {
-  type_id: number
+  type_id?: number
+  key?: string
   name: string
   changes: Record<string, [unknown, unknown]>
 }
@@ -725,9 +728,10 @@ export interface SdeChangedBlueprint {
   invention_probability: SdeValueChange | null
 }
 
-export interface SdeTableDelta {
-  old: number
-  new: number
+export interface SdeTableRowDiff {
+  new: SdeDiffItem[]
+  removed: SdeDiffItem[]
+  changed: SdeChangedItem[]
 }
 
 export interface SdeDiff {
@@ -735,7 +739,7 @@ export interface SdeDiff {
   removed_items: SdeDiffItem[]
   changed_items: SdeChangedItem[]
   changed_blueprints: SdeChangedBlueprint[]
-  table_deltas: Record<string, SdeTableDelta>
+  other_tables: Record<string, SdeTableRowDiff>
 }
 
 export type SdeApplyResult = Record<string, number>
