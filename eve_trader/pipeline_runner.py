@@ -1,7 +1,7 @@
 """Background runner for user-triggered jobs across tools.
 
 Trading (Search + Add + Clean Up / Refresh Shortlist / Pipeline), Doctrine
-(contract sync) and Admin (SDE refresh) used to run inside the HTTP request
+(contract sync) and Admin (SDE preview) used to run inside the HTTP request
 handler. Linear ESI / multi-CSV work outlasts any proxy timeout - this
 module moves the same `do_*` calls onto a stdlib `threading.Thread` and
 persists status in `pipeline_runs` so the frontend can poll.
@@ -55,7 +55,7 @@ JOB_REFRESH_AND_PRUNE = "refresh_and_prune"
 JOB_REFRESH_SHORTLIST = "refresh_shortlist"
 JOB_PIPELINE = "pipeline"
 JOB_SYNC_CONTRACTS = "sync_contracts"
-JOB_SDE_REFRESH = "sde_refresh"
+JOB_SDE_PREVIEW = "sde_preview"
 JOB_DISCOVER_BUILD_CANDIDATES = "discover_build_candidates"
 
 _JOB_LABELS: dict[tuple[str, str], str] = {
@@ -63,7 +63,7 @@ _JOB_LABELS: dict[tuple[str, str], str] = {
     (TOOL_TRADING, JOB_REFRESH_SHORTLIST): "Refresh Shortlist",
     (TOOL_TRADING, JOB_PIPELINE): "Run Complete Pipeline",
     (TOOL_DOCTRINE, JOB_SYNC_CONTRACTS): "Sync Contracts",
-    (TOOL_ADMIN, JOB_SDE_REFRESH): "Refresh SDE",
+    (TOOL_ADMIN, JOB_SDE_PREVIEW): "Preview SDE",
     (TOOL_PRODUCTION, JOB_DISCOVER_BUILD_CANDIDATES): "Discover Build Candidates",
 }
 
@@ -181,14 +181,14 @@ def start_doctrine_sync() -> dict:
     )
 
 
-def start_sde_refresh() -> dict:
-    """Background Admin SDE refresh. Scheduler/CLI still call
-    admin.do_refresh_sde in-process if they ever did; this is the HTTP path."""
+def start_sde_preview() -> dict:
+    """Background Admin SDE preview. Apply is a separate, blocking
+    do_apply_sde call - the HTTP path here only fetches and diffs."""
     from . import admin as admin_mod
     return start_job(
-        TOOL_ADMIN, JOB_SDE_REFRESH,
-        _JOB_LABELS[(TOOL_ADMIN, JOB_SDE_REFRESH)],
-        lambda cb: admin_mod.do_refresh_sde(progress_callback=cb),
+        TOOL_ADMIN, JOB_SDE_PREVIEW,
+        _JOB_LABELS[(TOOL_ADMIN, JOB_SDE_PREVIEW)],
+        lambda cb: admin_mod.do_preview_sde(progress_callback=cb),
     )
 
 
@@ -291,9 +291,9 @@ def _run_doctrine_sync(tenant_id: str, run_id: str) -> None:
     )
 
 
-def _run_sde_refresh(tenant_id: str, run_id: str) -> None:
+def _run_sde_preview(tenant_id: str, run_id: str) -> None:
     from . import admin as admin_mod
     _execute(
         tenant_id, run_id,
-        lambda cb: admin_mod.do_refresh_sde(progress_callback=cb),
+        lambda cb: admin_mod.do_preview_sde(progress_callback=cb),
     )

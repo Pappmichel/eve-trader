@@ -7,7 +7,7 @@ import pytest
 from eve_trader import admin, storage
 from eve_trader.actions import ActionError
 from eve_trader.esi_client import ESIClient, ESIError
-from eve_trader.production import jita_price_cache, sde
+from eve_trader.production import jita_price_cache, sde, sde_diff
 
 from . import pg_helpers
 from .pg_helpers import _apply_admin_schema, _apply_phase1_schema, _apply_phase2_schema, _apply_phase3_schema  # noqa: F401
@@ -22,7 +22,9 @@ def _wipe():
     pg_helpers.wipe_tables("tenant_registry_entries", "tool_grants", "character_session_revocations")
     with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
         conn.execute("DELETE FROM tenants WHERE tenant_id != %s", (storage.DEFAULT_TENANT_ID,))
+    admin._staged_sde = None
     yield
+    admin._staged_sde = None
 
 
 def test_do_add_user_resolves_id_via_esi_search_and_creates_dedicated_tenant(monkeypatch):
@@ -126,41 +128,81 @@ def test_do_set_tool_grants_rejects_unregistered_character():
         admin.do_set_tool_grants(999999, ["trading"])
 
 
-def test_do_refresh_sde_downloads_and_invalidates_caches(monkeypatch):
+def test_do_apply_sde_invalidates_caches(monkeypatch):
     # GitHub issue #34: moved here from production/actions.py - the SDE
     # cache is global/shared, not per-tenant, so this is a superadmin action.
     #
     # GitHub issue #54's own follow-up bug (found in code review of this PR):
     # invalidate_discover_cache/invalidate_ship_margin_cache became per-tenant
-    # by default once their caches were keyed by tenant - a refresh here MUST
+    # by default once their caches were keyed by tenant - an apply here MUST
     # pass all_tenants=True (every tenant's discover/margin results can be
     # affected by a global SDE change, not just the calling admin's own),
     # or every other tenant keeps serving stale results for up to the full
     # cache TTL. Asserting only that the functions were *called* (the
     # original version of this test) let exactly that regression pass.
+    fetched = sde.FetchedSde(dump_etag="e")
+    admin._staged_sde = fetched
     invalidated = []
-    monkeypatch.setattr(sde, "refresh_sde", lambda progress_callback=None: {"sde_types": 100})
+    monkeypatch.setattr(sde, "apply_sde", lambda staged: {"sde_types": 100})
     monkeypatch.setattr(admin, "invalidate_discover_cache",
                          lambda all_tenants=False: invalidated.append(("discover", all_tenants)))
     monkeypatch.setattr(admin, "invalidate_ship_margin_cache",
                          lambda all_tenants=False: invalidated.append(("ship_margin", all_tenants)))
 
-    result = admin.do_refresh_sde()
+    result = admin.do_apply_sde()
 
     assert result == {"sde_types": 100}
     assert invalidated == [("discover", True), ("ship_margin", True)]
+    assert admin._staged_sde is None
 
 
-def test_do_refresh_sde_wraps_network_error():
-    def _raise(progress_callback=None):
+def test_do_apply_sde_without_preview_raises():
+    admin._staged_sde = None
+    with pytest.raises(ActionError, match="Keine Preview-Daten vorhanden"):
+        admin.do_apply_sde()
+
+
+def test_do_apply_sde_after_preview_uses_staged_data_without_redownload(monkeypatch):
+    fetched = sde.FetchedSde(types=[(1, 1, "Rifter", 1.0, 1, None, None, None, 1)], dump_etag="e1")
+    fetch_calls = []
+
+    def fake_fetch(cfg=None, progress_callback=None):
+        fetch_calls.append(1)
+        return fetched
+
+    applied = []
+    monkeypatch.setattr(sde, "fetch_sde", fake_fetch)
+    monkeypatch.setattr(storage, "get_sde_snapshot_for_diff", lambda: {
+        "sde_types": [], "sde_blueprint_materials": [], "sde_blueprint_products": [],
+        "sde_blueprint_time": [], "sde_invention_probability": [], "counts": {},
+    })
+    monkeypatch.setattr(sde_diff, "build_diff", lambda f, snap: {"new_items": [{"type_id": 1, "name": "Rifter"}]})
+    monkeypatch.setattr(sde, "apply_sde", lambda staged: applied.append(staged) or {"sde_types": 1})
+    monkeypatch.setattr(admin, "invalidate_discover_cache", lambda all_tenants=False: None)
+    monkeypatch.setattr(admin, "invalidate_ship_margin_cache", lambda all_tenants=False: None)
+
+    diff = admin.do_preview_sde()
+    assert diff == {"new_items": [{"type_id": 1, "name": "Rifter"}]}
+    assert admin._staged_sde is fetched
+    assert fetch_calls == [1]
+
+    result = admin.do_apply_sde()
+    assert result == {"sde_types": 1}
+    assert applied == [fetched]
+    assert fetch_calls == [1]
+    assert admin._staged_sde is None
+
+
+def test_do_preview_sde_wraps_network_error():
+    def _raise(cfg=None, progress_callback=None):
         raise requests.RequestException("connection refused")
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(sde, "refresh_sde", _raise)
+        mp.setattr(sde, "fetch_sde", _raise)
         with pytest.raises(ActionError, match="SDE refresh failed"):
-            admin.do_refresh_sde()
+            admin.do_preview_sde()
 
 
-def test_do_refresh_sde_emits_increasing_batch_progress(monkeypatch):
+def test_do_preview_sde_emits_increasing_batch_progress(monkeypatch):
     """Track A: each of the 13 sequential CSV fetches reports batch/total_batches."""
     fetched = []
 
@@ -170,14 +212,16 @@ def test_do_refresh_sde_emits_increasing_batch_progress(monkeypatch):
 
     monkeypatch.setattr(sde, "_fetch_csv", fake_fetch)
     monkeypatch.setattr(sde, "_dump_etag", lambda *a, **k: "etag")
-    monkeypatch.setattr(storage, "replace_sde_data", lambda **k: None)
-    monkeypatch.setattr(storage, "set_sde_refresh_state", lambda *a, **k: None)
-    monkeypatch.setattr(storage, "sde_row_counts", lambda: {"sde_types": 0})
-    monkeypatch.setattr(admin, "invalidate_discover_cache", lambda all_tenants=False: None)
-    monkeypatch.setattr(admin, "invalidate_ship_margin_cache", lambda all_tenants=False: None)
+    monkeypatch.setattr(storage, "get_sde_snapshot_for_diff", lambda: {
+        "sde_types": [], "sde_blueprint_materials": [], "sde_blueprint_products": [],
+        "sde_blueprint_time": [], "sde_invention_probability": [], "counts": {},
+    })
+    monkeypatch.setattr(sde_diff, "build_diff", lambda f, snap: {"new_items": []})
+    monkeypatch.setattr(storage, "replace_sde_data", lambda **k: (_ for _ in ()).throw(
+        AssertionError("preview must not write the SDE cache")))
 
     seen = []
-    admin.do_refresh_sde(progress_callback=seen.append)
+    result = admin.do_preview_sde(progress_callback=seen.append)
 
     assert len(sde._SDE_CSV_FILES) == 13
     assert fetched == list(sde._SDE_CSV_FILES)
@@ -186,11 +230,14 @@ def test_do_refresh_sde_emits_increasing_batch_progress(monkeypatch):
     assert all(p["total_batches"] == 13 for p in seen)
     assert seen[0]["message"] == "Fetching invTypes.csv"
     assert seen[-1]["message"] == "Fetching invTypeMaterials.csv"
+    assert result == {"new_items": []}
+    assert admin._staged_sde is not None
+    assert admin._staged_sde.dump_etag == "etag"
 
 
 def test_do_refresh_jita_price_cache_returns_count_and_timestamp(monkeypatch):
     # Standalone manual trigger for production/jita_price_cache.py's shared
-    # cache - same cross-tenant-impacting-cache reasoning as do_refresh_sde
+    # cache - same cross-tenant-impacting-cache reasoning as do_apply_sde
     # above, thin wrapper only (the real refresh logic is tested in
     # tests/test_production_jita_price_cache.py).
     monkeypatch.setattr(jita_price_cache, "refresh_jita_price_cache", lambda: 42)

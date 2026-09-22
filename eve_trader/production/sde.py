@@ -3,8 +3,8 @@
 ESI no longer exposes blueprint materials/products/job-time (CCP removed those
 endpoints years ago) - Fuzzwork (fuzzwork.co.uk) republishes CCP's Static Data
 Export as CSV after every patch. This downloads the handful of tables this
-tool actually needs and caches them in SQLite (see storage.replace_sde_data),
-refreshed on demand via do_refresh_sde() (production/actions.py) rather than
+tool actually needs and caches them in Postgres (see storage.replace_sde_data),
+previewed then applied via admin.do_preview_sde / do_apply_sde rather than
 baked in once.
 """
 from __future__ import annotations
@@ -13,6 +13,7 @@ import csv
 import io
 import logging
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -26,8 +27,8 @@ log = logging.getLogger("eve_trader.production.sde")
 
 # Any one file from the dump is a fine freshness proxy - Fuzzwork regenerates
 # the whole dump directory together, and invTypes.csv is already the first
-# file refresh_sde() fetches anyway. Used both to record what we just fetched
-# (refresh_sde) and to cheaply check what's currently available
+# file fetch_sde() fetches anyway. Used both to record what we just fetched
+# (apply_sde) and to cheaply check what's currently available
 # (check_for_newer_sde) without downloading the ~19MB CSV body.
 _FRESHNESS_FILE = "invTypes.csv"
 
@@ -49,7 +50,7 @@ USER_AGENT = "eve-trader-python"
 # is_invented check.
 _RELEVANT_ACTIVITIES = {ACTIVITY_MANUFACTURING, ACTIVITY_REACTION, ACTIVITY_INVENTION, ACTIVITY_COPYING}
 
-# Sequential Fuzzwork CSV fetches for refresh_sde - batch/total_batches
+# Sequential Fuzzwork CSV fetches for fetch_sde - batch/total_batches
 # progress uses this tuple's length rather than a magic number. Order is
 # the progress-batch order; why each file is needed is commented at the
 # unpack site below (meta groups, slot effects, type materials).
@@ -76,9 +77,9 @@ def _fetch_csv(session: requests.Session, base_url: str, filename: str) -> list[
     (esi_client._get_response retries 420/5xx up to 3x; goonmetrics_client's
     current_prices/price_history explicitly retry with backoff for the same
     "a bare timeout with no retry intermittently killed every caller on
-    nothing more than normal response-time variance" reason). refresh_sde()
+    nothing more than normal response-time variance" reason). fetch_sde()
     fetches these sequentially over one session - a single transient
-    blip on any one of them used to abort the whole SDE refresh."""
+    blip on any one of them used to abort the whole SDE preview."""
     last_exc: Optional[requests.RequestException] = None
     for attempt in range(1, 4):
         try:
@@ -128,14 +129,33 @@ def _emit_progress(progress_callback, payload: dict) -> None:
         log.exception("progress_callback failed")
 
 
-def refresh_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None) -> dict:
-    """Downloads the current Fuzzwork SDE export and replaces the local cache
-    wholesale. Safe to re-run any time (e.g. after a CCP balance patch).
+@dataclass
+class FetchedSde:
+    """Parsed Fuzzwork dump, not yet written to storage. Staged in
+    admin._staged_sde between preview and apply so Apply does not re-fetch."""
+    types: list[tuple] = field(default_factory=list)
+    groups: list[tuple] = field(default_factory=list)
+    market_groups: list[tuple] = field(default_factory=list)
+    blueprint_time: list[tuple] = field(default_factory=list)
+    blueprint_materials: list[tuple] = field(default_factory=list)
+    blueprint_products: list[tuple] = field(default_factory=list)
+    invention_probability: list[tuple] = field(default_factory=list)
+    solar_systems: list[tuple] = field(default_factory=list)
+    stations: list[tuple] = field(default_factory=list)
+    categories: list[tuple] = field(default_factory=list)
+    type_slots: list[tuple] = field(default_factory=list)
+    type_materials: list[tuple] = field(default_factory=list)
+    dump_etag: Optional[str] = None
 
-    progress_callback is optional so scheduler/CLI in-process callers stay
-    unchanged; the HTTP background job passes pipeline_runner's writer.
-    Emits phase=run + batch/total_batches (same vocabulary as Trading and
-    Doctrine sync - not a per-file schema) before each CSV fetch."""
+
+def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None) -> FetchedSde:
+    """Downloads and parses the current Fuzzwork SDE export. Does not write
+    the local cache - apply_sde() is the write half.
+
+    progress_callback is optional so in-process callers stay unchanged; the
+    HTTP background job passes pipeline_runner's writer. Emits phase=run +
+    batch/total_batches (same vocabulary as Trading and Doctrine sync - not
+    a per-file schema) before each CSV fetch."""
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT})
     base = cfg.fuzzwork_csv_base
@@ -249,25 +269,37 @@ def refresh_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=Non
             type_slot_by_id[int(r["typeID"])] = slot
     type_slot_rows = list(type_slot_by_id.items())
 
-    storage.replace_sde_data(
+    return FetchedSde(
         types=types_rows, groups=groups_rows, market_groups=market_groups_rows,
-        blueprint_time=time_rows, blueprint_materials=material_rows, blueprint_products=product_rows,
-        stations=station_rows,
-        invention_probability=probability_rows, solar_systems=solar_system_rows,
+        blueprint_time=time_rows, blueprint_materials=material_rows,
+        blueprint_products=product_rows, invention_probability=probability_rows,
+        solar_systems=solar_system_rows, stations=station_rows,
         categories=category_rows, type_slots=type_slot_rows,
-        type_materials=type_materials_rows,
+        type_materials=type_materials_rows, dump_etag=dump_etag,
     )
-    storage.set_sde_refresh_state(datetime.now(timezone.utc).isoformat(), dump_etag)
 
+
+def apply_sde(fetched: FetchedSde) -> dict:
+    """Writes a previously fetched dump into the local SDE cache and records
+    freshness. Safe to re-run any time (e.g. after a CCP balance patch)."""
+    storage.replace_sde_data(
+        types=fetched.types, groups=fetched.groups, market_groups=fetched.market_groups,
+        blueprint_time=fetched.blueprint_time, blueprint_materials=fetched.blueprint_materials,
+        blueprint_products=fetched.blueprint_products, stations=fetched.stations,
+        invention_probability=fetched.invention_probability, solar_systems=fetched.solar_systems,
+        categories=fetched.categories, type_slots=fetched.type_slots,
+        type_materials=fetched.type_materials,
+    )
+    storage.set_sde_refresh_state(datetime.now(timezone.utc).isoformat(), fetched.dump_etag)
     return storage.sde_row_counts()
 
 
 def check_for_newer_sde(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     """Cheap staleness check - one HEAD request (no CSV download) compared
-    against the ETag recorded at the last successful refresh_sde() - tells
-    the caller whether it's worth clicking "Refresh SDE" without actually
-    doing the ~19MB, several-file download just to find out. Doesn't
-    auto-refresh anything.
+    against the ETag recorded at the last successful apply_sde() - tells
+    the caller whether it's worth clicking "SDE-Update prüfen" without
+    actually doing the ~19MB, several-file download just to find out.
+    Doesn't auto-refresh anything.
 
     newer_sde_available is only ever True on a genuine ETag *mismatch* - both
     "never refreshed yet" and "remote temporarily unreachable" report False
