@@ -311,18 +311,18 @@ def test_doctrine_sync_worker_forwards_increasing_progress(monkeypatch):
     assert finished == [("succeeded", {"contracts_synced": 3})]
 
 
-def test_sde_refresh_worker_forwards_increasing_progress(monkeypatch):
+def test_sde_preview_worker_forwards_increasing_progress(monkeypatch):
     from contextlib import contextmanager
 
     from eve_trader import admin as admin_mod
 
-    def fake_refresh(progress_callback=None):
+    def fake_preview(progress_callback=None):
         assert progress_callback is not None
         progress_callback({"phase": "run", "batch": 1, "total_batches": 13, "message": "Fetching invTypes.csv"})
         progress_callback({"phase": "run", "batch": 2, "total_batches": 13, "message": "Fetching invGroups.csv"})
-        return {"sde_types": 2}
+        return {"new_items": []}
 
-    monkeypatch.setattr(admin_mod, "do_refresh_sde", fake_refresh)
+    monkeypatch.setattr(admin_mod, "do_preview_sde", fake_preview)
     progresses = []
     monkeypatch.setattr(storage, "update_pipeline_run_progress", lambda run_id, p: progresses.append(p))
     finished = []
@@ -336,11 +336,11 @@ def test_sde_refresh_worker_forwards_increasing_progress(monkeypatch):
         yield
 
     monkeypatch.setattr(pipeline_runner.tenant_scope, "enter_tenant", _enter)
-    pipeline_runner._run_sde_refresh(_TENANT_ID, "run-sde")
+    pipeline_runner._run_sde_preview(_TENANT_ID, "run-sde")
 
     assert [p["batch"] for p in progresses] == [1, 2]
     assert all(p["phase"] == "run" for p in progresses)
-    assert finished == [("succeeded", {"sde_types": 2})]
+    assert finished == [("succeeded", {"new_items": []})]
 
 
 def test_pipeline_worker_marks_degraded_when_one_step_fails(monkeypatch):

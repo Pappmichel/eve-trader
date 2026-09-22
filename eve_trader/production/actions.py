@@ -91,7 +91,7 @@ def do_get_system_cost_indices(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dic
 
 
 def do_check_sde_freshness(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
-    """Read-only - the actual refresh action (do_refresh_sde) moved to
+    """Read-only - the actual refresh action (do_apply_sde) moved to
     admin.py (GitHub issue #34): the SDE cache is global/shared data, not
     per-tenant, so triggering a refresh is a cross-tenant-impacting action
     that belongs in the Admin tool's superadmin surface, not exposed to

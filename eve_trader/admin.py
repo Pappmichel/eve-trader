@@ -20,10 +20,16 @@ import requests
 from . import access_gate, backup, storage
 from .actions import ActionError
 from .esi_client import ESIError
-from .production import jita_price_cache, sde
+from .production import jita_price_cache, sde, sde_diff
 from .production.engine import invalidate_discover_cache, invalidate_ship_margin_cache
+from .production.sde import FetchedSde
 
 log = logging.getLogger("eve_trader.admin")
+
+# Single-process deploy (uvicorn without --workers, see
+# deploy/eve-trader.service.template) - the preview's parsed dump stays here
+# until Apply, rather than being re-fetched or staged in Postgres.
+_staged_sde: FetchedSde | None = None
 
 
 def do_list_tenants() -> list[dict]:
@@ -77,28 +83,56 @@ def do_remove_user(character_id: int) -> dict:
     return {"removed": character_id}
 
 
-def do_refresh_sde(progress_callback=None) -> dict:
-    """Downloads and caches the current Fuzzwork SDE export - moved here from
-    production/actions.py (GitHub issue #34): the SDE cache (sde_types/
+def do_start_sde_preview() -> dict:
+    """Kicks off SDE preview as a background job. The HTTP handler must not
+    block on the ~14 sequential CSV downloads."""
+    from . import pipeline_runner
+    return pipeline_runner.start_sde_preview()
+
+
+def do_sde_preview_status() -> dict:
+    from . import pipeline_runner
+    return pipeline_runner.job_status(pipeline_runner.TOOL_ADMIN)
+
+
+def do_preview_sde(progress_callback=None) -> dict:
+    return _preview_worker(progress_callback)
+
+
+def _preview_worker(progress_callback=None) -> dict:
+    """Fetch+parse Fuzzwork CSVs, diff against the current cache, stage the
+    parsed dump in `_staged_sde`. The job result is the diff only - raw CSV
+    rows must not land in pipeline_runs.result."""
+    global _staged_sde
+    try:
+        fetched = sde.fetch_sde(progress_callback=progress_callback)
+    except requests.RequestException as e:
+        # Confirmed real gap (see the original do_refresh_sde in production/
+        # actions.py this was moved from): the fetch's network errors used
+        # to reach the router unconverted - a raw 500 instead of the
+        # ActionError every other ESI/Goonmetrics-touching action converts a
+        # network failure to.
+        raise ActionError(f"SDE refresh failed: {e}") from e
+    snapshot = storage.get_sde_snapshot_for_diff()
+    diff = sde_diff.build_diff(fetched, snapshot)
+    _staged_sde = fetched
+    return diff
+
+
+def do_apply_sde() -> dict:
+    """Writes the staged preview dump into the shared SDE cache. Moved here
+    from production/actions.py (GitHub issue #34): the SDE cache (sde_types/
     sde_blueprint_materials/etc.) is global, shared data, not per-tenant, so
-    triggering a refresh affects every tenant's Production/Trading data at
+    applying a refresh affects every tenant's Production/Trading data at
     once - a cross-tenant-impacting action that belongs in this module's
     superadmin surface, not exposed to every Production tenant individually.
     production/actions.py's do_check_sde_freshness (read-only) stays there,
     unaffected - it still legitimately informs Production's/Trading's own
-    per-tenant sidebars.
-
-    progress_callback is optional so a scheduler/CLI in-process call stays
-    unchanged; the HTTP background job passes pipeline_runner's writer."""
-    try:
-        result = sde.refresh_sde(progress_callback=progress_callback)
-    except requests.RequestException as e:
-        # Confirmed real gap (see the original do_refresh_sde in production/
-        # actions.py this was moved from): sde.refresh_sde()'s network errors
-        # used to reach the router unconverted - a raw 500 instead of the
-        # ActionError every other ESI/Goonmetrics-touching action converts a
-        # network failure to.
-        raise ActionError(f"SDE refresh failed: {e}") from e
+    per-tenant sidebars."""
+    global _staged_sde
+    if _staged_sde is None:
+        raise ActionError("Keine Preview-Daten vorhanden - bitte SDE-Update erneut prüfen.")
+    result = sde.apply_sde(_staged_sde)
     # all_tenants=True: the SDE cache is global (this function's own
     # docstring), so a refresh can change every tenant's discover/margin
     # results, not just the calling admin's own - confirmed real gap (GitHub
@@ -106,19 +140,8 @@ def do_refresh_sde(progress_callback=None) -> dict:
     # tenant serving stale results for up to the full cache TTL.
     invalidate_discover_cache(all_tenants=True)
     invalidate_ship_margin_cache(all_tenants=True)
+    _staged_sde = None
     return result
-
-
-def do_start_refresh_sde() -> dict:
-    """Kicks off SDE refresh as a background job. The HTTP handler must not
-    block on the ~14 sequential CSV downloads."""
-    from . import pipeline_runner
-    return pipeline_runner.start_sde_refresh()
-
-
-def do_sde_refresh_status() -> dict:
-    from . import pipeline_runner
-    return pipeline_runner.job_status(pipeline_runner.TOOL_ADMIN)
 
 
 def do_refresh_jita_price_cache() -> dict:
@@ -129,7 +152,7 @@ def do_refresh_jita_price_cache() -> dict:
     prices right now can force one without it silently piggybacking on, or
     blocking, any other action. Also normally refreshed automatically once
     an hour by the scheduler (see scheduler._check_and_run_jita_price_cache_
-    job) - same cross-tenant-impacting-cache reasoning as do_refresh_sde
+    job) - same cross-tenant-impacting-cache reasoning as do_apply_sde
     above, since the cache is shared/global, not per-tenant."""
     try:
         count = jita_price_cache.refresh_jita_price_cache()
@@ -233,7 +256,7 @@ def do_create_backup() -> dict:
     Moved here from actions.py/the Portfolio page (confirmed real
     misplacement 2026-09-21): one pg_dump already covers every tenant's
     data in one shot (backup.py's own docstring), so creating a backup is a
-    cross-tenant-impacting action - same reasoning as do_start_refresh_sde/
+    cross-tenant-impacting action - same reasoning as do_start_sde_preview/
     do_refresh_jita_price_cache above, not a per-tenant Portfolio button.
     The access gate already required the "admin" grant for this via a
     one-off exception in api/app.py's _required_tool_for_path (F-06) before

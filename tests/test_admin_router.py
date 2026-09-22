@@ -102,52 +102,72 @@ def test_set_tool_grants_action_error_maps_to_400(monkeypatch):
     assert resp.json() == {"detail": "Unknown tool_key(s): bogus"}
 
 
-def test_refresh_sde_starts_background_job(monkeypatch):
-    monkeypatch.setattr(admin, "do_start_refresh_sde", lambda: {
-        "run_id": "sde-1", "status": "running", "job_name": "sde_refresh", "tool": "admin",
+def test_preview_sde_starts_background_job(monkeypatch):
+    monkeypatch.setattr(admin, "do_start_sde_preview", lambda: {
+        "run_id": "sde-1", "status": "running", "job_name": "sde_preview", "tool": "admin",
     })
 
-    resp = client.post("/api/admin/sde/refresh")
+    resp = client.post("/api/admin/sde/preview")
 
     assert resp.status_code == 200
     assert resp.json() == {
-        "run_id": "sde-1", "status": "running", "job_name": "sde_refresh", "tool": "admin",
+        "run_id": "sde-1", "status": "running", "job_name": "sde_preview", "tool": "admin",
     }
 
 
-def test_refresh_sde_conflict_maps_to_409(monkeypatch):
+def test_preview_sde_conflict_maps_to_409(monkeypatch):
     from eve_trader.actions import ConflictError
 
     def _raise():
         raise ConflictError("Sync Contracts is already running.")
-    monkeypatch.setattr(admin, "do_start_refresh_sde", _raise)
+    monkeypatch.setattr(admin, "do_start_sde_preview", _raise)
 
-    resp = client.post("/api/admin/sde/refresh")
+    resp = client.post("/api/admin/sde/preview")
 
     assert resp.status_code == 409
     assert resp.json() == {"detail": "Sync Contracts is already running."}
 
 
-def test_refresh_sde_status_returns_latest_run(monkeypatch):
-    monkeypatch.setattr(admin, "do_sde_refresh_status", lambda: {
+def test_preview_sde_status_returns_latest_run(monkeypatch):
+    monkeypatch.setattr(admin, "do_sde_preview_status", lambda: {
         "run_id": "sde-1", "status": "running", "tool": "admin",
         "progress": {"phase": "run", "batch": 3, "total_batches": 13, "message": "Fetching invGroups.csv"},
     })
-    resp = client.get("/api/admin/sde/refresh/status")
+    resp = client.get("/api/admin/sde/preview/status")
     assert resp.status_code == 200
     assert resp.json()["progress"]["batch"] == 3
     assert resp.json()["progress"]["total_batches"] == 13
 
 
-def test_refresh_sde_action_error_maps_to_400(monkeypatch):
+def test_preview_sde_action_error_maps_to_400(monkeypatch):
     def _raise():
         raise ActionError("SDE refresh failed: connection refused")
-    monkeypatch.setattr(admin, "do_start_refresh_sde", _raise)
+    monkeypatch.setattr(admin, "do_start_sde_preview", _raise)
 
-    resp = client.post("/api/admin/sde/refresh")
+    resp = client.post("/api/admin/sde/preview")
 
     assert resp.status_code == 400
     assert resp.json() == {"detail": "SDE refresh failed: connection refused"}
+
+
+def test_apply_sde_passes_through_action(monkeypatch):
+    monkeypatch.setattr(admin, "do_apply_sde", lambda: {"sde_types": 42})
+
+    resp = client.post("/api/admin/sde/apply")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"sde_types": 42}
+
+
+def test_apply_sde_without_preview_maps_to_400(monkeypatch):
+    def _raise():
+        raise ActionError("Keine Preview-Daten vorhanden - bitte SDE-Update erneut prüfen.")
+    monkeypatch.setattr(admin, "do_apply_sde", _raise)
+
+    resp = client.post("/api/admin/sde/apply")
+
+    assert resp.status_code == 400
+    assert "Keine Preview-Daten" in resp.json()["detail"]
 
 
 def test_refresh_jita_price_cache_action_error_maps_to_400(monkeypatch):

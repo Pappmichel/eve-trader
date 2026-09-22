@@ -34,8 +34,8 @@ describe('formatBackgroundProgress', () => {
   it('formats generic run batches with the message (Admin SDE refresh)', () => {
     expect(formatBackgroundProgress({
       phase: 'run', batch: 3, total_batches: 13, message: 'Fetching invGroups.csv',
-    }, 'sde_refresh', { sde_refresh: 'Refresh SDE' })).toBe(
-      'Refresh SDE: Batch 3/13 (Fetching invGroups.csv)',
+    }, 'sde_preview', { sde_preview: 'Preview SDE' })).toBe(
+      'Preview SDE: Batch 3/13 (Fetching invGroups.csv)',
     )
   })
 

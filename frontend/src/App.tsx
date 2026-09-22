@@ -79,6 +79,7 @@ const SortingOverview = lazy(() => import('./pages/sorting/SortingOverview'))
 const SortingSettings = lazy(() => import('./pages/sorting/SortingSettings'))
 
 const AdminPage = lazy(() => import('./pages/admin/AdminPage'))
+const SdePreviewPage = lazy(() => import('./pages/admin/SdePreviewPage'))
 const CharactersPage = lazy(() => import('./pages/characters/CharactersPage'))
 
 function RouteFallback() {
@@ -154,7 +155,7 @@ function SdeFreshnessChecker() {
         id: 'sde-newer-available',
         title: 'Newer SDE available',
         message: "CCP/Fuzzwork have published a newer Static Data Export than the one currently cached. "
-          + "Click Refresh SDE in the Admin tool to pick up new/changed items.",
+          + "Click Preview SDE Update in the Admin tool to pick up new/changed items.",
         color: 'warn',
         autoClose: false,
       })
@@ -187,6 +188,7 @@ function App() {
             <Route path="/portfolio" element={<Portfolio />} />
             <Route path="/characters" element={<CharactersPage />} />
             <Route path="/admin" element={<AdminPage />} />
+            <Route path="/admin/sde-preview" element={<SdePreviewPage />} />
 
             <Route path="/trading" element={<TradingLayout />}>
               <Route index element={<TradingOverview />} />

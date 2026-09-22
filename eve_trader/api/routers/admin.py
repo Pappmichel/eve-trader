@@ -66,23 +66,28 @@ def set_tool_grants(character_id: int, req: SetToolGrantsRequest):
 
 
 # GitHub issue #34: moved here from /api/production/sde/refresh - the SDE
-# cache is global/shared across every tenant, so triggering a refresh is a
-# cross-tenant-impacting action, not a per-tenant Production one.
-@router.post("/sde/refresh")
-def refresh_sde():
-    """Starts SDE refresh as a background job and returns immediately.
-    Poll GET /sde/refresh/status; a second start while any background job
-    is running is HTTP 409."""
-    return _wrap(admin.do_start_refresh_sde)
+# cache is global/shared across every tenant, so triggering a preview/apply
+# is a cross-tenant-impacting action, not a per-tenant Production one.
+@router.post("/sde/preview")
+def preview_sde():
+    """Starts SDE preview as a background job and returns immediately.
+    Poll GET /sde/preview/status; a second start while any background job
+    is running is HTTP 409. Apply is POST /sde/apply after the diff lands."""
+    return _wrap(admin.do_start_sde_preview)
 
 
-@router.get("/sde/refresh/status")
-def sde_refresh_status():
-    return _wrap(admin.do_sde_refresh_status)
+@router.get("/sde/preview/status")
+def sde_preview_status():
+    return _wrap(admin.do_sde_preview_status)
+
+
+@router.post("/sde/apply")
+def apply_sde():
+    return _wrap(admin.do_apply_sde)
 
 
 # Same "cross-tenant-impacting cache, not a per-tenant Production button"
-# reasoning as /sde/refresh above - see production/jita_price_cache.py and
+# reasoning as /sde/preview above - see production/jita_price_cache.py and
 # admin.do_refresh_jita_price_cache's own docstrings.
 @router.post("/jita-price-cache/refresh")
 def refresh_jita_price_cache():
@@ -103,7 +108,7 @@ def list_errors(limit: int = 200):
 # Moved from api/routers/portfolio.py (confirmed real misplacement
 # 2026-09-21) - creating a backup is cross-tenant-impacting (one pg_dump
 # covers every tenant, backup.py's own docstring), same reasoning as
-# /sde/refresh and /jita-price-cache/refresh above. This also removes the
+# /sde/preview and /jita-price-cache/refresh above. This also removes the
 # one-off gate exception api/app.py's _required_tool_for_path used to need
 # just for this path (F-06) - /api/admin/ already requires "admin".
 @router.get("/backups")

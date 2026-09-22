@@ -687,6 +687,59 @@ export interface AdminUser {
   tool_keys: string[]
 }
 
+export interface SdeDiffItem {
+  type_id: number
+  name: string
+}
+
+export interface SdeChangedItem {
+  type_id: number
+  name: string
+  changes: Record<string, [unknown, unknown]>
+}
+
+export interface SdeBlueprintMaterialChange {
+  material_type_id: number
+  name: string
+  old_qty: number
+  new_qty: number
+}
+
+export interface SdeQtyChange {
+  old_qty: number
+  new_qty: number
+}
+
+export interface SdeValueChange {
+  old: number | null
+  new: number | null
+}
+
+export interface SdeChangedBlueprint {
+  blueprint_type_id: number
+  product_type_id: number
+  product_name: string
+  materials: SdeBlueprintMaterialChange[]
+  products: SdeQtyChange | null
+  time: SdeValueChange | null
+  invention_probability: SdeValueChange | null
+}
+
+export interface SdeTableDelta {
+  old: number
+  new: number
+}
+
+export interface SdeDiff {
+  new_items: SdeDiffItem[]
+  removed_items: SdeDiffItem[]
+  changed_items: SdeChangedItem[]
+  changed_blueprints: SdeChangedBlueprint[]
+  table_deltas: Record<string, SdeTableDelta>
+}
+
+export type SdeApplyResult = Record<string, number>
+
 export interface ErrorLogRow {
   id: number
   tenant_id: string | null
