@@ -55,7 +55,7 @@ function SdeDataSection() {
         multiline w={300}>
         <Button component={Link} to="/admin/sde-preview" size="xs" variant="default"
           rightSection={<ActionTierIcon tier="live" />}>
-          SDE-Update prüfen
+          Preview SDE Update
         </Button>
       </Tooltip>
     </div>

@@ -46,7 +46,7 @@ const CHANGED_ITEM_COLUMNS: ColumnDef<SdeChangedItem, unknown>[] = [
   { header: 'Name', accessorKey: 'name', size: 240 },
   { header: 'Type ID', accessorKey: 'type_id', size: 100 },
   {
-    header: 'Änderungen',
+    header: 'Changes',
     id: 'changes',
     size: 420,
     enableSorting: false,
@@ -57,7 +57,7 @@ const CHANGED_ITEM_COLUMNS: ColumnDef<SdeChangedItem, unknown>[] = [
 ]
 
 function ItemList({ items, tableId }: { items: SdeDiffItem[]; tableId: string }) {
-  if (items.length === 0) return <Text size="sm" c="dimmed">Keine.</Text>
+  if (items.length === 0) return <Text size="sm" c="dimmed">None.</Text>
   return (
     <DataTable
       data={items}
@@ -71,7 +71,7 @@ function ItemList({ items, tableId }: { items: SdeDiffItem[]; tableId: string })
 }
 
 function ChangedItemList({ items }: { items: SdeChangedItem[] }) {
-  if (items.length === 0) return <Text size="sm" c="dimmed">Keine.</Text>
+  if (items.length === 0) return <Text size="sm" c="dimmed">None.</Text>
   return (
     <DataTable
       data={items}
@@ -89,13 +89,13 @@ function BlueprintPanel({ bp }: { bp: SdeChangedBlueprint }) {
     <Stack gap="sm">
       {bp.materials.length > 0 && (
         <div>
-          <Text size="sm" fw={600} mb={4}>Materialien</Text>
+          <Text size="sm" fw={600} mb={4}>Materials</Text>
           <Table>
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>Material</Table.Th>
-                <Table.Th>Alt</Table.Th>
-                <Table.Th>Neu</Table.Th>
+                <Table.Th>Old</Table.Th>
+                <Table.Th>New</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
@@ -112,18 +112,18 @@ function BlueprintPanel({ bp }: { bp: SdeChangedBlueprint }) {
       )}
       {bp.products && (
         <div>
-          <Text size="sm" fw={600} mb={4}>Produkte</Text>
+          <Text size="sm" fw={600} mb={4}>Products</Text>
           <Table>
             <Table.Thead>
               <Table.Tr>
-                <Table.Th>Feld</Table.Th>
-                <Table.Th>Alt</Table.Th>
-                <Table.Th>Neu</Table.Th>
+                <Table.Th>Field</Table.Th>
+                <Table.Th>Old</Table.Th>
+                <Table.Th>New</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
               <Table.Tr>
-                <Table.Td>Menge</Table.Td>
+                <Table.Td>Quantity</Table.Td>
                 <Table.Td>{bp.products.old_qty}</Table.Td>
                 <Table.Td>{bp.products.new_qty}</Table.Td>
               </Table.Tr>
@@ -133,20 +133,20 @@ function BlueprintPanel({ bp }: { bp: SdeChangedBlueprint }) {
       )}
       {bp.time && (
         <div>
-          <Text size="sm" fw={600} mb={4}>Bauzeit</Text>
+          <Text size="sm" fw={600} mb={4}>Build Time</Text>
           <Table>
             <Table.Thead>
               <Table.Tr>
-                <Table.Th>Feld</Table.Th>
-                <Table.Th>Alt</Table.Th>
-                <Table.Th>Neu</Table.Th>
+                <Table.Th>Field</Table.Th>
+                <Table.Th>Old</Table.Th>
+                <Table.Th>New</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
               <Table.Tr>
-                <Table.Td>Zeit</Table.Td>
-                <Table.Td>{bp.time.old}</Table.Td>
-                <Table.Td>{bp.time.new}</Table.Td>
+                <Table.Td>Time</Table.Td>
+                <Table.Td>{formatValue(bp.time.old)}</Table.Td>
+                <Table.Td>{formatValue(bp.time.new)}</Table.Td>
               </Table.Tr>
             </Table.Tbody>
           </Table>
@@ -154,20 +154,20 @@ function BlueprintPanel({ bp }: { bp: SdeChangedBlueprint }) {
       )}
       {bp.invention_probability && (
         <div>
-          <Text size="sm" fw={600} mb={4}>Invention-Wahrscheinlichkeit</Text>
+          <Text size="sm" fw={600} mb={4}>Invention Probability</Text>
           <Table>
             <Table.Thead>
               <Table.Tr>
-                <Table.Th>Feld</Table.Th>
-                <Table.Th>Alt</Table.Th>
-                <Table.Th>Neu</Table.Th>
+                <Table.Th>Field</Table.Th>
+                <Table.Th>Old</Table.Th>
+                <Table.Th>New</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
               <Table.Tr>
-                <Table.Td>Wahrscheinlichkeit</Table.Td>
-                <Table.Td>{bp.invention_probability.old}</Table.Td>
-                <Table.Td>{bp.invention_probability.new}</Table.Td>
+                <Table.Td>Probability</Table.Td>
+                <Table.Td>{formatValue(bp.invention_probability.old)}</Table.Td>
+                <Table.Td>{formatValue(bp.invention_probability.new)}</Table.Td>
               </Table.Tr>
             </Table.Tbody>
           </Table>
@@ -189,7 +189,7 @@ export default function SdePreviewPage() {
     pollIntervalMs: 1000,
   })
   const previewStart = useBackgroundJobStart(sdeJob, () => adminApi.previewSde())
-  const apply = useAction('Änderungen übernehmen', async () => {
+  const apply = useAction('Apply Changes', async () => {
     const result = await adminApi.applySde()
     setApplied(true)
     return result
@@ -221,7 +221,7 @@ export default function SdePreviewPage() {
   const deltaRows = useMemo(() => {
     if (!diff) return []
     return Object.entries(diff.table_deltas)
-      .map(([table, row]) => ({ table, old: row.old, neu: row.new, delta: row.new - row.old }))
+      .map(([table, row]) => ({ table, old: row.old, new: row.new, delta: row.new - row.old }))
       .sort((a, b) => a.table.localeCompare(b.table))
   }, [diff])
 
@@ -235,7 +235,7 @@ export default function SdePreviewPage() {
       <Group justify="space-between" mb="lg">
         <div>
           <Text tt="uppercase" size="xs" c="dimmed" fw={600} lts={2}>Admin</Text>
-          <Title order={1}>SDE-Update prüfen</Title>
+          <Title order={1}>Preview SDE Update</Title>
         </div>
         <Button component={Link} to="/admin" variant="subtle" leftSection={<IconArrowLeft size={14} />}>
           Back
@@ -245,7 +245,7 @@ export default function SdePreviewPage() {
       <Stack gap="md">
         <Group>
           <Button size="xs" variant="default" onClick={rerun} loading={running} disabled={running}>
-            Erneut prüfen
+            Re-check
           </Button>
           <Button
             size="xs"
@@ -253,7 +253,7 @@ export default function SdePreviewPage() {
             loading={apply.isPending}
             disabled={!canApply || apply.isPending}
           >
-            Änderungen übernehmen
+            Apply Changes
           </Button>
         </Group>
 
@@ -271,22 +271,22 @@ export default function SdePreviewPage() {
           <>
             <Accordion multiple>
               <Accordion.Item value="new">
-                <Accordion.Control>Neue Items ({newItems.length})</Accordion.Control>
+                <Accordion.Control>New Items ({newItems.length})</Accordion.Control>
                 <Accordion.Panel><ItemList items={newItems} tableId="sde-preview-new-items" /></Accordion.Panel>
               </Accordion.Item>
               <Accordion.Item value="removed">
-                <Accordion.Control>Entfernte Items ({removedItems.length})</Accordion.Control>
+                <Accordion.Control>Removed Items ({removedItems.length})</Accordion.Control>
                 <Accordion.Panel><ItemList items={removedItems} tableId="sde-preview-removed-items" /></Accordion.Panel>
               </Accordion.Item>
               <Accordion.Item value="changed">
-                <Accordion.Control>Geänderte Items ({changedItems.length})</Accordion.Control>
+                <Accordion.Control>Changed Items ({changedItems.length})</Accordion.Control>
                 <Accordion.Panel><ChangedItemList items={changedItems} /></Accordion.Panel>
               </Accordion.Item>
               <Accordion.Item value="blueprints">
-                <Accordion.Control>Geänderte Blueprints ({changedBlueprints.length})</Accordion.Control>
+                <Accordion.Control>Changed Blueprints ({changedBlueprints.length})</Accordion.Control>
                 <Accordion.Panel>
                   {changedBlueprints.length === 0 ? (
-                    <Text size="sm" c="dimmed">Keine.</Text>
+                    <Text size="sm" c="dimmed">None.</Text>
                   ) : (
                     <Accordion>
                       {changedBlueprints.map((bp) => (
@@ -302,13 +302,13 @@ export default function SdePreviewPage() {
             </Accordion>
 
             <div>
-              <Title order={4} mb="xs">Übrige Tabellen</Title>
+              <Title order={4} mb="xs">Other Tables</Title>
               <Table>
                 <Table.Thead>
                   <Table.Tr>
-                    <Table.Th>Tabelle</Table.Th>
-                    <Table.Th>Alt</Table.Th>
-                    <Table.Th>Neu</Table.Th>
+                    <Table.Th>Table</Table.Th>
+                    <Table.Th>Old</Table.Th>
+                    <Table.Th>New</Table.Th>
                     <Table.Th>Delta</Table.Th>
                   </Table.Tr>
                 </Table.Thead>
@@ -317,7 +317,7 @@ export default function SdePreviewPage() {
                     <Table.Tr key={row.table}>
                       <Table.Td>{row.table}</Table.Td>
                       <Table.Td>{row.old.toLocaleString('en-US')}</Table.Td>
-                      <Table.Td>{row.neu.toLocaleString('en-US')}</Table.Td>
+                      <Table.Td>{row.new.toLocaleString('en-US')}</Table.Td>
                       <Table.Td>{row.delta.toLocaleString('en-US')}</Table.Td>
                     </Table.Tr>
                   ))}

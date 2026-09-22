@@ -711,8 +711,8 @@ export interface SdeQtyChange {
 }
 
 export interface SdeValueChange {
-  old: number
-  new: number
+  old: number | null
+  new: number | null
 }
 
 export interface SdeChangedBlueprint {
