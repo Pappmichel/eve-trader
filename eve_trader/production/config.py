@@ -132,11 +132,16 @@ class ProductionConfig:
 
     # -- Asset-optimized build list (AssetPlanList) --
     # Optional day-target for the slot-split recommendation: when set, each
-    # eligible ready job asks only for as many slots as it would need to
-    # finish its ready runs within this many days (see engine.
-    # _slots_needed_for_days_target). None (the default) keeps today's
-    # time-weighted proportional split with no day cap. Edited on the
-    # Asset-Optimized Build List page, not the general Settings tab.
+    # eligible ready job's own *cap* (the most _allocate_slots_by_priority
+    # can hand it) becomes how many slots it would need to finish its ready
+    # runs within this many days (see engine._slots_needed_for_days_target),
+    # instead of the uncapped runs_ready_now. None (the default) means no
+    # day cap - each job's cap is runs_ready_now. Either way, jobs still
+    # claim slots in the same priority order - unlock_time_seconds
+    # descending (how much blocked job time elsewhere this job would newly
+    # unblock), stock_coverage ascending as the tie-break (see
+    # engine._allocate_slots_by_priority). Edited on the Asset-Optimized
+    # Build List page, not the general Settings tab.
     asset_plan_slot_days_target: Optional[float] = None
 
     # -- Alchemy reaction alternatives (informational only) --

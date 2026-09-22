@@ -2093,7 +2093,7 @@ def _slots_needed_for_days_target(ready_seconds: float, runs_ready_now: int,
     """How many slots this job's ready runs would need to finish within
     target_days, capped at runs_ready_now (never recommend more slots
     than there are ready runs to put on them - same cap philosophy
-    _allocate_slots_proportionally already applies). target_days <= 0
+    _allocate_slots_by_priority already applies). target_days <= 0
     is treated as "no meaningful cap" (max parallelism), not a
     ZeroDivisionError."""
     if target_days <= 0:
@@ -2140,66 +2140,108 @@ def _allocate_scarce_stock(claims: list[tuple[int, float]], available: float) ->
     return covered
 
 
-def _allocate_slots_proportionally(claims: list[tuple[int, float, int]], available: int) -> dict[int, int]:
+def _unlock_time_by_type(jobs: dict[int, AssetPlanJob]) -> dict[int, float]:
+    """For each type_id, how much currently-blocked job time (seconds) other
+    jobs in the plan would newly become workable if this job's own product
+    became available - user request 2026-09-22, feeding _allocate_slots_by_priority's
+    primary priority key.
+
+    A parent job P credits its *sole remaining same-category blocker* only -
+    grouping P.blockers by whatever engine.job_category() returns for the
+    blocking material (Reactions/Advanced Components/Capital Components/
+    Equipment/a ship-size bucket/etc. - job_category's own full bucket list,
+    not narrowed to the three slot-recommendation categories here) and
+    crediting a category group only when exactly one blocker remains in it.
+    Blockers with no job_category at all (a pure buy material, PI output, a
+    skillbook - nothing with a blueprint) are dropped before grouping and
+    never credited - user-confirmed: only *buildable* blockers count, and
+    only within their own category, so a Reaction can unlock a Component
+    (cross-category between P and its blocker, matches the "Reactions for
+    Components" example that prompted this) but a raw-mineral shortage on
+    the same job never blocks the credit, and a second unresolved Reaction
+    blocker on the same job prevents crediting either one until only one is
+    left. (A credited job outside Reactions/Advanced/Capital Components -
+    e.g. Equipment - is harmless today: _allocate_slots_by_priority is only
+    ever consulted for jobs in _SLOT_RECOMMENDATION_CATEGORIES, so the
+    credit just sits unused on that job's own unlock_time_seconds.) The
+    credited amount is P's own *blocked* job time - job_time_seconds scaled
+    down to just the (job_runs - runs_ready_now) portion - not P's full
+    build time, since only the newly-workable portion should count toward
+    "how much gets unlocked", not time that was already startable
+    regardless.
+
+    A single job can accumulate credit from multiple parents (summed) -
+    e.g. one Reaction feeding into three different Component jobs that are
+    each otherwise-ready credits all three amounts to that one Reaction."""
+    credit: dict[int, float] = {}
+    for parent in jobs.values():
+        if parent.job_runs <= 0:
+            continue
+        by_category: dict[str, list] = {}
+        for blocker in parent.blockers:
+            cat = job_category(blocker.type_id)
+            if cat is None:
+                continue
+            by_category.setdefault(cat, []).append(blocker)
+        for blockers in by_category.values():
+            if len(blockers) != 1:
+                continue
+            sole_type_id = blockers[0].type_id
+            blocked_runs = parent.job_runs - parent.runs_ready_now
+            if blocked_runs <= 0:
+                continue
+            blocked_seconds = parent.job_time_seconds * (blocked_runs / parent.job_runs)
+            credit[sole_type_id] = credit.get(sole_type_id, 0.0) + blocked_seconds
+    return credit
+
+
+def _allocate_slots_by_priority(
+    claims: list[tuple[int, int, float, Optional[float]]], available: int,
+) -> dict[int, int]:
     """Splits `available` job slots (one shared pool - see
-    _free_slots_by_category) across competing claims (job_type_id,
-    time_needed, runs_ready_now) proportionally to each job's *time_needed*
-    weight (not raw run count - see below), using the largest-remainder
-    method (floor each job's ideal proportional share, then hand out the
-    leftover slots one at a time to whichever job's *rounding* remainder is
-    largest, repeating so capacity freed up by a job hitting its own
-    runs_ready_now cap - it can't usefully take more slots than it has ready
-    runs for, one run minimum per slot - gets redistributed to the rest
-    instead of sitting unused). Returns {job_type_id: slots}, one entry per
-    input claim, summing to at most `available`.
+    _free_slots_by_category) across competing claims (job_type_id, cap,
+    unlock_time_seconds, stock_coverage), sorted primarily by
+    unlock_time_seconds descending (see _unlock_time_by_type - how much
+    currently-blocked job time elsewhere in the plan this job's own output
+    would newly unblock; user request 2026-09-22), stock_coverage ascending
+    as the tie-break (the earlier 2026-09-22 "least of itself already on
+    hand goes first" rule - see AssetPlanJob.stock_coverage) - then hands
+    each job its full `cap` in that order until the pool runs out. Returns
+    {job_type_id: slots}, one entry per input claim, summing to at most
+    `available`. `cap` is the caller's own per-mode need (runs_ready_now in
+    the no-target default, or _slots_needed_for_days_target's result when a
+    days target is set - see plan_asset_optimized) - this function only
+    decides *order*, not each job's own ceiling.
 
-    Weighted by time_needed = runs_ready_now * per-run job time, not by
-    runs_ready_now alone - confirmed real user correction (2026-08-16): a
-    job with many quick runs and a job with few long runs used to get slots
-    proportional to run *count* alone, so a short-running job could
-    out-rank a much longer one that will actually occupy a slot far longer.
-    The goal is for every job sharing the pool to finish its ready runs at
-    roughly the same time, so a job needing more total job-time gets
-    proportionally more parallel slots than one that would finish quickly
-    on a single slot anyway - runs_ready_now is still used separately as
-    each claim's own *cap* (a job can't usefully take more slots than it
-    has ready runs to put on them, regardless of how much time weight it
-    carries).
+    Deliberately reuses the same "smallest/most-urgent claim first, fully
+    filled" shape _allocate_scarce_stock already uses for scarce material -
+    a job with a high unlock score can and does claim the entire pool,
+    leaving every other job sharing the same category pool at 0 - the point
+    is to fully finish what unblocks the most downstream work before
+    spreading effort thin across everything, not to keep every eligible job
+    moving at once (same reasoning as the coverage-only version this
+    replaced - see git history for that version's own docstring).
 
-    Deliberately proportional, not _allocate_scarce_stock's own "smallest
-    claim first, fully filled" rule - confirmed real user correction
-    (2026-08-16): that rule is right for a material split among a handful of
-    jobs each needing a *comparable, boundable* quantity, but here every
-    job's own need (runs_ready_now) is typically orders of magnitude bigger
-    than the whole slot pool combined (seen live: a single job with 391,902
-    ready runs against 161 total free slots) - "smallest first, fully
-    filled" would just hand the *entire* pool to whichever eligible job
-    happens to have the fewest ready runs and leave every other job with
-    zero, rather than splitting the shared pool across all of them so they
-    can all actually be worked on."""
+    unlock_time_seconds is 0.0 (not None) for a job that unlocks nothing -
+    it sorts after every job with a positive score, but ties against other
+    zero-score jobs are then broken by stock_coverage exactly as before.
+    stock_coverage None (shouldn't happen for a job that reached this point
+    - see models.py) sorts last within a tie, treated as least urgent
+    rather than jumping the queue on an unknown value."""
     if available <= 0 or not claims:
-        return {type_id: 0 for type_id, _, _ in claims}
-    weights = {type_id: weight for type_id, weight, _ in claims}
-    caps = {type_id: cap for type_id, _, cap in claims}
-    total_weight = sum(weights.values())
-    if total_weight <= 0:
-        return {type_id: 0 for type_id in weights}
-
-    ideal = {type_id: available * weight / total_weight for type_id, weight in weights.items()}
-    allocated = {type_id: min(int(ideal[type_id]), caps[type_id]) for type_id in weights}
-
-    remaining = available - sum(allocated.values())
-    while remaining > 0:
-        candidates = [
-            (ideal[type_id] - allocated[type_id], type_id)
-            for type_id in weights if allocated[type_id] < caps[type_id]
-        ]
-        if not candidates:
+        return {type_id: 0 for type_id, *_ in claims}
+    order = sorted(
+        claims,
+        key=lambda c: (-c[2], c[3] is None, c[3] if c[3] is not None else 0.0),
+    )
+    allocated = {type_id: 0 for type_id, *_ in claims}
+    remaining = available
+    for type_id, cap, _unlock_time, _coverage in order:
+        if remaining <= 0:
             break
-        candidates.sort(reverse=True)
-        _, winner = candidates[0]
-        allocated[winner] += 1
-        remaining -= 1
+        take = min(cap, remaining)
+        allocated[type_id] = take
+        remaining -= take
     return allocated
 
 
@@ -2284,16 +2326,20 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     built or bought first). For Reactions/Advanced Components/Capital
     Components jobs specifically (user request 2026-08-15), also fills in
     recommended_slots - your currently-free character job slots
-    (_free_slots_by_category), split *by time needed* (runs_ready_now x
-    per-run job time) *across every eligible ready job sharing that slot
-    category at once* (_allocate_slots_proportionally) - not each job
-    recommended the whole pool independently, and not split by raw run count
-    either (user correction 2026-08-16) - see AssetPlanJob.recommended_slots
-    for why that's the goal. When cfg.asset_plan_slot_days_target is set,
-    the same allocator is reused but each job's weight and cap become its
-    own days-target need (_slots_needed_for_days_target) instead. Also
-    always fills days_to_complete_at_recommended_slots whenever
-    recommended_slots is set and > 0, in both modes."""
+    (_free_slots_by_category), claimed by whichever eligible ready job
+    unblocks the most currently-blocked job time elsewhere in the plan
+    (unlock_time_seconds descending, _unlock_time_by_type), ties broken by
+    whichever has the *least of itself already in stock* (stock_coverage
+    ascending) - not split proportionally across every ready job at once
+    (superseded 2026-09-22; see _allocate_slots_by_priority's own docstring
+    for why) - see AssetPlanJob.recommended_slots for why that's the goal
+    now. Each job's own cap is runs_ready_now by default, or, when
+    cfg.asset_plan_slot_days_target is set, its own days-target need
+    (_slots_needed_for_days_target) instead - in both modes the
+    highest-priority job can claim its entire cap before the next job
+    sharing the same pool gets anything. Also always fills
+    days_to_complete_at_recommended_slots whenever recommended_slots is set
+    and > 0, in both modes."""
     ctx = _PlanContext(cfg)
     manual_stock, manual_overrides, selected_decryptors = ctx.manual_stock, ctx.manual_overrides, ctx.selected_decryptors
     home, jita, cost_indices, adjusted_prices = ctx.home, ctx.jita, ctx.cost_indices, ctx.adjusted_prices
@@ -2502,6 +2548,9 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         depth += 1
 
     free_slots = _free_slots_by_category()
+    unlock_time_by_type = _unlock_time_by_type(jobs)
+    for job in jobs.values():
+        job.unlock_time_seconds = unlock_time_by_type.get(job.type_id, 0.0)
     eligible_by_pool: dict[str, list[AssetPlanJob]] = {}
     for job in jobs.values():
         if job.job_category not in _SLOT_RECOMMENDATION_CATEGORIES or job.runs_ready_now <= 0:
@@ -2511,35 +2560,36 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     for pool_label, pool_jobs in eligible_by_pool.items():
         # job_runs is always >=1 here (job.runs_ready_now <= job.job_runs,
         # and the loop above already skipped runs_ready_now <= 0), so
-        # per-run time is safe to divide out.
+        # per-run time is safe to divide out. In both branches below, `cap`
+        # is each job's own per-mode ceiling; _allocate_slots_by_priority
+        # only decides which jobs get to *claim* their cap first, ordered by
+        # unlock_time_seconds descending then stock_coverage ascending
+        # (user request 2026-09-22), not by splitting the pool across all of
+        # them.
         if cfg.asset_plan_slot_days_target is not None:
-            # Confirmed design: weight AND cap are both each job's own
-            # days-target need. When the pool has enough free slots to
-            # cover every job's need, _allocate_slots_proportionally gives
-            # each job exactly that (ideal == weight == cap, any surplus
-            # capacity goes unused rather than over-allocated - a job never
-            # gets more slots than it needs just because capacity allows).
-            # When the pool is short, the SAME proportional/largest-
-            # remainder logic rations the scarce slots by each job's own
-            # need weight, still never exceeding what that job asked for -
-            # this is the user-confirmed "cap each job proportionally on
-            # its own target need" behavior, not a fallback to a different
-            # algorithm.
+            # Confirmed design: cap is each job's own days-target need. When
+            # the pool has enough free slots to cover every eligible job's
+            # need (in priority order), each job gets exactly that - any
+            # surplus capacity goes unused rather than over-allocated. When
+            # the pool is short, the highest-priority jobs are filled
+            # completely first and the rest get whatever's left (possibly
+            # 0) - never exceeding what a job asked for, but no longer
+            # rationed proportionally across everyone.
             claims = []
             for j in pool_jobs:
                 ready_seconds = j.runs_ready_now * (j.job_time_seconds / j.job_runs)
                 target_cap = _slots_needed_for_days_target(
                     ready_seconds, j.runs_ready_now, cfg.asset_plan_slot_days_target)
-                claims.append((j.type_id, target_cap, target_cap))
+                claims.append((j.type_id, target_cap, j.unlock_time_seconds, j.stock_coverage))
         else:
-            # Weight = time needed for this job's ready runs specifically
-            # (runs_ready_now * per-run time), not runs_ready_now alone - see
-            # _allocate_slots_proportionally's docstring.
-            claims = [
-                (j.type_id, j.runs_ready_now * (j.job_time_seconds / j.job_runs), j.runs_ready_now)
-                for j in pool_jobs
-            ]
-        allocation = _allocate_slots_proportionally(claims, free_slots.get(pool_label, 0))
+            # No days target: cap is simply runs_ready_now (a job can't
+            # usefully take more slots than it has ready runs to put on
+            # them). The highest-priority job among the pool's ready jobs
+            # claims up to that many slots before the next one gets
+            # anything - see _allocate_slots_by_priority's own docstring for
+            # why this can mean a single job takes the whole pool.
+            claims = [(j.type_id, j.runs_ready_now, j.unlock_time_seconds, j.stock_coverage) for j in pool_jobs]
+        allocation = _allocate_slots_by_priority(claims, free_slots.get(pool_label, 0))
         for j in pool_jobs:
             j.recommended_slots = allocation[j.type_id]
             ready_seconds = j.runs_ready_now * (j.job_time_seconds / j.job_runs)

@@ -223,36 +223,51 @@ class AssetPlanJob:
     # runs_ready_now/job_runs ("Blocked"), which is about whether *this
     # item's own* materials are available to build it - stock_coverage is
     # about how much of *this item itself* is already sitting in inventory.
-    # Deliberately *not* factored into sort order/priority here - see
-    # engine.plan_asset_optimized's docstring for why.
+    # Deliberately *not* factored into the jobs list's own sort order (still
+    # job_runs desc) - see engine.plan_asset_optimized's docstring for why -
+    # but it *is* factored into recommended_slots below (user request
+    # 2026-09-22), as the tie-break under unlock_time_seconds: the lower
+    # this is, the earlier this job claims its slots among equally-unlocking
+    # jobs.
     stock_coverage: Optional[float] = None
+    # How much currently-blocked job time (seconds) elsewhere in the plan
+    # would newly become workable if this job's own product became
+    # available - user request 2026-09-22 ("priorisieren, dass in der
+    # naechsten Stage moeglichst viele Jobs moeglich werden ... jobtime
+    # gewichtet"), computed by engine._unlock_time_by_type. Credits a parent
+    # job's *blocked* time (job_time_seconds scaled to just the
+    # (job_runs - runs_ready_now) portion, not its full build time) to
+    # whichever of that parent's own blockers is the *sole remaining one in
+    # its own category* (Reactions/Advanced Components/Capital Components -
+    # a raw-buy material or anything else without a job_category is dropped
+    # before that check and never credited) - so a Reaction feeding a
+    # Component counts (cross-category, the motivating example), but a
+    # second unresolved same-category blocker on that same parent withholds
+    # credit from both until only one is left. 0.0 (not None) for a job
+    # that unlocks nothing right now, including every job outside the slot-
+    # recommendation categories (this is only ever consulted for
+    # recommended_slots priority below).
+    unlock_time_seconds: float = 0.0
     # How many of your currently-free character job slots (see
-    # engine._free_slots_by_category) to use for this job's ready runs. The
-    # free-slot pool for a category (Manufacturing, shared by Advanced/
-    # Capital Components; Reactions, its own pool) is split *across every
-    # eligible ready job in that category at once* (engine.
-    # _allocate_slots_proportionally, largest-remainder method) - so the
-    # numbers across every job sharing a pool add up to (at most) that
-    # pool's real total, not each job being told it can have the whole pool
-    # to itself. Confirmed real user correction (2026-08-16) after an
-    # earlier per-job-in-isolation version: with several ready jobs in the
-    # same category, that version recommended the *same* full pool size for
-    # every one of them simultaneously, which only makes sense if you're
-    # going to work on exactly one of them - the goal here is "how should I
-    # split my actual free slots so I can make progress on *all* of them at
-    # once." The split is weighted by *time needed* (runs_ready_now x
-    # per-run job time), not by raw runs_ready_now - a second, later user
-    # correction (2026-08-16): a job with many quick runs shouldn't
-    # out-rank one with fewer but much longer runs, since the point is for
-    # every job sharing the pool to finish its ready runs at roughly the
-    # same time - runs_ready_now still caps each job's own allocation
-    # (never more slots than it has ready runs to put on them). Only set
+    # engine._free_slots_by_category) to use for this job's ready runs.
+    # Claimed by unlock_time_seconds descending first, stock_coverage
+    # ascending as the tie-break - the eligible ready job that would unblock
+    # the most job time elsewhere claims its own full need first, ties
+    # going to whichever has the *least of itself already on hand*, and so
+    # on (engine._allocate_slots_by_priority) - so a single job can take the
+    # whole pool and leave every other job sharing the same category at 0
+    # this round, on purpose (confirmed real user correction 2026-09-22,
+    # superseding an earlier coverage-only version, which itself superseded
+    # a time-weighted-proportional split - see _allocate_slots_by_priority's
+    # own docstring for the full history). Each job's own "need" (the
+    # ceiling _allocate_slots_by_priority can hand it) is runs_ready_now by
+    # default, or, when ProductionConfig.asset_plan_slot_days_target is set,
+    # its own days-target need instead (_slots_needed_for_days_target) -
+    # never more than it has ready runs to put on them either way. Only set
     # for job_category in engine._SLOT_RECOMMENDATION_CATEGORIES (Reactions/
     # Advanced Components/Capital Components - user request 2026-08-15) and
     # only when runs_ready_now > 0 (nothing to split otherwise) - None
-    # everywhere else. When ProductionConfig.asset_plan_slot_days_target is
-    # set, the same allocator is reused but each job's weight *and* cap
-    # become its own days-target need instead of time-weight / ready-runs.
+    # everywhere else.
     recommended_slots: Optional[int] = None
     # Calendar days the recommended_slots split would take to finish this
     # job's ready runs (ready_seconds / recommended_slots / 86400). Always
@@ -263,8 +278,13 @@ class AssetPlanJob:
     # recommendation categories, or the pool had zero free slots for it).
     days_to_complete_at_recommended_slots: Optional[float] = None
     # Direct materials that still short this job (needed > covered). Empty
-    # when every run is ready now. Display-only (Blocked-column tooltip);
-    # never feeds sizing or slot-split math.
+    # when every run is ready now. Originally display-only (Blocked-column
+    # tooltip) and still never feeds this job's *own* sizing/readiness - but
+    # since 2026-09-22, engine._unlock_time_by_type reads every *other*
+    # job's blockers list to compute this job's own unlock_time_seconds
+    # (recommended_slots priority) - see that function's docstring. Keep
+    # this list populated/accurate even in a future fast path that doesn't
+    # need it for display; the slot-priority feature depends on it too now.
     blockers: list[AssetPlanBlocker] = field(default_factory=list)
 
 

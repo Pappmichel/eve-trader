@@ -331,6 +331,7 @@ export interface AssetPlanJob {
   job_category: string | null
   margin: number | null
   stock_coverage: number | null
+  unlock_time_seconds: number
   recommended_slots: number | null
   days_to_complete_at_recommended_slots: number | null
   blockers: AssetPlanBlocker[]
