@@ -1058,15 +1058,8 @@ SDE_TABLES = (
     "sde_type_materials",
 )
 
-# Full-row tables the SDE preview diff compares field-by-field. Remaining
-# sde_* tables only contribute COUNT(*) (see get_sde_snapshot_for_diff).
-_SDE_DIFF_FULL_TABLES = (
-    "sde_types",
-    "sde_blueprint_materials",
-    "sde_blueprint_products",
-    "sde_blueprint_time",
-    "sde_invention_probability",
-)
+# Every sde_* table is diffed row-by-row (see get_sde_snapshot_for_diff).
+_SDE_DIFF_FULL_TABLES = SDE_TABLES
 
 
 def sde_row_counts() -> dict[str, int]:
@@ -1076,20 +1069,13 @@ def sde_row_counts() -> dict[str, int]:
 
 def get_sde_snapshot_for_diff() -> dict:
     """Current sde_* cache as the preview diff's 'old' side. Full rows for
-    types/blueprint materials/products/time/invention probability; COUNT(*)
-    for every other table in SDE_TABLES. Separate from get_sde_type and the
-    other per-id caches, which stay unchanged."""
+    every table in SDE_TABLES. Separate from get_sde_type and the other
+    per-id caches, which stay unchanged."""
     with connect() as conn:
-        snapshot = {
+        return {
             table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table}").fetchall()]
             for table in _SDE_DIFF_FULL_TABLES
         }
-        snapshot["counts"] = {
-            table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            for table in SDE_TABLES
-            if table not in _SDE_DIFF_FULL_TABLES
-        }
-    return snapshot
 
 
 def set_sde_refresh_state(refreshed_at: str, dump_etag: Optional[str]) -> None:
