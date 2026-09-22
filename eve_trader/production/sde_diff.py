@@ -14,6 +14,7 @@ from .sde import FetchedSde
 _ITEM_COMPARE_FIELDS = (
     ("name", 2),
     ("volume", 3),
+    ("published", 4),
     ("meta_group_id", 7),
 )
 
@@ -206,9 +207,12 @@ def build_diff(fetched: FetchedSde, snapshot: dict) -> dict:
         for activity_id in _TIME_ACTIVITY_ORDER:
             old_t = old_time.get((bp_id, activity_id))
             new_t = new_time.get((bp_id, activity_id))
-            if old_t is not None and new_t is not None and _floats_differ(old_t, new_t):
-                time_change = {"old": old_t, "new": new_t}
-                break
+            if old_t is None and new_t is None:
+                continue
+            if old_t is not None and new_t is not None and not _floats_differ(old_t, new_t):
+                continue
+            time_change = {"old": old_t, "new": new_t}
+            break
 
         invention_probability = None
         pids = {pid for (bid, pid) in old_prob if bid == bp_id} | {
@@ -217,9 +221,12 @@ def build_diff(fetched: FetchedSde, snapshot: dict) -> dict:
         for pid in sorted(pids):
             old_p = old_prob.get((bp_id, pid))
             new_p = new_prob.get((bp_id, pid))
-            if old_p is not None and new_p is not None and _floats_differ(old_p, new_p):
-                invention_probability = {"old": old_p, "new": new_p}
-                break
+            if old_p is None and new_p is None:
+                continue
+            if old_p is not None and new_p is not None and not _floats_differ(old_p, new_p):
+                continue
+            invention_probability = {"old": old_p, "new": new_p}
+            break
 
         if not materials and products is None and time_change is None and invention_probability is None:
             continue

@@ -1,6 +1,6 @@
 """Unit tests for production.sde_diff.build_diff - no Postgres, constructed
 FetchedSde + snapshot dicts only."""
-from eve_trader.production.constants import ACTIVITY_MANUFACTURING
+from eve_trader.production.constants import ACTIVITY_MANUFACTURING, ACTIVITY_REACTION
 from eve_trader.production.sde import FetchedSde
 from eve_trader.production.sde_diff import build_diff
 
@@ -127,6 +127,77 @@ def test_build_diff_new_blueprint_type_is_new_item_not_changed_blueprint():
     diff = build_diff(fetched, _snapshot())
     assert {i["type_id"] for i in diff["new_items"]} == {10, 11}
     assert diff["changed_blueprints"] == []
+
+
+def test_build_diff_published_flag_only_is_a_change():
+    old = _snapshot(types=[_type(42, "Rifter", volume=1.0, meta_group_id=1, published=1)])
+    fetched = FetchedSde(types=[_type(42, "Rifter", volume=1.0, meta_group_id=1, published=0)])
+
+    diff = build_diff(fetched, old)
+
+    assert diff["new_items"] == []
+    assert diff["removed_items"] == []
+    assert diff["changed_items"] == [{
+        "type_id": 42,
+        "name": "Rifter",
+        "changes": {"published": [1, 0]},
+    }]
+
+
+def test_build_diff_new_invention_probability_on_existing_blueprint():
+    product = _type(588, "Rifter II")
+    bp = _type(999, "Rifter Blueprint")
+    old = _snapshot(
+        types=[product, bp],
+        materials=[(999, ACTIVITY_MANUFACTURING, 34, 10.0)],
+        products=[(999, ACTIVITY_MANUFACTURING, 588, 1.0)],
+        time=[(999, ACTIVITY_MANUFACTURING, 60.0)],
+    )
+    fetched = FetchedSde(
+        types=[product, bp],
+        blueprint_materials=[(999, ACTIVITY_MANUFACTURING, 34, 10.0)],
+        blueprint_products=[(999, ACTIVITY_MANUFACTURING, 588, 1.0)],
+        blueprint_time=[(999, ACTIVITY_MANUFACTURING, 60.0)],
+        invention_probability=[(999, 588, 0.35)],
+    )
+
+    diff = build_diff(fetched, old)
+
+    assert len(diff["changed_blueprints"]) == 1
+    row = diff["changed_blueprints"][0]
+    assert row["blueprint_type_id"] == 999
+    assert row["materials"] == []
+    assert row["products"] is None
+    assert row["time"] is None
+    assert row["invention_probability"] == {"old": None, "new": 0.35}
+
+
+def test_build_diff_new_build_time_activity_on_existing_blueprint():
+    product = _type(16672, "Tungsten Carbide")
+    bp = _type(46207, "Tungsten Carbide Reaction Formula")
+    old = _snapshot(
+        types=[product, bp],
+        products=[(46207, ACTIVITY_MANUFACTURING, 16672, 1.0)],
+        time=[(46207, ACTIVITY_MANUFACTURING, 100.0)],
+    )
+    fetched = FetchedSde(
+        types=[product, bp],
+        blueprint_products=[(46207, ACTIVITY_MANUFACTURING, 16672, 1.0)],
+        blueprint_time=[
+            (46207, ACTIVITY_MANUFACTURING, 100.0),
+            (46207, ACTIVITY_REACTION, 180.0),
+        ],
+    )
+
+    diff = build_diff(fetched, old)
+
+    assert len(diff["changed_blueprints"]) == 1
+    row = diff["changed_blueprints"][0]
+    assert row["blueprint_type_id"] == 46207
+    assert row["materials"] == []
+    assert row["products"] is None
+    assert row["invention_probability"] is None
+    assert row["time"] == {"old": None, "new": 180.0}
 
 
 def test_build_diff_ignores_postgres_real_volume_roundtrip():
