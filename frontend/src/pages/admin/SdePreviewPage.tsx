@@ -4,11 +4,13 @@ import {
 } from '@mantine/core'
 import { IconArrowLeft } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
+import type { ColumnDef } from '@tanstack/react-table'
 
 import { adminApi } from '../../api/client'
 import type {
   SdeChangedBlueprint, SdeChangedItem, SdeDiff, SdeDiffItem,
 } from '../../api/types'
+import { DataTable } from '../../components/DataTable'
 import { useAction } from '../../hooks/useAction'
 import { useBackgroundJob, useBackgroundJobStart } from '../../hooks/useBackgroundJob'
 
@@ -35,32 +37,50 @@ function formatValue(value: unknown): string {
   return String(value)
 }
 
-function ItemList({ items }: { items: SdeDiffItem[] }) {
+const ITEM_COLUMNS: ColumnDef<SdeDiffItem, unknown>[] = [
+  { header: 'Name', accessorKey: 'name', size: 280 },
+  { header: 'Type ID', accessorKey: 'type_id', size: 120 },
+]
+
+const CHANGED_ITEM_COLUMNS: ColumnDef<SdeChangedItem, unknown>[] = [
+  { header: 'Name', accessorKey: 'name', size: 240 },
+  { header: 'Type ID', accessorKey: 'type_id', size: 100 },
+  {
+    header: 'Änderungen',
+    id: 'changes',
+    size: 420,
+    enableSorting: false,
+    accessorFn: (row) => Object.entries(row.changes)
+      .map(([field, pair]) => `${field}: ${formatValue(pair[0])} → ${formatValue(pair[1])}`)
+      .join('; '),
+  },
+]
+
+function ItemList({ items, tableId }: { items: SdeDiffItem[]; tableId: string }) {
   if (items.length === 0) return <Text size="sm" c="dimmed">Keine.</Text>
   return (
-    <Stack gap={4}>
-      {items.map((item) => (
-        <Text size="sm" key={item.type_id}>{item.name} ({item.type_id})</Text>
-      ))}
-    </Stack>
+    <DataTable
+      data={items}
+      columns={ITEM_COLUMNS}
+      tableId={tableId}
+      exportFilename={tableId}
+      getRowId={(row) => String(row.type_id)}
+      maxHeight={360}
+    />
   )
 }
 
 function ChangedItemList({ items }: { items: SdeChangedItem[] }) {
   if (items.length === 0) return <Text size="sm" c="dimmed">Keine.</Text>
   return (
-    <Stack gap="sm">
-      {items.map((item) => (
-        <div key={item.type_id}>
-          <Text size="sm" fw={600}>{item.name} ({item.type_id})</Text>
-          {Object.entries(item.changes).map(([field, pair]) => (
-            <Text size="sm" c="dimmed" key={field}>
-              {field}: {formatValue(pair[0])} → {formatValue(pair[1])}
-            </Text>
-          ))}
-        </div>
-      ))}
-    </Stack>
+    <DataTable
+      data={items}
+      columns={CHANGED_ITEM_COLUMNS}
+      tableId="sde-preview-changed-items"
+      exportFilename="sde-changed-items"
+      getRowId={(row) => String(row.type_id)}
+      maxHeight={360}
+    />
   )
 }
 
@@ -252,11 +272,11 @@ export default function SdePreviewPage() {
             <Accordion multiple>
               <Accordion.Item value="new">
                 <Accordion.Control>Neue Items ({newItems.length})</Accordion.Control>
-                <Accordion.Panel><ItemList items={newItems} /></Accordion.Panel>
+                <Accordion.Panel><ItemList items={newItems} tableId="sde-preview-new-items" /></Accordion.Panel>
               </Accordion.Item>
               <Accordion.Item value="removed">
                 <Accordion.Control>Entfernte Items ({removedItems.length})</Accordion.Control>
-                <Accordion.Panel><ItemList items={removedItems} /></Accordion.Panel>
+                <Accordion.Panel><ItemList items={removedItems} tableId="sde-preview-removed-items" /></Accordion.Panel>
               </Accordion.Item>
               <Accordion.Item value="changed">
                 <Accordion.Control>Geänderte Items ({changedItems.length})</Accordion.Control>
