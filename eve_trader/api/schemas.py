@@ -193,6 +193,7 @@ class BuildJobEntry(_Base):
     job_category: Optional[str] = None
     job_cost: Optional[float] = None
     margin: Optional[float] = None
+    recipe_source: Optional[str] = None
 
 
 class LogisticsRow(_Base):

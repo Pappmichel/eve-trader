@@ -254,6 +254,7 @@ export interface BuildJobEntry {
   job_category: string | null
   job_cost: number | null
   margin: number | null
+  recipe_source: string | null
 }
 
 export interface LogisticsRow {
