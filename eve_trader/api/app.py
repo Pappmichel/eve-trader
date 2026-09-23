@@ -3,6 +3,7 @@ a static-files mount for the built frontend (frontend/dist/) so the "real run"
 mode is a single process/port."""
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -10,14 +11,17 @@ from typing import Optional
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import Scope
 
-from .. import scheduler, storage, tenant_scope
-from ..access_gate import SESSION_COOKIE_NAME, authorize_session_cookie
+from .. import access_policy, scheduler, storage, tenant_scope
+from ..access_gate import SESSION_COOKIE_NAME, AuthorizedSession, authorize_session_cookie
+
+log = logging.getLogger(__name__)
 from ..config import ACCESS_CONFIG, TRADING_CONFIG, apply_config_overrides
 from ..doctrine.config import DOCTRINE_CONFIG
 from ..production.config import PRODUCTION_CONFIG
@@ -107,6 +111,42 @@ def _is_auth_role_gated_path(_path: str) -> bool:
     return False
 
 
+async def _affiliation_block(session: AuthorizedSession) -> Optional[JSONResponse]:
+    """After a cookie is authorized: honor a suspension flag, and lazily
+    re-check affiliation when the last check is older than 6 hours.
+
+    The ESI call runs in a worker thread. `dispatch` is async; a blocking
+    fetch here would stall every request on the event loop. Admins and an
+    empty allowlist are exempt (decisions 3c, 3d). A stale suspension flag
+    on an exempt session is cleared, not enforced.
+    """
+    exempt = "admin" in session.tool_keys or not session.allowlist_active
+    if exempt:
+        if session.access_suspended:
+            await run_in_threadpool(
+                access_policy.refresh_registered, session.character_id, session.tool_keys, False,
+            )
+        return None
+    if session.access_suspended:
+        return JSONResponse({"detail": "access_suspended"}, status_code=403)
+    if not access_policy.recheck_due(
+        session.affiliation_checked_at, session.tool_keys, session.allowlist_active,
+    ):
+        return None
+    try:
+        verdict = await run_in_threadpool(
+            access_policy.refresh_registered, session.character_id, session.tool_keys, False,
+        )
+    except Exception:
+        log.exception("affiliation re-check failed")
+        return JSONResponse({"detail": "access_unverifiable"}, status_code=403)
+    if verdict == access_policy.Verdict.SUSPENDED:
+        return JSONResponse({"detail": "access_suspended"}, status_code=403)
+    if verdict == access_policy.Verdict.UNKNOWN:
+        return JSONResponse({"detail": "access_unverifiable"}, status_code=403)
+    return None
+
+
 def _required_tool_for_path(path: str, method: str = "GET") -> Optional[str]:
     # F-06's one-off exception here (POST /api/portfolio/backups required
     # "admin" even though the path lived under /api/portfolio/) is gone -
@@ -169,6 +209,9 @@ class AccessGateMiddleware(BaseHTTPMiddleware):
             session = authorize_session_cookie(request.cookies.get(SESSION_COOKIE_NAME))
             if session is None:
                 return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+            blocked = await _affiliation_block(session)
+            if blocked is not None:
+                return blocked
             return await call_next(request)
 
         if not path.startswith("/api/") or path in _GATE_EXEMPT_PATHS:
@@ -180,6 +223,10 @@ class AccessGateMiddleware(BaseHTTPMiddleware):
         session = authorize_session_cookie(request.cookies.get(SESSION_COOKIE_NAME))
         if session is None:
             return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+
+        blocked = await _affiliation_block(session)
+        if blocked is not None:
+            return blocked
 
         required_tool = _required_tool_for_path(path, request.method)
         if required_tool is not None and required_tool not in session.tool_keys:

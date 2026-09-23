@@ -13,7 +13,7 @@ import logging
 
 from fastapi import APIRouter, Cookie, Response
 
-from ... import storage
+from ... import access_policy, storage
 from ...access_gate import (
     ALL_TOOL_KEYS, SESSION_COOKIE_NAME, authorize_session_cookie, clear_session_cookie,
     read_session_token,
@@ -23,6 +23,41 @@ from ...config import ACCESS_CONFIG
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _suspended_after_recheck(session) -> bool:
+    """Same lazy re-check the middleware uses, run here because /status is
+    exempt from the middleware. A stale suspension can clear when the
+    character is back on the allowlist; admins and an empty allowlist are
+    never suspended."""
+    exempt = "admin" in session.tool_keys or not session.allowlist_active
+    if exempt:
+        if session.access_suspended:
+            try:
+                access_policy.refresh_registered(session.character_id, session.tool_keys, force=False)
+            except Exception:
+                log.exception("gate status could not clear a stale suspension flag")
+        return False
+    if access_policy.recheck_due(
+        session.affiliation_checked_at, session.tool_keys, session.allowlist_active,
+    ):
+        try:
+            verdict = access_policy.refresh_registered(session.character_id, session.tool_keys, force=False)
+        except Exception:
+            log.exception("gate status affiliation re-check failed")
+            return True
+        return verdict == access_policy.Verdict.SUSPENDED
+    return bool(session.access_suspended)
+
+
+def _status_extras(session) -> dict:
+    pending = None
+    if session is not None and "admin" in session.tool_keys:
+        pending = storage.count_pending_access_requests()
+    return {
+        "suspended": False if session is None else _suspended_after_recheck(session),
+        "pending_access_requests": pending,
+    }
 
 
 @router.get("/status")
@@ -44,17 +79,22 @@ def status(session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKI
             "logged_in": data is not None,
             "character_name": data["character_name"] if data else None,
             "tools": list(ALL_TOOL_KEYS),
+            "suspended": False,
+            "pending_access_requests": None,
         }
     session = authorize_session_cookie(session_cookie)
     if session is None:
         return {
             "enabled": True, "logged_in": False, "character_name": None, "tools": [],
+            "suspended": False, "pending_access_requests": None,
         }
+    extras = _status_extras(session)
     return {
         "enabled": True,
         "logged_in": True,
         "character_name": session.character_name,
         "tools": session.tool_keys,
+        **extras,
     }
 
 
