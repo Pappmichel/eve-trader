@@ -761,6 +761,12 @@ class AdminUser(_Base):
     tenant_id: str
     tenant_name: str
     tool_keys: list[str] = []
+    corporation_id: Optional[int] = None
+    corporation_name: Optional[str] = None
+    alliance_id: Optional[int] = None
+    alliance_name: Optional[str] = None
+    affiliation_checked_at: Optional[str] = None
+    access_suspended: bool = False
 
 
 class ErrorLogRow(_Base):

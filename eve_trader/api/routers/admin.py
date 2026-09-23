@@ -6,11 +6,14 @@ a normal grant (CLI bootstrap or another admin); there is no DEFAULT_TENANT_ID
 bypass. Nothing in this router itself re-checks that."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from typing import Optional
+
+from fastapi import APIRouter, Cookie, Depends, HTTPException
 from pydantic import BaseModel
 
 from .. import schemas
 from ... import admin, error_log
+from ...access_gate import SESSION_COOKIE_NAME, authorize_session_cookie
 from ...actions import ActionError, ConflictError
 
 router = APIRouter()
@@ -23,6 +26,17 @@ def _wrap(fn, **kwargs):
         raise HTTPException(status_code=409, detail=str(e))
     except ActionError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+def _actor_character_id(
+    session_cookie: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> Optional[int]:
+    """The admin's character id, when the gate session cookie is present.
+    Gate-off operator calls have no cookie; decided_by stays null."""
+    if not session_cookie:
+        return None
+    session = authorize_session_cookie(session_cookie)
+    return None if session is None else session.character_id
 
 
 @router.get("/tenants", response_model=list[schemas.AdminTenant])
@@ -63,6 +77,84 @@ class SetToolGrantsRequest(BaseModel):
 @router.put("/users/{character_id}/tools")
 def set_tool_grants(character_id: int, req: SetToolGrantsRequest):
     return _wrap(admin.do_set_tool_grants, character_id=character_id, tool_keys=req.tool_keys)
+
+
+@router.post("/users/refresh-affiliations")
+def refresh_user_affiliations():
+    return _wrap(admin.do_refresh_user_affiliations)
+
+
+@router.get("/allowlist")
+def list_allowlist():
+    return _wrap(admin.do_list_allowlist)
+
+
+@router.get("/allowlist/search")
+def search_allowlist(q: str):
+    return _wrap(admin.do_search_allowlist_candidates, name=q)
+
+
+@router.get("/allowlist/impact")
+def allowlist_impact(entry_type: str, entry_id: int, action: str,
+                     actor: Optional[int] = Depends(_actor_character_id)):
+    return _wrap(
+        admin.do_allowlist_impact, entry_type=entry_type, entry_id=entry_id,
+        action=action, actor_character_id=actor,
+    )
+
+
+class AllowlistEntryRequest(BaseModel):
+    entry_type: str
+    entry_id: int
+
+
+@router.post("/allowlist")
+def add_allowlist_entry(req: AllowlistEntryRequest,
+                        actor: Optional[int] = Depends(_actor_character_id)):
+    return _wrap(
+        admin.do_add_allowlist_entry, entry_type=req.entry_type, entry_id=req.entry_id,
+        added_by_character_id=actor,
+    )
+
+
+@router.delete("/allowlist/{entry_type}/{entry_id}")
+def remove_allowlist_entry(entry_type: str, entry_id: int):
+    return _wrap(admin.do_remove_allowlist_entry, entry_type=entry_type, entry_id=entry_id)
+
+
+@router.get("/access-requests/count")
+def count_access_requests():
+    return _wrap(admin.do_count_pending_access_requests)
+
+
+@router.get("/access-requests")
+def list_access_requests(status: Optional[str] = None):
+    return _wrap(admin.do_list_access_requests, status=status)
+
+
+class ApproveAccessRequest(BaseModel):
+    tool_keys: list[str]
+
+
+@router.post("/access-requests/{character_id}/approve")
+def approve_access_request(character_id: int, req: ApproveAccessRequest,
+                           actor: Optional[int] = Depends(_actor_character_id)):
+    return _wrap(
+        admin.do_approve_access_request, character_id=character_id, tool_keys=req.tool_keys,
+        decided_by_character_id=actor,
+    )
+
+
+@router.post("/access-requests/{character_id}/reject")
+def reject_access_request(character_id: int, actor: Optional[int] = Depends(_actor_character_id)):
+    return _wrap(
+        admin.do_reject_access_request, character_id=character_id, decided_by_character_id=actor,
+    )
+
+
+@router.delete("/access-requests/{character_id}")
+def delete_access_request(character_id: int):
+    return _wrap(admin.do_delete_access_request, character_id=character_id)
 
 
 # GitHub issue #34: moved here from /api/production/sde/refresh - the SDE
