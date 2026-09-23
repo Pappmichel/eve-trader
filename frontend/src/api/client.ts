@@ -5,14 +5,20 @@
 // origin as the API - see api/app.py's StaticFiles mount).
 import type * as T from './types'
 
-// Captured once at module load (page load), not re-read live on every 401 -
-// App.tsx's AuthRedirectHandler clears ?gate=denied from the URL shortly
-// after mount (via history.replaceState), so a live window.location.search
-// check inside request() could race: an in-flight query's 401 landing
-// *after* that cleanup would no longer see gate=denied and would redirect
-// straight back into EVE SSO, right back to another denial - a login loop.
-// A one-shot flag captured at load time survives that cleanup.
-const gateWasDeniedThisLoad = window.location.search.includes('gate=denied')
+// Captured once at module load (page load), not re-read live on every 401 —
+// App.tsx's AuthRedirectHandler clears ?gate= from the URL shortly after
+// mount, so a live window.location.search check inside request() could race:
+// an in-flight query's 401 landing *after* that cleanup would no longer see
+// the gate result and would redirect straight back into EVE SSO. A one-shot
+// flag captured at load time survives that cleanup. Covers denied, pending,
+// rejected, suspended, and an affiliation error — all of them are "we just
+// came back from the gate login, don't immediately start another one".
+const _gateResult = new URLSearchParams(window.location.search).get('gate')
+const gateLoginFinishedThisLoad = _gateResult === 'denied'
+  || _gateResult === 'pending'
+  || _gateResult === 'rejected'
+  || _gateResult === 'suspended'
+  || _gateResult === 'error'
 
 export class ApiError extends Error {
   status: number
@@ -50,17 +56,17 @@ function formatErrorDetail(detail: unknown, fallback: string): string {
 // mode in this app is a 400 (ActionError, via routers' _wrap) or a 422
 // (Pydantic validation), never a bare 401, so repurposing this one status
 // code for "go log in" doesn't collide with anything else. Skipped if the
-// URL already carries ?gate=denied - that means we *just* came back from a
-// failed gate login (not on the allowlist), and every query on that page
-// (e.g. App.tsx's SdeFreshnessChecker, which runs on every route including
-// Landing) would otherwise immediately 401 and bounce straight back into
-// another login attempt before the user ever sees the "access denied" message.
+// URL already carries a terminal ?gate= result - that means we *just* came
+// back from the gate login, and every query on that page (e.g. App.tsx's
+// SdeFreshnessChecker, which runs on every route including Landing) would
+// otherwise immediately 401 and bounce straight back into another login
+// attempt before the user ever sees the message.
 async function request<TResp>(path: string, init?: RequestInit): Promise<TResp> {
   const resp = await fetch(path, {
     headers: init?.body ? { 'Content-Type': 'application/json' } : undefined,
     ...init,
   })
-  if (resp.status === 401 && !gateWasDeniedThisLoad) {
+  if (resp.status === 401 && !gateLoginFinishedThisLoad) {
     // Plain fetch, not get()/request() - avoids recursing back into this
     // same function (this endpoint is exempt from the gate middleware, so
     // it can't itself 401, but there's no reason to depend on that).
@@ -493,6 +499,30 @@ export const adminApi = {
   // as everything else here.
   backups: () => get<T.BackupInfo[]>('/api/admin/backups'),
   createBackup: () => post<T.BackupInfo>('/api/admin/backups'),
+  allowlist: () => get<T.AllowlistEntry[]>('/api/admin/allowlist'),
+  searchAllowlist: (q: string) =>
+    get<T.AllowlistCandidate[]>(`/api/admin/allowlist/search?q=${encodeURIComponent(q)}`),
+  allowlistImpact: (entryType: string, entryId: number, action: 'add' | 'remove') =>
+    get<T.AllowlistImpact>(
+      `/api/admin/allowlist/impact?entry_type=${encodeURIComponent(entryType)}&entry_id=${entryId}&action=${action}`,
+    ),
+  addAllowlistEntry: (entryType: string, entryId: number) =>
+    post<T.AllowlistEntry>('/api/admin/allowlist', { entry_type: entryType, entry_id: entryId }),
+  removeAllowlistEntry: (entryType: string, entryId: number) =>
+    del(`/api/admin/allowlist/${encodeURIComponent(entryType)}/${entryId}`),
+  accessRequests: (status?: string) =>
+    get<T.AccessRequestRow[]>(
+      status ? `/api/admin/access-requests?status=${encodeURIComponent(status)}` : '/api/admin/access-requests',
+    ),
+  approveAccessRequest: (characterId: number, toolKeys: string[]) =>
+    post<{ character_id: number; tenant_id: string; tool_keys: string[] }>(
+      `/api/admin/access-requests/${characterId}/approve`, { tool_keys: toolKeys },
+    ),
+  rejectAccessRequest: (characterId: number) =>
+    post<{ character_id: number; status: string }>(`/api/admin/access-requests/${characterId}/reject`),
+  deleteAccessRequest: (characterId: number) =>
+    del(`/api/admin/access-requests/${characterId}`),
+  refreshAffiliations: () => post<{ updated: number }>('/api/admin/users/refresh-affiliations'),
 }
 
 // -------------------------------------------------------------- characters

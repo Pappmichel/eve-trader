@@ -29,7 +29,10 @@ client = TestClient(create_app())
 @pytest.fixture(autouse=True)
 def _wipe():
     client.cookies.clear()
-    pg_helpers.wipe_tables("tenant_registry_entries", "tool_grants", "character_session_revocations")
+    pg_helpers.wipe_tables(
+        "tenant_registry_entries", "tool_grants", "character_session_revocations",
+        "access_requests", "access_allowlist",
+    )
     with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
         conn.execute("DELETE FROM tenants WHERE tenant_id != %s", (storage.DEFAULT_TENANT_ID,))
     yield
@@ -217,9 +220,11 @@ def test_session_authorization_none_vs_empty_grants(_apply_admin_schema):
     storage.add_tenant_registry_entry(tenant_id, 11, character_name="A")
     result = storage.session_authorization(11, tenant_id)
     assert result is not None
-    tools, sva = result
-    assert tools == []
-    assert sva is None
+    assert result.tool_keys == []
+    assert result.sessions_valid_after is None
+    assert result.access_suspended is False
+    assert result.allowlist_active is False
+    assert result.corporation_id is None
     assert access_gate.tools_for(tenant_id, 11) == []
 
 

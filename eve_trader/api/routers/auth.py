@@ -26,8 +26,9 @@ import requests
 from fastapi import APIRouter, Cookie, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 
-from ... import storage
+from ... import access_policy, storage
 from ...access_gate import set_session_cookie
+from ...esi_client import ESIClient, ESIError
 from ...auth import TokenManager, _make_pkce_pair
 from ...config import OAUTH_CONFIG
 from ...esi_data.selector import delete_strict_subset_tokens, reauth_write_role
@@ -199,6 +200,65 @@ def start_gate_login(request: Request, response: Response):
     return begin_oauth(request, response, role_prefix="gate", scopes=[])
 
 
+def _gate_redirect(query: str, *, character_id: int | None = None,
+                   character_name: str | None = None, tenant_id: str | None = None):
+    resp = RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?{query}")
+    if tenant_id is not None and character_id is not None and character_name is not None:
+        set_session_cookie(resp, character_id, character_name, tenant_id)
+    resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
+    return resp
+
+
+def _affiliation_display_names(corporation_id: int, alliance_id: int | None) -> tuple[str | None, str | None]:
+    ids = [corporation_id]
+    if alliance_id is not None:
+        ids.append(alliance_id)
+    try:
+        names = ESIClient().resolve_names(ids)
+    except ESIError:
+        log.warning("could not resolve affiliation names for corp %s", corporation_id, exc_info=True)
+        return None, None
+    return names.get(corporation_id), (names.get(alliance_id) if alliance_id is not None else None)
+
+
+def _complete_gate_login(character_id: int, character_name: str):
+    tenant_id = storage.resolve_tenant_id(character_id)
+    if tenant_id is not None:
+        # Name refresh does not touch affiliation columns (ON CONFLICT only
+        # sets the name). Done even when the verdict later withholds the cookie
+        # so the Admin user list stays current.
+        storage.add_tenant_registry_entry(tenant_id, character_id, character_name=character_name)
+        tool_keys = storage.list_tool_grants_for_character(character_id)
+        try:
+            verdict = access_policy.refresh_registered(character_id, tool_keys, force=True)
+        except Exception:
+            log.exception("gate login affiliation check failed")
+            return _gate_redirect("gate=error&message=affiliation_unavailable")
+        if verdict == access_policy.Verdict.SUSPENDED:
+            return _gate_redirect("gate=suspended")
+        if verdict == access_policy.Verdict.UNKNOWN:
+            return _gate_redirect("gate=error&message=affiliation_unavailable")
+        return _gate_redirect(
+            f"gate=success&character={urllib.parse.quote(character_name)}",
+            character_id=character_id, character_name=character_name, tenant_id=tenant_id,
+        )
+
+    existing = storage.get_access_request(character_id)
+    if existing is not None and existing["status"] == "rejected":
+        return _gate_redirect("gate=rejected")
+    affiliation = access_policy.fetch_affiliation(character_id)
+    if affiliation is None:
+        return _gate_redirect("gate=error&message=affiliation_unavailable")
+    corporation_id, alliance_id = affiliation
+    if not access_policy.is_allowed(corporation_id, alliance_id):
+        return _gate_redirect("gate=denied")
+    corporation_name, alliance_name = _affiliation_display_names(corporation_id, alliance_id)
+    storage.upsert_pending_access_request(
+        character_id, character_name, corporation_id, corporation_name, alliance_id, alliance_name,
+    )
+    return _gate_redirect("gate=pending")
+
+
 @router.get("/callback")
 def callback(code: str | None = None, state: str | None = None, error_description: str | None = None,
              oauth_nonce: str | None = Cookie(default=None, alias=_OAUTH_NONCE_COOKIE)):
@@ -249,27 +309,12 @@ def callback(code: str | None = None, state: str | None = None, error_descriptio
 
     if role_prefix == "gate":
         # Identity-only login (see access_gate.py) - never persisted to
-        # TokenManager/tokens.json, unlike every other role below: the
-        # resulting session cookie IS the whole credential, re-verified via
-        # EVE SSO on every future login rather than refreshed from a stored
-        # token. Character-only (corp/alliance registry entries retired -
-        # see docs/admin_schema.sql), so no corp/alliance ESI lookup needed
-        # here anymore.
-        tenant_id = storage.resolve_tenant_id(character_id)
-        if tenant_id is None:
-            resp = RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?gate=denied")
-            resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
-            return resp
-        # Refresh the cached character_name (tenant_registry_entries' own
-        # column, see docs/admin_schema.sql) with the name EVE SSO just
-        # verified - keeps the Admin UI's user list current if a character
-        # is renamed, at zero extra cost (character_name is already known
-        # here, no additional ESI call).
-        storage.add_tenant_registry_entry(tenant_id, character_id, character_name=character_name)
-        resp = RedirectResponse(f"{OAUTH_CONFIG.frontend_origin}/?gate=success&character={urllib.parse.quote(character_name)}")
-        set_session_cookie(resp, character_id, character_name, tenant_id)
-        resp.delete_cookie(_OAUTH_NONCE_COOKIE, path="/api/auth")
-        return resp
+        # TokenManager. The session cookie is the credential. An
+        # unregistered character from an allowlisted corp/alliance files
+        # an access request; everyone else is denied, rejected, or
+        # suspended. Registered characters are re-checked (force=True, so
+        # the 6h window does not apply at login).
+        return _complete_gate_login(character_id, character_name)
 
     # Both Characters SSO rounds land here: re-authorize (an existing
     # character, `reauth_character_id` set - the returned character must

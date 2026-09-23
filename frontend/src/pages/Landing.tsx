@@ -1,4 +1,4 @@
-import { Container, Title, Text, SimpleGrid, Card, Button, Stack, Group, Badge } from '@mantine/core'
+import { Container, Title, Text, SimpleGrid, Card, Button, Stack, Group, Badge, Alert } from '@mantine/core'
 import { IconArrowRight } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
@@ -76,18 +76,22 @@ function AccessGateStatus() {
 // see gate.py's status handler), so `undefined` means "show everything",
 // matching this app's pre-tool-grants behavior for local/dev installs
 // rather than flashing an empty page during the initial load.
-function ToolCard({ tools, toolKey, to, title, description }: {
+function ToolCard({ tools, toolKey, to, title, description, badge }: {
   tools: string[] | undefined
   toolKey: string
   to: string
   title: string
   description: string
+  badge?: string
 }) {
   if (tools !== undefined && !tools.includes(toolKey)) return null
   return (
     <Card withBorder padding="lg" radius="md">
       <Stack gap="xs">
-        <Title order={3}>{title}</Title>
+        <Group justify="space-between" wrap="nowrap">
+          <Title order={3}>{title}</Title>
+          {badge && <Badge color="warn" variant="filled">{badge}</Badge>}
+        </Group>
         <Text c="dimmed" size="sm">{description}</Text>
         <Button component={Link} to={to} mt="sm" rightSection={<IconArrowRight size={14} />}>Open</Button>
       </Stack>
@@ -113,6 +117,13 @@ export default function Landing() {
           they know what they'd be logging into. */}
       <AccessGateStatus />
 
+      {gateStatus?.suspended && (
+        <Alert color="danger" title="Access suspended" mb="lg">
+          Your corporation or alliance is no longer allowlisted. Your data is unchanged.
+          Log out and back in to re-check immediately, or wait for the next automatic check.
+        </Alert>
+      )}
+
       <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }} spacing="md">
         <ToolCard tools={tools} toolKey="trading" to="/trading" title="Trading"
           description="C-J import trading: candidate search, shortlist, margins, trade reconciliation." />
@@ -134,7 +145,12 @@ export default function Landing() {
         <ToolCard tools={tools} toolKey="characters" to="/characters" title="Characters"
           description="Who is logged in for ESI data, which tools may read it, and which scopes still need a re-authorize." />
         <ToolCard tools={tools} toolKey="admin" to="/admin" title="Admin"
-          description="Manage tenants, users, and which tools each character can see." />
+          description="Manage tenants, users, and which tools each character can see."
+          badge={
+            gateStatus?.pending_access_requests
+              ? `${gateStatus.pending_access_requests} pending`
+              : undefined
+          } />
       </SimpleGrid>
 
       <Text size="xs" c="dimmed" ta="center" mt="xl">

@@ -122,7 +122,12 @@ export function QuickNav() {
     if (!toolKey || tools === undefined) return true
     return tools.includes(toolKey)
   })
-  const actions = visibleActions.map((a) => ({ ...a, onClick: () => navigate(PATHS[a.id]) }))
+  const pending = gateStatus?.pending_access_requests
+  const actions = visibleActions.map((a) => ({
+    ...a,
+    label: a.id === 'admin' && pending ? `Admin (${pending} pending)` : a.label,
+    onClick: () => navigate(PATHS[a.id]),
+  }))
 
   return (
     <Spotlight

@@ -92,6 +92,8 @@ def _wipe_auth_state() -> None:
         "tool_grants",
         "tenant_registry_entries",
         "character_session_revocations",
+        "access_requests",
+        "access_allowlist",
     )
 
 
@@ -115,7 +117,9 @@ def test_status_when_gate_disabled_reports_disabled(monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json() == {
-        "enabled": False, "logged_in": False, "character_name": None, "tools": list(access_gate.ALL_TOOL_KEYS),
+        "enabled": False, "logged_in": False, "character_name": None,
+        "tools": list(access_gate.ALL_TOOL_KEYS),
+        "suspended": False, "pending_access_requests": None,
     }
 
 
@@ -138,6 +142,7 @@ def test_status_with_valid_cookie_reports_logged_in(monkeypatch, _apply_phase1_s
 
     assert resp.json() == {
         "enabled": True, "logged_in": True, "character_name": "Test Character", "tools": ["trading"],
+        "suspended": False, "pending_access_requests": None,
     }
 
 
@@ -333,6 +338,9 @@ def test_callback_gate_branch_denied_character_redirects_without_a_cookie(
     }
     monkeypatch.setattr(TokenManager, "_exchange_code", lambda self, code, verifier: {"access_token": "tok"})
     monkeypatch.setattr(TokenManager, "_verify", staticmethod(lambda token: (999, "Denied Character")))
+    # Unregistered characters are checked against the allowlist before a
+    # denial. An affiliation ESI misses would be ?gate=error, not denied.
+    monkeypatch.setattr("eve_trader.access_policy.fetch_affiliation", lambda _character_id: (12345, None))
 
     resp = client.get(
         "/api/auth/callback", params={"code": "abc", "state": state},

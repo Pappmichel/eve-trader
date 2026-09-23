@@ -57,12 +57,14 @@ def _wipe():
     client.cookies.clear()
     pg_helpers.wipe_tables(
         "tool_grants", "tenant_registry_entries", "character_session_revocations",
+        "access_requests", "access_allowlist",
         "esi_sharing", "esi_character_capabilities", "tenant_tokens",
     )
     yield
     client.cookies.clear()
     pg_helpers.wipe_tables(
         "tool_grants", "tenant_registry_entries", "character_session_revocations",
+        "access_requests", "access_allowlist",
         "esi_sharing", "esi_character_capabilities", "tenant_tokens",
     )
 

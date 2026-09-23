@@ -186,6 +186,205 @@ def do_set_tool_grants(character_id: int, tool_keys: list[str]) -> dict:
     return {"character_id": character_id, "tool_keys": sorted(tool_keys)}
 
 
+def _require_allowlist_type(entry_type: str) -> None:
+    if entry_type not in ("corporation", "alliance"):
+        raise ActionError("entry_type must be 'corporation' or 'alliance'.")
+
+
+def do_list_allowlist() -> list[dict]:
+    return storage.list_allowlist()
+
+
+def do_search_allowlist_candidates(name: str) -> list[dict]:
+    """Exact corp/alliance name match. The Admin UI adds by id from this
+    list; the name cached on the allowlist is resolved again at add time."""
+    name = name.strip()
+    if not name:
+        raise ActionError("Name can't be empty.")
+    from .esi_client import ESIClient
+    try:
+        return ESIClient().search_corporations_alliances(name)
+    except ESIError as e:
+        raise ActionError(f"Could not search ESI for '{name}': {e}") from e
+
+
+def do_add_allowlist_entry(entry_type: str, entry_id: int,
+                           added_by_character_id: int | None = None) -> dict:
+    """Resolves and caches the display name. The client does not get to
+    supply the name."""
+    _require_allowlist_type(entry_type)
+    if not isinstance(entry_id, int) or entry_id <= 0:
+        raise ActionError("entry_id must be a positive integer.")
+    from .esi_client import ESIClient
+    try:
+        names = ESIClient().resolve_names([entry_id])
+    except ESIError as e:
+        raise ActionError(f"Could not resolve {entry_type} {entry_id} via ESI: {e}") from e
+    name = names.get(entry_id)
+    if not name:
+        raise ActionError(f"No name found for {entry_type} {entry_id}.")
+    storage.add_allowlist_entry(entry_type, entry_id, name, added_by_character_id)
+    return {"entry_type": entry_type, "entry_id": entry_id, "name": name}
+
+
+def do_remove_allowlist_entry(entry_type: str, entry_id: int) -> dict:
+    _require_allowlist_type(entry_type)
+    storage.remove_allowlist_entry(entry_type, entry_id)
+    return {"entry_type": entry_type, "entry_id": entry_id}
+
+
+def _matches_entry(user: dict, entry_type: str, entry_id: int) -> bool:
+    if entry_type == "corporation":
+        return user.get("corporation_id") == entry_id
+    return user.get("alliance_id") == entry_id
+
+
+def _allowed_by(user: dict, entries: list[dict]) -> bool:
+    return any(_matches_entry(user, entry["entry_type"], entry["entry_id"]) for entry in entries)
+
+
+def do_allowlist_impact(entry_type: str, entry_id: int, action: str,
+                        actor_character_id: int | None = None) -> dict:
+    """Which registered non-admin users would be suspended by this change.
+
+    Adding the first entry turns the re-check on, so anyone who would not
+    match that entry is listed. Adding to a non-empty allowlist only
+    expands it. Removing the last entry turns the re-check off, so nobody
+    is suspended. Otherwise, users whose only match is the removed entry
+    are listed. `actor_exempt_but_affected` is true when the acting admin's
+    own affiliation would fall outside the allowlist — admins stay exempt,
+    the warning is still shown.
+    """
+    _require_allowlist_type(entry_type)
+    if action not in ("add", "remove"):
+        raise ActionError("action must be 'add' or 'remove'.")
+    current = storage.list_allowlist()
+    users = storage.list_users_with_grants()
+    non_admins = [user for user in users if "admin" not in user["tool_keys"]]
+
+    if action == "add":
+        activates = len(current) == 0
+        after = current + [{"entry_type": entry_type, "entry_id": entry_id}]
+        would = [
+            user for user in non_admins
+            if activates and not _allowed_by(user, after)
+        ] if activates else []
+        disables = False
+    else:
+        remaining = [
+            entry for entry in current
+            if not (entry["entry_type"] == entry_type and entry["entry_id"] == entry_id)
+        ]
+        disables = len(current) > 0 and len(remaining) == 0
+        activates = False
+        if disables:
+            would = []
+        else:
+            would = [
+                user for user in non_admins
+                if _allowed_by(user, current) and not _allowed_by(user, remaining)
+            ]
+        after = remaining
+
+    actor = next((user for user in users if user["character_id"] == actor_character_id), None)
+    actor_affected = False
+    if actor is not None and "admin" in actor["tool_keys"]:
+        if action == "add" and len(current) == 0:
+            actor_affected = not _allowed_by(actor, after)
+        elif action == "remove" and not disables:
+            actor_affected = _allowed_by(actor, current) and not _allowed_by(actor, after)
+
+    return {
+        "would_suspend": [
+            {
+                "character_id": user["character_id"],
+                "character_name": user["character_name"],
+                "corporation_id": user["corporation_id"],
+                "alliance_id": user["alliance_id"],
+            }
+            for user in would
+        ],
+        "activates_recheck": activates,
+        "disables_recheck": disables,
+        "actor_exempt_but_affected": actor_affected,
+    }
+
+
+def do_refresh_user_affiliations() -> dict:
+    """One bulk affiliation call for every registered character. Updates the
+    registry (and the suspension flag) so the user table and the impact
+    preview are looking at a current corp/alliance."""
+    users = storage.list_users_with_grants()
+    ids = [user["character_id"] for user in users]
+    if not ids:
+        return {"updated": 0}
+    from .esi_client import ESIClient
+    try:
+        affiliations = ESIClient().character_affiliation(ids)
+    except ESIError as e:
+        raise ActionError(f"Could not refresh affiliations via ESI: {e}") from e
+    empty = storage.allowlist_is_empty()
+    updated = 0
+    for user in users:
+        found = affiliations.get(user["character_id"])
+        if found is None:
+            continue
+        corporation_id, alliance_id = found
+        suspended = (
+            not empty
+            and "admin" not in user["tool_keys"]
+            and not storage.allowlist_contains(corporation_id, alliance_id)
+        )
+        storage.update_registry_affiliation(
+            user["character_id"], corporation_id, alliance_id, suspended,
+        )
+        updated += 1
+    return {"updated": updated}
+
+
+def do_list_access_requests(status: str | None = None) -> list[dict]:
+    if status is not None and status not in ("pending", "approved", "rejected"):
+        raise ActionError("status must be pending, approved, or rejected.")
+    return storage.list_access_requests(status)
+
+
+def do_count_pending_access_requests() -> dict:
+    return {"pending": storage.count_pending_access_requests()}
+
+
+def do_approve_access_request(character_id: int, tool_keys: list[str],
+                               decided_by_character_id: int | None = None) -> dict:
+    """Creates a dedicated tenant named after the character and grants
+    exactly `tool_keys`. Invalid keys are rejected before anything is written."""
+    unknown = set(tool_keys) - set(access_gate.ALL_TOOL_KEYS)
+    if unknown:
+        raise ActionError(f"Unknown tool_key(s): {', '.join(sorted(unknown))}")
+    try:
+        tenant_id = storage.approve_access_request(
+            character_id, tool_keys, decided_by_character_id,
+        )
+    except storage.RegistryConflict as e:
+        raise ActionError(str(e)) from e
+    return {
+        "character_id": character_id,
+        "tenant_id": tenant_id,
+        "tool_keys": sorted(set(tool_keys)),
+    }
+
+
+def do_reject_access_request(character_id: int, decided_by_character_id: int | None = None) -> dict:
+    if not storage.reject_access_request(character_id, decided_by_character_id):
+        raise ActionError(f"No pending access request for character {character_id}.")
+    return {"character_id": character_id, "status": "rejected"}
+
+
+def do_delete_access_request(character_id: int) -> dict:
+    """Deletes a request in any status. Deleting a rejection is what lets
+    that character request access again."""
+    storage.delete_access_request(character_id)
+    return {"character_id": character_id}
+
+
 def do_bootstrap_admin(
     character_id: int,
     character_name: str | None = None,

@@ -100,6 +100,33 @@ a dedicated tenant is created. UNIQUE `(tenant_id)` on
 
 There is no unauthenticated HTTP path that can grant admin.
 
+## Corp/alliance allowlist rollout
+
+The allowlist decides who may *request* access. It does not grant tools.
+Deploying the schema changes nothing until the first corporation or
+alliance is added: an empty allowlist leaves the affiliation re-check off.
+
+Recommended order:
+
+1. Deploy, including `docs/admin_schema.sql` (`./deploy/deploy.sh` already
+   applies that file).
+2. Log in as an admin and open Admin → **Refresh affiliations**. That one
+   ESI call stores each registered character's corporation and alliance.
+3. Before adding or removing an entry, read the impact preview. Adding the
+   first entry turns the re-check on and lists every non-admin who would
+   not match it. Removing the last entry turns the re-check off again.
+4. Add the corporations and alliances whose members should be able to ask
+   for an account. Approve each request and pick that character's tools.
+   Approval creates a new tenant named after the character.
+
+Admins are exempt from the re-check, including while their own
+corporation is not allowlisted. Keep the `admin` grant list short. A
+non-admin who leaves an allowlisted corporation is suspended (their tenant
+and data stay) until they rejoin or an admin changes the list. If ESI
+cannot be reached, the last stored affiliation is trusted for 7 days;
+after that, login fails with "couldn't verify your corporation" and API
+calls return 403 `access_unverifiable` until ESI answers again.
+
 ## OpenAPI / docs (F-19)
 
 `/docs`, `/redoc`, and `/openapi.json` require a valid session while the

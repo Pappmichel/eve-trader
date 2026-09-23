@@ -49,11 +49,21 @@ ALL_TOOL_KEYS = ("trading", "production", "doctrine", "refining", "station_tradi
 @dataclass(frozen=True)
 class AuthorizedSession:
     """A cookie that is signed, unexpired, still bound to its tenant, and
-    not revoked via sessions_valid_after."""
+    not revoked via sessions_valid_after.
+
+    Affiliation fields come from the same session_authorization read so the
+    middleware can decide whether a lazy re-check is due without a second
+    query. `allowlist_active` is false while the corp/alliance allowlist is
+    empty."""
     character_id: int
     character_name: str
     tenant_id: str
     tool_keys: list[str]
+    access_suspended: bool = False
+    corporation_id: Optional[int] = None
+    alliance_id: Optional[int] = None
+    affiliation_checked_at: Optional[datetime] = None
+    allowlist_active: bool = False
 
 
 def _serializer(cfg: OAuthConfig) -> URLSafeTimedSerializer:
@@ -129,7 +139,8 @@ def authorize_session_cookie(token: Optional[str], cfg: OAuthConfig = OAUTH_CONF
         return None
     if authz is None:
         return None
-    tool_keys, sessions_valid_after = authz
+    tool_keys = authz.tool_keys
+    sessions_valid_after = authz.sessions_valid_after
     if sessions_valid_after is not None:
         sva = sessions_valid_after
         if getattr(sva, "tzinfo", None) is None:
@@ -147,6 +158,11 @@ def authorize_session_cookie(token: Optional[str], cfg: OAuthConfig = OAUTH_CONF
         character_name=str(character_name),
         tenant_id=str(tenant_id),
         tool_keys=list(tool_keys),
+        access_suspended=authz.access_suspended,
+        corporation_id=authz.corporation_id,
+        alliance_id=authz.alliance_id,
+        affiliation_checked_at=authz.affiliation_checked_at,
+        allowlist_active=authz.allowlist_active,
     )
 
 
@@ -183,4 +199,4 @@ def tools_for(tenant_id: str, character_id: int) -> Optional[list[str]]:
     authz = storage.session_authorization(character_id, tenant_id)
     if authz is None:
         return None
-    return authz[0]
+    return authz.tool_keys

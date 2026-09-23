@@ -55,3 +55,44 @@ ALTER TABLE tenant_registry_entries
 -- DB-level backstop for that invariant, not just the UI/action-layer logic.
 ALTER TABLE tenant_registry_entries DROP CONSTRAINT IF EXISTS tenant_registry_entries_tenant_id_unique;
 ALTER TABLE tenant_registry_entries ADD CONSTRAINT tenant_registry_entries_tenant_id_unique UNIQUE (tenant_id);
+
+-- ===================================================== corp/alliance allowlist
+-- Who may *ask* for access. Not a registry entry and not a grant: approval
+-- still creates one character, one tenant, and explicit tool_grants.
+-- Unscoped, same reasoning as tool_grants (queried before any tenant exists,
+-- and the Admin tool reads it across every character).
+CREATE TABLE IF NOT EXISTS access_allowlist (
+    entry_type TEXT NOT NULL CHECK (entry_type IN ('corporation', 'alliance')),
+    entry_id BIGINT NOT NULL,
+    name TEXT NOT NULL,
+    added_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    added_by_character_id BIGINT,
+    PRIMARY KEY (entry_type, entry_id)
+);
+GRANT SELECT, INSERT, UPDATE, DELETE ON access_allowlist TO eve_trader_app;
+
+-- One row per character that ever requested access. `rejected` stays until
+-- an admin deletes it; `approved` is the audit trail of who approved when.
+CREATE TABLE IF NOT EXISTS access_requests (
+    character_id BIGINT PRIMARY KEY,
+    character_name TEXT NOT NULL,
+    corporation_id BIGINT NOT NULL,
+    corporation_name TEXT,
+    alliance_id BIGINT,
+    alliance_name TEXT,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected')),
+    requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_login_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    decided_at TIMESTAMPTZ,
+    decided_by_character_id BIGINT
+);
+CREATE INDEX IF NOT EXISTS access_requests_status_idx ON access_requests (status);
+GRANT SELECT, INSERT, UPDATE, DELETE ON access_requests TO eve_trader_app;
+
+-- Last known affiliation for the lazy re-check. access_suspended is a
+-- registry flag (data stays); clearing it on the next successful check
+-- restores the existing session cookie.
+ALTER TABLE tenant_registry_entries ADD COLUMN IF NOT EXISTS corporation_id BIGINT;
+ALTER TABLE tenant_registry_entries ADD COLUMN IF NOT EXISTS alliance_id BIGINT;
+ALTER TABLE tenant_registry_entries ADD COLUMN IF NOT EXISTS affiliation_checked_at TIMESTAMPTZ;
+ALTER TABLE tenant_registry_entries ADD COLUMN IF NOT EXISTS access_suspended BOOLEAN NOT NULL DEFAULT false;
