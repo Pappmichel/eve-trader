@@ -1,6 +1,6 @@
 # Access gate: corp/alliance allowlist and access requests – implementation plan
 
-Status: draft, not yet in the repo · 2026-09-23
+Status: implemented · 2026-09-23
 
 Goal: a character that isn't registered yet can log in via EVE SSO. If its
 corporation or alliance is on an admin-maintained allowlist, an **access
