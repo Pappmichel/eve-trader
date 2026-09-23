@@ -35,6 +35,7 @@ import re
 import threading
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
 from typing import Iterable, Optional
@@ -316,8 +317,9 @@ def with_batch_session():
 def connect_unscoped():
     """A `connect()` sibling for the handful of genuinely tenant-independent
     tables (`tenants`, `tenant_registry_entries`,
-    `character_session_revocations` - see docs/phase3_schema.sql /
-    docs/session_revocations_schema.sql)
+    `character_session_revocations`, `access_allowlist`, `access_requests`
+    - see docs/phase3_schema.sql / docs/session_revocations_schema.sql /
+    docs/admin_schema.sql)
     - checks out a pooled connection *without* requiring or setting an
     ambient tenant_id. Needed because resolving *which* tenant a visitor
     belongs to (storage.resolve_tenant_id, called from the OAuth callback's
@@ -533,19 +535,34 @@ def list_tool_grants_for_character(character_id: int) -> list[str]:
     return [r[0] for r in rows]
 
 
-def session_authorization(character_id: int, tenant_id: str) -> Optional[tuple[list[str], Optional[datetime]]]:
-    """F-01 + F-03: one DB read. Returns (tool_keys, sessions_valid_after)
-    when `character_id` is registered as a character of `tenant_id`.
-    tool_keys is [] when the character is registered but has no grants for
-    that tenant. Returns None when there is no matching registry row
-    (character missing, or registered to a different tenant) — callers must
-    not treat that as "no grants".
+@dataclass(frozen=True)
+class SessionAuthorization:
+    """One `session_authorization` read. `tool_keys` is [] when the character
+    is registered but has no grants for that tenant. Affiliation fields drive
+    the lazy corp/alliance re-check; `allowlist_active` is false while
+    `access_allowlist` is empty (re-check stays off)."""
+    tool_keys: list[str]
+    sessions_valid_after: Optional[datetime]
+    corporation_id: Optional[int]
+    alliance_id: Optional[int]
+    affiliation_checked_at: Optional[datetime]
+    access_suspended: bool
+    allowlist_active: bool
+
+
+def session_authorization(character_id: int, tenant_id: str) -> Optional[SessionAuthorization]:
+    """F-01 + F-03: one DB read. Returns a SessionAuthorization when
+    `character_id` is registered as a character of `tenant_id`. Returns None
+    when there is no matching registry row (character missing, or registered
+    to a different tenant) — callers must not treat that as "no grants".
 
     JOIN conditions are load-bearing: e.tenant_id is the session tenant,
     g.tenant_id = e.tenant_id so a grant issued under another tenant cannot
     follow the character here. sessions_valid_after is the later of the
     registry column and character_session_revocations (P5-03) — Postgres
-    GREATEST is NULL-hostile, so the CASE is required."""
+    GREATEST is NULL-hostile, so the CASE is required. The allowlist EXISTS
+    is in the same statement so the middleware does not take a second round
+    trip to learn whether the re-check is active."""
     with connect_unscoped() as conn:
         rows = conn.execute(
             "SELECT g.tool_key, "
@@ -553,7 +570,10 @@ def session_authorization(character_id: int, tenant_id: str) -> Optional[tuple[l
             "  WHEN e.sessions_valid_after IS NULL THEN r.sessions_valid_after "
             "  WHEN r.sessions_valid_after IS NULL THEN e.sessions_valid_after "
             "  ELSE GREATEST(e.sessions_valid_after, r.sessions_valid_after) "
-            "END "
+            "END, "
+            "e.corporation_id, e.alliance_id, e.affiliation_checked_at, "
+            "e.access_suspended, "
+            "EXISTS (SELECT 1 FROM access_allowlist) "
             "FROM tenant_registry_entries e "
             "LEFT JOIN tool_grants g "
             "  ON g.character_id = e.entry_id "
@@ -567,9 +587,17 @@ def session_authorization(character_id: int, tenant_id: str) -> Optional[tuple[l
         ).fetchall()
     if not rows:
         return None
-    sessions_valid_after = rows[0][1]
-    tool_keys = sorted({key for key, _sva in rows if key is not None})
-    return tool_keys, sessions_valid_after
+    tool_keys = sorted({row[0] for row in rows if row[0] is not None})
+    first = rows[0]
+    return SessionAuthorization(
+        tool_keys=tool_keys,
+        sessions_valid_after=first[1],
+        corporation_id=first[2],
+        alliance_id=first[3],
+        affiliation_checked_at=first[4],
+        access_suspended=bool(first[5]),
+        allowlist_active=bool(first[6]),
+    )
 
 
 def revoke_sessions_for_character(character_id: int) -> None:
@@ -587,17 +615,35 @@ def revoke_sessions_for_character(character_id: int) -> None:
         )
 
 
+def _iso(value) -> Optional[str]:
+    return value.isoformat() if value is not None else None
+
+
 def list_users_with_grants() -> list[dict]:
     """Returns one dict per registered character - {character_id,
-    character_name, tenant_id, tenant_name, tool_keys} - tool_keys is the
-    list of currently-granted tool_key strings (empty if none yet).
+    character_name, tenant_id, tenant_name, tool_keys, corporation_id,
+    corporation_name, alliance_id, alliance_name, affiliation_checked_at,
+    access_suspended} - tool_keys is the list of currently-granted tool_key
+    strings (empty if none yet). Corp/alliance names prefer the allowlist
+    cache, then the character's access-request row; otherwise the id is all
+    the Admin page has without a live ESI call.
     Admin-UI-only (cross-tenant superadmin - see admin.py's own module
     docstring for why this deliberately reads across every tenant rather
     than being RLS-scoped)."""
     with connect_unscoped() as conn:
         users = conn.execute(
-            "SELECT tre.entry_id, tre.character_name, tre.tenant_id, t.name "
-            "FROM tenant_registry_entries tre JOIN tenants t ON t.tenant_id = tre.tenant_id "
+            "SELECT tre.entry_id, tre.character_name, tre.tenant_id, t.name, "
+            "tre.corporation_id, tre.alliance_id, tre.affiliation_checked_at, "
+            "tre.access_suspended, "
+            "COALESCE(ac.name, ar.corporation_name), "
+            "COALESCE(aa.name, ar.alliance_name) "
+            "FROM tenant_registry_entries tre "
+            "JOIN tenants t ON t.tenant_id = tre.tenant_id "
+            "LEFT JOIN access_allowlist ac "
+            "  ON ac.entry_type = 'corporation' AND ac.entry_id = tre.corporation_id "
+            "LEFT JOIN access_allowlist aa "
+            "  ON aa.entry_type = 'alliance' AND aa.entry_id = tre.alliance_id "
+            "LEFT JOIN access_requests ar ON ar.character_id = tre.entry_id "
             "WHERE tre.entry_type = 'character' ORDER BY tre.entry_id"
         ).fetchall()
         grants = conn.execute("SELECT character_id, tool_key FROM tool_grants").fetchall()
@@ -609,9 +655,278 @@ def list_users_with_grants() -> list[dict]:
             "character_id": character_id, "character_name": character_name,
             "tenant_id": str(tenant_id), "tenant_name": tenant_name,
             "tool_keys": grants_by_character.get(character_id, []),
+            "corporation_id": corporation_id, "corporation_name": corporation_name,
+            "alliance_id": alliance_id, "alliance_name": alliance_name,
+            "affiliation_checked_at": _iso(checked_at),
+            "access_suspended": bool(access_suspended),
         }
-        for character_id, character_name, tenant_id, tenant_name in users
+        for (character_id, character_name, tenant_id, tenant_name,
+             corporation_id, alliance_id, checked_at, access_suspended,
+             corporation_name, alliance_name) in users
     ]
+
+
+class RegistryConflict(Exception):
+    """approve_access_request refused: the character is already registered,
+    or there is no pending request to approve."""
+
+
+def list_allowlist() -> list[dict]:
+    with connect_unscoped() as conn:
+        rows = conn.execute(
+            "SELECT entry_type, entry_id, name, added_at, added_by_character_id "
+            "FROM access_allowlist ORDER BY entry_type, name"
+        ).fetchall()
+    return [
+        {
+            "entry_type": entry_type, "entry_id": entry_id, "name": name,
+            "added_at": _iso(added_at), "added_by_character_id": added_by,
+        }
+        for entry_type, entry_id, name, added_at, added_by in rows
+    ]
+
+
+def add_allowlist_entry(entry_type: str, entry_id: int, name: str,
+                        added_by_character_id: Optional[int] = None) -> None:
+    with connect_unscoped() as conn:
+        conn.execute(
+            "INSERT INTO access_allowlist (entry_type, entry_id, name, added_by_character_id) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT (entry_type, entry_id) DO UPDATE SET "
+            "name = excluded.name, added_at = now(), "
+            "added_by_character_id = excluded.added_by_character_id",
+            (entry_type, entry_id, name, added_by_character_id),
+        )
+
+
+def remove_allowlist_entry(entry_type: str, entry_id: int) -> bool:
+    with connect_unscoped() as conn:
+        cur = conn.execute(
+            "DELETE FROM access_allowlist WHERE entry_type = ? AND entry_id = ?",
+            (entry_type, entry_id),
+        )
+    return cur.rowcount > 0
+
+
+def allowlist_is_empty() -> bool:
+    with connect_unscoped() as conn:
+        row = conn.execute("SELECT NOT EXISTS (SELECT 1 FROM access_allowlist)").fetchone()
+    return bool(row[0])
+
+
+def allowlist_contains(corporation_id: Optional[int], alliance_id: Optional[int]) -> bool:
+    """True when either id is on the allowlist. NULL ids never match."""
+    with connect_unscoped() as conn:
+        row = conn.execute(
+            "SELECT EXISTS ("
+            "  SELECT 1 FROM access_allowlist "
+            "  WHERE (entry_type = 'corporation' AND entry_id = ?) "
+            "     OR (entry_type = 'alliance' AND entry_id = ?)"
+            ")",
+            (corporation_id, alliance_id),
+        ).fetchone()
+    return bool(row[0])
+
+
+def get_access_request(character_id: int) -> Optional[dict]:
+    with connect_unscoped() as conn:
+        row = conn.execute(
+            "SELECT character_id, character_name, corporation_id, corporation_name, "
+            "alliance_id, alliance_name, status, requested_at, last_login_at, "
+            "decided_at, decided_by_character_id "
+            "FROM access_requests WHERE character_id = ?",
+            (character_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return _access_request_dict(row, no_longer_allowlisted=None)
+
+
+def upsert_pending_access_request(
+    character_id: int, character_name: str, corporation_id: int,
+    corporation_name: Optional[str], alliance_id: Optional[int], alliance_name: Optional[str],
+) -> None:
+    """Insert a pending request, or refresh name/affiliation/last_login_at.
+    An existing `rejected` or `approved` status is left alone — a repeat
+    login must not clear a rejection or rewrite an approval."""
+    with connect_unscoped() as conn:
+        conn.execute(
+            "INSERT INTO access_requests ("
+            "  character_id, character_name, corporation_id, corporation_name, "
+            "  alliance_id, alliance_name, status, requested_at, last_login_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, 'pending', now(), now()) "
+            "ON CONFLICT (character_id) DO UPDATE SET "
+            "character_name = excluded.character_name, "
+            "corporation_id = excluded.corporation_id, "
+            "corporation_name = excluded.corporation_name, "
+            "alliance_id = excluded.alliance_id, "
+            "alliance_name = excluded.alliance_name, "
+            "last_login_at = now()",
+            (character_id, character_name, corporation_id, corporation_name, alliance_id, alliance_name),
+        )
+
+
+def _access_request_dict(row, no_longer_allowlisted: Optional[bool]) -> dict:
+    (character_id, character_name, corporation_id, corporation_name,
+     alliance_id, alliance_name, status, requested_at, last_login_at,
+     decided_at, decided_by) = row
+    return {
+        "character_id": character_id, "character_name": character_name,
+        "corporation_id": corporation_id, "corporation_name": corporation_name,
+        "alliance_id": alliance_id, "alliance_name": alliance_name,
+        "status": status, "requested_at": _iso(requested_at),
+        "last_login_at": _iso(last_login_at), "decided_at": _iso(decided_at),
+        "decided_by_character_id": decided_by,
+        "no_longer_allowlisted": no_longer_allowlisted,
+    }
+
+
+def list_access_requests(status: Optional[str] = None) -> list[dict]:
+    """`no_longer_allowlisted` is true when neither the request's corporation
+    nor its alliance is currently on the allowlist (decision A: removing an
+    entry leaves the request open and flagged)."""
+    with connect_unscoped() as conn:
+        rows = conn.execute(
+            "SELECT r.character_id, r.character_name, r.corporation_id, r.corporation_name, "
+            "r.alliance_id, r.alliance_name, r.status, r.requested_at, r.last_login_at, "
+            "r.decided_at, r.decided_by_character_id, "
+            "NOT EXISTS ("
+            "  SELECT 1 FROM access_allowlist a "
+            "  WHERE (a.entry_type = 'corporation' AND a.entry_id = r.corporation_id) "
+            "     OR (a.entry_type = 'alliance' AND a.entry_id = r.alliance_id)"
+            ") "
+            "FROM access_requests r "
+            "WHERE (?::text IS NULL OR r.status = ?) "
+            "ORDER BY r.requested_at",
+            (status, status),
+        ).fetchall()
+    return [_access_request_dict(row[:11], row[11]) for row in rows]
+
+
+def count_pending_access_requests() -> int:
+    with connect_unscoped() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM access_requests WHERE status = 'pending'"
+        ).fetchone()
+    return int(row[0])
+
+
+def reject_access_request(character_id: int, decided_by_character_id: Optional[int]) -> bool:
+    """Marks a pending request rejected. Returns False when there was no
+    pending row (already rejected/approved, or never requested)."""
+    with connect_unscoped() as conn:
+        cur = conn.execute(
+            "UPDATE access_requests SET status = 'rejected', decided_at = now(), "
+            "decided_by_character_id = ? "
+            "WHERE character_id = ? AND status = 'pending'",
+            (decided_by_character_id, character_id),
+        )
+    return cur.rowcount > 0
+
+
+def delete_access_request(character_id: int) -> bool:
+    """Deletes the row in any status. Deleting a rejection is what lets that
+    character request access again."""
+    with connect_unscoped() as conn:
+        cur = conn.execute(
+            "DELETE FROM access_requests WHERE character_id = ?",
+            (character_id,),
+        )
+    return cur.rowcount > 0
+
+
+def approve_access_request(character_id: int, tool_keys: list[str],
+                           decided_by_character_id: Optional[int]) -> str:
+    """One transaction: tenant + registry (with the request's affiliation,
+    affiliation_checked_at = now(), not suspended) + tool grants + mark the
+    request approved. Raises RegistryConflict when the character is already
+    registered or the request is not pending. A failure while inserting
+    grants rolls the tenant and registry row back with the request."""
+    tool_keys = list(dict.fromkeys(tool_keys))
+    with connect_unscoped() as conn:
+        existing = conn.execute(
+            "SELECT 1 FROM tenant_registry_entries "
+            "WHERE entry_type = 'character' AND entry_id = ?",
+            (character_id,),
+        ).fetchone()
+        if existing is not None:
+            raise RegistryConflict(f"Character {character_id} is already registered.")
+        req = conn.execute(
+            "SELECT character_name, corporation_id, alliance_id, status "
+            "FROM access_requests WHERE character_id = ?",
+            (character_id,),
+        ).fetchone()
+        if req is None or req[3] != "pending":
+            raise RegistryConflict(f"No pending access request for character {character_id}.")
+        character_name, corporation_id, alliance_id, _status = req
+        tenant_row = conn.execute(
+            "INSERT INTO tenants (name) VALUES (?) RETURNING tenant_id",
+            (character_name,),
+        ).fetchone()
+        tenant_id = str(tenant_row[0])
+        conn.execute(
+            "INSERT INTO tenant_registry_entries ("
+            "  entry_type, entry_id, tenant_id, character_name, "
+            "  corporation_id, alliance_id, affiliation_checked_at, access_suspended"
+            ") VALUES ('character', ?, ?, ?, ?, ?, now(), false)",
+            (character_id, tenant_id, character_name, corporation_id, alliance_id),
+        )
+        for tool_key in tool_keys:
+            conn.execute(
+                "INSERT INTO tool_grants (character_id, tool_key, tenant_id) VALUES (?, ?, ?)",
+                (character_id, tool_key, tenant_id),
+            )
+        conn.execute(
+            "UPDATE access_requests SET status = 'approved', decided_at = now(), "
+            "decided_by_character_id = ? WHERE character_id = ?",
+            (decided_by_character_id, character_id),
+        )
+    return tenant_id
+
+
+def get_registry_affiliation(character_id: int) -> Optional[dict]:
+    """Affiliation columns for one registered character, or None when they
+    are not registered. Used by the re-check; not a request-path read
+    (that stays session_authorization)."""
+    with connect_unscoped() as conn:
+        row = conn.execute(
+            "SELECT corporation_id, alliance_id, affiliation_checked_at, access_suspended "
+            "FROM tenant_registry_entries "
+            "WHERE entry_type = 'character' AND entry_id = ?",
+            (character_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "corporation_id": row[0],
+        "alliance_id": row[1],
+        "affiliation_checked_at": row[2],
+        "access_suspended": bool(row[3]),
+    }
+
+
+def update_registry_affiliation(character_id: int, corporation_id: Optional[int],
+                                alliance_id: Optional[int], suspended: bool,
+                                *, touch_checked_at: bool = True) -> None:
+    """Writes the registry affiliation. `touch_checked_at=False` leaves
+    affiliation_checked_at alone so an ESI failure does not reset the 7-day
+    staleness clock or the 6-hour re-check window."""
+    with connect_unscoped() as conn:
+        if touch_checked_at:
+            conn.execute(
+                "UPDATE tenant_registry_entries SET "
+                "corporation_id = ?, alliance_id = ?, access_suspended = ?, "
+                "affiliation_checked_at = now() "
+                "WHERE entry_type = 'character' AND entry_id = ?",
+                (corporation_id, alliance_id, suspended, character_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE tenant_registry_entries SET "
+                "corporation_id = ?, alliance_id = ?, access_suspended = ? "
+                "WHERE entry_type = 'character' AND entry_id = ?",
+                (corporation_id, alliance_id, suspended, character_id),
+            )
 
 
 # --------------------------------------------------------------- error log

@@ -436,7 +436,7 @@ class ESIClient:
         return self._get_response(path_or_url, params, auth_role, retries).json()
 
     def _post_response(self, path: str, json_body: Any, params: Optional[dict] = None,
-                        retries: int = 3) -> requests.Response:
+                       retries: int = 3, timeout: float = 30) -> requests.Response:
         """POST counterpart to _get_response - same retry/backoff behavior
         (420/429 rate-limited, 500/502/503/504) and same ESIError on exhaustion.
         Confirmed real bug: _post_universe_ids/resolve_names used to do a bare
@@ -451,7 +451,7 @@ class ESIClient:
         for attempt in range(1, retries + 1):
             self._await_error_budget()
             try:
-                resp = self.session.post(url, json=json_body, params=params, timeout=30)
+                resp = self.session.post(url, json=json_body, params=params, timeout=timeout)
             except requests.RequestException as e:
                 # Same transport-to-ESIError conversion as _get_response -
                 # a timeout here used to surface as HTTPError/ConnectionError
@@ -881,6 +881,45 @@ class ESIClient:
         for stock physically in the corp hangar was invisible to both)."""
         return self._get_all_pages(f"/corporations/{corporation_id}/orders/",
                                     params={"datasource": "tranquility"}, auth_role=auth_role)
+
+    def character_affiliation(self, character_ids: list[int], *, timeout: float = 30,
+                              retries: int = 3) -> dict[int, tuple[int, Optional[int]]]:
+        """POST /characters/affiliation/. Public, no auth, up to 1000 ids per
+        call. Not cached: a corp change has to show up on the next access-gate
+        check, and character_public_info's cache can stay stale across one.
+        Returns {character_id: (corporation_id, alliance_id)}. Ids ESI omits
+        are absent from the dict."""
+        out: dict[int, tuple[int, Optional[int]]] = {}
+        unique_ids = list(dict.fromkeys(int(i) for i in character_ids))
+        for i in range(0, len(unique_ids), 1000):
+            chunk = unique_ids[i:i + 1000]
+            resp = self._post_response(
+                "/characters/affiliation/", chunk,
+                params={"datasource": "tranquility"},
+                retries=retries, timeout=timeout,
+            )
+            for row in resp.json():
+                alliance = row.get("alliance_id")
+                out[int(row["character_id"])] = (
+                    int(row["corporation_id"]),
+                    int(alliance) if alliance else None,
+                )
+        return out
+
+    def search_corporations_alliances(self, name: str) -> list[dict]:
+        """Exact, case-insensitive corporation and alliance matches via
+        /universe/ids/ (same endpoint as character_search). Each hit is
+        {"type": "corporation"|"alliance", "id", "name"}."""
+        want = name.strip().lower()
+        result = self._post_universe_ids([name])
+        hits: list[dict] = []
+        for entry in result.get("corporations") or []:
+            if entry["name"].lower() == want:
+                hits.append({"type": "corporation", "id": entry["id"], "name": entry["name"]})
+        for entry in result.get("alliances") or []:
+            if entry["name"].lower() == want:
+                hits.append({"type": "alliance", "id": entry["id"], "name": entry["name"]})
+        return hits
 
     def character_public_info(self, character_id: int) -> dict:
         """Public endpoint, no auth - used to resolve corporation_id for
