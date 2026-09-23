@@ -107,14 +107,36 @@ function AuthRedirectHandler() {
       notifications.show({
         title: 'Access granted', message: `Logged in as ${params.get('character')}`, color: 'accent',
       })
+    } else if (gate === 'pending') {
+      notifications.show({
+        title: 'Request submitted',
+        message: 'An admin will review it.',
+        color: 'warn', autoClose: false,
+      })
+    } else if (gate === 'rejected') {
+      notifications.show({
+        title: 'Access rejected',
+        message: 'An admin rejected this request. It stays closed until they delete the rejection.',
+        color: 'danger', autoClose: false,
+      })
+    } else if (gate === 'suspended') {
+      notifications.show({
+        title: 'Access suspended',
+        message: 'Your corporation or alliance is no longer allowlisted.',
+        color: 'danger', autoClose: false,
+      })
     } else if (gate === 'denied') {
       notifications.show({
         title: 'Access denied',
-        message: 'This character/corp/alliance is not on the access allowlist.',
+        message: 'Your corporation or alliance is not allowlisted.',
         color: 'danger', autoClose: false,
       })
     } else if (gate === 'error') {
-      notifications.show({ title: 'Login failed', message: params.get('message') ?? 'unknown error', color: 'danger' })
+      const raw = params.get('message')
+      const message = raw === 'affiliation_unavailable'
+        ? "Couldn't verify your corporation, try again later."
+        : (raw ?? 'unknown error')
+      notifications.show({ title: 'Login failed', message, color: 'danger' })
     } else {
       return
     }

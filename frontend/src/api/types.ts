@@ -605,6 +605,52 @@ export interface GateStatus {
   logged_in: boolean
   character_name: string | null
   tools: string[]
+  suspended: boolean
+  /** Pending access-request count. Null unless this session holds admin. */
+  pending_access_requests: number | null
+}
+
+export interface AllowlistEntry {
+  entry_type: 'corporation' | 'alliance'
+  entry_id: number
+  name: string
+  added_at: string | null
+  added_by_character_id: number | null
+}
+
+export interface AllowlistCandidate {
+  type: 'corporation' | 'alliance'
+  id: number
+  name: string
+}
+
+export interface AllowlistImpactUser {
+  character_id: number
+  character_name: string | null
+  corporation_id: number | null
+  alliance_id: number | null
+}
+
+export interface AllowlistImpact {
+  would_suspend: AllowlistImpactUser[]
+  activates_recheck: boolean
+  disables_recheck: boolean
+  actor_exempt_but_affected: boolean
+}
+
+export interface AccessRequestRow {
+  character_id: number
+  character_name: string
+  corporation_id: number
+  corporation_name: string | null
+  alliance_id: number | null
+  alliance_name: string | null
+  status: string
+  requested_at: string | null
+  last_login_at: string | null
+  decided_at: string | null
+  decided_by_character_id: number | null
+  no_longer_allowlisted: boolean
 }
 
 export interface AccessPreviewItem {
@@ -685,6 +731,12 @@ export interface AdminUser {
   tenant_id: string
   tenant_name: string
   tool_keys: string[]
+  corporation_id: number | null
+  corporation_name: string | null
+  alliance_id: number | null
+  alliance_name: string | null
+  affiliation_checked_at: string | null
+  access_suspended: boolean
 }
 
 export interface SdeDiffItem {
