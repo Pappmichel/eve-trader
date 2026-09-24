@@ -1,7 +1,7 @@
 # Manual tracking for Production – implementation plan
 
-Status: phase 0, 1, 2, 3, 4, 5, 6, 7, and 8 done · 2026-09-24 (phase 1 landed
-separately, see PR #196)
+Status: phase 0, 1, 2, 3, 4, 5, 6, 7, 8, and 9 done · 2026-09-24 (phase 1
+landed separately, see PR #196) - every phase in this plan is now done
 
 Goal: make the Production tool fully usable without an ESI login. Manual data
 (stock, blueprints, running jobs, listed quantities, locations) takes effect
@@ -389,7 +389,7 @@ covered by the existing `production` grant.
 
 ---
 
-## 8. CLI (`cli.py`, decision 17)
+## 8. CLI (`cli.py`, decision 17) (done, phase 9)
 
 New group `eve-trader production manual …`. Every command takes
 `--tenant-id` (default: the Default Tenant) and runs inside
@@ -401,6 +401,15 @@ New group `eve-trader production manual …`. Every command takes
 - `jobs list|add|complete|remove`
 - `listed set|clear`
 - `locations name ID NAME` / `locations unname ID`
+
+Every subcommand is a thin wrapper around the same `production/actions.py`
+`do_*` functions the web UI calls - no logic duplicated here. `list`
+commands print every row (ESI-synced and manual, source-tagged); the
+mutating commands mirror the same `do_*` signature 1:1 as CLI options/
+arguments. Tests: `tests/test_cli_production_manual.py`
+(`click.testing.CliRunner`, `production_actions.do_*` and
+`tenant_scope.enter_tenant` monkeypatched, same "never touches real
+Postgres/ESI" shape as the router tests).
 
 ---
 
@@ -485,7 +494,7 @@ New group `eve-trader production manual …`. Every command takes
 | 6 | Done. Manual jobs incl. Complete | 3 |
 | 7 | Done. Listed quantities | – |
 | 8 | Done. Admin bulk resolution | 2 |
-| 9 | CLI | 3–7 |
+| 9 | Done. CLI | 3–7 |
 | 10 | Cancelled. Phase 0 was negative: no blueprint paste and no My Orders paste. | – |
 
 ---
