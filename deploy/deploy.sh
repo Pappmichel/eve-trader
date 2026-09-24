@@ -70,7 +70,7 @@ for f in phase1_schema.sql phase2_schema.sql phase3_schema.sql admin_schema.sql 
          station_trading_schema.sql special_orders_schema.sql \
          sorting_schema.sql production_buy_list_schema.sql pipeline_runs_schema.sql \
          session_revocations_schema.sql job_category_cost_index_overrides_schema.sql \
-         esi_access_schema.sql; do
+         esi_access_schema.sql portfolio_schema.sql; do
     sudo -u postgres psql -d eve_trader -v ON_ERROR_STOP=1 -f "docs/$f"
 done
 

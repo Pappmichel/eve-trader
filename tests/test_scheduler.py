@@ -84,15 +84,17 @@ def _recent_backup():
 
 def test_check_and_run_due_jobs_for_tenant_runs_when_never_synced(monkeypatch):
     monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: None)
+    monkeypatch.setattr(storage, "latest_portfolio_snapshot_taken_at", lambda: None)
     calls = []
     monkeypatch.setattr(actions, "do_pipeline", lambda safe=True: calls.append("trading"))
     monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda: calls.append("esi"))
+    monkeypatch.setattr(scheduler.portfolio, "take_portfolio_snapshot", lambda cfg: calls.append("portfolio_snapshot"))
 
     scheduler.last_run_status.clear()
     cfg = TradingConfig(scheduler_enabled=True, trading_pipeline_interval_hours=24.0)
     scheduler._check_and_run_due_jobs_for_tenant("test-tenant", cfg)
 
-    assert calls == ["trading", "esi"]
+    assert calls == ["trading", "esi", "portfolio_snapshot"]
     assert "esi_data_sync" in scheduler.last_run_status["test-tenant"]
     assert "production_sync" not in scheduler.last_run_status["test-tenant"]
 
@@ -100,15 +102,34 @@ def test_check_and_run_due_jobs_for_tenant_runs_when_never_synced(monkeypatch):
 def test_check_and_run_due_jobs_for_tenant_skips_pipeline_when_recently_run(monkeypatch):
     just_now = dt.datetime.now(dt.timezone.utc).isoformat()
     monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: just_now)
+    monkeypatch.setattr(storage, "latest_portfolio_snapshot_taken_at", lambda: just_now)
     calls = []
     monkeypatch.setattr(actions, "do_pipeline", lambda safe=True: calls.append("trading"))
     monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda: calls.append("esi"))
+    monkeypatch.setattr(scheduler.portfolio, "take_portfolio_snapshot", lambda cfg: calls.append("portfolio_snapshot"))
 
     cfg = TradingConfig(scheduler_enabled=True, trading_pipeline_interval_hours=24.0)
     scheduler._check_and_run_due_jobs_for_tenant("test-tenant", cfg)
 
-    # Pipeline is interval-gated; esi_data_sync always runs and decides internally.
+    # Pipeline and portfolio_snapshot are interval-gated and both just ran;
+    # esi_data_sync always runs and decides internally.
     assert calls == ["esi"]
+
+
+def test_check_and_run_due_jobs_for_tenant_runs_portfolio_snapshot_when_overdue(monkeypatch):
+    monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: dt.datetime.now(dt.timezone.utc).isoformat())
+    stale = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=25)).isoformat()
+    monkeypatch.setattr(storage, "latest_portfolio_snapshot_taken_at", lambda: stale)
+    calls = []
+    monkeypatch.setattr(actions, "do_pipeline", lambda safe=True: calls.append("trading"))
+    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda: calls.append("esi"))
+    monkeypatch.setattr(scheduler.portfolio, "take_portfolio_snapshot", lambda cfg: calls.append("portfolio_snapshot"))
+
+    cfg = TradingConfig(scheduler_enabled=True, trading_pipeline_interval_hours=24.0,
+                         portfolio_snapshot_interval_hours=24.0)
+    scheduler._check_and_run_due_jobs_for_tenant("test-tenant", cfg)
+
+    assert calls == ["esi", "portfolio_snapshot"]
 
 
 def test_check_and_run_due_jobs_for_tenant_skips_entirely_when_disabled(monkeypatch):
@@ -127,6 +148,7 @@ def test_check_and_run_due_jobs_for_tenant_skips_entirely_when_disabled(monkeypa
 
 def test_check_and_run_due_jobs_for_tenant_one_job_failing_does_not_block_the_others(monkeypatch):
     monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: None)
+    monkeypatch.setattr(storage, "latest_portfolio_snapshot_taken_at", lambda: None)
     calls = []
 
     def failing_pipeline(safe=True):
@@ -134,11 +156,12 @@ def test_check_and_run_due_jobs_for_tenant_one_job_failing_does_not_block_the_ot
 
     monkeypatch.setattr(actions, "do_pipeline", failing_pipeline)
     monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda: calls.append("esi"))
+    monkeypatch.setattr(scheduler.portfolio, "take_portfolio_snapshot", lambda cfg: calls.append("portfolio_snapshot"))
 
     cfg = TradingConfig(scheduler_enabled=True, trading_pipeline_interval_hours=24.0)
     scheduler._check_and_run_due_jobs_for_tenant("test-tenant", cfg)  # must not raise
 
-    assert calls == ["esi"]
+    assert calls == ["esi", "portfolio_snapshot"]
 
 
 def test_hours_since_last_backup_is_infinite_with_no_backups(monkeypatch):
@@ -251,6 +274,9 @@ def _stub_get_status_deps(monkeypatch, *, freshness=None):
     newest_esi_freshness_success_at read."""
     monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: None)
     monkeypatch.setattr(storage, "newest_esi_freshness_success_at", lambda: freshness)
+    monkeypatch.setattr(storage, "latest_portfolio_snapshot_taken_at",
+                        lambda: dt.datetime.now(dt.timezone.utc).isoformat())
+    monkeypatch.setattr(scheduler.portfolio, "take_portfolio_snapshot", lambda cfg: None)
     monkeypatch.setattr(backup, "list_backups", lambda: [])
     monkeypatch.setattr(scheduler.jita_price_cache, "last_updated_at", lambda: None)
 
@@ -355,6 +381,8 @@ def test_check_and_run_due_jobs_iterates_tenants_independently(
     tenant_a, tenant_b = tenant_pair
     monkeypatch.setattr(storage, "list_tenants", lambda: [(tenant_a, "A", None), (tenant_b, "B", None)])
     monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: None)  # always due
+    monkeypatch.setattr(storage, "latest_portfolio_snapshot_taken_at",
+                        lambda: dt.datetime.now(dt.timezone.utc).isoformat())  # not due
     monkeypatch.setattr(backup, "list_backups", lambda: [{"name": "b", "created_at": dt.datetime.now(dt.timezone.utc).isoformat(), "size_bytes": 1}])  # backup not due
     calls = []
     monkeypatch.setattr(actions, "do_pipeline", lambda safe=True: calls.append(storage.get_current_tenant()))
@@ -379,6 +407,9 @@ def test_get_status_esi_last_run_at_from_real_freshness_rows(
     # Empty table: never-synced renders as None, not an error-shaped miss.
     monkeypatch.setattr(storage, "get_esi_sync_time",
                         lambda scope: dt.datetime.now(dt.timezone.utc).isoformat())
+    monkeypatch.setattr(storage, "latest_portfolio_snapshot_taken_at",
+                        lambda: dt.datetime.now(dt.timezone.utc).isoformat())
+    monkeypatch.setattr(scheduler.portfolio, "take_portfolio_snapshot", lambda cfg: None)
     monkeypatch.setattr(backup, "list_backups", lambda: [])
     monkeypatch.setattr(scheduler.jita_price_cache, "last_updated_at", lambda: None)
     monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda: None)

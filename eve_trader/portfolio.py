@@ -8,6 +8,7 @@ either (confirmed with the user).
 """
 from __future__ import annotations
 
+from datetime import date
 from typing import Optional
 
 from . import storage
@@ -61,3 +62,23 @@ def portfolio_overview(cfg: TradingConfig = TRADING_CONFIG) -> dict:
         "production_stock_targets_configured": stock_targets_configured,
         "combined_value": trading_realized_profit + production_stock_value,
     }
+
+
+def take_portfolio_snapshot(cfg: TradingConfig = TRADING_CONFIG) -> dict:
+    """Computes portfolio_overview() and upserts today's row into
+    portfolio_snapshots - idempotent, safe to call more than once on the
+    same day (see storage.upsert_portfolio_snapshot). The two triggers
+    (scheduler job + lazy fallback on page load) both call this same
+    function, never portfolio_overview() directly, so there is one write
+    path, not two implementations that could drift.
+
+    total_wealth/wealth_assets_value/wealth_wallet_balance stay None here -
+    total_wealth() (PORTFOLIO_REWORK_PLAN.md section 6) wires into this
+    function once Portfolio becomes a real ESI-sharing participant; until
+    then every snapshot correctly records "no Total Wealth data yet" rather
+    than a wrong zero.
+    """
+    overview = portfolio_overview(cfg)
+    wealth = {"total_wealth": None, "wealth_assets_value": None, "wealth_wallet_balance": None}
+    storage.upsert_portfolio_snapshot(date.today(), {**overview, **wealth})
+    return {**overview, **wealth}

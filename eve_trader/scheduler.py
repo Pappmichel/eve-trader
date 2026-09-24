@@ -40,7 +40,7 @@ import logging
 import threading
 from typing import Optional
 
-from . import backup, storage, tenant_scope
+from . import backup, portfolio, storage, tenant_scope
 from .config import TRADING_CONFIG, TradingConfig
 from .production import jita_price_cache
 
@@ -163,6 +163,9 @@ def _check_and_run_due_jobs_for_tenant(tenant_id: str, cfg: TradingConfig) -> No
 
     # One orchestrator call; due-ness is per (owner, kind) inside do_sync_due.
     _run_job(tenant_id, "esi_data_sync", esi_orchestrator.do_sync_due)
+
+    if _hours_since(storage.latest_portfolio_snapshot_taken_at()) >= cfg.portfolio_snapshot_interval_hours:
+        _run_job(tenant_id, "portfolio_snapshot", lambda: portfolio.take_portfolio_snapshot(cfg))
 
 
 def _check_and_run_backup_job() -> None:

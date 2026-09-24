@@ -212,6 +212,7 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "esi_stale_clear_multiples": (0, None),
     "backup_interval_hours": (0, None),
     "jita_price_cache_interval_hours": (0, None),
+    "portfolio_snapshot_interval_hours": (0, None),
     # -- Doctrine tool (see doctrine/config.py's DoctrineConfig) --
     "doctrine_structure_id": (1, None),
     "stockpile_location_id": (1, None),
@@ -512,6 +513,7 @@ class TradingConfig:
     esi_stale_clear_multiples: float = 3.0            # passed into clear_stale_owner_kind
     backup_interval_hours: float = 24.0                # backup.create_backup() - see backup.py
     jita_price_cache_interval_hours: float = 1.0        # production.jita_price_cache.refresh_jita_price_cache()
+    portfolio_snapshot_interval_hours: float = 24.0     # portfolio.take_portfolio_snapshot() - see PORTFOLIO_REWORK_PLAN.md
 
 
 @dataclass

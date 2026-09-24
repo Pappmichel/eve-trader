@@ -36,7 +36,7 @@ import threading
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from functools import lru_cache
 from typing import Iterable, Optional
 
@@ -4874,3 +4874,69 @@ def list_all_special_order_item_rows() -> list[tuple[str, int, str, float]]:
             "SELECT order_id, type_id, type_name, quantity FROM special_order_items "
             "ORDER BY order_id, type_name"
         ).fetchall()
+
+
+# --------------------------------------------------------------- Portfolio: snapshots
+_PORTFOLIO_SNAPSHOT_COLUMNS = (
+    "trading_realized_profit", "trading_average_margin", "trading_daily_profit_volatility",
+    "trading_trade_count", "production_stock_value", "production_stock_targets_configured",
+    "combined_value", "total_wealth", "wealth_assets_value", "wealth_wallet_balance",
+)
+
+
+def upsert_portfolio_snapshot(snapshot_date: date, values: dict) -> None:
+    """One row per tenant per day (PORTFOLIO_REWORK_PLAN.md section 5) - a
+    second call on the same day overwrites that same row (including
+    `taken_at`) rather than creating a duplicate, so calling this more than
+    once a day (scheduler tick + lazy page-load fallback both firing) is
+    safe. `values` is expected to carry every column in
+    _PORTFOLIO_SNAPSHOT_COLUMNS - a missing key raises KeyError rather than
+    silently writing NULL/0 for a figure the caller forgot."""
+    row = tuple(values[col] for col in _PORTFOLIO_SNAPSHOT_COLUMNS)
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO portfolio_snapshots (snapshot_date, " + ", ".join(_PORTFOLIO_SNAPSHOT_COLUMNS) + ", taken_at) "
+            "VALUES (?, " + ", ".join(["?"] * len(_PORTFOLIO_SNAPSHOT_COLUMNS)) + ", now()) "
+            "ON CONFLICT (tenant_id, snapshot_date) DO UPDATE SET "
+            + ", ".join(f"{col}=excluded.{col}" for col in _PORTFOLIO_SNAPSHOT_COLUMNS)
+            + ", taken_at=excluded.taken_at",
+            (snapshot_date, *row),
+        )
+
+
+def load_portfolio_snapshots(since: Optional[date] = None) -> list[tuple]:
+    """(snapshot_date, *_PORTFOLIO_SNAPSHOT_COLUMNS), oldest first. `since`
+    omitted returns every snapshot this tenant has ever taken (unbounded
+    retention - decision in the plan) - the frontend's range buttons drive
+    this query rather than filtering client-side against a potentially
+    large result."""
+    cols = ", ".join(_PORTFOLIO_SNAPSHOT_COLUMNS)
+    with connect() as conn:
+        if since is None:
+            return conn.execute(
+                f"SELECT snapshot_date, {cols} FROM portfolio_snapshots ORDER BY snapshot_date"
+            ).fetchall()
+        return conn.execute(
+            f"SELECT snapshot_date, {cols} FROM portfolio_snapshots "
+            "WHERE snapshot_date >= ? ORDER BY snapshot_date",
+            (since,),
+        ).fetchall()
+
+
+def latest_portfolio_snapshot_date() -> Optional[date]:
+    """None if this tenant has never taken a snapshot."""
+    with connect() as conn:
+        row = conn.execute("SELECT MAX(snapshot_date) FROM portfolio_snapshots").fetchone()
+    return row[0] if row and row[0] is not None else None
+
+
+def latest_portfolio_snapshot_taken_at() -> Optional[str]:
+    """`taken_at` of the newest snapshot row, for the scheduler's own
+    `_hours_since`-based due check - mirrors newest_esi_freshness_success_at's
+    own shape/reasoning above."""
+    with connect() as conn:
+        row = conn.execute("SELECT MAX(taken_at) FROM portfolio_snapshots").fetchone()
+    if row is None or row[0] is None:
+        return None
+    ts = row[0]
+    return ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
