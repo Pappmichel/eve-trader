@@ -1,6 +1,6 @@
 # Manual tracking for Production – implementation plan
 
-Status: draft, not yet in the repo · 2026-09-23
+Status: phase 0 done (both checks negative) · 2026-09-24
 
 Goal: make the Production tool fully usable without an ESI login. Manual data
 (stock, blueprints, running jobs, listed quantities, locations) takes effect
@@ -12,10 +12,18 @@ existing Stock Targets, Blueprints and Industry Jobs pages.
 
 ## 0. Verification before building (no code)
 
-| Task | Outcome decides |
+Checked 2026-09-24 against [evepraisal/evepaste](https://github.com/evepraisal/evepaste) `master` (`17df80ef`, library version 0.9). That is the same reference `eve_trader/refining/paste_parser.py` used for the inventory parser (issue #92). Parser modules on that tree: `assets`, `cargo_scan`, `chat`, `contract`, `dscan`, `eft`, `fitting`, `industry`, `killmail`, `listing`, `loot_history`, `pi`, `survey_scanner`, `view_contents`, `wallet`. There is no blueprint parser and no market-order parser.
+
+| Check | Result |
 |---|---|
-| Check the EVE Blueprints window copy format (ME/TE/Runs) against a reliable reference (e.g. the evepaste parsers, same as the asset parser in issue #92) | If no usable format exists, blueprint paste is dropped and the form is the only input (decision 5) |
-| Check the copy format of the market window's "My Orders" | If no usable format exists, only the manual fields are built (decision 7) |
+| EVE Blueprints window copy format (ME/TE/Runs) | **Negative.** No usable format. Blueprint paste is dropped; the form is the only input (decision 5). |
+| Market window "My Orders" copy format | **Negative.** No usable format. Only the manual listed-quantity fields are built (decision 7). |
+
+**Blueprints.** `assets.py` is the inventory list: Name, Quantity, Group, Category, Size, Slot, Volume, Meta Level, Tech Level. A blueprint copied from inventory is a named stack in that list. Those columns do not carry ME, TE, or runs, so those lines stay skipped in the asset paste (decision 10). `industry.py` parses an industry bill of materials (`Name (N Units)`); its test fixture is minerals, not the Blueprints window. `contract.py` is name, quantity, type, category, and a details string (fitted or not). Forum posts from 2012–2013 describe a Science & Industry list copy that included ML/PL/Runs. That window predates the current industry UI, and evepaste never implemented it. It is not a reliable format.
+
+**My Orders.** `wallet.py` parses the wallet journal and completed transactions, not open orders. `listing.py` parses human item lists (`10x Name`), not the market window. The market window's export writes a file under the client's Marketlogs directory. That is not a clipboard grammar in the reference library, and this plan does not take a file-export parser in its place.
+
+Section 12 item 10 is cancelled.
 
 ---
 
@@ -136,8 +144,8 @@ exception; CLAUDE.md's list of exceptions gets updated accordingly.
   SYNC.md also mentions the old path and needs updating.
 - The logic stays the same. `ParsedPasteLine.category` already carries the
   category, which is how `Blueprint` lines are detected (decision 10).
-- Only if phase 0 finds a reliable format: add `parse_blueprint_paste()` and
-  `parse_market_orders_paste()` to the same module.
+- Phase 0 was negative, so this module does not gain `parse_blueprint_paste()`
+  or `parse_market_orders_paste()`.
 
 ---
 
@@ -421,7 +429,7 @@ New group `eve-trader production manual …`. Every command takes
 | 7 | Listed quantities | – |
 | 8 | Admin bulk resolution | 2 |
 | 9 | CLI | 3–7 |
-| 10 | Only if phase 0 is positive: paste for blueprints and My Orders | 5, 7 |
+| 10 | Cancelled. Phase 0 was negative: no blueprint paste and no My Orders paste. | – |
 
 ---
 
@@ -433,10 +441,10 @@ New group `eve-trader production manual …`. Every command takes
 | 2 | Jobs can be entered as runs or units; stored and calculated as units; count in `_current_stock`, not in `_stock_on_hand` |
 | 3 | SQLite migration and its tests follow the new `manual_stock` key |
 | 4 | Targeted cache invalidation: only manual blueprints clear the discover and ship-margin caches |
-| 5 | Blueprint paste only if the format can be verified, otherwise form only |
+| 5 | Blueprint paste is dropped. The form is the only input. Phase 0 found no reliable ME/TE/Runs clipboard format. |
 | 6 | Real EVE `location_id`s only (NPC station or structure ID), no invented locations; global structure cache; operator fallback behind a Default Tenant switch; synchronous; `force` refreshes globally |
 | 6b | Admin bulk resolution: the click is the consent; candidates from the admin tenant's own data only; new or all selectable; background job |
-| 7 | `manual_listed_stock` for home/Jita with "as of"; My Orders paste only if verifiable |
+| 7 | `manual_listed_stock` for home/Jita with "as of". My Orders paste is dropped. Phase 0 found no reliable clipboard format. |
 | 8 | Manual location names per tenant, not global |
 | 9 | Separate "Manual stock" table on Stock Targets; target column shows the total |
 | 10 | Blueprint lines in the inventory paste are skipped and flagged |
