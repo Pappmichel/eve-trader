@@ -213,6 +213,16 @@ export interface TradingKpis {
 }
 
 // ------------------------------------------------------------ production
+// LocationPicker (docs/MANUAL_TRACKING_PLAN.md phase 2) - a search hit from
+// GET /production/locations/search, same three kinds storage.search_locations
+// combines (the global structure cache is deliberately not searchable, see
+// that function's own docstring).
+export interface LocationSearchRow {
+  location_id: number
+  name: string
+  kind: 'station' | 'structure' | 'manual'
+}
+
 export interface StockTarget {
   type_id: number
   type_name: string

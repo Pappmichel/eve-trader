@@ -263,6 +263,18 @@ export const productionApi = {
       '/api/production/logistics/resolve-structure-name', { location_id: locationId, force },
     ),
 
+  // LocationPicker (docs/MANUAL_TRACKING_PLAN.md phase 2) - type-ahead
+  // across NPC stations, this tenant's own resolved structures and its own
+  // manual names.
+  searchLocations: (query: string) =>
+    get<T.LocationSearchRow[]>(`/api/production/locations/search?q=${encodeURIComponent(query)}`),
+  setManualLocationName: (locationId: number, name: string) =>
+    post<{ location_id: number; name: string }>(
+      '/api/production/locations/manual-names', { location_id: locationId, name },
+    ),
+  removeManualLocationName: (locationId: number) =>
+    del(`/api/production/locations/manual-names/${locationId}`),
+
   // No previewSde() here, deliberately - moved to adminApi below (GitHub
   // issue #34): the SDE cache is global/shared, not per-tenant, so
   // triggering a refresh is a cross-tenant-impacting action.
@@ -493,6 +505,13 @@ export const adminApi = {
   // as everything else here.
   backups: () => get<T.BackupInfo[]>('/api/admin/backups'),
   createBackup: () => post<T.BackupInfo>('/api/admin/backups'),
+  // docs/MANUAL_TRACKING_PLAN.md phase 2, question 1 - Default-Tenant-only
+  // operator switch (bulk admin resolution and its own UI section are
+  // phase 8, not part of this).
+  structureResolutionFallback: () =>
+    get<{ global_structure_resolution_fallback: boolean }>('/api/admin/structures/fallback'),
+  setStructureResolutionFallback: (enabled: boolean) =>
+    put<{ global_structure_resolution_fallback: boolean }>('/api/admin/structures/fallback', { enabled }),
 }
 
 // -------------------------------------------------------------- characters

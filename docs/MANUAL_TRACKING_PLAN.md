@@ -1,6 +1,7 @@
 # Manual tracking for Production – implementation plan
 
-Status: phase 0 done (both checks negative) · 2026-09-24
+Status: phase 0 and phase 2 done · 2026-09-24 (phase 1 landed separately, see
+PR #196)
 
 Goal: make the Production tool fully usable without an ESI login. Manual data
 (stock, blueprints, running jobs, listed quantities, locations) takes effect
@@ -180,6 +181,9 @@ Done in phase 1.
   `load_manual_listed_stock() -> {(type_id, market): (qty, updated_at)}`
 
 ### 3.5 Locations
+
+Done in phase 2.
+
 - `manual_location_names`: CRUD
 - `get_global_structure_names(ids)` and `upsert_global_structure_name(location_id, name, system_id)`
   (unscoped)
@@ -266,6 +270,10 @@ noticeable, preload manual stock once per call.
 - `do_set_manual_listed_stock(type_id, market, quantity)`, `do_clear_manual_listed_stock(type_id, market)`
 
 ### Locations
+
+Done in phase 2 (the admin job's own use of `resolve_structure_ids` is still
+phase 8).
+
 - `do_search_locations(query)`
 - `do_set_manual_location_name(location_id, name)`, `do_remove_manual_location_name(location_id)`
 - `do_resolve_structure_name()` – new chain:
@@ -310,14 +318,17 @@ noticeable, preload manual stock once per call.
   `job_name` + `tool`.
 - Endpoints: `POST /api/admin/structures/resolve` (`{force}`) and
   `GET /api/admin/structures/resolve/status`.
-- **"Operator fallback for structure names" switch** (question 1): a Default
+- **"Operator fallback for structure names" switch** (question 1, done in
+  phase 2 - everything else on this page is still phase 8): a Default
   Tenant settings field, e.g.
-  `ProductionConfig.global_structure_resolution_fallback: bool = False`, shown
-  and set only in the Admin tool. It is read inside
-  `enter_tenant(DEFAULT_TENANT_ID)`, so it always holds the Default Tenant's
-  value. Other tenants can neither see nor set it. The bulk resolution via the
-  admin click does not depend on this switch.
-  Endpoints: `GET/PUT /api/admin/structures/fallback`.
+  `ProductionConfig.global_structure_resolution_fallback: bool = False`,
+  read/written via `admin.do_get/set_structure_resolution_fallback`, read
+  inside `enter_tenant(DEFAULT_TENANT_ID)`, so it always holds the Default
+  Tenant's value. Other tenants can neither see nor set it. The bulk
+  resolution via the admin click does not depend on this switch, and its own
+  UI section (with the fallback switch's own toggle/warning text) is bundled
+  into phase 8, not built yet.
+  Endpoints: `GET/PUT /api/admin/structures/fallback` (done).
 
 ---
 
@@ -336,8 +347,8 @@ noticeable, preload manual stock once per call.
 | POST | `/manual-jobs` · PATCH/DELETE `/manual-jobs/{id}` | job CRUD |
 | POST | `/manual-jobs/{id}/complete` | `do_complete_manual_industry_job` |
 | GET/POST | `/manual-listed-stock` · DELETE `/manual-listed-stock/{type_id}/{market}` | listed quantities |
-| GET | `/locations/search?q=` | `do_search_locations` |
-| POST/DELETE | `/locations/manual-names[/{location_id}]` | manual names |
+| GET | `/locations/search?q=` | `do_search_locations` (done, phase 2) |
+| POST `/locations/manual-names` · DELETE `/locations/manual-names/{location_id}` | manual names (done, phase 2) |
 
 Size limit on the paste text in the request model (e.g. 500 KB or 10,000
 lines), so a huge paste can't block the server.
@@ -365,8 +376,8 @@ New group `eve-trader production manual …`. Every command takes
 
 | File | Change |
 |---|---|
-| `api/client.ts`, `api/types.ts` | new endpoints and types; `source`/`manual_id` on blueprint and job rows |
-| **new** `components/LocationPicker.tsx` | search across NPC stations, own structures and own manual names; direct entry of a structure ID with "Resolve" (if it stays unresolved: "Give it your own name"); a "No location" option |
+| `api/client.ts`, `api/types.ts` | new endpoints and types; `source`/`manual_id` on blueprint and job rows (locations endpoints/types done, phase 2 - the blueprint/job `source`/`manual_id` fields are still phase 5/6) |
+| **new** `components/LocationPicker.tsx` (done, phase 2) | search across NPC stations, own structures and own manual names; direct entry of a structure ID with "Resolve" (if it stays unresolved: "Give it your own name"); a "No location" option. Not yet wired into any page - that happens alongside each page's own phase below. |
 | `pages/production/StockTargets.tsx` | new **"Manual stock"** section: table (item, location, quantity, edit/delete), add form and paste panel (location, text area, replace/merge mode, preview as a diff marking skipped blueprints and "Did you mean…?", apply); the existing column shows the total and is only directly editable with at most one entry; new "Listed Home/Jita (manual)" columns with "as of"; **corrected delete-dialog text** (decision 20) |
 | `pages/production/Blueprints.tsx` | new **"Manual blueprints"** section (form with the hint texts from decision 14); source badge in the owned table; edit/delete only for manual rows |
 | `pages/production/Jobs.tsx` | form (item, runs/units toggle, quantity, location, ready at); source badge; "done" marker; "Complete" button with a confirmable target location; row keys from `source:id` |
@@ -430,7 +441,7 @@ New group `eve-trader production manual …`. Every command takes
 | # | Scope | Depends on |
 |---|---|---|
 | 1 | Done. Groundwork: parser move, batch name resolution, fix 19, delete-dialog text | – |
-| 2 | Locations: `manual_location_names`, `global_structure_names`, lookup chain, shared resolution function, `search_locations`, LocationPicker, fallback switch | – |
+| 2 | Done. Locations: `manual_location_names`, `global_structure_names`, lookup chain, shared resolution function, `search_locations`, LocationPicker, fallback switch | – |
 | 3 | `manual_stock` with locations: schema migration, storage, engine (`_stock_at_location`), SQLite migration, "Manual stock" UI table | 2 |
 | 4 | Asset paste: preview/commit, paste panel | 1, 3 |
 | 5 | Manual blueprints | 2 |

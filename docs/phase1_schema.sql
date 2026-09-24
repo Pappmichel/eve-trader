@@ -335,6 +335,24 @@ CREATE POLICY tenant_isolation ON structure_names
     USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 
+-- docs/MANUAL_TRACKING_PLAN.md phase 2 (decision 8): manual location names
+-- are per-tenant, not global - unlike global_structure_names
+-- (docs/admin_schema.sql), a name given here is only ever this tenant's own
+-- opinion of what to call a location, never shared or copied into the
+-- global cache.
+CREATE TABLE IF NOT EXISTS manual_location_names (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    location_id BIGINT NOT NULL,
+    name TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, location_id)
+);
+ALTER TABLE manual_location_names ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON manual_location_names;
+CREATE POLICY tenant_isolation ON manual_location_names
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON manual_location_names TO eve_trader_app;
+
 CREATE TABLE IF NOT EXISTS category_location_options (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
     category TEXT NOT NULL,

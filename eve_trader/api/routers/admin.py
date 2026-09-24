@@ -119,3 +119,19 @@ def list_backups():
 @router.post("/backups")
 def create_backup():
     return _wrap(admin.do_create_backup)
+
+
+# docs/MANUAL_TRACKING_PLAN.md phase 2, question 1 - Default-Tenant-only
+# operator switch, Admin-tool-gated same as everything else in this router.
+@router.get("/structures/fallback")
+def get_structure_resolution_fallback():
+    return _wrap(admin.do_get_structure_resolution_fallback)
+
+
+class SetStructureResolutionFallbackRequest(BaseModel):
+    enabled: bool
+
+
+@router.put("/structures/fallback")
+def set_structure_resolution_fallback(req: SetStructureResolutionFallbackRequest):
+    return _wrap(admin.do_set_structure_resolution_fallback, enabled=req.enabled)

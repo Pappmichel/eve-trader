@@ -406,6 +406,28 @@ def resolve_structure_name(req: ResolveStructureNameRequest):
     return _wrap(actions.do_resolve_structure_name, location_id=req.location_id, force=req.force)
 
 
+@router.get("/locations/search")
+def search_locations(q: str = ""):
+    # Storage-only type-ahead - no live ESI/Goonmetrics. See
+    # storage.search_locations for the three sources it combines.
+    return _wrap(actions.do_search_locations, query=q)["rows"]
+
+
+class SetManualLocationNameRequest(BaseModel):
+    location_id: int
+    name: str
+
+
+@router.post("/locations/manual-names")
+def set_manual_location_name(req: SetManualLocationNameRequest):
+    return _wrap(actions.do_set_manual_location_name, location_id=req.location_id, name=req.name)
+
+
+@router.delete("/locations/manual-names/{location_id}")
+def remove_manual_location_name(location_id: int):
+    return _wrap(actions.do_remove_manual_location_name, location_id=location_id)
+
+
 # ------------------------------------------------------------------ actions
 # POST /sde/refresh moved to /api/admin/sde/refresh (GitHub issue #34) - the
 # SDE cache is global/shared, not per-tenant, so triggering a refresh is a

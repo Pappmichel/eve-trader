@@ -245,3 +245,29 @@ def test_create_backup_action_error_maps_to_400(monkeypatch):
 
     assert resp.status_code == 400
     assert resp.json()["detail"] == "Backup failed."
+
+
+# docs/MANUAL_TRACKING_PLAN.md phase 2, question 1
+def test_get_structure_resolution_fallback(monkeypatch):
+    monkeypatch.setattr(admin, "do_get_structure_resolution_fallback",
+                         lambda: {"global_structure_resolution_fallback": True})
+
+    resp = client.get("/api/admin/structures/fallback")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"global_structure_resolution_fallback": True}
+
+
+def test_set_structure_resolution_fallback_passes_body(monkeypatch):
+    captured = {}
+
+    def _set(enabled):
+        captured["enabled"] = enabled
+        return {"global_structure_resolution_fallback": enabled}
+    monkeypatch.setattr(admin, "do_set_structure_resolution_fallback", _set)
+
+    resp = client.put("/api/admin/structures/fallback", json={"enabled": True})
+
+    assert resp.status_code == 200
+    assert captured == {"enabled": True}
+    assert resp.json() == {"global_structure_resolution_fallback": True}

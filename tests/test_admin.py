@@ -254,3 +254,32 @@ def test_do_refresh_jita_price_cache_wraps_network_error(monkeypatch):
     monkeypatch.setattr(jita_price_cache, "refresh_jita_price_cache", _raise)
     with pytest.raises(ActionError, match="Could not refresh Jita price cache"):
         admin.do_refresh_jita_price_cache()
+
+
+# docs/MANUAL_TRACKING_PLAN.md phase 2, question 1 - Default-Tenant-only
+# operator switch.
+def test_do_get_structure_resolution_fallback_defaults_to_false():
+    with storage.tenant_context(storage.DEFAULT_TENANT_ID), storage.connect() as conn:
+        conn.execute("DELETE FROM tenant_settings WHERE scope = 'production'")
+
+    assert admin.do_get_structure_resolution_fallback() == {"global_structure_resolution_fallback": False}
+
+
+def test_do_set_structure_resolution_fallback_persists_and_reads_back():
+    admin.do_set_structure_resolution_fallback(True)
+    try:
+        assert admin.do_get_structure_resolution_fallback() == {"global_structure_resolution_fallback": True}
+        with storage.tenant_context(storage.DEFAULT_TENANT_ID):
+            assert storage.load_tenant_settings("production") == {"global_structure_resolution_fallback": True}
+    finally:
+        admin.do_set_structure_resolution_fallback(False)  # don't leak into other tests
+
+
+def test_do_set_structure_resolution_fallback_is_scoped_to_default_tenant_only():
+    other_tenant = storage.create_tenant("Some Other Tenant")
+    admin.do_set_structure_resolution_fallback(True)
+    try:
+        with storage.tenant_context(other_tenant):
+            assert storage.load_tenant_settings("production").get("global_structure_resolution_fallback") is None
+    finally:
+        admin.do_set_structure_resolution_fallback(False)

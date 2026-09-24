@@ -300,7 +300,14 @@ operator, filesystem/SSH only — not a request parameter).
 
 `tool_grants` (`character_id, tool_key, tenant_id`) is deliberately **not
 RLS-scoped**, same reasoning as `tenants`/`tenant_registry_entries`
-(`docs/phase3_schema.sql`) - queried via `storage.connect_unscoped()`. The
+(`docs/phase3_schema.sql`) - queried via `storage.connect_unscoped()`.
+`global_structure_names` (`docs/admin_schema.sql`, Manual tracking plan
+phase 2) is the same kind of exception for a different reason: every
+tenant's successful structure-name resolution is deliberately shared
+across tenants (a structure's real-world name isn't tenant-private data,
+decision Q2 in `docs/MANUAL_TRACKING_PLAN.md`), so it has no `tenant_id` at
+all - `storage.get/upsert_global_structure_name`, both `connect_unscoped()`.
+The
 Admin tool (`eve_trader/admin.py`'s `do_*` functions, `api/routers/
 admin.py`, tool_key `"admin"`) is a deliberate **cross-tenant superadmin**
 surface, not a per-tenant self-service page. `"admin"` is a normal grant

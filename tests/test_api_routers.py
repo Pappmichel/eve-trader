@@ -1268,6 +1268,59 @@ def test_auth_callback_network_failure_redirects_with_error_instead_of_500(monke
     assert "auth=error" in resp.headers["location"]
 
 
+# --------------------------------------------------- locations (phase 2)
+def test_search_locations_passes_query_and_serializes_rows(monkeypatch):
+    captured = {}
+
+    def _search(query):
+        captured["query"] = query
+        return {"rows": [{"location_id": 60000000001, "name": "C-J Keepstar", "kind": "structure"}]}
+    monkeypatch.setattr(production_actions, "do_search_locations", _search)
+
+    resp = client.get("/api/production/locations/search?q=Keepstar")
+
+    assert resp.status_code == 200
+    assert captured == {"query": "Keepstar"}
+    assert resp.json() == [{"location_id": 60000000001, "name": "C-J Keepstar", "kind": "structure"}]
+
+
+def test_set_manual_location_name_passes_body(monkeypatch):
+    captured = {}
+
+    def _set(location_id, name):
+        captured.update(location_id=location_id, name=name)
+        return {"location_id": location_id, "name": name}
+    monkeypatch.setattr(production_actions, "do_set_manual_location_name", _set)
+
+    resp = client.post("/api/production/locations/manual-names", json={"location_id": 1000000000001, "name": "My POS"})
+
+    assert resp.status_code == 200
+    assert captured == {"location_id": 1000000000001, "name": "My POS"}
+    assert resp.json() == {"location_id": 1000000000001, "name": "My POS"}
+
+
+def test_set_manual_location_name_action_error_maps_to_400(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise ActionError("Name must not be empty.")
+    monkeypatch.setattr(production_actions, "do_set_manual_location_name", _raise)
+
+    resp = client.post("/api/production/locations/manual-names", json={"location_id": 1000000000001, "name": ""})
+
+    assert resp.status_code == 400
+    assert resp.json() == {"detail": "Name must not be empty."}
+
+
+def test_remove_manual_location_name_passes_path_param(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(production_actions, "do_remove_manual_location_name",
+                         lambda location_id: captured.update(location_id=location_id) or {"location_id": location_id})
+
+    resp = client.delete("/api/production/locations/manual-names/1000000000001")
+
+    assert resp.status_code == 200
+    assert captured == {"location_id": 1000000000001}
+
+
 # ---------------------------------------------------------------- sorting
 def test_get_sorting_list_serializes_action_result(monkeypatch):
     monkeypatch.setattr(sorting_actions, "do_sorting_list", lambda: {"rows": [

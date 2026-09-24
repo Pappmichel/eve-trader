@@ -42,6 +42,7 @@ _SIMPLE_UPDATE_TABLES = [
     ("selected_decryptors", ("type_id", "decryptor"), (34, "Accelerant"), (34, "Attenuation"), "decryptor"),
     ("job_category_locations", ("category", "location_id"), ("Reactions", 1000000000001), ("Reactions", 1000000000002), "location_id"),
     ("structure_names", ("location_id", "name"), (1000000000001, "Structure A"), (1000000000001, "Structure B"), "name"),
+    ("manual_location_names", ("location_id", "name"), (1000000000001, "My Name A"), (1000000000001, "My Name B"), "name"),
     ("esi_sync_state", ("scope", "synced_at"), ("trading", "2026-08-17T00:00:00"), ("trading", "2026-08-17T01:00:00"), "synced_at"),
     ("candidate_search_cursor", ("id", "offset_value"), (1, 10), (1, 20), "offset_value"),
 ]

@@ -55,3 +55,22 @@ ALTER TABLE tenant_registry_entries
 -- DB-level backstop for that invariant, not just the UI/action-layer logic.
 ALTER TABLE tenant_registry_entries DROP CONSTRAINT IF EXISTS tenant_registry_entries_tenant_id_unique;
 ALTER TABLE tenant_registry_entries ADD CONSTRAINT tenant_registry_entries_tenant_id_unique UNIQUE (tenant_id);
+
+-- ============================================================== shared table
+-- docs/MANUAL_TRACKING_PLAN.md phase 2 (decision Q2): every tenant's
+-- successful structure-name resolution (do_resolve_structure_name, the ESI
+-- sync's own _discover_structure_names) is written here too, so any other
+-- tenant asking about the same structure_id never needs its own producer
+-- character to see it - a structure's real name isn't tenant-private data,
+-- same reasoning as tool_grants above. Unscoped - no tenant_id, no RLS -
+-- accessed only through storage.connect_unscoped() (CLAUDE.md's
+-- connect_unscoped exception list). Only successful resolutions are ever
+-- stored here (see the column comment); a resolution failure stays purely
+-- in the asking tenant's own (RLS-scoped) structure_names cache.
+CREATE TABLE IF NOT EXISTS global_structure_names (
+    location_id BIGINT PRIMARY KEY,
+    name TEXT NOT NULL,                 -- successful resolutions only
+    solar_system_id INTEGER,
+    resolved_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+GRANT SELECT, INSERT, UPDATE, DELETE ON global_structure_names TO eve_trader_app;

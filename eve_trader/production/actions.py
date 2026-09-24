@@ -12,7 +12,7 @@ from typing import Optional
 
 import requests
 
-from .. import storage
+from .. import storage, tenant_scope
 from ..actions import ActionError
 from ..auth import InvalidRoleKey, TokenManager, validate_role_key_for_tool
 from ..config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
@@ -327,81 +327,114 @@ def do_remove_category_location_option(category: str, location_id: int) -> dict:
 
 def do_resolve_structure_name(location_id: int, force: bool = False) -> dict:
     """Resolves `location_id` to its structure name (and solar_system_id,
-    GitHub issue #12 - see storage.load_category_system_ids) via ESI, cached
-    indefinitely (storage.get/set_cached_structure_name) unless `force`.
+    GitHub issue #12 - see storage.load_category_system_ids), cached
+    indefinitely unless `force`. Four-tier lookup chain (docs/
+    MANUAL_TRACKING_PLAN.md phase 2 - tiers 3/4 replace the old
+    two-path-inline ESI logic with esi_sync.resolve_structure_ids, shared
+    with _discover_structure_names):
 
-    Tries two paths, in order:
-    1. Each registered character's corp's structure list
-       (ESIClient.corporation_structures - esi-corporations.read_structures.v1
-       + Station_Manager role) - covers every structure that corp owns, with
-       no dependency on any one character having personally docked there.
-       Each distinct corporation is only queried once.
-    2. Per-character docking history (ESIClient.get_structure_name -
-       esi-universe.read_structures.v1) - tries every registered producer
-       character in turn until one can actually "see" the structure (needs
-       docking rights/to have visited it - a random character's token isn't
-       guaranteed access to every structure, same fallback esi_sync.py uses
-       for corp-level calls). Only reached if path 1 didn't resolve it (e.g.
-       the structure belongs to a different corp than any registered
-       character's, or no registered character holds Station_Manager).
+    1. This tenant's own cache (storage.get_cached_structure_name).
+    2. The global cache (storage.get_global_structure_names) - any tenant's
+       earlier successful resolution of the same structure_id. A hit is
+       copied into this tenant's own cache so future lookups stay purely
+       local; no ESI call needed.
+    3. This tenant's own "structure_name_resolution" Access-capability
+       characters (docs/ESI_ACCESS_PLAN.md Known gap 4, closed - not
+       producer sharing, Group 3 has no tool dimension per decision 9),
+       tried corp-structure-list first, then per-character docking history
+       (see esi_sync.resolve_structure_ids' own docstring for why, in that
+       order).
+    4. The operator fallback - only when PRODUCTION_CONFIG.
+       global_structure_resolution_fallback is on (Default Tenant only, see
+       admin.do_set_structure_resolution_fallback): retries tier 3's same
+       two-path logic with the Default Tenant's own structure_name_
+       resolution characters, inside tenant_scope.enter_tenant(storage.
+       DEFAULT_TENANT_ID). The token itself never leaves the server - only
+       {name, solar_system_id} crosses back out into this tenant's result.
 
     A character added before esi-universe.read_structures.v1/
-    esi-corporations.read_structures.v1 existed needs to be re-added (remove +
-    add again) before either path works for it.
+    esi-corporations.read_structures.v1 existed needs to be re-added (remove
+    + add again) before tier 3/4 work for it.
 
-    Characters come from the "structure_name_resolution" Access capability
-    (docs/ESI_ACCESS_PLAN.md Known gap 4, closed), not producer sharing -
-    Group 3 has no tool dimension (decision 9): a character can resolve
-    structure names for Production without sharing Assets/Market Orders
-    with it, and vice versa."""
+    Every successful resolution (from tier 3 or 4) is written to both this
+    tenant's own cache and the global cache - including a regular tenant
+    resolving with its own characters (decision Q2: every successful
+    resolution becomes globally visible, not just the operator fallback's
+    own). `force=True` skips tiers 1-2 (always re-resolves via ESI) but
+    still updates both caches on success, per decision 6d."""
     if not force:
         was_cached, cached_name = storage.get_cached_structure_name(location_id)
         if was_cached:
             return {"location_id": location_id, "name": cached_name, "cached": True}
 
+        global_hit = storage.get_global_structure_names([location_id]).get(location_id)
+        if global_hit is not None:
+            name, solar_system_id = global_hit
+            storage.set_cached_structure_name(location_id, name, solar_system_id)
+            return {"location_id": location_id, "name": name, "cached": True}
+
     characters = esi_sync.list_capability_characters("structure_name_resolution")
-    if not characters:
+    fallback_enabled = PRODUCTION_CONFIG.global_structure_resolution_fallback
+    if not characters and not fallback_enabled:
         raise ActionError(
             "No character has ticked Structure name resolution yet (Characters page, Access section)."
         )
 
-    client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))
     name = None
     solar_system_id = None
 
-    tried_corporations: set[int] = set()
-    for role, character_id, character_name in characters:
-        try:
-            corporation_id = client.character_public_info(character_id)["corporation_id"]
-        except ESIError:
-            continue
-        if corporation_id in tried_corporations:
-            continue
-        tried_corporations.add(corporation_id)
-        try:
-            structures = client.corporation_structures(corporation_id, auth_role=role)
-        except ESIError:
-            continue  # this character lacks Station_Manager (or the scope) - try the next one
-        for structure in structures:
-            if structure.get("structure_id") == location_id:
-                name = structure.get("name")
-                solar_system_id = structure.get("solar_system_id")
-                break
-        if name:
-            break
+    if characters:
+        client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))
+        corp_roles = esi_sync.corp_roles_for_characters(client, characters)
+        resolved = esi_sync.resolve_structure_ids(client, {location_id}, corp_roles, lambda: characters)
+        if location_id in resolved:
+            name, solar_system_id = resolved[location_id]
 
-    if name is None:
-        for role, character_id, character_name in characters:
-            try:
-                info = client.get_structure_name(location_id, auth_role=role)
-                name = info.get("name")
-                solar_system_id = info.get("solar_system_id")
-                break
-            except ESIError:
-                continue  # this character can't see it - try the next one
+    if name is None and fallback_enabled:
+        with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
+            fallback_characters = esi_sync.list_capability_characters("structure_name_resolution")
+            if fallback_characters:
+                fallback_client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))
+                fallback_corp_roles = esi_sync.corp_roles_for_characters(fallback_client, fallback_characters)
+                fallback_resolved = esi_sync.resolve_structure_ids(
+                    fallback_client, {location_id}, fallback_corp_roles, lambda: fallback_characters,
+                )
+                if location_id in fallback_resolved:
+                    name, solar_system_id = fallback_resolved[location_id]
 
     storage.set_cached_structure_name(location_id, name, solar_system_id)
+    if name is not None:
+        storage.upsert_global_structure_name(location_id, name, solar_system_id)
     return {"location_id": location_id, "name": name, "cached": False}
+
+
+def do_search_locations(query: str) -> dict:
+    """Type-ahead for the LocationPicker (docs/MANUAL_TRACKING_PLAN.md
+    phase 2) - NPC stations, this tenant's own resolved structures and its
+    own manual names. See storage.search_locations for why the global
+    structure cache is deliberately not searchable here."""
+    return {"rows": [
+        {"location_id": location_id, "name": name, "kind": kind}
+        for location_id, name, kind in storage.search_locations(query)
+    ]}
+
+
+def do_set_manual_location_name(location_id: int, name: str) -> dict:
+    """Gives `location_id` a tenant-own display name (docs/
+    MANUAL_TRACKING_PLAN.md phase 2, decision 8) - the lowest-priority tier
+    in storage.get_location_names' lookup chain, for a structure/station
+    this tenant can't resolve via ESI (or doesn't want to). Never written to
+    the global cache - purely this tenant's own opinion."""
+    name = name.strip()
+    if not name:
+        raise ActionError("Name must not be empty.")
+    storage.set_manual_location_name(location_id, name)
+    return {"location_id": location_id, "name": name}
+
+
+def do_remove_manual_location_name(location_id: int) -> dict:
+    storage.remove_manual_location_name(location_id)
+    return {"location_id": location_id}
 
 
 def do_estimate_invention(product_name: str, decryptor_name: str | None = None,

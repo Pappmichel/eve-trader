@@ -1550,12 +1550,17 @@ def get_cached_structure_names(location_ids: list[int]) -> dict[int, tuple[bool,
 
 
 def get_location_names(location_ids: Iterable[int]) -> dict[int, Optional[str]]:
-    """Batched location_id -> display name, structure_names (player
-    structures) first, then sde_stations.station_name (NPC stations) - same
-    two-tier fallback search_item_stock_locations already does inline per
-    row, just batched here for a whole set of ids in one call (backs GET
-    /trading/wallet-transactions, which resolves every distinct location_id
-    across a character's transaction page in one shot rather than N+1)."""
+    """Batched location_id -> display name, four-tier fallback (docs/
+    MANUAL_TRACKING_PLAN.md phase 2 extended this from the original two
+    tiers): structure_names (this tenant's own ESI-resolved player
+    structures) -> global_structure_names (any tenant's successful
+    resolution, unscoped) -> manual_location_names (this tenant's own
+    manual name) -> sde_stations.station_name (NPC stations). Same
+    fallback order search_item_stock_locations already does inline per row
+    for its first two tiers, just batched here for a whole set of ids in
+    one call (backs GET /trading/wallet-transactions, which resolves every
+    distinct location_id across a character's transaction page in one shot
+    rather than N+1)."""
     location_ids = list(location_ids)
     if not location_ids:
         return {}
@@ -1565,17 +1570,148 @@ def get_location_names(location_ids: Iterable[int]) -> dict[int, Optional[str]]:
             f"SELECT location_id, name FROM structure_names WHERE location_id IN ({placeholders})",
             location_ids,
         ).fetchall()
-        resolved = dict(structure_rows)
+    resolved: dict[int, Optional[str]] = dict(structure_rows)
+    missing = [loc_id for loc_id in location_ids if resolved.get(loc_id) is None]
+
+    if missing:
+        for loc_id, (name, _system_id) in get_global_structure_names(missing).items():
+            resolved[loc_id] = name
         missing = [loc_id for loc_id in location_ids if resolved.get(loc_id) is None]
-        if missing:
-            missing_placeholders = ",".join("?" * len(missing))
+
+    if missing:
+        missing_placeholders = ",".join("?" * len(missing))
+        with connect() as conn:
+            manual_rows = conn.execute(
+                f"SELECT location_id, name FROM manual_location_names WHERE location_id IN ({missing_placeholders})",
+                missing,
+            ).fetchall()
+        for loc_id, name in manual_rows:
+            resolved[loc_id] = name
+        missing = [loc_id for loc_id in location_ids if resolved.get(loc_id) is None]
+
+    if missing:
+        missing_placeholders = ",".join("?" * len(missing))
+        with connect() as conn:
             station_rows = conn.execute(
                 f"SELECT station_id, station_name FROM sde_stations WHERE station_id IN ({missing_placeholders})",
                 missing,
             ).fetchall()
-            for station_id, station_name in station_rows:
-                resolved[station_id] = station_name
+        for station_id, station_name in station_rows:
+            resolved[station_id] = station_name
+
     return {loc_id: resolved.get(loc_id) for loc_id in location_ids}
+
+
+# ------------------------------------------------------------- global structure cache
+def get_global_structure_names(location_ids: list[int]) -> dict[int, tuple[str, Optional[int]]]:
+    """Every tenant's successful structure-name resolution (docs/
+    MANUAL_TRACKING_PLAN.md phase 2, `global_structure_names`) - unscoped,
+    same reasoning as tool_grants (see docs/admin_schema.sql's own comment
+    on that table): every successful resolution by any tenant is
+    deliberately shared across tenants, since a structure's real-world name
+    isn't tenant-private data (decision Q2). Only successful resolutions
+    are ever stored here - a location_id absent from the result was either
+    never resolved anywhere, or only resolved as a failure (which is never
+    written to this table at all, unlike this tenant's own structure_names
+    cache)."""
+    if not location_ids:
+        return {}
+    placeholders = ",".join("?" * len(location_ids))
+    with connect_unscoped() as conn:
+        rows = conn.execute(
+            f"SELECT location_id, name, solar_system_id FROM global_structure_names "
+            f"WHERE location_id IN ({placeholders})",
+            location_ids,
+        ).fetchall()
+    return {location_id: (name, solar_system_id) for location_id, name, solar_system_id in rows}
+
+
+def upsert_global_structure_name(location_id: int, name: str, solar_system_id: Optional[int] = None) -> None:
+    """Writes a successful resolution into the global cache - called from
+    every path that successfully resolves a structure name
+    (production.actions.do_resolve_structure_name, production.esi_sync.
+    _discover_structure_names), including a regular tenant resolving with
+    its own characters (decision Q2: every successful resolution becomes
+    globally visible, not just the operator-fallback tier's own
+    resolutions). `name` is expected non-None - callers only call this on a
+    successful resolution, matching the table's own `name TEXT NOT NULL`
+    (see docs/admin_schema.sql's column comment)."""
+    with connect_unscoped() as conn:
+        conn.execute(
+            "INSERT INTO global_structure_names (location_id, name, solar_system_id) VALUES (?, ?, ?) "
+            "ON CONFLICT (location_id) DO UPDATE SET name = excluded.name, "
+            "solar_system_id = COALESCE(excluded.solar_system_id, global_structure_names.solar_system_id), "
+            "resolved_at = now()",
+            (location_id, name, solar_system_id),
+        )
+
+
+# ------------------------------------------------------------- manual location names
+def list_manual_location_names() -> list[tuple[int, str]]:
+    """Every location_id this tenant has given its own manual name (docs/
+    MANUAL_TRACKING_PLAN.md phase 2, decision 8 - per-tenant, never
+    global)."""
+    with connect() as conn:
+        return conn.execute("SELECT location_id, name FROM manual_location_names ORDER BY name").fetchall()
+
+
+def set_manual_location_name(location_id: int, name: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO manual_location_names (location_id, name) VALUES (?, ?) "
+            "ON CONFLICT(tenant_id, location_id) DO UPDATE SET name = excluded.name",
+            (location_id, name),
+        )
+
+
+def remove_manual_location_name(location_id: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM manual_location_names WHERE location_id = ?", (location_id,))
+
+
+def search_locations(query: str, limit: int = 20) -> list[tuple[int, str, str]]:
+    """The LocationPicker's own type-ahead (docs/MANUAL_TRACKING_PLAN.md
+    phase 2) - NPC stations (sde_stations, shared/no tenant_id), this
+    tenant's own resolved structures (structure_names) and this tenant's
+    own manual names (manual_location_names). The global structure cache is
+    deliberately NOT searched here - only pick-by-ID surfaces it, via
+    do_resolve_structure_name's own lookup chain, so a structure another
+    tenant resolved can't be *browsed* by name, only reached if you already
+    know its numeric ID.
+
+    Returns (location_id, name, kind) tuples, kind in
+    {"station", "structure", "manual"}, name-ordered (an exact
+    case-insensitive match sorts first, same precedent as
+    search_sde_types), deduplicated by location_id - a structure resolved
+    via ESI and also given a manual name keeps only its ESI-resolved
+    row (same precedence as get_location_names)."""
+    query = query.strip()
+    if not query:
+        return []
+    like = f"%{query}%"
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT location_id, name, kind FROM ("
+            "  SELECT location_id, name, 'structure' AS kind, 1 AS pref FROM structure_names "
+            "  WHERE name IS NOT NULL AND name LIKE ? "
+            "  UNION ALL "
+            "  SELECT station_id, station_name, 'station', 2 FROM sde_stations "
+            "  WHERE station_name LIKE ? "
+            "  UNION ALL "
+            "  SELECT location_id, name, 'manual', 3 FROM manual_location_names "
+            "  WHERE name LIKE ? "
+            ") AS combined "
+            "ORDER BY (LOWER(name) <> LOWER(?)), pref, name LIMIT ?",
+            (like, like, like, query, limit),
+        ).fetchall()
+    seen: set[int] = set()
+    result: list[tuple[int, str, str]] = []
+    for location_id, name, kind in rows:
+        if location_id in seen:
+            continue
+        seen.add(location_id)
+        result.append((location_id, name, kind))
+    return result
 
 
 def list_cached_structure_names() -> list[tuple[int, Optional[str]]]:

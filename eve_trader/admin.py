@@ -17,10 +17,12 @@ import logging
 
 import requests
 
-from . import access_gate, backup, storage
+from . import access_gate, backup, storage, tenant_scope
 from .actions import ActionError
+from .config import ConfigError, save_tenant_config_overrides
 from .esi_client import ESIError
 from .production import jita_price_cache, sde, sde_diff
+from .production.config import PRODUCTION_CONFIG, ProductionConfig
 from .production.engine import invalidate_discover_cache, invalidate_ship_margin_cache
 from .production.sde import FetchedSde
 
@@ -184,6 +186,34 @@ def do_set_tool_grants(character_id: int, tool_keys: list[str]) -> dict:
     for tool_key in tool_keys:
         storage.set_tool_grant(character_id, tool_key, user["tenant_id"])
     return {"character_id": character_id, "tool_keys": sorted(tool_keys)}
+
+
+def do_get_structure_resolution_fallback() -> dict:
+    """The Default Tenant's own global_structure_resolution_fallback switch
+    (docs/MANUAL_TRACKING_PLAN.md phase 2, question 1) - reads under
+    tenant_scope.enter_tenant(DEFAULT_TENANT_ID) regardless of the calling
+    admin's own tenant, so this always reflects the one operator-level
+    value, never whatever tenant happens to be resolved for the request."""
+    with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
+        return {"global_structure_resolution_fallback": PRODUCTION_CONFIG.global_structure_resolution_fallback}
+
+
+def do_set_structure_resolution_fallback(enabled: bool) -> dict:
+    """Persists the switch above to the Default Tenant's own
+    tenant_settings, same save path do_update_settings uses for every other
+    Production setting (save_tenant_config_overrides), just scoped to
+    DEFAULT_TENANT_ID instead of whatever tenant is ambient for this
+    request - see do_get_structure_resolution_fallback's own docstring for
+    why."""
+    with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
+        try:
+            save_tenant_config_overrides(
+                "production", {"global_structure_resolution_fallback": enabled},
+                PRODUCTION_CONFIG, cfg_type=ProductionConfig,
+            )
+        except ConfigError as e:
+            raise ActionError(str(e)) from e
+    return {"global_structure_resolution_fallback": enabled}
 
 
 def do_bootstrap_admin(
