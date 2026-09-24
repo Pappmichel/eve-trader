@@ -427,6 +427,25 @@ CREATE POLICY tenant_isolation ON manual_industry_jobs
 GRANT SELECT, INSERT, UPDATE, DELETE ON manual_industry_jobs TO eve_trader_app;
 GRANT USAGE, SELECT ON SEQUENCE manual_industry_jobs_id_seq TO eve_trader_app;
 
+-- docs/MANUAL_TRACKING_PLAN.md phase 7 (decision 7) - manually-tracked
+-- quantities already listed for sale at home/Jita, additive alongside the
+-- ESI-derived open-sell-order volume production/engine.py's
+-- _total_missing/market_status already compute.
+CREATE TABLE IF NOT EXISTS manual_listed_stock (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    type_id INTEGER NOT NULL,
+    market TEXT NOT NULL CHECK (market IN ('home', 'jita')),
+    quantity DOUBLE PRECISION NOT NULL CHECK (quantity >= 0),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, type_id, market)
+);
+ALTER TABLE manual_listed_stock ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON manual_listed_stock;
+CREATE POLICY tenant_isolation ON manual_listed_stock
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON manual_listed_stock TO eve_trader_app;
+
 CREATE TABLE IF NOT EXISTS category_location_options (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
     category TEXT NOT NULL,

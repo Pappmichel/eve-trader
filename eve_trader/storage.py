@@ -1555,6 +1555,44 @@ def complete_manual_job(job_id: int, location_id: int) -> None:
         )
 
 
+# ------------------------------------------------------------- manual listed stock
+def upsert_manual_listed_stock(type_id: int, market: str, quantity: float) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO manual_listed_stock (type_id, market, quantity) VALUES (?, ?, ?) "
+            "ON CONFLICT(tenant_id, type_id, market) DO UPDATE SET quantity=excluded.quantity, updated_at=now()",
+            (type_id, market, quantity),
+        )
+
+
+def delete_manual_listed_stock(type_id: int, market: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM manual_listed_stock WHERE type_id = ? AND market = ?", (type_id, market))
+
+
+def load_manual_listed_stock() -> dict[tuple[int, str], tuple[float, object]]:
+    """{(type_id, market): (quantity, updated_at)} for every manually-set
+    listed quantity of this tenant - the Stock Targets page's own "Listed
+    Home/Jita (manual)" columns (docs/MANUAL_TRACKING_PLAN.md phase 7)."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, market, quantity, updated_at FROM manual_listed_stock"
+        ).fetchall()
+    return {(type_id, market): (quantity, updated_at) for type_id, market, quantity, updated_at in rows}
+
+
+def manual_listed_stock_qty(type_id: int, market: str) -> float:
+    """A single (type, market) quantity, 0 if unset - for production/
+    engine.py's _total_missing/market_status, which add this to the ESI-
+    derived open-sell-order volume (decision 7)."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT quantity FROM manual_listed_stock WHERE type_id = ? AND market = ?",
+            (type_id, market),
+        ).fetchone()
+    return row[0] if row else 0.0
+
+
 def save_latest_buy_list(rows: list[tuple[int, float]]) -> None:
     """Wholesale-replace this tenant's latest Production buy list
     (plan_production's own buy_list: type_id, quantity). DELETE+INSERT, same

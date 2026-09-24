@@ -347,6 +347,14 @@ export const productionApi = {
     }),
   removeManualStockEntry: (typeId: number, locationId: number) =>
     del(`/api/production/manual-stock/entries/${typeId}/${locationId}`),
+  // Manual listed stock (docs/MANUAL_TRACKING_PLAN.md phase 7).
+  manualListedStock: () => get<T.ManualListedStockEntry[]>('/api/production/manual-listed-stock'),
+  setManualListedStock: (typeId: number, market: 'home' | 'jita', quantity: number) =>
+    post<{ type_id: number; market: string; quantity: number }>(
+      '/api/production/manual-listed-stock', { type_id: typeId, market, quantity },
+    ),
+  clearManualListedStock: (typeId: number, market: 'home' | 'jita') =>
+    del(`/api/production/manual-listed-stock/${typeId}/${market}`),
   // Asset paste (docs/MANUAL_TRACKING_PLAN.md phase 4) - commit re-parses
   // the same text server-side, never takes preview's own rows back.
   previewAssetPaste: (text: string, locationId: number, mode: 'replace' | 'merge') =>

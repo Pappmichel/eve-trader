@@ -209,6 +209,28 @@ def complete_manual_industry_job(manual_id: int, req: CompleteManualIndustryJobR
     return _wrap(actions.do_complete_manual_industry_job, manual_id=manual_id, location_id=req.location_id)
 
 
+@router.get("/manual-listed-stock")
+def get_manual_listed_stock():
+    # Storage-only - no live ESI/Goonmetrics.
+    return _wrap(actions.do_list_manual_listed_stock)["rows"]
+
+
+class SetManualListedStockRequest(BaseModel):
+    type_id: int
+    market: str
+    quantity: float
+
+
+@router.post("/manual-listed-stock")
+def set_manual_listed_stock(req: SetManualListedStockRequest):
+    return _wrap(actions.do_set_manual_listed_stock, type_id=req.type_id, market=req.market, quantity=req.quantity)
+
+
+@router.delete("/manual-listed-stock/{type_id}/{market}")
+def clear_manual_listed_stock(type_id: int, market: str):
+    return _wrap(actions.do_clear_manual_listed_stock, type_id=type_id, market=market)
+
+
 @router.get("/slots", response_model=list[schemas.CharacterSlotRow])
 def get_character_slots():
     # Storage-only (synced industry_jobs/character_slots) - no live ESI.

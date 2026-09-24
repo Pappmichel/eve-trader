@@ -104,6 +104,14 @@ def _default_manual_incoming_qty(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _default_manual_listed_stock(monkeypatch):
+    # docs/MANUAL_TRACKING_PLAN.md phase 7: _total_missing/market_status
+    # now also add storage.manual_listed_stock_qty - same "default to
+    # none, no real DB" reasoning as the fixtures above.
+    monkeypatch.setattr(storage, "manual_listed_stock_qty", lambda type_id, market: 0.0)
+
+
+@pytest.fixture(autouse=True)
 def _reset_ship_margin_cache():
     # Same reasoning as _reset_discover_cache above, for engine._ship_margin_cache.
     engine.invalidate_ship_margin_cache()
@@ -299,6 +307,25 @@ def test_market_status_skips_items_with_no_market_target(monkeypatch):
     assert [r.type_id for r in rows] == [2, 3]
 
 
+def test_market_status_home_and_jita_listed_include_manual(monkeypatch):
+    # docs/MANUAL_TRACKING_PLAN.md phase 7, decision 7.
+    cfg = ProductionConfig(home_location_id=1000000000001)
+    monkeypatch.setattr(storage, "sell_order_qty_at_location", lambda type_id, location_id, **kwargs: 5.0)
+    monkeypatch.setattr(storage, "sell_order_qty_in_region", lambda type_id, region_id, **kwargs: 3.0)
+    monkeypatch.setattr(storage, "manual_listed_stock_qty",
+                         lambda type_id, market: {"home": 10.0, "jita": 2.0}[market])
+    monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None, **kwargs: 0.0)
+    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id, **_kwargs: {"runs": 0, "jobs": 0})
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(1, "Item", 0.0, 20.0, 20.0)])
+
+    rows = engine.market_status(cfg)
+
+    assert rows[0].home_listed == 15.0  # 5 ESI + 10 manual
+    assert rows[0].jita_listed == 5.0   # 3 ESI + 2 manual
+
+
 def test_total_missing_owned_stock_beyond_backup_covers_market_targets(monkeypatch):
     # Real bug found via a user report ("Buy List zeigt was ich insgesamt
     # brauche, nicht was ich kaufen muss") - live example: Sentinel had
@@ -361,6 +388,22 @@ def test_total_missing_zero_current_stock_matches_prior_behavior(monkeypatch):
                               current_stock=0.0, cfg=cfg)
 
     assert missing == 72.0
+
+
+def test_total_missing_nets_against_manual_listed_stock(monkeypatch):
+    # docs/MANUAL_TRACKING_PLAN.md phase 7, decision 7 - manual listed
+    # quantities net against the market targets same as ESI open-sell-order
+    # volume does.
+    cfg = ProductionConfig(home_location_id=1000000000001)
+    _no_listings(monkeypatch)
+    monkeypatch.setattr(storage, "manual_listed_stock_qty",
+                         lambda type_id, market: {"home": 10.0, "jita": 5.0}[market])
+
+    missing = _total_missing(1, backup_stock=0.0, home_market_stock=20.0, jita_market_stock=20.0,
+                              current_stock=0.0, cfg=cfg)
+
+    # home short 20-10=10, jita short 20-5=15 -> 25 total
+    assert missing == 25.0
 
 
 def test_market_listing_shortfall_excludes_backup_only_targets(monkeypatch):

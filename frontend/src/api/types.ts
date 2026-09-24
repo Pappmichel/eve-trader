@@ -225,6 +225,14 @@ export interface LocationSearchRow {
 
 // Manual stock table (docs/MANUAL_TRACKING_PLAN.md phase 3, decision 9) -
 // one row per (type_id, location_id).
+// docs/MANUAL_TRACKING_PLAN.md phase 7.
+export interface ManualListedStockEntry {
+  type_id: number
+  market: 'home' | 'jita'
+  quantity: number
+  updated_at: string
+}
+
 export interface ManualStockEntry {
   type_id: number
   type_name: string

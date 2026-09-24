@@ -13,6 +13,7 @@ vi.mock('../../api/client', () => ({
     stockTargets: vi.fn(),
     manualStock: vi.fn(),
     manualStockEntries: vi.fn(),
+    manualListedStock: vi.fn(),
     manualBuildBuy: vi.fn(),
     selectedDecryptors: vi.fn(),
     decryptors: vi.fn(),
@@ -59,6 +60,7 @@ describe('Stock Targets delete dialog', () => {
     ])
     vi.mocked(productionApi.manualStock).mockResolvedValue({ '34': 100 })
     vi.mocked(productionApi.manualStockEntries).mockResolvedValue([])
+    vi.mocked(productionApi.manualListedStock).mockResolvedValue([])
     vi.mocked(productionApi.searchLocations).mockResolvedValue([])
     vi.mocked(productionApi.manualBuildBuy).mockResolvedValue({ '34': 'Build' })
     vi.mocked(productionApi.selectedDecryptors).mockResolvedValue({})

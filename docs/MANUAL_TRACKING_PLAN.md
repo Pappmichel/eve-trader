@@ -1,6 +1,6 @@
 # Manual tracking for Production – implementation plan
 
-Status: phase 0, 2, 3, 4, 5, and 6 done · 2026-09-24 (phase 1 landed
+Status: phase 0, 2, 3, 4, 5, 6, and 7 done · 2026-09-24 (phase 1 landed
 separately, see PR #196)
 
 Goal: make the Production tool fully usable without an ESI login. Manual data
@@ -191,6 +191,9 @@ Done in phase 6.
   quantity to `manual_stock` via upsert, **in one transaction**
 
 ### 3.4 Listed quantities
+
+Done in phase 7.
+
 - `upsert_manual_listed_stock(type_id, market, qty)`, `delete_…`,
   `load_manual_listed_stock() -> {(type_id, market): (qty, updated_at)}`
 
@@ -236,7 +239,7 @@ is still phase 6.
 | `_owned_bpo_best_me_te` (1447) | done, phase 5. ME and TE each as the maximum of ESI and manual |
 | `_available_blueprint_copies` (1453) | done, phase 5. `+ storage.manual_bpc_runs(type_id, location_id)` |
 | `_has_bpo_at_location` (1459) | done, phase 5. `or storage.manual_has_bpo_at_location(...)` |
-| Home/Jita listing (1579/1587, 2625/2628) | add the manual value (home/jita) at both places (decision 7) |
+| Home/Jita listing (1579/1587, 2625/2628) | done, phase 7. add the manual value (home/jita) at both places (decision 7) |
 
 Performance: `_stock_at_location` runs per material and location in Logistics.
 The extra query costs about 3 ms. Measure with real data; only if it's
@@ -291,6 +294,9 @@ Done in phase 6.
   `ready_at` has passed, otherwise `active`. The slot overview is untouched.
 
 ### Listed
+
+Done in phase 7.
+
 - `do_set_manual_listed_stock(type_id, market, quantity)`, `do_clear_manual_listed_stock(type_id, market)`
 
 ### Locations
@@ -370,7 +376,7 @@ phase 8).
 | POST | `/manual-blueprints` · PATCH/DELETE `/manual-blueprints/{id}` | blueprint CRUD (done, phase 5) |
 | POST | `/manual-jobs` · PATCH/DELETE `/manual-jobs/{id}` | job CRUD (done, phase 6) |
 | POST | `/manual-jobs/{id}/complete` | `do_complete_manual_industry_job` (done, phase 6) |
-| GET/POST | `/manual-listed-stock` · DELETE `/manual-listed-stock/{type_id}/{market}` | listed quantities |
+| GET/POST | `/manual-listed-stock` · DELETE `/manual-listed-stock/{type_id}/{market}` | listed quantities (done, phase 7) |
 | GET | `/locations/search?q=` | `do_search_locations` (done, phase 2) |
 | POST `/locations/manual-names` · DELETE `/locations/manual-names/{location_id}` | manual names (done, phase 2) |
 
@@ -402,7 +408,7 @@ New group `eve-trader production manual …`. Every command takes
 |---|---|
 | `api/client.ts`, `api/types.ts` | new endpoints and types; `source`/`manual_id` on blueprint and job rows (locations endpoints/types done, phase 2; manual-stock-entries endpoints/types done, phase 3 - the blueprint/job `source`/`manual_id` fields are still phase 5/6) |
 | **new** `components/LocationPicker.tsx` (done, phase 2) | search across NPC stations, own structures and own manual names; direct entry of a structure ID with "Resolve" (if it stays unresolved: "Give it your own name"); a "No location" option. Wired into StockTargets.tsx's own Manual stock add form as of phase 3. |
-| `pages/production/StockTargets.tsx` | new **"Manual stock"** section (done, phase 3): table (item, location, quantity, edit/delete), add form; the existing column shows the total and is only directly editable with at most one entry (done, phase 3). Paste panel (done, phase 4): location, text area, replace/merge mode, preview as a diff marking skipped blueprints and "Did you mean…?", apply - `autosize` dropped from the paste `Textarea` (a jsdom/Mantine incompatibility broke StockTargets.ui.test.tsx, not worth chasing for a cosmetic auto-grow). Still phase 7: new "Listed Home/Jita (manual)" columns with "as of". **corrected delete-dialog text** (decision 20, done in phase 1) |
+| `pages/production/StockTargets.tsx` | new **"Manual stock"** section (done, phase 3): table (item, location, quantity, edit/delete), add form; the existing column shows the total and is only directly editable with at most one entry (done, phase 3). Paste panel (done, phase 4): location, text area, replace/merge mode, preview as a diff marking skipped blueprints and "Did you mean…?", apply - `autosize` dropped from the paste `Textarea` (a jsdom/Mantine incompatibility broke StockTargets.ui.test.tsx, not worth chasing for a cosmetic auto-grow). New "Listed Home/Jita (manual)" columns with "as of" (done, phase 7). **corrected delete-dialog text** (decision 20, done in phase 1) |
 | `pages/production/Blueprints.tsx` (done, phase 5) | new **"Manual blueprints"** section (form with the hint texts from decision 14); source badge in the owned table; edit/delete only for manual rows |
 | `pages/production/Jobs.tsx` (done, phase 6) | form (item, runs/units toggle, quantity, location, ready at); source badge; "done" marker; "Complete" button with a confirmable target location; row keys from `source:id` |
 | Logistics page | names through the extended lookup chain (global cache and manual names) |
@@ -470,7 +476,7 @@ New group `eve-trader production manual …`. Every command takes
 | 4 | Done. Asset paste: preview/commit, paste panel | 1, 3 |
 | 5 | Done. Manual blueprints | 2 |
 | 6 | Done. Manual jobs incl. Complete | 3 |
-| 7 | Listed quantities | – |
+| 7 | Done. Listed quantities | – |
 | 8 | Admin bulk resolution | 2 |
 | 9 | CLI | 3–7 |
 | 10 | Cancelled. Phase 0 was negative: no blueprint paste and no My Orders paste. | – |

@@ -6,7 +6,7 @@ import { IconCheck, IconAlertTriangle, IconTrash } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
-import type { AssetPastePreviewResult, ManualStockEntry, StockTarget } from '../../api/types'
+import type { AssetPastePreviewResult, ManualListedStockEntry, ManualStockEntry, StockTarget } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { LocationPicker } from '../../components/LocationPicker'
@@ -97,6 +97,18 @@ export default function StockTargets() {
   const { data: manualStockEntries } = useQuery({
     queryKey: ['production', 'manual-stock-entries'], queryFn: productionApi.manualStockEntries,
   })
+  const { data: manualListedStock } = useQuery({
+    queryKey: ['production', 'manual-listed-stock'], queryFn: productionApi.manualListedStock,
+  })
+  const manualListedByType = useMemo(() => {
+    const m = new Map<number, { home?: ManualListedStockEntry; jita?: ManualListedStockEntry }>()
+    for (const e of manualListedStock ?? []) {
+      const entry = m.get(e.type_id) ?? {}
+      entry[e.market] = e
+      m.set(e.type_id, entry)
+    }
+    return m
+  }, [manualListedStock])
   const entriesByType = useMemo(() => {
     const m = new Map<number, ManualStockEntry[]>()
     for (const e of manualStockEntries ?? []) {
@@ -143,6 +155,12 @@ export default function StockTargets() {
   }) => productionApi.updateStockTarget(args.typeId, { [args.field]: args.value }), STOCK_KEYS)
   const setManualStockAction = useAction('Save Current Stock', (args: { typeId: number; count: number; locationId: number }) =>
     productionApi.setManualStock(args.typeId, args.count, args.locationId), MANUAL_STOCK_KEYS)
+  const setManualListed = useAction(
+    'Save Listed Quantity',
+    (args: { typeId: number; market: 'home' | 'jita'; quantity: number }) =>
+      productionApi.setManualListedStock(args.typeId, args.market, args.quantity),
+    [['production', 'manual-listed-stock']],
+  )
   const setOverride = useAction('Save Override', (args: { typeId: number; decision: string }) =>
     productionApi.setManualBuildBuy(args.typeId, args.decision), [['production', 'manual-build-buy']])
   const clearOverride = useAction('Save Override', productionApi.clearManualBuildBuy, [['production', 'manual-build-buy']])
@@ -227,6 +245,42 @@ export default function StockTargets() {
       ),
     },
     {
+      header: 'Listed Home (manual)', id: 'listedHome', size: 170,
+      cell: (i) => {
+        const entry = manualListedByType.get(i.row.original.type_id)?.home
+        return (
+          <Tooltip label={entry ? `As of ${new Date(entry.updated_at).toLocaleString()}` : 'Not set'}>
+            <div>
+              <EditableNumberCell
+                value={entry?.quantity ?? 0}
+                ariaLabel={`Listed home quantity for ${i.row.original.type_name}`}
+                isPending={setManualListed.isPending}
+                onSave={(value) => setManualListed.mutate({ typeId: i.row.original.type_id, market: 'home', quantity: value })}
+              />
+            </div>
+          </Tooltip>
+        )
+      },
+    },
+    {
+      header: 'Listed Jita (manual)', id: 'listedJita', size: 170,
+      cell: (i) => {
+        const entry = manualListedByType.get(i.row.original.type_id)?.jita
+        return (
+          <Tooltip label={entry ? `As of ${new Date(entry.updated_at).toLocaleString()}` : 'Not set'}>
+            <div>
+              <EditableNumberCell
+                value={entry?.quantity ?? 0}
+                ariaLabel={`Listed Jita quantity for ${i.row.original.type_name}`}
+                isPending={setManualListed.isPending}
+                onSave={(value) => setManualListed.mutate({ typeId: i.row.original.type_id, market: 'jita', quantity: value })}
+              />
+            </div>
+          </Tooltip>
+        )
+      },
+    },
+    {
       header: 'Build/Buy Override', id: 'override', size: 150, accessorFn: (r) => overrides?.[r.type_id] ?? 'Auto',
     },
     {
@@ -249,7 +303,8 @@ export default function StockTargets() {
         </ActionIcon>
       ),
     },
-  ], [manualStock, entriesByType, computedStock, overrides, updateTarget, setManualStockAction, removeTarget, pendingRemoveId])
+  ], [manualStock, entriesByType, manualListedByType, computedStock, overrides, updateTarget, setManualStockAction,
+      setManualListed, removeTarget, pendingRemoveId])
 
   return (
     <Stack>

@@ -548,6 +548,52 @@ def test_complete_manual_industry_job_defaults_location_to_none(monkeypatch):
     assert captured == {"manual_id": 7, "location_id": None}
 
 
+def test_get_manual_listed_stock_serializes_rows(monkeypatch):
+    monkeypatch.setattr(production_actions, "do_list_manual_listed_stock", lambda: {"rows": [
+        {"type_id": 34, "market": "home", "quantity": 100.0, "updated_at": "2026-01-01T00:00:00+00:00"},
+    ]})
+
+    resp = client.get("/api/production/manual-listed-stock")
+
+    assert resp.status_code == 200
+    assert resp.json() == [{"type_id": 34, "market": "home", "quantity": 100.0, "updated_at": "2026-01-01T00:00:00+00:00"}]
+
+
+def test_set_manual_listed_stock_passes_body(monkeypatch):
+    captured = {}
+
+    def _set(type_id, market, quantity):
+        captured.update(type_id=type_id, market=market, quantity=quantity)
+        return {"type_id": type_id, "market": market, "quantity": quantity}
+    monkeypatch.setattr(production_actions, "do_set_manual_listed_stock", _set)
+
+    resp = client.post("/api/production/manual-listed-stock", json={"type_id": 34, "market": "home", "quantity": 100.0})
+
+    assert resp.status_code == 200
+    assert captured == {"type_id": 34, "market": "home", "quantity": 100.0}
+
+
+def test_set_manual_listed_stock_action_error_maps_to_400(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise ActionError("Market must be 'home' or 'jita'.")
+    monkeypatch.setattr(production_actions, "do_set_manual_listed_stock", _raise)
+
+    resp = client.post("/api/production/manual-listed-stock", json={"type_id": 34, "market": "bogus", "quantity": 1})
+
+    assert resp.status_code == 400
+
+
+def test_clear_manual_listed_stock_passes_path_params(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(production_actions, "do_clear_manual_listed_stock",
+                         lambda type_id, market: captured.update(type_id=type_id, market=market))
+
+    resp = client.delete("/api/production/manual-listed-stock/34/home")
+
+    assert resp.status_code == 200
+    assert captured == {"type_id": 34, "market": "home"}
+
+
 def test_get_manual_blueprint_copy_costs(monkeypatch):
     # GitHub issue #40.
     from eve_trader.production.models import ManualBlueprintCopyCostRow

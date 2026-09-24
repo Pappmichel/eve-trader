@@ -1613,13 +1613,14 @@ def _total_missing(type_id: int, backup_stock: float, home_market_stock: Optiona
         home_listed = (
             _sell_order_qty_at_location(type_id, cfg.home_location_id)
             if cfg.home_location_id is not None else 0.0
-        )
+        ) + storage.manual_listed_stock_qty(type_id, "home")  # docs/MANUAL_TRACKING_PLAN.md phase 7, decision 7
         home_short = max(0.0, home_market_stock - home_listed)
         applied = min(surplus_stock, home_short)
         missing += home_short - applied
         surplus_stock -= applied
     if jita_market_stock:
-        jita_listed = _sell_order_qty_in_region(type_id, TRADING_CONFIG.jita_region_id)
+        jita_listed = (_sell_order_qty_in_region(type_id, TRADING_CONFIG.jita_region_id)
+                       + storage.manual_listed_stock_qty(type_id, "jita"))
         jita_short = max(0.0, jita_market_stock - jita_listed)
         applied = min(surplus_stock, jita_short)
         missing += jita_short - applied
@@ -2659,8 +2660,9 @@ def market_status(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[MarketStatu
         home_listed = (
             _sell_order_qty_at_location(type_id, cfg.home_location_id)
             if cfg.home_location_id is not None else 0.0
-        )
-        jita_listed = _sell_order_qty_in_region(type_id, TRADING_CONFIG.jita_region_id)
+        ) + storage.manual_listed_stock_qty(type_id, "home")  # docs/MANUAL_TRACKING_PLAN.md phase 7, decision 7
+        jita_listed = (_sell_order_qty_in_region(type_id, TRADING_CONFIG.jita_region_id)
+                       + storage.manual_listed_stock_qty(type_id, "jita"))
         rows.append(MarketStatusRow(
             type_id=type_id, type_name=type_name,
             backup_target=backup_target, backup_current=backup_current,

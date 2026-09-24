@@ -1522,6 +1522,30 @@ def do_complete_manual_industry_job(manual_id: int, location_id: Optional[int] =
     return {"manual_id": manual_id, "location_id": effective_location_id}
 
 
+def do_list_manual_listed_stock() -> dict:
+    """{(type_id, market): (quantity, updated_at)} as a JSON-friendly list -
+    the Stock Targets page's own "Listed Home/Jita (manual)" columns
+    (docs/MANUAL_TRACKING_PLAN.md phase 7)."""
+    return {"rows": [
+        {"type_id": type_id, "market": market, "quantity": quantity, "updated_at": updated_at}
+        for (type_id, market), (quantity, updated_at) in storage.load_manual_listed_stock().items()
+    ]}
+
+
+def do_set_manual_listed_stock(type_id: int, market: str, quantity: float) -> dict:
+    if market not in ("home", "jita"):
+        raise ActionError("Market must be 'home' or 'jita'.")
+    if quantity < 0:
+        raise ActionError("Quantity cannot be negative.")
+    storage.upsert_manual_listed_stock(type_id, market, quantity)
+    return {"type_id": type_id, "market": market, "quantity": quantity}
+
+
+def do_clear_manual_listed_stock(type_id: int, market: str) -> dict:
+    storage.delete_manual_listed_stock(type_id, market)
+    return {"type_id": type_id, "market": market}
+
+
 def do_list_manual_blueprint_copy_costs() -> dict:
     """GitHub issue #40 - the Blueprints page's second table: purchase cost +
     included run count for blueprint copies that must be bought outright
