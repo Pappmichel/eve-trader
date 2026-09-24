@@ -1259,6 +1259,20 @@ def test_get_portfolio_history_with_days(monkeypatch):
     assert resp.json()[0]["combined_value"] == 3.0
 
 
+def test_get_total_wealth(monkeypatch):
+    from eve_trader import portfolio
+    monkeypatch.setattr(portfolio, "total_wealth", lambda cfg=None: {
+        "total_wealth": 1000.0, "wealth_assets_value": 600.0, "wealth_blueprints_value": 100.0,
+        "wealth_wallet_balance": 300.0, "wealth_priced_items": 3, "wealth_unpriced_items": 1,
+        "characters_missing_wallet_scope": [{"character_id": 1, "character_name": "Alice"}],
+    })
+    resp = client.get("/api/portfolio/wealth")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total_wealth"] == 1000.0
+    assert body["characters_missing_wallet_scope"] == [{"character_id": 1, "character_name": "Alice"}]
+
+
 def test_get_manual_item_prices(monkeypatch):
     from eve_trader import portfolio
     monkeypatch.setattr(portfolio, "do_list_manual_item_prices", lambda: {"rows": [

@@ -65,22 +65,142 @@ def portfolio_overview(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     }
 
 
-def take_portfolio_snapshot(cfg: TradingConfig = TRADING_CONFIG) -> dict:
-    """Computes portfolio_overview() and upserts today's row into
-    portfolio_snapshots - idempotent, safe to call more than once on the
-    same day (see storage.upsert_portfolio_snapshot). The two triggers
-    (scheduler job + lazy fallback on page load) both call this same
-    function, never portfolio_overview() directly, so there is one write
-    path, not two implementations that could drift.
+def _priced(type_ids: set[int]) -> dict[int, float]:
+    """Goonmetrics current-price quotes for `type_ids`, manual_item_prices
+    overriding per type_id. Deliberately reuses production/pricing.py's
+    raw Goonmetrics plumbing (`_goonmetrics_prices`, one full-market-list
+    call each) rather than the narrower home_prices/jita_prices - those are
+    ESI-first and scoped to explicit stock-target type_ids by design, while
+    Total Wealth needs every type_id actually owned, a much larger,
+    unpredictable set (PORTFOLIO_REWORK_PLAN.md section 6)."""
+    ids = list(type_ids)
+    if not ids:
+        return {}
+    from .production.config import PRODUCTION_CONFIG
+    from .production.pricing import JITA_MARKET, _goonmetrics_prices
+    manual = storage.load_manual_item_prices()
+    home = _goonmetrics_prices(PRODUCTION_CONFIG.home_market, ids) if PRODUCTION_CONFIG.home_market else {}
+    jita = _goonmetrics_prices(JITA_MARKET, ids)
+    prices: dict[int, float] = {}
+    for tid in ids:
+        if tid in manual:
+            prices[tid] = manual[tid]
+            continue
+        home_quote = home.get(tid)
+        jita_quote = jita.get(tid)
+        if home_quote and home_quote.sell > 0:
+            prices[tid] = home_quote.sell
+        elif jita_quote and jita_quote.sell > 0:
+            prices[tid] = jita_quote.sell
+    return prices
 
-    total_wealth/wealth_assets_value/wealth_wallet_balance stay None here -
-    total_wealth() (PORTFOLIO_REWORK_PLAN.md section 6) wires into this
-    function once Portfolio becomes a real ESI-sharing participant; until
-    then every snapshot correctly records "no Total Wealth data yet" rather
-    than a wrong zero.
+
+def _value_and_gaps(rows: list[tuple], prices: dict[int, float]) -> tuple[float, int, int]:
+    """`rows`: tuples whose first two elements are (type_id, quantity) -
+    works for both load_all_assets' and load_owned_blueprints' row shapes.
+    Unpriced items are excluded from the total, not counted as 0 - same
+    "explicit gap over silent understatement" precedent as
+    production.engine.stock_value."""
+    value = 0.0
+    priced = 0
+    unpriced = 0
+    for row in rows:
+        type_id, quantity = row[0], row[1]
+        price = prices.get(type_id)
+        if price is None:
+            unpriced += 1
+            continue
+        value += quantity * price
+        priced += 1
+    return value, priced, unpriced
+
+
+def _characters_missing_wallet_scope(character_ids: set[int]) -> list[dict]:
+    """Characters sharing wallet_balance with Portfolio whose stored token(s)
+    don't actually carry the wallet scope yet - real limitation stated in
+    the UI, not hidden (see PORTFOLIO_REWORK_PLAN.md section 2): a
+    character added only through Production ("producer" role) has no
+    wallet scope at all until re-authorized via the Characters page."""
+    if not character_ids:
+        return []
+    from .auth import TokenManager
+    from .config import OAUTH_CONFIG
+    has_scope: dict[int, bool] = {}
+    names: dict[int, str] = {}
+    for rec in TokenManager(OAUTH_CONFIG).list_records():
+        if rec.character_id not in character_ids:
+            continue
+        if rec.character_name:
+            names[rec.character_id] = rec.character_name
+        if "esi-wallet.read_character_wallet.v1" in (rec.scopes or "").split():
+            has_scope[rec.character_id] = True
+        else:
+            has_scope.setdefault(rec.character_id, False)
+    return [
+        {"character_id": cid, "character_name": names.get(cid, str(cid))}
+        for cid in sorted(character_ids)
+        if not has_scope.get(cid, False)
+    ]
+
+
+def total_wealth(cfg: TradingConfig = TRADING_CONFIG) -> dict:
+    """Assets + blueprints + wallet balances across every owner sharing
+    with "portfolio" specifically - sharing the same data with another
+    tool does not expose it here (PORTFOLIO_REWORK_PLAN.md section 4).
+
+    Blueprint pricing caveat, stated in the UI, not silently approximated
+    away: a blueprint's ME/TE materially changes what it would actually
+    sell for, but Goonmetrics has one quote per type_id, not per ME/TE
+    level - every copy of a blueprint type is valued at the same market
+    quote regardless of its own research level. The manual-price override
+    exists partly to let a user correct an individual high-value BPO."""
+    from .esi_data.access import shared_owner_ids
+
+    asset_char_ids = shared_owner_ids("assets", "portfolio", "character")
+    asset_corp_ids = shared_owner_ids("assets", "portfolio", "corporation")
+    bp_char_ids = shared_owner_ids("blueprints", "portfolio", "character")
+    bp_corp_ids = shared_owner_ids("blueprints", "portfolio", "corporation")
+    wallet_char_ids = shared_owner_ids("wallet_balance", "portfolio", "character")
+    wallet_corp_ids = shared_owner_ids("wallet_balance", "portfolio", "corporation")
+
+    assets = storage.load_all_assets(asset_char_ids, asset_corp_ids)
+    blueprints = storage.load_owned_blueprints(bp_char_ids, bp_corp_ids)
+    wallet_total = storage.sum_wallet_balances(wallet_char_ids, wallet_corp_ids)
+
+    type_ids = {row[0] for row in assets} | {row[0] for row in blueprints}
+    prices = _priced(type_ids)
+
+    assets_value, assets_priced, assets_unpriced = _value_and_gaps(assets, prices)
+    blueprints_value, bp_priced, bp_unpriced = _value_and_gaps(blueprints, prices)
+
+    return {
+        "total_wealth": assets_value + blueprints_value + wallet_total,
+        "wealth_assets_value": assets_value,
+        "wealth_blueprints_value": blueprints_value,
+        "wealth_wallet_balance": wallet_total,
+        "wealth_priced_items": assets_priced + bp_priced,
+        "wealth_unpriced_items": assets_unpriced + bp_unpriced,
+        "characters_missing_wallet_scope": _characters_missing_wallet_scope(set(wallet_char_ids)),
+    }
+
+
+def take_portfolio_snapshot(cfg: TradingConfig = TRADING_CONFIG) -> dict:
+    """Computes portfolio_overview() + total_wealth() and upserts today's
+    row into portfolio_snapshots - idempotent, safe to call more than once
+    on the same day (see storage.upsert_portfolio_snapshot). The two
+    triggers (scheduler job + lazy fallback on page load) both call this
+    same function, never portfolio_overview()/total_wealth() directly, so
+    there is one write path, not two implementations that could drift.
+
+    wealth_blueprints_value/wealth_priced_items/wealth_unpriced_items/
+    characters_missing_wallet_scope are not portfolio_snapshots columns
+    (blueprint value = total_wealth - wealth_assets_value -
+    wealth_wallet_balance, per that table's own comment) - they pass
+    through in the returned dict for the live overview read, but only the
+    declared snapshot columns are persisted.
     """
     overview = portfolio_overview(cfg)
-    wealth = {"total_wealth": None, "wealth_assets_value": None, "wealth_wallet_balance": None}
+    wealth = total_wealth(cfg)
     storage.upsert_portfolio_snapshot(date.today(), {**overview, **wealth})
     return {**overview, **wealth}
 

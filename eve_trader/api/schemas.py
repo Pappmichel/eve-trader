@@ -765,6 +765,21 @@ class PortfolioSnapshotRow(_Base):
     wealth_wallet_balance: Optional[float] = None
 
 
+class CharacterMissingWalletScope(_Base):
+    character_id: int
+    character_name: str
+
+
+class TotalWealth(_Base):
+    total_wealth: float
+    wealth_assets_value: float
+    wealth_blueprints_value: float
+    wealth_wallet_balance: float
+    wealth_priced_items: int
+    wealth_unpriced_items: int
+    characters_missing_wallet_scope: list[CharacterMissingWalletScope] = []
+
+
 class ManualItemPriceRow(_Base):
     type_id: int
     type_name: str

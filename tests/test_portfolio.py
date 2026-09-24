@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import date
 
 import pandas as pd
@@ -85,9 +86,15 @@ def test_production_stock_value_included_when_targets_configured(monkeypatch):
     assert result["combined_value"] == 12345.0
 
 
-def test_take_portfolio_snapshot_upserts_today_with_wealth_fields_none(monkeypatch):
+def test_take_portfolio_snapshot_upserts_today_with_no_wealth_sharing(monkeypatch):
+    # No owner shares anything with "portfolio" - total_wealth degrades to
+    # 0.0 (not None), matching total_wealth()'s own "nobody shares" shape.
     monkeypatch.setattr(storage, "read_table", lambda table: _trades_df([]))
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
+    _stub_sharing(monkeypatch)
+    monkeypatch.setattr(storage, "load_all_assets", lambda char_ids, corp_ids: [])
+    monkeypatch.setattr(storage, "load_owned_blueprints", lambda char_ids, corp_ids: [])
+    monkeypatch.setattr(storage, "sum_wallet_balances", lambda char_ids, corp_ids: 0.0)
     upserted = {}
     monkeypatch.setattr(storage, "upsert_portfolio_snapshot",
                         lambda snapshot_date, values: upserted.update(date=snapshot_date, **values))
@@ -95,11 +102,11 @@ def test_take_portfolio_snapshot_upserts_today_with_wealth_fields_none(monkeypat
     result = portfolio.take_portfolio_snapshot(TradingConfig())
 
     assert upserted["date"] == date.today()
-    assert upserted["total_wealth"] is None
-    assert upserted["wealth_assets_value"] is None
-    assert upserted["wealth_wallet_balance"] is None
+    assert upserted["total_wealth"] == 0.0
+    assert upserted["wealth_assets_value"] == 0.0
+    assert upserted["wealth_wallet_balance"] == 0.0
     assert upserted["combined_value"] == 0.0
-    assert result["total_wealth"] is None
+    assert result["total_wealth"] == 0.0
     assert result["combined_value"] == 0.0
 
 
@@ -215,3 +222,165 @@ def test_do_remove_manual_item_price(monkeypatch):
     result = portfolio.do_remove_manual_item_price(34)
     assert captured["type_id"] == 34
     assert result == {"removed": 34}
+
+
+# ------------------------------------------------------------ total_wealth
+def _current_price(type_id, sell):
+    from eve_trader.goonmetrics_client import CurrentPrice
+    return CurrentPrice(type_id=type_id, updated="", buy=0.0, sell=sell)
+
+
+@dataclass
+class _FakeTokenRecord:
+    character_id: int
+    character_name: str
+    scopes: str
+
+
+class _FakeTokenManager:
+    def __init__(self, records):
+        self._records = records
+
+    def __call__(self, *_args, **_kwargs):
+        return self
+
+    def list_records(self):
+        return self._records
+
+
+def _stub_sharing(monkeypatch, **owner_ids):
+    """owner_ids keys like 'assets_character', 'assets_corporation', ...
+    default []."""
+    from eve_trader.esi_data import access as esi_access
+
+    def _fake_shared_owner_ids(data_kind, tool_key, owner_type):
+        return owner_ids.get(f"{data_kind}_{owner_type}", [])
+
+    monkeypatch.setattr(esi_access, "shared_owner_ids", _fake_shared_owner_ids)
+
+
+def test_priced_prefers_manual_over_home_and_jita(monkeypatch):
+    from eve_trader.production.config import PRODUCTION_CONFIG
+    from eve_trader.production import pricing as production_pricing
+    monkeypatch.setattr(PRODUCTION_CONFIG, "home_market", "insmother")
+    monkeypatch.setattr(storage, "load_manual_item_prices", lambda: {34: 999.0})
+    monkeypatch.setattr(production_pricing, "_goonmetrics_prices",
+                        lambda market, ids: {tid: _current_price(tid, 10.0) for tid in ids})
+
+    prices = portfolio._priced({34, 35})
+
+    assert prices[34] == 999.0  # manual override wins
+    assert prices[35] == 10.0
+
+
+def test_priced_falls_back_to_jita_when_home_has_no_quote(monkeypatch):
+    from eve_trader.production.config import PRODUCTION_CONFIG
+    from eve_trader.production import pricing as production_pricing
+    monkeypatch.setattr(PRODUCTION_CONFIG, "home_market", "insmother")
+    monkeypatch.setattr(storage, "load_manual_item_prices", lambda: {})
+
+    def _fake_prices(market, ids):
+        if market == "insmother":
+            return {}
+        return {tid: _current_price(tid, 20.0) for tid in ids}
+
+    monkeypatch.setattr(production_pricing, "_goonmetrics_prices", _fake_prices)
+
+    prices = portfolio._priced({34})
+    assert prices[34] == 20.0
+
+
+def test_priced_excludes_type_with_no_quote_anywhere(monkeypatch):
+    from eve_trader.production.config import PRODUCTION_CONFIG
+    from eve_trader.production import pricing as production_pricing
+    monkeypatch.setattr(PRODUCTION_CONFIG, "home_market", None)
+    monkeypatch.setattr(storage, "load_manual_item_prices", lambda: {})
+    monkeypatch.setattr(production_pricing, "_goonmetrics_prices", lambda market, ids: {})
+
+    assert portfolio._priced({34}) == {}
+
+
+def test_value_and_gaps_excludes_unpriced_not_zeroed():
+    rows = [(34, 10), (35, 5)]
+    value, priced, unpriced = portfolio._value_and_gaps(rows, {34: 2.0})
+    assert value == 20.0
+    assert priced == 1
+    assert unpriced == 1
+
+
+def test_characters_missing_wallet_scope_empty_for_no_owners():
+    assert portfolio._characters_missing_wallet_scope(set()) == []
+
+
+def test_characters_missing_wallet_scope_flags_character_without_scope(monkeypatch):
+    import eve_trader.auth as auth_module
+    monkeypatch.setattr(auth_module, "TokenManager", _FakeTokenManager([
+        _FakeTokenRecord(character_id=1, character_name="Alice", scopes="esi-assets.read_assets.v1"),
+        _FakeTokenRecord(character_id=2, character_name="Bob", scopes="esi-wallet.read_character_wallet.v1"),
+    ]))
+
+    result = portfolio._characters_missing_wallet_scope({1, 2})
+
+    assert result == [{"character_id": 1, "character_name": "Alice"}]
+
+
+def test_characters_missing_wallet_scope_uses_id_when_name_unknown(monkeypatch):
+    import eve_trader.auth as auth_module
+    monkeypatch.setattr(auth_module, "TokenManager", _FakeTokenManager([]))
+    result = portfolio._characters_missing_wallet_scope({7})
+    assert result == [{"character_id": 7, "character_name": "7"}]
+
+
+def test_total_wealth_scoped_to_portfolio_sharing_only(monkeypatch):
+    _stub_sharing(monkeypatch, assets_character=[1], wallet_balance_character=[1])
+    monkeypatch.setattr(storage, "load_all_assets", lambda char_ids, corp_ids: [(34, 100)] if char_ids == [1] else [])
+    monkeypatch.setattr(storage, "load_owned_blueprints", lambda char_ids, corp_ids: [])
+    monkeypatch.setattr(storage, "sum_wallet_balances", lambda char_ids, corp_ids: 500.0 if char_ids == [1] else 0.0)
+    monkeypatch.setattr(portfolio, "_priced", lambda type_ids: {34: 5.0})
+    import eve_trader.auth as auth_module
+    monkeypatch.setattr(auth_module, "TokenManager", _FakeTokenManager([
+        _FakeTokenRecord(character_id=1, character_name="Alice", scopes="esi-wallet.read_character_wallet.v1"),
+    ]))
+
+    result = portfolio.total_wealth(TradingConfig())
+
+    assert result["wealth_assets_value"] == 500.0  # 100 * 5.0
+    assert result["wealth_blueprints_value"] == 0.0
+    assert result["wealth_wallet_balance"] == 500.0
+    assert result["total_wealth"] == 1000.0
+    assert result["wealth_priced_items"] == 1
+    assert result["wealth_unpriced_items"] == 0
+    assert result["characters_missing_wallet_scope"] == []
+
+
+def test_total_wealth_a_character_shared_only_with_production_is_excluded(monkeypatch):
+    # A character shared with "production" only must NOT appear in
+    # Portfolio's Total Wealth - sharing is per-tool, never bypassed.
+    _stub_sharing(monkeypatch)  # nothing shared with "portfolio"
+    monkeypatch.setattr(storage, "load_all_assets", lambda char_ids, corp_ids: [])
+    monkeypatch.setattr(storage, "load_owned_blueprints", lambda char_ids, corp_ids: [])
+    monkeypatch.setattr(storage, "sum_wallet_balances", lambda char_ids, corp_ids: 0.0)
+
+    result = portfolio.total_wealth(TradingConfig())
+
+    assert result["total_wealth"] == 0.0
+    assert result["characters_missing_wallet_scope"] == []
+
+
+def test_take_portfolio_snapshot_includes_total_wealth(monkeypatch):
+    monkeypatch.setattr(storage, "read_table", lambda table: _trades_df([]))
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
+    monkeypatch.setattr(portfolio, "total_wealth", lambda cfg: {
+        "total_wealth": 42.0, "wealth_assets_value": 42.0, "wealth_blueprints_value": 0.0,
+        "wealth_wallet_balance": 0.0, "wealth_priced_items": 1, "wealth_unpriced_items": 0,
+        "characters_missing_wallet_scope": [],
+    })
+    upserted = {}
+    monkeypatch.setattr(storage, "upsert_portfolio_snapshot",
+                        lambda snapshot_date, values: upserted.update(values))
+
+    result = portfolio.take_portfolio_snapshot(TradingConfig())
+
+    assert upserted["total_wealth"] == 42.0
+    assert upserted["wealth_assets_value"] == 42.0
+    assert result["total_wealth"] == 42.0

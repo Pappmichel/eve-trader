@@ -3562,6 +3562,56 @@ def esi_incoming_industry_qty(product_type_id: int) -> dict[str, float]:
     return {"runs": runs, "jobs": jobs}
 
 
+def load_all_assets(owner_character_ids: Optional[list[int]] = None,
+                     owner_corporation_ids: Optional[list[int]] = None) -> list[tuple]:
+    """Returns (type_id, quantity) across character + corp assets, excluding
+    blueprint items (`is_blueprint_copy`) - those are valued separately via
+    load_owned_blueprints (their own table carries the ME/TE that actually
+    matters), never double-counted here. For Portfolio's Total Wealth
+    (PORTFOLIO_REWORK_PLAN.md section 6) - `owner_character_ids`/
+    `owner_corporation_ids`: see `_owner_id_clause`, both None is
+    unfiltered."""
+    with connect() as conn:
+        rows = []
+        for table in ("character_assets", "corp_assets"):
+            id_clause, id_params = _owner_id_clause(table, owner_character_ids, owner_corporation_ids)
+            where_clause = f"WHERE {id_clause[5:]} AND " if id_clause else "WHERE "
+            rows.extend(conn.execute(
+                f"SELECT type_id, quantity FROM {table} {where_clause}"
+                "(is_blueprint_copy IS NULL OR is_blueprint_copy = 0)",
+                id_params,
+            ).fetchall())
+    return rows
+
+
+def sum_wallet_balances(char_ids: Optional[list[int]] = None,
+                         corp_ids: Optional[list[int]] = None) -> float:
+    """Sums character_wallet_balances + corp_wallet_balances (every
+    division) for the given owner ids. Both None/empty is 0.0, not
+    unfiltered - unlike load_all_assets/load_owned_blueprints above, an
+    empty owner list here genuinely means "nobody shares wallet_balance
+    with Portfolio yet", not "give me everyone's"."""
+    total = 0.0
+    with connect() as conn:
+        if char_ids:
+            placeholders = ",".join("?" * len(char_ids))
+            row = conn.execute(
+                f"SELECT COALESCE(SUM(balance), 0) FROM character_wallet_balances "
+                f"WHERE owner_character_id IN ({placeholders})",
+                char_ids,
+            ).fetchone()
+            total += row[0]
+        if corp_ids:
+            placeholders = ",".join("?" * len(corp_ids))
+            row = conn.execute(
+                f"SELECT COALESCE(SUM(balance), 0) FROM corp_wallet_balances "
+                f"WHERE owner_corporation_id IN ({placeholders})",
+                corp_ids,
+            ).fetchone()
+            total += row[0]
+    return total
+
+
 def load_owned_blueprints(owner_character_ids: Optional[list[int]] = None,
                            owner_corporation_ids: Optional[list[int]] = None) -> list[tuple]:
     """Returns (type_id, quantity, material_efficiency, time_efficiency, runs)

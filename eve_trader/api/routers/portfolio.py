@@ -42,6 +42,15 @@ def get_portfolio_history(days: Optional[int] = None):
     return _wrap(portfolio.do_get_portfolio_history, days=days)
 
 
+@router.get("/wealth", response_model=schemas.TotalWealth)
+def get_total_wealth():
+    # Live, not snapshot-cached - characters_missing_wallet_scope reflects
+    # current token state, which can change independently of the once-
+    # daily snapshot cadence (a re-authorize should show up immediately,
+    # not tomorrow).
+    return _wrap(portfolio.total_wealth)
+
+
 @router.get("/manual-prices", response_model=list[schemas.ManualItemPriceRow])
 def get_manual_item_prices():
     # Storage-only - no live ESI/Goonmetrics.
