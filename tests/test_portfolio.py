@@ -161,3 +161,57 @@ def test_do_get_portfolio_history_with_days_computes_since(monkeypatch):
     # Inclusive of today: 7 days means today back through 6 days ago.
     from datetime import timedelta
     assert captured["since"] == date.today() - timedelta(days=6)
+
+
+def test_do_list_manual_item_prices(monkeypatch):
+    monkeypatch.setattr(storage, "list_manual_item_prices", lambda: [
+        (34, "Tritanium", 5.5, "2026-09-01T00:00:00+00:00"),
+    ])
+    result = portfolio.do_list_manual_item_prices()
+    assert result == {"rows": [
+        {"type_id": 34, "type_name": "Tritanium", "price": 5.5, "updated_at": "2026-09-01T00:00:00+00:00"},
+    ]}
+
+
+def test_do_set_manual_item_price_resolves_exact_name(monkeypatch):
+    monkeypatch.setattr(storage, "search_sde_types", lambda query, limit=20: [(34, "Tritanium")])
+    captured = {}
+    monkeypatch.setattr(storage, "upsert_manual_item_price",
+                        lambda type_id, type_name, price: captured.update(
+                            type_id=type_id, type_name=type_name, price=price))
+
+    result = portfolio.do_set_manual_item_price("Tritanium", 5.5)
+
+    assert captured == {"type_id": 34, "type_name": "Tritanium", "price": 5.5}
+    assert result == {"type_id": 34, "type_name": "Tritanium", "price": 5.5}
+
+
+def test_do_set_manual_item_price_rejects_negative_price(monkeypatch):
+    from eve_trader.actions import ActionError
+    import pytest
+    with pytest.raises(ActionError):
+        portfolio.do_set_manual_item_price("Tritanium", -1.0)
+
+
+def test_do_set_manual_item_price_no_match_raises(monkeypatch):
+    from eve_trader.actions import ActionError
+    import pytest
+    monkeypatch.setattr(storage, "search_sde_types", lambda query, limit=20: [])
+    with pytest.raises(ActionError):
+        portfolio.do_set_manual_item_price("Nonexistent Item", 1.0)
+
+
+def test_do_set_manual_item_price_near_match_suggests_it(monkeypatch):
+    from eve_trader.actions import ActionError
+    import pytest
+    monkeypatch.setattr(storage, "search_sde_types", lambda query, limit=20: [(34, "Tritanium")])
+    with pytest.raises(ActionError, match="Tritanium"):
+        portfolio.do_set_manual_item_price("Tritanum", 1.0)
+
+
+def test_do_remove_manual_item_price(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(storage, "delete_manual_item_price", lambda type_id: captured.setdefault("type_id", type_id))
+    result = portfolio.do_remove_manual_item_price(34)
+    assert captured["type_id"] == 34
+    assert result == {"removed": 34}

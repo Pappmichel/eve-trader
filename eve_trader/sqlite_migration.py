@@ -133,6 +133,7 @@ KNOWN_NON_MIGRATED_TABLES: dict[str, str] = {
     "portfolio_snapshots": "Postgres-native (PORTFOLIO_REWORK_PLAN.md - daily history/Total Wealth snapshots, never existed in the pre-migration SQLite schema)",
     "character_wallet_balances": "Postgres-native (PORTFOLIO_REWORK_PLAN.md - wallet_balance ESI data kind, never existed in the pre-migration SQLite schema)",
     "corp_wallet_balances": "Postgres-native (PORTFOLIO_REWORK_PLAN.md - wallet_balance ESI data kind, never existed in the pre-migration SQLite schema)",
+    "manual_item_prices": "Postgres-native (PORTFOLIO_REWORK_PLAN.md - Portfolio's own manual price overrides, never existed in the pre-migration SQLite schema)",
 }
 
 

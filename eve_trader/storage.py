@@ -4985,6 +4985,46 @@ def latest_portfolio_snapshot_date() -> Optional[date]:
     return row[0] if row and row[0] is not None else None
 
 
+def upsert_manual_item_price(type_id: int, type_name: str, price: float) -> None:
+    """Registers/updates a manual price for `type_id` - used only by
+    Portfolio's Total Wealth calculation when Goonmetrics has no quote
+    (PORTFOLIO_REWORK_PLAN.md section 7)."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO manual_item_prices (type_id, type_name, price, updated_at) VALUES (?,?,?,now()) "
+            "ON CONFLICT(tenant_id, type_id) DO UPDATE SET "
+            "type_name=excluded.type_name, price=excluded.price, updated_at=excluded.updated_at",
+            (type_id, type_name, price),
+        )
+
+
+def load_manual_item_prices() -> dict[int, float]:
+    with connect() as conn:
+        rows = conn.execute("SELECT type_id, price FROM manual_item_prices").fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+def list_manual_item_prices() -> list[tuple]:
+    """Returns [(type_id, type_name, price, updated_at), ...], name-ordered -
+    for the Manual Prices table on the Portfolio page. `updated_at` is
+    always a string (isoformat), same conversion as
+    newest_esi_freshness_success_at above - the API schema declares it as
+    `str`, not a raw driver-specific datetime."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, type_name, price, updated_at FROM manual_item_prices ORDER BY type_name"
+        ).fetchall()
+    return [
+        (type_id, type_name, price, ts.isoformat() if hasattr(ts, "isoformat") else str(ts))
+        for type_id, type_name, price, ts in rows
+    ]
+
+
+def delete_manual_item_price(type_id: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM manual_item_prices WHERE type_id = ?", (type_id,))
+
+
 def latest_portfolio_snapshot_taken_at() -> Optional[str]:
     """`taken_at` of the newest snapshot row, for the scheduler's own
     `_hours_since`-based due check - mirrors newest_esi_freshness_success_at's

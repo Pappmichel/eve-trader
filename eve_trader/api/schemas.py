@@ -765,6 +765,13 @@ class PortfolioSnapshotRow(_Base):
     wealth_wallet_balance: Optional[float] = None
 
 
+class ManualItemPriceRow(_Base):
+    type_id: int
+    type_name: str
+    price: float
+    updated_at: str
+
+
 # ----------------------------------------------------------------------- admin
 class AdminTenant(_Base):
     tenant_id: str

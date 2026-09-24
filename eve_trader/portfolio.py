@@ -12,6 +12,7 @@ from datetime import date, timedelta
 from typing import Optional
 
 from . import storage
+from .actions import ActionError
 from .config import TRADING_CONFIG, TradingConfig
 
 
@@ -106,3 +107,37 @@ def do_get_portfolio_history(days: Optional[int] = None) -> list[dict]:
     rows = storage.load_portfolio_snapshots(since=since)
     columns = ("snapshot_date",) + storage.PORTFOLIO_SNAPSHOT_COLUMNS
     return [dict(zip(columns, row)) for row in rows]
+
+
+def do_list_manual_item_prices() -> dict:
+    """Manual prices used only by Total Wealth when Goonmetrics has no
+    quote for an owned item type (PORTFOLIO_REWORK_PLAN.md section 7) -
+    Production's/Trading's own pricing chains are untouched, this table is
+    Portfolio's own."""
+    rows = [
+        {"type_id": type_id, "type_name": type_name, "price": price, "updated_at": updated_at}
+        for type_id, type_name, price, updated_at in storage.list_manual_item_prices()
+    ]
+    return {"rows": rows}
+
+
+def do_set_manual_item_price(item_name: str, price: float) -> dict:
+    """Resolves `item_name` (exact match, same lookup Production's manual
+    override actions use) to a type_id and registers/updates its manual
+    price."""
+    if price < 0:
+        raise ActionError("Price must not be negative.")
+    matches = storage.search_sde_types(item_name, limit=2)
+    exact = [m for m in matches if m[1].lower() == item_name.strip().lower()]
+    if not exact:
+        if not matches:
+            raise ActionError(f"No type found for '{item_name}'. Refresh SDE first?")
+        raise ActionError(f"No exact match for '{item_name}'. Did you mean: {matches[0][1]}?")
+    type_id, resolved_name = exact[0]
+    storage.upsert_manual_item_price(type_id, resolved_name, price)
+    return {"type_id": type_id, "type_name": resolved_name, "price": price}
+
+
+def do_remove_manual_item_price(type_id: int) -> dict:
+    storage.delete_manual_item_price(type_id)
+    return {"removed": type_id}

@@ -1259,6 +1259,58 @@ def test_get_portfolio_history_with_days(monkeypatch):
     assert resp.json()[0]["combined_value"] == 3.0
 
 
+def test_get_manual_item_prices(monkeypatch):
+    from eve_trader import portfolio
+    monkeypatch.setattr(portfolio, "do_list_manual_item_prices", lambda: {"rows": [
+        {"type_id": 34, "type_name": "Tritanium", "price": 5.5, "updated_at": "2026-09-01T00:00:00+00:00"},
+    ]})
+    resp = client.get("/api/portfolio/manual-prices")
+    assert resp.status_code == 200
+    assert resp.json() == [{"type_id": 34, "type_name": "Tritanium", "price": 5.5,
+                             "updated_at": "2026-09-01T00:00:00+00:00"}]
+
+
+def test_set_manual_item_price_passes_body_fields(monkeypatch):
+    from eve_trader import portfolio
+    captured = {}
+
+    def _capture(item_name, price):
+        captured["item_name"] = item_name
+        captured["price"] = price
+        return {"type_id": 34, "type_name": "Tritanium", "price": price}
+
+    monkeypatch.setattr(portfolio, "do_set_manual_item_price", _capture)
+    resp = client.post("/api/portfolio/manual-prices", json={"item_name": "Tritanium", "price": 5.5})
+    assert resp.status_code == 200
+    assert captured == {"item_name": "Tritanium", "price": 5.5}
+
+
+def test_set_manual_item_price_action_error_maps_to_400(monkeypatch):
+    from eve_trader import portfolio
+
+    def _raise(item_name, price):
+        raise ActionError("Price must not be negative.")
+
+    monkeypatch.setattr(portfolio, "do_set_manual_item_price", _raise)
+    resp = client.post("/api/portfolio/manual-prices", json={"item_name": "Tritanium", "price": -1.0})
+    assert resp.status_code == 400
+    assert "negative" in resp.json()["detail"]
+
+
+def test_remove_manual_item_price_passes_type_id(monkeypatch):
+    from eve_trader import portfolio
+    captured = {}
+
+    def _capture(type_id):
+        captured["type_id"] = type_id
+        return {"removed": type_id}
+
+    monkeypatch.setattr(portfolio, "do_remove_manual_item_price", _capture)
+    resp = client.delete("/api/portfolio/manual-prices/34")
+    assert resp.status_code == 200
+    assert captured["type_id"] == 34
+
+
 def test_scheduler_status_route_removed():
     # Portfolio rework: the Background Scheduler card and its route were
     # removed from this page (scheduler.get_status() itself stays for

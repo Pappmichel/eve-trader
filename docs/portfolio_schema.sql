@@ -38,3 +38,27 @@ CREATE POLICY tenant_isolation ON portfolio_snapshots
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON portfolio_snapshots TO eve_trader_app;
+
+-- Manual item prices (plan section 7) - used only to value items
+-- Goonmetrics has no quote for in Total Wealth. One price per type_id,
+-- tenant-wide, no quantity/location tiers - scoped to Portfolio's own
+-- wealth calculation only, not a shared pricing fallback for Production/
+-- Trading (same "an explicit per-item entry always wins" precedent as
+-- manual_blueprint_copy_costs/manual_blueprint_me_te_overrides in
+-- phase1_schema.sql, but deliberately its own table since it's a
+-- different tool's override, not a blueprint-cost one).
+CREATE TABLE IF NOT EXISTS manual_item_prices (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    type_id INTEGER NOT NULL,
+    type_name TEXT NOT NULL,
+    price DOUBLE PRECISION NOT NULL CHECK (price >= 0),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, type_id)
+);
+ALTER TABLE manual_item_prices ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON manual_item_prices;
+CREATE POLICY tenant_isolation ON manual_item_prices
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON manual_item_prices TO eve_trader_app;

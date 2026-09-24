@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from .. import schemas
 from ... import portfolio
@@ -39,3 +40,24 @@ def get_portfolio_overview():
 @router.get("/history", response_model=list[schemas.PortfolioSnapshotRow])
 def get_portfolio_history(days: Optional[int] = None):
     return _wrap(portfolio.do_get_portfolio_history, days=days)
+
+
+@router.get("/manual-prices", response_model=list[schemas.ManualItemPriceRow])
+def get_manual_item_prices():
+    # Storage-only - no live ESI/Goonmetrics.
+    return portfolio.do_list_manual_item_prices()["rows"]
+
+
+class SetManualItemPriceRequest(BaseModel):
+    item_name: str
+    price: float
+
+
+@router.post("/manual-prices")
+def set_manual_item_price(req: SetManualItemPriceRequest):
+    return _wrap(portfolio.do_set_manual_item_price, item_name=req.item_name, price=req.price)
+
+
+@router.delete("/manual-prices/{type_id}")
+def remove_manual_item_price(type_id: int):
+    return _wrap(portfolio.do_remove_manual_item_price, type_id=type_id)
