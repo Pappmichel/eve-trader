@@ -409,6 +409,64 @@ def test_get_owned_blueprints(monkeypatch):
     assert resp.json()[0]["runs"] is None
 
 
+def test_add_manual_owned_blueprint_passes_body(monkeypatch):
+    captured = {}
+
+    def _add(**kwargs):
+        captured.update(kwargs)
+        return {"manual_id": 7, "type_id": 690, "type_name": "Rifter Blueprint", "is_original": True,
+                "material_efficiency": 10, "time_efficiency": 20, "runs": None, "quantity": 1, "location_id": 0}
+    monkeypatch.setattr(production_actions, "do_add_manual_owned_blueprint", _add)
+
+    resp = client.post("/api/production/manual-blueprints", json={
+        "item_name": "Rifter Blueprint", "is_original": True, "material_efficiency": 10,
+        "time_efficiency": 20, "runs": None, "quantity": 1, "location_id": 0,
+    })
+
+    assert resp.status_code == 200
+    assert captured == {"item_name": "Rifter Blueprint", "is_original": True, "material_efficiency": 10,
+                         "time_efficiency": 20, "runs": None, "quantity": 1, "location_id": 0}
+    assert resp.json()["manual_id"] == 7
+
+
+def test_add_manual_owned_blueprint_action_error_maps_to_400(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise ActionError("No type found for 'Bogus'. Refresh SDE first?")
+    monkeypatch.setattr(production_actions, "do_add_manual_owned_blueprint", _raise)
+
+    resp = client.post("/api/production/manual-blueprints", json={
+        "item_name": "Bogus", "is_original": True, "material_efficiency": 10, "time_efficiency": 20,
+    })
+
+    assert resp.status_code == 400
+
+
+def test_update_manual_owned_blueprint_passes_path_and_body(monkeypatch):
+    captured = {}
+
+    def _update(**kwargs):
+        captured.update(kwargs)
+        return {"manual_id": kwargs["manual_id"]}
+    monkeypatch.setattr(production_actions, "do_update_manual_owned_blueprint", _update)
+
+    resp = client.patch("/api/production/manual-blueprints/7",
+                         json={"material_efficiency": 6, "time_efficiency": 12, "runs": 10, "quantity": 3})
+
+    assert resp.status_code == 200
+    assert captured == {"manual_id": 7, "material_efficiency": 6, "time_efficiency": 12, "runs": 10, "quantity": 3}
+
+
+def test_remove_manual_owned_blueprint_passes_path_param(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(production_actions, "do_remove_manual_owned_blueprint",
+                         lambda manual_id: captured.update(manual_id=manual_id))
+
+    resp = client.delete("/api/production/manual-blueprints/7")
+
+    assert resp.status_code == 200
+    assert captured == {"manual_id": 7}
+
+
 def test_get_manual_blueprint_copy_costs(monkeypatch):
     # GitHub issue #40.
     from eve_trader.production.models import ManualBlueprintCopyCostRow

@@ -371,6 +371,34 @@ CREATE POLICY tenant_isolation ON manual_location_names
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 GRANT SELECT, INSERT, UPDATE, DELETE ON manual_location_names TO eve_trader_app;
 
+-- docs/MANUAL_TRACKING_PLAN.md phase 5 - manually-tracked owned blueprints
+-- (BPOs/BPCs), additive alongside ESI-synced character_blueprints/
+-- corp_blueprints (see production/engine.py's _owned_bpo_best_me_te/
+-- _available_blueprint_copies/_has_bpo_at_location). blueprint_type_id is
+-- the blueprint's own type, not the product it builds (the engine's key).
+CREATE TABLE IF NOT EXISTS manual_owned_blueprints (
+    id BIGSERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    blueprint_type_id INTEGER NOT NULL,
+    is_original BOOLEAN NOT NULL,
+    material_efficiency INTEGER NOT NULL CHECK (material_efficiency BETWEEN 0 AND 10),
+    time_efficiency INTEGER NOT NULL CHECK (time_efficiency BETWEEN 0 AND 20),
+    runs INTEGER CHECK (runs IS NULL OR runs > 0),   -- NULL for a BPO
+    quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+    location_id BIGINT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK ((is_original AND runs IS NULL) OR (NOT is_original AND runs IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS manual_owned_blueprints_tenant_bp_idx
+    ON manual_owned_blueprints (tenant_id, blueprint_type_id);
+ALTER TABLE manual_owned_blueprints ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON manual_owned_blueprints;
+CREATE POLICY tenant_isolation ON manual_owned_blueprints
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON manual_owned_blueprints TO eve_trader_app;
+GRANT USAGE, SELECT ON SEQUENCE manual_owned_blueprints_id_seq TO eve_trader_app;
+
 CREATE TABLE IF NOT EXISTS category_location_options (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
     category TEXT NOT NULL,

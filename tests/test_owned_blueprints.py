@@ -18,6 +18,14 @@ def _stub_shared_production_owner_ids(monkeypatch):
     monkeypatch.setattr(actions, "shared_production_owner_ids", lambda data_kind: (None, None))
 
 
+@pytest.fixture(autouse=True)
+def _no_manual_blueprints_by_default(monkeypatch):
+    # docs/MANUAL_TRACKING_PLAN.md phase 5: do_list_owned_blueprints now
+    # also appends storage.load_manual_owned_blueprints() - default to
+    # none, same no-real-Postgres reasoning as the fixture above.
+    monkeypatch.setattr(storage, "load_manual_owned_blueprints", lambda: [])
+
+
 def test_groups_identical_specs_and_labels_bpo_vs_bpc(monkeypatch):
     monkeypatch.setattr(storage, "load_owned_blueprints", lambda **kwargs: [
         (100, -1, 10, 20, -1),   # BPO, ME10/TE20
@@ -55,3 +63,25 @@ def test_unknown_type_falls_back_to_type_id_as_name(monkeypatch):
 
     rows = actions.do_list_owned_blueprints()["rows"]
     assert rows[0].type_name == "999"
+
+
+def test_manual_rows_are_appended_with_source_and_never_merged(monkeypatch):
+    monkeypatch.setattr(storage, "load_owned_blueprints", lambda **kwargs: [(100, -1, 10, 20, -1)])
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: {
+        100: (100, 0, "Rifter Blueprint", 0, 1, None, None),
+    }.get(type_id))
+    monkeypatch.setattr(storage, "load_manual_owned_blueprints", lambda: [
+        (7, 100, "Rifter Blueprint", True, 10, 20, None, 1, 1000000000001),
+    ])
+
+    result = actions.do_list_owned_blueprints()["rows"]
+
+    esi_rows = [r for r in result if r.source == "esi"]
+    manual_rows = [r for r in result if r.source == "manual"]
+    assert len(esi_rows) == 1
+    assert esi_rows[0].manual_id is None
+    assert esi_rows[0].location_id is None
+    assert len(manual_rows) == 1
+    assert manual_rows[0].manual_id == 7
+    assert manual_rows[0].location_id == 1000000000001
+    assert manual_rows[0].type_name == "Rifter Blueprint"

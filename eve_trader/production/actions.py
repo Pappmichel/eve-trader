@@ -1344,8 +1344,102 @@ def do_list_owned_blueprints() -> dict:
             type_id=type_id, type_name=name, is_original=is_original,
             quantity=qty, material_efficiency=me, time_efficiency=te, runs=runs,
         ))
+
+    # Manual rows (docs/MANUAL_TRACKING_PLAN.md phase 5) - each its own row,
+    # never merged with an ESI row or with each other (see OwnedBlueprintRow's
+    # own docstring for why).
+    for manual_id, bp_type_id, bp_name, is_original, me, te, runs, quantity, location_id in \
+            storage.load_manual_owned_blueprints():
+        rows.append(OwnedBlueprintRow(
+            type_id=bp_type_id, type_name=bp_name, is_original=is_original, quantity=quantity,
+            material_efficiency=me, time_efficiency=te, runs=runs,
+            source="manual", manual_id=manual_id, location_id=location_id,
+        ))
+
     rows.sort(key=lambda r: r.type_name)
     return {"rows": rows}
+
+
+def _validate_manual_blueprint_me_te(material_efficiency: int, time_efficiency: int) -> None:
+    if not (0 <= material_efficiency <= 10):
+        raise ActionError("Material efficiency must be between 0 and 10.")
+    if not (0 <= time_efficiency <= 20) or time_efficiency % 2 != 0:
+        raise ActionError("Time efficiency must be an even number between 0 and 20.")
+
+
+def do_add_manual_owned_blueprint(item_name: str, is_original: bool, material_efficiency: int,
+                                   time_efficiency: int, runs: Optional[int], quantity: int,
+                                   location_id: int = 0) -> dict:
+    """`item_name` accepts the blueprint's own name ("Rifter Blueprint") or
+    the product's name ("Rifter") - the latter is mapped to its blueprint
+    via storage.get_blueprint_for_product (same location picker/ME/TE
+    treatment as an ESI-owned blueprint, decision 14)."""
+    matches = storage.search_sde_types(item_name, limit=2)
+    exact = [m for m in matches if m[1].lower() == item_name.strip().lower()]
+    if not exact:
+        if not matches:
+            raise ActionError(f"No type found for '{item_name}'. Refresh SDE first?")
+        raise ActionError(f"No exact match for '{item_name}'. Did you mean: {matches[0][1]}?")
+    type_id, resolved_name = exact[0]
+
+    if storage.is_known_blueprint(type_id):
+        blueprint_type_id = type_id
+    else:
+        bp = storage.get_blueprint_for_product(type_id)
+        if bp is None:
+            raise ActionError(f"'{resolved_name}' is not a known blueprint, or a producible item.")
+        blueprint_type_id = bp[0]
+
+    _validate_manual_blueprint_me_te(material_efficiency, time_efficiency)
+    if is_original:
+        if runs is not None:
+            raise ActionError("A blueprint original (BPO) has no runs.")
+    elif not runs or runs <= 0:
+        raise ActionError("A blueprint copy (BPC) needs runs > 0.")
+    if quantity <= 0:
+        raise ActionError("Quantity must be positive.")
+
+    bp_sde_type = storage.get_sde_type(blueprint_type_id)
+    bp_name = bp_sde_type[2] if bp_sde_type else str(blueprint_type_id)
+    manual_id = storage.insert_manual_owned_blueprint(
+        blueprint_type_id, is_original, material_efficiency, time_efficiency, runs, quantity, location_id)
+    invalidate_discover_cache()
+    invalidate_ship_margin_cache()
+    return {
+        "manual_id": manual_id, "type_id": blueprint_type_id, "type_name": bp_name, "is_original": is_original,
+        "material_efficiency": material_efficiency, "time_efficiency": time_efficiency,
+        "runs": runs, "quantity": quantity, "location_id": location_id,
+    }
+
+
+def do_update_manual_owned_blueprint(manual_id: int, material_efficiency: int, time_efficiency: int,
+                                      runs: Optional[int], quantity: int) -> dict:
+    existing = storage.get_manual_owned_blueprint(manual_id)
+    if existing is None:
+        raise ActionError(f"No manual blueprint entry #{manual_id}.")
+    _id, _bp_type_id, is_original, _me, _te, _runs, _qty, _loc = existing
+
+    _validate_manual_blueprint_me_te(material_efficiency, time_efficiency)
+    if is_original:
+        if runs is not None:
+            raise ActionError("A blueprint original (BPO) has no runs.")
+    elif not runs or runs <= 0:
+        raise ActionError("A blueprint copy (BPC) needs runs > 0.")
+    if quantity <= 0:
+        raise ActionError("Quantity must be positive.")
+
+    storage.update_manual_owned_blueprint(manual_id, material_efficiency, time_efficiency, runs, quantity)
+    invalidate_discover_cache()
+    invalidate_ship_margin_cache()
+    return {"manual_id": manual_id, "material_efficiency": material_efficiency,
+            "time_efficiency": time_efficiency, "runs": runs, "quantity": quantity}
+
+
+def do_remove_manual_owned_blueprint(manual_id: int) -> dict:
+    storage.delete_manual_owned_blueprint(manual_id)
+    invalidate_discover_cache()
+    invalidate_ship_margin_cache()
+    return {"manual_id": manual_id}
 
 
 def do_list_manual_blueprint_copy_costs() -> dict:

@@ -431,7 +431,12 @@ class CharacterSlotRow:
 @dataclass
 class OwnedBlueprintRow:
     """One owned blueprint (character or corp), aggregated across every
-    location - see production/actions.py do_list_owned_blueprints."""
+    location - see production/actions.py do_list_owned_blueprints. An ESI
+    row (source="esi") still aggregates across locations (location_id=None)
+    exactly as before phase 5; a manual row (source="manual", docs/
+    MANUAL_TRACKING_PLAN.md phase 5) is its own row, one per manual_id, with
+    its own real location_id - manual entries are never merged together or
+    with ESI rows, since each is independently editable/deletable."""
     type_id: int
     type_name: str
     is_original: bool         # True = BPO (runs == -1 in ESI's model), False = BPC
@@ -439,6 +444,9 @@ class OwnedBlueprintRow:
     material_efficiency: int
     time_efficiency: int
     runs: Optional[int]        # None for a BPO (infinite), remaining run count for a BPC
+    source: str = "esi"        # "esi" | "manual"
+    manual_id: Optional[int] = None   # this row's manual_owned_blueprints.id, only set when source == "manual"
+    location_id: Optional[int] = None  # only set when source == "manual" - an ESI row stays location-aggregated
 
 
 @dataclass

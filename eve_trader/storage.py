@@ -1358,6 +1358,119 @@ def manual_stock_at_location(type_id: int, location_id: int) -> float:
     return row[0] if row else 0.0
 
 
+# ------------------------------------------------------------- manual owned blueprints
+def is_known_blueprint(type_id: int) -> bool:
+    """Whether `type_id` is itself a blueprint (appears as a
+    blueprint_type_id in sde_blueprint_products) - lets
+    do_add_manual_owned_blueprint (docs/MANUAL_TRACKING_PLAN.md phase 5)
+    tell "user typed the blueprint's own name" apart from "user typed the
+    product's name" (get_blueprint_for_product handles the latter)."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM sde_blueprint_products WHERE blueprint_type_id = ? LIMIT 1", (type_id,)
+        ).fetchone()
+    return row is not None
+
+
+def insert_manual_owned_blueprint(blueprint_type_id: int, is_original: bool, material_efficiency: int,
+                                   time_efficiency: int, runs: Optional[int], quantity: int,
+                                   location_id: int = 0) -> int:
+    with connect() as conn:
+        row = conn.execute(
+            "INSERT INTO manual_owned_blueprints (blueprint_type_id, is_original, material_efficiency, "
+            "time_efficiency, runs, quantity, location_id) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
+            (blueprint_type_id, is_original, material_efficiency, time_efficiency, runs, quantity, location_id),
+        ).fetchone()
+    return int(row[0])
+
+
+def update_manual_owned_blueprint(id_: int, material_efficiency: int, time_efficiency: int,
+                                   runs: Optional[int], quantity: int) -> None:
+    """Only the mutable fields - blueprint_type_id/is_original/location_id
+    are this row's identity, not editable in place (remove + re-add)."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE manual_owned_blueprints SET material_efficiency=?, time_efficiency=?, runs=?, quantity=? "
+            "WHERE id=?",
+            (material_efficiency, time_efficiency, runs, quantity, id_),
+        )
+
+
+def delete_manual_owned_blueprint(id_: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM manual_owned_blueprints WHERE id = ?", (id_,))
+
+
+def get_manual_owned_blueprint(id_: int) -> Optional[tuple]:
+    """(id, blueprint_type_id, is_original, material_efficiency,
+    time_efficiency, runs, quantity, location_id) for one row, or None."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT id, blueprint_type_id, is_original, material_efficiency, time_efficiency, runs, "
+            "quantity, location_id FROM manual_owned_blueprints WHERE id = ?",
+            (id_,),
+        ).fetchone()
+
+
+def load_manual_owned_blueprints() -> list[tuple]:
+    """(id, blueprint_type_id, blueprint_type_name, is_original,
+    material_efficiency, time_efficiency, runs, quantity, location_id),
+    name-ordered - for the Blueprints page's own manual section
+    (do_list_manual_owned_blueprints/do_list_owned_blueprints)."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT b.id, b.blueprint_type_id, t.type_name, b.is_original, b.material_efficiency, "
+            "b.time_efficiency, b.runs, b.quantity, b.location_id "
+            "FROM manual_owned_blueprints b JOIN sde_types t ON t.type_id = b.blueprint_type_id "
+            "ORDER BY t.type_name"
+        ).fetchall()
+
+
+def manual_bpo_best_me_te(bp_type_id: int) -> Optional[tuple[int, int]]:
+    """Best (highest) ME/TE across every manually-registered BPO of
+    `bp_type_id` - same "originals only" restriction as storage.
+    get_owned_bpo_best_me_te's own ESI-side counterpart."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT MAX(material_efficiency), MAX(time_efficiency) FROM manual_owned_blueprints "
+            "WHERE blueprint_type_id = ? AND is_original = ?",
+            (bp_type_id, True),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    return (row[0], row[1])
+
+
+def manual_bpc_runs(bp_type_id: int, location_id: Optional[int] = None) -> float:
+    """SUM(runs * quantity) across manually-registered BPCs of `bp_type_id`
+    - `location_id=None` sums every location (mirrors storage.
+    available_blueprint_copies' own None branch)."""
+    with connect() as conn:
+        if location_id is None:
+            row = conn.execute(
+                "SELECT SUM(runs * quantity) FROM manual_owned_blueprints "
+                "WHERE blueprint_type_id = ? AND is_original = ?",
+                (bp_type_id, False),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT SUM(runs * quantity) FROM manual_owned_blueprints "
+                "WHERE blueprint_type_id = ? AND is_original = ? AND location_id = ?",
+                (bp_type_id, False, location_id),
+            ).fetchone()
+    return row[0] if row and row[0] is not None else 0.0
+
+
+def manual_has_bpo_at_location(bp_type_id: int, location_id: int) -> bool:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM manual_owned_blueprints WHERE blueprint_type_id = ? AND is_original = ? "
+            "AND location_id = ? LIMIT 1",
+            (bp_type_id, True, location_id),
+        ).fetchone()
+    return row is not None
+
+
 def save_latest_buy_list(rows: list[tuple[int, float]]) -> None:
     """Wholesale-replace this tenant's latest Production buy list
     (plan_production's own buy_list: type_id, quantity). DELETE+INSERT, same

@@ -196,6 +196,26 @@ export const productionApi = {
     ),
   producerCharacters: () => get<T.ProducerCharacter[]>('/api/production/producer-characters'),
   ownedBlueprints: () => get<T.OwnedBlueprintRow[]>('/api/production/blueprints'),
+  // Manual owned blueprints (docs/MANUAL_TRACKING_PLAN.md phase 5) - rows
+  // come back mixed into ownedBlueprints() above (source: 'manual'); these
+  // are the write endpoints for that subset.
+  addManualOwnedBlueprint: (req: {
+    item_name: string
+    is_original: boolean
+    material_efficiency: number
+    time_efficiency: number
+    runs: number | null
+    quantity: number
+    location_id: number
+  }) => post<{ manual_id: number }>('/api/production/manual-blueprints', req),
+  updateManualOwnedBlueprint: (manualId: number, req: {
+    material_efficiency: number
+    time_efficiency: number
+    runs: number | null
+    quantity: number
+  }) => patch<{ manual_id: number }>(`/api/production/manual-blueprints/${manualId}`, req),
+  removeManualOwnedBlueprint: (manualId: number) =>
+    del(`/api/production/manual-blueprints/${manualId}`),
   manualBlueprintCopyCosts: () => get<T.ManualBlueprintCopyCostRow[]>('/api/production/blueprints/manual-copy-costs'),
   addManualBlueprintCopyCost: (itemName: string, purchaseCost: number, runs: number) =>
     post<{ type_id: number; type_name: string; purchase_cost: number; runs: number }>(

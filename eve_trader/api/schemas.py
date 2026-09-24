@@ -341,6 +341,9 @@ class OwnedBlueprintRow(_Base):
     material_efficiency: int
     time_efficiency: int
     runs: Optional[int]
+    source: str = "esi"
+    manual_id: Optional[int] = None
+    location_id: Optional[int] = None
 
 
 class ManualBlueprintCopyCostRow(_Base):

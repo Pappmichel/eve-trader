@@ -1457,21 +1457,33 @@ def _sell_order_qty_in_region(type_id: int, region_id: int) -> float:
 
 
 def _owned_bpo_best_me_te(blueprint_type_id: int) -> Optional[tuple[int, int]]:
+    """docs/MANUAL_TRACKING_PLAN.md phase 5: ME and TE each independently
+    take the max of the ESI-synced value and the manually-registered one
+    (decision 1) - not a max of the *pair*, so a manual ME10 entry still
+    lifts ME even if the ESI-owned BPO's own TE happens to be higher."""
     char_ids, corp_ids = shared_production_owner_ids("blueprints")
-    return storage.get_owned_bpo_best_me_te(
+    esi = storage.get_owned_bpo_best_me_te(
         blueprint_type_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
+    manual = storage.manual_bpo_best_me_te(blueprint_type_id)
+    if esi is None and manual is None:
+        return None
+    esi_me, esi_te = esi or (0, 0)
+    manual_me, manual_te = manual or (0, 0)
+    return (max(esi_me, manual_me), max(esi_te, manual_te))
 
 
 def _available_blueprint_copies(type_id: int, location_id: Optional[int]) -> float:
     char_ids, corp_ids = shared_production_owner_ids("blueprints")
-    return storage.available_blueprint_copies(
+    esi_copies = storage.available_blueprint_copies(
         type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
+    return esi_copies + storage.manual_bpc_runs(type_id, location_id)
 
 
 def _has_bpo_at_location(type_id: int, location_id: int) -> bool:
     char_ids, corp_ids = shared_production_owner_ids("blueprints")
     return storage.has_bpo_at_location(
-        type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
+        type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids
+    ) or storage.manual_has_bpo_at_location(type_id, location_id)
 
 
 def _esi_incoming_industry_qty(type_id: int) -> dict[str, float]:

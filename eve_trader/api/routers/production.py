@@ -191,6 +191,42 @@ def get_owned_blueprints():
     return actions.do_list_owned_blueprints()["rows"]
 
 
+class AddManualOwnedBlueprintRequest(BaseModel):
+    item_name: str
+    is_original: bool
+    material_efficiency: int
+    time_efficiency: int
+    runs: Optional[int] = None
+    quantity: int = 1
+    location_id: int = 0
+
+
+@router.post("/manual-blueprints")
+def add_manual_owned_blueprint(req: AddManualOwnedBlueprintRequest):
+    return _wrap(actions.do_add_manual_owned_blueprint, item_name=req.item_name, is_original=req.is_original,
+                 material_efficiency=req.material_efficiency, time_efficiency=req.time_efficiency,
+                 runs=req.runs, quantity=req.quantity, location_id=req.location_id)
+
+
+class UpdateManualOwnedBlueprintRequest(BaseModel):
+    material_efficiency: int
+    time_efficiency: int
+    runs: Optional[int] = None
+    quantity: int = 1
+
+
+@router.patch("/manual-blueprints/{manual_id}")
+def update_manual_owned_blueprint(manual_id: int, req: UpdateManualOwnedBlueprintRequest):
+    return _wrap(actions.do_update_manual_owned_blueprint, manual_id=manual_id,
+                 material_efficiency=req.material_efficiency, time_efficiency=req.time_efficiency,
+                 runs=req.runs, quantity=req.quantity)
+
+
+@router.delete("/manual-blueprints/{manual_id}")
+def remove_manual_owned_blueprint(manual_id: int):
+    return _wrap(actions.do_remove_manual_owned_blueprint, manual_id=manual_id)
+
+
 @router.get("/blueprints/manual-copy-costs", response_model=list[schemas.ManualBlueprintCopyCostRow])
 def get_manual_blueprint_copy_costs():
     # Storage-only - no live ESI/Goonmetrics.

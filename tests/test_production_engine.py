@@ -85,6 +85,17 @@ def _default_manual_stock_at_location(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _default_manual_blueprints(monkeypatch):
+    # docs/MANUAL_TRACKING_PLAN.md phase 5: _owned_bpo_best_me_te/
+    # _available_blueprint_copies/_has_bpo_at_location now also consult
+    # manual_owned_blueprints - same "default to none, no real DB" reasoning
+    # as _default_manual_stock_at_location above.
+    monkeypatch.setattr(storage, "manual_bpo_best_me_te", lambda bp_type_id: None)
+    monkeypatch.setattr(storage, "manual_bpc_runs", lambda bp_type_id, location_id=None: 0.0)
+    monkeypatch.setattr(storage, "manual_has_bpo_at_location", lambda bp_type_id, location_id: False)
+
+
+@pytest.fixture(autouse=True)
 def _reset_ship_margin_cache():
     # Same reasoning as _reset_discover_cache above, for engine._ship_margin_cache.
     engine.invalidate_ship_margin_cache()
@@ -171,6 +182,43 @@ def test_stock_at_location_does_not_double_count_manual_stock_at_location_none(m
                          lambda type_id, location_id: pytest.fail("must not be called when location_id is None"))
 
     assert engine._stock_at_location(34, None) == 100.0
+
+
+def test_owned_bpo_best_me_te_takes_max_of_esi_and_manual_independently(monkeypatch):
+    # docs/MANUAL_TRACKING_PLAN.md phase 5, decision 1 - ME and TE each take
+    # the max independently, not a max of the pair.
+    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda bp_id, **kwargs: (4, 20))
+    monkeypatch.setattr(storage, "manual_bpo_best_me_te", lambda bp_id: (10, 8))
+
+    assert engine._owned_bpo_best_me_te(690) == (10, 20)
+
+
+def test_owned_bpo_best_me_te_none_when_neither_has_one(monkeypatch):
+    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda bp_id, **kwargs: None)
+    monkeypatch.setattr(storage, "manual_bpo_best_me_te", lambda bp_id: None)
+
+    assert engine._owned_bpo_best_me_te(690) is None
+
+
+def test_owned_bpo_best_me_te_manual_only(monkeypatch):
+    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda bp_id, **kwargs: None)
+    monkeypatch.setattr(storage, "manual_bpo_best_me_te", lambda bp_id: (6, 12))
+
+    assert engine._owned_bpo_best_me_te(690) == (6, 12)
+
+
+def test_available_blueprint_copies_adds_manual_runs(monkeypatch):
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id, **kwargs: 5.0)
+    monkeypatch.setattr(storage, "manual_bpc_runs", lambda type_id, location_id=None: 3.0)
+
+    assert engine._available_blueprint_copies(690, 1000000000001) == 8.0
+
+
+def test_has_bpo_at_location_true_when_only_manual_has_one(monkeypatch):
+    monkeypatch.setattr(storage, "has_bpo_at_location", lambda type_id, location_id, **kwargs: False)
+    monkeypatch.setattr(storage, "manual_has_bpo_at_location", lambda type_id, location_id: True)
+
+    assert engine._has_bpo_at_location(690, 1000000000001) is True
 
 
 @pg_helpers.postgres_required()

@@ -499,6 +499,10 @@ export interface OwnedBlueprintRow {
   material_efficiency: number
   time_efficiency: number
   runs: number | null
+  // docs/MANUAL_TRACKING_PLAN.md phase 5.
+  source: 'esi' | 'manual'
+  manual_id: number | null
+  location_id: number | null
 }
 
 export interface ManualBlueprintCopyCostRow {
