@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import {
-  Container, Title, Text, Group, Stack, Button, TextInput, Checkbox, ActionIcon, Divider, Badge, Tooltip,
+  Container, Title, Text, Group, Stack, Button, TextInput, Checkbox, ActionIcon, Divider, Badge, Tooltip, Switch,
 } from '@mantine/core'
 import { IconArrowLeft, IconTrash } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
@@ -10,6 +10,7 @@ import type { ColumnDef } from '@tanstack/react-table'
 
 import { adminApi, productionApi } from '../../api/client'
 import { useAction } from '../../hooks/useAction'
+import { useBackgroundJob, useBackgroundJobStart } from '../../hooks/useBackgroundJob'
 import { ActionTierIcon, TIER_COPY } from '../../components/ActionTierIcon'
 import { dateTime } from '../../format'
 import type { AdminTenant, AdminUser, ErrorLogRow } from '../../api/types'
@@ -88,6 +89,83 @@ function JitaPriceCacheSection() {
           Refresh Now
         </Button>
       </Tooltip>
+    </div>
+  )
+}
+
+const STRUCTURE_RESOLVE_LABELS = { structure_resolve: 'Resolve Structure Names' }
+const STRUCTURE_RESOLVE_RESULT_KEYS: string[][] = []
+
+// docs/MANUAL_TRACKING_PLAN.md phase 8 - bulk structure-name resolution
+// across every candidate location any tenant's manual/ESI data references
+// (character/corp assets, blueprints, industry jobs, manual stock/
+// blueprints, category locations). Cross-tenant-impacting for the same
+// reason as SdeDataSection/JitaPriceCacheSection above - one background
+// job resolves for every tenant at once, not a per-tenant button. The
+// operator fallback switch is a separate, narrower Default-Tenant-only
+// setting (see admin.do_get/set_structure_resolution_fallback's own
+// docstring) - shown here since both concern the same "who resolves
+// structure names" question, not because they share implementation.
+function StructureResolveSection() {
+  const job = useBackgroundJob({
+    queryKey: ['admin', 'pipeline', 'structure-resolve'],
+    fetchStatus: adminApi.structureResolveStatus,
+    resultKeys: STRUCTURE_RESOLVE_RESULT_KEYS,
+    labels: STRUCTURE_RESOLVE_LABELS,
+    defaultLabel: 'Resolve Structure Names',
+    pollIntervalMs: 1000,
+  })
+  const start = useBackgroundJobStart(job, (force: boolean) => adminApi.startStructureNameResolve(force))
+  const running = Boolean(job.runningStatus || start.isPending)
+
+  const { data: fallback } = useQuery({
+    queryKey: ['admin', 'structure-resolution-fallback'],
+    queryFn: adminApi.structureResolutionFallback,
+  })
+  const setFallback = useAction(
+    'Operator Fallback', (enabled: boolean) => adminApi.setStructureResolutionFallback(enabled),
+    [['admin', 'structure-resolution-fallback']],
+  )
+
+  const result = job.status?.status === 'succeeded' || job.status?.status === 'degraded'
+    ? job.status.result as { candidates?: number; resolved?: number } | undefined
+    : undefined
+
+  return (
+    <div>
+      <Title order={4} mb="xs">Structure Names</Title>
+      <Text size="sm" c="dimmed" mb="xs">
+        Resolves player-structure names (Upwell structure IDs, not NPC stations) for every location referenced
+        across every tenant&apos;s assets, blueprints, industry jobs, and manual entries - shared cache, not
+        per-tenant.
+      </Text>
+      <Group gap="xs" mb="xs">
+        <Button size="xs" variant="default" onClick={() => start.mutate(false)} loading={running} disabled={running}>
+          Resolve New
+        </Button>
+        <Button size="xs" variant="default" onClick={() => start.mutate(true)} loading={running} disabled={running}>
+          Re-resolve All
+        </Button>
+      </Group>
+      {running && (
+        <Text size="sm" c="dimmed" mb="xs">{job.formatProgress(job.status?.progress, job.jobName)}</Text>
+      )}
+      {!running && job.status?.status === 'failed' && (
+        <Text size="sm" c="danger" mb="xs">{job.status.error || 'Structure name resolution failed.'}</Text>
+      )}
+      {!running && result && (
+        <Text size="sm" c="dimmed" mb="xs">
+          Resolved {result.resolved ?? 0} of {result.candidates ?? 0} candidate(s).
+        </Text>
+      )}
+      <Switch
+        mt="sm"
+        label="Operator fallback"
+        description="While on, structure names are resolved using ANY character with the capability ticked on ANY tenant - not just the tenant that owns the location. Only affects the Default Tenant's own operator characters; other tenants are unaffected. Leave off unless you understand the cross-tenant exposure."
+        checked={fallback?.global_structure_resolution_fallback ?? false}
+        onChange={(e) => setFallback.mutate(e.currentTarget.checked)}
+        disabled={setFallback.isPending}
+      />
     </div>
   )
 }
@@ -354,6 +432,8 @@ export default function AdminPage() {
         <SdeDataSection />
         <Divider />
         <JitaPriceCacheSection />
+        <Divider />
+        <StructureResolveSection />
         <Divider />
         <BackupsSection />
         <Divider />

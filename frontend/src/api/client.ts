@@ -581,6 +581,12 @@ export const adminApi = {
     get<{ global_structure_resolution_fallback: boolean }>('/api/admin/structures/fallback'),
   setStructureResolutionFallback: (enabled: boolean) =>
     put<{ global_structure_resolution_fallback: boolean }>('/api/admin/structures/fallback', { enabled }),
+  // docs/MANUAL_TRACKING_PLAN.md phase 8 - bulk structure-name resolution,
+  // same "starts a background job, poll status separately" shape as
+  // previewSde/previewSdeStatus above.
+  startStructureNameResolve: (force: boolean) =>
+    post<T.PipelineRunStatus>('/api/admin/structures/resolve', { force }),
+  structureResolveStatus: () => get<T.PipelineRunStatus>('/api/admin/structures/resolve/status'),
 }
 
 // -------------------------------------------------------------- characters

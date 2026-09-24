@@ -1,6 +1,6 @@
 # Manual tracking for Production – implementation plan
 
-Status: phase 0, 2, 3, 4, 5, 6, and 7 done · 2026-09-24 (phase 1 landed
+Status: phase 0, 1, 2, 3, 4, 5, 6, 7, and 8 done · 2026-09-24 (phase 1 landed
 separately, see PR #196)
 
 Goal: make the Production tool fully usable without an ESI login. Manual data
@@ -330,35 +330,37 @@ phase 8).
 
 - `do_start_structure_name_resolve(force: bool)` starts a background job with
   progress reporting through
-  `pipeline_runner.start_job(TOOL_ADMIN, JOB_STRUCTURE_RESOLVE, …)`.
+  `pipeline_runner.start_job(TOOL_ADMIN, JOB_STRUCTURE_RESOLVE, …)`
+  (done, phase 8).
 - **Candidates:** every `location_id >= STRUCTURE_ID_MIN` from the admin
   tenant's own data – `character_assets`, `corp_assets`,
   `character_blueprints`, `corp_blueprints`, the jobs' `output_location_id`,
   the category locations, the config locations, and the locations from manual
-  stock and manual blueprints.
+  stock and manual blueprints (`storage.candidate_structure_location_ids` +
+  `admin._structure_resolve_candidates`, done, phase 8).
 - `force=False` resolves only what isn't in the global cache yet;
-  `force=True` re-resolves everything.
+  `force=True` re-resolves everything (done, phase 8).
 - Resolution uses the admin tenant's characters (the
   `structure_name_resolution` capability). The result goes into the own cache
-  **and** the global cache. The click counts as consent (decision 6b).
+  **and** the global cache. The click counts as consent (decision 6b)
+  (done, phase 8).
 - **Small required change:** `pipeline_runner.job_status(tool)` gets an
   optional `job_name` parameter. Otherwise the SDE preview and structure
   resolution share the same admin status slot and each page would show the
   other's run. `storage.get_latest_pipeline_run` can already filter by
-  `job_name` + `tool`.
+  `job_name` + `tool` (done, phase 8).
 - Endpoints: `POST /api/admin/structures/resolve` (`{force}`) and
-  `GET /api/admin/structures/resolve/status`.
+  `GET /api/admin/structures/resolve/status` (done, phase 8).
 - **"Operator fallback for structure names" switch** (question 1, done in
-  phase 2 - everything else on this page is still phase 8): a Default
-  Tenant settings field, e.g.
+  phase 2): a Default Tenant settings field, e.g.
   `ProductionConfig.global_structure_resolution_fallback: bool = False`,
   read/written via `admin.do_get/set_structure_resolution_fallback`, read
   inside `enter_tenant(DEFAULT_TENANT_ID)`, so it always holds the Default
   Tenant's value. Other tenants can neither see nor set it. The bulk
-  resolution via the admin click does not depend on this switch, and its own
-  UI section (with the fallback switch's own toggle/warning text) is bundled
-  into phase 8, not built yet.
-  Endpoints: `GET/PUT /api/admin/structures/fallback` (done).
+  resolution via the admin click does not depend on this switch.
+  Endpoints: `GET/PUT /api/admin/structures/fallback` (done, phase 2). Its
+  own UI section (toggle + warning text, alongside "Resolve New"/"Re-resolve
+  All" buttons and progress) is on AdminPage.tsx (done, phase 8).
 
 ---
 
@@ -412,7 +414,7 @@ New group `eve-trader production manual …`. Every command takes
 | `pages/production/Blueprints.tsx` (done, phase 5) | new **"Manual blueprints"** section (form with the hint texts from decision 14); source badge in the owned table; edit/delete only for manual rows |
 | `pages/production/Jobs.tsx` (done, phase 6) | form (item, runs/units toggle, quantity, location, ready at); source badge; "done" marker; "Complete" button with a confirmable target location; row keys from `source:id` |
 | Logistics page | names through the extended lookup chain (global cache and manual names) |
-| `pages/admin/AdminPage.tsx` | "Resolve structure names" section with "Resolve new" and "Re-resolve all" buttons plus progress; also the "Operator fallback" switch with a warning text |
+| `pages/admin/AdminPage.tsx` (done, phase 8) | "Structure Names" section with "Resolve New" and "Re-resolve All" buttons plus progress (`useBackgroundJob`, same pattern as SdePreviewPage.tsx); also the "Operator fallback" switch with a warning text |
 
 ---
 
@@ -437,7 +439,12 @@ New group `eve-trader production manual …`. Every command takes
   blueprints.
 - **Router:** module-level monkeypatch per project convention; paste size limit.
 - **Admin:** candidate collection, force vs. not force, writes to the global
-  cache, `job_status` with the `job_name` filter.
+  cache, `job_status` with the `job_name` filter (done, phase 8 -
+  `tests/test_admin_structure_resolve.py`,
+  `tests/test_candidate_structure_location_ids.py`, the new
+  `test_job_status_job_name_narrows_running_and_latest_lookup` in
+  `tests/test_pipeline_runner.py`, and the router tests in
+  `tests/test_admin_router.py`).
 - **Resolution chain:** fallback only with the switch on; tenant B's context
   is restored correctly after the fallback (also on error); no token appears
   in the response; a regular tenant's resolution lands in the global cache; a
@@ -477,7 +484,7 @@ New group `eve-trader production manual …`. Every command takes
 | 5 | Done. Manual blueprints | 2 |
 | 6 | Done. Manual jobs incl. Complete | 3 |
 | 7 | Done. Listed quantities | – |
-| 8 | Admin bulk resolution | 2 |
+| 8 | Done. Admin bulk resolution | 2 |
 | 9 | CLI | 3–7 |
 | 10 | Cancelled. Phase 0 was negative: no blueprint paste and no My Orders paste. | – |
 

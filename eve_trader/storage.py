@@ -1593,6 +1593,37 @@ def manual_listed_stock_qty(type_id: int, market: str) -> float:
     return row[0] if row else 0.0
 
 
+def candidate_structure_location_ids() -> set[int]:
+    """Every distinct location_id this tenant's own data references
+    anywhere - character/corp assets and blueprints, industry jobs' output
+    location, the Logistik category locations (both the single per-category
+    assignment and the saved quick-switch options), and manual stock/
+    blueprint locations. Unfiltered (includes ordinary NPC station ids, not
+    just structures) - admin.py's structure-resolution candidate collection
+    (docs/MANUAL_TRACKING_PLAN.md phase 8) filters to `>= STRUCTURE_ID_MIN`
+    itself and adds the config locations (home/distribution/invention),
+    which live in the already-resolved ProductionConfig, not a table."""
+    ids: set[int] = set()
+    with connect() as conn:
+        for table in ("character_assets", "corp_assets", "character_blueprints", "corp_blueprints"):
+            for (loc,) in conn.execute(f"SELECT DISTINCT location_id FROM {table} WHERE location_id IS NOT NULL"):
+                ids.add(loc)
+        for table in ("character_industry_jobs", "corp_industry_jobs"):
+            for (loc,) in conn.execute(
+                f"SELECT DISTINCT output_location_id FROM {table} WHERE output_location_id IS NOT NULL"
+            ):
+                ids.add(loc)
+        for (loc,) in conn.execute("SELECT DISTINCT location_id FROM job_category_locations"):
+            ids.add(loc)
+        for (loc,) in conn.execute("SELECT DISTINCT location_id FROM category_location_options"):
+            ids.add(loc)
+        for (loc,) in conn.execute("SELECT DISTINCT location_id FROM manual_stock"):
+            ids.add(loc)
+        for (loc,) in conn.execute("SELECT DISTINCT location_id FROM manual_owned_blueprints"):
+            ids.add(loc)
+    return ids
+
+
 def save_latest_buy_list(rows: list[tuple[int, float]]) -> None:
     """Wholesale-replace this tenant's latest Production buy list
     (plan_production's own buy_list: type_id, quantity). DELETE+INSERT, same

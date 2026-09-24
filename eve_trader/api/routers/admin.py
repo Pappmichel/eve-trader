@@ -135,3 +135,20 @@ class SetStructureResolutionFallbackRequest(BaseModel):
 @router.put("/structures/fallback")
 def set_structure_resolution_fallback(req: SetStructureResolutionFallbackRequest):
     return _wrap(admin.do_set_structure_resolution_fallback, enabled=req.enabled)
+
+
+# docs/MANUAL_TRACKING_PLAN.md phase 8 - bulk structure-name resolution,
+# same "starts a background job, poll status separately" shape as
+# /sde/preview above.
+class ResolveStructuresRequest(BaseModel):
+    force: bool = False
+
+
+@router.post("/structures/resolve")
+def start_structure_name_resolve(req: ResolveStructuresRequest):
+    return _wrap(admin.do_start_structure_name_resolve, force=req.force)
+
+
+@router.get("/structures/resolve/status")
+def structure_resolve_status():
+    return _wrap(admin.do_structure_resolve_status)
