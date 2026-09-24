@@ -32,7 +32,22 @@ export default function BuildList() {
   const totalHours = useMemo(() => filtered.reduce((sum, e) => sum + e.job_time_seconds / 3600, 0), [filtered])
 
   const columns = useMemo<ColumnDef<BuildJobEntry, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 240 },
+    {
+      header: 'Item', accessorKey: 'type_name', size: 240,
+      cell: (i) => {
+        const row = i.row.original
+        return (
+          <Stack gap={2}>
+            <Text>{row.type_name}</Text>
+            {row.recipe_source === 'alchemy' && (
+              <Text size="xs" c="dimmed" style={{ whiteSpace: 'normal' }}>
+                ⚗ Alchemy recipe - cheaper than the normal reaction; reprocess the output to get the target material
+              </Text>
+            )}
+          </Stack>
+        )
+      },
+    },
     { header: 'Category', accessorKey: 'job_category', size: 160, cell: (i) => i.getValue() ?? '–' },
     { header: 'Activity', accessorKey: 'activity', size: 130 },
     { header: 'Job Runs', accessorKey: 'job_runs', size: 100, cell: (i) => qty(i.getValue()) },

@@ -254,6 +254,7 @@ export interface BuildJobEntry {
   job_category: string | null
   job_cost: number | null
   margin: number | null
+  recipe_source: string | null
 }
 
 export interface LogisticsRow {
@@ -334,6 +335,7 @@ export interface AssetPlanJob {
   unlock_time_seconds: number
   recommended_slots: number | null
   days_to_complete_at_recommended_slots: number | null
+  recipe_source: string | null
   blockers: AssetPlanBlocker[]
 }
 

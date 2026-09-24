@@ -166,8 +166,9 @@ export default function ProductionSettings() {
         checked={form.alchemy_reactions_enabled}
         onChange={(e) => set('alchemy_reactions_enabled', e.currentTarget.checked)} />
       <Text size="xs" c="dimmed">
-        Informational only — Build Candidates for Reaction items show a side-by-side ISK/hour comparison
-        against the &quot;Unrefined&quot; alchemy path. This never changes which recipe is used to build.
+        When on, the Buy/Build list sources a Reaction product via its &quot;Unrefined&quot; alchemy formula
+        whenever that is cheaper, and counts the reprocessing byproduct as stock against the rest of the plan.
+        Build Candidates additionally shows a side-by-side ISK/hour comparison for Reaction items.
       </Text>
 
       <Button mt="md" w={240} onClick={() => save.mutate(form)} loading={save.isPending}>
