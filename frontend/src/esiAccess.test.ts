@@ -45,7 +45,7 @@ describe('deriveCellState', () => {
     })
     expect(cell.kind).toBe('some')
     expect(cell.sharedCount).toBe(2)
-    expect(cell.capableCount).toBe(4)
+    expect(cell.capableCount).toBe(5)
   })
 
   it('is all when every consuming tool is shared', () => {
@@ -54,6 +54,7 @@ describe('deriveCellState', () => {
       { owner_type: 'character', owner_id: 1, data_kind: 'assets', tool_key: 'doctrine' },
       { owner_type: 'character', owner_id: 1, data_kind: 'assets', tool_key: 'sorting' },
       { owner_type: 'character', owner_id: 1, data_kind: 'assets', tool_key: 'trading' },
+      { owner_type: 'character', owner_id: 1, data_kind: 'assets', tool_key: 'portfolio' },
     ]
     const cell = deriveCellState({
       ownerType: 'character', ownerId: 1, dataKind: 'assets',

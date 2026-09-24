@@ -20,7 +20,7 @@ export interface AccessCapability {
 export const OWNED_DATA_KINDS: readonly OwnedDataKind[] = [
   {
     key: 'assets', label: 'Assets', group: 1,
-    consumingTools: ['production', 'doctrine', 'sorting', 'trading'],
+    consumingTools: ['production', 'doctrine', 'sorting', 'trading', 'portfolio'],
     corpRoles: ['Director'],
   },
   {
@@ -30,7 +30,7 @@ export const OWNED_DATA_KINDS: readonly OwnedDataKind[] = [
   },
   {
     key: 'blueprints', label: 'Blueprints', group: 1,
-    consumingTools: ['production'],
+    consumingTools: ['production', 'portfolio'],
     corpRoles: ['Director'],
   },
   {
@@ -46,6 +46,11 @@ export const OWNED_DATA_KINDS: readonly OwnedDataKind[] = [
   {
     key: 'wallet', label: 'Wallet', group: 1,
     consumingTools: ['trading'],
+    corpRoles: ['Accountant', 'Junior_Accountant'],
+  },
+  {
+    key: 'wallet_balance', label: 'Wallet Balance', group: 1,
+    consumingTools: ['portfolio'],
     corpRoles: ['Accountant', 'Junior_Accountant'],
   },
   {
@@ -82,9 +87,12 @@ export const TOOL_LABELS: Record<string, string> = {
   doctrine: 'Doctrine',
   station_trading: 'Station Trading',
   sorting: 'Sorting',
+  portfolio: 'Portfolio',
 }
 
-export const CONSUMING_TOOL_KEYS = ['trading', 'production', 'doctrine', 'station_trading', 'sorting'] as const
+export const CONSUMING_TOOL_KEYS = [
+  'trading', 'production', 'doctrine', 'station_trading', 'sorting', 'portfolio',
+] as const
 
 export function kindByKey(key: string): OwnedDataKind | undefined {
   return OWNED_DATA_KINDS.find((k) => k.key === key)
