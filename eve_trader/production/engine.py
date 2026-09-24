@@ -1427,9 +1427,21 @@ def invalidate_shared_production_owner_ids_cache(all_tenants: bool = False) -> N
 # the underlying storage.py function from this module goes through one of
 # these instead, so a call site cannot accidentally read unfiltered.
 def _stock_at_location(type_id: int, location_id: Optional[int], **kwargs) -> float:
+    """docs/MANUAL_TRACKING_PLAN.md phase 3 (decision 6): manual stock is
+    only added here when `location_id` is an actual location - callers that
+    pass None (_current_stock/_stock_on_hand's own "every location" scan via
+    manual_stock.get(type_id, 0), fed by storage.load_manual_stock's
+    all-locations total) already have manual stock folded into their own
+    total a different way, so adding it here too would double-count it.
+    This is what actually lets Logistics/Invention (both of which call this
+    with a real location_id) see manual stock at their own specific
+    location - they never go through _current_stock/_stock_on_hand at all."""
     char_ids, corp_ids = shared_production_owner_ids("assets")
-    return storage.esi_stock_at_location(
+    total = storage.esi_stock_at_location(
         type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids, **kwargs)
+    if location_id is not None:
+        total += storage.manual_stock_at_location(type_id, location_id)
+    return total
 
 
 def _sell_order_qty_at_location(type_id: int, location_id: int) -> float:

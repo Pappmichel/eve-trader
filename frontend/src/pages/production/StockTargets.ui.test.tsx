@@ -12,6 +12,7 @@ vi.mock('../../api/client', () => ({
   productionApi: {
     stockTargets: vi.fn(),
     manualStock: vi.fn(),
+    manualStockEntries: vi.fn(),
     manualBuildBuy: vi.fn(),
     selectedDecryptors: vi.fn(),
     decryptors: vi.fn(),
@@ -22,10 +23,17 @@ vi.mock('../../api/client', () => ({
     removeStockTarget: vi.fn(),
     updateStockTarget: vi.fn(),
     setManualStock: vi.fn(),
+    addManualStockEntry: vi.fn(),
+    removeManualStockEntry: vi.fn(),
     setManualBuildBuy: vi.fn(),
     clearManualBuildBuy: vi.fn(),
     setSelectedDecryptor: vi.fn(),
     clearSelectedDecryptor: vi.fn(),
+    // LocationPicker's own dependencies (docs/MANUAL_TRACKING_PLAN.md phase 3) -
+    // ManualStockEntriesSection's add form renders one.
+    searchLocations: vi.fn(),
+    setManualLocationName: vi.fn(),
+    resolveStructureName: vi.fn(),
   },
 }))
 
@@ -50,6 +58,8 @@ describe('Stock Targets delete dialog', () => {
       { type_id: 34, type_name: 'Tritanium', backup_stock: 10, home_market_stock: 5, jita_market_stock: null },
     ])
     vi.mocked(productionApi.manualStock).mockResolvedValue({ '34': 100 })
+    vi.mocked(productionApi.manualStockEntries).mockResolvedValue([])
+    vi.mocked(productionApi.searchLocations).mockResolvedValue([])
     vi.mocked(productionApi.manualBuildBuy).mockResolvedValue({ '34': 'Build' })
     vi.mocked(productionApi.selectedDecryptors).mockResolvedValue({})
     vi.mocked(productionApi.decryptors).mockResolvedValue([])

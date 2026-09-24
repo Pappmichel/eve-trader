@@ -156,9 +156,27 @@ CREATE POLICY tenant_isolation ON stock_targets
 CREATE TABLE IF NOT EXISTS manual_stock (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
     type_id INTEGER NOT NULL,
+    location_id BIGINT NOT NULL DEFAULT 0,   -- 0 = "no location"
     count REAL DEFAULT 0,
-    PRIMARY KEY (tenant_id, type_id)
+    PRIMARY KEY (tenant_id, type_id, location_id)
 );
+-- docs/MANUAL_TRACKING_PLAN.md phase 3 (decision 15): widened from
+-- (tenant_id, type_id) so the same type can have separate manual-stock
+-- entries per location. Idempotent for an already-provisioned DB - existing
+-- rows end up at location_id = 0 ("no location"), same total as before
+-- (load_manual_stock still SUMs across locations, see storage.py).
+ALTER TABLE manual_stock ADD COLUMN IF NOT EXISTS location_id BIGINT NOT NULL DEFAULT 0;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint c
+    JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+    WHERE c.conrelid = 'manual_stock'::regclass AND c.contype = 'p' AND a.attname = 'location_id'
+  ) THEN
+    ALTER TABLE manual_stock DROP CONSTRAINT manual_stock_pkey;
+    ALTER TABLE manual_stock ADD PRIMARY KEY (tenant_id, type_id, location_id);
+  END IF;
+END $$;
 ALTER TABLE manual_stock ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON manual_stock;
 CREATE POLICY tenant_isolation ON manual_stock

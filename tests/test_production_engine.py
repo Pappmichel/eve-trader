@@ -72,6 +72,19 @@ def _stub_shared_production_owner_ids(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _default_manual_stock_at_location(monkeypatch):
+    # docs/MANUAL_TRACKING_PLAN.md phase 3: _stock_at_location now also
+    # calls storage.manual_stock_at_location whenever location_id is not
+    # None - almost every test in this file monkeypatches storage.
+    # esi_stock_at_location directly and has no tenant/Postgres context at
+    # all, so default this to "no manual stock" the same way
+    # _stub_shared_production_owner_ids above defaults the sharing
+    # resolver. A test that specifically wants manual stock at a location
+    # overrides this fixture's monkeypatch itself.
+    monkeypatch.setattr(storage, "manual_stock_at_location", lambda type_id, location_id: 0.0)
+
+
+@pytest.fixture(autouse=True)
 def _reset_ship_margin_cache():
     # Same reasoning as _reset_discover_cache above, for engine._ship_margin_cache.
     engine.invalidate_ship_margin_cache()
@@ -135,6 +148,29 @@ def test_current_stock_checks_every_location_not_a_curated_set(monkeypatch):
 
     assert calls == [{"location_id": None, "exclude": 1000000000001}]
     assert total == 1_572_335.0
+
+
+def test_stock_at_location_adds_manual_stock_when_location_id_is_given(monkeypatch):
+    # docs/MANUAL_TRACKING_PLAN.md phase 3, decision 6 - this is what
+    # actually lets Logistics/Invention (both of which call
+    # _stock_at_location with a real location_id) see manual stock at
+    # their own specific location.
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, **kwargs: 100.0)
+    monkeypatch.setattr(storage, "manual_stock_at_location", lambda type_id, location_id: 25.0)
+
+    assert engine._stock_at_location(34, 1000000000001) == 125.0
+
+
+def test_stock_at_location_does_not_double_count_manual_stock_at_location_none(monkeypatch):
+    # _current_stock/_stock_on_hand already add manual stock through their
+    # own manual_stock dict (storage.load_manual_stock's all-locations
+    # total) when they call _stock_at_location(type_id, None, ...) - adding
+    # it again here would double-count it.
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, **kwargs: 100.0)
+    monkeypatch.setattr(storage, "manual_stock_at_location",
+                         lambda type_id, location_id: pytest.fail("must not be called when location_id is None"))
+
+    assert engine._stock_at_location(34, None) == 100.0
 
 
 @pg_helpers.postgres_required()

@@ -37,7 +37,10 @@ pytestmark = pg_helpers.postgres_required()
 # (table, insert_columns, row_a, row_b, update_col) - `insert_columns[0]` is
 # always the PK column that collides across tenants pre-widening.
 _SIMPLE_UPDATE_TABLES = [
-    ("manual_stock", ("type_id", "count"), (34, 100), (34, 200), "count"),
+    # manual_stock is NOT here - its real PK is 3 columns wide as of phase 3
+    # (tenant_id, type_id, location_id, decision 15), so its own conflict
+    # target doesn't fit this helper's single-extra-column shape. See its
+    # dedicated test below instead.
     ("manual_build_buy", ("type_id", "decision"), (34, "Build"), (34, "Buy"), "decision"),
     ("selected_decryptors", ("type_id", "decryptor"), (34, "Accelerant"), (34, "Attenuation"), "decryptor"),
     ("job_category_locations", ("category", "location_id"), ("Reactions", 1000000000001), ("Reactions", 1000000000002), "location_id"),
@@ -47,7 +50,9 @@ _SIMPLE_UPDATE_TABLES = [
     ("candidate_search_cursor", ("id", "offset_value"), (1, 10), (1, 20), "offset_value"),
 ]
 
-_ALL_TABLES = [t for t, *_ in _SIMPLE_UPDATE_TABLES] + ["shortlist_skip_streak", "category_location_options", "shortlist"]
+_ALL_TABLES = [t for t, *_ in _SIMPLE_UPDATE_TABLES] + [
+    "shortlist_skip_streak", "category_location_options", "shortlist", "manual_stock",
+]
 
 
 @pytest.fixture(autouse=True)
@@ -142,6 +147,53 @@ def test_category_location_options_do_nothing_stays_tenant_scoped(tenant_pair):
     with storage.tenant_context(tenant_b), storage.connect() as conn:
         rows = conn.execute("SELECT category, location_id FROM category_location_options").fetchall()
     assert rows == [("Reactions", 1000000000005)]
+
+
+def test_manual_stock_two_tenants_can_upsert_the_same_key_without_colliding(tenant_pair):
+    """Mirrors storage.upsert_manual_stock's own widened conflict target
+    (tenant_id, type_id, location_id) - phase 3's PK widening on top of the
+    original (tenant_id, type_id) (decision 15)."""
+    tenant_a, tenant_b = tenant_pair
+    upsert = (
+        "INSERT INTO manual_stock (type_id, count, location_id) VALUES (?, ?, ?) "
+        "ON CONFLICT(tenant_id, type_id, location_id) DO UPDATE SET count=excluded.count"
+    )
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
+        conn.execute(upsert, (34, 100, 0))
+    with storage.tenant_context(tenant_b), storage.connect() as conn:
+        conn.execute(upsert, (34, 200, 0))
+    # No exception on either INSERT is itself part of what's being proven -
+    # a shared/non-widened PK would raise a duplicate-key error on the
+    # second insert.
+
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
+        row = conn.execute("SELECT count FROM manual_stock WHERE type_id = 34 AND location_id = 0").fetchone()
+    assert row == (100,)
+
+    with storage.tenant_context(tenant_b), storage.connect() as conn:
+        row = conn.execute("SELECT count FROM manual_stock WHERE type_id = 34 AND location_id = 0").fetchone()
+    assert row == (200,)
+
+
+def test_manual_stock_same_type_id_different_locations_do_not_collide(tenant_pair):
+    """The whole point of phase 3's PK widening: the same tenant can now
+    have separate manual-stock rows for the same type_id at two different
+    locations - upsert_manual_stock at one location must not clobber the
+    other's count."""
+    tenant_a, _tenant_b = tenant_pair
+    upsert = (
+        "INSERT INTO manual_stock (type_id, count, location_id) VALUES (?, ?, ?) "
+        "ON CONFLICT(tenant_id, type_id, location_id) DO UPDATE SET count=excluded.count"
+    )
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
+        conn.execute(upsert, (34, 100, 1000000000001))
+        conn.execute(upsert, (34, 200, 1000000000002))
+        conn.execute(upsert, (34, 150, 1000000000001))  # updates the first location only
+
+        rows = conn.execute(
+            "SELECT location_id, count FROM manual_stock WHERE type_id = 34 ORDER BY location_id"
+        ).fetchall()
+    assert rows == [(1000000000001, 150), (1000000000002, 200)]
 
 
 def test_shortlist_coalesce_upsert_stays_tenant_scoped(tenant_pair):

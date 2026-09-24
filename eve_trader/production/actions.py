@@ -234,15 +234,45 @@ def do_remove_stock_target(type_id: int) -> dict:
     return {"removed": type_id}
 
 
-def do_set_manual_stock(type_id: int, count: float) -> dict:
+def do_set_manual_stock(type_id: int, count: float, location_id: int = 0) -> dict:
     # The UI's NumberInput already enforces min=0, but the API itself had no
     # boundary check (confirmed: a raw negative POST was silently accepted) -
     # a negative override would poison _current_stock for that item across
     # every stock-target/plan/stock-value computation that reads it.
     if count < 0:
         raise ActionError("Current stock cannot be negative.")
-    storage.upsert_manual_stock(type_id, count)
-    return {"type_id": type_id, "count": count}
+    storage.upsert_manual_stock(type_id, count, location_id)
+    return {"type_id": type_id, "count": count, "location_id": location_id}
+
+
+def do_list_manual_stock_entries() -> dict:
+    """One row per (type, location) - docs/MANUAL_TRACKING_PLAN.md phase 3,
+    decision 9 - for the Stock Targets page's own "Manual stock" table,
+    separate from the existing per-type total (do_set_manual_stock's own
+    location_id=0-default single value)."""
+    return {"rows": [
+        {"type_id": type_id, "type_name": type_name, "location_id": location_id, "count": count}
+        for type_id, type_name, location_id, count in storage.load_manual_stock_entries()
+    ]}
+
+
+def do_add_manual_stock_entry(item_name: str, count: float, location_id: int = 0) -> dict:
+    if count < 0:
+        raise ActionError("Count cannot be negative.")
+    matches = storage.search_sde_types(item_name, limit=2)
+    exact = [m for m in matches if m[1].lower() == item_name.strip().lower()]
+    if not exact:
+        if not matches:
+            raise ActionError(f"No type found for '{item_name}'. Refresh SDE first?")
+        raise ActionError(f"No exact match for '{item_name}'. Did you mean: {matches[0][1]}?")
+    type_id, resolved_name = exact[0]
+    storage.upsert_manual_stock(type_id, count, location_id)
+    return {"type_id": type_id, "type_name": resolved_name, "location_id": location_id, "count": count}
+
+
+def do_remove_manual_stock_entry(type_id: int, location_id: int = 0) -> dict:
+    storage.delete_manual_stock(type_id, location_id)
+    return {"type_id": type_id, "location_id": location_id}
 
 
 def do_set_manual_build_buy(type_id: int, decision: str) -> dict:

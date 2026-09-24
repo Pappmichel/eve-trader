@@ -239,6 +239,83 @@ def test_get_stock_value_action_error_maps_to_400(monkeypatch):
     assert resp.json() == {"detail": "Keine Stock-Ziele konfiguriert."}
 
 
+# ------------------------------------------ manual stock (phase 3)
+def test_set_manual_stock_passes_location_id(monkeypatch):
+    captured = {}
+
+    def _set(type_id, count, location_id):
+        captured.update(type_id=type_id, count=count, location_id=location_id)
+        return {"type_id": type_id, "count": count, "location_id": location_id}
+    monkeypatch.setattr(production_actions, "do_set_manual_stock", _set)
+
+    resp = client.post("/api/production/manual-stock", json={"type_id": 34, "count": 100, "location_id": 1000000000001})
+
+    assert resp.status_code == 200
+    assert captured == {"type_id": 34, "count": 100, "location_id": 1000000000001}
+
+
+def test_set_manual_stock_defaults_location_id_to_zero(monkeypatch):
+    captured = {}
+
+    def _set(type_id, count, location_id):
+        captured.update(location_id=location_id)
+        return {}
+    monkeypatch.setattr(production_actions, "do_set_manual_stock", _set)
+
+    resp = client.post("/api/production/manual-stock", json={"type_id": 34, "count": 100})
+
+    assert resp.status_code == 200
+    assert captured == {"location_id": 0}
+
+
+def test_get_manual_stock_entries_serializes_rows(monkeypatch):
+    monkeypatch.setattr(production_actions, "do_list_manual_stock_entries", lambda: {"rows": [
+        {"type_id": 34, "type_name": "Tritanium", "location_id": 1000000000001, "count": 100.0},
+    ]})
+
+    resp = client.get("/api/production/manual-stock/entries")
+
+    assert resp.status_code == 200
+    assert resp.json() == [{"type_id": 34, "type_name": "Tritanium", "location_id": 1000000000001, "count": 100.0}]
+
+
+def test_add_manual_stock_entry_passes_body(monkeypatch):
+    captured = {}
+
+    def _add(item_name, count, location_id):
+        captured.update(item_name=item_name, count=count, location_id=location_id)
+        return {"type_id": 34, "type_name": item_name, "location_id": location_id, "count": count}
+    monkeypatch.setattr(production_actions, "do_add_manual_stock_entry", _add)
+
+    resp = client.post("/api/production/manual-stock/entries",
+                        json={"item_name": "Tritanium", "count": 100, "location_id": 1000000000001})
+
+    assert resp.status_code == 200
+    assert captured == {"item_name": "Tritanium", "count": 100, "location_id": 1000000000001}
+
+
+def test_add_manual_stock_entry_action_error_maps_to_400(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise ActionError("No type found for 'Bogus Item'. Refresh SDE first?")
+    monkeypatch.setattr(production_actions, "do_add_manual_stock_entry", _raise)
+
+    resp = client.post("/api/production/manual-stock/entries", json={"item_name": "Bogus Item", "count": 1})
+
+    assert resp.status_code == 400
+    assert resp.json() == {"detail": "No type found for 'Bogus Item'. Refresh SDE first?"}
+
+
+def test_remove_manual_stock_entry_passes_path_params(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(production_actions, "do_remove_manual_stock_entry",
+                         lambda type_id, location_id: captured.update(type_id=type_id, location_id=location_id))
+
+    resp = client.delete("/api/production/manual-stock/entries/34/1000000000001")
+
+    assert resp.status_code == 200
+    assert captured == {"type_id": 34, "location_id": 1000000000001}
+
+
 def test_set_character_slot_excluded_passes_path_and_body(monkeypatch):
     # GitHub issue #39.
     captured = {}

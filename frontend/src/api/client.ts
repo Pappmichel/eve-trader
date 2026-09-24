@@ -164,6 +164,7 @@ export const productionApi = {
   sdeFreshness: () => get<T.SdeFreshness>('/api/production/sde/freshness'),
   stockTargets: () => get<T.StockTarget[]>('/api/production/stock-targets'),
   manualStock: () => get<Record<string, number>>('/api/production/manual-stock'),
+  manualStockEntries: () => get<T.ManualStockEntry[]>('/api/production/manual-stock/entries'),
   manualBuildBuy: () => get<Record<string, string>>('/api/production/manual-build-buy'),
   selectedDecryptors: () => get<Record<string, string>>('/api/production/selected-decryptors'),
   plan: () => get<T.ProductionPlan | null>('/api/production/plan'),
@@ -294,8 +295,17 @@ export const productionApi = {
     home_market_stock?: number | null
     jita_market_stock?: number | null
   }) => patch<T.StockTarget>(`/api/production/stock-targets/${typeId}`, updates),
-  setManualStock: (typeId: number, count: number) =>
-    post('/api/production/manual-stock', { type_id: typeId, count }),
+  setManualStock: (typeId: number, count: number, locationId = 0) =>
+    post('/api/production/manual-stock', { type_id: typeId, count, location_id: locationId }),
+  // Manual stock table (docs/MANUAL_TRACKING_PLAN.md phase 3, decision 9) -
+  // separate per-(item, location) entries, as opposed to setManualStock's
+  // own single per-type total above.
+  addManualStockEntry: (itemName: string, count: number, locationId: number) =>
+    post<T.ManualStockEntry>('/api/production/manual-stock/entries', {
+      item_name: itemName, count, location_id: locationId,
+    }),
+  removeManualStockEntry: (typeId: number, locationId: number) =>
+    del(`/api/production/manual-stock/entries/${typeId}/${locationId}`),
   setManualBuildBuy: (typeId: number, decision: string) =>
     post('/api/production/manual-build-buy', { type_id: typeId, decision }),
   clearManualBuildBuy: (typeId: number) => del(`/api/production/manual-build-buy/${typeId}`),

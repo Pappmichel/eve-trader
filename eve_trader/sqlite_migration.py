@@ -63,7 +63,11 @@ from . import storage
 _PER_TENANT_TABLES: list[tuple[str, tuple[str, ...] | None]] = [
     # composite-PK bucket - PK widened to (tenant_id, <original pk>)
     ("stock_targets", ("tenant_id", "type_id")),
-    ("manual_stock", ("tenant_id", "type_id")),
+    ("manual_stock", ("tenant_id", "type_id", "location_id")),  # decision 3 - PK widened phase 3;
+                                                                  # the old SQLite schema has no location_id
+                                                                  # column at all, so every migrated row lands
+                                                                  # at location_id=0 via the Postgres column
+                                                                  # default (not in the SELECT * column list)
     ("manual_build_buy", ("tenant_id", "type_id")),
     ("selected_decryptors", ("tenant_id", "type_id")),
     ("shortlist", ("tenant_id", "item_id")),

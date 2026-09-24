@@ -1267,19 +1267,62 @@ def load_stock_targets() -> list[tuple[int, str, float, Optional[float], Optiona
         ).fetchall()
 
 
-def upsert_manual_stock(type_id: int, count: float) -> None:
+def upsert_manual_stock(type_id: int, count: float, location_id: int = 0) -> None:
+    """`location_id=0` ("no location", the pre-phase-3 default - docs/
+    MANUAL_TRACKING_PLAN.md decision 15) keeps every pre-existing caller
+    working unchanged. Widened `ON CONFLICT` target matches the table's own
+    widened PK (tenant_id, type_id, location_id)."""
     with connect() as conn:
         conn.execute(
-            "INSERT INTO manual_stock (type_id, count) VALUES (?,?) "
-            "ON CONFLICT(tenant_id, type_id) DO UPDATE SET count=excluded.count",
-            (type_id, count),
+            "INSERT INTO manual_stock (type_id, count, location_id) VALUES (?,?,?) "
+            "ON CONFLICT(tenant_id, type_id, location_id) DO UPDATE SET count=excluded.count",
+            (type_id, count, location_id),
+        )
+
+
+def delete_manual_stock(type_id: int, location_id: int = 0) -> None:
+    with connect() as conn:
+        conn.execute(
+            "DELETE FROM manual_stock WHERE type_id = ? AND location_id = ?",
+            (type_id, location_id),
         )
 
 
 def load_manual_stock() -> dict[int, float]:
+    """Signature unchanged (decision 16) - totals per type across every
+    location, so every existing caller (_current_stock and friends in
+    production/engine.py) keeps working without knowing locations exist at
+    all. See load_manual_stock_entries for the per-location breakdown and
+    manual_stock_at_location for a single (type, location) lookup."""
     with connect() as conn:
-        rows = conn.execute("SELECT type_id, count FROM manual_stock").fetchall()
+        rows = conn.execute("SELECT type_id, SUM(count) FROM manual_stock GROUP BY type_id").fetchall()
     return {r[0]: r[1] for r in rows}
+
+
+def load_manual_stock_entries() -> list[tuple[int, str, int, float]]:
+    """Every manual-stock row, one per (type, location) - (type_id,
+    type_name, location_id, count), for the Stock Targets page's own
+    "Manual stock" table (docs/MANUAL_TRACKING_PLAN.md phase 3, decision 9 -
+    a separate table from the existing per-type total column)."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT m.type_id, t.type_name, m.location_id, m.count "
+            "FROM manual_stock m JOIN sde_types t ON t.type_id = m.type_id "
+            "ORDER BY t.type_name, m.location_id"
+        ).fetchall()
+
+
+def manual_stock_at_location(type_id: int, location_id: int) -> float:
+    """A single (type, location) count, 0 if no row - for
+    production/engine.py's _stock_at_location, which needs manual stock at
+    one specific location (Logistics/Invention), not the type-wide total
+    load_manual_stock already provides."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT count FROM manual_stock WHERE type_id = ? AND location_id = ?",
+            (type_id, location_id),
+        ).fetchone()
+    return row[0] if row else 0.0
 
 
 def save_latest_buy_list(rows: list[tuple[int, float]]) -> None:

@@ -223,6 +223,15 @@ export interface LocationSearchRow {
   kind: 'station' | 'structure' | 'manual'
 }
 
+// Manual stock table (docs/MANUAL_TRACKING_PLAN.md phase 3, decision 9) -
+// one row per (type_id, location_id).
+export interface ManualStockEntry {
+  type_id: number
+  type_name: string
+  location_id: number
+  count: number
+}
+
 export interface StockTarget {
   type_id: number
   type_name: string

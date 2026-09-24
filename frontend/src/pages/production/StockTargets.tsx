@@ -6,9 +6,10 @@ import { IconCheck, IconAlertTriangle, IconTrash } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
-import type { StockTarget } from '../../api/types'
+import type { ManualStockEntry, StockTarget } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
+import { LocationPicker } from '../../components/LocationPicker'
 import { SearchableSelect } from '../../components/SearchableSelect'
 import { useAction } from '../../hooks/useAction'
 import { useItemNameOptions } from '../../hooks/useStaticOptions'
@@ -18,8 +19,12 @@ const STOCK_KEYS = [
   ['production', 'stock-targets'],
   ['production', 'plan'],
 ]
+// Both /manual-stock (per-type total) and /manual-stock/entries (per-
+// location breakdown, docs/MANUAL_TRACKING_PLAN.md phase 3) read the same
+// underlying table - a write through either endpoint invalidates both.
 const MANUAL_STOCK_KEYS = [
   ['production', 'manual-stock'],
+  ['production', 'manual-stock-entries'],
   ['production', 'stock-value'],
 ]
 
@@ -89,6 +94,18 @@ export default function StockTargets() {
   const { data: targets, isLoading: targetsLoading, isError: targetsError, refetch: refetchTargets, dataUpdatedAt: targetsUpdatedAt } =
     useQuery({ queryKey: ['production', 'stock-targets'], queryFn: productionApi.stockTargets })
   const { data: manualStock } = useQuery({ queryKey: ['production', 'manual-stock'], queryFn: productionApi.manualStock })
+  const { data: manualStockEntries } = useQuery({
+    queryKey: ['production', 'manual-stock-entries'], queryFn: productionApi.manualStockEntries,
+  })
+  const entriesByType = useMemo(() => {
+    const m = new Map<number, ManualStockEntry[]>()
+    for (const e of manualStockEntries ?? []) {
+      const list = m.get(e.type_id) ?? []
+      list.push(e)
+      m.set(e.type_id, list)
+    }
+    return m
+  }, [manualStockEntries])
   const { data: overrides } = useQuery({ queryKey: ['production', 'manual-build-buy'], queryFn: productionApi.manualBuildBuy })
   const { data: decryptorOverrides } = useQuery({ queryKey: ['production', 'selected-decryptors'], queryFn: productionApi.selectedDecryptors })
   const { data: decryptors } = useQuery({ queryKey: ['production', 'decryptors'], queryFn: productionApi.decryptors })
@@ -124,8 +141,8 @@ export default function StockTargets() {
     field: 'backup_stock' | 'home_market_stock' | 'jita_market_stock'
     value: number
   }) => productionApi.updateStockTarget(args.typeId, { [args.field]: args.value }), STOCK_KEYS)
-  const setManualStockAction = useAction('Save Current Stock', (args: { typeId: number; count: number }) =>
-    productionApi.setManualStock(args.typeId, args.count), MANUAL_STOCK_KEYS)
+  const setManualStockAction = useAction('Save Current Stock', (args: { typeId: number; count: number; locationId: number }) =>
+    productionApi.setManualStock(args.typeId, args.count, args.locationId), MANUAL_STOCK_KEYS)
   const setOverride = useAction('Save Override', (args: { typeId: number; decision: string }) =>
     productionApi.setManualBuildBuy(args.typeId, args.decision), [['production', 'manual-build-buy']])
   const clearOverride = useAction('Save Override', productionApi.clearManualBuildBuy, [['production', 'manual-build-buy']])
@@ -156,15 +173,32 @@ export default function StockTargets() {
     },
     {
       header: 'Current Stock (manual)', id: 'manual', size: 170, accessorFn: (r) => manualStock?.[r.type_id] ?? 0,
-      cell: (i) => (
-        <EditableNumberCell
-          value={i.getValue()}
-          ariaLabel={`Manual current stock for ${i.row.original.type_name}`}
-          isPending={setManualStockAction.isPending}
-          flagged={isManualStockOutlier(i.getValue(), i.row.original)}
-          onSave={(value) => setManualStockAction.mutate({ typeId: i.row.original.type_id, count: value })}
-        />
-      ),
+      cell: (i) => {
+        const entries = entriesByType.get(i.row.original.type_id) ?? []
+        // Decision 9: the total column stays directly editable only while
+        // there's at most one location entry for this type - once there's
+        // more than one, editing this single field would be ambiguous
+        // about *which* location to change, so it becomes a read-only
+        // total and the per-location "Manual stock" table below is the
+        // only way to edit it.
+        if (entries.length > 1) {
+          return (
+            <Tooltip label="Split across multiple locations - edit in the Manual stock table below">
+              <Text size="sm">{qty(i.getValue())}</Text>
+            </Tooltip>
+          )
+        }
+        const locationId = entries.length === 1 ? entries[0].location_id : 0
+        return (
+          <EditableNumberCell
+            value={i.getValue()}
+            ariaLabel={`Manual current stock for ${i.row.original.type_name}`}
+            isPending={setManualStockAction.isPending}
+            flagged={isManualStockOutlier(i.getValue(), i.row.original)}
+            onSave={(value) => setManualStockAction.mutate({ typeId: i.row.original.type_id, count: value, locationId })}
+          />
+        )
+      },
     },
     {
       header: 'Current Stock (incl. ESI)', id: 'computed', size: 180, accessorFn: (r) => computedStock.get(r.type_id) ?? null,
@@ -215,7 +249,7 @@ export default function StockTargets() {
         </ActionIcon>
       ),
     },
-  ], [manualStock, computedStock, overrides, updateTarget, setManualStockAction, removeTarget, pendingRemoveId])
+  ], [manualStock, entriesByType, computedStock, overrides, updateTarget, setManualStockAction, removeTarget, pendingRemoveId])
 
   return (
     <Stack>
@@ -297,6 +331,148 @@ export default function StockTargets() {
           )}
         </>
       )}
+
+      <ManualStockEntriesSection />
     </Stack>
+  )
+}
+
+// docs/MANUAL_TRACKING_PLAN.md phase 3, decision 9 - a separate per-
+// (item, location) table, deliberately not folded into the main Stock
+// Targets table above (which only shows the per-type total, and only
+// directly editable there while a type has at most one location entry).
+// Same "own section, own query key, own add form + DataTable" shape as
+// Blueprints.tsx's ManualBlueprintCopyCostsSection.
+function ManualStockEntriesSection() {
+  const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({
+    queryKey: ['production', 'manual-stock-entries'], queryFn: productionApi.manualStockEntries,
+  })
+  const addEntry = useAction(
+    'Add Manual Stock',
+    (args: { itemName: string; count: number; locationId: number }) =>
+      productionApi.addManualStockEntry(args.itemName, args.count, args.locationId),
+    MANUAL_STOCK_KEYS,
+  )
+  // Same one-shared-mutation-instance caveat as StockTargets' own
+  // removeTarget/pendingRemoveId above - tracked per action since a row's
+  // edit and delete can each be in flight independently.
+  const [pendingRemoveKey, setPendingRemoveKey] = useState<string | null>(null)
+  const removeEntry = useAction(
+    'Remove Manual Stock',
+    (args: { typeId: number; locationId: number }) => productionApi.removeManualStockEntry(args.typeId, args.locationId),
+    MANUAL_STOCK_KEYS,
+  )
+  const [pendingEditKey, setPendingEditKey] = useState<string | null>(null)
+  const updateEntry = useAction(
+    'Save Manual Stock',
+    (args: { typeId: number; count: number; locationId: number }) =>
+      productionApi.setManualStock(args.typeId, args.count, args.locationId),
+    MANUAL_STOCK_KEYS,
+  )
+
+  const { data: itemNameOptions } = useItemNameOptions()
+  const entryItemOptions = useMemo(
+    () => (itemNameOptions ?? []).map((t) => ({ value: String(t.type_id), label: t.type_name })),
+    [itemNameOptions],
+  )
+  const [itemId, setItemId] = useState<string | null>(null)
+  const [count, setCount] = useState<number | ''>('')
+  const [locationId, setLocationId] = useState<number | null>(0)
+
+  const columns = useMemo<ColumnDef<ManualStockEntry, any>[]>(() => [
+    { header: 'Item', accessorKey: 'type_name', size: 240 },
+    {
+      header: 'Location', id: 'location', size: 200,
+      cell: (i) => (i.row.original.location_id === 0 ? 'No location' : String(i.row.original.location_id)),
+    },
+    {
+      header: 'Quantity', accessorKey: 'count', size: 150,
+      cell: (i) => {
+        const key = `${i.row.original.type_id}:${i.row.original.location_id}`
+        return (
+          <EditableNumberCell
+            value={i.getValue()}
+            ariaLabel={`Manual stock for ${i.row.original.type_name} at ${i.row.original.location_id}`}
+            isPending={updateEntry.isPending && pendingEditKey === key}
+            onSave={(value) => {
+              setPendingEditKey(key)
+              updateEntry.mutate({ typeId: i.row.original.type_id, count: value, locationId: i.row.original.location_id })
+            }}
+          />
+        )
+      },
+    },
+    {
+      header: '', id: 'actions', size: 60, enableSorting: false,
+      cell: (i) => {
+        const key = `${i.row.original.type_id}:${i.row.original.location_id}`
+        return (
+          <ActionIcon size="sm" variant="subtle" color="danger"
+            aria-label={`Remove manual stock for ${i.row.original.type_name} at ${i.row.original.location_id}`}
+            onClick={() => modals.openConfirmModal({
+              title: 'Remove manual stock entry',
+              children: (
+                <Text size="sm">
+                  Remove the manual stock entry for {i.row.original.type_name}
+                  {i.row.original.location_id !== 0 ? ` at location ${i.row.original.location_id}` : ''}?
+                </Text>
+              ),
+              labels: { confirm: 'Remove', cancel: 'Cancel' },
+              confirmProps: { color: 'danger' },
+              onConfirm: () => {
+                setPendingRemoveKey(key)
+                removeEntry.mutate({ typeId: i.row.original.type_id, locationId: i.row.original.location_id })
+              },
+            })}
+            loading={removeEntry.isPending && pendingRemoveKey === key}>
+            <IconTrash size={14} />
+          </ActionIcon>
+        )
+      },
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ], [updateEntry, pendingEditKey, removeEntry, pendingRemoveKey])
+
+  return (
+    <div>
+      <Title order={6} c="dimmed" tt="uppercase" mt="lg" mb="xs">Manual Stock</Title>
+      <Text size="xs" c="dimmed" mb="sm">
+        Stock you track by hand, per location - not fetched from ESI. Feeds every stock-target/plan calculation the
+        same way ESI-derived stock does.
+      </Text>
+
+      <Card withBorder mb="sm">
+        <Group grow align="flex-end">
+          <SearchableSelect label="Item name" placeholder="Search item…" data={entryItemOptions} value={itemId} onChange={setItemId} />
+          <LocationPicker label="Location" value={locationId} onChange={setLocationId} allowNone />
+          <NumberInput label="Quantity" value={count} onChange={(v) => setCount(v === '' ? '' : Number(v))} min={0} />
+          <Button
+            disabled={!itemId || count === ''}
+            loading={addEntry.isPending}
+            onClick={() => addEntry.mutate(
+              {
+                itemName: entryItemOptions.find((o) => o.value === itemId)?.label ?? '',
+                count: Number(count), locationId: locationId ?? 0,
+              },
+              { onSuccess: () => { setItemId(null); setCount(''); setLocationId(0) } },
+            )}
+          >
+            Add
+          </Button>
+        </Group>
+      </Card>
+
+      {isLoading ? (
+        <DataTable data={[]} columns={columns} isLoading maxHeight={300} />
+      ) : isError ? (
+        <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={300} />
+      ) : !data || data.length === 0 ? (
+        <Text c="dimmed" size="sm">No manual stock entries yet.</Text>
+      ) : (
+        <DataTable data={data} columns={columns} tableId="manual-stock-entries"
+          exportFilename="manual-stock-entries" getRowId={(r) => `${r.type_id}:${r.location_id}`} maxHeight={300}
+          dataUpdatedAt={dataUpdatedAt} />
+      )}
+    </div>
   )
 }

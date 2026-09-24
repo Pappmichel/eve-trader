@@ -87,6 +87,30 @@ def get_manual_stock():
     return storage.load_manual_stock()
 
 
+@router.get("/manual-stock/entries")
+def get_manual_stock_entries():
+    # Storage-only - no live ESI/Goonmetrics. One row per (type, location) -
+    # docs/MANUAL_TRACKING_PLAN.md phase 3, decision 9.
+    return _wrap(actions.do_list_manual_stock_entries)["rows"]
+
+
+class AddManualStockEntryRequest(BaseModel):
+    item_name: str
+    count: float
+    location_id: int = 0
+
+
+@router.post("/manual-stock/entries")
+def add_manual_stock_entry(req: AddManualStockEntryRequest):
+    return _wrap(actions.do_add_manual_stock_entry, item_name=req.item_name,
+                 count=req.count, location_id=req.location_id)
+
+
+@router.delete("/manual-stock/entries/{type_id}/{location_id}")
+def remove_manual_stock_entry(type_id: int, location_id: int):
+    return _wrap(actions.do_remove_manual_stock_entry, type_id=type_id, location_id=location_id)
+
+
 @router.get("/manual-build-buy")
 def get_manual_build_buy():
     return storage.load_manual_build_buy()
@@ -531,11 +555,12 @@ def remove_stock_target(type_id: int):
 class ManualStockRequest(BaseModel):
     type_id: int
     count: float
+    location_id: int = 0
 
 
 @router.post("/manual-stock")
 def set_manual_stock(req: ManualStockRequest):
-    return _wrap(actions.do_set_manual_stock, type_id=req.type_id, count=req.count)
+    return _wrap(actions.do_set_manual_stock, type_id=req.type_id, count=req.count, location_id=req.location_id)
 
 
 class ManualBuildBuyRequest(BaseModel):
