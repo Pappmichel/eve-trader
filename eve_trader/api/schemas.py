@@ -6,6 +6,7 @@ so actions.py/storage.py/engine.py need zero changes for this migration.
 """
 from __future__ import annotations
 
+from datetime import date
 from typing import Optional
 
 import pandas as pd
@@ -748,6 +749,20 @@ class PortfolioOverview(_Base):
     production_stock_value: float
     production_stock_targets_configured: bool
     combined_value: float
+
+
+class PortfolioSnapshotRow(_Base):
+    snapshot_date: date
+    trading_realized_profit: float
+    trading_average_margin: float
+    trading_daily_profit_volatility: Optional[float] = None
+    trading_trade_count: int
+    production_stock_value: float
+    production_stock_targets_configured: bool
+    combined_value: float
+    total_wealth: Optional[float] = None
+    wealth_assets_value: Optional[float] = None
+    wealth_wallet_balance: Optional[float] = None
 
 
 # ----------------------------------------------------------------------- admin

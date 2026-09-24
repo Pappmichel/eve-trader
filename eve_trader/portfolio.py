@@ -8,7 +8,7 @@ either (confirmed with the user).
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 from . import storage
@@ -82,3 +82,27 @@ def take_portfolio_snapshot(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     wealth = {"total_wealth": None, "wealth_assets_value": None, "wealth_wallet_balance": None}
     storage.upsert_portfolio_snapshot(date.today(), {**overview, **wealth})
     return {**overview, **wealth}
+
+
+def do_get_portfolio_overview(cfg: TradingConfig = TRADING_CONFIG) -> dict:
+    """`GET /api/portfolio/overview`'s own action - a real decision (has a
+    snapshot been taken today yet?), not a bare passthrough, so it lives
+    here rather than directly in the router. Takes today's snapshot lazily
+    on the first overview read of the day - the fallback path for when the
+    scheduler is disabled (the default), so history still fills in one row
+    per day purely from normal page usage. Every later read that same day
+    is the cheap, plain live read - take_portfolio_snapshot() is never
+    called more than once per day from here."""
+    if storage.latest_portfolio_snapshot_date() != date.today():
+        return take_portfolio_snapshot(cfg)
+    return portfolio_overview(cfg)
+
+
+def do_get_portfolio_history(days: Optional[int] = None) -> list[dict]:
+    """`GET /api/portfolio/history`'s own action. `days=None` returns every
+    snapshot this tenant has ever taken (unbounded retention); otherwise
+    only the last `days` days, inclusive of today."""
+    since = date.today() - timedelta(days=days - 1) if days is not None else None
+    rows = storage.load_portfolio_snapshots(since=since)
+    columns = ("snapshot_date",) + storage.PORTFOLIO_SNAPSHOT_COLUMNS
+    return [dict(zip(columns, row)) for row in rows]

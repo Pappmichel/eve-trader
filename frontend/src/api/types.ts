@@ -544,6 +544,20 @@ export interface PortfolioOverview {
   combined_value: number
 }
 
+export interface PortfolioSnapshotRow {
+  snapshot_date: string
+  trading_realized_profit: number
+  trading_average_margin: number
+  trading_daily_profit_volatility: number | null
+  trading_trade_count: number
+  production_stock_value: number
+  production_stock_targets_configured: boolean
+  combined_value: number
+  total_wealth: number | null
+  wealth_assets_value: number | null
+  wealth_wallet_balance: number | null
+}
+
 export interface ProductionPlan {
   inventory: InventoryRow[]
   buy_list: BuyListEntry[]

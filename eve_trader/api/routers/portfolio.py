@@ -5,6 +5,8 @@ tools' data together - keeping it separate makes that cross-cutting nature
 explicit instead of hiding it inside one tool's router."""
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException
 
 from .. import schemas
@@ -27,7 +29,13 @@ def get_portfolio_overview():
     # goes through _wrap like every other read endpoint, for consistency -
     # portfolio_overview doesn't currently raise ActionError, but a future
     # change that starts raising one would otherwise silently regress to a
-    # raw 500 instead of a clean 400. Backups moved to the Admin tool
-    # (confirmed real misplacement 2026-09-21, see admin.do_create_backup's
-    # own docstring) - this router no longer touches actions.py at all.
-    return _wrap(portfolio.portfolio_overview)
+    # raw 500 instead of a clean 400. do_get_portfolio_overview takes
+    # today's snapshot lazily on the first read of the day (portfolio
+    # rework, section 5.4) - a real decision, so it lives in portfolio.py,
+    # not here.
+    return _wrap(portfolio.do_get_portfolio_overview)
+
+
+@router.get("/history", response_model=list[schemas.PortfolioSnapshotRow])
+def get_portfolio_history(days: Optional[int] = None):
+    return _wrap(portfolio.do_get_portfolio_history, days=days)

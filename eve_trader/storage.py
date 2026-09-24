@@ -4877,7 +4877,7 @@ def list_all_special_order_item_rows() -> list[tuple[str, int, str, float]]:
 
 
 # --------------------------------------------------------------- Portfolio: snapshots
-_PORTFOLIO_SNAPSHOT_COLUMNS = (
+PORTFOLIO_SNAPSHOT_COLUMNS = (
     "trading_realized_profit", "trading_average_margin", "trading_daily_profit_volatility",
     "trading_trade_count", "production_stock_value", "production_stock_targets_configured",
     "combined_value", "total_wealth", "wealth_assets_value", "wealth_wallet_balance",
@@ -4890,27 +4890,27 @@ def upsert_portfolio_snapshot(snapshot_date: date, values: dict) -> None:
     `taken_at`) rather than creating a duplicate, so calling this more than
     once a day (scheduler tick + lazy page-load fallback both firing) is
     safe. `values` is expected to carry every column in
-    _PORTFOLIO_SNAPSHOT_COLUMNS - a missing key raises KeyError rather than
+    PORTFOLIO_SNAPSHOT_COLUMNS - a missing key raises KeyError rather than
     silently writing NULL/0 for a figure the caller forgot."""
-    row = tuple(values[col] for col in _PORTFOLIO_SNAPSHOT_COLUMNS)
+    row = tuple(values[col] for col in PORTFOLIO_SNAPSHOT_COLUMNS)
     with connect() as conn:
         conn.execute(
-            "INSERT INTO portfolio_snapshots (snapshot_date, " + ", ".join(_PORTFOLIO_SNAPSHOT_COLUMNS) + ", taken_at) "
-            "VALUES (?, " + ", ".join(["?"] * len(_PORTFOLIO_SNAPSHOT_COLUMNS)) + ", now()) "
+            "INSERT INTO portfolio_snapshots (snapshot_date, " + ", ".join(PORTFOLIO_SNAPSHOT_COLUMNS) + ", taken_at) "
+            "VALUES (?, " + ", ".join(["?"] * len(PORTFOLIO_SNAPSHOT_COLUMNS)) + ", now()) "
             "ON CONFLICT (tenant_id, snapshot_date) DO UPDATE SET "
-            + ", ".join(f"{col}=excluded.{col}" for col in _PORTFOLIO_SNAPSHOT_COLUMNS)
+            + ", ".join(f"{col}=excluded.{col}" for col in PORTFOLIO_SNAPSHOT_COLUMNS)
             + ", taken_at=excluded.taken_at",
             (snapshot_date, *row),
         )
 
 
 def load_portfolio_snapshots(since: Optional[date] = None) -> list[tuple]:
-    """(snapshot_date, *_PORTFOLIO_SNAPSHOT_COLUMNS), oldest first. `since`
+    """(snapshot_date, *PORTFOLIO_SNAPSHOT_COLUMNS), oldest first. `since`
     omitted returns every snapshot this tenant has ever taken (unbounded
     retention - decision in the plan) - the frontend's range buttons drive
     this query rather than filtering client-side against a potentially
     large result."""
-    cols = ", ".join(_PORTFOLIO_SNAPSHOT_COLUMNS)
+    cols = ", ".join(PORTFOLIO_SNAPSHOT_COLUMNS)
     with connect() as conn:
         if since is None:
             return conn.execute(

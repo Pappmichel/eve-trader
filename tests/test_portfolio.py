@@ -1,3 +1,5 @@
+from datetime import date
+
 import pandas as pd
 
 from eve_trader import portfolio, storage
@@ -81,3 +83,81 @@ def test_production_stock_value_included_when_targets_configured(monkeypatch):
     assert result["production_stock_targets_configured"] is True
     assert result["production_stock_value"] == 12345.0
     assert result["combined_value"] == 12345.0
+
+
+def test_take_portfolio_snapshot_upserts_today_with_wealth_fields_none(monkeypatch):
+    monkeypatch.setattr(storage, "read_table", lambda table: _trades_df([]))
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
+    upserted = {}
+    monkeypatch.setattr(storage, "upsert_portfolio_snapshot",
+                        lambda snapshot_date, values: upserted.update(date=snapshot_date, **values))
+
+    result = portfolio.take_portfolio_snapshot(TradingConfig())
+
+    assert upserted["date"] == date.today()
+    assert upserted["total_wealth"] is None
+    assert upserted["wealth_assets_value"] is None
+    assert upserted["wealth_wallet_balance"] is None
+    assert upserted["combined_value"] == 0.0
+    assert result["total_wealth"] is None
+    assert result["combined_value"] == 0.0
+
+
+def test_do_get_portfolio_overview_takes_snapshot_when_not_taken_today(monkeypatch):
+    monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: None)
+    calls = []
+    monkeypatch.setattr(portfolio, "take_portfolio_snapshot", lambda cfg: calls.append("snapshot") or {"combined_value": 1.0})
+    monkeypatch.setattr(portfolio, "portfolio_overview", lambda cfg: calls.append("live") or {"combined_value": 2.0})
+
+    result = portfolio.do_get_portfolio_overview(TradingConfig())
+
+    assert calls == ["snapshot"]
+    assert result == {"combined_value": 1.0}
+
+
+def test_do_get_portfolio_overview_reads_live_when_already_taken_today(monkeypatch):
+    monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: date.today())
+    calls = []
+    monkeypatch.setattr(portfolio, "take_portfolio_snapshot", lambda cfg: calls.append("snapshot") or {"combined_value": 1.0})
+    monkeypatch.setattr(portfolio, "portfolio_overview", lambda cfg: calls.append("live") or {"combined_value": 2.0})
+
+    result = portfolio.do_get_portfolio_overview(TradingConfig())
+
+    assert calls == ["live"]
+    assert result == {"combined_value": 2.0}
+
+
+def test_do_get_portfolio_history_unbounded_when_days_is_none(monkeypatch):
+    captured = {}
+
+    def _fake_load(since=None):
+        captured["since"] = since
+        return [(date(2026, 9, 1), 1.0, 0.1, None, 1, 2.0, True, 3.0, None, None, None)]
+
+    monkeypatch.setattr(storage, "load_portfolio_snapshots", _fake_load)
+
+    result = portfolio.do_get_portfolio_history()
+
+    assert captured["since"] is None
+    assert result == [{
+        "snapshot_date": date(2026, 9, 1), "trading_realized_profit": 1.0, "trading_average_margin": 0.1,
+        "trading_daily_profit_volatility": None, "trading_trade_count": 1, "production_stock_value": 2.0,
+        "production_stock_targets_configured": True, "combined_value": 3.0, "total_wealth": None,
+        "wealth_assets_value": None, "wealth_wallet_balance": None,
+    }]
+
+
+def test_do_get_portfolio_history_with_days_computes_since(monkeypatch):
+    captured = {}
+
+    def _fake_load(since=None):
+        captured["since"] = since
+        return []
+
+    monkeypatch.setattr(storage, "load_portfolio_snapshots", _fake_load)
+
+    portfolio.do_get_portfolio_history(days=7)
+
+    # Inclusive of today: 7 days means today back through 6 days ago.
+    from datetime import timedelta
+    assert captured["since"] == date.today() - timedelta(days=6)

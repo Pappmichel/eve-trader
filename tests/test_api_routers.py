@@ -1197,9 +1197,12 @@ def test_search_asset_locations_action_error_maps_to_400(monkeypatch):
 
 
 # ------------------------------------------------------------------ portfolio
-def test_get_portfolio_overview(monkeypatch):
+def test_get_portfolio_overview_reads_live_when_already_snapshotted_today(monkeypatch):
+    from datetime import date
+
     from eve_trader import portfolio
-    monkeypatch.setattr(portfolio, "portfolio_overview", lambda: {
+    monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: date.today())
+    monkeypatch.setattr(portfolio, "portfolio_overview", lambda cfg=None: {
         "trading_realized_profit": 1000.0, "trading_average_margin": 0.2,
         "trading_daily_profit_volatility": None, "trading_trade_count": 5,
         "production_stock_value": 2000.0, "production_stock_targets_configured": True,
@@ -1209,6 +1212,51 @@ def test_get_portfolio_overview(monkeypatch):
     assert resp.status_code == 200
     assert resp.json()["combined_value"] == 3000.0
     assert resp.json()["trading_daily_profit_volatility"] is None
+
+
+def test_get_portfolio_overview_takes_snapshot_on_first_read_of_the_day(monkeypatch):
+    from eve_trader import portfolio
+    monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: None)
+    calls = []
+    monkeypatch.setattr(portfolio, "take_portfolio_snapshot", lambda cfg=None: (calls.append(1), {
+        "trading_realized_profit": 500.0, "trading_average_margin": 0.1,
+        "trading_daily_profit_volatility": None, "trading_trade_count": 2,
+        "production_stock_value": 100.0, "production_stock_targets_configured": False,
+        "combined_value": 600.0, "total_wealth": None,
+        "wealth_assets_value": None, "wealth_wallet_balance": None,
+    })[1])
+
+    resp = client.get("/api/portfolio/overview")
+
+    assert resp.status_code == 200
+    assert resp.json()["combined_value"] == 600.0
+    assert calls == [1]
+
+
+def test_get_portfolio_history_defaults_to_unbounded(monkeypatch):
+    from eve_trader import portfolio
+    calls = {}
+    monkeypatch.setattr(portfolio, "do_get_portfolio_history", lambda days=None: calls.setdefault("days", days) or [])
+    resp = client.get("/api/portfolio/history")
+    assert resp.status_code == 200
+    assert resp.json() == []
+    assert calls["days"] is None
+
+
+def test_get_portfolio_history_with_days(monkeypatch):
+    from datetime import date
+
+    from eve_trader import portfolio
+    monkeypatch.setattr(portfolio, "do_get_portfolio_history", lambda days=None: [{
+        "snapshot_date": date(2026, 9, 1), "trading_realized_profit": 1.0, "trading_average_margin": 0.1,
+        "trading_daily_profit_volatility": None, "trading_trade_count": 1, "production_stock_value": 2.0,
+        "production_stock_targets_configured": True, "combined_value": 3.0, "total_wealth": None,
+        "wealth_assets_value": None, "wealth_wallet_balance": None,
+    }])
+    resp = client.get("/api/portfolio/history?days=7")
+    assert resp.status_code == 200
+    assert resp.json()[0]["snapshot_date"] == "2026-09-01"
+    assert resp.json()[0]["combined_value"] == 3.0
 
 
 def test_scheduler_status_route_removed():

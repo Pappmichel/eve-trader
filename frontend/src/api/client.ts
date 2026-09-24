@@ -341,6 +341,8 @@ export const productionApi = {
 // ------------------------------------------------------------- portfolio
 export const portfolioApi = {
   overview: () => get<T.PortfolioOverview>('/api/portfolio/overview'),
+  history: (days?: number) =>
+    get<T.PortfolioSnapshotRow[]>(days == null ? '/api/portfolio/history' : `/api/portfolio/history?days=${days}`),
 }
 
 // -------------------------------------------------------------- doctrine
