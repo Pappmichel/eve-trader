@@ -32,6 +32,7 @@ describe('Landing Characters card', () => {
     vi.mocked(gateApi.status).mockResolvedValue({
       enabled: true, logged_in: true, character_name: 'Alice',
       tools: ['trading', 'production', 'portfolio'],
+      suspended: false, pending_access_requests: null,
     })
     renderLanding()
     expect(await screen.findByRole('heading', { name: 'Trading' })).toBeInTheDocument()
@@ -45,6 +46,7 @@ describe('Landing Characters card', () => {
     vi.mocked(gateApi.status).mockResolvedValue({
       enabled: true, logged_in: true, character_name: 'Alice',
       tools: ['trading', 'characters'],
+      suspended: false, pending_access_requests: null,
     })
     renderLanding()
     expect(await screen.findByRole('heading', { name: 'Characters' })).toBeInTheDocument()

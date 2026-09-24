@@ -1,11 +1,13 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Container, Title, Text, Group, Stack, Button, TextInput, Checkbox, ActionIcon, Divider, Badge, Tooltip, Switch,
+  Modal, Collapse,
 } from '@mantine/core'
 import { IconArrowLeft, IconTrash } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { modals } from '@mantine/modals'
+import { notifications } from '@mantine/notifications'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { adminApi, productionApi } from '../../api/client'
@@ -13,7 +15,9 @@ import { useAction } from '../../hooks/useAction'
 import { useBackgroundJob, useBackgroundJobStart } from '../../hooks/useBackgroundJob'
 import { ActionTierIcon, TIER_COPY } from '../../components/ActionTierIcon'
 import { dateTime } from '../../format'
-import type { AdminTenant, AdminUser, ErrorLogRow } from '../../api/types'
+import type {
+  AdminTenant, AdminUser, AllowlistCandidate, AllowlistEntry, AllowlistImpact, AccessRequestRow, ErrorLogRow,
+} from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 
 // GitHub issue #34: the SDE cache is global/shared across every tenant, so
@@ -231,6 +235,59 @@ function withAutoCharacters(keys: string[]): string[] {
   return keys
 }
 
+function ToolGrantCheckboxes({ value, onChange }: { value: string[]; onChange: (next: string[]) => void }) {
+  const hasEsi = value.some((k) => ESI_CONSUMING_TOOLS.includes(k))
+  return (
+    <Stack gap={4}>
+      <Checkbox.Group value={value} onChange={(next) => onChange(withAutoCharacters(next))}>
+        <Group gap="xs">
+          {ALL_TOOL_KEYS.map((key) => (
+            <Checkbox
+              key={key}
+              value={key}
+              label={key}
+              size="xs"
+              disabled={key === 'characters' && hasEsi}
+            />
+          ))}
+        </Group>
+      </Checkbox.Group>
+      {hasEsi && (
+        <Text size="xs" c="dimmed">
+          Characters is auto-ticked while an ESI-consuming tool is granted — the Characters
+          page is how that tool&apos;s data-access is configured.
+        </Text>
+      )}
+    </Stack>
+  )
+}
+
+function affiliationLabel(name: string | null | undefined, id: number | null | undefined): string {
+  if (name) return name
+  if (id != null) return `#${id}`
+  return '—'
+}
+
+function impactSummary(impact: AllowlistImpact): string {
+  const names = impact.would_suspend.map((u) => u.character_name ?? `#${u.character_id}`)
+  const lines = []
+  if (impact.activates_recheck) {
+    lines.push('This is the first allowlist entry. Affiliation re-check turns on for every non-admin user.')
+  }
+  if (impact.disables_recheck) {
+    lines.push('Removing the last entry turns the re-check off. Nobody is suspended.')
+  }
+  if (names.length > 0) {
+    lines.push(`These users would be suspended: ${names.join(', ')}.`)
+  } else if (!impact.disables_recheck) {
+    lines.push('No registered non-admin user would be newly suspended.')
+  }
+  if (impact.actor_exempt_but_affected) {
+    lines.push('Your own corporation or alliance would not be allowlisted. Admins stay exempt, so you keep access.')
+  }
+  return lines.join(' ')
+}
+
 // Read-only - tenants are always created implicitly as part of "Add User"
 // below (one dedicated tenant per character, enforced at the DB level, see
 // docs/admin_schema.sql). Kept visible here mainly to spot orphaned tenants
@@ -268,35 +325,14 @@ function UserToolCheckboxes({ user }: { user: AdminUser }) {
   const dirty = toolKeys.slice().sort().join(',') !== user.tool_keys.slice().sort().join(',')
   const saveTools = useAction('Save Tools', () => adminApi.setToolGrants(user.character_id, toolKeys),
     [['admin', 'users']])
-  const hasEsi = toolKeys.some((k) => ESI_CONSUMING_TOOLS.includes(k))
 
   return (
     <Stack gap={4}>
-      <Group gap="sm" wrap="wrap">
-        <Checkbox.Group value={toolKeys} onChange={(next) => setToolKeys(withAutoCharacters(next))}>
-          <Group gap="xs">
-            {ALL_TOOL_KEYS.map((key) => (
-              <Checkbox
-                key={key}
-                value={key}
-                label={key}
-                size="xs"
-                disabled={key === 'characters' && hasEsi}
-              />
-            ))}
-          </Group>
-        </Checkbox.Group>
-        {dirty && (
-          <Button size="compact-xs" onClick={() => saveTools.mutate()} loading={saveTools.isPending}>
-            Save
-          </Button>
-        )}
-      </Group>
-      {hasEsi && (
-        <Text size="xs" c="dimmed">
-          Characters is auto-ticked while an ESI-consuming tool is granted — the Characters
-          page is how that tool&apos;s data-access is configured.
-        </Text>
+      <ToolGrantCheckboxes value={toolKeys} onChange={setToolKeys} />
+      {dirty && (
+        <Button size="compact-xs" onClick={() => saveTools.mutate()} loading={saveTools.isPending} w="fit-content">
+          Save
+        </Button>
       )}
     </Stack>
   )
@@ -309,6 +345,10 @@ function UsersSection() {
     [['admin', 'users'], ['admin', 'tenants']],
     { tier: 'live', effect: 'Resolves the character name live via ESI and creates a new tenant.' })
   const removeUser = useAction('Remove User', adminApi.removeUser, [['admin', 'users']])
+  const refreshAffiliations = useAction(
+    'Refresh affiliations', adminApi.refreshAffiliations, [['admin', 'users']],
+    { tier: 'live', effect: 'Loads every registered character’s corporation and alliance from ESI.' },
+  )
   // GitHub issue #59 (found in a full-codebase audit 2026-08-21): one shared
   // mutation instance reused across every user's Remove button - without
   // tracking which row is actually pending, clicking Remove for one user put
@@ -320,7 +360,26 @@ function UsersSection() {
   const columns = useMemo<ColumnDef<AdminUser, any>[]>(() => [
     { header: 'Character', accessorKey: 'character_name', size: 180, cell: (i) => i.getValue() ?? '—' },
     { header: 'ID', accessorKey: 'character_id', size: 130 },
-    { header: 'Tenant', accessorKey: 'tenant_name', size: 180 },
+    { header: 'Tenant', accessorKey: 'tenant_name', size: 160 },
+    {
+      header: 'Corp', id: 'corp', size: 160,
+      accessorFn: (u) => affiliationLabel(u.corporation_name, u.corporation_id),
+    },
+    {
+      header: 'Alliance', id: 'alliance', size: 160,
+      accessorFn: (u) => affiliationLabel(u.alliance_name, u.alliance_id),
+    },
+    {
+      header: 'Last check', id: 'checked', size: 160,
+      accessorFn: (u) => u.affiliation_checked_at,
+      cell: (i) => dateTime(i.getValue()),
+    },
+    {
+      header: 'Status', id: 'suspended', size: 110, enableSorting: false,
+      cell: (i) => i.row.original.access_suspended
+        ? <Badge size="xs" color="danger" variant="light">Suspended</Badge>
+        : <Text size="xs" c="dimmed">Active</Text>,
+    },
     {
       header: 'Tools', id: 'tools', size: 260, enableSorting: false,
       cell: (i) => <UserToolCheckboxes user={i.row.original} />,
@@ -349,7 +408,15 @@ function UsersSection() {
 
   return (
     <div>
-      <Title order={4} mb="xs">Users</Title>
+      <Group justify="space-between" mb="xs" wrap="nowrap">
+        <Title order={4}>Users</Title>
+        <Tooltip label={refreshAffiliations.tooltip} disabled={!refreshAffiliations.tooltip} multiline w={280}>
+          <Button size="xs" variant="default" leftSection={refreshAffiliations.tierIcon}
+            loading={refreshAffiliations.isPending} onClick={() => refreshAffiliations.mutate()}>
+            Refresh affiliations
+          </Button>
+        </Tooltip>
+      </Group>
       {!isLoading && !isError && (users ?? []).length === 0 && <Text c="dimmed" size="sm" mb="sm">No users registered yet.</Text>}
       {(isLoading || isError || (users ?? []).length > 0) && (
         <DataTable
@@ -417,9 +484,246 @@ function ErrorsSection() {
   )
 }
 
+function AllowlistSection() {
+  const { data: entries, isLoading, isError, refetch } = useQuery({
+    queryKey: ['admin', 'allowlist'], queryFn: adminApi.allowlist,
+  })
+  const [query, setQuery] = useState('')
+  const [hits, setHits] = useState<AllowlistCandidate[] | null>(null)
+  const [searching, setSearching] = useState(false)
+  const addEntry = useAction(
+    'Add allowlist entry',
+    (hit: AllowlistCandidate) => adminApi.addAllowlistEntry(hit.type, hit.id),
+    [['admin', 'allowlist'], ['gate', 'status']],
+    { tier: 'live', effect: 'Resolves the corporation or alliance name via ESI and adds it to the allowlist.' },
+  )
+  const removeEntry = useAction(
+    'Remove allowlist entry',
+    (entry: AllowlistEntry) => adminApi.removeAllowlistEntry(entry.entry_type, entry.entry_id),
+    [['admin', 'allowlist'], ['admin', 'access-requests'], ['gate', 'status']],
+  )
+
+  const confirmImpact = async (
+    entryType: string, entryId: number, action: 'add' | 'remove', onConfirm: () => void,
+  ) => {
+    let impact: AllowlistImpact
+    try {
+      impact = await adminApi.allowlistImpact(entryType, entryId, action)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not load the impact preview'
+      notifications.show({ title: 'Allowlist', message, color: 'danger' })
+      return
+    }
+    modals.openConfirmModal({
+      title: action === 'add' ? 'Add allowlist entry' : 'Remove allowlist entry',
+      children: <Text size="sm">{impactSummary(impact)}</Text>,
+      labels: { confirm: action === 'add' ? 'Add' : 'Remove', cancel: 'Cancel' },
+      confirmProps: { color: action === 'remove' ? 'danger' : undefined },
+      onConfirm,
+    })
+  }
+
+  const search = async () => {
+    const q = query.trim()
+    if (!q) return
+    setSearching(true)
+    try {
+      setHits(await adminApi.searchAllowlist(q))
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Search failed'
+      notifications.show({ title: 'Allowlist search', message, color: 'danger' })
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  const onAdd = (hit: AllowlistCandidate) => {
+    if ((entries ?? []).length === 0) {
+      void confirmImpact(hit.type, hit.id, 'add', () => addEntry.mutate(hit))
+      return
+    }
+    addEntry.mutate(hit)
+  }
+
+  return (
+    <div>
+      <Title order={4} mb="xs">Allowlist</Title>
+      <Text size="sm" c="dimmed" mb="sm">
+        Corporations and alliances whose members may request access. An empty list turns the
+        affiliation re-check off. Access itself stays per character, after you approve a request.
+      </Text>
+      <Group mb="sm">
+        <TextInput placeholder="Exact corp or alliance name" value={query}
+          onChange={(e) => setQuery(e.currentTarget.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') void search() }} w={280} />
+        <Button size="xs" variant="default" loading={searching} disabled={!query.trim()} onClick={() => void search()}>
+          Search
+        </Button>
+      </Group>
+      {hits && hits.length === 0 && <Text size="sm" c="dimmed" mb="sm">No exact match.</Text>}
+      {hits && hits.length > 0 && (
+        <Stack gap={4} mb="sm">
+          {hits.map((hit) => (
+            <Group key={`${hit.type}-${hit.id}`} justify="space-between">
+              <Text size="sm">{hit.name} <Text span c="dimmed" size="xs">{hit.type} #{hit.id}</Text></Text>
+              <Button size="compact-xs" onClick={() => onAdd(hit)} loading={addEntry.isPending}>Add</Button>
+            </Group>
+          ))}
+        </Stack>
+      )}
+      {isLoading && <Text size="sm" c="dimmed">Loading allowlist…</Text>}
+      {isError && <Button size="xs" variant="subtle" onClick={() => refetch()}>Couldn&apos;t load the allowlist. Retry</Button>}
+      {!isLoading && !isError && (entries ?? []).length === 0 && (
+        <Text size="sm" c="dimmed">No corporations or alliances allowlisted yet. Registered users keep access until the first entry is added.</Text>
+      )}
+      <Stack gap={4}>
+        {(entries ?? []).map((entry) => (
+          <Group key={`${entry.entry_type}-${entry.entry_id}`} justify="space-between">
+            <Text size="sm">{entry.name} <Text span c="dimmed" size="xs">{entry.entry_type} #{entry.entry_id}</Text></Text>
+            <ActionIcon size="sm" variant="subtle" color="danger" aria-label={`Remove ${entry.name}`}
+              onClick={() => void confirmImpact(entry.entry_type, entry.entry_id, 'remove', () => removeEntry.mutate(entry))}>
+              <IconTrash size={14} />
+            </ActionIcon>
+          </Group>
+        ))}
+      </Stack>
+    </div>
+  )
+}
+
+function ApproveRequestModal({ request, opened, onClose }: {
+  request: AccessRequestRow | null
+  opened: boolean
+  onClose: () => void
+}) {
+  const [toolKeys, setToolKeys] = useState<string[]>([])
+  useEffect(() => {
+    if (opened) setToolKeys([])
+  }, [opened, request?.character_id])
+  const approve = useAction(
+    'Approve access request',
+    () => adminApi.approveAccessRequest(request!.character_id, toolKeys),
+    [['admin', 'access-requests'], ['admin', 'users'], ['admin', 'tenants'], ['gate', 'status']],
+  )
+  return (
+    <Modal opened={opened} onClose={onClose} title={request ? `Approve ${request.character_name}` : 'Approve'}>
+      <Stack>
+        <Text size="sm" c="dimmed">
+          Creates a new tenant named after this character and grants exactly the tools you tick.
+        </Text>
+        <ToolGrantCheckboxes value={toolKeys} onChange={setToolKeys} />
+        <Group justify="flex-end">
+          <Button variant="default" onClick={onClose}>Cancel</Button>
+          <Button loading={approve.isPending} onClick={() => approve.mutate(undefined, { onSuccess: onClose })}>
+            Approve
+          </Button>
+        </Group>
+      </Stack>
+    </Modal>
+  )
+}
+
+function AccessRequestsSection() {
+  const { data: pending, isLoading } = useQuery({
+    queryKey: ['admin', 'access-requests', 'pending'],
+    queryFn: () => adminApi.accessRequests('pending'),
+  })
+  const { data: rejected } = useQuery({
+    queryKey: ['admin', 'access-requests', 'rejected'],
+    queryFn: () => adminApi.accessRequests('rejected'),
+  })
+  const [showRejected, setShowRejected] = useState(false)
+  const [approving, setApproving] = useState<AccessRequestRow | null>(null)
+  const reject = useAction(
+    'Reject access request',
+    adminApi.rejectAccessRequest,
+    [['admin', 'access-requests'], ['gate', 'status']],
+  )
+  const remove = useAction(
+    'Delete access request',
+    adminApi.deleteAccessRequest,
+    [['admin', 'access-requests'], ['gate', 'status']],
+  )
+
+  const columns = useMemo<ColumnDef<AccessRequestRow, any>[]>(() => [
+    { header: 'Character', accessorKey: 'character_name', size: 160 },
+    {
+      header: 'Corp', id: 'corp', size: 160,
+      accessorFn: (r) => affiliationLabel(r.corporation_name, r.corporation_id),
+    },
+    {
+      header: 'Alliance', id: 'alliance', size: 160,
+      accessorFn: (r) => affiliationLabel(r.alliance_name, r.alliance_id),
+    },
+    { header: 'Requested', accessorKey: 'requested_at', size: 160, cell: (i) => dateTime(i.getValue()) },
+    { header: 'Last login', accessorKey: 'last_login_at', size: 160, cell: (i) => dateTime(i.getValue()) },
+    {
+      header: '', id: 'flag', size: 160, enableSorting: false,
+      cell: (i) => i.row.original.no_longer_allowlisted
+        ? <Badge size="xs" color="warn" variant="light">No longer allowlisted</Badge>
+        : null,
+    },
+    {
+      header: '', id: 'actions', size: 160, enableSorting: false,
+      cell: (i) => (
+        <Group gap="xs">
+          <Button size="compact-xs" onClick={() => setApproving(i.row.original)}>Approve</Button>
+          <Button size="compact-xs" variant="default" color="danger"
+            onClick={() => reject.mutate(i.row.original.character_id)}>
+            Reject
+          </Button>
+        </Group>
+      ),
+    },
+  ], [reject])
+
+  return (
+    <div>
+      <Title order={4} mb="xs">Access requests</Title>
+      <Text size="sm" c="dimmed" mb="sm">
+        Characters from an allowlisted corporation or alliance who logged in and are waiting for a tenant.
+        Rejected characters stay blocked until you delete the rejection.
+      </Text>
+      {!isLoading && (pending ?? []).length === 0 && <Text size="sm" c="dimmed" mb="sm">No pending requests.</Text>}
+      {(isLoading || (pending ?? []).length > 0) && (
+        <DataTable
+          data={pending ?? []}
+          columns={columns}
+          tableId="admin-access-requests"
+          exportFilename="access-requests"
+          getRowId={(r) => String(r.character_id)}
+          isLoading={isLoading}
+        />
+      )}
+      <Button size="xs" variant="subtle" mt="sm" onClick={() => setShowRejected((v) => !v)}>
+        Rejected ({(rejected ?? []).length})
+      </Button>
+      <Collapse expanded={showRejected}>
+        <Stack gap={4} mt="xs">
+          {(rejected ?? []).length === 0 && <Text size="sm" c="dimmed">No rejected requests.</Text>}
+          {(rejected ?? []).map((row) => (
+            <Group key={row.character_id} justify="space-between">
+              <Text size="sm">
+                {row.character_name} <Text span c="dimmed" size="xs">
+                  {affiliationLabel(row.corporation_name, row.corporation_id)}
+                  {row.no_longer_allowlisted ? ' · no longer allowlisted' : ''}
+                </Text>
+              </Text>
+              <Button size="compact-xs" variant="subtle" color="danger" onClick={() => remove.mutate(row.character_id)}>
+                Delete
+              </Button>
+            </Group>
+          ))}
+        </Stack>
+      </Collapse>
+      <ApproveRequestModal request={approving} opened={approving !== null} onClose={() => setApproving(null)} />
+    </div>
+  )
+}
+
 export default function AdminPage() {
   return (
-    <Container size="md" py="xl">
+    <Container size="xl" py="xl">
       <Group justify="space-between" mb="lg">
         <div>
           <Text tt="uppercase" size="xs" c="dimmed" fw={600} lts={2}>Cross-tenant superadmin</Text>
@@ -436,6 +740,10 @@ export default function AdminPage() {
         <StructureResolveSection />
         <Divider />
         <BackupsSection />
+        <Divider />
+        <AllowlistSection />
+        <Divider />
+        <AccessRequestsSection />
         <Divider />
         <TenantSection />
         <Divider />

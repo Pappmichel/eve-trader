@@ -193,6 +193,7 @@ class BuildJobEntry(_Base):
     job_category: Optional[str] = None
     job_cost: Optional[float] = None
     margin: Optional[float] = None
+    recipe_source: Optional[str] = None
 
 
 class LogisticsRow(_Base):
@@ -280,6 +281,7 @@ class AssetPlanJob(_Base):
     unlock_time_seconds: float = 0.0
     recommended_slots: Optional[int] = None
     days_to_complete_at_recommended_slots: Optional[float] = None
+    recipe_source: Optional[str] = None
     blockers: list[AssetPlanBlocker] = []
 
 
@@ -766,6 +768,12 @@ class AdminUser(_Base):
     tenant_id: str
     tenant_name: str
     tool_keys: list[str] = []
+    corporation_id: Optional[int] = None
+    corporation_name: Optional[str] = None
+    alliance_id: Optional[int] = None
+    alliance_name: Optional[str] = None
+    affiliation_checked_at: Optional[str] = None
+    access_suspended: bool = False
 
 
 class ErrorLogRow(_Base):

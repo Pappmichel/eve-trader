@@ -307,7 +307,9 @@ tenant's successful structure-name resolution is deliberately shared
 across tenants (a structure's real-world name isn't tenant-private data,
 decision Q2 in `docs/MANUAL_TRACKING_PLAN.md`), so it has no `tenant_id` at
 all - `storage.get/upsert_global_structure_name`, both `connect_unscoped()`.
-The
+`access_allowlist` and `access_requests` are unscoped the same way: the
+allowlist decides who may *request* access, and a request exists before
+any tenant does. The
 Admin tool (`eve_trader/admin.py`'s `do_*` functions, `api/routers/
 admin.py`, tool_key `"admin"`) is a deliberate **cross-tenant superadmin**
 surface, not a per-tenant self-service page. `"admin"` is a normal grant
@@ -337,6 +339,27 @@ narrowing that constraint on a real deployment, check for existing
 corp/alliance rows first (`SELECT entry_type, count(*) FROM
 tenant_registry_entries GROUP BY entry_type`) - narrowing without migrating
 them first locks those characters out.
+
+The corp/alliance **allowlist** (`access_allowlist`) does not bring those
+registry entries back. It only decides who may file an access request.
+Approval still creates one new tenant for that character and the tool
+grants the admin picked. While the allowlist is empty, nothing is
+re-checked and existing users keep access. Characters who hold `admin` are
+exempt from the re-check. Everyone else is checked at login and, during a
+session, when `affiliation_checked_at` is older than 6 hours
+(`access_policy.py`; no scheduler). If ESI is down, the last stored
+affiliation is used for up to 7 days; older than that the login is
+`?gate=error` and an in-session request is 403 `access_unverifiable`.
+Failing the check sets `tenant_registry_entries.access_suspended` and
+withholds the cookie (`?gate=suspended`). The tenant and its data stay.
+Login always re-checks and clears the flag when the character is allowed
+again. `/api/gate/status` does the same when the last check is older than
+6 hours, so the existing cookie works again without issuing a new one.
+An API request that already sees the flag returns 403 `access_suspended`
+and does not clear it. A rejected request stays rejected until an admin
+deletes the row. Pending requests whose corp/alliance leaves the allowlist stay open
+and are flagged. The pending count is returned only to sessions that hold
+`admin` (`pending_access_requests` on `/api/gate/status`).
 
 ## Testing conventions
 

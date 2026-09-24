@@ -35,6 +35,9 @@ def test_list_users_serializes_action_result(monkeypatch):
     assert resp.json() == [{
         "character_id": 1, "character_name": "Alice", "tenant_id": "t1",
         "tenant_name": "Some Corp", "tool_keys": ["trading"],
+        "corporation_id": None, "corporation_name": None,
+        "alliance_id": None, "alliance_name": None,
+        "affiliation_checked_at": None, "access_suspended": False,
     }]
 
 

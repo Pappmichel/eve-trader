@@ -5034,3 +5034,405 @@ def test_discover_build_candidates_attaches_alchemy_comparison_when_enabled(monk
     )
 
     assert results[0]["alchemy_comparison"] == fake
+
+
+# ------------------------------------------- Alchemy as a real recipe choice
+# The same Caesarium Cadmide fixture as above, now driving the *real*
+# buy-vs-build engine rather than the informational ISK/hour column:
+#   normal:  100 Cadmium + 100 Caesium + 5 Oxygen Fuel Block -> 200 Caesarium
+#   alchemy: 100 Cadmium + 100 Scandium + 5 Hydrogen Fuel Block -> 1 Unrefined
+#   reprocessing 1 Unrefined at 55%: 90 Cadmium + 19 Caesarium
+# So one alchemy run recovers 19 Caesarium and drops 90 Cadmium as a
+# byproduct - both numbers every expectation below is built from.
+_ALCHEMY_BASE_SELLS = {
+    _CADMIUM: 1000.0,
+    _CAESIUM: 2000.0,
+    _SCANDIUM: 100.0,
+    _OXYGEN_FB: 20000.0,
+    _HYDROGEN_FB: 10000.0,
+    _CAESARIUM: 5000.0,
+}
+# A second, unrelated stock target sharing the alchemy byproduct (Cadmium) -
+# the "does a byproduct actually reduce demand elsewhere in the same plan"
+# shape plan_production's two-pass call exists for.
+_WIDGET = 90001
+_WIDGET_BP = 90002
+
+
+def _boom_alchemy(*args, **kwargs):
+    raise AssertionError("disabled alchemy path must not run")
+
+
+def _install_alchemy_recipe_engine(monkeypatch):
+    """Caesarium fixture + the flat ME/TE, no-facility-fee, skill-5
+    reprocessing context every recipe-choice test below shares, so expected
+    costs are exact arithmetic rather than structure/rig-dependent."""
+    from eve_trader.refining.config import RefiningConfig
+
+    _install_caesarium_alchemy_sde(monkeypatch)
+    monkeypatch.setattr(storage, "get_manual_blueprint_copy_cost_per_run", lambda type_id: None)
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id", lambda blueprint_id: ())
+    monkeypatch.setattr(engine, "_activity_mods",
+                         lambda activity, type_id, cfg, cost_indices, blueprint_id=None: (1.0, 1.0, 0.0))
+    monkeypatch.setattr(engine, "REFINING_CONFIG", RefiningConfig(scrapmetal_processing_skill_level=5))
+
+
+def _alchemy_home(**overrides):
+    sells = dict(_ALCHEMY_BASE_SELLS)
+    sells.update({int(tid): price for tid, price in overrides.items()})
+    return {tid: CurrentPrice(type_id=tid, updated="", buy=price * 0.9, sell=price)
+            for tid, price in sells.items()}
+
+
+def _alchemy_cost_indices():
+    return {f"alchemy:{_CAESARIUM}": find_alchemy_alternative(_CAESARIUM)}
+
+
+def test_unit_cost_picks_alchemy_when_cheaper(monkeypatch):
+    # Caesium priced at 20,000 makes the normal recipe far more expensive
+    # than the alchemy path, so _unit_cost must switch recipes on its own -
+    # the same "price every candidate, keep the cheapest, record which won"
+    # shape _tech_ii_mods already uses across decryptors.
+    _install_alchemy_recipe_engine(monkeypatch)
+    cfg = ProductionConfig(alchemy_reactions_enabled=True, jita_buy_broker_fee=0.0, haul_cost_per_m3=0.0)
+    alchemy_memo = {}
+
+    cost = engine._unit_cost(_CAESARIUM, cfg, _alchemy_home(**{str(_CAESIUM): 20_000.0}), {}, {}, {}, {},
+                             _alchemy_cost_indices(), {}, 0, alchemy_memo)
+
+    # normal: (100*1000 + 100*20000 + 5*20000) / 200 = 11,000 per unit
+    # alchemy: (100*1000 + 100*100 + 5*10000 - 90*1000 byproduct credit) / 19
+    assert cost == pytest.approx(70_000.0 / 19.0)
+    assert alchemy_memo[_CAESARIUM] is True
+
+
+def test_unit_cost_picks_normal_reaction_when_cheaper(monkeypatch):
+    # The other direction (same pair as the decryptor tests' own "cheapest
+    # wins" + "sanity check the other way" shape): at the base prices the
+    # normal recipe is cheaper, so nothing about the plan may change.
+    _install_alchemy_recipe_engine(monkeypatch)
+    cfg = ProductionConfig(alchemy_reactions_enabled=True, jita_buy_broker_fee=0.0, haul_cost_per_m3=0.0)
+    alchemy_memo = {}
+
+    cost = engine._unit_cost(_CAESARIUM, cfg, _alchemy_home(), {}, {}, {}, {},
+                             _alchemy_cost_indices(), {}, 0, alchemy_memo)
+
+    # normal: (100*1000 + 100*2000 + 5*20000) / 200 = 2,000 per unit, well
+    # under the alchemy path's 70,000/19 = ~3,684.
+    assert cost == pytest.approx(2_000.0)
+    assert alchemy_memo[_CAESARIUM] is False
+
+
+def test_unit_cost_ignores_alchemy_when_feature_flag_is_off(monkeypatch):
+    # The flag has to gate the *cost* engine too, not just the display
+    # column - otherwise turning it off would leave build costs alchemy-
+    # priced while the Bauliste queued the normal recipe.
+    _install_alchemy_recipe_engine(monkeypatch)
+    monkeypatch.setattr(engine, "_alchemy_unit_cost", _boom_alchemy)
+    cfg = ProductionConfig(alchemy_reactions_enabled=False, jita_buy_broker_fee=0.0, haul_cost_per_m3=0.0)
+    alchemy_memo = {}
+
+    cost = engine._unit_cost(_CAESARIUM, cfg, _alchemy_home(**{str(_CAESIUM): 20_000.0}), {}, {}, {}, {},
+                             _alchemy_cost_indices(), {}, 0, alchemy_memo)
+
+    assert cost == pytest.approx(5_000.0)  # min(buy 5,000, normal build 11,000) - never the 3,684 alchemy path
+    assert alchemy_memo[_CAESARIUM] is False
+
+
+def test_expand_all_alchemy_build_run_uses_unrefined_blueprint(monkeypatch):
+    # classify_activity/storage.get_blueprint_for_product always return the
+    # *normal* recipe, so the substitution can only happen inside
+    # _expand_all - and the run count has to be sized off how much Caesarium
+    # one run actually recovers (19), not off the normal recipe's 200/run.
+    _install_alchemy_recipe_engine(monkeypatch)
+    monkeypatch.setattr(engine, "_buy_or_build_decision",
+                         lambda type_id, cfg, home, jita, manual_overrides, cost_memo, bp, depth: "Buy" if bp is None else "Build")
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
+    cfg = ProductionConfig(component_overbuild=0.0)
+    cost_indices = _alchemy_cost_indices()
+
+    normal_buy, normal_runs = engine._expand_all(
+        {_CAESARIUM: 38.0}, cfg, {}, {}, {}, {}, {}, {}, {}, {}, {}, cost_indices=cost_indices)
+    alchemy_buy, alchemy_runs = engine._expand_all(
+        {_CAESARIUM: 38.0}, cfg, {}, {}, {}, {}, {}, {}, {}, {}, {}, cost_indices=cost_indices,
+        alchemy_memo={_CAESARIUM: True})
+
+    assert normal_runs == {(_NORMAL_BP, ACTIVITY_REACTION, _CAESARIUM): 1}  # ceil(38/200)
+    assert normal_buy == {_CADMIUM: 100, _CAESIUM: 100, _OXYGEN_FB: 5}
+    assert alchemy_runs == {(_ALCHEMY_BP, ACTIVITY_REACTION, _UNREFINED): 2}  # ceil(38/19)
+    assert alchemy_buy == {_CADMIUM: 200, _SCANDIUM: 200, _HYDROGEN_FB: 10}
+
+
+def test_expand_all_byproduct_stock_nets_against_material_demand(monkeypatch):
+    # The overlay half of the two-pass mechanism, in isolation: byproduct
+    # stock offsets a material's demand exactly like real on-hand stock.
+    _install_alchemy_recipe_engine(monkeypatch)
+    monkeypatch.setattr(engine, "_buy_or_build_decision",
+                         lambda type_id, cfg, home, jita, manual_overrides, cost_memo, bp, depth: "Buy" if bp is None else "Build")
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
+    cfg = ProductionConfig(component_overbuild=0.0)
+
+    buy_totals, _ = engine._expand_all(
+        {_CAESARIUM: 38.0}, cfg, {}, {}, {}, {}, {}, {}, {}, {}, {},
+        cost_indices=_alchemy_cost_indices(), alchemy_memo={_CAESARIUM: True},
+        byproduct_stock={_CADMIUM: 180.0})
+
+    # 2 alchemy runs need 200 Cadmium; their own 2 x 90 byproduct covers 180.
+    assert buy_totals[_CADMIUM] == 20
+
+
+def _install_alchemy_plan_sde(monkeypatch):
+    """_install_alchemy_recipe_engine plus a plain Tech I "Widget" stock
+    target whose own recipe consumes 1,000 Cadmium."""
+    _install_alchemy_recipe_engine(monkeypatch)
+    base_bp = storage.get_blueprint_for_product
+    base_materials = storage.get_blueprint_materials
+    base_sde_type = storage.get_sde_type
+
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (
+        (_WIDGET_BP, ACTIVITY_MANUFACTURING, 1.0) if type_id == _WIDGET else base_bp(type_id)))
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda blueprint_id, activity_id: (
+        [(_CADMIUM, 1000.0)] if blueprint_id == _WIDGET_BP else base_materials(blueprint_id, activity_id)))
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (
+        (type_id, 0, "Widget", 0.01, 1, None, None, None) if type_id == _WIDGET else base_sde_type(type_id)))
+    monkeypatch.setattr(storage, "get_blueprint_time", lambda blueprint_id, activity_id: 3600)
+    monkeypatch.setattr(storage, "load_sde_category_names", lambda: {})
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: None)
+    monkeypatch.setattr(engine, "job_category", lambda type_id: None)
+    monkeypatch.setattr(engine, "_current_stock", lambda *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: 1.0)  # clears the min_margin gate
+
+
+def _install_alchemy_plan_context(monkeypatch, home, cost_indices):
+    class _FakeCtx:
+        def __init__(self, cfg):
+            self.stock_targets = [
+                (_CAESARIUM, "Caesarium Cadmide", 38, 0, 0),
+                (_WIDGET, "Widget", 1, 0, 0),
+            ]
+            self.manual_stock = {}
+            self.manual_overrides = {}
+            self.selected_decryptors = {}
+            self.home = home
+            self.jita = {}
+            self.cost_indices = cost_indices
+            self.adjusted_prices = {}
+    monkeypatch.setattr(engine, "_PlanContext", _FakeCtx)
+
+
+@pg_helpers.postgres_required()
+def test_plan_production_byproduct_credits_other_demand(monkeypatch, tenant):
+    # Confirmed with the user during planning: an alchemy byproduct is real
+    # physical stock that offsets demand elsewhere in the same plan, not a
+    # cash credit. Caesarium's alchemy path drops 90 Cadmium per run, and
+    # Widget (a completely separate stock target) needs 1,000 Cadmium - the
+    # second _expand_all pass has to net the one against the other.
+    _install_alchemy_plan_sde(monkeypatch)
+    _install_alchemy_plan_context(monkeypatch, _alchemy_home(**{str(_CAESIUM): 20_000.0}), _alchemy_cost_indices())
+    cfg = ProductionConfig(alchemy_reactions_enabled=True, component_overbuild=0.0, min_margin=0.0,
+                            jita_buy_broker_fee=0.0, haul_cost_per_m3=0.0)
+
+    result = engine.plan_production(cfg)
+
+    build_by_id = {row.type_id: row for row in result["build_list"]}
+    assert build_by_id[_UNREFINED].blueprint_type_id == _ALCHEMY_BP
+    assert build_by_id[_UNREFINED].job_runs == 2  # ceil(38 Caesarium / 19 recovered per run)
+    assert build_by_id[_UNREFINED].recipe_source == "alchemy"
+    assert build_by_id[_WIDGET].recipe_source is None
+    assert _CAESARIUM not in build_by_id  # the normal recipe is not queued alongside it
+
+    buy_by_id = {row.type_id: row.quantity for row in result["buy_list"]}
+    # Gross Cadmium demand is 2 x 100 (alchemy inputs) + 1,000 (Widget) =
+    # 1,200; the 2 x 90 byproduct the alchemy runs themselves produce covers
+    # 180 of it.
+    assert buy_by_id[_CADMIUM] == 1020
+
+
+@pg_helpers.postgres_required()
+def test_plan_production_alchemy_disabled_matches_pre_feature_behavior(monkeypatch, tenant):
+    # Regression safety net, same short-circuit-proving shape as
+    # test_compare_alchemy_disabled_does_not_touch_storage_or_refining: with
+    # the flag off, none of the new code paths may run at all, and the plan
+    # must be exactly the normal-recipe one this engine produced before the
+    # feature existed.
+    _install_alchemy_plan_sde(monkeypatch)
+    _install_alchemy_plan_context(monkeypatch, _alchemy_home(), {})
+    for name in ("_alchemy_unit_cost", "_alchemy_yield", "_alchemy_byproduct_stock",
+                 "_alchemy_build_run_keys", "scrapmetal_yield", "apply_reprocessing_yield"):
+        monkeypatch.setattr(engine, name, _boom_alchemy)
+    cfg = ProductionConfig(alchemy_reactions_enabled=False, component_overbuild=0.0, min_margin=0.0,
+                            jita_buy_broker_fee=0.0, haul_cost_per_m3=0.0)
+
+    result = engine.plan_production(cfg)
+
+    build_by_id = {row.type_id: row for row in result["build_list"]}
+    assert set(build_by_id) == {_CAESARIUM, _WIDGET}
+    assert build_by_id[_CAESARIUM].blueprint_type_id == _NORMAL_BP
+    assert build_by_id[_CAESARIUM].job_runs == 1  # ceil(38 / 200 per normal run)
+    assert all(row.recipe_source is None for row in result["build_list"])
+
+    # 100 Cadmium for the one normal Caesarium run + 1,000 for Widget, with
+    # no byproduct overlay netting anything off.
+    assert {row.type_id: row.quantity for row in result["buy_list"]} == {
+        _CADMIUM: 1100, _CAESIUM: 100, _OXYGEN_FB: 5}
+
+
+def test_refining_settings_save_invalidates_production_build_cost_caches(monkeypatch):
+    # scrapmetal_processing_skill_level now sets how much of an "Unrefined X"
+    # batch reprocesses back into the target material, which feeds real
+    # build costs/margins (engine._alchemy_unit_cost) - both Production
+    # caches hold results computed from it, so a refining settings save has
+    # to invalidate them, same as Production's own settings save does.
+    from eve_trader.refining import actions as refining_actions
+    from eve_trader.refining.config import RefiningConfig
+
+    calls = []
+    monkeypatch.setattr(refining_actions, "save_tenant_config_overrides", lambda *a, **k: None)
+    monkeypatch.setattr(refining_actions, "invalidate_discover_cache", lambda: calls.append("discover"))
+    monkeypatch.setattr(refining_actions, "invalidate_ship_margin_cache", lambda: calls.append("ship_margin"))
+
+    refining_actions.do_update_settings({"scrapmetal_processing_skill_level": 4}, RefiningConfig())
+
+    assert calls == ["discover", "ship_margin"]
+
+
+# ------------------------------------ Alchemy in the Asset-Optimized Bauliste
+# plan_asset_optimized doesn't call _expand_all - it's its own breadth-first
+# walk with two parallel stock ledgers (stock_used for sizing, stock_used_
+# on_hand for readiness). It also has no buy_list: unlike plan_production, a
+# byproduct's effect on demand is only observable through a *downstream job's
+# own job_runs*, so these fixtures give Cadmium a trivial recipe (1 Ore -> 1
+# Cadmium) it doesn't have in the plan_production fixtures above.
+_CADMIUM_BP = 90003
+_ORE = 90004
+
+
+def _install_alchemy_asset_plan_sde(monkeypatch, widget_cadmium_qty=1000.0):
+    """_install_alchemy_plan_sde, plus Cadmium's own trivial 1 Ore -> 1
+    Cadmium recipe. `widget_cadmium_qty` overrides the shared fixture's
+    1,000 Cadmium/Widget ratio for tests that need a smaller, crisper claim
+    (see the readiness test below) - a full replacement of get_blueprint_
+    materials covering every known blueprint id, not a layered override, so
+    the ratio is unambiguous at the call site rather than depending on
+    monkeypatch application order."""
+    _install_alchemy_plan_sde(monkeypatch)
+    base_bp = storage.get_blueprint_for_product
+    base_sde_type = storage.get_sde_type
+
+    def fake_bp(type_id):
+        if type_id == _CADMIUM:
+            return (_CADMIUM_BP, ACTIVITY_MANUFACTURING, 1.0)
+        return base_bp(type_id)
+
+    def fake_materials(blueprint_id, activity_id):
+        if blueprint_id == _CADMIUM_BP:
+            return [(_ORE, 1.0)]
+        if blueprint_id == _WIDGET_BP:
+            return [(_CADMIUM, widget_cadmium_qty)]
+        if blueprint_id == _NORMAL_BP:
+            return [(_CADMIUM, 100.0), (_CAESIUM, 100.0), (_OXYGEN_FB, 5.0)]
+        if blueprint_id == _ALCHEMY_BP:
+            return [(_CADMIUM, 100.0), (_SCANDIUM, 100.0), (_HYDROGEN_FB, 5.0)]
+        return []
+
+    def fake_sde_type(type_id):
+        if type_id == _ORE:
+            return (type_id, 0, "Ore", 0.01, 1, None, None, None)
+        return base_sde_type(type_id)
+
+    monkeypatch.setattr(storage, "get_blueprint_for_product", fake_bp)
+    monkeypatch.setattr(storage, "get_blueprint_materials", fake_materials)
+    monkeypatch.setattr(storage, "get_sde_type", fake_sde_type)
+
+
+@pg_helpers.postgres_required()
+def test_plan_asset_optimized_uses_alchemy_recipe_when_cheaper(monkeypatch, tenant):
+    # Same substitution _expand_all already makes for plan_production,
+    # ported into plan_asset_optimized's own Phase A/C: the queued job is
+    # keyed/named by the "Unrefined X" intermediate (the job actually
+    # queued in EVE), sized off how much Caesarium one run recovers (19),
+    # not the normal recipe's 200/run - and the normal recipe is not queued
+    # alongside it.
+    _install_alchemy_plan_sde(monkeypatch)
+    _install_alchemy_plan_context(monkeypatch, _alchemy_home(**{str(_CAESIUM): 20_000.0}), _alchemy_cost_indices())
+    cfg = ProductionConfig(alchemy_reactions_enabled=True, component_overbuild=0.0, min_margin=0.0,
+                            jita_buy_broker_fee=0.0, haul_cost_per_m3=0.0)
+
+    result = engine.plan_asset_optimized(cfg)
+
+    jobs_by_id = {j.type_id: j for j in result["jobs"]}
+    assert jobs_by_id[_UNREFINED].blueprint_type_id == _ALCHEMY_BP
+    assert jobs_by_id[_UNREFINED].job_runs == 2  # ceil(38 Caesarium / 19 recovered per run)
+    assert jobs_by_id[_UNREFINED].recipe_source == "alchemy"
+    assert _CAESARIUM not in jobs_by_id
+
+
+@pg_helpers.postgres_required()
+def test_plan_asset_optimized_byproduct_credits_other_demand(monkeypatch, tenant):
+    # Confirmed with the user: an alchemy byproduct is real physical stock
+    # that offsets demand elsewhere in the same plan, not a cash credit -
+    # same reasoning as plan_production's own version of this test.
+    # plan_asset_optimized has no buy_list though, so the credit is observed
+    # via Cadmium's own job_runs (see _install_alchemy_asset_plan_sde):
+    # gross Cadmium demand is 2 alchemy runs x 100 + Widget's own 1,000 =
+    # 1,200; the alchemy runs' own 2 x 90 byproduct covers 180 of it.
+    _install_alchemy_asset_plan_sde(monkeypatch)
+    _install_alchemy_plan_context(
+        monkeypatch, _alchemy_home(**{str(_CAESIUM): 20_000.0, str(_ORE): 1.0}), _alchemy_cost_indices())
+    cfg = ProductionConfig(alchemy_reactions_enabled=True, component_overbuild=0.0, min_margin=0.0,
+                            jita_buy_broker_fee=0.0, haul_cost_per_m3=0.0)
+
+    result = engine.plan_asset_optimized(cfg)
+
+    jobs_by_id = {j.type_id: j for j in result["jobs"]}
+    assert jobs_by_id[_UNREFINED].job_runs == 2
+    assert jobs_by_id[_CADMIUM].job_runs == 1020
+    assert jobs_by_id[_CADMIUM].recipe_source is None
+
+
+@pg_helpers.postgres_required()
+def test_plan_asset_optimized_byproduct_does_not_count_as_ready_now(monkeypatch, tenant):
+    # The one genuinely new risk in this port: if the byproduct overlay
+    # wrongly reached available_on_hand instead of just the sizing ledger,
+    # Widget's whole 5-Cadmium claim would look fully covered by the
+    # alchemy runs' 180 byproduct and its one job_run would show ready. It
+    # must not - a byproduct this plan is merely proposing to produce is no
+    # more physically on hand than an in-progress job's own output (see
+    # plan_asset_optimized's own _current_stock/_stock_on_hand docstring,
+    # the confirmed 2026-08-15 Sylramic Fibers bug this mirrors).
+    _install_alchemy_asset_plan_sde(monkeypatch, widget_cadmium_qty=5.0)
+    _install_alchemy_plan_context(
+        monkeypatch, _alchemy_home(**{str(_CAESIUM): 20_000.0, str(_ORE): 1.0}), _alchemy_cost_indices())
+    cfg = ProductionConfig(alchemy_reactions_enabled=True, component_overbuild=0.0, min_margin=0.0,
+                            jita_buy_broker_fee=0.0, haul_cost_per_m3=0.0)
+
+    result = engine.plan_asset_optimized(cfg)
+
+    jobs_by_id = {j.type_id: j for j in result["jobs"]}
+    assert jobs_by_id[_WIDGET].job_runs == 1
+    assert jobs_by_id[_WIDGET].runs_ready_now == 0
+
+
+@pg_helpers.postgres_required()
+def test_plan_asset_optimized_alchemy_disabled_matches_pre_feature_behavior(monkeypatch, tenant):
+    # Regression safety net, same short-circuit-proving shape as the
+    # plan_production version: with the flag off, none of the new code
+    # paths may run at all, and the plan must be exactly the normal-recipe
+    # one this engine produced before the feature existed.
+    _install_alchemy_plan_sde(monkeypatch)
+    _install_alchemy_plan_context(monkeypatch, _alchemy_home(), {})
+    for name in ("_alchemy_unit_cost", "_alchemy_yield", "_alchemy_byproduct_stock",
+                 "_alchemy_build_run_keys", "scrapmetal_yield", "apply_reprocessing_yield"):
+        monkeypatch.setattr(engine, name, _boom_alchemy)
+    cfg = ProductionConfig(alchemy_reactions_enabled=False, component_overbuild=0.0, min_margin=0.0,
+                            jita_buy_broker_fee=0.0, haul_cost_per_m3=0.0)
+
+    result = engine.plan_asset_optimized(cfg)
+
+    jobs_by_id = {j.type_id: j for j in result["jobs"]}
+    assert set(jobs_by_id) == {_CAESARIUM, _WIDGET}
+    assert jobs_by_id[_CAESARIUM].blueprint_type_id == _NORMAL_BP
+    assert jobs_by_id[_CAESARIUM].job_runs == 1  # ceil(38 / 200 per normal run)
+    assert all(j.recipe_source is None for j in result["jobs"])

@@ -85,6 +85,13 @@ class BuildJobEntry:
     # Production sells only at C-J (see CLAUDE.md). None if there's no C-J
     # sell quote to check against, same convention as unit_build_cost.
     margin: Optional[float] = None
+    # "alchemy" when the buy-vs-build engine picked this item's "Unrefined X"
+    # alchemy formula over its normal Reaction recipe (engine._unit_cost /
+    # _expand_all), None for every ordinary row. On an alchemy row type_id/
+    # type_name/blueprint_type_id are the "Unrefined X" intermediate and its
+    # formula - that's the job actually queued in EVE; the target item comes
+    # out of reprocessing it afterwards.
+    recipe_source: Optional[str] = None
 
 
 @dataclass
@@ -277,6 +284,14 @@ class AssetPlanJob:
     # None when recommended_slots is 0 or None (job outside the
     # recommendation categories, or the pool had zero free slots for it).
     days_to_complete_at_recommended_slots: Optional[float] = None
+    # "alchemy" when the buy-vs-build engine picked this item's "Unrefined X"
+    # alchemy formula over its normal Reaction recipe (engine._unit_cost /
+    # plan_asset_optimized's own _run_rounds), None for every ordinary row -
+    # same convention as BuildJobEntry.recipe_source. On an alchemy row
+    # type_id/type_name/blueprint_type_id are the "Unrefined X" intermediate
+    # and its formula - that's the job actually queued in EVE; the target
+    # item comes out of reprocessing it afterwards.
+    recipe_source: Optional[str] = None
     # Direct materials that still short this job (needed > covered). Empty
     # when every run is ready now. Originally display-only (Blocked-column
     # tooltip) and still never feeds this job's *own* sizing/readiness - but
@@ -497,8 +512,12 @@ class AlchemyComparison:
     and its alchemy ("Unrefined X") alternative, if one exists - see
     engine.find_alchemy_alternative/compare_alchemy_profitability. Purely
     informational (ProductionConfig.alchemy_reactions_enabled gates whether
-    this is computed/shown at all) - never changes which recipe buy-vs-build
-    or plan_production actually uses."""
+    this is computed/shown at all) - this row is a sell-price ISK/hour
+    figure and is not what picks a recipe. The real pick lives in
+    engine._alchemy_unit_cost, which values the byproduct at what it would
+    cost to source rather than what it would sell for, so the two
+    deliberately answer different questions and need not agree (see
+    BuildJobEntry.recipe_source for what was actually chosen)."""
     product_type_id: int
     product_type_name: str
     normal_isk_per_hour: Optional[float]     # None if normal recipe's inputs have no price data

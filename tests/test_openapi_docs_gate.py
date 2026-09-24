@@ -35,6 +35,7 @@ def test_docs_are_reachable_when_authenticated(
 ):
     monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", True)
     monkeypatch.setattr(OAUTH_CONFIG, "session_secret_key", "test-secret-key")
+    pg_helpers.wipe_tables("access_allowlist", "access_requests")
     tenant_id = storage.create_tenant("Docs")
     storage.add_tenant_registry_entry(tenant_id, 11, character_name="Docs")
     token = access_gate.create_session_token(11, "Docs", tenant_id)
@@ -49,6 +50,7 @@ def test_openapi_schema_has_no_secrets(
 ):
     monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", True)
     monkeypatch.setattr(OAUTH_CONFIG, "session_secret_key", "test-secret-key")
+    pg_helpers.wipe_tables("access_allowlist", "access_requests")
     tenant_id = storage.create_tenant("Docs")
     storage.add_tenant_registry_entry(tenant_id, 11, character_name="Docs")
     token = access_gate.create_session_token(11, "Docs", tenant_id)

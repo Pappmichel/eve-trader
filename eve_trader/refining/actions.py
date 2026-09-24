@@ -17,6 +17,7 @@ from ..config import OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, Tra
 from ..esi_client import ESIClient, ESIError
 from ..goonmetrics_client import GoonmetricsClient
 from ..production.config import PRODUCTION_CONFIG, ProductionConfig
+from ..production.engine import invalidate_discover_cache, invalidate_ship_margin_cache
 from ..production.pricing import home_prices
 from .candidate_discovery import build_ore_candidate_universe
 from .config import REFINING_CONFIG, RefiningConfig, validate_refining_overrides
@@ -414,4 +415,11 @@ def do_update_settings(updates: dict, cfg: RefiningConfig = REFINING_CONFIG) -> 
         save_tenant_config_overrides("refining", updates, cfg, cfg_type=RefiningConfig)
     except ConfigError as e:
         raise ActionError(str(e)) from e
+    # Cross-tool: scrapmetal_processing_skill_level sets how much of an
+    # "Unrefined X" batch reprocesses back into the target material, which
+    # Production's buy-vs-build engine prices for real (production.engine.
+    # _alchemy_unit_cost) - both caches hold build_cost/margin results
+    # computed from it.
+    invalidate_discover_cache()
+    invalidate_ship_margin_cache()
     return updates

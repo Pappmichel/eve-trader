@@ -194,11 +194,22 @@ above) - they skip automatically, rather than fail, when one isn't running.
 
 ## Deploying somewhere reachable beyond localhost
 
-See [`deploy/README.md`](deploy/README.md) - a single-user deployment (e.g.
-a free-tier VPS) behind the access gate (`eve_trader/access_gate.py`), which
-requires an EVE SSO login matching a character registered in the tenant
-registry before any part of the app is reachable. Off by default; local dev
-is unaffected either way.
+See [`deploy/README.md`](deploy/README.md) and
+[`docs/OPERATOR_SECURITY.md`](docs/OPERATOR_SECURITY.md). The access gate
+(`eve_trader/access_gate.py`) is on by default. A character reaches the app
+only after an admin has registered them.
+
+Two ways to add someone:
+
+- **Add User** (Admin page): look the character up by name and create their
+  tenant immediately, then tick the tools they should have.
+- **Access request**: put their corporation or alliance on the allowlist.
+  The next time that character logs in with EVE SSO, a pending request
+  shows up in Admin. Approve it (picking tools — that creates their tenant)
+  or reject it. A rejection stays in force until an admin deletes it.
+  Leaving an allowlisted corporation suspends access; the tenant and its
+  data stay. An empty allowlist does not re-check anyone, so existing
+  users keep working until the first entry is added.
 
 ## Interface
 
