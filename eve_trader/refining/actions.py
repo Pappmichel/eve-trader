@@ -23,7 +23,7 @@ from .config import REFINING_CONFIG, RefiningConfig, validate_refining_overrides
 from .engine import apply_reprocessing_yield, ore_ice_yield
 from .models import MineralOption, MineralRequirement, OreOption, OreShortlistRow, ShoppingListPlan
 from .optimizer import OptimizationError, optimize_shopping_list
-from .paste_parser import merge_duplicate_stacks, parse_paste
+from ..paste_parser import merge_duplicate_stacks, parse_paste
 from .pricing import evaluate_ore_shortlist, landed_cost_per_unit, mineral_type_ids_for
 from .reprocessing import (
     REPROCESS_DECISION, ReprocessingQuoteRow, evaluate_reprocessing_line, mineral_type_ids_for_lines,

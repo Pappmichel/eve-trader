@@ -1462,6 +1462,12 @@ def _has_bpo_at_location(type_id: int, location_id: int) -> bool:
         type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
 
 
+def _esi_incoming_industry_qty(type_id: int) -> dict[str, float]:
+    char_ids, corp_ids = shared_production_owner_ids("industry_jobs")
+    return storage.esi_incoming_industry_qty(
+        type_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
+
+
 def _current_stock(type_id: int, manual_stock: dict[int, float], cfg: ProductionConfig,
                     bp: Optional[tuple[int, int, float]]) -> float:
     """manual entry + ESI assets at *every* location (location_id=None -
@@ -1498,7 +1504,7 @@ def _current_stock(type_id: int, manual_stock: dict[int, float], cfg: Production
     total += _stock_at_location(
         type_id, None, allowed_flags=cfg.stock_hangar_flags,
         exclude_intake_at_location_id=cfg.home_location_id)
-    incoming = storage.esi_incoming_industry_qty(type_id)
+    incoming = _esi_incoming_industry_qty(type_id)
     if incoming["runs"] and bp is not None:
         _, _, product_qty = bp
         total += incoming["runs"] * product_qty

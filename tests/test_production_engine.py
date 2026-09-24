@@ -61,9 +61,10 @@ def _stub_shared_production_owner_ids(monkeypatch):
     # resolve sharing via shared_production_owner_ids (storage.connect(),
     # real Postgres) before calling storage.esi_stock_at_location/
     # sell_order_qty_*/get_owned_bpo_best_me_te/available_blueprint_copies/
-    # has_bpo_at_location. Almost every test in this file monkeypatches
-    # those storage.* functions directly and has no tenant/Postgres context
-    # at all - stub the resolver to (None, None) ("unfiltered", the same
+    # has_bpo_at_location/esi_incoming_industry_qty. Almost every test in this
+    # file monkeypatches those storage.* functions directly and has no
+    # tenant/Postgres context at all - stub the resolver to (None, None)
+    # ("unfiltered", the same
     # default every storage.* function itself falls back to) so it never
     # touches storage.connect(). A test that specifically wants to exercise
     # the sharing filter overrides this fixture's monkeypatch itself.
@@ -127,7 +128,7 @@ def test_current_stock_checks_every_location_not_a_curated_set(monkeypatch):
         return 1_572_335.0
 
     monkeypatch.setattr(storage, "esi_stock_at_location", fake_esi_stock)
-    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id: {"runs": 0, "jobs": 0})
+    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id, **_kwargs: {"runs": 0, "jobs": 0})
     cfg = ProductionConfig(home_location_id=1000000000001)
 
     total = engine._current_stock(type_id=16636, manual_stock={}, cfg=cfg, bp=None)
@@ -156,7 +157,7 @@ def test_current_stock_does_not_count_configured_sorting_intake(monkeypatch, ten
         (9103, 34, jita, "Hangar", 80, 0, "pappmichl5"),
     ])
     storage.add_sorting_intake_source("character", "Hangar", owner_name="pappmichl5")
-    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id: {"runs": 0, "jobs": 0})
+    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id, **_kwargs: {"runs": 0, "jobs": 0})
     cfg = ProductionConfig(home_location_id=home)
 
     assert engine._current_stock(34, {}, cfg, None) == 90.0
@@ -181,7 +182,7 @@ def test_market_status_skips_items_with_no_market_target(monkeypatch):
     _no_listings(monkeypatch)
     monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
     monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None, **kwargs: 0.0)
-    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id: {"runs": 0, "jobs": 0})
+    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id, **_kwargs: {"runs": 0, "jobs": 0})
     monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [
         (1, "No Market Target", 10.0, None, None),
@@ -3781,7 +3782,7 @@ def test_plan_production_persisted_buy_list_ignores_sorting_intake_stash(monkeyp
     ])
     storage.add_sorting_intake_source("character", "Hangar", owner_name="pappmichl5")
     monkeypatch.setattr(storage, "save_latest_buy_list", _save_latest_buy_list_impl)
-    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id: {"runs": 0, "jobs": 0})
+    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id, **_kwargs: {"runs": 0, "jobs": 0})
 
     stock_targets = [(1, "Widget", 1, 0, 0)]
     monkeypatch.setattr(engine, "_PlanContext", _make_fake_plan_context(stock_targets))

@@ -203,7 +203,7 @@ export default function StockTargets() {
             title: 'Remove stock target',
             children: (
               <Text size="sm">
-                Remove the stock target for {i.row.original.type_name}? Its targets, manual stock, and overrides are all deleted.
+                Remove the stock target for {i.row.original.type_name}? Backup, home, and Jita targets are deleted. Manual stock and the build/buy override stay.
               </Text>
             ),
             labels: { confirm: 'Remove', cancel: 'Cancel' },

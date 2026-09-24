@@ -3165,7 +3165,9 @@ def get_esi_sync_time(scope: str) -> Optional[str]:
     return row[0] if row else None
 
 
-def esi_incoming_industry_qty(product_type_id: int) -> dict[str, float]:
+def esi_incoming_industry_qty(product_type_id: int,
+                              owner_character_ids: Optional[list[int]] = None,
+                              owner_corporation_ids: Optional[list[int]] = None) -> dict[str, float]:
     """Returns {'runs': total outstanding job runs, 'jobs': job count} for
     `product_type_id` across character + corp industry jobs. Converting runs
     to output quantity needs the blueprint's product qty/run (see
@@ -3177,15 +3179,21 @@ def esi_incoming_industry_qty(product_type_id: int) -> dict[str, float]:
     sitting there as 'ready' (completed, waiting to be picked up/delivered -
     its output already exists) wasn't counted as incoming stock at all,
     understating current+incoming supply and causing the Bauliste to plan to
-    build/buy more of something that's already sitting there completed."""
+    build/buy more of something that's already sitting there completed.
+
+    `owner_character_ids`/`owner_corporation_ids`: see `_owner_id_clause` -
+    both None (the default) is unfiltered. A caller that has resolved
+    sharing passes both, even when one list is empty."""
     with connect() as conn:
         runs = 0
         jobs = 0
         for table in ("character_industry_jobs", "corp_industry_jobs"):
+            id_clause, id_params = _owner_id_clause(table, owner_character_ids, owner_corporation_ids)
             row = conn.execute(
                 f"SELECT COALESCE(SUM(runs), 0), COUNT(*) FROM {table} "
-                "WHERE product_type_id = ? AND status IN ('active', 'paused', 'ready')",
-                (product_type_id,),
+                "WHERE product_type_id = ? AND status IN ('active', 'paused', 'ready')"
+                f"{id_clause}",
+                (product_type_id, *id_params),
             ).fetchone()
             runs += row[0]
             jobs += row[1]
@@ -3569,6 +3577,51 @@ def activate_station_trading_shortlist_items(type_ids: Iterable[int]) -> None:
 
 
 # ------------------------------------------------------------- Production: SDE reads
+def resolve_type_names_exact(names: Iterable[str]) -> dict[str, tuple[int, str, Optional[int]]]:
+    """Published types whose name matches one of `names` exactly, case-
+    insensitively, in one query. Key is the lowercased stripped input.
+    Value is (type_id, type_name, category_id). category_id comes from
+    sde_groups and is None when the type has no group row. Blank names are
+    skipped. Two published types that share a case-insensitive name resolve
+    to the lower type_id."""
+    keys: list[str] = []
+    seen: set[str] = set()
+    for raw in names:
+        key = raw.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        keys.append(key)
+    if not keys:
+        return {}
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT ON (LOWER(t.type_name)) "
+            "LOWER(t.type_name), t.type_id, t.type_name, g.category_id "
+            "FROM sde_types t "
+            "LEFT JOIN sde_groups g ON g.group_id = t.group_id "
+            "WHERE t.published = 1 AND LOWER(t.type_name) = ANY(?) "
+            "ORDER BY LOWER(t.type_name), t.type_id",
+            (keys,),
+        ).fetchall()
+    return {row[0]: (row[1], row[2], row[3]) for row in rows}
+
+
+def suggest_type_names(names: Iterable[str]) -> dict[str, Optional[tuple[int, str]]]:
+    """One search_sde_types(name, limit=1) per distinct non-blank name.
+    Key is the lowercased stripped input. Value is that top type-ahead hit,
+    or None when nothing matches. Callers pass the names
+    resolve_type_names_exact did not return."""
+    out: dict[str, Optional[tuple[int, str]]] = {}
+    for raw in names:
+        key = raw.strip().lower()
+        if not key or key in out:
+            continue
+        matches = search_sde_types(raw, limit=1)
+        out[key] = matches[0] if matches else None
+    return out
+
+
 def search_sde_types(query: str, limit: int = 20) -> list[tuple[int, str]]:
     """Type-ahead lookup for the Stock Targets editor. An exact (case-insensitive)
     match always sorts first, regardless of `limit` - otherwise e.g. "Vexor"

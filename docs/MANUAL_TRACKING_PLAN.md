@@ -12,7 +12,7 @@ existing Stock Targets, Blueprints and Industry Jobs pages.
 
 ## 0. Verification before building (no code)
 
-Checked 2026-09-24 against [evepraisal/evepaste](https://github.com/evepraisal/evepaste) `master` (`17df80ef`, library version 0.9). That is the same reference `eve_trader/refining/paste_parser.py` used for the inventory parser (issue #92). Parser modules on that tree: `assets`, `cargo_scan`, `chat`, `contract`, `dscan`, `eft`, `fitting`, `industry`, `killmail`, `listing`, `loot_history`, `pi`, `survey_scanner`, `view_contents`, `wallet`. There is no blueprint parser and no market-order parser.
+Checked 2026-09-24 against [evepraisal/evepaste](https://github.com/evepraisal/evepaste) `master` (`17df80ef`, library version 0.9). That is the same reference `eve_trader/paste_parser.py` used for the inventory parser (issue #92). Parser modules on that tree: `assets`, `cargo_scan`, `chat`, `contract`, `dscan`, `eft`, `fitting`, `industry`, `killmail`, `listing`, `loot_history`, `pi`, `survey_scanner`, `view_contents`, `wallet`. There is no blueprint parser and no market-order parser.
 
 | Check | Result |
 |---|---|
@@ -138,10 +138,12 @@ exception; CLAUDE.md's list of exceptions gets updated accordingly.
 
 ## 2. Shared paste parser module
 
-- Move `eve_trader/refining/paste_parser.py` to `eve_trader/paste_parser.py`.
-  Update the imports in `refining/actions.py`, `refining/reprocessing.py`,
+Done in phase 1.
+
+- `eve_trader/refining/paste_parser.py` now lives at `eve_trader/paste_parser.py`.
+  Imports updated in `refining/actions.py`, `refining/reprocessing.py`,
   `tests/test_refining_paste_parser.py` and `tests/test_refining_reprocessing.py`.
-  SYNC.md also mentions the old path and needs updating.
+  SYNC.md names the new path.
 - The logic stays the same. `ParsedPasteLine.category` already carries the
   category, which is how `Blueprint` lines are detected (decision 10).
 - Phase 0 was negative, so this module does not gain `parse_blueprint_paste()`
@@ -188,14 +190,21 @@ exception; CLAUDE.md's list of exceptions gets updated accordingly.
   **not** searched, so it can't be listed.
 
 ### 3.6 Batch name resolution (decision 18)
+
+Done in phase 1.
+
 - `resolve_type_names_exact(names) -> dict[str_lower, (type_id, name, category_id)]` –
   one query on `lower(type_name) = ANY(?)`, published types only.
-- Names that aren't found each get a suggestion through the existing
-  `search_sde_types(name, limit=1)`.
+- Names that aren't found each get a suggestion through `suggest_type_names`,
+  which calls the existing `search_sde_types(name, limit=1)` once per name.
 
 ### 3.7 Fix 19
-`esi_incoming_industry_qty()` gets `owner_character_ids`/`owner_corporation_ids`
-parameters (filtered through the existing `_owner_id_clause`).
+
+Done in phase 1. `esi_incoming_industry_qty()` takes
+`owner_character_ids`/`owner_corporation_ids` (filtered through the existing
+`_owner_id_clause`). `_current_stock` calls `_esi_incoming_industry_qty`, which
+passes `shared_production_owner_ids("industry_jobs")`. `manual_incoming_qty`
+is still phase 6.
 
 ---
 
@@ -420,7 +429,7 @@ New group `eve-trader production manual …`. Every command takes
 
 | # | Scope | Depends on |
 |---|---|---|
-| 1 | Groundwork: parser move, batch name resolution, fix 19, delete-dialog text | – |
+| 1 | Done. Groundwork: parser move, batch name resolution, fix 19, delete-dialog text | – |
 | 2 | Locations: `manual_location_names`, `global_structure_names`, lookup chain, shared resolution function, `search_locations`, LocationPicker, fallback switch | – |
 | 3 | `manual_stock` with locations: schema migration, storage, engine (`_stock_at_location`), SQLite migration, "Manual stock" UI table | 2 |
 | 4 | Asset paste: preview/commit, paste panel | 1, 3 |
@@ -457,5 +466,5 @@ New group `eve-trader production manual …`. Every command takes
 | 17 | CLI commands with `--tenant-id` and `enter_tenant` |
 | 18 | Batch name resolution with "Did you mean…?" |
 | 19 | Fix the missing sharing filter on incoming industry jobs in this project |
-| 20 | Correct the Stock Targets delete-dialog text |
+| 20 | Stock Targets delete dialog: only the backup/home/Jita targets are deleted. Manual stock and the build/buy override stay. |
 | Q2 | Every successful resolution by any tenant is written to the global cache |
