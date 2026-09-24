@@ -70,13 +70,11 @@ function SdeDataSection() {
 // reasoning as SdeDataSection above - see production/jita_price_cache.py's
 // own docstring. Deliberately its own standalone action (not wired into
 // Production's "Recompute Buy/Build List" or any other button) - normally
-// refreshed automatically once an hour by the scheduler (see the
-// "Background Scheduler" card on the Portfolio page for that job's own
-// last-run/interval status); this button is only for forcing a fresh one
-// on demand.
+// refreshed automatically once an hour by the scheduler; this button is
+// only for forcing a fresh one on demand.
 function JitaPriceCacheSection() {
   const refreshJitaPriceCache = useAction('Refresh Jita Price Cache', adminApi.refreshJitaPriceCache,
-    [['portfolio', 'scheduler-status']],
+    [],
     { tier: 'live', effect: 'Loads Jita prices live from ESI for every Production stock target, global across every tenant.' })
 
   return (
@@ -84,7 +82,7 @@ function JitaPriceCacheSection() {
       <Title order={4} mb="xs">Jita Price Cache</Title>
       <Text size="sm" c="dimmed" mb="xs">
         Shared, hourly-refreshed Jita price snapshot used by Production's Buy/Build list - shared across every
-        tenant. See the Background Scheduler card on the Portfolio page for last-refreshed time.
+        tenant.
       </Text>
       <Tooltip label={refreshJitaPriceCache.tooltip} disabled={!refreshJitaPriceCache.tooltip} multiline w={280}>
         <Button size="xs" variant="default" leftSection={refreshJitaPriceCache.tierIcon} onClick={() => refreshJitaPriceCache.mutate()}

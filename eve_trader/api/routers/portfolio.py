@@ -8,7 +8,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from .. import schemas
-from ... import portfolio, scheduler
+from ... import portfolio
 from ...actions import ActionError
 
 router = APIRouter()
@@ -31,8 +31,3 @@ def get_portfolio_overview():
     # (confirmed real misplacement 2026-09-21, see admin.do_create_backup's
     # own docstring) - this router no longer touches actions.py at all.
     return _wrap(portfolio.portfolio_overview)
-
-
-@router.get("/scheduler-status")
-def get_scheduler_status():
-    return scheduler.get_status()

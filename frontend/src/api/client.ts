@@ -341,7 +341,6 @@ export const productionApi = {
 // ------------------------------------------------------------- portfolio
 export const portfolioApi = {
   overview: () => get<T.PortfolioOverview>('/api/portfolio/overview'),
-  schedulerStatus: () => get<T.SchedulerStatus>('/api/portfolio/scheduler-status'),
 }
 
 // -------------------------------------------------------------- doctrine

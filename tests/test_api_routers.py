@@ -1211,23 +1211,13 @@ def test_get_portfolio_overview(monkeypatch):
     assert resp.json()["trading_daily_profit_volatility"] is None
 
 
-def test_get_scheduler_status(monkeypatch):
-    from eve_trader import scheduler
-    monkeypatch.setattr(scheduler, "get_status", lambda: {
-        "enabled": True, "running": True,
-        "jobs": {
-            "trading_pipeline": {"interval_hours": 24.0, "last_run_at": "2026-07-17T08:06:35", "last_error": None},
-            "esi_data_sync": {
-                "interval_hours": None,
-                "tier_interval_hours": {"frequent": 1.0, "normal": 6.0, "rare": 24.0},
-                "last_run_at": None, "last_error": "no auth",
-            },
-        },
-    })
+def test_scheduler_status_route_removed():
+    # Portfolio rework: the Background Scheduler card and its route were
+    # removed from this page (scheduler.get_status() itself stays for
+    # Admin's possible future use - see PORTFOLIO_REWORK_PLAN.md section 1).
+    # This guards against an accidental re-add.
     resp = client.get("/api/portfolio/scheduler-status")
-    assert resp.status_code == 200
-    assert resp.json()["enabled"] is True
-    assert resp.json()["jobs"]["esi_data_sync"]["last_error"] == "no auth"
+    assert resp.status_code == 404
 
 
 # Backup routes moved to /api/admin/backups (confirmed real misplacement
