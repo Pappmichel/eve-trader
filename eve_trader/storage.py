@@ -2211,12 +2211,13 @@ def delete_owner_snapshot_rows(
     """Clear one owner's partition (age-limit stale clear, tests)."""
     allowed = _ASSET_TABLES | _JOB_TABLES | _BP_TABLES | {
         "character_sell_orders", "esi_wallet_transactions", "esi_wallet_journal",
-        "doctrine_contracts",
+        "doctrine_contracts", "character_wallet_balances", "corp_wallet_balances",
     }
     if table not in allowed:
         raise ValueError(f"not a per-owner snapshot table: {table}")
     with connect() as conn:
-        if table in ("esi_wallet_transactions", "esi_wallet_journal"):
+        if table in ("esi_wallet_transactions", "esi_wallet_journal",
+                      "character_wallet_balances", "corp_wallet_balances"):
             col = "owner_character_id" if owner_character_id is not None else "owner_corporation_id"
             oid = owner_character_id if owner_character_id is not None else owner_corporation_id
             if oid is None:
@@ -2837,6 +2838,60 @@ def replace_wallet_journal(
                 for r in rows
             ],
         )
+
+
+def upsert_character_wallet_balance(character_id: int, balance: float) -> None:
+    """One row per character (current balance only, not history - see
+    esi_access_schema.sql's own comment on why this is a separate,
+    smaller data kind from esi_wallet_transactions/journal)."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO character_wallet_balances (owner_character_id, balance, synced_at) "
+            "VALUES (?, ?, now()) "
+            "ON CONFLICT (tenant_id, owner_character_id) DO UPDATE SET "
+            "balance=excluded.balance, synced_at=excluded.synced_at",
+            (character_id, balance),
+        )
+
+
+def load_character_wallet_balance(character_id: int) -> Optional[float]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT balance FROM character_wallet_balances WHERE owner_character_id = ?",
+            (character_id,),
+        ).fetchone()
+    return row[0] if row else None
+
+
+def replace_corp_wallet_balances(corporation_id: int, balances: dict[int, float]) -> None:
+    """Replaces only the divisions present in `balances` (the ones this
+    fetch could actually read) - an unread division keeps its existing
+    snapshot, same reasoning as replace_wallet_transactions' corp-owner
+    partial-replace above. `balances` empty is a no-op (zero readable
+    divisions is a failed fetch, decision 6 - the caller should not have
+    called this at all in that case)."""
+    if not balances:
+        return
+    divisions = list(balances.keys())
+    with connect() as conn:
+        conn.execute(
+            "DELETE FROM corp_wallet_balances WHERE owner_corporation_id = ? AND division = ANY(?)",
+            (corporation_id, divisions),
+        )
+        conn.executemany(
+            "INSERT INTO corp_wallet_balances (owner_corporation_id, division, balance, synced_at) "
+            "VALUES (?, ?, ?, now())",
+            [(corporation_id, division, balance) for division, balance in balances.items()],
+        )
+
+
+def load_corp_wallet_balances(corporation_id: int) -> dict[int, float]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT division, balance FROM corp_wallet_balances WHERE owner_corporation_id = ?",
+            (corporation_id,),
+        ).fetchall()
+    return {division: balance for division, balance in rows}
 
 
 def upsert_character_slot_row(

@@ -293,6 +293,42 @@ def fetch_corporation_wallet(
     return {"written": len(txn_rows), "journal": len(journal_rows), "divisions": readable}
 
 
+# ------------------------------------------------------------ wallet_balance
+def fetch_character_wallet_balance(
+    client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
+) -> dict:
+    balance = client.character_wallet_balance(owner_id, auth_role=auth_role)
+    storage.upsert_character_wallet_balance(owner_id, balance)
+    return {"written": 1, "balance": balance}
+
+
+def fetch_corporation_wallet_balance(
+    client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **kwargs,
+) -> dict:
+    """Union readable divisions across every candidate member role - same
+    reasoning as fetch_corporation_wallet above (a Junior Accountant may
+    only see division 1)."""
+    roles = [r for r in (kwargs.get("candidate_auth_roles") or ()) if r]
+    if not roles:
+        roles = [auth_role]
+    balances: dict[int, float] = {}
+    last_error: Optional[BaseException] = None
+    for role in roles:
+        try:
+            wallets = client.corporation_wallet_balances(owner_id, auth_role=role)
+        except ESIError as e:
+            last_error = e
+            continue
+        for w in wallets:
+            balances[w["division"]] = w["balance"]
+    if not balances:
+        if last_error is not None:
+            raise last_error
+        raise ESIError("no corporation wallet division readable")
+    storage.replace_corp_wallet_balances(owner_id, balances)
+    return {"written": len(balances), "divisions": sorted(balances)}
+
+
 # ------------------------------------------------------------------- skills
 def fetch_character_skills(
     client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
@@ -503,6 +539,8 @@ FETCHERS: dict[tuple[str, str], Callable] = {
     ("market_orders", "corporation"): fetch_corporation_market_orders,
     ("wallet", "character"): fetch_character_wallet,
     ("wallet", "corporation"): fetch_corporation_wallet,
+    ("wallet_balance", "character"): fetch_character_wallet_balance,
+    ("wallet_balance", "corporation"): fetch_corporation_wallet_balance,
     ("skills", "character"): fetch_character_skills,
     ("contracts", "character"): fetch_character_contracts,
     ("contracts", "corporation"): fetch_corporation_contracts,

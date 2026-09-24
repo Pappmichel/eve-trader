@@ -44,6 +44,10 @@ _KIND_TABLES: dict[str, dict[str, tuple[str, ...]]] = {
         "character": ("esi_wallet_transactions", "esi_wallet_journal"),
         "corporation": ("esi_wallet_transactions", "esi_wallet_journal"),
     },
+    "wallet_balance": {
+        "character": ("character_wallet_balances",),
+        "corporation": ("corp_wallet_balances",),
+    },
 }
 
 

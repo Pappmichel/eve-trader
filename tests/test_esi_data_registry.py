@@ -64,11 +64,12 @@ def test_importing_registry_does_not_load_tool_packages():
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
-def test_group_1_has_six_owned_kinds_with_corp_variant():
+def test_group_1_has_seven_owned_kinds_with_corp_variant():
     group_1 = [k for k in OWNED_DATA_KINDS if k.group == GROUP_1]
-    assert len(group_1) == 6
+    assert len(group_1) == 7
     assert {k.key for k in group_1} == {
         "assets", "industry_jobs", "blueprints", "market_orders", "contracts", "wallet",
+        "wallet_balance",
     }
     for kind in group_1:
         assert kind.corporation_scope
@@ -117,7 +118,10 @@ def test_every_consuming_tool_key_is_in_all_tool_keys():
     assert "admin" not in consuming_tool_keys()
     assert "characters" not in consuming_tool_keys()
     assert "refining" not in consuming_tool_keys()
-    assert "portfolio" not in consuming_tool_keys()
+    # Portfolio rework: "portfolio" is a real consumer now, of exactly
+    # "wallet_balance" (Total Wealth) - not "wallet" (Trading's own
+    # reconciliation keeps owning that one).
+    assert "portfolio" in consuming_tool_keys()
 
 
 def test_every_scope_appears_in_fetcher_facing_mapping():
@@ -135,6 +139,7 @@ def test_default_freshness_tiers_match_the_plan():
     by_key = {k.key: k.freshness_tier for k in OWNED_DATA_KINDS}
     assert by_key["market_orders"] == "frequent"
     assert by_key["wallet"] == "frequent"
+    assert by_key["wallet_balance"] == "frequent"
     assert by_key["assets"] == "normal"
     assert by_key["industry_jobs"] == "normal"
     assert by_key["contracts"] == "normal"

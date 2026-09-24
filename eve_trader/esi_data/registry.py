@@ -122,6 +122,23 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         freshness_tier=TIER_FREQUENT,
     ),
     OwnedDataKind(
+        key="wallet_balance",
+        label="Wallet Balance",
+        group=GROUP_1,
+        # Same scopes as "wallet" above (esi-wallet.read_character_wallet.v1
+        # covers both the transactions/journal endpoints and the plain
+        # balance endpoint - no new grant needed). A separate data kind,
+        # not folded into "wallet", because it's the only one Portfolio's
+        # Total Wealth needs shared with it (PORTFOLIO_REWORK_PLAN.md
+        # section 3) - Trading's own wallet reconciliation keeps consuming
+        # "wallet" unchanged.
+        character_scope="esi-wallet.read_character_wallet.v1",
+        corporation_scope="esi-wallet.read_corporation_wallets.v1",
+        corp_roles=("Accountant", "Junior_Accountant"),
+        consuming_tools=("portfolio",),
+        freshness_tier=TIER_FREQUENT,
+    ),
+    OwnedDataKind(
         key="skills",
         label="Skills",
         group=GROUP_2,
