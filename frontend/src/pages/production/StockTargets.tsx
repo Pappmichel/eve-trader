@@ -1,12 +1,12 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Title, Text, Group, NumberInput, Button, Select, Stack, ActionIcon, Tooltip } from '@mantine/core'
+import { Badge, Card, Title, Text, Group, NumberInput, Button, Select, Stack, ActionIcon, Textarea, Tooltip } from '@mantine/core'
 import { modals } from '@mantine/modals'
 import { IconCheck, IconAlertTriangle, IconTrash } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
-import type { ManualStockEntry, StockTarget } from '../../api/types'
+import type { AssetPastePreviewResult, ManualStockEntry, StockTarget } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { LocationPicker } from '../../components/LocationPicker'
@@ -472,6 +472,127 @@ function ManualStockEntriesSection() {
         <DataTable data={data} columns={columns} tableId="manual-stock-entries"
           exportFilename="manual-stock-entries" getRowId={(r) => `${r.type_id}:${r.location_id}`} maxHeight={300}
           dataUpdatedAt={dataUpdatedAt} />
+      )}
+
+      <AssetPastePanel />
+    </div>
+  )
+}
+
+const PASTE_STATUS_COLOR: Record<string, string> = {
+  new: 'accent', changed: 'info', unchanged: 'gray', removed: 'danger',
+}
+
+// docs/MANUAL_TRACKING_PLAN.md phase 4 - paste an EVE Inventory window's
+// list view (Ctrl+A, Ctrl+C) straight into manual stock at one location.
+// Preview shows a diff against what's already there without writing
+// anything; Apply re-parses the same text server-side (do_commit_asset_paste
+// never trusts preview's own rows) and actually writes it. Same
+// "paste -> preview/quote -> table" shape as refining/ReprocessingQuote.tsx.
+function AssetPastePanel() {
+  const [text, setText] = useState('')
+  const [pasteLocationId, setPasteLocationId] = useState<number | null>(0)
+  const [mode, setMode] = useState<'merge' | 'replace'>('merge')
+  const [preview, setPreview] = useState<AssetPastePreviewResult | null>(null)
+
+  const previewAction = useAction(
+    'Preview Asset Paste',
+    (args: { text: string; locationId: number; mode: 'merge' | 'replace' }) =>
+      productionApi.previewAssetPaste(args.text, args.locationId, args.mode),
+    [],
+  )
+  const applyAction = useAction(
+    'Apply Asset Paste',
+    (args: { text: string; locationId: number; mode: 'merge' | 'replace' }) =>
+      productionApi.commitAssetPaste(args.text, args.locationId, args.mode),
+    MANUAL_STOCK_KEYS,
+  )
+
+  return (
+    <div>
+      <Title order={6} c="dimmed" tt="uppercase" mt="lg" mb="xs">Paste From Inventory</Title>
+      <Text size="xs" c="dimmed" mb="sm">
+        Paste from an EVE Inventory window's list view (Ctrl+A, Ctrl+C). Blueprint lines are skipped (no reliable
+        ME/TE/Runs clipboard format exists) - add those individually on the Blueprints page instead. "Replace"
+        deletes every existing manual-stock entry at the chosen location first; "Merge" adds to what's already there.
+      </Text>
+
+      <Card withBorder mb="sm">
+        <Stack>
+          <Group grow align="flex-end">
+            <LocationPicker label="Location" value={pasteLocationId} onChange={setPasteLocationId} allowNone />
+            <Select label="Mode" data={[{ value: 'merge', label: 'Merge (add to existing)' },
+              { value: 'replace', label: 'Replace (this location only)' }]}
+              value={mode} onChange={(v) => setMode((v as 'merge' | 'replace') ?? 'merge')} allowDeselect={false} />
+          </Group>
+          <Textarea
+            label="Paste items here" placeholder={'Tritanium\t1000\tMineral\tMaterial\t\t\t0.01 m3\t\t'}
+            rows={8} value={text} onChange={(e) => setText(e.currentTarget.value)}
+            styles={{ input: { fontFamily: 'monospace' } }}
+          />
+          <Group>
+            <Button loading={previewAction.isPending} disabled={!text.trim()}
+              onClick={() => previewAction.mutate(
+                { text, locationId: pasteLocationId ?? 0, mode },
+                { onSuccess: (r) => setPreview(r) },
+              )}>
+              Preview
+            </Button>
+            {preview && (
+              <>
+                <Button color="accent" loading={applyAction.isPending}
+                  onClick={() => applyAction.mutate(
+                    { text, locationId: pasteLocationId ?? 0, mode },
+                    { onSuccess: () => { setText(''); setPreview(null) } },
+                  )}>
+                  Apply
+                </Button>
+                <Button variant="subtle" onClick={() => { setText(''); setPreview(null) }}>
+                  Clear
+                </Button>
+              </>
+            )}
+          </Group>
+        </Stack>
+      </Card>
+
+      {preview && (
+        <Stack gap="xs">
+          {preview.errors.length > 0 && (
+            <Text size="sm" c="danger">
+              {preview.errors.length} line(s) could not be parsed: {preview.errors.map((e) => e.line).join(', ')}
+            </Text>
+          )}
+          {preview.skipped_blueprints.length > 0 && (
+            <Text size="sm" c="dimmed">
+              Skipped {preview.skipped_blueprints.length} blueprint line(s): {preview.skipped_blueprints.join(', ')}
+            </Text>
+          )}
+          {preview.unresolved.length > 0 && (
+            <Text size="sm" c="warn">
+              {preview.unresolved.length} unresolved line(s):{' '}
+              {preview.unresolved.map((u) => (u.suggestion ? `${u.line} (did you mean "${u.suggestion}"?)` : u.line)).join('; ')}
+            </Text>
+          )}
+          {preview.rows.length === 0 ? (
+            <Text size="sm" c="dimmed">No stock changes from this paste.</Text>
+          ) : (
+            <DataTable
+              data={preview.rows}
+              columns={[
+                { header: 'Item', accessorKey: 'name', size: 220 },
+                { header: 'Old', accessorKey: 'old', size: 100, cell: (i) => qty(i.getValue()) },
+                { header: 'New', accessorKey: 'new', size: 100, cell: (i) => qty(i.getValue()) },
+                {
+                  header: 'Status', accessorKey: 'status', size: 120,
+                  cell: (i) => <Badge color={PASTE_STATUS_COLOR[i.getValue() as string] ?? 'gray'} variant="light">{i.getValue()}</Badge>,
+                },
+              ]}
+              maxHeight={300}
+              getRowId={(r) => String(r.type_id)}
+            />
+          )}
+        </Stack>
       )}
     </div>
   )

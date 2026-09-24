@@ -306,6 +306,16 @@ export const productionApi = {
     }),
   removeManualStockEntry: (typeId: number, locationId: number) =>
     del(`/api/production/manual-stock/entries/${typeId}/${locationId}`),
+  // Asset paste (docs/MANUAL_TRACKING_PLAN.md phase 4) - commit re-parses
+  // the same text server-side, never takes preview's own rows back.
+  previewAssetPaste: (text: string, locationId: number, mode: 'replace' | 'merge') =>
+    post<T.AssetPastePreviewResult>('/api/production/manual-stock/paste/preview', {
+      text, location_id: locationId, mode,
+    }),
+  commitAssetPaste: (text: string, locationId: number, mode: 'replace' | 'merge') =>
+    post<T.AssetPasteCommitResult>('/api/production/manual-stock/paste/commit', {
+      text, location_id: locationId, mode,
+    }),
   setManualBuildBuy: (typeId: number, decision: string) =>
     post('/api/production/manual-build-buy', { type_id: typeId, decision }),
   clearManualBuildBuy: (typeId: number) => del(`/api/production/manual-build-buy/${typeId}`),

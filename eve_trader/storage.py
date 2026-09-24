@@ -1288,6 +1288,39 @@ def delete_manual_stock(type_id: int, location_id: int = 0) -> None:
         )
 
 
+def apply_manual_stock_paste(location_id: int, rows: dict[int, float], mode: str) -> None:
+    """Applies an already-parsed/resolved asset paste (docs/
+    MANUAL_TRACKING_PLAN.md phase 4) at `location_id`, in one transaction
+    (connect() itself commits once on successful exit - see its own
+    docstring):
+    - `mode == "replace"` (decision 11): first deletes every existing row
+      *at this location* (other locations are untouched), then inserts
+      every row in `rows` fresh.
+    - `mode == "merge"`: upserts each row, adding to any existing count at
+      that location rather than overwriting it.
+
+    `rows` is `{type_id: quantity}` - already resolved from item names and
+    already summed for duplicate names (production.actions._parse_asset_paste
+    does both, then production.actions.do_commit_asset_paste calls this)."""
+    with connect() as conn:
+        if mode == "replace":
+            conn.execute("DELETE FROM manual_stock WHERE location_id = ?", (location_id,))
+        for type_id, count in rows.items():
+            if mode == "merge":
+                conn.execute(
+                    "INSERT INTO manual_stock (type_id, count, location_id) VALUES (?, ?, ?) "
+                    "ON CONFLICT(tenant_id, type_id, location_id) "
+                    "DO UPDATE SET count = manual_stock.count + excluded.count",
+                    (type_id, count, location_id),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO manual_stock (type_id, count, location_id) VALUES (?, ?, ?) "
+                    "ON CONFLICT(tenant_id, type_id, location_id) DO UPDATE SET count = excluded.count",
+                    (type_id, count, location_id),
+                )
+
+
 def load_manual_stock() -> dict[int, float]:
     """Signature unchanged (decision 16) - totals per type across every
     location, so every existing caller (_current_stock and friends in

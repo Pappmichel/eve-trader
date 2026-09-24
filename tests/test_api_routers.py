@@ -6,6 +6,7 @@ re-test that logic, only the thin wrapper on top of it. Every underlying
 storage/action call is monkeypatched, so these never touch the real DB, ESI,
 or Goonmetrics - safe to run anywhere, no network/auth required.
 """
+import pytest
 from fastapi.testclient import TestClient
 
 from eve_trader import actions, storage
@@ -314,6 +315,70 @@ def test_remove_manual_stock_entry_passes_path_params(monkeypatch):
 
     assert resp.status_code == 200
     assert captured == {"type_id": 34, "location_id": 1000000000001}
+
+
+def test_preview_asset_paste_passes_body(monkeypatch):
+    captured = {}
+
+    def _preview(text, location_id, mode):
+        captured.update(text=text, location_id=location_id, mode=mode)
+        return {"rows": [], "skipped_blueprints": [], "unresolved": [], "errors": []}
+    monkeypatch.setattr(production_actions, "do_preview_asset_paste", _preview)
+
+    resp = client.post("/api/production/manual-stock/paste/preview",
+                        json={"text": "Tritanium\t1\t\t\t\t\t\t\t", "location_id": 1000000000001, "mode": "merge"})
+
+    assert resp.status_code == 200
+    assert captured == {"text": "Tritanium\t1\t\t\t\t\t\t\t", "location_id": 1000000000001, "mode": "merge"}
+
+
+def test_preview_asset_paste_defaults_location_and_mode(monkeypatch):
+    captured = {}
+
+    def _preview(text, location_id, mode):
+        captured.update(location_id=location_id, mode=mode)
+        return {"rows": [], "skipped_blueprints": [], "unresolved": [], "errors": []}
+    monkeypatch.setattr(production_actions, "do_preview_asset_paste", _preview)
+
+    resp = client.post("/api/production/manual-stock/paste/preview", json={"text": "Tritanium\t1\t\t\t\t\t\t\t"})
+
+    assert resp.status_code == 200
+    assert captured == {"location_id": 0, "mode": "merge"}
+
+
+def test_preview_asset_paste_action_error_maps_to_400(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise ActionError("Paste is empty - copy items from an Inventory window's list view first.")
+    monkeypatch.setattr(production_actions, "do_preview_asset_paste", _raise)
+
+    resp = client.post("/api/production/manual-stock/paste/preview", json={"text": "x"})
+
+    assert resp.status_code == 400
+
+
+def test_commit_asset_paste_passes_body(monkeypatch):
+    captured = {}
+
+    def _commit(text, location_id, mode):
+        captured.update(text=text, location_id=location_id, mode=mode)
+        return {"applied": 1, "skipped_blueprints": [], "unresolved": [], "errors": []}
+    monkeypatch.setattr(production_actions, "do_commit_asset_paste", _commit)
+
+    resp = client.post("/api/production/manual-stock/paste/commit",
+                        json={"text": "Tritanium\t1\t\t\t\t\t\t\t", "location_id": 1000000000001, "mode": "replace"})
+
+    assert resp.status_code == 200
+    assert captured == {"text": "Tritanium\t1\t\t\t\t\t\t\t", "location_id": 1000000000001, "mode": "replace"}
+    assert resp.json()["applied"] == 1
+
+
+def test_paste_text_over_size_limit_is_rejected(monkeypatch):
+    monkeypatch.setattr(production_actions, "do_preview_asset_paste",
+                         lambda *a, **k: pytest.fail("must not reach the action - rejected by request validation"))
+
+    resp = client.post("/api/production/manual-stock/paste/preview", json={"text": "x" * 500_001})
+
+    assert resp.status_code == 422
 
 
 def test_set_character_slot_excluded_passes_path_and_body(monkeypatch):

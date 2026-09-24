@@ -17,6 +17,7 @@ from ..actions import ActionError
 from ..auth import InvalidRoleKey, TokenManager, validate_role_key_for_tool
 from ..config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
 from ..esi_client import ESIClient, ESIError
+from ..paste_parser import merge_duplicate_stacks, parse_paste
 from . import esi_sync, invention, jobs, order_integrity, pricing, sde
 from .config import PRODUCTION_CONFIG, ProductionConfig, validate_production_overrides
 from .constants import DECRYPTORS, JOB_CATEGORIES
@@ -273,6 +274,112 @@ def do_add_manual_stock_entry(item_name: str, count: float, location_id: int = 0
 def do_remove_manual_stock_entry(type_id: int, location_id: int = 0) -> dict:
     storage.delete_manual_stock(type_id, location_id)
     return {"type_id": type_id, "location_id": location_id}
+
+
+def _parse_asset_paste(text: str) -> dict:
+    """Shared by do_preview_asset_paste and do_commit_asset_paste (docs/
+    MANUAL_TRACKING_PLAN.md phase 4) - parses an EVE inventory "Copy As"
+    paste (eve_trader.paste_parser, same format issue #92's Ore & Minerals
+    import uses), skips Blueprint-category lines (decision 10 - Phase 0
+    found no reliable ME/TE/Runs clipboard format for them, so they can
+    never be more than a name+quantity here), and resolves every remaining
+    name to a type_id via storage.resolve_type_names_exact/suggest_type_names
+    (decision 18's batch "Did you mean...?" pattern).
+
+    Returns {"resolved": {type_id: (type_name, quantity)}, "skipped_blueprints":
+    [name, ...], "unresolved": [{"line": raw_line, "suggestion": name|None}, ...],
+    "errors": [{"line": raw_line, "error": message}, ...]}. Two different
+    paste lines that both resolve to the same type_id (distinct names for
+    the same item is not a real case, but merge_duplicate_stacks only
+    merges identical names) have their quantities summed."""
+    all_lines = parse_paste(text)
+    error_lines = [line for line in all_lines if line.error]
+    parsed = merge_duplicate_stacks(all_lines)
+
+    skipped_blueprints = [line.name for line in parsed if line.category.strip().lower() == "blueprint"]
+    item_lines = [line for line in parsed if line.category.strip().lower() != "blueprint"]
+
+    exact = storage.resolve_type_names_exact([line.name for line in item_lines])
+    missing = [line.name for line in item_lines if line.name.strip().lower() not in exact]
+    suggestions = storage.suggest_type_names(missing) if missing else {}
+
+    resolved: dict[int, list] = {}
+    unresolved = []
+    for line in item_lines:
+        key = line.name.strip().lower()
+        hit = exact.get(key)
+        if hit is None:
+            suggestion = suggestions.get(key)
+            unresolved.append({"line": line.raw_line, "suggestion": suggestion[1] if suggestion else None})
+            continue
+        type_id, resolved_name, _category_id = hit
+        if type_id in resolved:
+            resolved[type_id][1] += line.quantity
+        else:
+            resolved[type_id] = [resolved_name, float(line.quantity)]
+
+    return {
+        "resolved": {type_id: (name, qty) for type_id, (name, qty) in resolved.items()},
+        "skipped_blueprints": skipped_blueprints,
+        "unresolved": unresolved,
+        "errors": [{"line": line.raw_line, "error": line.error} for line in error_lines],
+    }
+
+
+def _validate_asset_paste_args(text: str, mode: str) -> None:
+    if mode not in ("replace", "merge"):
+        raise ActionError("Mode must be 'replace' or 'merge'.")
+    if not text or not text.strip():
+        raise ActionError("Paste is empty - copy items from an Inventory window's list view first.")
+
+
+def do_preview_asset_paste(text: str, location_id: int, mode: str) -> dict:
+    """Diffs an asset paste against this location's existing manual-stock
+    entries, without writing anything - do_commit_asset_paste applies the
+    exact same parse independently server-side (never trusting rows the
+    client sends back)."""
+    _validate_asset_paste_args(text, mode)
+    parsed = _parse_asset_paste(text)
+    existing = {
+        type_id: (type_name, count)
+        for type_id, type_name, loc_id, count in storage.load_manual_stock_entries()
+        if loc_id == location_id
+    }
+
+    rows = []
+    seen: set[int] = set()
+    for type_id, (name, qty) in parsed["resolved"].items():
+        seen.add(type_id)
+        _old_name, old = existing.get(type_id, (name, 0.0))
+        new = qty if mode == "replace" else old + qty
+        status = "new" if type_id not in existing else ("unchanged" if new == old else "changed")
+        rows.append({"type_id": type_id, "name": name, "old": old, "new": new, "status": status})
+
+    if mode == "replace":
+        for type_id, (name, old) in existing.items():
+            if type_id not in seen:
+                rows.append({"type_id": type_id, "name": name, "old": old, "new": 0.0, "status": "removed"})
+
+    return {
+        "rows": rows, "skipped_blueprints": parsed["skipped_blueprints"],
+        "unresolved": parsed["unresolved"], "errors": parsed["errors"],
+    }
+
+
+def do_commit_asset_paste(text: str, location_id: int, mode: str) -> dict:
+    """Re-parses `text` on the server (never takes rows from the client, so
+    the frontend can't alter what actually gets written) and applies it via
+    storage.apply_manual_stock_paste. Deliberately no cache invalidation
+    (decision 4) - a stock change alone doesn't need discover_cache/
+    ship_margin_cache invalidated, unlike a manual blueprint change."""
+    _validate_asset_paste_args(text, mode)
+    parsed = _parse_asset_paste(text)
+    rows = {type_id: qty for type_id, (_name, qty) in parsed["resolved"].items()}
+    storage.apply_manual_stock_paste(location_id, rows, mode)
+    return {
+        "applied": len(rows), "skipped_blueprints": parsed["skipped_blueprints"],
+        "unresolved": parsed["unresolved"], "errors": parsed["errors"],
+    }
 
 
 def do_set_manual_build_buy(type_id: int, decision: str) -> dict:

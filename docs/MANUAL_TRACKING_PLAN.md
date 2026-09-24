@@ -1,6 +1,6 @@
 # Manual tracking for Production – implementation plan
 
-Status: phase 0, 2, and 3 done · 2026-09-24 (phase 1 landed separately, see
+Status: phase 0, 2, 3, and 4 done · 2026-09-24 (phase 1 landed separately, see
 PR #196)
 
 Goal: make the Production tool fully usable without an ESI login. Manual data
@@ -160,8 +160,8 @@ Done in phase 1.
 
 ### 3.1 Manual stock
 
-The first five rows are done in phase 3. `apply_manual_stock_paste` is
-still phase 4 (Asset paste), not built yet.
+The first five rows are done in phase 3, `apply_manual_stock_paste` in
+phase 4.
 
 | Function | Behaviour |
 |---|---|
@@ -242,8 +242,8 @@ noticeable, preload manual stock once per call.
 
 ### Stock
 
-The first four bullets are done in phase 3. Asset paste (the rest of this
-section) is still phase 4.
+The first four bullets are done in phase 3, asset paste (the rest of this
+section) in phase 4.
 
 - `do_list_manual_stock_entries()`
 - `do_set_manual_stock(type_id, count, location_id=0)` – existing action,
@@ -353,8 +353,8 @@ phase 8).
 | GET | `/manual-stock/entries` | `do_list_manual_stock_entries` (done, phase 3) |
 | POST | `/manual-stock/entries` | `do_add_manual_stock_entry` (done, phase 3) |
 | DELETE | `/manual-stock/entries/{type_id}/{location_id}` | `do_remove_manual_stock_entry` (done, phase 3) |
-| POST | `/manual-stock/paste/preview` | `do_preview_asset_paste` |
-| POST | `/manual-stock/paste/commit` | `do_commit_asset_paste` |
+| POST | `/manual-stock/paste/preview` | `do_preview_asset_paste` (done, phase 4) |
+| POST | `/manual-stock/paste/commit` | `do_commit_asset_paste` (done, phase 4) |
 | POST | `/manual-blueprints` · PATCH/DELETE `/manual-blueprints/{id}` | blueprint CRUD |
 | POST | `/manual-jobs` · PATCH/DELETE `/manual-jobs/{id}` | job CRUD |
 | POST | `/manual-jobs/{id}/complete` | `do_complete_manual_industry_job` |
@@ -390,7 +390,7 @@ New group `eve-trader production manual …`. Every command takes
 |---|---|
 | `api/client.ts`, `api/types.ts` | new endpoints and types; `source`/`manual_id` on blueprint and job rows (locations endpoints/types done, phase 2; manual-stock-entries endpoints/types done, phase 3 - the blueprint/job `source`/`manual_id` fields are still phase 5/6) |
 | **new** `components/LocationPicker.tsx` (done, phase 2) | search across NPC stations, own structures and own manual names; direct entry of a structure ID with "Resolve" (if it stays unresolved: "Give it your own name"); a "No location" option. Wired into StockTargets.tsx's own Manual stock add form as of phase 3. |
-| `pages/production/StockTargets.tsx` | new **"Manual stock"** section (done, phase 3): table (item, location, quantity, edit/delete), add form; the existing column shows the total and is only directly editable with at most one entry (done, phase 3). Still phase 4: the paste panel (location, text area, replace/merge mode, preview as a diff marking skipped blueprints and "Did you mean…?", apply). Still phase 7: new "Listed Home/Jita (manual)" columns with "as of". **corrected delete-dialog text** (decision 20, done in phase 1) |
+| `pages/production/StockTargets.tsx` | new **"Manual stock"** section (done, phase 3): table (item, location, quantity, edit/delete), add form; the existing column shows the total and is only directly editable with at most one entry (done, phase 3). Paste panel (done, phase 4): location, text area, replace/merge mode, preview as a diff marking skipped blueprints and "Did you mean…?", apply - `autosize` dropped from the paste `Textarea` (a jsdom/Mantine incompatibility broke StockTargets.ui.test.tsx, not worth chasing for a cosmetic auto-grow). Still phase 7: new "Listed Home/Jita (manual)" columns with "as of". **corrected delete-dialog text** (decision 20, done in phase 1) |
 | `pages/production/Blueprints.tsx` | new **"Manual blueprints"** section (form with the hint texts from decision 14); source badge in the owned table; edit/delete only for manual rows |
 | `pages/production/Jobs.tsx` | form (item, runs/units toggle, quantity, location, ready at); source badge; "done" marker; "Complete" button with a confirmable target location; row keys from `source:id` |
 | Logistics page | names through the extended lookup chain (global cache and manual names) |
@@ -455,7 +455,7 @@ New group `eve-trader production manual …`. Every command takes
 | 1 | Done. Groundwork: parser move, batch name resolution, fix 19, delete-dialog text | – |
 | 2 | Done. Locations: `manual_location_names`, `global_structure_names`, lookup chain, shared resolution function, `search_locations`, LocationPicker, fallback switch | – |
 | 3 | Done. `manual_stock` with locations: schema migration, storage, engine (`_stock_at_location`), SQLite migration, "Manual stock" UI table | 2 |
-| 4 | Asset paste: preview/commit, paste panel | 1, 3 |
+| 4 | Done. Asset paste: preview/commit, paste panel | 1, 3 |
 | 5 | Manual blueprints | 2 |
 | 6 | Manual jobs incl. Complete | 3 |
 | 7 | Listed quantities | – |

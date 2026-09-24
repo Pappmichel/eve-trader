@@ -77,6 +77,31 @@ def test_delete_manual_stock_removes_only_that_location(tenant):
         assert storage.load_manual_stock() == {TYPE_ID: 50}
 
 
+def test_apply_manual_stock_paste_merge_adds_to_existing(tenant):
+    with storage.tenant_context(tenant):
+        storage.upsert_manual_stock(TYPE_ID, 50, LOCATION_A)
+        storage.upsert_manual_stock(TYPE_ID, 10, LOCATION_B)  # different location - untouched
+
+        storage.apply_manual_stock_paste(LOCATION_A, {TYPE_ID: 100}, "merge")
+
+        assert storage.manual_stock_at_location(TYPE_ID, LOCATION_A) == 150
+        assert storage.manual_stock_at_location(TYPE_ID, LOCATION_B) == 10
+
+
+def test_apply_manual_stock_paste_replace_deletes_only_that_location_first(tenant):
+    other_type = 35  # Pyerite
+    with storage.tenant_context(tenant):
+        storage.upsert_manual_stock(TYPE_ID, 50, LOCATION_A)
+        storage.upsert_manual_stock(other_type, 20, LOCATION_A)  # not in the new paste - must be deleted
+        storage.upsert_manual_stock(TYPE_ID, 999, LOCATION_B)    # different location - untouched
+
+        storage.apply_manual_stock_paste(LOCATION_A, {TYPE_ID: 100}, "replace")
+
+        assert storage.manual_stock_at_location(TYPE_ID, LOCATION_A) == 100
+        assert storage.manual_stock_at_location(other_type, LOCATION_A) == 0.0
+        assert storage.manual_stock_at_location(TYPE_ID, LOCATION_B) == 999
+
+
 def test_load_manual_stock_entries_returns_one_row_per_type_and_location(tenant):
     _insert_sde_type(TYPE_ID, "Tritanium")
     with storage.tenant_context(tenant):

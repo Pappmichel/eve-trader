@@ -232,6 +232,35 @@ export interface ManualStockEntry {
   count: number
 }
 
+// Asset paste (docs/MANUAL_TRACKING_PLAN.md phase 4).
+export interface AssetPastePreviewRow {
+  type_id: number
+  name: string
+  old: number
+  new: number
+  status: 'new' | 'changed' | 'unchanged' | 'removed'
+}
+export interface AssetPasteUnresolvedLine {
+  line: string
+  suggestion: string | null
+}
+export interface AssetPasteError {
+  line: string
+  error: string
+}
+export interface AssetPastePreviewResult {
+  rows: AssetPastePreviewRow[]
+  skipped_blueprints: string[]
+  unresolved: AssetPasteUnresolvedLine[]
+  errors: AssetPasteError[]
+}
+export interface AssetPasteCommitResult {
+  applied: number
+  skipped_blueprints: string[]
+  unresolved: AssetPasteUnresolvedLine[]
+  errors: AssetPasteError[]
+}
+
 export interface StockTarget {
   type_id: number
   type_name: string

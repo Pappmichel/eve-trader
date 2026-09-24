@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import schemas
 from ... import storage
@@ -109,6 +109,25 @@ def add_manual_stock_entry(req: AddManualStockEntryRequest):
 @router.delete("/manual-stock/entries/{type_id}/{location_id}")
 def remove_manual_stock_entry(type_id: int, location_id: int):
     return _wrap(actions.do_remove_manual_stock_entry, type_id=type_id, location_id=location_id)
+
+
+class AssetPasteRequest(BaseModel):
+    # 500 KB cap (docs/MANUAL_TRACKING_PLAN.md phase 4) so a huge paste
+    # can't block the server - a real inventory paste is a few hundred
+    # lines at most, this is generous headroom, not a real-world limit.
+    text: str = Field(max_length=500_000)
+    location_id: int = 0
+    mode: str = "merge"
+
+
+@router.post("/manual-stock/paste/preview")
+def preview_asset_paste(req: AssetPasteRequest):
+    return _wrap(actions.do_preview_asset_paste, text=req.text, location_id=req.location_id, mode=req.mode)
+
+
+@router.post("/manual-stock/paste/commit")
+def commit_asset_paste(req: AssetPasteRequest):
+    return _wrap(actions.do_commit_asset_paste, text=req.text, location_id=req.location_id, mode=req.mode)
 
 
 @router.get("/manual-build-buy")
