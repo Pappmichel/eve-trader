@@ -137,7 +137,7 @@ from ..refining.engine import apply_reprocessing_yield, scrapmetal_yield
 from . import invention, pricing
 from .config import PRODUCTION_CONFIG, ProductionConfig
 from .constants import (
-    ACTIVITY_MODS, ACTIVITY_REACTION, ADVANCED_COMPONENT_GROUP_IDS, ANCIENT_RELIC_CATEGORY_ID,
+    ACTIVITY_MANUFACTURING, ACTIVITY_MODS, ACTIVITY_REACTION, ADVANCED_COMPONENT_GROUP_IDS, ANCIENT_RELIC_CATEGORY_ID,
     CAPITAL_COMPONENT_GROUP_IDS, CHARGE_CATEGORY_ID, COMPONENT_GROUP_IDS, DEADSPACE_META_GROUP_ID, DECRYPTORS,
     DRONE_CATEGORY_ID, FACTION_META_GROUP_ID, FIGHTER_CATEGORY_ID, MODULE_CATEGORY_ID, OFFICER_META_GROUP_ID,
     SCC_SURCHARGE_RATE, SHIP_CATEGORY_ID, SHIP_SIZE_GROUP_IDS, SPECIAL_EDITION_SHIPS_MARKET_GROUP_ID,
@@ -2582,27 +2582,31 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     highest-priority job can claim its entire cap before the next job
     sharing the same pool gets anything. Also always fills
     days_to_complete_at_recommended_slots whenever recommended_slots is set
-    and > 0, in both modes."""
+    and > 0, in both modes.
+
+    A Reaction product whose "Unrefined X" alchemy formula won _unit_cost's
+    own cost comparison (alchemy_memo) is queued as that formula's job
+    instead - same substitution _expand_all makes for plan_production, and
+    the same two-pass byproduct overlay - see _run_rounds below. The
+    byproduct overlay deliberately reaches only the *sizing* ledger, never
+    the readiness one (see this docstring's _current_stock/_stock_on_hand
+    split above)."""
     ctx = _PlanContext(cfg)
     manual_stock, manual_overrides, selected_decryptors = ctx.manual_stock, ctx.manual_overrides, ctx.selected_decryptors
     home, jita, cost_indices, adjusted_prices = ctx.home, ctx.jita, ctx.cost_indices, ctx.adjusted_prices
 
     cost_memo: dict[int, Optional[float]] = {}
     t2_memo: dict[int, tuple[float, float, Optional[str]]] = {}
-    jobs: dict[int, AssetPlanJob] = {}
-    stock_used: dict[int, float] = {}
-    # Parallel ledger, on-hand-only (see _stock_on_hand) - tracks readiness
-    # consumption separately from stock_used's incoming-inclusive planning
-    # consumption, so the same physical unit can't be double-claimed as
-    # "ready" by two different jobs across rounds either.
-    stock_used_on_hand: dict[int, float] = {}
+    # Which Reaction products _unit_cost found cheaper to source via their
+    # "Unrefined X" alchemy formula than via the normal recipe - see
+    # _unit_cost/_expand_all's own docstrings.
+    alchemy_memo: dict[int, bool] = {}
     # Stock-oblivious sizing baseline for the overbuild buffer (see
     # _base_runs/_parent_base_runs_for_buffer docstrings) - same call
     # plan_production makes, over the same stock_targets, so the two
     # Baulisten's buffers can never disagree.
     base_runs = _base_runs(cfg, home, jita, manual_overrides, cost_memo, selected_decryptors, t2_memo,
-                            cost_indices, adjusted_prices, ctx.stock_targets)
-    buffered_parents: set[int] = set()
+                            cost_indices, adjusted_prices, ctx.stock_targets, alchemy_memo)
 
     # Same margin gate as plan_production (see its skip_due_to_margin): a
     # stock target's demand is dropped entirely - no job here, and (in
@@ -2620,7 +2624,11 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     # plan_production but still "Build" here for the same type_id,
     # contradicting this function's own "never disagree" docstring.
     margin_excluded: set[int] = set()
-    jobs_this_level: dict[int, float] = {}
+    # Round 0's demand and the stock-target half of stock_coverage_by_id,
+    # both resolved once up front - _run_rounds below copies them rather
+    # than rebuilding them, since neither depends on the byproduct overlay
+    # that differs between its two calls.
+    seed_jobs: dict[int, float] = {}
     # How much of type_id's own current demand is already covered by owned
     # stock (0-1, None if there's nothing to compare against) - purely a
     # display signal (AssetPlanJob.stock_coverage, "how urgent is this one"),
@@ -2639,7 +2647,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     #   Never overwrites a stock target's entry (see the dual-role case in
     #   this function's docstring) - the configured target is the more
     #   stable, meaningful number when both exist for the same type_id.
-    stock_coverage_by_id: dict[int, Optional[float]] = {}
+    seed_stock_coverage: dict[int, Optional[float]] = {}
     for type_id, type_name, backup_stock, home_market_stock, jita_market_stock in ctx.stock_targets:
         activity, bp = classify_activity(type_id)
         if bp is None:
@@ -2648,7 +2656,8 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         missing = _total_missing(type_id, backup_stock, home_market_stock, jita_market_stock, current_stock, cfg)
         if missing <= 0:
             continue
-        _unit_cost(type_id, cfg, home, jita, cost_memo, selected_decryptors, t2_memo, cost_indices, adjusted_prices)
+        _unit_cost(type_id, cfg, home, jita, cost_memo, selected_decryptors, t2_memo, cost_indices,
+                    adjusted_prices, 0, alchemy_memo)
 
         if type_id not in manual_overrides:
             margin = _build_margin(type_id, cost_memo.get(type_id), jita_market_stock, home, jita, cfg)
@@ -2659,136 +2668,218 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             continue
         if _buy_or_build_decision(type_id, cfg, home, jita, manual_overrides, cost_memo, bp) != "Build":
             continue
-        jobs_this_level[type_id] = jobs_this_level.get(type_id, 0.0) + missing
+        seed_jobs[type_id] = seed_jobs.get(type_id, 0.0) + missing
         total_target = backup_stock + (home_market_stock or 0.0) + (jita_market_stock or 0.0)
-        stock_coverage_by_id[type_id] = min(1.0, current_stock / total_target) if total_target > 0 else None
+        seed_stock_coverage[type_id] = min(1.0, current_stock / total_target) if total_target > 0 else None
 
-    depth = 0
-    while jobs_this_level and depth < MAX_DEPTH:
-        # Phase A: this round's net production quantity -> runs + raw
-        # material claims (not yet netted against stock). Two parallel
-        # totals per material, deliberately kept separate: next_level_claims
-        # (bare, per-parent, unbuffered) drives runs_ready_now below - a
-        # job's *readiness to start* should reflect whether its actual
-        # material needs are covered, not whether there's also enough spare
-        # stock to grow cfg.component_overbuild's cushion on top. buffered_demand
-        # (bare + overbuild buffer, pooled) is what actually determines the
-        # shortfall queued for the next round - the same total plan_production's
-        # _expand_all would compute for the same material.
-        runs_this_round: dict[int, int] = {}
-        job_meta: dict[int, tuple] = {}
-        next_level_claims: dict[int, list[tuple[int, float]]] = {}
-        buffered_demand: dict[int, float] = {}
+    def _run_rounds(byproduct_stock: dict[int, float]) -> dict[int, AssetPlanJob]:
+        """The whole breadth-first Phase A/B/C walk, from `seed_jobs` down to
+        MAX_DEPTH, as one self-contained call - so the alchemy byproduct
+        overlay can be discovered by a provisional run and then fed into a
+        real one (see the two-pass call below) without the round loop having
+        to be written twice.
 
-        for type_id, quantity in jobs_this_level.items():
-            activity, bp = classify_activity(type_id)
-            if bp is None:
-                continue
-            blueprint_id, activity_id, product_qty = bp
-            runs = math.ceil(quantity / product_qty)
-            runs_this_round[type_id] = runs
+        A nested closure rather than a module-level helper on purpose: it
+        reads a dozen already-resolved values off the enclosing scope
+        (cfg/home/jita/cost_memo/t2_memo/alchemy_memo/base_runs/...) that
+        would otherwise all have to become explicit parameters, for one
+        caller. Every ledger that must not carry over between the two passes
+        - jobs, both stock ledgers, buffered_parents, and the working copies
+        of seed_jobs/seed_stock_coverage - is created fresh here."""
+        jobs: dict[int, AssetPlanJob] = {}
+        stock_used: dict[int, float] = {}
+        # Parallel ledger, on-hand-only (see _stock_on_hand) - tracks readiness
+        # consumption separately from stock_used's incoming-inclusive planning
+        # consumption, so the same physical unit can't be double-claimed as
+        # "ready" by two different jobs across rounds either.
+        stock_used_on_hand: dict[int, float] = {}
+        buffered_parents: set[int] = set()
+        stock_coverage_by_id: dict[int, Optional[float]] = dict(seed_stock_coverage)
+        jobs_this_level: dict[int, float] = dict(seed_jobs)
 
-            if activity == "Tech II" and type_id in t2_memo:
-                material_mult, time_mult, decryptor_name, _ = t2_memo[type_id]
-            else:
-                # cost_indices (the real ctx.cost_indices in scope here, not {}) so a manual
-                # ME/TE override affects this Bauliste's material quantities too - see
-                # _expand_all's own docstring for the same fix/reasoning.
-                material_mult, time_mult, _ = _activity_mods(activity, type_id, cfg, cost_indices, blueprint_id)
-                decryptor_name = None
-            activity_label = "Reaction" if activity_id == ACTIVITY_REACTION else "Manufacturing"
-            job_meta[type_id] = (blueprint_id, activity_id, product_qty, activity_label, decryptor_name, time_mult)
+        depth = 0
+        while jobs_this_level and depth < MAX_DEPTH:
+            # Phase A: this round's net production quantity -> runs + raw
+            # material claims (not yet netted against stock). Two parallel
+            # totals per material, deliberately kept separate: next_level_claims
+            # (bare, per-parent, unbuffered) drives runs_ready_now below - a
+            # job's *readiness to start* should reflect whether its actual
+            # material needs are covered, not whether there's also enough spare
+            # stock to grow cfg.component_overbuild's cushion on top. buffered_demand
+            # (bare + overbuild buffer, pooled) is what actually determines the
+            # shortfall queued for the next round - the same total plan_production's
+            # _expand_all would compute for the same material.
+            runs_this_round: dict[int, int] = {}
+            job_meta: dict[int, tuple] = {}
+            next_level_claims: dict[int, list[tuple[int, float]]] = {}
+            buffered_demand: dict[int, float] = {}
 
-            parent_base_runs = _parent_base_runs_for_buffer(type_id, base_runs, buffered_parents)
-            for material_id, base_qty in storage.get_blueprint_materials(blueprint_id, activity_id):
-                bare_needed = _material_qty(base_qty, material_mult, runs)
-                if bare_needed <= 0:
+            for type_id, quantity in jobs_this_level.items():
+                activity, bp = classify_activity(type_id)
+                if bp is None:
                     continue
-                next_level_claims.setdefault(material_id, []).append((type_id, bare_needed))
-                overbuild = 0.0 if material_id in manual_overrides else cfg.component_overbuild
-                buffer = overbuild * base_qty * material_mult * parent_base_runs
-                buffered_demand[material_id] = buffered_demand.get(material_id, 0.0) + bare_needed + buffer
+                # Same recipe substitution _expand_all makes (see its
+                # alchemy_memo docstring): classify_activity always returns the
+                # *normal* recipe, so a won alchemy path can only be swapped in
+                # here. `type_id` stays the demand identity for the whole round
+                # - only the queued job's own identity (job_key) changes.
+                alchemy = _alchemy_yield(type_id, cost_indices) if alchemy_memo.get(type_id) else None
+                if alchemy is not None:
+                    (blueprint_id, activity_id, product_qty), job_key, reprocessed = alchemy
+                    runs = math.ceil(quantity / reprocessed[type_id])
+                else:
+                    blueprint_id, activity_id, product_qty = bp
+                    job_key = type_id
+                    runs = math.ceil(quantity / product_qty)
+                runs_this_round[type_id] = runs
 
-        # Phase B: readiness (min_fraction) is allocated across the *bare*
-        # per-job claims, smallest first, against stock that's *physically on
-        # hand right now* (_stock_on_hand - excludes still-in-progress
-        # industry jobs, unlike _current_stock) - purely informational,
-        # doesn't drive how much stock gets marked consumed for sizing.
-        # Actual consumption/shortfall sizing uses the *buffered* pooled
-        # total against _current_stock's incoming-inclusive availability
-        # instead (a legitimate "don't plan to build even more of something
-        # already queued" question, distinct from "can I click start now").
-        min_fraction: dict[int, float] = {type_id: 1.0 for type_id in runs_this_round}
-        blockers_this_round: dict[int, list[AssetPlanBlocker]] = {type_id: [] for type_id in runs_this_round}
-        jobs_this_level = {}
-        for material_id, claims in next_level_claims.items():
-            _, m_bp = classify_activity(material_id)
-            available = max(0.0, _current_stock(material_id, manual_stock, cfg, m_bp) - stock_used.get(material_id, 0.0))
-            available_on_hand = max(
-                0.0, _stock_on_hand(material_id, manual_stock, cfg) - stock_used_on_hand.get(material_id, 0.0))
-            covered_by_parent = _allocate_scarce_stock(claims, available_on_hand)
-            stock_used_on_hand[material_id] = stock_used_on_hand.get(material_id, 0.0) + sum(covered_by_parent.values())
+                if alchemy is not None:
+                    material_mult, time_mult, _ = _activity_mods("Reaction", job_key, cfg, cost_indices, blueprint_id)
+                    decryptor_name = None
+                elif activity == "Tech II" and type_id in t2_memo:
+                    material_mult, time_mult, decryptor_name, _ = t2_memo[type_id]
+                else:
+                    # cost_indices (the real ctx.cost_indices in scope here, not {}) so a manual
+                    # ME/TE override affects this Bauliste's material quantities too - see
+                    # _expand_all's own docstring for the same fix/reasoning.
+                    material_mult, time_mult, _ = _activity_mods(activity, type_id, cfg, cost_indices, blueprint_id)
+                    decryptor_name = None
+                activity_label = "Reaction" if activity_id == ACTIVITY_REACTION else "Manufacturing"
+                job_meta[type_id] = (job_key, blueprint_id, activity_id, product_qty, activity_label,
+                                      decryptor_name, time_mult)
 
-            sde_material = storage.get_sde_type(material_id)
-            material_name = sde_material[2] if sde_material else str(material_id)
-            for parent_type_id, qty in claims:
-                covered = covered_by_parent.get(parent_type_id, 0.0)
-                fraction = covered / qty if qty > 0 else 1.0
-                if fraction < min_fraction[parent_type_id]:
-                    min_fraction[parent_type_id] = fraction
-                if covered + 1e-9 < qty:
-                    blockers_this_round[parent_type_id].append(AssetPlanBlocker(
-                        type_id=material_id, type_name=material_name, needed=qty, covered=covered,
-                    ))
+                parent_base_runs = _parent_base_runs_for_buffer(type_id, base_runs, buffered_parents)
+                for material_id, base_qty in storage.get_blueprint_materials(blueprint_id, activity_id):
+                    bare_needed = _material_qty(base_qty, material_mult, runs)
+                    if bare_needed <= 0:
+                        continue
+                    next_level_claims.setdefault(material_id, []).append((type_id, bare_needed))
+                    overbuild = 0.0 if material_id in manual_overrides else cfg.component_overbuild
+                    buffer = overbuild * base_qty * material_mult * parent_base_runs
+                    buffered_demand[material_id] = buffered_demand.get(material_id, 0.0) + bare_needed + buffer
 
-            buffered_total = buffered_demand.get(material_id, 0.0)
-            consumed = min(buffered_total, available)
-            stock_used[material_id] = stock_used.get(material_id, 0.0) + consumed
-            shortfall = buffered_total - consumed
-            if shortfall <= 0 or m_bp is None:
-                continue
-            if material_id not in margin_excluded and _buy_or_build_decision(
-                    material_id, cfg, home, jita, manual_overrides, cost_memo, m_bp, depth + 1) == "Build":
-                jobs_this_level[material_id] = jobs_this_level.get(material_id, 0.0) + shortfall
-                if material_id not in stock_coverage_by_id:
-                    stock_coverage_by_id[material_id] = available / buffered_total if buffered_total > 0 else None
+            # Phase B: readiness (min_fraction) is allocated across the *bare*
+            # per-job claims, smallest first, against stock that's *physically on
+            # hand right now* (_stock_on_hand - excludes still-in-progress
+            # industry jobs, unlike _current_stock) - purely informational,
+            # doesn't drive how much stock gets marked consumed for sizing.
+            # Actual consumption/shortfall sizing uses the *buffered* pooled
+            # total against _current_stock's incoming-inclusive availability
+            # instead (a legitimate "don't plan to build even more of something
+            # already queued" question, distinct from "can I click start now").
+            min_fraction: dict[int, float] = {type_id: 1.0 for type_id in runs_this_round}
+            blockers_this_round: dict[int, list[AssetPlanBlocker]] = {type_id: [] for type_id in runs_this_round}
+            jobs_this_level = {}
+            for material_id, claims in next_level_claims.items():
+                _, m_bp = classify_activity(material_id)
+                # byproduct_stock joins the *sizing* side only, exactly like
+                # _expand_all's own overlay. It must never reach
+                # available_on_hand below: an alchemy byproduct this plan is
+                # merely proposing to produce is no more physically in the
+                # hangar than an in-progress job's output is (the Sylramic
+                # Fibers distinction in this function's docstring) - crediting
+                # it there would mark jobs "Ready Now" against stock that does
+                # not exist.
+                available = max(0.0, _current_stock(material_id, manual_stock, cfg, m_bp)
+                                 + byproduct_stock.get(material_id, 0.0)
+                                 - stock_used.get(material_id, 0.0))
+                available_on_hand = max(
+                    0.0, _stock_on_hand(material_id, manual_stock, cfg) - stock_used_on_hand.get(material_id, 0.0))
+                covered_by_parent = _allocate_scarce_stock(claims, available_on_hand)
+                stock_used_on_hand[material_id] = stock_used_on_hand.get(material_id, 0.0) + sum(covered_by_parent.values())
 
-        # Phase C: materialize/merge this round's AssetPlanJob entries now
-        # that readiness is known.
-        for type_id, runs in runs_this_round.items():
-            blueprint_id, activity_id, product_qty, activity_label, decryptor_name, time_mult = job_meta[type_id]
-            sde_type = storage.get_sde_type(type_id)
-            name = sde_type[2] if sde_type else str(type_id)
-            base_time = storage.get_blueprint_time(blueprint_id, activity_id) or 0
-            job_time = base_time * time_mult * runs
-            ready_increment = math.floor(runs * min_fraction[type_id])
+                sde_material = storage.get_sde_type(material_id)
+                material_name = sde_material[2] if sde_material else str(material_id)
+                for parent_type_id, qty in claims:
+                    covered = covered_by_parent.get(parent_type_id, 0.0)
+                    fraction = covered / qty if qty > 0 else 1.0
+                    if fraction < min_fraction[parent_type_id]:
+                        min_fraction[parent_type_id] = fraction
+                    if covered + 1e-9 < qty:
+                        blockers_this_round[parent_type_id].append(AssetPlanBlocker(
+                            type_id=material_id, type_name=material_name, needed=qty, covered=covered,
+                        ))
 
-            existing = jobs.get(type_id)
-            round_blockers = _merge_asset_plan_blockers([], blockers_this_round.get(type_id, []))
-            if existing is None:
-                jobs[type_id] = AssetPlanJob(
-                    type_id=type_id, type_name=name, blueprint_type_id=blueprint_id,
-                    activity=activity_label, quantity=runs * product_qty, job_runs=runs,
-                    runs_ready_now=ready_increment, job_time_seconds=job_time,
-                    unit_build_cost=cost_memo.get(type_id), decryptor=decryptor_name,
-                    job_category=job_category(type_id),
-                    stock_coverage=stock_coverage_by_id.get(type_id),
-                    # GitHub issue #38: margin_home, not margin_jita - see
-                    # plan_production's BuildJobEntry construction for why.
-                    margin=margin_home(type_id, cost_memo.get(type_id), home, cfg),
-                    blockers=round_blockers,
-                )
-            else:
-                # Same item is a job in more than one round (needed at two
-                # different tree depths) - merge rather than overwrite, so an
-                # earlier round's already-netted readiness isn't lost.
-                existing.job_runs += runs
-                existing.quantity += runs * product_qty
-                existing.runs_ready_now += ready_increment
-                existing.job_time_seconds += job_time
-                existing.blockers = _merge_asset_plan_blockers(existing.blockers, round_blockers)
+                buffered_total = buffered_demand.get(material_id, 0.0)
+                consumed = min(buffered_total, available)
+                stock_used[material_id] = stock_used.get(material_id, 0.0) + consumed
+                shortfall = buffered_total - consumed
+                if shortfall <= 0 or m_bp is None:
+                    continue
+                if material_id not in margin_excluded and _buy_or_build_decision(
+                        material_id, cfg, home, jita, manual_overrides, cost_memo, m_bp, depth + 1) == "Build":
+                    jobs_this_level[material_id] = jobs_this_level.get(material_id, 0.0) + shortfall
+                    if material_id not in stock_coverage_by_id:
+                        stock_coverage_by_id[material_id] = available / buffered_total if buffered_total > 0 else None
 
-        depth += 1
+            # Phase C: materialize/merge this round's AssetPlanJob entries now
+            # that readiness is known. An alchemy-sourced round is keyed and
+            # named by its "Unrefined X" intermediate - that's the job actually
+            # queued in EVE - the same swap _build_build_list makes for
+            # plan_production's rows. The mapping is one-to-one, so two rounds
+            # needing the same target still merge into that one row.
+            for type_id, runs in runs_this_round.items():
+                (job_key, blueprint_id, activity_id, product_qty, activity_label,
+                 decryptor_name, time_mult) = job_meta[type_id]
+                sde_type = storage.get_sde_type(job_key)
+                name = sde_type[2] if sde_type else str(job_key)
+                base_time = storage.get_blueprint_time(blueprint_id, activity_id) or 0
+                job_time = base_time * time_mult * runs
+                ready_increment = math.floor(runs * min_fraction[type_id])
+
+                existing = jobs.get(job_key)
+                round_blockers = _merge_asset_plan_blockers([], blockers_this_round.get(type_id, []))
+                if existing is None:
+                    jobs[job_key] = AssetPlanJob(
+                        type_id=job_key, type_name=name, blueprint_type_id=blueprint_id,
+                        activity=activity_label, quantity=runs * product_qty, job_runs=runs,
+                        runs_ready_now=ready_increment, job_time_seconds=job_time,
+                        unit_build_cost=cost_memo.get(type_id), decryptor=decryptor_name,
+                        job_category=job_category(type_id),
+                        stock_coverage=stock_coverage_by_id.get(type_id),
+                        # GitHub issue #38: margin_home, not margin_jita - see
+                        # plan_production's BuildJobEntry construction for why.
+                        margin=margin_home(type_id, cost_memo.get(type_id), home, cfg),
+                        recipe_source="alchemy" if job_key != type_id else None,
+                        blockers=round_blockers,
+                    )
+                else:
+                    # Same item is a job in more than one round (needed at two
+                    # different tree depths) - merge rather than overwrite, so an
+                    # earlier round's already-netted readiness isn't lost.
+                    existing.job_runs += runs
+                    existing.quantity += runs * product_qty
+                    existing.runs_ready_now += ready_increment
+                    existing.job_time_seconds += job_time
+                    existing.blockers = _merge_asset_plan_blockers(existing.blockers, round_blockers)
+
+            depth += 1
+
+        return jobs
+
+    # Byproduct discovery pass, same shape and same reasoning as
+    # plan_production's own two-pass _expand_all call (see the comment
+    # there): the walk resolves demand from stock targets downward, so a
+    # byproduct discovered while sizing a Reaction near the bottom would
+    # arrive after the shallower rounds that could have used it were already
+    # netted. Skipped entirely unless some alchemy recipe actually won a cost
+    # comparison - these rounds are not cheap (one stock read per material),
+    # and an ordinary plan must still walk them exactly once.
+    byproduct_stock: dict[int, float] = {}
+    if any(alchemy_memo.values()):
+        provisional_jobs = _run_rounds({})
+        # _alchemy_byproduct_stock takes _expand_all's own build_runs shape;
+        # rebuild it from the provisional AssetPlanJobs rather than teaching
+        # that helper a second one. Non-alchemy jobs simply miss its index.
+        provisional_runs = {
+            (job.blueprint_type_id,
+             ACTIVITY_REACTION if job.activity == "Reaction" else ACTIVITY_MANUFACTURING,
+             job.type_id): job.job_runs
+            for job in provisional_jobs.values()
+        }
+        byproduct_stock = _alchemy_byproduct_stock(provisional_runs, cost_indices)
+
+    jobs = _run_rounds(byproduct_stock)
 
     free_slots = _free_slots_by_category()
     unlock_time_by_type = _unlock_time_by_type(jobs)

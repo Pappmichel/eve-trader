@@ -284,6 +284,14 @@ class AssetPlanJob:
     # None when recommended_slots is 0 or None (job outside the
     # recommendation categories, or the pool had zero free slots for it).
     days_to_complete_at_recommended_slots: Optional[float] = None
+    # "alchemy" when the buy-vs-build engine picked this item's "Unrefined X"
+    # alchemy formula over its normal Reaction recipe (engine._unit_cost /
+    # plan_asset_optimized's own _run_rounds), None for every ordinary row -
+    # same convention as BuildJobEntry.recipe_source. On an alchemy row
+    # type_id/type_name/blueprint_type_id are the "Unrefined X" intermediate
+    # and its formula - that's the job actually queued in EVE; the target
+    # item comes out of reprocessing it afterwards.
+    recipe_source: Optional[str] = None
     # Direct materials that still short this job (needed > covered). Empty
     # when every run is ready now. Originally display-only (Blocked-column
     # tooltip) and still never feeds this job's *own* sizing/readiness - but
