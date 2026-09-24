@@ -467,6 +467,87 @@ def test_remove_manual_owned_blueprint_passes_path_param(monkeypatch):
     assert captured == {"manual_id": 7}
 
 
+def test_add_manual_industry_job_passes_body(monkeypatch):
+    captured = {}
+
+    def _add(**kwargs):
+        captured.update(kwargs)
+        return {"manual_id": 7, "type_id": 587, "type_name": "Rifter", "activity_id": 1,
+                "quantity": 50.0, "runs": 10, "location_id": 0, "ready_at": None}
+    monkeypatch.setattr(production_actions, "do_add_manual_industry_job", _add)
+
+    resp = client.post("/api/production/manual-jobs", json={
+        "item_name": "Rifter", "runs": 10, "location_id": 1000000000001, "ready_at": None,
+    })
+
+    assert resp.status_code == 200
+    assert captured == {"item_name": "Rifter", "quantity": None, "runs": 10,
+                         "location_id": 1000000000001, "ready_at": None}
+
+
+def test_add_manual_industry_job_action_error_maps_to_400(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise ActionError("Provide exactly one of quantity or runs.")
+    monkeypatch.setattr(production_actions, "do_add_manual_industry_job", _raise)
+
+    resp = client.post("/api/production/manual-jobs", json={"item_name": "Rifter"})
+
+    assert resp.status_code == 400
+
+
+def test_update_manual_industry_job_passes_path_and_body(monkeypatch):
+    captured = {}
+
+    def _update(**kwargs):
+        captured.update(kwargs)
+        return {"manual_id": kwargs["manual_id"]}
+    monkeypatch.setattr(production_actions, "do_update_manual_industry_job", _update)
+
+    resp = client.patch("/api/production/manual-jobs/7", json={"runs": 20})
+
+    assert resp.status_code == 200
+    assert captured == {"manual_id": 7, "quantity": None, "runs": 20, "location_id": None, "ready_at": None}
+
+
+def test_remove_manual_industry_job_passes_path_param(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(production_actions, "do_remove_manual_industry_job",
+                         lambda manual_id: captured.update(manual_id=manual_id))
+
+    resp = client.delete("/api/production/manual-jobs/7")
+
+    assert resp.status_code == 200
+    assert captured == {"manual_id": 7}
+
+
+def test_complete_manual_industry_job_passes_path_and_body(monkeypatch):
+    captured = {}
+
+    def _complete(**kwargs):
+        captured.update(kwargs)
+        return {"manual_id": kwargs["manual_id"], "location_id": kwargs["location_id"] or 0}
+    monkeypatch.setattr(production_actions, "do_complete_manual_industry_job", _complete)
+
+    resp = client.post("/api/production/manual-jobs/7/complete", json={"location_id": 1000000000001})
+
+    assert resp.status_code == 200
+    assert captured == {"manual_id": 7, "location_id": 1000000000001}
+
+
+def test_complete_manual_industry_job_defaults_location_to_none(monkeypatch):
+    captured = {}
+
+    def _complete(**kwargs):
+        captured.update(kwargs)
+        return {"manual_id": kwargs["manual_id"], "location_id": 0}
+    monkeypatch.setattr(production_actions, "do_complete_manual_industry_job", _complete)
+
+    resp = client.post("/api/production/manual-jobs/7/complete", json={})
+
+    assert resp.status_code == 200
+    assert captured == {"manual_id": 7, "location_id": None}
+
+
 def test_get_manual_blueprint_copy_costs(monkeypatch):
     # GitHub issue #40.
     from eve_trader.production.models import ManualBlueprintCopyCostRow

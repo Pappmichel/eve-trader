@@ -1471,6 +1471,90 @@ def manual_has_bpo_at_location(bp_type_id: int, location_id: int) -> bool:
     return row is not None
 
 
+# ------------------------------------------------------------- manual industry jobs
+def insert_manual_industry_job(product_type_id: int, activity_id: int, quantity: float,
+                                runs: Optional[int], location_id: int = 0,
+                                ready_at: Optional[str] = None) -> int:
+    with connect() as conn:
+        row = conn.execute(
+            "INSERT INTO manual_industry_jobs (product_type_id, activity_id, quantity, runs, "
+            "location_id, ready_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+            (product_type_id, activity_id, quantity, runs, location_id, ready_at),
+        ).fetchone()
+    return int(row[0])
+
+
+def update_manual_industry_job(id_: int, quantity: float, runs: Optional[int], location_id: int,
+                                ready_at: Optional[str]) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE manual_industry_jobs SET quantity=?, runs=?, location_id=?, ready_at=? WHERE id=?",
+            (quantity, runs, location_id, ready_at, id_),
+        )
+
+
+def delete_manual_industry_job(id_: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM manual_industry_jobs WHERE id = ?", (id_,))
+
+
+def get_manual_industry_job(id_: int) -> Optional[tuple]:
+    """(id, product_type_id, activity_id, quantity, runs, location_id, ready_at)."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT id, product_type_id, activity_id, quantity, runs, location_id, ready_at "
+            "FROM manual_industry_jobs WHERE id = ?",
+            (id_,),
+        ).fetchone()
+
+
+def load_manual_industry_jobs() -> list[tuple]:
+    """(id, product_type_id, product_type_name, activity_id, quantity, runs,
+    location_id, ready_at), name-ordered - production/jobs.py's
+    list_current_jobs appends these to the ESI-synced job list."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT j.id, j.product_type_id, t.type_name, j.activity_id, j.quantity, j.runs, "
+            "j.location_id, j.ready_at FROM manual_industry_jobs j "
+            "JOIN sde_types t ON t.type_id = j.product_type_id ORDER BY t.type_name"
+        ).fetchall()
+
+
+def manual_incoming_qty(product_type_id: int) -> float:
+    """SUM(quantity) of every manual job producing `product_type_id` - added
+    directly to production/engine.py's _current_stock, not multiplied by a
+    product quantity (decision 2), since `quantity` here is already stored
+    in finished-product units (see insert_manual_industry_job's own
+    docstring/the table's own column comment)."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT SUM(quantity) FROM manual_industry_jobs WHERE product_type_id = ?", (product_type_id,)
+        ).fetchone()
+    return row[0] if row and row[0] is not None else 0.0
+
+
+def complete_manual_job(job_id: int, location_id: int) -> None:
+    """Deletes the job and adds its quantity to manual_stock at
+    `location_id`, in one transaction (connect() itself commits once on
+    successful exit) - production/actions.do_complete_manual_industry_job
+    resolves `location_id` (defaults to the job's own output location,
+    decision 12) before calling this. A no-op if the job no longer exists
+    (already completed/removed by a concurrent request)."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT product_type_id, quantity FROM manual_industry_jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+        if row is None:
+            return
+        product_type_id, quantity = row
+        conn.execute("DELETE FROM manual_industry_jobs WHERE id = ?", (job_id,))
+        conn.execute(
+            "INSERT INTO manual_stock (type_id, count, location_id) VALUES (?, ?, ?) "
+            "ON CONFLICT(tenant_id, type_id, location_id) DO UPDATE SET count = manual_stock.count + excluded.count",
+            (product_type_id, quantity, location_id),
+        )
+
+
 def save_latest_buy_list(rows: list[tuple[int, float]]) -> None:
     """Wholesale-replace this tenant's latest Production buy list
     (plan_production's own buy_list: type_id, quantity). DELETE+INSERT, same

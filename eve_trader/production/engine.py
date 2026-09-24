@@ -1532,6 +1532,11 @@ def _current_stock(type_id: int, manual_stock: dict[int, float], cfg: Production
     if incoming["runs"] and bp is not None:
         _, _, product_qty = bp
         total += incoming["runs"] * product_qty
+    # docs/MANUAL_TRACKING_PLAN.md phase 6, decision 2 - manual jobs already
+    # store `quantity` in finished-product units (not runs), so this is a
+    # flat add, unlike the ESI incoming branch above which multiplies runs
+    # by product_qty.
+    total += storage.manual_incoming_qty(type_id)
     return total
 
 

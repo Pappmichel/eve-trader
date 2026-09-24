@@ -135,6 +135,7 @@ KNOWN_NON_MIGRATED_TABLES: dict[str, str] = {
     "esi_wallet_journal": "Postgres-native (ESI access plan Phase 1 - wallet journal snapshot, never existed in the pre-migration SQLite schema)",
     "manual_location_names": "Postgres-native (Manual tracking plan phase 2 - never existed in the pre-migration SQLite schema)",
     "manual_owned_blueprints": "Postgres-native (Manual tracking plan phase 5 - never existed in the pre-migration SQLite schema)",
+    "manual_industry_jobs": "Postgres-native (Manual tracking plan phase 6 - never existed in the pre-migration SQLite schema)",
 }
 
 

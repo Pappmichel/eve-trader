@@ -96,6 +96,14 @@ def _default_manual_blueprints(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _default_manual_incoming_qty(monkeypatch):
+    # docs/MANUAL_TRACKING_PLAN.md phase 6: _current_stock now also adds
+    # storage.manual_incoming_qty - same "default to none, no real DB"
+    # reasoning as the fixtures above.
+    monkeypatch.setattr(storage, "manual_incoming_qty", lambda type_id: 0.0)
+
+
+@pytest.fixture(autouse=True)
 def _reset_ship_margin_cache():
     # Same reasoning as _reset_discover_cache above, for engine._ship_margin_cache.
     engine.invalidate_ship_margin_cache()
@@ -159,6 +167,16 @@ def test_current_stock_checks_every_location_not_a_curated_set(monkeypatch):
 
     assert calls == [{"location_id": None, "exclude": 1000000000001}]
     assert total == 1_572_335.0
+
+
+def test_current_stock_adds_manual_incoming_qty(monkeypatch):
+    # docs/MANUAL_TRACKING_PLAN.md phase 6, decision 2 - a flat add, not
+    # multiplied by product quantity (unlike the ESI incoming-runs branch).
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, **kwargs: 0.0)
+    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id, **kwargs: {"runs": 0, "jobs": 0})
+    monkeypatch.setattr(storage, "manual_incoming_qty", lambda type_id: 42.0)
+
+    assert engine._current_stock(34, {}, ProductionConfig(), None) == 42.0
 
 
 def test_stock_at_location_adds_manual_stock_when_location_id_is_given(monkeypatch):

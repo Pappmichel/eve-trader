@@ -1,7 +1,7 @@
 # Manual tracking for Production – implementation plan
 
-Status: phase 0, 2, 3, 4, and 5 done · 2026-09-24 (phase 1 landed separately,
-see PR #196)
+Status: phase 0, 2, 3, 4, 5, and 6 done · 2026-09-24 (phase 1 landed
+separately, see PR #196)
 
 Goal: make the Production tool fully usable without an ESI login. Manual data
 (stock, blueprints, running jobs, listed quantities, locations) takes effect
@@ -182,6 +182,9 @@ Done in phase 5.
 - `manual_has_bpo_at_location(bp_type_id, location_id) -> bool`
 
 ### 3.3 Manual jobs
+
+Done in phase 6.
+
 - CRUD
 - `manual_incoming_qty(product_type_id) -> float` – `SUM(quantity)`
 - `complete_manual_job(job_id, location_id)` – delete the job and add its
@@ -227,7 +230,7 @@ is still phase 6.
 
 | Location | Change |
 |---|---|
-| `_current_stock` (1465) | replace the direct call to `storage.esi_incoming_industry_qty` with a new wrapper `_esi_incoming_industry_qty` that uses `shared_production_owner_ids("industry_jobs")` (**fix 19**, done in phase 1); additionally `+ storage.manual_incoming_qty(type_id)`, **not** multiplied by the product quantity (decision 2) - the `manual_incoming_qty` addition is still phase 6 (manual jobs) |
+| `_current_stock` (1465) | replace the direct call to `storage.esi_incoming_industry_qty` with a new wrapper `_esi_incoming_industry_qty` that uses `shared_production_owner_ids("industry_jobs")` (**fix 19**, done in phase 1); additionally `+ storage.manual_incoming_qty(type_id)`, **not** multiplied by the product quantity (decision 2, done in phase 6) |
 | `_stock_on_hand` (1508) | unchanged – manual jobs are not physical stock |
 | `_stock_at_location` (1429) | done in phase 3. when `location_id` is set, add `+ storage.manual_stock_at_location(...)`; when `location_id is None`, add **nothing**, because `_current_stock`/`_stock_on_hand` already include manual stock through the dict (otherwise it would be double-counted; record this in a comment). This lets Logistics and Invention see manual stock (decision 6) |
 | `_owned_bpo_best_me_te` (1447) | done, phase 5. ME and TE each as the maximum of ESI and manual |
@@ -274,6 +277,9 @@ Done in phase 5.
   `invalidate_ship_margin_cache()` (decision 4)
 
 ### Jobs
+
+Done in phase 6.
+
 - `do_add_manual_industry_job(item_name, quantity=None, runs=None, location_id=0, ready_at=None)`
   – exactly one of `quantity` or `runs`; activity and quantity per run come from
   `get_blueprint_for_product`; rejected if there's no blueprint (decision 13)
@@ -362,8 +368,8 @@ phase 8).
 | POST | `/manual-stock/paste/preview` | `do_preview_asset_paste` (done, phase 4) |
 | POST | `/manual-stock/paste/commit` | `do_commit_asset_paste` (done, phase 4) |
 | POST | `/manual-blueprints` · PATCH/DELETE `/manual-blueprints/{id}` | blueprint CRUD (done, phase 5) |
-| POST | `/manual-jobs` · PATCH/DELETE `/manual-jobs/{id}` | job CRUD |
-| POST | `/manual-jobs/{id}/complete` | `do_complete_manual_industry_job` |
+| POST | `/manual-jobs` · PATCH/DELETE `/manual-jobs/{id}` | job CRUD (done, phase 6) |
+| POST | `/manual-jobs/{id}/complete` | `do_complete_manual_industry_job` (done, phase 6) |
 | GET/POST | `/manual-listed-stock` · DELETE `/manual-listed-stock/{type_id}/{market}` | listed quantities |
 | GET | `/locations/search?q=` | `do_search_locations` (done, phase 2) |
 | POST `/locations/manual-names` · DELETE `/locations/manual-names/{location_id}` | manual names (done, phase 2) |
@@ -398,7 +404,7 @@ New group `eve-trader production manual …`. Every command takes
 | **new** `components/LocationPicker.tsx` (done, phase 2) | search across NPC stations, own structures and own manual names; direct entry of a structure ID with "Resolve" (if it stays unresolved: "Give it your own name"); a "No location" option. Wired into StockTargets.tsx's own Manual stock add form as of phase 3. |
 | `pages/production/StockTargets.tsx` | new **"Manual stock"** section (done, phase 3): table (item, location, quantity, edit/delete), add form; the existing column shows the total and is only directly editable with at most one entry (done, phase 3). Paste panel (done, phase 4): location, text area, replace/merge mode, preview as a diff marking skipped blueprints and "Did you mean…?", apply - `autosize` dropped from the paste `Textarea` (a jsdom/Mantine incompatibility broke StockTargets.ui.test.tsx, not worth chasing for a cosmetic auto-grow). Still phase 7: new "Listed Home/Jita (manual)" columns with "as of". **corrected delete-dialog text** (decision 20, done in phase 1) |
 | `pages/production/Blueprints.tsx` (done, phase 5) | new **"Manual blueprints"** section (form with the hint texts from decision 14); source badge in the owned table; edit/delete only for manual rows |
-| `pages/production/Jobs.tsx` | form (item, runs/units toggle, quantity, location, ready at); source badge; "done" marker; "Complete" button with a confirmable target location; row keys from `source:id` |
+| `pages/production/Jobs.tsx` (done, phase 6) | form (item, runs/units toggle, quantity, location, ready at); source badge; "done" marker; "Complete" button with a confirmable target location; row keys from `source:id` |
 | Logistics page | names through the extended lookup chain (global cache and manual names) |
 | `pages/admin/AdminPage.tsx` | "Resolve structure names" section with "Resolve new" and "Re-resolve all" buttons plus progress; also the "Operator fallback" switch with a warning text |
 
@@ -463,7 +469,7 @@ New group `eve-trader production manual …`. Every command takes
 | 3 | Done. `manual_stock` with locations: schema migration, storage, engine (`_stock_at_location`), SQLite migration, "Manual stock" UI table | 2 |
 | 4 | Done. Asset paste: preview/commit, paste panel | 1, 3 |
 | 5 | Done. Manual blueprints | 2 |
-| 6 | Manual jobs incl. Complete | 3 |
+| 6 | Done. Manual jobs incl. Complete | 3 |
 | 7 | Listed quantities | – |
 | 8 | Admin bulk resolution | 2 |
 | 9 | CLI | 3–7 |

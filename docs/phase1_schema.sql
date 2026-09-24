@@ -399,6 +399,34 @@ CREATE POLICY tenant_isolation ON manual_owned_blueprints
 GRANT SELECT, INSERT, UPDATE, DELETE ON manual_owned_blueprints TO eve_trader_app;
 GRANT USAGE, SELECT ON SEQUENCE manual_owned_blueprints_id_seq TO eve_trader_app;
 
+-- docs/MANUAL_TRACKING_PLAN.md phase 6 - manually-tracked running industry
+-- jobs, additive alongside ESI-synced character_industry_jobs/
+-- corp_industry_jobs. quantity is the value production/engine.py's
+-- _current_stock actually adds (decision 2); runs is display-only, set
+-- only when the job was entered as runs rather than a raw quantity.
+-- location_id is the job's output location - also the default target for
+-- "Complete" (decision 12).
+CREATE TABLE IF NOT EXISTS manual_industry_jobs (
+    id BIGSERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    product_type_id INTEGER NOT NULL,
+    activity_id INTEGER NOT NULL CHECK (activity_id IN (1, 11)),
+    quantity DOUBLE PRECISION NOT NULL CHECK (quantity > 0),
+    runs INTEGER CHECK (runs IS NULL OR runs > 0),
+    location_id BIGINT NOT NULL DEFAULT 0,
+    ready_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS manual_industry_jobs_tenant_product_idx
+    ON manual_industry_jobs (tenant_id, product_type_id);
+ALTER TABLE manual_industry_jobs ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON manual_industry_jobs;
+CREATE POLICY tenant_isolation ON manual_industry_jobs
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON manual_industry_jobs TO eve_trader_app;
+GRANT USAGE, SELECT ON SEQUENCE manual_industry_jobs_id_seq TO eve_trader_app;
+
 CREATE TABLE IF NOT EXISTS category_location_options (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
     category TEXT NOT NULL,

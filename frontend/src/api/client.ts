@@ -189,6 +189,27 @@ export const productionApi = {
   searchAssetLocations: (itemName: string) =>
     post<T.AssetLocationSearchResult>('/api/production/asset-locations', { item_name: itemName }),
   jobs: () => get<T.IndustryJobRow[]>('/api/production/jobs'),
+  // Manual industry jobs (docs/MANUAL_TRACKING_PLAN.md phase 6) - rows come
+  // back mixed into jobs() above (source: 'manual'); these are the write
+  // endpoints for that subset. Exactly one of quantity/runs.
+  addManualIndustryJob: (req: {
+    item_name: string
+    quantity: number | null
+    runs: number | null
+    location_id: number
+    ready_at: string | null
+  }) => post<{ manual_id: number }>('/api/production/manual-jobs', req),
+  updateManualIndustryJob: (manualId: number, req: {
+    quantity: number | null
+    runs: number | null
+    location_id: number | null
+    ready_at: string | null
+  }) => patch<{ manual_id: number }>(`/api/production/manual-jobs/${manualId}`, req),
+  removeManualIndustryJob: (manualId: number) => del(`/api/production/manual-jobs/${manualId}`),
+  completeManualIndustryJob: (manualId: number, locationId: number | null) =>
+    post<{ manual_id: number; location_id: number }>(
+      `/api/production/manual-jobs/${manualId}/complete`, { location_id: locationId },
+    ),
   slots: () => get<T.CharacterSlotRow[]>('/api/production/slots'),
   setCharacterSlotExcluded: (characterName: string, excluded: boolean) =>
     put<{ character_name: string; excluded: boolean }>(

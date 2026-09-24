@@ -480,6 +480,9 @@ export interface IndustryJobRow {
   remaining_seconds: number | null
   installer_name: string
   output_value: number | null
+  // docs/MANUAL_TRACKING_PLAN.md phase 6.
+  source: 'esi' | 'manual'
+  manual_id: number | null
 }
 
 export interface CharacterSlotRow {

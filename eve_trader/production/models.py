@@ -412,6 +412,8 @@ class IndustryJobRow:
     # quantity itself is None (no product - research/copying jobs) or if
     # neither market has a sell quote right now.
     output_value: Optional[float] = None
+    source: str = "esi"        # "esi" | "manual" (docs/MANUAL_TRACKING_PLAN.md phase 6)
+    manual_id: Optional[int] = None   # this row's manual_industry_jobs.id, only set when source == "manual"
 
 
 @dataclass

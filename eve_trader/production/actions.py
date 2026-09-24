@@ -1442,6 +1442,86 @@ def do_remove_manual_owned_blueprint(manual_id: int) -> dict:
     return {"manual_id": manual_id}
 
 
+def _resolve_manual_job_quantity(product_type_id: int, quantity: Optional[float],
+                                  runs: Optional[int]) -> tuple[float, int, Optional[int]]:
+    """Exactly one of `quantity`/`runs` must be given - `runs` is converted
+    to a quantity via the product's own qty-per-run (decision 13: rejected
+    if there's no known blueprint at all); a raw `quantity` is stored as-is
+    with `runs` left None (display-only, "if entered as runs" - see the
+    table's own column comment)."""
+    if (quantity is None) == (runs is None):
+        raise ActionError("Provide exactly one of quantity or runs.")
+    bp = storage.get_blueprint_for_product(product_type_id)
+    if bp is None:
+        raise ActionError("This item has no known blueprint - it can't be an industry job's output.")
+    _blueprint_type_id, activity_id, product_qty = bp
+    if runs is not None:
+        if runs <= 0:
+            raise ActionError("Runs must be positive.")
+        return runs * product_qty, activity_id, runs
+    if quantity is None or quantity <= 0:
+        raise ActionError("Quantity must be positive.")
+    return quantity, activity_id, None
+
+
+def do_add_manual_industry_job(item_name: str, quantity: Optional[float] = None, runs: Optional[int] = None,
+                                location_id: int = 0, ready_at: Optional[str] = None) -> dict:
+    matches = storage.search_sde_types(item_name, limit=2)
+    exact = [m for m in matches if m[1].lower() == item_name.strip().lower()]
+    if not exact:
+        if not matches:
+            raise ActionError(f"No type found for '{item_name}'. Refresh SDE first?")
+        raise ActionError(f"No exact match for '{item_name}'. Did you mean: {matches[0][1]}?")
+    product_type_id, resolved_name = exact[0]
+
+    resolved_quantity, activity_id, resolved_runs = _resolve_manual_job_quantity(product_type_id, quantity, runs)
+
+    manual_id = storage.insert_manual_industry_job(
+        product_type_id, activity_id, resolved_quantity, resolved_runs, location_id, ready_at)
+    return {
+        "manual_id": manual_id, "type_id": product_type_id, "type_name": resolved_name,
+        "activity_id": activity_id, "quantity": resolved_quantity, "runs": resolved_runs,
+        "location_id": location_id, "ready_at": ready_at,
+    }
+
+
+def do_update_manual_industry_job(manual_id: int, quantity: Optional[float] = None, runs: Optional[int] = None,
+                                   location_id: Optional[int] = None, ready_at: Optional[str] = None) -> dict:
+    existing = storage.get_manual_industry_job(manual_id)
+    if existing is None:
+        raise ActionError(f"No manual job entry #{manual_id}.")
+    _id, product_type_id, _activity_id, _qty, _runs, existing_location_id, _ready_at = existing
+
+    resolved_quantity, activity_id, resolved_runs = _resolve_manual_job_quantity(product_type_id, quantity, runs)
+    effective_location_id = existing_location_id if location_id is None else location_id
+
+    storage.update_manual_industry_job(manual_id, resolved_quantity, resolved_runs, effective_location_id, ready_at)
+    return {
+        "manual_id": manual_id, "activity_id": activity_id, "quantity": resolved_quantity,
+        "runs": resolved_runs, "location_id": effective_location_id, "ready_at": ready_at,
+    }
+
+
+def do_remove_manual_industry_job(manual_id: int) -> dict:
+    storage.delete_manual_industry_job(manual_id)
+    return {"manual_id": manual_id}
+
+
+def do_complete_manual_industry_job(manual_id: int, location_id: Optional[int] = None) -> dict:
+    """Deletes the job and books its quantity into manual_stock -
+    `location_id=None` (the default) uses the job's own output location
+    (decision 12); an explicit `location_id` overrides that (e.g. moved the
+    finished goods somewhere else before completing)."""
+    existing = storage.get_manual_industry_job(manual_id)
+    if existing is None:
+        raise ActionError(f"No manual job entry #{manual_id}.")
+    _id, _product_type_id, _activity_id, _qty, _runs, job_location_id, _ready_at = existing
+    effective_location_id = job_location_id if location_id is None else location_id
+
+    storage.complete_manual_job(manual_id, effective_location_id)
+    return {"manual_id": manual_id, "location_id": effective_location_id}
+
+
 def do_list_manual_blueprint_copy_costs() -> dict:
     """GitHub issue #40 - the Blueprints page's second table: purchase cost +
     included run count for blueprint copies that must be bought outright

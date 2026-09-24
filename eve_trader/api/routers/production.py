@@ -168,6 +168,47 @@ def get_current_jobs():
     return _wrap(actions.do_list_current_jobs)["rows"]
 
 
+class AddManualIndustryJobRequest(BaseModel):
+    item_name: str
+    quantity: Optional[float] = None
+    runs: Optional[int] = None
+    location_id: int = 0
+    ready_at: Optional[str] = None
+
+
+@router.post("/manual-jobs")
+def add_manual_industry_job(req: AddManualIndustryJobRequest):
+    return _wrap(actions.do_add_manual_industry_job, item_name=req.item_name, quantity=req.quantity,
+                 runs=req.runs, location_id=req.location_id, ready_at=req.ready_at)
+
+
+class UpdateManualIndustryJobRequest(BaseModel):
+    quantity: Optional[float] = None
+    runs: Optional[int] = None
+    location_id: Optional[int] = None
+    ready_at: Optional[str] = None
+
+
+@router.patch("/manual-jobs/{manual_id}")
+def update_manual_industry_job(manual_id: int, req: UpdateManualIndustryJobRequest):
+    return _wrap(actions.do_update_manual_industry_job, manual_id=manual_id, quantity=req.quantity,
+                 runs=req.runs, location_id=req.location_id, ready_at=req.ready_at)
+
+
+@router.delete("/manual-jobs/{manual_id}")
+def remove_manual_industry_job(manual_id: int):
+    return _wrap(actions.do_remove_manual_industry_job, manual_id=manual_id)
+
+
+class CompleteManualIndustryJobRequest(BaseModel):
+    location_id: Optional[int] = None
+
+
+@router.post("/manual-jobs/{manual_id}/complete")
+def complete_manual_industry_job(manual_id: int, req: CompleteManualIndustryJobRequest):
+    return _wrap(actions.do_complete_manual_industry_job, manual_id=manual_id, location_id=req.location_id)
+
+
 @router.get("/slots", response_model=list[schemas.CharacterSlotRow])
 def get_character_slots():
     # Storage-only (synced industry_jobs/character_slots) - no live ESI.
