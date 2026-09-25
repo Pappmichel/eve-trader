@@ -9,7 +9,7 @@ import pytest
 from eve_trader import storage
 
 from . import pg_helpers
-from .pg_helpers import _apply_phase1_schema  # noqa: F401
+from .pg_helpers import _apply_phase1_schema, tenant  # noqa: F401
 
 psycopg = pytest.importorskip("psycopg")
 
