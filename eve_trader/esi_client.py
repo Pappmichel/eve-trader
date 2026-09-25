@@ -724,17 +724,28 @@ class ESIClient:
         return {tid: _summarize_orders(by_type.get(tid, [])) for tid in type_ids}
 
     def structure_order_stats_bulk_or_goonmetrics(
-        self, structure_id: int, type_ids: list[int], auth_role: Optional[str],
+        self, structure_id: int, type_ids: list[int], auth_roles: list[str],
         goonmetrics_market_slug: Optional[str],
     ) -> tuple[dict[int, OrderStats], bool]:
         """Failsafe wrapper around structure_order_stats_bulk (confirmed with
-        the user 2026-08-24): tries the real structure order book first when
-        a seller/producer character (`auth_role`) is logged in, falling back
-        to a Goonmetrics current-price snapshot (GoonmetricsClient.
+        the user 2026-08-24): tries the real structure order book first,
+        falling back to a Goonmetrics current-price snapshot (GoonmetricsClient.
         current_prices(goonmetrics_market_slug)) whenever that's unavailable
         - no character logged in at all, or the ESI call itself fails (lost
         docking access, ESI outage). Returns (stats_by_id, used_fallback) so
         callers can surface the degraded-precision warning to the user.
+
+        `auth_roles` is every candidate character's auth_role, tried in order
+        (actions.structure_book_auth_roles) - confirmed real bug 2026-09-25:
+        esi-markets.structure_markets.v1 needs real in-game docking access to
+        *that* structure, an unrelated fact from having the "Structure market
+        book" capability ticked or a token that carries the scope. A buyer
+        character that only ever operates at Jita can have both and still get
+        a live 403 "Market access denied" for the C-J structure. Trying only
+        one arbitrary candidate meant the whole feature broke the moment such
+        a character happened to sort/list before a character that actually
+        has access - so every candidate is tried, and only exhausting all of
+        them (not just the first ESIError) falls through to Goonmetrics.
 
         The synthesized OrderStats only ever has sell_percentile/
         buy_percentile populated, from Goonmetrics' best-ask/best-bid
@@ -748,10 +759,10 @@ class ESIClient:
         order says otherwise, worse than a hard failure.
 
         Raises ESIError (same type the real call raises, so callers' own
-        ActionError wrapping needs no change) only when BOTH the real order
-        book AND the Goonmetrics fallback are unavailable."""
+        ActionError wrapping needs no change) only when BOTH every candidate
+        in `auth_roles` AND the Goonmetrics fallback are unavailable."""
         last_error: Optional[Exception] = None
-        if auth_role is not None:
+        for auth_role in auth_roles:
             try:
                 return self.structure_order_stats_bulk(structure_id, type_ids, auth_role=auth_role), False
             except ESIError as e:
@@ -769,7 +780,7 @@ class ESIClient:
                                            buy_percentile=p.buy or None, buy_volume=0.0)
                     for p in prices if p.type_id in wanted
                 }, True
-        if auth_role is None:
+        if not auth_roles:
             raise ESIError("No character shares the structure market book, and no Goonmetrics "
                             "fallback market configured (structure_market_slug). Enable "
                             "\"Structure market book\" for a character on the Characters page.")

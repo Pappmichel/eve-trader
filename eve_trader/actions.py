@@ -231,8 +231,9 @@ def list_shared_trading_characters(tm: TokenManager | None = None,
     return out
 
 
-def structure_book_auth_role(fallback_characters: list[tuple[str, int, str]] | None = None) -> Optional[str]:
-    """auth_role for reading a player structure's order book, or None.
+def structure_book_auth_roles(fallback_characters: list[tuple[str, int, str]] | None = None) -> list[str]:
+    """Every auth_role for reading a player structure's order book, in the
+    order to try them.
 
     Reading `/markets/structures/` needs `esi-markets.structure_markets.v1`
     plus live docking access - that is Group 3 "Structure market book" on
@@ -247,18 +248,35 @@ def structure_book_auth_role(fallback_characters: list[tuple[str, int, str]] | N
     (production/pricing.home_prices) and Doctrine (doctrine/engine) already
     resolve it this way.
 
+    Confirmed real follow-up bug 2026-09-25: even after fixing *which list*
+    to read, this used to return only the first capability-ticked character
+    (character_id ascending) instead of every one of them. The scope/
+    capability tick only prove a character *could* read a structure's order
+    book *if* it also has real in-game docking access to that specific
+    structure - a fact ESI only reveals at call time (403 "Market access
+    denied"), not something the capability tick or the token's scope list
+    exposes up front. A buyer character that only ever operates at Jita can
+    be capability-ticked and scope-complete and still never have docking
+    rights at the C-J structure; if it happens to sort before a character
+    that actually does, the feature broke outright for every caller that
+    only tried the first candidate. Callers must try every role in the
+    returned list, in order, until one succeeds - not just the first.
+
     `fallback_characters` keeps the pre-capability behaviour available for
     an install that has not ticked the capability for anyone yet: the old
     "first shared Trading character" guess is still better than not trying
-    at all, and the callers all degrade gracefully when the call fails.
+    at all, and the callers all degrade gracefully when every candidate
+    fails.
     """
     from .production import esi_sync as production_esi_sync
 
-    for role, _character_id, _name in production_esi_sync.list_capability_characters("structure_market_book"):
-        return role
+    roles = [role for role, _character_id, _name
+             in production_esi_sync.list_capability_characters("structure_market_book")]
+    if roles:
+        return roles
     if fallback_characters:
-        return fallback_characters[0][0]
-    return None
+        return [fallback_characters[0][0]]
+    return []
 
 
 def do_list_buyer_characters(oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> list[tuple[str, int, str]]:
@@ -711,15 +729,16 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
     try:
         # The structure's order book is one shared/global fetch - any one
         # character with the "Structure market book" capability and docking
-        # access can retrieve it (see structure_book_auth_role). Falls back
-        # to a Goonmetrics current-price snapshot (cfg.structure_market_slug)
-        # when nobody can read it at all, or the real call fails (lost
-        # docking access, ESI outage) - see structure_order_stats_bulk_or_
-        # goonmetrics's own docstring for why this is safe here but NOT used
-        # by check_undercut.
+        # access can retrieve it (see structure_book_auth_roles - tries every
+        # capability character in turn, not just the first). Falls back to a
+        # Goonmetrics current-price snapshot (cfg.structure_market_slug) when
+        # nobody can read it at all, or every real call fails (lost docking
+        # access, ESI outage) - see structure_order_stats_bulk_or_goonmetrics's
+        # own docstring for why this is safe here but NOT used by
+        # check_undercut.
         structure_stats_by_item, priced_via_fallback = client.structure_order_stats_bulk_or_goonmetrics(
             cfg.structure_id, priced_item_ids,
-            auth_role=structure_book_auth_role(seller_characters),
+            auth_roles=structure_book_auth_roles(seller_characters),
             goonmetrics_market_slug=cfg.structure_market_slug)
     except ESIError as e:
         # esi-markets.structure_markets.v1 additionally requires the seller
@@ -903,17 +922,28 @@ def do_check_seller_unlisted_stock(cfg: TradingConfig = TRADING_CONFIG,
     structure_stats_by_item: dict = {}
     jita_stats_by_item: dict = {}
     if unlisted_type_ids:
-        try:
-            # The structure's order book is a shared/global fetch - any one
-            # character with the "Structure market book" capability and
-            # docking access is enough (see structure_book_auth_role).
-            structure_stats_by_item = client.structure_order_stats_bulk(
-                cfg.structure_id, unlisted_type_ids,
-                auth_role=structure_book_auth_role(seller_characters))
-        except ESIError as e:
-            raise ActionError(f"Could not fetch the structure's order book ({e}). "
+        # The structure's order book is a shared/global fetch - any one
+        # character with the "Structure market book" capability and docking
+        # access is enough (see structure_book_auth_roles) - but the
+        # capability tick and the token's scope don't prove *which* one
+        # actually has docking access, so every candidate is tried in turn
+        # (confirmed real bug 2026-09-25: a capability-ticked buyer character
+        # that only ever operates at Jita sorted before the one that
+        # actually docks at C-J, and this call used to try only that first,
+        # always-403 candidate).
+        last_error: Optional[ESIError] = None
+        for role in structure_book_auth_roles(seller_characters):
+            try:
+                structure_stats_by_item = client.structure_order_stats_bulk(
+                    cfg.structure_id, unlisted_type_ids, auth_role=role)
+                last_error = None
+                break
+            except ESIError as e:
+                last_error = e
+        if last_error is not None:
+            raise ActionError(f"Could not fetch the structure's order book ({last_error}). "
                                f"Does a character with \"Structure market book\" ticked on the "
-                               f"Characters page still have docking access?") from e
+                               f"Characters page still have docking access?") from last_error
         try:
             # region_order_stats_bulk isolates per-type ESIError, but a
             # thread-pool/transport failure that escapes that still used to
@@ -972,7 +1002,7 @@ def do_check_undercut(cfg: TradingConfig = TRADING_CONFIG, oauth_cfg: OAuthConfi
         # doesn't count as "undercut".
         undercut = own_orders.check_undercut_pooled(
             [(cid, role) for role, cid, _name in seller_characters], client, cfg,
-            book_auth_role=structure_book_auth_role(seller_characters))
+            book_auth_roles=structure_book_auth_roles(seller_characters))
     except ESIError as e:
         raise ActionError(f"ESI access failed ({e}).") from e
 

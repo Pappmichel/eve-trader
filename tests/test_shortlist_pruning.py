@@ -223,11 +223,11 @@ def test_refresh_shortlist_prices_jita_in_oldest_first_batches(monkeypatch):
 
     monkeypatch.setattr(storage, "load_shortlist", lambda: items)
     monkeypatch.setattr(actions, "list_shared_trading_characters", lambda tm: [])
-    monkeypatch.setattr(actions, "structure_book_auth_role", lambda chars=None: "seller:1")
+    monkeypatch.setattr(actions, "structure_book_auth_roles", lambda chars=None: ["seller:1"])
     monkeypatch.setattr(ESIClient, "region_order_stats_bulk", fake_bulk)
     monkeypatch.setattr(
         ESIClient, "structure_order_stats_bulk_or_goonmetrics",
-        lambda self, structure_id, type_ids, auth_role, goonmetrics_market_slug: ({}, False),
+        lambda self, structure_id, type_ids, auth_roles, goonmetrics_market_slug: ({}, False),
     )
     monkeypatch.setattr(GoonmetricsClient, "price_history_chunked", lambda self, *a, **k: [])
     monkeypatch.setattr(storage, "replace_shortlist_snapshot_run", lambda rows, run_ts: None)
@@ -256,11 +256,11 @@ def _cleanup_refresh_mocks(monkeypatch, items, fake_bulk, previous_rows=None, ma
 
     monkeypatch.setattr(storage, "load_shortlist", lambda: items)
     monkeypatch.setattr(actions, "list_shared_trading_characters", lambda tm: [])
-    monkeypatch.setattr(actions, "structure_book_auth_role", lambda chars=None: "seller:1")
+    monkeypatch.setattr(actions, "structure_book_auth_roles", lambda chars=None: ["seller:1"])
     monkeypatch.setattr(ESIClient, "region_order_stats_bulk", fake_bulk)
     monkeypatch.setattr(
         ESIClient, "structure_order_stats_bulk_or_goonmetrics",
-        lambda self, structure_id, type_ids, auth_role, goonmetrics_market_slug: ({}, False),
+        lambda self, structure_id, type_ids, auth_roles, goonmetrics_market_slug: ({}, False),
     )
     monkeypatch.setattr(GoonmetricsClient, "price_history_chunked", lambda self, *a, **k: [])
     monkeypatch.setattr(storage, "load_latest_shortlist_rows", lambda: list(previous_rows or []))

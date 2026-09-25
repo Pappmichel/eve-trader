@@ -21,10 +21,10 @@ def test_refresh_shortlist_surfaces_priced_via_fallback(monkeypatch):
     monkeypatch.setattr(storage, "load_shortlist",
                          lambda: [ShortlistItem(item="Test", item_id=34, category="X", volume_m3=1.0, meta_level=5)])
     monkeypatch.setattr(actions, "list_shared_trading_characters", lambda tm: [])
-    monkeypatch.setattr(actions, "structure_book_auth_role", lambda chars=None: "seller:1")
+    monkeypatch.setattr(actions, "structure_book_auth_roles", lambda chars=None: ["seller:1"])
     monkeypatch.setattr(ESIClient, "region_order_stats_bulk", lambda self, region_id, type_ids: {})
     monkeypatch.setattr(ESIClient, "structure_order_stats_bulk_or_goonmetrics",
-                         lambda self, structure_id, type_ids, auth_role, goonmetrics_market_slug: ({}, True))
+                         lambda self, structure_id, type_ids, auth_roles, goonmetrics_market_slug: ({}, True))
     monkeypatch.setattr(storage, "replace_shortlist_snapshot_run", lambda rows, run_ts: None)
     monkeypatch.setattr(storage, "load_latest_shortlist_rows", lambda: [])
     monkeypatch.setattr(storage, "set_esi_sync_time", lambda tool, run_ts: None)
@@ -41,7 +41,7 @@ def test_refresh_shortlist_no_fallback_when_seller_logged_in(monkeypatch):
     monkeypatch.setattr(storage, "load_shortlist",
                          lambda: [ShortlistItem(item="Test", item_id=34, category="X", volume_m3=1.0, meta_level=5)])
     monkeypatch.setattr(actions, "list_shared_trading_characters", lambda tm: [("seller", 1, "Seller One")])
-    monkeypatch.setattr(actions, "structure_book_auth_role", lambda chars=None: "seller:1")
+    monkeypatch.setattr(actions, "structure_book_auth_roles", lambda chars=None: ["seller:1"])
     monkeypatch.setattr(actions.own_orders, "fetch_own_sell_orders", lambda char_id, role, client, cfg: {})
     # Buyer/seller are now the same shared-characters list (see
     # list_shared_trading_characters), so this "seller" record also flows
@@ -51,7 +51,7 @@ def test_refresh_shortlist_no_fallback_when_seller_logged_in(monkeypatch):
                          lambda char_id, role, client, cfg: set())
     monkeypatch.setattr(ESIClient, "region_order_stats_bulk", lambda self, region_id, type_ids: {})
     monkeypatch.setattr(ESIClient, "structure_order_stats_bulk_or_goonmetrics",
-                         lambda self, structure_id, type_ids, auth_role, goonmetrics_market_slug: ({}, False))
+                         lambda self, structure_id, type_ids, auth_roles, goonmetrics_market_slug: ({}, False))
     monkeypatch.setattr(storage, "replace_shortlist_snapshot_run", lambda rows, run_ts: None)
     monkeypatch.setattr(storage, "load_latest_shortlist_rows", lambda: [])
     monkeypatch.setattr(storage, "set_esi_sync_time", lambda tool, run_ts: None)
@@ -67,10 +67,10 @@ def test_refresh_ore_shortlist_surfaces_priced_via_fallback(monkeypatch):
     trading_cfg = TradingConfig(structure_id=1000, structure_market_slug="my-structure")
     monkeypatch.setattr(refining_actions, "build_ore_candidate_universe", lambda: [])
     monkeypatch.setattr(storage, "load_ore_shortlist", lambda: [(34, "Test Ore", "Veldspar", False, True)])
-    monkeypatch.setattr(refining_actions, "_seller_role", lambda tm: None)
+    monkeypatch.setattr(refining_actions, "_seller_roles", lambda tm: [])
     monkeypatch.setattr(ESIClient, "region_order_stats_bulk", lambda self, region_id, type_ids: {})
     monkeypatch.setattr(ESIClient, "structure_order_stats_bulk_or_goonmetrics",
-                         lambda self, structure_id, type_ids, auth_role, goonmetrics_market_slug: ({}, True))
+                         lambda self, structure_id, type_ids, auth_roles, goonmetrics_market_slug: ({}, True))
     monkeypatch.setattr(storage, "save_ore_shortlist_snapshot", lambda rows, run_ts: None)
     monkeypatch.setattr(storage, "set_esi_sync_time", lambda tool, run_ts: None)
 
@@ -86,7 +86,7 @@ def test_refresh_ore_shortlist_wraps_jita_order_book_outage(monkeypatch):
     trading_cfg = TradingConfig(structure_id=1000, structure_market_slug="my-structure")
     monkeypatch.setattr(refining_actions, "build_ore_candidate_universe", lambda: [])
     monkeypatch.setattr(storage, "load_ore_shortlist", lambda: [(34, "Test Ore", "Veldspar", False, True)])
-    monkeypatch.setattr(refining_actions, "_seller_role", lambda tm: None)
+    monkeypatch.setattr(refining_actions, "_seller_roles", lambda tm: [])
 
     def _boom(self, region_id, type_ids):
         raise ESIError("ESI down")
@@ -109,9 +109,9 @@ def test_quote_reprocessing_surfaces_priced_via_fallback(monkeypatch):
     # and hits storage.connect() with no tenant set.
     monkeypatch.setattr(refining_actions, "resolve_type_id", lambda name: None)
     monkeypatch.setattr(reprocessing, "resolve_type_id", lambda name: None)
-    monkeypatch.setattr(refining_actions, "_seller_role", lambda tm: None)
+    monkeypatch.setattr(refining_actions, "_seller_roles", lambda tm: [])
     monkeypatch.setattr(ESIClient, "structure_order_stats_bulk_or_goonmetrics",
-                         lambda self, structure_id, type_ids, auth_role, goonmetrics_market_slug: ({}, True))
+                         lambda self, structure_id, type_ids, auth_roles, goonmetrics_market_slug: ({}, True))
 
     result = refining_actions.do_quote_reprocessing("Tritanium\t100\tMineral\tMaterial\t\t\t0.01 m3\t\t",
                                                       trading_cfg=trading_cfg)
@@ -137,10 +137,10 @@ def test_quote_reprocessing_resolves_each_distinct_name_once(monkeypatch):
     monkeypatch.setattr(storage, "get_portion_size", lambda type_id: None)
     monkeypatch.setattr(storage, "get_type_materials", lambda type_id: [])
     monkeypatch.setattr(reprocessing, "resolve_type_id", refining_actions.resolve_type_id)
-    monkeypatch.setattr(refining_actions, "_seller_role", lambda tm: None)
+    monkeypatch.setattr(refining_actions, "_seller_roles", lambda tm: [])
     monkeypatch.setattr(
         ESIClient, "structure_order_stats_bulk_or_goonmetrics",
-        lambda self, structure_id, type_ids, auth_role, goonmetrics_market_slug: (
+        lambda self, structure_id, type_ids, auth_roles, goonmetrics_market_slug: (
             {tid: OrderStats(sell_percentile=1.0, sell_volume=1.0, buy_percentile=None, buy_volume=0.0)
              for tid in type_ids}, False))
 

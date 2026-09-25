@@ -11,7 +11,7 @@ from typing import Optional
 import requests
 
 from .. import storage
-from ..actions import ActionError, list_shared_trading_characters, structure_book_auth_role
+from ..actions import ActionError, list_shared_trading_characters, structure_book_auth_roles
 from ..auth import TokenManager
 from ..config import OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, TradingConfig, save_tenant_config_overrides
 from ..esi_client import ESIClient, ESIError
@@ -38,24 +38,28 @@ def now_ts() -> str:
     return dt.datetime.utcnow().isoformat(timespec="seconds")
 
 
-def _seller_role(tm: TokenManager) -> Optional[str]:
-    """auth_role for the C-J structure order book - no Ore-specific login
-    (see module docstring).
+def _seller_roles(tm: TokenManager) -> list[str]:
+    """auth_roles (in order to try them) for the C-J structure order book -
+    no Ore-specific login (see module docstring).
 
     Both call sites use this purely for structure_order_stats_bulk_or_
     goonmetrics, so it resolves the "Structure market book" capability
-    (actions.structure_book_auth_role), not just "the first character
-    sharing anything with Trading". Two successive fixes here: the original
-    `tm.list_roles("seller")`/legacy-bare-key lookup was blind to a
+    (actions.structure_book_auth_roles), not just "the first character
+    sharing anything with Trading". Three successive fixes here: the
+    original `tm.list_roles("seller")`/legacy-bare-key lookup was blind to a
     character added via the Characters page (Known-gap-4 class, fixed
-    2026-09-21), and its sharing-based replacement was still the wrong
-    fact - Market Orders/Wallet/Assets sharing never implies
+    2026-09-21), its sharing-based replacement was still the wrong fact -
+    Market Orders/Wallet/Assets sharing never implies
     esi-markets.structure_markets.v1, so an install whose capability
     character was not the arbitrary first entry silently fell back to
-    Goonmetrics (same day, found in review). Trading's shortlist, Unlisted
+    Goonmetrics (same day, found in review) - and returning only that first
+    capability character was itself still wrong, since the capability tick
+    doesn't prove *that* character has real docking access to this specific
+    structure (confirmed real bug 2026-09-25). Trading's shortlist, Unlisted
     Stock and Undercut Check, Production's home_prices and Doctrine's
-    shopping list all resolve it the same way now."""
-    return structure_book_auth_role(list_shared_trading_characters(tm))
+    shopping list all resolve it the same way now: every candidate, tried in
+    order until one actually works."""
+    return structure_book_auth_roles(list_shared_trading_characters(tm))
 
 
 def do_add_ore_to_shortlist() -> dict:
@@ -91,7 +95,7 @@ def do_refresh_ore_shortlist(trading_cfg: TradingConfig = TRADING_CONFIG,
     tracked_candidates = [c for c in candidates if c.type_id in tracked_ids]
 
     tm = TokenManager(oauth_cfg)
-    seller_role = _seller_role(tm)
+    seller_roles = _seller_roles(tm)
     client = ESIClient(trading_cfg, tm)
 
     ore_type_ids = [c.type_id for c in tracked_candidates]
@@ -111,7 +115,7 @@ def do_refresh_ore_shortlist(trading_cfg: TradingConfig = TRADING_CONFIG,
         # call fails - see structure_order_stats_bulk_or_goonmetrics's own
         # docstring.
         mineral_stats_by_id, priced_via_fallback = client.structure_order_stats_bulk_or_goonmetrics(
-            trading_cfg.structure_id, mineral_ids, auth_role=seller_role,
+            trading_cfg.structure_id, mineral_ids, auth_roles=seller_roles,
             goonmetrics_market_slug=trading_cfg.structure_market_slug)
     except ESIError as e:
         raise ActionError(f"Could not fetch the structure's order book ({e}). "
@@ -167,7 +171,7 @@ def do_quote_reprocessing(paste_text: str, trading_cfg: TradingConfig = TRADING_
         raise ActionError("Could not parse any items from the paste.")
 
     tm = TokenManager(oauth_cfg)
-    seller_role = _seller_role(tm)
+    seller_roles = _seller_roles(tm)
     client = ESIClient(trading_cfg, tm)
 
     resolved_by_name: dict[str, Optional[int]] = {}
@@ -183,7 +187,7 @@ def do_quote_reprocessing(paste_text: str, trading_cfg: TradingConfig = TRADING_
         # call fails - see structure_order_stats_bulk_or_goonmetrics's own
         # docstring.
         stats_by_id, priced_via_fallback = client.structure_order_stats_bulk_or_goonmetrics(
-            trading_cfg.structure_id, all_ids, auth_role=seller_role,
+            trading_cfg.structure_id, all_ids, auth_roles=seller_roles,
             goonmetrics_market_slug=trading_cfg.structure_market_slug)
     except ESIError as e:
         raise ActionError(f"Could not fetch the structure's order book ({e}). "

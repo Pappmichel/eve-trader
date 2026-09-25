@@ -12,7 +12,7 @@ from typing import Optional
 
 from . import storage
 from .config import TRADING_CONFIG, TradingConfig
-from .esi_client import ESIClient
+from .esi_client import ESIClient, ESIError
 
 JITA_SOLAR_SYSTEM_ID = 30000142  # stable, never changes - distinct from cfg.jita_region_id (The Forge region)
 
@@ -54,7 +54,7 @@ def fetch_own_sell_orders(character_id: int, auth_role: str, client: ESIClient,
 
 def check_undercut_pooled(sellers: list[tuple[int, str]], client: ESIClient,
                            cfg: TradingConfig = TRADING_CONFIG,
-                           book_auth_role: Optional[str] = None) -> list[dict]:
+                           book_auth_roles: Optional[list[str]] = None) -> list[dict]:
     """Same idea as check_undercut, but pools every registered seller
     character's own orders together (GitHub issue #46: multiple seller
     characters share the same structure's order slots) - `sellers` is a list
@@ -100,10 +100,25 @@ def check_undercut_pooled(sellers: list[tuple[int, str]], client: ESIClient,
     # access can retrieve it. That capability lookup needs storage/tenant
     # scope, which this module deliberately does not have (it is pure
     # compute over what the caller hands it), so the caller resolves it:
-    # `book_auth_role` comes from actions.structure_book_auth_role, and
+    # `book_auth_roles` comes from actions.structure_book_auth_roles, and
     # falls back to the first seller when nobody has the capability ticked.
-    all_orders = client.structure_orders_raw(
-        cfg.structure_id, auth_role=book_auth_role or sellers[0][1])
+    # Every candidate is tried in turn (confirmed real bug 2026-09-25: the
+    # capability tick and the token's scope don't prove a character actually
+    # has in-game docking access to this specific structure - only ESI
+    # itself reveals that, at call time, via a 403) - only once all of them
+    # fail does the original ESIError propagate to the caller.
+    candidates = book_auth_roles or [sellers[0][1]]
+    all_orders: Optional[list[dict]] = None
+    last_error: Optional[ESIError] = None
+    for role in candidates:
+        try:
+            all_orders = client.structure_orders_raw(cfg.structure_id, auth_role=role)
+            last_error = None
+            break
+        except ESIError as e:
+            last_error = e
+    if last_error is not None:
+        raise last_error
     competitor_best: dict[int, float] = {}
     for o in all_orders:
         if o.get("is_buy_order") or o.get("order_id") in my_order_ids:
