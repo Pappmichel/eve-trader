@@ -36,7 +36,7 @@ import threading
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from functools import lru_cache
 from typing import Iterable, Optional
 
@@ -2689,12 +2689,13 @@ def delete_owner_snapshot_rows(
     """Clear one owner's partition (age-limit stale clear, tests)."""
     allowed = _ASSET_TABLES | _JOB_TABLES | _BP_TABLES | {
         "character_sell_orders", "esi_wallet_transactions", "esi_wallet_journal",
-        "doctrine_contracts",
+        "doctrine_contracts", "character_wallet_balances", "corp_wallet_balances",
     }
     if table not in allowed:
         raise ValueError(f"not a per-owner snapshot table: {table}")
     with connect() as conn:
-        if table in ("esi_wallet_transactions", "esi_wallet_journal"):
+        if table in ("esi_wallet_transactions", "esi_wallet_journal",
+                      "character_wallet_balances", "corp_wallet_balances"):
             col = "owner_character_id" if owner_character_id is not None else "owner_corporation_id"
             oid = owner_character_id if owner_character_id is not None else owner_corporation_id
             if oid is None:
@@ -3315,6 +3316,60 @@ def replace_wallet_journal(
                 for r in rows
             ],
         )
+
+
+def upsert_character_wallet_balance(character_id: int, balance: float) -> None:
+    """One row per character (current balance only, not history - see
+    esi_access_schema.sql's own comment on why this is a separate,
+    smaller data kind from esi_wallet_transactions/journal)."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO character_wallet_balances (owner_character_id, balance, synced_at) "
+            "VALUES (?, ?, now()) "
+            "ON CONFLICT (tenant_id, owner_character_id) DO UPDATE SET "
+            "balance=excluded.balance, synced_at=excluded.synced_at",
+            (character_id, balance),
+        )
+
+
+def load_character_wallet_balance(character_id: int) -> Optional[float]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT balance FROM character_wallet_balances WHERE owner_character_id = ?",
+            (character_id,),
+        ).fetchone()
+    return row[0] if row else None
+
+
+def replace_corp_wallet_balances(corporation_id: int, balances: dict[int, float]) -> None:
+    """Replaces only the divisions present in `balances` (the ones this
+    fetch could actually read) - an unread division keeps its existing
+    snapshot, same reasoning as replace_wallet_transactions' corp-owner
+    partial-replace above. `balances` empty is a no-op (zero readable
+    divisions is a failed fetch, decision 6 - the caller should not have
+    called this at all in that case)."""
+    if not balances:
+        return
+    divisions = list(balances.keys())
+    with connect() as conn:
+        conn.execute(
+            "DELETE FROM corp_wallet_balances WHERE owner_corporation_id = ? AND division = ANY(?)",
+            (corporation_id, divisions),
+        )
+        conn.executemany(
+            "INSERT INTO corp_wallet_balances (owner_corporation_id, division, balance, synced_at) "
+            "VALUES (?, ?, ?, now())",
+            [(corporation_id, division, balance) for division, balance in balances.items()],
+        )
+
+
+def load_corp_wallet_balances(corporation_id: int) -> dict[int, float]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT division, balance FROM corp_wallet_balances WHERE owner_corporation_id = ?",
+            (corporation_id,),
+        ).fetchall()
+    return {division: balance for division, balance in rows}
 
 
 def upsert_character_slot_row(
@@ -3991,6 +4046,70 @@ def esi_incoming_industry_qty(product_type_id: int,
             runs += row[0]
             jobs += row[1]
     return {"runs": runs, "jobs": jobs}
+
+
+def load_all_assets(owner_character_ids: Optional[list[int]] = None,
+                     owner_corporation_ids: Optional[list[int]] = None) -> list[tuple]:
+    """Returns (type_id, quantity) across character + corp assets, excluding
+    blueprint items - those are valued separately via load_owned_blueprints
+    (their own table carries the ME/TE that actually matters), never
+    double-counted here. For Portfolio's Total Wealth (PORTFOLIO_REWORK_
+    PLAN.md section 6) - `owner_character_ids`/`owner_corporation_ids`: see
+    `_owner_id_clause`, both None is unfiltered.
+
+    Excludes by `item_id` against the matching blueprints table
+    (character_blueprints/corp_blueprints), NOT by the asset table's own
+    `is_blueprint_copy` column - that column is only ever set `true` for a
+    BPC; ESI omits the field entirely for a BPO (stored as 0/false the same
+    as a genuinely non-blueprint item, per `_asset_rows`'s `int(bool(...))`
+    conversion), so filtering on it alone leaves every BPO counted twice
+    (once here, once via load_owned_blueprints) - confirmed real in review.
+    A blueprint's item_id is always also present in its asset table's row
+    (ESI's assets endpoint lists blueprints too; `replace_blueprints`
+    already relies on this same overlap to resolve a blueprint's location),
+    so the exclusion is exact for both BPOs and BPCs."""
+    with connect() as conn:
+        rows = []
+        for asset_table, bp_table in (
+            ("character_assets", "character_blueprints"),
+            ("corp_assets", "corp_blueprints"),
+        ):
+            id_clause, id_params = _owner_id_clause(asset_table, owner_character_ids, owner_corporation_ids)
+            where_clause = f"WHERE {id_clause[5:]} AND " if id_clause else "WHERE "
+            rows.extend(conn.execute(
+                f"SELECT type_id, quantity FROM {asset_table} {where_clause}"
+                f"item_id NOT IN (SELECT item_id FROM {bp_table})",
+                id_params,
+            ).fetchall())
+    return rows
+
+
+def sum_wallet_balances(char_ids: Optional[list[int]] = None,
+                         corp_ids: Optional[list[int]] = None) -> float:
+    """Sums character_wallet_balances + corp_wallet_balances (every
+    division) for the given owner ids. Both None/empty is 0.0, not
+    unfiltered - unlike load_all_assets/load_owned_blueprints above, an
+    empty owner list here genuinely means "nobody shares wallet_balance
+    with Portfolio yet", not "give me everyone's"."""
+    total = 0.0
+    with connect() as conn:
+        if char_ids:
+            placeholders = ",".join("?" * len(char_ids))
+            row = conn.execute(
+                f"SELECT COALESCE(SUM(balance), 0) FROM character_wallet_balances "
+                f"WHERE owner_character_id IN ({placeholders})",
+                char_ids,
+            ).fetchone()
+            total += row[0]
+        if corp_ids:
+            placeholders = ",".join("?" * len(corp_ids))
+            row = conn.execute(
+                f"SELECT COALESCE(SUM(balance), 0) FROM corp_wallet_balances "
+                f"WHERE owner_corporation_id IN ({placeholders})",
+                corp_ids,
+            ).fetchone()
+            total += row[0]
+    return total
 
 
 def load_owned_blueprints(owner_character_ids: Optional[list[int]] = None,
@@ -5405,3 +5524,99 @@ def list_all_special_order_item_rows() -> list[tuple[str, int, str, float]]:
             "SELECT order_id, type_id, type_name, quantity FROM special_order_items "
             "ORDER BY order_id, type_name"
         ).fetchall()
+
+
+# --------------------------------------------------------------- Portfolio: snapshots
+PORTFOLIO_SNAPSHOT_COLUMNS = (
+    "trading_realized_profit", "trading_average_margin", "trading_daily_profit_volatility",
+    "trading_trade_count", "production_stock_value", "production_stock_targets_configured",
+    "combined_value", "total_wealth", "wealth_assets_value", "wealth_wallet_balance",
+)
+
+
+def upsert_portfolio_snapshot(snapshot_date: date, values: dict) -> None:
+    """One row per tenant per day (PORTFOLIO_REWORK_PLAN.md section 5) - a
+    second call on the same day overwrites that same row (including
+    `taken_at`) rather than creating a duplicate, so calling this more than
+    once a day (scheduler tick + lazy page-load fallback both firing) is
+    safe. `values` is expected to carry every column in
+    PORTFOLIO_SNAPSHOT_COLUMNS - a missing key raises KeyError rather than
+    silently writing NULL/0 for a figure the caller forgot."""
+    row = tuple(values[col] for col in PORTFOLIO_SNAPSHOT_COLUMNS)
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO portfolio_snapshots (snapshot_date, " + ", ".join(PORTFOLIO_SNAPSHOT_COLUMNS) + ", taken_at) "
+            "VALUES (?, " + ", ".join(["?"] * len(PORTFOLIO_SNAPSHOT_COLUMNS)) + ", now()) "
+            "ON CONFLICT (tenant_id, snapshot_date) DO UPDATE SET "
+            + ", ".join(f"{col}=excluded.{col}" for col in PORTFOLIO_SNAPSHOT_COLUMNS)
+            + ", taken_at=excluded.taken_at",
+            (snapshot_date, *row),
+        )
+
+
+def load_portfolio_snapshots(since: Optional[date] = None) -> list[tuple]:
+    """(snapshot_date, *PORTFOLIO_SNAPSHOT_COLUMNS), oldest first. `since`
+    omitted returns every snapshot this tenant has ever taken (unbounded
+    retention - decision in the plan) - the frontend's range buttons drive
+    this query rather than filtering client-side against a potentially
+    large result."""
+    cols = ", ".join(PORTFOLIO_SNAPSHOT_COLUMNS)
+    with connect() as conn:
+        if since is None:
+            return conn.execute(
+                f"SELECT snapshot_date, {cols} FROM portfolio_snapshots ORDER BY snapshot_date"
+            ).fetchall()
+        return conn.execute(
+            f"SELECT snapshot_date, {cols} FROM portfolio_snapshots "
+            "WHERE snapshot_date >= ? ORDER BY snapshot_date",
+            (since,),
+        ).fetchall()
+
+
+def latest_portfolio_snapshot_date() -> Optional[date]:
+    """None if this tenant has never taken a snapshot."""
+    with connect() as conn:
+        row = conn.execute("SELECT MAX(snapshot_date) FROM portfolio_snapshots").fetchone()
+    return row[0] if row and row[0] is not None else None
+
+
+def upsert_manual_item_price(type_id: int, type_name: str, price: float) -> None:
+    """Registers/updates a manual price for `type_id` - used only by
+    Portfolio's Total Wealth calculation when Goonmetrics has no quote
+    (PORTFOLIO_REWORK_PLAN.md section 7)."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO manual_item_prices (type_id, type_name, price, updated_at) VALUES (?,?,?,now()) "
+            "ON CONFLICT(tenant_id, type_id) DO UPDATE SET "
+            "type_name=excluded.type_name, price=excluded.price, updated_at=excluded.updated_at",
+            (type_id, type_name, price),
+        )
+
+
+def load_manual_item_prices() -> dict[int, float]:
+    with connect() as conn:
+        rows = conn.execute("SELECT type_id, price FROM manual_item_prices").fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+def list_manual_item_prices() -> list[tuple]:
+    """Returns [(type_id, type_name, price, updated_at), ...], name-ordered -
+    for the Manual Prices table on the Portfolio page. `updated_at` is
+    always a string (isoformat), same conversion as
+    newest_esi_freshness_success_at above - the API schema declares it as
+    `str`, not a raw driver-specific datetime."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, type_name, price, updated_at FROM manual_item_prices ORDER BY type_name"
+        ).fetchall()
+    return [
+        (type_id, type_name, price, ts.isoformat() if hasattr(ts, "isoformat") else str(ts))
+        for type_id, type_name, price, ts in rows
+    ]
+
+
+def delete_manual_item_price(type_id: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM manual_item_prices WHERE type_id = ?", (type_id,))
+
+

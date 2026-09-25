@@ -607,6 +607,42 @@ export interface PortfolioOverview {
   combined_value: number
 }
 
+export interface PortfolioSnapshotRow {
+  snapshot_date: string
+  trading_realized_profit: number
+  trading_average_margin: number
+  trading_daily_profit_volatility: number | null
+  trading_trade_count: number
+  production_stock_value: number
+  production_stock_targets_configured: boolean
+  combined_value: number
+  total_wealth: number | null
+  wealth_assets_value: number | null
+  wealth_wallet_balance: number | null
+}
+
+export interface CharacterMissingWalletScope {
+  character_id: number
+  character_name: string
+}
+
+export interface TotalWealth {
+  total_wealth: number | null
+  wealth_assets_value: number | null
+  wealth_blueprints_value: number | null
+  wealth_wallet_balance: number | null
+  wealth_priced_items: number
+  wealth_unpriced_items: number
+  characters_missing_wallet_scope: CharacterMissingWalletScope[]
+}
+
+export interface ManualItemPriceRow {
+  type_id: number
+  type_name: string
+  price: number
+  updated_at: string
+}
+
 export interface ProductionPlan {
   inventory: InventoryRow[]
   buy_list: BuyListEntry[]
@@ -869,29 +905,6 @@ export interface ErrorLogRow {
   detail: string | null
   path: string | null
   created_at: string | null
-}
-
-export interface SchedulerJobStatus {
-  interval_hours: number | null
-  last_run_at: string | null
-  last_error: string | null
-  /** Present on esi_data_sync: the three freshness-tier cadences. */
-  tier_interval_hours?: {
-    frequent: number
-    normal: number
-    rare: number
-  }
-}
-
-export interface SchedulerStatus {
-  enabled: boolean
-  running: boolean
-  jobs: {
-    trading_pipeline: SchedulerJobStatus
-    esi_data_sync: SchedulerJobStatus
-    backup: SchedulerJobStatus
-    jita_price_cache: SchedulerJobStatus
-  }
 }
 
 export interface BackupInfo {

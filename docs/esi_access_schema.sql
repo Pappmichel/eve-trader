@@ -356,3 +356,46 @@ BEGIN
     END IF;
 END
 $$;
+
+-- ============================================== wallet_balance data kind
+-- Portfolio rework (docs/PORTFOLIO_REWORK_PLAN.md section 3): current
+-- wallet *balance* is a separate, smaller data kind from esi_wallet_
+-- transactions/journal above (which own reconciliation's transaction/
+-- journal history) - Total Wealth only needs the current ISK figure, not
+-- the history. character_wallet_balances is one row per character
+-- (upsert, current balance only). corp_wallet_balances is one row per
+-- (corporation, division) - a corp wallet has up to 7 divisions, and
+-- different member roles can see different divisions (same reasoning as
+-- esi_wallet_transactions' per-division partition above), so the fetcher
+-- replaces only the divisions it could actually read.
+
+CREATE TABLE IF NOT EXISTS character_wallet_balances (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    owner_character_id BIGINT NOT NULL,
+    balance DOUBLE PRECISION NOT NULL,
+    synced_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, owner_character_id)
+);
+ALTER TABLE character_wallet_balances ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON character_wallet_balances;
+CREATE POLICY tenant_isolation ON character_wallet_balances
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON character_wallet_balances TO eve_trader_app;
+
+CREATE TABLE IF NOT EXISTS corp_wallet_balances (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    owner_corporation_id BIGINT NOT NULL,
+    division INTEGER NOT NULL CHECK (division BETWEEN 1 AND 7),
+    balance DOUBLE PRECISION NOT NULL,
+    synced_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, owner_corporation_id, division)
+);
+ALTER TABLE corp_wallet_balances ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON corp_wallet_balances;
+CREATE POLICY tenant_isolation ON corp_wallet_balances
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON corp_wallet_balances TO eve_trader_app;

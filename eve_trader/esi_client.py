@@ -1072,6 +1072,19 @@ class ESIClient:
         return self._get(f"/characters/{character_id}/wallet/",
                           params={"datasource": "tranquility"}, auth_role=auth_role)
 
+    def corporation_wallet_balances(self, corporation_id: int, auth_role: str) -> list[dict]:
+        """GET /corporations/{corporation_id}/wallets/ - every division's
+        current balance in one call ({"division": int, "balance": float}
+        per division), not a per-division call like the transactions/
+        journal endpoints above. Requires esi-wallet.read_corporation_
+        wallets.v1 plus Accountant or Junior_Accountant, same as
+        corporation_wallet_transactions - a Junior Accountant may still
+        only see a subset of divisions in the response, same "union across
+        candidate roles" reasoning fetch_corporation_wallet already applies
+        to transactions/journal."""
+        return self._get(f"/corporations/{corporation_id}/wallets/",
+                          params={"datasource": "tranquility"}, auth_role=auth_role)
+
     def character_wallet_journal(self, character_id: int, auth_role: str) -> list[dict]:
         """This character's wallet journal (every ISK-moving event, not just
         market trades - contract payments, bounties, taxes, ...). Standard

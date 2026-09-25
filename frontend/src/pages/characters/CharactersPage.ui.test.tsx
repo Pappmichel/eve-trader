@@ -102,7 +102,7 @@ describe('Characters page', () => {
     // Alice's access preview has wallet added:true (ticked, not yet on any
     // token) - the row-level badge surfaces that without opening a popover.
     expect(screen.getByText('re-auth needed')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'assets 2/4' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'assets 2/5' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'wallet re-auth' })).toBeInTheDocument()
     expect(screen.getByText('Test Corp')).toBeInTheDocument()
     expect(screen.queryByText('Corporation 99')).not.toBeInTheDocument()
@@ -116,7 +116,7 @@ describe('Characters page', () => {
     expect(screen.getByRole('button', { name: 'Re-authorize' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Remove' })).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'assets 2/4' }))
+    await user.click(screen.getByRole('button', { name: 'assets 2/5' }))
     expect(await screen.findByText('Toggling writes or deletes one sharing row. It does not call ESI.')).toBeInTheDocument()
     expect(screen.getByRole('switch', { name: 'Production' })).toBeChecked()
     const sortingSwitch = screen.getByRole('switch', { name: 'Sorting' })

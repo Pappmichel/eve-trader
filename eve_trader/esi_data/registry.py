@@ -53,8 +53,10 @@ class AccessCapability:
 
 # Consuming sets are what the code actually reads today
 # (`docs/ESI_ACCESS_PLAN.md` "Data kinds"), not what a sidebar offers.
-# `refining`, `portfolio`, `admin` are not consumers. `"characters"` is
-# the management tool (Phase 6 grant), not a consumer of raw ESI rows.
+# `refining`, `admin` are not consumers. `"characters"` is the management
+# tool (Phase 6 grant), not a consumer of raw ESI rows. `"portfolio"`
+# became a real consumer of assets/blueprints/wallet_balance in the
+# Portfolio rework (PORTFOLIO_REWORK_PLAN.md) - Total Wealth.
 OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
     OwnedDataKind(
         key="assets",
@@ -63,7 +65,10 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         character_scope="esi-assets.read_assets.v1",
         corporation_scope="esi-assets.read_corporation_assets.v1",
         corp_roles=("Director",),
-        consuming_tools=("production", "doctrine", "sorting", "trading"),
+        # "portfolio" added for Total Wealth (PORTFOLIO_REWORK_PLAN.md
+        # section 4) - a character sharing assets with another tool does
+        # NOT also expose them to Portfolio; this is its own opt-in row.
+        consuming_tools=("production", "doctrine", "sorting", "trading", "portfolio"),
         freshness_tier=TIER_NORMAL,
     ),
     OwnedDataKind(
@@ -83,7 +88,9 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         character_scope="esi-characters.read_blueprints.v1",
         corporation_scope="esi-corporations.read_blueprints.v1",
         corp_roles=("Director",),
-        consuming_tools=("production",),
+        # "portfolio" added for Total Wealth - same opt-in reasoning as
+        # assets above.
+        consuming_tools=("production", "portfolio"),
         freshness_tier=TIER_RARE,
     ),
     OwnedDataKind(
@@ -119,6 +126,23 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         # wallet routes. Both, not a newly invented role.
         corp_roles=("Accountant", "Junior_Accountant"),
         consuming_tools=("trading",),
+        freshness_tier=TIER_FREQUENT,
+    ),
+    OwnedDataKind(
+        key="wallet_balance",
+        label="Wallet Balance",
+        group=GROUP_1,
+        # Same scopes as "wallet" above (esi-wallet.read_character_wallet.v1
+        # covers both the transactions/journal endpoints and the plain
+        # balance endpoint - no new grant needed). A separate data kind,
+        # not folded into "wallet", because it's the only one Portfolio's
+        # Total Wealth needs shared with it (PORTFOLIO_REWORK_PLAN.md
+        # section 3) - Trading's own wallet reconciliation keeps consuming
+        # "wallet" unchanged.
+        character_scope="esi-wallet.read_character_wallet.v1",
+        corporation_scope="esi-wallet.read_corporation_wallets.v1",
+        corp_roles=("Accountant", "Junior_Accountant"),
+        consuming_tools=("portfolio",),
         freshness_tier=TIER_FREQUENT,
     ),
     OwnedDataKind(

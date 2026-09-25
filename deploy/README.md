@@ -198,7 +198,13 @@ sudo -u postgres psql -d eve_trader -f docs/pipeline_runs_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/session_revocations_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/job_category_cost_index_overrides_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/esi_access_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/portfolio_schema.sql
 ```
+`portfolio_schema.sql` creates `portfolio_snapshots` (Portfolio's daily
+history/Total Wealth snapshots, `docs/PORTFOLIO_REWORK_PLAN.md`) - skipping
+it leaves `/api/portfolio/overview`/`/api/portfolio/history` 500ing with
+`relation "portfolio_snapshots" does not exist`.
+
 `phase1_schema.sql` creates the `eve_trader_app` role with the **checked-in
 dev password** (`app_devpassword`) - fine for local dev, not for a real
 deployment. Overwrite it with a real generated secret immediately after:
@@ -384,6 +390,7 @@ sudo -u postgres psql -d eve_trader -f docs/pipeline_runs_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/session_revocations_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/job_category_cost_index_overrides_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/esi_access_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/portfolio_schema.sql
 .venv/bin/pip install -r requirements.lock
 .venv/bin/pip install -e . --no-deps
 cd frontend && npm ci && npm run build && cd ..

@@ -40,7 +40,7 @@ import logging
 import threading
 from typing import Optional
 
-from . import backup, storage, tenant_scope
+from . import backup, portfolio, storage, tenant_scope
 from .config import TRADING_CONFIG, TradingConfig
 from .production import jita_price_cache
 
@@ -89,6 +89,28 @@ def _hours_since(iso_ts: str | None) -> float:
     if since.tzinfo is None:
         since = since.replace(tzinfo=dt.timezone.utc)
     return (dt.datetime.now(dt.timezone.utc) - since).total_seconds() / 3600
+
+
+def _portfolio_snapshot_due(cfg: TradingConfig) -> bool:
+    """Calendar-date based, unlike every other job's `_hours_since` check -
+    deliberately so (confirmed real bug in review): portfolio_snapshots'
+    own primary key is one row per calendar day, but `_hours_since`-style
+    "now - last taken_at >= interval_hours" drifts a few minutes later
+    each successful run (each run's own `taken_at` is whenever that tick
+    happened to fire, not a fixed time of day) - over enough days that
+    drift can push the next run past midnight and skip a calendar day
+    outright, something an hours-since check can never self-correct
+    because it only ever compares against the *last actual run*, not the
+    calendar. `portfolio_snapshot_interval_hours` still governs cadence,
+    just rounded to whole days (minimum 1) since that is this table's own
+    real granularity - a sub-24h value would otherwise request more than
+    one snapshot per day, which the table's (tenant_id, snapshot_date)
+    primary key cannot represent anyway."""
+    latest = storage.latest_portfolio_snapshot_date()
+    if latest is None:
+        return True
+    interval_days = max(1, round(cfg.portfolio_snapshot_interval_hours / 24))
+    return (dt.date.today() - latest).days >= interval_days
 
 
 def _hours_since_last_backup() -> float:
@@ -163,6 +185,9 @@ def _check_and_run_due_jobs_for_tenant(tenant_id: str, cfg: TradingConfig) -> No
 
     # One orchestrator call; due-ness is per (owner, kind) inside do_sync_due.
     _run_job(tenant_id, "esi_data_sync", esi_orchestrator.do_sync_due)
+
+    if _portfolio_snapshot_due(cfg):
+        _run_job(tenant_id, "portfolio_snapshot", lambda: portfolio.take_portfolio_snapshot(cfg))
 
 
 def _check_and_run_backup_job() -> None:

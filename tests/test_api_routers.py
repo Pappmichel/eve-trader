@@ -1543,9 +1543,12 @@ def test_search_asset_locations_action_error_maps_to_400(monkeypatch):
 
 
 # ------------------------------------------------------------------ portfolio
-def test_get_portfolio_overview(monkeypatch):
+def test_get_portfolio_overview_reads_live_when_already_snapshotted_today(monkeypatch):
+    from datetime import date
+
     from eve_trader import portfolio
-    monkeypatch.setattr(portfolio, "portfolio_overview", lambda: {
+    monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: date.today())
+    monkeypatch.setattr(portfolio, "portfolio_overview", lambda cfg=None: {
         "trading_realized_profit": 1000.0, "trading_average_margin": 0.2,
         "trading_daily_profit_volatility": None, "trading_trade_count": 5,
         "production_stock_value": 2000.0, "production_stock_targets_configured": True,
@@ -1557,23 +1560,124 @@ def test_get_portfolio_overview(monkeypatch):
     assert resp.json()["trading_daily_profit_volatility"] is None
 
 
-def test_get_scheduler_status(monkeypatch):
-    from eve_trader import scheduler
-    monkeypatch.setattr(scheduler, "get_status", lambda: {
-        "enabled": True, "running": True,
-        "jobs": {
-            "trading_pipeline": {"interval_hours": 24.0, "last_run_at": "2026-07-17T08:06:35", "last_error": None},
-            "esi_data_sync": {
-                "interval_hours": None,
-                "tier_interval_hours": {"frequent": 1.0, "normal": 6.0, "rare": 24.0},
-                "last_run_at": None, "last_error": "no auth",
-            },
-        },
-    })
-    resp = client.get("/api/portfolio/scheduler-status")
+def test_get_portfolio_overview_takes_snapshot_on_first_read_of_the_day(monkeypatch):
+    from eve_trader import portfolio
+    monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: None)
+    calls = []
+    monkeypatch.setattr(portfolio, "take_portfolio_snapshot", lambda cfg=None: (calls.append(1), {
+        "trading_realized_profit": 500.0, "trading_average_margin": 0.1,
+        "trading_daily_profit_volatility": None, "trading_trade_count": 2,
+        "production_stock_value": 100.0, "production_stock_targets_configured": False,
+        "combined_value": 600.0, "total_wealth": None,
+        "wealth_assets_value": None, "wealth_wallet_balance": None,
+    })[1])
+
+    resp = client.get("/api/portfolio/overview")
+
     assert resp.status_code == 200
-    assert resp.json()["enabled"] is True
-    assert resp.json()["jobs"]["esi_data_sync"]["last_error"] == "no auth"
+    assert resp.json()["combined_value"] == 600.0
+    assert calls == [1]
+
+
+def test_get_portfolio_history_defaults_to_unbounded(monkeypatch):
+    from eve_trader import portfolio
+    calls = {}
+    monkeypatch.setattr(portfolio, "do_get_portfolio_history", lambda days=None: calls.setdefault("days", days) or [])
+    resp = client.get("/api/portfolio/history")
+    assert resp.status_code == 200
+    assert resp.json() == []
+    assert calls["days"] is None
+
+
+def test_get_portfolio_history_with_days(monkeypatch):
+    from datetime import date
+
+    from eve_trader import portfolio
+    monkeypatch.setattr(portfolio, "do_get_portfolio_history", lambda days=None: [{
+        "snapshot_date": date(2026, 9, 1), "trading_realized_profit": 1.0, "trading_average_margin": 0.1,
+        "trading_daily_profit_volatility": None, "trading_trade_count": 1, "production_stock_value": 2.0,
+        "production_stock_targets_configured": True, "combined_value": 3.0, "total_wealth": None,
+        "wealth_assets_value": None, "wealth_wallet_balance": None,
+    }])
+    resp = client.get("/api/portfolio/history?days=7")
+    assert resp.status_code == 200
+    assert resp.json()[0]["snapshot_date"] == "2026-09-01"
+    assert resp.json()[0]["combined_value"] == 3.0
+
+
+def test_get_total_wealth(monkeypatch):
+    from eve_trader import portfolio
+    monkeypatch.setattr(portfolio, "total_wealth", lambda cfg=None: {
+        "total_wealth": 1000.0, "wealth_assets_value": 600.0, "wealth_blueprints_value": 100.0,
+        "wealth_wallet_balance": 300.0, "wealth_priced_items": 3, "wealth_unpriced_items": 1,
+        "characters_missing_wallet_scope": [{"character_id": 1, "character_name": "Alice"}],
+    })
+    resp = client.get("/api/portfolio/wealth")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total_wealth"] == 1000.0
+    assert body["characters_missing_wallet_scope"] == [{"character_id": 1, "character_name": "Alice"}]
+
+
+def test_get_manual_item_prices(monkeypatch):
+    from eve_trader import portfolio
+    monkeypatch.setattr(portfolio, "do_list_manual_item_prices", lambda: {"rows": [
+        {"type_id": 34, "type_name": "Tritanium", "price": 5.5, "updated_at": "2026-09-01T00:00:00+00:00"},
+    ]})
+    resp = client.get("/api/portfolio/manual-prices")
+    assert resp.status_code == 200
+    assert resp.json() == [{"type_id": 34, "type_name": "Tritanium", "price": 5.5,
+                             "updated_at": "2026-09-01T00:00:00+00:00"}]
+
+
+def test_set_manual_item_price_passes_body_fields(monkeypatch):
+    from eve_trader import portfolio
+    captured = {}
+
+    def _capture(item_name, price):
+        captured["item_name"] = item_name
+        captured["price"] = price
+        return {"type_id": 34, "type_name": "Tritanium", "price": price}
+
+    monkeypatch.setattr(portfolio, "do_set_manual_item_price", _capture)
+    resp = client.post("/api/portfolio/manual-prices", json={"item_name": "Tritanium", "price": 5.5})
+    assert resp.status_code == 200
+    assert captured == {"item_name": "Tritanium", "price": 5.5}
+
+
+def test_set_manual_item_price_action_error_maps_to_400(monkeypatch):
+    from eve_trader import portfolio
+
+    def _raise(item_name, price):
+        raise ActionError("Price must not be negative.")
+
+    monkeypatch.setattr(portfolio, "do_set_manual_item_price", _raise)
+    resp = client.post("/api/portfolio/manual-prices", json={"item_name": "Tritanium", "price": -1.0})
+    assert resp.status_code == 400
+    assert "negative" in resp.json()["detail"]
+
+
+def test_remove_manual_item_price_passes_type_id(monkeypatch):
+    from eve_trader import portfolio
+    captured = {}
+
+    def _capture(type_id):
+        captured["type_id"] = type_id
+        return {"removed": type_id}
+
+    monkeypatch.setattr(portfolio, "do_remove_manual_item_price", _capture)
+    resp = client.delete("/api/portfolio/manual-prices/34")
+    assert resp.status_code == 200
+    assert captured["type_id"] == 34
+
+
+def test_scheduler_status_route_removed():
+    # Portfolio rework: the Background Scheduler card and its route were
+    # removed from this page (scheduler.get_status() itself stays for
+    # Admin's possible future use - see PORTFOLIO_REWORK_PLAN.md section 1).
+    # This guards against an accidental re-add.
+    resp = client.get("/api/portfolio/scheduler-status")
+    assert resp.status_code == 404
 
 
 # Backup routes moved to /api/admin/backups (confirmed real misplacement
