@@ -16,6 +16,22 @@ psycopg = pytest.importorskip("psycopg")
 pytestmark = pg_helpers.postgres_required()
 
 
+@pytest.fixture(autouse=True)
+def _wipe():
+    """character_assets/corp_assets/character_blueprints/corp_blueprints/
+    character_industry_jobs/corp_industry_jobs are column-only-bucket
+    tables (CLAUDE.md's Multi-tenant Postgres section, and the `tenant`
+    fixture's own docstring) - their PK isn't tenant-scoped, so a fresh
+    tenant_id alone doesn't stop this file's hardcoded item_id/job_id
+    values from colliding with another test's row at the physical PK
+    level. wipe_tables() clears them between tests instead."""
+    pg_helpers.wipe_tables(
+        "character_assets", "corp_assets", "character_blueprints", "corp_blueprints",
+        "character_industry_jobs", "corp_industry_jobs",
+    )
+    yield
+
+
 def test_empty_when_nothing_references_any_location(tenant):
     assert storage.candidate_structure_location_ids() == set()
 
