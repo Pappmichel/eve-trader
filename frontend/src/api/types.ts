@@ -564,10 +564,10 @@ export interface CharacterMissingWalletScope {
 }
 
 export interface TotalWealth {
-  total_wealth: number
-  wealth_assets_value: number
-  wealth_blueprints_value: number
-  wealth_wallet_balance: number
+  total_wealth: number | null
+  wealth_assets_value: number | null
+  wealth_blueprints_value: number | null
+  wealth_wallet_balance: number | null
   wealth_priced_items: number
   wealth_unpriced_items: number
   characters_missing_wallet_scope: CharacterMissingWalletScope[]

@@ -501,17 +501,24 @@ and one `if _hours_since(...) >= cfg.x: _run_job(tenant_id, ...)` line in
 job; extend `do_sync_due` / the registry instead.
 
 `portfolio_snapshot` (`TradingConfig.portfolio_snapshot_interval_hours`,
-default 24h) is exactly this pattern's own precedent case - it is not an
-ESI-owner sync (no `esi_freshness` row), so its due-check reads its own
-`storage.latest_portfolio_snapshot_taken_at()` via the same `_hours_since`
-helper the other two jobs use, rather than anything `do_sync_due`-shaped.
-It calls `portfolio.take_portfolio_snapshot(cfg)`, the same one write path
-`GET /api/portfolio/overview`'s lazy-fallback branch calls when the
-scheduler is off (the default) - see `docs/PORTFOLIO_REWORK_PLAN.md`
-section 5.4. Never call `portfolio_overview()`/`total_wealth()` directly
-from a new call site that means to write a snapshot; go through
-`take_portfolio_snapshot()` so there is one write path, not two that could
-drift.
+default 24h) is not an ESI-owner sync (no `esi_freshness` row) and
+deliberately does **not** use the `_hours_since` pattern the other two
+per-tenant jobs use - `scheduler._portfolio_snapshot_due` compares
+`storage.latest_portfolio_snapshot_date()` against the real calendar
+date instead (interval_hours rounded to whole days, minimum 1). An
+hours-since-last-run check drifts a few minutes later on every successful
+run (each run's own timestamp is whenever that tick happened to fire),
+and over enough days that drift can push a run past midnight and skip a
+calendar day outright - a real bug found in review, not a hypothetical
+one, since `portfolio_snapshots`' own primary key is one row per calendar
+day, so "due" for this one job is fundamentally a date comparison, not an
+elapsed-time one. It calls `portfolio.take_portfolio_snapshot(cfg)`, the
+same one write path `GET /api/portfolio/overview`'s lazy-fallback branch
+calls when the scheduler is off (the default) - see `docs/PORTFOLIO_
+REWORK_PLAN.md` section 5.4. Never call `portfolio_overview()`/
+`total_wealth()` directly from a new call site that means to write a
+snapshot; go through `take_portfolio_snapshot()` so there is one write
+path, not two that could drift.
 
 ## Backup
 

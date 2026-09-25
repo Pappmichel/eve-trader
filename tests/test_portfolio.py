@@ -87,14 +87,12 @@ def test_production_stock_value_included_when_targets_configured(monkeypatch):
 
 
 def test_take_portfolio_snapshot_upserts_today_with_no_wealth_sharing(monkeypatch):
-    # No owner shares anything with "portfolio" - total_wealth degrades to
-    # 0.0 (not None), matching total_wealth()'s own "nobody shares" shape.
+    # No owner shares anything with "portfolio" - total_wealth stays None
+    # (a real "nobody has opted in yet" gap), not 0.0 ("everything is
+    # worthless") - confirmed real bug in review.
     monkeypatch.setattr(storage, "read_table", lambda table: _trades_df([]))
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
     _stub_sharing(monkeypatch)
-    monkeypatch.setattr(storage, "load_all_assets", lambda char_ids, corp_ids: [])
-    monkeypatch.setattr(storage, "load_owned_blueprints", lambda char_ids, corp_ids: [])
-    monkeypatch.setattr(storage, "sum_wallet_balances", lambda char_ids, corp_ids: 0.0)
     upserted = {}
     monkeypatch.setattr(storage, "upsert_portfolio_snapshot",
                         lambda snapshot_date, values: upserted.update(date=snapshot_date, **values))
@@ -102,11 +100,11 @@ def test_take_portfolio_snapshot_upserts_today_with_no_wealth_sharing(monkeypatc
     result = portfolio.take_portfolio_snapshot(TradingConfig())
 
     assert upserted["date"] == date.today()
-    assert upserted["total_wealth"] == 0.0
-    assert upserted["wealth_assets_value"] == 0.0
-    assert upserted["wealth_wallet_balance"] == 0.0
+    assert upserted["total_wealth"] is None
+    assert upserted["wealth_assets_value"] is None
+    assert upserted["wealth_wallet_balance"] is None
     assert upserted["combined_value"] == 0.0
-    assert result["total_wealth"] == 0.0
+    assert result["total_wealth"] is None
     assert result["combined_value"] == 0.0
 
 
@@ -168,6 +166,37 @@ def test_do_get_portfolio_history_with_days_computes_since(monkeypatch):
     # Inclusive of today: 7 days means today back through 6 days ago.
     from datetime import timedelta
     assert captured["since"] == date.today() - timedelta(days=6)
+
+
+def test_do_get_portfolio_history_days_zero_is_clamped_to_one(monkeypatch):
+    # days=0 (or negative) computed a `since` one day in the *future*
+    # before the clamp, filtering out every row including today's -
+    # confirmed real bug in review. Clamped to "just today" instead.
+    captured = {}
+
+    def _fake_load(since=None):
+        captured["since"] = since
+        return []
+
+    monkeypatch.setattr(storage, "load_portfolio_snapshots", _fake_load)
+
+    portfolio.do_get_portfolio_history(days=0)
+
+    assert captured["since"] == date.today()
+
+
+def test_do_get_portfolio_history_negative_days_is_clamped_to_one(monkeypatch):
+    captured = {}
+
+    def _fake_load(since=None):
+        captured["since"] = since
+        return []
+
+    monkeypatch.setattr(storage, "load_portfolio_snapshots", _fake_load)
+
+    portfolio.do_get_portfolio_history(days=-5)
+
+    assert captured["since"] == date.today()
 
 
 def test_do_list_manual_item_prices(monkeypatch):
@@ -308,6 +337,14 @@ def test_value_and_gaps_excludes_unpriced_not_zeroed():
     assert unpriced == 1
 
 
+def test_blueprint_effective_quantity_normalizes_sentinels():
+    assert portfolio._blueprint_effective_quantity(-1) == 1   # BPO sentinel
+    assert portfolio._blueprint_effective_quantity(-2) == 1   # BPC sentinel
+    assert portfolio._blueprint_effective_quantity(0) == 1
+    assert portfolio._blueprint_effective_quantity(None) == 1
+    assert portfolio._blueprint_effective_quantity(5) == 5    # a real positive stack
+
+
 def test_characters_missing_wallet_scope_empty_for_no_owners():
     assert portfolio._characters_missing_wallet_scope(set()) == []
 
@@ -353,17 +390,75 @@ def test_total_wealth_scoped_to_portfolio_sharing_only(monkeypatch):
     assert result["characters_missing_wallet_scope"] == []
 
 
-def test_total_wealth_a_character_shared_only_with_production_is_excluded(monkeypatch):
-    # A character shared with "production" only must NOT appear in
-    # Portfolio's Total Wealth - sharing is per-tool, never bypassed.
-    _stub_sharing(monkeypatch)  # nothing shared with "portfolio"
-    monkeypatch.setattr(storage, "load_all_assets", lambda char_ids, corp_ids: [])
+def test_total_wealth_flags_asset_sharer_missing_wallet_scope_even_if_never_shared_wallet_balance(monkeypatch):
+    # Confirmed real bug in review: the wallet-scope warning banner exists
+    # to nudge a character who shares assets/blueprints into ALSO sharing
+    # wallet balance - checking only characters who already share
+    # wallet_balance can never find that audience, since a character who
+    # has never ticked wallet_balance at all is (correctly) absent from
+    # wallet_char_ids in the first place.
+    _stub_sharing(monkeypatch, assets_character=[1])  # only assets shared, never wallet_balance
+    monkeypatch.setattr(storage, "load_all_assets", lambda char_ids, corp_ids: [(34, 100)])
     monkeypatch.setattr(storage, "load_owned_blueprints", lambda char_ids, corp_ids: [])
     monkeypatch.setattr(storage, "sum_wallet_balances", lambda char_ids, corp_ids: 0.0)
+    monkeypatch.setattr(portfolio, "_priced", lambda type_ids: {34: 5.0})
+    import eve_trader.auth as auth_module
+    monkeypatch.setattr(auth_module, "TokenManager", _FakeTokenManager([
+        _FakeTokenRecord(character_id=1, character_name="Alice", scopes="esi-assets.read_assets.v1"),
+    ]))
 
     result = portfolio.total_wealth(TradingConfig())
 
-    assert result["total_wealth"] == 0.0
+    assert result["characters_missing_wallet_scope"] == [{"character_id": 1, "character_name": "Alice"}]
+
+
+def test_total_wealth_normalizes_blueprint_quantity_sentinel(monkeypatch):
+    # ESI's blueprint `quantity` is a sentinel (-1 original / -2 copy), not
+    # a real stack size - confirmed real bug in review: pricing directly
+    # against the raw value valued a BPO at *minus* one unit and a BPC at
+    # *minus* two.
+    _stub_sharing(monkeypatch, blueprints_character=[1])
+    monkeypatch.setattr(storage, "load_all_assets", lambda char_ids, corp_ids: [])
+    monkeypatch.setattr(storage, "load_owned_blueprints", lambda char_ids, corp_ids: [
+        (11567, -1, 10, 20, -1),  # a BPO
+        (11567, -2, 10, 20, 100),  # a BPC with 100 runs
+    ])
+    monkeypatch.setattr(storage, "sum_wallet_balances", lambda char_ids, corp_ids: 0.0)
+    monkeypatch.setattr(portfolio, "_priced", lambda type_ids: {11567: 1_000_000.0})
+    import eve_trader.auth as auth_module
+    monkeypatch.setattr(auth_module, "TokenManager", _FakeTokenManager([
+        _FakeTokenRecord(character_id=1, character_name="Alice", scopes="esi-wallet.read_character_wallet.v1"),
+    ]))
+
+    result = portfolio.total_wealth(TradingConfig())
+
+    # Two blueprint rows, each priced as exactly 1 unit at the market
+    # quote - never negative, never the raw ESI sentinel.
+    assert result["wealth_blueprints_value"] == 2_000_000.0
+    assert result["wealth_priced_items"] == 2
+    assert result["wealth_unpriced_items"] == 0
+
+
+def test_total_wealth_a_character_shared_only_with_production_is_excluded(monkeypatch):
+    # A character shared with "production" only must NOT appear in
+    # Portfolio's Total Wealth - sharing is per-tool, never bypassed. With
+    # nothing shared with "portfolio" at all, total_wealth is the "nobody
+    # has opted in" None shape, and never even calls the storage readers.
+    _stub_sharing(monkeypatch)  # nothing shared with "portfolio"
+
+    def _fail(*_a, **_kw):
+        raise AssertionError("should not be called when nobody shares with portfolio")
+
+    monkeypatch.setattr(storage, "load_all_assets", _fail)
+    monkeypatch.setattr(storage, "load_owned_blueprints", _fail)
+    monkeypatch.setattr(storage, "sum_wallet_balances", _fail)
+
+    result = portfolio.total_wealth(TradingConfig())
+
+    assert result["total_wealth"] is None
+    assert result["wealth_assets_value"] is None
+    assert result["wealth_blueprints_value"] is None
+    assert result["wealth_wallet_balance"] is None
     assert result["characters_missing_wallet_scope"] == []
 
 

@@ -96,16 +96,16 @@ def _priced(type_ids: set[int]) -> dict[int, float]:
 
 
 def _value_and_gaps(rows: list[tuple], prices: dict[int, float]) -> tuple[float, int, int]:
-    """`rows`: tuples whose first two elements are (type_id, quantity) -
-    works for both load_all_assets' and load_owned_blueprints' row shapes.
-    Unpriced items are excluded from the total, not counted as 0 - same
-    "explicit gap over silent understatement" precedent as
+    """`rows`: tuples of (type_id, quantity) - the *effective* quantity,
+    already resolved by the caller (see _blueprint_effective_quantity for
+    why load_owned_blueprints' raw quantity is not usable as-is). Unpriced
+    items are excluded from the total, not counted as 0 - same "explicit
+    gap over silent understatement" precedent as
     production.engine.stock_value."""
     value = 0.0
     priced = 0
     unpriced = 0
-    for row in rows:
-        type_id, quantity = row[0], row[1]
+    for type_id, quantity in rows:
         price = prices.get(type_id)
         if price is None:
             unpriced += 1
@@ -115,12 +115,27 @@ def _value_and_gaps(rows: list[tuple], prices: dict[int, float]) -> tuple[float,
     return value, priced, unpriced
 
 
+def _blueprint_effective_quantity(quantity: int) -> int:
+    """ESI's `quantity` field on a blueprint item is usually a sentinel
+    (-1 original / -2 copy), not a real stack size - same interpretation
+    production/actions.py's do_list_owned_blueprints already applies to
+    this exact field. Using the raw value directly (confirmed real bug in
+    review) prices every owned BPO at *minus* one unit and every BPC at
+    *minus* two."""
+    return quantity if quantity and quantity > 0 else 1
+
+
 def _characters_missing_wallet_scope(character_ids: set[int]) -> list[dict]:
-    """Characters sharing wallet_balance with Portfolio whose stored token(s)
-    don't actually carry the wallet scope yet - real limitation stated in
-    the UI, not hidden (see PORTFOLIO_REWORK_PLAN.md section 2): a
-    character added only through Production ("producer" role) has no
-    wallet scope at all until re-authorized via the Characters page."""
+    """`character_ids`: every character sharing *any* of assets/blueprints/
+    wallet_balance with Portfolio (not just wallet_balance - confirmed real
+    bug in review: a character who has never ticked wallet_balance at all
+    would never be flagged under that narrower set, even though they are
+    exactly the audience this banner exists to nudge). Flags whichever of
+    them has no stored token carrying the wallet scope yet - real
+    limitation stated in the UI, not hidden (see PORTFOLIO_REWORK_PLAN.md
+    section 2): a character added only through Production ("producer"
+    role) has no wallet scope at all until re-authorized via the
+    Characters page."""
     if not character_ids:
         return []
     from .auth import TokenManager
@@ -148,6 +163,13 @@ def total_wealth(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     with "portfolio" specifically - sharing the same data with another
     tool does not expose it here (PORTFOLIO_REWORK_PLAN.md section 4).
 
+    total_wealth/wealth_assets_value/wealth_blueprints_value/wealth_
+    wallet_balance stay None (not 0.0) until any owner shares anything
+    with "portfolio" at all - a real gap ("nobody has opted in yet"), not
+    "everything they own is worthless" (confirmed real bug in review: the
+    original version returned 0.0 here, which the History chart then drew
+    as an indistinguishable flat zero line).
+
     Blueprint pricing caveat, stated in the UI, not silently approximated
     away: a blueprint's ME/TE materially changes what it would actually
     sell for, but Goonmetrics has one quote per type_id, not per ME/TE
@@ -163,11 +185,26 @@ def total_wealth(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     wallet_char_ids = shared_owner_ids("wallet_balance", "portfolio", "character")
     wallet_corp_ids = shared_owner_ids("wallet_balance", "portfolio", "corporation")
 
+    shared_character_ids = set(asset_char_ids) | set(bp_char_ids) | set(wallet_char_ids)
+
+    if not (asset_char_ids or asset_corp_ids or bp_char_ids or bp_corp_ids
+            or wallet_char_ids or wallet_corp_ids):
+        return {
+            "total_wealth": None,
+            "wealth_assets_value": None,
+            "wealth_blueprints_value": None,
+            "wealth_wallet_balance": None,
+            "wealth_priced_items": 0,
+            "wealth_unpriced_items": 0,
+            "characters_missing_wallet_scope": [],
+        }
+
     assets = storage.load_all_assets(asset_char_ids, asset_corp_ids)
-    blueprints = storage.load_owned_blueprints(bp_char_ids, bp_corp_ids)
+    raw_blueprints = storage.load_owned_blueprints(bp_char_ids, bp_corp_ids)
+    blueprints = [(type_id, _blueprint_effective_quantity(quantity)) for type_id, quantity, *_rest in raw_blueprints]
     wallet_total = storage.sum_wallet_balances(wallet_char_ids, wallet_corp_ids)
 
-    type_ids = {row[0] for row in assets} | {row[0] for row in blueprints}
+    type_ids = {type_id for type_id, _qty in assets} | {type_id for type_id, _qty in blueprints}
     prices = _priced(type_ids)
 
     assets_value, assets_priced, assets_unpriced = _value_and_gaps(assets, prices)
@@ -180,7 +217,7 @@ def total_wealth(cfg: TradingConfig = TRADING_CONFIG) -> dict:
         "wealth_wallet_balance": wallet_total,
         "wealth_priced_items": assets_priced + bp_priced,
         "wealth_unpriced_items": assets_unpriced + bp_unpriced,
-        "characters_missing_wallet_scope": _characters_missing_wallet_scope(set(wallet_char_ids)),
+        "characters_missing_wallet_scope": _characters_missing_wallet_scope(shared_character_ids),
     }
 
 
@@ -222,8 +259,12 @@ def do_get_portfolio_overview(cfg: TradingConfig = TRADING_CONFIG) -> dict:
 def do_get_portfolio_history(days: Optional[int] = None) -> list[dict]:
     """`GET /api/portfolio/history`'s own action. `days=None` returns every
     snapshot this tenant has ever taken (unbounded retention); otherwise
-    only the last `days` days, inclusive of today."""
-    since = date.today() - timedelta(days=days - 1) if days is not None else None
+    only the last `days` days, inclusive of today. `days=0` (or negative)
+    is clamped to 1 - the formula below computes a `since` date one day in
+    the *future* for a non-positive `days`, which filtered out every row
+    including today's (confirmed real bug in review), rather than a
+    reasonable "just today" reading."""
+    since = date.today() - timedelta(days=max(days, 1) - 1) if days is not None else None
     rows = storage.load_portfolio_snapshots(since=since)
     columns = ("snapshot_date",) + storage.PORTFOLIO_SNAPSHOT_COLUMNS
     return [dict(zip(columns, row)) for row in rows]

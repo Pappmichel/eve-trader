@@ -1,6 +1,6 @@
 # Portfolio rework: history, total wealth, manual pricing – implementation plan
 
-Status: draft, not yet in the repo · 2026-09-23
+Status: implemented (all 9 phases landed) · 2026-09-23 – 2026-09-25
 
 Goal: the Portfolio page (`eve_trader/portfolio.py`,
 `frontend/src/pages/Portfolio.tsx`) today shows a live snapshot only (four

@@ -3565,20 +3565,34 @@ def esi_incoming_industry_qty(product_type_id: int) -> dict[str, float]:
 def load_all_assets(owner_character_ids: Optional[list[int]] = None,
                      owner_corporation_ids: Optional[list[int]] = None) -> list[tuple]:
     """Returns (type_id, quantity) across character + corp assets, excluding
-    blueprint items (`is_blueprint_copy`) - those are valued separately via
-    load_owned_blueprints (their own table carries the ME/TE that actually
-    matters), never double-counted here. For Portfolio's Total Wealth
-    (PORTFOLIO_REWORK_PLAN.md section 6) - `owner_character_ids`/
-    `owner_corporation_ids`: see `_owner_id_clause`, both None is
-    unfiltered."""
+    blueprint items - those are valued separately via load_owned_blueprints
+    (their own table carries the ME/TE that actually matters), never
+    double-counted here. For Portfolio's Total Wealth (PORTFOLIO_REWORK_
+    PLAN.md section 6) - `owner_character_ids`/`owner_corporation_ids`: see
+    `_owner_id_clause`, both None is unfiltered.
+
+    Excludes by `item_id` against the matching blueprints table
+    (character_blueprints/corp_blueprints), NOT by the asset table's own
+    `is_blueprint_copy` column - that column is only ever set `true` for a
+    BPC; ESI omits the field entirely for a BPO (stored as 0/false the same
+    as a genuinely non-blueprint item, per `_asset_rows`'s `int(bool(...))`
+    conversion), so filtering on it alone leaves every BPO counted twice
+    (once here, once via load_owned_blueprints) - confirmed real in review.
+    A blueprint's item_id is always also present in its asset table's row
+    (ESI's assets endpoint lists blueprints too; `replace_blueprints`
+    already relies on this same overlap to resolve a blueprint's location),
+    so the exclusion is exact for both BPOs and BPCs."""
     with connect() as conn:
         rows = []
-        for table in ("character_assets", "corp_assets"):
-            id_clause, id_params = _owner_id_clause(table, owner_character_ids, owner_corporation_ids)
+        for asset_table, bp_table in (
+            ("character_assets", "character_blueprints"),
+            ("corp_assets", "corp_blueprints"),
+        ):
+            id_clause, id_params = _owner_id_clause(asset_table, owner_character_ids, owner_corporation_ids)
             where_clause = f"WHERE {id_clause[5:]} AND " if id_clause else "WHERE "
             rows.extend(conn.execute(
-                f"SELECT type_id, quantity FROM {table} {where_clause}"
-                "(is_blueprint_copy IS NULL OR is_blueprint_copy = 0)",
+                f"SELECT type_id, quantity FROM {asset_table} {where_clause}"
+                f"item_id NOT IN (SELECT item_id FROM {bp_table})",
                 id_params,
             ).fetchall())
     return rows

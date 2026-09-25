@@ -771,10 +771,12 @@ class CharacterMissingWalletScope(_Base):
 
 
 class TotalWealth(_Base):
-    total_wealth: float
-    wealth_assets_value: float
-    wealth_blueprints_value: float
-    wealth_wallet_balance: float
+    # None (not 0.0) until any owner shares anything with "portfolio" -
+    # see portfolio.total_wealth's own docstring.
+    total_wealth: Optional[float] = None
+    wealth_assets_value: Optional[float] = None
+    wealth_blueprints_value: Optional[float] = None
+    wealth_wallet_balance: Optional[float] = None
     wealth_priced_items: int
     wealth_unpriced_items: int
     characters_missing_wallet_scope: list[CharacterMissingWalletScope] = []
