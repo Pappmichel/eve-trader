@@ -329,6 +329,18 @@ def test_priced_excludes_type_with_no_quote_anywhere(monkeypatch):
     assert portfolio._priced({34}) == {}
 
 
+def test_manual_only_priced_ignores_goonmetrics(monkeypatch):
+    monkeypatch.setattr(storage, "load_manual_item_prices", lambda: {34: 5.0, 35: 6.0})
+    assert portfolio._manual_only_priced({34, 999}) == {34: 5.0}  # 999 has no manual price
+
+
+def test_manual_only_priced_empty_type_ids_short_circuits(monkeypatch):
+    def _fail():
+        raise AssertionError("should not query storage for an empty type_ids set")
+    monkeypatch.setattr(storage, "load_manual_item_prices", _fail)
+    assert portfolio._manual_only_priced(set()) == {}
+
+
 def test_value_and_gaps_excludes_unpriced_not_zeroed():
     rows = [(34, 10), (35, 5)]
     value, priced, unpriced = portfolio._value_and_gaps(rows, {34: 2.0})
@@ -412,16 +424,14 @@ def test_total_wealth_flags_asset_sharer_missing_wallet_scope_even_if_never_shar
     assert result["characters_missing_wallet_scope"] == [{"character_id": 1, "character_name": "Alice"}]
 
 
-def test_total_wealth_normalizes_blueprint_quantity_sentinel(monkeypatch):
+def test_total_wealth_normalizes_bpo_quantity_sentinel(monkeypatch):
     # ESI's blueprint `quantity` is a sentinel (-1 original / -2 copy), not
     # a real stack size - confirmed real bug in review: pricing directly
-    # against the raw value valued a BPO at *minus* one unit and a BPC at
-    # *minus* two.
+    # against the raw value valued a BPO at *minus* one unit.
     _stub_sharing(monkeypatch, blueprints_character=[1])
     monkeypatch.setattr(storage, "load_all_assets", lambda char_ids, corp_ids: [])
     monkeypatch.setattr(storage, "load_owned_blueprints", lambda char_ids, corp_ids: [
         (11567, -1, 10, 20, -1),  # a BPO
-        (11567, -2, 10, 20, 100),  # a BPC with 100 runs
     ])
     monkeypatch.setattr(storage, "sum_wallet_balances", lambda char_ids, corp_ids: 0.0)
     monkeypatch.setattr(portfolio, "_priced", lambda type_ids: {11567: 1_000_000.0})
@@ -432,10 +442,58 @@ def test_total_wealth_normalizes_blueprint_quantity_sentinel(monkeypatch):
 
     result = portfolio.total_wealth(TradingConfig())
 
-    # Two blueprint rows, each priced as exactly 1 unit at the market
-    # quote - never negative, never the raw ESI sentinel.
-    assert result["wealth_blueprints_value"] == 2_000_000.0
-    assert result["wealth_priced_items"] == 2
+    # Priced as exactly 1 unit at the market quote - never negative, never
+    # the raw ESI sentinel.
+    assert result["wealth_blueprints_value"] == 1_000_000.0
+    assert result["wealth_priced_items"] == 1
+    assert result["wealth_unpriced_items"] == 0
+
+
+def test_total_wealth_bpc_without_manual_price_is_unpriced_not_bpo_priced(monkeypatch):
+    # Confirmed with the user: a BPC has no separate Goonmetrics quote from
+    # its BPO, so pricing it against the BPO's quote would systematically
+    # overstate Total Wealth - an unpriced BPC is excluded from the total,
+    # same as any other unpriced item, until a manual price is set.
+    _stub_sharing(monkeypatch, blueprints_character=[1])
+    monkeypatch.setattr(storage, "load_all_assets", lambda char_ids, corp_ids: [])
+    monkeypatch.setattr(storage, "load_owned_blueprints", lambda char_ids, corp_ids: [
+        (11567, -2, 10, 20, 100),  # a BPC with 100 runs, no manual price set
+    ])
+    monkeypatch.setattr(storage, "sum_wallet_balances", lambda char_ids, corp_ids: 0.0)
+    # A Goonmetrics/manual quote exists for the type (the BPO would use it) -
+    # the BPC must still not use it.
+    monkeypatch.setattr(portfolio, "_priced", lambda type_ids: {11567: 1_000_000.0})
+    monkeypatch.setattr(storage, "load_manual_item_prices", lambda: {})
+    import eve_trader.auth as auth_module
+    monkeypatch.setattr(auth_module, "TokenManager", _FakeTokenManager([
+        _FakeTokenRecord(character_id=1, character_name="Alice", scopes="esi-wallet.read_character_wallet.v1"),
+    ]))
+
+    result = portfolio.total_wealth(TradingConfig())
+
+    assert result["wealth_blueprints_value"] == 0.0
+    assert result["wealth_priced_items"] == 0
+    assert result["wealth_unpriced_items"] == 1
+
+
+def test_total_wealth_bpc_with_manual_price_is_priced_against_it(monkeypatch):
+    _stub_sharing(monkeypatch, blueprints_character=[1])
+    monkeypatch.setattr(storage, "load_all_assets", lambda char_ids, corp_ids: [])
+    monkeypatch.setattr(storage, "load_owned_blueprints", lambda char_ids, corp_ids: [
+        (11567, -2, 10, 20, 100),  # a BPC, manually priced lower than the BPO quote
+    ])
+    monkeypatch.setattr(storage, "sum_wallet_balances", lambda char_ids, corp_ids: 0.0)
+    monkeypatch.setattr(portfolio, "_priced", lambda type_ids: {11567: 1_000_000.0})
+    monkeypatch.setattr(storage, "load_manual_item_prices", lambda: {11567: 50_000.0})
+    import eve_trader.auth as auth_module
+    monkeypatch.setattr(auth_module, "TokenManager", _FakeTokenManager([
+        _FakeTokenRecord(character_id=1, character_name="Alice", scopes="esi-wallet.read_character_wallet.v1"),
+    ]))
+
+    result = portfolio.total_wealth(TradingConfig())
+
+    assert result["wealth_blueprints_value"] == 50_000.0
+    assert result["wealth_priced_items"] == 1
     assert result["wealth_unpriced_items"] == 0
 
 

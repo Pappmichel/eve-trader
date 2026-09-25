@@ -219,7 +219,7 @@ function TotalWealthSection() {
       <SimpleGrid cols={3} spacing="md">
         <Stat label="Assets" value={isk(data.wealth_assets_value)} />
         <Stat label="Blueprints" value={isk(data.wealth_blueprints_value)}
-          hint="One market quote per blueprint type, regardless of ME/TE or original vs. copy - a copy is priced the same as an original, which can overstate this figure" />
+          hint="One market quote per BPO, regardless of its own ME/TE - a BPC has no separate quote of its own, so it counts here only once you set a manual price for it" />
         <Stat label="Wallet" value={isk(data.wealth_wallet_balance)} />
       </SimpleGrid>
 

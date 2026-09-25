@@ -95,6 +95,20 @@ def _priced(type_ids: set[int]) -> dict[int, float]:
     return prices
 
 
+def _manual_only_priced(type_ids: set[int]) -> dict[int, float]:
+    """Manual overrides only, no Goonmetrics fallback - used for blueprint
+    *copies* (see total_wealth's own docstring): a BPC has no separate
+    market quote from its BPO, so pricing it against the BPO's Goonmetrics
+    quote would systematically overstate Total Wealth for anyone holding
+    many copies. Confirmed with the user: an unpriced BPC is excluded from
+    the total, same as any other unpriced item, until a manual price is
+    set for it specifically."""
+    if not type_ids:
+        return {}
+    manual = storage.load_manual_item_prices()
+    return {tid: manual[tid] for tid in type_ids if tid in manual}
+
+
 def _value_and_gaps(rows: list[tuple], prices: dict[int, float]) -> tuple[float, int, int]:
     """`rows`: tuples of (type_id, quantity) - the *effective* quantity,
     already resolved by the caller (see _blueprint_effective_quantity for
@@ -173,18 +187,18 @@ def total_wealth(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     Blueprint pricing caveat, stated in the UI, not silently approximated
     away: a blueprint's ME/TE materially changes what it would actually
     sell for, but Goonmetrics has one quote per type_id, not per ME/TE
-    level - every copy of a blueprint type is valued at the same market
-    quote regardless of its own research level. The manual-price override
-    exists partly to let a user correct an individual high-value BPO.
+    level - every BPO is valued at the same market quote regardless of its
+    own research level. The manual-price override exists partly to let a
+    user correct an individual high-value BPO.
 
-    A second, cruder approximation for the same reason: a BPC is priced
-    identically to a BPO of the same type, even though a copy is normally
-    worth only a fraction of an original - Goonmetrics has no separate BPC
-    quote to price it against. This can materially overstate Total Wealth
-    for a character holding many copies; correcting it (e.g. treating an
-    unpriced-by-manual-override BPC as unpriced rather than BPO-priced, or
-    a dedicated copy-value discount) is a real follow-up, not done here
-    without confirming the right approach with the user first.
+    A BPC (runs != -1) is deliberately priced *only* against
+    manual_item_prices, never against a BPO's Goonmetrics quote - a copy
+    has no separate market quote of its own, and pricing it against the
+    original's would systematically overstate Total Wealth for a
+    character holding many copies (confirmed with the user: an unpriced
+    BPC is excluded from the total, exactly like any other unpriced item,
+    until a manual price is set for it specifically - see
+    _manual_only_priced).
 
     Sharing scope note (working as designed, not a bug, but easy to
     misread): a character who shares assets but not blueprints with
@@ -221,22 +235,31 @@ def total_wealth(cfg: TradingConfig = TRADING_CONFIG) -> dict:
 
     assets = storage.load_all_assets(asset_char_ids, asset_corp_ids)
     raw_blueprints = storage.load_owned_blueprints(bp_char_ids, bp_corp_ids)
-    blueprints = [(type_id, _blueprint_effective_quantity(quantity)) for type_id, quantity, *_rest in raw_blueprints]
+    # is_original = runs == -1, same convention production/actions.py's
+    # do_list_owned_blueprints already uses for this same field - a BPC's
+    # own runs count is never -1 (that sentinel is BPO-only).
+    bpo_rows = [(type_id, _blueprint_effective_quantity(quantity))
+                for type_id, quantity, _me, _te, runs in raw_blueprints if runs == -1]
+    bpc_rows = [(type_id, _blueprint_effective_quantity(quantity))
+                for type_id, quantity, _me, _te, runs in raw_blueprints if runs != -1]
     wallet_total = storage.sum_wallet_balances(wallet_char_ids, wallet_corp_ids)
 
-    type_ids = {type_id for type_id, _qty in assets} | {type_id for type_id, _qty in blueprints}
+    type_ids = {type_id for type_id, _qty in assets} | {type_id for type_id, _qty in bpo_rows}
     prices = _priced(type_ids)
+    bpc_prices = _manual_only_priced({type_id for type_id, _qty in bpc_rows})
 
     assets_value, assets_priced, assets_unpriced = _value_and_gaps(assets, prices)
-    blueprints_value, bp_priced, bp_unpriced = _value_and_gaps(blueprints, prices)
+    bpo_value, bpo_priced, bpo_unpriced = _value_and_gaps(bpo_rows, prices)
+    bpc_value, bpc_priced, bpc_unpriced = _value_and_gaps(bpc_rows, bpc_prices)
+    blueprints_value = bpo_value + bpc_value
 
     return {
         "total_wealth": assets_value + blueprints_value + wallet_total,
         "wealth_assets_value": assets_value,
         "wealth_blueprints_value": blueprints_value,
         "wealth_wallet_balance": wallet_total,
-        "wealth_priced_items": assets_priced + bp_priced,
-        "wealth_unpriced_items": assets_unpriced + bp_unpriced,
+        "wealth_priced_items": assets_priced + bpo_priced + bpc_priced,
+        "wealth_unpriced_items": assets_unpriced + bpo_unpriced + bpc_unpriced,
         "characters_missing_wallet_scope": _characters_missing_wallet_scope(shared_character_ids),
     }
 
