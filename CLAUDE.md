@@ -611,9 +611,13 @@ manual-entry section/form alongside the ESI-synced rows (`source: "esi" |
   tenant's own ESI-resolved cache.
 - **Operator fallback** (`ProductionConfig.global_structure_resolution_
   fallback`, Default-Tenant-only, see "Tool permissions & Admin" above for
-  the general Default-Tenant-only pattern): when on, a tenant with no
-  `structure_name_resolution` characters of its own can still resolve a
-  structure name using the Default Tenant's own operator characters. The
+  the general Default-Tenant-only pattern): when on, a tenant whose own
+  `structure_name_resolution` characters can't resolve a given structure -
+  whether because it has none at all, or because the ones it has simply
+  can't see that particular structure - falls back to the Default Tenant's
+  own operator characters. Not limited to "no characters of its own": a
+  tenant with working characters still hits the fallback for any structure
+  its own characters happen not to be able to resolve. The
   switch itself is always read inside `tenant_scope.enter_tenant(storage.
   DEFAULT_TENANT_ID)` in `do_resolve_structure_name`, never off the
   ambient/requesting tenant's own `PRODUCTION_CONFIG` - that ambient copy
@@ -623,11 +627,15 @@ manual-entry section/form alongside the ESI-synced rows (`source: "esi" |
   reading the requesting tenant's own copy, making it silently inert for
   every tenant but the operator's own.
 - **Admin bulk resolution** (`admin.do_resolve_structure_names`, a
-  `pipeline_runner` background job): resolves every candidate location
-  any tenant's data references in one pass, instead of relying on each
-  tenant's own on-demand resolution - see `storage.
-  candidate_structure_location_ids`/`admin._structure_resolve_candidates`
-  for what counts as a candidate.
+  `pipeline_runner` background job): resolves every candidate location the
+  *admin's own* tenant's data references (decision 6b - not every tenant's
+  data; `storage.candidate_structure_location_ids` is a normal RLS-scoped
+  read) in one pass, instead of relying on that tenant's own on-demand
+  resolution - see that function/`admin._structure_resolve_candidates` for
+  what counts as a candidate. Every successful resolution still lands in
+  the global cache (decision Q2), so it does end up helping every other
+  tenant that later asks about the same structure - just not because this
+  job itself looked at their data.
 - **CLI**: `eve-trader production manual stock|blueprints|jobs|listed|
   locations ...` (`cli.py`) - every command takes `--tenant-id` and runs
   inside `tenant_scope.enter_tenant`, same `do_*` actions the web UI calls.

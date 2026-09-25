@@ -133,15 +133,19 @@ calls return 403 `access_unverifiable` until ESI answers again.
 MANUAL_TRACKING_PLAN.md phase 2, question 1) is a Default-Tenant-only
 switch, off by default, toggled only by an admin (`/api/admin/structures/
 fallback`, or the "Operator fallback" switch on the Admin page's Structure
-Names section). Turning it on means: **any other tenant that has no
-`structure_name_resolution` character of its own can still resolve a
-structure name using the Default Tenant's own operator characters.** The
-operator's own ESI token never leaves the server - only the resolved
-`{name, solar_system_id}` crosses back into the requesting tenant's
-result - but it is still real access on the operator's behalf, on demand,
-for every other tenant on the install. Leave it off on a multi-tenant
-install unless you understand and accept that. It is unrelated to (and
-does not require) the corp/alliance allowlist above.
+Names section). Turning it on means: **any resolution attempt that the
+requesting tenant's own `structure_name_resolution` characters couldn't
+satisfy falls back to the Default Tenant's own operator characters.**
+That is not limited to a tenant with no such characters at all - a tenant
+whose characters exist and work fine still hits the fallback for any
+individual structure they happen not to be able to see (not their corp's,
+not in their docking history). The operator's own ESI token never leaves
+the server - only the resolved `{name, solar_system_id}` crosses back into
+the requesting tenant's result - but it is still real access on the
+operator's behalf, on demand, for every other tenant on the install.
+Leave it off on a multi-tenant install unless you understand and accept
+that. It is unrelated to (and does not require) the corp/alliance
+allowlist above.
 
 Separately, Admin's own bulk resolution (Structure Names section, "Resolve
 New"/"Re-resolve All") always uses the *acting admin's own* tenant's

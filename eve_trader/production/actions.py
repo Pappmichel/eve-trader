@@ -1547,8 +1547,18 @@ def do_update_manual_industry_job(manual_id: int, quantity=_UNSET, runs=_UNSET,
             product_type_id, effective_quantity, effective_runs)
 
     effective_location_id = existing_location_id if location_id is _UNSET else location_id
-    effective_ready_at = existing_ready_at if ready_at is _UNSET else ready_at
-    _validate_ready_at(effective_ready_at)
+    if ready_at is _UNSET:
+        # Confirmed real bug in code review (2026-09-25): existing_ready_at
+        # comes back from storage.get_manual_industry_job as a real
+        # datetime (psycopg's own TIMESTAMPTZ mapping), not a string - only
+        # ever validate a value the client actually just sent (always a
+        # string or None); the already-stored value needs no re-validation,
+        # and _validate_ready_at's str.replace("Z", ...) would TypeError on
+        # a datetime.
+        effective_ready_at = existing_ready_at
+    else:
+        _validate_ready_at(ready_at)
+        effective_ready_at = ready_at
 
     storage.update_manual_industry_job(manual_id, resolved_quantity, resolved_runs,
                                         effective_location_id, effective_ready_at)

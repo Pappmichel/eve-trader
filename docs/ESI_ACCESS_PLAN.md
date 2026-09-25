@@ -1888,13 +1888,16 @@ if you already know its numeric id.
 The **operator fallback** (`ProductionConfig.global_structure_resolution_
 fallback`, Default-Tenant-only) is the opposite of automatic: **opt-in**,
 off by default, toggled only by an admin (`admin.do_set_structure_
-resolution_fallback`, `/api/admin/structures/fallback`). When on, a tenant
-with no `structure_name_resolution` characters of its own can still
-resolve a structure using the *Default Tenant's* own operator characters -
-the click that turns the switch on is the informed consent for that
-(decision 6b), not a default every fresh tenant gets. Admin's own bulk
-resolution (`admin.do_resolve_structure_names`) does not depend on this
-switch at all - it always uses the acting admin's own tenant's characters,
+resolution_fallback`, `/api/admin/structures/fallback`). When on, any
+resolution attempt whose own tier-3 characters didn't produce a name falls
+back to the *Default Tenant's* own operator characters - that covers a
+tenant with no `structure_name_resolution` characters at all, but just as
+much a tenant with working characters that simply can't see *this specific*
+structure (not their corp's, not in their docking history). The click that
+turns the switch on is the informed consent for both cases (decision 6b),
+not a default every fresh tenant gets. Admin's own bulk resolution
+(`admin.do_resolve_structure_names`) does not depend on this switch at
+all - it always uses the acting admin's own tenant's characters,
 regardless of whether the fallback is on.
 
 ## Explicitly out of scope

@@ -4,6 +4,8 @@ no Postgres needed. See test_manual_industry_jobs.py for storage.py's own
 functions."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
 from eve_trader import storage
@@ -155,6 +157,28 @@ def test_do_update_manual_industry_job_omitting_ready_at_keeps_existing(monkeypa
 
     assert captured["args"] == (7, 100.0, 20, LOCATION_A, "2026-10-01T00:00:00+00:00")
     assert result["ready_at"] == "2026-10-01T00:00:00+00:00"
+
+
+def test_do_update_manual_industry_job_omitting_ready_at_with_datetime_existing_value(monkeypatch):
+    """Confirmed real bug in code review (2026-09-25): storage.
+    get_manual_industry_job's real return (psycopg's own TIMESTAMPTZ
+    mapping) carries ready_at as a datetime object, not a string - the
+    test above only ever exercised the string case. Omitting ready_at on
+    a PATCH must carry that datetime through untouched, not attempt to
+    re-validate it as an ISO string (a TypeError, since datetime has no
+    .replace("Z", ...) - that signature means something else on datetime)."""
+    existing_ready_at = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(storage, "get_manual_industry_job",
+                         lambda manual_id: (7, PRODUCT_TYPE_ID, 1, 50.0, 10, LOCATION_A, existing_ready_at))
+    monkeypatch.setattr(storage, "get_blueprint_for_product", lambda type_id: (BP_TYPE_ID, 1, 5.0))
+    captured = {}
+    monkeypatch.setattr(storage, "update_manual_industry_job",
+                         lambda *args: captured.update(args=args))
+
+    result = actions.do_update_manual_industry_job(7, location_id=LOCATION_B)
+
+    assert captured["args"] == (7, 50.0, 10, LOCATION_B, existing_ready_at)
+    assert result["ready_at"] == existing_ready_at
 
 
 def test_do_update_manual_industry_job_ready_at_null_clears_it(monkeypatch):
