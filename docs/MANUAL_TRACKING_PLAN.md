@@ -432,9 +432,16 @@ Postgres/ESI" shape as the router tests).
 - **Schema/PG:** update `test_pg_composite_pk_tables.py` (manual_stock with a
   3-column key), `test_sqlite_migration.py`, and
   `sqlite_migration.py:66` → `("tenant_id", "type_id", "location_id")`
-  (decision 3). New: RLS isolation for every new table, an idempotency test
-  (apply the migration twice), and a test that `global_structure_names` is
-  readable without a tenant set.
+  (decision 3). New: RLS isolation for every new table (done -
+  `manual_stock`: `test_manual_stock_entries.py`;
+  `manual_owned_blueprints`/`manual_industry_jobs`/`manual_listed_stock`/
+  `manual_location_names`: each already had one, flagged and double-checked
+  in code review 2026-09-25), an idempotency test (apply the migration
+  twice, done - `test_pg_composite_pk_tables.py::
+  test_phase1_schema_applies_idempotently`), and a test that
+  `global_structure_names` is readable without a tenant set (done, phase 2 -
+  `test_global_structure_names.py`'s first five tests run with no
+  `tenant_context` at all, per that module's own docstring).
 - **Storage:** totals in `load_manual_stock`; replace and merge per location,
   other locations untouched; Complete in one transaction; batch name
   resolution.
@@ -457,26 +464,40 @@ Postgres/ESI" shape as the router tests).
 - **Resolution chain:** fallback only with the switch on; tenant B's context
   is restored correctly after the fallback (also on error); no token appears
   in the response; a regular tenant's resolution lands in the global cache; a
-  failure does not.
+  failure does not. **Confirmed real bug in code review (2026-09-25):** the
+  switch was read off the ambient/requesting tenant's own `PRODUCTION_CONFIG`
+  instead of under `enter_tenant(DEFAULT_TENANT_ID)` - always `False` for
+  every tenant but the Default one, since only `admin.do_set_structure_
+  resolution_fallback` ever saves it there, making the fallback silently
+  inert everywhere it was supposed to help. Fixed in `do_resolve_structure_
+  name` (`production/actions.py`); regression test:
+  `tests/test_resolve_structure_name.py::
+  test_do_resolve_structure_name_fallback_reads_default_tenant_switch_not_requesting_tenants`
+  (uses a fake `enter_tenant` that swaps `PRODUCTION_CONFIG`'s value per
+  tenant, unlike the module's other DB-free fake, so it actually catches a
+  regression to reading the ambient value directly - the old tests missed
+  this because they only ever monkeypatched the ambient config once,
+  outside any tenant switch).
 - **CLI:** `--tenant-id` uses `enter_tenant`.
 - The existing tests that monkeypatch `load_manual_stock` keep working
   unchanged (the signature stays).
 
 ---
 
-## 11. Docs
+## 11. Docs (done, code review follow-up 2026-09-25)
 
-- **CLAUDE.md:** new "Manual tracking" section (additive, no modes, where
-  input lives, `location_id = 0`, engine touch points), plus
+- **CLAUDE.md:** new "Manual tracking for Production" section (additive, no
+  modes, where input lives, `location_id = 0`, engine touch points) (done);
   `global_structure_names` in the `connect_unscoped` exception list
+  (done, phase 2)
 - `docs/ESI_ACCESS_PLAN.md`: global structure cache alongside the tenant
   cache. **State explicitly:** every successful resolution by any tenant
   becomes globally visible, so private structure names are deliberately
   shared across tenants (question 2); the operator fallback is opt-in
-  (question 1).
+  (question 1). (done)
 - `docs/OPERATOR_SECURITY.md`: note on the fallback switch and what it means
-  (operator characters resolve for all tenants)
-- `SYNC.md`: new paste parser path and `manual_stock`
+  (operator characters resolve for all tenants) (done)
+- `SYNC.md`: new paste parser path and `manual_stock` (done, phase 1)
 - Live verification per CLAUDE.md: endpoints against `localhost:8000`, UI via a
   Playwright script (delete the script and screenshots afterwards)
 

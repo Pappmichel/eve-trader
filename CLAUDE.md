@@ -571,6 +571,67 @@ new heuristic; if the SDE doesn't already carry the field you need, extend
 `refresh_sde()` to fetch it (see the `invMetaTypes.csv` merge that added
 `meta_group_id` for precedent) rather than approximating.
 
+## Manual tracking for Production
+
+Full history/decision log/phase breakdown lives in `docs/MANUAL_TRACKING_PLAN.md`
+(read this if you need the "why", not just the "what" below) - all 10 phases
+(0-9) are done. Goal: Production is fully usable without an ESI login.
+Manual data (stock, blueprints, running jobs, listed quantities, location
+names) takes effect everywhere ESI data already does, **additively** -
+there is no mode switch and no separate page. Input lives on the existing
+Stock Targets, Blueprints and Industry Jobs pages, each with its own
+manual-entry section/form alongside the ESI-synced rows (`source: "esi" |
+"manual"` on the row shape, `manual_id` set only for a manual row).
+
+- **`location_id = 0`** is the "no location" convention throughout
+  (`manual_stock`/`manual_owned_blueprints`/`manual_industry_jobs` all
+  default to it) - a manual entry doesn't have to specify a real structure/
+  station id, since not every user tracks that level of detail.
+- **Engine touch points** (`production/engine.py`) - manual data is added
+  on top of the ESI-derived figure, never replacing it: `_current_stock`/
+  `_stock_at_location` add `manual_stock`; `_owned_bpo_best_me_te` takes
+  `max(esi, manual)` independently for ME and TE; `_available_blueprint_
+  copies` adds manual BPC runs; `_has_bpo_at_location` also checks manual
+  BPOs; `_current_stock` also adds `manual_incoming_qty` (a flat add, not
+  runs × product qty like ESI's own incoming-jobs figure - decision 2);
+  `_total_missing`/`market_status` add manual listed quantities to the
+  ESI-derived home/Jita listed figures.
+- **Asset paste** (Stock Targets page): pastes an EVE inventory "Copy As"
+  list straight into manual stock at a chosen location, `replace` or
+  `merge` mode, previewed as a diff before committing - the same
+  `paste_parser.py` grammar the Ore & Minerals import already uses.
+  Blueprint-category lines are always skipped (no reliable ME/TE/runs
+  clipboard format exists - confirmed against `evepraisal/evepaste`,
+  see the plan's phase 0). The server re-parses the pasted text itself on
+  commit, never trusting rows the client sends back.
+- **Location names**: `manual_location_names` (per-tenant, this tenant's
+  own opinion, never shared) is the lowest-priority tier in the location
+  lookup chain, below `global_structure_names` (see "Tool permissions &
+  Admin" above for why that one has no `tenant_id` at all) and this
+  tenant's own ESI-resolved cache.
+- **Operator fallback** (`ProductionConfig.global_structure_resolution_
+  fallback`, Default-Tenant-only, see "Tool permissions & Admin" above for
+  the general Default-Tenant-only pattern): when on, a tenant with no
+  `structure_name_resolution` characters of its own can still resolve a
+  structure name using the Default Tenant's own operator characters. The
+  switch itself is always read inside `tenant_scope.enter_tenant(storage.
+  DEFAULT_TENANT_ID)` in `do_resolve_structure_name`, never off the
+  ambient/requesting tenant's own `PRODUCTION_CONFIG` - that ambient copy
+  is always `False` for every tenant except the Default one, since
+  `admin.do_set_structure_resolution_fallback` only ever saves it there.
+  Confirmed real bug fixed in code review (2026-09-25): the fallback was
+  reading the requesting tenant's own copy, making it silently inert for
+  every tenant but the operator's own.
+- **Admin bulk resolution** (`admin.do_resolve_structure_names`, a
+  `pipeline_runner` background job): resolves every candidate location
+  any tenant's data references in one pass, instead of relying on each
+  tenant's own on-demand resolution - see `storage.
+  candidate_structure_location_ids`/`admin._structure_resolve_candidates`
+  for what counts as a candidate.
+- **CLI**: `eve-trader production manual stock|blueprints|jobs|listed|
+  locations ...` (`cli.py`) - every command takes `--tenant-id` and runs
+  inside `tenant_scope.enter_tenant`, same `do_*` actions the web UI calls.
+
 ## Environment specifics
 
 - **Git repository, GitHub remote.** `git init` + first commit + a GitHub

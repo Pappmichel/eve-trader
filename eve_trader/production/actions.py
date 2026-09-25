@@ -481,13 +481,17 @@ def do_resolve_structure_name(location_id: int, force: bool = False) -> dict:
        tried corp-structure-list first, then per-character docking history
        (see esi_sync.resolve_structure_ids' own docstring for why, in that
        order).
-    4. The operator fallback - only when PRODUCTION_CONFIG.
-       global_structure_resolution_fallback is on (Default Tenant only, see
-       admin.do_set_structure_resolution_fallback): retries tier 3's same
-       two-path logic with the Default Tenant's own structure_name_
-       resolution characters, inside tenant_scope.enter_tenant(storage.
-       DEFAULT_TENANT_ID). The token itself never leaves the server - only
-       {name, solar_system_id} crosses back out into this tenant's result.
+    4. The operator fallback - only when the switch is on. The switch
+       itself is Default-Tenant-only (admin.do_get/set_structure_resolution_
+       fallback only ever reads/writes it there), so it's read here inside
+       its own tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID), not off
+       the ambient PRODUCTION_CONFIG - the requesting tenant's own copy of
+       that field is always False, since nothing ever saves it there.
+       Resolution itself retries tier 3's same two-path logic with the
+       Default Tenant's own structure_name_resolution characters, inside
+       that same tenant_scope. The token itself never leaves the server -
+       only {name, solar_system_id} crosses back out into this tenant's
+       result.
 
     A character added before esi-universe.read_structures.v1/
     esi-corporations.read_structures.v1 existed needs to be re-added (remove
@@ -511,11 +515,6 @@ def do_resolve_structure_name(location_id: int, force: bool = False) -> dict:
             return {"location_id": location_id, "name": name, "cached": True}
 
     characters = esi_sync.list_capability_characters("structure_name_resolution")
-    fallback_enabled = PRODUCTION_CONFIG.global_structure_resolution_fallback
-    if not characters and not fallback_enabled:
-        raise ActionError(
-            "No character has ticked Structure name resolution yet (Characters page, Access section)."
-        )
 
     name = None
     solar_system_id = None
@@ -527,17 +526,34 @@ def do_resolve_structure_name(location_id: int, force: bool = False) -> dict:
         if location_id in resolved:
             name, solar_system_id = resolved[location_id]
 
-    if name is None and fallback_enabled:
+    if name is None:
+        # The switch is Default-Tenant-only (admin.do_get/set_structure_
+        # resolution_fallback only ever saves it there) - reading the
+        # ambient PRODUCTION_CONFIG here would read *this* tenant's own
+        # (always-default-False) copy, making the fallback silently inert
+        # for every tenant except the Default one. Confirmed real bug in
+        # code review (2026-09-25): the old tests missed it because they
+        # set the flag directly on the ambient PRODUCTION_CONFIG instead of
+        # under enter_tenant. Read lazily (only once tier 3 has failed to
+        # resolve this location) so a normal tier-3 success never pays for
+        # an extra tenant switch.
         with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
-            fallback_characters = esi_sync.list_capability_characters("structure_name_resolution")
-            if fallback_characters:
-                fallback_client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))
-                fallback_corp_roles = esi_sync.corp_roles_for_characters(fallback_client, fallback_characters)
-                fallback_resolved = esi_sync.resolve_structure_ids(
-                    fallback_client, {location_id}, fallback_corp_roles, lambda: fallback_characters,
-                )
-                if location_id in fallback_resolved:
-                    name, solar_system_id = fallback_resolved[location_id]
+            fallback_enabled = PRODUCTION_CONFIG.global_structure_resolution_fallback
+        if not characters and not fallback_enabled:
+            raise ActionError(
+                "No character has ticked Structure name resolution yet (Characters page, Access section)."
+            )
+        if fallback_enabled:
+            with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
+                fallback_characters = esi_sync.list_capability_characters("structure_name_resolution")
+                if fallback_characters:
+                    fallback_client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))
+                    fallback_corp_roles = esi_sync.corp_roles_for_characters(fallback_client, fallback_characters)
+                    fallback_resolved = esi_sync.resolve_structure_ids(
+                        fallback_client, {location_id}, fallback_corp_roles, lambda: fallback_characters,
+                    )
+                    if location_id in fallback_resolved:
+                        name, solar_system_id = fallback_resolved[location_id]
 
     storage.set_cached_structure_name(location_id, name, solar_system_id)
     if name is not None:
@@ -1442,6 +1458,26 @@ def do_remove_manual_owned_blueprint(manual_id: int) -> dict:
     return {"manual_id": manual_id}
 
 
+_UNSET = object()  # sentinel for "field not provided" on a partial PATCH, distinct from None ("clear it")
+
+
+def _validate_ready_at(ready_at: Optional[str]) -> None:
+    """manual_industry_jobs.ready_at is TIMESTAMPTZ - an unparseable string
+    would otherwise reach Postgres unvalidated and surface as a bare 500
+    (psycopg raising on the INSERT/UPDATE) instead of a clean 400. Confirmed
+    real gap in code review (2026-09-25). Accepts the same ISO 8601 shape
+    JavaScript's Date.toISOString() produces (a trailing "Z"), which
+    datetime.fromisoformat only understands as "+00:00" from Python 3.11 -
+    normalize it by hand so this validates identically on 3.10 and 3.11
+    (this repo's CI matrix, see .github/workflows/ci.yml)."""
+    if ready_at is None:
+        return
+    try:
+        datetime.fromisoformat(ready_at.replace("Z", "+00:00"))
+    except ValueError as e:
+        raise ActionError(f"ready_at must be a valid ISO 8601 timestamp, got '{ready_at}'.") from e
+
+
 def _resolve_manual_job_quantity(product_type_id: int, quantity: Optional[float],
                                   runs: Optional[int]) -> tuple[float, int, Optional[int]]:
     """Exactly one of `quantity`/`runs` must be given - `runs` is converted
@@ -1474,6 +1510,7 @@ def do_add_manual_industry_job(item_name: str, quantity: Optional[float] = None,
         raise ActionError(f"No exact match for '{item_name}'. Did you mean: {matches[0][1]}?")
     product_type_id, resolved_name = exact[0]
 
+    _validate_ready_at(ready_at)
     resolved_quantity, activity_id, resolved_runs = _resolve_manual_job_quantity(product_type_id, quantity, runs)
 
     manual_id = storage.insert_manual_industry_job(
@@ -1485,20 +1522,39 @@ def do_add_manual_industry_job(item_name: str, quantity: Optional[float] = None,
     }
 
 
-def do_update_manual_industry_job(manual_id: int, quantity: Optional[float] = None, runs: Optional[int] = None,
-                                   location_id: Optional[int] = None, ready_at: Optional[str] = None) -> dict:
+def do_update_manual_industry_job(manual_id: int, quantity=_UNSET, runs=_UNSET,
+                                   location_id=_UNSET, ready_at=_UNSET) -> dict:
+    """A true partial update (decision from code review 2026-09-25 - the
+    old signature defaulted every field to None, which is indistinguishable
+    from "explicitly clear this", so a caller updating only e.g. location_id
+    was forced to also resend quantity/runs and always cleared ready_at).
+    Each parameter's default is `_UNSET`, not None, so "not passed at all"
+    (keep the existing value) and "passed as null" (e.g. clear ready_at)
+    are no longer the same thing. The router only forwards fields the
+    client actually set (Pydantic's `model_dump(exclude_unset=True)`)."""
     existing = storage.get_manual_industry_job(manual_id)
     if existing is None:
         raise ActionError(f"No manual job entry #{manual_id}.")
-    _id, product_type_id, _activity_id, _qty, _runs, existing_location_id, _ready_at = existing
+    _id, product_type_id, existing_activity_id, existing_qty, existing_runs, existing_location_id, \
+        existing_ready_at = existing
 
-    resolved_quantity, activity_id, resolved_runs = _resolve_manual_job_quantity(product_type_id, quantity, runs)
-    effective_location_id = existing_location_id if location_id is None else location_id
+    if quantity is _UNSET and runs is _UNSET:
+        resolved_quantity, activity_id, resolved_runs = existing_qty, existing_activity_id, existing_runs
+    else:
+        effective_quantity = None if quantity is _UNSET else quantity
+        effective_runs = None if runs is _UNSET else runs
+        resolved_quantity, activity_id, resolved_runs = _resolve_manual_job_quantity(
+            product_type_id, effective_quantity, effective_runs)
 
-    storage.update_manual_industry_job(manual_id, resolved_quantity, resolved_runs, effective_location_id, ready_at)
+    effective_location_id = existing_location_id if location_id is _UNSET else location_id
+    effective_ready_at = existing_ready_at if ready_at is _UNSET else ready_at
+    _validate_ready_at(effective_ready_at)
+
+    storage.update_manual_industry_job(manual_id, resolved_quantity, resolved_runs,
+                                        effective_location_id, effective_ready_at)
     return {
         "manual_id": manual_id, "activity_id": activity_id, "quantity": resolved_quantity,
-        "runs": resolved_runs, "location_id": effective_location_id, "ready_at": ready_at,
+        "runs": resolved_runs, "location_id": effective_location_id, "ready_at": effective_ready_at,
     }
 
 

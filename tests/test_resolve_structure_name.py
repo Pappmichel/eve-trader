@@ -20,6 +20,37 @@ def _no_global_cache_hit_by_default(monkeypatch):
     monkeypatch.setattr(storage, "upsert_global_structure_name", lambda location_id, name, solar_system_id=None: None)
 
 
+@contextlib.contextmanager
+def _fake_enter_tenant(tenant_id):
+    """A DB-free stand-in for tenant_scope.enter_tenant (which also
+    re-resolves TRADING_CONFIG/PRODUCTION_CONFIG/etc from tenant_settings,
+    a real DB read - see storage.load_tenant_settings) - this module's tests
+    deliberately don't need Postgres, and enter_tenant's own generic
+    "restores every contextvar, including on error" guarantee is already
+    covered by test_tenant_scope.py. Only switches storage's own tenant
+    contextvar - PRODUCTION_CONFIG stays the same ambient object throughout,
+    so a test that wants to simulate "the Default Tenant's own fallback
+    switch is on" still does it by monkeypatching PRODUCTION_CONFIG.
+    global_structure_resolution_fallback directly, same as before."""
+    token = storage.set_current_tenant(tenant_id)
+    try:
+        yield
+    finally:
+        storage.reset_current_tenant(token)
+
+
+@pytest.fixture(autouse=True)
+def _fake_enter_tenant_by_default(monkeypatch):
+    """do_resolve_structure_name now reads the operator-fallback switch
+    under tenant_scope.enter_tenant(DEFAULT_TENANT_ID) even when only
+    checking whether it's on (fixed 2026-09-25 - it used to read the
+    ambient/requesting tenant's own copy, which is always False since only
+    the Default Tenant's is ever saved) - every test in this file needs the
+    DB-free stand-in by default now, not just the two that explicitly
+    exercise the fallback tier."""
+    monkeypatch.setattr(actions.tenant_scope, "enter_tenant", _fake_enter_tenant)
+
+
 def test_do_resolve_structure_name_captures_solar_system_id_from_corp_structures(monkeypatch):
     # GitHub issue #12/#21: solar_system_id (needed for per-category cost
     # index lookups) used to be discarded entirely - only `name` was ever
@@ -140,25 +171,6 @@ def test_do_resolve_structure_name_raises_without_characters_or_fallback(monkeyp
         actions.do_resolve_structure_name(60000000001)
 
 
-@contextlib.contextmanager
-def _fake_enter_tenant(tenant_id):
-    """A DB-free stand-in for tenant_scope.enter_tenant (which also
-    re-resolves TRADING_CONFIG/PRODUCTION_CONFIG/etc from tenant_settings,
-    a real DB read - see storage.load_tenant_settings) - this module's other
-    tests deliberately don't need Postgres, and enter_tenant's own generic
-    "restores every contextvar, including on error" guarantee is already
-    covered by test_tenant_scope.py. These two tests only need to prove
-    do_resolve_structure_name's own fallback tier actually switches the
-    ambient tenant to DEFAULT_TENANT_ID for its own capability lookup, and
-    switches it back afterward - same shape as the real thing, just without
-    the config-resolution DB read."""
-    token = storage.set_current_tenant(tenant_id)
-    try:
-        yield
-    finally:
-        storage.reset_current_tenant(token)
-
-
 def test_do_resolve_structure_name_falls_back_to_default_tenant_characters(monkeypatch):
     """Tier 4 (docs/MANUAL_TRACKING_PLAN.md phase 2, question 1): this
     tenant has no structure_name_resolution characters of its own, but the
@@ -167,7 +179,6 @@ def test_do_resolve_structure_name_falls_back_to_default_tenant_characters(monke
     monkeypatch.setattr(storage, "get_cached_structure_name", lambda loc_id: (False, None))
     monkeypatch.setattr(storage, "set_cached_structure_name", lambda *a, **kw: None)
     monkeypatch.setattr(PRODUCTION_CONFIG, "global_structure_resolution_fallback", True)
-    monkeypatch.setattr(actions.tenant_scope, "enter_tenant", _fake_enter_tenant)
 
     def _characters(capability_key):
         current_tenant = storage.get_current_tenant()
@@ -192,7 +203,6 @@ def test_do_resolve_structure_name_fallback_restores_tenant_context_on_error(mon
     raises."""
     monkeypatch.setattr(storage, "get_cached_structure_name", lambda loc_id: (False, None))
     monkeypatch.setattr(PRODUCTION_CONFIG, "global_structure_resolution_fallback", True)
-    monkeypatch.setattr(actions.tenant_scope, "enter_tenant", _fake_enter_tenant)
 
     def _boom(capability_key):
         if storage.get_current_tenant() == storage.DEFAULT_TENANT_ID:
@@ -205,3 +215,49 @@ def test_do_resolve_structure_name_fallback_restores_tenant_context_on_error(mon
         with pytest.raises(RuntimeError):
             actions.do_resolve_structure_name(60000000001)
         assert storage.get_current_tenant() == "caller-tenant"
+
+
+def test_do_resolve_structure_name_fallback_reads_default_tenant_switch_not_requesting_tenants(monkeypatch):
+    """Confirmed real bug (code review 2026-09-25): the fallback switch is
+    Default-Tenant-only (admin.do_get/set_structure_resolution_fallback only
+    ever reads/writes it there) - reading the ambient PRODUCTION_CONFIG
+    without switching tenant first would read the *requesting* tenant's own
+    copy, which is always False since nothing ever saves it there, making
+    the fallback silently inert for every tenant except the Default one.
+    This test uses a fake enter_tenant that actually swaps the flag's value
+    per tenant (unlike the module's other DB-free fake, which only swaps
+    storage's own tenant contextvar) so it can catch a regression back to
+    reading the ambient/ caller-tenant value directly."""
+    per_tenant_fallback = {storage.DEFAULT_TENANT_ID: True, "requesting-tenant": False}
+
+    @contextlib.contextmanager
+    def _fake_enter_tenant_with_per_tenant_config(tenant_id):
+        token = storage.set_current_tenant(tenant_id)
+        previous = PRODUCTION_CONFIG.global_structure_resolution_fallback
+        PRODUCTION_CONFIG.global_structure_resolution_fallback = per_tenant_fallback[tenant_id]
+        try:
+            yield
+        finally:
+            PRODUCTION_CONFIG.global_structure_resolution_fallback = previous
+            storage.reset_current_tenant(token)
+
+    monkeypatch.setattr(actions.tenant_scope, "enter_tenant", _fake_enter_tenant_with_per_tenant_config)
+    monkeypatch.setattr(storage, "get_cached_structure_name", lambda loc_id: (False, None))
+    monkeypatch.setattr(storage, "set_cached_structure_name", lambda *a, **kw: None)
+    monkeypatch.setattr(PRODUCTION_CONFIG, "global_structure_resolution_fallback", False)
+
+    def _characters(capability_key):
+        if storage.get_current_tenant() == storage.DEFAULT_TENANT_ID:
+            return [("esi:1", 1, "Operator Alice")]
+        return []
+
+    monkeypatch.setattr(esi_sync, "list_capability_characters", _characters)
+    monkeypatch.setattr(esi_client.ESIClient, "character_public_info", lambda self, cid: {"corporation_id": 99})
+    monkeypatch.setattr(esi_client.ESIClient, "corporation_structures", lambda self, corp_id, auth_role: [
+        {"structure_id": 60000000001, "name": "Operator-Resolved Structure", "solar_system_id": 30000142},
+    ])
+
+    with storage.tenant_context("requesting-tenant"):
+        result = actions.do_resolve_structure_name(60000000001)
+
+    assert result == {"location_id": 60000000001, "name": "Operator-Resolved Structure", "cached": False}

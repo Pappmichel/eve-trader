@@ -29,6 +29,7 @@ from eve_trader import storage
 
 from . import pg_helpers
 from .pg_helpers import _apply_phase1_schema  # noqa: F401 - scopes the schema-provisioning fixture to this module
+from .pg_helpers import _PHASE1_SCHEMA_SQL
 
 psycopg = pytest.importorskip("psycopg")
 
@@ -225,3 +226,16 @@ def test_shortlist_coalesce_upsert_stays_tenant_scoped(tenant_pair):
     with storage.tenant_context(tenant_b), storage.connect() as conn:
         row = conn.execute("SELECT item, meta_level FROM shortlist WHERE item_id = ?", (1,)).fetchone()
     assert row == ("Tritanium (B)", 3)
+
+
+def test_phase1_schema_applies_idempotently(_apply_phase1_schema):
+    """docs/MANUAL_TRACKING_PLAN.md section 10 - flagged missing in code
+    review 2026-09-25. Covers manual_stock's own live-migration DO block
+    (widening its PK from (tenant_id, type_id) to (tenant_id, type_id,
+    location_id) on a database that already had the old shape) along with
+    every other statement in the file - applying the whole schema file
+    twice in a row must not raise, same pattern as
+    test_esi_access_schema.py::test_schema_applies_idempotently."""
+    with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
+        conn.execute(_PHASE1_SCHEMA_SQL.read_text())
+        conn.execute(_PHASE1_SCHEMA_SQL.read_text())

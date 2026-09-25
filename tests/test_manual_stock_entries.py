@@ -9,7 +9,7 @@ import pytest
 from eve_trader import storage
 
 from . import pg_helpers
-from .pg_helpers import _apply_phase1_schema, tenant  # noqa: F401
+from .pg_helpers import _apply_phase1_schema, tenant, tenant_pair  # noqa: F401
 
 psycopg = pytest.importorskip("psycopg")
 
@@ -100,6 +100,24 @@ def test_apply_manual_stock_paste_replace_deletes_only_that_location_first(tenan
         assert storage.manual_stock_at_location(TYPE_ID, LOCATION_A) == 100
         assert storage.manual_stock_at_location(other_type, LOCATION_A) == 0.0
         assert storage.manual_stock_at_location(TYPE_ID, LOCATION_B) == 999
+
+
+def test_manual_stock_is_tenant_isolated(tenant_pair):
+    """RLS isolation for manual_stock (docs/MANUAL_TRACKING_PLAN.md
+    section 10 - flagged missing in code review 2026-09-25; the widened
+    3-column key is already covered by test_pg_composite_pk_tables.py, but
+    that's a schema-shape test, not a real-row cross-tenant read check)."""
+    tenant_a, tenant_b = tenant_pair
+    with storage.tenant_context(tenant_a):
+        storage.upsert_manual_stock(TYPE_ID, 100, LOCATION_A)
+
+    with storage.tenant_context(tenant_b):
+        assert storage.load_manual_stock() == {}
+        assert storage.manual_stock_at_location(TYPE_ID, LOCATION_A) == 0.0
+        assert storage.load_manual_stock_entries() == []
+
+    with storage.tenant_context(tenant_a):
+        assert storage.load_manual_stock() == {TYPE_ID: 100}
 
 
 def test_load_manual_stock_entries_returns_one_row_per_type_and_location(tenant):

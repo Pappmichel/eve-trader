@@ -157,6 +157,16 @@ def test_search_sde_types_tolerates_incidental_whitespace(tenant):
     assert storage.search_sde_types("  Tritanium  ") == [(34, "Tritanium")]
 
 
+def test_search_sde_types_is_case_insensitive(tenant):
+    """Confirmed real bug in code review (2026-09-25) - same LIKE-vs-ILIKE
+    issue as storage.search_locations: Postgres's LIKE is case-sensitive,
+    so a lowercase query like "tritanium" used to find nothing."""
+    _insert_type(34, "Tritanium")
+
+    assert storage.search_sde_types("tritanium") == [(34, "Tritanium")]
+    assert storage.search_sde_types("TRITANIUM") == [(34, "Tritanium")]
+
+
 def test_resolve_type_names_exact_is_case_insensitive_and_skips_unpublished(tenant):
     group_id = 9_000_001
     _insert_type(34, "Tritanium", group_id=group_id)

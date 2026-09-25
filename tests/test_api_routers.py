@@ -496,6 +496,11 @@ def test_add_manual_industry_job_action_error_maps_to_400(monkeypatch):
 
 
 def test_update_manual_industry_job_passes_path_and_body(monkeypatch):
+    """Only fields actually present in the request body are forwarded
+    (Pydantic's exclude_unset=True) - do_update_manual_industry_job's own
+    _UNSET-sentinel defaults tell "omitted" (keep existing) apart from
+    "sent as null" (clear it), which passing every field unconditionally
+    would collapse (confirmed real gap, code review 2026-09-25)."""
     captured = {}
 
     def _update(**kwargs):
@@ -506,7 +511,21 @@ def test_update_manual_industry_job_passes_path_and_body(monkeypatch):
     resp = client.patch("/api/production/manual-jobs/7", json={"runs": 20})
 
     assert resp.status_code == 200
-    assert captured == {"manual_id": 7, "quantity": None, "runs": 20, "location_id": None, "ready_at": None}
+    assert captured == {"manual_id": 7, "runs": 20}
+
+
+def test_update_manual_industry_job_clears_ready_at_only_when_sent_as_null(monkeypatch):
+    captured = {}
+
+    def _update(**kwargs):
+        captured.update(kwargs)
+        return {"manual_id": kwargs["manual_id"]}
+    monkeypatch.setattr(production_actions, "do_update_manual_industry_job", _update)
+
+    resp = client.patch("/api/production/manual-jobs/7", json={"ready_at": None})
+
+    assert resp.status_code == 200
+    assert captured == {"manual_id": 7, "ready_at": None}
 
 
 def test_remove_manual_industry_job_passes_path_param(monkeypatch):

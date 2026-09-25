@@ -99,3 +99,21 @@ def test_search_locations_empty_query_returns_nothing(tenant_pair):
     with storage.tenant_context(tenant_a):
         assert storage.search_locations("") == []
         assert storage.search_locations("   ") == []
+
+
+def test_search_locations_is_case_insensitive(tenant_pair):
+    """Confirmed real bug in code review (2026-09-25): Postgres's LIKE is
+    case-sensitive (unlike SQLite's default ASCII LIKE), so a lowercase
+    query like "jita" used to find nothing against "Jita IV..." - fixed by
+    switching to ILIKE. Covers all three kinds (manual/structure/station -
+    the last one is seeded SDE data, real published stations)."""
+    tenant_a, _tenant_b = tenant_pair
+    with storage.tenant_context(tenant_a):
+        storage.set_manual_location_name(1000000000001, "Zzz Unique Manual Name")
+        storage.set_cached_structure_name(1000000000002, "Zzz Unique Structure Name", 30000142)
+
+        manual_rows = storage.search_locations("unique manual")
+        structure_rows = storage.search_locations("UNIQUE STRUCTURE")
+
+    assert manual_rows == [(1000000000001, "Zzz Unique Manual Name", "manual")]
+    assert structure_rows == [(1000000000002, "Zzz Unique Structure Name", "structure")]

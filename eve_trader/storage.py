@@ -2350,13 +2350,13 @@ def search_locations(query: str, limit: int = 20) -> list[tuple[int, str, str]]:
         rows = conn.execute(
             "SELECT location_id, name, kind FROM ("
             "  SELECT location_id, name, 'structure' AS kind, 1 AS pref FROM structure_names "
-            "  WHERE name IS NOT NULL AND name LIKE ? "
+            "  WHERE name IS NOT NULL AND name ILIKE ? "
             "  UNION ALL "
             "  SELECT station_id, station_name, 'station', 2 FROM sde_stations "
-            "  WHERE station_name LIKE ? "
+            "  WHERE station_name ILIKE ? "
             "  UNION ALL "
             "  SELECT location_id, name, 'manual', 3 FROM manual_location_names "
-            "  WHERE name LIKE ? "
+            "  WHERE name ILIKE ? "
             ") AS combined "
             "ORDER BY (LOWER(name) <> LOWER(?)), pref, name LIMIT ?",
             (like, like, like, query, limit),
@@ -4424,7 +4424,7 @@ def search_sde_types(query: str, limit: int = 20) -> list[tuple[int, str]]:
     with connect() as conn:
         rows = conn.execute(
             "SELECT type_id, type_name FROM sde_types "
-            "WHERE published = 1 AND type_name LIKE ? "
+            "WHERE published = 1 AND type_name ILIKE ? "
             "ORDER BY (LOWER(type_name) <> LOWER(?)), type_name LIMIT ?",
             (f"%{query}%", query, limit),
         ).fetchall()

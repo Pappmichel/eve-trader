@@ -191,8 +191,11 @@ class UpdateManualIndustryJobRequest(BaseModel):
 
 @router.patch("/manual-jobs/{manual_id}")
 def update_manual_industry_job(manual_id: int, req: UpdateManualIndustryJobRequest):
-    return _wrap(actions.do_update_manual_industry_job, manual_id=manual_id, quantity=req.quantity,
-                 runs=req.runs, location_id=req.location_id, ready_at=req.ready_at)
+    # exclude_unset, not the request body's raw values - do_update_manual_industry_job's
+    # own _UNSET-sentinel defaults need to tell "field omitted" (keep the
+    # existing value) apart from "field sent as null" (e.g. clear ready_at);
+    # passing every field unconditionally would collapse that distinction.
+    return _wrap(actions.do_update_manual_industry_job, manual_id=manual_id, **req.model_dump(exclude_unset=True))
 
 
 @router.delete("/manual-jobs/{manual_id}")
