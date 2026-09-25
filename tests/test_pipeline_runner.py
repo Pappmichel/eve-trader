@@ -276,6 +276,33 @@ def test_job_status_ignores_a_running_job_for_a_different_tool(monkeypatch):
     assert pipeline_runner.job_status(pipeline_runner.TOOL_DOCTRINE)["run_id"] == "doc"
 
 
+def test_job_status_job_name_narrows_running_and_latest_lookup(monkeypatch):
+    """docs/MANUAL_TRACKING_PLAN.md phase 8 - Admin now has two distinct
+    jobs (sde_preview, structure_resolve) sharing one tool slot; job_name
+    must keep their status pollers from showing each other's progress."""
+    monkeypatch.setattr(storage, "get_running_pipeline_run", lambda job_name=None: {
+        "run_id": "sde-run", "status": "running", "job_name": pipeline_runner.JOB_SDE_PREVIEW,
+        "tool": pipeline_runner.TOOL_ADMIN,
+    })
+    latest_calls = []
+
+    def _latest(job_name=None, tool=None):
+        latest_calls.append((job_name, tool))
+        return {
+            "run_id": "old-structure-resolve", "status": "succeeded",
+            "job_name": pipeline_runner.JOB_STRUCTURE_RESOLVE, "tool": tool,
+        }
+    monkeypatch.setattr(storage, "get_latest_pipeline_run", _latest)
+
+    status = pipeline_runner.job_status(pipeline_runner.TOOL_ADMIN, job_name=pipeline_runner.JOB_STRUCTURE_RESOLVE)
+
+    assert status["run_id"] == "old-structure-resolve"
+    assert latest_calls == [(pipeline_runner.JOB_STRUCTURE_RESOLVE, pipeline_runner.TOOL_ADMIN)]
+    # The running job (sde_preview) must not leak into a structure_resolve poller.
+    sde_status = pipeline_runner.job_status(pipeline_runner.TOOL_ADMIN, job_name=pipeline_runner.JOB_SDE_PREVIEW)
+    assert sde_status["run_id"] == "sde-run"
+
+
 def test_doctrine_sync_worker_forwards_increasing_progress(monkeypatch):
     """start_doctrine_sync's worker must pass pipeline_runner's callback into
     do_sync_contracts (not a one-shot static message)."""

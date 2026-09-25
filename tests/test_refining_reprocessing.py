@@ -7,7 +7,7 @@ from eve_trader import storage
 from eve_trader.config import TradingConfig
 from eve_trader.esi_client import OrderStats
 from eve_trader.refining.config import RefiningConfig
-from eve_trader.refining.paste_parser import ParsedPasteLine
+from eve_trader.paste_parser import ParsedPasteLine
 from eve_trader.refining.reprocessing import (
     NOT_REPROCESSABLE_DECISION, NO_MARKET_DATA_DECISION, REPROCESS_DECISION, SELL_DECISION,
     UNRESOLVED_DECISION, evaluate_reprocessing_line, mineral_type_ids_for_lines, resolve_type_id,

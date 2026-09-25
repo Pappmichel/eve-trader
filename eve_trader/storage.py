@@ -1582,19 +1582,361 @@ def load_stock_targets() -> list[tuple[int, str, float, Optional[float], Optiona
         ).fetchall()
 
 
-def upsert_manual_stock(type_id: int, count: float) -> None:
+def upsert_manual_stock(type_id: int, count: float, location_id: int = 0) -> None:
+    """`location_id=0` ("no location", the pre-phase-3 default - docs/
+    MANUAL_TRACKING_PLAN.md decision 15) keeps every pre-existing caller
+    working unchanged. Widened `ON CONFLICT` target matches the table's own
+    widened PK (tenant_id, type_id, location_id)."""
     with connect() as conn:
         conn.execute(
-            "INSERT INTO manual_stock (type_id, count) VALUES (?,?) "
-            "ON CONFLICT(tenant_id, type_id) DO UPDATE SET count=excluded.count",
-            (type_id, count),
+            "INSERT INTO manual_stock (type_id, count, location_id) VALUES (?,?,?) "
+            "ON CONFLICT(tenant_id, type_id, location_id) DO UPDATE SET count=excluded.count",
+            (type_id, count, location_id),
         )
 
 
-def load_manual_stock() -> dict[int, float]:
+def delete_manual_stock(type_id: int, location_id: int = 0) -> None:
     with connect() as conn:
-        rows = conn.execute("SELECT type_id, count FROM manual_stock").fetchall()
+        conn.execute(
+            "DELETE FROM manual_stock WHERE type_id = ? AND location_id = ?",
+            (type_id, location_id),
+        )
+
+
+def apply_manual_stock_paste(location_id: int, rows: dict[int, float], mode: str) -> None:
+    """Applies an already-parsed/resolved asset paste (docs/
+    MANUAL_TRACKING_PLAN.md phase 4) at `location_id`, in one transaction
+    (connect() itself commits once on successful exit - see its own
+    docstring):
+    - `mode == "replace"` (decision 11): first deletes every existing row
+      *at this location* (other locations are untouched), then inserts
+      every row in `rows` fresh.
+    - `mode == "merge"`: upserts each row, adding to any existing count at
+      that location rather than overwriting it.
+
+    `rows` is `{type_id: quantity}` - already resolved from item names and
+    already summed for duplicate names (production.actions._parse_asset_paste
+    does both, then production.actions.do_commit_asset_paste calls this)."""
+    with connect() as conn:
+        if mode == "replace":
+            conn.execute("DELETE FROM manual_stock WHERE location_id = ?", (location_id,))
+        for type_id, count in rows.items():
+            if mode == "merge":
+                conn.execute(
+                    "INSERT INTO manual_stock (type_id, count, location_id) VALUES (?, ?, ?) "
+                    "ON CONFLICT(tenant_id, type_id, location_id) "
+                    "DO UPDATE SET count = manual_stock.count + excluded.count",
+                    (type_id, count, location_id),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO manual_stock (type_id, count, location_id) VALUES (?, ?, ?) "
+                    "ON CONFLICT(tenant_id, type_id, location_id) DO UPDATE SET count = excluded.count",
+                    (type_id, count, location_id),
+                )
+
+
+def load_manual_stock() -> dict[int, float]:
+    """Signature unchanged (decision 16) - totals per type across every
+    location, so every existing caller (_current_stock and friends in
+    production/engine.py) keeps working without knowing locations exist at
+    all. See load_manual_stock_entries for the per-location breakdown and
+    manual_stock_at_location for a single (type, location) lookup."""
+    with connect() as conn:
+        rows = conn.execute("SELECT type_id, SUM(count) FROM manual_stock GROUP BY type_id").fetchall()
     return {r[0]: r[1] for r in rows}
+
+
+def load_manual_stock_entries() -> list[tuple[int, str, int, float]]:
+    """Every manual-stock row, one per (type, location) - (type_id,
+    type_name, location_id, count), for the Stock Targets page's own
+    "Manual stock" table (docs/MANUAL_TRACKING_PLAN.md phase 3, decision 9 -
+    a separate table from the existing per-type total column)."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT m.type_id, t.type_name, m.location_id, m.count "
+            "FROM manual_stock m JOIN sde_types t ON t.type_id = m.type_id "
+            "ORDER BY t.type_name, m.location_id"
+        ).fetchall()
+
+
+def manual_stock_at_location(type_id: int, location_id: int) -> float:
+    """A single (type, location) count, 0 if no row - for
+    production/engine.py's _stock_at_location, which needs manual stock at
+    one specific location (Logistics/Invention), not the type-wide total
+    load_manual_stock already provides."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT count FROM manual_stock WHERE type_id = ? AND location_id = ?",
+            (type_id, location_id),
+        ).fetchone()
+    return row[0] if row else 0.0
+
+
+# ------------------------------------------------------------- manual owned blueprints
+def is_known_blueprint(type_id: int) -> bool:
+    """Whether `type_id` is itself a blueprint (appears as a
+    blueprint_type_id in sde_blueprint_products) - lets
+    do_add_manual_owned_blueprint (docs/MANUAL_TRACKING_PLAN.md phase 5)
+    tell "user typed the blueprint's own name" apart from "user typed the
+    product's name" (get_blueprint_for_product handles the latter)."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM sde_blueprint_products WHERE blueprint_type_id = ? LIMIT 1", (type_id,)
+        ).fetchone()
+    return row is not None
+
+
+def insert_manual_owned_blueprint(blueprint_type_id: int, is_original: bool, material_efficiency: int,
+                                   time_efficiency: int, runs: Optional[int], quantity: int,
+                                   location_id: int = 0) -> int:
+    with connect() as conn:
+        row = conn.execute(
+            "INSERT INTO manual_owned_blueprints (blueprint_type_id, is_original, material_efficiency, "
+            "time_efficiency, runs, quantity, location_id) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
+            (blueprint_type_id, is_original, material_efficiency, time_efficiency, runs, quantity, location_id),
+        ).fetchone()
+    return int(row[0])
+
+
+def update_manual_owned_blueprint(id_: int, material_efficiency: int, time_efficiency: int,
+                                   runs: Optional[int], quantity: int) -> None:
+    """Only the mutable fields - blueprint_type_id/is_original/location_id
+    are this row's identity, not editable in place (remove + re-add)."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE manual_owned_blueprints SET material_efficiency=?, time_efficiency=?, runs=?, quantity=? "
+            "WHERE id=?",
+            (material_efficiency, time_efficiency, runs, quantity, id_),
+        )
+
+
+def delete_manual_owned_blueprint(id_: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM manual_owned_blueprints WHERE id = ?", (id_,))
+
+
+def get_manual_owned_blueprint(id_: int) -> Optional[tuple]:
+    """(id, blueprint_type_id, is_original, material_efficiency,
+    time_efficiency, runs, quantity, location_id) for one row, or None."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT id, blueprint_type_id, is_original, material_efficiency, time_efficiency, runs, "
+            "quantity, location_id FROM manual_owned_blueprints WHERE id = ?",
+            (id_,),
+        ).fetchone()
+
+
+def load_manual_owned_blueprints() -> list[tuple]:
+    """(id, blueprint_type_id, blueprint_type_name, is_original,
+    material_efficiency, time_efficiency, runs, quantity, location_id),
+    name-ordered - for the Blueprints page's own manual section
+    (do_list_manual_owned_blueprints/do_list_owned_blueprints)."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT b.id, b.blueprint_type_id, t.type_name, b.is_original, b.material_efficiency, "
+            "b.time_efficiency, b.runs, b.quantity, b.location_id "
+            "FROM manual_owned_blueprints b JOIN sde_types t ON t.type_id = b.blueprint_type_id "
+            "ORDER BY t.type_name"
+        ).fetchall()
+
+
+def manual_bpo_best_me_te(bp_type_id: int) -> Optional[tuple[int, int]]:
+    """Best (highest) ME/TE across every manually-registered BPO of
+    `bp_type_id` - same "originals only" restriction as storage.
+    get_owned_bpo_best_me_te's own ESI-side counterpart."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT MAX(material_efficiency), MAX(time_efficiency) FROM manual_owned_blueprints "
+            "WHERE blueprint_type_id = ? AND is_original = ?",
+            (bp_type_id, True),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    return (row[0], row[1])
+
+
+def manual_bpc_runs(bp_type_id: int, location_id: Optional[int] = None) -> float:
+    """SUM(runs * quantity) across manually-registered BPCs of `bp_type_id`
+    - `location_id=None` sums every location (mirrors storage.
+    available_blueprint_copies' own None branch)."""
+    with connect() as conn:
+        if location_id is None:
+            row = conn.execute(
+                "SELECT SUM(runs * quantity) FROM manual_owned_blueprints "
+                "WHERE blueprint_type_id = ? AND is_original = ?",
+                (bp_type_id, False),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT SUM(runs * quantity) FROM manual_owned_blueprints "
+                "WHERE blueprint_type_id = ? AND is_original = ? AND location_id = ?",
+                (bp_type_id, False, location_id),
+            ).fetchone()
+    return row[0] if row and row[0] is not None else 0.0
+
+
+def manual_has_bpo_at_location(bp_type_id: int, location_id: int) -> bool:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM manual_owned_blueprints WHERE blueprint_type_id = ? AND is_original = ? "
+            "AND location_id = ? LIMIT 1",
+            (bp_type_id, True, location_id),
+        ).fetchone()
+    return row is not None
+
+
+# ------------------------------------------------------------- manual industry jobs
+def insert_manual_industry_job(product_type_id: int, activity_id: int, quantity: float,
+                                runs: Optional[int], location_id: int = 0,
+                                ready_at: Optional[str] = None) -> int:
+    with connect() as conn:
+        row = conn.execute(
+            "INSERT INTO manual_industry_jobs (product_type_id, activity_id, quantity, runs, "
+            "location_id, ready_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+            (product_type_id, activity_id, quantity, runs, location_id, ready_at),
+        ).fetchone()
+    return int(row[0])
+
+
+def update_manual_industry_job(id_: int, quantity: float, runs: Optional[int], location_id: int,
+                                ready_at: Optional[str]) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE manual_industry_jobs SET quantity=?, runs=?, location_id=?, ready_at=? WHERE id=?",
+            (quantity, runs, location_id, ready_at, id_),
+        )
+
+
+def delete_manual_industry_job(id_: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM manual_industry_jobs WHERE id = ?", (id_,))
+
+
+def get_manual_industry_job(id_: int) -> Optional[tuple]:
+    """(id, product_type_id, activity_id, quantity, runs, location_id, ready_at)."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT id, product_type_id, activity_id, quantity, runs, location_id, ready_at "
+            "FROM manual_industry_jobs WHERE id = ?",
+            (id_,),
+        ).fetchone()
+
+
+def load_manual_industry_jobs() -> list[tuple]:
+    """(id, product_type_id, product_type_name, activity_id, quantity, runs,
+    location_id, ready_at), name-ordered - production/jobs.py's
+    list_current_jobs appends these to the ESI-synced job list."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT j.id, j.product_type_id, t.type_name, j.activity_id, j.quantity, j.runs, "
+            "j.location_id, j.ready_at FROM manual_industry_jobs j "
+            "JOIN sde_types t ON t.type_id = j.product_type_id ORDER BY t.type_name"
+        ).fetchall()
+
+
+def manual_incoming_qty(product_type_id: int) -> float:
+    """SUM(quantity) of every manual job producing `product_type_id` - added
+    directly to production/engine.py's _current_stock, not multiplied by a
+    product quantity (decision 2), since `quantity` here is already stored
+    in finished-product units (see insert_manual_industry_job's own
+    docstring/the table's own column comment)."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT SUM(quantity) FROM manual_industry_jobs WHERE product_type_id = ?", (product_type_id,)
+        ).fetchone()
+    return row[0] if row and row[0] is not None else 0.0
+
+
+def complete_manual_job(job_id: int, location_id: int) -> None:
+    """Deletes the job and adds its quantity to manual_stock at
+    `location_id`, in one transaction (connect() itself commits once on
+    successful exit) - production/actions.do_complete_manual_industry_job
+    resolves `location_id` (defaults to the job's own output location,
+    decision 12) before calling this. A no-op if the job no longer exists
+    (already completed/removed by a concurrent request)."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT product_type_id, quantity FROM manual_industry_jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+        if row is None:
+            return
+        product_type_id, quantity = row
+        conn.execute("DELETE FROM manual_industry_jobs WHERE id = ?", (job_id,))
+        conn.execute(
+            "INSERT INTO manual_stock (type_id, count, location_id) VALUES (?, ?, ?) "
+            "ON CONFLICT(tenant_id, type_id, location_id) DO UPDATE SET count = manual_stock.count + excluded.count",
+            (product_type_id, quantity, location_id),
+        )
+
+
+# ------------------------------------------------------------- manual listed stock
+def upsert_manual_listed_stock(type_id: int, market: str, quantity: float) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO manual_listed_stock (type_id, market, quantity) VALUES (?, ?, ?) "
+            "ON CONFLICT(tenant_id, type_id, market) DO UPDATE SET quantity=excluded.quantity, updated_at=now()",
+            (type_id, market, quantity),
+        )
+
+
+def delete_manual_listed_stock(type_id: int, market: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM manual_listed_stock WHERE type_id = ? AND market = ?", (type_id, market))
+
+
+def load_manual_listed_stock() -> dict[tuple[int, str], tuple[float, object]]:
+    """{(type_id, market): (quantity, updated_at)} for every manually-set
+    listed quantity of this tenant - the Stock Targets page's own "Listed
+    Home/Jita (manual)" columns (docs/MANUAL_TRACKING_PLAN.md phase 7)."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, market, quantity, updated_at FROM manual_listed_stock"
+        ).fetchall()
+    return {(type_id, market): (quantity, updated_at) for type_id, market, quantity, updated_at in rows}
+
+
+def manual_listed_stock_qty(type_id: int, market: str) -> float:
+    """A single (type, market) quantity, 0 if unset - for production/
+    engine.py's _total_missing/market_status, which add this to the ESI-
+    derived open-sell-order volume (decision 7)."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT quantity FROM manual_listed_stock WHERE type_id = ? AND market = ?",
+            (type_id, market),
+        ).fetchone()
+    return row[0] if row else 0.0
+
+
+def candidate_structure_location_ids() -> set[int]:
+    """Every distinct location_id this tenant's own data references
+    anywhere - character/corp assets and blueprints, industry jobs' output
+    location, the Logistik category locations (both the single per-category
+    assignment and the saved quick-switch options), and manual stock/
+    blueprint locations. Unfiltered (includes ordinary NPC station ids, not
+    just structures) - admin.py's structure-resolution candidate collection
+    (docs/MANUAL_TRACKING_PLAN.md phase 8) filters to `>= STRUCTURE_ID_MIN`
+    itself and adds the config locations (home/distribution/invention),
+    which live in the already-resolved ProductionConfig, not a table."""
+    ids: set[int] = set()
+    with connect() as conn:
+        for table in ("character_assets", "corp_assets", "character_blueprints", "corp_blueprints"):
+            for (loc,) in conn.execute(f"SELECT DISTINCT location_id FROM {table} WHERE location_id IS NOT NULL"):
+                ids.add(loc)
+        for table in ("character_industry_jobs", "corp_industry_jobs"):
+            for (loc,) in conn.execute(
+                f"SELECT DISTINCT output_location_id FROM {table} WHERE output_location_id IS NOT NULL"
+            ):
+                ids.add(loc)
+        for (loc,) in conn.execute("SELECT DISTINCT location_id FROM job_category_locations"):
+            ids.add(loc)
+        for (loc,) in conn.execute("SELECT DISTINCT location_id FROM category_location_options"):
+            ids.add(loc)
+        for (loc,) in conn.execute("SELECT DISTINCT location_id FROM manual_stock"):
+            ids.add(loc)
+        for (loc,) in conn.execute("SELECT DISTINCT location_id FROM manual_owned_blueprints"):
+            ids.add(loc)
+    return ids
 
 
 def save_latest_buy_list(rows: list[tuple[int, float]]) -> None:
@@ -1865,12 +2207,17 @@ def get_cached_structure_names(location_ids: list[int]) -> dict[int, tuple[bool,
 
 
 def get_location_names(location_ids: Iterable[int]) -> dict[int, Optional[str]]:
-    """Batched location_id -> display name, structure_names (player
-    structures) first, then sde_stations.station_name (NPC stations) - same
-    two-tier fallback search_item_stock_locations already does inline per
-    row, just batched here for a whole set of ids in one call (backs GET
-    /trading/wallet-transactions, which resolves every distinct location_id
-    across a character's transaction page in one shot rather than N+1)."""
+    """Batched location_id -> display name, four-tier fallback (docs/
+    MANUAL_TRACKING_PLAN.md phase 2 extended this from the original two
+    tiers): structure_names (this tenant's own ESI-resolved player
+    structures) -> global_structure_names (any tenant's successful
+    resolution, unscoped) -> manual_location_names (this tenant's own
+    manual name) -> sde_stations.station_name (NPC stations). Same
+    fallback order search_item_stock_locations already does inline per row
+    for its first two tiers, just batched here for a whole set of ids in
+    one call (backs GET /trading/wallet-transactions, which resolves every
+    distinct location_id across a character's transaction page in one shot
+    rather than N+1)."""
     location_ids = list(location_ids)
     if not location_ids:
         return {}
@@ -1880,17 +2227,148 @@ def get_location_names(location_ids: Iterable[int]) -> dict[int, Optional[str]]:
             f"SELECT location_id, name FROM structure_names WHERE location_id IN ({placeholders})",
             location_ids,
         ).fetchall()
-        resolved = dict(structure_rows)
+    resolved: dict[int, Optional[str]] = dict(structure_rows)
+    missing = [loc_id for loc_id in location_ids if resolved.get(loc_id) is None]
+
+    if missing:
+        for loc_id, (name, _system_id) in get_global_structure_names(missing).items():
+            resolved[loc_id] = name
         missing = [loc_id for loc_id in location_ids if resolved.get(loc_id) is None]
-        if missing:
-            missing_placeholders = ",".join("?" * len(missing))
+
+    if missing:
+        missing_placeholders = ",".join("?" * len(missing))
+        with connect() as conn:
+            manual_rows = conn.execute(
+                f"SELECT location_id, name FROM manual_location_names WHERE location_id IN ({missing_placeholders})",
+                missing,
+            ).fetchall()
+        for loc_id, name in manual_rows:
+            resolved[loc_id] = name
+        missing = [loc_id for loc_id in location_ids if resolved.get(loc_id) is None]
+
+    if missing:
+        missing_placeholders = ",".join("?" * len(missing))
+        with connect() as conn:
             station_rows = conn.execute(
                 f"SELECT station_id, station_name FROM sde_stations WHERE station_id IN ({missing_placeholders})",
                 missing,
             ).fetchall()
-            for station_id, station_name in station_rows:
-                resolved[station_id] = station_name
+        for station_id, station_name in station_rows:
+            resolved[station_id] = station_name
+
     return {loc_id: resolved.get(loc_id) for loc_id in location_ids}
+
+
+# ------------------------------------------------------------- global structure cache
+def get_global_structure_names(location_ids: list[int]) -> dict[int, tuple[str, Optional[int]]]:
+    """Every tenant's successful structure-name resolution (docs/
+    MANUAL_TRACKING_PLAN.md phase 2, `global_structure_names`) - unscoped,
+    same reasoning as tool_grants (see docs/admin_schema.sql's own comment
+    on that table): every successful resolution by any tenant is
+    deliberately shared across tenants, since a structure's real-world name
+    isn't tenant-private data (decision Q2). Only successful resolutions
+    are ever stored here - a location_id absent from the result was either
+    never resolved anywhere, or only resolved as a failure (which is never
+    written to this table at all, unlike this tenant's own structure_names
+    cache)."""
+    if not location_ids:
+        return {}
+    placeholders = ",".join("?" * len(location_ids))
+    with connect_unscoped() as conn:
+        rows = conn.execute(
+            f"SELECT location_id, name, solar_system_id FROM global_structure_names "
+            f"WHERE location_id IN ({placeholders})",
+            location_ids,
+        ).fetchall()
+    return {location_id: (name, solar_system_id) for location_id, name, solar_system_id in rows}
+
+
+def upsert_global_structure_name(location_id: int, name: str, solar_system_id: Optional[int] = None) -> None:
+    """Writes a successful resolution into the global cache - called from
+    every path that successfully resolves a structure name
+    (production.actions.do_resolve_structure_name, production.esi_sync.
+    _discover_structure_names), including a regular tenant resolving with
+    its own characters (decision Q2: every successful resolution becomes
+    globally visible, not just the operator-fallback tier's own
+    resolutions). `name` is expected non-None - callers only call this on a
+    successful resolution, matching the table's own `name TEXT NOT NULL`
+    (see docs/admin_schema.sql's column comment)."""
+    with connect_unscoped() as conn:
+        conn.execute(
+            "INSERT INTO global_structure_names (location_id, name, solar_system_id) VALUES (?, ?, ?) "
+            "ON CONFLICT (location_id) DO UPDATE SET name = excluded.name, "
+            "solar_system_id = COALESCE(excluded.solar_system_id, global_structure_names.solar_system_id), "
+            "resolved_at = now()",
+            (location_id, name, solar_system_id),
+        )
+
+
+# ------------------------------------------------------------- manual location names
+def list_manual_location_names() -> list[tuple[int, str]]:
+    """Every location_id this tenant has given its own manual name (docs/
+    MANUAL_TRACKING_PLAN.md phase 2, decision 8 - per-tenant, never
+    global)."""
+    with connect() as conn:
+        return conn.execute("SELECT location_id, name FROM manual_location_names ORDER BY name").fetchall()
+
+
+def set_manual_location_name(location_id: int, name: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO manual_location_names (location_id, name) VALUES (?, ?) "
+            "ON CONFLICT(tenant_id, location_id) DO UPDATE SET name = excluded.name",
+            (location_id, name),
+        )
+
+
+def remove_manual_location_name(location_id: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM manual_location_names WHERE location_id = ?", (location_id,))
+
+
+def search_locations(query: str, limit: int = 20) -> list[tuple[int, str, str]]:
+    """The LocationPicker's own type-ahead (docs/MANUAL_TRACKING_PLAN.md
+    phase 2) - NPC stations (sde_stations, shared/no tenant_id), this
+    tenant's own resolved structures (structure_names) and this tenant's
+    own manual names (manual_location_names). The global structure cache is
+    deliberately NOT searched here - only pick-by-ID surfaces it, via
+    do_resolve_structure_name's own lookup chain, so a structure another
+    tenant resolved can't be *browsed* by name, only reached if you already
+    know its numeric ID.
+
+    Returns (location_id, name, kind) tuples, kind in
+    {"station", "structure", "manual"}, name-ordered (an exact
+    case-insensitive match sorts first, same precedent as
+    search_sde_types), deduplicated by location_id - a structure resolved
+    via ESI and also given a manual name keeps only its ESI-resolved
+    row (same precedence as get_location_names)."""
+    query = query.strip()
+    if not query:
+        return []
+    like = f"%{query}%"
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT location_id, name, kind FROM ("
+            "  SELECT location_id, name, 'structure' AS kind, 1 AS pref FROM structure_names "
+            "  WHERE name IS NOT NULL AND name ILIKE ? "
+            "  UNION ALL "
+            "  SELECT station_id, station_name, 'station', 2 FROM sde_stations "
+            "  WHERE station_name ILIKE ? "
+            "  UNION ALL "
+            "  SELECT location_id, name, 'manual', 3 FROM manual_location_names "
+            "  WHERE name ILIKE ? "
+            ") AS combined "
+            "ORDER BY (LOWER(name) <> LOWER(?)), pref, name LIMIT ?",
+            (like, like, like, query, limit),
+        ).fetchall()
+    seen: set[int] = set()
+    result: list[tuple[int, str, str]] = []
+    for location_id, name, kind in rows:
+        if location_id in seen:
+            continue
+        seen.add(location_id)
+        result.append((location_id, name, kind))
+    return result
 
 
 def list_cached_structure_names() -> list[tuple[int, Optional[str]]]:
@@ -3480,7 +3958,9 @@ def get_esi_sync_time(scope: str) -> Optional[str]:
     return row[0] if row else None
 
 
-def esi_incoming_industry_qty(product_type_id: int) -> dict[str, float]:
+def esi_incoming_industry_qty(product_type_id: int,
+                              owner_character_ids: Optional[list[int]] = None,
+                              owner_corporation_ids: Optional[list[int]] = None) -> dict[str, float]:
     """Returns {'runs': total outstanding job runs, 'jobs': job count} for
     `product_type_id` across character + corp industry jobs. Converting runs
     to output quantity needs the blueprint's product qty/run (see
@@ -3492,15 +3972,21 @@ def esi_incoming_industry_qty(product_type_id: int) -> dict[str, float]:
     sitting there as 'ready' (completed, waiting to be picked up/delivered -
     its output already exists) wasn't counted as incoming stock at all,
     understating current+incoming supply and causing the Bauliste to plan to
-    build/buy more of something that's already sitting there completed."""
+    build/buy more of something that's already sitting there completed.
+
+    `owner_character_ids`/`owner_corporation_ids`: see `_owner_id_clause` -
+    both None (the default) is unfiltered. A caller that has resolved
+    sharing passes both, even when one list is empty."""
     with connect() as conn:
         runs = 0
         jobs = 0
         for table in ("character_industry_jobs", "corp_industry_jobs"):
+            id_clause, id_params = _owner_id_clause(table, owner_character_ids, owner_corporation_ids)
             row = conn.execute(
                 f"SELECT COALESCE(SUM(runs), 0), COUNT(*) FROM {table} "
-                "WHERE product_type_id = ? AND status IN ('active', 'paused', 'ready')",
-                (product_type_id,),
+                "WHERE product_type_id = ? AND status IN ('active', 'paused', 'ready')"
+                f"{id_clause}",
+                (product_type_id, *id_params),
             ).fetchone()
             runs += row[0]
             jobs += row[1]
@@ -3884,6 +4370,51 @@ def activate_station_trading_shortlist_items(type_ids: Iterable[int]) -> None:
 
 
 # ------------------------------------------------------------- Production: SDE reads
+def resolve_type_names_exact(names: Iterable[str]) -> dict[str, tuple[int, str, Optional[int]]]:
+    """Published types whose name matches one of `names` exactly, case-
+    insensitively, in one query. Key is the lowercased stripped input.
+    Value is (type_id, type_name, category_id). category_id comes from
+    sde_groups and is None when the type has no group row. Blank names are
+    skipped. Two published types that share a case-insensitive name resolve
+    to the lower type_id."""
+    keys: list[str] = []
+    seen: set[str] = set()
+    for raw in names:
+        key = raw.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        keys.append(key)
+    if not keys:
+        return {}
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT ON (LOWER(t.type_name)) "
+            "LOWER(t.type_name), t.type_id, t.type_name, g.category_id "
+            "FROM sde_types t "
+            "LEFT JOIN sde_groups g ON g.group_id = t.group_id "
+            "WHERE t.published = 1 AND LOWER(t.type_name) = ANY(?) "
+            "ORDER BY LOWER(t.type_name), t.type_id",
+            (keys,),
+        ).fetchall()
+    return {row[0]: (row[1], row[2], row[3]) for row in rows}
+
+
+def suggest_type_names(names: Iterable[str]) -> dict[str, Optional[tuple[int, str]]]:
+    """One search_sde_types(name, limit=1) per distinct non-blank name.
+    Key is the lowercased stripped input. Value is that top type-ahead hit,
+    or None when nothing matches. Callers pass the names
+    resolve_type_names_exact did not return."""
+    out: dict[str, Optional[tuple[int, str]]] = {}
+    for raw in names:
+        key = raw.strip().lower()
+        if not key or key in out:
+            continue
+        matches = search_sde_types(raw, limit=1)
+        out[key] = matches[0] if matches else None
+    return out
+
+
 def search_sde_types(query: str, limit: int = 20) -> list[tuple[int, str]]:
     """Type-ahead lookup for the Stock Targets editor. An exact (case-insensitive)
     match always sorts first, regardless of `limit` - otherwise e.g. "Vexor"
@@ -3893,7 +4424,7 @@ def search_sde_types(query: str, limit: int = 20) -> list[tuple[int, str]]:
     with connect() as conn:
         rows = conn.execute(
             "SELECT type_id, type_name FROM sde_types "
-            "WHERE published = 1 AND type_name LIKE ? "
+            "WHERE published = 1 AND type_name ILIKE ? "
             "ORDER BY (LOWER(type_name) <> LOWER(?)), type_name LIMIT ?",
             (f"%{query}%", query, limit),
         ).fetchall()

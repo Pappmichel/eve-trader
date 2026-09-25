@@ -54,6 +54,10 @@ def _stub_everything(monkeypatch):
     monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None, **kwargs: 0.0)
     monkeypatch.setattr(storage, "sell_order_qty_at_location", lambda type_id, location_id, **kwargs: 0.0)
     monkeypatch.setattr(storage, "sell_order_qty_in_region", lambda type_id, region_id, **kwargs: 0.0)
+    # docs/MANUAL_TRACKING_PLAN.md phase 7: _total_missing now also adds
+    # storage.manual_listed_stock_qty - default to none, same no-real-
+    # Postgres reasoning as the rest of this fixture.
+    monkeypatch.setattr(storage, "manual_listed_stock_qty", lambda type_id, market: 0.0)
     monkeypatch.setattr(sorting_engine, "stockpile_rows_for_doctrine", lambda cfg=None: ([], False))
     monkeypatch.setattr(storage, "load_mineral_requirements", lambda: [])
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))

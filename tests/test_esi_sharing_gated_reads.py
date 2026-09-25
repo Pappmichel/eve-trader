@@ -18,6 +18,7 @@ import pytest
 
 from eve_trader import storage
 from eve_trader.config import TradingConfig
+from eve_trader.production.config import ProductionConfig
 from eve_trader.esi_data.access import AccessorError
 from eve_trader.own_orders import (
     _character_assets,
@@ -362,7 +363,7 @@ def test_shared_wallet_snapshot_skips_live_esi(tenant, monkeypatch):
 # never went through the accessor at all - storage.esi_stock_at_location/
 # assets_at_flag/list_industry_jobs/load_owned_blueprints/sell_order_qty_*/
 # get_owned_bpo_best_me_te/available_blueprint_copies/has_bpo_at_location/
-# search_item_stock_locations now take an owner-id filter
+# search_item_stock_locations/esi_incoming_industry_qty now take an owner-id filter
 # (storage._owner_id_clause), and production/engine.py resolves it via
 # shared_production_owner_ids (esi_data.access.shared_owner_ids) before
 # calling them - the same shape as own_orders/trade_reconciliation's own
@@ -531,6 +532,62 @@ def test_shared_production_owner_ids_resolves_sharing_and_caches(tenant, monkeyp
 
     # A different data_kind is unaffected either way.
     assert production_engine.shared_production_owner_ids("blueprints") == ([], [])
+
+
+def test_esi_incoming_industry_qty_owner_filter_excludes_unshared_character(tenant):
+    storage.replace_industry_jobs("character_industry_jobs", [
+        (900, 1, 100, TYPE_ID, 4, None, "active", "2026-01-01T00:00:00Z",
+         "2026-01-01T00:00:00Z", GAP3_ALICE, "Alice"),
+        (903, 1, 100, TYPE_ID, 9, None, "delivered", "2026-01-01T00:00:00Z",
+         "2026-01-01T00:00:00Z", GAP3_ALICE, "Alice"),
+    ], owner_character_id=GAP3_ALICE)
+    storage.replace_industry_jobs("character_industry_jobs", [
+        (901, 1, 100, TYPE_ID, 7, None, "ready", "2026-01-01T00:00:00Z",
+         "2026-01-01T00:00:00Z", GAP3_BOB, "Bob"),
+    ], owner_character_id=GAP3_BOB)
+    storage.replace_industry_jobs("corp_industry_jobs", [
+        (902, 1, 100, TYPE_ID, 3, None, "paused", "2026-01-01T00:00:00Z",
+         "2026-01-01T00:00:00Z", GAP3_CORP, "Corp"),
+    ], owner_corporation_id=GAP3_CORP)
+
+    unfiltered = storage.esi_incoming_industry_qty(TYPE_ID)
+    assert unfiltered == {"runs": 14, "jobs": 3}
+
+    only_alice = storage.esi_incoming_industry_qty(
+        TYPE_ID, owner_character_ids=[GAP3_ALICE], owner_corporation_ids=[],
+    )
+    assert only_alice == {"runs": 4, "jobs": 1}
+
+    alice_and_corp = storage.esi_incoming_industry_qty(
+        TYPE_ID, owner_character_ids=[GAP3_ALICE], owner_corporation_ids=[GAP3_CORP],
+    )
+    assert alice_and_corp == {"runs": 7, "jobs": 2}
+
+    none_shared = storage.esi_incoming_industry_qty(
+        TYPE_ID, owner_character_ids=[], owner_corporation_ids=[],
+    )
+    assert none_shared == {"runs": 0, "jobs": 0}
+
+
+def test_current_stock_ignores_industry_jobs_of_unshared_characters(tenant):
+    production_engine.invalidate_shared_production_owner_ids_cache()
+    storage.replace_industry_jobs("character_industry_jobs", [
+        (910, 1, 100, TYPE_ID, 4, None, "active", "2026-01-01T00:00:00Z",
+         "2026-01-01T00:00:00Z", GAP3_ALICE, "Alice"),
+    ], owner_character_id=GAP3_ALICE)
+    storage.replace_industry_jobs("character_industry_jobs", [
+        (911, 1, 100, TYPE_ID, 7, None, "active", "2026-01-01T00:00:00Z",
+         "2026-01-01T00:00:00Z", GAP3_BOB, "Bob"),
+    ], owner_character_id=GAP3_BOB)
+    cfg = ProductionConfig()
+    bp = (100, 1, 10.0)
+
+    assert production_engine._current_stock(TYPE_ID, {}, cfg, bp) == 0.0
+
+    _share("character", GAP3_ALICE, "industry_jobs", tool_key="production")
+    production_engine.invalidate_shared_production_owner_ids_cache()
+
+    assert production_engine._current_stock(TYPE_ID, {}, cfg, bp) == 40.0
 
 
 def test_production_stock_helpers_respect_sharing_end_to_end(tenant):

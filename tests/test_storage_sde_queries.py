@@ -157,6 +157,56 @@ def test_search_sde_types_tolerates_incidental_whitespace(tenant):
     assert storage.search_sde_types("  Tritanium  ") == [(34, "Tritanium")]
 
 
+def test_search_sde_types_is_case_insensitive(tenant):
+    """Confirmed real bug in code review (2026-09-25) - same LIKE-vs-ILIKE
+    issue as storage.search_locations: Postgres's LIKE is case-sensitive,
+    so a lowercase query like "tritanium" used to find nothing."""
+    _insert_type(34, "Tritanium")
+
+    assert storage.search_sde_types("tritanium") == [(34, "Tritanium")]
+    assert storage.search_sde_types("TRITANIUM") == [(34, "Tritanium")]
+
+
+def test_resolve_type_names_exact_is_case_insensitive_and_skips_unpublished(tenant):
+    group_id = 9_000_001
+    _insert_type(34, "Tritanium", group_id=group_id)
+    _insert_type(35, "Pyerite", published=0, group_id=group_id)
+    with storage.connect() as conn:
+        conn.execute(
+            "INSERT INTO sde_groups (group_id, category_id, group_name) VALUES (?, ?, ?)",
+            (group_id, 4, "Test Mineral"),
+        )
+    try:
+        resolved = storage.resolve_type_names_exact(["  tritanium  ", "Tritanium", "Pyerite", "   ", "No Such Item"])
+    finally:
+        with storage.connect() as conn:
+            conn.execute("DELETE FROM sde_groups WHERE group_id = ?", (group_id,))
+
+    assert resolved == {"tritanium": (34, "Tritanium", 4)}
+    assert storage.resolve_type_names_exact([]) == {}
+
+
+def test_resolve_type_names_exact_breaks_same_name_ties_by_lower_type_id(tenant):
+    # group_id is deliberately absent from sde_groups, so category_id stays None.
+    _insert_type(200, "Duplicate Name", group_id=9_000_002)
+    _insert_type(100, "Duplicate Name", group_id=9_000_002)
+
+    assert storage.resolve_type_names_exact(["duplicate name"]) == {
+        "duplicate name": (100, "Duplicate Name", None),
+    }
+
+
+def test_suggest_type_names_uses_one_typeahead_hit_per_miss(tenant):
+    _insert_type(34, "Tritanium")
+
+    suggestions = storage.suggest_type_names(["Tritaniu", "Tritaniu", "Not A Real Item", "  "])
+
+    assert suggestions == {
+        "tritaniu": (34, "Tritanium"),
+        "not a real item": None,
+    }
+
+
 def test_get_sde_types_bulk_empty_list_skips_db(tenant, monkeypatch):
     from contextlib import contextmanager
     calls = {"n": 0}

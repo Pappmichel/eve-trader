@@ -157,6 +157,18 @@ class ProductionConfig:
                                                 # up at all, behavior is identical
                                                 # to before this feature existed
 
+    # -- Manual tracking (docs/MANUAL_TRACKING_PLAN.md phase 2, question 1) --
+    # Default Tenant only - do_resolve_structure_name reads this under
+    # enter_tenant(DEFAULT_TENANT_ID) regardless of the caller's own tenant,
+    # so no other tenant can see or set it (admin.do_get/set_structure_
+    # resolution_fallback are the only read/write paths, Admin-tool-gated).
+    # Off by default (operator opt-in): when true, a tenant whose own
+    # structure_name_resolution characters can't resolve a location falls
+    # back to trying the Default Tenant's own characters for it (the token
+    # itself never leaves the server, only {name, solar_system_id} crosses
+    # back out).
+    global_structure_resolution_fallback: bool = False
+
     # -- Fuzzwork SDE --
     fuzzwork_csv_base: str = "https://www.fuzzwork.co.uk/dump/latest/csv/"
 

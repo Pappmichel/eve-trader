@@ -17,10 +17,13 @@ import logging
 
 import requests
 
-from . import access_gate, backup, storage
+from . import access_gate, backup, storage, tenant_scope
 from .actions import ActionError
-from .esi_client import ESIError
-from .production import jita_price_cache, sde, sde_diff
+from .auth import TokenManager
+from .config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
+from .esi_client import ESIClient, ESIError
+from .production import esi_sync, jita_price_cache, sde, sde_diff
+from .production.config import PRODUCTION_CONFIG, ProductionConfig
 from .production.engine import invalidate_discover_cache, invalidate_ship_margin_cache
 from .production.sde import FetchedSde
 
@@ -92,7 +95,7 @@ def do_start_sde_preview() -> dict:
 
 def do_sde_preview_status() -> dict:
     from . import pipeline_runner
-    return pipeline_runner.job_status(pipeline_runner.TOOL_ADMIN)
+    return pipeline_runner.job_status(pipeline_runner.TOOL_ADMIN, pipeline_runner.JOB_SDE_PREVIEW)
 
 
 def do_preview_sde(progress_callback=None) -> dict:
@@ -184,6 +187,108 @@ def do_set_tool_grants(character_id: int, tool_keys: list[str]) -> dict:
     for tool_key in tool_keys:
         storage.set_tool_grant(character_id, tool_key, user["tenant_id"])
     return {"character_id": character_id, "tool_keys": sorted(tool_keys)}
+
+
+def do_get_structure_resolution_fallback() -> dict:
+    """The Default Tenant's own global_structure_resolution_fallback switch
+    (docs/MANUAL_TRACKING_PLAN.md phase 2, question 1) - reads under
+    tenant_scope.enter_tenant(DEFAULT_TENANT_ID) regardless of the calling
+    admin's own tenant, so this always reflects the one operator-level
+    value, never whatever tenant happens to be resolved for the request."""
+    with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
+        return {"global_structure_resolution_fallback": PRODUCTION_CONFIG.global_structure_resolution_fallback}
+
+
+def do_set_structure_resolution_fallback(enabled: bool) -> dict:
+    """Persists the switch above to the Default Tenant's own
+    tenant_settings, same save path do_update_settings uses for every other
+    Production setting (save_tenant_config_overrides), just scoped to
+    DEFAULT_TENANT_ID instead of whatever tenant is ambient for this
+    request - see do_get_structure_resolution_fallback's own docstring for
+    why."""
+    with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
+        try:
+            save_tenant_config_overrides(
+                "production", {"global_structure_resolution_fallback": enabled},
+                PRODUCTION_CONFIG, cfg_type=ProductionConfig,
+            )
+        except ConfigError as e:
+            raise ActionError(str(e)) from e
+    return {"global_structure_resolution_fallback": enabled}
+
+
+def do_start_structure_name_resolve(force: bool = False) -> dict:
+    """Kicks off bulk structure-name resolution as a background job (docs/
+    MANUAL_TRACKING_PLAN.md phase 8) - the HTTP handler must not block on
+    resolving a whole tenant's worth of candidates."""
+    from . import pipeline_runner
+    return pipeline_runner.start_structure_name_resolve(force=force)
+
+
+def do_structure_resolve_status() -> dict:
+    from . import pipeline_runner
+    return pipeline_runner.job_status(pipeline_runner.TOOL_ADMIN, pipeline_runner.JOB_STRUCTURE_RESOLVE)
+
+
+def _structure_resolve_candidates() -> set[int]:
+    """Every location_id >= STRUCTURE_ID_MIN this tenant's own data
+    references (storage.candidate_structure_location_ids), plus the three
+    config locations (home/distribution/invention) - those live in the
+    already-resolved ProductionConfig, not a table, so they're added here
+    rather than in storage.py's own generic collector."""
+    config_locations = {
+        PRODUCTION_CONFIG.home_location_id, PRODUCTION_CONFIG.distribution_source_location_id,
+        PRODUCTION_CONFIG.invention_location_id,
+    }
+    all_ids = storage.candidate_structure_location_ids() | config_locations
+    return {loc for loc in all_ids if loc is not None and loc >= esi_sync.STRUCTURE_ID_MIN}
+
+
+def do_resolve_structure_names(force: bool = False, progress_callback=None) -> dict:
+    """The actual bulk resolution (docs/MANUAL_TRACKING_PLAN.md phase 8,
+    decision 6b - the admin's click is the consent to use their own
+    structure_name_resolution characters for every candidate, not just
+    ones they personally asked about). `force=False` (the default) only
+    resolves candidates missing from the global cache; `force=True`
+    re-resolves everything. Every successful resolution lands in both this
+    tenant's own cache and the global one (storage.set_cached_structure_name/
+    upsert_global_structure_name) - same two-tier ESI logic as
+    do_resolve_structure_name and _discover_structure_names, shared via
+    esi_sync.resolve_structure_ids."""
+    all_candidates = _structure_resolve_candidates()
+    if force:
+        to_resolve = set(all_candidates)
+    else:
+        cached_globally = storage.get_global_structure_names(list(all_candidates))
+        to_resolve = {loc for loc in all_candidates if loc not in cached_globally}
+
+    if progress_callback:
+        progress_callback({"message": f"Resolving {len(to_resolve)} of {len(all_candidates)} candidate(s)"})
+
+    if not to_resolve:
+        return {"candidates": len(all_candidates), "resolved": 0}
+
+    characters = esi_sync.list_capability_characters("structure_name_resolution")
+    if not characters:
+        raise ActionError(
+            "No character has ticked Structure name resolution yet (Characters page, Access section)."
+        )
+
+    client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))
+    corp_roles = esi_sync.corp_roles_for_characters(client, characters)
+    resolved = esi_sync.resolve_structure_ids(client, to_resolve, corp_roles, lambda: characters)
+
+    resolved_count = 0
+    for loc_id in to_resolve:
+        name, solar_system_id = resolved.get(loc_id, (None, None))
+        storage.set_cached_structure_name(loc_id, name, solar_system_id)
+        if name is not None:
+            storage.upsert_global_structure_name(loc_id, name, solar_system_id)
+            resolved_count += 1
+
+    if progress_callback:
+        progress_callback({"message": f"Resolved {resolved_count} of {len(to_resolve)}"})
+    return {"candidates": len(all_candidates), "resolved": resolved_count}
 
 
 def _require_allowlist_type(entry_type: str) -> None:

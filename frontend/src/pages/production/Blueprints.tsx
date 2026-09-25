@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Badge, Stack, Card, Title, Text, Group, NumberInput, Button, ActionIcon, Divider } from '@mantine/core'
+import { Badge, Stack, Card, Title, Text, Group, NumberInput, Button, Select, ActionIcon, Divider } from '@mantine/core'
 import { modals } from '@mantine/modals'
 import { IconTrash, IconCheck } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
@@ -9,6 +9,7 @@ import { productionApi } from '../../api/client'
 import type { ManualBlueprintCopyCostRow, ManualBlueprintMeTeOverrideRow, OwnedBlueprintRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
+import { LocationPicker } from '../../components/LocationPicker'
 import { SearchableSelect } from '../../components/SearchableSelect'
 import { useAction } from '../../hooks/useAction'
 import { useItemNameOptions } from '../../hooks/useStaticOptions'
@@ -308,20 +309,114 @@ function ManualBlueprintMeTeOverridesSection() {
   )
 }
 
+const OWNED_BLUEPRINTS_KEY = [['production', 'blueprints']]
+
 export default function Blueprints() {
   const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['production', 'blueprints'], queryFn: productionApi.ownedBlueprints })
 
+  // Same one-shared-mutation-instance caveat as the sections below.
+  const [pendingRemoveId, setPendingRemoveId] = useState<number | null>(null)
+  const removeManual = useAction('Remove Manual Blueprint', productionApi.removeManualOwnedBlueprint, OWNED_BLUEPRINTS_KEY)
+  const [pendingEditId, setPendingEditId] = useState<number | null>(null)
+  const updateManual = useAction(
+    'Save Manual Blueprint',
+    (args: { manualId: number; materialEfficiency: number; timeEfficiency: number; runs: number | null; quantity: number }) =>
+      productionApi.updateManualOwnedBlueprint(args.manualId, {
+        material_efficiency: args.materialEfficiency, time_efficiency: args.timeEfficiency,
+        runs: args.runs, quantity: args.quantity,
+      }),
+    OWNED_BLUEPRINTS_KEY,
+  )
+
   const columns = useMemo<ColumnDef<OwnedBlueprintRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 260 },
+    { header: 'Item', accessorKey: 'type_name', size: 240 },
     {
-      header: 'Type', accessorKey: 'is_original', size: 100,
+      header: 'Type', accessorKey: 'is_original', size: 90,
       cell: (i) => <Badge color={i.getValue() ? 'accent' : 'info'} variant="light">{i.getValue() ? 'BPO' : 'BPC'}</Badge>,
     },
-    { header: 'Quantity', accessorKey: 'quantity', size: 110, cell: (i) => qty(i.getValue()) },
-    { header: 'ME', accessorKey: 'material_efficiency', size: 80 },
-    { header: 'TE', accessorKey: 'time_efficiency', size: 80 },
-    { header: 'Runs', accessorKey: 'runs', size: 100, cell: (i) => (i.getValue() === null ? '∞' : qty(i.getValue())) },
-  ], [])
+    {
+      header: 'Source', accessorKey: 'source', size: 90,
+      cell: (i) => <Badge color={i.getValue() === 'manual' ? 'warn' : 'gray'} variant="light">{i.getValue()}</Badge>,
+    },
+    {
+      header: 'Quantity', accessorKey: 'quantity', size: 110,
+      cell: (i) => (i.row.original.source === 'manual' ? (
+        <EditableBlueprintCell value={i.getValue()} min={1} ariaLabel={`Quantity for ${i.row.original.type_name}`}
+          isPending={updateManual.isPending && pendingEditId === i.row.original.manual_id}
+          onSave={(v) => {
+            setPendingEditId(i.row.original.manual_id)
+            updateManual.mutate({
+              manualId: i.row.original.manual_id!, materialEfficiency: i.row.original.material_efficiency,
+              timeEfficiency: i.row.original.time_efficiency, runs: i.row.original.runs, quantity: v,
+            })
+          }} />
+      ) : qty(i.getValue())),
+    },
+    {
+      header: 'ME', accessorKey: 'material_efficiency', size: 90,
+      cell: (i) => (i.row.original.source === 'manual' ? (
+        <EditableBlueprintCell value={i.getValue()} min={0} max={10} ariaLabel={`ME for ${i.row.original.type_name}`}
+          isPending={updateManual.isPending && pendingEditId === i.row.original.manual_id}
+          onSave={(v) => {
+            setPendingEditId(i.row.original.manual_id)
+            updateManual.mutate({
+              manualId: i.row.original.manual_id!, materialEfficiency: v,
+              timeEfficiency: i.row.original.time_efficiency, runs: i.row.original.runs,
+              quantity: i.row.original.quantity,
+            })
+          }} />
+      ) : i.getValue()),
+    },
+    {
+      header: 'TE', accessorKey: 'time_efficiency', size: 90,
+      cell: (i) => (i.row.original.source === 'manual' ? (
+        <EditableBlueprintCell value={i.getValue()} min={0} max={20} step={2} ariaLabel={`TE for ${i.row.original.type_name}`}
+          isPending={updateManual.isPending && pendingEditId === i.row.original.manual_id}
+          onSave={(v) => {
+            setPendingEditId(i.row.original.manual_id)
+            updateManual.mutate({
+              manualId: i.row.original.manual_id!, materialEfficiency: i.row.original.material_efficiency,
+              timeEfficiency: v, runs: i.row.original.runs, quantity: i.row.original.quantity,
+            })
+          }} />
+      ) : i.getValue()),
+    },
+    {
+      header: 'Runs', accessorKey: 'runs', size: 100,
+      cell: (i) => {
+        if (i.getValue() === null) return '∞'
+        if (i.row.original.source !== 'manual') return qty(i.getValue())
+        return (
+          <EditableBlueprintCell value={i.getValue()} min={1} ariaLabel={`Runs for ${i.row.original.type_name}`}
+            isPending={updateManual.isPending && pendingEditId === i.row.original.manual_id}
+            onSave={(v) => {
+              setPendingEditId(i.row.original.manual_id)
+              updateManual.mutate({
+                manualId: i.row.original.manual_id!, materialEfficiency: i.row.original.material_efficiency,
+                timeEfficiency: i.row.original.time_efficiency, runs: v, quantity: i.row.original.quantity,
+              })
+            }} />
+        )
+      },
+    },
+    {
+      header: '', id: 'actions', size: 50, enableSorting: false,
+      cell: (i) => (i.row.original.source !== 'manual' ? null : (
+        <ActionIcon size="sm" variant="subtle" color="danger" aria-label={`Remove manual blueprint for ${i.row.original.type_name}`}
+          onClick={() => modals.openConfirmModal({
+            title: 'Remove manual blueprint',
+            children: <Text size="sm">Remove this manual blueprint entry for {i.row.original.type_name}?</Text>,
+            labels: { confirm: 'Remove', cancel: 'Cancel' },
+            confirmProps: { color: 'danger' },
+            onConfirm: () => { setPendingRemoveId(i.row.original.manual_id); removeManual.mutate(i.row.original.manual_id!) },
+          })}
+          loading={removeManual.isPending && pendingRemoveId === i.row.original.manual_id}>
+          <IconTrash size={14} />
+        </ActionIcon>
+      )),
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ], [updateManual, pendingEditId, removeManual, pendingRemoveId])
 
   return (
     <Stack>
@@ -332,8 +427,13 @@ export default function Blueprints() {
       ) : !data || data.length === 0 ? (
         <HintCard>No blueprints found - or not synced yet (&apos;Refresh what I need&apos; in the sidebar).</HintCard>
       ) : (
-        <DataTable data={data} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
+        <DataTable data={data} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt}
+          getRowId={(r) => (r.source === 'manual' ? `manual:${r.manual_id}`
+            : `esi:${r.type_id}:${r.is_original}:${r.material_efficiency}:${r.time_efficiency}:${r.runs}`)} />
       )}
+
+      <Divider />
+      <ManualOwnedBlueprintFormSection />
 
       <Divider />
       <ManualBlueprintCopyCostsSection />
@@ -341,5 +441,109 @@ export default function Blueprints() {
       <Divider />
       <ManualBlueprintMeTeOverridesSection />
     </Stack>
+  )
+}
+
+// Same "local draft state, checkmark appears once it differs, click to
+// save" pattern as EditableCopyCostCell above - shared here for the
+// owned-blueprints table's four manual-row-only editable columns.
+function EditableBlueprintCell({ value, min, max, step, ariaLabel, isPending, onSave }: {
+  value: number
+  min: number
+  max?: number
+  step?: number
+  ariaLabel: string
+  isPending: boolean
+  onSave: (value: number) => void
+}) {
+  const [draft, setDraft] = useState(value)
+  const dirty = draft !== value
+  return (
+    <Group gap={4} wrap="nowrap">
+      <NumberInput value={draft} onChange={(v) => setDraft(v === '' ? min : Number(v))}
+        min={min} max={max} step={step} size="xs" w={90} aria-label={ariaLabel} />
+      {dirty && (
+        <ActionIcon size="sm" variant="filled" color="accent" aria-label={`Save ${ariaLabel}`}
+          onClick={() => onSave(draft)} loading={isPending}>
+          <IconCheck size={14} />
+        </ActionIcon>
+      )}
+    </Group>
+  )
+}
+
+// docs/MANUAL_TRACKING_PLAN.md phase 5 (decision 14) - the add form for a
+// manual blueprint entry; the resulting rows show up in the owned-
+// blueprints table above (source: 'manual'), not in a separate table here.
+function ManualOwnedBlueprintFormSection() {
+  const addManual = useAction(
+    'Add Manual Blueprint',
+    (args: {
+      itemName: string; isOriginal: boolean; materialEfficiency: number; timeEfficiency: number
+      runs: number | null; quantity: number; locationId: number
+    }) => productionApi.addManualOwnedBlueprint({
+      item_name: args.itemName, is_original: args.isOriginal, material_efficiency: args.materialEfficiency,
+      time_efficiency: args.timeEfficiency, runs: args.runs, quantity: args.quantity, location_id: args.locationId,
+    }),
+    OWNED_BLUEPRINTS_KEY,
+  )
+
+  const { data: itemNameOptions } = useItemNameOptions()
+  const blueprintItemOptions = useMemo(
+    () => (itemNameOptions ?? []).map((t) => ({ value: String(t.type_id), label: t.type_name })),
+    [itemNameOptions],
+  )
+  const [itemId, setItemId] = useState<string | null>(null)
+  const [isOriginal, setIsOriginal] = useState(true)
+  const [me, setMe] = useState<number | ''>(0)
+  const [te, setTe] = useState<number | ''>(0)
+  const [runs, setRuns] = useState<number | ''>('')
+  const [quantity, setQuantity] = useState<number | ''>(1)
+  const [locationId, setLocationId] = useState<number | null>(0)
+
+  const canAdd = itemId && me !== '' && te !== '' && quantity !== '' && (isOriginal || runs !== '')
+
+  return (
+    <div>
+      <Title order={5} mb="xs">Manual Blueprints</Title>
+      <Text size="sm" c="dimmed" mb="sm">
+        A blueprint not tracked via ESI - own the item by name (the blueprint itself, e.g. &quot;Rifter
+        Blueprint&quot;, or just the product, e.g. &quot;Rifter&quot;) or a copy with a known run count. A BPO has
+        no run count (infinite); a BPC needs one.
+      </Text>
+
+      <Card withBorder mb="sm">
+        <Stack>
+          <Group grow align="flex-end">
+            <SearchableSelect label="Blueprint or product name" placeholder="Search item…"
+              data={blueprintItemOptions} value={itemId} onChange={setItemId} />
+            <Select label="Type" data={[{ value: 'bpo', label: 'Original (BPO)' }, { value: 'bpc', label: 'Copy (BPC)' }]}
+              value={isOriginal ? 'bpo' : 'bpc'} onChange={(v) => setIsOriginal(v !== 'bpc')} allowDeselect={false} />
+            <LocationPicker label="Location" value={locationId} onChange={setLocationId} allowNone />
+          </Group>
+          <Group grow align="flex-end">
+            <NumberInput label="Material Efficiency" value={me} onChange={(v) => setMe(v === '' ? '' : Number(v))} min={0} max={10} />
+            <NumberInput label="Time Efficiency" value={te} onChange={(v) => setTe(v === '' ? '' : Number(v))} min={0} max={20} step={2} />
+            <NumberInput label="Runs" value={runs} onChange={(v) => setRuns(v === '' ? '' : Number(v))} min={1}
+              disabled={isOriginal} placeholder={isOriginal ? '∞ (BPO)' : undefined} />
+            <NumberInput label="Quantity" value={quantity} onChange={(v) => setQuantity(v === '' ? '' : Number(v))} min={1} />
+            <Button
+              disabled={!canAdd}
+              loading={addManual.isPending}
+              onClick={() => addManual.mutate(
+                {
+                  itemName: blueprintItemOptions.find((o) => o.value === itemId)?.label ?? '',
+                  isOriginal, materialEfficiency: Number(me), timeEfficiency: Number(te),
+                  runs: isOriginal ? null : Number(runs), quantity: Number(quantity), locationId: locationId ?? 0,
+                },
+                { onSuccess: () => { setItemId(null); setMe(0); setTe(0); setRuns(''); setQuantity(1); setLocationId(0) } },
+              )}
+            >
+              Add
+            </Button>
+          </Group>
+        </Stack>
+      </Card>
+    </div>
   )
 }

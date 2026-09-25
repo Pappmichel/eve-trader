@@ -6,6 +6,7 @@ re-test that logic, only the thin wrapper on top of it. Every underlying
 storage/action call is monkeypatched, so these never touch the real DB, ESI,
 or Goonmetrics - safe to run anywhere, no network/auth required.
 """
+import pytest
 from fastapi.testclient import TestClient
 
 from eve_trader import actions, storage
@@ -239,6 +240,147 @@ def test_get_stock_value_action_error_maps_to_400(monkeypatch):
     assert resp.json() == {"detail": "Keine Stock-Ziele konfiguriert."}
 
 
+# ------------------------------------------ manual stock (phase 3)
+def test_set_manual_stock_passes_location_id(monkeypatch):
+    captured = {}
+
+    def _set(type_id, count, location_id):
+        captured.update(type_id=type_id, count=count, location_id=location_id)
+        return {"type_id": type_id, "count": count, "location_id": location_id}
+    monkeypatch.setattr(production_actions, "do_set_manual_stock", _set)
+
+    resp = client.post("/api/production/manual-stock", json={"type_id": 34, "count": 100, "location_id": 1000000000001})
+
+    assert resp.status_code == 200
+    assert captured == {"type_id": 34, "count": 100, "location_id": 1000000000001}
+
+
+def test_set_manual_stock_defaults_location_id_to_zero(monkeypatch):
+    captured = {}
+
+    def _set(type_id, count, location_id):
+        captured.update(location_id=location_id)
+        return {}
+    monkeypatch.setattr(production_actions, "do_set_manual_stock", _set)
+
+    resp = client.post("/api/production/manual-stock", json={"type_id": 34, "count": 100})
+
+    assert resp.status_code == 200
+    assert captured == {"location_id": 0}
+
+
+def test_get_manual_stock_entries_serializes_rows(monkeypatch):
+    monkeypatch.setattr(production_actions, "do_list_manual_stock_entries", lambda: {"rows": [
+        {"type_id": 34, "type_name": "Tritanium", "location_id": 1000000000001, "count": 100.0},
+    ]})
+
+    resp = client.get("/api/production/manual-stock/entries")
+
+    assert resp.status_code == 200
+    assert resp.json() == [{"type_id": 34, "type_name": "Tritanium", "location_id": 1000000000001, "count": 100.0}]
+
+
+def test_add_manual_stock_entry_passes_body(monkeypatch):
+    captured = {}
+
+    def _add(item_name, count, location_id):
+        captured.update(item_name=item_name, count=count, location_id=location_id)
+        return {"type_id": 34, "type_name": item_name, "location_id": location_id, "count": count}
+    monkeypatch.setattr(production_actions, "do_add_manual_stock_entry", _add)
+
+    resp = client.post("/api/production/manual-stock/entries",
+                        json={"item_name": "Tritanium", "count": 100, "location_id": 1000000000001})
+
+    assert resp.status_code == 200
+    assert captured == {"item_name": "Tritanium", "count": 100, "location_id": 1000000000001}
+
+
+def test_add_manual_stock_entry_action_error_maps_to_400(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise ActionError("No type found for 'Bogus Item'. Refresh SDE first?")
+    monkeypatch.setattr(production_actions, "do_add_manual_stock_entry", _raise)
+
+    resp = client.post("/api/production/manual-stock/entries", json={"item_name": "Bogus Item", "count": 1})
+
+    assert resp.status_code == 400
+    assert resp.json() == {"detail": "No type found for 'Bogus Item'. Refresh SDE first?"}
+
+
+def test_remove_manual_stock_entry_passes_path_params(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(production_actions, "do_remove_manual_stock_entry",
+                         lambda type_id, location_id: captured.update(type_id=type_id, location_id=location_id))
+
+    resp = client.delete("/api/production/manual-stock/entries/34/1000000000001")
+
+    assert resp.status_code == 200
+    assert captured == {"type_id": 34, "location_id": 1000000000001}
+
+
+def test_preview_asset_paste_passes_body(monkeypatch):
+    captured = {}
+
+    def _preview(text, location_id, mode):
+        captured.update(text=text, location_id=location_id, mode=mode)
+        return {"rows": [], "skipped_blueprints": [], "unresolved": [], "errors": []}
+    monkeypatch.setattr(production_actions, "do_preview_asset_paste", _preview)
+
+    resp = client.post("/api/production/manual-stock/paste/preview",
+                        json={"text": "Tritanium\t1\t\t\t\t\t\t\t", "location_id": 1000000000001, "mode": "merge"})
+
+    assert resp.status_code == 200
+    assert captured == {"text": "Tritanium\t1\t\t\t\t\t\t\t", "location_id": 1000000000001, "mode": "merge"}
+
+
+def test_preview_asset_paste_defaults_location_and_mode(monkeypatch):
+    captured = {}
+
+    def _preview(text, location_id, mode):
+        captured.update(location_id=location_id, mode=mode)
+        return {"rows": [], "skipped_blueprints": [], "unresolved": [], "errors": []}
+    monkeypatch.setattr(production_actions, "do_preview_asset_paste", _preview)
+
+    resp = client.post("/api/production/manual-stock/paste/preview", json={"text": "Tritanium\t1\t\t\t\t\t\t\t"})
+
+    assert resp.status_code == 200
+    assert captured == {"location_id": 0, "mode": "merge"}
+
+
+def test_preview_asset_paste_action_error_maps_to_400(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise ActionError("Paste is empty - copy items from an Inventory window's list view first.")
+    monkeypatch.setattr(production_actions, "do_preview_asset_paste", _raise)
+
+    resp = client.post("/api/production/manual-stock/paste/preview", json={"text": "x"})
+
+    assert resp.status_code == 400
+
+
+def test_commit_asset_paste_passes_body(monkeypatch):
+    captured = {}
+
+    def _commit(text, location_id, mode):
+        captured.update(text=text, location_id=location_id, mode=mode)
+        return {"applied": 1, "skipped_blueprints": [], "unresolved": [], "errors": []}
+    monkeypatch.setattr(production_actions, "do_commit_asset_paste", _commit)
+
+    resp = client.post("/api/production/manual-stock/paste/commit",
+                        json={"text": "Tritanium\t1\t\t\t\t\t\t\t", "location_id": 1000000000001, "mode": "replace"})
+
+    assert resp.status_code == 200
+    assert captured == {"text": "Tritanium\t1\t\t\t\t\t\t\t", "location_id": 1000000000001, "mode": "replace"}
+    assert resp.json()["applied"] == 1
+
+
+def test_paste_text_over_size_limit_is_rejected(monkeypatch):
+    monkeypatch.setattr(production_actions, "do_preview_asset_paste",
+                         lambda *a, **k: pytest.fail("must not reach the action - rejected by request validation"))
+
+    resp = client.post("/api/production/manual-stock/paste/preview", json={"text": "x" * 500_001})
+
+    assert resp.status_code == 422
+
+
 def test_set_character_slot_excluded_passes_path_and_body(monkeypatch):
     # GitHub issue #39.
     captured = {}
@@ -265,6 +407,210 @@ def test_get_owned_blueprints(monkeypatch):
     assert resp.status_code == 200
     assert resp.json()[0]["type_name"] == "Rifter Blueprint"
     assert resp.json()[0]["runs"] is None
+
+
+def test_add_manual_owned_blueprint_passes_body(monkeypatch):
+    captured = {}
+
+    def _add(**kwargs):
+        captured.update(kwargs)
+        return {"manual_id": 7, "type_id": 690, "type_name": "Rifter Blueprint", "is_original": True,
+                "material_efficiency": 10, "time_efficiency": 20, "runs": None, "quantity": 1, "location_id": 0}
+    monkeypatch.setattr(production_actions, "do_add_manual_owned_blueprint", _add)
+
+    resp = client.post("/api/production/manual-blueprints", json={
+        "item_name": "Rifter Blueprint", "is_original": True, "material_efficiency": 10,
+        "time_efficiency": 20, "runs": None, "quantity": 1, "location_id": 0,
+    })
+
+    assert resp.status_code == 200
+    assert captured == {"item_name": "Rifter Blueprint", "is_original": True, "material_efficiency": 10,
+                         "time_efficiency": 20, "runs": None, "quantity": 1, "location_id": 0}
+    assert resp.json()["manual_id"] == 7
+
+
+def test_add_manual_owned_blueprint_action_error_maps_to_400(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise ActionError("No type found for 'Bogus'. Refresh SDE first?")
+    monkeypatch.setattr(production_actions, "do_add_manual_owned_blueprint", _raise)
+
+    resp = client.post("/api/production/manual-blueprints", json={
+        "item_name": "Bogus", "is_original": True, "material_efficiency": 10, "time_efficiency": 20,
+    })
+
+    assert resp.status_code == 400
+
+
+def test_update_manual_owned_blueprint_passes_path_and_body(monkeypatch):
+    captured = {}
+
+    def _update(**kwargs):
+        captured.update(kwargs)
+        return {"manual_id": kwargs["manual_id"]}
+    monkeypatch.setattr(production_actions, "do_update_manual_owned_blueprint", _update)
+
+    resp = client.patch("/api/production/manual-blueprints/7",
+                         json={"material_efficiency": 6, "time_efficiency": 12, "runs": 10, "quantity": 3})
+
+    assert resp.status_code == 200
+    assert captured == {"manual_id": 7, "material_efficiency": 6, "time_efficiency": 12, "runs": 10, "quantity": 3}
+
+
+def test_remove_manual_owned_blueprint_passes_path_param(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(production_actions, "do_remove_manual_owned_blueprint",
+                         lambda manual_id: captured.update(manual_id=manual_id))
+
+    resp = client.delete("/api/production/manual-blueprints/7")
+
+    assert resp.status_code == 200
+    assert captured == {"manual_id": 7}
+
+
+def test_add_manual_industry_job_passes_body(monkeypatch):
+    captured = {}
+
+    def _add(**kwargs):
+        captured.update(kwargs)
+        return {"manual_id": 7, "type_id": 587, "type_name": "Rifter", "activity_id": 1,
+                "quantity": 50.0, "runs": 10, "location_id": 0, "ready_at": None}
+    monkeypatch.setattr(production_actions, "do_add_manual_industry_job", _add)
+
+    resp = client.post("/api/production/manual-jobs", json={
+        "item_name": "Rifter", "runs": 10, "location_id": 1000000000001, "ready_at": None,
+    })
+
+    assert resp.status_code == 200
+    assert captured == {"item_name": "Rifter", "quantity": None, "runs": 10,
+                         "location_id": 1000000000001, "ready_at": None}
+
+
+def test_add_manual_industry_job_action_error_maps_to_400(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise ActionError("Provide exactly one of quantity or runs.")
+    monkeypatch.setattr(production_actions, "do_add_manual_industry_job", _raise)
+
+    resp = client.post("/api/production/manual-jobs", json={"item_name": "Rifter"})
+
+    assert resp.status_code == 400
+
+
+def test_update_manual_industry_job_passes_path_and_body(monkeypatch):
+    """Only fields actually present in the request body are forwarded
+    (Pydantic's exclude_unset=True) - do_update_manual_industry_job's own
+    _UNSET-sentinel defaults tell "omitted" (keep existing) apart from
+    "sent as null" (clear it), which passing every field unconditionally
+    would collapse (confirmed real gap, code review 2026-09-25)."""
+    captured = {}
+
+    def _update(**kwargs):
+        captured.update(kwargs)
+        return {"manual_id": kwargs["manual_id"]}
+    monkeypatch.setattr(production_actions, "do_update_manual_industry_job", _update)
+
+    resp = client.patch("/api/production/manual-jobs/7", json={"runs": 20})
+
+    assert resp.status_code == 200
+    assert captured == {"manual_id": 7, "runs": 20}
+
+
+def test_update_manual_industry_job_clears_ready_at_only_when_sent_as_null(monkeypatch):
+    captured = {}
+
+    def _update(**kwargs):
+        captured.update(kwargs)
+        return {"manual_id": kwargs["manual_id"]}
+    monkeypatch.setattr(production_actions, "do_update_manual_industry_job", _update)
+
+    resp = client.patch("/api/production/manual-jobs/7", json={"ready_at": None})
+
+    assert resp.status_code == 200
+    assert captured == {"manual_id": 7, "ready_at": None}
+
+
+def test_remove_manual_industry_job_passes_path_param(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(production_actions, "do_remove_manual_industry_job",
+                         lambda manual_id: captured.update(manual_id=manual_id))
+
+    resp = client.delete("/api/production/manual-jobs/7")
+
+    assert resp.status_code == 200
+    assert captured == {"manual_id": 7}
+
+
+def test_complete_manual_industry_job_passes_path_and_body(monkeypatch):
+    captured = {}
+
+    def _complete(**kwargs):
+        captured.update(kwargs)
+        return {"manual_id": kwargs["manual_id"], "location_id": kwargs["location_id"] or 0}
+    monkeypatch.setattr(production_actions, "do_complete_manual_industry_job", _complete)
+
+    resp = client.post("/api/production/manual-jobs/7/complete", json={"location_id": 1000000000001})
+
+    assert resp.status_code == 200
+    assert captured == {"manual_id": 7, "location_id": 1000000000001}
+
+
+def test_complete_manual_industry_job_defaults_location_to_none(monkeypatch):
+    captured = {}
+
+    def _complete(**kwargs):
+        captured.update(kwargs)
+        return {"manual_id": kwargs["manual_id"], "location_id": 0}
+    monkeypatch.setattr(production_actions, "do_complete_manual_industry_job", _complete)
+
+    resp = client.post("/api/production/manual-jobs/7/complete", json={})
+
+    assert resp.status_code == 200
+    assert captured == {"manual_id": 7, "location_id": None}
+
+
+def test_get_manual_listed_stock_serializes_rows(monkeypatch):
+    monkeypatch.setattr(production_actions, "do_list_manual_listed_stock", lambda: {"rows": [
+        {"type_id": 34, "market": "home", "quantity": 100.0, "updated_at": "2026-01-01T00:00:00+00:00"},
+    ]})
+
+    resp = client.get("/api/production/manual-listed-stock")
+
+    assert resp.status_code == 200
+    assert resp.json() == [{"type_id": 34, "market": "home", "quantity": 100.0, "updated_at": "2026-01-01T00:00:00+00:00"}]
+
+
+def test_set_manual_listed_stock_passes_body(monkeypatch):
+    captured = {}
+
+    def _set(type_id, market, quantity):
+        captured.update(type_id=type_id, market=market, quantity=quantity)
+        return {"type_id": type_id, "market": market, "quantity": quantity}
+    monkeypatch.setattr(production_actions, "do_set_manual_listed_stock", _set)
+
+    resp = client.post("/api/production/manual-listed-stock", json={"type_id": 34, "market": "home", "quantity": 100.0})
+
+    assert resp.status_code == 200
+    assert captured == {"type_id": 34, "market": "home", "quantity": 100.0}
+
+
+def test_set_manual_listed_stock_action_error_maps_to_400(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise ActionError("Market must be 'home' or 'jita'.")
+    monkeypatch.setattr(production_actions, "do_set_manual_listed_stock", _raise)
+
+    resp = client.post("/api/production/manual-listed-stock", json={"type_id": 34, "market": "bogus", "quantity": 1})
+
+    assert resp.status_code == 400
+
+
+def test_clear_manual_listed_stock_passes_path_params(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(production_actions, "do_clear_manual_listed_stock",
+                         lambda type_id, market: captured.update(type_id=type_id, market=market))
+
+    resp = client.delete("/api/production/manual-listed-stock/34/home")
+
+    assert resp.status_code == 200
+    assert captured == {"type_id": 34, "market": "home"}
 
 
 def test_get_manual_blueprint_copy_costs(monkeypatch):
@@ -1266,6 +1612,59 @@ def test_auth_callback_network_failure_redirects_with_error_instead_of_500(monke
 
     assert resp.status_code in (302, 307)
     assert "auth=error" in resp.headers["location"]
+
+
+# --------------------------------------------------- locations (phase 2)
+def test_search_locations_passes_query_and_serializes_rows(monkeypatch):
+    captured = {}
+
+    def _search(query):
+        captured["query"] = query
+        return {"rows": [{"location_id": 60000000001, "name": "C-J Keepstar", "kind": "structure"}]}
+    monkeypatch.setattr(production_actions, "do_search_locations", _search)
+
+    resp = client.get("/api/production/locations/search?q=Keepstar")
+
+    assert resp.status_code == 200
+    assert captured == {"query": "Keepstar"}
+    assert resp.json() == [{"location_id": 60000000001, "name": "C-J Keepstar", "kind": "structure"}]
+
+
+def test_set_manual_location_name_passes_body(monkeypatch):
+    captured = {}
+
+    def _set(location_id, name):
+        captured.update(location_id=location_id, name=name)
+        return {"location_id": location_id, "name": name}
+    monkeypatch.setattr(production_actions, "do_set_manual_location_name", _set)
+
+    resp = client.post("/api/production/locations/manual-names", json={"location_id": 1000000000001, "name": "My POS"})
+
+    assert resp.status_code == 200
+    assert captured == {"location_id": 1000000000001, "name": "My POS"}
+    assert resp.json() == {"location_id": 1000000000001, "name": "My POS"}
+
+
+def test_set_manual_location_name_action_error_maps_to_400(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise ActionError("Name must not be empty.")
+    monkeypatch.setattr(production_actions, "do_set_manual_location_name", _raise)
+
+    resp = client.post("/api/production/locations/manual-names", json={"location_id": 1000000000001, "name": ""})
+
+    assert resp.status_code == 400
+    assert resp.json() == {"detail": "Name must not be empty."}
+
+
+def test_remove_manual_location_name_passes_path_param(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(production_actions, "do_remove_manual_location_name",
+                         lambda location_id: captured.update(location_id=location_id) or {"location_id": location_id})
+
+    resp = client.delete("/api/production/locations/manual-names/1000000000001")
+
+    assert resp.status_code == 200
+    assert captured == {"location_id": 1000000000001}
 
 
 # ---------------------------------------------------------------- sorting
