@@ -5089,13 +5089,3 @@ def delete_manual_item_price(type_id: int) -> None:
         conn.execute("DELETE FROM manual_item_prices WHERE type_id = ?", (type_id,))
 
 
-def latest_portfolio_snapshot_taken_at() -> Optional[str]:
-    """`taken_at` of the newest snapshot row, for the scheduler's own
-    `_hours_since`-based due check - mirrors newest_esi_freshness_success_at's
-    own shape/reasoning above."""
-    with connect() as conn:
-        row = conn.execute("SELECT MAX(taken_at) FROM portfolio_snapshots").fetchone()
-    if row is None or row[0] is None:
-        return None
-    ts = row[0]
-    return ts.isoformat() if hasattr(ts, "isoformat") else str(ts)

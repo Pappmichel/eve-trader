@@ -1,8 +1,7 @@
 """storage.py's portfolio_snapshots functions (PORTFOLIO_REWORK_PLAN.md
 section 5) - real Postgres, since these are plain SQL upsert/read wrappers
 with no business logic worth mocking."""
-import datetime as dt
-from datetime import date, timedelta
+from datetime import date
 
 import pytest
 
@@ -65,17 +64,6 @@ def test_latest_portfolio_snapshot_date_returns_newest(tenant):
     storage.upsert_portfolio_snapshot(date(2026, 9, 1), _VALUES)
     storage.upsert_portfolio_snapshot(date(2026, 9, 5), _VALUES)
     assert storage.latest_portfolio_snapshot_date() == date(2026, 9, 5)
-
-
-def test_latest_portfolio_snapshot_taken_at_none_when_empty(tenant):
-    assert storage.latest_portfolio_snapshot_taken_at() is None
-
-
-def test_latest_portfolio_snapshot_taken_at_reflects_upsert(tenant):
-    storage.upsert_portfolio_snapshot(date.today(), _VALUES)
-    taken_at = storage.latest_portfolio_snapshot_taken_at()
-    assert taken_at is not None
-    assert dt.datetime.fromisoformat(taken_at).tzinfo is not None
 
 
 def test_snapshots_isolated_between_tenants(tenant_pair):

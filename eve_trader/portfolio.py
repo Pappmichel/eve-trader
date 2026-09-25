@@ -175,7 +175,27 @@ def total_wealth(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     sell for, but Goonmetrics has one quote per type_id, not per ME/TE
     level - every copy of a blueprint type is valued at the same market
     quote regardless of its own research level. The manual-price override
-    exists partly to let a user correct an individual high-value BPO."""
+    exists partly to let a user correct an individual high-value BPO.
+
+    A second, cruder approximation for the same reason: a BPC is priced
+    identically to a BPO of the same type, even though a copy is normally
+    worth only a fraction of an original - Goonmetrics has no separate BPC
+    quote to price it against. This can materially overstate Total Wealth
+    for a character holding many copies; correcting it (e.g. treating an
+    unpriced-by-manual-override BPC as unpriced rather than BPO-priced, or
+    a dedicated copy-value discount) is a real follow-up, not done here
+    without confirming the right approach with the user first.
+
+    Sharing scope note (working as designed, not a bug, but easy to
+    misread): a character who shares assets but not blueprints with
+    Portfolio contributes their non-blueprint assets to wealth_assets_value
+    but their BPOs/BPCs do not appear anywhere in Total Wealth at all
+    (neither counted as assets - load_all_assets always excludes blueprint
+    item_ids - nor as blueprints, since that requires its own separate
+    opt-in). Each data kind's sharing is independent by design (section 4);
+    this is just that design's visible edge case for blueprints
+    specifically, since (unlike assets/wallet) there's no partial-credit
+    fallback for them."""
     from .esi_data.access import shared_owner_ids
 
     asset_char_ids = shared_owner_ids("assets", "portfolio", "character")
