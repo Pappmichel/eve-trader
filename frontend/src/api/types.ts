@@ -558,6 +558,28 @@ export interface PortfolioSnapshotRow {
   wealth_wallet_balance: number | null
 }
 
+export interface CharacterMissingWalletScope {
+  character_id: number
+  character_name: string
+}
+
+export interface TotalWealth {
+  total_wealth: number
+  wealth_assets_value: number
+  wealth_blueprints_value: number
+  wealth_wallet_balance: number
+  wealth_priced_items: number
+  wealth_unpriced_items: number
+  characters_missing_wallet_scope: CharacterMissingWalletScope[]
+}
+
+export interface ManualItemPriceRow {
+  type_id: number
+  type_name: string
+  price: number
+  updated_at: string
+}
+
 export interface ProductionPlan {
   inventory: InventoryRow[]
   buy_list: BuyListEntry[]
