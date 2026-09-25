@@ -13,6 +13,8 @@ claim the same corp.
 """
 from __future__ import annotations
 
+from typing import Callable, Optional
+
 from .. import storage
 from ..actions import ActionError
 from ..auth import TokenManager
@@ -185,41 +187,58 @@ def _industry_job_rows(jobs: list[dict], installer_names: dict[int, str]) -> lis
     ]
 
 
-def _discover_structure_names(client: ESIClient, all_assets: list[dict], corp_roles: dict[int, str]) -> dict:
-    """Proactive bulk fill of storage.structure_names, driven entirely by
-    this sync's own already-fetched asset data - no extra ESI calls to
-    *discover* location_ids, since character_assets/corporation_assets
-    already return location_id on every asset row (including corp Office
-    folder entries - there's no separate ESI "offices" endpoint, offices are
-    just root-level asset rows at a station). Only location_ids not already
-    cached (storage.get_cached_structure_names) are attempted - this is
-    meant to be cheap and incremental every sync tick, not a forced
-    re-resolve (use POST resolve-structure-name with force=True for that).
+def corp_roles_for_characters(client: ESIClient, characters: list[tuple[str, int, str]]) -> dict[int, str]:
+    """{corporation_id: role} for the first character (in list order) that
+    belongs to each distinct corp - resolve_structure_ids' corp-structure-
+    list tier only needs to try each corp once, no matter how many
+    registered characters share it. Shared by sync_esi (building corp_roles
+    for _discover_structure_names) and production.actions.
+    do_resolve_structure_name (its own on-demand resolve and its
+    operator-fallback tier). Never raises - a character whose corp lookup
+    fails is just skipped, same as every other ESI call in this module."""
+    corp_roles: dict[int, str] = {}
+    for role, character_id, _name in characters:
+        try:
+            corporation_id = client.character_public_info(character_id)["corporation_id"]
+        except ESIError:
+            continue
+        corp_roles.setdefault(corporation_id, role)
+    return corp_roles
 
-    Two-tier resolution, same preference order as do_resolve_structure_name:
+
+def resolve_structure_ids(
+    client: ESIClient, location_ids: set[int], corp_roles: dict[int, str],
+    get_characters: Callable[[], list[tuple[str, int, str]]],
+) -> dict[int, tuple[Optional[str], Optional[int]]]:
+    """Two-tier structure-name resolution, extracted from
+    _discover_structure_names (docs/MANUAL_TRACKING_PLAN.md phase 2) so
+    production.actions.do_resolve_structure_name's own on-demand resolve
+    and its operator-fallback tier share the exact same logic instead of a
+    second hand-rolled copy:
     1. corporation_structures(corp_id) once per distinct corp in corp_roles
        - returns every structure that corp owns, with its name included, in
        one call, so this alone typically resolves most/all of a tenant's
        own structures.
     2. get_structure_name(location_id) per character, per still-unresolved
-       ID, stopping at the first character that can see it - the expensive
+       id, stopping at the first character that can see it - the expensive
        fallback, only reached for structures owned by a different corp than
        any registered character's (e.g. a structure a character's own
        assets merely sit inside, owned by someone else).
 
+    `get_characters` is called at most once, and only if tier 1 leaves
+    something unresolved - _discover_structure_names' own characters list
+    is itself a DB read (list_capability_characters), so a caller whose
+    corp-structures tier already resolved everything must not pay for it
+    (do_resolve_structure_name already has its characters list in hand
+    either way, so it just passes `lambda: characters`).
+
     Never raises - every ESIError is caught and skipped, matching sync_esi's
-    "one failure must not abort the whole sync" contract; an unresolved ID
-    just stays unresolved for next sync's retry."""
-    candidate_ids = {a["location_id"] for a in all_assets if a["location_id"] >= STRUCTURE_ID_MIN}
-    if not candidate_ids:
-        return {"candidates": 0, "resolved": 0}
-
-    cached = storage.get_cached_structure_names(list(candidate_ids))
-    unresolved = {loc_id for loc_id in candidate_ids if not cached[loc_id][0]}
-    if not unresolved:
-        return {"candidates": len(candidate_ids), "resolved": 0}
-
-    resolved_count = 0
+    "one failure must not abort the whole sync" contract. Returns only the
+    ids it actually resolved; a location_id absent from the result stays
+    unresolved and it's the caller's job to record that (a cache write, a
+    fallback attempt, ...) - this function itself never touches storage."""
+    unresolved = set(location_ids)
+    resolved: dict[int, tuple[Optional[str], Optional[int]]] = {}
 
     for corporation_id, role in corp_roles.items():
         if not unresolved:
@@ -231,28 +250,65 @@ def _discover_structure_names(client: ESIClient, all_assets: list[dict], corp_ro
         for structure in structures:
             loc_id = structure.get("structure_id")
             if loc_id in unresolved:
-                storage.set_cached_structure_name(loc_id, structure.get("name"), structure.get("solar_system_id"))
+                resolved[loc_id] = (structure.get("name"), structure.get("solar_system_id"))
                 unresolved.discard(loc_id)
-                resolved_count += 1
 
     if unresolved:
-        # structure_name_resolution capability, not producer sharing - see
-        # list_capability_characters' own docstring (Known gap 4, closed).
-        characters = list_capability_characters("structure_name_resolution")
+        characters = get_characters()
         for loc_id in list(unresolved):
-            name = None
-            solar_system_id = None
-            for role, character_id, _ in characters:
+            for role, character_id, _name in characters:
                 try:
                     info = client.get_structure_name(loc_id, auth_role=role)
-                    name = info.get("name")
-                    solar_system_id = info.get("solar_system_id")
-                    break
                 except ESIError:
                     continue
-            storage.set_cached_structure_name(loc_id, name, solar_system_id)
-            if name is not None:
-                resolved_count += 1
+                resolved[loc_id] = (info.get("name"), info.get("solar_system_id"))
+                break
+
+    return resolved
+
+
+def _discover_structure_names(client: ESIClient, all_assets: list[dict], corp_roles: dict[int, str]) -> dict:
+    """Proactive bulk fill of storage.structure_names (and, on success,
+    storage.global_structure_names - decision Q2), driven entirely by this
+    sync's own already-fetched asset data - no extra ESI calls to *discover*
+    location_ids, since character_assets/corporation_assets already return
+    location_id on every asset row (including corp Office folder entries -
+    there's no separate ESI "offices" endpoint, offices are just root-level
+    asset rows at a station). Only location_ids not already cached
+    (storage.get_cached_structure_names) are attempted - this is meant to be
+    cheap and incremental every sync tick, not a forced re-resolve (use POST
+    resolve-structure-name with force=True for that).
+
+    The actual two-tier resolution is resolve_structure_ids above, same
+    preference order as production.actions.do_resolve_structure_name.
+    Never raises - every ESIError is caught and skipped inside
+    resolve_structure_ids, matching sync_esi's "one failure must not abort
+    the whole sync" contract; an unresolved ID just stays unresolved for
+    next sync's retry."""
+    candidate_ids = {a["location_id"] for a in all_assets if a["location_id"] >= STRUCTURE_ID_MIN}
+    if not candidate_ids:
+        return {"candidates": 0, "resolved": 0}
+
+    cached = storage.get_cached_structure_names(list(candidate_ids))
+    unresolved = {loc_id for loc_id in candidate_ids if not cached[loc_id][0]}
+    if not unresolved:
+        return {"candidates": len(candidate_ids), "resolved": 0}
+
+    # structure_name_resolution capability, not producer sharing - see
+    # list_capability_characters' own docstring (Known gap 4, closed).
+    # Fetched lazily (only if tier 1 leaves something unresolved) via
+    # resolve_structure_ids' own get_characters callable.
+    resolved = resolve_structure_ids(
+        client, unresolved, corp_roles, lambda: list_capability_characters("structure_name_resolution"),
+    )
+
+    resolved_count = 0
+    for loc_id in unresolved:
+        name, solar_system_id = resolved.get(loc_id, (None, None))
+        storage.set_cached_structure_name(loc_id, name, solar_system_id)
+        if name is not None:
+            storage.upsert_global_structure_name(loc_id, name, solar_system_id)
+            resolved_count += 1
 
     return {"candidates": len(candidate_ids), "resolved": resolved_count}
 
@@ -287,12 +343,6 @@ def sync_esi() -> dict:
     # structure_name_resolution capability characters, not producer sharing
     # (Known gap 4, closed) - a character resolves structure names for
     # Production without ever sharing Assets/Market Orders with it.
-    corp_roles: dict[int, str] = {}
-    for role, character_id, _name in list_capability_characters("structure_name_resolution", tm):
-        try:
-            corporation_id = client.character_public_info(character_id)["corporation_id"]
-        except ESIError:
-            continue
-        corp_roles.setdefault(corporation_id, role)
+    corp_roles = corp_roles_for_characters(client, list_capability_characters("structure_name_resolution", tm))
     result["structure_names"] = _discover_structure_names(client, location_ids, corp_roles)
     return result

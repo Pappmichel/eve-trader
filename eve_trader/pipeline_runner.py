@@ -57,6 +57,7 @@ JOB_PIPELINE = "pipeline"
 JOB_SYNC_CONTRACTS = "sync_contracts"
 JOB_SDE_PREVIEW = "sde_preview"
 JOB_DISCOVER_BUILD_CANDIDATES = "discover_build_candidates"
+JOB_STRUCTURE_RESOLVE = "structure_resolve"  # docs/MANUAL_TRACKING_PLAN.md phase 8
 
 _JOB_LABELS: dict[tuple[str, str], str] = {
     (TOOL_TRADING, JOB_REFRESH_AND_PRUNE): "Search + Add + Clean Up",
@@ -64,6 +65,7 @@ _JOB_LABELS: dict[tuple[str, str], str] = {
     (TOOL_TRADING, JOB_PIPELINE): "Run Complete Pipeline",
     (TOOL_DOCTRINE, JOB_SYNC_CONTRACTS): "Sync Contracts",
     (TOOL_ADMIN, JOB_SDE_PREVIEW): "Preview SDE",
+    (TOOL_ADMIN, JOB_STRUCTURE_RESOLVE): "Resolve Structure Names",
     (TOOL_PRODUCTION, JOB_DISCOVER_BUILD_CANDIDATES): "Discover Build Candidates",
 }
 
@@ -117,19 +119,27 @@ def start_job(tool: str, job_name: str, label: str, worker: Worker) -> dict:
     return {"run_id": run_id, "status": "running", "job_name": job_name, "tool": tool}
 
 
-def job_status(tool: str) -> dict:
+def job_status(tool: str, job_name: str | None = None) -> dict:
     """Currently-running job for `tool` on this tenant, else this tool's
     latest finished row, else idle. A different tool's running job is
     intentionally not returned here (the shared lock still 409s a start);
-    each UI poller only shows its own progress."""
+    each UI poller only shows its own progress.
+
+    `job_name` (docs/MANUAL_TRACKING_PLAN.md phase 8) narrows both the
+    "currently running" check and the latest-finished fallback to one
+    specific job within `tool` - needed once a tool has more than one
+    distinct background job sharing its own admin status slot (SDE preview
+    vs. structure-name resolution), so each page's poller only ever shows
+    its own job's progress, not whichever of the tool's jobs ran last."""
     running = storage.get_running_pipeline_run()
     running_tool = (running or {}).get("tool") or TOOL_TRADING
-    if running and running_tool == tool:
+    running_job_name = (running or {}).get("job_name")
+    if running and running_tool == tool and (job_name is None or running_job_name == job_name):
         return running
-    row = storage.get_latest_pipeline_run(tool=tool)
+    row = storage.get_latest_pipeline_run(job_name=job_name, tool=tool)
     if row is None:
         return {
-            "run_id": None, "job_name": None, "tool": tool, "status": "idle",
+            "run_id": None, "job_name": job_name, "tool": tool, "status": "idle",
             "progress": None, "result": None, "error": None,
         }
     return row
@@ -189,6 +199,19 @@ def start_sde_preview() -> dict:
         TOOL_ADMIN, JOB_SDE_PREVIEW,
         _JOB_LABELS[(TOOL_ADMIN, JOB_SDE_PREVIEW)],
         lambda cb: admin_mod.do_preview_sde(progress_callback=cb),
+    )
+
+
+def start_structure_name_resolve(force: bool = False) -> dict:
+    """Background Admin bulk structure-name resolution (docs/
+    MANUAL_TRACKING_PLAN.md phase 8) - resolves every candidate location_id
+    from the admin tenant's own data, writing hits into both the tenant's
+    own cache and the global one."""
+    from . import admin as admin_mod
+    return start_job(
+        TOOL_ADMIN, JOB_STRUCTURE_RESOLVE,
+        _JOB_LABELS[(TOOL_ADMIN, JOB_STRUCTURE_RESOLVE)],
+        lambda cb: admin_mod.do_resolve_structure_names(force=force, progress_callback=cb),
     )
 
 

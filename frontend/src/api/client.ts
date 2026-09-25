@@ -170,6 +170,7 @@ export const productionApi = {
   sdeFreshness: () => get<T.SdeFreshness>('/api/production/sde/freshness'),
   stockTargets: () => get<T.StockTarget[]>('/api/production/stock-targets'),
   manualStock: () => get<Record<string, number>>('/api/production/manual-stock'),
+  manualStockEntries: () => get<T.ManualStockEntry[]>('/api/production/manual-stock/entries'),
   manualBuildBuy: () => get<Record<string, string>>('/api/production/manual-build-buy'),
   selectedDecryptors: () => get<Record<string, string>>('/api/production/selected-decryptors'),
   plan: () => get<T.ProductionPlan | null>('/api/production/plan'),
@@ -194,6 +195,27 @@ export const productionApi = {
   searchAssetLocations: (itemName: string) =>
     post<T.AssetLocationSearchResult>('/api/production/asset-locations', { item_name: itemName }),
   jobs: () => get<T.IndustryJobRow[]>('/api/production/jobs'),
+  // Manual industry jobs (docs/MANUAL_TRACKING_PLAN.md phase 6) - rows come
+  // back mixed into jobs() above (source: 'manual'); these are the write
+  // endpoints for that subset. Exactly one of quantity/runs.
+  addManualIndustryJob: (req: {
+    item_name: string
+    quantity: number | null
+    runs: number | null
+    location_id: number
+    ready_at: string | null
+  }) => post<{ manual_id: number }>('/api/production/manual-jobs', req),
+  updateManualIndustryJob: (manualId: number, req: {
+    quantity: number | null
+    runs: number | null
+    location_id: number | null
+    ready_at: string | null
+  }) => patch<{ manual_id: number }>(`/api/production/manual-jobs/${manualId}`, req),
+  removeManualIndustryJob: (manualId: number) => del(`/api/production/manual-jobs/${manualId}`),
+  completeManualIndustryJob: (manualId: number, locationId: number | null) =>
+    post<{ manual_id: number; location_id: number }>(
+      `/api/production/manual-jobs/${manualId}/complete`, { location_id: locationId },
+    ),
   slots: () => get<T.CharacterSlotRow[]>('/api/production/slots'),
   setCharacterSlotExcluded: (characterName: string, excluded: boolean) =>
     put<{ character_name: string; excluded: boolean }>(
@@ -201,6 +223,26 @@ export const productionApi = {
     ),
   producerCharacters: () => get<T.ProducerCharacter[]>('/api/production/producer-characters'),
   ownedBlueprints: () => get<T.OwnedBlueprintRow[]>('/api/production/blueprints'),
+  // Manual owned blueprints (docs/MANUAL_TRACKING_PLAN.md phase 5) - rows
+  // come back mixed into ownedBlueprints() above (source: 'manual'); these
+  // are the write endpoints for that subset.
+  addManualOwnedBlueprint: (req: {
+    item_name: string
+    is_original: boolean
+    material_efficiency: number
+    time_efficiency: number
+    runs: number | null
+    quantity: number
+    location_id: number
+  }) => post<{ manual_id: number }>('/api/production/manual-blueprints', req),
+  updateManualOwnedBlueprint: (manualId: number, req: {
+    material_efficiency: number
+    time_efficiency: number
+    runs: number | null
+    quantity: number
+  }) => patch<{ manual_id: number }>(`/api/production/manual-blueprints/${manualId}`, req),
+  removeManualOwnedBlueprint: (manualId: number) =>
+    del(`/api/production/manual-blueprints/${manualId}`),
   manualBlueprintCopyCosts: () => get<T.ManualBlueprintCopyCostRow[]>('/api/production/blueprints/manual-copy-costs'),
   addManualBlueprintCopyCost: (itemName: string, purchaseCost: number, runs: number) =>
     post<{ type_id: number; type_name: string; purchase_cost: number; runs: number }>(
@@ -269,6 +311,18 @@ export const productionApi = {
       '/api/production/logistics/resolve-structure-name', { location_id: locationId, force },
     ),
 
+  // LocationPicker (docs/MANUAL_TRACKING_PLAN.md phase 2) - type-ahead
+  // across NPC stations, this tenant's own resolved structures and its own
+  // manual names.
+  searchLocations: (query: string) =>
+    get<T.LocationSearchRow[]>(`/api/production/locations/search?q=${encodeURIComponent(query)}`),
+  setManualLocationName: (locationId: number, name: string) =>
+    post<{ location_id: number; name: string }>(
+      '/api/production/locations/manual-names', { location_id: locationId, name },
+    ),
+  removeManualLocationName: (locationId: number) =>
+    del(`/api/production/locations/manual-names/${locationId}`),
+
   // No previewSde() here, deliberately - moved to adminApi below (GitHub
   // issue #34): the SDE cache is global/shared, not per-tenant, so
   // triggering a refresh is a cross-tenant-impacting action.
@@ -288,8 +342,35 @@ export const productionApi = {
     home_market_stock?: number | null
     jita_market_stock?: number | null
   }) => patch<T.StockTarget>(`/api/production/stock-targets/${typeId}`, updates),
-  setManualStock: (typeId: number, count: number) =>
-    post('/api/production/manual-stock', { type_id: typeId, count }),
+  setManualStock: (typeId: number, count: number, locationId = 0) =>
+    post('/api/production/manual-stock', { type_id: typeId, count, location_id: locationId }),
+  // Manual stock table (docs/MANUAL_TRACKING_PLAN.md phase 3, decision 9) -
+  // separate per-(item, location) entries, as opposed to setManualStock's
+  // own single per-type total above.
+  addManualStockEntry: (itemName: string, count: number, locationId: number) =>
+    post<T.ManualStockEntry>('/api/production/manual-stock/entries', {
+      item_name: itemName, count, location_id: locationId,
+    }),
+  removeManualStockEntry: (typeId: number, locationId: number) =>
+    del(`/api/production/manual-stock/entries/${typeId}/${locationId}`),
+  // Manual listed stock (docs/MANUAL_TRACKING_PLAN.md phase 7).
+  manualListedStock: () => get<T.ManualListedStockEntry[]>('/api/production/manual-listed-stock'),
+  setManualListedStock: (typeId: number, market: 'home' | 'jita', quantity: number) =>
+    post<{ type_id: number; market: string; quantity: number }>(
+      '/api/production/manual-listed-stock', { type_id: typeId, market, quantity },
+    ),
+  clearManualListedStock: (typeId: number, market: 'home' | 'jita') =>
+    del(`/api/production/manual-listed-stock/${typeId}/${market}`),
+  // Asset paste (docs/MANUAL_TRACKING_PLAN.md phase 4) - commit re-parses
+  // the same text server-side, never takes preview's own rows back.
+  previewAssetPaste: (text: string, locationId: number, mode: 'replace' | 'merge') =>
+    post<T.AssetPastePreviewResult>('/api/production/manual-stock/paste/preview', {
+      text, location_id: locationId, mode,
+    }),
+  commitAssetPaste: (text: string, locationId: number, mode: 'replace' | 'merge') =>
+    post<T.AssetPasteCommitResult>('/api/production/manual-stock/paste/commit', {
+      text, location_id: locationId, mode,
+    }),
   setManualBuildBuy: (typeId: number, decision: string) =>
     post('/api/production/manual-build-buy', { type_id: typeId, decision }),
   clearManualBuildBuy: (typeId: number) => del(`/api/production/manual-build-buy/${typeId}`),
@@ -507,6 +588,19 @@ export const adminApi = {
   // as everything else here.
   backups: () => get<T.BackupInfo[]>('/api/admin/backups'),
   createBackup: () => post<T.BackupInfo>('/api/admin/backups'),
+  // docs/MANUAL_TRACKING_PLAN.md phase 2, question 1 - Default-Tenant-only
+  // operator switch (bulk admin resolution and its own UI section are
+  // phase 8, not part of this).
+  structureResolutionFallback: () =>
+    get<{ global_structure_resolution_fallback: boolean }>('/api/admin/structures/fallback'),
+  setStructureResolutionFallback: (enabled: boolean) =>
+    put<{ global_structure_resolution_fallback: boolean }>('/api/admin/structures/fallback', { enabled }),
+  // docs/MANUAL_TRACKING_PLAN.md phase 8 - bulk structure-name resolution,
+  // same "starts a background job, poll status separately" shape as
+  // previewSde/previewSdeStatus above.
+  startStructureNameResolve: (force: boolean) =>
+    post<T.PipelineRunStatus>('/api/admin/structures/resolve', { force }),
+  structureResolveStatus: () => get<T.PipelineRunStatus>('/api/admin/structures/resolve/status'),
   allowlist: () => get<T.AllowlistEntry[]>('/api/admin/allowlist'),
   searchAllowlist: (q: string) =>
     get<T.AllowlistCandidate[]>(`/api/admin/allowlist/search?q=${encodeURIComponent(q)}`),

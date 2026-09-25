@@ -213,6 +213,62 @@ export interface TradingKpis {
 }
 
 // ------------------------------------------------------------ production
+// LocationPicker (docs/MANUAL_TRACKING_PLAN.md phase 2) - a search hit from
+// GET /production/locations/search, same three kinds storage.search_locations
+// combines (the global structure cache is deliberately not searchable, see
+// that function's own docstring).
+export interface LocationSearchRow {
+  location_id: number
+  name: string
+  kind: 'station' | 'structure' | 'manual'
+}
+
+// Manual stock table (docs/MANUAL_TRACKING_PLAN.md phase 3, decision 9) -
+// one row per (type_id, location_id).
+// docs/MANUAL_TRACKING_PLAN.md phase 7.
+export interface ManualListedStockEntry {
+  type_id: number
+  market: 'home' | 'jita'
+  quantity: number
+  updated_at: string
+}
+
+export interface ManualStockEntry {
+  type_id: number
+  type_name: string
+  location_id: number
+  count: number
+}
+
+// Asset paste (docs/MANUAL_TRACKING_PLAN.md phase 4).
+export interface AssetPastePreviewRow {
+  type_id: number
+  name: string
+  old: number
+  new: number
+  status: 'new' | 'changed' | 'unchanged' | 'removed'
+}
+export interface AssetPasteUnresolvedLine {
+  line: string
+  suggestion: string | null
+}
+export interface AssetPasteError {
+  line: string
+  error: string
+}
+export interface AssetPastePreviewResult {
+  rows: AssetPastePreviewRow[]
+  skipped_blueprints: string[]
+  unresolved: AssetPasteUnresolvedLine[]
+  errors: AssetPasteError[]
+}
+export interface AssetPasteCommitResult {
+  applied: number
+  skipped_blueprints: string[]
+  unresolved: AssetPasteUnresolvedLine[]
+  errors: AssetPasteError[]
+}
+
 export interface StockTarget {
   type_id: number
   type_name: string
@@ -434,6 +490,9 @@ export interface IndustryJobRow {
   remaining_seconds: number | null
   installer_name: string
   output_value: number | null
+  // docs/MANUAL_TRACKING_PLAN.md phase 6.
+  source: 'esi' | 'manual'
+  manual_id: number | null
 }
 
 export interface CharacterSlotRow {
@@ -453,6 +512,10 @@ export interface OwnedBlueprintRow {
   material_efficiency: number
   time_efficiency: number
   runs: number | null
+  // docs/MANUAL_TRACKING_PLAN.md phase 5.
+  source: 'esi' | 'manual'
+  manual_id: number | null
+  location_id: number | null
 }
 
 export interface ManualBlueprintCopyCostRow {

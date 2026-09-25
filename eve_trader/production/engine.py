@@ -1627,9 +1627,21 @@ def invalidate_shared_production_owner_ids_cache(all_tenants: bool = False) -> N
 # the underlying storage.py function from this module goes through one of
 # these instead, so a call site cannot accidentally read unfiltered.
 def _stock_at_location(type_id: int, location_id: Optional[int], **kwargs) -> float:
+    """docs/MANUAL_TRACKING_PLAN.md phase 3 (decision 6): manual stock is
+    only added here when `location_id` is an actual location - callers that
+    pass None (_current_stock/_stock_on_hand's own "every location" scan via
+    manual_stock.get(type_id, 0), fed by storage.load_manual_stock's
+    all-locations total) already have manual stock folded into their own
+    total a different way, so adding it here too would double-count it.
+    This is what actually lets Logistics/Invention (both of which call this
+    with a real location_id) see manual stock at their own specific
+    location - they never go through _current_stock/_stock_on_hand at all."""
     char_ids, corp_ids = shared_production_owner_ids("assets")
-    return storage.esi_stock_at_location(
+    total = storage.esi_stock_at_location(
         type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids, **kwargs)
+    if location_id is not None:
+        total += storage.manual_stock_at_location(type_id, location_id)
+    return total
 
 
 def _sell_order_qty_at_location(type_id: int, location_id: int) -> float:
@@ -1645,21 +1657,39 @@ def _sell_order_qty_in_region(type_id: int, region_id: int) -> float:
 
 
 def _owned_bpo_best_me_te(blueprint_type_id: int) -> Optional[tuple[int, int]]:
+    """docs/MANUAL_TRACKING_PLAN.md phase 5: ME and TE each independently
+    take the max of the ESI-synced value and the manually-registered one
+    (decision 1) - not a max of the *pair*, so a manual ME10 entry still
+    lifts ME even if the ESI-owned BPO's own TE happens to be higher."""
     char_ids, corp_ids = shared_production_owner_ids("blueprints")
-    return storage.get_owned_bpo_best_me_te(
+    esi = storage.get_owned_bpo_best_me_te(
         blueprint_type_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
+    manual = storage.manual_bpo_best_me_te(blueprint_type_id)
+    if esi is None and manual is None:
+        return None
+    esi_me, esi_te = esi or (0, 0)
+    manual_me, manual_te = manual or (0, 0)
+    return (max(esi_me, manual_me), max(esi_te, manual_te))
 
 
 def _available_blueprint_copies(type_id: int, location_id: Optional[int]) -> float:
     char_ids, corp_ids = shared_production_owner_ids("blueprints")
-    return storage.available_blueprint_copies(
+    esi_copies = storage.available_blueprint_copies(
         type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
+    return esi_copies + storage.manual_bpc_runs(type_id, location_id)
 
 
 def _has_bpo_at_location(type_id: int, location_id: int) -> bool:
     char_ids, corp_ids = shared_production_owner_ids("blueprints")
     return storage.has_bpo_at_location(
-        type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
+        type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids
+    ) or storage.manual_has_bpo_at_location(type_id, location_id)
+
+
+def _esi_incoming_industry_qty(type_id: int) -> dict[str, float]:
+    char_ids, corp_ids = shared_production_owner_ids("industry_jobs")
+    return storage.esi_incoming_industry_qty(
+        type_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
 
 
 def _current_stock(type_id: int, manual_stock: dict[int, float], cfg: ProductionConfig,
@@ -1698,10 +1728,15 @@ def _current_stock(type_id: int, manual_stock: dict[int, float], cfg: Production
     total += _stock_at_location(
         type_id, None, allowed_flags=cfg.stock_hangar_flags,
         exclude_intake_at_location_id=cfg.home_location_id)
-    incoming = storage.esi_incoming_industry_qty(type_id)
+    incoming = _esi_incoming_industry_qty(type_id)
     if incoming["runs"] and bp is not None:
         _, _, product_qty = bp
         total += incoming["runs"] * product_qty
+    # docs/MANUAL_TRACKING_PLAN.md phase 6, decision 2 - manual jobs already
+    # store `quantity` in finished-product units (not runs), so this is a
+    # flat add, unlike the ESI incoming branch above which multiplies runs
+    # by product_qty.
+    total += storage.manual_incoming_qty(type_id)
     return total
 
 
@@ -1778,13 +1813,14 @@ def _total_missing(type_id: int, backup_stock: float, home_market_stock: Optiona
         home_listed = (
             _sell_order_qty_at_location(type_id, cfg.home_location_id)
             if cfg.home_location_id is not None else 0.0
-        )
+        ) + storage.manual_listed_stock_qty(type_id, "home")  # docs/MANUAL_TRACKING_PLAN.md phase 7, decision 7
         home_short = max(0.0, home_market_stock - home_listed)
         applied = min(surplus_stock, home_short)
         missing += home_short - applied
         surplus_stock -= applied
     if jita_market_stock:
-        jita_listed = _sell_order_qty_in_region(type_id, TRADING_CONFIG.jita_region_id)
+        jita_listed = (_sell_order_qty_in_region(type_id, TRADING_CONFIG.jita_region_id)
+                       + storage.manual_listed_stock_qty(type_id, "jita"))
         jita_short = max(0.0, jita_market_stock - jita_listed)
         applied = min(surplus_stock, jita_short)
         missing += jita_short - applied
@@ -2958,8 +2994,9 @@ def market_status(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[MarketStatu
         home_listed = (
             _sell_order_qty_at_location(type_id, cfg.home_location_id)
             if cfg.home_location_id is not None else 0.0
-        )
-        jita_listed = _sell_order_qty_in_region(type_id, TRADING_CONFIG.jita_region_id)
+        ) + storage.manual_listed_stock_qty(type_id, "home")  # docs/MANUAL_TRACKING_PLAN.md phase 7, decision 7
+        jita_listed = (_sell_order_qty_in_region(type_id, TRADING_CONFIG.jita_region_id)
+                       + storage.manual_listed_stock_qty(type_id, "jita"))
         rows.append(MarketStatusRow(
             type_id=type_id, type_name=type_name,
             backup_target=backup_target, backup_current=backup_current,

@@ -30,7 +30,7 @@ from ..config import TRADING_CONFIG, TradingConfig
 from ..esi_client import OrderStats
 from .config import REFINING_CONFIG, RefiningConfig
 from .engine import apply_reprocessing_yield, scrapmetal_yield
-from .paste_parser import ParsedPasteLine
+from ..paste_parser import ParsedPasteLine
 
 REPROCESS_DECISION = "Reprocess"
 SELL_DECISION = "Sell instead"

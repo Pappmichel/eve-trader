@@ -248,3 +248,78 @@ def test_create_backup_action_error_maps_to_400(monkeypatch):
 
     assert resp.status_code == 400
     assert resp.json()["detail"] == "Backup failed."
+
+
+# docs/MANUAL_TRACKING_PLAN.md phase 2, question 1
+def test_get_structure_resolution_fallback(monkeypatch):
+    monkeypatch.setattr(admin, "do_get_structure_resolution_fallback",
+                         lambda: {"global_structure_resolution_fallback": True})
+
+    resp = client.get("/api/admin/structures/fallback")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"global_structure_resolution_fallback": True}
+
+
+def test_set_structure_resolution_fallback_passes_body(monkeypatch):
+    captured = {}
+
+    def _set(enabled):
+        captured["enabled"] = enabled
+        return {"global_structure_resolution_fallback": enabled}
+    monkeypatch.setattr(admin, "do_set_structure_resolution_fallback", _set)
+
+    resp = client.put("/api/admin/structures/fallback", json={"enabled": True})
+
+    assert resp.status_code == 200
+    assert captured == {"enabled": True}
+    assert resp.json() == {"global_structure_resolution_fallback": True}
+
+
+# docs/MANUAL_TRACKING_PLAN.md phase 8
+def test_start_structure_name_resolve_defaults_force_to_false(monkeypatch):
+    captured = {}
+
+    def _start(force):
+        captured["force"] = force
+        return {"run_id": "r1", "status": "running", "job_name": "structure_resolve", "tool": "admin"}
+    monkeypatch.setattr(admin, "do_start_structure_name_resolve", _start)
+
+    resp = client.post("/api/admin/structures/resolve", json={})
+
+    assert resp.status_code == 200
+    assert captured == {"force": False}
+    assert resp.json()["run_id"] == "r1"
+
+
+def test_start_structure_name_resolve_passes_force_true(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(admin, "do_start_structure_name_resolve",
+                         lambda force: captured.update(force=force) or {"run_id": "r2"})
+
+    resp = client.post("/api/admin/structures/resolve", json={"force": True})
+
+    assert resp.status_code == 200
+    assert captured == {"force": True}
+
+
+def test_start_structure_name_resolve_conflict_maps_to_409(monkeypatch):
+    from eve_trader.actions import ConflictError
+    monkeypatch.setattr(admin, "do_start_structure_name_resolve",
+                         lambda force: (_ for _ in ()).throw(ConflictError("already running")))
+
+    resp = client.post("/api/admin/structures/resolve", json={})
+
+    assert resp.status_code == 409
+
+
+def test_structure_resolve_status_serializes_action_result(monkeypatch):
+    monkeypatch.setattr(admin, "do_structure_resolve_status", lambda: {
+        "run_id": None, "job_name": "structure_resolve", "tool": "admin", "status": "idle",
+        "progress": None, "result": None, "error": None,
+    })
+
+    resp = client.get("/api/admin/structures/resolve/status")
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "idle"

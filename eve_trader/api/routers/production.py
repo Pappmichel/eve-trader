@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import schemas
 from ... import storage
@@ -87,6 +87,49 @@ def get_manual_stock():
     return storage.load_manual_stock()
 
 
+@router.get("/manual-stock/entries")
+def get_manual_stock_entries():
+    # Storage-only - no live ESI/Goonmetrics. One row per (type, location) -
+    # docs/MANUAL_TRACKING_PLAN.md phase 3, decision 9.
+    return _wrap(actions.do_list_manual_stock_entries)["rows"]
+
+
+class AddManualStockEntryRequest(BaseModel):
+    item_name: str
+    count: float
+    location_id: int = 0
+
+
+@router.post("/manual-stock/entries")
+def add_manual_stock_entry(req: AddManualStockEntryRequest):
+    return _wrap(actions.do_add_manual_stock_entry, item_name=req.item_name,
+                 count=req.count, location_id=req.location_id)
+
+
+@router.delete("/manual-stock/entries/{type_id}/{location_id}")
+def remove_manual_stock_entry(type_id: int, location_id: int):
+    return _wrap(actions.do_remove_manual_stock_entry, type_id=type_id, location_id=location_id)
+
+
+class AssetPasteRequest(BaseModel):
+    # 500 KB cap (docs/MANUAL_TRACKING_PLAN.md phase 4) so a huge paste
+    # can't block the server - a real inventory paste is a few hundred
+    # lines at most, this is generous headroom, not a real-world limit.
+    text: str = Field(max_length=500_000)
+    location_id: int = 0
+    mode: str = "merge"
+
+
+@router.post("/manual-stock/paste/preview")
+def preview_asset_paste(req: AssetPasteRequest):
+    return _wrap(actions.do_preview_asset_paste, text=req.text, location_id=req.location_id, mode=req.mode)
+
+
+@router.post("/manual-stock/paste/commit")
+def commit_asset_paste(req: AssetPasteRequest):
+    return _wrap(actions.do_commit_asset_paste, text=req.text, location_id=req.location_id, mode=req.mode)
+
+
 @router.get("/manual-build-buy")
 def get_manual_build_buy():
     return storage.load_manual_build_buy()
@@ -125,6 +168,72 @@ def get_current_jobs():
     return _wrap(actions.do_list_current_jobs)["rows"]
 
 
+class AddManualIndustryJobRequest(BaseModel):
+    item_name: str
+    quantity: Optional[float] = None
+    runs: Optional[int] = None
+    location_id: int = 0
+    ready_at: Optional[str] = None
+
+
+@router.post("/manual-jobs")
+def add_manual_industry_job(req: AddManualIndustryJobRequest):
+    return _wrap(actions.do_add_manual_industry_job, item_name=req.item_name, quantity=req.quantity,
+                 runs=req.runs, location_id=req.location_id, ready_at=req.ready_at)
+
+
+class UpdateManualIndustryJobRequest(BaseModel):
+    quantity: Optional[float] = None
+    runs: Optional[int] = None
+    location_id: Optional[int] = None
+    ready_at: Optional[str] = None
+
+
+@router.patch("/manual-jobs/{manual_id}")
+def update_manual_industry_job(manual_id: int, req: UpdateManualIndustryJobRequest):
+    # exclude_unset, not the request body's raw values - do_update_manual_industry_job's
+    # own _UNSET-sentinel defaults need to tell "field omitted" (keep the
+    # existing value) apart from "field sent as null" (e.g. clear ready_at);
+    # passing every field unconditionally would collapse that distinction.
+    return _wrap(actions.do_update_manual_industry_job, manual_id=manual_id, **req.model_dump(exclude_unset=True))
+
+
+@router.delete("/manual-jobs/{manual_id}")
+def remove_manual_industry_job(manual_id: int):
+    return _wrap(actions.do_remove_manual_industry_job, manual_id=manual_id)
+
+
+class CompleteManualIndustryJobRequest(BaseModel):
+    location_id: Optional[int] = None
+
+
+@router.post("/manual-jobs/{manual_id}/complete")
+def complete_manual_industry_job(manual_id: int, req: CompleteManualIndustryJobRequest):
+    return _wrap(actions.do_complete_manual_industry_job, manual_id=manual_id, location_id=req.location_id)
+
+
+@router.get("/manual-listed-stock")
+def get_manual_listed_stock():
+    # Storage-only - no live ESI/Goonmetrics.
+    return _wrap(actions.do_list_manual_listed_stock)["rows"]
+
+
+class SetManualListedStockRequest(BaseModel):
+    type_id: int
+    market: str
+    quantity: float
+
+
+@router.post("/manual-listed-stock")
+def set_manual_listed_stock(req: SetManualListedStockRequest):
+    return _wrap(actions.do_set_manual_listed_stock, type_id=req.type_id, market=req.market, quantity=req.quantity)
+
+
+@router.delete("/manual-listed-stock/{type_id}/{market}")
+def clear_manual_listed_stock(type_id: int, market: str):
+    return _wrap(actions.do_clear_manual_listed_stock, type_id=type_id, market=market)
+
+
 @router.get("/slots", response_model=list[schemas.CharacterSlotRow])
 def get_character_slots():
     # Storage-only (synced industry_jobs/character_slots) - no live ESI.
@@ -146,6 +255,42 @@ def set_character_slot_excluded(character_name: str, req: SetCharacterSlotExclud
 def get_owned_blueprints():
     # Storage-only (last ESI sync snapshot) - no live ESI/Goonmetrics.
     return actions.do_list_owned_blueprints()["rows"]
+
+
+class AddManualOwnedBlueprintRequest(BaseModel):
+    item_name: str
+    is_original: bool
+    material_efficiency: int
+    time_efficiency: int
+    runs: Optional[int] = None
+    quantity: int = 1
+    location_id: int = 0
+
+
+@router.post("/manual-blueprints")
+def add_manual_owned_blueprint(req: AddManualOwnedBlueprintRequest):
+    return _wrap(actions.do_add_manual_owned_blueprint, item_name=req.item_name, is_original=req.is_original,
+                 material_efficiency=req.material_efficiency, time_efficiency=req.time_efficiency,
+                 runs=req.runs, quantity=req.quantity, location_id=req.location_id)
+
+
+class UpdateManualOwnedBlueprintRequest(BaseModel):
+    material_efficiency: int
+    time_efficiency: int
+    runs: Optional[int] = None
+    quantity: int = 1
+
+
+@router.patch("/manual-blueprints/{manual_id}")
+def update_manual_owned_blueprint(manual_id: int, req: UpdateManualOwnedBlueprintRequest):
+    return _wrap(actions.do_update_manual_owned_blueprint, manual_id=manual_id,
+                 material_efficiency=req.material_efficiency, time_efficiency=req.time_efficiency,
+                 runs=req.runs, quantity=req.quantity)
+
+
+@router.delete("/manual-blueprints/{manual_id}")
+def remove_manual_owned_blueprint(manual_id: int):
+    return _wrap(actions.do_remove_manual_owned_blueprint, manual_id=manual_id)
 
 
 @router.get("/blueprints/manual-copy-costs", response_model=list[schemas.ManualBlueprintCopyCostRow])
@@ -406,6 +551,28 @@ def resolve_structure_name(req: ResolveStructureNameRequest):
     return _wrap(actions.do_resolve_structure_name, location_id=req.location_id, force=req.force)
 
 
+@router.get("/locations/search")
+def search_locations(q: str = ""):
+    # Storage-only type-ahead - no live ESI/Goonmetrics. See
+    # storage.search_locations for the three sources it combines.
+    return _wrap(actions.do_search_locations, query=q)["rows"]
+
+
+class SetManualLocationNameRequest(BaseModel):
+    location_id: int
+    name: str
+
+
+@router.post("/locations/manual-names")
+def set_manual_location_name(req: SetManualLocationNameRequest):
+    return _wrap(actions.do_set_manual_location_name, location_id=req.location_id, name=req.name)
+
+
+@router.delete("/locations/manual-names/{location_id}")
+def remove_manual_location_name(location_id: int):
+    return _wrap(actions.do_remove_manual_location_name, location_id=location_id)
+
+
 # ------------------------------------------------------------------ actions
 # POST /sde/refresh moved to /api/admin/sde/refresh (GitHub issue #34) - the
 # SDE cache is global/shared, not per-tenant, so triggering a refresh is a
@@ -509,11 +676,12 @@ def remove_stock_target(type_id: int):
 class ManualStockRequest(BaseModel):
     type_id: int
     count: float
+    location_id: int = 0
 
 
 @router.post("/manual-stock")
 def set_manual_stock(req: ManualStockRequest):
-    return _wrap(actions.do_set_manual_stock, type_id=req.type_id, count=req.count)
+    return _wrap(actions.do_set_manual_stock, type_id=req.type_id, count=req.count, location_id=req.location_id)
 
 
 class ManualBuildBuyRequest(BaseModel):

@@ -61,13 +61,54 @@ def _stub_shared_production_owner_ids(monkeypatch):
     # resolve sharing via shared_production_owner_ids (storage.connect(),
     # real Postgres) before calling storage.esi_stock_at_location/
     # sell_order_qty_*/get_owned_bpo_best_me_te/available_blueprint_copies/
-    # has_bpo_at_location. Almost every test in this file monkeypatches
-    # those storage.* functions directly and has no tenant/Postgres context
-    # at all - stub the resolver to (None, None) ("unfiltered", the same
+    # has_bpo_at_location/esi_incoming_industry_qty. Almost every test in this
+    # file monkeypatches those storage.* functions directly and has no
+    # tenant/Postgres context at all - stub the resolver to (None, None)
+    # ("unfiltered", the same
     # default every storage.* function itself falls back to) so it never
     # touches storage.connect(). A test that specifically wants to exercise
     # the sharing filter overrides this fixture's monkeypatch itself.
     monkeypatch.setattr(engine, "shared_production_owner_ids", lambda data_kind: (None, None))
+
+
+@pytest.fixture(autouse=True)
+def _default_manual_stock_at_location(monkeypatch):
+    # docs/MANUAL_TRACKING_PLAN.md phase 3: _stock_at_location now also
+    # calls storage.manual_stock_at_location whenever location_id is not
+    # None - almost every test in this file monkeypatches storage.
+    # esi_stock_at_location directly and has no tenant/Postgres context at
+    # all, so default this to "no manual stock" the same way
+    # _stub_shared_production_owner_ids above defaults the sharing
+    # resolver. A test that specifically wants manual stock at a location
+    # overrides this fixture's monkeypatch itself.
+    monkeypatch.setattr(storage, "manual_stock_at_location", lambda type_id, location_id: 0.0)
+
+
+@pytest.fixture(autouse=True)
+def _default_manual_blueprints(monkeypatch):
+    # docs/MANUAL_TRACKING_PLAN.md phase 5: _owned_bpo_best_me_te/
+    # _available_blueprint_copies/_has_bpo_at_location now also consult
+    # manual_owned_blueprints - same "default to none, no real DB" reasoning
+    # as _default_manual_stock_at_location above.
+    monkeypatch.setattr(storage, "manual_bpo_best_me_te", lambda bp_type_id: None)
+    monkeypatch.setattr(storage, "manual_bpc_runs", lambda bp_type_id, location_id=None: 0.0)
+    monkeypatch.setattr(storage, "manual_has_bpo_at_location", lambda bp_type_id, location_id: False)
+
+
+@pytest.fixture(autouse=True)
+def _default_manual_incoming_qty(monkeypatch):
+    # docs/MANUAL_TRACKING_PLAN.md phase 6: _current_stock now also adds
+    # storage.manual_incoming_qty - same "default to none, no real DB"
+    # reasoning as the fixtures above.
+    monkeypatch.setattr(storage, "manual_incoming_qty", lambda type_id: 0.0)
+
+
+@pytest.fixture(autouse=True)
+def _default_manual_listed_stock(monkeypatch):
+    # docs/MANUAL_TRACKING_PLAN.md phase 7: _total_missing/market_status
+    # now also add storage.manual_listed_stock_qty - same "default to
+    # none, no real DB" reasoning as the fixtures above.
+    monkeypatch.setattr(storage, "manual_listed_stock_qty", lambda type_id, market: 0.0)
 
 
 @pytest.fixture(autouse=True)
@@ -127,13 +168,83 @@ def test_current_stock_checks_every_location_not_a_curated_set(monkeypatch):
         return 1_572_335.0
 
     monkeypatch.setattr(storage, "esi_stock_at_location", fake_esi_stock)
-    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id: {"runs": 0, "jobs": 0})
+    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id, **_kwargs: {"runs": 0, "jobs": 0})
     cfg = ProductionConfig(home_location_id=1000000000001)
 
     total = engine._current_stock(type_id=16636, manual_stock={}, cfg=cfg, bp=None)
 
     assert calls == [{"location_id": None, "exclude": 1000000000001}]
     assert total == 1_572_335.0
+
+
+def test_current_stock_adds_manual_incoming_qty(monkeypatch):
+    # docs/MANUAL_TRACKING_PLAN.md phase 6, decision 2 - a flat add, not
+    # multiplied by product quantity (unlike the ESI incoming-runs branch).
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, **kwargs: 0.0)
+    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id, **kwargs: {"runs": 0, "jobs": 0})
+    monkeypatch.setattr(storage, "manual_incoming_qty", lambda type_id: 42.0)
+
+    assert engine._current_stock(34, {}, ProductionConfig(), None) == 42.0
+
+
+def test_stock_at_location_adds_manual_stock_when_location_id_is_given(monkeypatch):
+    # docs/MANUAL_TRACKING_PLAN.md phase 3, decision 6 - this is what
+    # actually lets Logistics/Invention (both of which call
+    # _stock_at_location with a real location_id) see manual stock at
+    # their own specific location.
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, **kwargs: 100.0)
+    monkeypatch.setattr(storage, "manual_stock_at_location", lambda type_id, location_id: 25.0)
+
+    assert engine._stock_at_location(34, 1000000000001) == 125.0
+
+
+def test_stock_at_location_does_not_double_count_manual_stock_at_location_none(monkeypatch):
+    # _current_stock/_stock_on_hand already add manual stock through their
+    # own manual_stock dict (storage.load_manual_stock's all-locations
+    # total) when they call _stock_at_location(type_id, None, ...) - adding
+    # it again here would double-count it.
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, **kwargs: 100.0)
+    monkeypatch.setattr(storage, "manual_stock_at_location",
+                         lambda type_id, location_id: pytest.fail("must not be called when location_id is None"))
+
+    assert engine._stock_at_location(34, None) == 100.0
+
+
+def test_owned_bpo_best_me_te_takes_max_of_esi_and_manual_independently(monkeypatch):
+    # docs/MANUAL_TRACKING_PLAN.md phase 5, decision 1 - ME and TE each take
+    # the max independently, not a max of the pair.
+    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda bp_id, **kwargs: (4, 20))
+    monkeypatch.setattr(storage, "manual_bpo_best_me_te", lambda bp_id: (10, 8))
+
+    assert engine._owned_bpo_best_me_te(690) == (10, 20)
+
+
+def test_owned_bpo_best_me_te_none_when_neither_has_one(monkeypatch):
+    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda bp_id, **kwargs: None)
+    monkeypatch.setattr(storage, "manual_bpo_best_me_te", lambda bp_id: None)
+
+    assert engine._owned_bpo_best_me_te(690) is None
+
+
+def test_owned_bpo_best_me_te_manual_only(monkeypatch):
+    monkeypatch.setattr(storage, "get_owned_bpo_best_me_te", lambda bp_id, **kwargs: None)
+    monkeypatch.setattr(storage, "manual_bpo_best_me_te", lambda bp_id: (6, 12))
+
+    assert engine._owned_bpo_best_me_te(690) == (6, 12)
+
+
+def test_available_blueprint_copies_adds_manual_runs(monkeypatch):
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda type_id, location_id, **kwargs: 5.0)
+    monkeypatch.setattr(storage, "manual_bpc_runs", lambda type_id, location_id=None: 3.0)
+
+    assert engine._available_blueprint_copies(690, 1000000000001) == 8.0
+
+
+def test_has_bpo_at_location_true_when_only_manual_has_one(monkeypatch):
+    monkeypatch.setattr(storage, "has_bpo_at_location", lambda type_id, location_id, **kwargs: False)
+    monkeypatch.setattr(storage, "manual_has_bpo_at_location", lambda type_id, location_id: True)
+
+    assert engine._has_bpo_at_location(690, 1000000000001) is True
 
 
 @pg_helpers.postgres_required()
@@ -156,7 +267,7 @@ def test_current_stock_does_not_count_configured_sorting_intake(monkeypatch, ten
         (9103, 34, jita, "Hangar", 80, 0, "pappmichl5"),
     ])
     storage.add_sorting_intake_source("character", "Hangar", owner_name="pappmichl5")
-    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id: {"runs": 0, "jobs": 0})
+    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id, **_kwargs: {"runs": 0, "jobs": 0})
     cfg = ProductionConfig(home_location_id=home)
 
     assert engine._current_stock(34, {}, cfg, None) == 90.0
@@ -181,7 +292,7 @@ def test_market_status_skips_items_with_no_market_target(monkeypatch):
     _no_listings(monkeypatch)
     monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
     monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None, **kwargs: 0.0)
-    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id: {"runs": 0, "jobs": 0})
+    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id, **_kwargs: {"runs": 0, "jobs": 0})
     monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [
         (1, "No Market Target", 10.0, None, None),
@@ -194,6 +305,25 @@ def test_market_status_skips_items_with_no_market_target(monkeypatch):
     rows = engine.market_status(cfg)
 
     assert [r.type_id for r in rows] == [2, 3]
+
+
+def test_market_status_home_and_jita_listed_include_manual(monkeypatch):
+    # docs/MANUAL_TRACKING_PLAN.md phase 7, decision 7.
+    cfg = ProductionConfig(home_location_id=1000000000001)
+    monkeypatch.setattr(storage, "sell_order_qty_at_location", lambda type_id, location_id, **kwargs: 5.0)
+    monkeypatch.setattr(storage, "sell_order_qty_in_region", lambda type_id, region_id, **kwargs: 3.0)
+    monkeypatch.setattr(storage, "manual_listed_stock_qty",
+                         lambda type_id, market: {"home": 10.0, "jita": 2.0}[market])
+    monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None, **kwargs: 0.0)
+    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id, **_kwargs: {"runs": 0, "jobs": 0})
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(1, "Item", 0.0, 20.0, 20.0)])
+
+    rows = engine.market_status(cfg)
+
+    assert rows[0].home_listed == 15.0  # 5 ESI + 10 manual
+    assert rows[0].jita_listed == 5.0   # 3 ESI + 2 manual
 
 
 def test_total_missing_owned_stock_beyond_backup_covers_market_targets(monkeypatch):
@@ -258,6 +388,22 @@ def test_total_missing_zero_current_stock_matches_prior_behavior(monkeypatch):
                               current_stock=0.0, cfg=cfg)
 
     assert missing == 72.0
+
+
+def test_total_missing_nets_against_manual_listed_stock(monkeypatch):
+    # docs/MANUAL_TRACKING_PLAN.md phase 7, decision 7 - manual listed
+    # quantities net against the market targets same as ESI open-sell-order
+    # volume does.
+    cfg = ProductionConfig(home_location_id=1000000000001)
+    _no_listings(monkeypatch)
+    monkeypatch.setattr(storage, "manual_listed_stock_qty",
+                         lambda type_id, market: {"home": 10.0, "jita": 5.0}[market])
+
+    missing = _total_missing(1, backup_stock=0.0, home_market_stock=20.0, jita_market_stock=20.0,
+                              current_stock=0.0, cfg=cfg)
+
+    # home short 20-10=10, jita short 20-5=15 -> 25 total
+    assert missing == 25.0
 
 
 def test_market_listing_shortfall_excludes_backup_only_targets(monkeypatch):
@@ -3781,7 +3927,7 @@ def test_plan_production_persisted_buy_list_ignores_sorting_intake_stash(monkeyp
     ])
     storage.add_sorting_intake_source("character", "Hangar", owner_name="pappmichl5")
     monkeypatch.setattr(storage, "save_latest_buy_list", _save_latest_buy_list_impl)
-    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id: {"runs": 0, "jobs": 0})
+    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id, **_kwargs: {"runs": 0, "jobs": 0})
 
     stock_targets = [(1, "Widget", 1, 0, 0)]
     monkeypatch.setattr(engine, "_PlanContext", _make_fake_plan_context(stock_targets))

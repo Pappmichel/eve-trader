@@ -27,6 +27,14 @@ def _stub_shared_job_owner_ids(monkeypatch):
     monkeypatch.setattr(jobs, "_shared_job_owner_ids", lambda: (None, None))
 
 
+@pytest.fixture(autouse=True)
+def _no_manual_jobs_by_default(monkeypatch):
+    # docs/MANUAL_TRACKING_PLAN.md phase 6: list_current_jobs now also
+    # appends storage.load_manual_industry_jobs() - default to none, same
+    # no-real-Postgres reasoning as the fixture above.
+    monkeypatch.setattr(storage, "load_manual_industry_jobs", lambda: [])
+
+
 def test_output_value_prices_at_home_sell_falling_back_to_jita(monkeypatch):
     cfg = ProductionConfig(home_market="TestMarket")
     monkeypatch.setattr(storage, "list_industry_jobs", lambda **kwargs: [
@@ -78,3 +86,34 @@ def test_output_value_is_none_for_jobs_without_a_product(monkeypatch):
 
     assert rows[0].quantity is None
     assert rows[0].output_value is None
+
+
+def test_manual_jobs_are_appended_with_source_and_status(monkeypatch):
+    # docs/MANUAL_TRACKING_PLAN.md phase 6.
+    from datetime import datetime, timedelta, timezone
+
+    cfg = ProductionConfig(home_market="TestMarket")
+    monkeypatch.setattr(storage, "list_industry_jobs", lambda **kwargs: [])
+    past = datetime.now(timezone.utc) - timedelta(hours=1)
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    monkeypatch.setattr(storage, "load_manual_industry_jobs", lambda: [
+        (1, 10, "Ready Item", 1, 50.0, 10, 1000000000001, past),
+        (2, 20, "Active Item", 1, 30.0, None, 1000000000001, future),
+        (3, 30, "No Ready At", 1, 5.0, None, 1000000000001, None),
+    ])
+    monkeypatch.setattr(GoonmetricsClient, "current_prices", lambda self, market: [])
+
+    rows = jobs.list_current_jobs(cfg)
+    by_id = {r.job_id: r for r in rows}
+
+    assert by_id[1].source == "manual"
+    assert by_id[1].manual_id == 1
+    assert by_id[1].status == "ready"
+    assert by_id[1].runs == 10
+    assert by_id[1].quantity == 50.0
+
+    assert by_id[2].status == "active"
+    assert by_id[2].runs == 0  # runs was None (entered as raw quantity)
+
+    assert by_id[3].status == "active"
+    assert by_id[3].remaining_seconds is None

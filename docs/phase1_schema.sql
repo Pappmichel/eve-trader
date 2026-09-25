@@ -156,9 +156,27 @@ CREATE POLICY tenant_isolation ON stock_targets
 CREATE TABLE IF NOT EXISTS manual_stock (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
     type_id INTEGER NOT NULL,
+    location_id BIGINT NOT NULL DEFAULT 0,   -- 0 = "no location"
     count REAL DEFAULT 0,
-    PRIMARY KEY (tenant_id, type_id)
+    PRIMARY KEY (tenant_id, type_id, location_id)
 );
+-- docs/MANUAL_TRACKING_PLAN.md phase 3 (decision 15): widened from
+-- (tenant_id, type_id) so the same type can have separate manual-stock
+-- entries per location. Idempotent for an already-provisioned DB - existing
+-- rows end up at location_id = 0 ("no location"), same total as before
+-- (load_manual_stock still SUMs across locations, see storage.py).
+ALTER TABLE manual_stock ADD COLUMN IF NOT EXISTS location_id BIGINT NOT NULL DEFAULT 0;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint c
+    JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+    WHERE c.conrelid = 'manual_stock'::regclass AND c.contype = 'p' AND a.attname = 'location_id'
+  ) THEN
+    ALTER TABLE manual_stock DROP CONSTRAINT manual_stock_pkey;
+    ALTER TABLE manual_stock ADD PRIMARY KEY (tenant_id, type_id, location_id);
+  END IF;
+END $$;
 ALTER TABLE manual_stock ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON manual_stock;
 CREATE POLICY tenant_isolation ON manual_stock
@@ -334,6 +352,99 @@ DROP POLICY IF EXISTS tenant_isolation ON structure_names;
 CREATE POLICY tenant_isolation ON structure_names
     USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
+-- docs/MANUAL_TRACKING_PLAN.md phase 2 (decision 8): manual location names
+-- are per-tenant, not global - unlike global_structure_names
+-- (docs/admin_schema.sql), a name given here is only ever this tenant's own
+-- opinion of what to call a location, never shared or copied into the
+-- global cache.
+CREATE TABLE IF NOT EXISTS manual_location_names (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    location_id BIGINT NOT NULL,
+    name TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, location_id)
+);
+ALTER TABLE manual_location_names ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON manual_location_names;
+CREATE POLICY tenant_isolation ON manual_location_names
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON manual_location_names TO eve_trader_app;
+
+-- docs/MANUAL_TRACKING_PLAN.md phase 5 - manually-tracked owned blueprints
+-- (BPOs/BPCs), additive alongside ESI-synced character_blueprints/
+-- corp_blueprints (see production/engine.py's _owned_bpo_best_me_te/
+-- _available_blueprint_copies/_has_bpo_at_location). blueprint_type_id is
+-- the blueprint's own type, not the product it builds (the engine's key).
+CREATE TABLE IF NOT EXISTS manual_owned_blueprints (
+    id BIGSERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    blueprint_type_id INTEGER NOT NULL,
+    is_original BOOLEAN NOT NULL,
+    material_efficiency INTEGER NOT NULL CHECK (material_efficiency BETWEEN 0 AND 10),
+    time_efficiency INTEGER NOT NULL CHECK (time_efficiency BETWEEN 0 AND 20),
+    runs INTEGER CHECK (runs IS NULL OR runs > 0),   -- NULL for a BPO
+    quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+    location_id BIGINT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK ((is_original AND runs IS NULL) OR (NOT is_original AND runs IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS manual_owned_blueprints_tenant_bp_idx
+    ON manual_owned_blueprints (tenant_id, blueprint_type_id);
+ALTER TABLE manual_owned_blueprints ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON manual_owned_blueprints;
+CREATE POLICY tenant_isolation ON manual_owned_blueprints
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON manual_owned_blueprints TO eve_trader_app;
+GRANT USAGE, SELECT ON SEQUENCE manual_owned_blueprints_id_seq TO eve_trader_app;
+
+-- docs/MANUAL_TRACKING_PLAN.md phase 6 - manually-tracked running industry
+-- jobs, additive alongside ESI-synced character_industry_jobs/
+-- corp_industry_jobs. quantity is the value production/engine.py's
+-- _current_stock actually adds (decision 2); runs is display-only, set
+-- only when the job was entered as runs rather than a raw quantity.
+-- location_id is the job's output location - also the default target for
+-- "Complete" (decision 12).
+CREATE TABLE IF NOT EXISTS manual_industry_jobs (
+    id BIGSERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    product_type_id INTEGER NOT NULL,
+    activity_id INTEGER NOT NULL CHECK (activity_id IN (1, 11)),
+    quantity DOUBLE PRECISION NOT NULL CHECK (quantity > 0),
+    runs INTEGER CHECK (runs IS NULL OR runs > 0),
+    location_id BIGINT NOT NULL DEFAULT 0,
+    ready_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS manual_industry_jobs_tenant_product_idx
+    ON manual_industry_jobs (tenant_id, product_type_id);
+ALTER TABLE manual_industry_jobs ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON manual_industry_jobs;
+CREATE POLICY tenant_isolation ON manual_industry_jobs
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON manual_industry_jobs TO eve_trader_app;
+GRANT USAGE, SELECT ON SEQUENCE manual_industry_jobs_id_seq TO eve_trader_app;
+
+-- docs/MANUAL_TRACKING_PLAN.md phase 7 (decision 7) - manually-tracked
+-- quantities already listed for sale at home/Jita, additive alongside the
+-- ESI-derived open-sell-order volume production/engine.py's
+-- _total_missing/market_status already compute.
+CREATE TABLE IF NOT EXISTS manual_listed_stock (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    type_id INTEGER NOT NULL,
+    market TEXT NOT NULL CHECK (market IN ('home', 'jita')),
+    quantity DOUBLE PRECISION NOT NULL CHECK (quantity >= 0),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, type_id, market)
+);
+ALTER TABLE manual_listed_stock ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON manual_listed_stock;
+CREATE POLICY tenant_isolation ON manual_listed_stock
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON manual_listed_stock TO eve_trader_app;
 
 CREATE TABLE IF NOT EXISTS category_location_options (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,

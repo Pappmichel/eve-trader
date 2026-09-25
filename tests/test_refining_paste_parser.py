@@ -1,9 +1,9 @@
-"""Tests for eve_trader/refining/paste_parser.py - GitHub issue #92. Real
+"""Tests for eve_trader/paste_parser.py - GitHub issue #92. Real
 EVE "Copy As" clipboard format confirmed against evepraisal.com's own
 open-source evepaste library (evepaste/parsers/assets.py) during
 implementation - 9 tab-separated columns: Name, Quantity, Group, Category,
 Size, Slot, Volume, Meta Level, Tech Level, no header row."""
-from eve_trader.refining.paste_parser import merge_duplicate_stacks, parse_paste
+from eve_trader.paste_parser import merge_duplicate_stacks, parse_paste
 
 # A real Tech I ammo line - Size/Slot/Meta Level/Tech Level empty (common for
 # non-fitted items), still real trailing tab characters in an actual paste.

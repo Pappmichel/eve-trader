@@ -12,11 +12,12 @@ from typing import Optional
 
 import requests
 
-from .. import storage
+from .. import storage, tenant_scope
 from ..actions import ActionError
 from ..auth import InvalidRoleKey, TokenManager, validate_role_key_for_tool
 from ..config import ConfigError, OAUTH_CONFIG, save_tenant_config_overrides
 from ..esi_client import ESIClient, ESIError
+from ..paste_parser import merge_duplicate_stacks, parse_paste
 from . import esi_sync, invention, jobs, order_integrity, pricing, sde
 from .config import PRODUCTION_CONFIG, ProductionConfig, validate_production_overrides
 from .constants import DECRYPTORS, JOB_CATEGORIES
@@ -234,15 +235,151 @@ def do_remove_stock_target(type_id: int) -> dict:
     return {"removed": type_id}
 
 
-def do_set_manual_stock(type_id: int, count: float) -> dict:
+def do_set_manual_stock(type_id: int, count: float, location_id: int = 0) -> dict:
     # The UI's NumberInput already enforces min=0, but the API itself had no
     # boundary check (confirmed: a raw negative POST was silently accepted) -
     # a negative override would poison _current_stock for that item across
     # every stock-target/plan/stock-value computation that reads it.
     if count < 0:
         raise ActionError("Current stock cannot be negative.")
-    storage.upsert_manual_stock(type_id, count)
-    return {"type_id": type_id, "count": count}
+    storage.upsert_manual_stock(type_id, count, location_id)
+    return {"type_id": type_id, "count": count, "location_id": location_id}
+
+
+def do_list_manual_stock_entries() -> dict:
+    """One row per (type, location) - docs/MANUAL_TRACKING_PLAN.md phase 3,
+    decision 9 - for the Stock Targets page's own "Manual stock" table,
+    separate from the existing per-type total (do_set_manual_stock's own
+    location_id=0-default single value)."""
+    return {"rows": [
+        {"type_id": type_id, "type_name": type_name, "location_id": location_id, "count": count}
+        for type_id, type_name, location_id, count in storage.load_manual_stock_entries()
+    ]}
+
+
+def do_add_manual_stock_entry(item_name: str, count: float, location_id: int = 0) -> dict:
+    if count < 0:
+        raise ActionError("Count cannot be negative.")
+    matches = storage.search_sde_types(item_name, limit=2)
+    exact = [m for m in matches if m[1].lower() == item_name.strip().lower()]
+    if not exact:
+        if not matches:
+            raise ActionError(f"No type found for '{item_name}'. Refresh SDE first?")
+        raise ActionError(f"No exact match for '{item_name}'. Did you mean: {matches[0][1]}?")
+    type_id, resolved_name = exact[0]
+    storage.upsert_manual_stock(type_id, count, location_id)
+    return {"type_id": type_id, "type_name": resolved_name, "location_id": location_id, "count": count}
+
+
+def do_remove_manual_stock_entry(type_id: int, location_id: int = 0) -> dict:
+    storage.delete_manual_stock(type_id, location_id)
+    return {"type_id": type_id, "location_id": location_id}
+
+
+def _parse_asset_paste(text: str) -> dict:
+    """Shared by do_preview_asset_paste and do_commit_asset_paste (docs/
+    MANUAL_TRACKING_PLAN.md phase 4) - parses an EVE inventory "Copy As"
+    paste (eve_trader.paste_parser, same format issue #92's Ore & Minerals
+    import uses), skips Blueprint-category lines (decision 10 - Phase 0
+    found no reliable ME/TE/Runs clipboard format for them, so they can
+    never be more than a name+quantity here), and resolves every remaining
+    name to a type_id via storage.resolve_type_names_exact/suggest_type_names
+    (decision 18's batch "Did you mean...?" pattern).
+
+    Returns {"resolved": {type_id: (type_name, quantity)}, "skipped_blueprints":
+    [name, ...], "unresolved": [{"line": raw_line, "suggestion": name|None}, ...],
+    "errors": [{"line": raw_line, "error": message}, ...]}. Two different
+    paste lines that both resolve to the same type_id (distinct names for
+    the same item is not a real case, but merge_duplicate_stacks only
+    merges identical names) have their quantities summed."""
+    all_lines = parse_paste(text)
+    error_lines = [line for line in all_lines if line.error]
+    parsed = merge_duplicate_stacks(all_lines)
+
+    skipped_blueprints = [line.name for line in parsed if line.category.strip().lower() == "blueprint"]
+    item_lines = [line for line in parsed if line.category.strip().lower() != "blueprint"]
+
+    exact = storage.resolve_type_names_exact([line.name for line in item_lines])
+    missing = [line.name for line in item_lines if line.name.strip().lower() not in exact]
+    suggestions = storage.suggest_type_names(missing) if missing else {}
+
+    resolved: dict[int, list] = {}
+    unresolved = []
+    for line in item_lines:
+        key = line.name.strip().lower()
+        hit = exact.get(key)
+        if hit is None:
+            suggestion = suggestions.get(key)
+            unresolved.append({"line": line.raw_line, "suggestion": suggestion[1] if suggestion else None})
+            continue
+        type_id, resolved_name, _category_id = hit
+        if type_id in resolved:
+            resolved[type_id][1] += line.quantity
+        else:
+            resolved[type_id] = [resolved_name, float(line.quantity)]
+
+    return {
+        "resolved": {type_id: (name, qty) for type_id, (name, qty) in resolved.items()},
+        "skipped_blueprints": skipped_blueprints,
+        "unresolved": unresolved,
+        "errors": [{"line": line.raw_line, "error": line.error} for line in error_lines],
+    }
+
+
+def _validate_asset_paste_args(text: str, mode: str) -> None:
+    if mode not in ("replace", "merge"):
+        raise ActionError("Mode must be 'replace' or 'merge'.")
+    if not text or not text.strip():
+        raise ActionError("Paste is empty - copy items from an Inventory window's list view first.")
+
+
+def do_preview_asset_paste(text: str, location_id: int, mode: str) -> dict:
+    """Diffs an asset paste against this location's existing manual-stock
+    entries, without writing anything - do_commit_asset_paste applies the
+    exact same parse independently server-side (never trusting rows the
+    client sends back)."""
+    _validate_asset_paste_args(text, mode)
+    parsed = _parse_asset_paste(text)
+    existing = {
+        type_id: (type_name, count)
+        for type_id, type_name, loc_id, count in storage.load_manual_stock_entries()
+        if loc_id == location_id
+    }
+
+    rows = []
+    seen: set[int] = set()
+    for type_id, (name, qty) in parsed["resolved"].items():
+        seen.add(type_id)
+        _old_name, old = existing.get(type_id, (name, 0.0))
+        new = qty if mode == "replace" else old + qty
+        status = "new" if type_id not in existing else ("unchanged" if new == old else "changed")
+        rows.append({"type_id": type_id, "name": name, "old": old, "new": new, "status": status})
+
+    if mode == "replace":
+        for type_id, (name, old) in existing.items():
+            if type_id not in seen:
+                rows.append({"type_id": type_id, "name": name, "old": old, "new": 0.0, "status": "removed"})
+
+    return {
+        "rows": rows, "skipped_blueprints": parsed["skipped_blueprints"],
+        "unresolved": parsed["unresolved"], "errors": parsed["errors"],
+    }
+
+
+def do_commit_asset_paste(text: str, location_id: int, mode: str) -> dict:
+    """Re-parses `text` on the server (never takes rows from the client, so
+    the frontend can't alter what actually gets written) and applies it via
+    storage.apply_manual_stock_paste. Deliberately no cache invalidation
+    (decision 4) - a stock change alone doesn't need discover_cache/
+    ship_margin_cache invalidated, unlike a manual blueprint change."""
+    _validate_asset_paste_args(text, mode)
+    parsed = _parse_asset_paste(text)
+    rows = {type_id: qty for type_id, (_name, qty) in parsed["resolved"].items()}
+    storage.apply_manual_stock_paste(location_id, rows, mode)
+    return {
+        "applied": len(rows), "skipped_blueprints": parsed["skipped_blueprints"],
+        "unresolved": parsed["unresolved"], "errors": parsed["errors"],
+    }
 
 
 def do_set_manual_build_buy(type_id: int, decision: str) -> dict:
@@ -327,81 +464,130 @@ def do_remove_category_location_option(category: str, location_id: int) -> dict:
 
 def do_resolve_structure_name(location_id: int, force: bool = False) -> dict:
     """Resolves `location_id` to its structure name (and solar_system_id,
-    GitHub issue #12 - see storage.load_category_system_ids) via ESI, cached
-    indefinitely (storage.get/set_cached_structure_name) unless `force`.
+    GitHub issue #12 - see storage.load_category_system_ids), cached
+    indefinitely unless `force`. Four-tier lookup chain (docs/
+    MANUAL_TRACKING_PLAN.md phase 2 - tiers 3/4 replace the old
+    two-path-inline ESI logic with esi_sync.resolve_structure_ids, shared
+    with _discover_structure_names):
 
-    Tries two paths, in order:
-    1. Each registered character's corp's structure list
-       (ESIClient.corporation_structures - esi-corporations.read_structures.v1
-       + Station_Manager role) - covers every structure that corp owns, with
-       no dependency on any one character having personally docked there.
-       Each distinct corporation is only queried once.
-    2. Per-character docking history (ESIClient.get_structure_name -
-       esi-universe.read_structures.v1) - tries every registered producer
-       character in turn until one can actually "see" the structure (needs
-       docking rights/to have visited it - a random character's token isn't
-       guaranteed access to every structure, same fallback esi_sync.py uses
-       for corp-level calls). Only reached if path 1 didn't resolve it (e.g.
-       the structure belongs to a different corp than any registered
-       character's, or no registered character holds Station_Manager).
+    1. This tenant's own cache (storage.get_cached_structure_name).
+    2. The global cache (storage.get_global_structure_names) - any tenant's
+       earlier successful resolution of the same structure_id. A hit is
+       copied into this tenant's own cache so future lookups stay purely
+       local; no ESI call needed.
+    3. This tenant's own "structure_name_resolution" Access-capability
+       characters (docs/ESI_ACCESS_PLAN.md Known gap 4, closed - not
+       producer sharing, Group 3 has no tool dimension per decision 9),
+       tried corp-structure-list first, then per-character docking history
+       (see esi_sync.resolve_structure_ids' own docstring for why, in that
+       order).
+    4. The operator fallback - only when the switch is on. The switch
+       itself is Default-Tenant-only (admin.do_get/set_structure_resolution_
+       fallback only ever reads/writes it there), so it's read here inside
+       its own tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID), not off
+       the ambient PRODUCTION_CONFIG - the requesting tenant's own copy of
+       that field is always False, since nothing ever saves it there.
+       Resolution itself retries tier 3's same two-path logic with the
+       Default Tenant's own structure_name_resolution characters, inside
+       that same tenant_scope. The token itself never leaves the server -
+       only {name, solar_system_id} crosses back out into this tenant's
+       result.
 
     A character added before esi-universe.read_structures.v1/
-    esi-corporations.read_structures.v1 existed needs to be re-added (remove +
-    add again) before either path works for it.
+    esi-corporations.read_structures.v1 existed needs to be re-added (remove
+    + add again) before tier 3/4 work for it.
 
-    Characters come from the "structure_name_resolution" Access capability
-    (docs/ESI_ACCESS_PLAN.md Known gap 4, closed), not producer sharing -
-    Group 3 has no tool dimension (decision 9): a character can resolve
-    structure names for Production without sharing Assets/Market Orders
-    with it, and vice versa."""
+    Every successful resolution (from tier 3 or 4) is written to both this
+    tenant's own cache and the global cache - including a regular tenant
+    resolving with its own characters (decision Q2: every successful
+    resolution becomes globally visible, not just the operator fallback's
+    own). `force=True` skips tiers 1-2 (always re-resolves via ESI) but
+    still updates both caches on success, per decision 6d."""
     if not force:
         was_cached, cached_name = storage.get_cached_structure_name(location_id)
         if was_cached:
             return {"location_id": location_id, "name": cached_name, "cached": True}
 
-    characters = esi_sync.list_capability_characters("structure_name_resolution")
-    if not characters:
-        raise ActionError(
-            "No character has ticked Structure name resolution yet (Characters page, Access section)."
-        )
+        global_hit = storage.get_global_structure_names([location_id]).get(location_id)
+        if global_hit is not None:
+            name, solar_system_id = global_hit
+            storage.set_cached_structure_name(location_id, name, solar_system_id)
+            return {"location_id": location_id, "name": name, "cached": True}
 
-    client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))
+    characters = esi_sync.list_capability_characters("structure_name_resolution")
+
     name = None
     solar_system_id = None
 
-    tried_corporations: set[int] = set()
-    for role, character_id, character_name in characters:
-        try:
-            corporation_id = client.character_public_info(character_id)["corporation_id"]
-        except ESIError:
-            continue
-        if corporation_id in tried_corporations:
-            continue
-        tried_corporations.add(corporation_id)
-        try:
-            structures = client.corporation_structures(corporation_id, auth_role=role)
-        except ESIError:
-            continue  # this character lacks Station_Manager (or the scope) - try the next one
-        for structure in structures:
-            if structure.get("structure_id") == location_id:
-                name = structure.get("name")
-                solar_system_id = structure.get("solar_system_id")
-                break
-        if name:
-            break
+    if characters:
+        client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))
+        corp_roles = esi_sync.corp_roles_for_characters(client, characters)
+        resolved = esi_sync.resolve_structure_ids(client, {location_id}, corp_roles, lambda: characters)
+        if location_id in resolved:
+            name, solar_system_id = resolved[location_id]
 
     if name is None:
-        for role, character_id, character_name in characters:
-            try:
-                info = client.get_structure_name(location_id, auth_role=role)
-                name = info.get("name")
-                solar_system_id = info.get("solar_system_id")
-                break
-            except ESIError:
-                continue  # this character can't see it - try the next one
+        # The switch is Default-Tenant-only (admin.do_get/set_structure_
+        # resolution_fallback only ever saves it there) - reading the
+        # ambient PRODUCTION_CONFIG here would read *this* tenant's own
+        # (always-default-False) copy, making the fallback silently inert
+        # for every tenant except the Default one. Confirmed real bug in
+        # code review (2026-09-25): the old tests missed it because they
+        # set the flag directly on the ambient PRODUCTION_CONFIG instead of
+        # under enter_tenant. Read lazily (only once tier 3 has failed to
+        # resolve this location) so a normal tier-3 success never pays for
+        # an extra tenant switch.
+        with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
+            fallback_enabled = PRODUCTION_CONFIG.global_structure_resolution_fallback
+        if not characters and not fallback_enabled:
+            raise ActionError(
+                "No character has ticked Structure name resolution yet (Characters page, Access section)."
+            )
+        if fallback_enabled:
+            with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
+                fallback_characters = esi_sync.list_capability_characters("structure_name_resolution")
+                if fallback_characters:
+                    fallback_client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))
+                    fallback_corp_roles = esi_sync.corp_roles_for_characters(fallback_client, fallback_characters)
+                    fallback_resolved = esi_sync.resolve_structure_ids(
+                        fallback_client, {location_id}, fallback_corp_roles, lambda: fallback_characters,
+                    )
+                    if location_id in fallback_resolved:
+                        name, solar_system_id = fallback_resolved[location_id]
 
     storage.set_cached_structure_name(location_id, name, solar_system_id)
+    if name is not None:
+        storage.upsert_global_structure_name(location_id, name, solar_system_id)
     return {"location_id": location_id, "name": name, "cached": False}
+
+
+def do_search_locations(query: str) -> dict:
+    """Type-ahead for the LocationPicker (docs/MANUAL_TRACKING_PLAN.md
+    phase 2) - NPC stations, this tenant's own resolved structures and its
+    own manual names. See storage.search_locations for why the global
+    structure cache is deliberately not searchable here."""
+    return {"rows": [
+        {"location_id": location_id, "name": name, "kind": kind}
+        for location_id, name, kind in storage.search_locations(query)
+    ]}
+
+
+def do_set_manual_location_name(location_id: int, name: str) -> dict:
+    """Gives `location_id` a tenant-own display name (docs/
+    MANUAL_TRACKING_PLAN.md phase 2, decision 8) - the lowest-priority tier
+    in storage.get_location_names' lookup chain, for a structure/station
+    this tenant can't resolve via ESI (or doesn't want to). Never written to
+    the global cache - purely this tenant's own opinion."""
+    name = name.strip()
+    if not name:
+        raise ActionError("Name must not be empty.")
+    storage.set_manual_location_name(location_id, name)
+    return {"location_id": location_id, "name": name}
+
+
+def do_remove_manual_location_name(location_id: int) -> dict:
+    storage.remove_manual_location_name(location_id)
+    return {"location_id": location_id}
 
 
 def do_estimate_invention(product_name: str, decryptor_name: str | None = None,
@@ -1174,8 +1360,256 @@ def do_list_owned_blueprints() -> dict:
             type_id=type_id, type_name=name, is_original=is_original,
             quantity=qty, material_efficiency=me, time_efficiency=te, runs=runs,
         ))
+
+    # Manual rows (docs/MANUAL_TRACKING_PLAN.md phase 5) - each its own row,
+    # never merged with an ESI row or with each other (see OwnedBlueprintRow's
+    # own docstring for why).
+    for manual_id, bp_type_id, bp_name, is_original, me, te, runs, quantity, location_id in \
+            storage.load_manual_owned_blueprints():
+        rows.append(OwnedBlueprintRow(
+            type_id=bp_type_id, type_name=bp_name, is_original=is_original, quantity=quantity,
+            material_efficiency=me, time_efficiency=te, runs=runs,
+            source="manual", manual_id=manual_id, location_id=location_id,
+        ))
+
     rows.sort(key=lambda r: r.type_name)
     return {"rows": rows}
+
+
+def _validate_manual_blueprint_me_te(material_efficiency: int, time_efficiency: int) -> None:
+    if not (0 <= material_efficiency <= 10):
+        raise ActionError("Material efficiency must be between 0 and 10.")
+    if not (0 <= time_efficiency <= 20) or time_efficiency % 2 != 0:
+        raise ActionError("Time efficiency must be an even number between 0 and 20.")
+
+
+def do_add_manual_owned_blueprint(item_name: str, is_original: bool, material_efficiency: int,
+                                   time_efficiency: int, runs: Optional[int], quantity: int,
+                                   location_id: int = 0) -> dict:
+    """`item_name` accepts the blueprint's own name ("Rifter Blueprint") or
+    the product's name ("Rifter") - the latter is mapped to its blueprint
+    via storage.get_blueprint_for_product (same location picker/ME/TE
+    treatment as an ESI-owned blueprint, decision 14)."""
+    matches = storage.search_sde_types(item_name, limit=2)
+    exact = [m for m in matches if m[1].lower() == item_name.strip().lower()]
+    if not exact:
+        if not matches:
+            raise ActionError(f"No type found for '{item_name}'. Refresh SDE first?")
+        raise ActionError(f"No exact match for '{item_name}'. Did you mean: {matches[0][1]}?")
+    type_id, resolved_name = exact[0]
+
+    if storage.is_known_blueprint(type_id):
+        blueprint_type_id = type_id
+    else:
+        bp = storage.get_blueprint_for_product(type_id)
+        if bp is None:
+            raise ActionError(f"'{resolved_name}' is not a known blueprint, or a producible item.")
+        blueprint_type_id = bp[0]
+
+    _validate_manual_blueprint_me_te(material_efficiency, time_efficiency)
+    if is_original:
+        if runs is not None:
+            raise ActionError("A blueprint original (BPO) has no runs.")
+    elif not runs or runs <= 0:
+        raise ActionError("A blueprint copy (BPC) needs runs > 0.")
+    if quantity <= 0:
+        raise ActionError("Quantity must be positive.")
+
+    bp_sde_type = storage.get_sde_type(blueprint_type_id)
+    bp_name = bp_sde_type[2] if bp_sde_type else str(blueprint_type_id)
+    manual_id = storage.insert_manual_owned_blueprint(
+        blueprint_type_id, is_original, material_efficiency, time_efficiency, runs, quantity, location_id)
+    invalidate_discover_cache()
+    invalidate_ship_margin_cache()
+    return {
+        "manual_id": manual_id, "type_id": blueprint_type_id, "type_name": bp_name, "is_original": is_original,
+        "material_efficiency": material_efficiency, "time_efficiency": time_efficiency,
+        "runs": runs, "quantity": quantity, "location_id": location_id,
+    }
+
+
+def do_update_manual_owned_blueprint(manual_id: int, material_efficiency: int, time_efficiency: int,
+                                      runs: Optional[int], quantity: int) -> dict:
+    existing = storage.get_manual_owned_blueprint(manual_id)
+    if existing is None:
+        raise ActionError(f"No manual blueprint entry #{manual_id}.")
+    _id, _bp_type_id, is_original, _me, _te, _runs, _qty, _loc = existing
+
+    _validate_manual_blueprint_me_te(material_efficiency, time_efficiency)
+    if is_original:
+        if runs is not None:
+            raise ActionError("A blueprint original (BPO) has no runs.")
+    elif not runs or runs <= 0:
+        raise ActionError("A blueprint copy (BPC) needs runs > 0.")
+    if quantity <= 0:
+        raise ActionError("Quantity must be positive.")
+
+    storage.update_manual_owned_blueprint(manual_id, material_efficiency, time_efficiency, runs, quantity)
+    invalidate_discover_cache()
+    invalidate_ship_margin_cache()
+    return {"manual_id": manual_id, "material_efficiency": material_efficiency,
+            "time_efficiency": time_efficiency, "runs": runs, "quantity": quantity}
+
+
+def do_remove_manual_owned_blueprint(manual_id: int) -> dict:
+    storage.delete_manual_owned_blueprint(manual_id)
+    invalidate_discover_cache()
+    invalidate_ship_margin_cache()
+    return {"manual_id": manual_id}
+
+
+_UNSET = object()  # sentinel for "field not provided" on a partial PATCH, distinct from None ("clear it")
+
+
+def _validate_ready_at(ready_at: Optional[str]) -> None:
+    """manual_industry_jobs.ready_at is TIMESTAMPTZ - an unparseable string
+    would otherwise reach Postgres unvalidated and surface as a bare 500
+    (psycopg raising on the INSERT/UPDATE) instead of a clean 400. Confirmed
+    real gap in code review (2026-09-25). Accepts the same ISO 8601 shape
+    JavaScript's Date.toISOString() produces (a trailing "Z"), which
+    datetime.fromisoformat only understands as "+00:00" from Python 3.11 -
+    normalize it by hand so this validates identically on 3.10 and 3.11
+    (this repo's CI matrix, see .github/workflows/ci.yml)."""
+    if ready_at is None:
+        return
+    try:
+        datetime.fromisoformat(ready_at.replace("Z", "+00:00"))
+    except ValueError as e:
+        raise ActionError(f"ready_at must be a valid ISO 8601 timestamp, got '{ready_at}'.") from e
+
+
+def _resolve_manual_job_quantity(product_type_id: int, quantity: Optional[float],
+                                  runs: Optional[int]) -> tuple[float, int, Optional[int]]:
+    """Exactly one of `quantity`/`runs` must be given - `runs` is converted
+    to a quantity via the product's own qty-per-run (decision 13: rejected
+    if there's no known blueprint at all); a raw `quantity` is stored as-is
+    with `runs` left None (display-only, "if entered as runs" - see the
+    table's own column comment)."""
+    if (quantity is None) == (runs is None):
+        raise ActionError("Provide exactly one of quantity or runs.")
+    bp = storage.get_blueprint_for_product(product_type_id)
+    if bp is None:
+        raise ActionError("This item has no known blueprint - it can't be an industry job's output.")
+    _blueprint_type_id, activity_id, product_qty = bp
+    if runs is not None:
+        if runs <= 0:
+            raise ActionError("Runs must be positive.")
+        return runs * product_qty, activity_id, runs
+    if quantity is None or quantity <= 0:
+        raise ActionError("Quantity must be positive.")
+    return quantity, activity_id, None
+
+
+def do_add_manual_industry_job(item_name: str, quantity: Optional[float] = None, runs: Optional[int] = None,
+                                location_id: int = 0, ready_at: Optional[str] = None) -> dict:
+    matches = storage.search_sde_types(item_name, limit=2)
+    exact = [m for m in matches if m[1].lower() == item_name.strip().lower()]
+    if not exact:
+        if not matches:
+            raise ActionError(f"No type found for '{item_name}'. Refresh SDE first?")
+        raise ActionError(f"No exact match for '{item_name}'. Did you mean: {matches[0][1]}?")
+    product_type_id, resolved_name = exact[0]
+
+    _validate_ready_at(ready_at)
+    resolved_quantity, activity_id, resolved_runs = _resolve_manual_job_quantity(product_type_id, quantity, runs)
+
+    manual_id = storage.insert_manual_industry_job(
+        product_type_id, activity_id, resolved_quantity, resolved_runs, location_id, ready_at)
+    return {
+        "manual_id": manual_id, "type_id": product_type_id, "type_name": resolved_name,
+        "activity_id": activity_id, "quantity": resolved_quantity, "runs": resolved_runs,
+        "location_id": location_id, "ready_at": ready_at,
+    }
+
+
+def do_update_manual_industry_job(manual_id: int, quantity=_UNSET, runs=_UNSET,
+                                   location_id=_UNSET, ready_at=_UNSET) -> dict:
+    """A true partial update (decision from code review 2026-09-25 - the
+    old signature defaulted every field to None, which is indistinguishable
+    from "explicitly clear this", so a caller updating only e.g. location_id
+    was forced to also resend quantity/runs and always cleared ready_at).
+    Each parameter's default is `_UNSET`, not None, so "not passed at all"
+    (keep the existing value) and "passed as null" (e.g. clear ready_at)
+    are no longer the same thing. The router only forwards fields the
+    client actually set (Pydantic's `model_dump(exclude_unset=True)`)."""
+    existing = storage.get_manual_industry_job(manual_id)
+    if existing is None:
+        raise ActionError(f"No manual job entry #{manual_id}.")
+    _id, product_type_id, existing_activity_id, existing_qty, existing_runs, existing_location_id, \
+        existing_ready_at = existing
+
+    if quantity is _UNSET and runs is _UNSET:
+        resolved_quantity, activity_id, resolved_runs = existing_qty, existing_activity_id, existing_runs
+    else:
+        effective_quantity = None if quantity is _UNSET else quantity
+        effective_runs = None if runs is _UNSET else runs
+        resolved_quantity, activity_id, resolved_runs = _resolve_manual_job_quantity(
+            product_type_id, effective_quantity, effective_runs)
+
+    effective_location_id = existing_location_id if location_id is _UNSET else location_id
+    if ready_at is _UNSET:
+        # Confirmed real bug in code review (2026-09-25): existing_ready_at
+        # comes back from storage.get_manual_industry_job as a real
+        # datetime (psycopg's own TIMESTAMPTZ mapping), not a string - only
+        # ever validate a value the client actually just sent (always a
+        # string or None); the already-stored value needs no re-validation,
+        # and _validate_ready_at's str.replace("Z", ...) would TypeError on
+        # a datetime.
+        effective_ready_at = existing_ready_at
+    else:
+        _validate_ready_at(ready_at)
+        effective_ready_at = ready_at
+
+    storage.update_manual_industry_job(manual_id, resolved_quantity, resolved_runs,
+                                        effective_location_id, effective_ready_at)
+    return {
+        "manual_id": manual_id, "activity_id": activity_id, "quantity": resolved_quantity,
+        "runs": resolved_runs, "location_id": effective_location_id, "ready_at": effective_ready_at,
+    }
+
+
+def do_remove_manual_industry_job(manual_id: int) -> dict:
+    storage.delete_manual_industry_job(manual_id)
+    return {"manual_id": manual_id}
+
+
+def do_complete_manual_industry_job(manual_id: int, location_id: Optional[int] = None) -> dict:
+    """Deletes the job and books its quantity into manual_stock -
+    `location_id=None` (the default) uses the job's own output location
+    (decision 12); an explicit `location_id` overrides that (e.g. moved the
+    finished goods somewhere else before completing)."""
+    existing = storage.get_manual_industry_job(manual_id)
+    if existing is None:
+        raise ActionError(f"No manual job entry #{manual_id}.")
+    _id, _product_type_id, _activity_id, _qty, _runs, job_location_id, _ready_at = existing
+    effective_location_id = job_location_id if location_id is None else location_id
+
+    storage.complete_manual_job(manual_id, effective_location_id)
+    return {"manual_id": manual_id, "location_id": effective_location_id}
+
+
+def do_list_manual_listed_stock() -> dict:
+    """{(type_id, market): (quantity, updated_at)} as a JSON-friendly list -
+    the Stock Targets page's own "Listed Home/Jita (manual)" columns
+    (docs/MANUAL_TRACKING_PLAN.md phase 7)."""
+    return {"rows": [
+        {"type_id": type_id, "market": market, "quantity": quantity, "updated_at": updated_at}
+        for (type_id, market), (quantity, updated_at) in storage.load_manual_listed_stock().items()
+    ]}
+
+
+def do_set_manual_listed_stock(type_id: int, market: str, quantity: float) -> dict:
+    if market not in ("home", "jita"):
+        raise ActionError("Market must be 'home' or 'jita'.")
+    if quantity < 0:
+        raise ActionError("Quantity cannot be negative.")
+    storage.upsert_manual_listed_stock(type_id, market, quantity)
+    return {"type_id": type_id, "market": market, "quantity": quantity}
+
+
+def do_clear_manual_listed_stock(type_id: int, market: str) -> dict:
+    storage.delete_manual_listed_stock(type_id, market)
+    return {"type_id": type_id, "market": market}
 
 
 def do_list_manual_blueprint_copy_costs() -> dict:

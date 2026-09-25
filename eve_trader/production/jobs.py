@@ -46,10 +46,11 @@ def list_current_jobs(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[Industr
     "no value" rather than silently as 0."""
     char_ids, corp_ids = _shared_job_owner_ids()
     jobs = storage.list_industry_jobs(owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
+    manual_jobs = storage.load_manual_industry_jobs()
     # Only the distinct products these jobs actually output need pricing -
     # see pricing.home_prices/jita_prices' own docstrings for why callers
     # must scope type_ids explicitly now.
-    product_type_ids = list({j[3] for j in jobs if j[3] is not None})
+    product_type_ids = list({j[3] for j in jobs if j[3] is not None} | {m[1] for m in manual_jobs})
     home = pricing.home_prices(cfg, product_type_ids)
     jita = pricing.jita_prices(product_type_ids)
 
@@ -85,6 +86,35 @@ def list_current_jobs(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[Industr
             remaining_seconds=remaining,
             installer_name=installer_name or "?",
         ))
+
+    # Manual jobs (docs/MANUAL_TRACKING_PLAN.md phase 6) - each its own row,
+    # `status` derived from ready_at instead of ESI's own job status field.
+    for manual_id, product_type_id, product_name, activity_id, quantity, runs, _location_id, ready_at in manual_jobs:
+        output_value = None
+        home_quote = home.get(product_type_id)
+        jita_quote = jita.get(product_type_id)
+        if home_quote and home_quote.sell > 0:
+            output_value = quantity * home_quote.sell
+        elif jita_quote and jita_quote.sell > 0:
+            output_value = quantity * jita_quote.sell
+        ready_dt = _parse_iso(ready_at) if isinstance(ready_at, str) else ready_at
+        remaining = (ready_dt - now).total_seconds() if ready_dt else None
+        rows.append(IndustryJobRow(
+            job_id=manual_id,
+            type_name=product_name,
+            activity=ACTIVITY_JOB_LABELS.get(activity_id, str(activity_id)),
+            runs=runs or 0,
+            quantity=quantity,
+            output_value=output_value,
+            status="ready" if ready_dt and ready_dt <= now else "active",
+            start_date=None,
+            end_date=ready_at if isinstance(ready_at, str) else (ready_at.isoformat() if ready_at else None),
+            remaining_seconds=remaining if remaining is None or remaining > 0 else 0.0,
+            installer_name="Manual",
+            source="manual",
+            manual_id=manual_id,
+        ))
+
     rows.sort(key=lambda r: r.remaining_seconds if r.remaining_seconds is not None else float("inf"))
     return rows
 

@@ -122,6 +122,12 @@ def _make_sqlite_db(path):
     # One representative row per bucket - proves real data round-trips, not
     # just that empty tables don't error.
     conn.execute("INSERT INTO stock_targets VALUES (34, 'Tritanium', 1000.0, 500.0, 200.0)")  # composite-PK bucket
+    conn.execute("INSERT INTO manual_stock VALUES (34, 500.0)")  # composite-PK bucket, no location_id column
+                                                                   # at all in the pre-migration schema - proves
+                                                                   # the widened (tenant_id, type_id, location_id)
+                                                                   # ON CONFLICT target still matches a row that
+                                                                   # lands at location_id=0 via the column default
+                                                                   # (decision 3)
     conn.execute("INSERT INTO character_assets VALUES (123456789, 34, 60003760, 'Hangar', 100, 0, 'Some Char')")  # column-only bucket
     conn.execute("INSERT INTO realized_trades VALUES ('2026-01-01T00:00:00', 34, 'Tritanium', "
                  "'2026-01-01', 100, 4.5, '2026-01-02', 100, 5.5, 100, 100.0, 0.18)")  # no-PK bucket
@@ -139,7 +145,7 @@ def test_migrate_sqlite_to_postgres_copies_rows_from_each_bucket(tmp_path, tenan
     assert counts["stock_targets"] == 1
     assert counts["character_assets"] == 1
     assert counts["realized_trades"] == 1
-    assert counts["manual_stock"] == 0  # empty table - still queried, still reports 0, no error
+    assert counts["manual_stock"] == 1
 
     with storage.tenant_context(tenant), storage.connect() as conn:
         row = conn.execute("SELECT type_name, backup_stock FROM stock_targets WHERE type_id = 34").fetchone()
@@ -148,6 +154,10 @@ def test_migrate_sqlite_to_postgres_copies_rows_from_each_bucket(tmp_path, tenan
         assert row == ("Some Char",)
         row = conn.execute("SELECT item FROM realized_trades WHERE type_id = 34").fetchone()
         assert row == ("Tritanium",)
+        # location_id, absent from the pre-migration schema, lands at the
+        # Postgres column default (0, "no location" - decision 15), not NULL.
+        row = conn.execute("SELECT count, location_id FROM manual_stock WHERE type_id = 34").fetchone()
+        assert row == (500.0, 0)
 
 
 @pg_helpers.postgres_required()
@@ -161,5 +171,7 @@ def test_migrate_sqlite_to_postgres_is_idempotent_for_pk_tables(tmp_path, tenant
     with storage.tenant_context(tenant), storage.connect() as conn:
         count = conn.execute("SELECT COUNT(*) FROM stock_targets WHERE type_id = 34").fetchone()[0]
         assert count == 1  # ON CONFLICT DO NOTHING - not duplicated
+        count = conn.execute("SELECT COUNT(*) FROM manual_stock WHERE type_id = 34").fetchone()[0]
+        assert count == 1  # decision 3 - the widened 3-column ON CONFLICT target still matches on a re-run
         count = conn.execute("SELECT COUNT(*) FROM realized_trades WHERE type_id = 34").fetchone()[0]
         assert count == 2  # no-PK bucket - a re-run duplicates, same as a real pipeline re-run would
