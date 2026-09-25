@@ -45,7 +45,25 @@ of `docs/ESI_ACCESS_PLAN.md`; the Characters page is Phase 9)
 — plus the cross-tenant **Admin** tool
 (`eve_trader/admin.py`, see "Tool permissions & Admin" below), which
 isn't tenant-facing at all. **Portfolio** is also a tenant-facing tool
-(`tool_key "portfolio"`); it reads derived tables, not raw ESI.
+(`tool_key "portfolio"`); its four original Trading/Production figures
+(Combined Value etc.) still come from derived tables, not raw ESI. The
+Portfolio rework (`docs/PORTFOLIO_REWORK_PLAN.md`) added a second,
+broader figure on top - **Total Wealth** - which *does* read raw
+ESI-synced assets/blueprints/wallet balances, gated the same way every
+other tool's ESI reads are: Portfolio is a real `tool_key` in the
+ESI-sharing system now (`esi_data/registry.py`'s `consuming_tools`), not
+a bypass of it. This needed no new OAuth role-prefix/token namespace -
+Portfolio still has none (see `auth.py`'s own comment) - it reuses
+whichever token an owner already has from another tool to make the
+actual ESI calls; it only added a new data kind (`wallet_balance`) and a
+new sharing axis, both on top of the existing plumbing. `portfolio_
+overview()` stays the plain, non-snapshotting live read `GET /api/
+portfolio/overview` used to call directly; `take_portfolio_snapshot()`
+(calling both `portfolio_overview()` and the new `total_wealth()`) is
+now the one write path into `portfolio_snapshots` (daily history), called
+by both the scheduler's `portfolio_snapshot` job and a lazy fallback on
+the first overview read of the day - see `scheduler.py`'s own per-tenant
+job list below.
 
 All tenant-facing tools share one FastAPI backend (`eve_trader/api/`),
 one Postgres store (`eve_trader/storage.py`, multi-tenant - see
@@ -112,13 +130,18 @@ what a repo's API surface actually exposes.)
 Two narrow, deliberate exceptions call something other than a `do_*`
 function directly for *mutating or cross-cutting* work specifically - not
 places where the rule was missed, but don't extend either without the same
-reasoning: `api/routers/portfolio.py` calls
-`portfolio.portfolio_overview()`/`scheduler.get_status()` directly, since
-`portfolio.py`/`scheduler.py` are the cross-cutting modules that
-deliberately span both tools (see "Two tools, one backend" above) - there's
-no natural `do_*` home for either without picking one tool arbitrarily.
-Characters `do_*` will live in `eve_trader/esi_data/` (see
-`docs/ESI_ACCESS_PLAN.md`), not in `portfolio.py`.
+reasoning: `api/routers/portfolio.py`'s `GET /wealth` calls
+`portfolio.total_wealth()` directly (real logic - pricing, sharing lookups -
+not a bare passthrough), same as `GET /overview`/`GET /history` calling
+`portfolio.do_get_portfolio_overview()`/`do_get_portfolio_history()` (these
+two *do* carry the `do_` prefix, unlike `total_wealth()`/`portfolio_
+overview()`/`take_portfolio_snapshot()` - the prefix is a naming
+convenience this module reaches for when it helps the CLI/router-parity
+story, not a hard rule every function here must follow) - `portfolio.py`
+is the cross-cutting module that deliberately spans both tools (see "Two
+tools, one backend" above), so there's no natural single-tool `do_*` home
+to put any of these in. Characters `do_*` live in `eve_trader/esi_data/`
+(see `docs/ESI_ACCESS_PLAN.md`), not in `portfolio.py`.
 `cli.py`'s `tenant import-tokens`/`migrate-sqlite` commands call `storage`/
 `sqlite_migration` directly - both are genuinely one-time, operator-run
 commands with no web/API equivalent at all, so there's no router on the
@@ -422,10 +445,10 @@ background daemon thread, started from `api/app.py`'s FastAPI lifespan.
 Whether it starts at all is an operator-level decision, read once at boot
 from `DEFAULT_TENANT_ID`'s own `TradingConfig.scheduler_enabled` (**off by
 default**) - see "Multi-tenant Postgres" below for what `DEFAULT_TENANT_ID`
-means. Each tick, `trading_pipeline` / `esi_data_sync` run once **per
-tenant** (`storage.list_tenants()`, each fully scoped via `tenant_scope.
-enter_tenant`) - a tenant's own `scheduler_enabled`/interval fields decide
-independently whether *their* jobs run that tick, via
+means. Each tick, `trading_pipeline` / `esi_data_sync` / `portfolio_snapshot`
+run once **per tenant** (`storage.list_tenants()`, each fully scoped via
+`tenant_scope.enter_tenant`) - a tenant's own `scheduler_enabled`/interval
+fields decide independently whether *their* jobs run that tick, via
 `_check_and_run_due_jobs_for_tenant`. This does mean a real second tenant
 who flips their own `scheduler_enabled` on (Settings page) is silently a
 no-op the entire background thread never even starts, and so never reaches
@@ -452,8 +475,12 @@ per-kind state lives on `esi_freshness`. `get_status()` reports
 (`MAX(last_success_at)` for this tenant, `None` if nothing has ever
 succeeded) — not `_run_job`'s tick `ran_at`, because that job runs every
 five minutes and usually fetches nothing. `last_error` still comes from
-`last_run_status`. Portfolio shows the three tier intervals under
-`tier_interval_hours`; `interval_hours` is null for this job.
+`last_run_status`. `get_status()`'s `esi_data_sync` entry reports the
+three tier intervals under `tier_interval_hours` (`interval_hours` is
+null for this job) - `get_status()` itself is called nowhere in the UI
+since the Portfolio rework (`docs/PORTFOLIO_REWORK_PLAN.md`) removed that
+page's own "Background Scheduler" card; the function stays for Admin's
+possible future use.
 `trading_pipeline` is **not** an ESI-owner sync: it still runs
 `do_pipeline` (candidate/shortlist + reconcile). Reconcile consumes wallet snapshots when present and only
 live-pages ESI for a shared owner whose snapshot is empty.
@@ -464,7 +491,7 @@ retired as ESI intervals.
 `do_pipeline`). The backup job reuses the newest backup file's own mtime
 (`backup.list_backups()`). A manual pipeline/backup from the UI correctly
 counts either way and pushes back the next scheduled one. `last_run_status`
-is `{tenant_id: {job_name: {...}}}` for the two per-tenant jobs; a separate
+is `{tenant_id: {job_name: {...}}}` for the three per-tenant jobs; a separate
 `_backup_status` (not tenant-keyed) covers the global backup, and
 `_jita_price_cache_status` the other. Adding another *per-tenant* scheduled
 job that is not ESI-owner sync still means adding one interval field to
@@ -472,6 +499,19 @@ job that is not ESI-owner sync still means adding one interval field to
 and one `if _hours_since(...) >= cfg.x: _run_job(tenant_id, ...)` line in
 `_check_and_run_due_jobs_for_tenant`. Do not add a fourth tool-shaped ESI
 job; extend `do_sync_due` / the registry instead.
+
+`portfolio_snapshot` (`TradingConfig.portfolio_snapshot_interval_hours`,
+default 24h) is exactly this pattern's own precedent case - it is not an
+ESI-owner sync (no `esi_freshness` row), so its due-check reads its own
+`storage.latest_portfolio_snapshot_taken_at()` via the same `_hours_since`
+helper the other two jobs use, rather than anything `do_sync_due`-shaped.
+It calls `portfolio.take_portfolio_snapshot(cfg)`, the same one write path
+`GET /api/portfolio/overview`'s lazy-fallback branch calls when the
+scheduler is off (the default) - see `docs/PORTFOLIO_REWORK_PLAN.md`
+section 5.4. Never call `portfolio_overview()`/`total_wealth()` directly
+from a new call site that means to write a snapshot; go through
+`take_portfolio_snapshot()` so there is one write path, not two that could
+drift.
 
 ## Backup
 

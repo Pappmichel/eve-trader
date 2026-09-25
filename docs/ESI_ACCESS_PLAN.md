@@ -114,11 +114,11 @@ via a registered character, not a second login type.
 
 ### Data kinds
 
-Three groups (6 + 1 + 2 = 9). The registry (Phase 0) is the source of truth for names,
+Three groups (7 + 1 + 2 = 10). The registry (Phase 0) is the source of truth for names,
 scopes, consuming tools, corp in-game roles, and freshness-tier defaults.
 This section is the vocabulary that registry encodes.
 
-**Group 1 — owned data, character *and* corporation variant (6):**
+**Group 1 — owned data, character *and* corporation variant (7):**
 
 | Data kind        | Character scope                                      | Corporation scope                                        | Corp in-game role                          |
 |------------------|------------------------------------------------------|----------------------------------------------------------|--------------------------------------------|
@@ -128,6 +128,7 @@ This section is the vocabulary that registry encodes.
 | Market Orders    | `esi-markets.read_character_orders.v1`               | `esi-markets.read_corporation_orders.v1`                 | Accountant or Trader                       |
 | Contracts        | `esi-contracts.read_character_contracts.v1`          | `esi-contracts.read_corporation_contracts.v1`            | (whatever ESI already requires today)      |
 | Wallet           | `esi-wallet.read_character_wallet.v1`                | `esi-wallet.read_corporation_wallets.v1`                 | Accountant or Junior_Accountant            |
+| Wallet Balance   | `esi-wallet.read_character_wallet.v1`                | `esi-wallet.read_corporation_wallets.v1`                 | Accountant or Junior_Accountant            |
 
 The corp-role column is what the Corporations UI warns on, not a new
 ESI check this app invents. `ESIClient.corporation_assets` /
@@ -140,6 +141,14 @@ whatever `ESIClient.corporation_contracts` already requires — do not
 invent a Director-or-otherwise role for it here just to fill the table.
 Station Manager lives with structure name resolution in group 3, not
 here: a resolved name is not a per-character snapshot (see below).
+
+Wallet Balance (`docs/PORTFOLIO_REWORK_PLAN.md`) is deliberately a
+separate data kind from Wallet, not folded into it - it reuses the exact
+same scopes/corp role (no new grant), but its own snapshot tables
+(`character_wallet_balances`/`corp_wallet_balances`) store only the
+current balance, not transaction/journal history, and its only consuming
+tool is `portfolio` (Total Wealth) - Trading's own wallet reconciliation
+keeps consuming `wallet` unchanged.
 
 **Group 2 — owned data, character only (1):**
 
