@@ -173,7 +173,14 @@ def do_set_tool_grants(character_id: int, tool_keys: list[str]) -> dict:
     exactly `tool_keys` (replace, not append/merge - matches doctrine/
     storage.py's replace_fitting_items's own "replace, not append"
     semantics) - unchecked checkboxes in the Admin UI must actually revoke,
-    not just leave old grants stranded."""
+    not just leave old grants stranded.
+
+    T3-01 (business-logic audit follow-up, 2026-09-26): the actual DB write
+    is now storage.replace_tool_grants (one transaction, not N+1 separate
+    ones - see that function's own docstring). Also refuses to remove the
+    very last remaining "admin" grant anywhere - doing so would lock every
+    admin out of the Admin tool with no HTTP-reachable way back short of
+    `eve-trader admin bootstrap` on the server itself."""
     unknown = set(tool_keys) - set(access_gate.ALL_TOOL_KEYS)
     if unknown:
         raise ActionError(f"Unknown tool_key(s): {', '.join(sorted(unknown))}")
@@ -183,9 +190,17 @@ def do_set_tool_grants(character_id: int, tool_keys: list[str]) -> dict:
     if user is None:
         raise ActionError(f"Character {character_id} isn't a registered user - add them first.")
 
-    storage.revoke_all_tool_grants(character_id)
-    for tool_key in tool_keys:
-        storage.set_tool_grant(character_id, tool_key, user["tenant_id"])
+    if "admin" in user["tool_keys"] and "admin" not in tool_keys:
+        other_admins = any(
+            cid != character_id and "admin" in other["tool_keys"] for cid, other in users.items()
+        )
+        if not other_admins:
+            raise ActionError(
+                'Refusing to remove the last remaining "admin" grant - '
+                "grant it to another character first."
+            )
+
+    storage.replace_tool_grants(character_id, tool_keys, user["tenant_id"])
     return {"character_id": character_id, "tool_keys": sorted(tool_keys)}
 
 

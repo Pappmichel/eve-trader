@@ -117,6 +117,42 @@ def test_evaluate_line_refining_tax_reduces_refined_value(monkeypatch, trading_c
     assert with_tax.refining_tax > 0
 
 
+def test_evaluate_line_uses_ore_ice_yield_not_scrapmetal_when_family_given(monkeypatch, trading_cfg):
+    """T2-01 (business-logic audit, 2026-09-25/26): the Reprocessing tab used
+    to apply scrapmetal_yield to every pasted line unconditionally, including
+    ore/ice - silently understating ore/ice's real (usually much higher)
+    yield with no warning. evaluate_reprocessing_line must switch to
+    ore_ice_yield once the caller identifies the line as ore/ice (do_quote_
+    reprocessing, via candidate_discovery.ore_ice_families_for_types) -
+    itself unmocked here on purpose: this asserts against the real formula,
+    not a re-statement of it."""
+    from eve_trader.refining.engine import ore_ice_yield, scrapmetal_yield
+
+    monkeypatch.setattr(storage, "search_sde_types", lambda name, limit=5: [(45490, "Compressed Veldspar")])
+    monkeypatch.setattr(storage, "get_portion_size", lambda type_id: 100)
+    monkeypatch.setattr(storage, "get_type_materials", lambda type_id: [(34, 0.415)])
+    refining_cfg = RefiningConfig(reprocessing_skill_level=5, reprocessing_efficiency_skill_level=5,
+                                   scrapmetal_processing_skill_level=0, refining_tax_rate=0.0)
+    item_stats = OrderStats(sell_percentile=1.0, sell_volume=1000.0, buy_percentile=None, buy_volume=0.0)
+    tritanium = OrderStats(sell_percentile=10.0, sell_volume=1_000_000.0, buy_percentile=None, buy_volume=0.0)
+    line = _line(name="Compressed Veldspar", quantity=1000)
+
+    ore_row = evaluate_reprocessing_line(line, item_stats, {34: tritanium}, trading_cfg, refining_cfg,
+                                          ore_ice_family=("Veldspar", False))
+    scrapmetal_row = evaluate_reprocessing_line(line, item_stats, {34: tritanium}, trading_cfg, refining_cfg,
+                                                 ore_ice_family=None)
+
+    # Same config, same line - only the yield formula differs between the two calls.
+    ore_yield = ore_ice_yield(refining_cfg, "Veldspar")
+    scrapmetal_pct = scrapmetal_yield(refining_cfg)
+    assert ore_yield != scrapmetal_pct  # sanity: the two formulas must actually disagree here
+    assert ore_row.mineral_value != scrapmetal_row.mineral_value
+    if ore_yield > scrapmetal_pct:
+        assert ore_row.mineral_value > scrapmetal_row.mineral_value
+    else:
+        assert ore_row.mineral_value < scrapmetal_row.mineral_value
+
+
 def test_evaluate_line_sell_as_is_value_includes_structure_sell_haircut(monkeypatch, trading_cfg, refining_cfg):
     """Regression test for a confirmed real bug (business-logic audit,
     2026-08-29): sell_as_is_value used to be a bare gross quantity x price,

@@ -58,8 +58,21 @@ and restores the `exceptiongroup` / `tomli` marker pins.
 
 ## Vulnerability scanning
 
-CI runs `pip-audit -r requirements.lock` on every push/PR. A finding is a
-failed check, not a silent log line.
+CI runs `pip-audit -r requirements.lock` on every push/PR (backend job). A
+finding is a failed check, not a silent log line. The frontend job mirrors
+this with `npm audit --omit dev` against `frontend/package-lock.json` (F-06,
+business-logic audit follow-up, 2026-09-26) - `--omit dev` matches
+production's own `npm ci` (no dev-only tooling ships to a real user, so a
+vulnerable linter/test-runner doesn't need to fail this build the same way a
+vulnerable shipped dependency would).
+
+`.github/workflows/ci.yml`'s own `actions/checkout`/`actions/setup-python`/
+`actions/setup-node` steps are SHA-pinned, not on a moving version tag (F-06)
+- a compromised/re-tagged release would otherwise run in CI, with repo
+secrets in scope, without this workflow file itself ever changing.
+Dependabot's existing `github-actions` ecosystem entry (`.github/
+dependabot.yml`) already knows how to open a PR re-pinning to a new SHA when
+a tag moves - nothing extra to configure there.
 
 ## Updating a dependency
 

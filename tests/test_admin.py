@@ -131,6 +131,70 @@ def test_do_set_tool_grants_rejects_unregistered_character():
         admin.do_set_tool_grants(999999, ["trading"])
 
 
+def test_do_set_tool_grants_refuses_to_remove_the_last_admin(monkeypatch):
+    """T3-01 (business-logic audit follow-up, 2026-09-26): removing the last
+    remaining "admin" grant would lock every admin out of the Admin tool
+    entirely, with no HTTP-reachable way back short of `eve-trader admin
+    bootstrap` on the server itself."""
+    monkeypatch.setattr(ESIClient, "character_search", lambda self, name: 42)
+    admin.do_add_user("Some Pilot")
+    admin.do_set_tool_grants(42, ["admin"])
+
+    with pytest.raises(ActionError, match='last remaining "admin" grant'):
+        admin.do_set_tool_grants(42, ["trading"])
+
+    # Refused, not partially applied - the admin grant must still be there.
+    assert storage.list_tool_grants_for_character(42) == ["admin"]
+
+
+def test_do_set_tool_grants_allows_removing_admin_when_another_admin_remains(monkeypatch):
+    monkeypatch.setattr(ESIClient, "character_search", lambda self, name: {"Pilot A": 42, "Pilot B": 43}[name])
+    admin.do_add_user("Pilot A")
+    admin.do_add_user("Pilot B")
+    admin.do_set_tool_grants(42, ["admin"])
+    admin.do_set_tool_grants(43, ["admin"])
+
+    admin.do_set_tool_grants(42, ["trading"])  # 43 still has admin - must not raise
+
+    assert storage.list_tool_grants_for_character(42) == ["trading"]
+    assert storage.list_tool_grants_for_character(43) == ["admin"]
+
+
+def test_do_set_tool_grants_allows_removing_a_non_admin_grant_even_when_solely_admin(monkeypatch):
+    # The guard is specifically about removing "admin" itself - dropping
+    # some other tool while keeping "admin" must never be blocked.
+    monkeypatch.setattr(ESIClient, "character_search", lambda self, name: 42)
+    admin.do_add_user("Some Pilot")
+    admin.do_set_tool_grants(42, ["admin", "trading"])
+
+    admin.do_set_tool_grants(42, ["admin"])
+
+    assert storage.list_tool_grants_for_character(42) == ["admin"]
+
+
+def test_list_users_with_grants_excludes_orphaned_tool_grants_from_a_stale_tenant(monkeypatch):
+    """T3-02 (business-logic audit follow-up, 2026-09-26): tool_grants has
+    no FK/trigger keeping its own tenant_id in lockstep with the
+    character's *current* tenant_registry_entries.tenant_id (do_remove_user
+    happens to clean up properly today via revoke_all_tool_grants, but
+    nothing structural stops a stale row from existing some other way - a
+    direct DB edit, a partial restore, a future code path). Simulate that
+    directly (bypassing the admin actions, which don't currently produce
+    this on their own) to prove list_users_with_grants' own read-time
+    tenant match actually filters a row like this out, rather than relying
+    on every write path getting cleanup right forever."""
+    monkeypatch.setattr(ESIClient, "character_search", lambda self, name: 42)
+    result = admin.do_add_user("Some Pilot")
+    real_tenant_id = result["tenant_id"]
+    stale_tenant_id = storage.create_tenant("Some other, unrelated tenant")
+
+    storage.set_tool_grant(42, "trading", real_tenant_id)  # this character's real, current grant
+    storage.set_tool_grant(42, "admin", stale_tenant_id)   # orphaned - wrong tenant_id for this character
+
+    users = {u["character_id"]: u for u in admin.do_list_users()}
+    assert users[42]["tool_keys"] == ["trading"]  # not ["admin", "trading"]
+
+
 def test_do_apply_sde_invalidates_caches(monkeypatch):
     # GitHub issue #34: moved here from production/actions.py - the SDE
     # cache is global/shared, not per-tenant, so this is a superadmin action.

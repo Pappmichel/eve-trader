@@ -515,11 +515,32 @@ def revoke_tool_grant(character_id: int, tool_key: str) -> None:
 
 def revoke_all_tool_grants(character_id: int) -> None:
     """Removes every tool grant for `character_id` - called from
-    admin.do_remove_user alongside remove_tenant_registry_entry, and from
-    admin.do_set_tool_grants (replace-not-append semantics, see that
-    function's own docstring)."""
+    admin.do_remove_user alongside remove_tenant_registry_entry.
+    admin.do_set_tool_grants uses replace_tool_grants instead (below) -
+    this one stays a separate, single-purpose function for do_remove_user's
+    own "deregister, don't touch anything else" semantics."""
     with connect_unscoped() as conn:
         conn.execute("DELETE FROM tool_grants WHERE character_id = ?", (character_id,))
+
+
+def replace_tool_grants(character_id: int, tool_keys: list[str], tenant_id: str) -> None:
+    """Atomically replaces every tool grant for `character_id` with exactly
+    `tool_keys`, in one transaction (T3-01, business-logic audit follow-up,
+    2026-09-26) - admin.do_set_tool_grants used to call revoke_all_tool_
+    grants then set_tool_grant once per tool_key, each its own separate
+    connect_unscoped() connection/commit (N+1 writes, no transaction) - a
+    crash or dropped connection mid-loop left the character with fewer
+    grants than either the old or the intended new set, with no way to
+    tell which happened from the outside. One connection, one commit,
+    all-or-nothing."""
+    with connect_unscoped() as conn:
+        conn.execute("DELETE FROM tool_grants WHERE character_id = ?", (character_id,))
+        for tool_key in tool_keys:
+            conn.execute(
+                "INSERT INTO tool_grants (character_id, tool_key, tenant_id) VALUES (?, ?, ?) "
+                "ON CONFLICT (character_id, tool_key) DO UPDATE SET tenant_id = excluded.tenant_id",
+                (character_id, tool_key, tenant_id),
+            )
 
 
 def list_tool_grants_for_character(character_id: int) -> list[str]:
@@ -629,7 +650,21 @@ def list_users_with_grants() -> list[dict]:
     the Admin page has without a live ESI call.
     Admin-UI-only (cross-tenant superadmin - see admin.py's own module
     docstring for why this deliberately reads across every tenant rather
-    than being RLS-scoped)."""
+    than being RLS-scoped).
+
+    T3-02 (business-logic audit follow-up, 2026-09-26): tool_grants is
+    matched against BOTH character_id AND the character's *current*
+    tenant_id, not character_id alone - do_remove_user happens to clean up
+    properly on the one path that reaches it today (revoke_all_tool_grants
+    alongside remove_tenant_registry_entry), but nothing structural (no FK,
+    no trigger) keeps tool_grants.tenant_id in lockstep with a character's
+    current tenant_registry_entries.tenant_id in general - a stale row from
+    a direct DB edit, a partial restore, or a future code path would
+    otherwise resurface in the Admin UI as if it were a real current grant.
+    Confirmed no actual privilege gain even before this fix
+    (session_authorization's own tenant_id match already prevented that at
+    the request-auth layer) - this closes a misleading *display* gap, and
+    adds defense-in-depth against tool_grants ever drifting out of sync."""
     with connect_unscoped() as conn:
         users = conn.execute(
             "SELECT tre.entry_id, tre.character_name, tre.tenant_id, t.name, "
@@ -646,9 +681,12 @@ def list_users_with_grants() -> list[dict]:
             "LEFT JOIN access_requests ar ON ar.character_id = tre.entry_id "
             "WHERE tre.entry_type = 'character' ORDER BY tre.entry_id"
         ).fetchall()
-        grants = conn.execute("SELECT character_id, tool_key FROM tool_grants").fetchall()
+        grants = conn.execute("SELECT character_id, tool_key, tenant_id FROM tool_grants").fetchall()
+    current_tenant_by_character = {row[0]: str(row[2]) for row in users}
     grants_by_character: dict[int, list[str]] = {}
-    for character_id, tool_key in grants:
+    for character_id, tool_key, grant_tenant_id in grants:
+        if str(grant_tenant_id) != current_tenant_by_character.get(character_id):
+            continue  # orphaned - granted under a tenant this character no longer belongs to
         grants_by_character.setdefault(character_id, []).append(tool_key)
     return [
         {
@@ -4294,6 +4332,30 @@ def read_goonmetrics_history_for_types(type_ids: list[int]) -> pd.DataFrame:
         return pd.DataFrame(cur.fetchall(), columns=columns)
 
 
+def goonmetrics_history_type_ids_for_tenant() -> list[int]:
+    """type_ids in goonmetrics_history (a global, shared-across-every-tenant
+    cache - see this file's own module docstring) that are ALSO in this
+    tenant's own shortlist or candidate_universe (T3-03, business-logic
+    audit follow-up, 2026-09-26). The price DATA itself is legitimately
+    shared/public (same real market history for every tenant, same
+    reasoning as global_structure_names), but the previous "every type_id
+    anyone has ever cached" listing leaked something tenant-private: which
+    items another tenant is actively researching, via the Price History
+    page's own item picker (api/routers/trading.py's GET /history/type-ids).
+    Scoping the *listing* to this tenant's own known items of interest
+    closes that without touching the shared cache's own architecture -
+    still one shared fetch/cache per item, across every tenant; a specific
+    already-known type_id's own history (GET /history/{type_id}) stays
+    reachable regardless, same as querying Goonmetrics directly would be."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT gh.type_id FROM goonmetrics_history gh "
+            "WHERE gh.type_id IN (SELECT item_id FROM shortlist "
+            "UNION SELECT type_id FROM candidate_universe)"
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
 def latest_snapshot() -> pd.DataFrame:
     with connect() as conn:
         run_ts = conn.execute("SELECT MAX(run_ts) FROM shortlist_snapshot").fetchone()[0]
@@ -4648,6 +4710,28 @@ def get_type_category(type_id: int) -> Optional[int]:
             "WHERE t.type_id = ?", (type_id,),
         ).fetchone()
     return row[0] if row else None
+
+
+def get_types_names_and_groups_bulk(type_ids: list[int]) -> dict[int, tuple[str, str, int]]:
+    """Returns {type_id: (type_name, group_name, category_id)} for every
+    type_id found (missing ones are simply absent, not None-valued - unlike
+    get_sde_types_bulk). One round-trip for however many ids the caller has,
+    same reasoning as get_sde_types_bulk. Empty input is `{}`, no connection
+    opened. Used by refining/candidate_discovery.py's ore_ice_families_for_
+    types - unlike load_ore_ice_candidate_types (a fixed, one-shot bulk scan
+    for the Ore Shortlist candidate universe), this resolves arbitrary
+    type_ids for the Reprocessing tab's paste-import (any item, not just the
+    pre-scanned compressed-ore/ice ones)."""
+    unique = list(dict.fromkeys(type_ids))
+    if not unique:
+        return {}
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT t.type_id, t.type_name, g.group_name, g.category_id FROM sde_types t "
+            "JOIN sde_groups g ON g.group_id = t.group_id WHERE t.type_id = ANY(?)",
+            (unique,),
+        ).fetchall()
+    return {row[0]: (row[1], row[2], row[3]) for row in rows}
 
 
 @lru_cache(maxsize=None)

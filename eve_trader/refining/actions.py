@@ -19,7 +19,7 @@ from ..goonmetrics_client import GoonmetricsClient
 from ..production.config import PRODUCTION_CONFIG, ProductionConfig
 from ..production.engine import invalidate_discover_cache, invalidate_ship_margin_cache
 from ..production.pricing import home_prices
-from .candidate_discovery import build_ore_candidate_universe
+from .candidate_discovery import build_ore_candidate_universe, ore_ice_families_for_types
 from .config import REFINING_CONFIG, RefiningConfig, validate_refining_overrides
 from .engine import apply_reprocessing_yield, ore_ice_yield
 from .models import MineralOption, MineralRequirement, OreOption, OreShortlistRow, ShoppingListPlan
@@ -181,6 +181,7 @@ def do_quote_reprocessing(paste_text: str, trading_cfg: TradingConfig = TRADING_
     type_ids = [tid for tid in resolved_by_name.values() if tid is not None]
     mineral_ids = mineral_type_ids_for_lines(type_ids)
     all_ids = sorted(set(type_ids) | set(mineral_ids))
+    ore_ice_by_type = ore_ice_families_for_types(type_ids)
     try:
         # Falls back to a Goonmetrics current-price snapshot (trading_cfg.
         # structure_market_slug) when no seller is logged in or the real
@@ -198,7 +199,8 @@ def do_quote_reprocessing(paste_text: str, trading_cfg: TradingConfig = TRADING_
         type_id = resolved_by_name[line.name]
         item_stats = stats_by_id.get(type_id) if type_id is not None else None
         rows.append(evaluate_reprocessing_line(
-            line, item_stats, stats_by_id, trading_cfg, refining_cfg, type_id=type_id))
+            line, item_stats, stats_by_id, trading_cfg, refining_cfg, type_id=type_id,
+            ore_ice_family=ore_ice_by_type.get(type_id) if type_id is not None else None))
 
     reprocess_rows = [r for r in rows if r.decision == REPROCESS_DECISION]
     totals = {

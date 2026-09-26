@@ -153,21 +153,14 @@ def _check_type(key: str, value: Any, expected: type) -> None:
 # character/system IDs (always positive), day/count fields (never negative),
 # and genuine fee/tax/rate *fractions* (broker fees, hit rate, facility tax -
 # bounded 0-1 since these are literally "share of 1"). Shared across
-# TradingConfig and ProductionConfig - both define jita_buy_broker_fee
-# separately (see production/config.py's own copy - its own comment there
-# says "same buying character, same broker's-fee rate" explicitly, i.e. the
-# two fields are meant to represent the exact same real-world number, not
-# two tools' independently-tunable settings - reviewed 2026-09-26, not
-# merged: doing so would mean removing Production Settings' own "Broker's
-# fee buy" input entirely (frontend/src/pages/production/ProductionSettings.tsx,
-# plus its ProductionSettingsPatch type in frontend/src/api/types.ts) and
-# rewriting ~15 ProductionConfig(jita_buy_broker_fee=...) test call sites -
-# a real product/UX decision belonging to the user, not something to do
-# silently as a "duplicate config field" cleanup. Until that decision is
-# made, a Settings-page change to ONE of these two fields does NOT update
-# the other - if you change your real Broker Relations skill/standing,
-# update both TradingConfig's AND ProductionConfig's copy) - so this lives
-# rather than being duplicated per-module.
+# TradingConfig and (previously) ProductionConfig - both used to define
+# jita_buy_broker_fee separately, meant to represent the exact same real-
+# world number ("same buying character, same broker's-fee rate"), not two
+# tools' independently-tunable settings. Merged 2026-09-26 (T3-04, business-
+# logic audit follow-up, user-confirmed): ProductionConfig's own copy is
+# gone, every Production-side reader now reads TRADING_CONFIG.
+# jita_buy_broker_fee directly - see that field's own docstring below and
+# production/config.py's comment at the old field's former location.
 #
 # Margin fields (min_margin, min_margin_threshold, min_profit_threshold) are
 # deliberately bounded only at 0, NOT at 1 - margin can legitimately exceed
@@ -398,7 +391,12 @@ class TradingConfig:
     structure_sell_haircut: float = 0.9463
     # Broker's fee when buying (placing/filling a buy order) in Jita, confirmed
     # against the in-game buy screen (1.47%) - applied to landed_cost, since
-    # buying was previously modeled as fee-free.
+    # buying was previously modeled as fee-free. Also the single source of
+    # truth for Production's own buy-side broker fee (production/pricing.py,
+    # doctrine/engine.py) since T3-04 (2026-09-26) merged ProductionConfig's
+    # former duplicate copy of this exact same real-world number into this
+    # one field - read TRADING_CONFIG.jita_buy_broker_fee directly from
+    # Production/Doctrine code, don't reintroduce a second copy.
     jita_buy_broker_fee: float = 0.0147
     # Broker's fee estimate for the STRUCTURE SELL side specifically (T1-01,
     # 2026-09-25) - used only in trade_reconciliation.py's journal-matched

@@ -323,3 +323,83 @@ def test_structure_resolve_status_serializes_action_result(monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "idle"
+
+
+# T3-08 (business-logic audit follow-up, 2026-09-26): the allowlist routes
+# had zero coverage at this layer - test_admin_access_requests.py already
+# covers admin.do_add_allowlist_entry/do_allowlist_impact's own logic
+# directly (Postgres-backed), but nothing exercised the actual HTTP routes/
+# request-schema wiring on top of them.
+def test_list_allowlist_serializes_action_result(monkeypatch):
+    monkeypatch.setattr(admin, "do_list_allowlist", lambda: [
+        {"entry_type": "corporation", "entry_id": 500, "name": "Some Corp", "added_at": "2026-08-18T00:00:00"},
+    ])
+
+    resp = client.get("/api/admin/allowlist")
+
+    assert resp.status_code == 200
+    assert resp.json() == [
+        {"entry_type": "corporation", "entry_id": 500, "name": "Some Corp", "added_at": "2026-08-18T00:00:00"},
+    ]
+
+
+def test_search_allowlist_forwards_query_param_as_name(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(admin, "do_search_allowlist_candidates",
+                         lambda name: captured.update(name=name) or [])
+
+    resp = client.get("/api/admin/allowlist/search", params={"q": "Some Corp"})
+
+    assert resp.status_code == 200
+    assert captured == {"name": "Some Corp"}
+
+
+def test_allowlist_impact_forwards_query_params(monkeypatch):
+    captured = {}
+
+    def _impact(entry_type, entry_id, action, actor_character_id):
+        captured.update(entry_type=entry_type, entry_id=entry_id, action=action,
+                         actor_character_id=actor_character_id)
+        return {"affected": []}
+    monkeypatch.setattr(admin, "do_allowlist_impact", _impact)
+
+    resp = client.get("/api/admin/allowlist/impact",
+                       params={"entry_type": "corporation", "entry_id": 500, "action": "add"})
+
+    assert resp.status_code == 200
+    assert captured == {"entry_type": "corporation", "entry_id": 500, "action": "add", "actor_character_id": None}
+
+
+def test_add_allowlist_entry_forwards_body_fields(monkeypatch):
+    captured = {}
+
+    def _add(entry_type, entry_id, added_by_character_id):
+        captured.update(entry_type=entry_type, entry_id=entry_id, added_by_character_id=added_by_character_id)
+        return {"entry_type": entry_type, "entry_id": entry_id}
+    monkeypatch.setattr(admin, "do_add_allowlist_entry", _add)
+
+    resp = client.post("/api/admin/allowlist", json={"entry_type": "corporation", "entry_id": 500})
+
+    assert resp.status_code == 200
+    assert captured == {"entry_type": "corporation", "entry_id": 500, "added_by_character_id": None}
+
+
+def test_add_allowlist_entry_action_error_maps_to_400(monkeypatch):
+    def _raise(entry_type, entry_id, added_by_character_id):
+        raise ActionError("Unknown entry_type.")
+    monkeypatch.setattr(admin, "do_add_allowlist_entry", _raise)
+
+    resp = client.post("/api/admin/allowlist", json={"entry_type": "bogus", "entry_id": 1})
+
+    assert resp.status_code == 400
+
+
+def test_remove_allowlist_entry_forwards_path_params(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(admin, "do_remove_allowlist_entry",
+                         lambda entry_type, entry_id: captured.update(entry_type=entry_type, entry_id=entry_id))
+
+    resp = client.delete("/api/admin/allowlist/corporation/500")
+
+    assert resp.status_code == 200
+    assert captured == {"entry_type": "corporation", "entry_id": 500}

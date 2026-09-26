@@ -11,12 +11,24 @@ from pathlib import Path
 import pytest
 
 from eve_trader import storage
+from eve_trader.config import TRADING_CONFIG
 from eve_trader.goonmetrics_client import CurrentPrice
 from eve_trader.production.config import ProductionConfig
 from eve_trader.production.constants import DECRYPTORS
 
 from . import pg_helpers
 from .pg_helpers import tenant  # noqa: F401
+
+
+@pytest.fixture(autouse=True)
+def _zero_trading_broker_fee(monkeypatch):
+    # T3-04 (2026-09-26): ProductionConfig's own former jita_buy_broker_fee
+    # field is gone - production/pricing.py's buy_price/_candidate_prices
+    # now read TRADING_CONFIG.jita_buy_broker_fee directly (the single
+    # source of truth after the merge). Zeroed here so widget_cfg's own
+    # former jita_buy_broker_fee=0.0 keeps meaning the same thing for every
+    # test file that imports this fixture module.
+    monkeypatch.setattr(TRADING_CONFIG, "jita_buy_broker_fee", 0.0)
 
 psycopg = pytest.importorskip("psycopg")
 
@@ -74,7 +86,7 @@ BASE_RUNS = 10
 
 
 def widget_cfg(**overrides) -> ProductionConfig:
-    cfg = ProductionConfig(jita_buy_broker_fee=0.0, haul_cost_per_m3=0.0,
+    cfg = ProductionConfig(haul_cost_per_m3=0.0,
                            facility_tax_rate=0.0, market_fees=0.0,
                            component_overbuild=0.0, min_margin=0.0)
     for key, value in overrides.items():

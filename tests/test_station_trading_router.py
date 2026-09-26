@@ -82,6 +82,23 @@ def test_deactivate_shortlist_items_passes_type_ids_to_action(monkeypatch):
     assert resp.json() == {"deactivated": 2}
 
 
+def test_activate_shortlist_items_passes_type_ids_to_action(monkeypatch):
+    # T3-08 (business-logic audit follow-up, 2026-09-26): the activate
+    # counterpart had zero test coverage anywhere, unlike deactivate above.
+    captured = {}
+
+    def _activate(type_ids):
+        captured["type_ids"] = type_ids
+        return {"activated": len(type_ids)}
+    monkeypatch.setattr(station_trading_actions, "do_activate_shortlist_items", _activate)
+
+    resp = client.post("/api/station-trading/shortlist/activate", json={"type_ids": [34, 35]})
+
+    assert resp.status_code == 200
+    assert captured["type_ids"] == [34, 35]
+    assert resp.json() == {"activated": 2}
+
+
 def test_check_undercut_calls_action(monkeypatch):
     result = {"sell": [], "buy": []}
     monkeypatch.setattr(station_trading_actions, "do_check_undercut", lambda: result)

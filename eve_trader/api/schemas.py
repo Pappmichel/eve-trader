@@ -254,7 +254,9 @@ class InventionResult(_Base):
     expected_cost_per_run: Optional[float]
     me: int
     te: int
-    material_savings_per_run: float
+    # T3-05 (2026-09-26): None when reducible_material_cost couldn't price
+    # every material - see production/invention.py's own comment.
+    material_savings_per_run: Optional[float]
     net_cost_per_run: Optional[float]
 
 
@@ -831,6 +833,11 @@ class ProductionPlan(BaseModel):
     buy_list: list[BuyListEntry]
     build_list: list[BuildJobEntry]
     invention_list: list[InventionNeedRow]
+    # T2-02 (business-logic audit, 2026-09-25/26): False means ESI's
+    # adjusted-price fetch failed this run, so every BuildJobEntry.job_cost
+    # above silently reads 0 rather than its real value - see
+    # production/engine.py's _PlanContext for the root cause.
+    adjusted_prices_available: bool = True
 
 
 class AssetPlan(BaseModel):
@@ -865,6 +872,9 @@ class SpecialOrderComputeResult(BaseModel):
     build_list: list[BuildJobEntry]
     invention_list: list[InventionNeedRow]
     stock_overlap_warning: list[StockOverlapWarningRow]
+    # T2-02 (business-logic audit, 2026-09-25/26): see ProductionPlan's own
+    # comment on the same field.
+    adjusted_prices_available: bool = True
 
 
 # ---------------------------------------------------------------- sorting

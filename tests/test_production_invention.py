@@ -69,6 +69,44 @@ def test_estimate_returns_none_cost_fields_when_the_decryptor_itself_is_unpriced
     assert result.net_cost_per_run is None
 
 
+def test_reducible_material_cost_returns_none_when_a_material_is_unpriced(monkeypatch):
+    """T3-05 (business-logic audit follow-up, 2026-09-26): same anti-pattern
+    PB-06 fixed for datacore/decryptor/relic cost above - a reducible
+    material with no sell order anywhere used to be silently treated as
+    free (`price or 0.0`), understating the real material savings a higher-
+    ME decryptor gives you. Must return None (unknown), not a too-low
+    partial sum."""
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda *a, **k: [(35, 10), (36, 10)])
+    prices = {35: 100.0, 36: None}
+    monkeypatch.setattr(invention.pricing, "buy_price",
+                         lambda material_id, *a, **k: prices.get(material_id))
+
+    assert invention.reducible_material_cost(1, 1, {}, {}) is None
+
+
+def test_reducible_material_cost_sums_when_every_material_is_priced(monkeypatch):
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda *a, **k: [(35, 10), (36, 5)])
+    monkeypatch.setattr(invention.pricing, "buy_price", lambda material_id, *a, **k: 100.0)
+
+    assert invention.reducible_material_cost(1, 1, {}, {}) == pytest.approx(1500.0)  # 10*100 + 5*100
+
+
+def test_estimate_material_savings_and_net_cost_none_when_reducible_cost_unknown(monkeypatch):
+    """None reducible_material_cost_per_run must null out material_savings_
+    per_run/net_cost_per_run specifically, without also nulling out
+    expected_cost_per_success/expected_cost_per_run - those only depend on
+    datacore/decryptor/relic pricing (all known here), not on the build-
+    side ME credit."""
+    monkeypatch.setattr(invention.pricing, "buy_price", lambda *a, **k: 100_000.0)
+
+    result = invention.estimate(100, "None", {}, {}, reducible_material_cost_per_run=None)
+
+    assert result.expected_cost_per_success is not None
+    assert result.expected_cost_per_run is not None
+    assert result.material_savings_per_run is None
+    assert result.net_cost_per_run is None
+
+
 def test_compare_decryptors_ranks_an_unpriced_decryptor_last_not_falsely_cheapest(monkeypatch):
     """An unpriced decryptor (e.g. Accelerant with no sell order) must never
     win compare_decryptors' ranking just because its unknown cost silently

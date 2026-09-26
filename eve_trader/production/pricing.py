@@ -140,18 +140,21 @@ def _candidate_prices(type_id: int, home: dict[int, CurrentPrice], jita: dict[in
                        volume_m3: Optional[float], cfg: ProductionConfig) -> dict[str, float]:
     """Per-source landed unit price for `type_id`, for whichever sources
     actually have a sell order listed. Both are inflated by
-    cfg.jita_buy_broker_fee (same buying character, same broker's-fee rate
-    regardless of which market they buy in - confirmed against the in-game
-    buy screen); Jita's is additionally inflated by haul cost since it still
-    has to be moved to the home structure, while home's doesn't need hauling
-    by definition."""
+    TRADING_CONFIG.jita_buy_broker_fee (same buying character, same broker's-
+    fee rate regardless of which market they buy in - confirmed against the
+    in-game buy screen; T3-04, 2026-09-26, merged Production's own former
+    duplicate of this field into TradingConfig's copy, the single source of
+    truth for it now); Jita's is additionally inflated by haul cost since it
+    still has to be moved to the home structure, while home's doesn't need
+    hauling by definition."""
     candidates = {}
     home_quote = home.get(type_id)
     if home_quote and home_quote.sell > 0:
-        candidates["C-J"] = home_quote.sell * (1 + cfg.jita_buy_broker_fee)
+        candidates["C-J"] = home_quote.sell * (1 + TRADING_CONFIG.jita_buy_broker_fee)
     jita_quote = jita.get(type_id)
     if jita_quote and jita_quote.sell > 0:
-        candidates["Jita"] = jita_quote.sell * (1 + cfg.jita_buy_broker_fee) + cfg.haul_cost_per_m3 * (volume_m3 or 0)
+        candidates["Jita"] = (jita_quote.sell * (1 + TRADING_CONFIG.jita_buy_broker_fee)
+                               + cfg.haul_cost_per_m3 * (volume_m3 or 0))
     return candidates
 
 

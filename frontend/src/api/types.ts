@@ -363,7 +363,9 @@ export interface InventionResult {
   expected_cost_per_run: number | null
   me: number
   te: number
-  material_savings_per_run: number
+  // T3-05 (2026-09-26): null when reducible_material_cost couldn't price
+  // every material, rather than a silent (understated) 0.
+  material_savings_per_run: number | null
   net_cost_per_run: number | null
 }
 
@@ -426,6 +428,11 @@ export interface SpecialOrderComputeResult {
   build_list: BuildJobEntry[]
   invention_list: InventionNeedRow[]
   stock_overlap_warning: StockOverlapWarningRow[]
+  // T2-02 (business-logic audit, 2026-09-25/26): false means ESI's
+  // adjusted-price fetch failed this run, so every build_list row's
+  // job_cost - and this page's own Total Job Cost/Gesamt sum - silently
+  // reads 0 rather than its real value.
+  adjusted_prices_available: boolean
 }
 
 export interface SpecialOrderDetail {
@@ -648,13 +655,18 @@ export interface ProductionPlan {
   buy_list: BuyListEntry[]
   build_list: BuildJobEntry[]
   invention_list: InventionNeedRow[]
+  // T2-02 (business-logic audit, 2026-09-25/26): false means ESI's
+  // adjusted-price fetch failed this run, so every BuildJobEntry.job_cost
+  // above silently reads 0 rather than its real value.
+  adjusted_prices_available: boolean
 }
 
 export interface ProductionSettings {
   component_overbuild: number
   bpc_inventory: number
   market_fees: number
-  jita_buy_broker_fee: number
+  // jita_buy_broker_fee removed 2026-09-26 (T3-04) - TradingConfig's own
+  // copy is the single source of truth now, edited from Trading Settings.
   min_margin: number
   min_daily_profit: number
   haul_cost_per_m3: number

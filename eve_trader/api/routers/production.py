@@ -805,6 +805,7 @@ def refresh_production():
         "buy_list": plan["buy_list"],
         "build_list": plan["build_list"],
         "invention_list": plan["invention_list"],
+        "adjusted_prices_available": plan["adjusted_prices_available"],
     }
     return {
         "stock_targets": result["stock_targets"],

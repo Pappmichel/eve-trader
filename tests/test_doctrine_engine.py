@@ -281,7 +281,7 @@ def test_shopping_prices_cj_price_includes_broker_fee(monkeypatch):
 
     cj, jita = engine._shopping_prices(MODULE, home, {}, volume=5.0, cfg=cfg)
 
-    assert cj == pytest.approx(100.0 * (1 + engine.PRODUCTION_CONFIG.jita_buy_broker_fee))
+    assert cj == pytest.approx(100.0 * (1 + engine.TRADING_CONFIG.jita_buy_broker_fee))
     assert jita is None  # no jita quote at all
 
 
@@ -306,7 +306,7 @@ def test_shopping_prices_keeps_cj_price_with_real_listed_sell_volume(monkeypatch
 
     cj, jita = engine._shopping_prices(MODULE, home, {}, volume=5.0, cfg=cfg, home_stats=home_stats)
 
-    assert cj == pytest.approx(100.0 * (1 + engine.PRODUCTION_CONFIG.jita_buy_broker_fee))
+    assert cj == pytest.approx(100.0 * (1 + engine.TRADING_CONFIG.jita_buy_broker_fee))
 
 
 def test_shopping_prices_suppresses_jita_price_with_zero_listed_sell_volume(monkeypatch):
@@ -328,7 +328,7 @@ def test_shopping_prices_untrusted_stats_falls_back_to_goonmetrics(monkeypatch):
 
     cj, jita = engine._shopping_prices(MODULE, home, {}, volume=5.0, cfg=cfg, home_stats=None)
 
-    assert cj == pytest.approx(100.0 * (1 + engine.PRODUCTION_CONFIG.jita_buy_broker_fee))
+    assert cj == pytest.approx(100.0 * (1 + engine.TRADING_CONFIG.jita_buy_broker_fee))
 
 
 def test_shopping_prices_jita_landed_includes_doctrine_import_cost(monkeypatch):
@@ -337,7 +337,7 @@ def test_shopping_prices_jita_landed_includes_doctrine_import_cost(monkeypatch):
 
     cj, jita_landed = engine._shopping_prices(MODULE, {}, jita, volume=2.0, cfg=cfg)
 
-    broker_fee = engine.PRODUCTION_CONFIG.jita_buy_broker_fee
+    broker_fee = engine.TRADING_CONFIG.jita_buy_broker_fee
     assert cj is None
     assert jita_landed == pytest.approx(50.0 * (1 + broker_fee) + 900.0 * 2.0)
 

@@ -134,6 +134,13 @@ function ComputeResultView({ result }: { result: SpecialOrderComputeResult }) {
 
   return (
     <Stack gap="md">
+      {!result.adjusted_prices_available && (
+        <Alert color="danger" variant="light" title="Job Cost figures are currently unavailable">
+          ESI's adjusted-price data could not be fetched for this computation - every Job Cost/Unit below (and
+          the Total Job Cost/Gesamt totals) reads 0 rather than its real value. Recompute once ESI is reachable
+          again before trusting these numbers.
+        </Alert>
+      )}
       {result.stock_overlap_warning.length > 0 && (
         <Alert color="warn" variant="light" title="Possible stock overlap with your Stock Targets">
           These items are on hand right now and also reachable from your configured Stock Targets - the same

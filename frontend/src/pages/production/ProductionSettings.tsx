@@ -82,6 +82,10 @@ export default function ProductionSettings() {
       <HintCard>Changes take effect immediately and are saved to your account.</HintCard>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Economy</Title>
+      <Text size="xs" c="dimmed">
+        The buy-side broker's fee for Jita purchases is set once, in Trading Settings - it's the same real
+        broker's-fee rate regardless of which tool is buying, not an independently tunable Production number.
+      </Text>
       <SimpleGrid cols={2}>
         <NumberInput label="Component overbuild buffer" suffix="%" decimalScale={2} value={form.component_overbuild * 100} min={0} step={5}
           onChange={(v) => set('component_overbuild', Number(v) / 100)} />
@@ -89,8 +93,6 @@ export default function ProductionSettings() {
           onChange={(v) => set('haul_cost_per_m3', Number(v))} />
         <NumberInput label="Market sell fees" suffix="%" decimalScale={2} value={form.market_fees * 100} min={0} max={100} step={0.5}
           onChange={(v) => set('market_fees', Number(v) / 100)} />
-        <NumberInput label="Broker's fee buy" suffix="%" decimalScale={2} value={form.jita_buy_broker_fee * 100} min={0} max={100} step={0.1}
-          onChange={(v) => set('jita_buy_broker_fee', Number(v) / 100)} />
         <Tooltip label="Job-fee facility tax charged by the structure you build in, on top of the system cost index and the fixed 4% SCC surcharge. Fixed at 0.25% for NPC stations; a player-owned structure's owner can set their own rate." multiline w={280}>
           <NumberInput label="Facility tax" suffix="%" decimalScale={2} value={form.facility_tax_rate * 100} min={0} max={100} step={0.05}
             onChange={(v) => set('facility_tax_rate', Number(v) / 100)} />

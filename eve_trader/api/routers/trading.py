@@ -72,10 +72,15 @@ def get_history_type_ids():
     # Must be registered before /history/{type_id} - Starlette matches routes
     # in registration order, so the dynamic route would otherwise swallow
     # this literal path and fail trying to parse "type-ids" as an int.
-    df = storage.read_table("goonmetrics_history")
-    if df.empty:
+    #
+    # T3-03 (business-logic audit follow-up, 2026-09-26): scoped to this
+    # tenant's own shortlist/candidate_universe items - the shared
+    # goonmetrics_history cache's *full* type_id set used to be listed here
+    # unfiltered, leaking which items *other* tenants had ever researched
+    # (see storage.goonmetrics_history_type_ids_for_tenant's own docstring).
+    type_ids = sorted(storage.goonmetrics_history_type_ids_for_tenant())
+    if not type_ids:
         return []
-    type_ids = sorted(df["type_id"].unique().tolist())
     names = storage.sde_type_names(type_ids)
     # Falls back to the bare type_id (stringified) when the local SDE cache
     # has no row for it - e.g. a type_id from before the last Refresh SDE,
