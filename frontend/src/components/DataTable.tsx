@@ -178,7 +178,12 @@ export function DataTable<T>({
 
   useEffect(() => {
     if (!tableId) return
-    localStorage.setItem(`datatable:${tableId}:columns`, JSON.stringify(columnVisibility))
+    try {
+      localStorage.setItem(`datatable:${tableId}:columns`, JSON.stringify(columnVisibility))
+    } catch {
+      // quota exceeded / unavailable (private browsing) - column visibility
+      // just won't persist this session, never crash the page over it
+    }
   }, [tableId, columnVisibility])
 
   const table = useReactTable({

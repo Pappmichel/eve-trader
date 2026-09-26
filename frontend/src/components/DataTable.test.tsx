@@ -125,4 +125,40 @@ describe('DataTable', () => {
     const amountCell = within(bodyRows()[0]).getAllByRole('cell')[1]
     expect(amountCell).toHaveAttribute('title', 'Zebra Ore: 5 missing')
   })
+
+  it('renders normally when localStorage holds corrupted JSON for column visibility', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => '{not valid json',
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    })
+    expect(() => renderTable({ tableId: 'corrupt-test' })).not.toThrow()
+    const cells = bodyRows().map((r) => within(r).getAllByRole('cell')[0].textContent)
+    expect(cells).toEqual(['Zebra Ore', 'Alpha Ore', 'Mid Ore'])
+    vi.unstubAllGlobals()
+  })
+
+  it('renders normally when localStorage.setItem throws (quota exceeded / private browsing)', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => null,
+      setItem: () => {
+        throw new DOMException('QuotaExceededError')
+      },
+      removeItem: vi.fn(),
+    })
+    expect(() => renderTable({ tableId: 'quota-test' })).not.toThrow()
+    vi.unstubAllGlobals()
+  })
+
+  it('renders normally when localStorage.getItem throws (unavailable storage)', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => {
+        throw new DOMException('SecurityError')
+      },
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    })
+    expect(() => renderTable({ tableId: 'unavailable-test' })).not.toThrow()
+    vi.unstubAllGlobals()
+  })
 })
