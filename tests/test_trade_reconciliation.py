@@ -555,6 +555,54 @@ def test_reconcile_market_transaction_found_but_tax_entry_missing_falls_back(mon
     assert round(profit_per_unit, 2) == round(1200.0 - 1000.0, 2)  # fully modeled fallback
 
 
+def test_reconcile_rejects_implausible_tax_from_an_interleaved_same_second_sale(monkeypatch):
+    """T1-01 follow-up (independent challenge pass, 2026-09-26): a real,
+    demonstrated failure - two sells in the same second whose journal
+    entries interleave as (MT_A, MT_B, TAX_A, TAX_B) instead of the usual
+    (MT_A, TAX_A, MT_B, TAX_B) make the SMALL sale's id+1 land on the LARGE
+    sale's tax entry - same date, right ref_type, wrong sale. Before the
+    plausibility guard, this produced a wildly wrong (deeply negative)
+    profit for the small sale. It must now fall back to the modeled
+    formula instead of trusting an implausible tax/gross ratio."""
+    monkeypatch.setattr(trade_reconciliation.storage, "get_station_ids_in_region",
+                         lambda region_id: frozenset({JITA_4_4_STATION_ID}))
+    cfg = TradingConfig(lookback_days=30, structure_sell_haircut=1.0,
+                         structure_broker_fee=0.0, jita_buy_broker_fee=0.0)
+    buys = [{"is_buy": True, "type_id": 100, "date": _iso(2), "unit_price": 1.0, "quantity": 10000000,
+             "location_id": JITA_4_4_STATION_ID, "transaction_id": 1},
+            {"is_buy": True, "type_id": 200, "date": _iso(2), "unit_price": 1000.0, "quantity": 10,
+             "location_id": JITA_4_4_STATION_ID, "transaction_id": 2}]
+    same_instant = _iso(1)
+    sells = [
+        {"is_buy": False, "type_id": 100, "date": same_instant, "unit_price": 110.0, "quantity": 10000000,
+         "location_id": cfg.structure_id, "transaction_id": 10},  # the LARGE sale
+        {"is_buy": False, "type_id": 200, "date": same_instant, "unit_price": 120.0, "quantity": 10,
+         "location_id": cfg.structure_id, "transaction_id": 11},  # the SMALL sale
+    ]
+    # Interleaved: MT_A(500)=large sale, MT_B(501)=small sale, TAX_A(502), TAX_B(503).
+    journal_entries = {2: [
+        {"id": 500, "ref_type": "market_transaction", "amount": 1_100_000_000.0, "date": same_instant,
+         "context_id": 10, "context_id_type": "market_transaction_id"},
+        {"id": 501, "ref_type": "market_transaction", "amount": 1200.0, "date": same_instant,
+         "context_id": 11, "context_id_type": "market_transaction_id"},
+        {"id": 502, "ref_type": "transaction_tax", "amount": -37_125_000.0, "date": same_instant},  # A's real tax
+        {"id": 503, "ref_type": "transaction_tax", "amount": -40.5, "date": same_instant},  # B's real tax
+    ]}
+    client = FakeClient(buys, sells, journal_entries=journal_entries)
+
+    trades = reconcile_realized_trades(
+        buyer_characters=[(1, "buyer")], seller_characters=[(2, "seller")],
+        client=client, item_names={100: "Widget", 200: "Gadget"}, item_volumes={100: 0.0, 200: 0.0}, cfg=cfg,
+    )
+
+    small_sale = next(t for t in trades if t.type_id == 200)
+    profit_per_unit = small_sale.realized_profit / small_sale.matched_qty
+    # Must fall back to the fully modeled formula (haircut=1.0, no broker
+    # fee) rather than inherit the large sale's ~3.1M% "tax rate".
+    assert round(profit_per_unit, 2) == round(120.0 - 1000.0, 2)
+    assert profit_per_unit > -1000  # sanity: nowhere near the pre-fix wrong-pairing magnitude
+
+
 def test_reconcile_ignores_journal_entries_outside_the_lookback_window(monkeypatch):
     monkeypatch.setattr(trade_reconciliation.storage, "get_station_ids_in_region",
                          lambda region_id: frozenset({JITA_4_4_STATION_ID}))
