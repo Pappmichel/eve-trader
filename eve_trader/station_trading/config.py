@@ -37,6 +37,29 @@ class StationTradingConfig:
     # separately (unlike Trading's blended structure_sell_haircut) because
     # Station Trading needs broker fee charged per order leg (both buy and
     # sell) and sales tax charged once (sell leg only).
+    #
+    # Phase 8 (business-logic audit follow-up, 2026-09-26): Plan 1 flagged
+    # broker_fee_rate as "outdated" (code 5%, live ~3%) - checked live
+    # tenant_settings: the Default tenant's real override is 0.0147 (1.47%,
+    # not ~3% - matches TradingConfig.jita_buy_broker_fee's own confirmed
+    # real Jita-station rate exactly, same station this tool trades at).
+    # This is NOT a bug: this default is deliberately the unadjusted
+    # base-game placeholder (documented above), and the tenant has already
+    # correctly overridden it to their own real skill/standing-adjusted
+    # rate - same "honest placeholder vs. real per-tenant override" pattern
+    # as refining_tax_rate's own default (see that field's comment).
+    # Changing this default to match one tenant's own real rate would be
+    # exactly the mistake this field's own docstring already warns against.
+    #
+    # Loose end surfaced while checking this, NOT verified either way -
+    # worth a second look with real game-mechanic verification before
+    # touching it: sales_tax_rate below defaults to 0.075, but T1-01's own
+    # live-verified figure (trade_reconciliation.py, structure_sell_
+    # haircut's comment) states EVE's base sales tax is 8% (0.08) at
+    # Accounting 0 - if that's still accurate, 0.075 here may itself be a
+    # stale/wrong "base rate" figure, independent of the broker-fee
+    # question above. Left unchanged - no live verification done for this
+    # specific number in this pass.
     broker_fee_rate: float = 0.05
     sales_tax_rate: float = 0.075
 
