@@ -495,7 +495,12 @@ CREATE TABLE IF NOT EXISTS character_assets (
 -- so SET NOT NULL is safe unconditionally.
 ALTER TABLE character_assets ALTER COLUMN owner_name SET NOT NULL;
 ALTER TABLE character_assets DROP CONSTRAINT IF EXISTS character_assets_pkey;
-ALTER TABLE character_assets ADD CONSTRAINT character_assets_pkey PRIMARY KEY (item_id, owner_name);
+-- T1-04 (2026-09-26): widened again to include tenant_id - (item_id,
+-- owner_name) alone was still cross-tenant-unsafe for a shared corp (see
+-- corp_assets' own T1-04 comment below; this table shares the same
+-- collision shape for a character whose name coincidentally matches
+-- another tenant's - low real risk but cheap to close for consistency).
+ALTER TABLE character_assets ADD CONSTRAINT character_assets_pkey PRIMARY KEY (tenant_id, item_id, owner_name);
 -- GitHub issue #4/#20: location_id is the item's *immediate* parent (a ship,
 -- a container, a corp Office, ...), which can be several containers deep -
 -- resolved_location_id is that chain walked all the way up to the outermost
@@ -535,7 +540,26 @@ CREATE TABLE IF NOT EXISTS corp_assets (
 );
 ALTER TABLE corp_assets ALTER COLUMN owner_name SET NOT NULL;
 ALTER TABLE corp_assets DROP CONSTRAINT IF EXISTS corp_assets_pkey;
-ALTER TABLE corp_assets ADD CONSTRAINT corp_assets_pkey PRIMARY KEY (item_id, owner_name);
+-- T1-04 (business-logic audit 2026-08-28/30, live-confirmed 2026-09-26):
+-- (item_id, owner_name) alone is NOT tenant-safe for a corp table, even
+-- though MULTI_TENANT_PLAN.md originally classified corp_assets/corp_
+-- industry_jobs/corp_blueprints as "no real collision risk" alongside the
+-- character-owned tables in the same bucket - that reasoning ("EVE
+-- guarantees the id is globally unique") is true but doesn't matter here:
+-- collision isn't about id reuse, it's that owner_name is the SAME real
+-- corp's name for every tenant that has a character in it (one corp is not
+-- 1:1 with a tenant the way one character is - director-level characters
+-- from multiple tenants can legitimately belong to the same corp). Live-
+-- confirmed real, not just theoretical: corporation_id 98370861 has
+-- registered characters under 5 different tenants right now, and the
+-- Default/Hari Lindberg tenants' corp_assets/corp_blueprints/corp_
+-- industry_jobs rows for that corp have ZERO overlapping ids despite both
+-- syncing the same real corp - exactly the silent-partial-sync symptom
+-- this bug produces (whichever tenant's INSERT loses the bare-PK race for
+-- a given id never gets that row). No existing duplicate rows are possible
+-- under the current bare PK (Postgres already enforced global uniqueness
+-- on it), so widening can only be safe - never conflicts with existing data.
+ALTER TABLE corp_assets ADD CONSTRAINT corp_assets_pkey PRIMARY KEY (tenant_id, item_id, owner_name);
 ALTER TABLE corp_assets ADD COLUMN IF NOT EXISTS resolved_location_id BIGINT;
 ALTER TABLE corp_assets ADD COLUMN IF NOT EXISTS resolved_hangar_flag TEXT;
 DROP INDEX IF EXISTS idx_corp_assets_type_location;
@@ -562,6 +586,11 @@ CREATE TABLE IF NOT EXISTS character_industry_jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_character_industry_jobs_product_status
     ON character_industry_jobs (product_type_id, status);
+-- T1-04 (2026-09-26): bare job_id alone is not tenant-safe (see corp_
+-- industry_jobs' own T1-04 comment below) - low real risk here specifically
+-- (one tenant per character), widened for consistency with the corp table.
+ALTER TABLE character_industry_jobs DROP CONSTRAINT IF EXISTS character_industry_jobs_pkey;
+ALTER TABLE character_industry_jobs ADD CONSTRAINT character_industry_jobs_pkey PRIMARY KEY (tenant_id, job_id);
 ALTER TABLE character_industry_jobs ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON character_industry_jobs;
 CREATE POLICY tenant_isolation ON character_industry_jobs
@@ -584,6 +613,13 @@ CREATE TABLE IF NOT EXISTS corp_industry_jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_corp_industry_jobs_product_status
     ON corp_industry_jobs (product_type_id, status);
+-- T1-04 (business-logic audit 2026-08-28/30, live-confirmed 2026-09-26):
+-- bare job_id is not tenant-safe - same corp-is-not-1:1-with-a-tenant gap
+-- as corp_assets' own T1-04 comment above (see that comment for the full
+-- reasoning and the live evidence: corp 98370861 shared across 5 tenants,
+-- zero id overlap in what each tenant actually managed to store).
+ALTER TABLE corp_industry_jobs DROP CONSTRAINT IF EXISTS corp_industry_jobs_pkey;
+ALTER TABLE corp_industry_jobs ADD CONSTRAINT corp_industry_jobs_pkey PRIMARY KEY (tenant_id, job_id);
 ALTER TABLE corp_industry_jobs ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON corp_industry_jobs;
 CREATE POLICY tenant_isolation ON corp_industry_jobs
@@ -603,6 +639,13 @@ CREATE TABLE IF NOT EXISTS character_slots (
 -- entirely. Not wiped by replace_character_slots' own re-sync (see that
 -- function's own comment for why it's an UPSERT, not delete+reinsert).
 ALTER TABLE character_slots ADD COLUMN IF NOT EXISTS excluded_from_planning BOOLEAN NOT NULL DEFAULT FALSE;
+-- T1-04 (2026-09-26): bare character_name alone is not tenant-safe in
+-- principle (low real risk - EVE enforces character names unique game-wide -
+-- but cheap to close for consistency with the corp tables' own real fix).
+-- storage.replace_character_slots' own ON CONFLICT target was widened to
+-- match (tenant_id, character_name) in the same change.
+ALTER TABLE character_slots DROP CONSTRAINT IF EXISTS character_slots_pkey;
+ALTER TABLE character_slots ADD CONSTRAINT character_slots_pkey PRIMARY KEY (tenant_id, character_name);
 ALTER TABLE character_slots ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON character_slots;
 CREATE POLICY tenant_isolation ON character_slots
@@ -630,6 +673,11 @@ ALTER TABLE character_blueprints ADD COLUMN IF NOT EXISTS resolved_location_id B
 CREATE INDEX IF NOT EXISTS idx_character_blueprints_type_runs ON character_blueprints (type_id, runs);
 CREATE INDEX IF NOT EXISTS idx_character_blueprints_type_resolved_location
     ON character_blueprints (type_id, resolved_location_id);
+-- T1-04 (2026-09-26): bare item_id alone is not tenant-safe (see corp_
+-- blueprints' own T1-04 comment below) - low real risk here specifically
+-- (one tenant per character), widened for consistency with the corp table.
+ALTER TABLE character_blueprints DROP CONSTRAINT IF EXISTS character_blueprints_pkey;
+ALTER TABLE character_blueprints ADD CONSTRAINT character_blueprints_pkey PRIMARY KEY (tenant_id, item_id);
 ALTER TABLE character_blueprints ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON character_blueprints;
 CREATE POLICY tenant_isolation ON character_blueprints
@@ -652,6 +700,13 @@ ALTER TABLE corp_blueprints ADD COLUMN IF NOT EXISTS resolved_location_id BIGINT
 CREATE INDEX IF NOT EXISTS idx_corp_blueprints_type_runs ON corp_blueprints (type_id, runs);
 CREATE INDEX IF NOT EXISTS idx_corp_blueprints_type_resolved_location
     ON corp_blueprints (type_id, resolved_location_id);
+-- T1-04 (business-logic audit 2026-08-28/30, live-confirmed 2026-09-26):
+-- bare item_id is not tenant-safe - same corp-is-not-1:1-with-a-tenant gap
+-- as corp_assets' own T1-04 comment above (see that comment for the full
+-- reasoning and the live evidence: corp 98370861 shared across 5 tenants,
+-- zero id overlap in what each tenant actually managed to store).
+ALTER TABLE corp_blueprints DROP CONSTRAINT IF EXISTS corp_blueprints_pkey;
+ALTER TABLE corp_blueprints ADD CONSTRAINT corp_blueprints_pkey PRIMARY KEY (tenant_id, item_id);
 ALTER TABLE corp_blueprints ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON corp_blueprints;
 CREATE POLICY tenant_isolation ON corp_blueprints
@@ -669,6 +724,12 @@ CREATE TABLE IF NOT EXISTS character_sell_orders (
 );
 CREATE INDEX IF NOT EXISTS idx_character_sell_orders_type_location ON character_sell_orders (type_id, location_id);
 CREATE INDEX IF NOT EXISTS idx_character_sell_orders_type_region ON character_sell_orders (type_id, region_id);
+-- T1-04 (2026-09-26): bare order_id alone is not tenant-safe in principle
+-- (low real risk - EVE's own order_id is globally unique and there is no
+-- corp-shared counterpart table for sell orders - but cheap to close for
+-- consistency with the corp tables' own real fix).
+ALTER TABLE character_sell_orders DROP CONSTRAINT IF EXISTS character_sell_orders_pkey;
+ALTER TABLE character_sell_orders ADD CONSTRAINT character_sell_orders_pkey PRIMARY KEY (tenant_id, order_id);
 ALTER TABLE character_sell_orders ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON character_sell_orders;
 CREATE POLICY tenant_isolation ON character_sell_orders

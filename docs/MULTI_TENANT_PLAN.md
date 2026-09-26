@@ -76,15 +76,39 @@ treated them as the same risk, which they aren't:
   **These 10 tables/upsert-sites genuinely need the PK widened to composite
   `(tenant_id, <original_pk>)`**, confirmed against the actual `ON CONFLICT(...)` call
   sites: `storage.py:637, 674, 948, 973, 989, 1009, 1029, 1111, 1346, 1363`.
-- **No real collision risk** - `character_assets`/`corp_assets`/`character_blueprints`/
-  `corp_blueprints` (`item_id`), `character_industry_jobs`/`corp_industry_jobs` (`job_id`),
-  `character_sell_orders` (`order_id`), and `character_slots` (`character_name`) all key off
-  IDs that EVE itself already guarantees are globally unique across the entire game (ESI
-  assigns `item_id`/`job_id`/`order_id` server-side per real object instance, never
-  per-character-reused; EVE enforces character names unique game-wide - two tenants
-  literally cannot both have a character named the same thing). These 8 tables still need
-  the `tenant_id` column added (for RLS row-visibility), but **not** composite-PK surgery -
-  adding it anyway is a cheap, harmless defensive choice, not a correctness requirement.
+- **No real collision risk for the *character*-owned half of this bucket** -
+  `character_assets`/`character_blueprints` (`item_id`), `character_industry_jobs`
+  (`job_id`), `character_sell_orders` (`order_id`), and `character_slots`
+  (`character_name`) all key off IDs that EVE itself already guarantees are globally
+  unique across the entire game (ESI assigns `item_id`/`job_id`/`order_id` server-side
+  per real object instance, never per-character-reused; EVE enforces character names
+  unique game-wide), and one tenant per character (enforced at the DB level) means no
+  two tenants can ever legitimately hold the same character's row at all. These 5
+  tables needed the `tenant_id` column added (for RLS row-visibility) but not
+  composite-PK surgery on correctness grounds alone.
+
+  **T1-04 (business-logic audit 2026-08-28/30, live-confirmed 2026-09-26): this exact
+  same "globally unique ID" argument was wrongly extended to `corp_assets`/
+  `corp_industry_jobs`/`corp_blueprints` too** - a real, confirmed defect, not a style
+  nit. The ID being globally unique was never the actual safety condition; the real
+  condition is "can two tenants ever legitimately hold a row for the same id", and for
+  a **corporation** (unlike a character) the answer is yes - a corp is not 1:1 with a
+  tenant, and director-level characters from multiple tenants can and do legitimately
+  belong to the same real corp. Postgres enforces a bare PK's uniqueness underneath
+  RLS, so whichever tenant's sync inserted a given shared corp's `item_id`/`job_id`
+  first silently blocked every other tenant sharing that corp from ever storing that
+  same row - not a crash, just a quiet gap each affected tenant would see as
+  incomplete corp asset/blueprint/job data with no error surfaced anywhere obvious.
+  Live-confirmed, not theoretical: this production database has one real corporation
+  (id `98370861`) with registered characters under 5 different tenants, and the
+  `Default`/`Hari Lindberg` tenants' `corp_assets`/`corp_blueprints`/
+  `corp_industry_jobs` rows for it had **zero overlapping ids** despite both tenants
+  actively syncing the same real corp - exactly this symptom. Fixed 2026-09-26:
+  `corp_assets`/`corp_industry_jobs`/`corp_blueprints`' PKs were widened to
+  `(tenant_id, <original pk>)` (see `docs/phase1_schema.sql`'s own T1-04 comments on
+  each table) - the other 5 tables in this bucket got the same widening too, for
+  consistency, since it was a free, safe change once the pattern existed for the 3
+  that actually needed it.
 
 (The remaining `ON CONFLICT` sites - `storage.py:746` `goonmetrics_history` and `:828`
 `sde_refresh_state` and `:1518` `type_packaged_volume` - are shared tables, see below, and

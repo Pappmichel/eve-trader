@@ -2884,7 +2884,7 @@ def replace_character_slots(rows: list[tuple]) -> None:
         conn.executemany(
             "INSERT INTO character_slots (character_name, manufacturing_slots, reaction_slots, science_slots) "
             "VALUES (?,?,?,?) "
-            "ON CONFLICT (character_name) DO UPDATE SET "
+            "ON CONFLICT (tenant_id, character_name) DO UPDATE SET "
             "manufacturing_slots=excluded.manufacturing_slots, reaction_slots=excluded.reaction_slots, "
             "science_slots=excluded.science_slots",
             rows,
@@ -3388,7 +3388,7 @@ def upsert_character_slot_row(
             "(character_name, manufacturing_slots, reaction_slots, science_slots, "
             "owner_character_id) "
             "VALUES (?,?,?,?,?) "
-            "ON CONFLICT (character_name) DO UPDATE SET "
+            "ON CONFLICT (tenant_id, character_name) DO UPDATE SET "
             "manufacturing_slots=excluded.manufacturing_slots, "
             "reaction_slots=excluded.reaction_slots, "
             "science_slots=excluded.science_slots, "
