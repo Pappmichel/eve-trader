@@ -1,3 +1,5 @@
+import os
+import stat
 import zipfile
 
 import pytest
@@ -56,6 +58,26 @@ def test_create_backup_produces_a_zip_with_dump_and_config(isolated_backup_dir):
         # Real bytes made it through the subprocess -> file -> zip path, not
         # an empty/corrupt placeholder.
         assert zf.read("eve_trader.dump") == b"FAKE_PG_DUMP_CONTENT"
+
+
+def test_create_backup_is_never_group_or_world_readable_regardless_of_umask(isolated_backup_dir):
+    """T1-05 regression (found in Plan 2's independent challenge pass,
+    2026-09-26): a real backup created over a non-interactive SSH session
+    inherited the OS default umask (0002), not the interactive-shell-only
+    `umask 077` this repo relies on elsewhere - confirmed live, it produced
+    a world-readable pg_dump of the whole database (tenant_tokens
+    included). create_backup() must chmod its own output explicitly,
+    never depend on whatever umask the calling process happens to have."""
+    backup_dir, _config_path = isolated_backup_dir
+    old_umask = os.umask(0o002)  # the exact permissive umask this bug was found under
+    try:
+        info = backup.create_backup()
+    finally:
+        os.umask(old_umask)
+
+    zip_path = backup_dir / info["name"]
+    mode = stat.S_IMODE(zip_path.stat().st_mode)
+    assert mode == 0o600, f"expected 0o600, got {oct(mode)}"
 
 
 def test_create_backup_raises_and_cleans_up_on_pg_dump_failure(isolated_backup_dir, monkeypatch):

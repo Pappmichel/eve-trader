@@ -132,6 +132,19 @@ def _create_backup_locked() -> dict:
                 pg_dump_cmd,
                 stdout=dump_file, stderr=subprocess.PIPE, timeout=300,
             )
+        # T1-05 regression (found in Plan 2's independent challenge pass,
+        # 2026-09-26): the raw dump - and, below, the finished zip - must
+        # never depend on whatever umask the calling process happens to
+        # have. A manual/ad-hoc invocation over a non-interactive SSH
+        # session inherits the OS default umask (0002 here), not the
+        # interactive-shell-only `umask 077` in .bashrc - confirmed live,
+        # the exact way the challenge pass's own throwaway backup ended up
+        # world-readable (chmod 600'd by hand afterward, real exposure
+        # while it existed). systemd's own UMask=0027 on the real service
+        # covers the scheduled/Admin-UI paths, but this function has no way
+        # to know it's being called from a hardened process vs. an ad-hoc
+        # script - chmod explicitly rather than trust the caller's umask.
+        os.chmod(tmp_dump_path, 0o600)
         if result.returncode != 0:
             stderr_text = result.stderr.decode(errors="replace") if result.stderr else ""
             log.error("pg_dump failed (exit %s): %s", result.returncode, stderr_text)
@@ -141,6 +154,7 @@ def _create_backup_locked() -> dict:
             zf.write(tmp_dump_path, arcname="eve_trader.dump")
             if DEFAULT_CONFIG_PATH.exists():
                 zf.write(DEFAULT_CONFIG_PATH, arcname="config.yaml")
+        os.chmod(backup_path, 0o600)
     except Exception:
         # A failure partway through (pg_dump not reachable, a full disk, ...)
         # used to leave a partial/corrupt .zip behind - it matches
