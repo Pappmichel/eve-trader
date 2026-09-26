@@ -17,6 +17,21 @@ cd "$APP_DIR"
 echo "==> Pulling latest code..."
 git pull
 
+# Confirmed real bug (2026-09-26): a freshly-changed schema file lands on
+# disk with whatever mode `git pull`'s checkout used, which inherits the
+# *invoking interactive shell's* umask - not this script's own. When that
+# shell has the `umask 077` hardening fix from T1-05 active (see backup.py's
+# own comment on the same class of issue, the opposite direction), a
+# schema file touched by the pull comes out 0600 (owner-only), unreadable
+# by the `postgres` OS user the loop below runs as - `psql -f` then fails
+# with a bare "Permission denied" and aborts the whole deploy under
+# `set -e`. Files untouched by a given pull keep whatever mode they already
+# had (typically still readable, from before that umask was ever set), so
+# this silently only ever hits the specific file(s) a commit just changed -
+# easy to miss until the exact deploy that changes a schema file. Same fix
+# as backup.py's own: chmod explicitly, never depend on the caller's umask.
+chmod 644 docs/*.sql
+
 # Self-modifying-script guard (confirmed real bug 2026-09-16, found live: a
 # freshly-added schema file - job_category_cost_index_overrides_schema.sql -
 # was silently skipped on the very run that pulled the commit adding it to
