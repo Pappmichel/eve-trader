@@ -536,3 +536,66 @@ def job_slots_from_skills(skill_levels: dict[int, int]) -> dict[str, int]:
         "reaction": slots(SKILL_MASS_REACTIONS, SKILL_ADVANCED_MASS_REACTIONS),
         "science": slots(SKILL_LABORATORY_OPERATION, SKILL_ADVANCED_LABORATORY_OPERATION),
     }
+
+
+# --------------------------------------------------------- job-time skills
+# Confirmed real gap (found live 2026-09-27, comparing a real reaction job's
+# "Job Duration Modifiers" panel against this tool's own computed duration for
+# the same blueprint/quantity): _activity_mods/_tech_ii_mods (engine.py) only
+# ever combined Blueprint Time Efficiency with the structure/rig bonus - there
+# was no character-skill (or implant) term at all, so every predicted job
+# duration was too long by whatever the pilot's own Industry/Advanced
+# Industry/Reactions/specialist-skill training would have saved.
+#
+# Each skill's own dogma attribute is a clean, machine-checkable source for
+# its exact per-level % (verified against dgmTypeAttributes.csv/
+# dgmAttributeTypes.csv, not just the type's free-text description) - see
+# engine._skill_time_mult. There is no "Advanced Reactions" time-bonus skill
+# (Mass Reactions/Advanced Mass Reactions are job-slot skills only, see
+# SKILL_MASS_REACTIONS above - confirmed by scanning every dogma attribute
+# matching "time...per level" in the whole SDE, 2026-09-27).
+SKILL_INDUSTRY = 3380                  # manufacturingTimeBonus: -4%/level
+SKILL_ADVANCED_INDUSTRY = 3388         # advancedIndustrySkillIndustryJobTimeBonus: -3%/level
+SKILL_REACTIONS = 45746                # reactionTimeBonus: -4%/level
+
+INDUSTRY_TIME_BONUS_PCT = 4.0
+ADVANCED_INDUSTRY_TIME_BONUS_PCT = 3.0
+REACTIONS_TIME_BONUS_PCT = 4.0
+
+# "Specialist" science skills (dogma attribute manufactureTimePerLevel, whose
+# own description reads "Only applies to skills required to manufacture the
+# blueprint") - each reduces Manufacturing time by its own %/level, but ONLY
+# for a blueprint whose industryActivitySkills.csv row actually lists that
+# skill (storage.get_blueprint_skills) - unlike Industry/Advanced Industry/
+# Reactions above, which apply universally regardless of this table. -1%/
+# level for every skill here except Mutagenic Stabilization (-2%/level,
+# confirmed against its own SDE description). Type IDs + percentages
+# confirmed against invTypes.csv/dgmTypeAttributes.csv, 2026-09-27.
+SPECIALIST_TIME_SKILLS: dict[int, float] = {
+    3395: 1.0,   # Advanced Small Ship Construction
+    3396: 1.0,   # Advanced Industrial Ship Construction
+    3397: 1.0,   # Advanced Medium Ship Construction
+    3398: 1.0,   # Advanced Large Ship Construction
+    3400: 1.0,   # Outpost Construction
+    11433: 1.0,  # High Energy Physics
+    11441: 1.0,  # Plasma Physics
+    11442: 1.0,  # Nanite Engineering
+    11443: 1.0,  # Hydromagnetic Physics
+    11444: 1.0,  # Amarr Starship Engineering
+    11445: 1.0,  # Minmatar Starship Engineering
+    11446: 1.0,  # Graviton Physics
+    11447: 1.0,  # Laser Physics
+    11448: 1.0,  # Electromagnetic Physics
+    11449: 1.0,  # Rocket Science
+    11450: 1.0,  # Gallente Starship Engineering
+    11451: 1.0,  # Nuclear Physics
+    11452: 1.0,  # Mechanical Engineering
+    11453: 1.0,  # Electronic Engineering
+    11454: 1.0,  # Caldari Starship Engineering
+    11455: 1.0,  # Quantum Physics
+    11529: 1.0,  # Molecular Engineering
+    52307: 1.0,  # Triglavian Quantum Engineering
+    77725: 1.0,  # Advanced Capital Ship Construction
+    81050: 1.0,  # Upwell Starship Engineering
+    81896: 2.0,  # Mutagenic Stabilization
+}

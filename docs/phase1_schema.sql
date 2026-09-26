@@ -95,6 +95,25 @@ CREATE TABLE IF NOT EXISTS sde_blueprint_products (
 CREATE INDEX IF NOT EXISTS idx_sde_blueprint_products_by_product
     ON sde_blueprint_products (product_type_id, activity_id);
 
+-- industryActivitySkills.csv - which skill(s) (and minimum level) a blueprint's
+-- activity requires. Used for job-time skill bonuses (production/engine.py
+-- _skill_time_mult): the universal Industry/Advanced Industry/Reactions skills
+-- apply to every Manufacturing/Reaction job regardless of this table, but the
+-- ~26 "specialist" skills (constants.SPECIALIST_TIME_SKILLS, e.g. Molecular
+-- Engineering) only reduce time for a blueprint that actually requires them -
+-- confirmed via each skill's own dogma attribute (manufactureTimePerLevel,
+-- "Only applies to skills required to manufacture the blueprint") and cross-
+-- checked live against a real reaction job screenshot, 2026-09-27.
+CREATE TABLE IF NOT EXISTS sde_blueprint_skills (
+    blueprint_type_id INTEGER,
+    activity_id INTEGER,
+    skill_type_id INTEGER,
+    level INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_sde_blueprint_skills_lookup
+    ON sde_blueprint_skills (blueprint_type_id, activity_id);
+
 CREATE TABLE IF NOT EXISTS sde_invention_probability (
     t1_blueprint_type_id INTEGER,
     product_type_id INTEGER,

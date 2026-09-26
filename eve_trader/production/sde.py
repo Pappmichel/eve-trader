@@ -68,6 +68,10 @@ _SDE_CSV_FILES = (
     "staStations.csv",
     "dgmTypeEffects.csv",
     "invTypeMaterials.csv",
+    # Which skill(s) a blueprint's activity requires (production/engine.py's
+    # job-time skill bonus - see constants.SPECIALIST_TIME_SKILLS, confirmed
+    # 2026-09-27 against a real reaction job's Job Duration Modifiers panel).
+    "industryActivitySkills.csv",
 )
 
 
@@ -145,6 +149,7 @@ class FetchedSde:
     categories: list[tuple] = field(default_factory=list)
     type_slots: list[tuple] = field(default_factory=list)
     type_materials: list[tuple] = field(default_factory=list)
+    blueprint_skills: list[tuple] = field(default_factory=list)
     dump_etag: Optional[str] = None
 
 
@@ -205,6 +210,7 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
     # against this one SDE table (see refining/engine.py, storage.
     # get_type_materials).
     inv_type_materials = fetched["invTypeMaterials.csv"]
+    activity_skills = fetched["industryActivitySkills.csv"]
 
     meta_group_by_type = {int(r["typeID"]): _int_or_none(r["metaGroupID"]) for r in inv_meta_types}
     types_rows = [
@@ -253,6 +259,10 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
         (int(r["typeID"]), int(r["productTypeID"]), float(r["probability"]))
         for r in activity_probabilities if int(r["activityID"]) == ACTIVITY_INVENTION
     ]
+    blueprint_skill_rows = [
+        (int(r["typeID"]), int(r["activityID"]), int(r["skillID"]), int(r["level"]))
+        for r in activity_skills if int(r["activityID"]) in _RELEVANT_ACTIVITIES
+    ]
     solar_system_rows = [
         (int(r["solarSystemID"]), r["solarSystemName"], float(r["security"]), _int_or_none(r.get("regionID")))
         for r in solar_systems if r.get("security") not in (None, "")
@@ -275,7 +285,8 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
         blueprint_products=product_rows, invention_probability=probability_rows,
         solar_systems=solar_system_rows, stations=station_rows,
         categories=category_rows, type_slots=type_slot_rows,
-        type_materials=type_materials_rows, dump_etag=dump_etag,
+        type_materials=type_materials_rows, blueprint_skills=blueprint_skill_rows,
+        dump_etag=dump_etag,
     )
 
 
@@ -288,7 +299,7 @@ def apply_sde(fetched: FetchedSde) -> dict:
         blueprint_products=fetched.blueprint_products, stations=fetched.stations,
         invention_probability=fetched.invention_probability, solar_systems=fetched.solar_systems,
         categories=fetched.categories, type_slots=fetched.type_slots,
-        type_materials=fetched.type_materials,
+        type_materials=fetched.type_materials, blueprint_skills=fetched.blueprint_skills,
     )
     storage.set_sde_refresh_state(datetime.now(timezone.utc).isoformat(), fetched.dump_etag)
     return storage.sde_row_counts()

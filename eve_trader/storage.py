@@ -1352,7 +1352,7 @@ def replace_sde_data(
     blueprint_time: list[tuple], blueprint_materials: list[tuple], blueprint_products: list[tuple],
     invention_probability: list[tuple] = (), solar_systems: list[tuple] = (),
     stations: list[tuple] = (), categories: list[tuple] = (), type_slots: list[tuple] = (),
-    type_materials: list[tuple] = (),
+    type_materials: list[tuple] = (), blueprint_skills: list[tuple] = (),
 ) -> None:
     """Wholesale-replaces the SDE cache tables (each refresh reflects one Fuzzwork
     dump snapshot, not an incremental merge - stale rows from a previous CCP
@@ -1364,7 +1364,14 @@ def replace_sde_data(
     are "type -> material yield" lookups against this same SDE table, see
     eve_trader/refining/engine.py). `types` rows now carry a 9th
     `portion_size` element (same issue - exact whole-portion reprocessing
-    rounding, not a continuous approximation)."""
+    rounding, not a continuous approximation).
+
+    `blueprint_skills` is `industryActivitySkills.csv` (blueprint_type_id,
+    activity_id, skill_type_id, level) - which skill(s) a blueprint's activity
+    requires, used by production/engine.py's job-time skill bonus (see
+    get_blueprint_skills, constants.SPECIALIST_TIME_SKILLS) to tell whether a
+    blueprint's own "specialist" skill (e.g. Molecular Engineering) applies on
+    top of the universal Industry/Advanced Industry/Reactions bonus."""
     with connect() as conn:
         conn.execute("DELETE FROM sde_types")
         conn.execute("DELETE FROM sde_groups")
@@ -1378,6 +1385,7 @@ def replace_sde_data(
         conn.execute("DELETE FROM sde_categories")
         conn.execute("DELETE FROM sde_type_slots")
         conn.execute("DELETE FROM sde_type_materials")
+        conn.execute("DELETE FROM sde_blueprint_skills")
         conn.executemany("INSERT INTO sde_types VALUES (?,?,?,?,?,?,?,?,?)", types)
         conn.executemany("INSERT INTO sde_groups VALUES (?,?,?)", groups)
         conn.executemany("INSERT INTO sde_market_groups VALUES (?,?,?)", market_groups)
@@ -1390,6 +1398,7 @@ def replace_sde_data(
         conn.executemany("INSERT INTO sde_categories VALUES (?,?)", categories)
         conn.executemany("INSERT INTO sde_type_slots VALUES (?,?)", type_slots)
         conn.executemany("INSERT INTO sde_type_materials VALUES (?,?,?)", type_materials)
+        conn.executemany("INSERT INTO sde_blueprint_skills VALUES (?,?,?,?)", blueprint_skills)
     get_system_security.cache_clear()
     get_sde_type.cache_clear()
     get_type_category.cache_clear()
@@ -1402,11 +1411,13 @@ def replace_sde_data(
     get_type_slot.cache_clear()
     get_type_materials.cache_clear()
     get_invention_recipe.cache_clear()
+    get_blueprint_skills.cache_clear()
 
 
 SDE_TABLES = (
     "sde_types", "sde_groups", "sde_market_groups", "sde_blueprint_time",
     "sde_blueprint_materials", "sde_blueprint_products", "sde_invention_probability",
+    "sde_blueprint_skills",
     "sde_solar_systems", "sde_stations", "sde_categories", "sde_type_slots",
     "sde_type_materials",
 )
@@ -4819,6 +4830,25 @@ def get_blueprint_materials(blueprint_type_id: int, activity_id: int) -> list[tu
     with connect() as conn:
         return conn.execute(
             "SELECT material_type_id, quantity FROM sde_blueprint_materials "
+            "WHERE blueprint_type_id = ? AND activity_id = ?",
+            (blueprint_type_id, activity_id),
+        ).fetchall()
+
+
+@lru_cache(maxsize=None)
+def get_blueprint_skills(blueprint_type_id: int, activity_id: int) -> list[tuple[int, int]]:
+    """Returns [(skill_type_id, level), ...] from industryActivitySkills.csv -
+    the skill(s) this blueprint's activity requires, at their minimum level.
+    Used only for the job-time "specialist" skill bonus (production/engine.py
+    _skill_time_mult, constants.SPECIALIST_TIME_SKILLS) - the universal
+    Industry/Advanced Industry/Reactions bonus applies regardless of this
+    table. `level` here is the minimum *required* level (often lower than
+    what a character has actually trained - constants.SPECIALIST_TIME_SKILLS'
+    own per-level percentage is applied against ProductionConfig.
+    specialist_skill_level, not this column). Cached - see get_sde_type."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT skill_type_id, level FROM sde_blueprint_skills "
             "WHERE blueprint_type_id = ? AND activity_id = ?",
             (blueprint_type_id, activity_id),
         ).fetchall()
