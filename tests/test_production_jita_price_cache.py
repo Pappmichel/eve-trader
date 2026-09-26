@@ -54,6 +54,17 @@ def test_last_updated_at_is_none_before_first_refresh():
 def test_refresh_returns_zero_and_skips_esi_when_no_tenant_has_stock_targets(monkeypatch):
     monkeypatch.setattr(storage, "list_tenants", lambda: [(storage.DEFAULT_TENANT_ID, "Default", None)])
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
+    # Tier 3 "config-dependent test error" (business-logic audit follow-up,
+    # 2026-09-26): refresh_jita_price_cache() enters tenant_scope.enter_tenant
+    # for every tenant BEFORE checking load_stock_targets() (see that
+    # function's own code) - the real enter_tenant needs a live Postgres
+    # connection regardless of what load_stock_targets ends up returning, so
+    # without this mock (already used two tests below, in
+    # test_refresh_prices_the_union_of_every_tenants_structural_material_closure)
+    # this test hung on a real pool checkout instead of testing the
+    # short-circuit it's named for. Not a production bug - real callers
+    # always run inside a real tenant scope already.
+    monkeypatch.setattr(tenant_scope, "enter_tenant", _fake_enter_tenant())
     monkeypatch.setattr(ESIClient, "region_order_stats_bulk", lambda self, region_id, type_ids:
                          pytest.fail("must not call ESI when no tenant has any stock targets"))
 

@@ -13,6 +13,7 @@ from eve_trader.doctrine.constants import SEVERITY_CRITICAL, SEVERITY_TOLERABLE,
 from eve_trader.doctrine.engine import _Candidate
 from eve_trader.doctrine.models import AggregatedStockpileRow, ContractItemRow, Fitting, FittingItem, StockpileRow
 from eve_trader.goonmetrics_client import CurrentPrice
+from eve_trader.production import esi_sync as production_esi_sync
 from eve_trader.production.constants import MODULE_CATEGORY_ID
 
 HULL_A = 1000
@@ -359,6 +360,15 @@ def test_shopping_list_rows_picks_cheapest_of_build_cj_jita(monkeypatch):
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Damage Control II", 5.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: MODULE_CATEGORY_ID)
     monkeypatch.setattr(storage, "get_cached_packaged_volume", lambda type_id: 5.0)  # no packaged/flight difference
+    # Tier 3 "config-dependent test error" (business-logic audit follow-up,
+    # 2026-09-26): shopping_list_rows' own structure_market_book leg (GitHub
+    # issue #10 fix, confirmed 2026-09-21 - see this function's own comment)
+    # calls production_esi_sync.list_capability_characters, which needs a
+    # tenant context this lightweight fixture-only test never sets up. Not a
+    # production bug - real callers always run inside tenant_scope - just a
+    # test written before that call site existed. [] means "no capability
+    # character available", matching the function's own best-effort fallback.
+    monkeypatch.setattr(production_esi_sync, "list_capability_characters", lambda *a, **k: [])
     monkeypatch.setattr(engine, "ESIClient", _FakeESIClient)
 
     rows = engine.shopping_list_rows(cfg=DoctrineConfig(import_cost_per_m3=900.0))
@@ -395,6 +405,10 @@ def test_shopping_list_rows_recommends_none_when_no_price_data(monkeypatch):
     monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
     monkeypatch.setattr(engine, "unit_cost_detail", lambda *a, **k: (None, None, None))
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: None)
+    # See test_shopping_list_rows_picks_cheapest_of_build_cj_jita's own
+    # comment above for why this is needed (Tier 3 "config-dependent test
+    # error", business-logic audit follow-up, 2026-09-26).
+    monkeypatch.setattr(production_esi_sync, "list_capability_characters", lambda *a, **k: [])
     monkeypatch.setattr(engine, "ESIClient", _FakeESIClient)
 
     rows = engine.shopping_list_rows()
@@ -426,6 +440,10 @@ def test_shopping_list_rows_suppresses_jita_price_with_no_live_orders(monkeypatc
         def region_order_stats_bulk(self, region_id, type_ids):
             return {tid: engine.OrderStats(sell_percentile=None, sell_volume=0.0, buy_percentile=None, buy_volume=0.0)
                     for tid in type_ids}
+    # See test_shopping_list_rows_picks_cheapest_of_build_cj_jita's own
+    # comment above for why this is needed (Tier 3 "config-dependent test
+    # error", business-logic audit follow-up, 2026-09-26).
+    monkeypatch.setattr(production_esi_sync, "list_capability_characters", lambda *a, **k: [])
     monkeypatch.setattr(engine, "ESIClient", _NoOrdersESIClient)
 
     rows = engine.shopping_list_rows()
