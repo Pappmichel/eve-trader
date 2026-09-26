@@ -555,6 +555,29 @@ scheduler's own global backup job (opt-in via `DEFAULT_TENANT_ID`'s
 Filenames include microseconds and a uuid so two backups cannot collide;
 `pg_dump` stderr stays in the process log, not in the HTTP 400.
 
+**Live operational decision (business-logic audit follow-up, confirmed
+with the user 2026-09-26): the scheduler stays off; backups are run by
+hand.** T1-06's own root-cause investigation found `scheduler_enabled`
+(every tenant, including `DEFAULT_TENANT_ID`) is currently `false` in
+production - explained above as an operator-level, off-by-default switch,
+and this is that switch deliberately left off, not an unnoticed outage.
+Explicitly confirmed with the user: "scheduler bleibt offline. backups
+werden von hand ausgeführt." Consequence, plainly stated: `trading_
+pipeline`/`esi_data_sync`/`portfolio_snapshot`/the global backup job/the
+Jita price cache job are ALL inert right now, on every tenant, until
+someone flips `scheduler_enabled` back on - re-enabling it resumes every
+one of those jobs at once, not backups alone (see this section's own
+opening paragraph for why they share one switch). `create_backup()`
+itself works correctly and was live-verified via a full restore drill the
+same day (schema/data/application-level checks, throwaway database,
+`eve_trader` untouched) - the "outage" Plan 1 found was never a bug in
+the backup mechanism itself, only in the assumption that it ran
+automatically. A regression this decision surfaced and fixed the same
+day: a *manual* backup run over a non-interactive SSH session inherits
+the OS default umask, not the interactive-shell-only `umask 077` fix (see
+"Multi-tenant Postgres"'s neighbor sections) - `create_backup()` now
+`chmod`s its own output to `0600` explicitly rather than depend on it.
+
 ## "Theoretical ceiling" figures - not bugs
 
 `potential_daily_profit` (Production's Build Candidates) and "Profit / Day"
