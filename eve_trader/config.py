@@ -176,6 +176,7 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "import_cost_per_m3": (0, None),
     "structure_sell_haircut": (0, 1),
     "jita_buy_broker_fee": (0, 1),
+    "structure_broker_fee": (0, 1),
     "min_profit_threshold": (0, None),
     "min_margin_threshold": (0, None),
     "skip_grace_period_days": (0, None),
@@ -353,14 +354,33 @@ class TradingConfig:
 
     # -- Economics --
     import_cost_per_m3: float = 900.0        # ISK freight cost per m3 to move goods to the structure
-    # Multiplier applied to the C-J structure sell price, confirmed against the
-    # in-game sell-order breakdown: SCC surcharge 0.5% + Broker's fee 1.5% +
-    # Sales tax 3.37% + Safety Tax 0.00% = 5.37% total -> 1 - 0.0537 = 0.9463.
+    # Multiplier applied to the C-J structure sell price when no real
+    # per-sale tax figure is available (trade_reconciliation.py's fallback
+    # path only - see structure_broker_fee below for the journal-matched
+    # path). Confirmed against the in-game sell-order breakdown: Broker's
+    # fee 1.5% + Sales tax 3.37% = 4.87% total -> 1 - 0.0487 = 0.9513... -
+    # historically derived as 0.9463 (including an extra "SCC surcharge
+    # 0.5%" term) before T1-01 (2026-09-25) confirmed with the user that SCC
+    # surcharge applies only to industry jobs, never to a market sell - kept
+    # at its original 0.9463 default rather than silently reinterpreted,
+    # since this is a live-configurable value a tenant may already have
+    # tuned to their own real skills/standing; revisit only with the user.
     structure_sell_haircut: float = 0.9463
     # Broker's fee when buying (placing/filling a buy order) in Jita, confirmed
     # against the in-game buy screen (1.47%) - applied to landed_cost, since
     # buying was previously modeled as fee-free.
     jita_buy_broker_fee: float = 0.0147
+    # Broker's fee estimate for the STRUCTURE SELL side specifically (T1-01,
+    # 2026-09-25) - used only in trade_reconciliation.py's journal-matched
+    # path, where the real per-sale sales tax now comes from ESI directly
+    # (see trade_reconciliation.py's own T1-01 comment) and this is the one
+    # remaining modeled component: broker's fee is charged once per ORDER,
+    # not per fill, so it can never be attributed to one specific
+    # FIFO-matched sale the way tax now can be. Confirmed live (2026-09-25)
+    # that EVE's "SCC surcharge" is an industry-job-only fee, never charged
+    # on a market sell - deliberately NOT included here (no hardcoded
+    # phantom deduction with zero live evidence behind it).
+    structure_broker_fee: float = 0.015
     min_profit_threshold: float = 0.0        # Minimum absolute profit/unit to consider
     min_margin_threshold: float = 0.05       # Minimum margin to mark an item "Import"
     # Grace period before actions.do_refresh_and_prune_candidates deactivates a

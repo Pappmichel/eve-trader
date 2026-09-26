@@ -1105,9 +1105,11 @@ class ESIClient:
         uses this for one specific purpose: a wallet/transactions entry's own
         `journal_ref_id` links 1:1 to the journal entry recording that same
         sale (`ref_type: "market_transaction"`), whose `amount` field is the
-        real ISK actually credited *after* sales tax - a more accurate
-        sell-side figure than the modeled structure_sell_haircut for the tax
-        portion specifically. Requires esi-wallet.read_character_wallet.v1 -
+        real GROSS ISK value of that specific fill (confirmed with the user,
+        2026-09-25 - NOT net of sales tax; a structure sale's tax is a
+        separate journal entry, never netted into this one) - see T1-01's
+        comment in trade_reconciliation.py above _MARKET_TRANSACTION_REF_TYPE
+        for how that's used. Requires esi-wallet.read_character_wallet.v1 -
         the same scope character_wallet_transactions already needs, no new
         grant required."""
         return self._get_all_pages(f"/characters/{character_id}/wallet/journal/",
@@ -1160,7 +1162,9 @@ class ESIClient:
         trade_reconciliation uses this the same way it uses
         character_wallet_journal: a wallet-transaction's `journal_ref_id`
         links 1:1 to the `market_transaction` journal entry whose `amount`
-        is the real ISK credited after sales tax. Lookup is wallet-local
+        is the real GROSS ISK value of that fill, not net of sales tax
+        (see T1-01's comment in trade_reconciliation.py above
+        _MARKET_TRANSACTION_REF_TYPE). Lookup is wallet-local
         (this division's journal, never a character journal).
         """
         return self._get_all_pages(

@@ -3,12 +3,17 @@
 Pulls wallet transactions for buyer/seller characters (Jita imports vs
 structure sells) over a lookback window, PLUS corporation wallet
 transactions for any corp those characters belong to, and matches buys
-against sells per item (FIFO) to compute realized profit. The sell side's tax
-deduction uses the real per-sale amount from the wallet *journal* when
-available (see fetch_recent_journal_entries/_ASSUMED_TAX_RATE_IN_DEFAULT_
-HAIRCUT), falling back to a fully modeled haircut otherwise; the buy side
-and broker's fee stay modeled (ESI has no per-fill broker-fee attribution -
-see PB-03 in the 2026-08-29 business-logic audit).
+against sells per item (FIFO) to compute realized profit. The sell side
+(T1-01, 2026-09-25 - see the comment above _MARKET_TRANSACTION_REF_TYPE)
+uses the REAL per-sale sales tax from ESI's wallet journal when a sell's
+`market_transaction` and `transaction_tax` journal entries can both be
+confidently located, deducting only cfg.structure_broker_fee (modeled -
+broker's fee is charged once per ORDER, not per fill, so it can never be
+attributed to one specific sale) on top of that; falling back to the fully
+modeled cfg.structure_sell_haircut against sell_unit_price whenever the
+real figures can't be confidently found (missing/failed journal fetch, a
+snapshot-sourced entry with no linking field, or a sale near the fetch
+window's edge).
 
 Character and corp wallets are disjoint ESI streams: a corp-funded market
 order is recorded on `/corporations/{id}/wallets/{division}/transactions/`
@@ -79,53 +84,82 @@ WALLET_TRANSACTIONS_PAGE_SIZE = 2500  # ESI's fixed per-call cap for this endpoi
 # trading history.
 _BUY_LOOKBACK_MULTIPLIER = 3
 
-# PB-03 (business-logic audit, 2026-08-29): net_sell used to be entirely
-# modeled (sell_unit_price x structure_sell_haircut) even though ESI's
-# wallet journal has the REAL sales tax for each specific sell (via a
-# transaction's own journal_ref_id -> the matching journal entry's `amount`,
-# already net of that real tax - confirmed against ESI's own OpenAPI spec).
-# Only the tax portion is fixable this way: broker's fee is charged once per
-# ORDER, not per fill, so it can't be attributed to one specific FIFO-matched
-# sale the way tax can - confirmed with the user (2026-08-29) to leave that
-# portion modeled rather than guess at an order-level allocation.
+# PB-03 (business-logic audit, 2026-08-29) originally treated a journal-
+# matched sell's `market_transaction` journal-entry `amount` as already NET
+# of sales tax. That was wrong (confirmed with the user, 2026-09-25):
+# `market_transaction`'s `amount` is the GROSS sale value; ESI deducts sales
+# tax via its own separate `transaction_tax` journal entry. A same-day fix
+# (still T1-01) then applied the fully modeled cfg.structure_sell_haircut to
+# that gross amount instead - correct but conservative, since it left the
+# real per-sale tax unused.
 #
-# structure_sell_haircut bundles SCC surcharge + broker's fee + sales tax
-# into one multiplier (see its own default-derivation comment in config.py:
-# "SCC surcharge 0.5% + Broker's fee 1.5% + Sales tax 3.37% = 5.37% total").
-# To swap in the real tax without a new config field to hold the SCC+broker
-# portion separately, this is the assumed tax rate baked into that *default*
-# 0.9463 value, used only to back it out: (structure_sell_haircut +
-# _ASSUMED_TAX_RATE_IN_DEFAULT_HAIRCUT) isolates the SCC+broker-only
-# retention ratio, which then multiplies the *real* post-tax proceeds
-# instead of the raw unit price. Exact when structure_sell_haircut is still
-# its default; a tenant who has customized it away from 0.9463 (different
-# real skills/standings) gets a close-but-not-exact SCC+broker estimate -
-# still strictly more accurate on the tax term than the fully-modeled
-# formula, which is the one thing this fix set out to improve.
-_ASSUMED_TAX_RATE_IN_DEFAULT_HAIRCUT = 0.0337
+# T1-01's live verification (2026-09-25, evetrader.duckdns.org, Default
+# tenant, read-only) found the REAL tax figure and its linkage, checked
+# against all 2447 real structure sells in one seller character's fetched
+# wallet journal:
+#
+#   - The wallet TRANSACTION's own `journal_ref_id` field never equals any
+#     journal entry ESI actually returns (confirmed 0/2447) - it is USELESS
+#     for finding a sell's `market_transaction` entry and must not be used
+#     for that (a stale assumption from before this was live-checked).
+#   - The real, 100%-reliable link (2447/2447) is `context_id` on the
+#     `market_transaction` entry itself: `context_id == transaction_id` when
+#     `context_id_type == "market_transaction_id"`.
+#   - Its sales-tax deduction is a separate, adjacent journal entry: id ==
+#     (the market_transaction entry's own id) + 1, ref_type
+#     "transaction_tax", same `date` - verified this way on 2396/2447 sells
+#     (the other 51 simply fell outside the fetched journal window's edge -
+#     a safe, honest "can't confidently verify this one", never a wrong
+#     guess - see the fallback below).
+#   - The observed tax rate was a flat 3.375% of gross on every one of
+#     those 2396 sells - a real, currently-live per-character figure, not a
+#     value to hardcode; this module still always fetches and uses the
+#     actual per-sale entry, never an assumed rate.
+#   - "SCC surcharge" (part of structure_sell_haircut's own original
+#     derivation) does not apply to a market sell at all - confirmed with
+#     the user (2026-09-25) it is an industry-job-only fee - so it is not
+#     part of this per-sale deduction (see cfg.structure_broker_fee's own
+#     comment in config.py).
+#
+# Broker's fee still cannot be attributed to one specific FIFO-matched sale
+# - it's charged once per ORDER, not per fill (confirmed with the user,
+# 2026-08-29) - so cfg.structure_broker_fee stays modeled, applied on top of
+# the real gross-minus-tax figure. A sell whose market_transaction/
+# transaction_tax pair can't be confidently found this way (fetch failure,
+# window-edge sale, or a snapshot-sourced entry - the persisted
+# esi_wallet_journal table does not store context_id/context_id_type, so a
+# snapshot-only sell can never resolve through this path; extending that
+# schema is a separate, deliberately deferred follow-up, not done here)
+# falls back to the same fully modeled cfg.structure_sell_haircut x
+# sell_unit_price this module always used before PB-03 existed.
 
 _MARKET_TRANSACTION_REF_TYPE = "market_transaction"
+_TRANSACTION_TAX_REF_TYPE = "transaction_tax"
 
 
 def fetch_recent_journal_entries(character_id: int, auth_role: str, client: ESIClient,
-                                  lookback_days: int) -> dict[int, float]:
-    """{journal entry id: amount} for this character's `market_transaction`
-    journal entries within `lookback_days` - the lookup reconcile_realized_
-    trades uses to find a specific sell's real post-tax proceeds via its
-    wallet-transaction's own `journal_ref_id`. Best-effort: any ESI failure
-    (missing scope, outage, ...) returns {} rather than raising, so a wallet-
-    journal problem degrades reconciliation to the fully-modeled formula
-    instead of blocking it entirely - same spirit as this module's other
-    best-effort fallbacks (_type_info below)."""
+                                  lookback_days: int) -> dict[int, dict]:
+    """{journal entry id: full entry} for this character's
+    `market_transaction` and `transaction_tax` journal entries within
+    `lookback_days` - reconcile_realized_trades uses these to find a
+    specific sell's real gross amount and its real tax deduction (see
+    T1-01's comment above _MARKET_TRANSACTION_REF_TYPE for the linkage -
+    NOT the wallet-transaction's own `journal_ref_id`, confirmed live to
+    never match). Best-effort: any ESI failure (missing scope, outage, ...)
+    returns {} rather than raising, so a wallet-journal problem degrades
+    reconciliation to the fully-modeled formula instead of blocking it
+    entirely - same spirit as this module's other best-effort fallbacks
+    (_type_info below)."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
     try:
         entries = client.character_wallet_journal(character_id, auth_role=auth_role)
     except Exception:  # noqa: BLE001 - best-effort; modeled fallback is always safe
         return {}
     return {
-        entry["id"]: entry["amount"]
+        entry["id"]: entry
         for entry in entries
-        if entry.get("ref_type") == _MARKET_TRANSACTION_REF_TYPE and _parse_iso(entry["date"]) >= cutoff
+        if entry.get("ref_type") in (_MARKET_TRANSACTION_REF_TYPE, _TRANSACTION_TAX_REF_TYPE)
+        and _parse_iso(entry["date"]) >= cutoff
     }
 
 
@@ -207,9 +241,11 @@ def fetch_recent_corporation_transactions(corporation_id: int, division: int, au
 
 
 def fetch_recent_corporation_journal_entries(corporation_id: int, division: int, auth_role: str,
-                                              client: ESIClient, lookback_days: int) -> dict[int, float]:
-    """{journal entry id: amount} for one corp wallet division's
-    `market_transaction` entries within `lookback_days`. Best-effort, same
+                                              client: ESIClient, lookback_days: int) -> dict[int, dict]:
+    """{journal entry id: full entry} for one corp wallet division's
+    `market_transaction` and `transaction_tax` entries within
+    `lookback_days`, same as fetch_recent_journal_entries (see T1-01's
+    comment above _MARKET_TRANSACTION_REF_TYPE). Best-effort, same
     contract as fetch_recent_journal_entries: any ESI failure returns {}
     rather than raising, so a journal problem degrades that wallet to the
     modeled haircut instead of blocking reconciliation. Role/scope failure
@@ -222,9 +258,10 @@ def fetch_recent_corporation_journal_entries(corporation_id: int, division: int,
     except Exception:  # noqa: BLE001 - best-effort; modeled fallback is always safe
         return {}
     return {
-        entry["id"]: entry["amount"]
+        entry["id"]: entry
         for entry in entries
-        if entry.get("ref_type") == _MARKET_TRANSACTION_REF_TYPE and _parse_iso(entry["date"]) >= cutoff
+        if entry.get("ref_type") in (_MARKET_TRANSACTION_REF_TYPE, _TRANSACTION_TAX_REF_TYPE)
+        and _parse_iso(entry["date"]) >= cutoff
     }
 
 
@@ -260,8 +297,8 @@ def fetch_corporation_wallet_streams(characters: list[tuple[int, str]], client: 
                                       txn_lookback_days: int, journal_lookback_days: int,
                                       cfg: TradingConfig,
                                       corps: Optional[dict[int, list[tuple[int, str]]]] = None,
-                                      ) -> tuple[list[dict], dict[tuple, float]]:
-    """Corp wallet transactions + namespaced journal amounts for every corp
+                                      ) -> tuple[list[dict], dict[tuple, dict]]:
+    """Corp wallet transactions + namespaced journal entries for every corp
     a registered buyer/seller belongs to.
 
     Each corp is fetched once. Member characters are tried in list order.
@@ -276,7 +313,7 @@ def fetch_corporation_wallet_streams(characters: list[tuple[int, str]], client: 
     """
     divisions = _wallet_divisions(cfg)
     txns: list[dict] = []
-    journal: dict[tuple, float] = {}
+    journal: dict[tuple, dict] = {}
     if corps is None:
         corps = _corps_for_characters(characters, client)
     for corporation_id, members in corps.items():
@@ -301,10 +338,10 @@ def fetch_corporation_wallet_streams(characters: list[tuple[int, str]], client: 
                     f"character {character_id} ({role}): {last_error}")
                 continue
             for division in readable:
-                for jid, amount in fetch_recent_corporation_journal_entries(
+                for jid, entry in fetch_recent_corporation_journal_entries(
                     corporation_id, division, role, client, journal_lookback_days,
                 ).items():
-                    journal[("corporation", corporation_id, division, jid)] = amount
+                    journal[("corporation", corporation_id, division, jid)] = entry
             txns.extend(corp_txns)
             fetched_any = True
             if unread:
@@ -354,14 +391,30 @@ def _txn_from_snapshot(row: dict) -> dict:
     }
 
 
-def _journal_from_snapshot(rows: list[dict]) -> dict[tuple, float]:
-    journal: dict[tuple, float] = {}
+def _journal_from_snapshot(rows: list[dict]) -> dict[tuple, dict]:
+    """The persisted `esi_wallet_journal` table (docs/esi_access_schema.sql)
+    stores only (division, journal_id, date, ref_type, amount) - it has no
+    context_id/context_id_type column, so a snapshot-sourced entry can never
+    resolve through T1-01's real-tax linkage (see the comment above
+    _MARKET_TRANSACTION_REF_TYPE) no matter what's returned here - it will
+    always safely fall back to the modeled cfg.structure_sell_haircut
+    formula. Extending that schema to carry context_id/context_id_type is a
+    deliberately deferred, separate follow-up (a live schema migration),
+    not part of this fix. Kept shape-compatible (dict[tuple, dict], one
+    entry per key) with the live-fetch paths regardless, so callers don't
+    need to know which source a given entry came from."""
+    journal: dict[tuple, dict] = {}
     for entry in rows:
         if entry.get("ref_type") != _MARKET_TRANSACTION_REF_TYPE:
             continue
         owner_type = entry["owner_type"]
         division = None if owner_type == "character" else entry["division"]
-        journal[(owner_type, int(entry["owner_id"]), division, entry["journal_id"])] = entry["amount"]
+        journal[(owner_type, int(entry["owner_id"]), division, entry["journal_id"])] = {
+            "id": entry["journal_id"],
+            "date": _iso_date(entry["date"]),
+            "ref_type": entry["ref_type"],
+            "amount": entry["amount"],
+        }
     return journal
 
 
@@ -370,7 +423,7 @@ def collect_trading_wallet_streams(
     seller_characters: list[tuple[int, str]],
     client: ESIClient,
     cfg: TradingConfig = TRADING_CONFIG,
-) -> tuple[list[dict], dict[tuple, float], int]:
+) -> tuple[list[dict], dict[tuple, dict], int]:
     """Per-owner wallet rows for Trading, sharing-gated (decision 9).
 
     For each character and each corporation derived from them:
@@ -401,7 +454,7 @@ def collect_trading_wallet_streams(
     buy_lookback = cfg.lookback_days * _BUY_LOOKBACK_MULTIPLIER
     sell_lookback = cfg.lookback_days
     txns: list[dict] = []
-    journal: dict[tuple, float] = {}
+    journal: dict[tuple, dict] = {}
 
     roles_by_id: dict[int, str] = {}
     buyer_ids = {cid for cid, _role in buyer_characters}
@@ -429,10 +482,10 @@ def collect_trading_wallet_streams(
         lookback = buy_lookback if character_id in buyer_ids else sell_lookback
         txns.extend(fetch_recent_transactions(character_id, role, client, lookback))
         if character_id in seller_ids:
-            for jid, amount in fetch_recent_journal_entries(
+            for jid, entry in fetch_recent_journal_entries(
                 character_id, role, client, sell_lookback,
             ).items():
-                journal[("character", character_id, None, jid)] = amount
+                journal[("character", character_id, None, jid)] = entry
 
     seen_pairs: list[tuple[int, str]] = []
     seen: set[tuple[int, str]] = set()
@@ -473,7 +526,7 @@ def reconcile_realized_trades(buyer_characters: list[tuple[int, str]], seller_ch
                                item_volumes: dict[int, float],
                                cfg: TradingConfig = TRADING_CONFIG,
                                snapshot_txns: Optional[list[dict]] = None,
-                               snapshot_journal: Optional[dict] = None) -> list[RealizedTrade]:
+                               snapshot_journal: Optional[dict[tuple, dict]] = None) -> list[RealizedTrade]:
     """Matches every buyer character's Jita buy transactions against every
     seller character's structure sell transactions per type_id, FIFO, within
     cfg.lookback_days, then the same for corporation-wallet fills of any corp
@@ -492,7 +545,7 @@ def reconcile_realized_trades(buyer_characters: list[tuple[int, str]], seller_ch
 
     buys: list[dict] = []
     sells: list[dict] = []
-    journal_amount_by_key: dict[tuple, float] = {}
+    journal_entries_by_key: dict[tuple, dict] = {}
 
     if snapshot_txns is not None:
         buyer_ids = {cid for cid, _role in buyer_characters}
@@ -512,21 +565,22 @@ def reconcile_realized_trades(buyer_characters: list[tuple[int, str]], seller_ch
                 elif not t.get("is_buy") and _parse_iso(t["date"]) >= sell_cutoff:
                     sells.append(t)
         if snapshot_journal:
-            journal_amount_by_key.update(snapshot_journal)
+            journal_entries_by_key.update(snapshot_journal)
     else:
         for character_id, role in buyer_characters:
             buys.extend(fetch_recent_transactions(character_id, role, client, buy_lookback))
         for character_id, role in seller_characters:
             sells.extend(fetch_recent_transactions(character_id, role, client, sell_lookback))
 
-        # PB-03: real post-tax proceeds, namespaced by wallet so a character
-        # journal id cannot satisfy a corp sell (or vice versa). See
-        # fetch_recent_journal_entries / _ASSUMED_TAX_RATE_IN_DEFAULT_HAIRCUT.
+        # PB-03/T1-01: real per-fill journal entries, namespaced by wallet
+        # so a character journal id cannot satisfy a corp sell (or vice
+        # versa). See fetch_recent_journal_entries and the comment above
+        # _MARKET_TRANSACTION_REF_TYPE for the linkage/formula.
         for character_id, role in seller_characters:
-            for jid, amount in fetch_recent_journal_entries(
+            for jid, entry in fetch_recent_journal_entries(
                 character_id, role, client, sell_lookback,
             ).items():
-                journal_amount_by_key[("character", character_id, None, jid)] = amount
+                journal_entries_by_key[("character", character_id, None, jid)] = entry
 
         seen_pairs: list[tuple[int, str]] = []
         seen: set[tuple[int, str]] = set()
@@ -536,7 +590,7 @@ def reconcile_realized_trades(buyer_characters: list[tuple[int, str]], seller_ch
                 seen_pairs.append(pair)
         corp_txns, corp_journal = fetch_corporation_wallet_streams(
             seen_pairs, client, buy_lookback, sell_lookback, cfg)
-        journal_amount_by_key.update(corp_journal)
+        journal_entries_by_key.update(corp_journal)
         for t in corp_txns:
             if t.get("is_buy"):
                 buys.append(t)
@@ -557,6 +611,38 @@ def reconcile_realized_trades(buyer_characters: list[tuple[int, str]], seller_ch
     jita_region_stations = storage.get_station_ids_in_region(cfg.jita_region_id)
     buys = [t for t in buys if t.get("is_buy") and t.get("location_id") in jita_region_stations]
     sells = [t for t in sells if not t.get("is_buy") and t.get("location_id") == cfg.structure_id]
+
+    # T1-01: index market_transaction entries by the wallet transaction they
+    # actually belong to (context_id/context_id_type - see the comment above
+    # _MARKET_TRANSACTION_REF_TYPE), NOT by journal_ref_id. Built once here
+    # rather than per-sell for efficiency.
+    market_transaction_by_key: dict[tuple, dict] = {}
+    for (kind, owner_id, division, _entry_id), entry in journal_entries_by_key.items():
+        if (entry.get("ref_type") == _MARKET_TRANSACTION_REF_TYPE
+                and entry.get("context_id_type") == "market_transaction_id"
+                and entry.get("context_id") is not None):
+            market_transaction_by_key[(kind, owner_id, division, entry["context_id"])] = entry
+
+    def _real_net_sell_per_unit(sell: dict) -> Optional[float]:
+        """The real (gross - sales tax) per-unit proceeds for `sell`, or
+        None if the market_transaction/transaction_tax pair can't be
+        confidently located - callers must fall back to the fully modeled
+        cfg.structure_sell_haircut formula in that case, never guess."""
+        if not sell.get("quantity"):
+            return None
+        key = (sell.get("_wallet_kind", "character"), sell.get("_wallet_owner_id"),
+               sell.get("_wallet_division"), sell.get("transaction_id"))
+        mt = market_transaction_by_key.get(key)
+        if mt is None:
+            return None
+        tax_key = (key[0], key[1], key[2], mt["id"] + 1)
+        tax_entry = journal_entries_by_key.get(tax_key)
+        if (tax_entry is None or tax_entry.get("ref_type") != _TRANSACTION_TAX_REF_TYPE
+                or tax_entry.get("date") != mt.get("date")):
+            return None
+        real_tax = -tax_entry["amount"]
+        gross = mt["amount"]
+        return (gross - real_tax) / sell["quantity"]
 
     buys_by_type: dict[int, list[dict]] = defaultdict(list)
     for t in buys:
@@ -640,21 +726,14 @@ def reconcile_realized_trades(buyer_characters: list[tuple[int, str]], seller_ch
                 # make this side of Realized Trades drift from what actually
                 # landed in the wallet.
                 landed = buy["unit_price"] * (1 + cfg.jita_buy_broker_fee) + freight
-                journal_amount = journal_amount_by_key.get((
-                    sell.get("_wallet_kind", "character"),
-                    sell.get("_wallet_owner_id"),
-                    sell.get("_wallet_division"),
-                    sell.get("journal_ref_id"),
-                ))
-                if journal_amount is not None and sell["quantity"]:
-                    # Real post-tax proceeds (ESI wallet journal) scaled by
-                    # the SCC+broker-only retention ratio backed out of the
-                    # modeled haircut - see _ASSUMED_TAX_RATE_IN_DEFAULT_
-                    # HAIRCUT's own comment for why this, not the real tax
-                    # amount, replaces the sell["unit_price"] x haircut term.
-                    net_sell = (journal_amount / sell["quantity"]) * (
-                        cfg.structure_sell_haircut + _ASSUMED_TAX_RATE_IN_DEFAULT_HAIRCUT
-                    )
+                real_net_sell = _real_net_sell_per_unit(sell)
+                if real_net_sell is not None:
+                    # T1-01: real gross sale amount minus the real per-sale
+                    # sales tax (both from ESI's wallet journal - see the
+                    # comment above _MARKET_TRANSACTION_REF_TYPE), minus the
+                    # modeled broker's-fee-only estimate (it can't be
+                    # attributed to one specific fill the way tax now can).
+                    net_sell = real_net_sell * (1 - cfg.structure_broker_fee)
                 else:
                     net_sell = sell["unit_price"] * cfg.structure_sell_haircut
                 profit_per_unit = net_sell - landed
