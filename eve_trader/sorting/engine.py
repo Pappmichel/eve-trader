@@ -69,7 +69,7 @@ def _as_item_name(value) -> Optional[str]:
 
 def _trading_wanted() -> tuple[dict[int, float], dict[str, float]]:
     """Hangar-staging demand for Trading's import list, claimed as the
-    `trading` pot (separate from Production's `markt` listing shortfall).
+    `trading` pot (separate from Production's `market_listing` shortfall).
 
     Returns (by_type_id, by_lower_item_name). Name matching covers the
     case where the snapshot/shortlist row's item_id doesn't equal the
@@ -149,7 +149,7 @@ def _material_wanted_by_type() -> dict[int, float]:
     tenant - the same accepted staleness/emptiness Trading's
     `_trading_wanted` already has via load_shortlist()/
     latest_snapshot(). Market-listing demand stays a separate pot
-    (`markt`, via production_engine.market_listing_shortfall_by_type)."""
+    (`market_listing`, via production_engine.market_listing_shortfall_by_type)."""
     return storage.load_latest_buy_list()
 
 
@@ -181,7 +181,7 @@ def _ore_minerals_wanted_by_type() -> dict[int, float]:
     return {type_id: qty for type_id, _name, qty in storage.load_mineral_requirements() if qty > 0}
 
 
-def _markt_wanted_by_type(production_cfg: ProductionConfig) -> dict[int, float]:
+def _market_listing_wanted_by_type(production_cfg: ProductionConfig) -> dict[int, float]:
     """Production's home/Jita listing shortfall - finished goods that
     belong on the C-J market hangar. Trading import-list items are a
     separate `trading` pot: same physical 'list this at C-J' idea, but a
@@ -271,7 +271,7 @@ def do_sorting_list(production_cfg: ProductionConfig = PRODUCTION_CONFIG,
         return {"rows": []}
 
     trading_by_id, trading_by_name = _trading_wanted()
-    markt_wanted = _markt_wanted_by_type(production_cfg)
+    market_listing_wanted = _market_listing_wanted_by_type(production_cfg)
     material_wanted = _material_wanted_by_type()
     doctrine_wanted = _doctrine_wanted_by_type(doctrine_cfg)
     ore_minerals_wanted = _ore_minerals_wanted_by_type()
@@ -287,7 +287,7 @@ def do_sorting_list(production_cfg: ProductionConfig = PRODUCTION_CONFIG,
         wanted_by_tool = []
         for tool, qty in (
             ("trading", trading_qty),
-            ("markt", markt_wanted.get(type_id)),
+            ("market_listing", market_listing_wanted.get(type_id)),
             ("material", material_wanted.get(type_id)),
             ("doctrine", doctrine_wanted.get(type_id)),
             ("ore_minerals", ore_minerals_wanted.get(type_id)),

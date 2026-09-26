@@ -66,7 +66,7 @@ export default function SortingSettings() {
   return (
     <Stack>
       <HintCard>
-        Each character can have their own personal hangar as a Wareneingang (filtered to that character&apos;s
+        Each character can have their own personal hangar as an intake source (filtered to that character&apos;s
         assets). A corp division is filtered to one corp the same way — pick which corp&apos;s hangar to count.
         The overview sums every source and still shows which hangar the stack actually sits in.
       </HintCard>
