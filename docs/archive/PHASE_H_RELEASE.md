@@ -4,7 +4,9 @@ Certification record for the Production Special-Order path after Phases C–G
 on **eve-trader** (FastAPI + Postgres + React). Core stays frozen
 (`docs/PRODUCTION_SEMANTICS.md`).
 
-**Identifier:** package `0.2.0rc1`, git tag `v0.2.0-rc1`  
+**Identifier:** package `0.2.0rc1` (no git tag actually exists for this in
+this repo - `git tag -l` confirms none, 2026-09-26 audit; this file
+previously claimed `v0.2.0-rc1` did).
 **Machine:** Cloud Agent VM, Python 3.12, local Postgres.
 
 This certifies the online Special-Order path only. It is not a Trading /
@@ -42,7 +44,7 @@ table-drift (includes `special_order_events`).
 ## H.2 — G.1 re-run
 
 Second `pytest tests/test_phase_g1_scale_baseline.py -s` on this branch.
-Ranking unchanged vs the G.1 table in `docs/PHASE_G_SCALE.md`: create × N
+Ranking unchanged vs the G.1 table in `docs/archive/PHASE_G_SCALE.md`: create × N
 still dominates; Combined stays one planner call; list still N+1
 item_count queries. Semantic gates still pass.
 
