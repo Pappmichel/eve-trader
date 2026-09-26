@@ -12,7 +12,7 @@ import { filterSortingRows, UNCLAIMED } from './sortingFilters'
 
 const TOOL_LABELS: Record<string, string> = {
   trading: 'Trading',
-  markt: 'Markt',
+  market_listing: 'Market listing',
   material: 'Material',
   doctrine: 'Doctrine',
   ore_minerals: 'Ore & Minerals',
@@ -66,7 +66,7 @@ export default function SortingOverview() {
   const columns = useMemo<ColumnDef<SortingRow, unknown>[]>(() => [
     { header: 'Item', accessorKey: 'type_name', size: 220 },
     {
-      header: 'In Wareneingang', accessorKey: 'intake_qty', size: 140,
+      header: 'In Intake', accessorKey: 'intake_qty', size: 140,
       cell: (i) => qty(i.getValue() as number),
     },
     {

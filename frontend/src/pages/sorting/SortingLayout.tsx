@@ -31,7 +31,7 @@ export default function SortingLayout() {
       <AppShell.Navbar p="md">
         <Stack gap="md">
           <div>
-            <Title order={6} c="dimmed" tt="uppercase" mb="xs">Wareneingang</Title>
+            <Title order={6} c="dimmed" tt="uppercase" mb="xs">Intake</Title>
             <Text size="xs" c="dimmed">
               Jita imports for every tool land in personal hangars and shared corp divisions first.
               EVE has no API to move an item between hangar divisions, so sorting is still manual.

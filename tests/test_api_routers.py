@@ -1846,14 +1846,14 @@ def test_get_sorting_list_serializes_action_result(monkeypatch):
     monkeypatch.setattr(sorting_actions, "do_sorting_list", lambda: {"rows": [
         {"type_id": 34, "type_name": "Tritanium", "intake_qty": 500.0,
          "by_source": [{"source_label": "Alice (Hangar)", "qty": 500.0}],
-         "wanted_by_tool": [{"tool": "markt", "wanted_qty": 100.0}], "unclaimed": False},
+         "wanted_by_tool": [{"tool": "market_listing", "wanted_qty": 100.0}], "unclaimed": False},
     ]})
     resp = client.get("/api/sorting/sorting-list")
     assert resp.status_code == 200
     assert resp.json() == {"rows": [
         {"type_id": 34, "type_name": "Tritanium", "intake_qty": 500.0,
          "by_source": [{"source_label": "Alice (Hangar)", "qty": 500.0}],
-         "wanted_by_tool": [{"tool": "markt", "wanted_qty": 100.0}], "unclaimed": False},
+         "wanted_by_tool": [{"tool": "market_listing", "wanted_qty": 100.0}], "unclaimed": False},
     ]}
 
 

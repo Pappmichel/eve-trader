@@ -309,7 +309,7 @@ def test_trading_and_production_listing_are_separate_pots(monkeypatch):
     result = sorting_engine.do_sorting_list(production_cfg=production_cfg)
 
     wanted = {w["tool"]: w["wanted_qty"] for w in result["rows"][0]["wanted_by_tool"]}
-    assert wanted == {"trading": 100.0, "markt": 40.0}
+    assert wanted == {"trading": 100.0, "market_listing": 40.0}
 
 
 def test_doctrine_wanted_qty_sums_shortfall_across_fittings(monkeypatch):
