@@ -80,6 +80,33 @@ def test_create_backup_is_never_group_or_world_readable_regardless_of_umask(isol
     assert mode == 0o600, f"expected 0o600, got {oct(mode)}"
 
 
+def test_create_backup_chmods_the_tmp_dump_before_pg_dump_writes_to_it(isolated_backup_dir, monkeypatch):
+    """Second independent challenge pass (2026-09-26): the first version of
+    the T1-05 fix only chmod'd the tmp dump file *after* subprocess.run()
+    returned - under a permissive umask, that narrowed the exposure window
+    from "forever" to "the entire pg_dump duration" (up to the 300s
+    timeout) instead of actually closing it. The file must already be 0600
+    by the time pg_dump (or its stand-in here) starts writing to it, not
+    only once it's done."""
+    backup_dir, _config_path = isolated_backup_dir
+    seen_modes = []
+
+    def _run(cmd, stdout=None, stderr=None, timeout=None):
+        seen_modes.append(stat.S_IMODE(os.fstat(stdout.fileno()).st_mode))
+        stdout.write(b"FAKE_PG_DUMP_CONTENT")
+        return _FakeCompletedProcess(returncode=0, stderr=b"")
+
+    monkeypatch.setattr(backup.subprocess, "run", _run)
+
+    old_umask = os.umask(0o002)  # the exact permissive umask T1-05 was found under
+    try:
+        backup.create_backup()
+    finally:
+        os.umask(old_umask)
+
+    assert seen_modes == [0o600]
+
+
 def test_create_backup_raises_and_cleans_up_on_pg_dump_failure(isolated_backup_dir, monkeypatch):
     backup_dir, config_path = isolated_backup_dir
     monkeypatch.setattr(backup.subprocess, "run",

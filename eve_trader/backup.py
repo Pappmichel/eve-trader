@@ -127,11 +127,6 @@ def _create_backup_locked() -> dict:
         pg_dump_cmd = ["pg_dump", "-h", "127.0.0.1", "-U", "postgres", "-d", PG_DB_NAME, "-Fc"]
 
     try:
-        with open(tmp_dump_path, "wb") as dump_file:
-            result = subprocess.run(
-                pg_dump_cmd,
-                stdout=dump_file, stderr=subprocess.PIPE, timeout=300,
-            )
         # T1-05 regression (found in Plan 2's independent challenge pass,
         # 2026-09-26): the raw dump - and, below, the finished zip - must
         # never depend on whatever umask the calling process happens to
@@ -144,17 +139,32 @@ def _create_backup_locked() -> dict:
         # covers the scheduled/Admin-UI paths, but this function has no way
         # to know it's being called from a hardened process vs. an ad-hoc
         # script - chmod explicitly rather than trust the caller's umask.
-        os.chmod(tmp_dump_path, 0o600)
+        #
+        # chmod immediately after each file is created, *before* anything is
+        # written into it - not after the write finishes. A second,
+        # independent challenge pass (2026-09-26) found the first version of
+        # this fix chmod'd only after `subprocess.run()`/the `zipfile.
+        # ZipFile` block returned, which narrowed the exposure window from
+        # "forever" to "the full pg_dump/zip duration" (up to the 300s
+        # timeout) instead of actually closing it - a permissive-umask
+        # caller could still read a world-readable, mid-dump database
+        # export for that whole stretch.
+        with open(tmp_dump_path, "wb") as dump_file:
+            os.chmod(tmp_dump_path, 0o600)
+            result = subprocess.run(
+                pg_dump_cmd,
+                stdout=dump_file, stderr=subprocess.PIPE, timeout=300,
+            )
         if result.returncode != 0:
             stderr_text = result.stderr.decode(errors="replace") if result.stderr else ""
             log.error("pg_dump failed (exit %s): %s", result.returncode, stderr_text)
             raise BackupError("Database backup failed.")
 
         with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            os.chmod(backup_path, 0o600)
             zf.write(tmp_dump_path, arcname="eve_trader.dump")
             if DEFAULT_CONFIG_PATH.exists():
                 zf.write(DEFAULT_CONFIG_PATH, arcname="config.yaml")
-        os.chmod(backup_path, 0o600)
     except Exception:
         # A failure partway through (pg_dump not reachable, a full disk, ...)
         # used to leave a partial/corrupt .zip behind - it matches
