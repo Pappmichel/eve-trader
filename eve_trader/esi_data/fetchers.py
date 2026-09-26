@@ -215,6 +215,19 @@ def fetch_character_market_orders(
     client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
 ) -> dict:
     orders = client.character_orders(owner_id, auth_role=auth_role)
+    # T1-04 adjacent gap (independent challenge pass, 2026-09-26): ESI's
+    # personal /characters/{id}/orders/ also returns orders that character
+    # placed *on behalf of its corp* (corp-wallet-funded, `is_corporation:
+    # true`) - the exact same order the corp's own /corporations/{id}/
+    # orders/ endpoint already returns via fetch_corporation_market_orders.
+    # character_sell_orders' PK is now (tenant_id, order_id) (T1-04) - if a
+    # tenant ever shares market_orders for both a character and that
+    # character's corp, writing the same real order_id under both owners
+    # would violate that PK on whichever sync runs second. Excluding these
+    # here is enough on its own even without the corp side also being
+    # shared - a corp order was never actually "this character's own"
+    # inventory to report through the character-owned table regardless.
+    orders = [o for o in orders if not o.get("is_corporation")]
     rows = _sell_order_rows(orders, owner_name)
     storage.replace_sell_orders(
         rows, owner_character_id=owner_id, owner_name=owner_name,
