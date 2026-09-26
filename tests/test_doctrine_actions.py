@@ -5,7 +5,10 @@ mocked out, same "thin wrapper, real logic elsewhere" split every other
 do_* function in this app follows)."""
 from contextlib import contextmanager
 
+import pytest
+
 from eve_trader import storage
+from eve_trader.actions import ActionError
 from eve_trader.auth import TokenManager, TokenRecord
 from eve_trader.doctrine import actions, engine, esi_sync
 from eve_trader.doctrine.models import ParsedFitting
@@ -354,3 +357,21 @@ def test_do_sync_contracts_forwards_progress_callback(monkeypatch):
     cb = object()
     assert actions.do_sync_contracts(progress_callback=cb) == {"ok": True}
     assert captured["cb"] is cb
+
+
+def test_do_get_fitting_detail_missing_id_raises_action_error(monkeypatch):
+    # Confirmed real bug (2026-09-26 pentest follow-up): unlike
+    # do_update_fitting/do_delete_fitting above, this function had no
+    # not-found guard of its own before calling
+    # engine.load_fitting_with_items(), which raises a plain LookupError
+    # for a nonexistent fitting_id - unconverted, that surfaced as a bare
+    # 500 instead of the clean ActionError-derived 400 every other
+    # fitting_id endpoint already returns. A cross-tenant real ID and a
+    # genuinely made-up one are indistinguishable here by design (RLS
+    # already filtered the row out at the storage layer before this
+    # function ever runs), so this same guard also confirms that case
+    # isn't a tenant-isolation gap, just a missing 404 path.
+    monkeypatch.setattr(storage, "get_fitting", lambda fitting_id: None)
+
+    with pytest.raises(ActionError):
+        actions.do_get_fitting_detail("missing")

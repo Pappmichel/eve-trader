@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from eve_trader import access_gate, storage
 from eve_trader.api.app import create_app
-from eve_trader.config import ACCESS_CONFIG
+from eve_trader.config import ACCESS_CONFIG, OAUTH_CONFIG
 
 from . import pg_helpers
 from .pg_helpers import (  # noqa: F401
@@ -77,3 +77,53 @@ def test_authorized_trading_user_reaches_trading_not_production(_apply_admin_sch
 def test_gate_off_allows_unauthenticated_settings():
     assert ACCESS_CONFIG.access_gate_enabled is False
     assert client.get("/api/trading/settings").status_code == 200
+
+
+# ------------------------------------------------------------- CSRF Origin check
+# 2026-09-26 pentest follow-up: a state-changing /api/ request carrying an
+# Origin header that matches neither this server's own origin nor the
+# configured frontend_origin is rejected outright, before auth/tenant
+# resolution - see app.py's own _csrf_check docstring for why this exists
+# (CORS alone never protected a simple-content-type form POST, which skips
+# preflight entirely).
+
+def test_mutating_request_with_disallowed_origin_is_rejected_before_auth():
+    resp = client.post("/api/trading/settings", json={}, headers={"Origin": "https://evil-attacker.example"})
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "Forbidden - disallowed origin"
+
+
+def test_mutating_request_with_disallowed_origin_rejected_even_with_valid_auth(_apply_admin_schema):
+    # Ordering check: a hostile Origin must be rejected *before* a valid
+    # session cookie would otherwise let the request through.
+    tenant_id = storage.create_tenant("T")
+    storage.add_tenant_registry_entry(tenant_id, 11, character_name="T")
+    storage.set_tool_grant(11, "trading", tenant_id)
+    resp = client.post("/api/trading/settings", json={}, headers={"Origin": "https://evil-attacker.example"},
+                        cookies=_cookie(11, tenant_id))
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "Forbidden - disallowed origin"
+
+
+def test_mutating_request_with_no_origin_header_reaches_normal_auth_check():
+    # A non-browser API client (no Origin header at all) was never a CSRF
+    # vector - only rejected here for the usual reason (no session cookie).
+    assert client.post("/api/trading/settings", json={}).status_code == 401
+
+
+def test_mutating_request_with_matching_frontend_origin_reaches_normal_auth_check():
+    resp = client.post("/api/trading/settings", json={}, headers={"Origin": OAUTH_CONFIG.frontend_origin})
+    assert resp.status_code == 401
+
+
+def test_mutating_request_with_matching_self_origin_reaches_normal_auth_check():
+    self_origin = str(client.base_url).rstrip("/")
+    resp = client.post("/api/trading/settings", json={}, headers={"Origin": self_origin})
+    assert resp.status_code == 401
+
+
+def test_safe_get_method_is_never_origin_checked():
+    # GET can't carry a CSRF side effect - a hostile Origin here is simply
+    # irrelevant, request is only ever blocked by the normal auth check.
+    resp = client.get("/api/trading/settings", headers={"Origin": "https://evil-attacker.example"})
+    assert resp.status_code == 401
