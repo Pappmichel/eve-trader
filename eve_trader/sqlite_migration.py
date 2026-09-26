@@ -77,18 +77,23 @@ _PER_TENANT_TABLES: list[tuple[str, tuple[str, ...] | None]] = [
     ("candidate_search_cursor", ("tenant_id", "id")),
     ("structure_names", ("tenant_id", "location_id")),
     ("category_location_options", ("tenant_id", "category", "location_id")),
-    # column-only bucket - PK already globally unique per ESI, unchanged
-    # (character_assets/corp_assets are the one exception: PK widened
-    # 2026-09-08 to (item_id, owner_name) - item_id alone turned out not to
-    # be globally unique after all, see phase1_schema.sql's own comment)
-    ("character_assets", ("item_id", "owner_name")),
-    ("corp_assets", ("item_id", "owner_name")),
-    ("character_industry_jobs", ("job_id",)),
-    ("corp_industry_jobs", ("job_id",)),
-    ("character_slots", ("character_name",)),
-    ("character_blueprints", ("item_id",)),
-    ("corp_blueprints", ("item_id",)),
-    ("character_sell_orders", ("order_id",)),
+    # column-only-turned-composite bucket - originally PK'd on the bare ESI
+    # ID alone (globally unique per character), but a corp-owned table can
+    # span multiple tenants (one corp, several members each in their own
+    # tenant) so the bare ID collides across them - confirmed live 2026-09-26
+    # (T1-04, corp 98370861 in 5 tenants). All 8 widened to (tenant_id, ...)
+    # in phase1_schema.sql the same day; character_assets/corp_assets had
+    # already been widened once before (2026-09-08, item_id alone turned out
+    # not to be globally unique either - see that file's own comment) and
+    # were simply widened again on top.
+    ("character_assets", ("tenant_id", "item_id", "owner_name")),
+    ("corp_assets", ("tenant_id", "item_id", "owner_name")),
+    ("character_industry_jobs", ("tenant_id", "job_id")),
+    ("corp_industry_jobs", ("tenant_id", "job_id")),
+    ("character_slots", ("tenant_id", "character_name")),
+    ("character_blueprints", ("tenant_id", "item_id")),
+    ("corp_blueprints", ("tenant_id", "item_id")),
+    ("character_sell_orders", ("tenant_id", "order_id")),
     # no-PK append/snapshot bucket
     ("shortlist_snapshot", None),
     ("candidate_universe", None),
