@@ -44,7 +44,12 @@ def test_goonmetrics_history_type_ids_for_tenant_excludes_another_tenants_items(
     candidate_universe items, or it leaks which items another tenant is
     researching."""
     tenant_a, tenant_b = tenant_pair
-    storage.save_goonmetrics_history([_point(1), _point(2), _point(3)])  # shared cache, both tenants can see the data
+    # goonmetrics_history has no tenant_id column at all (a genuinely global
+    # table), but save_goonmetrics_history still goes through the normal
+    # tenant-scoped connect() - needs *some* ambient tenant set to open a
+    # connection at all, even though it won't filter by it for this table.
+    with storage.tenant_context(tenant_a):
+        storage.save_goonmetrics_history([_point(1), _point(2), _point(3)])  # shared cache, both tenants can see the data
 
     with storage.tenant_context(tenant_a), storage.connect() as conn:
         conn.execute("INSERT INTO shortlist (item_id, item) VALUES (?, ?)", (1, "Tritanium"))

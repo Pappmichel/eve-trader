@@ -2299,6 +2299,7 @@ def _make_fake_special_order_context(stock_targets=(), manual_stock=None):
             self.jita = {}
             self.cost_indices = {}
             self.adjusted_prices = {}
+            self.adjusted_prices_available = True
     return _FakeCtx
 
 
@@ -3369,6 +3370,7 @@ def _make_fake_plan_context(stock_targets, manual_stock=None):
             self.jita = {}
             self.cost_indices = {}
             self.adjusted_prices = {}
+            self.adjusted_prices_available = True
     return _FakeCtx
 
 
@@ -5255,6 +5257,7 @@ def _install_alchemy_plan_context(monkeypatch, home, cost_indices):
             self.jita = {}
             self.cost_indices = cost_indices
             self.adjusted_prices = {}
+            self.adjusted_prices_available = True
     monkeypatch.setattr(engine, "_PlanContext", _FakeCtx)
 
 
