@@ -134,7 +134,14 @@ def _create_backup_locked() -> dict:
         tmp_dump_path.unlink(missing_ok=True)
 
     _prune_old_backups()
-    return _backup_info(backup_path)
+    info = _backup_info(backup_path)
+    # T1-06 (2026-09-26): _run_job only ever logs a scheduled backup's
+    # FAILURE, never its success - manual (Admin "Create Backup") and
+    # scheduled backups looked identical in the logs either way, which is
+    # exactly why a several-day gap (scheduler_enabled off) went unnoticed.
+    # This is the one place both paths funnel through.
+    log.info("Backup created: %s (%s bytes)", info["name"], info["size_bytes"])
+    return info
 
 
 def _prune_old_backups() -> None:
