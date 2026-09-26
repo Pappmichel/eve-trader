@@ -48,6 +48,16 @@ def test_validate_config_overrides_rejects_refining_tax_rate_above_1():
         validate_config_overrides(cfg, {"refining_tax_rate": 1.5})
 
 
+def test_refining_tax_rate_default_is_an_explicit_unconfigured_placeholder():
+    """Pins today's deliberate decision (business-logic audit follow-up,
+    2026-09-26): 0.0 is NOT a researched real-world reprocessing tax rate -
+    see the field's own comment in refining/config.py - it's the same
+    "honestly unconfigured" placeholder this dataclass already uses for
+    the skill-level fields. A future change to a different default should
+    show up as a deliberate diff to this test, not a silent one."""
+    assert RefiningConfig().refining_tax_rate == 0.0
+
+
 def test_validate_config_overrides_rejects_security_status_out_of_range():
     cfg = RefiningConfig()
     with pytest.raises(ConfigError):

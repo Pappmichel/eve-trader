@@ -20,12 +20,32 @@ class ProductionConfig:
     # -- Settings tab equivalents --
     component_overbuild: float = 0.7      # extra buffer kept for build-chain components
     bpc_inventory: float = 4.0            # multiplier: 4.0 = 400% BPC stockpile buffer (keep 4x needed BPC runs)
-    market_fees: float = 0.0537           # sell-side broker fee + sales tax + SCC surcharge, subtracted
-                                            # from margins (see engine.py _build_margin) - confirmed
-                                            # against the in-game sell-order breakdown: SCC surcharge
-                                            # 0.5% + Broker's fee 1.5% + Sales tax 3.37% + Safety Tax 0.00%
+    market_fees: float = 0.0537           # sell-side broker fee + sales tax, subtracted from margins
+                                            # (see engine.py _build_margin) - originally derived (like
+                                            # TradingConfig.structure_sell_haircut, see that field's own
+                                            # T1-01 comment) as SCC surcharge 0.5% + Broker's fee 1.5% +
+                                            # Sales tax 3.37% + Safety Tax 0.00% = 5.37%. T1-01
+                                            # (2026-09-25) confirmed with the user that SCC surcharge
+                                            # applies only to industry jobs, never to a market sell - the
+                                            # same mistake T1-01 fixed for structure_sell_haircut applies
+                                            # here too (this field IS specifically a market-sell fee, per
+                                            # its own docstring and every call site in engine.py). Kept at
+                                            # its original 0.0537 default rather than silently
+                                            # reinterpreted, same reasoning as structure_sell_haircut - a
+                                            # live-configurable value a tenant may already have tuned;
+                                            # the corrected value would be 1.5%+3.37% = 0.0487 (0.9513
+                                            # retention) - revisit only with the user.
     jita_buy_broker_fee: float = 0.0147   # buy-side broker fee, confirmed against the in-game buy
-                                            # screen - applied in pricing.py buy_price/_candidate_prices
+                                            # screen - applied in pricing.py buy_price/_candidate_prices.
+                                            # Duplicates TradingConfig's OWN jita_buy_broker_fee field -
+                                            # both are meant to be the exact same real number ("same
+                                            # buying character, same broker's-fee rate" - see pricing.py's
+                                            # own _candidate_prices docstring), not two tools' independently
+                                            # tunable settings. Reviewed 2026-09-26 (business-logic audit
+                                            # follow-up) and deliberately NOT merged - see config.py's own
+                                            # _FIELD_RANGES comment for why (real UX/test blast radius, a
+                                            # decision for the user, not a silent cleanup). Until merged,
+                                            # a Settings change to one does NOT propagate to the other.
     min_margin: float = 0.15              # gates the Bauliste: a stock target only builds if margin
                                             # (sell price minus build cost, over build cost) clears this
                                             # - see engine.py _build_margin/plan_production

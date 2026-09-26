@@ -64,6 +64,23 @@ class RefiningConfig:
     # (#92) tabs' quotes - a separate field from Production's
     # facility_tax_rate/market_fees, since this tool's own refining structure
     # may not be the same one Production builds in.
+    #
+    # 0.0 follows this class's own established "manual field defaults to an
+    # honestly-unconfigured value, not a guessed real one" convention (same
+    # as reprocessing_skill_level/scrapmetal_processing_skill_level above),
+    # but unlike a skill level - where 0 really is a brand-new character's
+    # real starting value - a real reprocessing tax at almost any actual
+    # structure/station is very unlikely to genuinely be 0%. Left at 0.0
+    # rather than replaced with an invented "typical" percentage (no live
+    # game-mechanic verification was done here to justify a specific
+    # number - see station_trading/config.py's sales_tax_rate for the
+    # precedent of how this codebase prefers to handle exactly this
+    # situation: state plainly that the default is a placeholder, not a
+    # researched real-world figure, and point the user at checking their
+    # own in-game Reprocessing window rather than trusting it silently).
+    # Every quote computed before this is set for real understates true
+    # cost, not overstates it - check this before trusting a Buy/Import
+    # decision that's close to its margin threshold.
     refining_tax_rate: float = 0.0
 
 

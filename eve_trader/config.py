@@ -154,7 +154,19 @@ def _check_type(key: str, value: Any, expected: type) -> None:
 # and genuine fee/tax/rate *fractions* (broker fees, hit rate, facility tax -
 # bounded 0-1 since these are literally "share of 1"). Shared across
 # TradingConfig and ProductionConfig - both define jita_buy_broker_fee
-# separately (see production/config.py's own copy), so this lives here
+# separately (see production/config.py's own copy - its own comment there
+# says "same buying character, same broker's-fee rate" explicitly, i.e. the
+# two fields are meant to represent the exact same real-world number, not
+# two tools' independently-tunable settings - reviewed 2026-09-26, not
+# merged: doing so would mean removing Production Settings' own "Broker's
+# fee buy" input entirely (frontend/src/pages/production/ProductionSettings.tsx,
+# plus its ProductionSettingsPatch type in frontend/src/api/types.ts) and
+# rewriting ~15 ProductionConfig(jita_buy_broker_fee=...) test call sites -
+# a real product/UX decision belonging to the user, not something to do
+# silently as a "duplicate config field" cleanup. Until that decision is
+# made, a Settings-page change to ONE of these two fields does NOT update
+# the other - if you change your real Broker Relations skill/standing,
+# update both TradingConfig's AND ProductionConfig's copy) - so this lives
 # rather than being duplicated per-module.
 #
 # Margin fields (min_margin, min_margin_threshold, min_profit_threshold) are
@@ -365,6 +377,24 @@ class TradingConfig:
     # at its original 0.9463 default rather than silently reinterpreted,
     # since this is a live-configurable value a tenant may already have
     # tuned to their own real skills/standing; revisit only with the user.
+    #
+    # "Sales tax 3.37%" (and the near-identical 3.375% T1-01 (2026-09-25)
+    # live-verified directly from 2396 real ESI wallet-journal entries -
+    # see trade_reconciliation.py's own T1-01 comment) is not EVE's base
+    # sales tax rate - base is 8% (0.08) at Accounting level 0. The
+    # reduction to ~3.37-3.375% assumes the selling character has the
+    # Accounting skill trained to (or near) level 5 ("Accounting V", the
+    # skill's max), which is what actually lowers the sales-tax percentage
+    # a character pays on a sell order; it is not affected by standings or
+    # by Broker Relations (those only affect the broker's-fee side, i.e.
+    # jita_buy_broker_fee/structure_broker_fee below, not this figure). A
+    # tenant whose selling character has a lower Accounting level would see
+    # a real tax rate closer to 8% and should override structure_sell_
+    # haircut (and, if configured, station_trading's own sales_tax_rate,
+    # which documents this same base-rate-vs-skill-reduced split
+    # separately) to match - this default does not re-derive or verify
+    # CCP's exact per-level Accounting reduction formula, it only records
+    # the one rate this tenant's own live data already confirmed.
     structure_sell_haircut: float = 0.9463
     # Broker's fee when buying (placing/filling a buy order) in Jita, confirmed
     # against the in-game buy screen (1.47%) - applied to landed_cost, since
