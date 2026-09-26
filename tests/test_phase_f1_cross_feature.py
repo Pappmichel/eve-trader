@@ -8,7 +8,7 @@ from eve_trader.production import actions, jobs, preview_refresh
 
 from . import pg_helpers, special_order_fixtures as fx
 from .pg_helpers import tenant  # noqa: F401
-from .special_order_fixtures import _apply_special_orders_schema  # noqa: F401
+from .special_order_fixtures import _apply_special_orders_schema, _zero_trading_broker_fee  # noqa: F401
 
 pytestmark = [pg_helpers.postgres_required(), pytest.mark.release]
 

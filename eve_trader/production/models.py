@@ -404,7 +404,11 @@ class InventionResult:
     expected_cost_per_run: Optional[float]       # expected_cost_per_success / output_runs
     me: int                                      # resulting BPC material efficiency
     te: int                                      # resulting BPC time efficiency
-    material_savings_per_run: float              # (me/100) * reducible_material_cost_per_run, 0 if not supplied
+    # (me/100) * reducible_material_cost_per_run, 0 if not supplied (caller
+    # passed 0.0 to deliberately ignore ME savings), None if it couldn't be
+    # computed at all (T3-05: reducible_material_cost found a genuinely
+    # unpriced material - an honest "unknown", not a silent 0).
+    material_savings_per_run: Optional[float]
     net_cost_per_run: Optional[float]             # expected_cost_per_run - material_savings_per_run
 
 

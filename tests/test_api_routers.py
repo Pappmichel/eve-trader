@@ -890,7 +890,8 @@ def test_asset_plan_is_isolated_per_tenant(monkeypatch):
 
 def test_plan_is_isolated_per_tenant(monkeypatch):
     monkeypatch.setattr(production_actions, "do_refresh_production", lambda: {
-        "plan": {"inventory": [], "buy_list": [], "build_list": [], "invention_list": []},
+        "plan": {"inventory": [], "buy_list": [], "build_list": [], "invention_list": [],
+                 "adjusted_prices_available": True},
         "stock_targets": 1, "missing_types": 0, "buy_entries": 0, "build_jobs": 0,
     })
 
@@ -1001,6 +1002,7 @@ def test_compute_special_order_success(monkeypatch):
     assert resp.status_code == 200
     assert resp.json() == {
         "line_items": [], "buy_list": [], "build_list": [], "invention_list": [], "stock_overlap_warning": [],
+        "adjusted_prices_available": True,
     }
 
 

@@ -1,11 +1,17 @@
 """Reprocessing tab quote calculation - GitHub issue #92. Uses the
-scrapmetal path only (see refining/engine.py's scrapmetal_yield/constants.py's
-module docstring for the confirmed asymmetry vs. the ore/ice path #91 uses -
-structure/rig/implant/general Reprocessing skills have no effect here, only
-RefiningConfig.scrapmetal_processing_skill_level).
+scrapmetal path (refining/engine.py's scrapmetal_yield - structure/rig/
+implant/general Reprocessing skills have no effect, only RefiningConfig.
+scrapmetal_processing_skill_level) for a non-ore/ice item, the primary use
+case this tab was originally built for (modules/ammo/drones/loot) - but an
+ore/ice paste line (raw or compressed - see candidate_discovery.py's
+ore_ice_family_for_type) gets the real ore_ice_yield formula instead
+(T2-01, business-logic audit, 2026-09-25/26: this tab used to apply
+scrapmetal_yield to ore/ice too, silently understating its real yield -
+up to ~90.6%, vs scrapmetal's ~55% cap - with no warning at all).
 
     Sell-as-is value = quantity x C-J sell percentile x structure_sell_haircut
-    Refined value     = mineral yield (scrapmetal_yield, portion-size-rounded)
+    Refined value     = mineral yield (scrapmetal_yield or ore_ice_yield,
+                         whichever applies, portion-size-rounded)
                          x mineral C-J sell percentile x structure_sell_haircut - Refining Tax
     Recommendation    = "Reprocess" if Refined value > Sell-as-is value, else "Sell instead"
                          (both numbers always shown - nothing is auto-decided/excluded, #92's
@@ -29,7 +35,7 @@ from .. import storage
 from ..config import TRADING_CONFIG, TradingConfig
 from ..esi_client import OrderStats
 from .config import REFINING_CONFIG, RefiningConfig
-from .engine import apply_reprocessing_yield, scrapmetal_yield
+from .engine import apply_reprocessing_yield, ore_ice_yield, scrapmetal_yield
 from ..paste_parser import ParsedPasteLine
 
 REPROCESS_DECISION = "Reprocess"
@@ -82,11 +88,16 @@ def evaluate_reprocessing_line(line: ParsedPasteLine, item_stats: Optional[Order
                                 mineral_stats_by_id: dict[int, OrderStats],
                                 trading_cfg: TradingConfig = TRADING_CONFIG,
                                 refining_cfg: RefiningConfig = REFINING_CONFIG,
-                                type_id: Union[int, None, object] = _TYPE_ID_UNRESOLVED) -> ReprocessingQuoteRow:
-    """Pure - `item_stats`/`mineral_stats_by_id` are pre-fetched by the caller
-    (see do_quote_reprocessing), no network calls here. `type_id` is optional:
-    do_quote_reprocessing passes the already-resolved id so each paste name
-    is looked up once; unit tests that omit it still resolve here."""
+                                type_id: Union[int, None, object] = _TYPE_ID_UNRESOLVED,
+                                ore_ice_family: Optional[tuple[str, bool]] = None) -> ReprocessingQuoteRow:
+    """Pure - `item_stats`/`mineral_stats_by_id`/`ore_ice_family` are pre-
+    fetched by the caller (see do_quote_reprocessing), no network calls
+    here. `type_id` is optional: do_quote_reprocessing passes the already-
+    resolved id so each paste name is looked up once; unit tests that omit
+    it still resolve here. `ore_ice_family` is `(family, is_ice)` when
+    `type_id` is ore/ice (see candidate_discovery.ore_ice_families_for_
+    types), None otherwise - selects ore_ice_yield vs scrapmetal_yield
+    below (T2-01)."""
     if line.error:
         return ReprocessingQuoteRow(name=line.name, quantity=line.quantity, type_id=None, category=line.category,
                                      sell_as_is_value=None, refined_value=None, mineral_value=None,
@@ -112,7 +123,11 @@ def evaluate_reprocessing_line(line: ParsedPasteLine, item_stats: Optional[Order
                                      sell_as_is_value=sell_as_is_value, refined_value=None, mineral_value=None,
                                      refining_tax=None, decision=NOT_REPROCESSABLE_DECISION)
 
-    yield_pct = scrapmetal_yield(refining_cfg)
+    if ore_ice_family is not None:
+        family, _is_ice = ore_ice_family
+        yield_pct = ore_ice_yield(refining_cfg, family)
+    else:
+        yield_pct = scrapmetal_yield(refining_cfg)
     minerals = apply_reprocessing_yield(type_id, line.quantity, yield_pct)
 
     mineral_value = 0.0

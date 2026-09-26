@@ -35,17 +35,16 @@ class ProductionConfig:
                                             # live-configurable value a tenant may already have tuned;
                                             # the corrected value would be 1.5%+3.37% = 0.0487 (0.9513
                                             # retention) - revisit only with the user.
-    jita_buy_broker_fee: float = 0.0147   # buy-side broker fee, confirmed against the in-game buy
-                                            # screen - applied in pricing.py buy_price/_candidate_prices.
-                                            # Duplicates TradingConfig's OWN jita_buy_broker_fee field -
-                                            # both are meant to be the exact same real number ("same
-                                            # buying character, same broker's-fee rate" - see pricing.py's
-                                            # own _candidate_prices docstring), not two tools' independently
-                                            # tunable settings. Reviewed 2026-09-26 (business-logic audit
-                                            # follow-up) and deliberately NOT merged - see config.py's own
-                                            # _FIELD_RANGES comment for why (real UX/test blast radius, a
-                                            # decision for the user, not a silent cleanup). Until merged,
-                                            # a Settings change to one does NOT propagate to the other.
+    # jita_buy_broker_fee removed 2026-09-26 (T3-04, business-logic audit
+    # follow-up, user-confirmed merge): this used to be its own field here,
+    # duplicating TradingConfig's own jita_buy_broker_fee - both were always
+    # meant to be the exact same real number ("same buying character, same
+    # broker's-fee rate" - see pricing.py's own _candidate_prices
+    # docstring), not two tools' independently tunable settings. Every
+    # Production-side reader now reads TRADING_CONFIG.jita_buy_broker_fee
+    # directly instead (production/pricing.py, doctrine/engine.py) - there
+    # is exactly one live-configurable copy of this value now, edited only
+    # from Trading Settings.
     min_margin: float = 0.15              # gates the Bauliste: a stock target only builds if margin
                                             # (sell price minus build cost, over build cost) clears this
                                             # - see engine.py _build_margin/plan_production

@@ -136,6 +136,12 @@ def test_quote_reprocessing_resolves_each_distinct_name_once(monkeypatch):
     monkeypatch.setattr(storage, "get_type_materials_bulk", lambda type_ids: {tid: [] for tid in type_ids})
     monkeypatch.setattr(storage, "get_portion_size", lambda type_id: None)
     monkeypatch.setattr(storage, "get_type_materials", lambda type_id: [])
+    # T2-01 (business-logic audit follow-up, 2026-09-26): do_quote_reprocessing
+    # now also bulk-resolves ore/ice family info up front (candidate_
+    # discovery.ore_ice_families_for_types -> storage.get_types_names_and_
+    # groups_bulk) - mocked here like every other storage call this action
+    # makes, none of these items are ore/ice so an empty result is correct.
+    monkeypatch.setattr(storage, "get_types_names_and_groups_bulk", lambda type_ids: {})
     monkeypatch.setattr(reprocessing, "resolve_type_id", refining_actions.resolve_type_id)
     monkeypatch.setattr(refining_actions, "_seller_roles", lambda tm: [])
     monkeypatch.setattr(

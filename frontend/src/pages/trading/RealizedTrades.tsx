@@ -22,30 +22,47 @@ interface ItemSummary {
   totalProfit: number
 }
 
+// One row per item (not per trade) - price/margin columns are the
+// quantity-weighted average across that item's matched trades (T3-07,
+// business-logic audit follow-up, 2026-09-26: a plain per-trade mean let
+// one tiny, oddly-priced trade skew the row's average just as much as a
+// trade covering thousands of units), quantity/profit are summed.
+// avgMargin is derived from the weighted totals (totalProfit / total buy
+// cost), not an average of per-trade margin ratios - dimensionally
+// consistent with avgBuyPrice/avgSellPrice above it, and avoids the same
+// small-trade-skew problem a ratio average would reintroduce. Exported
+// (not inlined in the component) so it's directly unit-testable - see
+// RealizedTrades.test.ts.
+export function aggregateByItem(trades: RealizedTrade[]): ItemSummary[] {
+  const groups = new Map<number, RealizedTrade[]>()
+  for (const t of trades) {
+    const list = groups.get(t.type_id) ?? []
+    list.push(t)
+    groups.set(t.type_id, list)
+  }
+  return [...groups.values()].map((rows) => {
+    const matchedQty = rows.reduce((sum, t) => sum + t.matched_qty, 0)
+    const totalBuyCost = rows.reduce((sum, t) => sum + t.buy_unit_price * t.matched_qty, 0)
+    const totalSellValue = rows.reduce((sum, t) => sum + t.sell_unit_price * t.matched_qty, 0)
+    const totalProfit = rows.reduce((sum, t) => sum + t.realized_profit, 0)
+    return {
+      type_id: rows[0].type_id,
+      item: rows[0].item,
+      trades: rows.length,
+      matchedQty,
+      avgBuyPrice: matchedQty > 0 ? totalBuyCost / matchedQty : 0,
+      avgSellPrice: matchedQty > 0 ? totalSellValue / matchedQty : 0,
+      avgMargin: totalBuyCost > 0 ? totalProfit / totalBuyCost : 0,
+      totalProfit,
+    }
+  }).sort((a, b) => b.totalProfit - a.totalProfit)
+}
+
 export default function RealizedTrades() {
   const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['trading', 'trades', 'realized'], queryFn: tradingApi.realizedTrades })
   const total = useMemo(() => (data ?? []).reduce((sum, t) => sum + t.realized_profit, 0), [data])
 
-  // One row per item (not per trade) - price/margin columns are the average
-  // across that item's matched trades, quantity/profit are summed.
-  const byItem = useMemo<ItemSummary[]>(() => {
-    const groups = new Map<number, RealizedTrade[]>()
-    for (const t of data ?? []) {
-      const list = groups.get(t.type_id) ?? []
-      list.push(t)
-      groups.set(t.type_id, list)
-    }
-    return [...groups.values()].map((trades) => ({
-      type_id: trades[0].type_id,
-      item: trades[0].item,
-      trades: trades.length,
-      matchedQty: trades.reduce((sum, t) => sum + t.matched_qty, 0),
-      avgBuyPrice: trades.reduce((sum, t) => sum + t.buy_unit_price, 0) / trades.length,
-      avgSellPrice: trades.reduce((sum, t) => sum + t.sell_unit_price, 0) / trades.length,
-      avgMargin: trades.reduce((sum, t) => sum + t.margin, 0) / trades.length,
-      totalProfit: trades.reduce((sum, t) => sum + t.realized_profit, 0),
-    })).sort((a, b) => b.totalProfit - a.totalProfit)
-  }, [data])
+  const byItem = useMemo<ItemSummary[]>(() => aggregateByItem(data ?? []), [data])
 
   const topByProfit = useMemo(() => byItem.slice(0, 15), [byItem])
 

@@ -1,5 +1,6 @@
 import pytest
 
+from eve_trader.config import TRADING_CONFIG
 from eve_trader.esi_client import ESIClient, ESIError, OrderStats
 from eve_trader.goonmetrics_client import CurrentPrice, GoonmetricsClient
 from eve_trader.production import esi_sync, jita_price_cache
@@ -7,8 +8,11 @@ from eve_trader.production.config import ProductionConfig
 from eve_trader.production.pricing import buy_price, buy_source, home_prices, jita_prices
 
 # jita_buy_broker_fee=0.0 keeps these source-picking tests' arithmetic clean -
-# see test_buy_price_includes_buy_broker_fee for the fee itself.
-CFG = ProductionConfig(haul_cost_per_m3=900.0, jita_buy_broker_fee=0.0)
+# see test_buy_price_includes_buy_broker_fee for the fee itself. T3-04
+# (2026-09-26): the fee itself now lives only on TRADING_CONFIG (see
+# _reset_trading_broker_fee below), not ProductionConfig - CFG no longer
+# sets it at all.
+CFG = ProductionConfig(haul_cost_per_m3=900.0)
 
 
 @pytest.fixture(autouse=True)
@@ -24,6 +28,18 @@ def _reset_jita_price_cache():
     yield
     jita_price_cache._cache.clear()
     jita_price_cache._updated_at = None
+
+
+@pytest.fixture(autouse=True)
+def _reset_trading_broker_fee(monkeypatch):
+    # T3-04 (2026-09-26): _candidate_prices (production/pricing.py) now
+    # reads TRADING_CONFIG.jita_buy_broker_fee directly (the single source
+    # of truth after merging ProductionConfig's former duplicate copy) -
+    # zeroed here so these source-picking tests' arithmetic stays clean,
+    # same reasoning CFG's own former jita_buy_broker_fee=0.0 had.
+    # test_buy_price_includes_buy_broker_fee overrides this locally to
+    # verify the fee actually gets applied.
+    monkeypatch.setattr(TRADING_CONFIG, "jita_buy_broker_fee", 0.0)
 
 
 def _price(sell: float) -> CurrentPrice:
@@ -56,8 +72,9 @@ def test_buy_price_none_when_no_sell_order_anywhere():
     assert buy_price(1, {}, {}, volume_m3=1.0, cfg=CFG) is None
 
 
-def test_buy_price_includes_buy_broker_fee():
-    cfg = ProductionConfig(haul_cost_per_m3=900.0, jita_buy_broker_fee=0.0147)
+def test_buy_price_includes_buy_broker_fee(monkeypatch):
+    monkeypatch.setattr(TRADING_CONFIG, "jita_buy_broker_fee", 0.0147)
+    cfg = ProductionConfig(haul_cost_per_m3=900.0)
     home = {1: _price(500.0)}
     assert buy_price(1, home, {}, volume_m3=1.0, cfg=cfg) == 500.0 * 1.0147
 

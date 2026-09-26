@@ -1945,6 +1945,7 @@ class _PlanContext:
                     self.cost_indices[f"alchemy:{type_id}"] = alternative
         try:
             self.adjusted_prices = esi_client.get_adjusted_prices()
+            self.adjusted_prices_available = True
         except Exception as e:  # noqa: BLE001 - best-effort; falls back to {} (job_cost=0 everywhere), not a guess
             # Confirmed real 2026-09-16: this used to fail silently - EIV (and
             # therefore every BuildJobEntry.job_cost/"Total Job Cost") reads
@@ -1955,8 +1956,18 @@ class _PlanContext:
             # facility_tax_rate + SCC_SURCHARGE_RATE - see _job_cost_rate),
             # so a silent, unlogged {} here was invisible until the Total Job
             # Cost/Gesamt fields gave it somewhere to show up.
+            #
+            # T2-02 (business-logic audit, 2026-09-25/26): the 2026-09-16 fix
+            # above only added the log line - every BuildJobEntry.job_cost
+            # still silently reads 0, indistinguishable from "genuinely free"
+            # at the API/UI layer. adjusted_prices_available surfaces the
+            # same fact plan_production's own return dict (not every
+            # _PlanContext consumer - see that function's own docstring) so
+            # the frontend can show a real "Job Cost figures are currently
+            # unavailable" warning instead of silently trusting the zeros.
             log.warning("ESI get_adjusted_prices() failed (%s) - job_cost will read 0 for this plan.", e)
             self.adjusted_prices = {}
+            self.adjusted_prices_available = False
 
 
 def _build_buy_list(buy_totals: dict[int, float], gross_demand: dict[int, float],
@@ -2058,14 +2069,18 @@ def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: di
 def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     """Runs the full Stock Targets -> Inventory -> Buy/Build pipeline. Returns
     dict with 'inventory' (InventoryRow list), 'buy_list' (BuyListEntry list,
-    sorted by total price desc), 'build_list' (BuildJobEntry list), and
+    sorted by total price desc), 'build_list' (BuildJobEntry list),
     'invention_list' (InventionNeedRow list, sorted by recommended invention
     runs desc - one row per *configured Tech II stock target* that's actually
     invention-sourced (has a decryptor), regardless of whether it's currently
     missing or would be bought instead of built right now - runs_needed is 0
     for a target that's already fully stocked, but bpc_target_runs /
     recommended_invention_runs still size a BPC-on-hand buffer from
-    cfg.bpc_inventory x the stock-target quantity).
+    cfg.bpc_inventory x the stock-target quantity), and 'adjusted_prices_
+    available' (bool - False means ESI's adjusted-price fetch failed this
+    run, so every BuildJobEntry.job_cost in this same response silently
+    reads 0 rather than its real value - T2-02, business-logic audit,
+    2026-09-25/26; see _PlanContext's own comment).
 
     Track B (2026-09-11): HTTP entry is do_refresh_production — see that
     docstring for the live timing and why this was not moved onto
@@ -2203,7 +2218,8 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     # Sorting tool means is specifically plan_production / do_refresh_production.
     storage.save_latest_buy_list([(e.type_id, e.quantity) for e in buy_list])
 
-    return {"inventory": inventory, "buy_list": buy_list, "build_list": build_list, "invention_list": invention_list}
+    return {"inventory": inventory, "buy_list": buy_list, "build_list": build_list, "invention_list": invention_list,
+            "adjusted_prices_available": ctx.adjusted_prices_available}
 
 
 @storage.with_batch_session()
@@ -2358,6 +2374,11 @@ def plan_special_order(items: list[tuple[int, str, float]], cfg: ProductionConfi
     return {
         "line_items": line_items, "buy_list": buy_list, "build_list": build_list,
         "invention_list": invention_list, "stock_overlap_warning": stock_overlap_warning,
+        # T2-02 (business-logic audit, 2026-09-25/26): False means ESI's
+        # adjusted-price fetch failed this run, so every build_list row's
+        # job_cost - and this page's own "Total Job Cost"/"Gesamt" sum -
+        # silently reads 0 rather than its real value. See _PlanContext.
+        "adjusted_prices_available": ctx.adjusted_prices_available,
     }
 
 

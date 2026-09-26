@@ -175,6 +175,41 @@ def test_get_sync_time_is_not_wrapped_but_still_reachable(monkeypatch):
     assert resp.json() == {"synced_at": "2026-08-21T00:00:00"}
 
 
+# T3-08 (business-logic audit follow-up, 2026-09-26): the Doctrine asset-
+# sync path (POST /assets/sync -> do_sync_assets -> esi_sync.sync_assets)
+# had zero test coverage at any layer - test_doctrine_esi_sync.py's own
+# docstring deliberately keeps sync_assets itself unit-test-free (matching
+# production's own sync_esi convention: router-level, not step-by-step
+# mocked), so this router-level test is the intended place to close the gap.
+def test_sync_assets_calls_action(monkeypatch):
+    monkeypatch.setattr(doctrine_actions, "do_sync_assets", lambda: {"written": 42})
+
+    resp = client.post("/api/doctrine/assets/sync")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"written": 42}
+
+
+def test_sync_assets_action_error_maps_to_400(monkeypatch):
+    def _raise():
+        raise ActionError("No Doctrine character shared yet. Share Assets with Doctrine on the Characters page.")
+    monkeypatch.setattr(doctrine_actions, "do_sync_assets", _raise)
+
+    resp = client.post("/api/doctrine/assets/sync")
+
+    assert resp.status_code == 400
+    assert "Share Assets with Doctrine" in resp.json()["detail"]
+
+
+def test_get_asset_sync_time_is_reachable(monkeypatch):
+    monkeypatch.setattr(doctrine_actions, "do_get_asset_sync_time", lambda: {"synced_at": "2026-09-26T00:00:00"})
+
+    resp = client.get("/api/doctrine/assets/sync-time")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"synced_at": "2026-09-26T00:00:00"}
+
+
 # --------------------------------------------------------------------- status
 def test_get_status_passes_optional_doctrine_id_query_param(monkeypatch):
     captured = {}

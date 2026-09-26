@@ -9,7 +9,10 @@ planning as not worth a full crawl.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from .. import storage
+from .constants import ORE_ICE_CATEGORY_ID
 from .models import OreCandidate
 
 
@@ -35,6 +38,36 @@ def _family_and_is_ice(type_name: str, group_name: str) -> tuple[str, bool]:
     else:
         family = group_name.removeprefix("Compressed ").strip()
     return family, is_ice
+
+
+def ore_ice_families_for_types(type_ids: list[int]) -> dict[int, tuple[str, bool]]:
+    """{type_id: (family, is_ice)} for every type_id in `type_ids` that's
+    ore/ice (raw or its compressed variant - real ore/ice reprocessing
+    yield% is identical either way, compression only reduces volume); a
+    type_id that isn't ore/ice at all (SDE category_id != ORE_ICE_CATEGORY_ID)
+    or isn't in the SDE cache is simply absent from the result, not None-
+    valued. One bulk lookup regardless of how many ids are passed.
+
+    T2-01 (business-logic audit, 2026-09-25/26): the Reprocessing tab's
+    paste-import (evaluate_reprocessing_line) used to apply scrapmetal_yield
+    unconditionally to every pasted line, including ore/ice - silently
+    understating ore/ice's real yield (up to ~90.6%, vs scrapmetal's ~55%
+    cap) with no warning. build_ore_candidate_universe's own
+    _family_and_is_ice already had the right classification logic for the
+    Ore Shortlist's fixed, pre-scanned compressed-type universe
+    (storage.load_ore_ice_candidate_types) - this is the same logic, reused
+    for arbitrary type_ids instead (storage.get_types_names_and_groups_bulk),
+    so an uncompressed "Veldspar" paste line classifies correctly too, not
+    only "Compressed Veldspar". Kept as a separate bulk lookup (not folded
+    into do_quote_reprocessing's own resolved_by_name loop) so
+    evaluate_reprocessing_line itself stays storage-free/pure - the caller
+    resolves everything upfront, same pattern as mineral_stats_by_id."""
+    rows = storage.get_types_names_and_groups_bulk(type_ids)
+    result: dict[int, tuple[str, bool]] = {}
+    for type_id, (type_name, group_name, category_id) in rows.items():
+        if category_id == ORE_ICE_CATEGORY_ID:
+            result[type_id] = _family_and_is_ice(type_name, group_name)
+    return result
 
 
 def build_ore_candidate_universe() -> list[OreCandidate]:

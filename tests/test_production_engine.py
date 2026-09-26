@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from eve_trader import storage
+from eve_trader.config import TRADING_CONFIG
 from eve_trader.storage import save_latest_buy_list as _save_latest_buy_list_impl
 from eve_trader.goonmetrics_client import CurrentPrice
 from eve_trader.production import engine
@@ -41,6 +42,19 @@ def _noop_save_latest_buy_list(monkeypatch):
     # not write that table, so a no-op here also keeps those calls honest
     # if someone wires them up by accident (they simply wouldn't be called).
     monkeypatch.setattr(storage, "save_latest_buy_list", lambda rows: None)
+
+
+@pytest.fixture(autouse=True)
+def _zero_trading_broker_fee(monkeypatch):
+    # T3-04 (2026-09-26): ProductionConfig's own former jita_buy_broker_fee
+    # field is gone - production/pricing.py's buy_price/_candidate_prices
+    # now read TRADING_CONFIG.jita_buy_broker_fee directly (the single
+    # source of truth after the merge). Zeroed here (this file's tests
+    # previously passed ProductionConfig(...) to
+    # get the same clean-arithmetic effect) so this doesn't need repeating
+    # per test; a test that specifically wants a real fee value overrides
+    # this locally.
+    monkeypatch.setattr(TRADING_CONFIG, "jita_buy_broker_fee", 0.0)
 
 
 @pytest.fixture(autouse=True)
@@ -642,6 +656,31 @@ def test_plan_context_logs_and_falls_back_when_adjusted_prices_fetch_fails(monke
 
     assert ctx.adjusted_prices == {}
     assert "simulated ESI outage" in caplog.text
+    # T2-02 (business-logic audit, 2026-09-25/26): plan_production/plan_
+    # special_order surface this on their own response so the frontend can
+    # warn "Job Cost figures unavailable" instead of trusting the zeros.
+    assert ctx.adjusted_prices_available is False
+
+
+def test_plan_context_adjusted_prices_available_true_on_success(monkeypatch):
+    from eve_trader import esi_client as esi_client_module
+    from eve_trader.production import pricing as pricing_module
+
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [])
+    monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
+    monkeypatch.setattr(storage, "load_manual_build_buy", lambda: {})
+    monkeypatch.setattr(storage, "load_selected_decryptors", lambda: {})
+    monkeypatch.setattr(storage, "load_category_system_ids", lambda: {})
+    monkeypatch.setattr(storage, "load_category_cost_index_overrides", lambda: {})
+    monkeypatch.setattr(storage, "load_manual_blueprint_me_te_overrides", lambda: [])
+    monkeypatch.setattr(pricing_module, "home_prices", lambda cfg, type_ids: {})
+    monkeypatch.setattr(pricing_module, "jita_prices", lambda type_ids: {})
+    monkeypatch.setattr(esi_client_module.ESIClient, "__init__", lambda self: None)
+    monkeypatch.setattr(esi_client_module.ESIClient, "get_adjusted_prices", lambda self: {34: 5.0})
+
+    ctx = engine._PlanContext(ProductionConfig(component_system_id=None, manufacturing_system_id=None))
+
+    assert ctx.adjusted_prices_available is True
 
 
 def test_classify_activity_treats_low_meta_level_invented_item_as_tech_ii(monkeypatch):
@@ -837,7 +876,7 @@ def test_unit_cost_detail_returns_build_cost_and_buy_price_separately(monkeypatc
     best, build_cost, buy_price = engine.unit_cost_detail(
         100, cfg, home, {}, memo={}, selected_decryptors={}, t2_memo={}, cost_indices={}, adjusted_prices={})
 
-    assert buy_price == pytest.approx(500.0 * (1 + cfg.jita_buy_broker_fee))
+    assert buy_price == pytest.approx(500.0 * (1 + TRADING_CONFIG.jita_buy_broker_fee))
     assert build_cost == 0.0  # no materials, no job cost (adjusted_prices empty -> eiv=0)
     assert best == 0.0  # min(buy, 0.0) - build wins
 
@@ -878,7 +917,7 @@ def test_unit_cost_detail_returns_buy_only_when_not_buildable(monkeypatch):
         100, cfg, home, {}, memo={}, selected_decryptors={}, t2_memo={}, cost_indices={}, adjusted_prices={})
 
     assert build_cost is None
-    assert buy_price == best == pytest.approx(500.0 * (1 + cfg.jita_buy_broker_fee))
+    assert buy_price == best == pytest.approx(500.0 * (1 + TRADING_CONFIG.jita_buy_broker_fee))
 
 
 def test_reaction_never_uses_owned_bpo_data(monkeypatch):
@@ -2260,6 +2299,7 @@ def _make_fake_special_order_context(stock_targets=(), manual_stock=None):
             self.jita = {}
             self.cost_indices = {}
             self.adjusted_prices = {}
+            self.adjusted_prices_available = True
     return _FakeCtx
 
 
@@ -3330,6 +3370,7 @@ def _make_fake_plan_context(stock_targets, manual_stock=None):
             self.jita = {}
             self.cost_indices = {}
             self.adjusted_prices = {}
+            self.adjusted_prices_available = True
     return _FakeCtx
 
 
@@ -4895,7 +4936,6 @@ def test_compare_alchemy_profitability_caesarium_isk_per_hour(monkeypatch):
     _install_caesarium_alchemy_sde(monkeypatch)
     cfg = ProductionConfig(
         alchemy_reactions_enabled=True,
-        jita_buy_broker_fee=0.0,
         haul_cost_per_m3=0.0,
         market_fees=0.0,  # isolated quantity/time fixture; fee-netting has its own test
     )
@@ -4939,7 +4979,6 @@ def test_compare_alchemy_nets_market_fees_like_margin_home(monkeypatch):
     _install_caesarium_alchemy_sde(monkeypatch)
     cfg = ProductionConfig(
         alchemy_reactions_enabled=True,
-        jita_buy_broker_fee=0.0,
         haul_cost_per_m3=0.0,
         market_fees=0.05,
     )
@@ -4973,7 +5012,6 @@ def test_compare_alchemy_reprocesses_full_recipe_output_qty(monkeypatch):
     monkeypatch.setattr(storage, "get_blueprint_for_product", fake_bp)
     cfg = ProductionConfig(
         alchemy_reactions_enabled=True,
-        jita_buy_broker_fee=0.0,
         haul_cost_per_m3=0.0,
         market_fees=0.0,
     )
@@ -5094,7 +5132,7 @@ def test_unit_cost_picks_alchemy_when_cheaper(monkeypatch):
     # the same "price every candidate, keep the cheapest, record which won"
     # shape _tech_ii_mods already uses across decryptors.
     _install_alchemy_recipe_engine(monkeypatch)
-    cfg = ProductionConfig(alchemy_reactions_enabled=True, jita_buy_broker_fee=0.0, haul_cost_per_m3=0.0)
+    cfg = ProductionConfig(alchemy_reactions_enabled=True, haul_cost_per_m3=0.0)
     alchemy_memo = {}
 
     cost = engine._unit_cost(_CAESARIUM, cfg, _alchemy_home(**{str(_CAESIUM): 20_000.0}), {}, {}, {}, {},
@@ -5111,7 +5149,7 @@ def test_unit_cost_picks_normal_reaction_when_cheaper(monkeypatch):
     # wins" + "sanity check the other way" shape): at the base prices the
     # normal recipe is cheaper, so nothing about the plan may change.
     _install_alchemy_recipe_engine(monkeypatch)
-    cfg = ProductionConfig(alchemy_reactions_enabled=True, jita_buy_broker_fee=0.0, haul_cost_per_m3=0.0)
+    cfg = ProductionConfig(alchemy_reactions_enabled=True, haul_cost_per_m3=0.0)
     alchemy_memo = {}
 
     cost = engine._unit_cost(_CAESARIUM, cfg, _alchemy_home(), {}, {}, {}, {},
@@ -5129,7 +5167,7 @@ def test_unit_cost_ignores_alchemy_when_feature_flag_is_off(monkeypatch):
     # priced while the Bauliste queued the normal recipe.
     _install_alchemy_recipe_engine(monkeypatch)
     monkeypatch.setattr(engine, "_alchemy_unit_cost", _boom_alchemy)
-    cfg = ProductionConfig(alchemy_reactions_enabled=False, jita_buy_broker_fee=0.0, haul_cost_per_m3=0.0)
+    cfg = ProductionConfig(alchemy_reactions_enabled=False, haul_cost_per_m3=0.0)
     alchemy_memo = {}
 
     cost = engine._unit_cost(_CAESARIUM, cfg, _alchemy_home(**{str(_CAESIUM): 20_000.0}), {}, {}, {}, {},
@@ -5219,6 +5257,7 @@ def _install_alchemy_plan_context(monkeypatch, home, cost_indices):
             self.jita = {}
             self.cost_indices = cost_indices
             self.adjusted_prices = {}
+            self.adjusted_prices_available = True
     monkeypatch.setattr(engine, "_PlanContext", _FakeCtx)
 
 
@@ -5232,7 +5271,7 @@ def test_plan_production_byproduct_credits_other_demand(monkeypatch, tenant):
     _install_alchemy_plan_sde(monkeypatch)
     _install_alchemy_plan_context(monkeypatch, _alchemy_home(**{str(_CAESIUM): 20_000.0}), _alchemy_cost_indices())
     cfg = ProductionConfig(alchemy_reactions_enabled=True, component_overbuild=0.0, min_margin=0.0,
-                            jita_buy_broker_fee=0.0, haul_cost_per_m3=0.0)
+                            haul_cost_per_m3=0.0)
 
     result = engine.plan_production(cfg)
 
@@ -5263,7 +5302,7 @@ def test_plan_production_alchemy_disabled_matches_pre_feature_behavior(monkeypat
                  "_alchemy_build_run_keys", "scrapmetal_yield", "apply_reprocessing_yield"):
         monkeypatch.setattr(engine, name, _boom_alchemy)
     cfg = ProductionConfig(alchemy_reactions_enabled=False, component_overbuild=0.0, min_margin=0.0,
-                            jita_buy_broker_fee=0.0, haul_cost_per_m3=0.0)
+                            haul_cost_per_m3=0.0)
 
     result = engine.plan_production(cfg)
 
@@ -5358,7 +5397,7 @@ def test_plan_asset_optimized_uses_alchemy_recipe_when_cheaper(monkeypatch, tena
     _install_alchemy_plan_sde(monkeypatch)
     _install_alchemy_plan_context(monkeypatch, _alchemy_home(**{str(_CAESIUM): 20_000.0}), _alchemy_cost_indices())
     cfg = ProductionConfig(alchemy_reactions_enabled=True, component_overbuild=0.0, min_margin=0.0,
-                            jita_buy_broker_fee=0.0, haul_cost_per_m3=0.0)
+                            haul_cost_per_m3=0.0)
 
     result = engine.plan_asset_optimized(cfg)
 
@@ -5382,7 +5421,7 @@ def test_plan_asset_optimized_byproduct_credits_other_demand(monkeypatch, tenant
     _install_alchemy_plan_context(
         monkeypatch, _alchemy_home(**{str(_CAESIUM): 20_000.0, str(_ORE): 1.0}), _alchemy_cost_indices())
     cfg = ProductionConfig(alchemy_reactions_enabled=True, component_overbuild=0.0, min_margin=0.0,
-                            jita_buy_broker_fee=0.0, haul_cost_per_m3=0.0)
+                            haul_cost_per_m3=0.0)
 
     result = engine.plan_asset_optimized(cfg)
 
@@ -5406,7 +5445,7 @@ def test_plan_asset_optimized_byproduct_does_not_count_as_ready_now(monkeypatch,
     _install_alchemy_plan_context(
         monkeypatch, _alchemy_home(**{str(_CAESIUM): 20_000.0, str(_ORE): 1.0}), _alchemy_cost_indices())
     cfg = ProductionConfig(alchemy_reactions_enabled=True, component_overbuild=0.0, min_margin=0.0,
-                            jita_buy_broker_fee=0.0, haul_cost_per_m3=0.0)
+                            haul_cost_per_m3=0.0)
 
     result = engine.plan_asset_optimized(cfg)
 
@@ -5427,7 +5466,7 @@ def test_plan_asset_optimized_alchemy_disabled_matches_pre_feature_behavior(monk
                  "_alchemy_build_run_keys", "scrapmetal_yield", "apply_reprocessing_yield"):
         monkeypatch.setattr(engine, name, _boom_alchemy)
     cfg = ProductionConfig(alchemy_reactions_enabled=False, component_overbuild=0.0, min_margin=0.0,
-                            jita_buy_broker_fee=0.0, haul_cost_per_m3=0.0)
+                            haul_cost_per_m3=0.0)
 
     result = engine.plan_asset_optimized(cfg)
 

@@ -319,7 +319,9 @@ def _shopping_prices(type_id: int, home: dict, jita: dict, volume: Optional[floa
     docking access for the C-J leg) - degrades to trusting the Goonmetrics
     quote as before rather than blocking the page on a fixable auth gap."""
     home_quote, jita_quote = home.get(type_id), jita.get(type_id)
-    broker_fee = PRODUCTION_CONFIG.jita_buy_broker_fee
+    # T3-04 (2026-09-26): TRADING_CONFIG is the single source of truth for
+    # this fee now - ProductionConfig's own former duplicate copy is gone.
+    broker_fee = TRADING_CONFIG.jita_buy_broker_fee
     cj = None
     if home_quote and home_quote.sell > 0 and (home_stats is None or home_stats.sell_volume > 0):
         cj = home_quote.sell * (1 + broker_fee)

@@ -54,11 +54,21 @@ from .models import InventionResult
 
 
 def reducible_material_cost(manufacturing_blueprint_id: int, activity_id: int, home: dict, jita: dict,
-                             cfg: ProductionConfig = PRODUCTION_CONFIG) -> float:
+                             cfg: ProductionConfig = PRODUCTION_CONFIG) -> Optional[float]:
     """Cost of a blueprint's own build materials that actually scale with ME
     (base qty > 1/run - EVE never reduces a material below 1 unit/run, so
     qty=1 materials are excluded). Used to weigh a decryptor's ME bonus
-    against its cost - see module docstring."""
+    against its cost - see module docstring.
+
+    T3-05 (business-logic audit follow-up, 2026-09-26): same anti-pattern
+    PB-06 already fixed for datacore_cost/decryptor_cost/relic_cost below -
+    a material with genuinely no sell order anywhere used to be silently
+    priced at 0 ISK (`price or 0.0`), understating the real material
+    savings a higher-ME decryptor gives you and biasing the decryptor
+    comparison toward under-valuing ME. Returns None (not a partial sum)
+    the moment any reducible material is unpriced - estimate() folds this
+    into its own all_prices_known gate, same honest "can't estimate" this
+    module already uses for every other priced input."""
     total = 0.0
     for material_id, base_qty in storage.get_blueprint_materials(manufacturing_blueprint_id, activity_id):
         if base_qty <= 1:
@@ -66,7 +76,9 @@ def reducible_material_cost(manufacturing_blueprint_id: int, activity_id: int, h
         sde_type = storage.get_sde_type(material_id)
         volume = sde_type[3] if sde_type else None
         price = pricing.buy_price(material_id, home, jita, volume, cfg)
-        total += base_qty * (price or 0.0)
+        if price is None:
+            return None
+        total += base_qty * price
     return total
 
 
@@ -78,13 +90,18 @@ def skill_multiplier(cfg: ProductionConfig = PRODUCTION_CONFIG) -> float:
 
 
 def estimate(t1_blueprint_type_id: int, decryptor_name: str, home: dict, jita: dict,
-             cfg: ProductionConfig = PRODUCTION_CONFIG, reducible_material_cost_per_run: float = 0.0,
+             cfg: ProductionConfig = PRODUCTION_CONFIG, reducible_material_cost_per_run: Optional[float] = 0.0,
              product_type_id: Optional[int] = None) -> InventionResult:
     """`reducible_material_cost_per_run` is the cost of the resulting item's own
     build materials that actually scale with ME (base qty > 1 - EVE never
     reduces a material below 1 unit/run) - pass 0 to ignore build-side ME
     savings entirely (e.g. when just pricing invention itself, not deciding
-    which decryptor to build with)."""
+    which decryptor to build with). None (reducible_material_cost found an
+    unpriced material - T3-05) makes material_savings_per_run/net_cost_per_run
+    None too - deliberately NOT folded into all_prices_known below, which
+    gates the separate, invention-attempt-only expected_cost_per_success/
+    expected_cost_per_run (reducible_material_cost_per_run affects only the
+    build-side ME credit, not the cost of the invention attempt itself)."""
     recipe = storage.get_invention_recipe(t1_blueprint_type_id, product_type_id)
     if recipe is None:
         raise ValueError(f"No invention recipe found for type ID {t1_blueprint_type_id}.")
@@ -154,9 +171,13 @@ def estimate(t1_blueprint_type_id: int, decryptor_name: str, home: dict, jita: d
     expected_cost_per_run = (
         (expected_cost_per_success / output_runs) if expected_cost_per_success is not None and output_runs > 0 else None
     )
-    material_savings_per_run = (decryptor.me_bonus / 100) * reducible_material_cost_per_run
+    material_savings_per_run = (
+        (decryptor.me_bonus / 100) * reducible_material_cost_per_run
+        if reducible_material_cost_per_run is not None else None
+    )
     net_cost_per_run = (
-        (expected_cost_per_run - material_savings_per_run) if expected_cost_per_run is not None else None
+        (expected_cost_per_run - material_savings_per_run)
+        if expected_cost_per_run is not None and material_savings_per_run is not None else None
     )
 
     t1_type = storage.get_sde_type(t1_blueprint_type_id)
@@ -180,7 +201,7 @@ def estimate(t1_blueprint_type_id: int, decryptor_name: str, home: dict, jita: d
 
 def compare_decryptors(t1_blueprint_type_id: int, home: dict, jita: dict,
                         cfg: ProductionConfig = PRODUCTION_CONFIG,
-                        reducible_material_cost_per_run: float = 0.0,
+                        reducible_material_cost_per_run: Optional[float] = 0.0,
                         product_type_id: Optional[int] = None) -> list[InventionResult]:
     """One InventionResult per decryptor option (including "None"), cheapest
     net cost per BPC run first (expected invention cost minus the ME material
@@ -198,7 +219,7 @@ def compare_decryptors(t1_blueprint_type_id: int, home: dict, jita: dict,
 
 def best_decryptor_for_item(t1_blueprint_type_id: int, home: dict, jita: dict,
                              cfg: ProductionConfig = PRODUCTION_CONFIG,
-                             reducible_material_cost_per_run: float = 0.0) -> Optional[InventionResult]:
+                             reducible_material_cost_per_run: Optional[float] = 0.0) -> Optional[InventionResult]:
     """The single cheapest (net cost per run) decryptor choice for ONE fixed
     invention-source candidate (t1_blueprint_type_id), or None if no
     invention recipe/probability data exists for it. For Tech III, the
@@ -214,7 +235,7 @@ def best_decryptor_for_item(t1_blueprint_type_id: int, home: dict, jita: dict,
 
 def compare_recipes_and_decryptors(product_blueprint_type_id: int, home: dict, jita: dict,
                                     cfg: ProductionConfig = PRODUCTION_CONFIG,
-                                    reducible_material_cost_per_run: float = 0.0) -> list[InventionResult]:
+                                    reducible_material_cost_per_run: Optional[float] = 0.0) -> list[InventionResult]:
     """Every (invention-source candidate, decryptor) combination for
     `product_blueprint_type_id`, cheapest net cost per run first - generalizes
     compare_decryptors (which only ever varies the decryptor, for one fixed
@@ -240,7 +261,7 @@ def compare_recipes_and_decryptors(product_blueprint_type_id: int, home: dict, j
 
 def best_recipe_and_decryptor(product_blueprint_type_id: int, home: dict, jita: dict,
                                cfg: ProductionConfig = PRODUCTION_CONFIG,
-                               reducible_material_cost_per_run: float = 0.0) -> Optional[InventionResult]:
+                               reducible_material_cost_per_run: Optional[float] = 0.0) -> Optional[InventionResult]:
     """The single globally-cheapest (candidate, decryptor) combination for
     `product_blueprint_type_id` - see compare_recipes_and_decryptors, this is
     just its first element. None if no invention recipe/probability data
@@ -251,7 +272,7 @@ def best_recipe_and_decryptor(product_blueprint_type_id: int, home: dict, jita: 
 
 def best_recipe_for_decryptor(product_blueprint_type_id: int, decryptor_name: str, home: dict, jita: dict,
                                cfg: ProductionConfig = PRODUCTION_CONFIG,
-                               reducible_material_cost_per_run: float = 0.0) -> Optional[InventionResult]:
+                               reducible_material_cost_per_run: Optional[float] = 0.0) -> Optional[InventionResult]:
     """Like best_recipe_and_decryptor, but with the decryptor fixed - still
     explores every grade candidate (Tech III's Intact/Malfunctioning/Wrecked
     relics), picking whichever grade is cheapest with that one decryptor.

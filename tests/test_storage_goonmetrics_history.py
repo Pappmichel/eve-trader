@@ -5,6 +5,7 @@ from eve_trader.goonmetrics_client import HistoryPoint
 
 from . import pg_helpers
 from .pg_helpers import _apply_phase1_schema, tenant  # noqa: F401
+# tenant_pair fixture comes from conftest.py (registered project-wide)
 
 psycopg = pytest.importorskip("psycopg")
 
@@ -33,3 +34,40 @@ def test_read_goonmetrics_history_for_types_empty_list_returns_empty_df(tenant):
     df = storage.read_goonmetrics_history_for_types([])
 
     assert df.empty
+
+
+def test_goonmetrics_history_type_ids_for_tenant_excludes_another_tenants_items(tenant_pair):
+    """T3-03 (business-logic audit follow-up, 2026-09-26): goonmetrics_
+    history itself is a global, shared-across-every-tenant cache (the price
+    DATA is legitimately public/shared) - but the *listing* of which
+    type_ids exist in it must be scoped to this tenant's own shortlist/
+    candidate_universe items, or it leaks which items another tenant is
+    researching."""
+    tenant_a, tenant_b = tenant_pair
+    # goonmetrics_history has no tenant_id column at all (a genuinely global
+    # table), but save_goonmetrics_history still goes through the normal
+    # tenant-scoped connect() - needs *some* ambient tenant set to open a
+    # connection at all, even though it won't filter by it for this table.
+    with storage.tenant_context(tenant_a):
+        storage.save_goonmetrics_history([_point(1), _point(2), _point(3)])  # shared cache, both tenants can see the data
+
+    with storage.tenant_context(tenant_a), storage.connect() as conn:
+        conn.execute("INSERT INTO shortlist (item_id, item) VALUES (?, ?)", (1, "Tritanium"))
+    with storage.tenant_context(tenant_b), storage.connect() as conn:
+        conn.execute("INSERT INTO candidate_universe (type_id) VALUES (?)", (2,))
+        # type_id 3 is in neither tenant's own items - present in the shared
+        # cache, but neither tenant should ever see it listed.
+
+    with storage.tenant_context(tenant_a):
+        assert storage.goonmetrics_history_type_ids_for_tenant() == [1]
+    with storage.tenant_context(tenant_b):
+        assert storage.goonmetrics_history_type_ids_for_tenant() == [2]
+
+
+def test_goonmetrics_history_type_ids_for_tenant_covers_both_shortlist_and_candidate_universe(tenant):
+    storage.save_goonmetrics_history([_point(1), _point(2)])
+    with storage.connect() as conn:
+        conn.execute("INSERT INTO shortlist (item_id, item) VALUES (?, ?)", (1, "Tritanium"))
+        conn.execute("INSERT INTO candidate_universe (type_id) VALUES (?)", (2,))
+
+    assert sorted(storage.goonmetrics_history_type_ids_for_tenant()) == [1, 2]
