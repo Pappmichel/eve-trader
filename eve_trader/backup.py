@@ -37,6 +37,31 @@ counterpart either): extract eve_trader.dump from the zip, then
 or, on a bare-`pg_dump`-mode host, the same `pg_restore -U postgres -d
 eve_trader --clean --if-exists < eve_trader.dump` without the `docker exec`
 wrapper.
+
+Restore drill (T1-06/Phase 10 follow-up, 2026-09-26, live-verified against
+evetrader.duckdns.org without touching the real `eve_trader` database):
+`createdb eve_trader_restore_drill` (a throwaway sibling database on the
+same Postgres instance) -> `pg_restore --no-owner --no-privileges -d
+eve_trader_restore_drill eve_trader.dump` -> `GRANT SELECT ON ALL TABLES
+IN SCHEMA public TO eve_trader_app` (the dump's own GRANTs were skipped by
+--no-privileges, needed only so the app role can read this throwaway copy
+at all) -> point a one-off script at it via an `EVE_TRADER_PG_DSN` env
+override with `dbname=` swapped (never edit the real `.env`) and run real
+storage.py functions (list_tenants(), a real RLS-scoped connect()) against
+it -> `dropdb eve_trader_restore_drill` when done. Confirmed exact row-
+count and JSON-payload parity with the live database this way (not just
+"pg_restore exited 0").
+
+**One real finding from this drill, not just a confirmation**: a restore
+puts back the schema *as it was at backup time*, not today's schema - the
+backup used for this drill (created before the same day's T1-04 fix) came
+back with the T1-04-era bare `(item_id)`/`(job_id)` PKs on `corp_assets`/
+`corp_industry_jobs`/`corp_blueprints`, not the widened `(tenant_id, ...)`
+ones already live. A real disaster-recovery restore must re-apply every
+`docs/*_schema.sql` file (in the same order `deploy/deploy.sh`'s migration
+loop does) *after* `pg_restore`, or the restored database silently reverts
+to whatever schema state the backup predates - `pg_restore` alone is not
+sufficient on its own for a backup that isn't from today.
 """
 from __future__ import annotations
 
