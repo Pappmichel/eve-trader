@@ -44,8 +44,11 @@ def test_pages_past_first_batch_when_still_within_window():
     # First page is a *full* WALLET_TRANSACTIONS_PAGE_SIZE batch, all recent -
     # a single un-paginated call would stop here and silently miss the older,
     # still-in-window second page (the real-world Oxygen Isotopes bug).
+    # Page 2's ids are its own distinct range (real ESI transaction_ids never
+    # restart at 0 on a later page) - see the dedup tests below for what
+    # happens when a page boundary genuinely does repeat an id.
     page1 = [_txn(i, days_ago=1) for i in range(WALLET_TRANSACTIONS_PAGE_SIZE)]
-    page2 = [_txn(i, days_ago=5) for i in range(50)]
+    page2 = [_txn(WALLET_TRANSACTIONS_PAGE_SIZE + i, days_ago=5) for i in range(50)]
     client = PagingFakeClient([page1, page2])
 
     result = fetch_recent_transactions(1, "role", client, lookback_days=30)
@@ -54,6 +57,30 @@ def test_pages_past_first_batch_when_still_within_window():
     assert len(client.calls) == 2
     # second call's from_id is the oldest (lowest) transaction_id of page 1
     assert client.calls[1] == 0
+
+
+def test_boundary_transaction_repeated_across_pages_is_not_double_counted():
+    """T1-01 follow-up (independent challenge pass, 2026-09-26): live
+    production logs show recurring duplicate-key errors on
+    esi_wallet_transactions_pkey - the only way that happens is the same
+    transaction_id appearing twice in one fetch (replace_wallet_transactions
+    does a full delete-then-insert per sync, ruling out a cross-sync
+    collision). from_id's oldest-of-previous-page value reappearing as the
+    newest entry of the next page reproduces exactly that shape. Without
+    the fix, this transaction would enter FIFO reconciliation twice,
+    double-counting its quantity and profit if it's a structure sale."""
+    boundary_id = WALLET_TRANSACTIONS_PAGE_SIZE - 1
+    page1 = [_txn(i, days_ago=1) for i in range(WALLET_TRANSACTIONS_PAGE_SIZE)]  # ids 0..boundary_id
+    # boundary_id repeated first, as the "inclusive from_id" bug would produce.
+    page2 = [_txn(boundary_id, days_ago=1)] + [_txn(WALLET_TRANSACTIONS_PAGE_SIZE + i, days_ago=5)
+                                                for i in range(49)]
+    client = PagingFakeClient([page1, page2])
+
+    result = fetch_recent_transactions(1, "role", client, lookback_days=30)
+
+    ids = [t["transaction_id"] for t in result]
+    assert ids.count(boundary_id) == 1
+    assert len(result) == WALLET_TRANSACTIONS_PAGE_SIZE + 49  # not +50 - the repeat doesn't count twice
 
 
 def test_stops_once_a_page_reaches_past_the_cutoff():
@@ -84,7 +111,7 @@ class CorpPagingFakeClient:
 
 def test_corp_wallet_pages_past_first_batch_when_still_within_window():
     page1 = [_txn(i, days_ago=1) for i in range(WALLET_TRANSACTIONS_PAGE_SIZE)]
-    page2 = [_txn(i, days_ago=5) for i in range(50)]
+    page2 = [_txn(WALLET_TRANSACTIONS_PAGE_SIZE + i, days_ago=5) for i in range(50)]
     client = CorpPagingFakeClient([page1, page2])
 
     result = fetch_recent_corporation_transactions(99, 3, "seller:1", client, lookback_days=30)
@@ -96,3 +123,20 @@ def test_corp_wallet_pages_past_first_batch_when_still_within_window():
     assert all(t["_wallet_kind"] == "corporation" for t in result)
     assert all(t["_wallet_owner_id"] == 99 for t in result)
     assert all(t["_wallet_division"] == 3 for t in result)
+
+
+def test_corp_boundary_transaction_repeated_across_pages_is_not_double_counted():
+    """See the character-wallet version of this test (above) for the full
+    reasoning - same from_id-cursor pattern, same live production symptom
+    (duplicate-key errors), same fix."""
+    boundary_id = WALLET_TRANSACTIONS_PAGE_SIZE - 1
+    page1 = [_txn(i, days_ago=1) for i in range(WALLET_TRANSACTIONS_PAGE_SIZE)]
+    page2 = [_txn(boundary_id, days_ago=1)] + [_txn(WALLET_TRANSACTIONS_PAGE_SIZE + i, days_ago=5)
+                                                for i in range(49)]
+    client = CorpPagingFakeClient([page1, page2])
+
+    result = fetch_recent_corporation_transactions(99, 3, "seller:1", client, lookback_days=30)
+
+    ids = [t["transaction_id"] for t in result]
+    assert ids.count(boundary_id) == 1
+    assert len(result) == WALLET_TRANSACTIONS_PAGE_SIZE + 49

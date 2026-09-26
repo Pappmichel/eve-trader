@@ -174,15 +174,27 @@ def fetch_recent_transactions(character_id: int, auth_role: str, client: ESIClie
     window trades for any character with more transaction volume than that
     within `lookback_days` (confirmed real-world symptom: a frequently-traded
     item like Oxygen Isotopes missing from Realized Trades even though it
-    was clearly sold within the lookback window)."""
+    was clearly sold within the lookback window).
+
+    T1-01 follow-up (independent challenge pass, 2026-09-26): dedupes by
+    transaction_id across pages - live production logs show recurring
+    duplicate-key errors on this same boundary-transaction shape in the
+    persisted-snapshot sync path (esi_data/fetchers.py's own
+    _page_wallet_transactions, fixed the same way), and this live-fetch
+    path shares the identical from_id-cursor pattern - without this, a
+    boundary transaction entering FIFO reconciliation twice would
+    double-count its quantity and profit whenever it's a structure sale."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
     all_txns: list[dict] = []
+    seen_ids: set[int] = set()
     from_id: Optional[int] = None
     while True:
         page = client.character_wallet_transactions(character_id, auth_role=auth_role, from_id=from_id)
         if not page:
             break
-        all_txns.extend(page)
+        new_on_this_page = [t for t in page if t["transaction_id"] not in seen_ids]
+        all_txns.extend(new_on_this_page)
+        seen_ids.update(t["transaction_id"] for t in new_on_this_page)
         oldest = min(page, key=lambda t: t["transaction_id"])
         # len(page) < WALLET_TRANSACTIONS_PAGE_SIZE as the "no more pages"
         # signal relies on ESI's per-call cap staying fixed at 2500 - correct
@@ -218,16 +230,21 @@ def fetch_recent_corporation_transactions(corporation_id: int, division: int, au
     this endpoint too (swagger maxItems, confirmed 2026-09-20) so
     WALLET_TRANSACTIONS_PAGE_SIZE is shared. Raises ESIError —
     fetch_corporation_wallet_streams catches that per division so one
-    unread wallet does not discard the others."""
+    unread wallet does not discard the others. Dedupes by transaction_id
+    across pages - see fetch_recent_transactions' own T1-01 follow-up
+    comment for why."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
     all_txns: list[dict] = []
+    seen_ids: set[int] = set()
     from_id: Optional[int] = None
     while True:
         page = client.corporation_wallet_transactions(
             corporation_id, division, auth_role=auth_role, from_id=from_id)
         if not page:
             break
-        all_txns.extend(page)
+        new_on_this_page = [t for t in page if t["transaction_id"] not in seen_ids]
+        all_txns.extend(new_on_this_page)
+        seen_ids.update(t["transaction_id"] for t in new_on_this_page)
         oldest = min(page, key=lambda t: t["transaction_id"])
         if _parse_iso(oldest["date"]) < cutoff or len(page) < WALLET_TRANSACTIONS_PAGE_SIZE:
             break
@@ -623,6 +640,26 @@ def reconcile_realized_trades(buyer_characters: list[tuple[int, str]], seller_ch
                 and entry.get("context_id") is not None):
             market_transaction_by_key[(kind, owner_id, division, entry["context_id"])] = entry
 
+    # T1-01 follow-up (independent challenge pass, 2026-09-26): the id+1
+    # adjacency check alone doesn't verify the tax entry actually belongs
+    # to THIS sale - it only checks ref_type and a matching date string.
+    # Demonstrated real failure: two sells whose market_transaction/
+    # transaction_tax journal entries interleave within the same second
+    # (id order MT_A, MT_B, TAX_A, TAX_B rather than the usual MT_A, TAX_A,
+    # MT_B, TAX_B) makes sell B's id+1 land on TAX_A instead of its own -
+    # same date, right ref_type, wrong sale - producing a wildly wrong
+    # profit (a small sale inheriting a much larger sale's tax deduction).
+    # A real EVE sales tax is a small, bounded fraction of gross (T1-01's
+    # own live-verified figure was 3.375%; the true base rate is 8% at
+    # Accounting 0) - reject a pairing whose implied rate falls outside a
+    # generous but finite band instead of trusting id+1 blindly. This does
+    # not fully solve misattribution between two same-second sales of
+    # similar size (a plausible-looking wrong pairing wouldn't trip this
+    # guard) - context_id on the tax entry itself, if ESI populates one,
+    # would close that gap for good; not verified here (needs a live
+    # journal payload from a genuinely simultaneous multi-sale tick).
+    _MAX_PLAUSIBLE_TAX_RATE = 0.15
+
     def _real_net_sell_per_unit(sell: dict) -> Optional[float]:
         """The real (gross - sales tax) per-unit proceeds for `sell`, or
         None if the market_transaction/transaction_tax pair can't be
@@ -642,6 +679,8 @@ def reconcile_realized_trades(buyer_characters: list[tuple[int, str]], seller_ch
             return None
         real_tax = -tax_entry["amount"]
         gross = mt["amount"]
+        if not gross or not (0 <= real_tax / gross <= _MAX_PLAUSIBLE_TAX_RATE):
+            return None
         return (gross - real_tax) / sell["quantity"]
 
     buys_by_type: dict[int, list[dict]] = defaultdict(list)

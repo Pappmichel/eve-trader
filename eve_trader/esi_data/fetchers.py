@@ -59,13 +59,29 @@ def _job_slots_from_skills(skill_levels: dict[int, int]) -> dict[str, int]:
 
 
 def _page_wallet_transactions(fetch_page: Callable) -> list[dict]:
+    """T1-01 follow-up (independent challenge pass, 2026-09-26): live
+    production logs show recurring `duplicate key value violates unique
+    constraint "esi_wallet_transactions_pkey"` for a real character -
+    replace_wallet_transactions does a full DELETE-then-INSERT per sync
+    (ruling out a cross-sync duplicate), so the only way to get the same
+    transaction_id twice in one INSERT batch is `from_id`'s own boundary
+    behavior not being strictly exclusive in practice, whatever ESI's own
+    docs claim - not independently re-verified against a live payload here
+    (would need a real token round-trip), so this dedupes defensively
+    rather than assume either way. Without this, a boundary transaction
+    entering FIFO/reconciliation twice would double-count its quantity and
+    profit if it happens to be a structure sale, on top of the sync itself
+    intermittently failing outright."""
     all_txns: list[dict] = []
+    seen_ids: set[int] = set()
     from_id: Optional[int] = None
     while True:
         page = fetch_page(from_id)
         if not page:
             break
-        all_txns.extend(page)
+        new_on_this_page = [t for t in page if t["transaction_id"] not in seen_ids]
+        all_txns.extend(new_on_this_page)
+        seen_ids.update(t["transaction_id"] for t in new_on_this_page)
         oldest = min(page, key=lambda t: t["transaction_id"])
         if len(page) < WALLET_TRANSACTIONS_PAGE_SIZE:
             break
