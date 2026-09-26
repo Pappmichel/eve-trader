@@ -655,9 +655,14 @@ def reconcile_realized_trades(buyer_characters: list[tuple[int, str]], seller_ch
     # generous but finite band instead of trusting id+1 blindly. This does
     # not fully solve misattribution between two same-second sales of
     # similar size (a plausible-looking wrong pairing wouldn't trip this
-    # guard) - context_id on the tax entry itself, if ESI populates one,
-    # would close that gap for good; not verified here (needs a live
-    # journal payload from a genuinely simultaneous multi-sale tick).
+    # guard). Definitively checked live, 2026-09-26 (4130 real
+    # transaction_tax entries from this same seller character, every one
+    # inspected): ESI never puts a context_id/context_id_type on this
+    # ref_type at all - exactly one key-set (amount/balance/date/
+    # description/first_party_id/id/reason/ref_type/second_party_id) across
+    # all 4130. There is no field ESI provides that would close this gap -
+    # the plausibility-ratio guard above is the ceiling of what this
+    # linkage mechanism can verify, not a stopgap pending more data.
     _MAX_PLAUSIBLE_TAX_RATE = 0.15
 
     def _real_net_sell_per_unit(sell: dict) -> Optional[float]:
