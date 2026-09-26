@@ -4,11 +4,46 @@
 # (see deploy/README.md) to add the HTTPS server block and the http->https
 # redirect; certbot rewrites this file in place to do that, so there's no
 # point hand-writing the TLS block here just to have certbot replace it.
+# The headers below land in certbot's own rewritten HTTPS server block too
+# (confirmed against the live production config, 2026-09-26) - certbot only
+# adds the `listen 443 ssl`/cert directives, it doesn't touch existing
+# `location`/`add_header` lines.
 
 server {
     listen 80;
     listen [::]:80;
     server_name __DOMAIN__;
+
+    # Security headers - confirmed already live on production (added
+    # directly to the post-certbot config at some point, never backported
+    # here - this template was drifting behind reality, not the other way
+    # around). Kept here so a *fresh* install gets them from the start
+    # instead of relying on someone hand-adding them again after certbot runs.
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    # Strict-Transport-Security is deliberately NOT here - it only makes
+    # sense once HTTPS actually exists (this plain-HTTP server block is
+    # pre-certbot); it's added to the HTTPS block certbot creates, same as
+    # production already does.
+
+    # CSP grounded in what this app's own built frontend actually loads
+    # (confirmed 2026-09-26 by grepping frontend/dist's built JS for
+    # external URLs - none - and index.html for external tags - only Google
+    # Fonts): same-origin API (`/api/*`, same host, no separate API
+    # domain), no third-party CDN scripts, no analytics. The EVE SSO login
+    # redirect (`/api/auth/gate/start` -> login.eveonline.com) is a plain
+    # server-side 302 the browser navigates to - top-level navigation isn't
+    # governed by CSP at all, so no `login.eveonline.com` allowance is
+    # needed anywhere below.
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'" always;
+    # style-src needs 'unsafe-inline': the UI library stack (floating-ui,
+    # Radix-style portals/positioning - see frontend/dist's own
+    # floating-ui.react/OptionalPortal/Stack chunks) sets inline
+    # style="..." attributes for positioning at runtime, not just
+    # stylesheet classes - a real requirement, not a lazy default.
+    # script-src stays strict (no 'unsafe-inline'/'unsafe-eval') since
+    # nothing in the built bundle needed either.
 
     location / {
         proxy_pass http://127.0.0.1:8000;
@@ -23,7 +58,9 @@ server {
         # for those synchronous endpoints is no longer needed. 60s is
         # nginx's own default and is enough for the remaining request-scoped
         # actions. The scheduler and CLI still call do_* in-process (no
-        # HTTP hop).
+        # HTTP hop). NOTE: production is still running the old 300s value
+        # as of 2026-09-26 (drift, not yet applied) - low priority, but
+        # worth syncing next deploy.
         proxy_read_timeout 60s;
         proxy_connect_timeout 60s;
         proxy_send_timeout 60s;
