@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from eve_trader import actions, storage
 from eve_trader.actions import ActionError, ConflictError
-from eve_trader.api.app import create_app
+from eve_trader.api.app import FRONTEND_DIST, create_app
 from eve_trader.models import ShortlistItem
 from eve_trader.production import actions as production_actions
 from eve_trader.production.models import AssetLocationRow, BuildCandidate, ShipMarginRow
@@ -1712,6 +1712,22 @@ def test_spa_fallback_bare_api_path_returns_404_not_200():
     assert client.get("/api/").status_code == 404
 
 
+# These three need a real frontend/dist (create_app() only mounts "/" at
+# all if FRONTEND_DIST.exists() - see eve_trader/api/app.py) - CI's own
+# `backend` job never builds the frontend (that's the separate `frontend`
+# job in .github/workflows/ci.yml, on its own checkout), so there is no
+# frontend/dist there at all, and these passed locally only by accident
+# whenever a `npm run build` happened to already exist on disk (confirmed
+# real CI failure, 2026-09-26 - not a bug in the fallback logic itself,
+# which the four tests above already cover without needing a real mount).
+_HAS_FRONTEND_BUILD = FRONTEND_DIST.exists()
+_NO_FRONTEND_BUILD_REASON = (
+    "requires a built frontend/dist (run `npm run build` in frontend/) - "
+    "not available in the backend-only CI job"
+)
+
+
+@pytest.mark.skipif(not _HAS_FRONTEND_BUILD, reason=_NO_FRONTEND_BUILD_REASON)
 def test_spa_fallback_unknown_frontend_route_still_returns_the_spa_shell():
     # A client-side-only route (React Router) must still 200 with the SPA's
     # own index.html on a hard reload/typed URL - the fix must not have
@@ -1721,11 +1737,13 @@ def test_spa_fallback_unknown_frontend_route_still_returns_the_spa_shell():
     assert "<html" in resp.text.lower()
 
 
+@pytest.mark.skipif(not _HAS_FRONTEND_BUILD, reason=_NO_FRONTEND_BUILD_REASON)
 def test_spa_fallback_static_asset_is_served_directly():
     resp = client.get("/favicon.svg")
     assert resp.status_code == 200
 
 
+@pytest.mark.skipif(not _HAS_FRONTEND_BUILD, reason=_NO_FRONTEND_BUILD_REASON)
 def test_spa_fallback_root_serves_index_html():
     resp = client.get("/")
     assert resp.status_code == 200

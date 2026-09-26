@@ -289,7 +289,10 @@ $$;
 -- drop them. Idempotent: a fresh install never creates these tables
 -- (doctrine_schema.sql stopped creating them in the same change), so this
 -- is a no-op there. On an existing deploy the copy runs as the owner role
--- (bypasses RLS) and preserves tenant_id. PK is (item_id, owner_name).
+-- (bypasses RLS) and preserves tenant_id. PK is (tenant_id, item_id,
+-- owner_name) - widened from (item_id, owner_name) in the T1-04 PK-widening
+-- fix (2026-09-26, see phase1_schema.sql); this ON CONFLICT target must
+-- match it exactly or Postgres rejects the whole DO block outright.
 -- Conflict = the same item dual-synced into both table pairs. Prefer an
 -- already owner-id-stamped shared-table row over an unstamped doctrine
 -- row; otherwise take the incoming doctrine row. Next orchestrator sync
@@ -310,7 +313,7 @@ BEGIN
             is_blueprint_copy, owner_name, resolved_location_id, resolved_hangar_flag,
             owner_character_id, owner_corporation_id
         FROM doctrine_character_assets
-        ON CONFLICT (item_id, owner_name) DO UPDATE SET
+        ON CONFLICT (tenant_id, item_id, owner_name) DO UPDATE SET
             tenant_id = EXCLUDED.tenant_id,
             type_id = EXCLUDED.type_id,
             location_id = EXCLUDED.location_id,
@@ -339,7 +342,7 @@ BEGIN
             is_blueprint_copy, owner_name, resolved_location_id, resolved_hangar_flag,
             owner_character_id, owner_corporation_id
         FROM doctrine_corp_assets
-        ON CONFLICT (item_id, owner_name) DO UPDATE SET
+        ON CONFLICT (tenant_id, item_id, owner_name) DO UPDATE SET
             tenant_id = EXCLUDED.tenant_id,
             type_id = EXCLUDED.type_id,
             location_id = EXCLUDED.location_id,

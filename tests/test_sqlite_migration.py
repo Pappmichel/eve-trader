@@ -21,12 +21,15 @@ from .pg_helpers import _apply_phase1_schema, tenant  # noqa: F401
 
 @pytest.fixture(autouse=True)
 def _wipe_character_assets():
-    # character_assets' PK is item_id alone (column-only bucket - not
-    # tenant-widened, see docs/MULTI_TENANT_PLAN.md's "Composite primary
-    # keys" section) - the fixed literal item_id used below could otherwise
-    # collide with a leftover row from an earlier run under a *different*
-    # tenant, silently no-op'ing this test's INSERT via ON CONFLICT DO
-    # NOTHING. Same pattern pg_helpers.wipe_tables's own docstring describes.
+    # character_assets' PK is (tenant_id, item_id, owner_name) - widened
+    # from (item_id, owner_name) in the T1-04 PK-widening fix (2026-09-26,
+    # see docs/MULTI_TENANT_PLAN.md's "Composite primary keys" section) - so
+    # a fixed literal item_id used below can no longer collide with a
+    # leftover row from an earlier run under a *different* tenant at all.
+    # Still wiped here regardless, since a stale row from the *same* tenant
+    # (a previous run's leftover, or test ordering) would otherwise
+    # silently no-op this test's INSERT via ON CONFLICT DO NOTHING. Same
+    # pattern pg_helpers.wipe_tables's own docstring describes.
     pg_helpers.wipe_tables("character_assets")
 
 
@@ -128,7 +131,7 @@ def _make_sqlite_db(path):
                                                                    # ON CONFLICT target still matches a row that
                                                                    # lands at location_id=0 via the column default
                                                                    # (decision 3)
-    conn.execute("INSERT INTO character_assets VALUES (123456789, 34, 60003760, 'Hangar', 100, 0, 'Some Char')")  # column-only bucket
+    conn.execute("INSERT INTO character_assets VALUES (123456789, 34, 60003760, 'Hangar', 100, 0, 'Some Char')")  # column-only-turned-composite bucket
     conn.execute("INSERT INTO realized_trades VALUES ('2026-01-01T00:00:00', 34, 'Tritanium', "
                  "'2026-01-01', 100, 4.5, '2026-01-02', 100, 5.5, 100, 100.0, 0.18)")  # no-PK bucket
     conn.commit()
