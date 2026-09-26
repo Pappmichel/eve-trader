@@ -1704,6 +1704,14 @@ def test_spa_fallback_unknown_api_route_returns_404_not_200():
     assert resp.status_code == 404
 
 
+def test_spa_fallback_bare_api_path_returns_404_not_200():
+    # Independent challenge pass (2026-09-26): Starlette normalizes both
+    # "/api" and "/api/" to the bare path "api" - `startswith("api/")`
+    # alone let these two through as a 200 SPA-shell response.
+    assert client.get("/api").status_code == 404
+    assert client.get("/api/").status_code == 404
+
+
 def test_spa_fallback_unknown_frontend_route_still_returns_the_spa_shell():
     # A client-side-only route (React Router) must still 200 with the SPA's
     # own index.html on a hard reload/typed URL - the fix must not have

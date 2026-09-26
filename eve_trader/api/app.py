@@ -53,7 +53,10 @@ class SPAStaticFiles(StaticFiles):
     already claimed by an `app.include_router(..., prefix="/api/...")`
     above), so path starting with "api/" (no leading slash - see this
     class's own `path` param, relative to the "/" mount point) must stay a
-    real 404, not fall back."""
+    real 404, not fall back. The bare "api" path (no trailing segment -
+    Starlette normalizes "/api"/"/api/" to this) is excluded the same way
+    (independent challenge pass, 2026-09-26 - `startswith("api/")` alone
+    let exactly these two through)."""
 
     async def get_response(self, path: str, scope: Scope):
         # StaticFiles doesn't return a 404 Response here on a missing file -
@@ -64,7 +67,7 @@ class SPAStaticFiles(StaticFiles):
         try:
             return await super().get_response(path, scope)
         except StarletteHTTPException as exc:
-            if exc.status_code == 404 and not path.startswith("api/"):
+            if exc.status_code == 404 and path != "api" and not path.startswith("api/"):
                 return await super().get_response("index.html", scope)
             raise
 
