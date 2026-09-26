@@ -160,7 +160,7 @@ per-tenant settings.
 
 ---
 
-## 6. Login callback (`api/routers/auth.py`, gate branch at 250–272)
+## 6. Login callback (`api/routers/auth.py`, `_complete_gate_login`, called from `callback`)
 
 ```
 tenant_id = storage.resolve_tenant_id(character_id)
