@@ -1680,6 +1680,50 @@ def test_scheduler_status_route_removed():
     assert resp.status_code == 404
 
 
+# ------------------------------------------------------------------ SPA fallback
+# Tier 2 finding (business-logic audit 2026-08-28/30): SPAStaticFiles
+# (eve_trader/api/app.py) falls back to index.html on any 404 under its "/"
+# mount, so a genuinely-missing /api/* route used to be silently rewritten
+# into a 200 serving the SPA shell - test_scheduler_status_route_removed and
+# test_unrecognized_role_prefix_start_is_gone (test_gate_router.py) already
+# caught two real instances of this; these five cover every case the fix
+# needs to get right at once, not just those two routes.
+
+def test_spa_fallback_valid_api_route_reaches_the_real_handler():
+    resp = client.get("/api/portfolio/scheduler-status")
+    # A real route (even one that itself 404s on purpose, as above) must be
+    # answered by the router, never by the SPA fallback - distinguishing
+    # this from an unmatched path isn't possible from status code alone, so
+    # this is really just re-confirming routers are tried before the "/"
+    # static mount at all (FastAPI's own routing order, not this fix).
+    assert resp.status_code == 404
+
+
+def test_spa_fallback_unknown_api_route_returns_404_not_200():
+    resp = client.get("/api/this-route-does-not-exist")
+    assert resp.status_code == 404
+
+
+def test_spa_fallback_unknown_frontend_route_still_returns_the_spa_shell():
+    # A client-side-only route (React Router) must still 200 with the SPA's
+    # own index.html on a hard reload/typed URL - the fix must not have
+    # turned this into a 404 too.
+    resp = client.get("/production/asset-plan-nobody-could-have-bookmarked")
+    assert resp.status_code == 200
+    assert "<html" in resp.text.lower()
+
+
+def test_spa_fallback_static_asset_is_served_directly():
+    resp = client.get("/favicon.svg")
+    assert resp.status_code == 200
+
+
+def test_spa_fallback_root_serves_index_html():
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "<html" in resp.text.lower()
+
+
 # Backup routes moved to /api/admin/backups (confirmed real misplacement
 # 2026-09-21, see admin.do_create_backup's own docstring) - their router
 # tests moved to test_admin_router.py alongside the rest of /api/admin/*.

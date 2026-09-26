@@ -42,7 +42,18 @@ class SPAStaticFiles(StaticFiles):
     (F5) or a bookmarked/typed URL sends a fresh GET straight to the server
     for that path, which would otherwise 404 - this mirrors what the Vite
     dev server already does automatically (which is why this only ever
-    showed up in the built/deployed single-process mode, never locally)."""
+    showed up in the built/deployed single-process mode, never locally).
+
+    Tier 2 finding (business-logic audit 2026-08-28/30): this mount is at
+    "/", so an unmatched `/api/...` path (a typo'd route, a retired one, or
+    just internet scanner noise) also fell through to this same fallback -
+    a bare 404 from a genuinely missing API route was silently rewritten
+    into a 200 serving index.html, which a client/monitoring script would
+    read as "success". `/api/` is never a real SPA route (every real one is
+    already claimed by an `app.include_router(..., prefix="/api/...")`
+    above), so path starting with "api/" (no leading slash - see this
+    class's own `path` param, relative to the "/" mount point) must stay a
+    real 404, not fall back."""
 
     async def get_response(self, path: str, scope: Scope):
         # StaticFiles doesn't return a 404 Response here on a missing file -
@@ -53,7 +64,7 @@ class SPAStaticFiles(StaticFiles):
         try:
             return await super().get_response(path, scope)
         except StarletteHTTPException as exc:
-            if exc.status_code == 404:
+            if exc.status_code == 404 and not path.startswith("api/"):
                 return await super().get_response("index.html", scope)
             raise
 
