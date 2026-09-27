@@ -13,8 +13,8 @@ from eve_trader.production.constants import (
     rig_security_multiplier,
 )
 from eve_trader.production.engine import (
-    _activity_mods, _material_qty, _structural_material_closure, _tech_ii_mods, _total_missing, classify_activity,
-    compare_alchemy_profitability, find_alchemy_alternative,
+    _activity_mods, _material_qty, _skill_time_mult, _structural_material_closure, _tech_ii_mods, _total_missing,
+    classify_activity, compare_alchemy_profitability, find_alchemy_alternative,
 )
 from eve_trader.production.models import AlchemyComparison, AssetPlanJob, CharacterSlotRow, InventionResult
 
@@ -123,6 +123,17 @@ def _default_manual_listed_stock(monkeypatch):
     # now also add storage.manual_listed_stock_qty - same "default to
     # none, no real DB" reasoning as the fixtures above.
     monkeypatch.setattr(storage, "manual_listed_stock_qty", lambda type_id, market: 0.0)
+
+
+@pytest.fixture(autouse=True)
+def _default_blueprint_skills(monkeypatch):
+    # _skill_time_mult (job-time skill bonus, 2026-09-27) now also calls
+    # storage.get_blueprint_skills for every _activity_mods/_tech_ii_mods
+    # call - same "default to none, no real DB" reasoning as the fixtures
+    # above. A test that specifically wants a blueprint-conditional
+    # "specialist" skill (constants.SPECIALIST_TIME_SKILLS) overrides this
+    # fixture's monkeypatch itself.
+    monkeypatch.setattr(storage, "get_blueprint_skills", lambda blueprint_type_id, activity_id: [])
 
 
 @pytest.fixture(autouse=True)
@@ -497,7 +508,8 @@ def test_tech_iii_manual_decryptor_applies_without_invention_recipe(monkeypatch,
     )
     # Accelerant: absolute ME4/TE14 -> multipliers 0.96/0.86 (no structure/rig bonus, cfg default = Citadel/no rig).
     assert round(material_mult, 4) == 0.96
-    assert round(time_mult, 4) == 0.86
+    # 0.86 * skill_mult 0.68 (default Industry L5 × Advanced Industry L5 - Tech II/III's own build is Manufacturing)
+    assert round(time_mult, 4) == 0.5848
     assert decryptor_name == "Accelerant"
     assert chosen is None  # no real recipe - this is the defensive override-only fallback
 
@@ -512,7 +524,7 @@ def test_tech_iii_falls_back_to_flat_baseline_without_override(monkeypatch, tena
         selected_decryptors={}, memo={},
     )
     assert round(material_mult, 4) == 0.98
-    assert round(time_mult, 4) == 0.96
+    assert round(time_mult, 4) == 0.6528  # 0.96 * skill_mult 0.68 (default Industry L5 × Advanced Industry L5)
     assert decryptor_name is None
     assert chosen is None
 
@@ -526,7 +538,8 @@ def test_tech_i_uses_owned_bpo_me_te_when_available(monkeypatch, tenant):
 
     material_mult, time_mult, _ = _activity_mods("Tech I", type_id=1, cfg=cfg, cost_indices={}, blueprint_id=2)
     assert round(material_mult, 4) == 0.90  # 1 - 10/100
-    assert round(time_mult, 4) == 0.94      # 1 - 6/100
+    # (1 - 6/100) * skill_mult 0.68 (default Industry L5 × Advanced Industry L5, no specialist skill)
+    assert round(time_mult, 4) == 0.6392
 
 
 @pg_helpers.postgres_required()
@@ -536,7 +549,7 @@ def test_tech_i_falls_back_to_flat_baseline_when_bpo_not_owned(monkeypatch, tena
 
     material_mult, time_mult, _ = _activity_mods("Tech I", type_id=1, cfg=cfg, cost_indices={}, blueprint_id=2)
     assert round(material_mult, 4) == 0.90  # flat ACTIVITY_MODS["Tech I"] baseline
-    assert round(time_mult, 4) == 0.80
+    assert round(time_mult, 4) == 0.544     # 0.80 * skill_mult 0.68 (default Industry L5 × Advanced Industry L5)
 
 
 @pg_helpers.postgres_required()
@@ -552,7 +565,7 @@ def test_faction_is_always_me0_te0_and_ignores_owned_bpo_data(monkeypatch, tenan
 
     material_mult, time_mult, _ = _activity_mods("Faction", type_id=1, cfg=cfg, cost_indices={}, blueprint_id=2)
     assert round(material_mult, 4) == 1.00
-    assert round(time_mult, 4) == 1.00
+    assert round(time_mult, 4) == 0.68  # 1.00 * skill_mult 0.68 (default Industry L5 × Advanced Industry L5)
 
 
 @pg_helpers.postgres_required()
@@ -567,7 +580,7 @@ def test_manual_me_te_override_wins_over_owned_bpo_for_tech_i(monkeypatch, tenan
 
     material_mult, time_mult, _ = _activity_mods("Tech I", type_id=1, cfg=cfg, cost_indices=cost_indices, blueprint_id=2)
     assert round(material_mult, 4) == 0.93  # 1 - 7/100
-    assert round(time_mult, 4) == 0.86      # 1 - 14/100
+    assert round(time_mult, 4) == 0.5848    # (1 - 14/100) * skill_mult 0.68 (default Industry L5 × Advanced Industry L5)
 
 
 @pg_helpers.postgres_required()
@@ -584,7 +597,7 @@ def test_manual_me_te_override_wins_over_faction_flat_me0_te0(monkeypatch, tenan
 
     material_mult, time_mult, _ = _activity_mods("Faction", type_id=1, cfg=cfg, cost_indices=cost_indices, blueprint_id=2)
     assert round(material_mult, 4) == 0.90  # 1 - 10/100
-    assert round(time_mult, 4) == 0.80      # 1 - 20/100
+    assert round(time_mult, 4) == 0.544     # (1 - 20/100) * skill_mult 0.68 (default Industry L5 × Advanced Industry L5)
 
 
 @pg_helpers.postgres_required()
@@ -597,7 +610,8 @@ def test_manual_me_te_override_absent_falls_back_to_existing_chain(monkeypatch, 
 
     material_mult, time_mult, _ = _activity_mods("Tech I", type_id=1, cfg=cfg, cost_indices=cost_indices, blueprint_id=2)
     assert round(material_mult, 4) == 0.90  # owned BPO's ME10
-    assert round(time_mult, 4) == 0.94      # owned BPO's TE6
+    # owned BPO's TE6 (0.94) * skill_mult 0.68 (default Industry L5 × Advanced Industry L5)
+    assert round(time_mult, 4) == 0.6392
 
 
 def test_plan_context_loads_manual_me_te_overrides(monkeypatch):
@@ -928,7 +942,7 @@ def test_reaction_never_uses_owned_bpo_data(monkeypatch):
 
     material_mult, time_mult, _ = _activity_mods("Reaction", type_id=1, cfg=cfg, cost_indices={}, blueprint_id=2)
     assert round(material_mult, 4) == 1.00
-    assert round(time_mult, 4) == 1.00
+    assert round(time_mult, 4) == 0.80  # 1.00 * skill_mult 0.80 (default Reactions skill L5)
 
 
 @pg_helpers.postgres_required()
@@ -1256,7 +1270,11 @@ def test_reaction_te_rig_applies(monkeypatch):
     # reduce time even though the Athanor itself has no reaction-duration
     # structure bonus of its own.
     monkeypatch.setattr(storage, "get_system_security", lambda system_id: -0.5)  # nullsec
-    cfg = ProductionConfig(reaction_structure_type="Athanor (M Refinery)", reaction_rig_tier="T2-Rig")
+    # reactions_skill_level=0 isolates this test from the (unrelated)
+    # job-time skill bonus - see _skill_time_mult - so the assertion below
+    # stays purely about the rig/structure math it was written to check.
+    cfg = ProductionConfig(reaction_structure_type="Athanor (M Refinery)", reaction_rig_tier="T2-Rig",
+                            reactions_skill_level=0)
 
     _, time_mult, _ = _activity_mods("Reaction", type_id=1, cfg=cfg, cost_indices={}, blueprint_id=None)
     # Athanor has no reaction-duration structure bonus of its own
@@ -1264,6 +1282,45 @@ def test_reaction_te_rig_applies(monkeypatch):
     # alone must still measurably reduce time.
     assert time_mult < 0.90
     assert round(time_mult, 5) == round(1.00 * (1 - 0.24 * 1.1), 5)
+
+
+def test_skill_time_mult_matches_confirmed_live_reaction_example(monkeypatch):
+    # Confirmed real gap (2026-09-27): _activity_mods/_tech_ii_mods never
+    # modeled any character-skill (or implant) time bonus at all. This
+    # reproduces the exact "Job Duration Modifiers" panel of a real reaction
+    # job (Crystalline Carbonide Armor Plate Blueprint 17323) with Industry/
+    # Advanced Industry/Molecular Engineering all trained to level 5: the
+    # game showed "Skills and Implants -35.4%", i.e. a 0.646 multiplier.
+    monkeypatch.setattr(storage, "get_blueprint_skills", lambda bp_id, activity_id: [(11529, 3)])  # Molecular Eng.
+    cfg = ProductionConfig(industry_skill_level=5, advanced_industry_skill_level=5, specialist_skill_level=5)
+
+    mult = _skill_time_mult(is_reaction=False, blueprint_id=17323, cfg=cfg)
+
+    assert round(mult, 6) == 0.646
+
+
+def test_skill_time_mult_reaction_uses_reactions_skill_not_industry(monkeypatch):
+    # A Reaction job must use the Reactions skill alone (-4%/level) - Industry/
+    # Advanced Industry never apply, and there is no "Advanced Reactions" time
+    # skill (Mass Reactions/Advanced Mass Reactions are job-slot skills only).
+    monkeypatch.setattr(storage, "get_blueprint_skills", lambda bp_id, activity_id: [])
+    cfg = ProductionConfig(reactions_skill_level=5, industry_skill_level=5, advanced_industry_skill_level=5)
+
+    mult = _skill_time_mult(is_reaction=True, blueprint_id=1, cfg=cfg)
+
+    assert round(mult, 4) == 0.80  # 1 - 4%*5, Industry/Advanced Industry ignored
+
+
+def test_skill_time_mult_ignores_specialist_skill_the_blueprint_does_not_require():
+    # A blueprint whose industryActivitySkills.csv row lists no "specialist"
+    # skill (constants.SPECIALIST_TIME_SKILLS) must not get that discount,
+    # even with a nonzero specialist_skill_level configured - it only applies
+    # to a blueprint that actually requires one (storage.get_blueprint_skills).
+    cfg = ProductionConfig(industry_skill_level=0, advanced_industry_skill_level=0, specialist_skill_level=5)
+
+    mult = _skill_time_mult(is_reaction=False, blueprint_id=None, cfg=cfg)
+
+    assert mult == 1.0
 
 
 def test_reaction_rig_security_multiplier_uses_refinery_table_not_engineering_complex_table():
@@ -4938,6 +4995,7 @@ def test_compare_alchemy_profitability_caesarium_isk_per_hour(monkeypatch):
         alchemy_reactions_enabled=True,
         haul_cost_per_m3=0.0,
         market_fees=0.0,  # isolated quantity/time fixture; fee-netting has its own test
+        reactions_skill_level=0,  # isolates this from the (unrelated) job-time skill bonus
     )
     result = compare_alchemy_profitability(
         _CAESARIUM, cfg, home=_caesarium_home_quotes(), jita={}, cost_indices={}, adjusted_prices={},
@@ -4981,6 +5039,7 @@ def test_compare_alchemy_nets_market_fees_like_margin_home(monkeypatch):
         alchemy_reactions_enabled=True,
         haul_cost_per_m3=0.0,
         market_fees=0.05,
+        reactions_skill_level=0,  # isolates this from the (unrelated) job-time skill bonus
     )
     result = compare_alchemy_profitability(
         _CAESARIUM, cfg, home=_caesarium_home_quotes(), jita={},
@@ -5014,6 +5073,7 @@ def test_compare_alchemy_reprocesses_full_recipe_output_qty(monkeypatch):
         alchemy_reactions_enabled=True,
         haul_cost_per_m3=0.0,
         market_fees=0.0,
+        reactions_skill_level=0,  # isolates this from the (unrelated) job-time skill bonus
     )
     result = compare_alchemy_profitability(
         _CAESARIUM, cfg, home=_caesarium_home_quotes(), jita={},

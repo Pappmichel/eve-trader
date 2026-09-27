@@ -138,10 +138,11 @@ from . import invention, pricing
 from .config import PRODUCTION_CONFIG, ProductionConfig
 from .constants import (
     ACTIVITY_MANUFACTURING, ACTIVITY_MODS, ACTIVITY_REACTION, ADVANCED_COMPONENT_GROUP_IDS, ANCIENT_RELIC_CATEGORY_ID,
-    CAPITAL_COMPONENT_GROUP_IDS, CHARGE_CATEGORY_ID, COMPONENT_GROUP_IDS, DEADSPACE_META_GROUP_ID, DECRYPTORS,
-    DRONE_CATEGORY_ID, FACTION_META_GROUP_ID, FIGHTER_CATEGORY_ID, MODULE_CATEGORY_ID, OFFICER_META_GROUP_ID,
-    SCC_SURCHARGE_RATE, SHIP_CATEGORY_ID, SHIP_SIZE_GROUP_IDS, SPECIAL_EDITION_SHIPS_MARKET_GROUP_ID,
-    STORYLINE_META_GROUP_ID, SUBSYSTEM_GROUP_IDS,
+    ADVANCED_INDUSTRY_TIME_BONUS_PCT, CAPITAL_COMPONENT_GROUP_IDS, CHARGE_CATEGORY_ID, COMPONENT_GROUP_IDS,
+    DEADSPACE_META_GROUP_ID, DECRYPTORS, DRONE_CATEGORY_ID, FACTION_META_GROUP_ID, FIGHTER_CATEGORY_ID,
+    INDUSTRY_TIME_BONUS_PCT, MODULE_CATEGORY_ID, OFFICER_META_GROUP_ID, REACTIONS_TIME_BONUS_PCT,
+    SCC_SURCHARGE_RATE, SHIP_CATEGORY_ID, SHIP_SIZE_GROUP_IDS, SPECIALIST_TIME_SKILLS,
+    SPECIAL_EDITION_SHIPS_MARKET_GROUP_ID, STORYLINE_META_GROUP_ID, SUBSYSTEM_GROUP_IDS,
     rig_security_multiplier, structure_rig_multiplier,
 )
 from .jobs import character_slot_overview
@@ -720,6 +721,48 @@ def _manual_me_te_override(type_id: int, cost_indices: CostIndices) -> Optional[
     return (1 - me / 100, 1 - te / 100)
 
 
+def _skill_time_mult(is_reaction: bool, blueprint_id: Optional[int], cfg: ProductionConfig) -> float:
+    """Character-skill job-time multiplier, applied on top of the blueprint/
+    structure/rig time_mult _activity_mods/_tech_ii_mods already compute.
+    Confirmed real gap (found live 2026-09-27, comparing a real reaction job's
+    "Job Duration Modifiers" panel against this tool's own predicted duration
+    for the same blueprint/quantity): neither function modeled any skill (or
+    implant) time bonus at all before this.
+
+    Two independent layers, both real EVE mechanics (see constants.py's own
+    "job-time skills" section for the dogma-attribute sourcing):
+    1. Universal - Industry + Advanced Industry for every Manufacturing job
+       (also covers Tech I/II/III and Faction/Storyline/Officer/Deadspace,
+       all of which route through this same activity_id=1 Manufacturing
+       mechanic), or Reactions alone for a Reaction job (no "Advanced
+       Reactions" time skill exists).
+    2. Blueprint-specific "specialist" skill (constants.SPECIALIST_TIME_SKILLS,
+       e.g. Molecular Engineering) - only applies if `blueprint_id`'s own
+       industryActivitySkills.csv row (storage.get_blueprint_skills) actually
+       requires it; multiple qualifying skills on one blueprint stack
+       multiplicatively, same as EVE itself.
+
+    Every level is a flat cfg assumption (industry_skill_level/
+    advanced_industry_skill_level/reactions_skill_level/specialist_skill_level)
+    - same "one tenant-wide number, no per-character selection" design this
+    tool already uses for invention's encryption_skill_level/datacore_skill_
+    *_level, confirmed deliberately kept that way with the user 2026-09-27
+    (real per-character ESI skill data exists for job slots, see
+    constants.job_slots_from_skills, but isn't reused here)."""
+    if is_reaction:
+        mult = 1 - (REACTIONS_TIME_BONUS_PCT * cfg.reactions_skill_level) / 100
+    else:
+        mult = 1 - (INDUSTRY_TIME_BONUS_PCT * cfg.industry_skill_level) / 100
+        mult *= 1 - (ADVANCED_INDUSTRY_TIME_BONUS_PCT * cfg.advanced_industry_skill_level) / 100
+    if blueprint_id is not None:
+        activity_id = ACTIVITY_REACTION if is_reaction else ACTIVITY_MANUFACTURING
+        for skill_id, _min_level in storage.get_blueprint_skills(blueprint_id, activity_id):
+            pct = SPECIALIST_TIME_SKILLS.get(skill_id)
+            if pct is not None:
+                mult *= 1 - (pct * cfg.specialist_skill_level) / 100
+    return mult
+
+
 def _activity_mods(activity: str, type_id: int, cfg: ProductionConfig,
                     cost_indices: CostIndices, blueprint_id: Optional[int] = None) -> tuple[float, float, float]:
     """Returns (material_multiplier, time_multiplier, job_cost_rate) for Tech I
@@ -770,7 +813,8 @@ def _activity_mods(activity: str, type_id: int, cfg: ProductionConfig,
         if owned is not None:
             base_material_mult, base_time_mult = owned
 
-    return base_material_mult * me_mult, base_time_mult * te_mult, job_cost_rate
+    skill_mult = _skill_time_mult(activity == "Reaction", blueprint_id, cfg)
+    return base_material_mult * me_mult, base_time_mult * te_mult * skill_mult, job_cost_rate
 
 
 def _tech_ii_mods(type_id: int, blueprint_id: int, activity_id: int, cfg: ProductionConfig,
@@ -810,6 +854,11 @@ def _tech_ii_mods(type_id: int, blueprint_id: int, activity_id: int, cfg: Produc
     structure_type, rig_tier = _structure_rig(structure_profile, cfg)
     security_multiplier = _security_multiplier_for(structure_profile, cfg)
     _, me_mult, te_mult = structure_rig_multiplier(structure_type, rig_tier, security_multiplier)
+    # Tech II/III's own build is always Manufacturing (activity_id=1) - a
+    # product whose blueprint activity is genuinely Reaction is classified
+    # "Reaction" by classify_activity before ever reaching _tech_ii_mods, so
+    # `is_reaction` is never true here.
+    te_mult *= _skill_time_mult(False, blueprint_id, cfg)
     fallback = ACTIVITY_MODS["Tech II"]
     override = selected_decryptors.get(type_id)
     candidates = storage.find_invention_recipe_candidates_by_product_type_id(blueprint_id)

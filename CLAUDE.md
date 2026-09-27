@@ -641,6 +641,49 @@ new heuristic; if the SDE doesn't already carry the field you need, extend
 `refresh_sde()` to fetch it (see the `invMetaTypes.csv` merge that added
 `meta_group_id` for precedent) rather than approximating.
 
+## Job-time character-skill bonus (confirmed real gap, fixed 2026-09-27)
+
+`_activity_mods`/`_tech_ii_mods` (`production/engine.py`) used to combine
+only Blueprint Time Efficiency with the structure/rig bonus for a job's
+predicted duration - no character-skill (or implant) time bonus at all,
+confirmed by live-comparing a real reaction job's "Job Duration Modifiers"
+panel against this tool's own computed duration for the same blueprint/
+quantity (100,000 runs of Crystalline Carbonide Armor Plate): the game
+showed "Skills and Implants -35.4%", this tool showed nothing. `_skill_time_
+mult` (engine.py) now fixes this with two independently-stacking layers, both
+sourced from each skill's own dogma attribute (not just its free-text
+description - `manufacturingTimeBonus`/`advancedIndustrySkillIndustryJobTime
+Bonus`/`reactionTimeBonus`/`manufactureTimePerLevel`, verified against
+`dgmTypeAttributes.csv`/`dgmAttributeTypes.csv`, cross-checked live against
+the same real reaction job: Industry L5 (-20%) x Advanced Industry L5 (-15%)
+x Molecular Engineering L5 (-5%) = 0.646 = exactly the shown -35.4%):
+1. **Universal**: Industry + Advanced Industry for every Manufacturing job
+   (also covers Tech I/II/III and Faction/Storyline/Officer/Deadspace, all
+   of which route through this same activity_id=1 mechanic), or Reactions
+   alone for a Reaction job - confirmed no "Advanced Reactions" time skill
+   exists (Mass Reactions/Advanced Mass Reactions are job-slot skills only,
+   see `constants.job_slots_from_skills`).
+2. **Blueprint-specific "specialist" skill** (`constants.SPECIALIST_TIME_
+   SKILLS`, ~26 skills, e.g. Molecular Engineering, each -1%/level except
+   Mutagenic Stabilization at -2%/level) - only applies if the blueprint's
+   own `industryActivitySkills.csv` row (`storage.get_blueprint_skills`,
+   `sde_blueprint_skills` table) actually requires it; a required skill with
+   no such dogma attribute (e.g. Capital Ship Construction - a pure gate,
+   confirmed via its own SDE description) correctly contributes nothing.
+
+Every level is a **flat, manually-set `ProductionConfig` field**
+(`industry_skill_level`/`advanced_industry_skill_level`/`reactions_skill_
+level`/`specialist_skill_level`, default 5) - the exact same "one tenant-
+wide number, no per-character selection" design this tool already used for
+Invention's `encryption_skill_level`/`datacore_skill_*_level`, deliberately
+kept that way here too (confirmed with the user 2026-09-27): real ESI
+character skills already exist for job-slot counts
+(`esi_data/fetchers.py::fetch_character_skills`), but are not reused for
+this, since a tenant can have several producer characters and there is no
+"whose skills count" selection logic anywhere in this tool to reach for
+instead - re-opening that question was explicitly declined in favor of
+staying consistent with the existing Invention pattern.
+
 ## Manual tracking for Production
 
 Full history/decision log/phase breakdown lives in `docs/MANUAL_TRACKING_PLAN.md`

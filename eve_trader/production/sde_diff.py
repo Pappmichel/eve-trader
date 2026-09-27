@@ -150,6 +150,12 @@ def _other_tables(fetched: FetchedSde, snapshot: dict, new_types: dict, old_type
             lambda row: f"{type_label(row[0])} → {type_label(row[1])}",
             (("probability", 2, True),),
         ),
+        (
+            "sde_blueprint_skills", fetched.blueprint_skills,
+            lambda row: (int(row[0]), int(row[1]), int(row[2])),
+            lambda row: f"{type_label(row[0])} ({row[1]}) needs {type_label(row[2])}",
+            (("level", 3, False),),
+        ),
     )
     return {
         table: _diff_rows(_rows(snapshot, table), new_rows, key_fn, name_fn, fields)
