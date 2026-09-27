@@ -136,7 +136,7 @@ export default function Landing() {
         <ToolCard tools={tools} toolKey="station_trading" to="/station-trading" title="Station Trading"
           description="Buy and sell on Jita's own order book, profiting from the bid-ask spread." />
         <ToolCard tools={tools} toolKey="sorting" to="/sorting" title="Sorting"
-          description="See what's sitting in Wareneingang hangars and which tool still wants it." />
+          description="See what's sitting in the intake hangars and which tool still wants it." />
       </SimpleGrid>
 
       <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }} spacing="md" mt="md">
