@@ -14,6 +14,7 @@ import './index.css'
 import { theme } from './theme'
 import App from './App'
 import { errorsApi } from './api/client'
+import { clearChunkReloadAttemptFlag } from './chunkReload'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
@@ -34,6 +35,13 @@ window.addEventListener('unhandledrejection', (event) => {
   const detail = reason instanceof Error ? reason.stack : undefined
   errorsApi.report('frontend-unhandled-rejection', message, detail, window.location.pathname).catch(() => {})
 })
+
+// ErrorBoundary sets a one-shot "already auto-reloaded for a stale chunk"
+// flag for the tab session (see chunkReload.ts) to stop a genuine, repeating
+// failure from reload-looping. Once this app has been running a few seconds
+// without hitting that path, clear it - a *later*, separate deploy hit by
+// the same long-lived tab should get its own auto-reload attempt too.
+window.setTimeout(clearChunkReloadAttemptFlag, 5000)
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
