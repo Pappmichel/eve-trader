@@ -1,7 +1,8 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
-import { Box, Button, Container, Group, Stack, Text, Title } from '@mantine/core'
+import { Box, Button, Center, Container, Group, Loader, Stack, Text, Title } from '@mantine/core'
 import { errorsApi } from '../api/client'
 import { COLORS } from '../theme'
+import { isChunkLoadError, shouldAutoReloadForChunkError } from '../chunkReload'
 
 // React error boundaries must be class components - there is still no hook
 // equivalent (getDerivedStateFromError/componentDidCatch have no functional
@@ -14,13 +15,14 @@ interface Props {
 
 interface State {
   error: Error | null
+  reloading: boolean
 }
 
 export class ErrorBoundary extends Component<Props, State> {
-  state: State = { error: null }
+  state: State = { error: null, reloading: false }
 
   static getDerivedStateFromError(error: Error): State {
-    return { error }
+    return { error, reloading: isChunkLoadError(error) }
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
@@ -34,9 +36,28 @@ export class ErrorBoundary extends Component<Props, State> {
     console.error('Unhandled render error:', error, info.componentStack)
     errorsApi.report('frontend-render', error.message, info.componentStack ?? undefined, window.location.pathname)
       .catch(() => {})
+
+    // Stale-chunk-after-deploy (see chunkReload.ts) - one silent reload
+    // instead of the "Something went wrong" screen, since the user didn't
+    // cause this and a reload always clears it. shouldAutoReloadForChunkError
+    // only returns true once per tab session, so a genuinely persistent
+    // failure (not just a stale chunk) still falls through to that screen
+    // instead of reloading forever.
+    if (isChunkLoadError(error) && shouldAutoReloadForChunkError()) {
+      window.location.reload()
+    } else if (this.state.reloading) {
+      this.setState({ reloading: false })
+    }
   }
 
   render() {
+    if (this.state.reloading) {
+      return (
+        <Center h={200}>
+          <Loader color="accent" />
+        </Center>
+      )
+    }
     if (!this.state.error) {
       return this.props.children
     }
