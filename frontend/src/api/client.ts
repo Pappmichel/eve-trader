@@ -695,3 +695,22 @@ export const sortingApi = {
     '/api/sorting/hangar-division-options',
   ),
 }
+
+// ------------------------------------------------------ module reprocessing
+export const moduleReprocessingApi = {
+  discover: () => post<{ scanned: number; estimated_profitable: number }>('/api/module-reprocessing/discover'),
+  discoveredResults: () => get<T.DiscoveredModuleResult[]>('/api/module-reprocessing/discover/results'),
+  shortlistSnapshot: () => get<T.ModuleShortlistRow[]>('/api/module-reprocessing/shortlist/snapshot'),
+  shortlistItems: () => get<T.ModuleShortlistItem[]>('/api/module-reprocessing/shortlist/items'),
+  addToShortlist: (itemIds: number[]) =>
+    post<{ added: number }>('/api/module-reprocessing/shortlist/add', { item_ids: itemIds }),
+  refreshShortlist: () => post<Record<string, unknown>>('/api/module-reprocessing/shortlist/refresh'),
+  deactivateShortlistItems: (itemIds: number[]) =>
+    post<{ deactivated: number }>('/api/module-reprocessing/shortlist/deactivate', { item_ids: itemIds }),
+  activateShortlistItems: (itemIds: number[]) =>
+    post<{ activated: number }>('/api/module-reprocessing/shortlist/activate', { item_ids: itemIds }),
+  settings: () => get<T.ModuleReprocessingSettings>('/api/module-reprocessing/settings'),
+  updateSettings: (s: T.ModuleReprocessingSettings) =>
+    post<T.ModuleReprocessingSettings>('/api/module-reprocessing/settings', s),
+  esiSyncTime: () => get<{ synced_at: string | null }>('/api/module-reprocessing/esi/sync-time'),
+}

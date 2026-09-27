@@ -224,7 +224,7 @@ function BackupsSection() {
 // Mirrors access_gate.ALL_TOOL_KEYS (eve_trader/access_gate.py) - kept in
 // sync by hand, same as every other small fixed-vocabulary list already
 // hardcoded on the frontend elsewhere in this app.
-const ALL_TOOL_KEYS = ['trading', 'production', 'doctrine', 'refining', 'station_trading', 'sorting', 'portfolio', 'admin', 'characters']
+const ALL_TOOL_KEYS = ['trading', 'production', 'doctrine', 'refining', 'station_trading', 'sorting', 'portfolio', 'admin', 'characters', 'module_reprocessing']
 const ESI_CONSUMING_TOOLS = ['trading', 'production', 'doctrine', 'station_trading', 'sorting']
 
 function withAutoCharacters(keys: string[]): string[] {

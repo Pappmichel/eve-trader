@@ -239,6 +239,14 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "sales_tax_rate": (0, 1),
     "min_spread_threshold": (0, 1),
     "min_daily_volume": (0, None),
+    # -- Module Reprocessing Import tool (see module_reprocessing/config.py's
+    # ModuleReprocessingConfig) - scrapmetal_processing_skill_level and
+    # refining_tax_rate reuse the exact same field names/bounds as
+    # RefiningConfig's own copies above (this dict is keyed by field name,
+    # not by dataclass, so no new entry is needed for those two) --
+    "freight_cost_per_m3": (0, None),
+    "purchase_region_id": (1, None),
+    "purchase_structure_id": (1, None),
 }
 
 

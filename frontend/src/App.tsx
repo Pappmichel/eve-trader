@@ -78,6 +78,12 @@ const SortingLayout = lazy(() => import('./pages/sorting/SortingLayout'))
 const SortingOverview = lazy(() => import('./pages/sorting/SortingOverview'))
 const SortingSettings = lazy(() => import('./pages/sorting/SortingSettings'))
 
+const ModuleReprocessingLayout = lazy(() => import('./pages/module_reprocessing/ModuleReprocessingLayout'))
+const ModuleReprocessingOverview = lazy(() => import('./pages/module_reprocessing/Overview'))
+const ModuleReprocessingDiscover = lazy(() => import('./pages/module_reprocessing/Discover'))
+const ModuleReprocessingShortlist = lazy(() => import('./pages/module_reprocessing/Shortlist'))
+const ModuleReprocessingSettings = lazy(() => import('./pages/module_reprocessing/ModuleReprocessingSettings'))
+
 const AdminPage = lazy(() => import('./pages/admin/AdminPage'))
 const SdePreviewPage = lazy(() => import('./pages/admin/SdePreviewPage'))
 const CharactersPage = lazy(() => import('./pages/characters/CharactersPage'))
@@ -276,6 +282,13 @@ function App() {
             <Route path="/sorting" element={<SortingLayout />}>
               <Route index element={<SortingOverview />} />
               <Route path="settings" element={<SortingSettings />} />
+            </Route>
+
+            <Route path="/modules" element={<ModuleReprocessingLayout />}>
+              <Route index element={<ModuleReprocessingOverview />} />
+              <Route path="discover" element={<ModuleReprocessingDiscover />} />
+              <Route path="shortlist" element={<ModuleReprocessingShortlist />} />
+              <Route path="settings" element={<ModuleReprocessingSettings />} />
             </Route>
           </Routes>
         </Suspense>

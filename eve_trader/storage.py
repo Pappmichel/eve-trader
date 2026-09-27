@@ -4526,6 +4526,122 @@ def load_mineral_requirements() -> list[tuple[int, str, float]]:
         ).fetchall()
 
 
+# --------------------------------------------------- Module Reprocessing Import
+# Same two-table shortlist/snapshot shape as the Ore Shortlist above
+# (docs/module_reprocessing_schema.sql mirrors docs/refining_schema.sql's own
+# ore_shortlist/ore_shortlist_snapshot), but the candidate universe itself
+# (module_reprocessing_candidate_types below) is large - unlike
+# load_ore_ice_candidate_types, this is a Discover-time query, not something
+# every row of gets auto-added to the shortlist (see module_reprocessing/
+# candidate_discovery.py).
+def upsert_module_reprocessing_shortlist(rows: Iterable[tuple[int, str, bool]]) -> None:
+    """rows: (item_id, item, active)."""
+    with connect() as conn:
+        conn.executemany(
+            "INSERT INTO module_reprocessing_shortlist (item_id, item, active) VALUES (?,?,?) "
+            "ON CONFLICT(tenant_id, item_id) DO UPDATE SET item=excluded.item, active=excluded.active",
+            [(item_id, item, bool(active)) for item_id, item, active in rows],
+        )
+
+
+def load_module_reprocessing_shortlist() -> list[tuple[int, str, bool]]:
+    """Returns (item_id, item, active) rows."""
+    with connect() as conn:
+        return conn.execute("SELECT item_id, item, active FROM module_reprocessing_shortlist").fetchall()
+
+
+def deactivate_module_reprocessing_shortlist_items(item_ids: Iterable[int]) -> None:
+    item_ids = list(item_ids)
+    if not item_ids:
+        return
+    with connect() as conn:
+        conn.executemany(
+            "UPDATE module_reprocessing_shortlist SET active = false WHERE item_id = ?", [(i,) for i in item_ids]
+        )
+
+
+def activate_module_reprocessing_shortlist_items(item_ids: Iterable[int]) -> None:
+    """Reactivation counterpart - same reasoning as activate_ore_shortlist_items:
+    without this, an item deactivated once would stay inactive forever even
+    if its economics later recovered."""
+    item_ids = list(item_ids)
+    if not item_ids:
+        return
+    with connect() as conn:
+        conn.executemany(
+            "UPDATE module_reprocessing_shortlist SET active = true WHERE item_id = ?", [(i,) for i in item_ids]
+        )
+
+
+def save_module_reprocessing_shortlist_snapshot(rows: list[tuple], run_ts: str) -> None:
+    """rows: (item_id, item, active, volume_m3, landed_cost, yield_pct,
+    mineral_value, refining_tax, net_sell, sell_listed_qty, profit_per_unit,
+    margin, profit_per_m3, decision) - see module_reprocessing/models.py's
+    ModuleShortlistRow for field meanings."""
+    with connect() as conn:
+        conn.executemany(
+            "INSERT INTO module_reprocessing_shortlist_snapshot (run_ts, item_id, item, active, volume_m3, "
+            "landed_cost, yield_pct, mineral_value, refining_tax, net_sell, sell_listed_qty, profit_per_unit, "
+            "margin, profit_per_m3, decision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [(run_ts, *row) for row in rows],
+        )
+
+
+def latest_module_reprocessing_snapshot() -> pd.DataFrame:
+    """Same pattern as latest_ore_snapshot() - the most recent run_ts's rows
+    only, as a DataFrame the router converts via schemas.records()."""
+    with connect() as conn:
+        run_ts = conn.execute("SELECT MAX(run_ts) FROM module_reprocessing_shortlist_snapshot").fetchone()[0]
+        if not run_ts:
+            return pd.DataFrame()
+        cur = conn.execute("SELECT * FROM module_reprocessing_shortlist_snapshot WHERE run_ts = ?", (run_ts,))
+        columns = [d[0] for d in cur.description]
+        return pd.DataFrame(cur.fetchall(), columns=columns)
+
+
+def module_reprocessing_candidate_types(type_ids: Optional[list[int]] = None) -> list[tuple[int, str, float]]:
+    """Returns (type_id, type_name, volume) for every published T1/Meta
+    module or drone - the Module Reprocessing Import tool's candidate
+    universe (category_id 7 "Module" or 18 "Drone", see production/
+    constants.py's MODULE_CATEGORY_ID/DRONE_CATEGORY_ID).
+
+    Excludes, all via real SDE fields rather than name heuristics (see
+    CLAUDE.md's "Real SDE data drives classification"):
+      - Tech II (meta_group_id 2), Storyline (3), Faction (4), Officer (5),
+        Deadspace (6) - confirmed with the user: these are almost always
+        worth more sold than scrapped, out of scope for this tool. A NULL
+        meta_group_id (plain Tech I) passes through, same as production/
+        engine.py's classify_activity treats an unmatched meta_group_id as
+        Tech I.
+      - Rigs - real category_id 7 covers both regular modules and rigs (see
+        eve_trader/candidate_discovery.py's own MODULE_CATEGORY_ID comment),
+        distinguished via sde_type_slots.slot = 'rig' (populated from
+        dgmTypeEffects.csv's rig-activation effect, see production/sde.py's
+        refresh_sde) - confirmed with the user during planning to exclude
+        rigs from this tool's scope entirely.
+
+    `type_ids`, when given, narrows the scan to just those ids (used by
+    module_reprocessing/candidate_discovery.py's arbitrary-type paste/lookup
+    paths, if any are ever added) - the default (None) is the full-universe
+    Discover scan."""
+    query = (
+        "SELECT t.type_id, t.type_name, t.volume FROM sde_types t "
+        "JOIN sde_groups g ON g.group_id = t.group_id "
+        "LEFT JOIN sde_type_slots s ON s.type_id = t.type_id "
+        "WHERE g.category_id IN (7, 18) AND t.published = 1 "
+        "AND (t.meta_group_id IS NULL OR t.meta_group_id NOT IN (2, 3, 4, 5, 6)) "
+        "AND (s.slot IS NULL OR s.slot != 'rig')"
+    )
+    params: tuple = ()
+    if type_ids is not None:
+        if not type_ids:
+            return []
+        query += " AND t.type_id = ANY(?)"
+        params = (list(type_ids),)
+    with connect() as conn:
+        return conn.execute(query, params).fetchall()
+
+
 # ----------------------------------------------- Station Trading: candidate shortlist
 def upsert_station_trading_shortlist(rows: Iterable[tuple[int, float, float, str]]) -> None:
     """rows: (type_id, spread_pct, avg_daily_volume, discovered_at) - a

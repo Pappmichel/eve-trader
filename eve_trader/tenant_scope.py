@@ -15,6 +15,7 @@ from contextlib import contextmanager
 
 from . import config, storage
 from .doctrine import config as doctrine_config
+from .module_reprocessing import config as module_reprocessing_config
 from .production import config as production_config
 from .refining import config as refining_config
 from .station_trading import config as station_trading_config
@@ -23,12 +24,12 @@ from .station_trading import config as station_trading_config
 @contextmanager
 def enter_tenant(tenant_id: str):
     """Sets storage's ambient tenant, then resolves and sets TRADING_CONFIG's,
-    PRODUCTION_CONFIG's, DOCTRINE_CONFIG's, REFINING_CONFIG's, and
-    STATION_TRADING_CONFIG's live instance for that same tenant (base
-    defaults + config.yaml, overlaid with that tenant's own tenant_settings)
-    - resets all six on exit, storage's tenant last, so the config-resolution
-    steps still have a tenant to read tenant_settings under for as long as
-    they need it.
+    PRODUCTION_CONFIG's, DOCTRINE_CONFIG's, REFINING_CONFIG's,
+    STATION_TRADING_CONFIG's, and MODULE_REPROCESSING_CONFIG's live instance
+    for that same tenant (base defaults + config.yaml, overlaid with that
+    tenant's own tenant_settings) - resets all seven on exit, storage's
+    tenant last, so the config-resolution steps still have a tenant to read
+    tenant_settings under for as long as they need it.
 
     Each `set`/resolve step gets its own nested `try/finally` rather than
     one flat `try` wrapping all four - if a later resolve step raises (e.g.
@@ -50,7 +51,13 @@ def enter_tenant(tenant_id: str):
                     try:
                         station_trading_token = station_trading_config.resolve_and_set_station_trading_config(tenant_id)
                         try:
-                            yield
+                            module_reprocessing_token = (
+                                module_reprocessing_config.resolve_and_set_module_reprocessing_config(tenant_id)
+                            )
+                            try:
+                                yield
+                            finally:
+                                module_reprocessing_config.reset_module_reprocessing_config(module_reprocessing_token)
                         finally:
                             station_trading_config.reset_station_trading_config(station_trading_token)
                     finally:

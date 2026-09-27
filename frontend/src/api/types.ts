@@ -1328,3 +1328,47 @@ export interface SortingIntakeSource {
 export interface SortingIntakeSourceList {
   sources: SortingIntakeSource[]
 }
+
+// ---------------------------------------------------- module reprocessing
+export interface ModuleShortlistItem {
+  item_id: number
+  item: string
+  active: boolean
+}
+
+export interface ModuleShortlistRow {
+  item_id: number
+  item: string
+  active: boolean
+  volume_m3: number | null
+  landed_cost: number | null
+  yield_pct: number | null
+  mineral_value: number | null
+  refining_tax: number | null
+  net_sell: number | null
+  sell_listed_qty: number | null
+  profit_per_unit: number | null
+  margin: number | null
+  profit_per_m3: number | null
+  decision: string
+}
+
+export interface DiscoveredModuleResult {
+  type_id: number
+  item: string
+  volume_m3: number
+  est_landed_cost: number | null
+  est_mineral_value: number | null
+  est_profit_per_unit: number | null
+  est_margin: number | null
+}
+
+export interface ModuleReprocessingSettings {
+  scrapmetal_processing_skill_level: number
+  refining_tax_rate: number
+  freight_cost_per_m3: number
+  min_profit_threshold: number
+  min_margin_threshold: number
+  purchase_region_id: number
+  purchase_structure_id: number | null
+}
