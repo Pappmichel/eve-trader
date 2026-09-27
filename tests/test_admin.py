@@ -296,7 +296,7 @@ def test_do_preview_sde_emits_increasing_batch_progress(monkeypatch):
     assert all(p["phase"] == "run" for p in seen)
     assert all(p["total_batches"] == 14 for p in seen)
     assert seen[0]["message"] == "Fetching invTypes.csv"
-    assert seen[-1]["message"] == "Fetching invTypeMaterials.csv"
+    assert seen[-1]["message"] == "Fetching industryActivitySkills.csv"
     assert result == {"new_items": []}
     assert admin._staged_sde is not None
     assert admin._staged_sde.dump_etag == "etag"
