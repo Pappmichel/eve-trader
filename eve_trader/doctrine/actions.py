@@ -295,6 +295,16 @@ def _character_names_by_role_key() -> dict[str, str]:
 
 
 def do_get_fitting_detail(fitting_id: str) -> dict:
+    # Same not-found guard as do_update_fitting/do_delete_fitting above -
+    # confirmed real bug (2026-09-26 pentest follow-up): this was the one
+    # fitting_id call site with no existence check before
+    # load_fitting_with_items, so any nonexistent fitting_id (a genuinely
+    # bad ID, or another tenant's real ID - RLS makes the two
+    # indistinguishable here, correctly) hit that function's own
+    # LookupError unconverted, surfacing as a bare 500 instead of a clean
+    # ActionError-derived 400.
+    if storage.get_fitting(fitting_id) is None:
+        raise ActionError(f"Fitting {fitting_id} not found.")
     fitting, items = engine.load_fitting_with_items(fitting_id)
     issue_rows = storage.load_fitting_parse_issues(fitting_id)
     contracts = engine.contract_rows_from_db(storage.list_doctrine_contracts(fitting_id=fitting_id))

@@ -374,7 +374,6 @@ class ProductionSettings(BaseModel):
     component_overbuild: float
     bpc_inventory: float
     market_fees: float
-    jita_buy_broker_fee: float
     min_margin: float
     min_daily_profit: float
     haul_cost_per_m3: float

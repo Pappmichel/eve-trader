@@ -22,7 +22,7 @@ from .. import access_policy, scheduler, storage, tenant_scope
 from ..access_gate import SESSION_COOKIE_NAME, AuthorizedSession, authorize_session_cookie
 
 log = logging.getLogger(__name__)
-from ..config import ACCESS_CONFIG, TRADING_CONFIG, apply_config_overrides
+from ..config import ACCESS_CONFIG, OAUTH_CONFIG, TRADING_CONFIG, apply_config_overrides
 from ..doctrine.config import DOCTRINE_CONFIG
 from ..production.config import PRODUCTION_CONFIG
 from .routers import (
@@ -173,6 +173,44 @@ def _required_tool_for_path(path: str, method: str = "GET") -> Optional[str]:
     return None
 
 
+# State-changing methods only - a GET/HEAD/OPTIONS can't carry a CSRF side
+# effect, so there's nothing here for them to protect.
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _origin_is_allowed(request: Request, origin: str) -> bool:
+    """True if `origin` is this request's own scheme+host - a real
+    same-origin browser request, safe to trust since Origin is set by the
+    browser itself and cannot be scripted by an attacker's page - or the
+    configured dev frontend_origin (the other legitimate origin a real
+    login-flow browser can call from in the two-process local dev setup,
+    see OAUTH_CONFIG.frontend_origin's own docstring)."""
+    self_origin = f"{request.url.scheme}://{request.url.netloc}"
+    return origin in (self_origin, OAUTH_CONFIG.frontend_origin)
+
+
+def _csrf_check(request: Request) -> Optional[JSONResponse]:
+    """2026-09-26 pentest follow-up: CORS' own Origin allow-list only ever
+    protected requests a *browser* subjects to CORS in the first place
+    (fetch/XHR with a non-simple content type) - a plain HTML form POST
+    (application/x-www-form-urlencoded, no custom headers) never triggers a
+    preflight and was reaching Pydantic body validation regardless of
+    Origin, confirmed live during that pentest. This is the missing
+    server-side half: reject a state-changing /api/ request outright when
+    it carries an Origin header that doesn't match anything we'd accept -
+    checked before auth/tenant resolution, same reasoning as the gate's own
+    fail-closed checks below. A request with *no* Origin header at all
+    (a non-browser API client - the CLI, a script, another service) is
+    let through here; it was never a CSRF vector to begin with, since CSRF
+    is specifically about a browser automatically attaching a victim's
+    cookies to a request that client didn't choose to send."""
+    if request.method in _UNSAFE_METHODS and request.url.path.startswith("/api/"):
+        origin = request.headers.get("origin")
+        if origin is not None and not _origin_is_allowed(request, origin):
+            return JSONResponse({"detail": "Forbidden - disallowed origin"}, status_code=403)
+    return None
+
+
 class AccessGateMiddleware(BaseHTTPMiddleware):
     """Gates every /api/* route behind a valid access-gate session cookie
     once AccessConfig.access_gate_enabled is true (on by default; the check
@@ -206,6 +244,10 @@ class AccessGateMiddleware(BaseHTTPMiddleware):
     not a clear 401."""
 
     async def dispatch(self, request: Request, call_next):
+        csrf_rejection = _csrf_check(request)
+        if csrf_rejection is not None:
+            return csrf_rejection
+
         if not ACCESS_CONFIG.access_gate_enabled:
             # Gate off - every request is DEFAULT_TENANT_ID, structurally
             # (there's no session to resolve a *different* tenant from), so
@@ -301,7 +343,17 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173"],
+        # OAUTH_CONFIG.frontend_origin, not a hardcoded literal - this is the
+        # exact same config value set_session_cookie() already relies on to
+        # decide the session cookie's own Secure flag (see access_gate.py),
+        # so it must already be set correctly per environment. A hardcoded
+        # "http://localhost:5173" here meant the dev origin stayed allowed
+        # (with credentials) in every deployment regardless of environment -
+        # confirmed live in production during the 2026-09-26 pentest
+        # follow-up. Production doesn't need any entry here at all (frontend
+        # and backend are same-origin there, see this module's own docstring)
+        # - this only matters for the two-process local dev setup.
+        allow_origins=[OAUTH_CONFIG.frontend_origin],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
