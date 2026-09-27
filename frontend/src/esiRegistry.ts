@@ -9,6 +9,15 @@ export interface OwnedDataKind {
   group: 1 | 2
   consumingTools: readonly string[]
   corpRoles: readonly string[]
+  // Only set where a tool in consumingTools is actually backed by a
+  // *different* data_kind under the hood than this row's own `key` (2026-09-27:
+  // "Wallet" and the former standalone "Wallet Balance" row merged into one
+  // visual row - Trading's own wallet sync (transactions+journal) and
+  // Portfolio's wallet-balance sync are still two separate, independently-
+  // scheduled ESI fetches server-side, same OAuth scope but very different
+  // cost/shape, so the sharing *data* stays split; only the UI presentation
+  // merged). Falls back to `key` for every tool not listed here.
+  toolDataKind?: Readonly<Record<string, string>>
 }
 
 export interface AccessCapability {
@@ -45,13 +54,9 @@ export const OWNED_DATA_KINDS: readonly OwnedDataKind[] = [
   },
   {
     key: 'wallet', label: 'Wallet', group: 1,
-    consumingTools: ['trading'],
+    consumingTools: ['trading', 'portfolio'],
     corpRoles: ['Accountant', 'Junior_Accountant'],
-  },
-  {
-    key: 'wallet_balance', label: 'Wallet Balance', group: 1,
-    consumingTools: ['portfolio'],
-    corpRoles: ['Accountant', 'Junior_Accountant'],
+    toolDataKind: { portfolio: 'wallet_balance' },
   },
   {
     key: 'skills', label: 'Skills', group: 2,
@@ -96,6 +101,13 @@ export const CONSUMING_TOOL_KEYS = [
 
 export function kindByKey(key: string): OwnedDataKind | undefined {
   return OWNED_DATA_KINDS.find((k) => k.key === key)
+}
+
+// The real data_kind a given tool's sharing row lives under for this row -
+// `kind.key` unless `toolDataKind` overrides it for that specific tool (see
+// that field's own docstring).
+export function dataKindForTool(kind: OwnedDataKind, toolKey: string): string {
+  return kind.toolDataKind?.[toolKey] ?? kind.key
 }
 
 export function capabilityByKey(key: string): AccessCapability | undefined {

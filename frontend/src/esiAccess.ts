@@ -1,6 +1,7 @@
 import type { AccessPreview } from './api/types'
 import type { EsiCapabilityRow, EsiFreshnessRow, EsiSharingRow } from './api/types'
-import { CONSUMING_TOOL_KEYS, OWNED_DATA_KINDS, kindByKey, toolLabel } from './esiRegistry'
+import { CONSUMING_TOOL_KEYS, OWNED_DATA_KINDS, dataKindForTool, kindByKey, toolLabel } from './esiRegistry'
+import type { OwnedDataKind } from './esiRegistry'
 
 export type CellKind = 'not_shared' | 'all' | 'some' | 'pending' | 'error'
 
@@ -11,18 +12,24 @@ export interface CellState {
   lastError: string | null
 }
 
+// `kind` (not just its `key`) so a per-tool `toolDataKind` override (see
+// esiRegistry.ts, e.g. the merged Wallet row's Portfolio toggle actually
+// living under 'wallet_balance') resolves correctly instead of every tool
+// being checked against the row's own nominal key.
 export function sharedToolsFor(
   sharing: EsiSharingRow[],
   ownerType: string,
   ownerId: number,
-  dataKind: string,
+  kind: OwnedDataKind,
 ): string[] {
-  const capable = new Set(kindByKey(dataKind)?.consumingTools ?? [])
   const tools = new Set<string>()
-  for (const row of sharing) {
-    if (row.owner_type === ownerType && row.owner_id === ownerId && row.data_kind === dataKind && capable.has(row.tool_key)) {
-      tools.add(row.tool_key)
-    }
+  for (const toolKey of kind.consumingTools) {
+    const dk = dataKindForTool(kind, toolKey)
+    const isShared = sharing.some(
+      (row) => row.owner_type === ownerType && row.owner_id === ownerId
+        && row.data_kind === dk && row.tool_key === toolKey,
+    )
+    if (isShared) tools.add(toolKey)
   }
   return [...tools]
 }
@@ -49,14 +56,24 @@ export function deriveCellState(args: {
   freshness: EsiFreshnessRow[]
   pendingKinds: ReadonlySet<string>
 }): CellState {
-  const capableCount = kindByKey(args.dataKind)?.consumingTools.length ?? 0
-  const shared = sharedToolsFor(args.sharing, args.ownerType, args.ownerId, args.dataKind)
+  const kind = kindByKey(args.dataKind)
+  const capableCount = kind?.consumingTools.length ?? 0
+  const shared = kind ? sharedToolsFor(args.sharing, args.ownerType, args.ownerId, kind) : []
   const sharedCount = shared.length
-  const lastError = freshnessError(args.freshness, args.ownerType, args.ownerId, args.dataKind)
+  // Every real data_kind this row's tools might actually live under (usually
+  // just the row's own key; the merged Wallet row also covers 'wallet_balance')
+  // - a failure on *either* underlying fetch should surface on this one cell.
+  const underlyingKinds = new Set(
+    kind ? kind.consumingTools.map((toolKey) => dataKindForTool(kind, toolKey)) : [args.dataKind],
+  )
+  const lastError = [...underlyingKinds]
+    .map((dk) => freshnessError(args.freshness, args.ownerType, args.ownerId, dk))
+    .find((err) => err != null) ?? null
+  const pending = [...underlyingKinds].some((dk) => args.pendingKinds.has(dk))
   if (sharedCount > 0 && lastError) {
     return { kind: 'error', sharedCount, capableCount, lastError }
   }
-  if (sharedCount > 0 && args.pendingKinds.has(args.dataKind)) {
+  if (sharedCount > 0 && pending) {
     return { kind: 'pending', sharedCount, capableCount, lastError: null }
   }
   if (sharedCount === 0) {
@@ -136,8 +153,9 @@ export function buildToolView(
     const missing: ToolViewKind[] = []
     for (const kind of OWNED_DATA_KINDS) {
       if (!kind.consumingTools.includes(toolKey)) continue
+      const dk = dataKindForTool(kind, toolKey)
       const owners = sharing
-        .filter((r) => r.tool_key === toolKey && r.data_kind === kind.key)
+        .filter((r) => r.tool_key === toolKey && r.data_kind === dk)
         .map((r) => ({
           ownerType: r.owner_type,
           ownerId: r.owner_id,

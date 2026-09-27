@@ -215,6 +215,44 @@ def test_contracts_are_tenant_isolated_even_with_same_contract_id(tenant_pair):
     assert len(rows_b) == 1 and rows_b[0][6] == "B's view"
 
 
+def test_same_contract_synced_by_two_owners_updates_not_crashes(tenant):
+    # Confirmed real bug (2026-09-27, live production sync): a corp-shared
+    # contract_id (globally unique, not per-character) is visible to every
+    # member's own sync too, not just a corp-level one - each owner's
+    # replace only ever deletes its OWN partition first
+    # (_delete_doctrine_contract_partition), so a second owner who also
+    # sees the same real contract used to hit doctrine_contracts' own
+    # (tenant_id, contract_id) primary key head-on with a plain INSERT
+    # (IntegrityError, no ON CONFLICT clause at all). Character A's own
+    # sync recording contract_id=42 first, then character B's sync also
+    # seeing that same contract, must not crash - and the row's owner
+    # attribution should stay A's (first recorded), while the contract's
+    # own real-world details (status here) still refresh to the latest
+    # sync's view.
+    storage.replace_doctrine_sync_snapshot(
+        contracts=[(42, "doctrine:1", True, 1, 1, "outstanding", "shared contract", 1.0, None, None, None,
+                    "unmatched", "2026-01-01T00:00:00Z")],
+        items=[], deviations=[],
+        owner_character_id=111,
+    )
+    storage.replace_doctrine_sync_snapshot(
+        contracts=[(42, "doctrine:2", True, 1, 1, "finished", "shared contract", 1.0, None, None, None,
+                    "unmatched", "2026-01-02T00:00:00Z")],
+        items=[], deviations=[],
+        owner_character_id=222,
+    )
+
+    rows = storage.list_doctrine_contracts()
+    assert len(rows) == 1
+    assert rows[0][0] == 42
+    assert rows[0][5] == "finished"  # status refreshed to the second sync's view
+    with storage.connect() as conn:
+        owner = conn.execute(
+            "SELECT owner_character_id FROM doctrine_contracts WHERE contract_id = 42"
+        ).fetchone()
+    assert owner[0] == 111  # attribution stays with whoever recorded it first
+
+
 @pytest.fixture(autouse=True)
 def _wipe_doctrine_assets():
     # character_assets/corp_assets are column-only-bucket tables (PK =

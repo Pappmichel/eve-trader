@@ -16,6 +16,7 @@ import {
   CHARACTER_KINDS,
   GROUP_1_KINDS,
   capabilityByKey,
+  dataKindForTool,
   formatCorpRoles,
   kindByKey,
   toolLabel,
@@ -27,6 +28,7 @@ import {
   deriveCellState,
   extraKindsForCharacter,
   pendingKeysFromPreview,
+  sharedToolsFor,
   type CellKind,
   type CellState,
 } from '../../esiAccess'
@@ -91,11 +93,7 @@ function SharingCell({
   const state = deriveCellState({
     ownerType, ownerId, dataKind, sharing, freshness, pendingKinds,
   })
-  const shared = new Set(
-    sharing
-      .filter((r) => r.owner_type === ownerType && r.owner_id === ownerId && r.data_kind === dataKind)
-      .map((r) => r.tool_key),
-  )
+  const shared = new Set(kind ? sharedToolsFor(sharing, ownerType, ownerId, kind) : [])
 
   return (
     <Popover opened={opened} onChange={setOpened} position="right-start" withArrow shadow="md" width={260} withinPortal>
@@ -223,7 +221,7 @@ function CharactersSection({
                         pendingKinds={pending}
                         pendingToggle={pendingToggle}
                         onToggle={(toolKey, enabled) =>
-                          onToggle('character', owner.character_id, k.key, toolKey, enabled)}
+                          onToggle('character', owner.character_id, dataKindForTool(k, toolKey), toolKey, enabled)}
                       />
                     </Table.Td>
                   ))}
@@ -390,7 +388,7 @@ function CorporationsSection({
                       pendingKinds={new Set()}
                       pendingToggle={pendingToggle}
                       onToggle={(toolKey, enabled) =>
-                        onToggle('corporation', corpId, k.key, toolKey, enabled)}
+                        onToggle('corporation', corpId, dataKindForTool(k, toolKey), toolKey, enabled)}
                     />
                     <div>
                       <RoleWarningBadge corpId={corpId} dataKind={k.key} roleCheck={roleCheck} />

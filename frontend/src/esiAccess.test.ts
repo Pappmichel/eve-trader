@@ -7,7 +7,9 @@ import {
   deriveCellState,
   extraKindsForCharacter,
   pendingKeysFromPreview,
+  sharedToolsFor,
 } from './esiAccess'
+import { kindByKey } from './esiRegistry'
 import type { EsiCapabilityRow, EsiFreshnessRow, EsiSharingRow } from './api/types'
 
 const sharing: EsiSharingRow[] = [
@@ -78,6 +80,54 @@ describe('deriveCellState', () => {
       sharing, freshness: [], pendingKinds: new Set(['assets']),
     })
     expect(cell.kind).toBe('pending')
+  })
+})
+
+describe('merged Wallet row (2026-09-27: Wallet Balance folded into Wallet)', () => {
+  // Trading's own wallet sync and Portfolio's wallet-balance sync are still
+  // two separate data_kind rows server-side (different ESI fetch, same
+  // scope) - only the UI presentation merged into one row/cell, via
+  // esiRegistry.ts's toolDataKind override on 'wallet'.
+  const walletSharing: EsiSharingRow[] = [
+    { owner_type: 'character', owner_id: 5, data_kind: 'wallet', tool_key: 'trading' },
+    { owner_type: 'character', owner_id: 5, data_kind: 'wallet_balance', tool_key: 'portfolio' },
+  ]
+
+  it('resolves the Portfolio toggle to the wallet_balance data_kind, not wallet', () => {
+    const kind = kindByKey('wallet')!
+    const shared = sharedToolsFor(walletSharing, 'character', 5, kind)
+    expect(shared.sort()).toEqual(['portfolio', 'trading'])
+  })
+
+  it('reports the merged cell as fully shared once both underlying rows exist', () => {
+    const cell = deriveCellState({
+      ownerType: 'character', ownerId: 5, dataKind: 'wallet',
+      sharing: walletSharing, freshness: [], pendingKinds: new Set(),
+    })
+    expect(cell.kind).toBe('all')
+    expect(cell.sharedCount).toBe(2)
+    expect(cell.capableCount).toBe(2)
+  })
+
+  it('does not count a wallet_balance row as shared under a different owner', () => {
+    const kind = kindByKey('wallet')!
+    const shared = sharedToolsFor(walletSharing, 'character', 999, kind)
+    expect(shared).toEqual([])
+  })
+
+  it('surfaces a wallet_balance-only fetch failure on the merged cell', () => {
+    const freshnessWithBalanceError: EsiFreshnessRow[] = [
+      {
+        owner_type: 'character', owner_id: 5, data_kind: 'wallet_balance',
+        last_success_at: null, last_attempt_at: 't', last_error: 'Market access denied',
+      },
+    ]
+    const cell = deriveCellState({
+      ownerType: 'character', ownerId: 5, dataKind: 'wallet',
+      sharing: walletSharing, freshness: freshnessWithBalanceError, pendingKinds: new Set(),
+    })
+    expect(cell.kind).toBe('error')
+    expect(cell.lastError).toBe('Market access denied')
   })
 })
 

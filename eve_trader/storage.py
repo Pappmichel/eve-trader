@@ -5366,8 +5366,24 @@ def _replace_doctrine_sync_one(
             stamped.append(row + (char_id, corp_id))
         cols = ", ".join(_CONTRACT_COLUMNS) + ", owner_character_id, owner_corporation_id"
         placeholders = ", ".join("?" for _ in _CONTRACT_COLUMNS) + ",?,?"
+        # ON CONFLICT, not a bare INSERT (confirmed real bug, 2026-09-27): a
+        # corp-shared contract_id (globally unique, not per-character) is
+        # visible to every member's own sync too, not just the corp-level
+        # one - each owner's delete-then-insert above only ever touches its
+        # OWN partition (_delete_doctrine_contract_partition), so a second
+        # owner who also sees the same real contract hit this table's
+        # (tenant_id, contract_id) primary key head-on with a plain INSERT.
+        # Updates every real contract-detail column on conflict (the CCP-side
+        # state is the same regardless of which member's sync is currently
+        # looking at it) but deliberately leaves source_role/owner_character_id/
+        # owner_corporation_id alone - whichever owner recorded this contract
+        # first keeps the attribution, a later sync from a different member
+        # seeing the same shared contract shouldn't silently reassign it.
+        update_cols = [c for c in _CONTRACT_COLUMNS if c not in ("contract_id", "source_role")]
+        update_clause = ", ".join(f"{c} = excluded.{c}" for c in update_cols)
         conn.executemany(
-            f"INSERT INTO doctrine_contracts ({cols}) VALUES ({placeholders})",
+            f"INSERT INTO doctrine_contracts ({cols}) VALUES ({placeholders}) "
+            f"ON CONFLICT (tenant_id, contract_id) DO UPDATE SET {update_clause}",
             stamped,
         )
         conn.executemany(
