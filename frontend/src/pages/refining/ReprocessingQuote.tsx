@@ -96,16 +96,21 @@ export default function ReprocessingQuote() {
               <Title order={4}>{isk(result.totals.total_refined_value)}</Title>
             </Card>
             <Card withBorder padding="sm">
-              <Tooltip label='Same "Reprocess"-marked items as the two cards to the left - what you'
-                + "'d have gotten selling them as-is instead, for a fair comparison against Refined Value."
-                multiline w={260}>
+              <Tooltip
+                label={'Same "Reprocess"-marked items as the two cards to the left - what you\'d have gotten selling them as-is instead, for a fair comparison against Refined Value.'}
+                multiline
+                w={260}
+              >
                 <Text size="xs" c="dimmed" tt="uppercase">Sell As-Is Value (Reprocess Items)</Text>
               </Tooltip>
               <Title order={4}>{isk(result.totals.total_sell_as_is_value)}</Title>
             </Card>
             <Card withBorder padding="sm">
-              <Tooltip label="Refined Value for items marked Reprocess, plus Sell-As-Is for everything else in the
-                paste - what the whole batch is worth if you follow each item's own recommendation." multiline w={260}>
+              <Tooltip
+                label="Refined Value for items marked Reprocess, plus Sell-As-Is for everything else in the paste - what the whole batch is worth if you follow each item's own recommendation."
+                multiline
+                w={260}
+              >
                 <Text size="xs" c="dimmed" tt="uppercase">Total Batch Value (Optimal)</Text>
               </Tooltip>
               <Title order={4}>{isk(result.totals.total_batch_value_optimal)}</Title>
