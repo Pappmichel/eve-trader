@@ -125,7 +125,8 @@ def test_quote_reprocessing_passes_paste_to_action(monkeypatch):
     def _quote(paste_text):
         captured["paste_text"] = paste_text
         return {"rows": [], "totals": {"reprocess_count": 0, "total_mineral_value": 0.0,
-                                        "total_refined_value": 0.0, "total_sell_as_is_value": 0.0}}
+                                        "total_refined_value": 0.0, "total_sell_as_is_value": 0.0},
+                "mineral_totals": []}
     monkeypatch.setattr(refining_actions, "do_quote_reprocessing", _quote)
 
     resp = client.post("/api/refining/reprocessing/quote", json={"paste": "Tritanium\t100\tMineral\tMaterial\t\t\t0.01 m3\t\t"})
@@ -134,7 +135,7 @@ def test_quote_reprocessing_passes_paste_to_action(monkeypatch):
     assert captured["paste_text"] == "Tritanium\t100\tMineral\tMaterial\t\t\t0.01 m3\t\t"
     assert resp.json() == {"rows": [], "totals": {"reprocess_count": 0, "total_mineral_value": 0.0,
                                                     "total_refined_value": 0.0, "total_sell_as_is_value": 0.0},
-                            "priced_via_fallback": False}
+                            "mineral_totals": [], "priced_via_fallback": False}
 
 
 def test_quote_reprocessing_action_error_maps_to_400(monkeypatch):

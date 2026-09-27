@@ -3,7 +3,7 @@ import { Alert, Badge, Button, Card, Group, SimpleGrid, Stack, Text, Textarea, T
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { refiningApi } from '../../api/client'
-import type { ReprocessingQuoteResult, ReprocessingQuoteRow } from '../../api/types'
+import type { ReprocessingMineralTotal, ReprocessingQuoteResult, ReprocessingQuoteRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
@@ -38,6 +38,13 @@ export default function ReprocessingQuote() {
       header: 'Note', accessorKey: 'error', size: 200,
       cell: (i) => (i.getValue() ? <Text size="xs" c="dimmed">{i.getValue() as string}</Text> : null),
     },
+  ], [])
+
+  const mineralColumns = useMemo<ColumnDef<ReprocessingMineralTotal, any>[]>(() => [
+    { header: 'Mineral', accessorKey: 'name', size: 160 },
+    { header: 'Quantity', accessorKey: 'quantity', size: 120, cell: (i) => qty(i.getValue()) },
+    { header: 'Unit Sell Price (C-J)', accessorKey: 'unit_sell_price', size: 160, cell: (i) => isk(i.getValue()) },
+    { header: 'Value (C-J)', accessorKey: 'value', size: 150, cell: (i) => isk(i.getValue()) },
   ], [])
 
   return (
@@ -98,6 +105,17 @@ export default function ReprocessingQuote() {
             <HintCard>No items parsed from the paste.</HintCard>
           ) : (
             <DataTable data={result.rows} columns={columns} maxHeight={480} getRowId={(r) => `${r.name}-${r.type_id ?? 'unknown'}`} />
+          )}
+
+          {result.mineral_totals.length > 0 && (
+            <>
+              <Title order={5}>Minerals You'll Get</Title>
+              <Text size="xs" c="dimmed">
+                Summed across every item above marked "Reprocess" - what you'd actually walk away with.
+              </Text>
+              <DataTable data={result.mineral_totals} columns={mineralColumns} maxHeight={320}
+                getRowId={(m) => String(m.type_id)} />
+            </>
           )}
         </>
       )}
