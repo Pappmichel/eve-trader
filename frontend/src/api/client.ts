@@ -698,13 +698,11 @@ export const sortingApi = {
 
 // ------------------------------------------------------ module reprocessing
 export const moduleReprocessingApi = {
-  discover: () => post<{ scanned: number; estimated_profitable: number }>('/api/module-reprocessing/discover'),
-  discoveredResults: () => get<T.DiscoveredModuleResult[]>('/api/module-reprocessing/discover/results'),
   shortlistSnapshot: () => get<T.ModuleShortlistRow[]>('/api/module-reprocessing/shortlist/snapshot'),
   shortlistItems: () => get<T.ModuleShortlistItem[]>('/api/module-reprocessing/shortlist/items'),
-  addToShortlist: (itemIds: number[]) =>
-    post<{ added: number }>('/api/module-reprocessing/shortlist/add', { item_ids: itemIds }),
-  refreshShortlist: () => post<Record<string, unknown>>('/api/module-reprocessing/shortlist/refresh'),
+  refreshShortlist: () => post<{
+    discovered: number; evaluated: number; import_candidates: number; priced_via_fallback: boolean
+  }>('/api/module-reprocessing/shortlist/refresh'),
   deactivateShortlistItems: (itemIds: number[]) =>
     post<{ deactivated: number }>('/api/module-reprocessing/shortlist/deactivate', { item_ids: itemIds }),
   activateShortlistItems: (itemIds: number[]) =>

@@ -1354,16 +1354,6 @@ export interface ModuleShortlistRow {
   decision: string
 }
 
-export interface DiscoveredModuleResult {
-  type_id: number
-  item: string
-  volume_m3: number
-  est_landed_cost: number | null
-  est_mineral_value: number | null
-  est_profit_per_unit: number | null
-  est_margin: number | null
-}
-
 export interface ModuleReprocessingSettings {
   scrapmetal_processing_skill_level: number
   refining_tax_rate: number
@@ -1372,4 +1362,6 @@ export interface ModuleReprocessingSettings {
   min_margin_threshold: number
   purchase_region_id: number
   purchase_structure_id: number | null
+  enforce_shortlist_cap: boolean
+  max_active_shortlist_items: number
 }

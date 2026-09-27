@@ -4534,13 +4534,21 @@ def load_mineral_requirements() -> list[tuple[int, str, float]]:
 # load_ore_ice_candidate_types, this is a Discover-time query, not something
 # every row of gets auto-added to the shortlist (see module_reprocessing/
 # candidate_discovery.py).
-def upsert_module_reprocessing_shortlist(rows: Iterable[tuple[int, str, bool]]) -> None:
-    """rows: (item_id, item, active)."""
+def upsert_module_reprocessing_shortlist(rows: Iterable[tuple[int, str]]) -> None:
+    """rows: (item_id, item). Called on every Refresh Shortlist run (see
+    module_reprocessing/actions.py's do_refresh_shortlist) with whatever
+    candidate_discovery.discover_candidates just found - a re-discovered
+    type_id refreshes its name but leaves `active` untouched (ON CONFLICT
+    only sets the column actually passed in; a brand-new row still gets the
+    table's own DEFAULT true) - same "don't silently reactivate a
+    deliberately-deactivated row" reasoning as station_trading's own
+    upsert_station_trading_shortlist. Without this, a user's manual
+    Deactivate would be wiped out by the very next auto-discovery pass."""
     with connect() as conn:
         conn.executemany(
-            "INSERT INTO module_reprocessing_shortlist (item_id, item, active) VALUES (?,?,?) "
-            "ON CONFLICT(tenant_id, item_id) DO UPDATE SET item=excluded.item, active=excluded.active",
-            [(item_id, item, bool(active)) for item_id, item, active in rows],
+            "INSERT INTO module_reprocessing_shortlist (item_id, item) VALUES (?,?) "
+            "ON CONFLICT(tenant_id, item_id) DO UPDATE SET item=excluded.item",
+            [(item_id, item) for item_id, item in rows],
         )
 
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Stack, Title, SimpleGrid, NumberInput, Button, Center, Loader } from '@mantine/core'
+import { Stack, Title, Text, SimpleGrid, NumberInput, Checkbox, Button, Center, Loader } from '@mantine/core'
 
 import { moduleReprocessingApi } from '../../api/client'
 import type { ModuleReprocessingSettings as ModuleReprocessingSettingsT } from '../../api/types'
@@ -45,12 +45,28 @@ export default function ModuleReprocessingSettings() {
         <NumberInput label="Minimum margin (0-1+)" value={form.min_margin_threshold} min={0} step={0.01}
           onChange={(v) => set('min_margin_threshold', Number(v))} />
       </SimpleGrid>
+      <Text size="xs" c="dimmed">
+        These two thresholds are what decides whether Refresh Shortlist auto-adds a candidate - there is no
+        separate manual review step.
+      </Text>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Purchase Source</Title>
       <SimpleGrid cols={2}>
         <NumberInput label="Purchase region ID (default: Jita/The Forge)" value={form.purchase_region_id} min={1}
           onChange={(v) => set('purchase_region_id', Number(v))} />
       </SimpleGrid>
+
+      <Title order={6} c="dimmed" tt="uppercase" mt="md">Shortlist Size</Title>
+      <SimpleGrid cols={2}>
+        <Checkbox label="Cap the shortlist at a maximum size" checked={form.enforce_shortlist_cap}
+          onChange={(e) => set('enforce_shortlist_cap', e.currentTarget.checked)} mt={6} />
+        <NumberInput label="Max. active shortlist entries (when cap is on)" value={form.max_active_shortlist_items}
+          min={1} step={10} onChange={(v) => set('max_active_shortlist_items', Number(v))} />
+      </SimpleGrid>
+      <Text size="xs" c="dimmed">
+        Off by default - the margin/profit threshold above is the real filter. Turn this on only if too many
+        candidates still clear that bar.
+      </Text>
 
       <Button mt="md" w={240} onClick={() => save.mutate(form)} loading={save.isPending}>
         Save Settings

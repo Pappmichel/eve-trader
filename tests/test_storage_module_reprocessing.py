@@ -148,24 +148,39 @@ def test_type_ids_filter_empty_list_short_circuits(tenant):
 
 # --------------------------------------------------------------- Shortlist
 def test_upsert_and_load_module_reprocessing_shortlist_round_trips(tenant):
-    storage.upsert_module_reprocessing_shortlist([(100, "200mm AutoCannon I", True)])
+    storage.upsert_module_reprocessing_shortlist([(100, "200mm AutoCannon I")])
 
     rows = storage.load_module_reprocessing_shortlist()
 
-    assert rows == [(100, "200mm AutoCannon I", True)]
+    assert rows == [(100, "200mm AutoCannon I", True)]  # active defaults true on a brand-new row
 
 
-def test_upsert_module_reprocessing_shortlist_updates_existing_row_on_conflict(tenant):
-    storage.upsert_module_reprocessing_shortlist([(100, "200mm AutoCannon I", True)])
-    storage.upsert_module_reprocessing_shortlist([(100, "200mm AutoCannon I", False)])
+def test_upsert_module_reprocessing_shortlist_updates_name_on_conflict(tenant):
+    storage.upsert_module_reprocessing_shortlist([(100, "200mm AutoCannon I")])
+    storage.upsert_module_reprocessing_shortlist([(100, "200mm AutoCannon II")])
 
     rows = storage.load_module_reprocessing_shortlist()
 
-    assert rows == [(100, "200mm AutoCannon I", False)]
+    assert rows == [(100, "200mm AutoCannon II", True)]
+
+
+def test_upsert_module_reprocessing_shortlist_never_resets_active_on_conflict(tenant):
+    """Confirmed real requirement (2026-09-27): Refresh Shortlist now
+    auto-re-discovers and re-upserts every candidate that still clears the
+    margin/profit bar on every run - without this, a user's manual
+    Deactivate would be silently undone the very next time that same item
+    is re-discovered. Mirrors station_trading's own upsert_station_trading_
+    shortlist test for the identical requirement."""
+    storage.upsert_module_reprocessing_shortlist([(100, "200mm AutoCannon I")])
+    storage.deactivate_module_reprocessing_shortlist_items([100])
+
+    storage.upsert_module_reprocessing_shortlist([(100, "200mm AutoCannon I")])  # re-discovered
+
+    assert storage.load_module_reprocessing_shortlist() == [(100, "200mm AutoCannon I", False)]
 
 
 def test_deactivate_module_reprocessing_shortlist_items(tenant):
-    storage.upsert_module_reprocessing_shortlist([(100, "200mm AutoCannon I", True)])
+    storage.upsert_module_reprocessing_shortlist([(100, "200mm AutoCannon I")])
 
     storage.deactivate_module_reprocessing_shortlist_items([100])
 
@@ -177,7 +192,8 @@ def test_deactivate_module_reprocessing_shortlist_items_empty_list_is_a_no_op(te
 
 
 def test_activate_module_reprocessing_shortlist_items(tenant):
-    storage.upsert_module_reprocessing_shortlist([(100, "200mm AutoCannon I", False)])
+    storage.upsert_module_reprocessing_shortlist([(100, "200mm AutoCannon I")])
+    storage.deactivate_module_reprocessing_shortlist_items([100])
 
     storage.activate_module_reprocessing_shortlist_items([100])
 
@@ -222,10 +238,10 @@ def test_latest_module_reprocessing_snapshot_empty_before_any_run(tenant):
 
 def test_module_reprocessing_shortlist_is_tenant_isolated(tenant):
     import uuid
-    storage.upsert_module_reprocessing_shortlist([(100, "200mm AutoCannon I", True)])
+    storage.upsert_module_reprocessing_shortlist([(100, "200mm AutoCannon I")])
 
     with storage.tenant_context(str(uuid.uuid4())):
         assert storage.load_module_reprocessing_shortlist() == []
-        storage.upsert_module_reprocessing_shortlist([(200, "Hobgoblin I", True)])
+        storage.upsert_module_reprocessing_shortlist([(200, "Hobgoblin I")])
 
     assert storage.load_module_reprocessing_shortlist() == [(100, "200mm AutoCannon I", True)]
