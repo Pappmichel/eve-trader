@@ -1990,18 +1990,33 @@ def candidate_structure_location_ids() -> set[int]:
 
 def save_latest_buy_list(rows: list[tuple[int, float]]) -> None:
     """Wholesale-replace this tenant's latest Production buy list
-    (plan_production's own buy_list: type_id, quantity). DELETE+INSERT, same
-    shape as replace_assets/replace_mineral_requirements - Sorting only needs
+    (plan_production's own buy_list: type_id, quantity) - Sorting only needs
     the current list, not history, so a second save must drop types that are
-    no longer on the buy list. The DELETE is tenant-scoped by RLS."""
+    no longer on the buy list. Upsert-then-prune, not the DELETE-then-INSERT
+    this used to be (matching replace_assets/replace_mineral_requirements'
+    shape): do_refresh_production isn't migrated to pipeline_runner and has
+    no concurrency guard, and a slow plan_production run outliving nginx's
+    own 60s proxy timeout (the client/browser then retries) produces two
+    overlapping calls here - confirmed live 2026-09-27, DELETE-then-INSERT
+    let one call's INSERT race the other's and hit production_buy_list_pkey's
+    UniqueViolation. ON CONFLICT DO UPDATE can only block on the row lock and
+    then win-or-lose cleanly, never raise. Both statements stay tenant-scoped
+    by RLS."""
     rows = [(int(type_id), float(qty)) for type_id, qty in rows if float(qty) > 0]
     with connect() as conn:
-        conn.execute("DELETE FROM production_buy_list")
         if rows:
             conn.executemany(
-                "INSERT INTO production_buy_list (type_id, quantity) VALUES (?,?)",
+                "INSERT INTO production_buy_list (type_id, quantity) VALUES (?,?) "
+                "ON CONFLICT (tenant_id, type_id) DO UPDATE SET quantity = excluded.quantity",
                 rows,
             )
+            placeholders = ",".join(["?"] * len(rows))
+            conn.execute(
+                f"DELETE FROM production_buy_list WHERE type_id NOT IN ({placeholders})",
+                tuple(type_id for type_id, _ in rows),
+            )
+        else:
+            conn.execute("DELETE FROM production_buy_list")
 
 
 def load_latest_buy_list() -> dict[int, float]:
