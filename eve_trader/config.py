@@ -362,7 +362,7 @@ class TradingConfig:
     structure_market_slug: Optional[str] = None
 
     # -- Economics --
-    import_cost_per_m3: float = 900.0        # ISK freight cost per m3 to move goods to the structure
+    import_cost_per_m3: float = 800.0        # ISK freight cost per m3 to move goods to the structure
     # Multiplier applied to the C-J structure sell price when no real
     # per-sale tax figure is available (trade_reconciliation.py's fallback
     # path only - see structure_broker_fee below for the journal-matched
