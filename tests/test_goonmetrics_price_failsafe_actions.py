@@ -7,6 +7,8 @@ ESIClient method (see test_esi_client_goonmetrics_fallback.py for that).
 Everything below `ESIClient.structure_order_stats_bulk_or_goonmetrics` is
 mocked out, since that method's own behavior is already covered there.
 """
+import pytest
+
 from eve_trader import actions
 from eve_trader import storage
 from eve_trader.config import TradingConfig
@@ -208,3 +210,64 @@ def test_quote_reprocessing_returns_mineral_totals_aggregated_across_reprocess_r
     assert result["mineral_totals"] == [
         {"type_id": 35, "name": "Tritanium", "quantity": 110, "unit_sell_price": 5.0, "value": 550.0},
     ]
+
+
+def test_quote_reprocessing_totals_scope_sell_as_is_to_reprocess_rows(monkeypatch):
+    """Real user feedback (2026-09-27): total_sell_as_is_value used to sum
+    every parsed row regardless of decision, while total_mineral_value/
+    total_refined_value only ever covered the REPROCESS_DECISION subset -
+    three cards that looked like a matched set but weren't comparable.
+    total_sell_as_is_value is now scoped to the same reprocess_rows (a fair
+    comparison against total_refined_value for that subset), and a new
+    total_batch_value_optimal = total_refined_value + Sell-As-Is for every
+    non-reprocess row answers what the old, batch-wide total was actually
+    reaching for: the whole paste's value if you follow each item's own
+    recommendation."""
+    from eve_trader.esi_client import OrderStats
+    from eve_trader.refining import reprocessing
+    from eve_trader.refining.config import RefiningConfig
+
+    trading_cfg = TradingConfig(structure_id=1000, structure_market_slug="my-structure", structure_sell_haircut=1.0)
+    refining_cfg = RefiningConfig(scrapmetal_processing_skill_level=5, refining_tax_rate=0.0)  # 55% yield, no tax
+
+    by_name = {"Item A": 100, "Item B": 200}
+    # Item A: cheap to sell, refines into a lot of Tritanium -> Reprocess.
+    # Item B: refines into essentially nothing, but sells for real ISK as-is -> Sell instead.
+    materials_by_type = {100: [(35, 1.0)], 200: [(35, 0.01)]}
+    portion_size_by_type = {100: 1, 200: 1}
+    item_stats_by_type = {
+        100: OrderStats(sell_percentile=0.01, sell_volume=1.0, buy_percentile=None, buy_volume=0.0),
+        200: OrderStats(sell_percentile=1.0, sell_volume=1.0, buy_percentile=None, buy_volume=0.0),
+    }
+    tritanium_stats = OrderStats(sell_percentile=5.0, sell_volume=1.0, buy_percentile=None, buy_volume=0.0)
+
+    monkeypatch.setattr(storage, "search_sde_types", lambda name, limit=5: (
+        [(by_name[name], name)] if name in by_name else []))
+    monkeypatch.setattr(storage, "get_type_materials_bulk",
+                         lambda type_ids: {tid: materials_by_type.get(tid, []) for tid in type_ids})
+    monkeypatch.setattr(storage, "get_portion_size", lambda type_id: portion_size_by_type.get(type_id))
+    monkeypatch.setattr(storage, "get_type_materials", lambda type_id: materials_by_type.get(type_id, []))
+    monkeypatch.setattr(storage, "get_types_names_and_groups_bulk", lambda type_ids: {})
+    monkeypatch.setattr(storage, "get_sde_types_bulk",
+                         lambda type_ids: {35: (35, 0, "Tritanium", 0.01, True, None, None, None)})
+    monkeypatch.setattr(reprocessing, "resolve_type_id", refining_actions.resolve_type_id)
+    monkeypatch.setattr(refining_actions, "_seller_roles", lambda tm: [])
+    monkeypatch.setattr(
+        ESIClient, "structure_order_stats_bulk_or_goonmetrics",
+        lambda self, structure_id, type_ids, auth_roles, goonmetrics_market_slug: (
+            {tid: (tritanium_stats if tid == 35 else item_stats_by_type[tid]) for tid in type_ids}, False))
+
+    paste = "Item A\t100\tCharge\tMaterial\t\t\t0.01 m3\t\t\nItem B\t10\tCharge\tMaterial\t\t\t0.01 m3\t\t"
+    result = refining_actions.do_quote_reprocessing(paste, trading_cfg=trading_cfg, refining_cfg=refining_cfg)
+
+    assert [(r["name"], r["decision"]) for r in result["rows"]] == [
+        ("Item A", "Reprocess"), ("Item B", "Sell instead"),
+    ]
+    # Item A: sell_as_is = 100 x 0.01 = 1.0; minerals = floor(100 x 1.0 x 0.55) = 55 -> mineral/refined value = 55 x 5.0 = 275.0
+    # Item B: sell_as_is = 10 x 1.0 = 10.0; minerals = floor(10 x 0.01 x 0.55) = 0 -> refined_value 0, so "Sell instead"
+    assert result["totals"]["total_mineral_value"] == pytest.approx(275.0)
+    assert result["totals"]["total_refined_value"] == pytest.approx(275.0)
+    # Scoped to Item A only now, not Item B's 10.0 too.
+    assert result["totals"]["total_sell_as_is_value"] == pytest.approx(1.0)
+    # Item A reprocessed (275.0) + Item B sold as-is (10.0), the optimal per-item outcome for the whole paste.
+    assert result["totals"]["total_batch_value_optimal"] == pytest.approx(285.0)

@@ -1230,6 +1230,7 @@ export interface ReprocessingQuoteTotals {
   total_mineral_value: number
   total_refined_value: number
   total_sell_as_is_value: number
+  total_batch_value_optimal: number
 }
 
 export interface ReprocessingMineralTotal {

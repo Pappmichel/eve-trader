@@ -473,6 +473,7 @@ class ReprocessingQuoteTotals(_Base):
     total_mineral_value: float
     total_refined_value: float
     total_sell_as_is_value: float
+    total_batch_value_optimal: float
 
 
 class ReprocessingMineralTotal(_Base):
