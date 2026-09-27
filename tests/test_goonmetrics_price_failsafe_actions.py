@@ -160,3 +160,51 @@ def test_quote_reprocessing_resolves_each_distinct_name_once(monkeypatch):
     # Two distinct names, even though Item A appears twice (and used to be
     # resolved once in the type_ids pass and again per evaluate_reprocessing_line).
     assert searches == ["Item A", "Item B"]
+
+
+def test_quote_reprocessing_returns_mineral_totals_aggregated_across_reprocess_rows(monkeypatch):
+    """The Reprocessing tab used to price the mineral basket as one ISK
+    figure without ever naming the minerals themselves (real user feedback,
+    2026-09-27, testing a ratting-loot+salvage paste: "eine Tabelle die
+    sagt welche Minerals dabei rauskommen, wär hilfreich"). mineral_totals
+    aggregates every REPROCESS-decision row's own minerals dict (same scope
+    as totals.total_mineral_value) into one per-mineral quantity/value table."""
+    from eve_trader.esi_client import OrderStats
+    from eve_trader.refining import reprocessing
+    from eve_trader.refining.config import RefiningConfig
+
+    trading_cfg = TradingConfig(structure_id=1000, structure_market_slug="my-structure", structure_sell_haircut=1.0)
+    refining_cfg = RefiningConfig(scrapmetal_processing_skill_level=5, refining_tax_rate=0.0)  # 55% yield, no tax
+
+    by_name = {"Item A": 100, "Item B": 200}
+    materials_by_type = {100: [(35, 1.0)], 200: [(35, 2.0)]}  # both refine into Tritanium (35)
+    portion_size_by_type = {100: 1, 200: 1}
+
+    monkeypatch.setattr(storage, "search_sde_types", lambda name, limit=5: (
+        [(by_name[name], name)] if name in by_name else []))
+    monkeypatch.setattr(storage, "get_type_materials_bulk",
+                         lambda type_ids: {tid: materials_by_type.get(tid, []) for tid in type_ids})
+    monkeypatch.setattr(storage, "get_portion_size", lambda type_id: portion_size_by_type.get(type_id))
+    monkeypatch.setattr(storage, "get_type_materials", lambda type_id: materials_by_type.get(type_id, []))
+    monkeypatch.setattr(storage, "get_types_names_and_groups_bulk", lambda type_ids: {})
+    monkeypatch.setattr(storage, "get_sde_types_bulk",
+                         lambda type_ids: {35: (35, 0, "Tritanium", 0.01, True, None, None, None)})
+    monkeypatch.setattr(reprocessing, "resolve_type_id", refining_actions.resolve_type_id)
+    monkeypatch.setattr(refining_actions, "_seller_roles", lambda tm: [])
+
+    # Cheap items, valuable Tritanium - both rows come back REPROCESS_DECISION.
+    item_stats = OrderStats(sell_percentile=0.01, sell_volume=1.0, buy_percentile=None, buy_volume=0.0)
+    tritanium_stats = OrderStats(sell_percentile=5.0, sell_volume=1.0, buy_percentile=None, buy_volume=0.0)
+    monkeypatch.setattr(
+        ESIClient, "structure_order_stats_bulk_or_goonmetrics",
+        lambda self, structure_id, type_ids, auth_roles, goonmetrics_market_slug: (
+            {tid: (tritanium_stats if tid == 35 else item_stats) for tid in type_ids}, False))
+
+    paste = "Item A\t100\tCharge\tMaterial\t\t\t0.01 m3\t\t\nItem B\t50\tCharge\tMaterial\t\t\t0.01 m3\t\t"
+    result = refining_actions.do_quote_reprocessing(paste, trading_cfg=trading_cfg, refining_cfg=refining_cfg)
+
+    assert [r["decision"] for r in result["rows"]] == ["Reprocess", "Reprocess"]
+    # Item A: floor(100 x 1.0 x 0.55) = 55 Tritanium; Item B: floor(50 x 2.0 x 0.55) = 55 Tritanium.
+    assert result["mineral_totals"] == [
+        {"type_id": 35, "name": "Tritanium", "quantity": 110, "unit_sell_price": 5.0, "value": 550.0},
+    ]

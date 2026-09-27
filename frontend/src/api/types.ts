@@ -1232,9 +1232,18 @@ export interface ReprocessingQuoteTotals {
   total_sell_as_is_value: number
 }
 
+export interface ReprocessingMineralTotal {
+  type_id: number
+  name: string
+  quantity: number
+  unit_sell_price: number | null
+  value: number | null
+}
+
 export interface ReprocessingQuoteResult {
   rows: ReprocessingQuoteRow[]
   totals: ReprocessingQuoteTotals
+  mineral_totals: ReprocessingMineralTotal[]
   priced_via_fallback: boolean
 }
 

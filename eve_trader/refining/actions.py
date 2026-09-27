@@ -209,8 +209,37 @@ def do_quote_reprocessing(paste_text: str, trading_cfg: TradingConfig = TRADING_
         "total_refined_value": sum(r.refined_value or 0.0 for r in reprocess_rows),
         "total_sell_as_is_value": sum(r.sell_as_is_value or 0.0 for r in rows if r.sell_as_is_value is not None),
     }
+    mineral_totals = _mineral_totals(reprocess_rows, stats_by_id, trading_cfg)
     return {"rows": [_reprocessing_row_to_dict(r) for r in rows], "totals": totals,
-            "priced_via_fallback": priced_via_fallback}
+            "mineral_totals": mineral_totals, "priced_via_fallback": priced_via_fallback}
+
+
+def _mineral_totals(reprocess_rows: list[ReprocessingQuoteRow], stats_by_id: dict,
+                     trading_cfg: TradingConfig) -> list[dict]:
+    """Sums each row's own `minerals` yield across every row marked
+    `REPROCESS_DECISION` (same scope as `totals.total_mineral_value` above,
+    so the two stay consistent - the per-mineral breakdown of that one
+    total) into "what do I actually get back" - the table #92's own
+    Reprocessing tab never showed: it only ever priced the mineral basket as
+    one ISK figure, never named the minerals themselves."""
+    quantities: dict[int, int] = {}
+    for row in reprocess_rows:
+        for mineral_type_id, qty in (row.minerals or {}).items():
+            quantities[mineral_type_id] = quantities.get(mineral_type_id, 0) + qty
+    if not quantities:
+        return []
+    sde_rows = storage.get_sde_types_bulk(list(quantities.keys()))
+    totals = []
+    for mineral_type_id, qty in quantities.items():
+        stats = stats_by_id.get(mineral_type_id)
+        unit_sell_price = stats.sell_percentile if stats and stats.sell_percentile is not None else None
+        value = qty * unit_sell_price * trading_cfg.structure_sell_haircut if unit_sell_price is not None else None
+        sde_row = sde_rows.get(mineral_type_id)
+        name = sde_row[2] if sde_row else f"Type {mineral_type_id}"
+        totals.append({"type_id": mineral_type_id, "name": name, "quantity": qty,
+                        "unit_sell_price": unit_sell_price, "value": value})
+    totals.sort(key=lambda m: (m["value"] is None, -(m["value"] or 0.0)))
+    return totals
 
 
 def error_line_to_row(line) -> ReprocessingQuoteRow:

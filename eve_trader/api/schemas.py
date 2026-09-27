@@ -475,9 +475,18 @@ class ReprocessingQuoteTotals(_Base):
     total_sell_as_is_value: float
 
 
+class ReprocessingMineralTotal(_Base):
+    type_id: int
+    name: str
+    quantity: int
+    unit_sell_price: Optional[float]
+    value: Optional[float]
+
+
 class ReprocessingQuoteResult(_Base):
     rows: list[ReprocessingQuoteRow]
     totals: ReprocessingQuoteTotals
+    mineral_totals: list[ReprocessingMineralTotal] = []
     priced_via_fallback: bool = False
 
 

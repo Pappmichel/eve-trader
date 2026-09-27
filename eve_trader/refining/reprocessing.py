@@ -61,6 +61,7 @@ class ReprocessingQuoteRow:
     refining_tax: Optional[float]
     decision: str
     error: Optional[str] = None
+    minerals: Optional[dict[int, int]] = None  # mineral type_id -> qty this line yields; None if never computed
 
 
 def resolve_type_id(name: str) -> Optional[int]:
@@ -143,7 +144,8 @@ def evaluate_reprocessing_line(line: ParsedPasteLine, item_stats: Optional[Order
         return ReprocessingQuoteRow(name=line.name, quantity=line.quantity, type_id=type_id, category=line.category,
                                      sell_as_is_value=sell_as_is_value, refined_value=None,
                                      mineral_value=mineral_value if have_full_mineral_data else None,
-                                     refining_tax=None, decision=NO_MARKET_DATA_DECISION)
+                                     refining_tax=None, decision=NO_MARKET_DATA_DECISION,
+                                     minerals=minerals)
 
     refining_tax = mineral_value * refining_cfg.refining_tax_rate
     refined_value = mineral_value - refining_tax
@@ -151,4 +153,5 @@ def evaluate_reprocessing_line(line: ParsedPasteLine, item_stats: Optional[Order
 
     return ReprocessingQuoteRow(name=line.name, quantity=line.quantity, type_id=type_id, category=line.category,
                                  sell_as_is_value=sell_as_is_value, refined_value=refined_value,
-                                 mineral_value=mineral_value, refining_tax=refining_tax, decision=decision)
+                                 mineral_value=mineral_value, refining_tax=refining_tax, decision=decision,
+                                 minerals=minerals)
