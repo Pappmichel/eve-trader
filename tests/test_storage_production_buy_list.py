@@ -1,6 +1,7 @@
 """Postgres tests for storage.save_latest_buy_list / load_latest_buy_list:
 round-trip, wholesale-replace, and RLS tenant isolation.
 """
+import threading
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,41 @@ def test_save_latest_buy_list_empty_clears_previous_rows(tenant):
 
 def test_load_latest_buy_list_empty_when_never_saved(tenant):
     assert storage.load_latest_buy_list() == {}
+
+
+def test_save_latest_buy_list_survives_overlapping_calls(tenant):
+    """Regression for the live 2026-09-27 UniqueViolation on
+    production_buy_list_pkey: do_refresh_production has no concurrency
+    guard, so a slow plan_production run outliving nginx's own proxy
+    timeout (client retries) produces two overlapping save_latest_buy_list
+    calls with overlapping type_ids. The old DELETE-then-INSERT let one
+    call's INSERT race the other's; upsert-then-prune must not raise
+    regardless of interleaving. Threads don't inherit contextvars (see
+    CLAUDE.md's own "ThreadPoolExecutor/threading.Thread" note), hence
+    with_current_tenant."""
+    barrier = threading.Barrier(2)
+    errors: list[BaseException] = []
+
+    def _save(rows):
+        barrier.wait(timeout=5)
+        try:
+            storage.save_latest_buy_list(rows)
+        except BaseException as exc:  # noqa: BLE001 - capture for the main thread to re-raise
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=storage.with_current_tenant(_save), args=([(36, 100.0), (38, 50.0)],)),
+        threading.Thread(target=storage.with_current_tenant(_save), args=([(38, 75.0), (39, 14.0)],)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert not errors, f"overlapping save_latest_buy_list calls raised: {errors}"
+    # Whichever call committed last wins wholesale - either is a valid,
+    # non-corrupted end state; the crash itself is what this test guards.
+    assert storage.load_latest_buy_list() in ({36: 100.0, 38: 50.0}, {38: 75.0, 39: 14.0})
 
 
 def test_buy_list_of_tenant_a_is_invisible_to_tenant_b(tenant_pair):
