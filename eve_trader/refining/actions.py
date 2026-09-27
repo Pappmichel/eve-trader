@@ -203,11 +203,28 @@ def do_quote_reprocessing(paste_text: str, trading_cfg: TradingConfig = TRADING_
             ore_ice_family=ore_ice_by_type.get(type_id) if type_id is not None else None))
 
     reprocess_rows = [r for r in rows if r.decision == REPROCESS_DECISION]
+    non_reprocess_rows = [r for r in rows if r.decision != REPROCESS_DECISION]
+    total_refined_value = sum(r.refined_value or 0.0 for r in reprocess_rows)
+    # Real user feedback (2026-09-27): the old total_sell_as_is_value summed
+    # every parsed row regardless of decision, while total_mineral_value/
+    # total_refined_value only ever covered the REPROCESS_DECISION subset -
+    # three cards that looked like a matched set but weren't, since two were
+    # scoped to "items worth reprocessing" and the third to "everything in
+    # the paste". Rescoped to the same reprocess_rows so it's a fair,
+    # apples-to-apples comparison against refined_value for that subset.
+    # total_batch_value_optimal is the number that old batch-wide total was
+    # actually reaching for: what the whole paste is worth if you act on
+    # each item's own recommendation - reprocess what's marked Reprocess,
+    # sell everything else as-is.
+    total_sell_as_is_value = sum(r.sell_as_is_value or 0.0 for r in reprocess_rows if r.sell_as_is_value is not None)
+    non_reprocess_sell_as_is_value = sum(
+        r.sell_as_is_value or 0.0 for r in non_reprocess_rows if r.sell_as_is_value is not None)
     totals = {
         "reprocess_count": len(reprocess_rows),
         "total_mineral_value": sum(r.mineral_value or 0.0 for r in reprocess_rows),
-        "total_refined_value": sum(r.refined_value or 0.0 for r in reprocess_rows),
-        "total_sell_as_is_value": sum(r.sell_as_is_value or 0.0 for r in rows if r.sell_as_is_value is not None),
+        "total_refined_value": total_refined_value,
+        "total_sell_as_is_value": total_sell_as_is_value,
+        "total_batch_value_optimal": total_refined_value + non_reprocess_sell_as_is_value,
     }
     mineral_totals = _mineral_totals(reprocess_rows, stats_by_id, trading_cfg)
     return {"rows": [_reprocessing_row_to_dict(r) for r in rows], "totals": totals,
