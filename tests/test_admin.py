@@ -270,7 +270,7 @@ def test_do_preview_sde_wraps_network_error():
 
 
 def test_do_preview_sde_emits_increasing_batch_progress(monkeypatch):
-    """Track A: each of the 13 sequential CSV fetches reports batch/total_batches."""
+    """Track A: each of the 14 sequential CSV fetches reports batch/total_batches."""
     fetched = []
 
     def fake_fetch(session, base, filename):
@@ -290,11 +290,11 @@ def test_do_preview_sde_emits_increasing_batch_progress(monkeypatch):
     seen = []
     result = admin.do_preview_sde(progress_callback=seen.append)
 
-    assert len(sde._SDE_CSV_FILES) == 13
+    assert len(sde._SDE_CSV_FILES) == 14
     assert fetched == list(sde._SDE_CSV_FILES)
-    assert [p["batch"] for p in seen] == list(range(1, 14))
+    assert [p["batch"] for p in seen] == list(range(1, 15))
     assert all(p["phase"] == "run" for p in seen)
-    assert all(p["total_batches"] == 13 for p in seen)
+    assert all(p["total_batches"] == 14 for p in seen)
     assert seen[0]["message"] == "Fetching invTypes.csv"
     assert seen[-1]["message"] == "Fetching invTypeMaterials.csv"
     assert result == {"new_items": []}

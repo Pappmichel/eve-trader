@@ -31,7 +31,7 @@ $$;
 GRANT USAGE ON SCHEMA public TO eve_trader_app;
 
 -- ============================================================== shared tables
--- 12 SDE reference tables + goonmetrics_history - identical for every tenant,
+-- 13 SDE reference tables + goonmetrics_history - identical for every tenant,
 -- refreshed globally. No tenant_id, no RLS.
 
 CREATE TABLE IF NOT EXISTS sde_types (
