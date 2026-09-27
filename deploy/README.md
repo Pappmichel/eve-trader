@@ -172,14 +172,16 @@ rather than raising - but every frontend error report is silently lost
 until this is applied), `refining_schema.sql` creates the
 `sde_type_materials` table + `sde_types.portion_size` column the "Ore &
 Minerals" tool needs (GitHub issue #90), `station_trading_schema.sql`
-creates `station_trading_shortlist` the Station Trading tool needs, AND
-holds the current, widest `tenant_settings_scope_check` (every earlier
-schema file's own version of this same constraint is narrower/stale - skip
-this file and re-running an earlier one can silently leave the constraint
-missing entirely, not just outdated, since a DROP CONSTRAINT can succeed
-even when the following ADD CONSTRAINT then fails - confirmed real,
-2026-08-30). Applying `esi_access_schema.sql` drops the retired
-per-prefix consent table if it still exists:
+creates `station_trading_shortlist` the Station Trading tool needs,
+`module_reprocessing_schema.sql` creates `module_reprocessing_shortlist`
+the Module Reprocessing Import tool needs AND holds the current, widest
+`tenant_settings_scope_check` (every earlier schema file's own version of
+this same constraint is narrower/stale - skip this file and re-running an
+earlier one can silently leave the constraint missing entirely, not just
+outdated, since a DROP CONSTRAINT can succeed even when the following ADD
+CONSTRAINT then fails - confirmed real, 2026-08-30). Applying
+`esi_access_schema.sql` drops the retired per-prefix consent table if it
+still exists:
 ```bash
 cd ~/eve-trader
 sudo -u postgres psql -c "CREATE DATABASE eve_trader;"
@@ -199,6 +201,7 @@ sudo -u postgres psql -d eve_trader -f docs/session_revocations_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/job_category_cost_index_overrides_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/esi_access_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/portfolio_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/module_reprocessing_schema.sql
 ```
 `portfolio_schema.sql` creates `portfolio_snapshots` (Portfolio's daily
 history/Total Wealth snapshots, `docs/PORTFOLIO_REWORK_PLAN.md`) - skipping
@@ -391,6 +394,7 @@ sudo -u postgres psql -d eve_trader -f docs/session_revocations_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/job_category_cost_index_overrides_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/esi_access_schema.sql
 sudo -u postgres psql -d eve_trader -f docs/portfolio_schema.sql
+sudo -u postgres psql -d eve_trader -f docs/module_reprocessing_schema.sql
 .venv/bin/pip install -r requirements.lock
 .venv/bin/pip install -e . --no-deps
 cd frontend && npm ci && npm run build && cd ..

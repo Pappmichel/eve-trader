@@ -42,8 +42,10 @@ SESSION_MAX_AGE_SECONDS = 30 * 24 * 3600  # 30 days
 # Admin UI or `eve-trader admin bootstrap` — not implied by DEFAULT_TENANT_ID.
 # "characters" is the ninth grant (docs/ESI_ACCESS_PLAN.md decision 11):
 # Admin's checkboxes auto-tick it in the UI only; do_set_tool_grants stays
-# replace-not-merge and does not special-case it.
-ALL_TOOL_KEYS = ("trading", "production", "doctrine", "refining", "station_trading", "sorting", "portfolio", "admin", "characters")
+# replace-not-merge and does not special-case it. "module_reprocessing" is
+# the tenth grant (Module Reprocessing Import tool) - a normal grant like
+# every other tenant-facing tool, no DEFAULT_TENANT_ID bypass.
+ALL_TOOL_KEYS = ("trading", "production", "doctrine", "refining", "station_trading", "sorting", "portfolio", "admin", "characters", "module_reprocessing")
 
 
 @dataclass(frozen=True)

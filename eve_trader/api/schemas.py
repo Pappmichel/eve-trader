@@ -928,3 +928,47 @@ class SortingAvailableCharacters(BaseModel):
 
 class SortingAvailableCorps(BaseModel):
     corps: list[str]
+
+
+# --------------------------------------------------- module reprocessing
+class ModuleShortlistItem(_Base):
+    item_id: int
+    item: str
+    active: bool = True
+
+
+class ModuleShortlistRow(_Base):
+    item_id: int
+    item: str
+    active: bool
+    volume_m3: Optional[float]
+    landed_cost: Optional[float]
+    yield_pct: Optional[float]
+    mineral_value: Optional[float]
+    refining_tax: Optional[float]
+    net_sell: Optional[float]
+    sell_listed_qty: Optional[float]
+    profit_per_unit: Optional[float]
+    margin: Optional[float]
+    profit_per_m3: Optional[float]
+    decision: str
+
+
+class DiscoveredModuleResult(_Base):
+    type_id: int
+    item: str
+    volume_m3: float
+    est_landed_cost: Optional[float]
+    est_mineral_value: Optional[float]
+    est_profit_per_unit: Optional[float]
+    est_margin: Optional[float]
+
+
+class ModuleReprocessingSettings(_Base):
+    scrapmetal_processing_skill_level: int
+    refining_tax_rate: float
+    freight_cost_per_m3: float
+    min_profit_threshold: float
+    min_margin_threshold: float
+    purchase_region_id: int
+    purchase_structure_id: Optional[int] = None
