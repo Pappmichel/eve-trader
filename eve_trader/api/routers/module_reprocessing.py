@@ -23,11 +23,6 @@ def _wrap(fn, **kwargs):
 
 
 # ------------------------------------------------------------------- reads
-@router.get("/discover/results", response_model=list[schemas.DiscoveredModuleResult])
-def get_discovered_candidates():
-    return _wrap(actions.do_get_discovered_candidates)
-
-
 @router.get("/shortlist/snapshot", response_model=list[schemas.ModuleShortlistRow])
 def get_module_shortlist_snapshot():
     df = storage.latest_module_reprocessing_snapshot()
@@ -55,18 +50,8 @@ def get_esi_sync_time():
 
 
 # ------------------------------------------------------------------ writes
-@router.post("/discover")
-def discover_candidates():
-    return _wrap(actions.do_discover_candidates)
-
-
 class ShortlistItemIdsBody(BaseModel):
     item_ids: list[int]
-
-
-@router.post("/shortlist/add")
-def add_to_shortlist(body: ShortlistItemIdsBody):
-    return _wrap(actions.do_add_to_shortlist, item_ids=body.item_ids)
 
 
 @router.post("/shortlist/refresh")

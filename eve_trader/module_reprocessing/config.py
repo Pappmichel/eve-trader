@@ -58,6 +58,23 @@ class ModuleReprocessingConfig:
     # means "region only", matching this tool's initial scope.
     purchase_structure_id: Optional[int] = None
 
+    # -- Shortlist auto-maintenance (candidate_discovery.discover_candidates) --
+    # Same "off by default, user opts in" shape as TradingConfig's/
+    # StationTradingConfig's own enforce_shortlist_cap/max_active_shortlist_
+    # items (confirmed with the user for Station Trading 2026-08-29: an
+    # always-on hard cap was wrong there because min_daily_volume was
+    # already the real noise filter - a cap on top of that should be an
+    # explicit choice, not a silent default). Same reasoning applies here:
+    # min_profit_threshold/min_margin_threshold above are this tool's own
+    # real noise filter over the (much larger than Ore & Minerals') T1/Meta
+    # module+drone universe - confirmed with the user 2026-09-27 that manual
+    # per-item shortlist curation doesn't scale at this size, so Refresh
+    # Shortlist now auto-discovers and auto-adds every candidate clearing
+    # that bar (see actions.do_refresh_shortlist) instead of requiring a
+    # separate manual "add" step.
+    enforce_shortlist_cap: bool = False
+    max_active_shortlist_items: int = 300
+
 
 _module_reprocessing_config_yaml_cache: dict = {}
 

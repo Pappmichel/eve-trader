@@ -41,49 +41,6 @@ def test_get_shortlist_items(monkeypatch):
     assert resp.json() == [{"item_id": 100, "item": "200mm AutoCannon I", "active": True}]
 
 
-def test_get_discovered_candidates(monkeypatch):
-    monkeypatch.setattr(mr_actions, "do_get_discovered_candidates", lambda: [{
-        "type_id": 100, "item": "200mm AutoCannon I", "volume_m3": 0.01, "est_landed_cost": 1.9,
-        "est_mineral_value": 473.15, "est_profit_per_unit": 471.24, "est_margin": 247.0,
-    }])
-    resp = client.get("/api/module-reprocessing/discover/results")
-    assert resp.status_code == 200
-    assert resp.json()[0]["type_id"] == 100
-
-
-def test_discover_calls_action(monkeypatch):
-    monkeypatch.setattr(mr_actions, "do_discover_candidates", lambda: {"scanned": 500, "estimated_profitable": 12})
-    resp = client.post("/api/module-reprocessing/discover")
-    assert resp.status_code == 200
-    assert resp.json() == {"scanned": 500, "estimated_profitable": 12}
-
-
-def test_discover_action_error_maps_to_400(monkeypatch):
-    def _raise():
-        raise ActionError("No T1/Meta module or drone types found in the SDE cache - run Refresh SDE first.")
-    monkeypatch.setattr(mr_actions, "do_discover_candidates", _raise)
-
-    resp = client.post("/api/module-reprocessing/discover")
-
-    assert resp.status_code == 400
-    assert "Refresh SDE" in resp.json()["detail"]
-
-
-def test_add_to_shortlist_passes_item_ids_to_action(monkeypatch):
-    captured = {}
-
-    def _add(item_ids):
-        captured["item_ids"] = item_ids
-        return {"added": len(item_ids)}
-    monkeypatch.setattr(mr_actions, "do_add_to_shortlist", _add)
-
-    resp = client.post("/api/module-reprocessing/shortlist/add", json={"item_ids": [100, 200]})
-
-    assert resp.status_code == 200
-    assert captured["item_ids"] == [100, 200]
-    assert resp.json() == {"added": 2}
-
-
 def test_deactivate_shortlist_items_passes_item_ids_to_action(monkeypatch):
     captured = {}
 
@@ -114,15 +71,24 @@ def test_activate_shortlist_items_passes_item_ids_to_action(monkeypatch):
     assert resp.json() == {"activated": 1}
 
 
+def test_refresh_shortlist_calls_action(monkeypatch):
+    monkeypatch.setattr(mr_actions, "do_refresh_shortlist",
+                         lambda: {"discovered": 3, "evaluated": 10, "import_candidates": 2,
+                                  "priced_via_fallback": False})
+    resp = client.post("/api/module-reprocessing/shortlist/refresh")
+    assert resp.status_code == 200
+    assert resp.json()["discovered"] == 3
+
+
 def test_refresh_shortlist_action_error_maps_to_400(monkeypatch):
     def _raise():
-        raise ActionError("Shortlist is empty - add candidates from Discover first.")
+        raise ActionError("No candidates clear the configured margin/profit threshold yet.")
     monkeypatch.setattr(mr_actions, "do_refresh_shortlist", _raise)
 
     resp = client.post("/api/module-reprocessing/shortlist/refresh")
 
     assert resp.status_code == 400
-    assert "Discover first" in resp.json()["detail"]
+    assert "margin/profit threshold" in resp.json()["detail"]
 
 
 def test_update_settings_calls_action(monkeypatch):
@@ -136,7 +102,7 @@ def test_update_settings_calls_action(monkeypatch):
     payload = {
         "scrapmetal_processing_skill_level": 5, "refining_tax_rate": 0.02, "freight_cost_per_m3": 500.0,
         "min_profit_threshold": 0.0, "min_margin_threshold": 0.05, "purchase_region_id": 10000002,
-        "purchase_structure_id": None,
+        "purchase_structure_id": None, "enforce_shortlist_cap": False, "max_active_shortlist_items": 300,
     }
     resp = client.post("/api/module-reprocessing/settings", json=payload)
 

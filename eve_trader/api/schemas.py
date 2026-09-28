@@ -955,16 +955,6 @@ class ModuleShortlistRow(_Base):
     decision: str
 
 
-class DiscoveredModuleResult(_Base):
-    type_id: int
-    item: str
-    volume_m3: float
-    est_landed_cost: Optional[float]
-    est_mineral_value: Optional[float]
-    est_profit_per_unit: Optional[float]
-    est_margin: Optional[float]
-
-
 class ModuleReprocessingSettings(_Base):
     scrapmetal_processing_skill_level: int
     refining_tax_rate: float
@@ -973,3 +963,5 @@ class ModuleReprocessingSettings(_Base):
     min_margin_threshold: float
     purchase_region_id: int
     purchase_structure_id: Optional[int] = None
+    enforce_shortlist_cap: bool
+    max_active_shortlist_items: int

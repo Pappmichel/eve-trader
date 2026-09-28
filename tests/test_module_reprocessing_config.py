@@ -46,13 +46,27 @@ def test_validate_config_overrides_rejects_non_positive_purchase_region_id():
         validate_config_overrides(cfg, {"purchase_region_id": 0})
 
 
+def test_validate_config_overrides_rejects_non_positive_max_active_shortlist_items():
+    cfg = ModuleReprocessingConfig()
+    with pytest.raises(ConfigError):
+        validate_config_overrides(cfg, {"max_active_shortlist_items": 0})
+
+
 def test_validate_config_overrides_accepts_a_full_valid_settings_payload():
     cfg = ModuleReprocessingConfig()
     validate_config_overrides(cfg, {
         "scrapmetal_processing_skill_level": 5, "refining_tax_rate": 0.02,
         "freight_cost_per_m3": 500.0, "min_profit_threshold": 100.0, "min_margin_threshold": 0.1,
-        "purchase_region_id": 10000002,
+        "purchase_region_id": 10000002, "enforce_shortlist_cap": True, "max_active_shortlist_items": 300,
     })  # no raise
+
+
+def test_shortlist_cap_off_by_default():
+    """Same "off by default, user opts in" shape as Station Trading's own
+    enforce_shortlist_cap - the margin/profit threshold is the real filter."""
+    cfg = ModuleReprocessingConfig()
+    assert cfg.enforce_shortlist_cap is False
+    assert cfg.max_active_shortlist_items == 300
 
 
 def test_default_purchase_region_is_jita():

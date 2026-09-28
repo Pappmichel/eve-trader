@@ -2,7 +2,7 @@ import { AppShell, Burger, Stack, Title, Text, Button, Group, Tabs, Container, D
 import { useDisclosure } from '@mantine/hooks'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { IconArrowLeft, IconRefresh, IconSearch } from '@tabler/icons-react'
+import { IconArrowLeft, IconRefresh } from '@tabler/icons-react'
 
 import { moduleReprocessingApi } from '../../api/client'
 import { useAction, warnIfPricedViaFallback } from '../../hooks/useAction'
@@ -10,7 +10,6 @@ import { dateTime } from '../../format'
 
 const TABS = [
   { path: '/modules', label: 'Overview' },
-  { path: '/modules/discover', label: 'Discover' },
   { path: '/modules/shortlist', label: 'Shortlist' },
   { path: '/modules/settings', label: 'Settings' },
 ]
@@ -27,12 +26,17 @@ export default function ModuleReprocessingLayout() {
   const { data: syncTime } = useQuery({
     queryKey: ['module_reprocessing', 'esi-sync-time'], queryFn: moduleReprocessingApi.esiSyncTime,
   })
-  const discover = useAction('Discover', moduleReprocessingApi.discover, [
-    ['module_reprocessing', 'discover', 'results'],
-  ], { tier: 'live', effect: 'Scans the full T1/Meta module+drone SDE universe against a Goonmetrics current-price snapshot - can take up to a minute.' })
+  // One button does everything: scans the full candidate universe against a
+  // Goonmetrics current-price snapshot, auto-adds whatever clears the
+  // configured margin/profit threshold in Settings, then live-prices the
+  // whole (now possibly-grown) shortlist via ESI - no separate "Discover,
+  // then manually pick candidates" step (confirmed with the user: reviewing
+  // thousands of candidates by hand doesn't scale, so this now mirrors
+  // Station Trading's own single-button Refresh Shortlist).
   const refresh = useAction('Refresh Shortlist', moduleReprocessingApi.refreshShortlist, [
-    ['module_reprocessing', 'shortlist', 'snapshot'], ['module_reprocessing', 'esi-sync-time'],
-  ], { tier: 'live', effect: 'Reprices the entire shortlist live via ESI (with a Goonmetrics fallback).' })
+    ['module_reprocessing', 'shortlist', 'snapshot'], ['module_reprocessing', 'shortlist', 'items'],
+    ['module_reprocessing', 'esi-sync-time'],
+  ], { tier: 'live', effect: 'Scans the full candidate universe against Goonmetrics, auto-adds anything profitable, then reprices the whole shortlist live via ESI (with a Goonmetrics fallback) - can take up to a minute.' })
 
   return (
     <AppShell header={{ height: 56 }} navbar={{ width: 280, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding={{ base: 'xs', sm: 'md' }}>
@@ -72,12 +76,6 @@ export default function ModuleReprocessingLayout() {
           <div>
             <Title order={6} c="dimmed" tt="uppercase" mb="xs">Workflow</Title>
             <Stack gap="xs">
-              <Tooltip label={discover.tooltip} disabled={!discover.tooltip} multiline w={280}>
-                <Button size="xs" variant="default" leftSection={<IconSearch size={14} />} rightSection={discover.tierIcon}
-                  onClick={() => discover.mutate()} loading={discover.isPending}>
-                  Discover
-                </Button>
-              </Tooltip>
               <Tooltip label={refresh.tooltip} disabled={!refresh.tooltip} multiline w={280}>
                 <Button size="xs" leftSection={<IconRefresh size={14} />} rightSection={refresh.tierIcon}
                   onClick={() => refresh.mutate(undefined, { onSuccess: warnIfPricedViaFallback })} loading={refresh.isPending}>
@@ -85,9 +83,8 @@ export default function ModuleReprocessingLayout() {
                 </Button>
               </Tooltip>
               <Text size="xs" c="dimmed">
-                Discover scans the full candidate universe and estimates profitability from Goonmetrics -
-                pick items on the Discover tab to add them. Refresh Shortlist reprices everything you've
-                added and recomputes profit.
+                Scans every T1/Meta module and drone against Goonmetrics, auto-adds anything clearing the
+                margin/profit threshold in Settings, then reprices the whole shortlist live via ESI.
               </Text>
             </Stack>
           </div>
