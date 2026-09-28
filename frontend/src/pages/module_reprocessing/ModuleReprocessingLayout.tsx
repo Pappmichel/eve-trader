@@ -11,6 +11,7 @@ import { dateTime } from '../../format'
 const TABS = [
   { path: '/modules', label: 'Overview' },
   { path: '/modules/shortlist', label: 'Shortlist' },
+  { path: '/modules/shopping-list', label: 'Shopping List' },
   { path: '/modules/settings', label: 'Settings' },
 ]
 

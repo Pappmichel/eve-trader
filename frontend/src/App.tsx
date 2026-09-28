@@ -81,6 +81,7 @@ const SortingSettings = lazy(() => import('./pages/sorting/SortingSettings'))
 const ModuleReprocessingLayout = lazy(() => import('./pages/module_reprocessing/ModuleReprocessingLayout'))
 const ModuleReprocessingOverview = lazy(() => import('./pages/module_reprocessing/Overview'))
 const ModuleReprocessingShortlist = lazy(() => import('./pages/module_reprocessing/Shortlist'))
+const ModuleReprocessingMineralShoppingList = lazy(() => import('./pages/module_reprocessing/MineralShoppingList'))
 const ModuleReprocessingSettings = lazy(() => import('./pages/module_reprocessing/ModuleReprocessingSettings'))
 
 const AdminPage = lazy(() => import('./pages/admin/AdminPage'))
@@ -286,6 +287,7 @@ function App() {
             <Route path="/modules" element={<ModuleReprocessingLayout />}>
               <Route index element={<ModuleReprocessingOverview />} />
               <Route path="shortlist" element={<ModuleReprocessingShortlist />} />
+              <Route path="shopping-list" element={<ModuleReprocessingMineralShoppingList />} />
               <Route path="settings" element={<ModuleReprocessingSettings />} />
             </Route>
           </Routes>

@@ -711,4 +711,13 @@ export const moduleReprocessingApi = {
   updateSettings: (s: T.ModuleReprocessingSettings) =>
     post<T.ModuleReprocessingSettings>('/api/module-reprocessing/settings', s),
   esiSyncTime: () => get<{ synced_at: string | null }>('/api/module-reprocessing/esi/sync-time'),
+  // Mineral Shopping List (ore/ice AND modules/drones as reprocessing sources)
+  shoppableMinerals: () => get<T.RefinableMineral[]>('/api/module-reprocessing/shopping-list/minerals'),
+  shoppingRequirements: () => get<T.MineralRequirement[]>('/api/module-reprocessing/shopping-list/requirements'),
+  saveShoppingRequirements: (requirements: T.MineralRequirement[]) =>
+    post<{ saved: number }>('/api/module-reprocessing/shopping-list/requirements', { requirements }),
+  optimizeShoppingList: (requirements?: T.MineralRequirement[]) =>
+    post<T.ModuleShoppingListPlan>('/api/module-reprocessing/shopping-list/optimize', {
+      requirements: requirements ?? null,
+    }),
 }

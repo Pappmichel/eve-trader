@@ -1354,6 +1354,44 @@ export interface ModuleShortlistRow {
   decision: string
 }
 
+// Module Reprocessing's Mineral Shopping List - reuses MineralRequirement,
+// DirectMineralPurchase and RefinableMineral above as-is.
+export interface ReprocessPurchase {
+  type_id: number
+  item: string
+  category: 'ore' | 'module'
+  family: string | null
+  is_ice: boolean
+  portions: number
+  units: number
+  volume_m3: number
+  landed_cost_per_unit: number
+  total_cost: number
+}
+
+export interface ReprocessMineralCoverage {
+  type_id: number
+  name: string
+  required: number
+  from_reprocessing: number
+  from_direct: number
+  delivered: number
+  surplus: number
+}
+
+export interface ModuleShoppingListPlan {
+  reprocess_purchases: ReprocessPurchase[]
+  direct_purchases: DirectMineralPurchase[]
+  coverage: ReprocessMineralCoverage[]
+  reprocess_cost: number
+  direct_cost: number
+  total_cost: number
+  lp_cost: number
+  all_direct_cost: number | null
+  savings_vs_all_direct: number | null
+  total_volume_m3: number
+}
+
 export interface ModuleReprocessingSettings {
   scrapmetal_processing_skill_level: number
   refining_tax_rate: number
