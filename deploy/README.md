@@ -174,7 +174,8 @@ until this is applied), `refining_schema.sql` creates the
 Minerals" tool needs (GitHub issue #90), `station_trading_schema.sql`
 creates `station_trading_shortlist` the Station Trading tool needs,
 `module_reprocessing_schema.sql` creates `module_reprocessing_shortlist`
-the Module Reprocessing Import tool needs AND holds the current, widest
+(and `module_reprocessing_mineral_requirements`, its Shopping List) the
+Module Reprocessing Import tool needs AND holds the current, widest
 `tenant_settings_scope_check` (every earlier schema file's own version of
 this same constraint is narrower/stale - skip this file and re-running an
 earlier one can silently leave the constraint missing entirely, not just

@@ -4650,6 +4650,36 @@ def module_reprocessing_candidate_types(type_ids: Optional[list[int]] = None) ->
         return conn.execute(query, params).fetchall()
 
 
+# ------------------------------- Module Reprocessing: Mineral Shopping List
+# Same replace-all key-value shape as Ore & Minerals' own mineral_requirements
+# above (replace_mineral_requirements - see its docstring for why replace-all,
+# not upsert), but a separate table (module_reprocessing_mineral_requirements,
+# docs/module_reprocessing_schema.sql): the two tools' shopping lists are
+# independent, and saving one must never overwrite the other.
+def replace_module_shopping_requirements(rows: Iterable[tuple[int, str, float]]) -> None:
+    """rows: (mineral_type_id, mineral_name, required_qty). Replace-all - a
+    mineral removed in the editor has to actually disappear here. The DELETE
+    is tenant-scoped by RLS like every other statement on this connection."""
+    rows = [(int(type_id), name, float(qty)) for type_id, name, qty in rows]
+    with connect() as conn:
+        conn.execute("DELETE FROM module_reprocessing_mineral_requirements")
+        if rows:
+            conn.executemany(
+                "INSERT INTO module_reprocessing_mineral_requirements (mineral_type_id, mineral_name, required_qty) "
+                "VALUES (?,?,?)",
+                rows,
+            )
+
+
+def load_module_shopping_requirements() -> list[tuple[int, str, float]]:
+    """Returns (mineral_type_id, mineral_name, required_qty) rows, name-ordered."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT mineral_type_id, mineral_name, required_qty FROM module_reprocessing_mineral_requirements "
+            "ORDER BY mineral_name"
+        ).fetchall()
+
+
 # ----------------------------------------------- Station Trading: candidate shortlist
 def upsert_station_trading_shortlist(rows: Iterable[tuple[int, float, float, str]]) -> None:
     """rows: (type_id, spread_pct, avg_daily_volume, discovered_at) - a

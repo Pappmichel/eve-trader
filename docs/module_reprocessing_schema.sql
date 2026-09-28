@@ -79,3 +79,29 @@ CREATE POLICY tenant_isolation ON module_reprocessing_shortlist_snapshot
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON module_reprocessing_shortlist, module_reprocessing_shortlist_snapshot
     TO eve_trader_app;
+
+-- ================================= per-tenant: Mineral Shopping List
+-- Module Reprocessing's own Mineral Shopping List (ore/ice AND modules/drones
+-- as reprocessing sources in one plan - see module_reprocessing/
+-- shopping_optimizer.py). Exact same shape as docs/refining_schema.sql's
+-- mineral_requirements (composite-PK "live list" bucket), but its own table:
+-- the two tools' shopping lists are independent, and saving one must never
+-- overwrite the other. Only the requirement list is stored - a solved plan
+-- is recomputed on demand from live prices, same reasoning as there.
+CREATE TABLE IF NOT EXISTS module_reprocessing_mineral_requirements (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    mineral_type_id INTEGER NOT NULL,
+    mineral_name TEXT NOT NULL,
+    -- DOUBLE PRECISION for the same reason as mineral_requirements.required_qty
+    -- (Production's buy-list shortfall, the "Load from Production" source, can
+    -- be fractional).
+    required_qty DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY (tenant_id, mineral_type_id)
+);
+ALTER TABLE module_reprocessing_mineral_requirements ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON module_reprocessing_mineral_requirements;
+CREATE POLICY tenant_isolation ON module_reprocessing_mineral_requirements
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON module_reprocessing_mineral_requirements TO eve_trader_app;

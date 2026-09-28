@@ -245,3 +245,38 @@ def test_module_reprocessing_shortlist_is_tenant_isolated(tenant):
         storage.upsert_module_reprocessing_shortlist([(200, "Hobgoblin I")])
 
     assert storage.load_module_reprocessing_shortlist() == [(100, "200mm AutoCannon I", True)]
+
+
+# --------------------------------------------------- Mineral Shopping List
+def test_module_shopping_requirements_round_trip(tenant):
+    storage.replace_module_shopping_requirements([(34, "Tritanium", 1_000_000.0), (35, "Pyerite", 250_000.5)])
+
+    # Name-ordered, so Pyerite comes first regardless of insert order.
+    assert storage.load_module_shopping_requirements() == [(35, "Pyerite", 250_000.5), (34, "Tritanium", 1_000_000.0)]
+
+
+def test_replace_module_shopping_requirements_drops_rows_no_longer_in_the_list(tenant):
+    storage.replace_module_shopping_requirements([(34, "Tritanium", 100.0), (35, "Pyerite", 200.0)])
+
+    storage.replace_module_shopping_requirements([(34, "Tritanium", 150.0)])
+
+    assert storage.load_module_shopping_requirements() == [(34, "Tritanium", 150.0)]
+
+
+def test_replace_module_shopping_requirements_with_an_empty_list_clears_everything(tenant):
+    storage.replace_module_shopping_requirements([(34, "Tritanium", 100.0)])
+
+    storage.replace_module_shopping_requirements([])
+
+    assert storage.load_module_shopping_requirements() == []
+
+
+def test_module_shopping_requirements_are_tenant_isolated(tenant):
+    import uuid
+    storage.replace_module_shopping_requirements([(34, "Tritanium", 100.0)])
+
+    with storage.tenant_context(str(uuid.uuid4())):
+        assert storage.load_module_shopping_requirements() == []
+        storage.replace_module_shopping_requirements([(35, "Pyerite", 7.0)])
+
+    assert storage.load_module_shopping_requirements() == [(34, "Tritanium", 100.0)]

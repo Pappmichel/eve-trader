@@ -955,6 +955,47 @@ class ModuleShortlistRow(_Base):
     decision: str
 
 
+# Module Reprocessing's Mineral Shopping List - MineralRequirement,
+# DirectMineralPurchase and RefinableMineral above are reused as-is (identical
+# shapes); these three differ from Ore & Minerals' own OrePurchase/
+# MineralCoverage/ShoppingListPlan (ore AND module sources, `category`,
+# `from_reprocessing`, `reprocess_cost`).
+class ReprocessPurchase(_Base):
+    type_id: int
+    item: str
+    category: str               # "ore" or "module"
+    family: Optional[str] = None
+    is_ice: bool = False
+    portions: int
+    units: int
+    volume_m3: float
+    landed_cost_per_unit: float
+    total_cost: float
+
+
+class ReprocessMineralCoverage(_Base):
+    type_id: int
+    name: str
+    required: float
+    from_reprocessing: int
+    from_direct: int
+    delivered: int
+    surplus: float
+
+
+class ModuleShoppingListPlan(_Base):
+    reprocess_purchases: list[ReprocessPurchase]
+    direct_purchases: list[DirectMineralPurchase]
+    coverage: list[ReprocessMineralCoverage]
+    reprocess_cost: float
+    direct_cost: float
+    total_cost: float
+    lp_cost: float
+    all_direct_cost: Optional[float]
+    savings_vs_all_direct: Optional[float]
+    total_volume_m3: float
+
+
 class ModuleReprocessingSettings(_Base):
     scrapmetal_processing_skill_level: int
     refining_tax_rate: float
