@@ -49,6 +49,13 @@ class ModuleReprocessingConfig:
     freight_cost_per_m3: float = 800.0
     min_profit_threshold: float = 0.0
     min_margin_threshold: float = 0.05
+    # When on, Refresh Shortlist skips both threshold checks above entirely
+    # (every priced candidate is a "hit", regardless of est_profit_per_unit/
+    # est_margin) - for a tenant who wants to see the full priced universe
+    # (e.g. while Goonmetrics data is thin/stale and nothing clears even a
+    # 0 threshold) rather than tightening/loosening the two numeric fields.
+    # Off by default - same "opt in" shape as enforce_shortlist_cap below.
+    ignore_thresholds: bool = False
 
     # -- Purchase source (Default Jita - a region-wide buy, same shape as
     # Ore & Minerals' own Jita-only ore sourcing) --

@@ -92,11 +92,17 @@ def discover_candidates(cfg: ModuleReprocessingConfig, trading_cfg: TradingConfi
             log.warning("Goonmetrics home-market fetch failed (%s) - mineral values will be missing this run.", e)
 
     results = estimate_discovered_candidates(candidates, jita_prices_by_id, mineral_prices_by_id, trading_cfg, cfg)
-    hits = [
-        r for r in results
-        if r.est_profit_per_unit is not None and r.est_profit_per_unit > cfg.min_profit_threshold
-        and r.est_margin is not None and r.est_margin >= cfg.min_margin_threshold
-    ]
+    if cfg.ignore_thresholds:
+        # Both numeric filters bypassed - still require a priced estimate
+        # (an unpriced candidate has nothing to sort/act on), same as the
+        # normal path implicitly requires via the `is not None` checks below.
+        hits = [r for r in results if r.est_profit_per_unit is not None and r.est_margin is not None]
+    else:
+        hits = [
+            r for r in results
+            if r.est_profit_per_unit is not None and r.est_profit_per_unit > cfg.min_profit_threshold
+            and r.est_margin is not None and r.est_margin >= cfg.min_margin_threshold
+        ]
     hits.sort(key=lambda r: r.est_profit_per_unit, reverse=True)
 
     if cfg.enforce_shortlist_cap:

@@ -96,6 +96,38 @@ def test_discover_candidates_excludes_items_below_the_margin_bar(monkeypatch, tr
     assert discover_candidates(cfg, trading_cfg, client=client) == []
 
 
+def test_discover_candidates_ignore_thresholds_bypasses_both_bars(monkeypatch, trading_cfg):
+    """Same fixture as test_discover_candidates_excludes_items_below_the_margin_bar
+    (thin margin, would normally be filtered out) - ignore_thresholds=True still
+    includes it, since a priced estimate exists."""
+    _setup_one_module(monkeypatch)
+    client = FakeGoonmetricsClient({
+        "jita": [_price(100, buy=1000.0, sell=1000.0)],  # expensive, thin margin
+        "my-structure": [_price(34, buy=0.01, sell=0.01)],
+    })
+    cfg = ModuleReprocessingConfig(min_profit_threshold=0.0, min_margin_threshold=0.05, ignore_thresholds=True)
+
+    result = discover_candidates(cfg, trading_cfg, client=client)
+
+    assert [r.type_id for r in result] == [100]
+
+
+def test_discover_candidates_ignore_thresholds_still_requires_a_priced_estimate(monkeypatch, trading_cfg):
+    """ignore_thresholds bypasses the two numeric bars, not the underlying
+    None-check - a candidate Goonmetrics/mineral pricing couldn't estimate at
+    all still has nothing to sort/act on."""
+    _setup_one_module(monkeypatch)
+
+    class NoHomeMarket(FakeGoonmetricsClient):
+        def current_prices(self, market):
+            return [] if market == "my-structure" else super().current_prices(market)
+
+    client = NoHomeMarket({"jita": [_price(100, buy=0.5, sell=1.0)]})
+    cfg = ModuleReprocessingConfig(ignore_thresholds=True)
+
+    assert discover_candidates(cfg, trading_cfg, client=client) == []
+
+
 def test_discover_candidates_sorts_by_profit_descending(monkeypatch, trading_cfg):
     monkeypatch.setattr(storage, "module_reprocessing_candidate_types", lambda: [
         (100, "Cheap Module I", 0.01), (200, "Rich Module I", 0.01),

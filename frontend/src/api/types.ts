@@ -1360,6 +1360,7 @@ export interface ModuleReprocessingSettings {
   freight_cost_per_m3: number
   min_profit_threshold: number
   min_margin_threshold: number
+  ignore_thresholds: boolean
   purchase_region_id: number
   purchase_structure_id: number | null
   enforce_shortlist_cap: boolean

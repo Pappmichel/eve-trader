@@ -80,7 +80,8 @@ def do_refresh_shortlist(cfg: ModuleReprocessingConfig = MODULE_REPROCESSING_CON
     shortlist = storage.load_module_reprocessing_shortlist()
     if not shortlist:
         raise ActionError("No candidates clear the configured margin/profit threshold yet - "
-                           "lower it in Settings, or check back once Goonmetrics has fresher data.")
+                           "lower it in Settings (or turn on 'Ignore margin/profit thresholds "
+                           "entirely'), or check back once Goonmetrics has fresher data.")
     active_by_id = {item_id: active for item_id, _item, active in shortlist}
     item_ids = list(active_by_id.keys())
 

@@ -41,13 +41,19 @@ export default function ModuleReprocessingSettings() {
         <NumberInput label="Freight cost per m³" value={form.freight_cost_per_m3} min={0} step={10}
           onChange={(v) => set('freight_cost_per_m3', Number(v))} />
         <NumberInput label="Minimum profit / unit" value={form.min_profit_threshold} min={0} step={100}
+          disabled={form.ignore_thresholds}
           onChange={(v) => set('min_profit_threshold', Number(v))} />
         <NumberInput label="Minimum margin (0-1+)" value={form.min_margin_threshold} min={0} step={0.01}
+          disabled={form.ignore_thresholds}
           onChange={(v) => set('min_margin_threshold', Number(v))} />
       </SimpleGrid>
+      <Checkbox label="Ignore margin/profit thresholds entirely (auto-add every priced candidate)"
+        checked={form.ignore_thresholds}
+        onChange={(e) => set('ignore_thresholds', e.currentTarget.checked)} mt={6} />
       <Text size="xs" c="dimmed">
         These two thresholds are what decides whether Refresh Shortlist auto-adds a candidate - there is no
-        separate manual review step.
+        separate manual review step. Turn the checkbox on to bypass both and see every candidate Goonmetrics
+        could price, regardless of margin or profit.
       </Text>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Purchase Source</Title>

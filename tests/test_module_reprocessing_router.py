@@ -101,7 +101,8 @@ def test_update_settings_calls_action(monkeypatch):
 
     payload = {
         "scrapmetal_processing_skill_level": 5, "refining_tax_rate": 0.02, "freight_cost_per_m3": 500.0,
-        "min_profit_threshold": 0.0, "min_margin_threshold": 0.05, "purchase_region_id": 10000002,
+        "min_profit_threshold": 0.0, "min_margin_threshold": 0.05, "ignore_thresholds": False,
+        "purchase_region_id": 10000002,
         "purchase_structure_id": None, "enforce_shortlist_cap": False, "max_active_shortlist_items": 300,
     }
     resp = client.post("/api/module-reprocessing/settings", json=payload)
