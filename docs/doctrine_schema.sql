@@ -38,7 +38,7 @@
 -- scope added too, not just the newest one's.
 ALTER TABLE tenant_settings DROP CONSTRAINT IF EXISTS tenant_settings_scope_check;
 ALTER TABLE tenant_settings ADD CONSTRAINT tenant_settings_scope_check
-    CHECK (scope IN ('trading', 'production', 'doctrine', 'refining', 'station_trading'));
+    CHECK (scope IN ('trading', 'production', 'doctrine', 'refining', 'station_trading', 'module_reprocessing'));
 
 -- ============================================================== shared table
 -- typeID -> fitting slot (see production/sde.py's refresh_sde, storage.
