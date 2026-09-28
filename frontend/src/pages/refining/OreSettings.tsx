@@ -94,8 +94,8 @@ export default function OreSettings() {
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Economy</Title>
       <SimpleGrid cols={2}>
-        <NumberInput label="Refining tax (0-1)" value={form.refining_tax_rate} min={0} max={1} step={0.01}
-          onChange={(v) => set('refining_tax_rate', Number(v))} />
+        <NumberInput label="Refining tax" suffix="%" decimalScale={2} value={form.refining_tax_rate * 100}
+          min={0} max={100} step={1} onChange={(v) => set('refining_tax_rate', Number(v) / 100)} />
       </SimpleGrid>
 
       <Button mt="md" w={240} onClick={() => save.mutate(form)} loading={save.isPending}>

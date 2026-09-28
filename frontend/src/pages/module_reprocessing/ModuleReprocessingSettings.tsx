@@ -32,8 +32,8 @@ export default function ModuleReprocessingSettings() {
       <SimpleGrid cols={2}>
         <NumberInput label="Scrapmetal Processing skill (0-5)" value={form.scrapmetal_processing_skill_level}
           min={0} max={5} step={1} onChange={(v) => set('scrapmetal_processing_skill_level', Number(v))} />
-        <NumberInput label="Refining tax (0-1)" value={form.refining_tax_rate} min={0} max={1} step={0.01}
-          onChange={(v) => set('refining_tax_rate', Number(v))} />
+        <NumberInput label="Refining tax" suffix="%" decimalScale={2} value={form.refining_tax_rate * 100}
+          min={0} max={100} step={1} onChange={(v) => set('refining_tax_rate', Number(v) / 100)} />
       </SimpleGrid>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Economy</Title>
@@ -43,9 +43,9 @@ export default function ModuleReprocessingSettings() {
         <NumberInput label="Minimum profit / unit" value={form.min_profit_threshold} min={0} step={100}
           disabled={form.ignore_thresholds}
           onChange={(v) => set('min_profit_threshold', Number(v))} />
-        <NumberInput label="Minimum margin (0-1+)" value={form.min_margin_threshold} min={0} step={0.01}
-          disabled={form.ignore_thresholds}
-          onChange={(v) => set('min_margin_threshold', Number(v))} />
+        <NumberInput label="Minimum margin" suffix="%" decimalScale={2} value={form.min_margin_threshold * 100}
+          min={0} step={1} disabled={form.ignore_thresholds}
+          onChange={(v) => set('min_margin_threshold', Number(v) / 100)} />
       </SimpleGrid>
       <Checkbox label="Ignore margin/profit thresholds entirely (auto-add every priced candidate)"
         checked={form.ignore_thresholds}

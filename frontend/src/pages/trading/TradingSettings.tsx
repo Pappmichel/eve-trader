@@ -41,12 +41,14 @@ export default function TradingSettings() {
       <SimpleGrid cols={2}>
         <NumberInput label="Freight cost Jita→structure (ISK/m³)" value={form.import_cost_per_m3} min={0} step={50}
           onChange={(v) => set('import_cost_per_m3', Number(v))} />
-        <NumberInput label="Structure sell haircut (0-1)" value={form.structure_sell_haircut} min={0} max={1} step={0.01}
-          onChange={(v) => set('structure_sell_haircut', Number(v))} />
+        <NumberInput label="Structure sell haircut" suffix="%" decimalScale={2}
+          value={form.structure_sell_haircut * 100} min={0} max={100} step={1}
+          onChange={(v) => set('structure_sell_haircut', Number(v) / 100)} />
         <NumberInput label="Minimum profit/unit (ISK)" value={form.min_profit_threshold} min={0} step={100}
           onChange={(v) => set('min_profit_threshold', Number(v))} />
-        <NumberInput label="Minimum margin for 'Import'" value={form.min_margin_threshold} min={0} step={0.01}
-          onChange={(v) => set('min_margin_threshold', Number(v))} />
+        <NumberInput label="Minimum margin for 'Import'" suffix="%" decimalScale={2}
+          value={form.min_margin_threshold * 100} min={0} step={1}
+          onChange={(v) => set('min_margin_threshold', Number(v) / 100)} />
         <NumberInput label="Grace period before deactivation (days)" value={form.skip_grace_period_days} min={0} step={1}
           onChange={(v) => set('skip_grace_period_days', Number(v))} />
         <NumberInput label="Max. active shortlist entries (when cap is on)"
@@ -61,8 +63,9 @@ export default function TradingSettings() {
         no keyword allow/denylist, no per-item size cap.
       </Text>
       <SimpleGrid cols={3}>
-        <NumberInput label="Min. hit rate (0-1)" value={form.min_hit_rate} min={0} max={1} step={0.05}
-          onChange={(v) => set('min_hit_rate', Number(v))} />
+        <NumberInput label="Min. hit rate" suffix="%" decimalScale={2} value={form.min_hit_rate * 100}
+          min={0} max={100} step={5}
+          onChange={(v) => set('min_hit_rate', Number(v) / 100)} />
         <NumberInput label="Min. avg market movement (reference region)" value={form.min_avg_movement} min={0} step={1}
           onChange={(v) => set('min_avg_movement', Number(v))} />
         <NumberInput label="Safe mode: max IDs/run" value={form.safe_mode_max_ids} min={1} step={50}

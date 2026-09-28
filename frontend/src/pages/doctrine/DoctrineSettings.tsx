@@ -48,8 +48,9 @@ export default function DoctrineSettings() {
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Validation</Title>
       <SimpleGrid cols={2}>
-        <NumberInput label="Cargo/drone/charge tolerance (0-1)" value={form.cargo_tolerance_pct} min={0} max={1} step={0.05}
-          onChange={(v) => set('cargo_tolerance_pct', Number(v))} />
+        <NumberInput label="Cargo/drone/charge tolerance" suffix="%" decimalScale={2}
+          value={form.cargo_tolerance_pct * 100} min={0} max={100} step={5}
+          onChange={(v) => set('cargo_tolerance_pct', Number(v) / 100)} />
       </SimpleGrid>
       <Switch label="Treat unexpected extra items as a defect (strict mode)" checked={form.strict_extras}
         onChange={(e) => set('strict_extras', e.currentTarget.checked)} />
