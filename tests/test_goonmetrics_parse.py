@@ -3,7 +3,9 @@ import requests
 
 from eve_trader.config import TradingConfig
 from eve_trader.esi_client import ESIClient
-from eve_trader.goonmetrics_client import GoonmetricsClient, clear_prices_cache, _parse_history_xml
+from eve_trader.goonmetrics_client import (
+    PRICE_DATA_MAX_TYPES_PER_CALL, GoonmetricsClient, clear_prices_cache, _parse_history_xml, _parse_price_data_xml,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -174,3 +176,107 @@ def test_current_prices_does_not_serialize_unrelated_markets(monkeypatch):
 
     assert "jita" in results and "home-structure-slug" in results
     assert elapsed < DELAY * 2  # ran concurrently, not serialized behind one shared lock
+
+
+# ---------------------------------------------------- station_current_prices / price_data
+# Real response shape confirmed live 2026-09-28 against goonmetrics.apps.gnf.lt
+# for a real private player structure ID that has no appraise.gnf.lt market
+# slug at all - see module_reprocessing/candidate_discovery.py's own comment
+# on why structure_id is now preferred over structure_market_slug.
+SAMPLE_PRICE_DATA_XML = """<goonmetrics method="price_data" version="1.0">
+  <price_data>
+    <type id="34">
+      <updated>2026-09-28T17:49:10Z</updated>
+      <all><weekly_movement>10854709540.3</weekly_movement></all>
+      <buy><max>3.69</max><listed>1556115691</listed></buy>
+      <sell><min>3.87</min><listed>2790543698</listed></sell>
+    </type>
+    <type id="35">
+      <updated>2026-09-28T17:49:10Z</updated>
+      <all><weekly_movement>6876363497.0</weekly_movement></all>
+      <buy><max>16.15</max><listed>2138518668</listed></buy>
+      <sell><min>19.00</min><listed>2305531227</listed></sell>
+    </type>
+  </price_data>
+</goonmetrics>
+"""
+
+
+def test_parses_price_data_xml():
+    prices = _parse_price_data_xml(SAMPLE_PRICE_DATA_XML)
+    assert set(prices) == {34, 35}
+    assert prices[34].buy == 3.69
+    assert prices[34].sell == 3.87
+    assert prices[34].updated == "2026-09-28T17:49:10Z"
+    assert prices[35].buy == 16.15
+    assert prices[35].sell == 19.00
+
+
+def test_parses_price_data_xml_skips_types_with_no_buy_or_sell_side():
+    xml = """<goonmetrics method="price_data" version="1.0">
+      <price_data>
+        <type id="34">
+          <updated>2026-09-28T17:49:10Z</updated>
+          <all><weekly_movement>0</weekly_movement></all>
+        </type>
+      </price_data>
+    </goonmetrics>
+    """
+    assert _parse_price_data_xml(xml) == {}
+
+
+def test_station_current_prices_builds_expected_url_and_parses(monkeypatch):
+    captured = {}
+
+    def _fake_get(self, url, timeout):
+        captured["url"] = url
+        return _XmlResponse(SAMPLE_PRICE_DATA_XML)
+    monkeypatch.setattr(requests.Session, "get", _fake_get)
+
+    client = GoonmetricsClient()
+    prices = client.station_current_prices(1049588174021, [34, 35])
+
+    assert "station_id=1049588174021" in captured["url"]
+    assert "type_id=34,35" in captured["url"]
+    assert prices[34].sell == 3.87
+    assert prices[35].sell == 19.00
+
+
+def test_station_current_prices_returns_empty_dict_for_no_type_ids():
+    client = GoonmetricsClient()
+    assert client.station_current_prices(1049588174021, []) == {}
+
+
+def test_station_current_prices_chunks_over_the_per_call_cap(monkeypatch):
+    # PRICE_DATA_MAX_TYPES_PER_CALL (50) is the API's own documented limit -
+    # a caller asking for more type_ids than that must transparently become
+    # more than one HTTP call, each within the cap, and the merged result
+    # must cover every requested type_id.
+    type_ids = list(range(1, PRICE_DATA_MAX_TYPES_PER_CALL + 11))  # 60 ids -> 2 calls
+    calls = []
+
+    def _fake_get(self, url, timeout):
+        calls.append(url)
+        ids_param = url.split("type_id=")[1]
+        ids = [int(t) for t in ids_param.split(",")]
+        xml_types = "".join(
+            f'<type id="{t}"><updated>2026-09-28T00:00:00Z</updated>'
+            f'<buy><max>1.0</max></buy><sell><min>2.0</min></sell></type>'
+            for t in ids
+        )
+        return _XmlResponse(f'<goonmetrics><price_data>{xml_types}</price_data></goonmetrics>')
+    monkeypatch.setattr(requests.Session, "get", _fake_get)
+
+    client = GoonmetricsClient()
+    prices = client.station_current_prices(1049588174021, type_ids)
+
+    assert len(calls) == 2
+    assert set(prices) == set(type_ids)
+
+
+class _XmlResponse:
+    def __init__(self, text):
+        self.text = text
+
+    def raise_for_status(self):
+        pass

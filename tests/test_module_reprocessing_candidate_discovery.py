@@ -44,12 +44,18 @@ def test_empty_universe_returns_empty_list(monkeypatch):
 # ---------------------------------------------------------- discover_candidates
 class FakeGoonmetricsClient:
     """Same shape as test_station_trading_discovery.py's own fake - avoids
-    class-level monkeypatching of the real GoonmetricsClient."""
-    def __init__(self, prices_by_market):
+    class-level monkeypatching of the real GoonmetricsClient. station_prices
+    (optional) mirrors station_current_prices' own dict[type_id, CurrentPrice]
+    return shape, keyed by station_id."""
+    def __init__(self, prices_by_market, station_prices=None):
         self._prices_by_market = prices_by_market
+        self._station_prices = station_prices or {}
 
     def current_prices(self, market):
         return self._prices_by_market.get(market, [])
+
+    def station_current_prices(self, station_id, type_ids):
+        return self._station_prices.get(station_id, {})
 
 
 def _price(type_id, buy, sell):
@@ -208,6 +214,70 @@ def test_discover_candidates_survives_home_market_outage(monkeypatch, trading_cf
             raise requests.RequestException("Goonmetrics home market down")
 
     client = BoomingHomeMarket({"jita": [_price(100, buy=0.5, sell=1.0)]})
+    cfg = ModuleReprocessingConfig(min_profit_threshold=0.0, min_margin_threshold=0.0)
+
+    assert discover_candidates(cfg, trading_cfg, client=client) == []
+
+
+# --------------------------------------------- structure_id-based home-market pricing
+def test_discover_candidates_prefers_structure_id_over_slug(monkeypatch):
+    """When both structure_id and structure_market_slug are set,
+    structure_id wins - station_current_prices (keyed directly by the
+    structure ID, no market-slug guessing) is preferred over current_prices'
+    slug-keyed appraise.gnf.lt dump. Confirmed real need 2026-09-28: a real
+    private player structure had a working structure_id but no
+    appraise.gnf.lt slug for its market at all."""
+    _setup_one_module(monkeypatch)
+    trading_cfg = TradingConfig(jita_buy_broker_fee=0.0147, structure_sell_haircut=0.9463,
+                                 structure_id=1049588174021, structure_market_slug="my-structure")
+    client = FakeGoonmetricsClient(
+        prices_by_market={
+            "jita": [_price(100, buy=0.5, sell=1.0)],
+            # If the slug path were used by mistake, this thin margin would
+            # exclude the candidate below - proves structure_id was actually used.
+            "my-structure": [_price(34, buy=0.01, sell=0.01)],
+        },
+        station_prices={1049588174021: {34: _price(34, buy=9.0, sell=10.0)}},
+    )
+    cfg = ModuleReprocessingConfig(min_profit_threshold=0.0, min_margin_threshold=0.05)
+
+    result = discover_candidates(cfg, trading_cfg, client=client)
+
+    assert [r.type_id for r in result] == [100]
+    assert result[0].est_profit_per_unit > 0
+
+
+def test_discover_candidates_falls_back_to_slug_when_no_structure_id(monkeypatch, trading_cfg):
+    """trading_cfg fixture has structure_market_slug set but no structure_id -
+    the slug path still works exactly as before this feature (regression
+    guard, mirrors test_discover_candidates_includes_items_clearing_the_bar)."""
+    _setup_one_module(monkeypatch)
+    assert trading_cfg.structure_id is None
+    client = FakeGoonmetricsClient({
+        "jita": [_price(100, buy=0.5, sell=1.0)],
+        "my-structure": [_price(34, buy=9.0, sell=10.0)],
+    })
+    cfg = ModuleReprocessingConfig(min_profit_threshold=0.0, min_margin_threshold=0.05)
+
+    result = discover_candidates(cfg, trading_cfg, client=client)
+
+    assert [r.type_id for r in result] == [100]
+
+
+def test_discover_candidates_survives_structure_id_fetch_failure(monkeypatch):
+    """Same "best-effort" reasoning as test_discover_candidates_survives_
+    home_market_outage, for the structure_id path instead of the slug path."""
+    import requests
+
+    _setup_one_module(monkeypatch)
+    trading_cfg = TradingConfig(jita_buy_broker_fee=0.0147, structure_sell_haircut=0.9463,
+                                 structure_id=1049588174021)
+
+    class BoomingStation(FakeGoonmetricsClient):
+        def station_current_prices(self, station_id, type_ids):
+            raise requests.RequestException("Goonmetrics station price_data down")
+
+    client = BoomingStation({"jita": [_price(100, buy=0.5, sell=1.0)]})
     cfg = ModuleReprocessingConfig(min_profit_threshold=0.0, min_margin_threshold=0.0)
 
     assert discover_candidates(cfg, trading_cfg, client=client) == []

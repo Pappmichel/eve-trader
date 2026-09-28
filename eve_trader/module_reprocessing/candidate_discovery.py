@@ -10,13 +10,18 @@ candidate_discovery.py), the T1/Meta module+drone universe is large
 (thousands of published types) - manually reviewing and picking candidates
 one by one doesn't scale at this size (confirmed with the user 2026-09-27).
 So, same as station_trading's own discover_candidates: `discover_candidates`
-below does one Goonmetrics current-price dump per market (already a single
-HTTP call each, see GoonmetricsClient.current_prices) over the *whole*
-universe and returns everything that clears cfg.min_profit_threshold/
-min_margin_threshold - never touches ESI. module_reprocessing/actions.py's
-do_refresh_shortlist auto-adds every result of this to the persisted
-shortlist and is the only place that then calls ESI, and only against that
-already-narrowed, persisted list.
+below does one Goonmetrics current-price dump for Jita (GoonmetricsClient.
+current_prices - the whole-market JSON dump) plus one targeted Goonmetrics
+lookup for the tool's own handful of reprocessing minerals at the home
+structure (GoonmetricsClient.station_current_prices, keyed by
+trading_cfg.structure_id directly - see that function's own docstring for
+why this is preferred over current_prices' slug-keyed appraise.gnf.lt dump
+for a private player structure) over the *whole* module/drone universe, and
+returns everything that clears cfg.min_profit_threshold/min_margin_threshold
+- never touches ESI. module_reprocessing/actions.py's do_refresh_shortlist
+auto-adds every result of this to the persisted shortlist and is the only
+place that then calls ESI, and only against that already-narrowed,
+persisted list.
 """
 from __future__ import annotations
 
@@ -82,14 +87,31 @@ def discover_candidates(cfg: ModuleReprocessingConfig, trading_cfg: TradingConfi
 
     mineral_ids = set(mineral_type_ids_for(candidates))
     mineral_prices_by_id = {}
-    if trading_cfg.structure_market_slug:
+    # Prefer structure_id (goonmetrics.apps.gnf.lt's own price_data, keyed
+    # directly by station/structure ID) over structure_market_slug
+    # (appraise.gnf.lt's current_prices, keyed by a market "slug" that a
+    # private player structure may not have at all - confirmed real
+    # 2026-09-28: a real C-J structure had no working slug, but Goonmetrics
+    # does track it directly by ID). structure_id is already required for
+    # Trading to place/track orders there at all, so this needs no new
+    # config field - just a better-informed choice between two that already
+    # exist. Falls back to the slug path only when structure_id itself isn't
+    # set, so an existing tenant relying on a working slug is unaffected.
+    if trading_cfg.structure_id:
+        try:
+            mineral_prices_by_id = client.station_current_prices(trading_cfg.structure_id, mineral_ids)
+        except requests.RequestException as e:
+            log.warning("Goonmetrics home-market fetch failed (station_id, %s) - "
+                        "mineral values will be missing this run.", e)
+    elif trading_cfg.structure_market_slug:
         try:
             mineral_prices_by_id = {
                 p.type_id: p for p in client.current_prices(trading_cfg.structure_market_slug)
                 if p.type_id in mineral_ids
             }
         except requests.RequestException as e:
-            log.warning("Goonmetrics home-market fetch failed (%s) - mineral values will be missing this run.", e)
+            log.warning("Goonmetrics home-market fetch failed (market slug, %s) - "
+                        "mineral values will be missing this run.", e)
 
     results = estimate_discovered_candidates(candidates, jita_prices_by_id, mineral_prices_by_id, trading_cfg, cfg)
     if cfg.ignore_thresholds:

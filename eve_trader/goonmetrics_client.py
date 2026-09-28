@@ -35,6 +35,19 @@ USER_AGENT = "eve-trader-python"
 
 APPRAISE_BASE = "https://appraise.gnf.lt"
 
+# goonmetrics.apps.gnf.lt's own "price_data" XML endpoint - keyed directly by
+# a station_id/structure_id, unlike current_prices' appraise.gnf.lt JSON dump
+# (keyed by a market "slug" that has to exist on that site at all - a private
+# player structure with no such slug has no way to use current_prices for its
+# own market). Confirmed live 2026-09-28: a real C-J-style player structure ID
+# with no appraise.gnf.lt slug still returned real price_data for it - GARPA's
+# own scan apparently keys off the structure ID directly, not a curated slug
+# list. See station_current_prices below.
+PRICE_DATA_BASE = "https://goonmetrics.apps.gnf.lt/api/price_data/"
+# The API's own documented per-call cap (see its usage page: "You may specify
+# up to 50 types per call").
+PRICE_DATA_MAX_TYPES_PER_CALL = 50
+
 # Module-level (not per-instance) TTL cache for current_prices, keyed by
 # `market` - a GoonmetricsClient is instantiated fresh on every _PlanContext
 # (production/engine.py) and every plan_production/plan_asset_optimized
@@ -159,6 +172,37 @@ class GoonmetricsClient:
             _prices_cache_at[market] = time.time()
             return list(prices)
 
+    def station_current_prices(self, station_id: int, type_ids: Iterable[int]) -> dict[int, CurrentPrice]:
+        """Current best buy (max)/sell (min) for `type_ids` at a specific
+        station/structure ID, via price_data (see PRICE_DATA_BASE above) -
+        the station_id-keyed sibling of current_prices' slug-keyed JSON dump.
+        Returns a dict, not a list (unlike current_prices), since this is
+        never "give me the whole market", only a handful of looked-up types -
+        a type_id Goonmetrics has no data for (no buy or sell side at all) is
+        simply missing from the result, same "absent means unknown" contract
+        every caller here already expects from a dict.get(type_id).
+
+        Chunks transparently at PRICE_DATA_MAX_TYPES_PER_CALL (the API's own
+        per-call cap) and merges - callers never need to chunk their own
+        type_id list. No retry/cache here (unlike current_prices' multi-MB
+        market dump) - this is a small, targeted lookup (e.g. this tool's own
+        handful of reprocessing minerals), cheap enough to just re-fetch.
+        Raises requests.RequestException on failure, same as current_prices -
+        callers decide whether that's fatal or best-effort for their own use
+        case.
+        """
+        ids = sorted(set(type_ids))
+        if not ids:
+            return {}
+        out: dict[int, CurrentPrice] = {}
+        for i in range(0, len(ids), PRICE_DATA_MAX_TYPES_PER_CALL):
+            chunk = ids[i:i + PRICE_DATA_MAX_TYPES_PER_CALL]
+            url = f"{PRICE_DATA_BASE}?station_id={station_id}&type_id={','.join(str(t) for t in chunk)}"
+            resp = self.session.get(url, timeout=30)
+            resp.raise_for_status()
+            out.update(_parse_price_data_xml(resp.text))
+        return out
+
     def price_history(self, region_id: int, type_ids: Iterable[int]) -> list[HistoryPoint]:
         """Never raises on a Goonmetrics failure - silently falls back to
         the slower per-type_id ESI history endpoint instead (see except
@@ -240,6 +284,31 @@ class GoonmetricsClient:
             for points in pool.map(_fetch, chunks):
                 out.extend(points)
         return out
+
+
+def _parse_price_data_xml(xml_text: str) -> dict[int, CurrentPrice]:
+    """Parses price_data's <type id="..."><updated/><buy><max/></buy>
+    <sell><min/></sell></type> shape (confirmed live 2026-09-28 - see
+    station_current_prices' own docstring). A type with no buy or no sell
+    side at all (element missing, or present but empty) is skipped entirely
+    rather than stored with a None/0 price - same "absent means unknown"
+    contract as every other Goonmetrics price lookup in this codebase."""
+    root = ET.fromstring(xml_text)
+    prices: dict[int, CurrentPrice] = {}
+    for type_el in root.iter("type"):
+        type_id = int(type_el.attrib["id"])
+        buy_el = type_el.find("buy/max")
+        sell_el = type_el.find("sell/min")
+        if buy_el is None or sell_el is None or not buy_el.text or not sell_el.text:
+            continue
+        updated_el = type_el.find("updated")
+        prices[type_id] = CurrentPrice(
+            type_id=type_id,
+            updated=updated_el.text if updated_el is not None and updated_el.text else "",
+            buy=float(buy_el.text),
+            sell=float(sell_el.text),
+        )
+    return prices
 
 
 def _parse_history_xml(xml_text: str, region_id: int) -> list[HistoryPoint]:
