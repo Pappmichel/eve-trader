@@ -115,8 +115,10 @@ on it afterwards.
    `_TOOL_PATH_PREFIXES`, Characters sharing UI).
 4. **`skillqueue_empty`: default lead time 12 h, sent once per `finish_date`**;
    lead time configurable per subscription.
-5. **`mail_new` without `include_content`: count only** ("2 new mails"), no
-   sender, no subject. Content only with the separate opt-in.
+5. **`mail_new` message: count, sender name and subject always** (revised
+   2026-09-29 after live use; originally count only). The mail **text** only
+   with the separate `include_content` opt-in. Sender names come from public
+   ESI name resolution.
 6. **No quiet hours, English messages.** Secrets handling follows
    `tenant_tokens` precedent for anything stored at rest.
 
@@ -204,7 +206,7 @@ Independent of the scheduler rework:
 - `eve_trader/alerts/`: `config.py` (operator env), `discord_client.py` (OAuth2
   identify link + bot DM, mentions disabled, 429 -> `DiscordRateLimited`, DM
   refused -> `DiscordDMBlocked`), `logic.py` (pure `skillqueue_decision` /
-  `mail_decision`, incl. baseline and count-only default), `actions.py`
+  `mail_decision`, incl. baseline; sender+subject always, text only with opt-in), `actions.py`
   (settings, subscriptions, link start/finish, unlink, test message,
   `deliver()`).
 - Router `/api/char-alerts/` (settings, subscriptions, discord start/callback/

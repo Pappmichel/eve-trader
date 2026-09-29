@@ -119,6 +119,25 @@ def _run_skillqueue(cid: int, lead_hours: int, name: str, now: datetime, client:
     _send(cid, logic.SKILLQUEUE_EMPTY, decision, now, tokens=tokens)
 
 
+def _sender_names(client: ESIClient, ids: list[int]) -> dict[int, str]:
+    """Names for mail sender ids (public ESI data). One unresolvable id 404s a
+    whole batch, so a failed batch falls back to one call per id; anything
+    still unresolved just shows as an unknown sender."""
+    ids = list(dict.fromkeys(ids))
+    if not ids:
+        return {}
+    try:
+        return client.resolve_names_cached(ids)
+    except ESIError:
+        names: dict[int, str] = {}
+        for i in ids:
+            try:
+                names.update(client.resolve_names_cached([i]))
+            except ESIError:
+                pass
+        return names
+
+
 def _run_mail(cid: int, include_content: bool, name: str, now: datetime, poll_minutes: float,
               client: ESIClient, tokens: TokenManager) -> None:
     state = storage.get_alert_state(cid, logic.MAIL_NEW)
@@ -137,16 +156,20 @@ def _run_mail(cid: int, include_content: bool, name: str, now: datetime, poll_mi
         storage.save_alert_state(cid, logic.MAIL_NEW, at=now)
         return
     bodies: dict[int, str] = {}
-    if include_content and last_seen is not None:
-        fresh = sorted(
-            (int(h["mail_id"]) for h in headers if int(h["mail_id"]) > last_seen and not h.get("is_read")),
+    senders: dict[int, str] = {}
+    if last_seen is not None:
+        fresh_headers = sorted(
+            (h for h in headers if int(h["mail_id"]) > last_seen and not h.get("is_read")),
+            key=lambda h: int(h["mail_id"]),
         )[:logic.MAX_MAILS_LISTED]
+        senders = _sender_names(client, [int(h["from"]) for h in fresh_headers if h.get("from")])
+        fresh = [int(h["mail_id"]) for h in fresh_headers] if include_content else []
         for mail_id in fresh:
             try:
                 bodies[mail_id] = _clean_body(client.character_mail_body(cid, role, mail_id, cache=False).get("body", ""))
             except ESIError:
                 pass                                        # a subject-only line beats no alert
-    result = logic.mail_decision(headers, last_seen, include_content, name, bodies)
+    result = logic.mail_decision(headers, last_seen, include_content, name, bodies, senders)
     cursor = result.newest_id if result.newest_id is not None else 0     # 0 = empty inbox baseline
     if result.baseline or result.decision is None:
         storage.save_alert_state(cid, logic.MAIL_NEW, last_seen_mail_id=cursor, at=now)

@@ -28,7 +28,7 @@ function list(overrides: Partial<NotificationsList> = {}): NotificationsList {
     items: [item()], total: 1, unread_total: 1,
     types: [{ type: 'StructureUnderAttack', label: 'Structure under attack', count: 1 }],
     categories: [{ category: 'structures', label: 'Structures', count: 1 }],
-    characters: [{ character_id: 1, character_name: 'Alice', synced_at: '2026-09-29T08:00:00Z', last_error: null }],
+    characters: [{ character_id: 1, character_name: 'Alice', synced_at: new Date().toISOString(), last_error: null }],
     hidden_characters: [],
     ...overrides,
   }

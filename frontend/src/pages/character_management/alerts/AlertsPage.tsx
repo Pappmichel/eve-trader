@@ -51,14 +51,14 @@ function AlertRow(props: {
         <Stack gap={2}>
           <Checkbox
             size="xs" checked={sub.include_content} disabled={pending}
-            label="Include subject and text in the message"
+            label="Include the mail text in the message"
             aria-label={`${props.label} include mail content`}
             onChange={(e) => props.onChange({ enabled: true, include_content: e.currentTarget.checked })}
           />
           <Text size="xs" c={sub.include_content ? 'orange' : 'dimmed'}>
             {sub.include_content
-              ? 'Mail subjects and text will be sent to Discord and can not be recalled from there.'
-              : 'Without this only the number of new mails is sent.'}
+              ? 'The mail text will be sent to Discord and can not be recalled from there.'
+              : 'Without this only the number of new mails, the sender and the subject are sent.'}
           </Text>
         </Stack>
       )}
