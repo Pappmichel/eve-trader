@@ -31,6 +31,15 @@ HTMLElement.prototype.getBoundingClientRect = function () {
   return { x: 0, y: 0, top: 0, left: 0, bottom: 600, right: 800, width: 800, height: 600, toJSON() {} }
 }
 
+// jsdom has no FontFaceSet: Mantine's autosizing <Textarea> subscribes to
+// document.fonts (to re-measure once fonts load) and would throw on mount.
+if (!('fonts' in document)) {
+  Object.defineProperty(document, 'fonts', {
+    configurable: true,
+    value: { addEventListener: () => {}, removeEventListener: () => {}, ready: Promise.resolve() },
+  })
+}
+
 // jsdom doesn't implement matchMedia at all - MantineProvider's own color
 // scheme detection (auto light/dark) calls it unconditionally on mount, so
 // every test rendering anything under MantineProvider needs this stubbed.

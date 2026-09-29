@@ -638,6 +638,62 @@ Original design:
     EVE player who can send you mail.
 
 ### Phase 4 - Mail write
+
+**Status: implemented.** Deviations/additions:
+- **Capabilities `mail_send` / `mail_organize`** (group 3) added to the registry
+  and the frontend mirror, so the Characters "Access" table shows them and the
+  re-authorize flow requests their scopes. Every write action requires the
+  tick (the user's consent that this app acts for the character) **and** a token
+  holding the scope (`fields.capability_ready` -> `ready | not_enabled |
+  reauth_needed`); a tick without the scope says "re-authorize", not "sent".
+  `organize` does not imply `send` and vice versa.
+- **`ESIClient._write`** (R3): 420/429 are retried for every method (ESI
+  rejected the request before processing it); transport errors and 5xx are
+  retried **only for idempotent writes** (PUT read/labels, DELETE). Sending a
+  mail and creating a label are not retried: they end in `ESIDeliveryUnknown`,
+  which `do_send_mail` turns into "ESI did not confirm the delivery ... check the
+  Sent folder before sending it again". Accepts ESI's 201/204. A definite refusal
+  is `ESIHTTPError(status, body)`; the body stays server-side (only used to parse
+  a CSPA cost), users and logs see `ESI returned HTTP <n>`.
+- **CSPA charge:** `do_send_mail` returns `{sent: false, needs_approval, cost}`
+  when ESI's refusal text carries a cost above `approved_cost`; the UI asks and
+  repeats with `ceil(cost)`. The cost is parsed from ESI's error text
+  (`fields`/`_COST` regex) - **unverified against real ESI** (offline sandbox);
+  if the text is not parseable the user gets a plain refusal instead.
+- **Validation before any ESI call:** recipients (max 50, types, own mailing
+  lists only, exact-name lookup via `/universe/ids`, order preserved, deduped),
+  subject (required, <= 1000), body (<= 10000), label name/colour (ESI's fixed
+  18 colours), system folders cannot be deleted.
+- **Archive stays a faithful copy:** a mail sent by an archived character is
+  stored right away (label Sent, body, recipients); read state / labels are
+  mirrored; a mail deleted through the app is removed from the archive too (and
+  the message garbage-collected if no header references it). All through the
+  guarded archive writes. Live caches of that character (`mail_*`) are
+  invalidated after every write.
+- **Routes** (all under the existing `char_mail` grant; the global Origin/CSRF
+  check covers the POST/DELETE routes - tested with a foreign Origin):
+  `POST /send`, `POST /mails/{c}/{m}/read`, `POST /mails/{c}/{m}/labels`,
+  `DELETE /mails/{c}/{m}`, `POST /labels`, `DELETE /labels/{c}/{l}`,
+  `GET /recipients`. `do_list_folders` now reports per-character write
+  capability states so the UI can disable and explain.
+- **Frontend:** Compose modal (sender picker limited to characters that may send,
+  recipient chips with name entry + autocomplete over own lists and public ESI
+  search, counters, CSPA confirmation, draft kept on failure), Reply / Reply all /
+  Forward (quote via the same sanitizer, replies go out as the receiving
+  character), Mark read/unread, Labels popover (checkboxes, sends the full
+  resulting set), Delete with confirmation, label create/delete in Mail
+  settings. Opening an unread mail marks it read in the game **only** if the
+  character may organize, once per mail per visit (R13); otherwise it stays
+  unread.
+- **Bug found by the UI tests:** reading `e.currentTarget.value` inside a
+  functional `setState` updater (it runs after the handler, when React has nulled
+  `currentTarget`) - fixed by reading the value first.
+- **Not verifiable in the sandbox:** real ESI write responses. In the live
+  browser run, ESI was unreachable, which exercised the failure paths: the
+  auto mark-read and the send both showed their redacted error toasts and the
+  draft stayed open.
+- **Not done:** the Characters "Remove character" dialog still does not offer
+  deleting an archive (R8); scheduled/deferred sends; mailing-list management.
 - Capabilities `mail_send` and `mail_organize` go into
   `ACCESS_CAPABILITIES`, the `esiRegistry.ts` mirror, and the capabilities
   table on the Characters page.

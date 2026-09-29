@@ -663,6 +663,25 @@ export const charMailApi = {
     post<T.MailArchiveRow | { character_id: number; archive_enabled: false; deleted: { headers: number; messages: number } }>(
       '/api/char-mail/archive', body,
     ),
+  searchRecipients: (characterId: number, q: string) =>
+    get<{ results: T.MailRecipientHit[] }>(
+      `/api/char-mail/recipients?character_id=${characterId}&q=${encodeURIComponent(q)}`,
+    ),
+  send: (body: T.MailSendRequest) => post<T.MailSendResult>('/api/char-mail/send', body),
+  markRead: (characterId: number, mailId: number, read: boolean) =>
+    post<{ character_id: number; mail_id: number; read: boolean }>(
+      `/api/char-mail/mails/${characterId}/${mailId}/read`, { read },
+    ),
+  setLabels: (characterId: number, mailId: number, labels: number[]) =>
+    post<{ character_id: number; mail_id: number; labels: number[] }>(
+      `/api/char-mail/mails/${characterId}/${mailId}/labels`, { labels },
+    ),
+  deleteMail: (characterId: number, mailId: number) =>
+    del<{ character_id: number; mail_id: number; deleted: true }>(`/api/char-mail/mails/${characterId}/${mailId}`),
+  createLabel: (body: { character_id: number; name: string; color?: string }) =>
+    post<{ character_id: number; label_id: number; name: string; color: string }>('/api/char-mail/labels', body),
+  deleteLabel: (characterId: number, labelId: number) =>
+    del<{ character_id: number; label_id: number; deleted: true }>(`/api/char-mail/labels/${characterId}/${labelId}`),
   refreshArchive: (characterId?: number | null) =>
     post<{ characters: (T.MailCharacterStatus & { new_mails?: number; covered?: number })[] }>(
       '/api/char-mail/archive/refresh', { character_id: characterId ?? null },

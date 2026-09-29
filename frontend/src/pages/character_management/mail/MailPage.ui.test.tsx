@@ -20,6 +20,7 @@ vi.mock('../../../api/client', () => ({
 }))
 
 const api = vi.mocked(charMailApi)
+const NO_WRITE = { send: 'not_enabled', organize: 'not_enabled' } as const
 
 function labels(unreadInbox = 0) {
   return [
@@ -32,8 +33,8 @@ function labels(unreadInbox = 0) {
 function folders(over: Partial<MailFolders> = {}): MailFolders {
   return {
     characters: [
-      { character_id: 1, character_name: 'Alice', archived: false, state: 'ok', labels: labels(2), lists: [], total_unread: 2 },
-      { character_id: 2, character_name: 'Bob', archived: true, state: 'ok', labels: labels(1), lists: [], total_unread: 1 },
+      { character_id: 1, character_name: 'Alice', archived: false, state: 'ok', labels: labels(2), lists: [], total_unread: 2, capabilities: NO_WRITE },
+      { character_id: 2, character_name: 'Bob', archived: true, state: 'ok', labels: labels(1), lists: [], total_unread: 1, capabilities: NO_WRITE },
     ],
     unread: { '1': 3, '2': 0, '4': 0, '8': 0, '16': 0 },
     ...over,

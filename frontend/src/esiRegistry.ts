@@ -136,6 +136,10 @@ export const ACCESS_CAPABILITIES: readonly AccessCapability[] = [
     label: 'Corporation roles',
     corpRoles: [],
   },
+  // Mail write actions (Character Management phase 4): consent for this app to
+  // act for the character in the game. Not data kinds - no sharing, no sync.
+  { key: 'mail_send', label: 'Send mail', corpRoles: [] },
+  { key: 'mail_organize', label: 'Organize mail', corpRoles: [] },
 ]
 
 export const TOOL_LABELS: Record<string, string> = {

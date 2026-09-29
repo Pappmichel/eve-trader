@@ -2,6 +2,12 @@ import type { MailReceivedBy, MailRow } from '../../../api/types'
 
 export const ARCHIVE_KEY = ['char-mail', 'archive']
 
+// The only colours ESI accepts for a mail label.
+export const LABEL_COLORS = [
+  '#ffffff', '#e6e6e6', '#999999', '#666666', '#fe0000', '#9a0000', '#ff6600', '#ffff01', '#ffffcd',
+  '#ccff9a', '#00ff33', '#349800', '#006634', '#99ffff', '#01ffff', '#0099ff', '#0000fe', '#660066',
+] as const
+
 // The server merges characters within one response; "Load more" then adds
 // pages for only the characters that still have more, so the same mail can
 // arrive again from a different character. Union by mail_id (received_by

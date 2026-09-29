@@ -1,16 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Alert, Badge, Box, Button, Container, Divider, Drawer, Grid, Group, Loader, NavLink, ScrollArea,
-  Stack, Text, TextInput, Title, Tooltip, UnstyledButton,
+  Alert, Badge, Box, Button, Checkbox, Container, Divider, Drawer, Grid, Group, Loader, NavLink, Popover,
+  ScrollArea, Stack, Text, TextInput, Title, Tooltip, UnstyledButton,
 } from '@mantine/core'
-import { IconArrowLeft, IconSettings } from '@tabler/icons-react'
+import { modals } from '@mantine/modals'
+import { notifications } from '@mantine/notifications'
+import { IconArrowLeft, IconPencil, IconSettings, IconTag } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { charMailApi } from '../../../api/client'
-import type { MailFolders, MailOpened, MailPage as MailPageData, MailRow } from '../../../api/types'
+import { ApiError, charMailApi } from '../../../api/client'
+import type {
+  MailCapabilityState, MailFolderLabel, MailFolders, MailOpened, MailPage as MailPageData, MailRow,
+} from '../../../api/types'
 import { dateTime } from '../../../format'
 import { sanitizeMailBody } from '../../../mailHtml'
+import { ComposeModal } from './ComposeModal'
+import { EMPTY_DRAFT, forwardDraft, replyDraft, type ComposeDraft } from './mailCompose'
 import { MailSettings } from './MailSettings'
 import { ARCHIVE_KEY, filterMailRows, mergeMailRows } from './mailUtils'
 
@@ -69,11 +75,77 @@ function MailListRow({ mail, active, showWho, onOpen }: {
   )
 }
 
-function Reader({ mail }: { mail: MailOpened }) {
+// Why an action is unavailable, said where the button is (not only on the
+// Characters page): the write actions need the capability ticked there AND a
+// re-authorize that grants the scope.
+function capabilityReason(state: MailCapabilityState, label: string): string | undefined {
+  if (state === 'ready') return undefined
+  return state === 'not_enabled'
+    ? `Tick "${label}" for this character on the Characters page to enable this.`
+    : 'Re-authorize this character on the Characters page (its token lacks the scope).'
+}
+
+function Reader({ mail, caps, customLabels, busy, onReply, onForward, onToggleRead, onSetLabels, onDelete }: {
+  mail: MailOpened
+  caps: { send: MailCapabilityState; organize: MailCapabilityState }
+  customLabels: MailFolderLabel[]
+  busy: boolean
+  onReply: (all: boolean) => void
+  onForward: () => void
+  onToggleRead: (read: boolean) => void
+  onSetLabels: (labels: number[]) => void
+  onDelete: () => void
+}) {
   // The ONLY place a mail body becomes markup, and only after sanitizing.
   const html = useMemo(() => sanitizeMailBody(mail.body), [mail.body])
+  const mine = mail.received_by.find((r) => r.character_id === mail.character_id)
+  const isRead = mine?.is_read ?? mail.is_read
+  const labels = mine?.labels ?? []
+  const sendReason = capabilityReason(caps.send, 'Send mail')
+  const organizeReason = capabilityReason(caps.organize, 'Organize mail')
+  const action = (label: string, reason: string | undefined, onClick: () => void) => (
+    <Tooltip label={reason} disabled={!reason} multiline w={240}>
+      <span>
+        <Button size="compact-sm" variant="default" disabled={!!reason || busy} onClick={onClick}>{label}</Button>
+      </span>
+    </Tooltip>
+  )
   return (
     <Stack gap="xs">
+      <Group gap="xs">
+        {action('Reply', sendReason, () => onReply(false))}
+        {action('Reply all', sendReason, () => onReply(true))}
+        {action('Forward', sendReason, onForward)}
+        {action(isRead ? 'Mark unread' : 'Mark read', organizeReason, () => onToggleRead(!isRead))}
+        <Popover withinPortal position="bottom-start" shadow="md" disabled={!!organizeReason}>
+          <Tooltip label={organizeReason} disabled={!organizeReason} multiline w={240}>
+            <span>
+              <Popover.Target>
+                <Button size="compact-sm" variant="default" leftSection={<IconTag size={14} />} disabled={!!organizeReason || busy}>
+                  Labels
+                </Button>
+              </Popover.Target>
+            </span>
+          </Tooltip>
+          <Popover.Dropdown>
+            <Stack gap={6} miw={180}>
+              {customLabels.length === 0 && <Text size="xs" c="dimmed">No custom labels yet (create one in Mail settings)</Text>}
+              {customLabels.map((l) => (
+                <Checkbox
+                  key={l.label_id}
+                  label={l.name}
+                  checked={labels.includes(l.label_id)}
+                  disabled={busy}
+                  onChange={(e) => onSetLabels(e.currentTarget.checked
+                    ? [...labels, l.label_id]
+                    : labels.filter((x) => x !== l.label_id))}
+                />
+              ))}
+            </Stack>
+          </Popover.Dropdown>
+        </Popover>
+        {action('Delete', organizeReason, onDelete)}
+      </Group>
       <Title order={3}>{mail.subject || '(no subject)'}</Title>
       <Text size="sm">
         <Text span fw={600}>From </Text>{mail.from_name ?? (mail.from_id ? `#${mail.from_id}` : '–')}
@@ -103,6 +175,9 @@ export default function MailPage() {
   const [filter, setFilter] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [compose, setCompose] = useState<{ open: boolean; draft: ComposeDraft; key: number }>(
+    { open: false, draft: EMPTY_DRAFT, key: 0 },
+  )
 
   const folders = useQuery({ queryKey: ['char-mail', 'folders'], queryFn: charMailApi.folders })
   const list = useInfiniteQuery({
@@ -150,6 +225,70 @@ export default function MailPage() {
   const statuses = (list.data?.pages[0]?.characters ?? []).filter((c) => c.state !== 'ok')
   const multi = (folders.data?.characters.length ?? 0) > 1 && sel.characterId === null
 
+  // ---- write actions (phase 4). Each needs the character's capability, which
+  // the folders response reports per character (and the server re-checks).
+  const charOf = (characterId: number) => folders.data?.characters.find((c) => c.character_id === characterId)
+  const senders = (folders.data?.characters ?? [])
+    .filter((c) => c.capabilities?.send === 'ready')
+    .map((c) => ({ character_id: c.character_id, character_name: c.character_name }))
+  const refetchMail = () => {
+    queryClient.invalidateQueries({ queryKey: ['char-mail', 'mails'] })
+    queryClient.invalidateQueries({ queryKey: ['char-mail', 'folders'] })
+  }
+  const notifyError = (title: string) => (err: unknown) => notifications.show({
+    title, color: 'danger', message: err instanceof ApiError ? err.message : String(err),
+  })
+  const markRead = useMutation({
+    mutationFn: (a: { cid: number; mid: number; read: boolean }) => charMailApi.markRead(a.cid, a.mid, a.read),
+    onSuccess: (_r, a) => {
+      // Keep the open reader in step without another request.
+      queryClient.setQueryData<MailOpened>(['char-mail', 'mail', a.cid, a.mid], (old) => old && ({
+        ...old, is_read: a.read,
+        received_by: old.received_by.map((r) => (r.character_id === a.cid ? { ...r, is_read: a.read } : r)),
+      }))
+      refetchMail()
+    },
+    onError: notifyError('Could not change the read state'),
+  })
+  const setLabels = useMutation({
+    mutationFn: (a: { cid: number; mid: number; labels: number[] }) => charMailApi.setLabels(a.cid, a.mid, a.labels),
+    onSuccess: (_r, a) => {
+      queryClient.setQueryData<MailOpened>(['char-mail', 'mail', a.cid, a.mid], (old) => old && ({
+        ...old,
+        received_by: old.received_by.map((r) => (r.character_id === a.cid ? { ...r, labels: a.labels } : r)),
+      }))
+      refetchMail()
+    },
+    onError: notifyError('Could not set the labels'),
+  })
+  const deleteMail = useMutation({
+    mutationFn: (a: { cid: number; mid: number }) => charMailApi.deleteMail(a.cid, a.mid),
+    onSuccess: () => { setOpened(null); refetchMail() },
+    onError: notifyError('Could not delete the mail'),
+  })
+
+  // Opening an unread mail marks it read in the game too - but only for a
+  // character that may organize mail; otherwise it stays unread (the read
+  // state shown here is ESI's, not a local flag). Once per mail per visit.
+  const autoMarked = useRef(new Set<string>())
+  useEffect(() => {
+    const m = mail.data
+    if (!m) return
+    const caps = charOf(m.character_id)?.capabilities
+    const key = `${m.character_id}:${m.mail_id}`
+    // Decide once, when the mail is first seen with its capabilities known. A
+    // later "Mark unread" must not be undone by this effect re-running.
+    if (!caps || autoMarked.current.has(key)) return
+    autoMarked.current.add(key)
+    const mine = m.received_by.find((r) => r.character_id === m.character_id)
+    if (mine && !mine.is_read && caps.organize === 'ready') {
+      markRead.mutate({ cid: m.character_id, mid: m.mail_id, read: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mail.data, folders.data])
+
+  const openCompose = (draft: ComposeDraft) => setCompose((c) => ({ open: true, draft, key: c.key + 1 }))
+
   const refreshAll = useMutation({
     mutationFn: async () => { if (anyArchived) await charMailApi.refreshArchive() },
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['char-mail'] }),
@@ -165,6 +304,17 @@ export default function MailPage() {
           <Text size="xs" c="dimmed">Read live from ESI. Nothing is stored unless you archive a character in Mail settings.</Text>
         </div>
         <Group gap="xs">
+          <Tooltip
+            label='Tick "Send mail" for a character on the Characters page (and re-authorize) to write mail.'
+            disabled={senders.length > 0} multiline w={260}
+          >
+            <span>
+              <Button size="xs" leftSection={<IconPencil size={14} />} disabled={senders.length === 0}
+                onClick={() => openCompose(EMPTY_DRAFT)}>
+                Compose
+              </Button>
+            </span>
+          </Tooltip>
           <Button size="xs" variant="default" loading={refreshAll.isPending} onClick={() => refreshAll.mutate()}>
             Refresh
           </Button>
@@ -291,9 +441,40 @@ export default function MailPage() {
           {opened === null ? <Text c="dimmed">Select a mail to read it.</Text>
             : mail.isLoading ? <Loader size="sm" color="accent" />
               : mail.error || !mail.data ? <Text c="danger">{(mail.error as Error | null)?.message ?? 'Could not load this mail.'}</Text>
-                : <Reader mail={mail.data} />}
+                : (
+                  <Reader
+                    mail={mail.data}
+                    caps={charOf(mail.data.character_id)?.capabilities ?? { send: 'not_enabled', organize: 'not_enabled' }}
+                    customLabels={(charOf(mail.data.character_id)?.labels ?? []).filter((l) => !l.system)}
+                    busy={markRead.isPending || setLabels.isPending || deleteMail.isPending}
+                    onReply={(all) => openCompose(replyDraft(mail.data, all))}
+                    onForward={() => openCompose(forwardDraft(mail.data))}
+                    onToggleRead={(read) => markRead.mutate({ cid: mail.data.character_id, mid: mail.data.mail_id, read })}
+                    onSetLabels={(labels) => setLabels.mutate({ cid: mail.data.character_id, mid: mail.data.mail_id, labels })}
+                    onDelete={() => modals.openConfirmModal({
+                      title: 'Delete this mail?',
+                      children: (
+                        <Text size="sm">
+                          This deletes &quot;{mail.data.subject || '(no subject)'}&quot; in the game
+                          {mail.data.archived ? ' and from this app\'s archive' : ''}. It cannot be undone.
+                        </Text>
+                      ),
+                      labels: { confirm: 'Delete mail', cancel: 'Keep' },
+                      confirmProps: { color: 'danger' },
+                      onConfirm: () => deleteMail.mutate({ cid: mail.data.character_id, mid: mail.data.mail_id }),
+                    })}
+                  />
+                )}
         </Grid.Col>
       </Grid>
+
+      <ComposeModal
+        key={compose.key}
+        opened={compose.open}
+        onClose={() => setCompose((c) => ({ ...c, open: false }))}
+        draft={compose.draft}
+        senders={senders}
+      />
 
       <Drawer opened={settingsOpen} onClose={() => setSettingsOpen(false)} position="right" size="md" title="Mail settings">
         <MailSettings />

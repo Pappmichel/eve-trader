@@ -1629,11 +1629,15 @@ export interface MailFolderLabel {
   system: boolean
 }
 
+/** ready = ticked on the Characters page AND a token holds the scope. */
+export type MailCapabilityState = 'ready' | 'not_enabled' | 'reauth_needed'
+
 export interface MailFolders {
   characters: (MailCharacterStatus & {
     labels: MailFolderLabel[]
     lists: { list_id: number; name: string }[]
     total_unread: number
+    capabilities: { send: MailCapabilityState; organize: MailCapabilityState }
   })[]
   /** system label id -> unread summed over every character */
   unread: Record<string, number>
@@ -1664,4 +1668,29 @@ export interface MailArchiveRow {
   error: string | null
   last_refresh_at: string | null
   counts: { headers: number; bodies: number }
+}
+
+// Mail write actions (phase 4) - mirrors character_management/mail_write.py.
+export interface MailDraftRecipient {
+  type?: string
+  id?: number
+  name?: string
+}
+
+export interface MailSendRequest {
+  from_character_id: number
+  recipients: MailDraftRecipient[]
+  subject: string
+  body: string
+  approved_cost?: number
+}
+
+export type MailSendResult =
+  | { sent: true; mail_id: number; recipients: { recipient_id: number; recipient_type: string; name: string | null }[] }
+  | { sent: false; needs_approval: true; cost: number }
+
+export interface MailRecipientHit {
+  type: 'character' | 'corporation' | 'alliance' | 'mailing_list'
+  id: number
+  name: string
 }
