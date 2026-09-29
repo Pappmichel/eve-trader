@@ -180,7 +180,7 @@ def test_default_freshness_tiers_match_the_plan():
     by_key = {k.key: k.freshness_tier for k in OWNED_DATA_KINDS}
     assert by_key["market_orders"] == "frequent"
     assert by_key["wallet"] == "frequent"
-    assert by_key["wallet_balance"] == "frequent"
+    assert by_key["wallet_balance"] == "normal"
     assert by_key["assets"] == "normal"
     assert by_key["industry_jobs"] == "normal"
     assert by_key["contracts"] == "normal"

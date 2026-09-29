@@ -15,6 +15,7 @@ import type {
 import { FieldState } from '../../../components/FieldState'
 import { dateTime, duration, qty } from '../../../format'
 import { useCharacterSync } from '../../../hooks/useCharacterSync'
+import { isStale, newestStamp, useSyncWhenStale } from '../../../hooks/useSyncWhenStale'
 import { DoctrineCheckTab } from './DoctrineCheckTab'
 import { warningText } from './queueWarning'
 
@@ -364,6 +365,9 @@ function MatrixTable({ matrix, filter, onFilter }: {
   )
 }
 
+const QUEUE_KINDS = ['skillqueue']
+const AUTO_SYNC_KEYS = [['char-skills']]
+
 export default function SkillsPage() {
   const [tab, setTab] = useState<string | null>('overview')
   const [selected, setSelected] = useState<number | null>(null)
@@ -380,6 +384,15 @@ export default function SkillsPage() {
     [['char-skills']],
     'Syncs skills, attributes, SP totals and the skill queue for every character shared with Skills.',
   )
+
+  // The skill queue is no longer refreshed in the background (esi_data
+  // `on_demand`), so opening the page with an old queue syncs it once.
+  useSyncWhenStale({
+    ready: overview.isSuccess,
+    stale: isStale(characters.map((c) => newestStamp(QUEUE_KINDS.map((k) => c.freshness[k]?.last_attempt_at)))),
+    sync: charSkillsApi.sync,
+    invalidateKeys: AUTO_SYNC_KEYS,
+  })
 
   const openCharacter = (characterId: number) => {
     setSelected(characterId)

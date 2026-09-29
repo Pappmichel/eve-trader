@@ -40,8 +40,8 @@ import logging
 import threading
 from typing import Optional
 
-from . import backup, portfolio, storage, tenant_scope
-from .config import TRADING_CONFIG, TradingConfig
+from . import backup, portfolio, storage, tenant_eligibility, tenant_scope
+from .config import SCHEDULER_OPERATOR_CONFIG, TRADING_CONFIG, TradingConfig
 from .production import jita_price_cache
 
 log = logging.getLogger("eve_trader.scheduler")
@@ -118,6 +118,37 @@ def _hours_since_last_backup() -> float:
     return _hours_since(backups[0]["created_at"]) if backups else float("inf")
 
 
+def _job_due(success_ts: str | None, attempt_ts: str | None, interval_hours: float) -> bool:
+    """Interval since the last success *and* failure backoff since the last
+    attempt (docs/SCHEDULER_REWORK_PLAN.md decision 6). Without the second
+    half a job that keeps failing before it can record a success (ESI down, no
+    token, `pg_dump` unavailable) would re-run on every 5-minute tick. After a
+    success the attempt is never newer than the success stamp's interval, so
+    this only bites after a failed attempt. `attempt_ts` is the in-process
+    outcome recorded by `_run_job`, so a restart allows one immediate retry."""
+    from .esi_data.orchestrator import FAILURE_BACKOFF_HOURS  # lazy: see _check_and_run_due_jobs_for_tenant
+
+    if _hours_since(success_ts) < interval_hours:
+        return False
+    if attempt_ts is not None and _hours_since(attempt_ts) < min(interval_hours, FAILURE_BACKOFF_HOURS):
+        return False
+    return True
+
+
+def _last_attempt(tenant_id: Optional[str], name: str) -> str | None:
+    if tenant_id is None:
+        return _GLOBAL_JOB_STATUS[name].get("ran_at")
+    return last_run_status.get(tenant_id, {}).get(name, {}).get("ran_at")
+
+
+def _master_enabled() -> bool:
+    """The operator-level master switch: DEFAULT_TENANT_ID's own
+    `scheduler_enabled`. Tenant-level jobs and the global backup/Jita jobs
+    need it in addition to their own switch."""
+    with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
+        return bool(TRADING_CONFIG.scheduler_enabled)
+
+
 _GLOBAL_JOB_STATUS = {"backup": _backup_status, "jita_price_cache": _jita_price_cache_status}
 
 
@@ -165,26 +196,52 @@ def _run_job(tenant_id: Optional[str], name: str, fn) -> None:
         last_run_status.setdefault(tenant_id, {})[name] = result
 
 
-def _check_and_run_due_jobs_for_tenant(tenant_id: str, cfg: TradingConfig) -> None:
-    """The per-tenant trading_pipeline / esi_data_sync check - takes `cfg`
-    explicitly (rather than reading the ambient TRADING_CONFIG itself) so
-    it stays directly unit-testable the way it already was pre-Phase-4;
-    the caller (_check_and_run_due_jobs) is what resolves `cfg` for
-    `tenant_id` via tenant_scope.enter_tenant before calling this."""
+def _check_and_run_due_jobs_for_tenant(
+    tenant_id: str, cfg: TradingConfig, *, active: bool = True, master_enabled: bool = True,
+) -> None:
+    """The per-tenant trading_pipeline / esi_data_sync / portfolio_snapshot
+    check - takes `cfg` explicitly (rather than reading the ambient
+    TRADING_CONFIG itself) so it stays directly unit-testable the way it
+    already was pre-Phase-4; the caller (_check_and_run_due_jobs) is what
+    resolves `cfg` for `tenant_id` via tenant_scope.enter_tenant before
+    calling this.
+
+    `active` is the tenant inactivity gate (tenant_eligibility.is_active); an
+    inactive tenant runs nothing here. Alert demand (Discord feature) will
+    later be the one thing an inactive tenant still syncs - that hook is
+    docs/SCHEDULER_REWORK_PLAN.md's "Gate split".
+    `master_enabled` is the operator switch (Default tenant's
+    scheduler_enabled): these legacy jobs need it *and* the tenant's own flag.
+    """
     # Lazy imports: actions.py and esi_data.orchestrator import from this
     # same config module - importing them at module load time would risk a
     # circular import; deferring to call time avoids that.
     from . import actions
     from .esi_data import orchestrator as esi_orchestrator
 
-    if not cfg.scheduler_enabled:
+    if not master_enabled or not cfg.scheduler_enabled:
+        return
+    if not active:
         return
 
-    if _hours_since(storage.get_esi_sync_time("trading")) >= cfg.trading_pipeline_interval_hours:
+    # None = no restriction (gate off); otherwise the tenant's current grants.
+    grants = tenant_eligibility.granted_tools(tenant_id)
+
+    if tenant_eligibility.may_use("trading", grants) and _job_due(
+        storage.get_esi_sync_time("trading"),
+        _last_attempt(tenant_id, "trading_pipeline"),
+        cfg.trading_pipeline_interval_hours,
+    ):
         _run_job(tenant_id, "trading_pipeline", lambda: actions.do_pipeline(safe=True))
 
-    # One orchestrator call; due-ness is per (owner, kind) inside do_sync_due.
-    _run_job(tenant_id, "esi_data_sync", esi_orchestrator.do_sync_due)
+    # Cheap inline check (two small reads): only start a job thread - and write
+    # a status entry - when something is actually due. do_sync_due re-derives
+    # the same list, so the two cannot disagree.
+    if esi_orchestrator.pending_due(granted_tools=grants):
+        _run_job(
+            tenant_id, "esi_data_sync",
+            lambda: esi_orchestrator.do_sync_due(granted_tools=grants),
+        )
 
     if _portfolio_snapshot_due(cfg):
         _run_job(tenant_id, "portfolio_snapshot", lambda: portfolio.take_portfolio_snapshot(cfg))
@@ -192,10 +249,15 @@ def _check_and_run_due_jobs_for_tenant(tenant_id: str, cfg: TradingConfig) -> No
 
 def _check_and_run_backup_job() -> None:
     """Global, unscoped - reads DEFAULT_TENANT_ID's own backup_interval_hours
-    (the operator's setting), same reasoning as start()'s own gate."""
+    (the operator's setting), same reasoning as start()'s own gate. Skipped
+    when the operator switched the job off (backup_job_enabled)."""
+    if not SCHEDULER_OPERATOR_CONFIG.backup_job_enabled:
+        return
     with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
         interval_hours = TRADING_CONFIG.backup_interval_hours
-    if _hours_since_last_backup() >= interval_hours:
+    backups = backup.list_backups()
+    newest = backups[0]["created_at"] if backups else None
+    if _job_due(newest, _last_attempt(None, "backup"), interval_hours):
         _run_job(None, "backup", backup.create_backup)
 
 
@@ -209,24 +271,43 @@ def _check_and_run_jita_price_cache_job() -> None:
     both this scheduled tick and the standalone manual admin action
     (admin.do_refresh_jita_price_cache), so a manual run correctly pushes
     back the next scheduled one too, same as backup's own mtime-based
-    check."""
+    check. Skipped when the operator switched the job off
+    (jita_price_cache_job_enabled)."""
+    if not SCHEDULER_OPERATOR_CONFIG.jita_price_cache_job_enabled:
+        return
     with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
         interval_hours = TRADING_CONFIG.jita_price_cache_interval_hours
-    if _hours_since(jita_price_cache.last_updated_at()) >= interval_hours:
+    if _job_due(
+        jita_price_cache.last_updated_at(), _last_attempt(None, "jita_price_cache"), interval_hours,
+    ):
         _run_job(None, "jita_price_cache", jita_price_cache.refresh_jita_price_cache)
 
 
 def _check_and_run_due_jobs() -> None:
-    for tenant_id, _name, _created_at in storage.list_tenants():
-        tenant_id = str(tenant_id)
+    master = _master_enabled()
+    if master:
         try:
-            with tenant_scope.enter_tenant(tenant_id):
-                _check_and_run_due_jobs_for_tenant(tenant_id, TRADING_CONFIG)
-        except Exception as e:  # noqa: BLE001 - one tenant's failure must not block the others
-            log.warning("Per-tenant job check failed for tenant %s: %s", tenant_id, e)
+            last_active = storage.list_tenant_last_active()
+        except Exception as e:  # noqa: BLE001 - a failed lookup must not switch everyone off
+            log.warning("Could not read tenant activity, treating every tenant as active: %s", e)
+            last_active = {}
+        for tenant_id, _name, _created_at in storage.list_tenants():
+            tenant_id = str(tenant_id)
+            try:
+                with tenant_scope.enter_tenant(tenant_id):
+                    _check_and_run_due_jobs_for_tenant(
+                        tenant_id, TRADING_CONFIG,
+                        active=tenant_eligibility.is_active(tenant_id, last_active),
+                        master_enabled=True,
+                    )
+            except Exception as e:  # noqa: BLE001 - one tenant's failure must not block the others
+                log.warning("Per-tenant job check failed for tenant %s: %s", tenant_id, e)
 
-    _check_and_run_backup_job()
-    _check_and_run_jita_price_cache_job()
+        _check_and_run_backup_job()
+        _check_and_run_jita_price_cache_job()
+
+    # Future: the opt-in alerts job runs here regardless of `master`
+    # (docs/DISCORD_ALERTS_HANDOFF.md), gated by alerts_job_enabled.
 
 
 def _loop() -> None:
@@ -249,9 +330,10 @@ def start() -> None:
     global _thread
     if _thread is not None and _thread.is_alive():
         return
-    with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
-        enabled = TRADING_CONFIG.scheduler_enabled
-    if not enabled:
+    # The thread runs for the master switch (every legacy job) or for the
+    # alerts job alone - alerts must work without switching the backup,
+    # pipeline and ESI jobs on (docs/SCHEDULER_REWORK_PLAN.md decision 7).
+    if not (_master_enabled() or SCHEDULER_OPERATOR_CONFIG.alerts_job_enabled):
         return
     _stop_event.clear()
     _thread = threading.Thread(target=_loop, daemon=True, name="eve-trader-scheduler")
@@ -289,6 +371,12 @@ def get_status() -> dict:
     backups = backup.list_backups()
     return {
         "enabled": TRADING_CONFIG.scheduler_enabled,
+        "operator": {
+            "backup_job_enabled": SCHEDULER_OPERATOR_CONFIG.backup_job_enabled,
+            "jita_price_cache_job_enabled": SCHEDULER_OPERATOR_CONFIG.jita_price_cache_job_enabled,
+            "alerts_job_enabled": SCHEDULER_OPERATOR_CONFIG.alerts_job_enabled,
+            "inactive_tenant_days": SCHEDULER_OPERATOR_CONFIG.inactive_tenant_days,
+        },
         "running": _thread is not None and _thread.is_alive(),
         "jobs": {
             "trading_pipeline": {

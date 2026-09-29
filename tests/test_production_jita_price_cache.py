@@ -149,3 +149,77 @@ def test_refresh_keeps_previous_snapshot_when_esi_returns_no_quotes(monkeypatch)
     assert count == 1
     assert jita_price_cache.get_cached_prices([34])[34].sell == 5.5
     assert jita_price_cache.last_updated_at() == "2026-09-01T00:00:00+00:00"
+
+
+# ------------------------------------------------ scheduler rework: who gets priced
+TENANT_ACTIVE = "11111111-1111-1111-1111-111111111111"
+TENANT_IDLE = "22222222-2222-2222-2222-222222222222"
+TENANT_NO_PRODUCTION = "33333333-3333-3333-3333-333333333333"
+
+
+def _eligibility_env(monkeypatch, *, stock_by_tenant):
+    import datetime as dt
+
+    from eve_trader import tenant_eligibility
+
+    tenants = [(t, t, None) for t in stock_by_tenant]
+    monkeypatch.setattr(storage, "list_tenants", lambda: tenants)
+    old = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=60)
+    monkeypatch.setattr(storage, "list_tenant_last_active", lambda: {TENANT_IDLE: old})
+    monkeypatch.setattr(config.ACCESS_CONFIG, "access_gate_enabled", True)
+    grants = {TENANT_ACTIVE: ["production"], TENANT_IDLE: ["production"], TENANT_NO_PRODUCTION: ["trading"]}
+    monkeypatch.setattr(storage, "list_tool_grants_for_tenant", lambda t: grants.get(t, []))
+    current = {}
+
+    @contextmanager
+    def _enter(tenant_id):
+        current["tenant"] = tenant_id
+        token = config._trading_config_var.set(TradingConfig())
+        try:
+            yield
+        finally:
+            config._trading_config_var.reset(token)
+
+    monkeypatch.setattr(tenant_scope, "enter_tenant", _enter)
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: stock_by_tenant[current["tenant"]])
+    monkeypatch.setattr(engine, "_structural_material_closure", lambda seed_type_ids: set(seed_type_ids))
+    return tenant_eligibility
+
+
+def test_refresh_only_prices_active_tenants_that_hold_production(monkeypatch):
+    _eligibility_env(monkeypatch, stock_by_tenant={
+        TENANT_ACTIVE: [(587, "Rifter", 1, 0, 0)],
+        TENANT_IDLE: [(588, "Slasher", 1, 0, 0)],
+        TENANT_NO_PRODUCTION: [(589, "Breacher", 1, 0, 0)],
+    })
+    seen = {}
+
+    def _fetch(self, region_id, type_ids):
+        seen["type_ids"] = sorted(type_ids)
+        return {587: OrderStats(sell_percentile=1.0, sell_volume=1.0, buy_percentile=1.0, buy_volume=1.0)}
+
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", _fetch)
+    assert jita_price_cache.refresh_jita_price_cache() == 1
+    assert seen["type_ids"] == [587]
+
+
+def test_refresh_makes_no_esi_call_when_no_tenant_is_eligible(monkeypatch):
+    _eligibility_env(monkeypatch, stock_by_tenant={
+        TENANT_IDLE: [(588, "Slasher", 1, 0, 0)],
+        TENANT_NO_PRODUCTION: [(589, "Breacher", 1, 0, 0)],
+    })
+
+    def _boom(self, region_id, type_ids):
+        raise AssertionError("no ESI call expected")
+
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", _boom)
+    assert jita_price_cache.refresh_jita_price_cache() == 0
+
+
+def test_refresh_treats_everyone_as_active_when_the_activity_lookup_fails(monkeypatch):
+    _eligibility_env(monkeypatch, stock_by_tenant={TENANT_IDLE: [(588, "Slasher", 1, 0, 0)]})
+    monkeypatch.setattr(storage, "list_tenant_last_active", lambda: (_ for _ in ()).throw(RuntimeError("db")))
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", lambda self, region_id, type_ids: {
+        588: OrderStats(sell_percentile=2.0, sell_volume=1.0, buy_percentile=1.0, buy_volume=1.0)})
+    assert jita_price_cache.refresh_jita_price_cache() == 1
+

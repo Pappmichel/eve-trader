@@ -51,6 +51,23 @@ function renderPage() {
 beforeEach(() => vi.resetAllMocks())
 
 describe('Notifications page', () => {
+  it('syncs once on open when a character is stale or never synced, but not when it is fresh', async () => {
+    vi.mocked(charNotificationsApi.sync).mockResolvedValue({ ok: true, characters: {}, in_flight: [], failed: [] })
+    const chars = (synced_at: string | null) =>
+      [{ character_id: 1, character_name: 'Alice', synced_at, last_error: null }]
+    vi.mocked(charNotificationsApi.list).mockResolvedValue(list({ characters: chars(null) }))
+    const first = renderPage()
+    await screen.findByText('Structure under attack - Jita')
+    await waitFor(() => expect(charNotificationsApi.sync).toHaveBeenCalledTimes(1))
+    first.unmount()
+
+    vi.mocked(charNotificationsApi.sync).mockClear()
+    vi.mocked(charNotificationsApi.list).mockResolvedValue(list({ characters: chars(new Date().toISOString()) }))
+    renderPage()
+    await screen.findByText('Structure under attack - Jita')
+    expect(charNotificationsApi.sync).not.toHaveBeenCalled()
+  })
+
   it('says so when no character is shared', async () => {
     vi.mocked(charNotificationsApi.list).mockResolvedValue(list({ items: [], total: 0, characters: [] }))
     renderPage()

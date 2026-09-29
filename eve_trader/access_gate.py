@@ -21,6 +21,8 @@ cookie. This module's functions are safe to import and call regardless.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
@@ -116,6 +118,31 @@ def _cookie_issued_at(token: str, cfg: OAuthConfig = OAUTH_CONFIG) -> Optional[t
     if issued_at.tzinfo is None:
         issued_at = issued_at.replace(tzinfo=timezone.utc)
     return payload, issued_at
+
+
+# Tenant activity for the scheduler's inactivity gate (docs/SCHEDULER_REWORK_PLAN.md
+# decision 1): one small UPDATE per tenant per hour, not one per request.
+_ACTIVITY_TOUCH_INTERVAL_SECONDS = 3600.0
+_activity_touch_mu = threading.Lock()
+_activity_last_touch: dict[str, float] = {}
+
+
+def note_tenant_activity(tenant_id: str) -> None:
+    """Record that `tenant_id` just made an authorized request, at most once per
+    `_ACTIVITY_TOUCH_INTERVAL_SECONDS` per process. Never raises: bookkeeping
+    for the scheduler must not fail (or slow down) a real request. A failed
+    write is not retried on every request - the stamp stays, the next hour
+    tries again."""
+    now = time.monotonic()
+    with _activity_touch_mu:
+        last = _activity_last_touch.get(tenant_id)
+        if last is not None and now - last < _ACTIVITY_TOUCH_INTERVAL_SECONDS:
+            return
+        _activity_last_touch[tenant_id] = now
+    try:
+        storage.touch_tenant_active(tenant_id)
+    except Exception:  # noqa: BLE001 - see docstring
+        log.warning("could not record tenant activity for %s", tenant_id, exc_info=True)
 
 
 def authorize_session_cookie(token: Optional[str], cfg: OAuthConfig = OAUTH_CONFIG) -> Optional[AuthorizedSession]:

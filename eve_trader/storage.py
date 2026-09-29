@@ -445,6 +445,21 @@ def list_tenants() -> list[tuple]:
         return conn.execute("SELECT tenant_id, name, created_at FROM tenants ORDER BY created_at").fetchall()
 
 
+def touch_tenant_active(tenant_id: str) -> None:
+    """Stamp `tenants.last_active_at = now()`. Called (throttled) from the
+    access-gate middleware - see access_gate.note_tenant_activity."""
+    with connect_unscoped() as conn:
+        conn.execute("UPDATE tenants SET last_active_at = now() WHERE tenant_id = ?", (tenant_id,))
+
+
+def list_tenant_last_active() -> dict[str, Optional["datetime"]]:
+    """`{tenant_id: last_active_at or None}` for every tenant - one query for
+    the scheduler's per-tick inactivity check."""
+    with connect_unscoped() as conn:
+        rows = conn.execute("SELECT tenant_id, last_active_at FROM tenants").fetchall()
+    return {str(r[0]): r[1] for r in rows}
+
+
 def list_tenant_registry_entries(tenant_id: str) -> list[tuple]:
     """Returns (entry_type, entry_id) for every id registered to `tenant_id`
     - admin-CLI-only (`tenant list`)."""
@@ -541,6 +556,20 @@ def replace_tool_grants(character_id: int, tool_keys: list[str], tenant_id: str)
                 "ON CONFLICT (character_id, tool_key) DO UPDATE SET tenant_id = excluded.tenant_id",
                 (character_id, tool_key, tenant_id),
             )
+
+
+def list_tool_grants_for_tenant(tenant_id: str) -> list[str]:
+    """Distinct tool_keys granted to the character(s) registered to
+    `tenant_id` (one character per tenant, so this is normally that one
+    character's grants). `tool_grants` is unscoped, hence connect_unscoped.
+    The scheduler uses it to skip work for tools a tenant no longer holds
+    (docs/SCHEDULER_REWORK_PLAN.md decision 2a)."""
+    with connect_unscoped() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT tool_key FROM tool_grants WHERE tenant_id = ? ORDER BY tool_key",
+            (tenant_id,),
+        ).fetchall()
+    return [r[0] for r in rows]
 
 
 def list_tool_grants_for_character(character_id: int) -> list[str]:
@@ -3278,6 +3307,27 @@ def upsert_esi_freshness(
             "last_success_at = COALESCE(excluded.last_success_at, esi_freshness.last_success_at), "
             "last_error = excluded.last_error",
             (owner_type, owner_id, data_kind, last_success, ts, last_error),
+        )
+
+
+def record_esi_attempt(
+    owner_type: str, owner_id: int, data_kind: str, *, now: Optional[str] = None,
+) -> None:
+    """Stamp `last_attempt_at` only - success timestamp and `last_error` are
+    left untouched. Used for kinds the orchestrator could not even try (no
+    token holds the scope yet), so the scheduler's failure backoff applies to
+    them without surfacing a fake fetch error (SCHEDULER_REWORK_PLAN.md,
+    decision 6)."""
+    from datetime import datetime, timezone
+    ts = now or datetime.now(timezone.utc).isoformat()
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO esi_freshness "
+            "(owner_type, owner_id, data_kind, last_success_at, last_attempt_at, last_error) "
+            "VALUES (?,?,?,NULL,?,NULL) "
+            "ON CONFLICT (tenant_id, owner_type, owner_id, data_kind) DO UPDATE SET "
+            "last_attempt_at = excluded.last_attempt_at",
+            (owner_type, owner_id, data_kind, ts),
         )
 
 

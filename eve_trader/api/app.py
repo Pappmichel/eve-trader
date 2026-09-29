@@ -19,7 +19,9 @@ from starlette.responses import JSONResponse
 from starlette.types import Scope
 
 from .. import access_policy, scheduler, storage, tenant_scope
-from ..access_gate import ALL_TOOL_KEYS, SESSION_COOKIE_NAME, AuthorizedSession, authorize_session_cookie
+from ..access_gate import (
+    ALL_TOOL_KEYS, SESSION_COOKIE_NAME, AuthorizedSession, authorize_session_cookie, note_tenant_activity,
+)
 
 log = logging.getLogger(__name__)
 from ..config import ACCESS_CONFIG, OAUTH_CONFIG, TRADING_CONFIG, apply_config_overrides
@@ -292,6 +294,11 @@ class AccessGateMiddleware(BaseHTTPMiddleware):
         blocked = await _affiliation_block(session)
         if blocked is not None:
             return blocked
+
+        # Scheduler inactivity signal (throttled to one UPDATE/hour/tenant,
+        # never raises) - after the suspension check so a suspended tenant
+        # does not count as active.
+        note_tenant_activity(session.tenant_id)
 
         required_tool = _required_tool_for_path(path, request.method)
         if required_tool is not None and required_tool not in session.tool_keys:

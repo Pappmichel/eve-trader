@@ -43,6 +43,15 @@ function renderPage() {
 
 beforeEach(() => vi.resetAllMocks())
 
+// A character whose snapshot kinds were tried just now: the page must not auto-sync it.
+function freshCharacter(overrides: Partial<CharInfoCharacter> = {}): CharInfoCharacter {
+  const stamp = { last_success_at: null, last_attempt_at: new Date().toISOString(), last_error: null }
+  const freshness = Object.fromEntries(
+    ['wallet_balance', 'standings', 'loyalty', 'clones', 'implants'].map((k) => [k, stamp]),
+  )
+  return character({ freshness, ...overrides })
+}
+
 describe('Character Info page', () => {
   it('renders each field state: ok, not shared, re-auth needed, not synced, error', async () => {
     vi.mocked(charInfoApi.overview).mockResolvedValue({
@@ -86,8 +95,24 @@ describe('Character Info page', () => {
     expect(await screen.findByText(/No ESI characters registered yet/)).toBeInTheDocument()
   })
 
-  it('Refresh syncs, tells the user about an already-running sync, and refetches', async () => {
+  it('syncs once on open when a character has old or no snapshot data, but not when it is fresh', async () => {
+    vi.mocked(charInfoApi.sync).mockResolvedValue({ ok: true, characters: {}, in_flight: [], failed: [] })
     vi.mocked(charInfoApi.overview).mockResolvedValue({ characters: [character()] })
+    const first = renderPage()
+    await screen.findByText('Alice')
+    await waitFor(() => expect(charInfoApi.sync).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(charInfoApi.overview).toHaveBeenCalledTimes(2))
+    first.unmount()
+
+    vi.mocked(charInfoApi.sync).mockClear()
+    vi.mocked(charInfoApi.overview).mockResolvedValue({ characters: [freshCharacter()] })
+    renderPage()
+    await screen.findByText('Alice')
+    expect(charInfoApi.sync).not.toHaveBeenCalled()
+  })
+
+  it('Refresh syncs, tells the user about an already-running sync, and refetches', async () => {
+    vi.mocked(charInfoApi.overview).mockResolvedValue({ characters: [freshCharacter()] })
     vi.mocked(charInfoApi.sync).mockResolvedValue({ ok: true, characters: {}, in_flight: [1], failed: [] })
     const user = userEvent.setup()
     renderPage()

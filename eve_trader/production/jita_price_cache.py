@@ -73,13 +73,26 @@ def refresh_jita_price_cache() -> int:
 
     Returns the number of type_ids now cached (0 if no tenant has any stock
     targets configured yet - not an error, just nothing to price)."""
-    from .. import tenant_scope
+    from .. import tenant_eligibility, tenant_scope
     from ..config import TRADING_CONFIG
     from ..esi_client import ESIClient
     from .engine import _structural_material_closure
 
+    try:
+        last_active = storage.list_tenant_last_active()
+    except Exception:  # noqa: BLE001 - unknown activity must not shrink the universe
+        log.warning("Could not read tenant activity for the Jita price cache", exc_info=True)
+        last_active = {}
+
     type_ids: set[int] = set()
     for tenant_id, _name, _created_at in storage.list_tenants():
+        # Only tenants that can actually use Production prices and are still
+        # around cost ESI calls here (docs/SCHEDULER_REWORK_PLAN.md decision 4).
+        # Also applies to the manual admin refresh - same function.
+        if not tenant_eligibility.is_active(str(tenant_id), last_active):
+            continue
+        if not tenant_eligibility.may_use("production", tenant_eligibility.granted_tools(str(tenant_id))):
+            continue
         with tenant_scope.enter_tenant(str(tenant_id)):
             stock_targets = storage.load_stock_targets()
             # Confirmed real bug, caught live on first restart-after-deploy
