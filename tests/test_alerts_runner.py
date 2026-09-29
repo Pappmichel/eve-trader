@@ -52,6 +52,15 @@ class FakeClient:
             raise ESIError("HTTP 500")
         return self.headers
 
+    senders: dict = {}
+    names_error = False
+
+    def resolve_names_cached(self, ids):
+        self.calls.append(f"names{sorted(ids)}")
+        if self.names_error and len(ids) > 1:
+            raise ESIError("HTTP 404")
+        return {i: self.senders[i] for i in ids if i in self.senders}
+
     def character_mail_body(self, cid, role, mail_id, cache=True):
         self.calls.append(f"body{mail_id}")
         return {"body": self.bodies[mail_id]}
@@ -177,7 +186,7 @@ def test_mail_baseline_then_count_only_alert(tenant, _env):
     _run(fake, now=NOW + timedelta(minutes=5))   # inside the poll interval: nothing
     assert fake.calls == ["headers"]
     _run(fake, now=NOW + timedelta(minutes=11))
-    assert _env == ["Alice: 2 new EVE mails."] and "SECRET" not in _env[0]
+    assert _env[0].startswith("Alice: 2 new EVE mails.") and "SECRET" in _env[0]   # subject is metadata now
     assert storage.get_alert_state(ALICE, "mail_new")[0] == 11
     assert not any(c.startswith("body") for c in fake.calls)
 
@@ -190,7 +199,21 @@ def test_an_empty_inbox_baseline_still_catches_the_first_mail(tenant, _env):
     assert storage.get_alert_state(ALICE, "mail_new")[0] == 0
     fake.headers = [_h(4)]
     _run(fake, now=NOW + timedelta(minutes=11))
-    assert _env == ["Alice: 1 new EVE mail."]
+    assert _env[0].startswith("Alice: 1 new EVE mail.")
+
+
+def test_sender_names_are_resolved_and_a_bad_id_does_not_lose_the_others(tenant, _env):
+    _setup()
+    aa.do_set_subscription(ALICE, "mail_new", True)
+    fake = FakeClient(headers=[_h(1)])
+    fake.senders = {7: "Bob"}
+    fake.names_error = True                      # the batch 404s: fall back to one call per id
+    _run(fake)
+    fake.headers = [{**_h(3, subject="Hi"), "from": 7}, {**_h(2, subject="List"), "from": 8}, _h(1)]
+    _run(fake, now=NOW + timedelta(minutes=11))
+    assert "- Bob: Hi" in _env[0] and "- unknown sender: List" in _env[0]
+    assert "names[7, 8]" in fake.calls and "names[7]" in fake.calls
+    assert "body" not in _env[0]
 
 
 def test_content_opt_in_fetches_cleaned_bodies(tenant, _env):
@@ -218,7 +241,7 @@ def test_failed_mail_poll_or_send_does_not_advance_the_cursor(tenant, _env, monk
     assert storage.get_alert_state(ALICE, "mail_new")[0] == 1 and _env == []
     monkeypatch.setattr(discord_client, "send_dm", lambda uid, text: _env.append(text))
     _run(fake, now=NOW + timedelta(minutes=33))
-    assert _env == ["Alice: 1 new EVE mail."]
+    assert _env[0].startswith("Alice: 1 new EVE mail.")
 
 
 def test_revoked_sharing_stops_alerts_immediately(tenant, _env):

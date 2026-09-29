@@ -75,11 +75,13 @@ class MailDecision:
 
 def mail_decision(
     headers: Sequence[dict], last_seen_mail_id: Optional[int], include_content: bool, character_name: str,
-    bodies: Optional[dict[int, str]] = None,
+    bodies: Optional[dict[int, str]] = None, senders: Optional[dict[int, str]] = None,
 ) -> MailDecision:
     """`headers` are ESI mail headers. Only unread mails newer than the
-    cursor count. Without `include_content` the message carries the count
-    only (no sender, no subject) - a settled decision."""
+    cursor count. The message always lists sender and subject of the newest
+    mails (`senders` maps a header's `from` id to a name; an unresolved one
+    reads "unknown sender"); the mail text is added only with `include_content`
+    - a settled decision (sender and subject are metadata, the text is not)."""
     ids = [int(h["mail_id"]) for h in headers if "mail_id" in h]
     newest = max(ids) if ids else last_seen_mail_id
     if last_seen_mail_id is None:
@@ -89,15 +91,15 @@ def mail_decision(
         # Read mails still advance the cursor so they never come back as new.
         return MailDecision(newest, None)
     n = len(fresh)
-    text = f"{character_name}: {n} new EVE mail" + ("s" if n != 1 else "") + "."
-    if include_content:
-        fresh.sort(key=lambda h: int(h["mail_id"]))
-        lines = []
-        for h in fresh[:MAX_MAILS_LISTED]:
-            subject = str(h.get("subject") or "(no subject)")[:MAX_SUBJECT_CHARS]
-            body = (bodies or {}).get(int(h["mail_id"]))
-            lines.append(f"- {subject}" + (f"\n  {body}" if body else ""))
-        if n > MAX_MAILS_LISTED:
-            lines.append(f"... and {n - MAX_MAILS_LISTED} more")
-        text += "\n" + "\n".join(lines)
+    lines = []
+    fresh.sort(key=lambda h: int(h["mail_id"]))
+    for h in fresh[:MAX_MAILS_LISTED]:
+        sender = (senders or {}).get(int(h.get("from") or 0)) or "unknown sender"
+        subject = str(h.get("subject") or "(no subject)")[:MAX_SUBJECT_CHARS]
+        line = f"- {sender[:MAX_SUBJECT_CHARS]}: {subject}"
+        body = (bodies or {}).get(int(h["mail_id"])) if include_content else None
+        lines.append(line + (f"\n  {body}" if body else ""))
+    if n > MAX_MAILS_LISTED:
+        lines.append(f"... and {n - MAX_MAILS_LISTED} more")
+    text = f"{character_name}: {n} new EVE mail" + ("s" if n != 1 else "") + ".\n" + "\n".join(lines)
     return MailDecision(newest, Decision(f"mail:{newest}", text))

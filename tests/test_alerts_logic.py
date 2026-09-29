@@ -64,11 +64,16 @@ def test_baseline_of_an_empty_inbox_stays_unset():
     assert r.baseline and r.newest_id is None
 
 
-def test_new_mail_message_carries_only_the_count_without_content_opt_in():
-    r = logic.mail_decision([_h(11, subject="SECRET"), _h(12), _h(3)], 10, False, "Alice")
-    assert r.decision.message == "Alice: 2 new EVE mails."
-    assert "SECRET" not in r.decision.message and r.newest_id == 12
-    assert logic.mail_decision([_h(11)], 10, False, "Alice").decision.message == "Alice: 1 new EVE mail."
+def test_new_mail_message_lists_sender_and_subject_but_never_the_text_without_opt_in():
+    r = logic.mail_decision(
+        [{**_h(11, subject="Hello"), "from": 7}, _h(12), _h(3)], 10, False, "Alice",
+        bodies={11: "SECRET TEXT"}, senders={7: "Bob"},
+    )
+    text = r.decision.message
+    assert text.startswith("Alice: 2 new EVE mails.")
+    assert "- Bob: Hello" in text and "- unknown sender: s" in text
+    assert "SECRET TEXT" not in text and r.newest_id == 12
+    assert logic.mail_decision([_h(11)], 10, False, "Alice").decision.message.startswith("Alice: 1 new EVE mail.\n")
 
 
 def test_read_or_old_mail_does_not_alert_but_advances_the_cursor():
@@ -76,7 +81,7 @@ def test_read_or_old_mail_does_not_alert_but_advances_the_cursor():
     assert r.decision is None and r.newest_id == 11
 
 
-def test_content_opt_in_lists_subjects_and_bodies_truncated():
+def test_content_opt_in_adds_the_text_and_long_lists_are_truncated():
     r = logic.mail_decision(
         [_h(i, subject=f"subj{i}") for i in range(11, 18)], 10, True, "Alice", bodies={11: "hello"},
     )
