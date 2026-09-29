@@ -445,6 +445,21 @@ def list_tenants() -> list[tuple]:
         return conn.execute("SELECT tenant_id, name, created_at FROM tenants ORDER BY created_at").fetchall()
 
 
+def touch_tenant_active(tenant_id: str) -> None:
+    """Stamp `tenants.last_active_at = now()`. Called (throttled) from the
+    access-gate middleware - see access_gate.note_tenant_activity."""
+    with connect_unscoped() as conn:
+        conn.execute("UPDATE tenants SET last_active_at = now() WHERE tenant_id = ?", (tenant_id,))
+
+
+def list_tenant_last_active() -> dict[str, Optional["datetime"]]:
+    """`{tenant_id: last_active_at or None}` for every tenant - one query for
+    the scheduler's per-tick inactivity check."""
+    with connect_unscoped() as conn:
+        rows = conn.execute("SELECT tenant_id, last_active_at FROM tenants").fetchall()
+    return {str(r[0]): r[1] for r in rows}
+
+
 def list_tenant_registry_entries(tenant_id: str) -> list[tuple]:
     """Returns (entry_type, entry_id) for every id registered to `tenant_id`
     - admin-CLI-only (`tenant list`)."""
