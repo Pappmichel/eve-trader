@@ -26,7 +26,7 @@ from ..config import ACCESS_CONFIG, OAUTH_CONFIG, TRADING_CONFIG, apply_config_o
 from ..doctrine.config import DOCTRINE_CONFIG
 from ..production.config import PRODUCTION_CONFIG
 from .routers import (
-    admin, auth, char_contacts, char_info, char_mail, char_notifications, char_skill_plans, char_skills, characters, doctrine, errors, gate, module_reprocessing, portfolio, production, refining, sorting,
+    admin, auth, char_contacts, char_info, char_mail, char_notifications, char_alerts, char_skill_plans, char_skills, characters, doctrine, errors, gate, module_reprocessing, portfolio, production, refining, sorting,
     station_trading, trading,
 )
 
@@ -111,6 +111,7 @@ _TOOL_PATH_PREFIXES = {
     "/api/char-notifications/": "char_notifications",
     "/api/char-contacts/": "char_contacts",
     "/api/char-skill-plans/": "char_skill_plans",
+    "/api/char-alerts/": "char_alerts",
 }
 
 
@@ -395,6 +396,7 @@ def create_app() -> FastAPI:
     app.include_router(char_notifications.router, prefix="/api/char-notifications", tags=["char_notifications"])
     app.include_router(char_contacts.router, prefix="/api/char-contacts", tags=["char_contacts"])
     app.include_router(char_skill_plans.router, prefix="/api/char-skill-plans", tags=["char_skill_plans"])
+    app.include_router(char_alerts.router, prefix="/api/char-alerts", tags=["char_alerts"])
     app.include_router(errors.router, prefix="/api/errors", tags=["errors"])
 
     if FRONTEND_DIST.exists():

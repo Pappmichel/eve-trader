@@ -6,7 +6,7 @@
 export const ALL_TOOL_KEYS = [
   'trading', 'production', 'doctrine', 'refining', 'station_trading', 'sorting',
   'portfolio', 'admin', 'characters', 'module_reprocessing', 'char_info', 'char_skills', 'char_mail',
-  'char_notifications', 'char_contacts', 'char_skill_plans',
+  'char_notifications', 'char_contacts', 'char_skill_plans', 'char_alerts',
 ] as const
 
 // Tools that consume raw ESI data, i.e. the union of every `consumingTools` in
@@ -17,7 +17,7 @@ export const ALL_TOOL_KEYS = [
 // has been a real consumer since the Portfolio rework.
 export const ESI_CONSUMING_TOOLS: readonly string[] = [
   'trading', 'production', 'doctrine', 'station_trading', 'sorting', 'portfolio', 'char_info', 'char_skills', 'char_mail',
-  'char_notifications', 'char_contacts', 'char_skill_plans',
+  'char_notifications', 'char_contacts', 'char_skill_plans', 'char_alerts',
 ]
 
 // Sub-tools of the Character Management hub. The hub itself has no grant: its

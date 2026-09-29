@@ -114,7 +114,7 @@ def test_character_management_kinds():
     # phase 3 - never an orchestrator kind, so the stale clear cannot reach it).
     assert {k.key for k in OWNED_DATA_KINDS if k.live_only} == {"location", "ship", "online", "mail", "fatigue", "contacts", "calendar"}
     assert by_key["mail"].character_scope == "esi-mail.read_mail.v1"
-    assert by_key["mail"].consuming_tools == ("char_mail",)
+    assert by_key["mail"].consuming_tools == ("char_mail", "char_alerts")
     # char_info also reads the wallet balance (Character Info's ISK column).
     assert "char_info" in by_key["wallet_balance"].consuming_tools
     assert "portfolio" in by_key["wallet_balance"].consuming_tools

@@ -172,7 +172,7 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         character_scope="esi-skills.read_skillqueue.v1",
         corporation_scope=None,
         corp_roles=(),
-        consuming_tools=("char_skills",),
+        consuming_tools=("char_skills", "char_alerts"),
         freshness_tier=TIER_NORMAL,
     ),
     # Phase 5c: clones (home, jump clones, their implants) and the active
@@ -303,7 +303,7 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         character_scope="esi-mail.read_mail.v1",
         corporation_scope=None,
         corp_roles=(),
-        consuming_tools=("char_mail",),
+        consuming_tools=("char_mail", "char_alerts"),
         freshness_tier=TIER_FREQUENT,
         live_only=True,
     ),

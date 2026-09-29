@@ -1,6 +1,6 @@
 # Discord alerts - handoff for a later session
 
-Status: **planned, not started** (written 2026-09-29, revised after a critical
+Status: **partly implemented** - scheduler-independent parts done (see "Implemented so far"); scheduler job and UI pending. Originally: planned (written 2026-09-29, revised after a critical
 review the same day). Temporary note: delete it (and move durable facts into
 CLAUDE.md) when the feature lands.
 
@@ -183,3 +183,35 @@ composite PK with `tenant_id` only if the natural key could collide.
 
 Process rules from CLAUDE.md: live-verify backend and frontend changes, keep
 `pytest` green, no Claude/Anthropic attribution in commits or PRs.
+
+## Implemented so far (branch `feat/discord-alerts`)
+
+Independent of the scheduler rework:
+- Schema (phase 10 in `docs/character_management_schema.sql`): `alert_destinations`,
+  `alert_subscriptions`, `alert_state`, RLS like every tenant table.
+- `eve_trader/alerts/`: `config.py` (operator env), `discord_client.py` (OAuth2
+  identify link + bot DM, mentions disabled, 429 -> `DiscordRateLimited`, DM
+  refused -> `DiscordDMBlocked`), `logic.py` (pure `skillqueue_decision` /
+  `mail_decision`, incl. baseline and count-only default), `actions.py`
+  (settings, subscriptions, link start/finish, unlink, test message,
+  `deliver()`).
+- Router `/api/char-alerts/` (settings, subscriptions, discord start/callback/
+  delete, test), grant `char_alerts` in `ALL_TOOL_KEYS`, and `char_alerts` as a
+  consuming tool of `skillqueue` and `mail` (sharing matrix). Frontend mirrors
+  updated (`toolKeys.ts`, `esiRegistry.ts`).
+
+Deliberate choices while building:
+- Removing a character (`do_remove_token_character`, `admin.do_remove_user`)
+  does NOT delete subscriptions, matching those actions' keep-data policy;
+  `deliver()` refuses to send without a token holding the scope, so nothing is
+  sent for a removed character. The scheduler job must also skip tenants whose
+  registry entry is gone or suspended.
+- Unlinking Discord switches all subscriptions off; a fresh opt-in resets
+  `alert_state` (clean mail baseline, no stale dedupe key).
+
+Still to do (needs the scheduler rework): the `alerts` job (skill queue tick
+evaluation with one live re-check before sending, mail header poll with
+backoff, `demand` feed into `do_sync_due`), the `alerts_job_enabled` switch and
+interval field, and the frontend page `/character-management/alerts` (the
+Discord callback already redirects there) plus its hub card and
+`CHARACTER_MANAGEMENT_TOOL_KEYS` entry.
