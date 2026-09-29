@@ -36,7 +36,7 @@ import threading
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from functools import lru_cache
 from typing import Iterable, Optional
 
@@ -6997,23 +6997,36 @@ def get_alert_state(character_id: int, alert_type: str) -> Optional[tuple]:
 
 
 def save_alert_state(character_id: int, alert_type: str, *, last_seen_mail_id: Optional[int] = None,
-                     last_key: Optional[str] = None, sent: bool = False) -> None:
-    """Record an attempt; `sent=True` also stamps `last_sent_at`. A None
-    `last_seen_mail_id`/`last_key` keeps the stored value, so a failed send
-    can note the attempt without advancing the dedupe cursor."""
+                     last_key: Optional[str] = None, sent: bool = False,
+                     at: Optional[datetime] = None) -> None:
+    """Record an attempt at `at` (default now); `sent=True` also stamps
+    `last_sent_at`. A None `last_seen_mail_id`/`last_key` keeps the stored
+    value, so a failed send can note the attempt without advancing the dedupe
+    cursor."""
+    at = at or datetime.now(timezone.utc)
     with connect() as conn:
         conn.execute(
             "INSERT INTO alert_state (character_id, alert_type, last_seen_mail_id, last_key, last_sent_at, "
-            "last_attempt_at) VALUES (?,?,?,?, CASE WHEN ? THEN now() END, now()) "
+            "last_attempt_at) VALUES (?,?,?,?, CASE WHEN ? THEN ?::timestamptz END, ?) "
             "ON CONFLICT (tenant_id, character_id, alert_type) DO UPDATE SET "
             "last_seen_mail_id = COALESCE(excluded.last_seen_mail_id, alert_state.last_seen_mail_id), "
             "last_key = COALESCE(excluded.last_key, alert_state.last_key), "
             "last_sent_at = COALESCE(excluded.last_sent_at, alert_state.last_sent_at), "
-            "last_attempt_at = now()",
-            (character_id, alert_type, last_seen_mail_id, last_key, sent),
+            "last_attempt_at = excluded.last_attempt_at",
+            (character_id, alert_type, last_seen_mail_id, last_key, sent, at, at),
         )
 
 
 def reset_alert_state(character_id: int, alert_type: str) -> None:
     with connect() as conn:
         conn.execute("DELETE FROM alert_state WHERE character_id = ? AND alert_type = ?", (character_id, alert_type))
+
+
+def tenant_registry_suspension(tenant_id: str) -> Optional[bool]:
+    """`access_suspended` of the tenant's registry entry, or None when the
+    tenant has no registered character (removed user, orphaned tenant)."""
+    with connect_unscoped() as conn:
+        row = conn.execute(
+            "SELECT access_suspended FROM tenant_registry_entries WHERE tenant_id = ?", (tenant_id,),
+        ).fetchone()
+    return None if row is None else bool(row[0])

@@ -1,6 +1,6 @@
 # Discord alerts - handoff for a later session
 
-Status: **partly implemented** - scheduler-independent parts done (see "Implemented so far"); scheduler job and UI pending. Originally: planned (written 2026-09-29, revised after a critical
+Status: **implemented** (backend, scheduler job, UI; see the sections at the end). Originally: planned (written 2026-09-29, revised after a critical
 review the same day). Temporary note: delete it (and move durable facts into
 CLAUDE.md) when the feature lands.
 
@@ -227,3 +227,23 @@ backoff, `demand` feed into `do_sync_due`), the `alerts_job_enabled` switch and
 interval field, and the frontend page `/character-management/alerts` (the
 Discord callback already redirects there) plus its hub card and
 `CHARACTER_MANAGEMENT_TOOL_KEYS` entry.
+
+## Scheduler part and UI (implemented after the scheduler rework landed on dev)
+
+- `eve_trader/alerts/runner.py::run_for_tenant`, called by
+  `scheduler._check_and_run_alerts_job` (own switch `alerts_job_enabled`, poll
+  interval `alerts_mail_poll_minutes` - both operator-only in
+  `SchedulerOperatorConfig`, see `config.example.yaml`).
+- Skill queue: threshold checked every tick from the stored snapshot; one live
+  re-check right before sending; never alarms on a never-synced snapshot; the
+  `skillqueue` snapshot is refreshed via `do_sync_due(granted_tools={"char_alerts"},
+  demand=...)`, so an inactive tenant's other ESI data is never fetched.
+- Mail: polled live (headers only, bodies only with `include_content`), baseline
+  on first poll (empty inbox stores cursor 0), cursor advances only after a
+  successful send or a deliberate no-alert.
+- Failures (ESI, Discord) record `last_attempt_at` (the simulated `now` the
+  runner is given) and back off `RETRY_BACKOFF_MINUTES` (15) / the poll interval.
+- Frontend page `/character-management/alerts` (`AlertsPage.tsx`), hub card,
+  QuickNav entry, `CHARACTER_MANAGEMENT_TOOL_KEYS` includes `char_alerts`.
+
+Delete this handoff once the feature is confirmed live in production.

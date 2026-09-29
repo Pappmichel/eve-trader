@@ -61,3 +61,17 @@ def granted_tools(tenant_id: str) -> Optional[set[str]]:
 
 def may_use(tool_key: str, grants: Optional[set[str]]) -> bool:
     return grants is None or tool_key in grants
+
+
+def alerts_allowed(tenant_id: str) -> bool:
+    """May this tenant's Discord alerts run? Deliberately NOT gated on
+    `is_active` (someone who only wants pings and never logs in must keep
+    them) nor on the tenant's own `scheduler_enabled`. Gate on: the tenant
+    must still have a registered, non-suspended character and hold the
+    `char_alerts` grant. Gate off: always."""
+    if not ACCESS_CONFIG.access_gate_enabled:
+        return True
+    suspended = storage.tenant_registry_suspension(str(tenant_id))
+    if suspended is None or suspended:
+        return False
+    return may_use("char_alerts", granted_tools(tenant_id))

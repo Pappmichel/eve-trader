@@ -67,8 +67,12 @@ inactive_tenant_days: 14
 # switch is true.
 backup_job_enabled: true
 jita_price_cache_job_enabled: true
-# Reserved for the Discord alerts feature (nothing reads it yet).
+# Discord alerts job (docs/DISCORD_ALERTS_HANDOFF.md). Runs for opted-in
+# characters only, independent of every tenant's scheduler_enabled. Also needs
+# DISCORD_BOT_TOKEN / DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET in .env.
 alerts_job_enabled: false
+# How often opted-in characters' mail headers are polled.
+alerts_mail_poll_minutes: 10
 
 # ---- Production tool (see eve_trader/production/config.py ProductionConfig) ----
 component_overbuild: 0.7

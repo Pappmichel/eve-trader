@@ -283,6 +283,26 @@ def _check_and_run_jita_price_cache_job() -> None:
         _run_job(None, "jita_price_cache", jita_price_cache.refresh_jita_price_cache)
 
 
+def _check_and_run_alerts_job() -> None:
+    """Per tenant with an enabled alert opt-in. Independent of the tenant's
+    own `scheduler_enabled` and of the tenant activity gate (see
+    tenant_eligibility.alerts_allowed); a tenant without any opt-in costs one
+    small read per tick."""
+    if not SCHEDULER_OPERATOR_CONFIG.alerts_job_enabled:
+        return
+    from .alerts import runner as alert_runner  # lazy: alerts import actions/esi_data (see _check_and_run_due_jobs_for_tenant)
+
+    for tenant_id, _name, _created_at in storage.list_tenants():
+        tenant_id = str(tenant_id)
+        try:
+            with tenant_scope.enter_tenant(tenant_id):
+                if not tenant_eligibility.alerts_allowed(tenant_id) or not alert_runner.enabled_subscriptions():
+                    continue
+                _run_job(tenant_id, "alerts", alert_runner.run_for_tenant)
+        except Exception as e:  # noqa: BLE001 - one tenant's failure must not block the others
+            log.warning("Alerts check failed for tenant %s: %s", tenant_id, e)
+
+
 def _check_and_run_due_jobs() -> None:
     master = _master_enabled()
     if master:
@@ -306,8 +326,9 @@ def _check_and_run_due_jobs() -> None:
         _check_and_run_backup_job()
         _check_and_run_jita_price_cache_job()
 
-    # Future: the opt-in alerts job runs here regardless of `master`
-    # (docs/DISCORD_ALERTS_HANDOFF.md), gated by alerts_job_enabled.
+    # The opt-in alerts job runs regardless of `master`, gated only by its own
+    # operator switch (docs/DISCORD_ALERTS_HANDOFF.md).
+    _check_and_run_alerts_job()
 
 
 def _loop() -> None:

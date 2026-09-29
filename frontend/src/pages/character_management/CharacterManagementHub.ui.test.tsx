@@ -109,6 +109,14 @@ describe('CharacterManagementHub', () => {
     expect(screen.getByRole('link', { name: /open/i })).toHaveAttribute('href', '/character-management/skill-plans')
   })
 
+  it('lists Discord Alerts when char_alerts is granted', async () => {
+    vi.mocked(gateApi.status).mockResolvedValue({ ...base, tools: ['char_alerts'] })
+    renderHub()
+    expect(await screen.findByRole('heading', { name: 'Discord Alerts' })).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Skills' })).not.toBeInTheDocument())
+    expect(screen.getByRole('link', { name: /open/i })).toHaveAttribute('href', '/character-management/alerts')
+  })
+
   it('says so when no sub-tool grant is held', async () => {
     vi.mocked(gateApi.status).mockResolvedValue({ ...base, tools: ['trading'] })
     renderHub()
