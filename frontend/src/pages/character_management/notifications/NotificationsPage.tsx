@@ -34,13 +34,15 @@ function NotificationDetailModal({ item, onClose }: { item: NotificationItem | n
               {data.parsed ? 'This notification carries no details.' : 'The details of this notification could not be read.'}
             </Text>
           ) : (
-            <Table withTableBorder striped>
-              <Table.Tbody>
-                {data.details.map((d) => (
-                  <Table.Tr key={d.key}><Table.Td>{d.key}</Table.Td><Table.Td>{d.value}</Table.Td></Table.Tr>
-                ))}
-              </Table.Tbody>
-            </Table>
+            <Table.ScrollContainer minWidth={0}>
+              <Table withTableBorder striped>
+                <Table.Tbody>
+                  {data.details.map((d) => (
+                    <Table.Tr key={d.key}><Table.Td>{d.key}</Table.Td><Table.Td>{d.value}</Table.Td></Table.Tr>
+                  ))}
+                </Table.Tbody>
+              </Table>
+            </Table.ScrollContainer>
           )}
         </Stack>
       )}
@@ -144,40 +146,42 @@ export default function NotificationsPage() {
           )}
 
           {items.length === 0 ? <Text c="dimmed">No notifications match.</Text> : (
-            <Table withTableBorder striped highlightOnHover>
-              <Table.Thead>
-                <Table.Tr>
-                  <Table.Th>When</Table.Th><Table.Th>Character</Table.Th><Table.Th>Notification</Table.Th><Table.Th />
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                {items.map((n) => (
-                  <Table.Tr key={`${n.character_id}-${n.notification_id}`}>
-                    <Table.Td>{dateTime(n.sent_at)}</Table.Td>
-                    <Table.Td>{n.character_name}</Table.Td>
-                    <Table.Td>
-                      <Group gap="xs" wrap="nowrap">
-                        {!n.read && <Badge size="xs" color="accent">new</Badge>}
-                        <Button variant="subtle" size="compact-sm" onClick={() => setOpened(n)}
-                          styles={{ label: { fontWeight: n.read ? 400 : 700 } }}>
-                          {n.summary}
-                        </Button>
-                      </Group>
-                    </Table.Td>
-                    <Table.Td ta="right">
-                      {n.read_in_game ? (
-                        <Text size="xs" c="dimmed">read in game</Text>
-                      ) : (
-                        <Button size="compact-xs" variant="default" loading={setRead.isPending}
-                          onClick={() => setRead.mutate({ item: n, read: !n.read })}>
-                          {n.read ? 'Mark unread' : 'Mark read'}
-                        </Button>
-                      )}
-                    </Table.Td>
+            <Table.ScrollContainer minWidth={500}>
+              <Table withTableBorder striped highlightOnHover>
+                <Table.Thead>
+                  <Table.Tr>
+                    <Table.Th>When</Table.Th><Table.Th>Character</Table.Th><Table.Th>Notification</Table.Th><Table.Th />
                   </Table.Tr>
-                ))}
-              </Table.Tbody>
-            </Table>
+                </Table.Thead>
+                <Table.Tbody>
+                  {items.map((n) => (
+                    <Table.Tr key={`${n.character_id}-${n.notification_id}`}>
+                      <Table.Td>{dateTime(n.sent_at)}</Table.Td>
+                      <Table.Td>{n.character_name}</Table.Td>
+                      <Table.Td>
+                        <Group gap="xs" wrap="nowrap">
+                          {!n.read && <Badge size="xs" color="accent">new</Badge>}
+                          <Button variant="subtle" size="compact-sm" onClick={() => setOpened(n)}
+                            styles={{ label: { fontWeight: n.read ? 400 : 700 } }}>
+                            {n.summary}
+                          </Button>
+                        </Group>
+                      </Table.Td>
+                      <Table.Td ta="right">
+                        {n.read_in_game ? (
+                          <Text size="xs" c="dimmed">read in game</Text>
+                        ) : (
+                          <Button size="compact-xs" variant="default" loading={setRead.isPending}
+                            onClick={() => setRead.mutate({ item: n, read: !n.read })}>
+                            {n.read ? 'Mark unread' : 'Mark read'}
+                          </Button>
+                        )}
+                      </Table.Td>
+                    </Table.Tr>
+                  ))}
+                </Table.Tbody>
+              </Table>
+            </Table.ScrollContainer>
           )}
 
           <Group justify="space-between">

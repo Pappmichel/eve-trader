@@ -38,7 +38,7 @@ export default function TradingSettings() {
       <Text size="xs" c="dimmed">
         Freight and fee rates change with the market/carrier - adjust here if import/sale numbers suddenly look unrealistic.
       </Text>
-      <SimpleGrid cols={2}>
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <NumberInput label="Freight cost Jita→structure (ISK/m³)" value={form.import_cost_per_m3} min={0} step={50}
           onChange={(v) => set('import_cost_per_m3', Number(v))} />
         <NumberInput label="Structure sell haircut" suffix="%" decimalScale={2}
@@ -62,7 +62,7 @@ export default function TradingSettings() {
         Beyond the excluded market-group paths below, only margin/hit rate/volume decide whether an item gets suggested -
         no keyword allow/denylist, no per-item size cap.
       </Text>
-      <SimpleGrid cols={3}>
+      <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }}>
         <NumberInput label="Min. hit rate" suffix="%" decimalScale={2} value={form.min_hit_rate * 100}
           min={0} max={100} step={5}
           onChange={(v) => set('min_hit_rate', Number(v) / 100)} />
@@ -84,7 +84,7 @@ export default function TradingSettings() {
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Regions &amp; Structure</Title>
       <Text size="xs" c="dimmed">Only change if your trading location shifts entirely.</Text>
-      <SimpleGrid cols={3}>
+      <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }}>
         <NumberInput label="Jita region ID" value={form.jita_region_id} min={1}
           onChange={(v) => set('jita_region_id', Number(v))} />
         <NumberInput label="Reference region ID" value={form.reference_region_id} min={1}
@@ -92,7 +92,7 @@ export default function TradingSettings() {
         <StructureIdField label="Structure ID" value={form.structure_id ?? null}
           onChange={(v) => set('structure_id', v)} structureNames={structureNames} />
       </SimpleGrid>
-      <SimpleGrid cols={2} mt="xs">
+      <SimpleGrid cols={{ base: 1, xs: 2 }} mt="xs">
         <TextInput label="Structure market slug (appraise.gnf.lt, optional failsafe)"
           description="Falls back to this Goonmetrics snapshot for structure pricing when no seller is logged in or ESI fails - not used by Undercut Check."
           value={form.structure_market_slug ?? ''}
@@ -100,7 +100,7 @@ export default function TradingSettings() {
       </SimpleGrid>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Characters</Title>
-      <SimpleGrid cols={2}>
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <TextInput label="Buyer name (Jita)" value={form.buyer_character_name ?? ''} autoComplete="off"
           onChange={(e) => set('buyer_character_name', e.currentTarget.value)} />
         <TextInput label="Seller name (structure)" value={form.seller_character_name ?? ''} autoComplete="off"
@@ -132,7 +132,7 @@ export default function TradingSettings() {
         next scheduled fetch. Frequent: market orders and wallet. Normal: assets,
         jobs, contracts. Rare: blueprints and skills.
       </Text>
-      <SimpleGrid cols={2}>
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <NumberInput label="Frequent interval (hours)" value={form.esi_frequent_interval_hours} min={0} step={0.5}
           onChange={(v) => set('esi_frequent_interval_hours', Number(v))} />
         <NumberInput label="Normal interval (hours)" value={form.esi_normal_interval_hours} min={0} step={0.5}

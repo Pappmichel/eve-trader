@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   Alert, Badge, Button, CloseButton, Group, Modal, Paper, Select, Stack, Text, Textarea, TextInput, UnstyledButton,
 } from '@mantine/core'
+import { useMediaQuery } from '@mantine/hooks'
 import { modals } from '@mantine/modals'
 import { notifications } from '@mantine/notifications'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -39,6 +40,7 @@ export function ComposeModal({ opened, onClose, draft, senders }: {
   senders: Sender[]
 }) {
   const queryClient = useQueryClient()
+  const phone = useMediaQuery('(max-width: 47.99em)') ?? false   // full screen on a phone: room above the keyboard
   // The parent remounts this component (`key`) for every new draft, so state is
   // initialised once - deliberately no effect that re-syncs from props, which
   // would wipe what the user is typing on every parent render.
@@ -104,7 +106,7 @@ export function ComposeModal({ opened, onClose, draft, senders }: {
   })
 
   return (
-    <Modal opened={opened} onClose={onClose} title="New mail" size="lg" closeOnClickOutside={false}>
+    <Modal opened={opened} onClose={onClose} title="New mail" size="lg" closeOnClickOutside={false} fullScreen={phone}>
       <Stack gap="sm">
         {senders.length === 0 ? (
           <Alert color="warn" variant="light">

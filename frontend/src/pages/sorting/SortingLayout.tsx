@@ -1,7 +1,7 @@
-import { AppShell, Burger, Stack, Title, Text, Button, Group, Tabs, Container, Divider } from '@mantine/core'
+import { AppShell, Stack, Title, Text, Tabs, Container, Divider } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { IconArrowLeft } from '@tabler/icons-react'
+import { ToolHeader } from '../../components/ToolHeader'
 
 const TABS = [
   { path: '/sorting', label: 'Overview' },
@@ -19,13 +19,7 @@ export default function SortingLayout() {
   return (
     <AppShell header={{ height: 56 }} navbar={{ width: 280, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding={{ base: 'xs', sm: 'md' }}>
       <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between">
-          <Group>
-            <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" aria-label="Toggle navigation" />
-            <Text fw={700} tt="uppercase" lts={1}>EVE Trader — Sorting</Text>
-          </Group>
-          <Button variant="subtle" size="xs" leftSection={<IconArrowLeft size={14} />} onClick={() => navigate('/')}>Tools</Button>
-        </Group>
+        <ToolHeader title="Sorting" opened={opened} onToggle={toggle} />
       </AppShell.Header>
 
       <AppShell.Navbar p="md">

@@ -122,7 +122,7 @@ export default function FittingDetail() {
       </Group>
 
       <Grid>
-        <Grid.Col span={6}>
+        <Grid.Col span={{ base: 12, sm: 6 }}>
           <Card withBorder>
             <Title order={6} c="dimmed" tt="uppercase" mb="sm">Fitting ({items.length} items)</Title>
             <Stack gap="sm">
@@ -163,7 +163,7 @@ export default function FittingDetail() {
           </Card>
         </Grid.Col>
 
-        <Grid.Col span={6}>
+        <Grid.Col span={{ base: 12, sm: 6 }}>
           <Card withBorder>
             <Title order={6} c="dimmed" tt="uppercase" mb="sm">Contracts ({contracts.length})</Title>
             {contracts.length === 0 && <Text size="sm" c="dimmed">No contracts matched to this fitting yet.</Text>}
@@ -179,18 +179,20 @@ export default function FittingDetail() {
                   </Group>
                   <Text size="xs" c="dimmed">{isk(c.price)} — expires {dateTime(c.date_expired)}</Text>
                   {c.deviations.length > 0 && (
-                    <Table mt="xs" fz="xs">
-                      <Table.Tbody>
-                        {c.deviations.map((d, i) => (
-                          <Table.Tr key={i}>
-                            <Table.Td>{d.type_name}</Table.Td>
-                            <Table.Td>{d.kind}</Table.Td>
-                            <Table.Td>{d.expected_qty} expected / {d.actual_qty} actual</Table.Td>
-                            <Table.Td><Badge size="xs" color={SEVERITY_COLOR[d.severity] ?? 'dimmed'} variant="light">{d.severity}</Badge></Table.Td>
-                          </Table.Tr>
-                        ))}
-                      </Table.Tbody>
-                    </Table>
+                    <Table.ScrollContainer minWidth={0}>
+                      <Table mt="xs" fz="xs">
+                        <Table.Tbody>
+                          {c.deviations.map((d, i) => (
+                            <Table.Tr key={i}>
+                              <Table.Td>{d.type_name}</Table.Td>
+                              <Table.Td>{d.kind}</Table.Td>
+                              <Table.Td>{d.expected_qty} expected / {d.actual_qty} actual</Table.Td>
+                              <Table.Td><Badge size="xs" color={SEVERITY_COLOR[d.severity] ?? 'dimmed'} variant="light">{d.severity}</Badge></Table.Td>
+                            </Table.Tr>
+                          ))}
+                        </Table.Tbody>
+                      </Table>
+                    </Table.ScrollContainer>
                   )}
                 </div>
               ))}

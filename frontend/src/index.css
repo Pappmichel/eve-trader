@@ -8,3 +8,20 @@ html, body, #root {
 * {
   box-sizing: border-box;
 }
+
+/* Phones: Mantine's compact xs/sm control heights are fine for a mouse but too
+   small to hit reliably with a thumb. Only on coarse pointers narrower than
+   Mantine's `sm` breakpoint, so desktop and tablet density stay as they are. */
+@media (pointer: coarse) and (max-width: 47.99em) {
+  :root {
+    --button-height-xs: 2.25rem;
+    --button-height-sm: 2.5rem;
+    --button-height-compact-xs: 1.875rem;
+    --button-height-compact-sm: 2.125rem;
+    --input-height-xs: 2.25rem;
+    --input-height-sm: 2.5rem;
+    --ai-size-xs: 1.875rem;
+    --ai-size-sm: 2.25rem;
+    --ai-size-md: 2.5rem;
+  }
+}

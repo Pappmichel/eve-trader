@@ -157,7 +157,7 @@ export default function Shortlist() {
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
   if (isError) return <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />
   if (!data || data.length === 0) {
-    return <HintCard>No run yet. Click <b>Refresh Shortlist</b> on the left to compute margins and buy recommendations for your shortlist.</HintCard>
+    return <HintCard>No run yet. Click <b>Refresh Shortlist</b> in the side menu to compute margins and buy recommendations for your shortlist.</HintCard>
   }
 
   return (

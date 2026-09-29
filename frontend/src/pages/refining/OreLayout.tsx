@@ -1,12 +1,13 @@
-import { AppShell, Burger, Stack, Title, Text, Button, Group, Tabs, Container, Divider, Tooltip } from '@mantine/core'
+import { AppShell, Stack, Title, Text, Button, Group, Tabs, Container, Divider, Tooltip } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { IconArrowLeft, IconDownload, IconRefresh } from '@tabler/icons-react'
+import { IconDownload, IconRefresh } from '@tabler/icons-react'
 
 import { refiningApi } from '../../api/client'
 import { useAction, warnIfPricedViaFallback } from '../../hooks/useAction'
 import { dateTime } from '../../format'
+import { ToolHeader } from '../../components/ToolHeader'
 
 const TABS = [
   { path: '/ore', label: 'Overview' },
@@ -35,13 +36,7 @@ export default function OreLayout() {
   return (
     <AppShell header={{ height: 56 }} navbar={{ width: 280, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding={{ base: 'xs', sm: 'md' }}>
       <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between">
-          <Group>
-            <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" aria-label="Toggle navigation" />
-            <Text fw={700} tt="uppercase" lts={1}>EVE Trader — Ore &amp; Minerals</Text>
-          </Group>
-          <Button variant="subtle" size="xs" leftSection={<IconArrowLeft size={14} />} onClick={() => navigate('/')}>Tools</Button>
-        </Group>
+        <ToolHeader title="Ore & Minerals" opened={opened} onToggle={toggle} />
       </AppShell.Header>
 
       <AppShell.Navbar p="md">

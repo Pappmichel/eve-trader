@@ -1,13 +1,14 @@
-import { AppShell, Burger, Stack, Title, Text, Button, Group, Container, Tabs, ScrollArea, Divider, Tooltip } from '@mantine/core'
+import { AppShell, Stack, Title, Text, Button, Group, Container, Tabs, ScrollArea, Divider, Tooltip } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { IconArrowLeft, IconRefresh } from '@tabler/icons-react'
+import { IconRefresh } from '@tabler/icons-react'
 
 import { stationTradingApi } from '../../api/client'
 import { useAction } from '../../hooks/useAction'
 import { useRoleCharacters } from '../../hooks/useRoleCharacters'
 import { dateTime } from '../../format'
+import { ToolHeader } from '../../components/ToolHeader'
 
 const TABS = [
   { path: '/station-trading', label: 'Overview' },
@@ -37,13 +38,7 @@ export default function StationTradingLayout() {
   return (
     <AppShell header={{ height: 56 }} navbar={{ width: 300, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding={{ base: 'xs', sm: 'md' }}>
       <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between">
-          <Group>
-            <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" aria-label="Toggle navigation" />
-            <Text fw={700} tt="uppercase" lts={1}>EVE Trader — Station Trading</Text>
-          </Group>
-          <Button variant="subtle" size="xs" leftSection={<IconArrowLeft size={14} />} onClick={() => navigate('/')}>Tools</Button>
-        </Group>
+        <ToolHeader title="Station Trading" opened={opened} onToggle={toggle} />
       </AppShell.Header>
 
       <AppShell.Navbar p={0} style={{ display: 'flex', flexDirection: 'column' }}>

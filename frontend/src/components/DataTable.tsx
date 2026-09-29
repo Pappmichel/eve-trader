@@ -306,7 +306,8 @@ export function DataTable<T>({
 
   return (
     <div>
-      <Group justify="space-between" mb="xs" gap="xs" wrap="nowrap">
+      {/* Wraps below the search box on a phone: one line squeezed the box to a few pixels. */}
+      <Group justify="space-between" mb="xs" gap="xs">
         <TextInput
           size="xs"
           placeholder="Filter..."
@@ -318,11 +319,11 @@ export function DataTable<T>({
           ) : undefined}
           value={globalFilter}
           onChange={(e) => setGlobalFilter(e.currentTarget.value)}
-          style={{ flex: 1, maxWidth: 280 }}
+          style={{ flex: '1 1 160px', maxWidth: 280 }}
         />
         <Group gap="xs" wrap="nowrap">
           {dataUpdatedAt && (
-            <Text size="xs" c="dimmed" title={new Date(dataUpdatedAt).toLocaleString()}>
+            <Text size="xs" c="dimmed" visibleFrom="xs" title={new Date(dataUpdatedAt).toLocaleString()}>
               Updated {relativeTime(dataUpdatedAt)}
             </Text>
           )}

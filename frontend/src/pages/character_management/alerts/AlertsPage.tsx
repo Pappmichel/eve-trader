@@ -150,26 +150,28 @@ export default function AlertsPage() {
             {data.characters.length === 0 ? (
               <Text size="sm" c="dimmed">No characters with ESI access yet.</Text>
             ) : (
-              <Table>
-                <Table.Tbody>
-                  {data.characters.map((c) => (
-                    <Table.Tr key={c.character_id}>
-                      <Table.Td fw={600}>{c.character_name}</Table.Td>
-                      <Table.Td>
-                        <Stack gap="sm">
-                          {(['skillqueue_empty', 'mail_new'] as AlertType[]).map((type) => (
-                            <AlertRow
-                              key={type} characterId={c.character_id} label={c.character_name} type={type}
-                              sub={c.alerts[type]} linked={data.linked} pending={subscribe.isPending}
-                              onChange={(change) => subscribe.mutate({ character_id: c.character_id, alert_type: type, ...change })}
-                            />
-                          ))}
-                        </Stack>
-                      </Table.Td>
-                    </Table.Tr>
-                  ))}
-                </Table.Tbody>
-              </Table>
+              <Table.ScrollContainer minWidth={0}>
+                <Table>
+                  <Table.Tbody>
+                    {data.characters.map((c) => (
+                      <Table.Tr key={c.character_id}>
+                        <Table.Td fw={600}>{c.character_name}</Table.Td>
+                        <Table.Td>
+                          <Stack gap="sm">
+                            {(['skillqueue_empty', 'mail_new'] as AlertType[]).map((type) => (
+                              <AlertRow
+                                key={type} characterId={c.character_id} label={c.character_name} type={type}
+                                sub={c.alerts[type]} linked={data.linked} pending={subscribe.isPending}
+                                onChange={(change) => subscribe.mutate({ character_id: c.character_id, alert_type: type, ...change })}
+                              />
+                            ))}
+                          </Stack>
+                        </Table.Td>
+                      </Table.Tr>
+                    ))}
+                  </Table.Tbody>
+                </Table>
+              </Table.ScrollContainer>
             )}
           </Paper>
         </Stack>

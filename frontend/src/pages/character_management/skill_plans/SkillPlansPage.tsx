@@ -93,32 +93,34 @@ function StepsTable({ plan }: { plan: SkillPlan }) {
   }
   if (plan.steps.length === 0) return <Text c="dimmed">This plan is empty. Add a skill above or import a plan.</Text>
   return (
-    <Table withTableBorder striped>
-      <Table.Thead><Table.Tr><Table.Th>#</Table.Th><Table.Th>Skill</Table.Th><Table.Th>Level</Table.Th><Table.Th>Group</Table.Th><Table.Th /></Table.Tr></Table.Thead>
-      <Table.Tbody>
-        {plan.steps.map((s, i) => (
-          <Table.Tr key={`${s.skill_id}-${s.level}`}>
-            <Table.Td>{i + 1}</Table.Td>
-            <Table.Td>{s.name}</Table.Td>
-            <Table.Td>{s.level_label}</Table.Td>
-            <Table.Td>{s.group_name ?? '–'}</Table.Td>
-            <Table.Td ta="right">
-              <Group gap={4} justify="flex-end" wrap="nowrap">
-                <ActionIcon variant="subtle" aria-label={`Move ${s.name} ${s.level_label} up`} disabled={i === 0 || move.isPending}
-                  onClick={() => swap(i, i - 1)}><IconArrowUp size={14} /></ActionIcon>
-                <ActionIcon variant="subtle" aria-label={`Move ${s.name} ${s.level_label} down`}
-                  disabled={i === plan.steps.length - 1 || move.isPending}
-                  onClick={() => swap(i, i + 1)}><IconArrowDown size={14} /></ActionIcon>
-                <Tooltip label="Also removes steps that need this one" multiline w={200}>
-                  <ActionIcon variant="subtle" color="danger" aria-label={`Remove ${s.name} ${s.level_label}`}
-                    onClick={() => remove.mutate(s)}><IconTrash size={14} /></ActionIcon>
-                </Tooltip>
-              </Group>
-            </Table.Td>
-          </Table.Tr>
-        ))}
-      </Table.Tbody>
-    </Table>
+    <Table.ScrollContainer minWidth={600}>
+      <Table withTableBorder striped>
+        <Table.Thead><Table.Tr><Table.Th>#</Table.Th><Table.Th>Skill</Table.Th><Table.Th>Level</Table.Th><Table.Th>Group</Table.Th><Table.Th /></Table.Tr></Table.Thead>
+        <Table.Tbody>
+          {plan.steps.map((s, i) => (
+            <Table.Tr key={`${s.skill_id}-${s.level}`}>
+              <Table.Td>{i + 1}</Table.Td>
+              <Table.Td>{s.name}</Table.Td>
+              <Table.Td>{s.level_label}</Table.Td>
+              <Table.Td>{s.group_name ?? '–'}</Table.Td>
+              <Table.Td ta="right">
+                <Group gap={4} justify="flex-end" wrap="nowrap">
+                  <ActionIcon variant="subtle" aria-label={`Move ${s.name} ${s.level_label} up`} disabled={i === 0 || move.isPending}
+                    onClick={() => swap(i, i - 1)}><IconArrowUp size={14} /></ActionIcon>
+                  <ActionIcon variant="subtle" aria-label={`Move ${s.name} ${s.level_label} down`}
+                    disabled={i === plan.steps.length - 1 || move.isPending}
+                    onClick={() => swap(i, i + 1)}><IconArrowDown size={14} /></ActionIcon>
+                  <Tooltip label="Also removes steps that need this one" multiline w={200}>
+                    <ActionIcon variant="subtle" color="danger" aria-label={`Remove ${s.name} ${s.level_label}`}
+                      onClick={() => remove.mutate(s)}><IconTrash size={14} /></ActionIcon>
+                  </Tooltip>
+                </Group>
+              </Table.Td>
+            </Table.Tr>
+          ))}
+        </Table.Tbody>
+      </Table>
+    </Table.ScrollContainer>
   )
 }
 

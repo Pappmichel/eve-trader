@@ -1,14 +1,13 @@
-import { AppShell, Badge, Burger, Stack, Title, Text, Button, Group, Container, Tabs, ScrollArea, Divider, Tooltip } from '@mantine/core'
+import { AppShell, Badge, Stack, Title, Text, Button, Group, Container, Tabs, ScrollArea, Divider, Tooltip } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { spotlight } from '@mantine/spotlight'
-import { IconArrowLeft, IconSearch } from '@tabler/icons-react'
 
 import { productionApi } from '../../api/client'
 import { useAction } from '../../hooks/useAction'
 import { useRoleCharacters } from '../../hooks/useRoleCharacters'
 import { dateTime } from '../../format'
+import { ToolHeader } from '../../components/ToolHeader'
 
 const TABS = [
   { path: '/production', label: 'Overview' },
@@ -66,18 +65,7 @@ export default function ProductionLayout() {
   return (
     <AppShell header={{ height: 56 }} navbar={{ width: 300, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding={{ base: 'xs', sm: 'md' }}>
       <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between">
-          <Group>
-            <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" aria-label="Toggle navigation" />
-            <Text fw={700} tt="uppercase" lts={1}>EVE Trader — Production</Text>
-          </Group>
-          <Group gap="xs">
-            <Button variant="subtle" size="xs" leftSection={<IconSearch size={14} />} onClick={() => spotlight.open()}>
-              Jump to... (⌘K)
-            </Button>
-            <Button variant="subtle" size="xs" leftSection={<IconArrowLeft size={14} />} onClick={() => navigate('/')}>Tools</Button>
-          </Group>
-        </Group>
+        <ToolHeader title="Production" opened={opened} onToggle={toggle} showJump />
       </AppShell.Header>
 
       <AppShell.Navbar p={0} style={{ display: 'flex', flexDirection: 'column' }}>

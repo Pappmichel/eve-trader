@@ -217,7 +217,7 @@ export default function Logistics() {
           live system index and the flat Settings-page overrides, so use it when you need a category's rate to
           differ from what its assigned system would otherwise give it. Leave blank to use the live system index.
         </Text>
-        <SimpleGrid cols={3}>
+        <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }}>
           {(categories ?? []).map((cat) => {
             const savedId = locations?.[cat]
             const resolvedName = savedId != null ? structureNames?.[String(savedId)] : undefined

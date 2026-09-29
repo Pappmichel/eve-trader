@@ -173,6 +173,12 @@ describe('Mail page', () => {
       const user = userEvent.setup()
       renderPage()
       const item = await screen.findByRole('button', { name: /Open mail Subject 1/ })
+      // the folder tree is a collapsed picker on a phone, not a wall above the mail list
+      const picker = screen.getByRole('button', { name: /Folder: Inbox/ })
+      expect(screen.getByLabelText('Folders')).not.toBeVisible()
+      await user.click(picker)
+      expect(screen.getByLabelText('Folders')).toBeVisible()
+      await user.click(picker)
       expect(screen.queryByRole('button', { name: /Back to list/ })).not.toBeInTheDocument()
       await user.click(item)
       expect(await screen.findByTestId('mail-body')).toBeVisible()
