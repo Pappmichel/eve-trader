@@ -48,7 +48,7 @@ const DECISION_4 =
   'Sharing governs raw ESI snapshots only — assets, jobs, blueprints, orders, contracts, wallet, skills, skill queue, standings, loyalty points, clones, and implants. '
   + 'Derived tables (realized trades, shortlists, production plans) are not filtered by it. '
   + 'Unticking Wallet does not erase last week\'s realized trades. '
-  + 'Location, current ship, and online status are read live from ESI while Character Info is open and are never stored. '
+  + 'Location, current ship, online status, and jump fatigue are read live from ESI while Character Info is open and are never stored. '
   + 'Mail is read live too and only stored for a character that opts into the mail archive.'
 
 const CELL_LABEL: Record<CellKind, string> = {

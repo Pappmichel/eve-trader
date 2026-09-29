@@ -106,6 +106,10 @@ export const OWNED_DATA_KINDS: readonly OwnedDataKind[] = [
     consumingTools: ['char_info'], corpRoles: [],
   },
   {
+    key: 'fatigue', section: 'character', label: 'Jump Fatigue', group: 2, liveOnly: true,
+    consumingTools: ['char_info'], corpRoles: [],
+  },
+  {
     key: 'notifications', section: 'character', label: 'Notifications', group: 2,
     consumingTools: ['char_notifications'], corpRoles: [],
   },

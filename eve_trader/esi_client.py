@@ -1370,6 +1370,14 @@ class ESIClient:
         return self._live_character_read(
             "online", character_id, auth_role, f"/characters/{character_id}/online/")
 
+    def character_fatigue(self, character_id: int, auth_role: str) -> dict:
+        """Requires esi-characters.read_fatigue.v1. {"jump_fatigue_expire_date"?,
+        "last_jump_date"?, "last_update_date"?} (all optional: a character
+        without fatigue may return an empty object). Live, 60s cache, never
+        stored."""
+        return self._live_character_read(
+            "fatigue", character_id, auth_role, f"/characters/{character_id}/fatigue/")
+
     def character_standings(self, character_id: int, auth_role: str) -> list[dict]:
         """Requires esi-characters.read_standings.v1. [{"from_id",
         "from_type" (agent|npc_corp|faction), "standing"}]. Snapshot-synced

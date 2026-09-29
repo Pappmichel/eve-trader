@@ -15,6 +15,7 @@ must not blank the overview of the others.
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Optional
 
@@ -76,6 +77,29 @@ def _names(client: ESIClient, ids: list[int]) -> dict[int, str]:
         return client.resolve_names(ids)
     except ESIError:
         return {}
+
+
+def _fatigue_value(raw: Any) -> dict:
+    """The three optional ESI dates as ISO strings (None when absent). The
+    countdown itself is the browser's job: it needs the current time, and a
+    server-side remaining-seconds would already be stale when displayed."""
+    raw = raw if isinstance(raw, dict) else {}
+    return {
+        "jump_fatigue_expire_date": raw.get("jump_fatigue_expire_date"),
+        "last_jump_date": raw.get("last_jump_date"),
+        "last_update_date": raw.get("last_update_date"),
+    }
+
+
+# Clones can be jumped again this long after the last jump. 24 h is the base
+# cooldown; the Infomorph Synchronizing skill shortens it by up to 4 h, which
+# is not read here, so the UI calls this the latest the cooldown can end.
+CLONE_JUMP_COOLDOWN_HOURS = 24
+
+
+def _clone_jump_available_at(last_jump: Any) -> Optional[str]:
+    parsed = fields.parse_dt(last_jump)
+    return (parsed + timedelta(hours=CLONE_JUMP_COOLDOWN_HOURS)).isoformat() if parsed else None
 
 
 def _location_value(raw: dict) -> dict:
@@ -148,6 +172,7 @@ def _character_summary(
             "ship", cid, tokens, lambda role: client.character_ship(cid, role), _ship_value,
         ),
         "online": _live("online", cid, tokens, lambda role: client.character_online(cid, role)),
+        "fatigue": _live("fatigue", cid, tokens, lambda role: client.character_fatigue(cid, role), _fatigue_value),
         "freshness": freshness,
     }
     if detail:
@@ -210,7 +235,8 @@ def _clones_field(cid: int, tokens: TokenManager, freshness: dict) -> dict:
     def shape(rows: list[dict]) -> dict:
         row = rows[0] if rows else None
         if row is None:
-            return {"home": None, "jump_clones": [], "last_clone_jump_date": None, "last_station_change_date": None}
+            return {"home": None, "jump_clones": [], "last_clone_jump_date": None,
+                    "last_station_change_date": None, "clone_jump_available_at": None}
         meta, clones = row["meta"], row["jump_clones"]
         loc_ids = [c["location_id"] for c in clones if c["location_id"]]
         if meta["home_location_id"]:
@@ -236,6 +262,7 @@ def _clones_field(cid: int, tokens: TokenManager, freshness: dict) -> dict:
             ],
             "last_clone_jump_date": meta["last_clone_jump_date"],
             "last_station_change_date": meta["last_station_change_date"],
+            "clone_jump_available_at": _clone_jump_available_at(meta["last_clone_jump_date"]),
         }
     return _snapshot("clones", cid, tokens, freshness, shape)
 

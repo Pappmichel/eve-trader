@@ -163,4 +163,33 @@ describe('Character Info page', () => {
     expect(screen.getByText(/Mining – structure #1035466617946/)).toBeInTheDocument()   // unresolved keeps its id
     expect(screen.getByText('No implants.')).toBeInTheDocument()
   })
+
+  it('shows a jump fatigue countdown per character and the next clone jump in the detail', async () => {
+    const soon = new Date(Date.now() + 90 * 60_000).toISOString()
+    vi.mocked(charInfoApi.overview).mockResolvedValue({
+      characters: [
+        character({
+          fatigue: { state: 'ok', value: { jump_fatigue_expire_date: soon, last_jump_date: null, last_update_date: null } },
+        }),
+        character({ character_id: 2, character_name: 'Bob', fatigue: { state: 'ok', value: {
+          jump_fatigue_expire_date: null, last_jump_date: null, last_update_date: null } } }),
+      ],
+    })
+    vi.mocked(charInfoApi.detail).mockResolvedValue(character({
+      clones: {
+        state: 'ok',
+        value: {
+          home: null, jump_clones: [], last_clone_jump_date: null, last_station_change_date: null,
+          clone_jump_available_at: new Date(Date.now() + 5 * 3_600_000).toISOString(),
+        },
+      },
+    }))
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Alice')
+    expect(screen.getByText(/^1h 2\dm$|^1h 30m$|^1h 29m$/)).toBeInTheDocument()
+    expect(screen.getByText('none')).toBeInTheDocument()
+    await user.click(screen.getAllByRole('button', { name: 'Details' })[0])
+    expect(await screen.findByText(/^4h 5\dm$|^5h 0m$/)).toBeInTheDocument()
+  })
 })

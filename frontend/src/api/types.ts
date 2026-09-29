@@ -1446,6 +1446,11 @@ export interface CharInfoStandings {
   npc_corp: CharInfoStandingRow[]
   agent: CharInfoStandingRow[]
 }
+export interface CharInfoFatigue {
+  jump_fatigue_expire_date: string | null
+  last_jump_date: string | null
+  last_update_date: string | null
+}
 export interface CharInfoLoyaltyRow { corporation_id: number; corporation_name: string; loyalty_points: number }
 export interface CharInfoImplant { type_id: number; name: string }
 export interface CharInfoJumpClone {
@@ -1461,6 +1466,8 @@ export interface CharInfoClones {
   jump_clones: CharInfoJumpClone[]
   last_clone_jump_date: string | null
   last_station_change_date: string | null
+  /** last_clone_jump_date + 24 h (the base cooldown; skills can shorten it) */
+  clone_jump_available_at: string | null
 }
 export interface CharInfoCorpHistoryRow { corporation_id: number; corporation_name: string; start_date: string | null }
 
@@ -1477,6 +1484,7 @@ export interface CharInfoCharacter {
   location: CharInfoField<CharInfoLocation>
   ship: CharInfoField<CharInfoShip>
   online: CharInfoField<CharInfoOnline>
+  fatigue?: CharInfoField<CharInfoFatigue>
   freshness: Record<string, { last_success_at: string | null; last_attempt_at: string | null; last_error: string | null }>
   // Detail only:
   standings?: CharInfoField<CharInfoStandings>

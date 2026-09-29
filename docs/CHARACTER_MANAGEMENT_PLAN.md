@@ -818,6 +818,17 @@ Original design:
 - Filter by type. A read/unread flag is local only (ESI has no write).
 
 ### Phase 7 - Jump fatigue / timers
+**Status: implemented.** Kind `fatigue` (`esi-characters.read_fatigue.v1`,
+`live_only`, consumer `char_info`): read live per overview request through the
+60 s live cache, never stored. The overview passes ESI's three optional dates
+through as ISO strings; the browser does the countdown (`components/Countdown`,
+30 s tick), since a server-side "seconds left" would be stale on arrival. The
+clone jump timer is `clone_jump_available_at` = `last_clone_jump_date` + 24 h,
+computed in `info_actions._clones_field` (needs `clones` shared); the tooltip
+says Infomorph Synchronizing can shorten the 24 h, which is not read here.
+Countdown column on the overview table, clone timer in the detail drawer.
+
+Original design:
 - Add `fatigue` (`live_only`).
 - Show countdowns on Character Info. The jump clone cooldown comes from
   `clones.last_clone_jump_date`.

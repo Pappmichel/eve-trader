@@ -8,6 +8,7 @@ import { useQuery } from '@tanstack/react-query'
 
 import { charInfoApi } from '../../../api/client'
 import type { CharInfoCharacter, CharInfoImplant, CharInfoStandingRow } from '../../../api/types'
+import { Countdown } from '../../../components/Countdown'
 import { FieldState } from '../../../components/FieldState'
 import { dateTime, isk, qty } from '../../../format'
 import { useCharacterSync } from '../../../hooks/useCharacterSync'
@@ -120,6 +121,12 @@ function CharacterDetail({ characterId }: { characterId: number }) {
                 <Text size="xs" c="dimmed">
                   Last jump {dateTime(c.last_clone_jump_date)} · last home change {dateTime(c.last_station_change_date)}
                 </Text>
+                <Text size="sm">
+                  Next clone jump in{' '}
+                  <Tooltip label="24 h after the last jump. Infomorph Synchronizing can shorten this by up to 4 h, so it may be ready sooner." multiline w={260}>
+                    <span><Countdown until={c.clone_jump_available_at} doneLabel="available now" /></span>
+                  </Tooltip>
+                </Text>
                 {c.jump_clones.length === 0
                   ? <Text size="sm" c="dimmed">No jump clones.</Text>
                   : c.jump_clones.map((jc) => (
@@ -220,7 +227,7 @@ export default function CharacterInfoPage() {
       <Text size="xs" c="dimmed" mb="md">
         What this page may show is decided on the{' '}
         <Text component={Link} to="/character-management/characters" span c="accent" td="underline">Characters page</Text>
-        . Location, ship and online status are read live and never stored.
+        . Location, ship, online status and jump fatigue are read live and never stored.
       </Text>
 
       {overview.isLoading ? <Loader color="accent" /> : characters.length === 0 ? (
@@ -236,6 +243,7 @@ export default function CharacterInfoPage() {
                 <Table.Th>Status</Table.Th>
                 <Table.Th>Location</Table.Th>
                 <Table.Th>Ship</Table.Th>
+                <Table.Th>Jump fatigue</Table.Th>
                 <Table.Th />
               </Table.Tr>
             </Table.Thead>
@@ -282,6 +290,13 @@ export default function CharacterInfoPage() {
                         </div>
                       )}
                     </FieldState>
+                  </Table.Td>
+                  <Table.Td>
+                    {c.fatigue && (
+                      <FieldState field={c.fatigue}>
+                        {(f) => <Countdown until={f.jump_fatigue_expire_date} doneLabel="none" />}
+                      </FieldState>
+                    )}
                   </Table.Td>
                   <Table.Td>
                     <Button size="compact-xs" variant="default" onClick={() => setSelected(c.character_id)}>

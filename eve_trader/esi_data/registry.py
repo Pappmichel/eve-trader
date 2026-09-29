@@ -254,6 +254,18 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         freshness_tier=TIER_FREQUENT,
         live_only=True,
     ),
+    # Phase 7: jump fatigue, read live like location/ship/online (never stored).
+    OwnedDataKind(
+        key="fatigue",
+        label="Jump Fatigue",
+        group=GROUP_2,
+        character_scope="esi-characters.read_fatigue.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_info",),
+        freshness_tier=TIER_FREQUENT,
+        live_only=True,
+    ),
     # Mail (phase 3). `live_only` here means "not an orchestrator kind": mail
     # is read live per request, and only a character that ticked the archive
     # checkbox gets it stored - by character_management/mail_* (own sync and
