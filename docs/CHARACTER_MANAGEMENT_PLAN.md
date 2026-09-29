@@ -867,6 +867,41 @@ Original design:
   window only (R15).
 
 ### Phase 9 - Skill-plan editor (`char_skill_plans`)
+**Status: implemented.** What shipped, next to the design below:
+- Grant `char_skill_plans`, tables `skill_plans` (`id BIGSERIAL`, per-tenant by
+  RLS) and `skill_plan_items` (`plan_id, position, skill_id, level`, cascade on
+  delete, unique per skill/level). Tenant data the user writes: no sharing, no
+  sync, no stale clear. Limits: 100 plans, 600 steps per plan, 50 000 characters
+  of import text.
+- A plan is kept **self-contained** (`character_management/skill_plan_logic.py`,
+  pure functions): a step at level L>1 needs `(skill, L-1)` earlier, a level-1
+  step needs the skill's own prerequisites (`sde_skill_requirements`) earlier.
+  Adding a skill inserts everything missing, in dependency order, and leaves
+  existing positions alone; removing a step also removes every step that needed
+  it (the UI says how many went); reordering (up/down) is accepted only as a
+  permutation that keeps every step after what it needs. A prerequisite cycle in
+  the data is cut, not looped on.
+- Import/export text: one `<skill name> <level>` per line, level as roman
+  numeral or digit, `#` comments and blank lines ignored, unknown lines reported
+  back (`unresolved`) instead of failing the import. The in-game client's exact
+  export format could not be checked offline, so import is deliberately lenient
+  and export writes the simplest form (`Gunnery V`).
+- Progress per character: `read_esi("skills", "char_skill_plans")`, i.e.
+  `char_skill_plans` became a consumer of the `skills` kind and has its own
+  sharing row (Skills sharing does not open it). Per character: steps done, SP
+  and estimated time left (same estimate as the doctrine check: attributes as
+  ESI reports them, no implants or boosters, R14), and the next 10 steps in plan
+  order - the plan order is already a valid training order, so it doubles as the
+  suggested queue order. A step's SP is `SP(L) - SP(L-1)`, or only the rest of
+  the level for a character part-way through the level below.
+  `POST /api/char-skill-plans/sync` refreshes the skills of characters shared
+  with Skill Plans.
+- Needs the SDE skill tables (Admin SDE preview + apply once); the page says so
+  instead of offering an unusable editor.
+- Not done: reordering by drag and drop, sharing plans between tenants, pushing a
+  plan into the game's skill queue (no write scope is requested).
+
+Original design:
 - Tenant-scoped `skill_plans` and `skill_plan_items` (`plan_id, position,
   skill_id, level`).
 - Import and export in the EVE client skill plan text format.

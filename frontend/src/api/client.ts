@@ -649,6 +649,30 @@ export const charSkillsApi = {
   sync: () => post<T.CharInfoSyncResult>('/api/char-skills/sync', {}),
 }
 
+// -------------------------------------------------------------- skill plans
+const PLANS = '/api/char-skill-plans'
+export const charSkillPlansApi = {
+  list: () => get<{ plans: T.SkillPlanSummary[]; sde_ready: boolean }>(`${PLANS}/plans`),
+  create: (name: string, description: string, text?: string) =>
+    post<T.SkillPlan>(`${PLANS}/plans`, { name, description, text: text?.trim() ? text : null }),
+  get: (planId: number) => get<T.SkillPlan>(`${PLANS}/plans/${planId}`),
+  update: (planId: number, name: string, description: string) =>
+    put<T.SkillPlan>(`${PLANS}/plans/${planId}`, { name, description }),
+  remove: (planId: number) => del<{ deleted: number }>(`${PLANS}/plans/${planId}`),
+  addStep: (planId: number, skillId: number, level: number) =>
+    post<T.SkillPlan>(`${PLANS}/plans/${planId}/steps`, { skill_id: skillId, level }),
+  removeStep: (planId: number, skillId: number, level: number) =>
+    del<T.SkillPlan>(`${PLANS}/plans/${planId}/steps/${skillId}/${level}`),
+  reorder: (planId: number, order: { skill_id: number; level: number }[]) =>
+    put<T.SkillPlan>(`${PLANS}/plans/${planId}/order`, { order }),
+  exportText: (planId: number) => get<{ name: string; text: string }>(`${PLANS}/plans/${planId}/export`),
+  searchSkills: (q: string) =>
+    get<{ skills: { skill_id: number; name: string; group_name: string | null }[] }>(
+      `${PLANS}/skills/search?q=${encodeURIComponent(q)}`),
+  progress: (planId: number) => get<T.SkillPlanProgress>(`${PLANS}/plans/${planId}/progress`),
+  sync: () => post<T.CharInfoSyncResult>(`${PLANS}/sync`, {}),
+}
+
 // -------------------------------------------------------------- contacts & calendar
 export const charContactsApi = {
   characters: () => get<{ characters: T.ContactsCharacter[] }>('/api/char-contacts/characters'),

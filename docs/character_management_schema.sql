@@ -380,3 +380,42 @@ CREATE POLICY tenant_isolation ON character_notification_reads
     USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 GRANT SELECT, INSERT, UPDATE, DELETE ON character_notification_reads TO eve_trader_app;
+
+-- ------------------------------------------------------------------ phase 9
+-- Skill plans (docs/CHARACTER_MANAGEMENT_PLAN.md). Tenant data the user writes
+-- themselves, not ESI data: no sharing, no sync, no stale clear. A plan is an
+-- ordered list of (skill, level) steps that is kept self-contained - every
+-- step's prerequisites (the level below, and the skill's own prerequisites)
+-- sit earlier in the same plan (the editor inserts them and prunes dependents).
+CREATE TABLE IF NOT EXISTS skill_plans (
+    id BIGSERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS skill_plans_tenant_idx ON skill_plans (tenant_id, id);
+ALTER TABLE skill_plans ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON skill_plans;
+CREATE POLICY tenant_isolation ON skill_plans
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON skill_plans TO eve_trader_app;
+GRANT USAGE, SELECT ON SEQUENCE skill_plans_id_seq TO eve_trader_app;
+
+CREATE TABLE IF NOT EXISTS skill_plan_items (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    plan_id BIGINT NOT NULL REFERENCES skill_plans(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    skill_id INTEGER NOT NULL,
+    level INTEGER NOT NULL CHECK (level BETWEEN 1 AND 5),
+    PRIMARY KEY (tenant_id, plan_id, position),
+    UNIQUE (tenant_id, plan_id, skill_id, level)
+);
+ALTER TABLE skill_plan_items ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON skill_plan_items;
+CREATE POLICY tenant_isolation ON skill_plan_items
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON skill_plan_items TO eve_trader_app;

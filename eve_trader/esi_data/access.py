@@ -113,8 +113,8 @@ def read_esi(data_kind: str, tool_key: str, **filters) -> list[dict]:
     elif data_kind == "contracts":
         rows.extend(_read_contracts(tool_key, owner_type_filter, owner_id_filter))
     elif data_kind == "skills":
-        if tool_key == "char_skills":
-            rows.extend(_read_character_skills(owner_id_filter, filters.get("table")))
+        if tool_key in ("char_skills", "char_skill_plans"):
+            rows.extend(_read_character_skills(tool_key, owner_id_filter, filters.get("table")))
         else:
             rows.extend(_read_skills(tool_key, owner_id_filter))
     elif data_kind == "skillqueue":
@@ -453,13 +453,14 @@ def _read_implants(tool_key: str, owner_id) -> list[dict]:
     ]
 
 
-def _read_character_skills(owner_id, table: Optional[str]) -> list[dict]:
-    """`read_esi("skills", "char_skills")`: per-skill rows, or with
+def _read_character_skills(tool_key: str, owner_id, table: Optional[str]) -> list[dict]:
+    """`read_esi("skills", "char_skills")` (also `"char_skill_plans"`, each
+    under its own sharing row): per-skill rows, or with
     `table="attributes"` the attribute block + SP totals (one row per
     character). Deliberately a separate shape from `_read_skills`, which
     returns Production's job-slot rows from `character_slots` - the same
     data kind, two tools, two row shapes, each under its own sharing row."""
-    ids = _filter_ids(_shared_owner_ids("skills", "char_skills", "character"), owner_id)
+    ids = _filter_ids(_shared_owner_ids("skills", tool_key, "character"), owner_id)
     if table == "attributes":
         return [
             {

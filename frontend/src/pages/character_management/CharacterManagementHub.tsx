@@ -49,6 +49,8 @@ export default function CharacterManagementHub() {
             description="Structure attacks, war declarations, sovereignty and other in-game notifications across your characters." />
           <ToolCard tools={tools} toolKey="char_contacts" to="/character-management/contacts" title="Contacts & Calendar"
             description="Contacts with standings and labels, and upcoming calendar events, read live from ESI." />
+          <ToolCard tools={tools} toolKey="char_skill_plans" to="/character-management/skill-plans" title="Skill Plans"
+            description="Build skill plans with prerequisites filled in, import and export them, and see how far each character is." />
         </SimpleGrid>
       )}
     </Container>

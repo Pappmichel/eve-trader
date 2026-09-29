@@ -1654,6 +1654,54 @@ export interface DoctrineCheck {
 }
 
 
+// Mirrors eve_trader/character_management/skill_plan_actions.py.
+export interface SkillPlanSummary {
+  plan_id: number
+  name: string
+  description: string
+  created_at: string | null
+  updated_at: string | null
+  step_count: number
+}
+export interface SkillPlanStep {
+  position: number
+  skill_id: number
+  level: number
+  level_label: string
+  name: string
+  group_name: string | null
+  rank: number | null
+}
+export interface SkillPlan {
+  plan_id: number
+  name: string
+  description: string
+  created_at: string | null
+  updated_at: string | null
+  steps: SkillPlanStep[]
+  sde_ready: boolean
+  added?: number
+  removed?: number
+  unresolved?: string[]
+  steps_added_for_prerequisites?: number
+}
+export interface SkillPlanProgressStep { skill_id: number; level: number; level_label: string; name: string; sp_remaining: number | null }
+export interface SkillPlanProgressRow {
+  character_id: number
+  character_name: string
+  synced: boolean
+  steps_total?: number
+  steps_done?: number
+  sp_remaining?: number | null
+  train_seconds?: number | null
+  next_steps?: SkillPlanProgressStep[]
+}
+export interface SkillPlanProgress {
+  plan_id: number
+  characters: SkillPlanProgressRow[]
+  hidden_characters: { character_id: number; character_name: string }[]
+}
+
 // Mirrors eve_trader/character_management/contacts_actions.py.
 export interface ContactRow {
   contact_id: number

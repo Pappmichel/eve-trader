@@ -3853,6 +3853,100 @@ def get_skill_catalog(skill_ids: Iterable[int]) -> dict[int, dict]:
     }
 
 
+# --------------------------------------- Character Management: skill plans (phase 9)
+def create_skill_plan(name: str, description: str = "") -> int:
+    with connect() as conn:
+        return int(conn.execute(
+            "INSERT INTO skill_plans (name, description) VALUES (?, ?) RETURNING id", (name, description),
+        ).fetchone()[0])
+
+
+def count_skill_plans() -> int:
+    with connect() as conn:
+        return int(conn.execute("SELECT count(*) FROM skill_plans").fetchone()[0])
+
+
+def list_skill_plans() -> list[tuple]:
+    """`(id, name, description, created_at, updated_at, item_count)`, newest first."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT p.id, p.name, p.description, p.created_at, p.updated_at, "
+            "(SELECT count(*) FROM skill_plan_items i WHERE i.plan_id = p.id) "
+            "FROM skill_plans p ORDER BY p.updated_at DESC, p.id DESC"
+        ).fetchall()
+
+
+def get_skill_plan(plan_id: int) -> Optional[tuple]:
+    """`(id, name, description, created_at, updated_at)` or None."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT id, name, description, created_at, updated_at FROM skill_plans WHERE id = ?", (plan_id,),
+        ).fetchone()
+
+
+def update_skill_plan(plan_id: int, name: str, description: str) -> bool:
+    with connect() as conn:
+        cur = conn.execute(
+            "UPDATE skill_plans SET name = ?, description = ?, updated_at = now() WHERE id = ?",
+            (name, description, plan_id),
+        )
+        return cur.rowcount > 0
+
+
+def delete_skill_plan(plan_id: int) -> bool:
+    with connect() as conn:
+        return conn.execute("DELETE FROM skill_plans WHERE id = ?", (plan_id,)).rowcount > 0
+
+
+def load_skill_plan_items(plan_id: int) -> list[tuple[int, int]]:
+    """`[(skill_id, level), ...]` in plan order."""
+    with connect() as conn:
+        return [
+            (int(r[0]), int(r[1])) for r in conn.execute(
+                "SELECT skill_id, level FROM skill_plan_items WHERE plan_id = ? ORDER BY position", (plan_id,),
+            ).fetchall()
+        ]
+
+
+def replace_skill_plan_items(plan_id: int, items: list[tuple[int, int]]) -> None:
+    """Rewrites the whole ordered list (positions 0..n-1) and touches the plan."""
+    with connect() as conn:
+        conn.execute("DELETE FROM skill_plan_items WHERE plan_id = ?", (plan_id,))
+        if items:
+            conn.executemany(
+                "INSERT INTO skill_plan_items (plan_id, position, skill_id, level) VALUES (?,?,?,?)",
+                [(plan_id, pos, skill_id, level) for pos, (skill_id, level) in enumerate(items)],
+            )
+        conn.execute("UPDATE skill_plans SET updated_at = now() WHERE id = ?", (plan_id,))
+
+
+def search_skills(query: str, limit: int = 20) -> list[tuple]:
+    """`(skill_id, name, group_name)` of skills (types with an sde_skill_meta
+    row) whose name contains `query`, prefix matches first. Empty until an SDE
+    refresh has filled sde_skill_meta."""
+    like = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    with connect() as conn:
+        return conn.execute(
+            "SELECT t.type_id, t.type_name, g.group_name FROM sde_skill_meta m "
+            "JOIN sde_types t ON t.type_id = m.skill_id LEFT JOIN sde_groups g ON g.group_id = t.group_id "
+            "WHERE t.type_name ILIKE ? ORDER BY (t.type_name ILIKE ?) DESC, t.type_name LIMIT ?",
+            (like, like[1:], limit),
+        ).fetchall()
+
+
+def find_skill_ids_by_name(names: Iterable[str]) -> dict[str, int]:
+    """`{lower-cased name: skill_id}` for the names that are skills."""
+    lowered = list(dict.fromkeys(n.strip().lower() for n in names if n and n.strip()))
+    if not lowered:
+        return {}
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT lower(t.type_name), t.type_id FROM sde_skill_meta m JOIN sde_types t ON t.type_id = m.skill_id "
+            "WHERE lower(t.type_name) = ANY(?)", (lowered,),
+        ).fetchall()
+    return {r[0]: int(r[1]) for r in rows}
+
+
 # --------------------------------------- Character Management: mail archive (phase 3)
 # Only ever written for a character whose archive checkbox is ticked. Every
 # reader takes explicit character ids (never "all"): the caller passes the
