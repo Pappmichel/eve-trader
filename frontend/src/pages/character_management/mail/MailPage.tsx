@@ -3,6 +3,7 @@ import {
   Alert, Badge, Box, Button, Checkbox, Container, Divider, Drawer, Grid, Group, Loader, NavLink, Popover,
   ScrollArea, Stack, Text, TextInput, Title, Tooltip, UnstyledButton,
 } from '@mantine/core'
+import { useMediaQuery } from '@mantine/hooks'
 import { modals } from '@mantine/modals'
 import { notifications } from '@mantine/notifications'
 import { IconArrowLeft, IconPencil, IconSettings, IconTag } from '@tabler/icons-react'
@@ -179,6 +180,16 @@ export default function MailPage() {
     { open: false, draft: EMPTY_DRAFT, key: 0 },
   )
 
+  // Below Mantine's md breakpoint the three columns stack, which put the reader
+  // far below a 620px-tall list - opening a mail looked like nothing happened.
+  // There the page is master/detail instead: the folders and list, or (once a
+  // mail is open) just the reader with a way back. Columns are hidden with CSS,
+  // not unmounted, so the list keeps its scroll position and loaded pages.
+  const narrow = useMediaQuery('(max-width: 61.99em)') ?? false
+  const showBrowse = !narrow || opened === null
+  const showReader = !narrow || opened !== null
+  const hideUnless = (show: boolean) => (show ? undefined : { display: 'none' })
+
   const folders = useQuery({ queryKey: ['char-mail', 'folders'], queryFn: charMailApi.folders })
   const list = useInfiniteQuery({
     queryKey: ['char-mail', 'mails', sel.characterId, sel.labelId],
@@ -198,6 +209,10 @@ export default function MailPage() {
     enabled: opened !== null,
   })
   const archive = useQuery({ queryKey: ARCHIVE_KEY, queryFn: charMailApi.archive })
+
+  useEffect(() => {
+    if (narrow && opened !== null) window.scrollTo({ top: 0 })
+  }, [narrow, opened])
 
   // Refresh the archives once when Mail opens with a stale one (debounced by
   // the ref: never while one is already in flight, never twice per visit).
@@ -328,7 +343,7 @@ export default function MailPage() {
       </Group>
 
       <Grid gap="md">
-        <Grid.Col span={{ base: 12, md: 3 }}>
+        <Grid.Col span={{ base: 12, md: 3 }} style={hideUnless(showBrowse)}>
           <Stack gap={0} aria-label="Folders">
             {folders.isLoading && <Loader size="sm" color="accent" />}
             {SYSTEM.map((s) => (
@@ -379,7 +394,7 @@ export default function MailPage() {
           </Stack>
         </Grid.Col>
 
-        <Grid.Col span={{ base: 12, md: 4 }}>
+        <Grid.Col span={{ base: 12, md: 4 }} style={hideUnless(showBrowse)}>
           <Stack gap="xs">
             <Text fw={600}>{folderTitle(sel, folders.data)}</Text>
             <Group gap="xs" wrap="nowrap">
@@ -437,7 +452,15 @@ export default function MailPage() {
           </Stack>
         </Grid.Col>
 
-        <Grid.Col span={{ base: 12, md: 5 }}>
+        <Grid.Col span={{ base: 12, md: 5 }} style={hideUnless(showReader)}>
+          {narrow && opened !== null && (
+            <Button
+              variant="subtle" size="xs" mb="xs" leftSection={<IconArrowLeft size={14} />}
+              onClick={() => setOpened(null)}
+            >
+              Back to list
+            </Button>
+          )}
           {opened === null ? <Text c="dimmed">Select a mail to read it.</Text>
             : mail.isLoading ? <Loader size="sm" color="accent" />
               : mail.error || !mail.data ? <Text c="danger">{(mail.error as Error | null)?.message ?? 'Could not load this mail.'}</Text>
