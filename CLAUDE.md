@@ -526,6 +526,72 @@ REWORK_PLAN.md` section 5.4. Never call `portfolio_overview()`/
 snapshot; go through `take_portfolio_snapshot()` so there is one write
 path, not two that could drift.
 
+### Scheduler rework (2026-09-29, `docs/SCHEDULER_REWORK_PLAN.md`)
+
+Goal was limiting background load once the scheduler is on again. What is
+true now (the paragraphs above are still right except where this overrides
+them):
+
+- **Job switches.** `scheduler_enabled` on `DEFAULT_TENANT_ID` is the master
+  switch (it also gates every other tenant's per-tenant jobs, which still need
+  their own `scheduler_enabled` too). New **operator-only** switches live in
+  `config.SCHEDULER_OPERATOR_CONFIG` (`SchedulerOperatorConfig`, read from
+  `config.yaml` like `AccessConfig`, deliberately *not* on `TradingConfig` and
+  not on the Settings page): `backup_job_enabled`, `jita_price_cache_job_enabled`
+  (both default on - the global jobs run when the master switch is on and their
+  own switch is on), `alerts_job_enabled` (reserved for the Discord alerts, see
+  `docs/DISCORD_ALERTS_HANDOFF.md`; nothing reads it yet) and
+  `inactive_tenant_days`. The thread now starts for the master switch **or**
+  `alerts_job_enabled` alone, so alerts never require turning the backup,
+  pipeline and ESI jobs on. Re-enabling the scheduler therefore no longer has to
+  mean re-enabling everything at once (see "Backup" below).
+- **Failure backoff.** A job/kind is due only if the interval since the last
+  *success* has elapsed **and** `min(interval, 6 h)` has elapsed since the last
+  *attempt* (`scheduler._job_due`, `orchestrator._kind_is_due`). Before this an
+  ESI outage re-ran the whole pipeline / a failing kind's owner batch / the
+  ~850-call Jita refresh on every 5-minute tick. Pipeline, backup and Jita use
+  the in-process `ran_at` from `_run_job` as the attempt (a restart allows one
+  immediate retry); ESI kinds use `esi_freshness.last_attempt_at`, and a kind
+  skipped as `REAUTH_NEEDED` gets an attempt stamp via
+  `storage.record_esi_attempt` (no error text, no stale clear). Manual syncs
+  ignore the backoff.
+- **Idle ticks are free.** `esi_data_sync` starts a job thread (and writes
+  `last_run_status`) only when `orchestrator.pending_due()` is non-empty;
+  `do_sync_due` uses the same list. Due-ness is one `list_esi_freshness()` read;
+  live-only kinds are never "due"; `_sync` returns before touching
+  `TokenManager`/`ESIClient` when there is nothing to fetch and only runs the
+  corp-membership public-info pass when a corporation owner exists.
+- **Tenant gating** (`eve_trader/tenant_eligibility.py`): a tenant with no
+  authenticated request for `inactive_tenant_days` (14; `0` disables; NULL =
+  active; `DEFAULT_TENANT_ID` always active) runs no tenant-level jobs.
+  `tenants.last_active_at` is written by `AccessGateMiddleware` via
+  `access_gate.note_tenant_activity` (at most one UPDATE per tenant per hour per
+  process, never raises). Consequence: inactive tenants get no daily portfolio
+  snapshots (gaps in that history). `trading_pipeline` also needs the `trading`
+  grant, `do_sync_due(granted_tools=...)` only refreshes kinds of tools the
+  tenant still holds, and `jita_price_cache` only prices stock targets of
+  active tenants holding `production` (also for the manual admin refresh). Gate
+  off => `granted_tools()` is `None` (= everything; `DEFAULT_TENANT_ID` has no
+  grant rows), gate on => exactly `tool_grants`, for the Default tenant too.
+- **`schedule_mode = "on_demand"`** (registry): `clones`, `implants`,
+  `standings`, `loyalty`, `skillqueue`, `notifications` are display-only and no
+  longer refreshed by the scheduler. `pending_due(demand=...)` /
+  `do_sync_due(demand=...)` include one only for an `(owner_type, owner_id,
+  kind)` in `demand` - nothing supplies one yet; the opt-in Discord alerts will.
+  Manual syncs (`do_sync_for_tool`/`do_sync_all`) still include them, they are
+  exempt from `clear_stale_owner_kind` (a failed sync after a long gap must not
+  wipe the snapshot), and the Character Info / Skills / Notifications pages
+  sync themselves once per open when their data was last tried more than 6 h
+  ago (`frontend/src/hooks/useSyncWhenStale.ts`, fixed 6 h = default normal
+  tier). `skills` stays scheduled (Production/Station Trading need it).
+- Defaults: `trading_pipeline_interval_hours` 48 (was 24),
+  `jita_price_cache_interval_hours` 3 (was 1), `wallet_balance` in the normal
+  tier (was frequent). They only change tenants without a saved override; a
+  `config.yaml` copied from `config.example.yaml` overrides the dataclass
+  default, so check the real one.
+- Tick stays 300 s on purpose (returning tenants and the future mail alerts need
+  short latency; after the above an idle tick is a few small queries).
+
 ## Backup
 
 `eve_trader/backup.py`'s `create_backup()` zips a `pg_dump` (`-Fc`, custom/

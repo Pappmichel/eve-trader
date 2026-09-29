@@ -58,6 +58,18 @@ esi_rare_interval_hours: 24.0
 esi_stale_clear_multiples: 3.0
 backup_interval_hours: 24.0
 
+# ---- Scheduler operator switches (docs/SCHEDULER_REWORK_PLAN.md). Operator-only:
+# read from this file, not editable on the Settings page.
+# Tenants without an authenticated request for this many days are skipped by the
+# tenant-level jobs (0 turns the check off; never-seen tenants count as active).
+inactive_tenant_days: 14
+# The two global jobs; they run when scheduler_enabled is true and their own
+# switch is true.
+backup_job_enabled: true
+jita_price_cache_job_enabled: true
+# Reserved for the Discord alerts feature (nothing reads it yet).
+alerts_job_enabled: false
+
 # ---- Production tool (see eve_trader/production/config.py ProductionConfig) ----
 component_overbuild: 0.7
 bpc_inventory: 4.0           # multiplier: 4.0 = 400% BPC stockpile buffer (keep 4x needed BPC runs)

@@ -11,15 +11,27 @@ session, and update that CLAUDE.md paragraph when work begins.
 
 ## Prerequisite
 
-`docs/SCHEDULER_REWORK_PLAN.md` must be implemented first. This feature relies
-on what it provides:
-- **per-job operator switches** (`alerts_job_enabled` is reserved there) and
-  the new thread-start rule: alerts must work with the scheduler thread
+`docs/SCHEDULER_REWORK_PLAN.md` is **implemented** (2026-09-29). This feature
+relies on what it provides (names as built):
+- **per-job operator switches** (`SCHEDULER_OPERATOR_CONFIG.alerts_job_enabled`,
+  reserved, read by nothing yet) and the new thread-start rule (thread runs for
+  the master `scheduler_enabled` **or** `alerts_job_enabled`; see
+  `scheduler.start`): alerts must work with the scheduler thread
   running for alerts only, and **independent of a tenant's own
   `scheduler_enabled`** (which today defaults to `false` per tenant);
-- `schedule_mode = "on_demand"` ESI kinds and `do_sync_due(..., demand=...)`
-  (the demand set is filled from opt-in subscriptions);
-- the tenant activity gate with the demand-gate hook;
+- `schedule_mode = "on_demand"` ESI kinds and
+  `orchestrator.pending_due(demand=...)` / `do_sync_due(demand=...)` where
+  `demand` is an iterable of `(owner_type, owner_id, kind)` (fill it from opt-in
+  subscriptions; wire it into `scheduler._check_and_run_due_jobs_for_tenant`,
+  which today passes none). On-demand kinds: `clones`, `implants`, `standings`,
+  `loyalty`, `skillqueue`, `notifications`; they are exempt from the stale clear;
+  the Character pages also auto-sync when opened with data older than 6 h;
+- the tenant activity gate (`tenant_eligibility.is_active`,
+  `tenants.last_active_at`). `scheduler._check_and_run_due_jobs` currently does
+  nothing when the master switch is off and has a comment marking where the
+  alerts job must run regardless of `master`; an inactive tenant currently runs
+  **no** `esi_data_sync` at all, so the alerts wiring must feed `demand` for
+  inactive tenants too;
 - grant filtering and failure backoff in `do_sync_due`;
 - 300 s scheduler tick (deliberately kept).
 

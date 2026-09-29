@@ -1,8 +1,10 @@
 # Scheduler rework - load reduction (plan)
 
-Status: **planned, nothing implemented** (written 2026-09-29, revised after a
-critical review the same day). Every decision below was confirmed one by one
-with the user. Goal: limit background load (ESI calls, DB queries, threads)
+Status: **implemented 2026-09-29** (phases A-F, one commit each on
+`ccr-bfaa809d-aluzun`); written and revised the same day after a critical
+review. Every decision below was confirmed one by one with the user. The
+durable summary is CLAUDE.md, "Scheduler rework"; "Deviations from the plan as
+written" at the end lists where the implementation differs. Goal: limit background load (ESI calls, DB queries, threads)
 once the scheduler is switched on again. It is currently off in production
 (CLAUDE.md, "Backup").
 
@@ -156,3 +158,54 @@ One commit per phase, suite green after each (`pytest` from repo root).
 - Router tests monkeypatch module objects (`from ... import actions`); new router code must keep that import style.
 - Live-verify each phase against the real endpoint / a real browser, not only unit tests (CLAUDE.md).
 - No Claude/Anthropic attribution in commits or PRs (CLAUDE.md, "Environment specifics").
+
+## Deviations from the plan as written (what was actually built)
+
+- **Attempt timestamps for pipeline/backup/Jita are the in-process `ran_at`
+  that `_run_job` already records**, not new persisted keys
+  (`scheduler._job_due` / `_last_attempt`). A restart therefore allows one
+  immediate retry, which is acceptable. ESI kinds use the persisted
+  `esi_freshness.last_attempt_at` as planned; `REAUTH_NEEDED` kinds get an
+  attempt-only stamp (`storage.record_esi_attempt`), which leaves `last_error`
+  and the success time untouched and never triggers the stale clear.
+- **Operator config** is its own dataclass, `config.SchedulerOperatorConfig` /
+  `SCHEDULER_OPERATOR_CONFIG` (read from `config.yaml`, not on the Settings page,
+  not on `TradingConfig`, not in `AccessConfig`).
+- **Shared eligibility logic** lives in `eve_trader/tenant_eligibility.py`
+  (`is_active`, `granted_tools`, `may_use`) because `production/jita_price_cache.py`
+  needs it and `scheduler.py` imports that module.
+- **Thread-start rule and master switch**: the thread starts for the Default
+  tenant's `scheduler_enabled` **or** `alerts_job_enabled`. Tenant-level jobs
+  and the global backup/Jita jobs additionally require the master switch
+  (`scheduler._master_enabled()`, DEFAULT tenant's `scheduler_enabled`), which
+  is what makes an alerts-only run truly alerts-only. The backup/Jita switches
+  default to on but only matter while the master switch is on - a default of
+  "on" that started the thread by itself would have broken "off by default".
+- **Backup got the same backoff** as the pipeline and Jita jobs (a failing
+  `pg_dump` would otherwise be retried every tick).
+- `pending_due` also drops sharing rows for unknown kinds and corporation rows
+  whose kind has no corporation scope, besides live-only kinds.
+- Page-open auto-sync needed no new backend route: `useSyncWhenStale` calls the
+  existing sync endpoints. It looks at the newest *attempt* time
+  (`freshness.last_attempt_at`; for Notifications `synced_at`, which is all that
+  endpoint returns), so a failing kind retries once per 6 h window per open,
+  not on every render.
+- Not done / left for later: the demand source for `on_demand` kinds and the
+  alerts job (Discord session); a second thread-safety look at the throttle
+  dict in `access_gate` is not needed (guarded by a lock).
+
+## Verification done
+
+- Backend suite green after every phase (2654 passed, 3 skipped at the end; run
+  against a freshly recreated test database - see below), frontend `vitest` (203
+  passed), `tsc -b` clean.
+- Live against the dev Postgres (RLS on, app role): a seeded character with a
+  failing ESI (sandbox proxy 403) produced exactly one attempt per kind; the
+  second tick did not re-run the pipeline, the failed kind or the snapshot job,
+  and the on-demand `skillqueue` was never scheduled. A real browser on the Skills
+  page issued exactly one `POST /api/char-skills/sync` on open.
+- Test-suite gotcha found on the way: `tests/test_sqlite_migration_table_drift.py`
+  reads `pg_policies` of the shared test database, so it fails on a database that
+  earlier full runs already filled with `station_trading_*` / `module_reprocessing_*`
+  tables (unrelated to this change). Recreate `eve_trader` before a full run.
+
