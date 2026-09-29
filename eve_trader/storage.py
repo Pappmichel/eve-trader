@@ -3642,6 +3642,352 @@ def get_skill_catalog(skill_ids: Iterable[int]) -> dict[int, dict]:
     }
 
 
+# --------------------------------------- Character Management: mail archive (phase 3)
+# Only ever written for a character whose archive checkbox is ticked. Every
+# reader takes explicit character ids (never "all"): the caller passes the
+# characters shared with char_mail. Nothing here clears anything except
+# delete_mail_archive, the explicit "stop archiving and delete" path.
+def get_mail_archive_settings(character_ids: Optional[list[int]] = None) -> dict[int, dict]:
+    """{character_id: settings} for archive-enabled characters (None -> all in
+    this tenant, a settings listing rather than mail data). Dates as ISO."""
+    with connect() as conn:
+        if character_ids is None:
+            rows = conn.execute(
+                "SELECT character_id, enabled, backfill_state, backfill_cursor, headers_complete, "
+                "backfill_error, last_refresh_at FROM char_mail_archive_settings WHERE enabled"
+            ).fetchall()
+        elif not character_ids:
+            return {}
+        else:
+            placeholders = ",".join("?" * len(character_ids))
+            rows = conn.execute(
+                "SELECT character_id, enabled, backfill_state, backfill_cursor, headers_complete, "
+                "backfill_error, last_refresh_at FROM char_mail_archive_settings "
+                f"WHERE enabled AND character_id IN ({placeholders})",
+                character_ids,
+            ).fetchall()
+    return {
+        int(r[0]): {
+            "enabled": bool(r[1]), "backfill_state": r[2],
+            "backfill_cursor": int(r[3]) if r[3] is not None else None,
+            "headers_complete": bool(r[4]), "backfill_error": r[5],
+            "last_refresh_at": r[6].isoformat() if hasattr(r[6], "isoformat") else r[6],
+        }
+        for r in rows
+    }
+
+
+def enable_mail_archive(character_id: int) -> None:
+    """Ticks the checkbox. Re-enabling a character whose archive was deleted
+    starts from scratch (cursor/complete flag reset by delete_mail_archive)."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO char_mail_archive_settings (character_id, enabled, backfill_state, updated_at) "
+            "VALUES (?, TRUE, 'idle', now()) "
+            "ON CONFLICT (tenant_id, character_id) DO UPDATE SET enabled = TRUE, updated_at = now()",
+            (character_id,),
+        )
+
+
+def update_mail_archive_state(
+    character_id: int, *, backfill_state: Optional[str] = None,
+    backfill_cursor: Optional[int] = None, set_cursor: bool = False,
+    headers_complete: Optional[bool] = None, backfill_error: Optional[str] = None,
+    clear_error: bool = False, touch_refresh: bool = False,
+) -> None:
+    """Partial update of one settings row (a no-op if the character is not
+    archived). `set_cursor=True` is needed to write a NULL cursor."""
+    sets, params = ["updated_at = now()"], []
+    if backfill_state is not None:
+        sets.append("backfill_state = ?")
+        params.append(backfill_state)
+    if set_cursor:
+        sets.append("backfill_cursor = ?")
+        params.append(backfill_cursor)
+    if headers_complete is not None:
+        sets.append("headers_complete = ?")
+        params.append(headers_complete)
+    if backfill_error is not None:
+        sets.append("backfill_error = ?")
+        params.append(backfill_error)
+    if clear_error:
+        sets.append("backfill_error = NULL")
+    if touch_refresh:
+        sets.append("last_refresh_at = now()")
+    params.append(character_id)
+    with connect() as conn:
+        conn.execute(
+            f"UPDATE char_mail_archive_settings SET {', '.join(sets)} WHERE character_id = ? AND enabled",
+            params,
+        )
+
+
+def _archive_still_enabled(conn, character_id: int) -> bool:
+    """Row-locks (FOR SHARE) the character's settings row for the rest of this
+    transaction. A background backfill/refresh writes through this guard so
+    it can never re-create rows after the user chose "stop archiving and
+    delete": delete_mail_archive removes the settings row FIRST, which blocks
+    until any in-flight write here has committed, and every later write finds
+    no row and does nothing."""
+    return conn.execute(
+        "SELECT 1 FROM char_mail_archive_settings WHERE character_id = ? AND enabled FOR SHARE",
+        (character_id,),
+    ).fetchone() is not None
+
+
+def store_mail_headers(character_id: int, headers: list[dict]) -> bool:
+    """Upserts one page of ESI mail headers for an archived character.
+
+    The message row is insert-if-missing (a stored body is never blanked by a
+    later header page), recipients likewise; the per-character header row is
+    upserted so read state and labels track ESI. Raw ESI shapes in:
+    {"mail_id", "from", "subject", "timestamp", "is_read", "labels",
+    "recipients": [{"recipient_id", "recipient_type"}]}. Returns False (and
+    writes nothing) when the character's archive is not enabled."""
+    if not headers:
+        return True
+    with connect() as conn:
+        if not _archive_still_enabled(conn, character_id):
+            return False
+        conn.executemany(
+            "INSERT INTO mail_messages (mail_id, from_id, subject, \"timestamp\") VALUES (?,?,?,?) "
+            "ON CONFLICT (tenant_id, mail_id) DO NOTHING",
+            [(h["mail_id"], h.get("from"), h.get("subject") or "", h.get("timestamp")) for h in headers],
+        )
+        recipient_rows = [
+            (h["mail_id"], r["recipient_id"], r["recipient_type"])
+            for h in headers for r in h.get("recipients") or []
+        ]
+        if recipient_rows:
+            conn.executemany(
+                "INSERT INTO mail_recipients (mail_id, recipient_id, recipient_type) VALUES (?,?,?) "
+                "ON CONFLICT DO NOTHING",
+                recipient_rows,
+            )
+        conn.executemany(
+            "INSERT INTO mail_character_headers (character_id, mail_id, is_read, labels) VALUES (?,?,?,?) "
+            "ON CONFLICT (tenant_id, character_id, mail_id) DO UPDATE SET "
+            "is_read = excluded.is_read, labels = excluded.labels",
+            [(character_id, h["mail_id"], bool(h.get("is_read")), list(h.get("labels") or [])) for h in headers],
+        )
+    return True
+
+
+def known_mail_ids(character_id: int, mail_ids: list[int]) -> set[int]:
+    if not mail_ids:
+        return set()
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT mail_id FROM mail_character_headers WHERE character_id = ? AND mail_id = ANY(?)",
+            (character_id, list(mail_ids)),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+def mail_ids_without_body(character_id: int, limit: int) -> list[int]:
+    """Newest-first ids of this character's archived mails whose body has not
+    been fetched yet."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT h.mail_id FROM mail_character_headers h "
+            "JOIN mail_messages m ON m.tenant_id = h.tenant_id AND m.mail_id = h.mail_id "
+            "WHERE h.character_id = ? AND m.body_fetched_at IS NULL "
+            "ORDER BY h.mail_id DESC LIMIT ?",
+            (character_id, limit),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def store_mail_body(character_id: int, mail_id: int, body: str) -> bool:
+    """Stores a fetched body for a mail `character_id` (an archived
+    character) received. False (nothing written) if their archive is not
+    enabled or they hold no header for that mail."""
+    with connect() as conn:
+        if not _archive_still_enabled(conn, character_id):
+            return False
+        return conn.execute(
+            "UPDATE mail_messages SET body = ?, body_fetched_at = now() WHERE mail_id = ? "
+            "AND mail_id IN (SELECT mail_id FROM mail_character_headers WHERE character_id = ?)",
+            (body, mail_id, character_id),
+        ).rowcount > 0
+
+
+def _mail_header_dict(row) -> dict:
+    ts = row[3]
+    return {
+        "character_id": int(row[0]), "mail_id": int(row[1]), "from_id": row[2],
+        "timestamp": ts.isoformat() if hasattr(ts, "isoformat") else ts,
+        "subject": row[4], "is_read": bool(row[5]), "labels": list(row[6] or []),
+    }
+
+
+def load_mail_archive_page(
+    character_id: int, label_id: Optional[int], before_mail_id: Optional[int], limit: int,
+) -> list[dict]:
+    """One page of an archived character's headers, newest (highest mail_id)
+    first - the same ordering and cursor semantics as ESI's own paging - with
+    recipients attached."""
+    where, params = ["h.character_id = ?"], [character_id]
+    if label_id:
+        where.append("? = ANY(h.labels)")
+        params.append(label_id)
+    if before_mail_id:
+        where.append("h.mail_id < ?")
+        params.append(before_mail_id)
+    params.append(limit)
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT h.character_id, h.mail_id, m.from_id, m.\"timestamp\", m.subject, h.is_read, h.labels "
+            "FROM mail_character_headers h "
+            "JOIN mail_messages m ON m.tenant_id = h.tenant_id AND m.mail_id = h.mail_id "
+            f"WHERE {' AND '.join(where)} ORDER BY h.mail_id DESC LIMIT ?",
+            params,
+        ).fetchall()
+        headers = [_mail_header_dict(r) for r in rows]
+        recipients = _load_mail_recipients(conn, [h["mail_id"] for h in headers])
+    for h in headers:
+        h["recipients"] = recipients.get(h["mail_id"], [])
+    return headers
+
+
+def _load_mail_recipients(conn, mail_ids: list[int]) -> dict[int, list[dict]]:
+    if not mail_ids:
+        return {}
+    rows = conn.execute(
+        "SELECT mail_id, recipient_id, recipient_type FROM mail_recipients WHERE mail_id = ANY(?) "
+        "ORDER BY mail_id, recipient_type, recipient_id",
+        (list(mail_ids),),
+    ).fetchall()
+    out: dict[int, list[dict]] = {}
+    for mail_id, recipient_id, recipient_type in rows:
+        out.setdefault(int(mail_id), []).append({"recipient_id": int(recipient_id), "recipient_type": recipient_type})
+    return out
+
+
+def get_archived_mail(character_id: int, mail_id: int) -> Optional[dict]:
+    """The archived message as seen by `character_id` (header row required:
+    a mail is only visible through a character that received it), or None."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT h.character_id, h.mail_id, m.from_id, m.\"timestamp\", m.subject, h.is_read, h.labels, m.body "
+            "FROM mail_character_headers h "
+            "JOIN mail_messages m ON m.tenant_id = h.tenant_id AND m.mail_id = h.mail_id "
+            "WHERE h.character_id = ? AND h.mail_id = ?",
+            (character_id, mail_id),
+        ).fetchone()
+        if row is None:
+            return None
+        out = _mail_header_dict(row[:7])
+        out["body"] = row[7]
+        out["recipients"] = _load_mail_recipients(conn, [mail_id]).get(mail_id, [])
+    return out
+
+
+def search_mail_archive(character_ids: list[int], query: str, limit: int) -> list[dict]:
+    """Subject/body search over the given archived characters: Postgres
+    full-text (GIN-indexed) OR a case-insensitive subject match, so a partial
+    word in a subject still finds it. Newest first."""
+    if not character_ids or not query.strip():
+        return []
+    placeholders = ",".join("?" * len(character_ids))
+    like = "%" + query.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT h.character_id, h.mail_id, m.from_id, m.\"timestamp\", m.subject, h.is_read, h.labels "
+            "FROM mail_character_headers h "
+            "JOIN mail_messages m ON m.tenant_id = h.tenant_id AND m.mail_id = h.mail_id "
+            f"WHERE h.character_id IN ({placeholders}) AND ("
+            "to_tsvector('simple', coalesce(m.subject, '') || ' ' || coalesce(m.body, '')) "
+            "@@ plainto_tsquery('simple', ?) OR m.subject ILIKE ?) "
+            "ORDER BY h.mail_id DESC LIMIT ?",
+            [*character_ids, query.strip(), like, limit],
+        ).fetchall()
+        headers = [_mail_header_dict(r) for r in rows]
+        recipients = _load_mail_recipients(conn, [h["mail_id"] for h in headers])
+    for h in headers:
+        h["recipients"] = recipients.get(h["mail_id"], [])
+    return headers
+
+
+def replace_mail_labels(character_id: int, labels: list[tuple]) -> bool:
+    """`labels`: [(label_id, name, color, unread_count), ...]. False (nothing
+    written) when the archive is not enabled."""
+    with connect() as conn:
+        if not _archive_still_enabled(conn, character_id):
+            return False
+        conn.execute("DELETE FROM mail_labels WHERE character_id = ?", (character_id,))
+        if labels:
+            conn.executemany(
+                "INSERT INTO mail_labels (character_id, label_id, name, color, unread_count) VALUES (?,?,?,?,?)",
+                [(character_id, *row) for row in labels],
+            )
+    return True
+
+
+def replace_mail_lists(character_id: int, lists: list[tuple]) -> bool:
+    """`lists`: [(list_id, name), ...]. False when the archive is not enabled."""
+    with connect() as conn:
+        if not _archive_still_enabled(conn, character_id):
+            return False
+        conn.execute("DELETE FROM mail_lists WHERE character_id = ?", (character_id,))
+        if lists:
+            conn.executemany(
+                "INSERT INTO mail_lists (character_id, list_id, name) VALUES (?,?,?)",
+                [(character_id, *row) for row in lists],
+            )
+    return True
+
+
+def load_mail_labels(character_id: int) -> list[tuple]:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT label_id, name, color, unread_count FROM mail_labels WHERE character_id = ? "
+            "ORDER BY label_id",
+            (character_id,),
+        ).fetchall()
+
+
+def load_mail_lists(character_id: int) -> list[tuple]:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT list_id, name FROM mail_lists WHERE character_id = ? ORDER BY name",
+            (character_id,),
+        ).fetchall()
+
+
+def mail_archive_counts(character_id: int) -> dict:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT count(*), count(m.body_fetched_at) FROM mail_character_headers h "
+            "JOIN mail_messages m ON m.tenant_id = h.tenant_id AND m.mail_id = h.mail_id "
+            "WHERE h.character_id = ?",
+            (character_id,),
+        ).fetchone()
+    return {"headers": int(row[0]), "bodies": int(row[1])}
+
+
+def delete_mail_archive(character_id: int) -> dict:
+    """The explicit "stop archiving and delete" path: disables the character's
+    archive, removes their headers/labels/lists and garbage-collects every
+    message (and its recipients) that no character header references any
+    more. A message another archived character also received stays."""
+    with connect() as conn:
+        # Settings row first: see _archive_still_enabled for why the order matters.
+        conn.execute("DELETE FROM char_mail_archive_settings WHERE character_id = ?", (character_id,))
+        deleted_headers = conn.execute(
+            "DELETE FROM mail_character_headers WHERE character_id = ?", (character_id,),
+        ).rowcount
+        conn.execute("DELETE FROM mail_labels WHERE character_id = ?", (character_id,))
+        conn.execute("DELETE FROM mail_lists WHERE character_id = ?", (character_id,))
+        orphan = (
+            "mail_id NOT IN (SELECT mail_id FROM mail_character_headers "
+            "WHERE tenant_id = current_setting('app.tenant_id', false)::uuid)"
+        )
+        conn.execute(f"DELETE FROM mail_recipients WHERE {orphan}")
+        deleted_messages = conn.execute(f"DELETE FROM mail_messages WHERE {orphan}").rowcount
+    return {"headers": int(deleted_headers), "messages": int(deleted_messages)}
+
+
 def load_character_wallet_balances(character_ids: list[int]) -> dict[int, float]:
     """{character_id: balance} for the given characters (empty list -> {})."""
     if not character_ids:

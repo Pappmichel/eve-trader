@@ -220,6 +220,23 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         freshness_tier=TIER_FREQUENT,
         live_only=True,
     ),
+    # Mail (phase 3). `live_only` here means "not an orchestrator kind": mail
+    # is read live per request, and only a character that ticked the archive
+    # checkbox gets it stored - by character_management/mail_* (own sync and
+    # backfill), never by do_sync_*, so the stale clear can not delete an
+    # archive after one failed refresh (docs/CHARACTER_MANAGEMENT_PLAN.md R2,
+    # R11). The tier is a placeholder.
+    OwnedDataKind(
+        key="mail",
+        label="Mail",
+        group=GROUP_2,
+        character_scope="esi-mail.read_mail.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_mail",),
+        freshness_tier=TIER_FREQUENT,
+        live_only=True,
+    ),
     OwnedDataKind(
         key="online",
         label="Online Status",

@@ -150,3 +150,122 @@ CREATE TABLE IF NOT EXISTS sde_skill_meta (
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON sde_skill_requirements TO eve_trader_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON sde_skill_meta TO eve_trader_app;
+
+-- ------------------------------------------------------------------ phase 3
+-- Mail archive (docs/CHARACTER_MANAGEMENT_PLAN.md decision 4). Mail is read
+-- LIVE from ESI by default and nothing about it is stored. These tables hold
+-- data ONLY for a character whose "Archive mail" checkbox is ticked
+-- (char_mail_archive_settings.enabled). The archive has no size limit and is
+-- never cleared automatically - not by the ESI stale clear (mail is not an
+-- orchestrator kind), not by a failed sync. It is removed only by the explicit
+-- "stop archiving and delete" action, which also garbage-collects messages no
+-- character header references any more.
+--
+-- mail_id is shared by every recipient of a message (one corp mail received by
+-- three alts is one mail_id), so the message (subject/body/recipients) is
+-- stored once per tenant and each character's read state + labels live in
+-- mail_character_headers.
+
+CREATE TABLE IF NOT EXISTS char_mail_archive_settings (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    character_id BIGINT NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    -- idle | running | done | error. A 'running' row whose thread died with the
+    -- process is reported as interrupted by the app and resumed from the cursor.
+    backfill_state TEXT NOT NULL DEFAULT 'idle',
+    -- Next `last_mail_id` to request when paging history (NULL = start at newest).
+    backfill_cursor BIGINT,
+    headers_complete BOOLEAN NOT NULL DEFAULT FALSE,
+    backfill_error TEXT,
+    last_refresh_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, character_id)
+);
+ALTER TABLE char_mail_archive_settings ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON char_mail_archive_settings;
+CREATE POLICY tenant_isolation ON char_mail_archive_settings
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON char_mail_archive_settings TO eve_trader_app;
+
+CREATE TABLE IF NOT EXISTS mail_messages (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    mail_id BIGINT NOT NULL,
+    from_id BIGINT,
+    subject TEXT NOT NULL DEFAULT '',
+    "timestamp" TIMESTAMPTZ,
+    body TEXT,
+    body_fetched_at TIMESTAMPTZ,
+    PRIMARY KEY (tenant_id, mail_id)
+);
+ALTER TABLE mail_messages ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON mail_messages;
+CREATE POLICY tenant_isolation ON mail_messages
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON mail_messages TO eve_trader_app;
+CREATE INDEX IF NOT EXISTS mail_messages_timestamp_idx ON mail_messages (tenant_id, "timestamp" DESC);
+-- Full-text search over subject + body (archive only).
+CREATE INDEX IF NOT EXISTS mail_messages_fts_idx ON mail_messages
+    USING GIN (to_tsvector('simple', coalesce(subject, '') || ' ' || coalesce(body, '')));
+
+CREATE TABLE IF NOT EXISTS mail_recipients (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    mail_id BIGINT NOT NULL,
+    recipient_id BIGINT NOT NULL,
+    recipient_type TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, mail_id, recipient_type, recipient_id)
+);
+ALTER TABLE mail_recipients ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON mail_recipients;
+CREATE POLICY tenant_isolation ON mail_recipients
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON mail_recipients TO eve_trader_app;
+
+CREATE TABLE IF NOT EXISTS mail_character_headers (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    character_id BIGINT NOT NULL,
+    mail_id BIGINT NOT NULL,
+    is_read BOOLEAN NOT NULL DEFAULT FALSE,
+    labels INTEGER[] NOT NULL DEFAULT '{}',
+    PRIMARY KEY (tenant_id, character_id, mail_id)
+);
+ALTER TABLE mail_character_headers ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON mail_character_headers;
+CREATE POLICY tenant_isolation ON mail_character_headers
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON mail_character_headers TO eve_trader_app;
+CREATE INDEX IF NOT EXISTS mail_character_headers_labels_idx
+    ON mail_character_headers USING GIN (labels);
+
+CREATE TABLE IF NOT EXISTS mail_labels (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    character_id BIGINT NOT NULL,
+    label_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    color TEXT,
+    unread_count INTEGER,
+    PRIMARY KEY (tenant_id, character_id, label_id)
+);
+ALTER TABLE mail_labels ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON mail_labels;
+CREATE POLICY tenant_isolation ON mail_labels
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON mail_labels TO eve_trader_app;
+
+CREATE TABLE IF NOT EXISTS mail_lists (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    character_id BIGINT NOT NULL,
+    list_id BIGINT NOT NULL,
+    name TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, character_id, list_id)
+);
+ALTER TABLE mail_lists ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON mail_lists;
+CREATE POLICY tenant_isolation ON mail_lists
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON mail_lists TO eve_trader_app;

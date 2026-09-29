@@ -12,10 +12,13 @@ view of the other characters.
 """
 from __future__ import annotations
 
+import re
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from .. import storage
 from ..auth import TokenManager
+from ..config import OAUTH_CONFIG
 from ..esi_data import is_shared, read_esi, select_auth_role
 from ..esi_data.registry import OWNED_DATA_KINDS
 
@@ -87,3 +90,40 @@ def summarise_sync(result: dict) -> dict:
             for o in owners if not o.get("ok", True) and o.get("skipped") != "in_flight"
         ],
     }
+
+
+def token_characters() -> list[dict]:
+    """Every character with a token, sorted by name. No network: unlike
+    esi_data.actions.do_list_token_characters this does not look up corps."""
+    by_id: dict[int, str] = {}
+    for rec in TokenManager(OAUTH_CONFIG).list_records():
+        by_id[rec.character_id] = by_id.get(rec.character_id) or rec.character_name or ""
+    return sorted(
+        ({"character_id": cid, "character_name": name or f"#{cid}"} for cid, name in by_id.items()),
+        key=lambda c: (c["character_name"].lower(), c["character_id"]),
+    )
+
+
+def parse_dt(value: Any) -> Optional[datetime]:
+    """ESI / Postgres ISO timestamp -> aware datetime (None if missing/bad)."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+_HTTP_STATUS = re.compile(r"HTTP (\d{3})")
+
+
+def esi_failure(error: BaseException) -> str:
+    """A message safe to show and log for a failed ESI request on private data.
+
+    `ESIError` text embeds the start of the response body and the URL. For mail
+    that is more than we want in an error toast or a log line, so only the
+    HTTP status (or "network error") survives (docs/CHARACTER_MANAGEMENT_PLAN.md
+    phase 3, privacy)."""
+    match = _HTTP_STATUS.search(str(error))
+    return f"ESI returned HTTP {match.group(1)}" if match else "ESI request failed (network error)"

@@ -52,17 +52,7 @@ def sp_to_level_v(rank: Optional[float], skillpoints: int) -> Optional[int]:
     return max(0, round(_LEVEL_V_BASE_SP * rank) - int(skillpoints))
 
 
-def _token_characters() -> list[dict]:
-    """Every character with a token, sorted by name. No network: unlike
-    esi_data.actions.do_list_token_characters this does not look up corps."""
-    tm = TokenManager(OAUTH_CONFIG)
-    by_id: dict[int, str] = {}
-    for rec in tm.list_records():
-        by_id[rec.character_id] = by_id.get(rec.character_id) or rec.character_name or ""
-    return sorted(
-        ({"character_id": cid, "character_name": name or f"#{cid}"} for cid, name in by_id.items()),
-        key=lambda c: (c["character_name"].lower(), c["character_id"]),
-    )
+_token_characters = fields.token_characters
 
 
 def _skill_name(catalog: dict[int, dict], skill_id: int) -> str:
@@ -80,14 +70,7 @@ def _attributes_value(row: Optional[dict]) -> Optional[dict]:
     }
 
 
-def _parse_dt(value: Optional[str]) -> Optional[datetime]:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+_parse_dt = fields.parse_dt
 
 
 def _queue_value(rows: list[dict], catalog: dict[int, dict], now: datetime) -> dict:

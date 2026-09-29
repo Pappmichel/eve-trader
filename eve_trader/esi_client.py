@@ -273,9 +273,19 @@ class ESIClient:
     # decision) to tenant B. Short TTL - a position is stale within minutes
     # and nothing is ever written to the DB (decision 5: live only).
     _LIVE_CHARACTER_CACHE_TTL = 60  # seconds
+    # Mail: ESI itself caches list/label reads for about 30 s; bodies never
+    # change, 10 minutes just spares re-opening the same mail.
+    _MAIL_LIST_CACHE_TTL = 30  # seconds
+    _MAIL_BODY_CACHE_TTL = 600  # seconds
     _live_character_cache: dict[tuple, Any] = {}
     _live_character_cache_at: dict[tuple, float] = {}
     _live_character_locks: dict[tuple, threading.Lock] = {}
+
+    # id -> display name, for mail sender/recipient names. Public data (the
+    # same names any client sees), so - like character_public_info - it is
+    # safe to share across tenants; nothing private is keyed here.
+    _NAMES_CACHE_TTL = 3600  # seconds
+    _names_cache: dict[int, tuple[float, str]] = {}
 
     # Public corporation history, same shape/TTL as character_public_info.
     _character_corp_history_cache: dict[int, list] = {}
@@ -330,6 +340,7 @@ class ESIClient:
             cls._live_character_cache_at.clear()
             cls._character_corp_history_cache.clear()
             cls._character_corp_history_cache_at.clear()
+            cls._names_cache.clear()
 
     @classmethod
     def clear_corporation_public_info_cache(cls) -> None:
@@ -1208,27 +1219,62 @@ class ESIClient:
                           params={"datasource": "tranquility"}, auth_role=auth_role)
 
     # ---- Character Management (docs/CHARACTER_MANAGEMENT_PLAN.md phase 1)
-    def _live_character_read(self, what: str, character_id: int, auth_role: str, path: str):
-        """TTL-cached authenticated GET keyed by (tenant_id, what, character_id).
+    def _live_character_read(
+        self, what: str, character_id: int, auth_role: str, path: str,
+        params: Optional[dict] = None, ttl: Optional[float] = None, extra: tuple = (),
+        cache: bool = True,
+    ):
+        """TTL-cached authenticated GET keyed by (tenant_id, what, character_id,
+        *extra).
 
         Fail-closed on a missing tenant (same spirit as storage.connect()):
         an unscoped key would be exactly the cross-tenant leak R16 exists to
         prevent. The per-key lock serializes two racers on a cold key only.
+        `cache=False` (archive backfill: thousands of one-off pages) goes
+        straight to ESI and never stores anything in process memory.
         """
         tenant_id = storage.get_current_tenant()
         if not tenant_id:
             raise RuntimeError("live character read requires a tenant in scope")
-        key = (str(tenant_id), what, int(character_id))
+        request_params = {"datasource": "tranquility", **(params or {})}
+        if not cache:
+            return self._get(path, params=request_params, auth_role=auth_role)
+        key = (str(tenant_id), what, int(character_id), *extra)
+        ttl = self._LIVE_CHARACTER_CACHE_TTL if ttl is None else ttl
         with self._lock_for_key(self._live_character_locks, key):
             cached_at = self._live_character_cache_at.get(key, 0.0)
-            if key in self._live_character_cache and (
-                time.time() - cached_at
-            ) < self._LIVE_CHARACTER_CACHE_TTL:
+            if key in self._live_character_cache and (time.time() - cached_at) < ttl:
                 return self._live_character_cache[key]
-            value = self._get(path, params={"datasource": "tranquility"}, auth_role=auth_role)
+            value = self._get(path, params=request_params, auth_role=auth_role)
             self._live_character_cache[key] = value
             self._live_character_cache_at[key] = time.time()
-            return value
+        self._prune_live_character_cache(ttl)
+        return value
+
+    @classmethod
+    def _prune_live_character_cache(cls, ttl: float) -> None:
+        """Expired entries are otherwise only ever *replaced*, never removed:
+        paging through a big mailbox would grow this dict without bound. Cheap
+        no-op below a small size; above it, drop everything older than the
+        longest TTL in use (bodies, 10 minutes)."""
+        if len(cls._live_character_cache) <= 256:
+            return
+        horizon = time.time() - max(ttl, cls._MAIL_BODY_CACHE_TTL)
+        with cls._order_book_locks_guard:
+            for key in [k for k, at in cls._live_character_cache_at.items() if at < horizon]:
+                cls._live_character_cache.pop(key, None)
+                cls._live_character_cache_at.pop(key, None)
+
+    @classmethod
+    def invalidate_live_character_caches(cls, tenant_id: str, character_id: int, prefix: str = "") -> None:
+        """Drops one character's live entries (e.g. every `mail_*` read after a
+        send/organize action, so the next list shows the change instantly)."""
+        cid, tid = int(character_id), str(tenant_id)
+        with cls._order_book_locks_guard:
+            for key in [k for k in cls._live_character_cache
+                        if k[0] == tid and k[2] == cid and k[1].startswith(prefix)]:
+                cls._live_character_cache.pop(key, None)
+                cls._live_character_cache_at.pop(key, None)
 
     def character_location(self, character_id: int, auth_role: str) -> dict:
         """Requires esi-location.read_location.v1. {"solar_system_id",
@@ -1277,6 +1323,72 @@ class ESIClient:
             self._character_corp_history_cache[key] = history
             self._character_corp_history_cache_at[key] = time.time()
             return history
+
+    # ---- Mail (docs/CHARACTER_MANAGEMENT_PLAN.md phase 3): live reads only.
+    # ESIError text can embed the start of a response body - the mail actions
+    # never pass it on (see character_management/mail_actions._esi_failure).
+    def character_mail_headers(
+        self, character_id: int, auth_role: str, labels: Optional[list[int]] = None,
+        last_mail_id: Optional[int] = None, cache: bool = True,
+    ) -> list[dict]:
+        """Requires esi-mail.read_mail.v1. Up to 50 headers, newest first:
+        [{"mail_id", "from", "subject", "timestamp", "is_read", "labels",
+        "recipients": [{"recipient_id", "recipient_type"}]}]. `last_mail_id`
+        is the paging cursor (the smallest id of the previous page)."""
+        params: dict = {}
+        if labels:
+            params["labels"] = ",".join(str(int(x)) for x in labels)
+        if last_mail_id:
+            params["last_mail_id"] = int(last_mail_id)
+        return self._live_character_read(
+            "mail_headers", character_id, auth_role, f"/characters/{character_id}/mail/",
+            params=params, ttl=self._MAIL_LIST_CACHE_TTL,
+            extra=(tuple(sorted(int(x) for x in labels or ())), int(last_mail_id or 0)), cache=cache,
+        )
+
+    def character_mail_labels(self, character_id: int, auth_role: str) -> dict:
+        """{"total_unread_count", "labels": [{"label_id", "name", "color", "unread_count"}]}"""
+        return self._live_character_read(
+            "mail_labels", character_id, auth_role, f"/characters/{character_id}/mail/labels/",
+            ttl=self._MAIL_LIST_CACHE_TTL,
+        )
+
+    def character_mail_lists(self, character_id: int, auth_role: str) -> list[dict]:
+        """[{"mailing_list_id", "name"}] - the lists this character subscribes to."""
+        return self._live_character_read(
+            "mail_lists", character_id, auth_role, f"/characters/{character_id}/mail/lists/",
+            ttl=self._MAIL_LIST_CACHE_TTL,
+        )
+
+    def character_mail_body(
+        self, character_id: int, auth_role: str, mail_id: int, cache: bool = True,
+    ) -> dict:
+        """{"body", "from", "subject", "timestamp", "labels", "read",
+        "recipients"} for one mail."""
+        return self._live_character_read(
+            "mail_body", character_id, auth_role, f"/characters/{character_id}/mail/{int(mail_id)}/",
+            ttl=self._MAIL_BODY_CACHE_TTL, extra=(int(mail_id),), cache=cache,
+        )
+
+    def resolve_names_cached(self, ids: list[int]) -> dict[int, str]:
+        """resolve_names with a shared 1 h in-memory cache (public data).
+        Mailing-list ids are NOT resolvable via /universe/names/ (one invalid
+        id would 404 the whole batch) - callers take those from the mail
+        lists endpoint instead."""
+        now = time.time()
+        out: dict[int, str] = {}
+        missing: list[int] = []
+        for i in dict.fromkeys(int(x) for x in ids if x):
+            hit = self._names_cache.get(i)
+            if hit and now - hit[0] < self._NAMES_CACHE_TTL:
+                out[i] = hit[1]
+            else:
+                missing.append(i)
+        if missing:
+            for i, name in self.resolve_names(missing).items():
+                self._names_cache[i] = (now, name)
+                out[i] = name
+        return out
 
     def character_attributes(self, character_id: int, auth_role: str) -> dict:
         """Requires esi-skills.read_skills.v1 (same scope as character_skills).
