@@ -23,6 +23,7 @@ const ACTIONS: SpotlightActionData[] = [
   { id: 'characters', label: 'Character Management — Characters', description: 'ESI access, sharing, and re-authorize', onClick: () => {} },
   { id: 'char-info', label: 'Character Management — Character Info', description: 'Location, wallet, standings, LP', onClick: () => {} },
   { id: 'char-skills', label: 'Character Management — Skills', description: 'SP, attributes, skill queue, matrix', onClick: () => {} },
+  { id: 'char-mail', label: 'Character Management — Mail', description: 'Read mail for all characters', onClick: () => {} },
   { id: 'admin', label: 'Admin', description: 'Cross-tenant superadmin tools', onClick: () => {} },
 
   { id: 'trading', label: 'Trading — Shortlist', description: 'Trading', onClick: () => {} },
@@ -72,7 +73,7 @@ const ACTIONS: SpotlightActionData[] = [
 // component-free data array - useNavigate() is only available inside a
 // Router, so the actual onClick wiring happens once, here, at render time.
 const PATHS: Record<string, string> = {
-  home: '/', portfolio: '/portfolio', admin: '/admin', 'character-management': '/character-management', characters: '/character-management/characters', 'char-info': '/character-management/info', 'char-skills': '/character-management/skills',
+  home: '/', portfolio: '/portfolio', admin: '/admin', 'character-management': '/character-management', characters: '/character-management/characters', 'char-info': '/character-management/info', 'char-skills': '/character-management/skills', 'char-mail': '/character-management/mail',
   trading: '/trading/shortlist', 'trading-candidates': '/trading/candidates', 'trading-new-candidates': '/trading/new-candidates',
   'trading-history': '/trading/history', 'trading-trades': '/trading/trades', 'trading-unlisted-stock': '/trading/unlisted-stock',
   'trading-undercut': '/trading/undercut', 'trading-settings': '/trading/settings',
@@ -95,7 +96,7 @@ const PATHS: Record<string, string> = {
 // (`_TOOL_PATH_PREFIXES` on the backend). 'home' has no entry, since jumping
 // back to the tool picker is always allowed regardless of tool grants.
 const TOOL_KEYS: Record<string, string> = {
-  portfolio: 'portfolio', admin: 'admin', characters: 'characters', 'char-info': 'char_info', 'char-skills': 'char_skills',
+  portfolio: 'portfolio', admin: 'admin', characters: 'characters', 'char-info': 'char_info', 'char-skills': 'char_skills', 'char-mail': 'char_mail',
   // 'character-management' (the hub) has no single key: see visibleActions.
   trading: 'trading', 'trading-candidates': 'trading', 'trading-new-candidates': 'trading',
   'trading-history': 'trading', 'trading-trades': 'trading', 'trading-unlisted-stock': 'trading',

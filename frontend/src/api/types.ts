@@ -1575,3 +1575,93 @@ export interface SkillMatrix {
   reauth_needed: number[]
   groups: { group_id: number | null; group_name: string; skills: SkillMatrixSkill[] }[]
 }
+
+
+// ---------------------------------------------------- Mail (Character Management)
+// Mirrors eve_trader/character_management/mail_actions.py.
+export interface MailRecipient {
+  recipient_id: number
+  recipient_type: string   // character | corporation | alliance | mailing_list
+  name: string | null
+}
+
+export interface MailReceivedBy {
+  character_id: number
+  character_name: string
+  is_read: boolean
+  labels: number[]
+  /** true: read from the local archive; false: read live from ESI. */
+  archived: boolean
+}
+
+/** One message, grouped over every selected character that received it. */
+export interface MailRow {
+  mail_id: number
+  from_id: number | null
+  from_name: string | null
+  subject: string
+  timestamp: string | null
+  is_read: boolean
+  recipients: MailRecipient[]
+  received_by: MailReceivedBy[]
+}
+
+export interface MailCharacterStatus {
+  character_id: number
+  character_name: string
+  archived: boolean
+  state: 'ok' | 'reauth_needed' | 'error'
+  detail?: string
+}
+
+export interface MailPage {
+  mails: MailRow[]
+  /** character_id -> last_mail_id to continue from; absent = that character is exhausted. */
+  next_cursors: Record<string, number>
+  characters: MailCharacterStatus[]
+}
+
+export interface MailFolderLabel {
+  label_id: number
+  name: string
+  color: string | null
+  unread_count: number
+  system: boolean
+}
+
+export interface MailFolders {
+  characters: (MailCharacterStatus & {
+    labels: MailFolderLabel[]
+    lists: { list_id: number; name: string }[]
+    total_unread: number
+  })[]
+  /** system label id -> unread summed over every character */
+  unread: Record<string, number>
+}
+
+export interface MailOpened extends MailRow {
+  body: string
+  character_id: number
+  archived: boolean
+}
+
+export interface MailSearchResult {
+  mails: MailRow[]
+  searched: MailCharacterStatus[]
+  unsearchable: MailCharacterStatus[]
+}
+
+export type MailBackfillState = 'off' | 'idle' | 'running' | 'done' | 'error' | 'interrupted'
+
+export interface MailArchiveRow {
+  character_id: number
+  character_name: string
+  shared: boolean
+  archive_enabled: boolean
+  reauth_needed: boolean
+  backfill_state: MailBackfillState
+  headers_complete: boolean
+  error: string | null
+  last_refresh_at: string | null
+  counts: { headers: number; bodies: number }
+}

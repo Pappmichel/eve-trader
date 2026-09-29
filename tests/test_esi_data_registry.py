@@ -80,7 +80,7 @@ def test_group_2_is_character_only_kinds_with_no_corp_variant():
     group_2 = {k.key: k for k in OWNED_DATA_KINDS if k.group == GROUP_2}
     # skills + Character Management phase 1 (docs/CHARACTER_MANAGEMENT_PLAN.md).
     assert set(group_2) == {
-        "skills", "skillqueue", "standings", "loyalty", "location", "ship", "online",
+        "skills", "skillqueue", "standings", "loyalty", "location", "ship", "online", "mail",
     }
     for kind in group_2.values():
         assert kind.corporation_scope is None
@@ -109,8 +109,11 @@ def test_character_management_kinds():
     assert by_key["online"].character_scope == "esi-location.read_online.v1"
     for key in ("standings", "loyalty", "location", "ship", "online"):
         assert by_key[key].consuming_tools == ("char_info",)
-    # Live-only kinds are exactly the three location kinds.
-    assert {k.key for k in OWNED_DATA_KINDS if k.live_only} == {"location", "ship", "online"}
+    # Live-only kinds: the three location kinds, plus mail (own code path,
+    # phase 3 - never an orchestrator kind, so the stale clear cannot reach it).
+    assert {k.key for k in OWNED_DATA_KINDS if k.live_only} == {"location", "ship", "online", "mail"}
+    assert by_key["mail"].character_scope == "esi-mail.read_mail.v1"
+    assert by_key["mail"].consuming_tools == ("char_mail",)
     # char_info also reads the wallet balance (Character Info's ISK column).
     assert "char_info" in by_key["wallet_balance"].consuming_tools
     assert "portfolio" in by_key["wallet_balance"].consuming_tools

@@ -501,6 +501,58 @@ Original design:
 
 ### Phase 3 - Mail read (`char_mail`)
 
+**Status: implemented (read, live + opt-in archive).** Deviations/additions:
+- **Registry:** `mail` (`esi-mail.read_mail.v1`, consumer `char_mail`) is
+  `live_only`, i.e. *not an orchestrator kind*: the orchestrator ignores its
+  sharing rows, and it is deliberately absent from `stale._KIND_TABLES` and
+  `delete_owner_snapshot_rows`, so no failed sync can delete an archive (R2).
+- **Backfill runs on its own daemon thread, not `pipeline_runner`.** The
+  runner allows one running job per *tenant*; a backfill of an old mailbox
+  can take a long time and would 409 Trading/Production jobs meanwhile.
+  Progress + the resume cursor live in `char_mail_archive_settings`
+  (`backfill_state/backfill_cursor/headers_complete/backfill_error`); a
+  thread that died with the process is reported as `interrupted` and resumed
+  by the next refresh (`mail_archive.ensure_backfill`, one thread per
+  (tenant, character) per process).
+- **Delete-vs-backfill race is closed in the database:** every archive write
+  goes through `_archive_still_enabled` (`SELECT ... FOR SHARE` on the
+  character's settings row, same transaction) and `delete_mail_archive`
+  deletes the settings row *first* - it blocks until an in-flight write
+  commits, and any later write finds no row and does nothing. Tested.
+- **Names:** `ESIClient.resolve_names_cached` (1 h, shared - public data).
+  Mailing-list names come from the character's own lists endpoint, never from
+  `/universe/names` (one unknown id 404s the whole batch).
+- **Caches:** the live-read cache took `params/ttl/extra`, is pruned (expired
+  entries were previously only ever replaced), can be bypassed
+  (`cache=False`, used by the backfill so thousands of one-off pages never sit
+  in memory) and invalidated per character (`invalidate_live_character_caches`,
+  for phase 4).
+- **Privacy:** `fields.esi_failure` reduces any ESI failure on mail to
+  `ESI returned HTTP <n>` / `network error` - no response text, URL or
+  subject in errors, `pipeline`/`error_log`, or archive state.
+- **Archive semantics:** the archive only ever holds rows for a character with
+  the switch on; `do_set_mail_archive(enabled=False)` deletes it and needs
+  `confirm_delete=True` when anything is stored; nothing else deletes archived
+  mail. A mail two characters received is stored once (R4). Unsharing a
+  character hides its archive (reads go through `shared_owner_ids`), it does
+  not delete it. **Not done:** offering archive deletion in the
+  Characters "Remove character" dialog (R8) - removing a character keeps its
+  archive like every other snapshot; delete it in Mail settings first.
+- **Frontend:** three-pane client (folders with unread badges incl. unified
+  system folders and per-character labels, list with per-character chips and
+  "Load more" via per-character cursors, reader). Mail bodies go through the
+  strict whitelist sanitizer `mailHtml.ts` (DOMPurify; colours/sizes/`<font>`
+  dropped because EVE colours are ARGB and clash with the themes; only
+  http(s) links, opened with `noopener`; `showinfo:` links become text) and
+  are the only HTML in the app. Client-side filter over loaded mail;
+  server-side full-text search only for archived characters. Mail settings
+  drawer: per-character archive switch, backfill progress (polled while
+  running), confirm-before-delete. A stale archive (>5 min) is refreshed once
+  on open.
+- **Not verifiable in the sandbox:** real ESI mail responses (offline).
+  Shapes follow the public swagger; the system-label names ESI returns
+  (`[Inbox]` etc.) are normalised defensively.
+
 **Phase 3a - live mode (default, no storage).**
 - `ESIClient` gets these methods, each with a TTL cache keyed by
   `(tenant_id, character_id, ...)` (R16):

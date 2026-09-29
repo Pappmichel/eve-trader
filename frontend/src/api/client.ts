@@ -642,6 +642,33 @@ export const charSkillsApi = {
   sync: () => post<T.CharInfoSyncResult>('/api/char-skills/sync', {}),
 }
 
+// -------------------------------------------------------------- mail
+export const charMailApi = {
+  folders: () => get<T.MailFolders>('/api/char-mail/folders'),
+  mails: (opts: { labelId?: number | null; characterId?: number | null; cursors?: Record<string, number> | null }) => {
+    const q = new URLSearchParams()
+    if (opts.labelId) q.set('label_id', String(opts.labelId))
+    if (opts.characterId) q.set('character_id', String(opts.characterId))
+    if (opts.cursors) q.set('cursors', JSON.stringify(opts.cursors))
+    const qs = q.toString()
+    return get<T.MailPage>(`/api/char-mail/mails${qs ? `?${qs}` : ''}`)
+  },
+  open: (characterId: number, mailId: number) => get<T.MailOpened>(`/api/char-mail/mails/${characterId}/${mailId}`),
+  search: (q: string, characterId?: number | null) =>
+    get<T.MailSearchResult>(
+      `/api/char-mail/search?q=${encodeURIComponent(q)}${characterId ? `&character_id=${characterId}` : ''}`,
+    ),
+  archive: () => get<{ characters: T.MailArchiveRow[] }>('/api/char-mail/archive'),
+  setArchive: (body: { character_id: number; enabled: boolean; confirm_delete?: boolean }) =>
+    post<T.MailArchiveRow | { character_id: number; archive_enabled: false; deleted: { headers: number; messages: number } }>(
+      '/api/char-mail/archive', body,
+    ),
+  refreshArchive: (characterId?: number | null) =>
+    post<{ characters: (T.MailCharacterStatus & { new_mails?: number; covered?: number })[] }>(
+      '/api/char-mail/archive/refresh', { character_id: characterId ?? null },
+    ),
+}
+
 // -------------------------------------------------------------- characters
 export const charactersApi = {
   owners: () => get<T.EsiTokenCharacter[]>('/api/characters/owners'),

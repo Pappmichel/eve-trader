@@ -22,6 +22,9 @@ export interface OwnedDataKind {
   // page is open, never stored or synced (so there is nothing to re-sync and
   // the freshness column never applies to it).
   liveOnly?: boolean
+  // Popover note for a live-only kind; falls back to the plain "never stored"
+  // wording. Mail overrides it: it can be archived if the user opts in.
+  liveNote?: string
   consumingTools: readonly string[]
   corpRoles: readonly string[]
   // Only set where a tool in consumingTools is actually backed by a
@@ -106,6 +109,12 @@ export const OWNED_DATA_KINDS: readonly OwnedDataKind[] = [
     key: 'online', section: 'character', label: 'Online Status', group: 2, liveOnly: true,
     consumingTools: ['char_info'], corpRoles: [],
   },
+  {
+    key: 'mail', section: 'character', label: 'Mail', group: 2, liveOnly: true,
+    liveNote: 'Read live from ESI in Mail and not stored - unless you turn on "Archive mail" for this '
+      + 'character in Mail settings, which keeps a copy in this app\'s database until you delete it.',
+    consumingTools: ['char_mail'], corpRoles: [],
+  },
 ]
 
 export const GROUP_1_KINDS = OWNED_DATA_KINDS.filter((k) => k.group === 1)
@@ -138,10 +147,11 @@ export const TOOL_LABELS: Record<string, string> = {
   portfolio: 'Portfolio',
   char_info: 'Character Info',
   char_skills: 'Skills',
+  char_mail: 'Mail',
 }
 
 export const CONSUMING_TOOL_KEYS = [
-  'trading', 'production', 'doctrine', 'station_trading', 'sorting', 'portfolio', 'char_info', 'char_skills',
+  'trading', 'production', 'doctrine', 'station_trading', 'sorting', 'portfolio', 'char_info', 'char_skills', 'char_mail',
 ] as const
 
 export function kindByKey(key: string): OwnedDataKind | undefined {

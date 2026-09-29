@@ -48,7 +48,8 @@ const DECISION_4 =
   'Sharing governs raw ESI snapshots only — assets, jobs, blueprints, orders, contracts, wallet, skills, skill queue, standings, and loyalty points. '
   + 'Derived tables (realized trades, shortlists, production plans) are not filtered by it. '
   + 'Unticking Wallet does not erase last week\'s realized trades. '
-  + 'Location, current ship, and online status are read live from ESI while Character Info is open and are never stored.'
+  + 'Location, current ship, and online status are read live from ESI while Character Info is open and are never stored. '
+  + 'Mail is read live too and only stored for a character that opts into the mail archive.'
 
 const CELL_LABEL: Record<CellKind, string> = {
   not_shared: 'not shared',
@@ -115,7 +116,9 @@ function SharingCell({
           <Text size="sm" fw={600}>{kind?.label ?? dataKind}</Text>
           <Text size="xs" c="dimmed">Toggling writes or deletes one sharing row. It does not call ESI.</Text>
           {kind?.liveOnly && (
-            <Text size="xs" c="dimmed">Read live from ESI while Character Info is open. Never stored, never synced.</Text>
+            <Text size="xs" c="dimmed">
+              {kind.liveNote ?? 'Read live from ESI while Character Info is open. Never stored, never synced.'}
+            </Text>
           )}
           {(kind?.consumingTools ?? []).map((toolKey) => (
             <Switch

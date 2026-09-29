@@ -10,7 +10,7 @@ describe('esiRegistry Character Management kinds', () => {
       expect(kind.group).toBe(2)
     }
     expect(OWNED_DATA_KINDS.filter((k) => k.liveOnly).map((k) => k.key).sort())
-      .toEqual(['location', 'online', 'ship'])
+      .toEqual(['location', 'mail', 'online', 'ship'])
   })
 
   it('lets Character Info read the wallet balance through the merged Wallet row', () => {
@@ -38,5 +38,15 @@ describe('esiRegistry Character Management kinds', () => {
     expect(queue.consumingTools).toEqual(['char_skills'])
     expect(queue.liveOnly).toBeUndefined()      // a synced snapshot, not a live read
     expect(toolLabel('char_skills')).toBe('Skills')
+  })
+
+  it('mirrors phase 3: Mail is a live-only kind with its own note about the opt-in archive', () => {
+    const mail = kindByKey('mail')!
+    expect(mail.consumingTools).toEqual(['char_mail'])
+    expect(mail.liveOnly).toBe(true)
+    expect(mail.liveNote).toMatch(/Archive mail/)
+    expect(toolLabel('char_mail')).toBe('Mail')
+    // the other live kinds keep the default wording (no override)
+    expect(kindByKey('location')!.liveNote).toBeUndefined()
   })
 })

@@ -34,6 +34,8 @@ export default function CharacterManagementHub() {
             description="Location, ship, online status, wallet, standings, loyalty points and corporation history for each character." />
           <ToolCard tools={tools} toolKey="char_skills" to="/character-management/skills" title="Skills"
             description="Skill points, attributes, training queues, every trained skill and a skills matrix across your characters." />
+          <ToolCard tools={tools} toolKey="char_mail" to="/character-management/mail" title="Mail"
+            description="A mail client for all your characters: read live from ESI, with an optional searchable archive." />
         </SimpleGrid>
       )}
     </Container>
