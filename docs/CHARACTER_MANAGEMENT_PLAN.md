@@ -4,8 +4,9 @@ Status: **plan, nothing implemented.** Product decisions confirmed with the
 user 2026-09-29. Revision 2 (same day) adds a code review of the plan against
 the actual `esi_data/` / gate / SDE code: the "Review findings" section lists
 what revision 1 got wrong and how each point is resolved; the phase sections
-are now worked out file by file. Items marked **[decide]** still need the
-user's answer before the phase that depends on them starts.
+are now worked out file by file. Revision 3 (same day) settles all review
+decisions with the user; mail is now live-only by default with an opt-in
+per-character archive.
 
 ## Goal
 
@@ -20,13 +21,26 @@ fail-closed accessor) and introduces no new OAuth/token mechanism.
    shows when the session holds any sub-tool grant.
 2. **The existing Characters page moves into the hub.** `/characters` keeps
    working as a redirect.
-3. **Mail is a real mail client: read and send.** Bodies are cached in the DB.
-4. **Refresh button per sub-page** plus "last updated". The scheduler stays
-   off (CLAUDE.md "Live operational decision"). Mail refreshes on open if its
-   snapshot is older than a few minutes.
-5. **All extras are in scope as later phases:** skillqueue guard,
+3. **Mail is a real mail client: read and send.**
+4. **Mail is live by default. Nothing about a character's mail is stored
+   server-side** (no headers, no bodies, no metadata) unless that character's
+   **"Archive mail" checkbox** is ticked. The checkbox is per character.
+   - Live mode: every view is fetched from ESI on demand. There is only a
+     short in-memory cache against ESI load (process memory, never the DB,
+     so never in a backup).
+   - Archive mode: headers and bodies are stored, with **no size limit**,
+     and are **never cleared automatically** (no stale clear). Archived mail
+     is only deleted by an explicit user action: unticking the checkbox (with
+     a confirm dialog) or "Delete archived mail".
+5. **Location, ship and online status are live reads only**, with no
+   storage.
+6. **Refresh button per sub-page** plus "last updated". The scheduler stays
+   off (CLAUDE.md "Live operational decision").
+7. **All extras are in scope as later phases:** skillqueue guard,
    skill-vs-doctrine check, clones & implants, notifications, jump fatigue,
    contacts & calendar, wallet journal per character, skill-plan editor.
+8. **Tool keys use a `char_` prefix** (R5).
+9. **One scope = one data kind.** Multi-scope features are split (R1).
 
 ## Review findings (revision 1 → revision 2)
 
@@ -50,11 +64,12 @@ groups them visually instead (R6).
 `last_success_at` is older than `tier_hours × esi_stale_clear_multiples`
 (frequent 1 h × 3 = **3 h**). With the scheduler off, the normal case is
 "last sync yesterday". The first ESI hiccup on opening Mail would delete every
-cached header and body. **Resolution:** mail tables are **not** registered in
-`stale._KIND_TABLES` (same treatment `skills` already gets via its early
-return). The stale-data concern of decision 6 is covered for mail by showing
-the age in the UI. Removing cached mail is a separate, explicit user action
-(R8).
+cached header and body. **Resolution (decision 4):** in live mode there is nothing to
+clear. For archive mode, mail is not an orchestrator kind at all (see R11),
+so `_record_failure` or stale clear can never reach it. The mail tables are
+also absent from `stale._KIND_TABLES` and `delete_owner_snapshot_rows`'
+allow-list, a belt-and-braces guard backed by a test. The UI shows the
+archive's age.
 
 **R3 - Sending mail must never auto-retry.** `ESIClient._post_response`
 retries on timeouts and 500/502/503/504, and treats only `200` as success.
@@ -81,7 +96,7 @@ data kind `skills` makes `esi_sharing` rows read `('skills', 'skills')` and the
 Characters matrix ambiguous. **Resolution:** tool keys get a prefix:
 `char_skills`, `char_mail`, `char_info`, later `char_notifications`,
 `char_contacts`, `char_skill_plans`. Data kinds keep their plain names.
-**[decide]** exact names; this is the proposal.
+Settled (decision 8).
 
 **R6 - The Characters sharing table does not scale.** It renders one *column*
 per data kind (`CharactersPage.tsx`, `CHARACTER_KINDS.map`). Going from 7 to
@@ -111,15 +126,21 @@ secondary_attr)`. Skill groups already work: `sde_types.group_id`, then
 **R8 - Removing a character does not remove data.** `do_remove_token_character`
 keeps snapshots and sharing by design (decision 4 / reversible admin
 operations). For mail that is surprising privacy-wise. **Resolution:** keep
-the general rule, and add an explicit "Delete cached mail for this character"
-action on the Mail settings (and offered in the remove-character confirm
-dialog). It deletes `mail_character_headers` for that character, then
-garbage-collects `mail_messages` no longer referenced by any header.
+the general rule. For archive mode, add the explicit deletion paths from
+decision 4: untick the archive checkbox, "Delete archived mail", or the offer
+in the remove-character confirm dialog. Each deletes
+`mail_character_headers` for that character, then garbage-collects
+`mail_messages` no longer referenced by any header. Live-mode characters
+have nothing stored.
 
 **R9 - Location/ship/online are not snapshot data.** Syncing them on a tier is
 pointless (they are stale within minutes) and needs three tables.
-**Resolution:** a *live* read on page open with a short class-level TTL cache
-in `ESIClient` (the caching shape for per-call-constructed clients). It is
+**Resolution (decision 5):** a *live* read on page open with a short
+class-level TTL cache in `ESIClient` (the caching shape for
+per-call-constructed clients). The cache key **must include `tenant_id`**, not
+only `character_id`. Two tenants can each hold a token for the same
+character, and a character-only key would serve tenant A's fetch to tenant B
+(R16). The same rule applies to mail's live cache. It is
 still gated by `is_shared(kind, 'char_info', 'character', id)` first, as
 decision 9 covers live fetches too. There is no table, no freshness row and no
 stale clear. The kinds exist in the registry only for scope and sharing; they
@@ -130,21 +151,33 @@ default `False`).
 guard is per owner, not per (owner, kind). A Mail auto-refresh on open makes
 a concurrent Skills refresh of the same character return `skipped:
 in_flight`. **Resolution:** acceptable. The UI must render `in_flight` as
-"sync already running", not as an error or a silent success. Mail's
-refresh-on-open is debounced client-side and never fires while one is pending.
+"sync already running", not as an error or a silent success. Mail is outside
+the orchestrator (R11), so it does not contend for this guard. It has its
+own per-(tenant, character) lock for archive syncs.
 
 **R11 - Mail sync cost inside a batch session.** Each owner task holds one
 pooled connection for its whole run (pool max 10, 4 workers). A first mail
 backfill (for example 5,000 mails, 100 header pages) and per-mail body calls
-must not run inside that. **Resolution:**
-- The mail fetcher syncs **headers only**, incrementally. It pages newest to
-  oldest until it hits a known `mail_id` older than the refresh window, and
-  re-fetches a fixed window (the newest 500) for read and label changes.
-- It stops at the retention cap.
-- Bodies are fetched **lazily** in the `do_open_mail` action, outside the
-  orchestrator: one call, cached.
-- An optional "prefetch bodies" background job (`pipeline_runner`) is a later
-  nice-to-have.
+must not run inside that. With unlimited
+retention (decision 4), a first archive backfill for an old character can be
+thousands of pages and bodies. **Resolution:** `mail` is registered with
+`live_only=True`, so the orchestrator, `do_sync_all` and `do_sync_due` never
+touch it. Mail has its own code path in `character_management/mail_*`:
+- **Live mode:** direct ESI reads per request, with no batch session held.
+- **Archive refresh** (Refresh button, or opening Mail when the archive is
+  older than 5 minutes):
+  - incremental header sync, newest to oldest, until it reaches a known
+    `mail_id`;
+  - re-fetch the newest 500 headers for read and label changes;
+  - store new bodies.
+  Short connection use per page, not one long batch session.
+- **Archive backfill** (after ticking the checkbox) is a resumable
+  `pipeline_runner` background job:
+  - It stores its oldest-reached `last_mail_id` cursor, so an interrupted or
+    failed run continues where it stopped.
+  - Headers come first, then bodies, paced by ESI's error budget
+    (`_await_error_budget`).
+  - Progress is shown in the Mail settings.
 
 **R12 - Admin's ESI tool list is already out of sync.**
 `AdminPage.tsx` `ESI_CONSUMING_TOOLS` lacks `portfolio`, which is a real
@@ -174,6 +207,14 @@ replaced per owner on each sync, so it only ever holds ESI's 30-day window.
 The per-character journal view says so. Long history would need an
 accumulating table, which is out of scope unless asked.
 
+**R16 - Existing caches are keyed without a tenant.** The class-level caches
+of public data (`character_public_info`, `corporation_public_info`) are keyed
+by EVE id only. That is fine because the data is public. Every **new
+authenticated** in-memory cache in this plan (location, ship, online, mail
+headers, mail bodies, anything else) is keyed `(tenant_id, character_id,
+...)`. Add a test that two tenants with the same character do not share
+entries.
+
 ## Grants and tool keys (proposal, R5)
 
 | Sub-tool | tool_key | Consumes kinds | Phase |
@@ -195,7 +236,7 @@ confuses admins.
 |---|---|---|---|---|
 | `skills` (consumers extended) | `esi-skills.read_skills.v1` | rare | no | 2 |
 | `skillqueue` | `esi-skills.read_skillqueue.v1` | normal | no | 2 |
-| `mail` | `esi-mail.read_mail.v1` | frequent | no | 3 |
+| `mail` | `esi-mail.read_mail.v1` | - | yes (own path, R11) | 3 |
 | `location` | `esi-location.read_location.v1` | - | yes | 1 |
 | `ship` | `esi-location.read_ship_type.v1` | - | yes | 1 |
 | `online` | `esi-location.read_online.v1` | - | yes | 1 |
@@ -348,6 +389,42 @@ Tests:
   declined).
 
 ### Phase 3 - Mail read (`char_mail`)
+
+**Phase 3a - live mode (default, no storage).**
+- `ESIClient` gets these methods, each with a TTL cache keyed by
+  `(tenant_id, character_id, ...)` (R16):
+  - `character_mail_headers(char, labels, last_mail_id)` (50 per page);
+  - `character_mail_labels`;
+  - `character_mail_lists`;
+  - `character_mail_body(char, mail_id)`.
+  Cache lifetimes: headers, labels and lists about 30 seconds (ESI's own
+  cache time), bodies about 10 minutes.
+- `mail_actions.py`:
+  - `do_list_folders(character_id | None)`: labels and lists live, merged
+    across shared characters.
+  - `do_list_mails(folder, character_id | None, cursors)`: the unified inbox
+    fetches the first page of each shared live-mode character and merges by
+    timestamp. "Load more" carries one `last_mail_id` cursor per character in
+    an opaque client-side cursor.
+  - `do_open_mail(character_id, mail_id)`: body fetched live.
+- In live mode, search is client-side over the headers already loaded
+  (sender and subject). The UI says full-text search needs the archive.
+- Nothing is written to Postgres. A test asserts that a live-mode read does
+  no INSERT (mock `storage`).
+
+**Phase 3b - archive mode (opt-in per character).**
+- A per-character setting table `char_mail_archive_settings`
+  (`tenant_id, character_id, enabled, backfill_cursor, backfill_state,
+  last_refresh_at`) with RLS. It is *not* an `esi_character_capabilities`
+  row, because capabilities imply scopes and this one does not.
+- `do_set_mail_archive(character_id, enabled)`:
+  - Enabling starts the backfill job (R11).
+  - Disabling deletes the archive, and the frontend confirm dialog is
+    required. The server accepts it as an explicit user action; this is the
+    decision-4 deletion path.
+- A mixed unified inbox is allowed: archived characters are read from the
+  DB, live characters live, merged by timestamp. Full-text search covers
+  archived characters only, and the UI shows which ones.
 - Schema (R4): see the table sketch below.
   - `mail_messages` (`tenant_id, mail_id, from_id, subject, timestamp,
     body NULL, body_fetched_at`)
@@ -359,18 +436,17 @@ Tests:
   - `mail_lists` (`tenant_id, character_id, list_id, name`)
   - Indexes on `(tenant_id, character_id, timestamp desc)`, plus a
     `to_tsvector('simple', subject || body)` GIN index for search.
-- The fetcher (R11) runs incrementally and writes headers, labels and lists
-  inside the owner batch. There is **no** `stale._KIND_TABLES` entry (R2).
-- Retention config: `CharMailConfig.max_mails_per_character`, default 5000,
-  mapped in `_FIELD_RANGES`. Mails older than the cap are pruned after the
-  sync.
-- Actions (`mail_actions.py`):
-  - `do_list_folders` (Inbox, Sent, Corp, Alliance, mailing lists and labels,
-    with unread counts);
-  - `do_list_mails(folder, character_id|None, cursor, q)`;
-  - `do_open_mail(character_id, mail_id)`: lazy body fetch outside any batch
-    session;
-  - `do_delete_cached_mail(character_id)` (R8).
+- The archive sync and backfill follow R11, outside the orchestrator. There
+  is **no** `stale._KIND_TABLES` entry (R2). There is **no retention limit**
+  (decision 4): nothing is pruned.
+- A mail that is in the archive and also received by a live-mode character
+  is shown from the archive. The live character's read state is fetched
+  live.
+- Actions added for archive mode:
+  - `do_refresh_mail_archive(character_id | None)`;
+  - `do_mail_archive_status()` (backfill progress);
+  - `do_delete_mail_archive(character_id)` (R8);
+  - `do_search_mail(q)` (full-text, archive only).
 - Every read uses `shared_owner_ids('mail', 'char_mail', 'character')`.
   Mails visible only through an unshared character are hidden. A message
   shared through at least one shared recipient is visible, with only that
@@ -378,14 +454,20 @@ Tests:
 - Names come from `resolve_names` (existing, batched). The cache is
   class-level, the same shape as structure names, or a small
   `eve_names` table.
-- Privacy: no subjects or bodies in logs or `error_log.py` (review this
-  explicitly). The Characters page note on the `mail` row says: "stores
-  message bodies in this tenant's database".
+- Privacy: no subjects or bodies in logs or `error_log.py`. Review this
+  explicitly, because `ESIError` messages embed `resp.text[:300]`: mail
+  endpoints must pass a redacted message.
 - Frontend: a three-pane layout (folders, list, reader).
   - Unified inbox with a character filter chip.
   - Search box.
-  - Refresh button, plus auto-refresh on open when the last sync is older
-    than 5 minutes (config), debounced (R10).
+  - Refresh button (live: invalidate the TTL cache and refetch; archive:
+    incremental sync). Auto-refresh on open when the archive is older than 5
+    minutes (config), debounced.
+  - Mail settings panel: per-character archive checkbox, backfill progress,
+    and "Delete archived mail".
+  - The Characters page note on the `mail` row: "Mail is read live and not
+    stored, unless you enable the archive for this character in Mail
+    settings."
   - EVE mail bodies are HTML-ish (`<font>`, `<a href="showinfo:...">`), so
     render them through a whitelist sanitizer (for example DOMPurify with
     allowed tags). `showinfo:` links become plain text or an internal link.
@@ -424,8 +506,10 @@ Tests:
     with the cost;
   - rate limits;
   - blocked recipients.
-- After a successful send, insert the mail into the local Sent folder right
-  away (ESI returns the new `mail_id`).
+- After a successful send, invalidate the sender's live header cache. If
+  the sender is in archive mode, also insert the mail into the local Sent
+  folder right away (ESI returns the new `mail_id`). Organize actions (read,
+  labels, delete) likewise update archived rows and invalidate live caches.
 - Compose UI:
   - reply, reply-all and forward (quote the original body);
   - a recipient autocomplete with character, corporation, alliance and list
@@ -477,14 +561,17 @@ Tests:
   live-verified attribute semantics first).
 - Progress per character, plus the next step as a suggested queue order.
 
-## Open items [decide]
+## Open items
 
-1. **Tool-key names** (R5): `char_info`, `char_skills`, `char_mail`, and so
-   on, or others.
-2. **Split scopes into single-scope kinds** (R1): the recommendation. The
-   alternative is multi-scope kinds, which means reworking the selector.
-3. **Mail archive never auto-cleared** (R2), with only explicit deletion
-   (R8): the recommendation.
-4. **Location/ship/online as live reads without storage** (R9): the
-   recommendation.
-5. **Mail retention default:** 5,000 per character, or unlimited.
+None blocking. All five review decisions were settled with the user
+(2026-09-29) and folded into "Settled decisions" 4, 5, 8 and 9 above:
+- `char_*` keys;
+- split kinds;
+- mail live by default, with a per-character archive that is unlimited and
+  never auto-cleared;
+- location live-only.
+
+Still to verify live during implementation:
+- whether ESI attribute values include implants (R14);
+- mail ESI error shapes for the CSPA charge (phase 4);
+- ESI's cache times for the mail endpoints (they set the live TTLs).
