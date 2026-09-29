@@ -271,10 +271,10 @@ describe('Characters page', () => {
     expect(screen.getByRole('columnheader', { name: 'Online Status' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'location all tools' })).toBeInTheDocument()
 
-    // Collapsing the Character section swaps its ten columns for one summary.
+    // Collapsing the Character section swaps its eleven columns for one summary.
     await user.click(screen.getByRole('button', { name: 'Collapse Character' }))
     expect(screen.queryByRole('columnheader', { name: 'Loyalty Points' })).not.toBeInTheDocument()
-    expect(screen.getByText('2/10 shared')).toBeInTheDocument()
+    expect(screen.getByText('2/11 shared')).toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: 'Assets' })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Expand Character' }))

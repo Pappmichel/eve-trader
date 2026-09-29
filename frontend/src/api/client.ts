@@ -647,6 +647,37 @@ export const charSkillsApi = {
   sync: () => post<T.CharInfoSyncResult>('/api/char-skills/sync', {}),
 }
 
+// -------------------------------------------------------------- notifications
+export interface NotificationQuery {
+  characterId?: number | null
+  type?: string | null
+  category?: string | null
+  unreadOnly?: boolean
+  limit?: number
+  offset?: number
+}
+
+export const charNotificationsApi = {
+  list: (o: NotificationQuery = {}) => {
+    const q = new URLSearchParams()
+    if (o.characterId) q.set('character_id', String(o.characterId))
+    if (o.type) q.set('type', o.type)
+    if (o.category) q.set('category', o.category)
+    if (o.unreadOnly) q.set('unread_only', 'true')
+    if (o.limit) q.set('limit', String(o.limit))
+    if (o.offset) q.set('offset', String(o.offset))
+    const qs = q.toString()
+    return get<T.NotificationsList>(`/api/char-notifications/notifications${qs ? `?${qs}` : ''}`)
+  },
+  detail: (characterId: number, notificationId: number) =>
+    get<T.NotificationDetail>(`/api/char-notifications/notifications/${characterId}/${notificationId}`),
+  setRead: (characterId: number, notificationIds: number[], read: boolean) =>
+    post<{ changed: number }>('/api/char-notifications/read', {
+      character_id: characterId, notification_ids: notificationIds, read,
+    }),
+  sync: () => post<T.CharInfoSyncResult>('/api/char-notifications/sync', {}),
+}
+
 // -------------------------------------------------------------- mail
 export const charMailApi = {
   folders: () => get<T.MailFolders>('/api/char-mail/folders'),

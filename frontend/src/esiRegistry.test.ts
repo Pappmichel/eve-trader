@@ -49,4 +49,11 @@ describe('esiRegistry Character Management kinds', () => {
     // the other live kinds keep the default wording (no override)
     expect(kindByKey('location')!.liveNote).toBeUndefined()
   })
+
+  it('mirrors phase 6: Notifications is a synced snapshot kind for its own tool', () => {
+    const n = kindByKey('notifications')!
+    expect(n.consumingTools).toEqual(['char_notifications'])
+    expect(n.liveOnly).toBeUndefined()
+    expect(toolLabel('char_notifications')).toBe('Notifications')
+  })
 })

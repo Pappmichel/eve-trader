@@ -45,6 +45,8 @@ export default function CharacterManagementHub() {
             description="Skill points, attributes, training queues, every trained skill and a skills matrix across your characters." />
           <ToolCard tools={tools} toolKey="char_mail" to="/character-management/mail" title="Mail"
             description="A mail client for all your characters: read live from ESI, with an optional searchable archive." />
+          <ToolCard tools={tools} toolKey="char_notifications" to="/character-management/notifications" title="Notifications"
+            description="Structure attacks, war declarations, sovereignty and other in-game notifications across your characters." />
         </SimpleGrid>
       )}
     </Container>

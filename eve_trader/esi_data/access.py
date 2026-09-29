@@ -125,6 +125,8 @@ def read_esi(data_kind: str, tool_key: str, **filters) -> list[dict]:
         rows.extend(_read_standings(tool_key, owner_id_filter))
     elif data_kind == "loyalty":
         rows.extend(_read_loyalty(tool_key, owner_id_filter))
+    elif data_kind == "notifications":
+        rows.extend(_read_notifications(tool_key, owner_id_filter))
     elif data_kind == "clones":
         rows.extend(_read_clones(tool_key, owner_id_filter))
     elif data_kind == "implants":
@@ -422,6 +424,15 @@ def _read_loyalty(tool_key: str, owner_id) -> list[dict]:
         {"owner_type": "character", "owner_id": int(r[0]), "corporation_id": int(r[1]),
          "loyalty_points": int(r[2])}
         for r in storage.load_character_loyalty_points(ids)
+    ]
+
+
+def _read_notifications(tool_key: str, owner_id) -> list[dict]:
+    ids = _filter_ids(_shared_owner_ids("notifications", tool_key, "character"), owner_id)
+    return [
+        {"owner_type": "character", "owner_id": int(r[0]), "notification_id": int(r[1]), "type": r[2],
+         "sender_id": r[3], "sender_type": r[4], "sent_at": r[5], "esi_is_read": bool(r[6]), "text": r[7]}
+        for r in storage.load_character_notifications(ids)
     ]
 
 

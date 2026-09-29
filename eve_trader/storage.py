@@ -2786,6 +2786,7 @@ def delete_owner_snapshot_rows(
         "character_standings", "character_loyalty_points",
         "character_skills", "character_attributes", "character_skillqueue",
         "character_clone_meta", "character_jump_clones", "character_jump_clone_implants", "character_implants",
+        "character_notifications", "character_notification_reads",
     }
     if table not in allowed:
         raise ValueError(f"not a per-owner snapshot table: {table}")
@@ -2794,7 +2795,8 @@ def delete_owner_snapshot_rows(
                       "character_wallet_balances", "corp_wallet_balances",
                       "character_standings", "character_loyalty_points",
                       "character_skills", "character_attributes", "character_skillqueue",
-                      "character_clone_meta", "character_jump_clones", "character_jump_clone_implants", "character_implants"):
+                      "character_clone_meta", "character_jump_clones", "character_jump_clone_implants", "character_implants",
+                      "character_notifications", "character_notification_reads"):
             col = "owner_character_id" if owner_character_id is not None else "owner_corporation_id"
             oid = owner_character_id if owner_character_id is not None else owner_corporation_id
             if oid is None:
@@ -3594,6 +3596,85 @@ def load_character_implants(character_ids: list[int]) -> list[tuple]:
             "ORDER BY owner_character_id, type_id",
             character_ids,
         ).fetchall()
+
+
+# ------------------------------------------- Character Management: notifications (phase 6)
+def replace_character_notifications(character_id: int, rows: list[tuple]) -> None:
+    """Mirrors ESI's current notification list for one character. `rows`:
+    [(notification_id, type, sender_id, sender_type, sent_at, esi_is_read,
+    text), ...]. Local read flags for notifications no longer in the list are
+    dropped (they could never be shown again)."""
+    with connect() as conn:
+        conn.execute("DELETE FROM character_notifications WHERE owner_character_id = ?", (character_id,))
+        if rows:
+            conn.executemany(
+                "INSERT INTO character_notifications (owner_character_id, notification_id, type, sender_id, "
+                "sender_type, sent_at, esi_is_read, text, synced_at) VALUES (?,?,?,?,?,?,?,?, now()) "
+                "ON CONFLICT (tenant_id, owner_character_id, notification_id) DO NOTHING",
+                [(character_id, *row) for row in rows],
+            )
+        keep = [int(r[0]) for r in rows]
+        if keep:
+            ph = ",".join("?" * len(keep))
+            conn.execute(
+                "DELETE FROM character_notification_reads WHERE owner_character_id = ? "
+                f"AND notification_id NOT IN ({ph})", [character_id, *keep],
+            )
+        else:
+            conn.execute("DELETE FROM character_notification_reads WHERE owner_character_id = ?", (character_id,))
+
+
+def load_character_notifications(character_ids: list[int]) -> list[tuple]:
+    """`(owner_character_id, notification_id, type, sender_id, sender_type,
+    sent_at, esi_is_read, text)`, newest first (empty list -> empty result)."""
+    if not character_ids:
+        return []
+    ph = ",".join("?" * len(character_ids))
+    with connect() as conn:
+        return conn.execute(
+            "SELECT owner_character_id, notification_id, type, sender_id, sender_type, sent_at, esi_is_read, text "
+            f"FROM character_notifications WHERE owner_character_id IN ({ph}) "
+            "ORDER BY sent_at DESC, notification_id DESC",
+            character_ids,
+        ).fetchall()
+
+
+def set_notifications_read(character_id: int, notification_ids: list[int], read: bool) -> int:
+    """Sets/clears this app's own read flag; only ids that exist in the
+    character's snapshot are touched. Returns how many rows changed."""
+    ids = sorted({int(i) for i in notification_ids})
+    if not ids:
+        return 0
+    ph = ",".join("?" * len(ids))
+    with connect() as conn:
+        if read:
+            cur = conn.execute(
+                "INSERT INTO character_notification_reads (owner_character_id, notification_id) "
+                f"SELECT owner_character_id, notification_id FROM character_notifications "
+                f"WHERE owner_character_id = ? AND notification_id IN ({ph}) "
+                "ON CONFLICT (tenant_id, owner_character_id, notification_id) DO NOTHING",
+                [character_id, *ids],
+            )
+        else:
+            cur = conn.execute(
+                f"DELETE FROM character_notification_reads WHERE owner_character_id = ? AND notification_id IN ({ph})",
+                [character_id, *ids],
+            )
+        return cur.rowcount
+
+
+def load_notification_reads(character_ids: list[int]) -> set[tuple[int, int]]:
+    """`{(owner_character_id, notification_id)}` flagged read locally."""
+    if not character_ids:
+        return set()
+    ph = ",".join("?" * len(character_ids))
+    with connect() as conn:
+        return {
+            (int(r[0]), int(r[1])) for r in conn.execute(
+                f"SELECT owner_character_id, notification_id FROM character_notification_reads "
+                f"WHERE owner_character_id IN ({ph})", character_ids,
+            ).fetchall()
+        }
 
 
 # ------------------------------------------- Character Management: skills (phase 2)

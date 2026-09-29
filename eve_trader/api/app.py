@@ -26,7 +26,7 @@ from ..config import ACCESS_CONFIG, OAUTH_CONFIG, TRADING_CONFIG, apply_config_o
 from ..doctrine.config import DOCTRINE_CONFIG
 from ..production.config import PRODUCTION_CONFIG
 from .routers import (
-    admin, auth, char_info, char_mail, char_skills, characters, doctrine, errors, gate, module_reprocessing, portfolio, production, refining, sorting,
+    admin, auth, char_info, char_mail, char_notifications, char_skills, characters, doctrine, errors, gate, module_reprocessing, portfolio, production, refining, sorting,
     station_trading, trading,
 )
 
@@ -108,6 +108,7 @@ _TOOL_PATH_PREFIXES = {
     "/api/char-info/": "char_info",
     "/api/char-skills/": "char_skills",
     "/api/char-mail/": "char_mail",
+    "/api/char-notifications/": "char_notifications",
 }
 
 
@@ -389,6 +390,7 @@ def create_app() -> FastAPI:
     app.include_router(char_info.router, prefix="/api/char-info", tags=["char_info"])
     app.include_router(char_skills.router, prefix="/api/char-skills", tags=["char_skills"])
     app.include_router(char_mail.router, prefix="/api/char-mail", tags=["char_mail"])
+    app.include_router(char_notifications.router, prefix="/api/char-notifications", tags=["char_notifications"])
     app.include_router(errors.router, prefix="/api/errors", tags=["errors"])
 
     if FRONTEND_DIST.exists():

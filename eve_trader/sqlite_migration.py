@@ -144,6 +144,8 @@ KNOWN_NON_MIGRATED_TABLES: dict[str, str] = {
     "character_loyalty_points": "Postgres-native (CHARACTER_MANAGEMENT_PLAN.md - loyalty ESI data kind, never existed in the pre-migration SQLite schema)",
     "character_skills": "Postgres-native (CHARACTER_MANAGEMENT_PLAN.md phase 2 - per-skill rows, never existed in the pre-migration SQLite schema)",
     "character_attributes": "Postgres-native (CHARACTER_MANAGEMENT_PLAN.md phase 2 - attributes/SP totals, never existed in the pre-migration SQLite schema)",
+    "character_notifications": "Postgres-native (CHARACTER_MANAGEMENT_PLAN.md phase 6 - notifications ESI data kind, never existed in the pre-migration SQLite schema)",
+    "character_notification_reads": "Postgres-native (CHARACTER_MANAGEMENT_PLAN.md phase 6 - local read flags, never existed in the pre-migration SQLite schema)",
     "character_clone_meta": "Postgres-native (CHARACTER_MANAGEMENT_PLAN.md phase 5c - clones ESI data kind, never existed in the pre-migration SQLite schema)",
     "character_jump_clones": "Postgres-native (CHARACTER_MANAGEMENT_PLAN.md phase 5c - clones ESI data kind, never existed in the pre-migration SQLite schema)",
     "character_jump_clone_implants": "Postgres-native (CHARACTER_MANAGEMENT_PLAN.md phase 5c - clones ESI data kind, never existed in the pre-migration SQLite schema)",

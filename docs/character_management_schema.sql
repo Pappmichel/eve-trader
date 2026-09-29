@@ -339,3 +339,44 @@ CREATE POLICY tenant_isolation ON character_implants
     USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 GRANT SELECT, INSERT, UPDATE, DELETE ON character_implants TO eve_trader_app;
+
+-- ------------------------------------------------------------------ phase 6
+-- Notifications. character_notifications mirrors what ESI currently returns
+-- for the character (replaced per owner on each successful sync). `text` is
+-- ESI's raw YAML, parsed on read. character_notification_reads is this app's
+-- own read flag (ESI has no write for notifications); it is separate so a
+-- snapshot replace never loses a flag, and pruned to ids still in the snapshot.
+
+CREATE TABLE IF NOT EXISTS character_notifications (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    owner_character_id BIGINT NOT NULL,
+    notification_id BIGINT NOT NULL,
+    type TEXT NOT NULL,
+    sender_id BIGINT,
+    sender_type TEXT,
+    sent_at TIMESTAMPTZ NOT NULL,
+    esi_is_read BOOLEAN NOT NULL DEFAULT FALSE,
+    text TEXT,
+    synced_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, owner_character_id, notification_id)
+);
+ALTER TABLE character_notifications ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON character_notifications;
+CREATE POLICY tenant_isolation ON character_notifications
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON character_notifications TO eve_trader_app;
+
+CREATE TABLE IF NOT EXISTS character_notification_reads (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    owner_character_id BIGINT NOT NULL,
+    notification_id BIGINT NOT NULL,
+    read_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, owner_character_id, notification_id)
+);
+ALTER TABLE character_notification_reads ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON character_notification_reads;
+CREATE POLICY tenant_isolation ON character_notification_reads
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON character_notification_reads TO eve_trader_app;

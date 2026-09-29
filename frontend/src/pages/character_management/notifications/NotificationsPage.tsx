@@ -1,0 +1,186 @@
+import { useState } from 'react'
+import {
+  Badge, Button, Checkbox, Container, Group, Loader, Modal, Select, Stack, Table, Text, Title, Tooltip,
+} from '@mantine/core'
+import { notifications } from '@mantine/notifications'
+import { IconArrowLeft } from '@tabler/icons-react'
+import { Link } from 'react-router-dom'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+
+import { ApiError, charNotificationsApi } from '../../../api/client'
+import type { NotificationItem } from '../../../api/types'
+import { dateTime } from '../../../format'
+import { useCharacterSync } from '../../../hooks/useCharacterSync'
+
+const PAGE = 50
+const KEY = ['char-notifications']
+
+function NotificationDetailModal({ item, onClose }: { item: NotificationItem | null; onClose: () => void }) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: [...KEY, 'detail', item?.character_id, item?.notification_id],
+    queryFn: () => charNotificationsApi.detail(item!.character_id, item!.notification_id),
+    enabled: item !== null, retry: false,
+  })
+  return (
+    <Modal opened={item !== null} onClose={onClose} title={item?.summary ?? 'Notification'} size="lg">
+      {isLoading && <Loader color="accent" />}
+      {error && <Text c="red" size="sm">{error instanceof ApiError ? error.message : 'Could not load this notification.'}</Text>}
+      {data && (
+        <Stack gap="xs">
+          <Text size="xs" c="dimmed">{data.type} · {dateTime(data.sent_at)}</Text>
+          {data.details.length === 0 ? (
+            <Text size="sm" c="dimmed">
+              {data.parsed ? 'This notification carries no details.' : 'The details of this notification could not be read.'}
+            </Text>
+          ) : (
+            <Table withTableBorder striped>
+              <Table.Tbody>
+                {data.details.map((d) => (
+                  <Table.Tr key={d.key}><Table.Td>{d.key}</Table.Td><Table.Td>{d.value}</Table.Td></Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          )}
+        </Stack>
+      )}
+    </Modal>
+  )
+}
+
+export default function NotificationsPage() {
+  const qc = useQueryClient()
+  const [characterId, setCharacterId] = useState<string | null>(null)
+  const [category, setCategory] = useState<string | null>(null)
+  const [type, setType] = useState<string | null>(null)
+  const [unreadOnly, setUnreadOnly] = useState(false)
+  const [offset, setOffset] = useState(0)
+  const [opened, setOpened] = useState<NotificationItem | null>(null)
+
+  const query = { characterId: characterId ? Number(characterId) : null, category, type, unreadOnly, limit: PAGE, offset }
+  const { data, isLoading, error } = useQuery({
+    queryKey: [...KEY, 'list', query], queryFn: () => charNotificationsApi.list(query), retry: false,
+  })
+
+  const refresh = useCharacterSync(
+    'Notifications refresh', charNotificationsApi.sync, [KEY],
+    'Fetches the current notification list from ESI for every character shared with Notifications.',
+  )
+  const setRead = useMutation({
+    mutationFn: (v: { item: NotificationItem; read: boolean }) =>
+      charNotificationsApi.setRead(v.item.character_id, [v.item.notification_id], v.read),
+    onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
+    onError: (e) => notifications.show({
+      title: 'Could not change the flag', message: e instanceof ApiError ? e.message : 'Request failed.', color: 'danger',
+    }),
+  })
+
+  // Any filter change goes back to the first page.
+  const filter = (apply: () => void) => { apply(); setOffset(0) }
+  const items = data?.items ?? []
+  const total = data?.total ?? 0
+  const neverSynced = (data?.characters ?? []).filter((c) => c.synced_at === null)
+
+  return (
+    <Container size="xl" py="xl">
+      <Group justify="space-between" align="flex-start" mb="md">
+        <div>
+          <Title order={1}>Notifications</Title>
+          <Text size="sm" c="dimmed">
+            In-game notifications of your characters. ESI has no way to mark them read, so “read” here is this
+            app&apos;s own flag; a notification you already read in the game counts as read.
+          </Text>
+        </div>
+        <Group gap="xs">
+          <Tooltip label={refresh.tooltip} disabled={!refresh.tooltip} multiline w={280}>
+            <Button size="xs" variant="default" leftSection={refresh.tierIcon}
+              onClick={() => refresh.mutate()} loading={refresh.isPending}>
+              Refresh
+            </Button>
+          </Tooltip>
+          <Button component={Link} to="/character-management" variant="subtle" leftSection={<IconArrowLeft size={14} />}>
+            Back
+          </Button>
+        </Group>
+      </Group>
+
+      <Text size="xs" c="dimmed" mb="md">
+        Which characters appear is decided on the{' '}
+        <Text component={Link} to="/character-management/characters" span c="accent" td="underline">Characters page</Text>.
+      </Text>
+
+      {isLoading ? <Loader color="accent" /> : error || !data ? (
+        <Text c="red">{error instanceof ApiError ? error.message : 'Could not load notifications.'}</Text>
+      ) : data.characters.length === 0 ? (
+        <Text c="dimmed">No character is shared with Notifications. Tick it for a character on the Characters page.</Text>
+      ) : (
+        <Stack gap="sm">
+          <Group align="flex-end">
+            <Select label="Character" placeholder="All characters" clearable value={characterId}
+              onChange={(v) => filter(() => setCharacterId(v))}
+              data={data.characters.map((c) => ({ value: String(c.character_id), label: c.character_name }))} />
+            <Select label="Category" placeholder="All" clearable value={category}
+              onChange={(v) => filter(() => { setCategory(v); setType(null) })}
+              data={data.categories.map((c) => ({ value: c.category, label: `${c.label} (${c.count})` }))} />
+            <Select label="Type" placeholder="All" clearable searchable value={type}
+              onChange={(v) => filter(() => setType(v))}
+              data={data.types.map((t) => ({ value: t.type, label: `${t.label} (${t.count})` }))} />
+            <Checkbox label={`Unread only (${data.unread_total})`} checked={unreadOnly}
+              onChange={(e) => { const checked = e.currentTarget.checked; filter(() => setUnreadOnly(checked)) }} />
+          </Group>
+
+          {neverSynced.length > 0 && (
+            <Text size="xs" c="dimmed">
+              Not synced yet: {neverSynced.map((c) => c.character_name).join(', ')}. Press Refresh.
+            </Text>
+          )}
+
+          {items.length === 0 ? <Text c="dimmed">No notifications match.</Text> : (
+            <Table withTableBorder striped highlightOnHover>
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>When</Table.Th><Table.Th>Character</Table.Th><Table.Th>Notification</Table.Th><Table.Th />
+                </Table.Tr>
+              </Table.Thead>
+              <Table.Tbody>
+                {items.map((n) => (
+                  <Table.Tr key={`${n.character_id}-${n.notification_id}`}>
+                    <Table.Td>{dateTime(n.sent_at)}</Table.Td>
+                    <Table.Td>{n.character_name}</Table.Td>
+                    <Table.Td>
+                      <Group gap="xs" wrap="nowrap">
+                        {!n.read && <Badge size="xs" color="accent">new</Badge>}
+                        <Button variant="subtle" size="compact-sm" onClick={() => setOpened(n)}
+                          styles={{ label: { fontWeight: n.read ? 400 : 700 } }}>
+                          {n.summary}
+                        </Button>
+                      </Group>
+                    </Table.Td>
+                    <Table.Td ta="right">
+                      {n.read_in_game ? (
+                        <Text size="xs" c="dimmed">read in game</Text>
+                      ) : (
+                        <Button size="compact-xs" variant="default" loading={setRead.isPending}
+                          onClick={() => setRead.mutate({ item: n, read: !n.read })}>
+                          {n.read ? 'Mark unread' : 'Mark read'}
+                        </Button>
+                      )}
+                    </Table.Td>
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          )}
+
+          <Group justify="space-between">
+            <Text size="xs" c="dimmed">{total === 0 ? '0' : `${offset + 1}–${Math.min(offset + PAGE, total)}`} of {total}</Text>
+            <Group gap="xs">
+              <Button size="xs" variant="default" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}>Previous</Button>
+              <Button size="xs" variant="default" disabled={offset + PAGE >= total} onClick={() => setOffset(offset + PAGE)}>Next</Button>
+            </Group>
+          </Group>
+        </Stack>
+      )}
+      <NotificationDetailModal item={opened} onClose={() => setOpened(null)} />
+    </Container>
+  )
+}

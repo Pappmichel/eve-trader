@@ -60,6 +60,8 @@ _KIND_TABLES: dict[str, dict[str, tuple[str, ...]]] = {
     # Phase 5c.
     "clones": {"character": ("character_clone_meta", "character_jump_clones", "character_jump_clone_implants")},
     "implants": {"character": ("character_implants",)},
+    # Phase 6. The local read flags go with the snapshot.
+    "notifications": {"character": ("character_notifications", "character_notification_reads")},
 }
 
 

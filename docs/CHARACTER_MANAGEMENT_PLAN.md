@@ -785,6 +785,32 @@ Original design:
   resolution chain.
 
 ### Phase 6 - Notifications (`char_notifications`)
+**Status: implemented.** What shipped, next to the design below:
+- Grant `char_notifications`, kind `notifications` (scope
+  `esi-characters.read_notifications.v1`, normal tier, a snapshot kind).
+  `character_notifications` mirrors ESI's current list per character (replaced
+  on each sync; ESI decides how far back it goes) and holds the raw YAML `text`;
+  it is parsed on read with `ruamel.yaml`'s safe loader (already a dependency).
+  A body that is oversized, malformed, not a mapping or has non-string keys
+  parses to `{}` and the notification still lists under its humanised type.
+- Only a few types get more than the humanised name: place (solar system) and
+  structure type when the body carries them, and shield/armor/hull percentages
+  for `StructureUnderAttack`. Field names of other types are unverified offline,
+  so the detail modal lists the parsed keys instead of guessing prose.
+  Categories (structures, sovereignty, war, corporation, moon, starbases,
+  combat, other) come from type prefixes; the pickers count what is left after
+  the other filters.
+- Read flag: `character_notification_reads`, this app's own; a notification
+  counts as read if ESI already said so or the flag is set. An in-game read can
+  not be undone from here (no "mark unread" for it). Flags of notifications that
+  left ESI's list are pruned on each sync; stale clear removes both tables.
+- Routes under `/api/char-notifications/`: `GET /notifications` (character,
+  type, category, unread_only, limit<=200, offset), `GET /notifications/{cid}/{nid}`,
+  `POST /read`, `POST /sync`. Existing deployments apply the schema file again.
+- Not done: hub badge for unread notifications (Admin-style badge would need a
+  cheap count endpoint; deferred until asked for).
+
+Original design:
 - Add the `notifications` kind plus a table.
 - The ESI `text` is YAML: parse the known types (structure attacked or
   reinforced, war declared, sov) into readable lines, and fall back to the

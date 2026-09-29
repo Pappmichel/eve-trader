@@ -220,6 +220,18 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         consuming_tools=("char_info",),
         freshness_tier=TIER_RARE,
     ),
+    # Phase 6: notifications, a snapshot kind (the raw YAML text is parsed on
+    # read). One scope, consumed only by Notifications.
+    OwnedDataKind(
+        key="notifications",
+        label="Notifications",
+        group=GROUP_2,
+        character_scope="esi-characters.read_notifications.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_notifications",),
+        freshness_tier=TIER_NORMAL,
+    ),
     OwnedDataKind(
         key="location",
         label="Location",

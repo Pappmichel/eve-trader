@@ -411,6 +411,19 @@ def fetch_character_implants(
     return {"written": len(raw)}
 
 
+def fetch_character_notifications(
+    client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
+) -> dict:
+    raw = client.character_notifications(owner_id, auth_role=auth_role)
+    rows = [
+        (int(n["notification_id"]), n["type"], n.get("sender_id"), n.get("sender_type"),
+         n["timestamp"], bool(n.get("is_read", False)), n.get("text"))
+        for n in raw
+    ]
+    storage.replace_character_notifications(owner_id, rows)
+    return {"written": len(rows)}
+
+
 # ------------------------------------------------------------------- skills
 def fetch_character_skills(
     client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
@@ -664,6 +677,7 @@ FETCHERS: dict[tuple[str, str], Callable] = {
     ("skillqueue", "character"): fetch_character_skillqueue,
     ("clones", "character"): fetch_character_clones,
     ("implants", "character"): fetch_character_implants,
+    ("notifications", "character"): fetch_character_notifications,
     ("standings", "character"): fetch_character_standings,
     ("loyalty", "character"): fetch_character_loyalty,
     ("contracts", "character"): fetch_character_contracts,

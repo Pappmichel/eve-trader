@@ -1377,6 +1377,13 @@ class ESIClient:
         return self._get(f"/characters/{character_id}/standings/",
                          params={"datasource": "tranquility"}, auth_role=auth_role)
 
+    def character_notifications(self, character_id: int, auth_role: str) -> list[dict]:
+        """Requires esi-characters.read_notifications.v1. [{"notification_id",
+        "type", "sender_id", "sender_type", "timestamp", "is_read"?, "text"?}].
+        Snapshot-synced; `text` is YAML."""
+        return self._get(f"/characters/{character_id}/notifications/",
+                         params={"datasource": "tranquility"}, auth_role=auth_role)
+
     def character_clones(self, character_id: int, auth_role: str) -> dict:
         """Requires esi-clones.read_clones.v1. {"home_location": {"location_id",
         "location_type"}, "jump_clones": [{"jump_clone_id", "location_id",

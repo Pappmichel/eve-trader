@@ -81,7 +81,7 @@ def test_group_2_is_character_only_kinds_with_no_corp_variant():
     # skills + Character Management phase 1 (docs/CHARACTER_MANAGEMENT_PLAN.md).
     assert set(group_2) == {
         "skills", "skillqueue", "standings", "loyalty", "location", "ship", "online", "mail",
-        "clones", "implants",
+        "clones", "implants", "notifications",
     }
     for kind in group_2.values():
         assert kind.corporation_scope is None

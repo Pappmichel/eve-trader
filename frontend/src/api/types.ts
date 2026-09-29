@@ -1646,6 +1646,43 @@ export interface DoctrineCheck {
 }
 
 
+// Mirrors eve_trader/character_management/notification_actions.py.
+export interface NotificationItem {
+  character_id: number
+  character_name: string | null
+  notification_id: number
+  type: string
+  category: string
+  sent_at: string | null
+  summary: string
+  read: boolean
+  read_in_game: boolean
+  sender_id: number | null
+  sender_type: string | null
+}
+
+export interface NotificationsList {
+  items: NotificationItem[]
+  total: number
+  unread_total: number
+  types: { type: string; label: string; count: number }[]
+  categories: { category: string; label: string; count: number }[]
+  characters: { character_id: number; character_name: string; synced_at: string | null; last_error: string | null }[]
+  hidden_characters: { character_id: number; character_name: string }[]
+}
+
+export interface NotificationDetail {
+  character_id: number
+  notification_id: number
+  type: string
+  category: string
+  sent_at: string | null
+  summary: string
+  details: { key: string; value: string }[]
+  parsed: boolean
+  read: boolean
+}
+
 // ---------------------------------------------------- Mail (Character Management)
 // Mirrors eve_trader/character_management/mail_actions.py.
 export interface MailRecipient {
