@@ -138,6 +138,7 @@ describe('Character Info page', () => {
           home: { location_id: 60003760, location_type: 'station', location_name: 'Jita IV - Moon 4' },
           last_clone_jump_date: null,
           last_station_change_date: null,
+          clone_jump_available_at: null,
           jump_clones: [
             {
               jump_clone_id: 7, name: null, location_id: 60008494, location_type: 'station',
