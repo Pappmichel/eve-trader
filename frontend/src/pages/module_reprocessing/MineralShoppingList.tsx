@@ -153,33 +153,35 @@ export default function MineralShoppingList() {
       {rows.length === 0 ? (
         <HintCard>No mineral requirements yet - add one above.</HintCard>
       ) : (
-        <Table maw={640} withTableBorder>
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th>Mineral</Table.Th>
-              <Table.Th>Required Quantity</Table.Th>
-              <Table.Th />
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {rows.map((r, index) => (
-              <Table.Tr key={r.type_id}>
-                <Table.Td>{r.name}</Table.Td>
-                <Table.Td>
-                  <NumberInput size="xs" min={1} value={r.required_qty} thousandSeparator
-                    onChange={(v) => setRows((all) => all.map((row, i) =>
-                      i === index ? { ...row, required_qty: Number(v) || 0 } : row))} />
-                </Table.Td>
-                <Table.Td w={50}>
-                  <ActionIcon variant="subtle" color="danger" aria-label={`Remove ${r.name}`}
-                    onClick={() => setRows((all) => all.filter((_, i) => i !== index))}>
-                    <IconTrash size={14} />
-                  </ActionIcon>
-                </Table.Td>
+        <Table.ScrollContainer minWidth={400}>
+          <Table maw={640} withTableBorder>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>Mineral</Table.Th>
+                <Table.Th>Required Quantity</Table.Th>
+                <Table.Th />
               </Table.Tr>
-            ))}
-          </Table.Tbody>
-        </Table>
+            </Table.Thead>
+            <Table.Tbody>
+              {rows.map((r, index) => (
+                <Table.Tr key={r.type_id}>
+                  <Table.Td>{r.name}</Table.Td>
+                  <Table.Td>
+                    <NumberInput size="xs" min={1} value={r.required_qty} thousandSeparator
+                      onChange={(v) => setRows((all) => all.map((row, i) =>
+                        i === index ? { ...row, required_qty: Number(v) || 0 } : row))} />
+                  </Table.Td>
+                  <Table.Td w={50}>
+                    <ActionIcon variant="subtle" color="danger" aria-label={`Remove ${r.name}`}
+                      onClick={() => setRows((all) => all.filter((_, i) => i !== index))}>
+                      <IconTrash size={14} />
+                    </ActionIcon>
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        </Table.ScrollContainer>
       )}
 
       <Group>

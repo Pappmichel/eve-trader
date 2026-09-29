@@ -38,7 +38,7 @@ export default function Candidates() {
 
   return (
     <>
-      <SimpleGrid cols={2} mb="md">
+      <SimpleGrid cols={{ base: 1, xs: 2 }} mb="md">
         <Card withBorder padding="sm">
           <Text size="xs" c="dimmed" tt="uppercase">Candidate Universe</Text>
           <Title order={3}>{universe?.length ?? 0}</Title>
@@ -54,7 +54,7 @@ export default function Candidates() {
       ) : isError ? (
         <DataTable data={[]} columns={columns} isError onRetry={refetch} maxHeight={560} />
       ) : display.length === 0 ? (
-        <HintCard>No candidates loaded yet. Click <b>Load Market Groups</b> on the left, then <b>Filter Candidates</b>.</HintCard>
+        <HintCard>No candidates loaded yet. Click <b>Load Market Groups</b> in the side menu, then <b>Filter Candidates</b>.</HintCard>
       ) : (
         <DataTable data={display} columns={columns} maxHeight={560} dataUpdatedAt={displayUpdatedAt} />
       )}

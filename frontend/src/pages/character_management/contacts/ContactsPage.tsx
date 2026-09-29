@@ -33,25 +33,27 @@ function ContactsTab({ characterId }: { characterId: number }) {
             <TextInput placeholder="Filter by name or label" value={filter}
               onChange={(e) => setFilter(e.currentTarget.value)} maw={320} />
             {rows.length === 0 ? <Text c="dimmed">No contacts{needle ? ' match' : ''}.</Text> : (
-              <Table withTableBorder striped>
-                <Table.Thead>
-                  <Table.Tr><Table.Th>Name</Table.Th><Table.Th>Type</Table.Th><Table.Th ta="right">Standing</Table.Th><Table.Th>Labels</Table.Th></Table.Tr>
-                </Table.Thead>
-                <Table.Tbody>
-                  {rows.map((c) => (
-                    <Table.Tr key={c.contact_id}>
-                      <Table.Td>
-                        {c.name}
-                        {c.is_blocked && <Badge ml="xs" size="xs" color="danger">blocked</Badge>}
-                        {c.is_watched && <Badge ml="xs" size="xs" color="info">watched</Badge>}
-                      </Table.Td>
-                      <Table.Td>{TYPE_LABEL[c.contact_type] ?? c.contact_type}</Table.Td>
-                      <Table.Td ta="right" c={c.standing < 0 ? 'danger' : undefined}>{c.standing.toFixed(1)}</Table.Td>
-                      <Table.Td>{c.labels.join(', ')}</Table.Td>
-                    </Table.Tr>
-                  ))}
-                </Table.Tbody>
-              </Table>
+              <Table.ScrollContainer minWidth={500}>
+                <Table withTableBorder striped>
+                  <Table.Thead>
+                    <Table.Tr><Table.Th>Name</Table.Th><Table.Th>Type</Table.Th><Table.Th ta="right">Standing</Table.Th><Table.Th>Labels</Table.Th></Table.Tr>
+                  </Table.Thead>
+                  <Table.Tbody>
+                    {rows.map((c) => (
+                      <Table.Tr key={c.contact_id}>
+                        <Table.Td>
+                          {c.name}
+                          {c.is_blocked && <Badge ml="xs" size="xs" color="danger">blocked</Badge>}
+                          {c.is_watched && <Badge ml="xs" size="xs" color="info">watched</Badge>}
+                        </Table.Td>
+                        <Table.Td>{TYPE_LABEL[c.contact_type] ?? c.contact_type}</Table.Td>
+                        <Table.Td ta="right" c={c.standing < 0 ? 'danger' : undefined}>{c.standing.toFixed(1)}</Table.Td>
+                        <Table.Td>{c.labels.join(', ')}</Table.Td>
+                      </Table.Tr>
+                    ))}
+                  </Table.Tbody>
+                </Table>
+              </Table.ScrollContainer>
             )}
             <Text size="xs" c="dimmed">{v.contacts.length} contacts · read-only, changed in the game.</Text>
           </Stack>
@@ -96,18 +98,20 @@ function CalendarTab({ characterId }: { characterId: number }) {
     <>
       <FieldState field={data}>
         {(events) => events.length === 0 ? <Text c="dimmed">No upcoming events.</Text> : (
-          <Table withTableBorder striped highlightOnHover>
-            <Table.Thead><Table.Tr><Table.Th>When</Table.Th><Table.Th>Event</Table.Th><Table.Th>Response</Table.Th></Table.Tr></Table.Thead>
-            <Table.Tbody>
-              {events.map((e) => (
-                <Table.Tr key={e.event_id}>
-                  <Table.Td>{dateTime(e.event_date)}</Table.Td>
-                  <Table.Td><Button variant="subtle" size="compact-sm" onClick={() => setOpened(e)}>{e.title}</Button></Table.Td>
-                  <Table.Td>{e.response ?? '–'}</Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
+          <Table.ScrollContainer minWidth={400}>
+            <Table withTableBorder striped highlightOnHover>
+              <Table.Thead><Table.Tr><Table.Th>When</Table.Th><Table.Th>Event</Table.Th><Table.Th>Response</Table.Th></Table.Tr></Table.Thead>
+              <Table.Tbody>
+                {events.map((e) => (
+                  <Table.Tr key={e.event_id}>
+                    <Table.Td>{dateTime(e.event_date)}</Table.Td>
+                    <Table.Td><Button variant="subtle" size="compact-sm" onClick={() => setOpened(e)}>{e.title}</Button></Table.Td>
+                    <Table.Td>{e.response ?? '–'}</Table.Td>
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </Table.ScrollContainer>
         )}
       </FieldState>
       <EventModal characterId={characterId} event={opened} onClose={() => setOpened(null)} />

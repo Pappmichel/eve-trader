@@ -86,7 +86,7 @@ export default function ProductionSettings() {
         The buy-side broker's fee for Jita purchases is set once, in Trading Settings - it's the same real
         broker's-fee rate regardless of which tool is buying, not an independently tunable Production number.
       </Text>
-      <SimpleGrid cols={2}>
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <NumberInput label="Component overbuild buffer" suffix="%" decimalScale={2} value={form.component_overbuild * 100} min={0} step={5}
           onChange={(v) => set('component_overbuild', Number(v) / 100)} />
         <NumberInput label="Freight cost (ISK/m³)" value={form.haul_cost_per_m3} min={0} step={50}
@@ -108,7 +108,7 @@ export default function ProductionSettings() {
       </SimpleGrid>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Market &amp; Location</Title>
-      <SimpleGrid cols={2}>
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <TextInput label="Home market (appraise.gnf.lt slug)" value={form.home_market ?? ''}
           onChange={(e) => set('home_market', e.currentTarget.value)} />
         <StructureIdField label="Structure/location ID (assets/orders)" value={form.home_location_id ?? null}
@@ -134,7 +134,7 @@ export default function ProductionSettings() {
         need a genuinely bigger structure than a regular Capital Ship build) / manufacturing (everything else) -
         you can build in four different structures.
       </Text>
-      <SimpleGrid cols={2}>
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <Select label="Structure - Reactions" data={structureOptions.structure_types} value={form.reaction_structure_type}
           onChange={(v) => v && set('reaction_structure_type', v)} />
         <Select label="Rig - Reactions" data={structureOptions.rig_tiers} value={form.reaction_rig_tier}
@@ -154,7 +154,7 @@ export default function ProductionSettings() {
       </SimpleGrid>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Invention Skills</Title>
-      <SimpleGrid cols={3}>
+      <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }}>
         <NumberInput label="Encryption Methods" value={form.encryption_skill_level} min={0} max={5} step={1}
           onChange={(v) => set('encryption_skill_level', Number(v))} />
         <NumberInput label="Datacore skill 1" value={form.datacore_skill_1_level} min={0} max={5} step={1}
@@ -200,7 +200,7 @@ export default function ProductionSettings() {
               <Text size="xs" c="dimmed">Current: {systemSettings.component_system_name} (ID {systemSettings.component_system_id})</Text>
             )}
           </Group>
-          <SimpleGrid cols={2}>
+          <SimpleGrid cols={{ base: 1, xs: 2 }}>
             <Stack gap={2}>
               <NumberInput label="Reaction cost index override" suffix="%" decimalScale={2} placeholder="Auto (from system above)"
                 value={form.reaction_cost_index_override != null ? form.reaction_cost_index_override * 100 : ''} min={0} max={100} step={0.1}
@@ -225,7 +225,7 @@ export default function ProductionSettings() {
               <Text size="xs" c="dimmed">Current: {systemSettings.manufacturing_system_name} (ID {systemSettings.manufacturing_system_id})</Text>
             )}
           </Group>
-          <SimpleGrid cols={2}>
+          <SimpleGrid cols={{ base: 1, xs: 2 }}>
             <Stack gap={2}>
               <NumberInput label="Manufacturing cost index override" suffix="%" decimalScale={2} placeholder="Auto (from system above)"
                 value={form.manufacturing_cost_index_override != null ? form.manufacturing_cost_index_override * 100 : ''} min={0} max={100} step={0.1}

@@ -47,57 +47,59 @@ export default function Slots() {
   if (isLoading) return <Text c="dimmed">Loading…</Text>
   if (!data || data.length === 0) {
     return (
-      <HintCard>No character slot data yet - run <b>Refresh what I need</b> in the sidebar.</HintCard>
+      <HintCard>No character slot data yet - run <b>Refresh what I need</b> in the side menu.</HintCard>
     )
   }
 
   return (
     <Stack>
-      <Table striped highlightOnHover>
-        <Table.Thead>
-          <Table.Tr>
-            <Table.Th rowSpan={2}>Character</Table.Th>
-            <Table.Th rowSpan={2}>Excluded</Table.Th>
-            {JOB_TYPES.map((jt) => (
-              <Table.Th key={jt} colSpan={3} style={{ textAlign: 'center' }}>{jt}</Table.Th>
-            ))}
-          </Table.Tr>
-          <Table.Tr>
-            {JOB_TYPES.map((jt) => (
-              <Fragment key={jt}>
-                <Table.Th>Total</Table.Th>
-                <Table.Th>Used</Table.Th>
-                <Table.Th>Free</Table.Th>
-              </Fragment>
-            ))}
-          </Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>
-          {rows.map((row) => (
-            <Table.Tr key={row.character_name} style={row.excluded ? { opacity: 0.5 } : undefined}>
-              <Table.Td>{row.character_name}</Table.Td>
-              <Table.Td>
-                <Checkbox
-                  aria-label={`Exclude ${row.character_name} from planning`}
-                  checked={row.excluded}
-                  disabled={setExcluded.isPending}
-                  onChange={(e) => setExcluded.mutate({ characterName: row.character_name, excluded: e.currentTarget.checked })}
-                />
-              </Table.Td>
-              {JOB_TYPES.map((jt) => {
-                const cell = row.byJobType[jt]
-                return (
-                  <Fragment key={jt}>
-                    <Table.Td>{cell ? qty(cell.total) : '–'}</Table.Td>
-                    <Table.Td>{cell ? qty(cell.used) : '–'}</Table.Td>
-                    <Table.Td>{cell ? qty(cell.free) : '–'}</Table.Td>
-                  </Fragment>
-                )
-              })}
+      <Table.ScrollContainer minWidth={700}>
+        <Table striped highlightOnHover>
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th rowSpan={2}>Character</Table.Th>
+              <Table.Th rowSpan={2}>Excluded</Table.Th>
+              {JOB_TYPES.map((jt) => (
+                <Table.Th key={jt} colSpan={3} style={{ textAlign: 'center' }}>{jt}</Table.Th>
+              ))}
             </Table.Tr>
-          ))}
-        </Table.Tbody>
-      </Table>
+            <Table.Tr>
+              {JOB_TYPES.map((jt) => (
+                <Fragment key={jt}>
+                  <Table.Th>Total</Table.Th>
+                  <Table.Th>Used</Table.Th>
+                  <Table.Th>Free</Table.Th>
+                </Fragment>
+              ))}
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {rows.map((row) => (
+              <Table.Tr key={row.character_name} style={row.excluded ? { opacity: 0.5 } : undefined}>
+                <Table.Td>{row.character_name}</Table.Td>
+                <Table.Td>
+                  <Checkbox
+                    aria-label={`Exclude ${row.character_name} from planning`}
+                    checked={row.excluded}
+                    disabled={setExcluded.isPending}
+                    onChange={(e) => setExcluded.mutate({ characterName: row.character_name, excluded: e.currentTarget.checked })}
+                  />
+                </Table.Td>
+                {JOB_TYPES.map((jt) => {
+                  const cell = row.byJobType[jt]
+                  return (
+                    <Fragment key={jt}>
+                      <Table.Td>{cell ? qty(cell.total) : '–'}</Table.Td>
+                      <Table.Td>{cell ? qty(cell.used) : '–'}</Table.Td>
+                      <Table.Td>{cell ? qty(cell.free) : '–'}</Table.Td>
+                    </Fragment>
+                  )
+                })}
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      </Table.ScrollContainer>
       <Text size="xs" c="dimmed">
         Manufacturing: Mass Production + Advanced Mass Production. Reactions: Mass Reactions + Advanced Mass Reactions.
         Science (ME/TE research, copying, invention): Laboratory Operation + Advanced Laboratory Operation.

@@ -101,7 +101,7 @@ export default function Shortlist() {
   if (!data || data.length === 0) {
     return (
       <HintCard>
-        No candidates yet. Click <b>Refresh Shortlist</b> on the left to scan Jita for wide bid-ask spreads.
+        No candidates yet. Click <b>Refresh Shortlist</b> in the side menu to scan Jita for wide bid-ask spreads.
       </HintCard>
     )
   }

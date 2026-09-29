@@ -32,7 +32,7 @@ export default function OreSettings() {
       <HintCard>Changes take effect immediately. Structure/rig/security/implant/skills are entered manually here, not pulled from ESI.</HintCard>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Ore/Ice Reprocessing Setup</Title>
-      <SimpleGrid cols={2}>
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <Select label="Structure" data={options.structure_types} value={form.structure_type}
           onChange={(v) => v && set('structure_type', v)} />
         <Select label="Rig" data={options.rig_tiers} value={form.rig_tier}
@@ -44,7 +44,7 @@ export default function OreSettings() {
       </SimpleGrid>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Skills</Title>
-      <SimpleGrid cols={3}>
+      <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }}>
         <NumberInput label="Reprocessing" value={form.reprocessing_skill_level} min={0} max={5} step={1}
           onChange={(v) => set('reprocessing_skill_level', Number(v))} />
         <NumberInput label="Reprocessing Efficiency" value={form.reprocessing_efficiency_skill_level} min={0} max={5} step={1}
@@ -59,25 +59,27 @@ export default function OreSettings() {
         Veldspar) - a family missing here is assumed maxed (level 5). Add one only to record a lower level.
       </Text>
       {families.length > 0 && (
-        <Table>
-          <Table.Tbody>
-            {families.map(([family, level]) => (
-              <Table.Tr key={family}>
-                <Table.Td>{family}</Table.Td>
-                <Table.Td>{level}</Table.Td>
-                <Table.Td>
-                  <ActionIcon size="sm" variant="subtle" color="danger" onClick={() => {
-                    const next = { ...form.ore_family_skill_levels }
-                    delete next[family]
-                    set('ore_family_skill_levels', next)
-                  }}>
-                    <IconTrash size={14} />
-                  </ActionIcon>
-                </Table.Td>
-              </Table.Tr>
-            ))}
-          </Table.Tbody>
-        </Table>
+        <Table.ScrollContainer minWidth={0}>
+          <Table>
+            <Table.Tbody>
+              {families.map(([family, level]) => (
+                <Table.Tr key={family}>
+                  <Table.Td>{family}</Table.Td>
+                  <Table.Td>{level}</Table.Td>
+                  <Table.Td>
+                    <ActionIcon size="sm" variant="subtle" color="danger" onClick={() => {
+                      const next = { ...form.ore_family_skill_levels }
+                      delete next[family]
+                      set('ore_family_skill_levels', next)
+                    }}>
+                      <IconTrash size={14} />
+                    </ActionIcon>
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        </Table.ScrollContainer>
       )}
       <Group align="flex-end">
         <TextInput label="Family (e.g. Veldspar)" value={newFamily} onChange={(e) => setNewFamily(e.currentTarget.value)} />
@@ -93,7 +95,7 @@ export default function OreSettings() {
       </Group>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Economy</Title>
-      <SimpleGrid cols={2}>
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <NumberInput label="Refining tax" suffix="%" decimalScale={2} value={form.refining_tax_rate * 100}
           min={0} max={100} step={1} onChange={(v) => set('refining_tax_rate', Number(v) / 100)} />
       </SimpleGrid>

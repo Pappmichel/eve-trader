@@ -172,7 +172,7 @@ export default function Jobs() {
       ) : isError ? (
         <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />
       ) : !data || data.length === 0 ? (
-        <HintCard>No active industry jobs - or not synced yet (&apos;Refresh what I need&apos; in the sidebar).</HintCard>
+        <HintCard>No active industry jobs - or not synced yet (&apos;Refresh what I need&apos; in the side menu).</HintCard>
       ) : (
         <>
           <Text size="xs" c="dimmed">{filtered.length} of {jobs.length} jobs</Text>

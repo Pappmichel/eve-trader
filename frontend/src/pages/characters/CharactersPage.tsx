@@ -737,7 +737,7 @@ export default function CharactersPage() {
 
   return (
     <Container size="xl" py="xl">
-      <Group justify="space-between" mb="lg" wrap="nowrap">
+      <Group justify="space-between" mb="lg" gap="sm">
         <div>
           <Text tt="uppercase" size="xs" c="dimmed" fw={600} lts={2}>ESI access</Text>
           <Title order={1}>Characters</Title>

@@ -21,16 +21,18 @@ function StandingsTable({ title, rows }: { title: string; rows: CharInfoStanding
   return (
     <div>
       <Text size="sm" fw={600} mb={4}>{title}</Text>
-      <Table withTableBorder striped>
-        <Table.Tbody>
-          {rows.map((r) => (
-            <Table.Tr key={r.from_id}>
-              <Table.Td>{r.name}</Table.Td>
-              <Table.Td ta="right" c={r.standing < 0 ? 'danger' : undefined}>{r.standing.toFixed(2)}</Table.Td>
-            </Table.Tr>
-          ))}
-        </Table.Tbody>
-      </Table>
+      <Table.ScrollContainer minWidth={0}>
+        <Table withTableBorder striped>
+          <Table.Tbody>
+            {rows.map((r) => (
+              <Table.Tr key={r.from_id}>
+                <Table.Td>{r.name}</Table.Td>
+                <Table.Td ta="right" c={r.standing < 0 ? 'danger' : undefined}>{r.standing.toFixed(2)}</Table.Td>
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      </Table.ScrollContainer>
     </div>
   )
 }
@@ -56,17 +58,19 @@ function WalletJournal({ characterId }: { characterId: number }) {
           </Text>
           {j.entries.length === 0 ? <Text size="sm" c="dimmed">No journal entries.</Text> : (
             <div style={{ maxHeight: 320, overflowY: 'auto' }}>
-              <Table withTableBorder striped>
-                <Table.Tbody>
-                  {j.entries.map((e, i) => (
-                    <Table.Tr key={e.id ?? i}>
-                      <Table.Td>{dateTime(e.date)}</Table.Td>
-                      <Table.Td>{(e.ref_type ?? 'unknown').replace(/_/g, ' ')}</Table.Td>
-                      <Table.Td ta="right" c={e.amount < 0 ? 'danger' : undefined}>{isk(e.amount)}</Table.Td>
-                    </Table.Tr>
-                  ))}
-                </Table.Tbody>
-              </Table>
+              <Table.ScrollContainer minWidth={0}>
+                <Table withTableBorder striped>
+                  <Table.Tbody>
+                    {j.entries.map((e, i) => (
+                      <Table.Tr key={e.id ?? i}>
+                        <Table.Td>{dateTime(e.date)}</Table.Td>
+                        <Table.Td>{(e.ref_type ?? 'unknown').replace(/_/g, ' ')}</Table.Td>
+                        <Table.Td ta="right" c={e.amount < 0 ? 'danger' : undefined}>{isk(e.amount)}</Table.Td>
+                      </Table.Tr>
+                    ))}
+                  </Table.Tbody>
+                </Table>
+              </Table.ScrollContainer>
             </div>
           )}
         </Stack>
@@ -126,16 +130,18 @@ function CharacterDetail({ characterId }: { characterId: number }) {
             {(rows) => rows.length === 0
               ? <Text size="sm" c="dimmed">No loyalty points.</Text>
               : (
-                <Table withTableBorder striped>
-                  <Table.Tbody>
-                    {rows.map((r) => (
-                      <Table.Tr key={r.corporation_id}>
-                        <Table.Td>{r.corporation_name}</Table.Td>
-                        <Table.Td ta="right">{qty(r.loyalty_points)} LP</Table.Td>
-                      </Table.Tr>
-                    ))}
-                  </Table.Tbody>
-                </Table>
+                <Table.ScrollContainer minWidth={0}>
+                  <Table withTableBorder striped>
+                    <Table.Tbody>
+                      {rows.map((r) => (
+                        <Table.Tr key={r.corporation_id}>
+                          <Table.Td>{r.corporation_name}</Table.Td>
+                          <Table.Td ta="right">{qty(r.loyalty_points)} LP</Table.Td>
+                        </Table.Tr>
+                      ))}
+                    </Table.Tbody>
+                  </Table>
+                </Table.ScrollContainer>
               )}
           </FieldState>
         )}
@@ -197,16 +203,18 @@ function CharacterDetail({ characterId }: { characterId: number }) {
         {(data.corporation_history ?? []).length === 0
           ? <Text size="sm" c="dimmed">Unavailable.</Text>
           : (
-            <Table withTableBorder striped>
-              <Table.Tbody>
-                {(data.corporation_history ?? []).map((h, i) => (
-                  <Table.Tr key={`${h.corporation_id}-${i}`}>
-                    <Table.Td>{h.corporation_name}</Table.Td>
-                    <Table.Td ta="right">{dateTime(h.start_date)}</Table.Td>
-                  </Table.Tr>
-                ))}
-              </Table.Tbody>
-            </Table>
+            <Table.ScrollContainer minWidth={0}>
+              <Table withTableBorder striped>
+                <Table.Tbody>
+                  {(data.corporation_history ?? []).map((h, i) => (
+                    <Table.Tr key={`${h.corporation_id}-${i}`}>
+                      <Table.Td>{h.corporation_name}</Table.Td>
+                      <Table.Td ta="right">{dateTime(h.start_date)}</Table.Td>
+                    </Table.Tr>
+                  ))}
+                </Table.Tbody>
+              </Table>
+            </Table.ScrollContainer>
           )}
       </div>
     </Stack>

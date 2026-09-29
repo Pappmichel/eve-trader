@@ -93,7 +93,7 @@ export default function RealizedTrades() {
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={480} />
   if (isError) return <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={480} />
   if (!data || data.length === 0) {
-    return <HintCard>No realized trades yet. Click <b>Reconcile Trades</b> on the left once Wallet is shared with Trading.</HintCard>
+    return <HintCard>No realized trades yet. Click <b>Reconcile Trades</b> in the side menu once Wallet is shared with Trading.</HintCard>
   }
 
   return (

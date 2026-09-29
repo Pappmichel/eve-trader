@@ -85,7 +85,7 @@ export default function Shortlist() {
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
   if (!data || data.length === 0) {
     return (
-      <HintCard>No run yet. Click <b>Refresh Shortlist</b> on the left - it scans for candidates and prices them in one go.</HintCard>
+      <HintCard>No run yet. Click <b>Refresh Shortlist</b> in the side menu - it scans for candidates and prices them in one go.</HintCard>
     )
   }
 

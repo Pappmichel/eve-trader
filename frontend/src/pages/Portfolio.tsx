@@ -216,7 +216,7 @@ function TotalWealthSection() {
       <Stat label="Total Wealth" value={isk(data.total_wealth)}
         hint="Every asset, wallet balance and blueprint shared with Portfolio - a separate, broader figure from Combined Value above" />
 
-      <SimpleGrid cols={3} spacing="md">
+      <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }} spacing="md">
         <Stat label="Assets" value={isk(data.wealth_assets_value)} />
         <Stat label="Blueprints" value={isk(data.wealth_blueprints_value)}
           hint="One market quote per BPO, regardless of its own ME/TE - a BPC has no separate quote of its own, so it counts here only once you set a manual price for it" />
@@ -269,7 +269,7 @@ export default function Portfolio() {
           <Stat label="Combined Value" value={isk(data.combined_value)}
             hint="Trading realized profit (latest reconciliation) + current Production stock value" />
 
-          <SimpleGrid cols={2} spacing="md">
+          <SimpleGrid cols={{ base: 1, xs: 2 }} spacing="md">
             <Stat label="Trading: Realized Profit" value={isk(data.trading_realized_profit)}
               hint={`${qty(data.trading_trade_count)} matched trades in latest reconciliation`} />
             <Stat label="Trading: Average Margin" value={pct(data.trading_average_margin)} />
@@ -294,7 +294,7 @@ export default function Portfolio() {
               { dataKey: 'production_stock_value', name: 'Production Stock Value', color: COLORS.info, formatter: isk },
             ]} />
 
-          <SimpleGrid cols={2} spacing="md">
+          <SimpleGrid cols={{ base: 1, xs: 2 }} spacing="md">
             <HistoryChart title="Trading Average Margin" rows={history ?? []}
               lines={[{ dataKey: 'trading_average_margin', name: 'Average Margin', color: COLORS.info, formatter: pct }]} />
             <HistoryChart title="Trading Daily Profit Volatility" rows={history ?? []}

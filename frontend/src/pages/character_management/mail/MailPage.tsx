@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Alert, Badge, Box, Button, Checkbox, Container, Divider, Drawer, Grid, Group, Loader, NavLink, Popover,
+  Alert, Badge, Box, Button, Checkbox, Collapse, Container, Divider, Drawer, Grid, Group, Loader, NavLink, Popover,
   ScrollArea, Stack, Text, TextInput, Title, Tooltip, UnstyledButton,
 } from '@mantine/core'
 import { useMediaQuery } from '@mantine/hooks'
 import { modals } from '@mantine/modals'
 import { notifications } from '@mantine/notifications'
-import { IconArrowLeft, IconPencil, IconSettings, IconTag } from '@tabler/icons-react'
+import { IconArrowLeft, IconChevronDown, IconChevronUp, IconPencil, IconSettings, IconTag } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
@@ -186,6 +186,7 @@ export default function MailPage() {
   // mail is open) just the reader with a way back. Columns are hidden with CSS,
   // not unmounted, so the list keeps its scroll position and loaded pages.
   const narrow = useMediaQuery('(max-width: 61.99em)') ?? false
+  const [foldersOpen, setFoldersOpen] = useState(false)
   const showBrowse = !narrow || opened === null
   const showReader = !narrow || opened !== null
   const hideUnless = (show: boolean) => (show ? undefined : { display: 'none' })
@@ -309,7 +310,9 @@ export default function MailPage() {
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['char-mail'] }),
   })
 
-  const select = (next: Selection) => { setSel(next); setOpened(null); setSearchTerm(''); setFilter('') }
+  const select = (next: Selection) => {
+    setSel(next); setOpened(null); setSearchTerm(''); setFilter(''); setFoldersOpen(false)
+  }
 
   return (
     <Container size="xl" py="lg">
@@ -344,6 +347,19 @@ export default function MailPage() {
 
       <Grid gap="md">
         <Grid.Col span={{ base: 12, md: 3 }} style={hideUnless(showBrowse)}>
+          {/* The folder tree is ~450px tall; stacked above the mail list on a
+              phone it pushed every mail off the first screen. There it is a
+              collapsed picker showing the current folder. */}
+          {narrow && (
+            <Button
+              variant="default" fullWidth justify="space-between" mb="xs" aria-expanded={foldersOpen}
+              rightSection={foldersOpen ? <IconChevronUp size={16} /> : <IconChevronDown size={16} />}
+              onClick={() => setFoldersOpen((o) => !o)}
+            >
+              Folder: {folderTitle(sel, folders.data)}
+            </Button>
+          )}
+          <Collapse expanded={!narrow || foldersOpen}>
           <Stack gap={0} aria-label="Folders">
             {folders.isLoading && <Loader size="sm" color="accent" />}
             {SYSTEM.map((s) => (
@@ -392,6 +408,7 @@ export default function MailPage() {
               </Text>
             )}
           </Stack>
+          </Collapse>
         </Grid.Col>
 
         <Grid.Col span={{ base: 12, md: 4 }} style={hideUnless(showBrowse)}>

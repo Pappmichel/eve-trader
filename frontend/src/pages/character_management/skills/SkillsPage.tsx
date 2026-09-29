@@ -114,37 +114,39 @@ function OverviewTab({ rows, onOpen }: { rows: SkillsOverviewRow[]; onOpen: (cha
 
 function GroupTable({ group }: { group: SkillGroup }) {
   return (
-    <Table withTableBorder striped>
-      <Table.Thead>
-        <Table.Tr>
-          <Table.Th>Skill</Table.Th>
-          <Table.Th ta="center">Level</Table.Th>
-          <Table.Th ta="right">Rank</Table.Th>
-          <Table.Th ta="right">SP</Table.Th>
-          <Table.Th ta="right">SP to V</Table.Th>
-        </Table.Tr>
-      </Table.Thead>
-      <Table.Tbody>
-        {group.skills.map((s) => (
-          <Table.Tr key={s.skill_id}>
-            <Table.Td>{s.name}</Table.Td>
-            <Table.Td ta="center">
-              <Badge size="sm" variant="light" color={s.trained_level >= 5 ? 'accent' : 'gray'}>
-                {level(s.trained_level)}
-              </Badge>
-              {s.active_level !== s.trained_level && (
-                <Tooltip label={`Active level ${level(s.active_level)} (trained ${level(s.trained_level)})`}>
-                  <Text span size="xs" c="dimmed"> ({level(s.active_level)})</Text>
-                </Tooltip>
-              )}
-            </Table.Td>
-            <Table.Td ta="right">{s.rank === null ? '–' : s.rank}</Table.Td>
-            <Table.Td ta="right">{qty(s.skillpoints)}</Table.Td>
-            <Table.Td ta="right">{s.sp_to_level_v === null ? '–' : qty(s.sp_to_level_v)}</Table.Td>
+    <Table.ScrollContainer minWidth={600}>
+      <Table withTableBorder striped>
+        <Table.Thead>
+          <Table.Tr>
+            <Table.Th>Skill</Table.Th>
+            <Table.Th ta="center">Level</Table.Th>
+            <Table.Th ta="right">Rank</Table.Th>
+            <Table.Th ta="right">SP</Table.Th>
+            <Table.Th ta="right">SP to V</Table.Th>
           </Table.Tr>
-        ))}
-      </Table.Tbody>
-    </Table>
+        </Table.Thead>
+        <Table.Tbody>
+          {group.skills.map((s) => (
+            <Table.Tr key={s.skill_id}>
+              <Table.Td>{s.name}</Table.Td>
+              <Table.Td ta="center">
+                <Badge size="sm" variant="light" color={s.trained_level >= 5 ? 'accent' : 'gray'}>
+                  {level(s.trained_level)}
+                </Badge>
+                {s.active_level !== s.trained_level && (
+                  <Tooltip label={`Active level ${level(s.active_level)} (trained ${level(s.trained_level)})`}>
+                    <Text span size="xs" c="dimmed"> ({level(s.active_level)})</Text>
+                  </Tooltip>
+                )}
+              </Table.Td>
+              <Table.Td ta="right">{s.rank === null ? '–' : s.rank}</Table.Td>
+              <Table.Td ta="right">{qty(s.skillpoints)}</Table.Td>
+              <Table.Td ta="right">{s.sp_to_level_v === null ? '–' : qty(s.sp_to_level_v)}</Table.Td>
+            </Table.Tr>
+          ))}
+        </Table.Tbody>
+      </Table>
+    </Table.ScrollContainer>
   )
 }
 
@@ -156,17 +158,19 @@ function QueueTable({ queue }: { queue: SkillQueue }) {
     <Stack gap={4}>
       {queue.warning && <Text size="sm" c="warn">{warningText(queue.warning)}</Text>}
       {queue.paused && <Text size="sm" c="warn">The queue is paused - ESI reports no finish dates.</Text>}
-      <Table withTableBorder striped>
-        <Table.Tbody>
-          {queue.entries.map((e) => (
-            <Table.Tr key={e.queue_position}>
-              <Table.Td>{e.queue_position + 1}</Table.Td>
-              <Table.Td>{e.name} {level(e.finished_level)}</Table.Td>
-              <Table.Td ta="right">{e.finish_date ? dateTime(e.finish_date) : '–'}</Table.Td>
-            </Table.Tr>
-          ))}
-        </Table.Tbody>
-      </Table>
+      <Table.ScrollContainer minWidth={0}>
+        <Table withTableBorder striped>
+          <Table.Tbody>
+            {queue.entries.map((e) => (
+              <Table.Tr key={e.queue_position}>
+                <Table.Td>{e.queue_position + 1}</Table.Td>
+                <Table.Td>{e.name} {level(e.finished_level)}</Table.Td>
+                <Table.Td ta="right">{e.finish_date ? dateTime(e.finish_date) : '–'}</Table.Td>
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      </Table.ScrollContainer>
     </Stack>
   )
 }

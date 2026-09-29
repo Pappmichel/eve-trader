@@ -91,7 +91,7 @@ export default function SortingSettings() {
       )}
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Add source</Title>
-      <SimpleGrid cols={2}>
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <Select
           label="Kind"
           data={[

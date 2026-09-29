@@ -1,10 +1,9 @@
-import { AppShell, Burger, Stack, Title, Text, Button, Group, Badge, Tabs, Container, Divider, Tooltip } from '@mantine/core'
+import { AppShell, Stack, Title, Text, Button, Group, Badge, Tabs, Container, Divider, Tooltip } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { spotlight } from '@mantine/spotlight'
 import {
-  IconArrowLeft, IconBolt, IconCircleNumber1, IconCircleNumber2, IconPlayerPlay, IconSearch,
+  IconBolt, IconCircleNumber1, IconCircleNumber2, IconPlayerPlay, IconSearch,
 } from '@tabler/icons-react'
 
 import { productionApi, tradingApi } from '../../api/client'
@@ -13,6 +12,7 @@ import { useTradingPipelineJob } from '../../hooks/useRefreshAndPruneJob'
 import { useRoleCharacters } from '../../hooks/useRoleCharacters'
 import { ActionTierIcon, TIER_COPY } from '../../components/ActionTierIcon'
 import { dateTime } from '../../format'
+import { ToolHeader } from '../../components/ToolHeader'
 
 // The four Daily-Workflow/Candidate-Setup buttons below all run through
 // useTradingPipelineJob's shared background-job lock, not useAction, so
@@ -108,18 +108,7 @@ export default function TradingLayout() {
   return (
     <AppShell header={{ height: 56 }} navbar={{ width: 280, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding={{ base: 'xs', sm: 'md' }}>
       <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between">
-          <Group>
-            <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" aria-label="Toggle navigation" />
-            <Text fw={700} tt="uppercase" lts={1}>EVE Trader — Trading</Text>
-          </Group>
-          <Group gap="xs">
-            <Button variant="subtle" size="xs" leftSection={<IconSearch size={14} />} onClick={() => spotlight.open()}>
-              Jump to... (⌘K)
-            </Button>
-            <Button variant="subtle" size="xs" leftSection={<IconArrowLeft size={14} />} onClick={() => navigate('/')}>Tools</Button>
-          </Group>
-        </Group>
+        <ToolHeader title="Trading" opened={opened} onToggle={toggle} showJump />
       </AppShell.Header>
 
       <AppShell.Navbar p="md">
