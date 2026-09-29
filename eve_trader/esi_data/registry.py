@@ -35,6 +35,12 @@ class OwnedDataKind:
     corp_roles: tuple[str, ...]
     consuming_tools: tuple[str, ...]
     freshness_tier: str
+    # docs/CHARACTER_MANAGEMENT_PLAN.md R9: a live-only kind has a scope and
+    # sharing rows (so the Characters page can grant it) but no snapshot
+    # table, no freshness row and no stale clear - tools read it straight
+    # from ESI, after an `is_shared` check. The orchestrator ignores its
+    # sharing rows entirely. `freshness_tier` is a placeholder there.
+    live_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -142,7 +148,7 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         character_scope="esi-wallet.read_character_wallet.v1",
         corporation_scope="esi-wallet.read_corporation_wallets.v1",
         corp_roles=("Accountant", "Junior_Accountant"),
-        consuming_tools=("portfolio",),
+        consuming_tools=("portfolio", "char_info"),
         freshness_tier=TIER_FREQUENT,
     ),
     OwnedDataKind(
@@ -154,6 +160,62 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         corp_roles=(),
         consuming_tools=("production", "station_trading"),
         freshness_tier=TIER_RARE,
+    ),
+    # Character Management, phase 1 (docs/CHARACTER_MANAGEMENT_PLAN.md).
+    # One scope per kind (R1): the selector, orchestrator and Characters
+    # page all assume it, so multi-scope features are split into kinds.
+    OwnedDataKind(
+        key="standings",
+        label="Standings",
+        group=GROUP_2,
+        character_scope="esi-characters.read_standings.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_info",),
+        freshness_tier=TIER_RARE,
+    ),
+    OwnedDataKind(
+        key="loyalty",
+        label="Loyalty Points",
+        group=GROUP_2,
+        character_scope="esi-characters.read_loyalty.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_info",),
+        freshness_tier=TIER_RARE,
+    ),
+    OwnedDataKind(
+        key="location",
+        label="Location",
+        group=GROUP_2,
+        character_scope="esi-location.read_location.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_info",),
+        freshness_tier=TIER_FREQUENT,
+        live_only=True,
+    ),
+    OwnedDataKind(
+        key="ship",
+        label="Current Ship",
+        group=GROUP_2,
+        character_scope="esi-location.read_ship_type.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_info",),
+        freshness_tier=TIER_FREQUENT,
+        live_only=True,
+    ),
+    OwnedDataKind(
+        key="online",
+        label="Online Status",
+        group=GROUP_2,
+        character_scope="esi-location.read_online.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_info",),
+        freshness_tier=TIER_FREQUENT,
+        live_only=True,
     ),
 )
 

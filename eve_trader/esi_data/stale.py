@@ -48,6 +48,10 @@ _KIND_TABLES: dict[str, dict[str, tuple[str, ...]]] = {
         "character": ("character_wallet_balances",),
         "corporation": ("corp_wallet_balances",),
     },
+    # Character Management phase 1. The live-only kinds (location, ship,
+    # online) have no table, so they are correctly absent here.
+    "standings": {"character": ("character_standings",)},
+    "loyalty": {"character": ("character_loyalty_points",)},
 }
 
 

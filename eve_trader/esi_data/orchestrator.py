@@ -195,6 +195,8 @@ def _kinds_for_owner(
     # (replace_blueprints walks the matching asset table).
     wanted = {kind for ot, oid, kind, _tool in sharing if ot == owner_type and oid == owner_id}
     for spec in OWNED_DATA_KINDS:
+        if spec.live_only:
+            continue
         if spec.key in wanted and spec.key not in seen:
             if owner_type == "corporation" and spec.corporation_scope is None:
                 continue
@@ -402,6 +404,15 @@ def _sync(
     tool_key: Optional[str],
     extra: Optional[dict] = None,
 ) -> dict:
+    # Live-only kinds (registry `live_only`, docs/CHARACTER_MANAGEMENT_PLAN.md
+    # R9) have sharing rows but nothing to fetch or store. Drop them before
+    # owners are derived: otherwise a character that shares only a live kind
+    # would still get an (empty) owner task, count as `attempted`, and
+    # trigger the NULL-id sweep for no reason.
+    sharing = [
+        row for row in sharing
+        if not (_KIND_BY_KEY.get(row[2]) and _KIND_BY_KEY[row[2]].live_only)
+    ]
     tm = TokenManager(OAUTH_CONFIG)
     characters = _list_known_characters(tm)
     esi = client or ESIClient(tokens=tm)

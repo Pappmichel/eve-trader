@@ -30,6 +30,8 @@ export default function CharacterManagementHub() {
         <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }} spacing="md">
           <ToolCard tools={tools} toolKey="characters" to="/character-management/characters" title="Characters"
             description="Who is logged in for ESI data, which tools may read it, and which scopes still need a re-authorize." />
+          <ToolCard tools={tools} toolKey="char_info" to="/character-management/info" title="Character Info"
+            description="Location, ship, online status, wallet, standings, loyalty points and corporation history for each character." />
         </SimpleGrid>
       )}
     </Container>

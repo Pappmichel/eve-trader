@@ -326,6 +326,53 @@ Tests:
 - Admin auto-tick including `portfolio`.
 
 ### Phase 1 - Character Info (`char_info`)
+
+**Status: implemented.** Deviations from the text below (the text is kept as
+the original design; this list is what actually shipped):
+- **Public info:** `security_status`/`birthday`/alliance come from the
+  already-cached `character_public_info`; the only new public call is
+  `character_corporation_history`.
+- **`wallet_balance` reads go through `read_esi`.** The accessor had no
+  branch for that kind (Portfolio reads it via `shared_owner_ids` +
+  `storage.sum_wallet_balances`); phase 1 added one (characters only) so
+  Character Info uses the fail-closed accessor like everything else.
+- **`read_esi` raises `AccessorError` for live-only kinds** instead of
+  returning `[]`, so "live-only" can never be mistaken for "shared with
+  nobody".
+- **Field states.** Every optional field in the overview/detail responses is
+  `{state, value, detail?, synced_at?}` with state `ok | not_shared |
+  reauth_needed | not_synced | error`; one failing field never fails the
+  page or other characters. Order of checks: not shared -> no token holds the
+  scope -> data.
+- **Character list = every character with a token** (`esi_data.actions.
+  do_list_token_characters`), fetched with 4 worker threads
+  (`storage.with_current_tenant`).
+- **Location names** come from the local SDE / structure-name caches only
+  (`storage.get_location_names`, new `get_solar_system_names`); an unresolved
+  structure shows `Structure <id>`. Live structure resolution belongs to
+  Production's resolution chain and needs another scope.
+- **The R10 `in_flight` rendering shipped** with the first Refresh button:
+  `do_sync_char_info` returns `in_flight` / `failed` separately and the page
+  shows "Sync already running" as neutral, not as an error.
+- **R6 (Characters table column groups) shipped** with collapsible sections
+  (`Industry & Trading`, `Character`); a collapsed section shows an `n/m
+  shared` summary. `KIND_SECTIONS`/`section`/`liveOnly` live in
+  `esiRegistry.ts`.
+- **New drift guard found on the way:** `tests/test_sqlite_migration_table_
+  drift.py` fails when a new RLS table is missing from
+  `sqlite_migration.KNOWN_NON_MIGRATED_TABLES` - the two new tables are
+  recorded there. That test also depends on database state: run against a
+  test database that earlier runs already filled with the Module
+  Reprocessing / Station Trading tables it reports them as undocumented
+  (pre-existing, unrelated); use a freshly created `eve_trader` test DB.
+- **Line endings:** `api/app.py`, `esi_client.py`, `esi_data/fetchers.py`
+  and `storage.py` are CRLF in the repo. Edit them so the diff stays small
+  (a plain Python read/write silently converts them to LF).
+- **Not verifiable in the sandbox:** live calls to ESI (no outbound access to
+  `esi.evetech.net` / `images.evetech.net`). Covered by unit tests with a
+  fake client, and by a live run of the real backend + browser in which ESI
+  calls failed and rendered as `error` states without breaking the page.
+  First real-character check still to do on a deployment.
 Backend:
 - `access_gate.ALL_TOOL_KEYS` gains `char_info`. `_TOOL_PATH_PREFIXES` gains
   `/api/char-info/`.

@@ -88,6 +88,7 @@ const AdminPage = lazy(() => import('./pages/admin/AdminPage'))
 const SdePreviewPage = lazy(() => import('./pages/admin/SdePreviewPage'))
 const CharactersPage = lazy(() => import('./pages/characters/CharactersPage'))
 const CharacterManagementHub = lazy(() => import('./pages/character_management/CharacterManagementHub'))
+const CharacterInfoPage = lazy(() => import('./pages/character_management/info/CharacterInfoPage'))
 
 function RouteFallback() {
   return (
@@ -217,6 +218,7 @@ function App() {
             <Route path="/portfolio" element={<Portfolio />} />
             <Route path="/character-management" element={<CharacterManagementHub />} />
             <Route path="/character-management/characters" element={<CharactersPage />} />
+            <Route path="/character-management/info" element={<CharacterInfoPage />} />
             {/* Characters moved into the Character Management hub; keep old bookmarks working. */}
             <Route path="/characters" element={<Navigate to="/character-management/characters" replace />} />
             <Route path="/admin" element={<AdminPage />} />

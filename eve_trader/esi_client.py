@@ -265,6 +265,23 @@ class ESIClient:
     _corporation_public_info_cache_at: dict[int, float] = {}
     _corporation_public_info_locks: dict[int, threading.Lock] = {}
 
+    # Live, *authenticated* per-character reads (docs/CHARACTER_MANAGEMENT_PLAN.md
+    # R9/R16: location, ship, online status). Unlike every cache above this
+    # holds one principal's private data, so the key MUST include tenant_id:
+    # two tenants can each hold a token for the same character, and a
+    # character-id-only key would serve tenant A's fetch (and its sharing
+    # decision) to tenant B. Short TTL - a position is stale within minutes
+    # and nothing is ever written to the DB (decision 5: live only).
+    _LIVE_CHARACTER_CACHE_TTL = 60  # seconds
+    _live_character_cache: dict[tuple, Any] = {}
+    _live_character_cache_at: dict[tuple, float] = {}
+    _live_character_locks: dict[tuple, threading.Lock] = {}
+
+    # Public corporation history, same shape/TTL as character_public_info.
+    _character_corp_history_cache: dict[int, list] = {}
+    _character_corp_history_cache_at: dict[int, float] = {}
+    _character_corp_history_locks: dict[int, threading.Lock] = {}
+
     def __init__(self, cfg: TradingConfig = TRADING_CONFIG, tokens: Optional[TokenManager] = None):
         self.cfg = cfg
         self.tokens = tokens or TokenManager()
@@ -302,6 +319,17 @@ class ESIClient:
         with cls._order_book_locks_guard:
             cls._character_public_info_cache.clear()
             cls._character_public_info_cache_at.clear()
+
+    @classmethod
+    def clear_live_character_caches(cls) -> None:
+        """Forces the next live character read (location/ship/online, and the
+        public corporation history) to re-fetch - exists for tests, same
+        reason clear_character_public_info_cache does."""
+        with cls._order_book_locks_guard:
+            cls._live_character_cache.clear()
+            cls._live_character_cache_at.clear()
+            cls._character_corp_history_cache.clear()
+            cls._character_corp_history_cache_at.clear()
 
     @classmethod
     def clear_corporation_public_info_cache(cls) -> None:
@@ -1178,6 +1206,77 @@ class ESIClient:
         job-slot counts (see production/constants.py job_slots_from_skills)."""
         return self._get(f"/characters/{character_id}/skills/",
                           params={"datasource": "tranquility"}, auth_role=auth_role)
+
+    # ---- Character Management (docs/CHARACTER_MANAGEMENT_PLAN.md phase 1)
+    def _live_character_read(self, what: str, character_id: int, auth_role: str, path: str):
+        """TTL-cached authenticated GET keyed by (tenant_id, what, character_id).
+
+        Fail-closed on a missing tenant (same spirit as storage.connect()):
+        an unscoped key would be exactly the cross-tenant leak R16 exists to
+        prevent. The per-key lock serializes two racers on a cold key only.
+        """
+        tenant_id = storage.get_current_tenant()
+        if not tenant_id:
+            raise RuntimeError("live character read requires a tenant in scope")
+        key = (str(tenant_id), what, int(character_id))
+        with self._lock_for_key(self._live_character_locks, key):
+            cached_at = self._live_character_cache_at.get(key, 0.0)
+            if key in self._live_character_cache and (
+                time.time() - cached_at
+            ) < self._LIVE_CHARACTER_CACHE_TTL:
+                return self._live_character_cache[key]
+            value = self._get(path, params={"datasource": "tranquility"}, auth_role=auth_role)
+            self._live_character_cache[key] = value
+            self._live_character_cache_at[key] = time.time()
+            return value
+
+    def character_location(self, character_id: int, auth_role: str) -> dict:
+        """Requires esi-location.read_location.v1. {"solar_system_id",
+        "station_id"?, "structure_id"?}. Live, 60s cache, never stored."""
+        return self._live_character_read(
+            "location", character_id, auth_role, f"/characters/{character_id}/location/")
+
+    def character_ship(self, character_id: int, auth_role: str) -> dict:
+        """Requires esi-location.read_ship_type.v1. {"ship_type_id",
+        "ship_item_id", "ship_name"}. Live, 60s cache, never stored."""
+        return self._live_character_read(
+            "ship", character_id, auth_role, f"/characters/{character_id}/ship/")
+
+    def character_online(self, character_id: int, auth_role: str) -> dict:
+        """Requires esi-location.read_online.v1. {"online", "last_login",
+        "last_logout", "logins"}. Live, 60s cache, never stored."""
+        return self._live_character_read(
+            "online", character_id, auth_role, f"/characters/{character_id}/online/")
+
+    def character_standings(self, character_id: int, auth_role: str) -> list[dict]:
+        """Requires esi-characters.read_standings.v1. [{"from_id",
+        "from_type" (agent|npc_corp|faction), "standing"}]. Snapshot-synced
+        by the standings fetcher, not cached here."""
+        return self._get(f"/characters/{character_id}/standings/",
+                         params={"datasource": "tranquility"}, auth_role=auth_role)
+
+    def character_loyalty_points(self, character_id: int, auth_role: str) -> list[dict]:
+        """Requires esi-characters.read_loyalty.v1. [{"corporation_id",
+        "loyalty_points"}]. Snapshot-synced by the loyalty fetcher."""
+        return self._get(f"/characters/{character_id}/loyalty/points/",
+                         params={"datasource": "tranquility"}, auth_role=auth_role)
+
+    def character_corporation_history(self, character_id: int) -> list[dict]:
+        """Public endpoint, no auth. [{"corporation_id", "start_date",
+        "record_id", "is_deleted"?}], cached like character_public_info
+        (public data, so sharing the cache across tenants is safe)."""
+        key = int(character_id)
+        with self._lock_for_key(self._character_corp_history_locks, key):
+            cached_at = self._character_corp_history_cache_at.get(key, 0.0)
+            if key in self._character_corp_history_cache and (
+                time.time() - cached_at
+            ) < self._CHARACTER_PUBLIC_INFO_CACHE_TTL:
+                return self._character_corp_history_cache[key]
+            history = self._get(f"/characters/{character_id}/corporationhistory/",
+                                params={"datasource": "tranquility"})
+            self._character_corp_history_cache[key] = history
+            self._character_corp_history_cache_at[key] = time.time()
+            return history
 
     def resolve_names(self, ids: list[int]) -> dict[int, str]:
         """Batch id->name resolution via POST /universe/names/ (public, no

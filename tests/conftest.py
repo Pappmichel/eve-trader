@@ -62,6 +62,7 @@ def _reset_character_public_info_cache():
     dict.clear() under a lock, no I/O, not a forced real connection."""
     ESIClient.clear_character_public_info_cache()
     ESIClient.clear_corporation_public_info_cache()
+    ESIClient.clear_live_character_caches()
     yield
     ESIClient.clear_character_public_info_cache()
     ESIClient.clear_corporation_public_info_cache()

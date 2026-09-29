@@ -358,6 +358,25 @@ def fetch_corporation_wallet_balance(
     return {"written": len(balances), "divisions": sorted(balances)}
 
 
+# -------------------------------------------- Character Management (phase 1)
+def fetch_character_standings(
+    client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
+) -> dict:
+    raw = client.character_standings(owner_id, auth_role=auth_role)
+    rows = [(int(r["from_id"]), r["from_type"], float(r["standing"])) for r in raw]
+    storage.replace_character_standings(owner_id, rows)
+    return {"written": len(rows)}
+
+
+def fetch_character_loyalty(
+    client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
+) -> dict:
+    raw = client.character_loyalty_points(owner_id, auth_role=auth_role)
+    rows = [(int(r["corporation_id"]), int(r["loyalty_points"])) for r in raw]
+    storage.replace_character_loyalty_points(owner_id, rows)
+    return {"written": len(rows)}
+
+
 # ------------------------------------------------------------------- skills
 def fetch_character_skills(
     client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
@@ -571,6 +590,8 @@ FETCHERS: dict[tuple[str, str], Callable] = {
     ("wallet_balance", "character"): fetch_character_wallet_balance,
     ("wallet_balance", "corporation"): fetch_corporation_wallet_balance,
     ("skills", "character"): fetch_character_skills,
+    ("standings", "character"): fetch_character_standings,
+    ("loyalty", "character"): fetch_character_loyalty,
     ("contracts", "character"): fetch_character_contracts,
     ("contracts", "corporation"): fetch_corporation_contracts,
 }

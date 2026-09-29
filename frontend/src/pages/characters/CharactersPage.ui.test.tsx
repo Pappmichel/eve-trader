@@ -244,4 +244,42 @@ describe('Characters page', () => {
       expect(vi.mocked(charactersApi.removeCharacter).mock.calls[0][0]).toBe(1)
     })
   })
+
+  it('groups the sharing table into collapsible sections and marks live-only kinds', async () => {
+    vi.mocked(charactersApi.owners).mockResolvedValue([
+      {
+        character_id: 1, character_name: 'Alice', write_role: 'esi:1',
+        character_has_token_pool: false, roles: ['esi:1'], corporation_id: 99,
+        corporation_name: 'Test Corp',
+      },
+    ])
+    vi.mocked(charactersApi.sharing).mockResolvedValue([
+      { owner_type: 'character', owner_id: 1, data_kind: 'location', tool_key: 'char_info' },
+      { owner_type: 'character', owner_id: 1, data_kind: 'standings', tool_key: 'char_info' },
+    ])
+    vi.mocked(charactersApi.freshness).mockResolvedValue([])
+    vi.mocked(charactersApi.capabilities).mockResolvedValue([])
+    vi.mocked(charactersApi.accessPreview).mockResolvedValue({ title: 'Confirm ESI access', items: [] })
+
+    const user = userEvent.setup()
+    renderPage()
+
+    await screen.findAllByText('Alice')
+    // Both section headers are there, every kind is a column while expanded.
+    expect(screen.getByRole('button', { name: 'Collapse Industry & Trading' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Loyalty Points' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Online Status' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'location all tools' })).toBeInTheDocument()
+
+    // Collapsing the Character section swaps its five columns for one summary.
+    await user.click(screen.getByRole('button', { name: 'Collapse Character' }))
+    expect(screen.queryByRole('columnheader', { name: 'Loyalty Points' })).not.toBeInTheDocument()
+    expect(screen.getByText('2/5 shared')).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Assets' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Expand Character' }))
+    // Live-only kinds say so in their popover, snapshot kinds do not.
+    await user.click(screen.getByRole('button', { name: 'location all tools' }))
+    expect(await screen.findByText(/Read live from ESI while Character Info is open/)).toBeInTheDocument()
+  })
 })

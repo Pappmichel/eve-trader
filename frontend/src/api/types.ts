@@ -1404,3 +1404,77 @@ export interface ModuleReprocessingSettings {
   enforce_shortlist_cap: boolean
   max_active_shortlist_items: number
 }
+
+
+// ---------------------------------------------- Character Info (Character Management)
+// Mirrors eve_trader/character_management/info_actions.py. Every optional
+// field is a `CharInfoField`: the `state` says why `value` is missing.
+export type CharInfoFieldState = 'ok' | 'not_shared' | 'reauth_needed' | 'not_synced' | 'error'
+
+export interface CharInfoField<T> {
+  state: CharInfoFieldState
+  value: T | null
+  detail?: string
+  /** Snapshot fields only: when the last successful sync ran. */
+  synced_at?: string
+}
+
+export interface CharInfoLocation {
+  solar_system_id: number | null
+  solar_system_name: string | null
+  location_id: number | null
+  location_kind: 'structure' | 'station' | 'space'
+  location_name: string | null
+}
+
+export interface CharInfoShip {
+  ship_type_id: number | null
+  ship_type_name: string | null
+  ship_name: string | null
+}
+
+export interface CharInfoOnline {
+  online: boolean
+  last_login?: string
+  last_logout?: string
+  logins?: number
+}
+
+export interface CharInfoStandingRow { from_id: number; name: string; standing: number }
+export interface CharInfoStandings {
+  faction: CharInfoStandingRow[]
+  npc_corp: CharInfoStandingRow[]
+  agent: CharInfoStandingRow[]
+}
+export interface CharInfoLoyaltyRow { corporation_id: number; corporation_name: string; loyalty_points: number }
+export interface CharInfoCorpHistoryRow { corporation_id: number; corporation_name: string; start_date: string | null }
+
+export interface CharInfoCharacter {
+  character_id: number
+  character_name: string | null
+  corporation_id: number | null
+  corporation_name: string | null
+  alliance_id: number | null
+  alliance_name: string | null
+  security_status: number | null
+  birthday: string | null
+  wallet_balance: CharInfoField<number>
+  location: CharInfoField<CharInfoLocation>
+  ship: CharInfoField<CharInfoShip>
+  online: CharInfoField<CharInfoOnline>
+  freshness: Record<string, { last_success_at: string | null; last_attempt_at: string | null; last_error: string | null }>
+  // Detail only:
+  standings?: CharInfoField<CharInfoStandings>
+  loyalty_points?: CharInfoField<CharInfoLoyaltyRow[]>
+  corporation_history?: CharInfoCorpHistoryRow[]
+}
+
+export interface CharInfoOverview { characters: CharInfoCharacter[] }
+
+export interface CharInfoSyncResult {
+  ok: boolean
+  characters: Record<string, unknown>
+  /** Owners another sync pass was already running for (not an error). */
+  in_flight: number[]
+  failed: { owner_id: number; name: string | null; error: string | null }[]
+}

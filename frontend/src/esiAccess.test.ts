@@ -91,12 +91,15 @@ describe('merged Wallet row (2026-09-27: Wallet Balance folded into Wallet)', ()
   const walletSharing: EsiSharingRow[] = [
     { owner_type: 'character', owner_id: 5, data_kind: 'wallet', tool_key: 'trading' },
     { owner_type: 'character', owner_id: 5, data_kind: 'wallet_balance', tool_key: 'portfolio' },
+    // Character Management phase 1: Character Info reads the same balance
+    // snapshot Portfolio does, under its own opt-in row.
+    { owner_type: 'character', owner_id: 5, data_kind: 'wallet_balance', tool_key: 'char_info' },
   ]
 
-  it('resolves the Portfolio toggle to the wallet_balance data_kind, not wallet', () => {
+  it('resolves the Portfolio and Character Info toggles to wallet_balance, not wallet', () => {
     const kind = kindByKey('wallet')!
     const shared = sharedToolsFor(walletSharing, 'character', 5, kind)
-    expect(shared.sort()).toEqual(['portfolio', 'trading'])
+    expect(shared.sort()).toEqual(['char_info', 'portfolio', 'trading'])
   })
 
   it('reports the merged cell as fully shared once both underlying rows exist', () => {
@@ -105,8 +108,8 @@ describe('merged Wallet row (2026-09-27: Wallet Balance folded into Wallet)', ()
       sharing: walletSharing, freshness: [], pendingKinds: new Set(),
     })
     expect(cell.kind).toBe('all')
-    expect(cell.sharedCount).toBe(2)
-    expect(cell.capableCount).toBe(2)
+    expect(cell.sharedCount).toBe(3)
+    expect(cell.capableCount).toBe(3)
   })
 
   it('does not count a wallet_balance row as shared under a different owner', () => {

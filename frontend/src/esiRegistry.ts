@@ -3,10 +3,26 @@
 // /api/characters/registry endpoint — do not infer consuming tools from
 // sharing rows.
 
+// Column groups on the Characters page's sharing table (CHARACTER_MANAGEMENT_
+// PLAN.md R6): the table outgrew one flat row of columns once Character
+// Management added kinds. `skills` stays under 'industry' - its consumers
+// today are Production and Station Trading.
+export type KindSection = 'industry' | 'character'
+
+export const KIND_SECTIONS: readonly { key: KindSection; label: string }[] = [
+  { key: 'industry', label: 'Industry & Trading' },
+  { key: 'character', label: 'Character' },
+]
+
 export interface OwnedDataKind {
   key: string
   label: string
   group: 1 | 2
+  section: KindSection
+  // Mirrors the registry's `live_only`: read straight from ESI when the tool
+  // page is open, never stored or synced (so there is nothing to re-sync and
+  // the freshness column never applies to it).
+  liveOnly?: boolean
   consumingTools: readonly string[]
   corpRoles: readonly string[]
   // Only set where a tool in consumingTools is actually backed by a
@@ -28,40 +44,61 @@ export interface AccessCapability {
 
 export const OWNED_DATA_KINDS: readonly OwnedDataKind[] = [
   {
-    key: 'assets', label: 'Assets', group: 1,
+    key: 'assets', section: 'industry', label: 'Assets', group: 1,
     consumingTools: ['production', 'doctrine', 'sorting', 'trading', 'portfolio'],
     corpRoles: ['Director'],
   },
   {
-    key: 'industry_jobs', label: 'Industry Jobs', group: 1,
+    key: 'industry_jobs', section: 'industry', label: 'Industry Jobs', group: 1,
     consumingTools: ['production'],
     corpRoles: ['Director'],
   },
   {
-    key: 'blueprints', label: 'Blueprints', group: 1,
+    key: 'blueprints', section: 'industry', label: 'Blueprints', group: 1,
     consumingTools: ['production', 'portfolio'],
     corpRoles: ['Director'],
   },
   {
-    key: 'market_orders', label: 'Market Orders', group: 1,
+    key: 'market_orders', section: 'industry', label: 'Market Orders', group: 1,
     consumingTools: ['trading', 'production', 'station_trading'],
     corpRoles: ['Accountant', 'Trader'],
   },
   {
-    key: 'contracts', label: 'Contracts', group: 1,
+    key: 'contracts', section: 'industry', label: 'Contracts', group: 1,
     consumingTools: ['doctrine'],
     corpRoles: [],
   },
   {
-    key: 'wallet', label: 'Wallet', group: 1,
-    consumingTools: ['trading', 'portfolio'],
+    key: 'wallet', section: 'industry', label: 'Wallet', group: 1,
+    consumingTools: ['trading', 'portfolio', 'char_info'],
     corpRoles: ['Accountant', 'Junior_Accountant'],
-    toolDataKind: { portfolio: 'wallet_balance' },
+    toolDataKind: { portfolio: 'wallet_balance', char_info: 'wallet_balance' },
   },
   {
-    key: 'skills', label: 'Skills', group: 2,
+    key: 'skills', section: 'industry', label: 'Skills', group: 2,
     consumingTools: ['production', 'station_trading'],
     corpRoles: [],
+  },
+  // Character Management (docs/CHARACTER_MANAGEMENT_PLAN.md phase 1).
+  {
+    key: 'standings', section: 'character', label: 'Standings', group: 2,
+    consumingTools: ['char_info'], corpRoles: [],
+  },
+  {
+    key: 'loyalty', section: 'character', label: 'Loyalty Points', group: 2,
+    consumingTools: ['char_info'], corpRoles: [],
+  },
+  {
+    key: 'location', section: 'character', label: 'Location', group: 2, liveOnly: true,
+    consumingTools: ['char_info'], corpRoles: [],
+  },
+  {
+    key: 'ship', section: 'character', label: 'Current Ship', group: 2, liveOnly: true,
+    consumingTools: ['char_info'], corpRoles: [],
+  },
+  {
+    key: 'online', section: 'character', label: 'Online Status', group: 2, liveOnly: true,
+    consumingTools: ['char_info'], corpRoles: [],
   },
 ]
 
@@ -93,10 +130,11 @@ export const TOOL_LABELS: Record<string, string> = {
   station_trading: 'Station Trading',
   sorting: 'Sorting',
   portfolio: 'Portfolio',
+  char_info: 'Character Info',
 }
 
 export const CONSUMING_TOOL_KEYS = [
-  'trading', 'production', 'doctrine', 'station_trading', 'sorting', 'portfolio',
+  'trading', 'production', 'doctrine', 'station_trading', 'sorting', 'portfolio', 'char_info',
 ] as const
 
 export function kindByKey(key: string): OwnedDataKind | undefined {

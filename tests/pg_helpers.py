@@ -36,6 +36,7 @@ _SESSION_REVOCATIONS_SCHEMA_SQL = _DOCS_DIR / "session_revocations_schema.sql"
 _JOB_CATEGORY_COST_INDEX_OVERRIDES_SCHEMA_SQL = _DOCS_DIR / "job_category_cost_index_overrides_schema.sql"
 _ESI_ACCESS_SCHEMA_SQL = _DOCS_DIR / "esi_access_schema.sql"
 _PORTFOLIO_SCHEMA_SQL = _DOCS_DIR / "portfolio_schema.sql"
+_CHARACTER_MANAGEMENT_SCHEMA_SQL = _DOCS_DIR / "character_management_schema.sql"
 
 
 @functools.lru_cache(maxsize=1)
@@ -201,6 +202,17 @@ def _apply_portfolio_schema(_apply_phase1_schema) -> None:
         return
     with psycopg.connect(OWNER_DSN, autocommit=True) as conn:
         conn.execute(_PORTFOLIO_SCHEMA_SQL.read_text())
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _apply_character_management_schema(_apply_phase1_schema) -> None:
+    """docs/character_management_schema.sql (Character Management hub -
+    character_standings / character_loyalty_points). Depends on
+    _apply_phase1_schema because its GRANTs target the eve_trader_app role."""
+    if not _postgres_available():
+        return
+    with psycopg.connect(OWNER_DSN, autocommit=True) as conn:
+        conn.execute(_CHARACTER_MANAGEMENT_SCHEMA_SQL.read_text())
 
 
 @pytest.fixture

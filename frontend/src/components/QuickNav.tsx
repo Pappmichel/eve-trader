@@ -4,6 +4,7 @@ import { Spotlight, type SpotlightActionData } from '@mantine/spotlight'
 import { IconSearch } from '@tabler/icons-react'
 
 import { gateApi } from '../api/client'
+import { CHARACTER_MANAGEMENT_TOOL_KEYS, hasAnyToolGrant } from '../toolKeys'
 
 // GitHub issue #79: the only way to navigate was each tool's own sidebar -
 // no fast, cross-tool way to jump from e.g. "Trading > Shortlist" straight
@@ -20,6 +21,7 @@ const ACTIONS: SpotlightActionData[] = [
   { id: 'portfolio', label: 'Portfolio', description: 'Combined Trading + Production overview', onClick: () => {} },
   { id: 'character-management', label: 'Character Management', description: 'Character tools hub', onClick: () => {}, keywords: ['characters'] },
   { id: 'characters', label: 'Character Management — Characters', description: 'ESI access, sharing, and re-authorize', onClick: () => {} },
+  { id: 'char-info', label: 'Character Management — Character Info', description: 'Location, wallet, standings, LP', onClick: () => {} },
   { id: 'admin', label: 'Admin', description: 'Cross-tenant superadmin tools', onClick: () => {} },
 
   { id: 'trading', label: 'Trading — Shortlist', description: 'Trading', onClick: () => {} },
@@ -69,7 +71,7 @@ const ACTIONS: SpotlightActionData[] = [
 // component-free data array - useNavigate() is only available inside a
 // Router, so the actual onClick wiring happens once, here, at render time.
 const PATHS: Record<string, string> = {
-  home: '/', portfolio: '/portfolio', admin: '/admin', 'character-management': '/character-management', characters: '/character-management/characters',
+  home: '/', portfolio: '/portfolio', admin: '/admin', 'character-management': '/character-management', characters: '/character-management/characters', 'char-info': '/character-management/info',
   trading: '/trading/shortlist', 'trading-candidates': '/trading/candidates', 'trading-new-candidates': '/trading/new-candidates',
   'trading-history': '/trading/history', 'trading-trades': '/trading/trades', 'trading-unlisted-stock': '/trading/unlisted-stock',
   'trading-undercut': '/trading/undercut', 'trading-settings': '/trading/settings',
@@ -92,7 +94,8 @@ const PATHS: Record<string, string> = {
 // (`_TOOL_PATH_PREFIXES` on the backend). 'home' has no entry, since jumping
 // back to the tool picker is always allowed regardless of tool grants.
 const TOOL_KEYS: Record<string, string> = {
-  portfolio: 'portfolio', admin: 'admin', characters: 'characters', 'character-management': 'characters', // hub: widen to any-of once a second sub-tool grant exists
+  portfolio: 'portfolio', admin: 'admin', characters: 'characters', 'char-info': 'char_info',
+  // 'character-management' (the hub) has no single key: see visibleActions.
   trading: 'trading', 'trading-candidates': 'trading', 'trading-new-candidates': 'trading',
   'trading-history': 'trading', 'trading-trades': 'trading', 'trading-unlisted-stock': 'trading',
   'trading-undercut': 'trading', 'trading-settings': 'trading',
@@ -119,6 +122,8 @@ export function QuickNav() {
   const { data: gateStatus } = useQuery({ queryKey: ['gate', 'status'], queryFn: gateApi.status })
   const tools = gateStatus?.tools
   const visibleActions = ACTIONS.filter((a) => {
+    // The hub has no grant of its own - visible if any sub-tool grant is held.
+    if (a.id === 'character-management') return hasAnyToolGrant(tools, CHARACTER_MANAGEMENT_TOOL_KEYS)
     const toolKey = TOOL_KEYS[a.id]
     if (!toolKey || tools === undefined) return true
     return tools.includes(toolKey)

@@ -87,6 +87,14 @@ def read_esi(data_kind: str, tool_key: str, **filters) -> list[dict]:
     kind = _KIND_BY_KEY.get(data_kind)
     if kind is None:
         raise AccessorError(f"unknown data_kind {data_kind!r}")
+    if kind.live_only:
+        # No snapshot exists to read. Failing loudly (rather than returning
+        # []) stops a caller mistaking "live-only" for "shared with nobody";
+        # the caller must gate a live ESI call on `is_shared` instead.
+        raise AccessorError(
+            f"{data_kind!r} is live-only: it has no snapshot, use is_shared() "
+            "and read it live"
+        )
 
     owner_type_filter = filters.get("owner_type")
     owner_id_filter = filters.get("owner_id")
@@ -106,6 +114,12 @@ def read_esi(data_kind: str, tool_key: str, **filters) -> list[dict]:
         rows.extend(_read_contracts(tool_key, owner_type_filter, owner_id_filter))
     elif data_kind == "skills":
         rows.extend(_read_skills(tool_key, owner_id_filter))
+    elif data_kind == "wallet_balance":
+        rows.extend(_read_wallet_balance(tool_key, owner_id_filter))
+    elif data_kind == "standings":
+        rows.extend(_read_standings(tool_key, owner_id_filter))
+    elif data_kind == "loyalty":
+        rows.extend(_read_loyalty(tool_key, owner_id_filter))
     else:
         raise AccessorError(f"unknown data_kind {data_kind!r}")
     return rows
@@ -370,3 +384,33 @@ def _read_skills(tool_key: str, owner_id) -> list[dict]:
                 "owner_id": r[5],
             })
     return out
+
+
+def _read_wallet_balance(tool_key: str, owner_id) -> list[dict]:
+    """Character wallet balances only (`owner_type='character'`). Corporation
+    balances are Portfolio's own read (`storage.sum_wallet_balances`); no
+    other consumer needs them."""
+    ids = _filter_ids(_shared_owner_ids("wallet_balance", tool_key, "character"), owner_id)
+    balances = storage.load_character_wallet_balances(ids)
+    return [
+        {"owner_type": "character", "owner_id": cid, "balance": bal}
+        for cid, bal in sorted(balances.items())
+    ]
+
+
+def _read_standings(tool_key: str, owner_id) -> list[dict]:
+    ids = _filter_ids(_shared_owner_ids("standings", tool_key, "character"), owner_id)
+    return [
+        {"owner_type": "character", "owner_id": int(r[0]), "from_id": int(r[1]),
+         "from_type": r[2], "standing": float(r[3])}
+        for r in storage.load_character_standings(ids)
+    ]
+
+
+def _read_loyalty(tool_key: str, owner_id) -> list[dict]:
+    ids = _filter_ids(_shared_owner_ids("loyalty", tool_key, "character"), owner_id)
+    return [
+        {"owner_type": "character", "owner_id": int(r[0]), "corporation_id": int(r[1]),
+         "loyalty_points": int(r[2])}
+        for r in storage.load_character_loyalty_points(ids)
+    ]

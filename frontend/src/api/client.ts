@@ -627,6 +627,13 @@ export const adminApi = {
   refreshAffiliations: () => post<{ updated: number }>('/api/admin/users/refresh-affiliations'),
 }
 
+// -------------------------------------------------------------- character info
+export const charInfoApi = {
+  overview: () => get<T.CharInfoOverview>('/api/char-info/overview'),
+  detail: (characterId: number) => get<T.CharInfoCharacter>(`/api/char-info/characters/${characterId}`),
+  sync: () => post<T.CharInfoSyncResult>('/api/char-info/sync', {}),
+}
+
 // -------------------------------------------------------------- characters
 export const charactersApi = {
   owners: () => get<T.EsiTokenCharacter[]>('/api/characters/owners'),

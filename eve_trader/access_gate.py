@@ -44,8 +44,12 @@ SESSION_MAX_AGE_SECONDS = 30 * 24 * 3600  # 30 days
 # Admin's checkboxes auto-tick it in the UI only; do_set_tool_grants stays
 # replace-not-merge and does not special-case it. "module_reprocessing" is
 # the tenth grant (Module Reprocessing Import tool) - a normal grant like
-# every other tenant-facing tool, no DEFAULT_TENANT_ID bypass.
-ALL_TOOL_KEYS = ("trading", "production", "doctrine", "refining", "station_trading", "sorting", "portfolio", "admin", "characters", "module_reprocessing")
+# every other tenant-facing tool, no DEFAULT_TENANT_ID bypass. "char_info"
+# is the first Character Management hub sub-tool (docs/
+# CHARACTER_MANAGEMENT_PLAN.md, decision 8: `char_` prefix so a tool key never
+# collides with a data-kind key like "skills"); later phases add char_skills,
+# char_mail, ... each with its own router.
+ALL_TOOL_KEYS = ("trading", "production", "doctrine", "refining", "station_trading", "sorting", "portfolio", "admin", "characters", "module_reprocessing", "char_info")
 
 
 @dataclass(frozen=True)

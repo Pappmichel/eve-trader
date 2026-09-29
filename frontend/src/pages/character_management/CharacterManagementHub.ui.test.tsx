@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MantineProvider } from '@mantine/core'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -33,7 +33,17 @@ describe('CharacterManagementHub', () => {
     vi.mocked(gateApi.status).mockResolvedValue({ ...base, tools: ['characters'] })
     renderHub()
     expect(await screen.findByRole('heading', { name: 'Characters' })).toBeInTheDocument()
+    // Until the gate status loads every card shows (Landing's convention).
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Character Info' })).not.toBeInTheDocument())
     expect(screen.getByRole('link', { name: /open/i })).toHaveAttribute('href', '/character-management/characters')
+  })
+
+  it('lists Character Info when char_info is granted, and works without characters', async () => {
+    vi.mocked(gateApi.status).mockResolvedValue({ ...base, tools: ['char_info'] })
+    renderHub()
+    expect(await screen.findByRole('heading', { name: 'Character Info' })).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Characters' })).not.toBeInTheDocument())
+    expect(screen.getByRole('link', { name: /open/i })).toHaveAttribute('href', '/character-management/info')
   })
 
   it('says so when no sub-tool grant is held', async () => {

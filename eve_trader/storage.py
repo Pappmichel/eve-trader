@@ -1587,6 +1587,23 @@ def get_system_security(system_id: Optional[int]) -> Optional[float]:
     return row[0] if row else None
 
 
+def get_solar_system_names(system_ids: Iterable[int]) -> dict[int, Optional[str]]:
+    """Batched solar_system_id -> SDE name (None for an id the SDE cache does
+    not know, e.g. before the first SDE refresh or a wormhole system)."""
+    ids = list(dict.fromkeys(int(i) for i in system_ids))
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    with connect() as conn:
+        rows = conn.execute(
+            f"SELECT solar_system_id, solar_system_name FROM sde_solar_systems "
+            f"WHERE solar_system_id IN ({placeholders})",
+            ids,
+        ).fetchall()
+    found = {int(r[0]): r[1] for r in rows}
+    return {i: found.get(i) for i in ids}
+
+
 def list_all_solar_systems() -> list[tuple[int, str]]:
     """Every SDE solar system (solar_system_id, solar_system_name), name-
     ordered - full candidate list for the system-name autocomplete
@@ -2754,12 +2771,14 @@ def delete_owner_snapshot_rows(
     allowed = _ASSET_TABLES | _JOB_TABLES | _BP_TABLES | {
         "character_sell_orders", "esi_wallet_transactions", "esi_wallet_journal",
         "doctrine_contracts", "character_wallet_balances", "corp_wallet_balances",
+        "character_standings", "character_loyalty_points",
     }
     if table not in allowed:
         raise ValueError(f"not a per-owner snapshot table: {table}")
     with connect() as conn:
         if table in ("esi_wallet_transactions", "esi_wallet_journal",
-                      "character_wallet_balances", "corp_wallet_balances"):
+                      "character_wallet_balances", "corp_wallet_balances",
+                      "character_standings", "character_loyalty_points"):
             col = "owner_character_id" if owner_character_id is not None else "owner_corporation_id"
             oid = owner_character_id if owner_character_id is not None else owner_corporation_id
             if oid is None:
@@ -3394,6 +3413,84 @@ def upsert_character_wallet_balance(character_id: int, balance: float) -> None:
             "balance=excluded.balance, synced_at=excluded.synced_at",
             (character_id, balance),
         )
+
+
+def replace_character_standings(character_id: int, rows: list[tuple[int, str, float]]) -> None:
+    """Replaces one character's standings snapshot. `rows`: [(from_id,
+    from_type, standing), ...] with from_type in agent|npc_corp|faction.
+    An empty list clears the character's partition (ESI legitimately returns
+    [] for a character with no standings)."""
+    with connect() as conn:
+        conn.execute(
+            "DELETE FROM character_standings WHERE owner_character_id = ?", (character_id,),
+        )
+        if rows:
+            conn.executemany(
+                "INSERT INTO character_standings "
+                "(owner_character_id, from_id, from_type, standing, synced_at) "
+                "VALUES (?,?,?,?, now())",
+                [(character_id, from_id, from_type, standing) for from_id, from_type, standing in rows],
+            )
+
+
+def load_character_standings(character_ids: list[int]) -> list[tuple]:
+    """`(owner_character_id, from_id, from_type, standing)` for the given
+    characters (empty list -> empty result, never unfiltered)."""
+    if not character_ids:
+        return []
+    placeholders = ",".join("?" * len(character_ids))
+    with connect() as conn:
+        return conn.execute(
+            "SELECT owner_character_id, from_id, from_type, standing FROM character_standings "
+            f"WHERE owner_character_id IN ({placeholders}) "
+            "ORDER BY owner_character_id, standing DESC, from_id",
+            character_ids,
+        ).fetchall()
+
+
+def replace_character_loyalty_points(character_id: int, rows: list[tuple[int, int]]) -> None:
+    """Replaces one character's loyalty-point snapshot. `rows`:
+    [(corporation_id, loyalty_points), ...]."""
+    with connect() as conn:
+        conn.execute(
+            "DELETE FROM character_loyalty_points WHERE owner_character_id = ?", (character_id,),
+        )
+        if rows:
+            conn.executemany(
+                "INSERT INTO character_loyalty_points "
+                "(owner_character_id, corporation_id, loyalty_points, synced_at) "
+                "VALUES (?,?,?, now())",
+                [(character_id, corp_id, lp) for corp_id, lp in rows],
+            )
+
+
+def load_character_loyalty_points(character_ids: list[int]) -> list[tuple]:
+    """`(owner_character_id, corporation_id, loyalty_points)` for the given
+    characters (empty list -> empty result, never unfiltered)."""
+    if not character_ids:
+        return []
+    placeholders = ",".join("?" * len(character_ids))
+    with connect() as conn:
+        return conn.execute(
+            "SELECT owner_character_id, corporation_id, loyalty_points FROM character_loyalty_points "
+            f"WHERE owner_character_id IN ({placeholders}) "
+            "ORDER BY owner_character_id, loyalty_points DESC, corporation_id",
+            character_ids,
+        ).fetchall()
+
+
+def load_character_wallet_balances(character_ids: list[int]) -> dict[int, float]:
+    """{character_id: balance} for the given characters (empty list -> {})."""
+    if not character_ids:
+        return {}
+    placeholders = ",".join("?" * len(character_ids))
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_character_id, balance FROM character_wallet_balances "
+            f"WHERE owner_character_id IN ({placeholders})",
+            character_ids,
+        ).fetchall()
+    return {int(r[0]): float(r[1]) for r in rows}
 
 
 def load_character_wallet_balance(character_id: int) -> Optional[float]:
