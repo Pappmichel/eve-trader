@@ -3909,6 +3909,48 @@ def search_mail_archive(character_ids: list[int], query: str, limit: int) -> lis
     return headers
 
 
+def set_archived_mail_read(character_id: int, mail_id: int, is_read: bool) -> bool:
+    """Mirrors a read/unread change made through this app into the archive."""
+    with connect() as conn:
+        if not _archive_still_enabled(conn, character_id):
+            return False
+        return conn.execute(
+            "UPDATE mail_character_headers SET is_read = ? WHERE character_id = ? AND mail_id = ?",
+            (is_read, character_id, mail_id),
+        ).rowcount > 0
+
+
+def set_archived_mail_labels(character_id: int, mail_id: int, labels: list[int]) -> bool:
+    with connect() as conn:
+        if not _archive_still_enabled(conn, character_id):
+            return False
+        return conn.execute(
+            "UPDATE mail_character_headers SET labels = ? WHERE character_id = ? AND mail_id = ?",
+            (list(labels), character_id, mail_id),
+        ).rowcount > 0
+
+
+def delete_archived_mail(character_id: int, mail_id: int) -> bool:
+    """A mail deleted in the game through this app is removed from this
+    character's archive too (and the message itself once no character header
+    references it any more)."""
+    with connect() as conn:
+        if not _archive_still_enabled(conn, character_id):
+            return False
+        deleted = conn.execute(
+            "DELETE FROM mail_character_headers WHERE character_id = ? AND mail_id = ?",
+            (character_id, mail_id),
+        ).rowcount > 0
+        if deleted:
+            orphan = (
+                "mail_id = ? AND mail_id NOT IN (SELECT mail_id FROM mail_character_headers "
+                "WHERE tenant_id = current_setting('app.tenant_id', false)::uuid)"
+            )
+            conn.execute(f"DELETE FROM mail_recipients WHERE {orphan}", (mail_id,))
+            conn.execute(f"DELETE FROM mail_messages WHERE {orphan}", (mail_id,))
+        return deleted
+
+
 def replace_mail_labels(character_id: int, labels: list[tuple]) -> bool:
     """`labels`: [(label_id, name, color, unread_count), ...]. False (nothing
     written) when the archive is not enabled."""

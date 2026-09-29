@@ -32,6 +32,24 @@ class ESIError(RuntimeError):
     pass
 
 
+class ESIHTTPError(ESIError):
+    """A definite HTTP refusal from a write call. `body` is ESI's response text
+    - for the server side only (e.g. to parse a CSPA cost); it must never be
+    shown to a user or logged, callers surface `status` alone."""
+
+    def __init__(self, status: int, body: str, message: str):
+        super().__init__(message)
+        self.status = status
+        self.body = body
+
+
+class ESIDeliveryUnknown(ESIError):
+    """A non-idempotent write (sending a mail) whose outcome is unknown: the
+    request may or may not have been processed (a timeout, a connection reset,
+    or a 5xx). It is never retried automatically - a retry could deliver the
+    mail twice."""
+
+
 def extract_meta_level(type_info: dict) -> Optional[int]:
     """Pulls the metaLevel dogma attribute out of a /universe/types/{id}/
     response, if present (unpublished/no-attribute types return None)."""
@@ -912,6 +930,64 @@ class ESIClient:
                 return s["id"]
         return None
 
+    def _write(
+        self, method: str, path: str, *, auth_role: str, json_body: Any = None,
+        params: Optional[dict] = None, idempotent: bool = False,
+        expect: tuple[int, ...] = (200, 201, 204), timeout: float = 30,
+    ) -> requests.Response:
+        """Authenticated write (POST/PUT/DELETE) with a retry policy that
+        depends on whether repeating the request is safe.
+
+        `_post_response`/`_get_response` retry on transport errors and 5xx and
+        accept only HTTP 200. For a write that is wrong twice over: ESI answers
+        201/204 for the calls here (so every success would be read as a
+        failure), and a retry after a timeout can repeat a non-idempotent action
+        - a mail sent twice (docs/CHARACTER_MANAGEMENT_PLAN.md R3).
+
+        - 420/429: ESI rejected the request before processing it, so waiting
+          and repeating is always safe (any method).
+        - transport errors and 5xx: retried only when `idempotent` (PUT/DELETE
+          that set a state); otherwise `ESIDeliveryUnknown`.
+        - any other unexpected status: `ESIHTTPError` (no retry).
+        """
+        url = f"{self.cfg.esi_base}{path}"
+        try:
+            headers = dict(self.tokens.auth_header(auth_role))
+        except requests.RequestException as e:
+            raise ESIError(
+                f"Token refresh failed for role '{auth_role}': {e}. Re-authorize this character."
+            ) from e
+        request_params = {"datasource": "tranquility", **(params or {})}
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            self._await_error_budget()
+            try:
+                resp = self.session.request(
+                    method, url, json=json_body, params=request_params, headers=headers, timeout=timeout,
+                )
+            except requests.RequestException as e:
+                if idempotent and attempt < attempts:
+                    time.sleep(attempt * 1.5)
+                    continue
+                error_cls = ESIError if idempotent else ESIDeliveryUnknown
+                raise error_cls(f"Request failed for {url}: {e}") from e
+            self._record_error_budget(resp)
+            if resp.status_code in expect:
+                return resp
+            if resp.status_code in (420, 429) and attempt < attempts:
+                time.sleep(self._retry_after_seconds(resp, attempt))
+                continue
+            if resp.status_code in (500, 502, 503, 504):
+                if idempotent and attempt < attempts:
+                    time.sleep(attempt * 1.5)
+                    continue
+                if not idempotent:
+                    raise ESIDeliveryUnknown(f"HTTP {resp.status_code} for {url}")
+            raise ESIHTTPError(
+                resp.status_code, resp.text[:300], f"HTTP {resp.status_code} for {url}",
+            )
+        raise ESIError(f"Exhausted retries for {url}")  # pragma: no cover - loop always returns/raises
+
     def _post_universe_ids(self, names: list[str]) -> dict:
         return self._post_response("/universe/ids/", names, params={"datasource": "tranquility"}).json()
 
@@ -1369,6 +1445,76 @@ class ESIClient:
             "mail_body", character_id, auth_role, f"/characters/{character_id}/mail/{int(mail_id)}/",
             ttl=self._MAIL_BODY_CACHE_TTL, extra=(int(mail_id),), cache=cache,
         )
+
+    # ---- Mail writes (phase 4). Each needs the matching *capability* ticked
+    # (mail_send / mail_organize) and a token holding its scope.
+    def send_mail(self, character_id: int, auth_role: str, payload: dict) -> int:
+        """Requires esi-mail.send_mail.v1. Sends one mail and returns its
+        mail_id. NEVER retried (see _write): a transport error or 5xx raises
+        ESIDeliveryUnknown, and the caller must tell the user to check the
+        Sent folder before sending again. `payload`: {"approved_cost", "body",
+        "recipients": [{"recipient_id", "recipient_type"}], "subject"}."""
+        resp = self._write(
+            "POST", f"/characters/{character_id}/mail/", auth_role=auth_role, json_body=payload,
+            idempotent=False, expect=(200, 201),
+        )
+        return int(resp.json())
+
+    def update_mail(self, character_id: int, auth_role: str, mail_id: int, changes: dict) -> None:
+        """Requires esi-mail.organize_mail.v1. `changes`: {"read": bool} and/or
+        {"labels": [label_id, ...]}. Idempotent (sets state), so retried."""
+        self._write(
+            "PUT", f"/characters/{character_id}/mail/{int(mail_id)}/", auth_role=auth_role,
+            json_body=changes, idempotent=True, expect=(200, 204),
+        )
+
+    def delete_mail(self, character_id: int, auth_role: str, mail_id: int) -> None:
+        """Requires esi-mail.organize_mail.v1. Deletes one mail in the game."""
+        self._write(
+            "DELETE", f"/characters/{character_id}/mail/{int(mail_id)}/", auth_role=auth_role,
+            idempotent=True, expect=(200, 204),
+        )
+
+    def create_mail_label(self, character_id: int, auth_role: str, name: str, color: str) -> int:
+        """Requires esi-mail.organize_mail.v1. Returns the new label_id. Not
+        idempotent (a repeat would create a second label): no retry on 5xx."""
+        resp = self._write(
+            "POST", f"/characters/{character_id}/mail/labels/", auth_role=auth_role,
+            json_body={"name": name, "color": color}, idempotent=False, expect=(200, 201),
+        )
+        return int(resp.json())
+
+    def delete_mail_label(self, character_id: int, auth_role: str, label_id: int) -> None:
+        """Requires esi-mail.organize_mail.v1."""
+        self._write(
+            "DELETE", f"/characters/{character_id}/mail/labels/{int(label_id)}/", auth_role=auth_role,
+            idempotent=True, expect=(200, 204),
+        )
+
+    def resolve_recipient_names(self, names: list[str]) -> dict[str, list[dict]]:
+        """Exact-name lookup for mail recipients via POST /universe/ids/ (no
+        auth). {"character": [{"id","name"}], "corporation": [...],
+        "alliance": [...]}; a name ESI does not know is simply absent."""
+        result = self._post_universe_ids(list(dict.fromkeys(n for n in names if n)))
+        return {
+            "character": list(result.get("characters") or []),
+            "corporation": list(result.get("corporations") or []),
+            "alliance": list(result.get("alliances") or []),
+        }
+
+    def search_entities(self, query: str, limit: int = 8) -> list[dict]:
+        """Public GET /search/ (no auth) over characters, corporations and
+        alliances, for the compose recipient autocomplete. Returns at most
+        `limit` per category as [{"type", "id", "name"}]."""
+        found = self._get(
+            "/search/", params={"categories": "character,corporation,alliance", "search": query,
+                                "strict": "false", "datasource": "tranquility"},
+        )
+        picked: list[tuple[str, int]] = []
+        for kind in ("character", "corporation", "alliance"):
+            picked.extend((kind, int(i)) for i in (found.get(kind) or [])[:limit])
+        names = self.resolve_names_cached([i for _k, i in picked])
+        return [{"type": k, "id": i, "name": names[i]} for k, i in picked if i in names]
 
     def resolve_names_cached(self, ids: list[int]) -> dict[int, str]:
         """resolve_names with a shared 1 h in-memory cache (public data).

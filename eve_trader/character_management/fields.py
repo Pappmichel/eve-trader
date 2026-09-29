@@ -125,5 +125,25 @@ def esi_failure(error: BaseException) -> str:
     that is more than we want in an error toast or a log line, so only the
     HTTP status (or "network error") survives (docs/CHARACTER_MANAGEMENT_PLAN.md
     phase 3, privacy)."""
+    if "Token refresh failed" in str(error):
+        return "Token refresh failed - re-authorize this character on the Characters page"
     match = _HTTP_STATUS.search(str(error))
     return f"ESI returned HTTP {match.group(1)}" if match else "ESI request failed (network error)"
+
+
+def capability_ready(
+    character_id: int, capability_key: str, scope: str, tokens: TokenManager,
+) -> str:
+    """State of a write capability for one character: `ready` (ticked AND a
+    token holds the scope), `not_enabled` (not ticked - the user has not
+    consented to this app acting for the character), or `reauth_needed`
+    (ticked, but no stored token carries the scope yet)."""
+    ticked = any(
+        cid == int(character_id) and key == capability_key
+        for cid, key in storage.list_esi_character_capabilities()
+    )
+    if not ticked:
+        return "not_enabled"
+    if select_auth_role(character_id, scope, tokens=tokens) is None:
+        return STATE_REAUTH
+    return "ready"

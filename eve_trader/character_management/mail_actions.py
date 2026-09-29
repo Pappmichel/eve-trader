@@ -112,9 +112,16 @@ def do_list_folders() -> dict:
     out, unread = [], {lid: 0 for lid in SYSTEM_LABELS}
     for c in chars:
         cid = c["character_id"]
+        # Write capabilities (phase 4): `ready`, `not_enabled` (not ticked) or
+        # `reauth_needed`, so the UI can offer send/organize or explain why not.
+        caps = {
+            "send": fields.capability_ready(cid, "mail_send", "esi-mail.send_mail.v1", tokens),
+            "organize": fields.capability_ready(cid, "mail_organize", "esi-mail.organize_mail.v1", tokens),
+        }
         role = select_auth_role(cid, MAIL_SCOPE, tokens=tokens)
         if role is None:
-            out.append({**_status(c, STATE_REAUTH), "labels": [], "lists": [], "total_unread": 0})
+            out.append({**_status(c, STATE_REAUTH), "labels": [], "lists": [], "total_unread": 0,
+                        "capabilities": caps})
             continue
         try:
             labels, total = _normalize_labels(client.character_mail_labels(cid, role))
@@ -135,7 +142,8 @@ def do_list_folders() -> dict:
         for lb in labels:
             if lb["label_id"] in unread:
                 unread[lb["label_id"]] += lb["unread_count"]
-        out.append({**_status(c, state, detail), "labels": labels, "lists": lists, "total_unread": total})
+        out.append({**_status(c, state, detail), "labels": labels, "lists": lists, "total_unread": total,
+                    "capabilities": caps})
     return {"characters": out, "unread": {str(k): v for k, v in unread.items()}}
 
 

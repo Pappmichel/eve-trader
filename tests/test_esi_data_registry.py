@@ -120,13 +120,20 @@ def test_character_management_kinds():
     assert "char_info" in consuming_tool_keys()
 
 
-def test_group_3_has_three_capabilities_and_no_consuming_tool_list():
+def test_group_3_capabilities_and_no_consuming_tool_list():
     # corporation_roles added for docs/ESI_ACCESS_PLAN.md Known gap 2 (the
-    # Corporations table's role warning).
-    assert len(ACCESS_CAPABILITIES) == 3
+    # Corporations table's role warning); mail_send / mail_organize for the
+    # Character Management mail write actions (phase 4).
+    assert len(ACCESS_CAPABILITIES) == 5
     assert {c.key for c in ACCESS_CAPABILITIES} == {
         "structure_name_resolution", "structure_market_book", "corporation_roles",
+        "mail_send", "mail_organize",
     }
+    by_key = {c.key: c for c in ACCESS_CAPABILITIES}
+    assert by_key["mail_send"].character_scope == "esi-mail.send_mail.v1"
+    assert by_key["mail_organize"].character_scope == "esi-mail.organize_mail.v1"
+    for key in ("mail_send", "mail_organize"):
+        assert by_key[key].corporation_scope is None and by_key[key].corp_roles == ()
     for cap in ACCESS_CAPABILITIES:
         assert isinstance(cap, AccessCapability)
         assert not hasattr(cap, "consuming_tools")

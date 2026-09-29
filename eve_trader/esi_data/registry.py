@@ -265,6 +265,26 @@ ACCESS_CAPABILITIES: tuple[AccessCapability, ...] = (
         corporation_scope=None,
         corp_roles=(),
     ),
+    # Mail write actions (docs/CHARACTER_MANAGEMENT_PLAN.md phase 4). These are
+    # capabilities, not data kinds: on/off per character, no tool dimension, no
+    # freshness, and never fetched by a sync. Ticking one is the user's explicit
+    # consent that this app may act on the character's behalf (send a mail,
+    # change read state/labels, delete); the mail actions check both the tick
+    # and that a token really holds the scope, and fail closed otherwise.
+    AccessCapability(
+        key="mail_send",
+        label="Send mail",
+        character_scope="esi-mail.send_mail.v1",
+        corporation_scope=None,
+        corp_roles=(),
+    ),
+    AccessCapability(
+        key="mail_organize",
+        label="Organize mail",
+        character_scope="esi-mail.organize_mail.v1",
+        corporation_scope=None,
+        corp_roles=(),
+    ),
     AccessCapability(
         key="corporation_roles",
         label="Corporation roles",
