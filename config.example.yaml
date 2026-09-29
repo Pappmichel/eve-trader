@@ -51,7 +51,7 @@ lookback_days: 30
 # the Jita price cache stay global/unscoped. Status is on the Portfolio
 # page. A manual "Backup Now" is always available there too.
 scheduler_enabled: false
-trading_pipeline_interval_hours: 24.0
+trading_pipeline_interval_hours: 48.0
 esi_frequent_interval_hours: 1.0
 esi_normal_interval_hours: 6.0
 esi_rare_interval_hours: 24.0

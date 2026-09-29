@@ -149,7 +149,9 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         corporation_scope="esi-wallet.read_corporation_wallets.v1",
         corp_roles=("Accountant", "Junior_Accountant"),
         consuming_tools=("portfolio", "char_info"),
-        freshness_tier=TIER_FREQUENT,
+        # Normal, not frequent: Total Wealth is a once-a-day snapshot and
+        # Character Info is display-only (docs/SCHEDULER_REWORK_PLAN.md 2c).
+        freshness_tier=TIER_NORMAL,
     ),
     OwnedDataKind(
         key="skills",

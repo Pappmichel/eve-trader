@@ -563,7 +563,7 @@ class TradingConfig:
     # on-by-default since this is a credentials-handling tool making its
     # own ESI calls in the background.
     scheduler_enabled: bool = False
-    trading_pipeline_interval_hours: float = 24.0     # do_pipeline(safe=True) - no universe rebuild
+    trading_pipeline_interval_hours: float = 48.0     # do_pipeline(safe=True) - no universe rebuild (docs/SCHEDULER_REWORK_PLAN.md)
     # Freshness tiers (docs/ESI_ACCESS_PLAN.md Phase 7 / decision 5).
     # production_sync_interval_hours / doctrine_sync_interval_hours used
     # to be the ESI cadences; they are retired. Defaults match the
@@ -579,7 +579,7 @@ class TradingConfig:
     # tenant_settings scope CHECK widened; edited on the Skills page.
     char_skills_queue_warning_hours: float = 24.0
     backup_interval_hours: float = 24.0                # backup.create_backup() - see backup.py
-    jita_price_cache_interval_hours: float = 1.0        # production.jita_price_cache.refresh_jita_price_cache()
+    jita_price_cache_interval_hours: float = 3.0        # production.jita_price_cache.refresh_jita_price_cache()
     portfolio_snapshot_interval_hours: float = 24.0     # portfolio.take_portfolio_snapshot() - see PORTFOLIO_REWORK_PLAN.md
 
 
