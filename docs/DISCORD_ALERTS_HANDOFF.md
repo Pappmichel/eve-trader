@@ -88,7 +88,27 @@ caches notifications ~10 min, so a ~10-15 min poll at most).
   after a successful send (or after a deliberate skip), so a Discord outage
   does not lose alerts or duplicate them.
 
-## Open decisions (ask the user)
+## Decisions confirmed 2026-09-29 (supersede the open list below)
+
+The scheduler rework is implemented by a separate session; this feature builds
+on it afterwards.
+
+1. **Delivery: Discord bot** (not a webhook). The bot token is an
+   operator-level env variable, never stored per tenant or in the DB.
+2. **Target: DM to a linked Discord account.** The user links their Discord
+   account (OAuth2 `identify`) to the character; per tenant only the Discord
+   user id is stored. (The webhook SSRF guard in the checklist below then does
+   not apply; the bot only calls the fixed Discord API host.)
+3. **New tool_key `char_alerts`** (`ALL_TOOL_KEYS`, Admin checkboxes,
+   `_TOOL_PATH_PREFIXES`, Characters sharing UI).
+4. **`skillqueue_empty`: default lead time 12 h, sent once per `finish_date`**;
+   lead time configurable per subscription.
+5. **`mail_new` without `include_content`: count only** ("2 new mails"), no
+   sender, no subject. Content only with the separate opt-in.
+6. **No quiet hours, English messages.** Secrets handling follows
+   `tenant_tokens` precedent for anything stored at rest.
+
+## Original open decisions (now answered above)
 
 - Delivery: user-supplied Discord **webhook** per tenant vs. a bot (DM/channel).
   Webhook is far simpler; a bot needs a token and linking flow.
