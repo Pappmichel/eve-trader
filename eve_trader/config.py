@@ -225,6 +225,7 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "jita_price_cache_interval_hours": (0, None),
     "portfolio_snapshot_interval_hours": (0, None),
     "inactive_tenant_days": (0, None),                # SchedulerOperatorConfig (operator-only)
+    "alerts_mail_poll_minutes": (1, None),            # SchedulerOperatorConfig (operator-only)
     # -- Doctrine tool (see doctrine/config.py's DoctrineConfig) --
     "doctrine_structure_id": (1, None),
     "stockpile_location_id": (1, None),
@@ -701,13 +702,16 @@ class SchedulerOperatorConfig:
     - backup_job_enabled / jita_price_cache_job_enabled: the two global jobs.
       Defaults keep today's behaviour (both run whenever the scheduler
       thread runs).
-    - alerts_job_enabled: reserved for the Discord alerts feature
-      (docs/DISCORD_ALERTS_HANDOFF.md); nothing reads it yet.
+    - alerts_job_enabled: the Discord alerts job (docs/DISCORD_ALERTS_HANDOFF.md),
+      runs independently of every tenant's scheduler_enabled.
+    - alerts_mail_poll_minutes: how often an opted-in character's mail headers
+      are polled (ESI caches the mail list ~30 s; more often only costs calls).
     """
     inactive_tenant_days: float = 14.0
     backup_job_enabled: bool = True
     jita_price_cache_job_enabled: bool = True
     alerts_job_enabled: bool = False
+    alerts_mail_poll_minutes: float = 10.0
 
 
 _trading_config_yaml_cache: dict[Path, TradingConfig] = {}

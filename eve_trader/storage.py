@@ -36,7 +36,7 @@ import threading
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from functools import lru_cache
 from typing import Iterable, Optional
 
@@ -6922,3 +6922,111 @@ def delete_manual_item_price(type_id: int) -> None:
         conn.execute("DELETE FROM manual_item_prices WHERE type_id = ?", (type_id,))
 
 
+
+
+# --------------------------------------- Discord alerts (docs/DISCORD_ALERTS_HANDOFF.md)
+def get_alert_destination() -> Optional[str]:
+    """This tenant's linked Discord user id, or None."""
+    with connect() as conn:
+        row = conn.execute("SELECT discord_user_id FROM alert_destinations").fetchone()
+    return str(row[0]) if row else None
+
+
+def set_alert_destination(discord_user_id: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO alert_destinations (discord_user_id) VALUES (?) "
+            "ON CONFLICT (tenant_id) DO UPDATE SET discord_user_id = excluded.discord_user_id, linked_at = now()",
+            (discord_user_id,),
+        )
+
+
+def delete_alert_destination() -> bool:
+    """Unlink Discord. Also switches every subscription off: an opt-in without
+    a destination could never be delivered, and must not silently resume if a
+    different account is linked later."""
+    with connect() as conn:
+        conn.execute("UPDATE alert_subscriptions SET enabled = FALSE, updated_at = now() WHERE enabled")
+        return conn.execute("DELETE FROM alert_destinations").rowcount > 0
+
+
+def list_alert_subscriptions() -> list[tuple]:
+    """`(character_id, alert_type, enabled, include_content, lead_hours)`."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT character_id, alert_type, enabled, include_content, lead_hours "
+            "FROM alert_subscriptions ORDER BY character_id, alert_type"
+        ).fetchall()
+
+
+def get_alert_subscription(character_id: int, alert_type: str) -> Optional[tuple]:
+    """`(enabled, include_content, lead_hours)` or None (never opted in)."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT enabled, include_content, lead_hours FROM alert_subscriptions "
+            "WHERE character_id = ? AND alert_type = ?", (character_id, alert_type),
+        ).fetchone()
+
+
+def upsert_alert_subscription(character_id: int, alert_type: str, enabled: bool,
+                              include_content: bool, lead_hours: int) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO alert_subscriptions (character_id, alert_type, enabled, include_content, lead_hours) "
+            "VALUES (?,?,?,?,?) ON CONFLICT (tenant_id, character_id, alert_type) DO UPDATE SET "
+            "enabled = excluded.enabled, include_content = excluded.include_content, "
+            "lead_hours = excluded.lead_hours, updated_at = now()",
+            (character_id, alert_type, enabled, include_content, lead_hours),
+        )
+
+
+def delete_alert_data_for_character(character_id: int) -> None:
+    """Drop subscriptions and dedupe state of a character (removed owner)."""
+    with connect() as conn:
+        conn.execute("DELETE FROM alert_subscriptions WHERE character_id = ?", (character_id,))
+        conn.execute("DELETE FROM alert_state WHERE character_id = ?", (character_id,))
+
+
+def get_alert_state(character_id: int, alert_type: str) -> Optional[tuple]:
+    """`(last_seen_mail_id, last_key, last_sent_at, last_attempt_at)` or None."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT last_seen_mail_id, last_key, last_sent_at, last_attempt_at FROM alert_state "
+            "WHERE character_id = ? AND alert_type = ?", (character_id, alert_type),
+        ).fetchone()
+
+
+def save_alert_state(character_id: int, alert_type: str, *, last_seen_mail_id: Optional[int] = None,
+                     last_key: Optional[str] = None, sent: bool = False,
+                     at: Optional[datetime] = None) -> None:
+    """Record an attempt at `at` (default now); `sent=True` also stamps
+    `last_sent_at`. A None `last_seen_mail_id`/`last_key` keeps the stored
+    value, so a failed send can note the attempt without advancing the dedupe
+    cursor."""
+    at = at or datetime.now(timezone.utc)
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO alert_state (character_id, alert_type, last_seen_mail_id, last_key, last_sent_at, "
+            "last_attempt_at) VALUES (?,?,?,?, CASE WHEN ? THEN ?::timestamptz END, ?) "
+            "ON CONFLICT (tenant_id, character_id, alert_type) DO UPDATE SET "
+            "last_seen_mail_id = COALESCE(excluded.last_seen_mail_id, alert_state.last_seen_mail_id), "
+            "last_key = COALESCE(excluded.last_key, alert_state.last_key), "
+            "last_sent_at = COALESCE(excluded.last_sent_at, alert_state.last_sent_at), "
+            "last_attempt_at = excluded.last_attempt_at",
+            (character_id, alert_type, last_seen_mail_id, last_key, sent, at, at),
+        )
+
+
+def reset_alert_state(character_id: int, alert_type: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM alert_state WHERE character_id = ? AND alert_type = ?", (character_id, alert_type))
+
+
+def tenant_registry_suspension(tenant_id: str) -> Optional[bool]:
+    """`access_suspended` of the tenant's registry entry, or None when the
+    tenant has no registered character (removed user, orphaned tenant)."""
+    with connect_unscoped() as conn:
+        row = conn.execute(
+            "SELECT access_suspended FROM tenant_registry_entries WHERE tenant_id = ?", (tenant_id,),
+        ).fetchone()
+    return None if row is None else bool(row[0])

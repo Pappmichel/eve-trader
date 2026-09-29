@@ -1,6 +1,6 @@
 # Discord alerts - handoff for a later session
 
-Status: **planned, not started** (written 2026-09-29, revised after a critical
+Status: **implemented** (backend, scheduler job, UI; see the sections at the end). Originally: planned (written 2026-09-29, revised after a critical
 review the same day). Temporary note: delete it (and move durable facts into
 CLAUDE.md) when the feature lands.
 
@@ -100,7 +100,27 @@ caches notifications ~10 min, so a ~10-15 min poll at most).
   after a successful send (or after a deliberate skip), so a Discord outage
   does not lose alerts or duplicate them.
 
-## Open decisions (ask the user)
+## Decisions confirmed 2026-09-29 (supersede the open list below)
+
+The scheduler rework is implemented by a separate session; this feature builds
+on it afterwards.
+
+1. **Delivery: Discord bot** (not a webhook). The bot token is an
+   operator-level env variable, never stored per tenant or in the DB.
+2. **Target: DM to a linked Discord account.** The user links their Discord
+   account (OAuth2 `identify`) to the character; per tenant only the Discord
+   user id is stored. (The webhook SSRF guard in the checklist below then does
+   not apply; the bot only calls the fixed Discord API host.)
+3. **New tool_key `char_alerts`** (`ALL_TOOL_KEYS`, Admin checkboxes,
+   `_TOOL_PATH_PREFIXES`, Characters sharing UI).
+4. **`skillqueue_empty`: default lead time 12 h, sent once per `finish_date`**;
+   lead time configurable per subscription.
+5. **`mail_new` without `include_content`: count only** ("2 new mails"), no
+   sender, no subject. Content only with the separate opt-in.
+6. **No quiet hours, English messages.** Secrets handling follows
+   `tenant_tokens` precedent for anything stored at rest.
+
+## Original open decisions (now answered above)
 
 - Delivery: user-supplied Discord **webhook** per tenant vs. a bot (DM/channel).
   Webhook is far simpler; a bot needs a token and linking flow.
@@ -175,3 +195,55 @@ composite PK with `tenant_id` only if the natural key could collide.
 
 Process rules from CLAUDE.md: live-verify backend and frontend changes, keep
 `pytest` green, no Claude/Anthropic attribution in commits or PRs.
+
+## Implemented so far (branch `feat/discord-alerts`)
+
+Independent of the scheduler rework:
+- Schema (phase 10 in `docs/character_management_schema.sql`): `alert_destinations`,
+  `alert_subscriptions`, `alert_state`, RLS like every tenant table.
+- `eve_trader/alerts/`: `config.py` (operator env), `discord_client.py` (OAuth2
+  identify link + bot DM, mentions disabled, 429 -> `DiscordRateLimited`, DM
+  refused -> `DiscordDMBlocked`), `logic.py` (pure `skillqueue_decision` /
+  `mail_decision`, incl. baseline and count-only default), `actions.py`
+  (settings, subscriptions, link start/finish, unlink, test message,
+  `deliver()`).
+- Router `/api/char-alerts/` (settings, subscriptions, discord start/callback/
+  delete, test), grant `char_alerts` in `ALL_TOOL_KEYS`, and `char_alerts` as a
+  consuming tool of `skillqueue` and `mail` (sharing matrix). Frontend mirrors
+  updated (`toolKeys.ts`, `esiRegistry.ts`).
+
+Deliberate choices while building:
+- Removing a character (`do_remove_token_character`, `admin.do_remove_user`)
+  does NOT delete subscriptions, matching those actions' keep-data policy;
+  `deliver()` refuses to send without a token holding the scope, so nothing is
+  sent for a removed character. The scheduler job must also skip tenants whose
+  registry entry is gone or suspended.
+- Unlinking Discord switches all subscriptions off; a fresh opt-in resets
+  `alert_state` (clean mail baseline, no stale dedupe key).
+
+Still to do (needs the scheduler rework): the `alerts` job (skill queue tick
+evaluation with one live re-check before sending, mail header poll with
+backoff, `demand` feed into `do_sync_due`), the `alerts_job_enabled` switch and
+interval field, and the frontend page `/character-management/alerts` (the
+Discord callback already redirects there) plus its hub card and
+`CHARACTER_MANAGEMENT_TOOL_KEYS` entry.
+
+## Scheduler part and UI (implemented after the scheduler rework landed on dev)
+
+- `eve_trader/alerts/runner.py::run_for_tenant`, called by
+  `scheduler._check_and_run_alerts_job` (own switch `alerts_job_enabled`, poll
+  interval `alerts_mail_poll_minutes` - both operator-only in
+  `SchedulerOperatorConfig`, see `config.example.yaml`).
+- Skill queue: threshold checked every tick from the stored snapshot; one live
+  re-check right before sending; never alarms on a never-synced snapshot; the
+  `skillqueue` snapshot is refreshed via `do_sync_due(granted_tools={"char_alerts"},
+  demand=...)`, so an inactive tenant's other ESI data is never fetched.
+- Mail: polled live (headers only, bodies only with `include_content`), baseline
+  on first poll (empty inbox stores cursor 0), cursor advances only after a
+  successful send or a deliberate no-alert.
+- Failures (ESI, Discord) record `last_attempt_at` (the simulated `now` the
+  runner is given) and back off `RETRY_BACKOFF_MINUTES` (15) / the poll interval.
+- Frontend page `/character-management/alerts` (`AlertsPage.tsx`), hub card,
+  QuickNav entry, `CHARACTER_MANAGEMENT_TOOL_KEYS` includes `char_alerts`.
+
+Delete this handoff once the feature is confirmed live in production.

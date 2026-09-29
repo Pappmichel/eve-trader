@@ -35,14 +35,14 @@ describe('esiRegistry Character Management kinds', () => {
     expect(skills.section).toBe('character')
     expect(skills.consumingTools).toEqual(['production', 'station_trading', 'char_skills', 'char_skill_plans'])
     const queue = kindByKey('skillqueue')!
-    expect(queue.consumingTools).toEqual(['char_skills'])
+    expect(queue.consumingTools).toEqual(['char_skills', 'char_alerts'])
     expect(queue.liveOnly).toBeUndefined()      // a synced snapshot, not a live read
     expect(toolLabel('char_skills')).toBe('Skills')
   })
 
   it('mirrors phase 3: Mail is a live-only kind with its own note about the opt-in archive', () => {
     const mail = kindByKey('mail')!
-    expect(mail.consumingTools).toEqual(['char_mail'])
+    expect(mail.consumingTools).toEqual(['char_mail', 'char_alerts'])
     expect(mail.liveOnly).toBe(true)
     expect(mail.liveNote).toMatch(/Archive mail/)
     expect(toolLabel('char_mail')).toBe('Mail')

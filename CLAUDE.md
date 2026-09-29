@@ -861,10 +861,24 @@ manual-entry section/form alongside the ESI-synced rows (`source: "esi" |
 
 ## Deferred, not rejected
 
-Contract-Scanner, Discord alerts, and a PI (Planetary Interaction) calculator
+Contract-Scanner and a PI (Planetary Interaction) calculator
 were explicitly discussed and deferred (not rejected) as of 2026-07-14 -
 they're legitimate future scope, just not started. Don't start on these
 without asking first.
+
+**Discord alerts** (user-scheduled 2026-09-29, branch
+`feat/discord-alerts`, decisions in `docs/DISCORD_ALERTS_HANDOFF.md`): bot DMs
+to an OAuth-linked Discord account, tool_key `char_alerts`, opt-in per
+character x alert type (`skillqueue_empty`, `mail_new`). Code lives in
+`eve_trader/alerts/` (`discord_client.py`, pure `logic.py`, `actions.py` with
+`deliver()` as the one send path that re-checks opt-in/sharing/token at send
+time), router `/api/char-alerts/`. Bot token and OAuth client are operator env
+variables (`DISCORD_*`, see `.env.example`), never stored per tenant. The
+`alerts` job (`alerts/runner.py`, hooked in `scheduler._check_and_run_alerts_job`)
+runs only with the operator switch `alerts_job_enabled`, independent of every
+tenant's `scheduler_enabled` and of tenant inactivity
+(`tenant_eligibility.alerts_allowed`: gate on -> registered, not suspended,
+holds `char_alerts`). Frontend: `/character-management/alerts`.
 
 A full codebase audit (2026-08-18) turned up four more low-priority items,
 deliberately left unfixed at the time (everything else the audit found -

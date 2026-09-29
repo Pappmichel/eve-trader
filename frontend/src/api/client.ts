@@ -715,6 +715,17 @@ export const charNotificationsApi = {
   sync: () => post<T.CharInfoSyncResult>('/api/char-notifications/sync', {}),
 }
 
+// -------------------------------------------------------------- discord alerts
+export const charAlertsApi = {
+  settings: () => get<T.AlertSettings>('/api/char-alerts/settings'),
+  setSubscription: (s: {
+    character_id: number; alert_type: T.AlertType; enabled: boolean; include_content?: boolean; lead_hours?: number
+  }) => post<unknown>('/api/char-alerts/subscriptions', s),
+  linkStart: () => get<{ url: string }>('/api/char-alerts/discord/start'),
+  unlink: () => del<{ unlinked: boolean }>('/api/char-alerts/discord'),
+  test: () => post<{ sent: boolean }>('/api/char-alerts/test', {}),
+}
+
 // -------------------------------------------------------------- mail
 export const charMailApi = {
   folders: () => get<T.MailFolders>('/api/char-mail/folders'),

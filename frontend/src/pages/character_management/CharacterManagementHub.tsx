@@ -51,6 +51,8 @@ export default function CharacterManagementHub() {
             description="Contacts with standings and labels, and upcoming calendar events, read live from ESI." />
           <ToolCard tools={tools} toolKey="char_skill_plans" to="/character-management/skill-plans" title="Skill Plans"
             description="Build skill plans with prerequisites filled in, import and export them, and see how far each character is." />
+          <ToolCard tools={tools} toolKey="char_alerts" to="/character-management/alerts" title="Discord Alerts"
+            description="Get a Discord DM when a skill queue is about to run empty or new mail arrives. Every alert is opt-in." />
         </SimpleGrid>
       )}
     </Container>

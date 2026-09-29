@@ -1902,3 +1902,24 @@ export interface MailRecipientHit {
   id: number
   name: string
 }
+
+// ------------------------------------------------------------- discord alerts
+export type AlertType = 'skillqueue_empty' | 'mail_new'
+
+export interface AlertSubscription {
+  shared: boolean
+  enabled: boolean
+  include_content: boolean
+  lead_hours: number
+}
+
+export interface AlertSettings {
+  bot_configured: boolean
+  link_configured: boolean
+  linked: boolean
+  characters: Array<{
+    character_id: number
+    character_name: string
+    alerts: Record<AlertType, AlertSubscription>
+  }>
+}

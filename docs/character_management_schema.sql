@@ -419,3 +419,54 @@ CREATE POLICY tenant_isolation ON skill_plan_items
     USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 GRANT SELECT, INSERT, UPDATE, DELETE ON skill_plan_items TO eve_trader_app;
+
+-- ----------------------------------------------------------------- phase 10
+-- Discord alerts (docs/DISCORD_ALERTS_HANDOFF.md). One Discord user id per
+-- tenant (one character per tenant is a DB guarantee), the bot DMs it. The bot
+-- token is an operator env variable, never stored here. Every subscription is
+-- opt-in, default off; `alert_state` holds dedupe/baseline state only.
+CREATE TABLE IF NOT EXISTS alert_destinations (
+    tenant_id UUID PRIMARY KEY DEFAULT current_setting('app.tenant_id', false)::uuid,
+    discord_user_id TEXT NOT NULL,
+    linked_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE alert_destinations ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON alert_destinations;
+CREATE POLICY tenant_isolation ON alert_destinations
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON alert_destinations TO eve_trader_app;
+
+CREATE TABLE IF NOT EXISTS alert_subscriptions (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    character_id BIGINT NOT NULL,
+    alert_type TEXT NOT NULL CHECK (alert_type IN ('skillqueue_empty', 'mail_new')),
+    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    include_content BOOLEAN NOT NULL DEFAULT FALSE,
+    lead_hours INTEGER NOT NULL DEFAULT 12 CHECK (lead_hours BETWEEN 1 AND 168),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, character_id, alert_type)
+);
+ALTER TABLE alert_subscriptions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON alert_subscriptions;
+CREATE POLICY tenant_isolation ON alert_subscriptions
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON alert_subscriptions TO eve_trader_app;
+
+CREATE TABLE IF NOT EXISTS alert_state (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    character_id BIGINT NOT NULL,
+    alert_type TEXT NOT NULL CHECK (alert_type IN ('skillqueue_empty', 'mail_new')),
+    last_seen_mail_id BIGINT,
+    last_key TEXT,
+    last_sent_at TIMESTAMPTZ,
+    last_attempt_at TIMESTAMPTZ,
+    PRIMARY KEY (tenant_id, character_id, alert_type)
+);
+ALTER TABLE alert_state ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON alert_state;
+CREATE POLICY tenant_isolation ON alert_state
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON alert_state TO eve_trader_app;

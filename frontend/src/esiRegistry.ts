@@ -86,7 +86,7 @@ export const OWNED_DATA_KINDS: readonly OwnedDataKind[] = [
   },
   {
     key: 'skillqueue', section: 'character', label: 'Skill Queue', group: 2,
-    consumingTools: ['char_skills'], corpRoles: [],
+    consumingTools: ['char_skills', 'char_alerts'], corpRoles: [],
   },
   // Character Management (docs/CHARACTER_MANAGEMENT_PLAN.md phase 1).
   {
@@ -137,7 +137,7 @@ export const OWNED_DATA_KINDS: readonly OwnedDataKind[] = [
     key: 'mail', section: 'character', label: 'Mail', group: 2, liveOnly: true,
     liveNote: 'Read live from ESI in Mail and not stored - unless you turn on "Archive mail" for this '
       + 'character in Mail settings, which keeps a copy in this app\'s database until you delete it.',
-    consumingTools: ['char_mail'], corpRoles: [],
+    consumingTools: ['char_mail', 'char_alerts'], corpRoles: [],
   },
 ]
 
@@ -179,11 +179,12 @@ export const TOOL_LABELS: Record<string, string> = {
   char_notifications: 'Notifications',
   char_contacts: 'Contacts & Calendar',
   char_skill_plans: 'Skill Plans',
+  char_alerts: 'Discord Alerts',
 }
 
 export const CONSUMING_TOOL_KEYS = [
   'trading', 'production', 'doctrine', 'station_trading', 'sorting', 'portfolio', 'char_info', 'char_skills', 'char_mail',
-  'char_notifications', 'char_contacts', 'char_skill_plans',
+  'char_notifications', 'char_contacts', 'char_skill_plans', 'char_alerts',
 ] as const
 
 export function kindByKey(key: string): OwnedDataKind | undefined {

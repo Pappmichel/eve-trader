@@ -50,8 +50,8 @@ SESSION_MAX_AGE_SECONDS = 30 * 24 * 3600  # 30 days
 # is the first Character Management hub sub-tool (docs/
 # CHARACTER_MANAGEMENT_PLAN.md, decision 8: `char_` prefix so a tool key never
 # collides with a data-kind key like "skills"); later phases add char_skills,
-# char_mail, ... each with its own router. "char_skills" is phase 2, "char_mail" phase 3, "char_notifications" phase 6, "char_contacts" phase 8, "char_skill_plans" phase 9.
-ALL_TOOL_KEYS = ("trading", "production", "doctrine", "refining", "station_trading", "sorting", "portfolio", "admin", "characters", "module_reprocessing", "char_info", "char_skills", "char_mail", "char_notifications", "char_contacts", "char_skill_plans")
+# char_mail, ... each with its own router. "char_skills" is phase 2, "char_mail" phase 3, "char_notifications" phase 6, "char_contacts" phase 8, "char_skill_plans" phase 9, "char_alerts" (Discord alerts).
+ALL_TOOL_KEYS = ("trading", "production", "doctrine", "refining", "station_trading", "sorting", "portfolio", "admin", "characters", "module_reprocessing", "char_info", "char_skills", "char_mail", "char_notifications", "char_contacts", "char_skill_plans", "char_alerts")
 
 
 @dataclass(frozen=True)

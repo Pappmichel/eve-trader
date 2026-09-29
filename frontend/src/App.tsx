@@ -92,6 +92,7 @@ const CharacterInfoPage = lazy(() => import('./pages/character_management/info/C
 const SkillsPage = lazy(() => import('./pages/character_management/skills/SkillsPage'))
 const MailPage = lazy(() => import('./pages/character_management/mail/MailPage'))
 const SkillPlansPage = lazy(() => import('./pages/character_management/skill_plans/SkillPlansPage'))
+const AlertsPage = lazy(() => import('./pages/character_management/alerts/AlertsPage'))
 const ContactsPage = lazy(() => import('./pages/character_management/contacts/ContactsPage'))
 const NotificationsPage = lazy(() => import('./pages/character_management/notifications/NotificationsPage'))
 
@@ -229,6 +230,7 @@ function App() {
             <Route path="/character-management/notifications" element={<NotificationsPage />} />
             <Route path="/character-management/contacts" element={<ContactsPage />} />
             <Route path="/character-management/skill-plans" element={<SkillPlansPage />} />
+            <Route path="/character-management/alerts" element={<AlertsPage />} />
             {/* Characters moved into the Character Management hub; keep old bookmarks working. */}
             <Route path="/characters" element={<Navigate to="/character-management/characters" replace />} />
             <Route path="/admin" element={<AdminPage />} />
