@@ -6,15 +6,16 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { charSkillsApi } from '../../../api/client'
+import { charSkillsApi, gateApi } from '../../../api/client'
 import type { CharacterSkills, SkillMatrix, SkillsOverviewRow } from '../../../api/types'
 import SkillsPage from './SkillsPage'
 
 vi.mock('../../../api/client', () => ({
   charSkillsApi: {
     overview: vi.fn(), character: vi.fn(), matrix: vi.fn(), sync: vi.fn(), warnings: vi.fn(), settings: vi.fn(),
-    setSettings: vi.fn(),
+    setSettings: vi.fn(), doctrineCheck: vi.fn(),
   },
+  gateApi: { status: vi.fn() },
   ApiError: class ApiError extends Error {},
 }))
 
@@ -48,6 +49,7 @@ function renderPage() {
 beforeEach(() => {
   vi.resetAllMocks()
   vi.mocked(charSkillsApi.warnings).mockResolvedValue({ count: 0, characters: [], queue_warning_hours: 24 })
+  vi.mocked(gateApi.status).mockResolvedValue({ tools: ['char_skills'] } as never)
 })
 
 const runningQueue = {
@@ -248,5 +250,57 @@ describe('Queue guard (phase 5a)', () => {
     await user.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(charSkillsApi.setSettings).toHaveBeenCalledWith(48))
     await waitFor(() => expect(charSkillsApi.warnings).toHaveBeenCalledTimes(2))
+  })
+})
+
+describe('Skills page doctrine check tab', () => {
+  const overview = { characters: [row()] }
+
+  it('is hidden without the doctrine grant and shown with it', async () => {
+    vi.mocked(charSkillsApi.overview).mockResolvedValue(overview)
+    renderPage()
+    await screen.findByRole('tab', { name: 'Matrix' })
+    expect(screen.queryByRole('tab', { name: 'Doctrine check' })).toBeNull()
+  })
+
+  it('lists who can fly what and expands the missing skills', async () => {
+    vi.mocked(gateApi.status).mockResolvedValue({ tools: ['char_skills', 'doctrine'] } as never)
+    vi.mocked(charSkillsApi.overview).mockResolvedValue(overview)
+    vi.mocked(charSkillsApi.doctrineCheck).mockResolvedValue({
+      sde_ready: true,
+      characters: [{ character_id: 1, character_name: 'Alice' }, { character_id: 2, character_name: 'Bob' }],
+      hidden_characters: [{ character_id: 3, character_name: 'Carol' }],
+      fittings: [{
+        fitting_id: 'f1', name: 'Rifter AC', variant_label: null, doctrine_id: 'd1', doctrine_name: 'Frigates',
+        hull_type_id: 587, hull_name: 'Rifter', required_skills: 3,
+        characters: [
+          { character_id: 1, can_fly: true, missing: [], train_seconds: 0 },
+          {
+            character_id: 2, can_fly: false, train_seconds: 3600,
+            missing: [{ skill_id: 1, name: 'Small Projectile Turret', needed: 3, have: 1, sp_remaining: 14000 }],
+          },
+        ],
+      }],
+    })
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByRole('tab', { name: 'Doctrine check' }))
+    expect(await screen.findByText('Can fly')).toBeTruthy()
+    expect(screen.getByText(/1 missing/)).toBeTruthy()
+    expect(screen.getByText(/Carol/)).toBeTruthy()
+    await user.click(screen.getByText('Rifter AC'))
+    expect(await screen.findByText(/Small Projectile Turret III \(has I\)/)).toBeTruthy()
+  })
+
+  it('explains an SDE without skill requirements', async () => {
+    vi.mocked(gateApi.status).mockResolvedValue({ tools: ['char_skills', 'doctrine'] } as never)
+    vi.mocked(charSkillsApi.overview).mockResolvedValue(overview)
+    vi.mocked(charSkillsApi.doctrineCheck).mockResolvedValue({
+      sde_ready: false, fittings: [], characters: [], hidden_characters: [],
+    })
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByRole('tab', { name: 'Doctrine check' }))
+    expect(await screen.findByText(/not loaded yet/)).toBeTruthy()
   })
 })

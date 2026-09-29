@@ -8,13 +8,14 @@ import { IconArrowLeft } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { ApiError, charSkillsApi } from '../../../api/client'
+import { ApiError, charSkillsApi, gateApi } from '../../../api/client'
 import type {
   CharacterSkills, SkillAttributes, SkillGroup, SkillMatrix, SkillQueue, SkillsOverviewRow, SkillsSummary,
 } from '../../../api/types'
 import { FieldState } from '../../../components/FieldState'
 import { dateTime, duration, qty } from '../../../format'
 import { useCharacterSync } from '../../../hooks/useCharacterSync'
+import { DoctrineCheckTab } from './DoctrineCheckTab'
 import { warningText } from './queueWarning'
 
 const ROMAN = ['0', 'I', 'II', 'III', 'IV', 'V']
@@ -368,6 +369,10 @@ export default function SkillsPage() {
   const [selected, setSelected] = useState<number | null>(null)
   const overview = useQuery({ queryKey: ['char-skills', 'overview'], queryFn: charSkillsApi.overview })
   const characters = overview.data?.characters ?? []
+  const gateStatus = useQuery({ queryKey: ['gate', 'status'], queryFn: gateApi.status })
+  const tools = gateStatus.data?.tools
+  // The check reads Doctrine's fittings, so it needs that grant as well.
+  const canDoctrine = tools === undefined || tools.includes('doctrine')
 
   const refresh = useCharacterSync(
     'Skills refresh',
@@ -415,6 +420,7 @@ export default function SkillsPage() {
             <Tabs.Tab value="overview">Overview</Tabs.Tab>
             <Tabs.Tab value="character">Character skills</Tabs.Tab>
             <Tabs.Tab value="matrix">Matrix</Tabs.Tab>
+            {canDoctrine && <Tabs.Tab value="doctrine">Doctrine check</Tabs.Tab>}
           </Tabs.List>
           <Tabs.Panel value="overview">
             <QueueGuard />
@@ -424,6 +430,7 @@ export default function SkillsPage() {
             <CharacterTab characters={characters} selected={selected} onSelect={setSelected} />
           </Tabs.Panel>
           <Tabs.Panel value="matrix"><MatrixTab /></Tabs.Panel>
+          {canDoctrine && <Tabs.Panel value="doctrine"><DoctrineCheckTab /></Tabs.Panel>}
         </Tabs>
       )}
     </Container>

@@ -751,7 +751,19 @@ Original design:
   to the Skills page and as a hub card badge (same mechanism as Admin's
   pending badge; the count is computed server-side). Push, Discord or email
   stays deferred (CLAUDE.md).
-- **5b Doctrine skill check:** read fittings via storage (a doctrine storage
+- **5b Doctrine skill check (implemented):** `character_management/skill_check.py`,
+  `GET /api/char-skills/doctrine-check?doctrine_id=`. The route sits under the
+  `char_skills` prefix and additionally requires the `doctrine` grant, checked
+  in the handler against `request.state.tool_keys` (now set by the access-gate
+  middleware; every key while the gate is off). Only characters shared with
+  Skills are checked; the rest are listed as `hidden_characters`. Level SP is
+  `ceil(250 * rank * 32**((level-1)/2))`; the training time is an estimate from
+  the synced attributes (`primary + secondary/2` SP per minute, no implants or
+  boosters) and is null when attributes or any rank are unknown. When the SDE
+  has no skill requirements (`sde_ready: false`, an Admin SDE preview + apply is
+  needed once) the tab explains that instead of showing everyone as able to fly.
+  The Skills page shows the "Doctrine check" tab only with the doctrine grant.
+  Original text: read fittings via storage (a doctrine storage
   reader, no import of `eve_trader.doctrine` internals). Collect the required
   skills of the ship and every fitted type from `sde_skill_requirements`,
   expanded recursively through skill prerequisites. Compare them against

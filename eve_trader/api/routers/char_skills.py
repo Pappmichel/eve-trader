@@ -5,11 +5,13 @@ Gated on tool_key `char_skills` via `_TOOL_PATH_PREFIXES` (api/app.py).
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from ...actions import ActionError
-from ...character_management import skills_actions
+from ...character_management import skill_check, skills_actions
 
 router = APIRouter()
 
@@ -58,3 +60,15 @@ def get_settings():
 @router.post("/settings")
 def set_settings(req: SettingsRequest):
     return _wrap(skills_actions.do_set_queue_warning_hours, hours=req.queue_warning_hours)
+
+
+@router.get("/doctrine-check")
+def doctrine_check(request: Request, doctrine_id: Optional[str] = None):
+    """Which characters can fly which doctrine fitting. Reads Doctrine's
+    fittings AND the characters' skills, so it needs BOTH grants: `char_skills`
+    (enforced by the path prefix) and `doctrine` (checked here against the
+    grants the middleware put on the request - fail closed when absent)."""
+    keys = getattr(request.state, "tool_keys", None)
+    if keys is None or "doctrine" not in keys:
+        raise HTTPException(status_code=403, detail="Forbidden - missing tool grant")
+    return _wrap(skill_check.do_doctrine_skill_check, doctrine_id=doctrine_id)

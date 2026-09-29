@@ -3615,6 +3615,33 @@ def load_character_skillqueue(character_ids: list[int]) -> list[tuple]:
     ]
 
 
+def get_skill_requirements(type_ids: Iterable[int]) -> dict[int, list[tuple[int, int]]]:
+    """type_id -> [(skill_id, level), ...] direct skill requirements from the SDE
+    cache (ships, modules, drones, charges - and skills themselves, whose
+    requirements are their prerequisites). Empty until an SDE refresh has
+    filled sde_skill_requirements."""
+    ids = list(dict.fromkeys(int(i) for i in type_ids))
+    if not ids:
+        return {}
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, skill_id, level FROM sde_skill_requirements WHERE type_id = ANY(?) "
+            "ORDER BY type_id, skill_id",
+            (ids,),
+        ).fetchall()
+    out: dict[int, list[tuple[int, int]]] = {}
+    for type_id, skill_id, level in rows:
+        out.setdefault(int(type_id), []).append((int(skill_id), int(level)))
+    return out
+
+
+def skill_requirements_loaded() -> bool:
+    """True once an SDE refresh has filled sde_skill_requirements (the doctrine
+    skill check is meaningless - every fitting looks flyable - without it)."""
+    with connect() as conn:
+        return conn.execute("SELECT 1 FROM sde_skill_requirements LIMIT 1").fetchone() is not None
+
+
 def get_skill_catalog(skill_ids: Iterable[int]) -> dict[int, dict]:
     """skill_id -> {name, group_id, group_name, rank, primary_attribute,
     secondary_attribute} from the SDE cache. `rank`/attributes are None until

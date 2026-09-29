@@ -643,6 +643,7 @@ export const charSkillsApi = {
   settings: () => get<{ queue_warning_hours: number }>('/api/char-skills/settings'),
   setSettings: (queueWarningHours: number) =>
     post<{ queue_warning_hours: number }>('/api/char-skills/settings', { queue_warning_hours: queueWarningHours }),
+  doctrineCheck: () => get<T.DoctrineCheck>('/api/char-skills/doctrine-check'),
   sync: () => post<T.CharInfoSyncResult>('/api/char-skills/sync', {}),
 }
 

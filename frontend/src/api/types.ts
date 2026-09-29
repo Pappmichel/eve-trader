@@ -1592,6 +1592,43 @@ export interface SkillMatrix {
 }
 
 
+// Mirrors eve_trader/character_management/skill_check.py.
+export interface DoctrineMissingSkill {
+  skill_id: number
+  name: string
+  needed: number
+  have: number
+  sp_remaining: number | null
+}
+
+export interface DoctrineCheckCharacter {
+  character_id: number
+  can_fly: boolean
+  missing: DoctrineMissingSkill[]
+  /** estimate from current attributes; null when unknown */
+  train_seconds: number | null
+}
+
+export interface DoctrineCheckFitting {
+  fitting_id: string
+  name: string
+  variant_label: string | null
+  doctrine_id: string
+  doctrine_name: string | null
+  hull_type_id: number
+  hull_name: string | null
+  required_skills: number
+  characters: DoctrineCheckCharacter[]
+}
+
+export interface DoctrineCheck {
+  sde_ready: boolean
+  fittings: DoctrineCheckFitting[]
+  characters: { character_id: number; character_name: string }[]
+  hidden_characters: { character_id: number; character_name: string }[]
+}
+
+
 // ---------------------------------------------------- Mail (Character Management)
 // Mirrors eve_trader/character_management/mail_actions.py.
 export interface MailRecipient {

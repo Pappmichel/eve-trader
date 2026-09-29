@@ -19,7 +19,7 @@ from starlette.responses import JSONResponse
 from starlette.types import Scope
 
 from .. import access_policy, scheduler, storage, tenant_scope
-from ..access_gate import SESSION_COOKIE_NAME, AuthorizedSession, authorize_session_cookie
+from ..access_gate import ALL_TOOL_KEYS, SESSION_COOKIE_NAME, AuthorizedSession, authorize_session_cookie
 
 log = logging.getLogger(__name__)
 from ..config import ACCESS_CONFIG, OAUTH_CONFIG, TRADING_CONFIG, apply_config_overrides
@@ -293,6 +293,11 @@ class AccessGateMiddleware(BaseHTTPMiddleware):
         if required_tool is not None and required_tool not in session.tool_keys:
             return JSONResponse({"detail": "Forbidden - missing tool grant"}, status_code=403)
 
+        # Handlers that need a grant beyond their path's tool (a route reading
+        # two tools' data, e.g. Skills x Doctrine) check this - fail closed when
+        # it is absent - instead of the middleware growing multi-tool paths.
+        request.state.tool_keys = tuple(session.tool_keys)
+
         # Gate on - the request could genuinely be any of several different
         # real tenants, so their own TRADING_CONFIG/PRODUCTION_CONFIG must be
         # resolved fresh here, not left pointing at whichever tenant's
@@ -302,6 +307,10 @@ class AccessGateMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     async def _call_with_default_tenant(call_next, request: Request):
+        # Gate off: the trusted local operator holds every tool (same as
+        # /api/gate/status reporting every key), so handlers that need a second
+        # grant on top of their path's tool see them all.
+        request.state.tool_keys = tuple(ALL_TOOL_KEYS)
         context_token = storage.set_current_tenant(storage.DEFAULT_TENANT_ID)
         try:
             return await call_next(request)
