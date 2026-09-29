@@ -15,6 +15,19 @@ from .pg_helpers import (  # noqa: F401
 )
 
 
+@pytest.fixture(autouse=True)
+def _scheduler_isolation(monkeypatch):
+    """Job outcomes live in module-level dicts (the failure backoff reads
+    them), so start every test clean; and by default pretend the ESI sync has
+    something due - tests that care override `pending_due` themselves."""
+    scheduler.last_run_status.clear()
+    scheduler._backup_status.clear()
+    scheduler._jita_price_cache_status.clear()
+    monkeypatch.setattr(
+        esi_orchestrator, "pending_due", lambda **kw: [("character", 1, "assets", "production")],
+    )
+
+
 def _fake_enter_tenant(cfg: TradingConfig):
     """A stand-in for tenant_scope.enter_tenant that only resolves
     TRADING_CONFIG (via a direct ContextVar.set, not real Postgres) - used
@@ -120,7 +133,7 @@ def test_check_and_run_due_jobs_for_tenant_runs_when_never_synced(monkeypatch):
     monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: None)
     calls = []
     monkeypatch.setattr(actions, "do_pipeline", lambda safe=True: calls.append("trading"))
-    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda: calls.append("esi"))
+    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda **kw: calls.append("esi"))
     monkeypatch.setattr(scheduler.portfolio, "take_portfolio_snapshot", lambda cfg: calls.append("portfolio_snapshot"))
 
     scheduler.last_run_status.clear()
@@ -138,14 +151,14 @@ def test_check_and_run_due_jobs_for_tenant_skips_pipeline_when_recently_run(monk
     monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: dt.date.today())
     calls = []
     monkeypatch.setattr(actions, "do_pipeline", lambda safe=True: calls.append("trading"))
-    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda: calls.append("esi"))
+    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda **kw: calls.append("esi"))
     monkeypatch.setattr(scheduler.portfolio, "take_portfolio_snapshot", lambda cfg: calls.append("portfolio_snapshot"))
 
     cfg = TradingConfig(scheduler_enabled=True, trading_pipeline_interval_hours=24.0)
     scheduler._check_and_run_due_jobs_for_tenant("test-tenant", cfg)
 
     # Pipeline and portfolio_snapshot are interval-gated and both just ran;
-    # esi_data_sync always runs and decides internally.
+    # esi_data_sync runs because the (stubbed) pending_due says something is due.
     assert calls == ["esi"]
 
 
@@ -155,7 +168,7 @@ def test_check_and_run_due_jobs_for_tenant_runs_portfolio_snapshot_when_overdue(
     monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: yesterday)
     calls = []
     monkeypatch.setattr(actions, "do_pipeline", lambda safe=True: calls.append("trading"))
-    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda: calls.append("esi"))
+    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda **kw: calls.append("esi"))
     monkeypatch.setattr(scheduler.portfolio, "take_portfolio_snapshot", lambda cfg: calls.append("portfolio_snapshot"))
 
     cfg = TradingConfig(scheduler_enabled=True, trading_pipeline_interval_hours=24.0,
@@ -171,7 +184,7 @@ def test_check_and_run_due_jobs_for_tenant_skips_entirely_when_disabled(monkeypa
     monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: None)
     calls = []
     monkeypatch.setattr(actions, "do_pipeline", lambda safe=True: calls.append("trading"))
-    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda: calls.append("esi"))
+    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda **kw: calls.append("esi"))
 
     cfg = TradingConfig(scheduler_enabled=False, trading_pipeline_interval_hours=24.0)
     scheduler._check_and_run_due_jobs_for_tenant("test-tenant", cfg)
@@ -188,7 +201,7 @@ def test_check_and_run_due_jobs_for_tenant_one_job_failing_does_not_block_the_ot
         raise RuntimeError("no auth")
 
     monkeypatch.setattr(actions, "do_pipeline", failing_pipeline)
-    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda: calls.append("esi"))
+    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda **kw: calls.append("esi"))
     monkeypatch.setattr(scheduler.portfolio, "take_portfolio_snapshot", lambda cfg: calls.append("portfolio_snapshot"))
 
     cfg = TradingConfig(scheduler_enabled=True, trading_pipeline_interval_hours=24.0)
@@ -355,7 +368,7 @@ def test_get_status_esi_last_run_at_is_freshness_not_tick(monkeypatch):
     _stub_get_status_deps(monkeypatch, freshness=stale)
     monkeypatch.setattr(storage, "get_esi_sync_time",
                         lambda scope: dt.datetime.now(dt.timezone.utc).isoformat())
-    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda: None)
+    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda **kw: None)
     monkeypatch.setattr(actions, "do_pipeline", lambda safe=True: None)
 
     scheduler.last_run_status.clear()
@@ -377,7 +390,7 @@ def test_get_status_esi_last_run_at_is_freshness_not_tick(monkeypatch):
 def test_get_status_esi_last_error_still_from_run_job(monkeypatch):
     _stub_get_status_deps(monkeypatch, freshness=None)
 
-    def boom():
+    def boom(**kw):
         raise RuntimeError("orchestrator exploded")
 
     monkeypatch.setattr(esi_orchestrator, "do_sync_due", boom)
@@ -417,7 +430,8 @@ def test_check_and_run_due_jobs_iterates_tenants_independently(
     monkeypatch.setattr(backup, "list_backups", lambda: [{"name": "b", "created_at": dt.datetime.now(dt.timezone.utc).isoformat(), "size_bytes": 1}])  # backup not due
     calls = []
     monkeypatch.setattr(actions, "do_pipeline", lambda safe=True: calls.append(storage.get_current_tenant()))
-    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda: None)
+    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda **kw: None)
+    monkeypatch.setattr(scheduler, "_master_enabled", lambda: True)  # operator switch, tested separately
 
     with storage.tenant_context(tenant_a):
         storage.save_tenant_settings("trading", {"scheduler_enabled": True, "trading_pipeline_interval_hours": 24.0})
@@ -442,7 +456,7 @@ def test_get_status_esi_last_run_at_from_real_freshness_rows(
     monkeypatch.setattr(scheduler.portfolio, "take_portfolio_snapshot", lambda cfg: None)
     monkeypatch.setattr(backup, "list_backups", lambda: [])
     monkeypatch.setattr(scheduler.jita_price_cache, "last_updated_at", lambda: None)
-    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda: None)
+    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda **kw: None)
 
     assert scheduler.get_status()["jobs"]["esi_data_sync"]["last_run_at"] is None
 
@@ -466,3 +480,165 @@ def test_get_status_esi_last_run_at_from_real_freshness_rows(
     assert reported.startswith("2026-09-10")
     assert scheduler._hours_since(reported) > 24
     assert scheduler._hours_since(tick) < 0.01
+
+
+# --------------------------------------------------- scheduler rework (phase D)
+def _due_env(monkeypatch, *, sync_time=None):
+    monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: sync_time)
+    monkeypatch.setattr(storage, "latest_portfolio_snapshot_date", lambda: dt.date.today())
+    calls = []
+    monkeypatch.setattr(actions, "do_pipeline", lambda safe=True: calls.append("trading"))
+    monkeypatch.setattr(esi_orchestrator, "do_sync_due", lambda **kw: calls.append(("esi", kw)))
+    return calls
+
+
+def _hours_ago(h):
+    return (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=h)).isoformat()
+
+
+def test_esi_job_is_not_started_when_nothing_is_due(monkeypatch):
+    calls = _due_env(monkeypatch)
+    monkeypatch.setattr(esi_orchestrator, "pending_due", lambda **kw: [])
+    scheduler._check_and_run_due_jobs_for_tenant(
+        "t", TradingConfig(scheduler_enabled=True, trading_pipeline_interval_hours=48.0))
+    assert calls == ["trading"]
+    assert "esi_data_sync" not in scheduler.last_run_status.get("t", {})
+
+
+def test_esi_job_gets_the_tenants_granted_tools(monkeypatch):
+    calls = _due_env(monkeypatch, sync_time=_hours_ago(1))
+    seen = {}
+    monkeypatch.setattr(esi_orchestrator, "pending_due", lambda **kw: seen.update(kw) or [("character", 1, "assets", "production")])
+    monkeypatch.setattr(scheduler.tenant_eligibility, "granted_tools", lambda tid: {"production"})
+    scheduler._check_and_run_due_jobs_for_tenant("t", TradingConfig(scheduler_enabled=True))
+    assert seen == {"granted_tools": {"production"}}
+    assert calls == [("esi", {"granted_tools": {"production"}})]
+
+
+def test_pipeline_needs_the_trading_grant(monkeypatch):
+    calls = _due_env(monkeypatch)
+    monkeypatch.setattr(scheduler.tenant_eligibility, "granted_tools", lambda tid: {"production"})
+    scheduler._check_and_run_due_jobs_for_tenant("t", TradingConfig(scheduler_enabled=True))
+    assert "trading" not in calls
+    monkeypatch.setattr(scheduler.tenant_eligibility, "granted_tools", lambda tid: {"trading"})
+    scheduler._check_and_run_due_jobs_for_tenant("t", TradingConfig(scheduler_enabled=True))
+    assert "trading" in calls
+
+
+def test_inactive_tenant_and_missing_master_switch_run_nothing(monkeypatch):
+    calls = _due_env(monkeypatch)
+    cfg = TradingConfig(scheduler_enabled=True)
+    scheduler._check_and_run_due_jobs_for_tenant("t", cfg, active=False)
+    scheduler._check_and_run_due_jobs_for_tenant("t", cfg, master_enabled=False)
+    assert calls == []
+
+
+def test_failed_pipeline_backs_off_instead_of_retrying_every_tick(monkeypatch):
+    calls = _due_env(monkeypatch, sync_time=None)  # never succeeded
+    cfg = TradingConfig(scheduler_enabled=True, trading_pipeline_interval_hours=48.0)
+    scheduler.last_run_status["t"] = {"trading_pipeline": {"ran_at": _hours_ago(1), "error": "boom"}}
+    scheduler._check_and_run_due_jobs_for_tenant("t", cfg)
+    assert "trading" not in calls
+    scheduler.last_run_status["t"] = {"trading_pipeline": {"ran_at": _hours_ago(7), "error": "boom"}}
+    scheduler._check_and_run_due_jobs_for_tenant("t", cfg)
+    assert "trading" in calls
+
+
+def test_short_interval_shortens_the_backoff_too():
+    # backoff = min(interval, 6h): a 2h job retries after 2h, not 6h.
+    assert scheduler._job_due(_hours_ago(3), _hours_ago(3), 2.0) is True
+    assert scheduler._job_due(_hours_ago(3), _hours_ago(1), 2.0) is False
+    assert scheduler._job_due(None, None, 24.0) is True
+
+
+def test_backup_and_jita_back_off_after_a_failed_attempt(monkeypatch):
+    monkeypatch.setattr(backup, "list_backups", lambda: [])
+    calls = []
+    monkeypatch.setattr(backup, "create_backup", lambda: calls.append("backup"))
+    monkeypatch.setattr(scheduler.jita_price_cache, "last_updated_at", lambda: None)
+    monkeypatch.setattr(scheduler.jita_price_cache, "refresh_jita_price_cache", lambda: calls.append("jita") or 0)
+    monkeypatch.setattr(scheduler.tenant_scope, "enter_tenant", _fake_enter_tenant(TradingConfig()))
+
+    scheduler._backup_status.update({"ran_at": _hours_ago(1), "error": "docker missing"})
+    scheduler._jita_price_cache_status.update({"ran_at": _hours_ago(1), "error": "esi down"})
+    scheduler._check_and_run_backup_job()
+    scheduler._check_and_run_jita_price_cache_job()
+    assert calls == []
+
+    scheduler._backup_status["ran_at"] = _hours_ago(7)
+    scheduler._jita_price_cache_status["ran_at"] = _hours_ago(7)
+    scheduler._check_and_run_backup_job()
+    scheduler._check_and_run_jita_price_cache_job()
+    assert calls == ["backup", "jita"]
+
+
+def test_operator_job_switches_turn_the_global_jobs_off(monkeypatch):
+    monkeypatch.setattr(backup, "list_backups", lambda: [])
+    calls = []
+    monkeypatch.setattr(backup, "create_backup", lambda: calls.append("backup"))
+    monkeypatch.setattr(scheduler.jita_price_cache, "last_updated_at", lambda: None)
+    monkeypatch.setattr(scheduler.jita_price_cache, "refresh_jita_price_cache", lambda: calls.append("jita") or 0)
+    monkeypatch.setattr(scheduler.tenant_scope, "enter_tenant", _fake_enter_tenant(TradingConfig()))
+    monkeypatch.setattr(scheduler.SCHEDULER_OPERATOR_CONFIG, "backup_job_enabled", False)
+    monkeypatch.setattr(scheduler.SCHEDULER_OPERATOR_CONFIG, "jita_price_cache_job_enabled", False)
+    scheduler._check_and_run_backup_job()
+    scheduler._check_and_run_jita_price_cache_job()
+    assert calls == []
+
+
+def _tick_env(monkeypatch, *, master, last_active):
+    monkeypatch.setattr(scheduler, "_master_enabled", lambda: master)
+    monkeypatch.setattr(storage, "list_tenants", lambda: [("t-active", "A", None), ("t-idle", "B", None)])
+    monkeypatch.setattr(storage, "list_tenant_last_active", lambda: last_active)
+    monkeypatch.setattr(scheduler.tenant_scope, "enter_tenant", _fake_enter_tenant(TradingConfig(scheduler_enabled=True)))
+    seen = []
+    monkeypatch.setattr(
+        scheduler, "_check_and_run_due_jobs_for_tenant",
+        lambda tid, cfg, **kw: seen.append((tid, kw["active"], kw["master_enabled"])),
+    )
+    globals_ = []
+    monkeypatch.setattr(scheduler, "_check_and_run_backup_job", lambda: globals_.append("backup"))
+    monkeypatch.setattr(scheduler, "_check_and_run_jita_price_cache_job", lambda: globals_.append("jita"))
+    return seen, globals_
+
+
+def test_tick_marks_long_idle_tenants_inactive(monkeypatch):
+    long_ago = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=30)
+    seen, globals_ = _tick_env(monkeypatch, master=True, last_active={"t-idle": long_ago, "t-active": None})
+    scheduler._check_and_run_due_jobs()
+    assert seen == [("t-active", True, True), ("t-idle", False, True)]
+    assert globals_ == ["backup", "jita"]
+
+
+def test_tick_does_nothing_without_the_master_switch(monkeypatch):
+    seen, globals_ = _tick_env(monkeypatch, master=False, last_active={})
+    scheduler._check_and_run_due_jobs()
+    assert seen == [] and globals_ == []
+
+
+def test_a_failed_activity_lookup_treats_everyone_as_active(monkeypatch):
+    seen, _ = _tick_env(monkeypatch, master=True, last_active={})
+    monkeypatch.setattr(storage, "list_tenant_last_active", lambda: (_ for _ in ()).throw(RuntimeError("db")))
+    scheduler._check_and_run_due_jobs()
+    assert [a for _t, a, _m in seen] == [True, True]
+
+
+@pytest.mark.parametrize("master,alerts,starts", [(False, False, False), (True, False, True), (False, True, True)])
+def test_thread_starts_for_the_master_switch_or_the_alerts_job_alone(monkeypatch, master, alerts, starts):
+    monkeypatch.setattr(scheduler, "_thread", None)
+    monkeypatch.setattr(scheduler, "_master_enabled", lambda: master)
+    monkeypatch.setattr(scheduler.SCHEDULER_OPERATOR_CONFIG, "alerts_job_enabled", alerts)
+    monkeypatch.setattr(scheduler, "_loop", lambda: None)
+    scheduler.start()
+    assert (scheduler._thread is not None) is starts
+    if scheduler._thread is not None:
+        scheduler._thread.join(timeout=2)
+
+
+def test_get_status_reports_the_operator_switches(monkeypatch):
+    _stub_get_status_deps(monkeypatch)
+    status = scheduler.get_status()
+    assert set(status["operator"]) == {
+        "backup_job_enabled", "jita_price_cache_job_enabled", "alerts_job_enabled", "inactive_tenant_days",
+    }
+

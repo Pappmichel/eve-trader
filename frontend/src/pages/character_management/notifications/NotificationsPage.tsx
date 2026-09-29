@@ -11,6 +11,7 @@ import { ApiError, charNotificationsApi } from '../../../api/client'
 import type { NotificationItem } from '../../../api/types'
 import { dateTime } from '../../../format'
 import { useCharacterSync } from '../../../hooks/useCharacterSync'
+import { isStale, useSyncWhenStale } from '../../../hooks/useSyncWhenStale'
 
 const PAGE = 50
 const KEY = ['char-notifications']
@@ -65,6 +66,14 @@ export default function NotificationsPage() {
     'Notifications refresh', charNotificationsApi.sync, [KEY],
     'Fetches the current notification list from ESI for every character shared with Notifications.',
   )
+  // Notifications are no longer refreshed in the background (esi_data
+  // `on_demand`), so opening the page with an old list syncs it once.
+  useSyncWhenStale({
+    ready: !!data,
+    stale: isStale((data?.characters ?? []).map((c) => c.synced_at)),
+    sync: charNotificationsApi.sync,
+    invalidateKeys: [KEY],
+  })
   const setRead = useMutation({
     mutationFn: (v: { item: NotificationItem; read: boolean }) =>
       charNotificationsApi.setRead(v.item.character_id, [v.item.notification_id], v.read),

@@ -32,6 +32,14 @@ function row(overrides: Partial<SkillsOverviewRow> = {}): SkillsOverviewRow {
   }
 }
 
+// A row whose skill queue was tried just now: the page must not auto-sync it.
+function freshRow(overrides: Partial<SkillsOverviewRow> = {}): SkillsOverviewRow {
+  return row({
+    freshness: { skillqueue: { last_success_at: null, last_attempt_at: new Date().toISOString(), last_error: null } },
+    ...overrides,
+  })
+}
+
 function renderPage() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
@@ -105,8 +113,23 @@ describe('Skills page overview', () => {
     expect(await screen.findByText(/No ESI characters registered yet/)).toBeInTheDocument()
   })
 
-  it('Refresh syncs, reports an already-running sync, and refetches the overview', async () => {
+  it('syncs once on open when the skill queue was never tried or is old, but not when it is fresh', async () => {
+    vi.mocked(charSkillsApi.sync).mockResolvedValue({ ok: true, characters: {}, in_flight: [], failed: [] })
     vi.mocked(charSkillsApi.overview).mockResolvedValue({ characters: [row()] })
+    const first = renderPage()
+    await screen.findByText('Alice')
+    await waitFor(() => expect(charSkillsApi.sync).toHaveBeenCalledTimes(1))
+    first.unmount()
+
+    vi.mocked(charSkillsApi.sync).mockClear()
+    vi.mocked(charSkillsApi.overview).mockResolvedValue({ characters: [freshRow()] })
+    renderPage()
+    await screen.findByText('Alice')
+    expect(charSkillsApi.sync).not.toHaveBeenCalled()
+  })
+
+  it('Refresh syncs, reports an already-running sync, and refetches the overview', async () => {
+    vi.mocked(charSkillsApi.overview).mockResolvedValue({ characters: [freshRow()] })
     vi.mocked(charSkillsApi.sync).mockResolvedValue({ ok: true, characters: {}, in_flight: [1], failed: [] })
     const user = userEvent.setup()
     renderPage()

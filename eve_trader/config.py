@@ -224,6 +224,7 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "backup_interval_hours": (0, None),
     "jita_price_cache_interval_hours": (0, None),
     "portfolio_snapshot_interval_hours": (0, None),
+    "inactive_tenant_days": (0, None),                # SchedulerOperatorConfig (operator-only)
     # -- Doctrine tool (see doctrine/config.py's DoctrineConfig) --
     "doctrine_structure_id": (1, None),
     "stockpile_location_id": (1, None),
@@ -563,7 +564,7 @@ class TradingConfig:
     # on-by-default since this is a credentials-handling tool making its
     # own ESI calls in the background.
     scheduler_enabled: bool = False
-    trading_pipeline_interval_hours: float = 24.0     # do_pipeline(safe=True) - no universe rebuild
+    trading_pipeline_interval_hours: float = 48.0     # do_pipeline(safe=True) - no universe rebuild (docs/SCHEDULER_REWORK_PLAN.md)
     # Freshness tiers (docs/ESI_ACCESS_PLAN.md Phase 7 / decision 5).
     # production_sync_interval_hours / doctrine_sync_interval_hours used
     # to be the ESI cadences; they are retired. Defaults match the
@@ -579,7 +580,7 @@ class TradingConfig:
     # tenant_settings scope CHECK widened; edited on the Skills page.
     char_skills_queue_warning_hours: float = 24.0
     backup_interval_hours: float = 24.0                # backup.create_backup() - see backup.py
-    jita_price_cache_interval_hours: float = 1.0        # production.jita_price_cache.refresh_jita_price_cache()
+    jita_price_cache_interval_hours: float = 3.0        # production.jita_price_cache.refresh_jita_price_cache()
     portfolio_snapshot_interval_hours: float = 24.0     # portfolio.take_portfolio_snapshot() - see PORTFOLIO_REWORK_PLAN.md
 
 
@@ -684,6 +685,31 @@ class AccessConfig:
     access_gate_enabled: bool = True
 
 
+@dataclass
+class SchedulerOperatorConfig:
+    """Operator-only scheduler switches (docs/SCHEDULER_REWORK_PLAN.md).
+
+    Same posture as AccessConfig: plain instance, read from config.yaml,
+    deliberately NOT part of TradingConfig - a TradingConfig field would show
+    up on every tenant's Settings page although only the Default tenant's
+    value counts (the trap CLAUDE.md documents for `scheduler_enabled`), and
+    an authenticated session must not be able to flip operator switches.
+
+    - inactive_tenant_days: tenants without any authenticated request for this
+      many days are skipped by the tenant-level scheduler jobs (0 disables the
+      check). `tenants.last_active_at` NULL counts as active.
+    - backup_job_enabled / jita_price_cache_job_enabled: the two global jobs.
+      Defaults keep today's behaviour (both run whenever the scheduler
+      thread runs).
+    - alerts_job_enabled: reserved for the Discord alerts feature
+      (docs/DISCORD_ALERTS_HANDOFF.md); nothing reads it yet.
+    """
+    inactive_tenant_days: float = 14.0
+    backup_job_enabled: bool = True
+    jita_price_cache_job_enabled: bool = True
+    alerts_job_enabled: bool = False
+
+
 _trading_config_yaml_cache: dict[Path, TradingConfig] = {}
 
 
@@ -781,6 +807,20 @@ OAUTH_CONFIG = OAuthConfig()
 # per its own docstring, it's operator-only and becomes the tenant registry
 # in Phase 3, never a per-tenant Settings-page value.
 ACCESS_CONFIG = load_access_config()
+
+
+def load_scheduler_operator_config(path: Path = DEFAULT_CONFIG_PATH) -> SchedulerOperatorConfig:
+    """Same config.yaml, same loading as AccessConfig."""
+    cfg = SchedulerOperatorConfig()
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as f:
+            overrides = yaml.safe_load(f) or {}
+        validate_config_overrides(cfg, overrides)
+        apply_config_overrides(cfg, overrides)
+    return cfg
+
+
+SCHEDULER_OPERATOR_CONFIG = load_scheduler_operator_config()
 
 
 def save_tenant_config_overrides(scope: str, updates: dict[str, Any], *live_configs, cfg_type: type) -> None:
