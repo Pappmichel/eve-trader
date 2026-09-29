@@ -423,6 +423,55 @@ Tests:
 - the fetcher writes and stale-clear behaviour.
 
 ### Phase 2 - Skills (`char_skills`)
+
+**Status: implemented.** What shipped, next to the design below:
+- **Kinds:** `skills` (consumers now `production`, `station_trading`,
+  `char_skills`) and the new `skillqueue` (`esi-skills.read_skillqueue.v1`,
+  normal tier). `skills` moved to the "Character" column group on the
+  Characters page.
+- **Tables** (all in `docs/character_management_schema.sql`): `character_skills`,
+  `character_attributes` (attribute block + `total_sp`/`unallocated_sp`, all
+  columns nullable, written by two independent upserts), `character_skillqueue`
+  and the global `sde_skill_requirements` / `sde_skill_meta`.
+- **Fetcher:** `fetch_character_skills` still writes `character_slots`
+  first and adds the per-skill rows + totals in the same owner batch. The
+  `/attributes/` call is **best-effort** (`ESIError` is logged and skipped):
+  a failure would otherwise roll the whole batch back and break Production's
+  job-slot sync over a Character-Management-only detail.
+- **Stale clear:** `skills` now clears `character_skills`/`character_attributes`
+  (never `character_slots`); the early return for `skills` is gone.
+- **Accessor:** `read_esi("skills", "char_skills")` returns per-skill rows,
+  `table="attributes"` the attribute block + totals; any other tool keeps the
+  slot-row shape. `read_esi("skillqueue", ...)` is new.
+- **SDE:** `dgmTypeAttributes.csv` is **streamed** and filtered to the ten
+  attribute ids while parsing (`production/sde._fetch_skill_attributes`,
+  retried as a whole so a mid-stream reset never yields a truncated table),
+  then `skill_rows_from_attributes` builds the two tables. `sde_diff` diffs
+  them, the preview job now reports 15 batches. **An existing deployment must
+  run Admin's SDE preview + apply once** - until then ranks are absent (names
+  and groups only need the older tables, so the page still works).
+- **Extractable SP** is `max(0, (total_sp - 5,000,000) // 500,000)` and is
+  labelled an *estimate / upper bound* everywhere: the game also limits what
+  can be pulled from individual skills.
+- **Shared helpers:** `character_management/fields.py` (field states, gate,
+  snapshot read, sync summary) is now used by Character Info and Skills;
+  frontend `components/FieldState.tsx` and `hooks/useCharacterSync.ts` likewise.
+- **Actions/routes:** `do_skills_overview`, `do_character_skills`,
+  `do_skill_matrix`, `do_sync_char_skills` -> `/api/char-skills/{overview,
+  characters/{id}, matrix, sync}`. The page has Overview / Character skills /
+  Matrix tabs.
+- **Not in phase 2:** the queue guard (5a) - the overview only shows
+  "queue empty" / "queue paused" and the end date; no warning threshold yet.
+- **Not verifiable in the sandbox:** the real Fuzzwork download and real ESI
+  responses (see phase 1). The CSV column names (`typeID, attributeID,
+  valueInt, valueFloat`) and the ESI field names come from the public
+  dumps/swagger and are covered by tests against constructed data only -
+  check them on the first real SDE apply and character sync.
+- **Deployment:** new scope `esi-skills.read_skillqueue.v1` -> characters that
+  share Skill Queue must re-authorize; apply the schema file again; run the SDE
+  preview/apply.
+
+Original design:
 - The registry gets `skillqueue` and adds `char_skills` to the `skills`
   consumers.
 - `fetch_character_skills` writes job slots unchanged (Production depends on

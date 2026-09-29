@@ -79,7 +79,9 @@ def test_group_1_has_seven_owned_kinds_with_corp_variant():
 def test_group_2_is_character_only_kinds_with_no_corp_variant():
     group_2 = {k.key: k for k in OWNED_DATA_KINDS if k.group == GROUP_2}
     # skills + Character Management phase 1 (docs/CHARACTER_MANAGEMENT_PLAN.md).
-    assert set(group_2) == {"skills", "standings", "loyalty", "location", "ship", "online"}
+    assert set(group_2) == {
+        "skills", "skillqueue", "standings", "loyalty", "location", "ship", "online",
+    }
     for kind in group_2.values():
         assert kind.corporation_scope is None
         assert kind.corp_roles == ()

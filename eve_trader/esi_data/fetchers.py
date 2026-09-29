@@ -6,6 +6,7 @@ opportunistic). This module imports no tool package.
 """
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Callable, Optional
@@ -13,6 +14,8 @@ from typing import Callable, Optional
 from .. import storage
 from ..config import WALLET_DIVISION_IDS
 from ..esi_client import ESIClient, ESIError
+
+log = logging.getLogger(__name__)
 
 # Confirmed CCP live/SDE mismatch: ESI industry jobs report Reactions as
 # activity_id 9, the SDE files them under 11. Same normalization
@@ -388,7 +391,44 @@ def fetch_character_skills(
         owner_name, slots["manufacturing"], slots["reaction"], slots["science"],
         owner_character_id=owner_id,
     )
-    return {"written": 1, "slots": slots}
+    # Character Management phase 2: the full skill list and SP totals, next to
+    # (never instead of) the slot row Production needs. Written in the same
+    # owner batch, so they roll back together.
+    skill_rows = [
+        (int(s["skill_id"]), int(s["active_skill_level"]),
+         int(s.get("trained_skill_level", s["active_skill_level"])),
+         int(s.get("skillpoints_in_skill", 0)))
+        for s in skills.get("skills", [])
+    ]
+    storage.replace_character_skills(owner_id, skill_rows)
+    storage.upsert_character_skill_totals(
+        owner_id, skills.get("total_sp"), skills.get("unallocated_sp"),
+    )
+    # Best-effort: /attributes/ is a second call under the same scope. Its
+    # failure must never fail this fetch, because the owner batch would then
+    # roll back and Production's job-slot sync would break over a
+    # Character-Management-only detail.
+    try:
+        storage.upsert_character_attributes(owner_id, client.character_attributes(owner_id, auth_role=auth_role))
+    except ESIError as e:
+        log.warning("attributes fetch failed for character %s: %s", owner_id, e)
+    return {"written": 1, "slots": slots, "skills": len(skill_rows)}
+
+
+def fetch_character_skillqueue(
+    client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
+) -> dict:
+    raw = client.character_skillqueue(owner_id, auth_role=auth_role)
+    rows = [
+        (
+            int(q["queue_position"]), int(q["skill_id"]), int(q["finished_level"]),
+            q.get("start_date"), q.get("finish_date"), q.get("training_start_sp"),
+            q.get("level_start_sp"), q.get("level_end_sp"),
+        )
+        for q in raw
+    ]
+    storage.replace_character_skillqueue(owner_id, rows)
+    return {"written": len(rows)}
 
 
 # ---------------------------------------------------------------- contracts
@@ -590,6 +630,7 @@ FETCHERS: dict[tuple[str, str], Callable] = {
     ("wallet_balance", "character"): fetch_character_wallet_balance,
     ("wallet_balance", "corporation"): fetch_corporation_wallet_balance,
     ("skills", "character"): fetch_character_skills,
+    ("skillqueue", "character"): fetch_character_skillqueue,
     ("standings", "character"): fetch_character_standings,
     ("loyalty", "character"): fetch_character_loyalty,
     ("contracts", "character"): fetch_character_contracts,

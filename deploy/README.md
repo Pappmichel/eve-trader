@@ -207,9 +207,13 @@ sudo -u postgres psql -d eve_trader -f docs/character_management_schema.sql
 ```
 `character_management_schema.sql` creates `character_standings` and
 `character_loyalty_points` (the Character Management hub's Character Info
-snapshots, `docs/CHARACTER_MANAGEMENT_PLAN.md`) - skipping it leaves a
-Standings/Loyalty sync failing with `relation "character_standings" does not
-exist`, and later hub phases append their tables to this same file.
+snapshots, `docs/CHARACTER_MANAGEMENT_PLAN.md`) plus, since the Skills phase,
+`character_skills`/`character_attributes`/`character_skillqueue` and the global
+`sde_skill_requirements`/`sde_skill_meta` - skipping it leaves a Standings/
+Loyalty/Skills sync failing with `relation "character_standings" does not
+exist`, and an SDE apply failing on the two `sde_skill_*` tables. Later hub
+phases append their tables to this same file. After applying it once, run
+Admin's SDE preview + apply so `sde_skill_meta` (skill ranks) gets filled.
 `portfolio_schema.sql` creates `portfolio_snapshots` (Portfolio's daily
 history/Total Wealth snapshots, `docs/PORTFOLIO_REWORK_PLAN.md`) - skipping
 it leaves `/api/portfolio/overview`/`/api/portfolio/history` 500ing with

@@ -19,6 +19,8 @@ DEFAULT_STALE_CLEAR_MULTIPLES = 3
 
 # skills -> character_slots is deliberately absent: that write path is an
 # UPSERT so excluded_from_planning survives a re-sync (GitHub issue #39).
+# The per-skill / attribute tables Character Management added next to it
+# (phase 2) are ordinary snapshots and do clear.
 _KIND_TABLES: dict[str, dict[str, tuple[str, ...]]] = {
     "assets": {
         "character": ("character_assets",),
@@ -52,6 +54,9 @@ _KIND_TABLES: dict[str, dict[str, tuple[str, ...]]] = {
     # online) have no table, so they are correctly absent here.
     "standings": {"character": ("character_standings",)},
     "loyalty": {"character": ("character_loyalty_points",)},
+    # Phase 2. `skills` clears only the new tables, never character_slots.
+    "skills": {"character": ("character_skills", "character_attributes")},
+    "skillqueue": {"character": ("character_skillqueue",)},
 }
 
 
@@ -82,10 +87,9 @@ def clear_stale_owner_kind(
 
     Returns True if a clear ran. Missing freshness row, NULL
     `last_success_at`, or age still inside the grace window: no-op
-    (decision 6 keeps existing rows). `character_slots` is never cleared.
+    (decision 6 keeps existing rows). `character_slots` is never cleared
+    (`skills` maps to the per-skill/attribute tables only).
     """
-    if data_kind == "skills":
-        return False
     tables = _KIND_TABLES.get(data_kind, {}).get(owner_type)
     if not tables:
         return False

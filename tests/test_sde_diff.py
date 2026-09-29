@@ -222,6 +222,8 @@ _OTHER_TABLES = (
     "sde_type_materials",
     "sde_invention_probability",
     "sde_blueprint_skills",
+    "sde_skill_requirements",
+    "sde_skill_meta",
 )
 
 
@@ -242,6 +244,8 @@ def test_build_diff_other_tables_skip_types_and_blueprint_tables():
     assert other["sde_categories"]["new"] == [{"key": "6", "name": "Ship"}]
     assert other["sde_type_slots"]["new"] == [{"key": "123", "name": "123"}]
     assert other["sde_invention_probability"] == {"new": [], "removed": [], "changed": []}
+    assert other["sde_skill_requirements"] == {"new": [], "removed": [], "changed": []}
+    assert other["sde_skill_meta"] == {"new": [], "removed": [], "changed": []}
 
 
 def test_build_diff_sde_groups_new_removed_changed_skips_unchanged():

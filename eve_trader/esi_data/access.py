@@ -113,7 +113,12 @@ def read_esi(data_kind: str, tool_key: str, **filters) -> list[dict]:
     elif data_kind == "contracts":
         rows.extend(_read_contracts(tool_key, owner_type_filter, owner_id_filter))
     elif data_kind == "skills":
-        rows.extend(_read_skills(tool_key, owner_id_filter))
+        if tool_key == "char_skills":
+            rows.extend(_read_character_skills(owner_id_filter, filters.get("table")))
+        else:
+            rows.extend(_read_skills(tool_key, owner_id_filter))
+    elif data_kind == "skillqueue":
+        rows.extend(_read_skillqueue(tool_key, owner_id_filter))
     elif data_kind == "wallet_balance":
         rows.extend(_read_wallet_balance(tool_key, owner_id_filter))
     elif data_kind == "standings":
@@ -413,4 +418,47 @@ def _read_loyalty(tool_key: str, owner_id) -> list[dict]:
         {"owner_type": "character", "owner_id": int(r[0]), "corporation_id": int(r[1]),
          "loyalty_points": int(r[2])}
         for r in storage.load_character_loyalty_points(ids)
+    ]
+
+
+def _read_character_skills(owner_id, table: Optional[str]) -> list[dict]:
+    """`read_esi("skills", "char_skills")`: per-skill rows, or with
+    `table="attributes"` the attribute block + SP totals (one row per
+    character). Deliberately a separate shape from `_read_skills`, which
+    returns Production's job-slot rows from `character_slots` - the same
+    data kind, two tools, two row shapes, each under its own sharing row."""
+    ids = _filter_ids(_shared_owner_ids("skills", "char_skills", "character"), owner_id)
+    if table == "attributes":
+        return [
+            {
+                "owner_type": "character", "owner_id": int(r[0]), "total_sp": r[1],
+                "unallocated_sp": r[2], "charisma": r[3], "intelligence": r[4],
+                "memory": r[5], "perception": r[6], "willpower": r[7],
+                "bonus_remaps": r[8], "last_remap_date": r[9],
+                "accrued_remap_cooldown_date": r[10],
+            }
+            for r in storage.load_character_attributes(ids)
+        ]
+    if table not in (None, "skills"):
+        raise AccessorError(f"unknown skills table {table!r}")
+    return [
+        {
+            "owner_type": "character", "owner_id": int(r[0]), "skill_id": int(r[1]),
+            "active_level": int(r[2]), "trained_level": int(r[3]),
+            "skillpoints_in_skill": int(r[4]),
+        }
+        for r in storage.load_character_skills(ids)
+    ]
+
+
+def _read_skillqueue(tool_key: str, owner_id) -> list[dict]:
+    ids = _filter_ids(_shared_owner_ids("skillqueue", tool_key, "character"), owner_id)
+    return [
+        {
+            "owner_type": "character", "owner_id": int(r[0]), "queue_position": int(r[1]),
+            "skill_id": int(r[2]), "finished_level": int(r[3]), "start_date": r[4],
+            "finish_date": r[5], "training_start_sp": r[6], "level_start_sp": r[7],
+            "level_end_sp": r[8],
+        }
+        for r in storage.load_character_skillqueue(ids)
     ]

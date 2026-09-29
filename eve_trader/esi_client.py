@@ -1278,6 +1278,21 @@ class ESIClient:
             self._character_corp_history_cache_at[key] = time.time()
             return history
 
+    def character_attributes(self, character_id: int, auth_role: str) -> dict:
+        """Requires esi-skills.read_skills.v1 (same scope as character_skills).
+        {"charisma", "intelligence", "memory", "perception", "willpower",
+        "bonus_remaps"?, "last_remap_date"?, "accrued_remap_cooldown_date"?}."""
+        return self._get(f"/characters/{character_id}/attributes/",
+                         params={"datasource": "tranquility"}, auth_role=auth_role)
+
+    def character_skillqueue(self, character_id: int, auth_role: str) -> list[dict]:
+        """Requires esi-skills.read_skillqueue.v1. [{"queue_position",
+        "skill_id", "finished_level", "start_date"?, "finish_date"?,
+        "training_start_sp"?, "level_start_sp"?, "level_end_sp"?}] - the
+        dates are absent for a paused queue."""
+        return self._get(f"/characters/{character_id}/skillqueue/",
+                         params={"datasource": "tranquility"}, auth_role=auth_role)
+
     def resolve_names(self, ids: list[int]) -> dict[int, str]:
         """Batch id->name resolution via POST /universe/names/ (public, no
         auth, up to 1000 ids/call) - used to resolve industry job installer_id

@@ -37,7 +37,8 @@ describe('deriveCellState', () => {
     })
     expect(cell.kind).toBe('not_shared')
     expect(cell.sharedCount).toBe(0)
-    expect(cell.capableCount).toBe(2)
+    // production, station_trading and (Character Management phase 2) char_skills
+    expect(cell.capableCount).toBe(3)
   })
 
   it('uses a 2/4 badge when some consuming tools are shared', () => {

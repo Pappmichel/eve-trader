@@ -1353,6 +1353,7 @@ def replace_sde_data(
     invention_probability: list[tuple] = (), solar_systems: list[tuple] = (),
     stations: list[tuple] = (), categories: list[tuple] = (), type_slots: list[tuple] = (),
     type_materials: list[tuple] = (), blueprint_skills: list[tuple] = (),
+    skill_requirements: list[tuple] = (), skill_meta: list[tuple] = (),
 ) -> None:
     """Wholesale-replaces the SDE cache tables (each refresh reflects one Fuzzwork
     dump snapshot, not an incremental merge - stale rows from a previous CCP
@@ -1371,7 +1372,13 @@ def replace_sde_data(
     requires, used by production/engine.py's job-time skill bonus (see
     get_blueprint_skills, constants.SPECIALIST_TIME_SKILLS) to tell whether a
     blueprint's own "specialist" skill (e.g. Molecular Engineering) applies on
-    top of the universal Industry/Advanced Industry/Reactions bonus."""
+    top of the universal Industry/Advanced Industry/Reactions bonus.
+
+    `skill_requirements` (type_id, skill_id, level) and `skill_meta`
+    (skill_id, rank, primary_attribute, secondary_attribute) come from
+    `dgmTypeAttributes.csv`, filtered while parsing (see production/sde.py) -
+    Character Management's skill catalogue, doctrine skill check and skill
+    planner (docs/CHARACTER_MANAGEMENT_PLAN.md R7)."""
     with connect() as conn:
         conn.execute("DELETE FROM sde_types")
         conn.execute("DELETE FROM sde_groups")
@@ -1386,6 +1393,8 @@ def replace_sde_data(
         conn.execute("DELETE FROM sde_type_slots")
         conn.execute("DELETE FROM sde_type_materials")
         conn.execute("DELETE FROM sde_blueprint_skills")
+        conn.execute("DELETE FROM sde_skill_requirements")
+        conn.execute("DELETE FROM sde_skill_meta")
         conn.executemany("INSERT INTO sde_types VALUES (?,?,?,?,?,?,?,?,?)", types)
         conn.executemany("INSERT INTO sde_groups VALUES (?,?,?)", groups)
         conn.executemany("INSERT INTO sde_market_groups VALUES (?,?,?)", market_groups)
@@ -1399,6 +1408,8 @@ def replace_sde_data(
         conn.executemany("INSERT INTO sde_type_slots VALUES (?,?)", type_slots)
         conn.executemany("INSERT INTO sde_type_materials VALUES (?,?,?)", type_materials)
         conn.executemany("INSERT INTO sde_blueprint_skills VALUES (?,?,?,?)", blueprint_skills)
+        conn.executemany("INSERT INTO sde_skill_requirements VALUES (?,?,?)", skill_requirements)
+        conn.executemany("INSERT INTO sde_skill_meta VALUES (?,?,?,?)", skill_meta)
     get_system_security.cache_clear()
     get_sde_type.cache_clear()
     get_type_category.cache_clear()
@@ -1420,6 +1431,7 @@ SDE_TABLES = (
     "sde_blueprint_skills",
     "sde_solar_systems", "sde_stations", "sde_categories", "sde_type_slots",
     "sde_type_materials",
+    "sde_skill_requirements", "sde_skill_meta",
 )
 
 # Every sde_* table is diffed row-by-row (see get_sde_snapshot_for_diff).
@@ -2772,13 +2784,15 @@ def delete_owner_snapshot_rows(
         "character_sell_orders", "esi_wallet_transactions", "esi_wallet_journal",
         "doctrine_contracts", "character_wallet_balances", "corp_wallet_balances",
         "character_standings", "character_loyalty_points",
+        "character_skills", "character_attributes", "character_skillqueue",
     }
     if table not in allowed:
         raise ValueError(f"not a per-owner snapshot table: {table}")
     with connect() as conn:
         if table in ("esi_wallet_transactions", "esi_wallet_journal",
                       "character_wallet_balances", "corp_wallet_balances",
-                      "character_standings", "character_loyalty_points"):
+                      "character_standings", "character_loyalty_points",
+                      "character_skills", "character_attributes", "character_skillqueue"):
             col = "owner_character_id" if owner_character_id is not None else "owner_corporation_id"
             oid = owner_character_id if owner_character_id is not None else owner_corporation_id
             if oid is None:
@@ -3477,6 +3491,155 @@ def load_character_loyalty_points(character_ids: list[int]) -> list[tuple]:
             "ORDER BY owner_character_id, loyalty_points DESC, corporation_id",
             character_ids,
         ).fetchall()
+
+
+# ------------------------------------------- Character Management: skills (phase 2)
+def replace_character_skills(character_id: int, rows: list[tuple[int, int, int, int]]) -> None:
+    """Replaces one character's skill rows. `rows`: [(skill_id, active_level,
+    trained_level, skillpoints_in_skill), ...]. An empty list clears the
+    partition (a brand-new character legitimately has none)."""
+    with connect() as conn:
+        conn.execute("DELETE FROM character_skills WHERE owner_character_id = ?", (character_id,))
+        if rows:
+            conn.executemany(
+                "INSERT INTO character_skills "
+                "(owner_character_id, skill_id, active_level, trained_level, skillpoints_in_skill, synced_at) "
+                "VALUES (?,?,?,?,?, now())",
+                [(character_id, sid, active, trained, sp) for sid, active, trained, sp in rows],
+            )
+
+
+def upsert_character_skill_totals(character_id: int, total_sp: Optional[int], unallocated_sp: Optional[int]) -> None:
+    """Writes only the SP-total columns of character_attributes - the
+    attribute block is a separate, best-effort write (upsert_character_
+    attributes) so a failing /attributes/ call never loses these."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO character_attributes (owner_character_id, total_sp, unallocated_sp, synced_at) "
+            "VALUES (?,?,?, now()) "
+            "ON CONFLICT (tenant_id, owner_character_id) DO UPDATE SET "
+            "total_sp=excluded.total_sp, unallocated_sp=excluded.unallocated_sp, synced_at=excluded.synced_at",
+            (character_id, total_sp, unallocated_sp),
+        )
+
+
+def upsert_character_attributes(character_id: int, attrs: dict) -> None:
+    """Writes only the attribute columns of character_attributes (ESI's
+    /attributes/ response); leaves total_sp/unallocated_sp alone."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO character_attributes (owner_character_id, charisma, intelligence, memory, "
+            "perception, willpower, bonus_remaps, last_remap_date, accrued_remap_cooldown_date, synced_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?, now()) "
+            "ON CONFLICT (tenant_id, owner_character_id) DO UPDATE SET "
+            "charisma=excluded.charisma, intelligence=excluded.intelligence, memory=excluded.memory, "
+            "perception=excluded.perception, willpower=excluded.willpower, "
+            "bonus_remaps=excluded.bonus_remaps, last_remap_date=excluded.last_remap_date, "
+            "accrued_remap_cooldown_date=excluded.accrued_remap_cooldown_date, synced_at=excluded.synced_at",
+            (
+                character_id, attrs.get("charisma"), attrs.get("intelligence"), attrs.get("memory"),
+                attrs.get("perception"), attrs.get("willpower"), attrs.get("bonus_remaps"),
+                attrs.get("last_remap_date"), attrs.get("accrued_remap_cooldown_date"),
+            ),
+        )
+
+
+def replace_character_skillqueue(character_id: int, rows: list[tuple]) -> None:
+    """Replaces one character's queue. `rows`: [(queue_position, skill_id,
+    finished_level, start_date, finish_date, training_start_sp, level_start_sp,
+    level_end_sp), ...] - dates may be None (paused queue)."""
+    with connect() as conn:
+        conn.execute("DELETE FROM character_skillqueue WHERE owner_character_id = ?", (character_id,))
+        if rows:
+            conn.executemany(
+                "INSERT INTO character_skillqueue "
+                "(owner_character_id, queue_position, skill_id, finished_level, start_date, finish_date, "
+                "training_start_sp, level_start_sp, level_end_sp, synced_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?, now())",
+                [(character_id, *row) for row in rows],
+            )
+
+
+def load_character_skills(character_ids: list[int]) -> list[tuple]:
+    """`(owner_character_id, skill_id, active_level, trained_level,
+    skillpoints_in_skill)` (empty list -> empty result, never unfiltered)."""
+    if not character_ids:
+        return []
+    placeholders = ",".join("?" * len(character_ids))
+    with connect() as conn:
+        return conn.execute(
+            "SELECT owner_character_id, skill_id, active_level, trained_level, skillpoints_in_skill "
+            f"FROM character_skills WHERE owner_character_id IN ({placeholders}) "
+            "ORDER BY owner_character_id, skill_id",
+            character_ids,
+        ).fetchall()
+
+
+def load_character_attributes(character_ids: list[int]) -> list[tuple]:
+    """`(owner_character_id, total_sp, unallocated_sp, charisma, intelligence,
+    memory, perception, willpower, bonus_remaps, last_remap_date,
+    accrued_remap_cooldown_date)`; dates as ISO strings."""
+    if not character_ids:
+        return []
+    placeholders = ",".join("?" * len(character_ids))
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_character_id, total_sp, unallocated_sp, charisma, intelligence, memory, "
+            "perception, willpower, bonus_remaps, last_remap_date, accrued_remap_cooldown_date "
+            f"FROM character_attributes WHERE owner_character_id IN ({placeholders}) "
+            "ORDER BY owner_character_id",
+            character_ids,
+        ).fetchall()
+    return [
+        tuple(v.isoformat() if hasattr(v, "isoformat") else v for v in row) for row in rows
+    ]
+
+
+def load_character_skillqueue(character_ids: list[int]) -> list[tuple]:
+    """`(owner_character_id, queue_position, skill_id, finished_level,
+    start_date, finish_date, training_start_sp, level_start_sp, level_end_sp)`
+    in queue order; dates as ISO strings (None for a paused queue)."""
+    if not character_ids:
+        return []
+    placeholders = ",".join("?" * len(character_ids))
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_character_id, queue_position, skill_id, finished_level, start_date, finish_date, "
+            "training_start_sp, level_start_sp, level_end_sp "
+            f"FROM character_skillqueue WHERE owner_character_id IN ({placeholders}) "
+            "ORDER BY owner_character_id, queue_position",
+            character_ids,
+        ).fetchall()
+    return [
+        tuple(v.isoformat() if hasattr(v, "isoformat") else v for v in row) for row in rows
+    ]
+
+
+def get_skill_catalog(skill_ids: Iterable[int]) -> dict[int, dict]:
+    """skill_id -> {name, group_id, group_name, rank, primary_attribute,
+    secondary_attribute} from the SDE cache. `rank`/attributes are None until
+    an SDE refresh has filled sde_skill_meta; a skill the SDE does not know
+    is simply absent from the result (callers fall back to the bare id)."""
+    ids = list(dict.fromkeys(int(i) for i in skill_ids))
+    if not ids:
+        return {}
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT t.type_id, t.type_name, t.group_id, g.group_name, "
+            "m.rank, m.primary_attribute, m.secondary_attribute "
+            "FROM sde_types t "
+            "LEFT JOIN sde_groups g ON g.group_id = t.group_id "
+            "LEFT JOIN sde_skill_meta m ON m.skill_id = t.type_id "
+            "WHERE t.type_id = ANY(?)",
+            (ids,),
+        ).fetchall()
+    return {
+        int(r[0]): {
+            "name": r[1], "group_id": r[2], "group_name": r[3],
+            "rank": r[4], "primary_attribute": r[5], "secondary_attribute": r[6],
+        }
+        for r in rows
+    }
 
 
 def load_character_wallet_balances(character_ids: list[int]) -> dict[int, float]:

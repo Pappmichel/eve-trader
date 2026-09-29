@@ -5,7 +5,7 @@
 // Mirrors access_gate.ALL_TOOL_KEYS (eve_trader/access_gate.py).
 export const ALL_TOOL_KEYS = [
   'trading', 'production', 'doctrine', 'refining', 'station_trading', 'sorting',
-  'portfolio', 'admin', 'characters', 'module_reprocessing', 'char_info',
+  'portfolio', 'admin', 'characters', 'module_reprocessing', 'char_info', 'char_skills',
 ] as const
 
 // Tools that consume raw ESI data, i.e. the union of every `consumingTools` in
@@ -15,13 +15,13 @@ export const ALL_TOOL_KEYS = [
 // missing here until the Character Management hub work (R12) even though it
 // has been a real consumer since the Portfolio rework.
 export const ESI_CONSUMING_TOOLS: readonly string[] = [
-  'trading', 'production', 'doctrine', 'station_trading', 'sorting', 'portfolio', 'char_info',
+  'trading', 'production', 'doctrine', 'station_trading', 'sorting', 'portfolio', 'char_info', 'char_skills',
 ]
 
 // Sub-tools of the Character Management hub. The hub itself has no grant: its
 // Landing card shows when the session holds any of these. New keys are added
 // in the phase that ships their router (a dead grant in Admin only confuses).
-export const CHARACTER_MANAGEMENT_TOOL_KEYS: readonly string[] = ['characters', 'char_info']
+export const CHARACTER_MANAGEMENT_TOOL_KEYS: readonly string[] = ['characters', 'char_info', 'char_skills']
 
 // `tools` is undefined while /api/gate/status has not loaded (or the gate is
 // off and the backend returns every key) - "show everything", same convention

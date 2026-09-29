@@ -196,7 +196,12 @@ def test_age_limit_clear_noops_without_freshness_or_inside_grace(tenant):
 
 
 def test_age_limit_clear_does_not_touch_character_slots(tenant):
+    # `skills` now clears Character Management's per-skill/attribute tables
+    # (phase 2) - but never character_slots (the UPSERT write path keeps
+    # excluded_from_planning across syncs, GitHub issue #39).
     storage.replace_character_slots([("Alice", 5, 3, 2)])
+    storage.replace_character_skills(ALICE_ID, [(3380, 5, 5, 256000)])
+    storage.upsert_character_skill_totals(ALICE_ID, 5_000_000, 0)
     now = datetime(2026, 9, 20, tzinfo=timezone.utc)
     with storage.connect() as conn:
         conn.execute(
@@ -206,7 +211,9 @@ def test_age_limit_clear_does_not_touch_character_slots(tenant):
         )
     assert clear_stale_owner_kind(
         "character", ALICE_ID, "skills", tier_interval_hours=4, now=now,
-    ) is False
+    ) is True
+    assert storage.load_character_skills([ALICE_ID]) == []
+    assert storage.load_character_attributes([ALICE_ID]) == []
     rows = storage.load_character_slots()
     assert rows[0][0] == "Alice"
 

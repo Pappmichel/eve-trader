@@ -29,4 +29,14 @@ describe('esiRegistry Character Management kinds', () => {
   it('labels the new tool', () => {
     expect(toolLabel('char_info')).toBe('Character Info')
   })
+
+  it('mirrors phase 2: Skills is a Character-section kind with three consumers, plus the skill queue', () => {
+    const skills = kindByKey('skills')!
+    expect(skills.section).toBe('character')
+    expect(skills.consumingTools).toEqual(['production', 'station_trading', 'char_skills'])
+    const queue = kindByKey('skillqueue')!
+    expect(queue.consumingTools).toEqual(['char_skills'])
+    expect(queue.liveOnly).toBeUndefined()      // a synced snapshot, not a live read
+    expect(toolLabel('char_skills')).toBe('Skills')
+  })
 })

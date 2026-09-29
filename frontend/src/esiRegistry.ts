@@ -5,8 +5,7 @@
 
 // Column groups on the Characters page's sharing table (CHARACTER_MANAGEMENT_
 // PLAN.md R6): the table outgrew one flat row of columns once Character
-// Management added kinds. `skills` stays under 'industry' - its consumers
-// today are Production and Station Trading.
+// Management added kinds.
 export type KindSection = 'industry' | 'character'
 
 export const KIND_SECTIONS: readonly { key: KindSection; label: string }[] = [
@@ -75,9 +74,16 @@ export const OWNED_DATA_KINDS: readonly OwnedDataKind[] = [
     toolDataKind: { portfolio: 'wallet_balance', char_info: 'wallet_balance' },
   },
   {
-    key: 'skills', section: 'industry', label: 'Skills', group: 2,
-    consumingTools: ['production', 'station_trading'],
+    // Moved to the Character section with phase 2: the per-skill rows,
+    // attributes and SP totals are character data first, and Skills (char_skills)
+    // joined Production and Station Trading as a consumer.
+    key: 'skills', section: 'character', label: 'Skills', group: 2,
+    consumingTools: ['production', 'station_trading', 'char_skills'],
     corpRoles: [],
+  },
+  {
+    key: 'skillqueue', section: 'character', label: 'Skill Queue', group: 2,
+    consumingTools: ['char_skills'], corpRoles: [],
   },
   // Character Management (docs/CHARACTER_MANAGEMENT_PLAN.md phase 1).
   {
@@ -131,10 +137,11 @@ export const TOOL_LABELS: Record<string, string> = {
   sorting: 'Sorting',
   portfolio: 'Portfolio',
   char_info: 'Character Info',
+  char_skills: 'Skills',
 }
 
 export const CONSUMING_TOOL_KEYS = [
-  'trading', 'production', 'doctrine', 'station_trading', 'sorting', 'portfolio', 'char_info',
+  'trading', 'production', 'doctrine', 'station_trading', 'sorting', 'portfolio', 'char_info', 'char_skills',
 ] as const
 
 export function kindByKey(key: string): OwnedDataKind | undefined {

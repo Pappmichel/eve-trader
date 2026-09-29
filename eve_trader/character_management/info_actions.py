@@ -23,27 +23,14 @@ from ..actions import ActionError
 from ..auth import TokenManager
 from ..config import OAUTH_CONFIG
 from ..esi_client import ESIClient, ESIError
-from ..esi_data import (
-    AccessorError,
-    do_sync_for_tool,
-    is_shared,
-    read_esi,
-    select_auth_role,
-)
+from ..esi_data import AccessorError, do_sync_for_tool, select_auth_role
 from ..esi_data import actions as esi_actions
-from ..esi_data.registry import OWNED_DATA_KINDS
+from . import fields
+from .fields import SCOPE_BY_KIND, STATE_ERROR, STATE_OK, field as _field
 
 log = logging.getLogger(__name__)
 
 TOOL_KEY = "char_info"
-
-STATE_OK = "ok"
-STATE_NOT_SHARED = "not_shared"
-STATE_REAUTH = "reauth_needed"
-STATE_NOT_SYNCED = "not_synced"
-STATE_ERROR = "error"
-
-_SCOPE_BY_KIND = {k.key: k.character_scope for k in OWNED_DATA_KINDS}
 
 # Overview fans out one worker per character. Kept small: each worker's ESI
 # calls are cached/short and the pool of DB connections is shared with the
@@ -51,20 +38,8 @@ _SCOPE_BY_KIND = {k.key: k.character_scope for k in OWNED_DATA_KINDS}
 _MAX_WORKERS = 4
 
 
-def _field(state: str, value: Any = None, detail: Optional[str] = None) -> dict:
-    out: dict = {"state": state, "value": value}
-    if detail:
-        out["detail"] = detail
-    return out
-
-
 def _gate(kind: str, character_id: int, tokens: TokenManager) -> Optional[str]:
-    """None if the caller may proceed, else the state to report."""
-    if not is_shared(kind, TOOL_KEY, "character", character_id):
-        return STATE_NOT_SHARED
-    if select_auth_role(character_id, _SCOPE_BY_KIND[kind], tokens=tokens) is None:
-        return STATE_REAUTH
-    return None
+    return fields.gate(kind, TOOL_KEY, character_id, tokens)
 
 
 def _live(
@@ -74,7 +49,7 @@ def _live(
     blocked = _gate(kind, character_id, tokens)
     if blocked:
         return _field(blocked)
-    role = select_auth_role(character_id, _SCOPE_BY_KIND[kind], tokens=tokens)
+    role = select_auth_role(character_id, SCOPE_BY_KIND[kind], tokens=tokens)
     try:
         return _field(STATE_OK, shape(fetch(role)))
     except ESIError as e:
@@ -82,29 +57,14 @@ def _live(
 
 
 def _freshness_by_kind(character_id: int) -> dict[str, dict]:
-    out: dict[str, dict] = {}
-    for ot, oid, kind, success, attempt, err in storage.list_esi_freshness():
-        if ot == "character" and oid == character_id:
-            out[kind] = {"last_success_at": success, "last_attempt_at": attempt, "last_error": err}
-    return out
+    return fields.freshness_by_kind(character_id)
 
 
 def _snapshot(
     kind: str, character_id: int, tokens: TokenManager, freshness: dict[str, dict],
     shape: Callable[[list[dict]], Any],
 ) -> dict:
-    blocked = _gate(kind, character_id, tokens)
-    if blocked:
-        return _field(blocked)
-    fresh = freshness.get(kind)
-    last_success = fresh["last_success_at"] if fresh else None
-    detail = fresh["last_error"] if fresh and fresh.get("last_error") else None
-    if last_success is None:
-        return _field(STATE_NOT_SYNCED, detail=detail)
-    rows = read_esi(kind, TOOL_KEY, owner_type="character", owner_id=character_id)
-    out = _field(STATE_OK, shape(rows), detail)
-    out["synced_at"] = last_success
-    return out
+    return fields.snapshot(kind, TOOL_KEY, character_id, tokens, freshness, shape)
 
 
 # --------------------------------------------------------------- name lookup
@@ -295,13 +255,4 @@ def do_sync_char_info() -> dict:
         result = do_sync_for_tool(TOOL_KEY)
     except AccessorError as e:  # pragma: no cover - defensive, tool key is fixed
         raise ActionError(str(e)) from e
-    owners = result.get("owners", [])
-    return {
-        "ok": bool(result.get("ok")),
-        "characters": result.get("characters", {}),
-        "in_flight": [o["owner_id"] for o in owners if o.get("skipped") == "in_flight"],
-        "failed": [
-            {"owner_id": o["owner_id"], "name": o.get("name"), "error": o.get("error")}
-            for o in owners if not o.get("ok", True) and o.get("skipped") != "in_flight"
-        ],
-    }
+    return fields.summarise_sync(result)

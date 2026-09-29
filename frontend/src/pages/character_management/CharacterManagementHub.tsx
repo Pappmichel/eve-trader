@@ -32,6 +32,8 @@ export default function CharacterManagementHub() {
             description="Who is logged in for ESI data, which tools may read it, and which scopes still need a re-authorize." />
           <ToolCard tools={tools} toolKey="char_info" to="/character-management/info" title="Character Info"
             description="Location, ship, online status, wallet, standings, loyalty points and corporation history for each character." />
+          <ToolCard tools={tools} toolKey="char_skills" to="/character-management/skills" title="Skills"
+            description="Skill points, attributes, training queues, every trained skill and a skills matrix across your characters." />
         </SimpleGrid>
       )}
     </Container>

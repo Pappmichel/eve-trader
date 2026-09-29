@@ -101,7 +101,7 @@ def _diff_rows(old_rows, new_rows, key_fn, name_fn, fields) -> dict:
 
 
 def _other_tables(fetched: FetchedSde, snapshot: dict, new_types: dict, old_types: dict) -> dict:
-    """Row diffs for the eight tables that are not types or blueprint
+    """Row diffs for the ten tables that are not types or blueprint
     materials/products/time. Invention probability is also summarized per
     blueprint inside changed_blueprints; both views are kept."""
     def type_label(type_id: int) -> str:
@@ -155,6 +155,17 @@ def _other_tables(fetched: FetchedSde, snapshot: dict, new_types: dict, old_type
             lambda row: (int(row[0]), int(row[1]), int(row[2])),
             lambda row: f"{type_label(row[0])} ({row[1]}) needs {type_label(row[2])}",
             (("level", 3, False),),
+        ),
+        (
+            "sde_skill_requirements", fetched.skill_requirements,
+            lambda row: (int(row[0]), int(row[1])),
+            lambda row: f"{type_label(row[0])} needs {type_label(row[1])}",
+            (("level", 2, False),),
+        ),
+        (
+            "sde_skill_meta", fetched.skill_meta,
+            lambda row: int(row[0]), lambda row: type_label(row[0]),
+            (("rank", 1, True), ("primary_attribute", 2, False), ("secondary_attribute", 3, False)),
         ),
     )
     return {

@@ -634,6 +634,14 @@ export const charInfoApi = {
   sync: () => post<T.CharInfoSyncResult>('/api/char-info/sync', {}),
 }
 
+// -------------------------------------------------------------- skills
+export const charSkillsApi = {
+  overview: () => get<T.SkillsOverview>('/api/char-skills/overview'),
+  character: (characterId: number) => get<T.CharacterSkills>(`/api/char-skills/characters/${characterId}`),
+  matrix: () => get<T.SkillMatrix>('/api/char-skills/matrix'),
+  sync: () => post<T.CharInfoSyncResult>('/api/char-skills/sync', {}),
+}
+
 // -------------------------------------------------------------- characters
 export const charactersApi = {
   owners: () => get<T.EsiTokenCharacter[]>('/api/characters/owners'),

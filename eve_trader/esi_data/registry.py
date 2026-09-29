@@ -158,8 +158,22 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         character_scope="esi-skills.read_skills.v1",
         corporation_scope=None,
         corp_roles=(),
-        consuming_tools=("production", "station_trading"),
+        # "char_skills" (Character Management phase 2): the per-skill rows,
+        # attributes and SP totals, read through `read_esi("skills",
+        # "char_skills")`. Production/Station Trading keep reading the slot
+        # rows from `character_slots` under their own sharing rows.
+        consuming_tools=("production", "station_trading", "char_skills"),
         freshness_tier=TIER_RARE,
+    ),
+    OwnedDataKind(
+        key="skillqueue",
+        label="Skill Queue",
+        group=GROUP_2,
+        character_scope="esi-skills.read_skillqueue.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_skills",),
+        freshness_tier=TIER_NORMAL,
     ),
     # Character Management, phase 1 (docs/CHARACTER_MANAGEMENT_PLAN.md).
     # One scope per kind (R1): the selector, orchestrator and Characters

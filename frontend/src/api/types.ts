@@ -1478,3 +1478,100 @@ export interface CharInfoSyncResult {
   in_flight: number[]
   failed: { owner_id: number; name: string | null; error: string | null }[]
 }
+
+
+// ------------------------------------------------- Skills (Character Management)
+// Mirrors eve_trader/character_management/skills_actions.py. Fields reuse the
+// same CharInfoField state wrapper as Character Info.
+export interface SkillAttributes {
+  charisma: number
+  intelligence: number
+  memory: number
+  perception: number
+  willpower: number
+  bonus_remaps: number | null
+  last_remap_date: string | null
+  accrued_remap_cooldown_date: string | null
+}
+
+export interface SkillsSummary {
+  total_sp: number | null
+  unallocated_sp: number | null
+  /** Upper bound: extractors' worth of SP above the 5,000,000 SP floor. */
+  extractable_estimate: number | null
+  attributes: SkillAttributes | null
+}
+
+export interface SkillQueueEntry {
+  queue_position: number
+  skill_id: number
+  name: string
+  finished_level: number
+  start_date: string | null
+  finish_date: string | null
+  training_start_sp: number | null
+  level_start_sp: number | null
+  level_end_sp: number | null
+}
+
+export interface SkillQueue {
+  entries: SkillQueueEntry[]
+  length: number
+  empty: boolean
+  /** Entries exist but none carries a finish date. */
+  paused: boolean
+  current: SkillQueueEntry | null
+  ends_at: string | null
+}
+
+export interface SkillRow {
+  skill_id: number
+  name: string
+  /** null until an SDE refresh has filled sde_skill_meta. */
+  rank: number | null
+  active_level: number
+  trained_level: number
+  skillpoints: number
+  sp_to_level_v: number | null
+}
+
+export interface SkillGroup {
+  group_id: number | null
+  group_name: string
+  skills: SkillRow[]
+  total_sp: number
+  maxed: number
+}
+
+export interface SkillsOverviewRow {
+  character_id: number
+  character_name: string
+  summary: CharInfoField<SkillsSummary>
+  queue: CharInfoField<SkillQueue>
+  freshness: Record<string, { last_success_at: string | null; last_attempt_at: string | null; last_error: string | null }>
+}
+
+export interface SkillsOverview { characters: SkillsOverviewRow[] }
+
+export interface CharacterSkills {
+  character_id: number
+  character_name: string
+  summary: CharInfoField<SkillsSummary>
+  skills: CharInfoField<SkillGroup[]>
+  queue: CharInfoField<SkillQueue>
+  freshness: SkillsOverviewRow['freshness']
+}
+
+export interface SkillMatrixSkill {
+  skill_id: number
+  name: string
+  /** keyed by str(character_id) */
+  levels: Record<string, { active: number; trained: number }>
+}
+
+export interface SkillMatrix {
+  characters: { character_id: number; character_name: string }[]
+  hidden_characters: { character_id: number; character_name: string }[]
+  reauth_needed: number[]
+  groups: { group_id: number | null; group_name: string; skills: SkillMatrixSkill[] }[]
+}
