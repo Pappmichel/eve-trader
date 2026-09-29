@@ -1,19 +1,21 @@
 import { useState } from 'react'
 import {
-  Accordion, Badge, Button, Container, Group, Loader, Select, SimpleGrid, Stack, Table, Tabs, Text,
-  TextInput, Title, Tooltip,
+  Accordion, Alert, Badge, Button, Container, Group, Loader, NumberInput, Select, SimpleGrid, Stack, Table, Tabs,
+  Text, TextInput, Title, Tooltip,
 } from '@mantine/core'
+import { notifications } from '@mantine/notifications'
 import { IconArrowLeft } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { charSkillsApi } from '../../../api/client'
+import { ApiError, charSkillsApi } from '../../../api/client'
 import type {
   CharacterSkills, SkillAttributes, SkillGroup, SkillMatrix, SkillQueue, SkillsOverviewRow, SkillsSummary,
 } from '../../../api/types'
 import { FieldState } from '../../../components/FieldState'
 import { dateTime, duration, qty } from '../../../format'
 import { useCharacterSync } from '../../../hooks/useCharacterSync'
+import { warningText } from './queueWarning'
 
 const ROMAN = ['0', 'I', 'II', 'III', 'IV', 'V']
 
@@ -41,11 +43,15 @@ function Attributes({ attrs }: { attrs: SkillAttributes | null }) {
 }
 
 function QueueSummary({ queue }: { queue: SkillQueue }) {
-  if (queue.empty) return <Badge size="sm" color="warn" variant="light">queue empty</Badge>
-  if (queue.paused) return <Badge size="sm" color="warn" variant="light">queue paused</Badge>
+  if (queue.empty || queue.paused) {
+    return queue.warning
+      ? <Badge size="sm" color="warn" variant="light">{warningText(queue.warning)}</Badge>
+      : <Text size="xs" c="dimmed">{queue.empty ? 'queue empty' : 'queue paused'}</Text>
+  }
   const remaining = untilSeconds(queue.current?.finish_date ?? null)
   return (
     <div>
+      {queue.warning && <Badge size="xs" color="warn" variant="light" mb={2}>{warningText(queue.warning)}</Badge>}
       <Text size="sm">
         {queue.current ? `${queue.current.name} ${level(queue.current.finished_level)}` : 'Nothing training'}
         {remaining !== null && remaining > 0 ? ` · ${duration(remaining)}` : ''}
@@ -141,9 +147,12 @@ function GroupTable({ group }: { group: SkillGroup }) {
 }
 
 function QueueTable({ queue }: { queue: SkillQueue }) {
-  if (queue.empty) return <Text size="sm" c="dimmed">The skill queue is empty.</Text>
+  if (queue.empty) {
+    return <Text size="sm" c={queue.warning ? 'warn' : 'dimmed'}>The skill queue is empty.</Text>
+  }
   return (
     <Stack gap={4}>
+      {queue.warning && <Text size="sm" c="warn">{warningText(queue.warning)}</Text>}
       {queue.paused && <Text size="sm" c="warn">The queue is paused - ESI reports no finish dates.</Text>}
       <Table withTableBorder striped>
         <Table.Tbody>
@@ -156,6 +165,48 @@ function QueueTable({ queue }: { queue: SkillQueue }) {
           ))}
         </Table.Tbody>
       </Table>
+    </Stack>
+  )
+}
+
+// The queue guard: which queues need attention, and the threshold that decides
+// "ends soon". 0 turns every warning off. Stored per tenant on the server.
+function QueueGuard() {
+  const queryClient = useQueryClient()
+  const warnings = useQuery({ queryKey: ['char-skills', 'warnings'], queryFn: charSkillsApi.warnings })
+  const [hours, setHours] = useState<number | string>('')
+  const save = useMutation({
+    mutationFn: (h: number) => charSkillsApi.setSettings(h),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['char-skills'] }),
+    onError: (err: unknown) => notifications.show({
+      title: 'Could not save', color: 'danger', message: err instanceof ApiError ? err.message : String(err),
+    }),
+  })
+  const current = warnings.data?.queue_warning_hours
+  const value = hours === '' ? (current ?? 24) : hours
+  return (
+    <Stack gap="xs" mb="md">
+      {(warnings.data?.count ?? 0) > 0 && (
+        <Alert color="warn" variant="light" title="Skill queues need attention">
+          {warnings.data?.characters.map((c) => (
+            <Text key={c.character_id} size="sm">{c.character_name}: {warningText(c)}</Text>
+          ))}
+        </Alert>
+      )}
+      <Group gap="xs" align="flex-end">
+        <NumberInput
+          label="Warn when a queue ends within (hours)"
+          description="0 turns all queue warnings off"
+          min={0} max={1440} w={260} value={value} onChange={setHours}
+        />
+        <Button
+          size="xs" variant="default" loading={save.isPending}
+          disabled={typeof value !== 'number' || value === current}
+          onClick={() => save.mutate(Number(value))}
+        >
+          Save
+        </Button>
+      </Group>
     </Stack>
   )
 }
@@ -365,7 +416,10 @@ export default function SkillsPage() {
             <Tabs.Tab value="character">Character skills</Tabs.Tab>
             <Tabs.Tab value="matrix">Matrix</Tabs.Tab>
           </Tabs.List>
-          <Tabs.Panel value="overview"><OverviewTab rows={characters} onOpen={openCharacter} /></Tabs.Panel>
+          <Tabs.Panel value="overview">
+            <QueueGuard />
+            <OverviewTab rows={characters} onOpen={openCharacter} />
+          </Tabs.Panel>
           <Tabs.Panel value="character">
             <CharacterTab characters={characters} selected={selected} onSelect={setSelected} />
           </Tabs.Panel>

@@ -639,6 +639,10 @@ export const charSkillsApi = {
   overview: () => get<T.SkillsOverview>('/api/char-skills/overview'),
   character: (characterId: number) => get<T.CharacterSkills>(`/api/char-skills/characters/${characterId}`),
   matrix: () => get<T.SkillMatrix>('/api/char-skills/matrix'),
+  warnings: () => get<T.SkillsWarnings>('/api/char-skills/warnings'),
+  settings: () => get<{ queue_warning_hours: number }>('/api/char-skills/settings'),
+  setSettings: (queueWarningHours: number) =>
+    post<{ queue_warning_hours: number }>('/api/char-skills/settings', { queue_warning_hours: queueWarningHours }),
   sync: () => post<T.CharInfoSyncResult>('/api/char-skills/sync', {}),
 }
 

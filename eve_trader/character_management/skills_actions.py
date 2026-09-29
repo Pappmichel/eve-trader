@@ -14,9 +14,9 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .. import storage
-from ..actions import ActionError
+from ..actions import ActionError, do_update_settings
 from ..auth import TokenManager
-from ..config import OAUTH_CONFIG
+from ..config import OAUTH_CONFIG, TRADING_CONFIG
 from ..esi_data import do_sync_for_tool, read_esi, shared_owner_ids
 from . import fields
 
@@ -73,7 +73,35 @@ def _attributes_value(row: Optional[dict]) -> Optional[dict]:
 _parse_dt = fields.parse_dt
 
 
-def _queue_value(rows: list[dict], catalog: dict[int, dict], now: datetime) -> dict:
+def queue_warning(
+    *, empty: bool, paused: bool, ends_at: Optional[datetime], now: datetime, warn_hours: float,
+) -> Optional[dict]:
+    """The queue guard (docs/CHARACTER_MANAGEMENT_PLAN.md phase 5a): why a
+    character's queue needs attention, or None.
+
+    - `empty`: nothing queued; `paused`: entries but no finish dates;
+    - `ended`: every entry's finish date has passed (the snapshot is older than
+      the queue - the character is very likely not training any more);
+    - `ends_soon`: the last entry finishes within `warn_hours`.
+    `warn_hours <= 0` switches every warning off."""
+    if warn_hours <= 0:
+        return None
+    if empty:
+        return {"kind": "empty", "hours_left": None}
+    if paused:
+        return {"kind": "paused", "hours_left": None}
+    if ends_at is None:
+        return None
+    hours_left = (ends_at - now).total_seconds() / 3600
+    if hours_left <= 0:
+        return {"kind": "ended", "hours_left": 0.0}
+    if hours_left < warn_hours:
+        return {"kind": "ends_soon", "hours_left": round(hours_left, 1)}
+    return None
+
+
+def _queue_value(rows: list[dict], catalog: dict[int, dict], now: datetime,
+                 warn_hours: Optional[float] = None) -> dict:
     """Queue rows (one character, in order) -> entries plus a summary.
 
     `paused`: entries exist but none carries a finish date (ESI omits the
@@ -95,13 +123,18 @@ def _queue_value(rows: list[dict], catalog: dict[int, dict], now: datetime) -> d
     current = next(
         (e for e, d in zip(entries, dated) if d is not None and d > now), None,
     )
+    warn = TRADING_CONFIG.char_skills_queue_warning_hours if warn_hours is None else warn_hours
+    paused = bool(entries) and not known
     return {
         "entries": entries,
         "length": len(entries),
         "empty": not entries,
-        "paused": bool(entries) and not known,
+        "paused": paused,
         "current": current,
         "ends_at": max(known).isoformat() if known else None,
+        "warning": queue_warning(
+            empty=not entries, paused=paused, ends_at=max(known) if known else None, now=now, warn_hours=warn,
+        ),
     }
 
 
@@ -266,3 +299,35 @@ def do_sync_char_skills() -> dict:
     """Refresh the kinds shared with Skills (skills + attributes + slots, and
     the skill queue). See fields.summarise_sync for the response shape."""
     return fields.summarise_sync(do_sync_for_tool(TOOL_KEY))
+
+
+def do_queue_warnings() -> dict:
+    """Characters whose skill queue needs attention, from the stored snapshots
+    only (no ESI call): what the hub badge and the Skills page banner show. A
+    character whose queue is not shared / not synced / needs a re-authorize
+    contributes nothing here - its overview row says why."""
+    warned = []
+    for row in do_skills_overview()["characters"]:
+        queue = row["queue"]
+        if queue["state"] != "ok" or not queue["value"].get("warning"):
+            continue
+        warned.append({
+            "character_id": row["character_id"], "character_name": row["character_name"],
+            **queue["value"]["warning"],
+        })
+    return {"count": len(warned), "characters": warned,
+            "queue_warning_hours": TRADING_CONFIG.char_skills_queue_warning_hours}
+
+
+def do_get_skills_settings() -> dict:
+    return {"queue_warning_hours": TRADING_CONFIG.char_skills_queue_warning_hours}
+
+
+def do_set_queue_warning_hours(hours: float) -> dict:
+    """Saves the warning threshold for this tenant (0 = warnings off)."""
+    try:
+        value = float(hours)
+    except (TypeError, ValueError) as e:
+        raise ActionError("The warning threshold must be a number of hours.") from e
+    do_update_settings({"char_skills_queue_warning_hours": value})
+    return do_get_skills_settings()

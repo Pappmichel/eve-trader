@@ -544,3 +544,97 @@ def test_char_skills_router_converts_action_errors_to_400(monkeypatch):
     monkeypatch.setattr(skills_actions, "do_character_skills", boom)
     resp = _client.get("/api/char-skills/characters/1")
     assert resp.status_code == 400 and resp.json()["detail"] == "nope"
+
+
+# ------------------------------------------------- queue guard (phase 5a)
+from eve_trader.config import TRADING_CONFIG  # noqa: E402
+
+
+@pytest.fixture
+def warn_hours(monkeypatch):
+    monkeypatch.setattr(TRADING_CONFIG, "char_skills_queue_warning_hours", 24.0)
+    return TRADING_CONFIG
+
+
+def _at(hours: float, now: datetime):
+    from datetime import timedelta
+    return now + timedelta(hours=hours)
+
+
+def test_queue_warning_kinds_and_boundaries():
+    now = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
+    w = skills_actions.queue_warning
+    assert w(empty=True, paused=False, ends_at=None, now=now, warn_hours=24) == {"kind": "empty", "hours_left": None}
+    assert w(empty=False, paused=True, ends_at=None, now=now, warn_hours=24) == {"kind": "paused", "hours_left": None}
+    assert w(empty=False, paused=False, ends_at=_at(-1, now), now=now, warn_hours=24) == {"kind": "ended", "hours_left": 0.0}
+    assert w(empty=False, paused=False, ends_at=_at(5.55, now), now=now, warn_hours=24) == {"kind": "ends_soon", "hours_left": 5.5}
+    assert w(empty=False, paused=False, ends_at=_at(23.99, now), now=now, warn_hours=24)["kind"] == "ends_soon"
+    assert w(empty=False, paused=False, ends_at=_at(24, now), now=now, warn_hours=24) is None     # exactly at the threshold: fine
+    assert w(empty=False, paused=False, ends_at=_at(200, now), now=now, warn_hours=24) is None
+    assert w(empty=False, paused=False, ends_at=None, now=now, warn_hours=24) is None
+
+
+def test_a_threshold_of_zero_switches_every_warning_off():
+    now = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
+    for kwargs in (dict(empty=True, paused=False, ends_at=None), dict(empty=False, paused=True, ends_at=None),
+                   dict(empty=False, paused=False, ends_at=_at(-5, now))):
+        assert skills_actions.queue_warning(now=now, warn_hours=0, **kwargs) is None
+
+
+def test_queue_value_carries_the_warning(warn_hours):
+    now = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
+    soon = [{"queue_position": 0, "skill_id": INDUSTRY, "finished_level": 5, "start_date": None,
+             "finish_date": "2026-09-30T00:00:00Z", "training_start_sp": None, "level_start_sp": None,
+             "level_end_sp": None}]
+    assert skills_actions._queue_value(soon, {}, now)["warning"] == {"kind": "ends_soon", "hours_left": 12.0}
+    assert skills_actions._queue_value(soon, {}, now, warn_hours=6)["warning"] is None
+    assert skills_actions._queue_value([], {}, now)["warning"]["kind"] == "empty"
+
+
+def test_do_queue_warnings_counts_only_shared_synced_queues_that_need_attention(tenant, warn_hours):
+    _token(ALICE, "Alice")
+    _token(BOB, "Bob")
+    _token(3003, "Carol", scopes=SKILLS_SCOPE)              # queue scope missing -> reauth, contributes nothing
+    for cid in (ALICE, BOB, 3003):
+        _share(cid, "skillqueue")
+    storage.replace_character_skillqueue(ALICE, [])         # empty  -> warned
+    storage.replace_character_skillqueue(BOB, [(0, INDUSTRY, 5, None, "2099-01-01T00:00:00Z", None, None, None)])   # fine
+    for cid in (ALICE, BOB):
+        storage.upsert_esi_freshness("character", cid, "skillqueue", success=True)
+    out = skills_actions.do_queue_warnings()
+    assert out["count"] == 1
+    assert out["characters"] == [{"character_id": ALICE, "character_name": "Alice", "kind": "empty", "hours_left": None}]
+    assert out["queue_warning_hours"] == 24.0
+
+
+def test_do_queue_warnings_is_empty_when_warnings_are_off(tenant, warn_hours):
+    _token(ALICE, "Alice")
+    _share(ALICE, "skillqueue")
+    storage.replace_character_skillqueue(ALICE, [])
+    storage.upsert_esi_freshness("character", ALICE, "skillqueue", success=True)
+    assert skills_actions.do_queue_warnings()["count"] == 1
+    skills_actions.do_set_queue_warning_hours(0)
+    assert skills_actions.do_queue_warnings()["count"] == 0
+
+
+def test_the_warning_threshold_is_validated_persisted_and_applied(tenant, warn_hours):
+    assert skills_actions.do_get_skills_settings() == {"queue_warning_hours": 24.0}
+    assert skills_actions.do_set_queue_warning_hours(48) == {"queue_warning_hours": 48.0}
+    assert TRADING_CONFIG.char_skills_queue_warning_hours == 48.0
+    assert storage.load_tenant_settings("trading")["char_skills_queue_warning_hours"] == 48.0
+    for bad in (-1, 24 * 60 + 1, "soon", None):
+        with pytest.raises(ActionError):
+            skills_actions.do_set_queue_warning_hours(bad)
+    assert TRADING_CONFIG.char_skills_queue_warning_hours == 48.0       # a rejected value changed nothing
+
+
+def test_queue_guard_routes(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(skills_actions, "do_queue_warnings", lambda: {"count": 0, "characters": [], "queue_warning_hours": 24})
+    monkeypatch.setattr(skills_actions, "do_get_skills_settings", lambda: {"queue_warning_hours": 24})
+    monkeypatch.setattr(skills_actions, "do_set_queue_warning_hours", lambda hours: seen.update(hours=hours) or {"queue_warning_hours": hours})
+    assert _client.get("/api/char-skills/warnings").json()["count"] == 0
+    assert _client.get("/api/char-skills/settings").json() == {"queue_warning_hours": 24}
+    assert _client.post("/api/char-skills/settings", json={"queue_warning_hours": 36}).json() == {"queue_warning_hours": 36}
+    assert seen == {"hours": 36.0}
+    assert _client.post("/api/char-skills/settings", json={"queue_warning_hours": "x"}).status_code == 422

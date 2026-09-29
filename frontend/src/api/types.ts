@@ -1522,6 +1522,21 @@ export interface SkillQueue {
   paused: boolean
   current: SkillQueueEntry | null
   ends_at: string | null
+  /** The queue guard (phase 5a): why this queue needs attention, if it does. */
+  warning: SkillQueueWarning | null
+}
+
+export type SkillQueueWarningKind = 'empty' | 'paused' | 'ended' | 'ends_soon'
+
+export interface SkillQueueWarning {
+  kind: SkillQueueWarningKind
+  hours_left: number | null
+}
+
+export interface SkillsWarnings {
+  count: number
+  characters: (SkillQueueWarning & { character_id: number; character_name: string })[]
+  queue_warning_hours: number
 }
 
 export interface SkillRow {

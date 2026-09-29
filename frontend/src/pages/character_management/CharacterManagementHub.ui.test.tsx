@@ -2,13 +2,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MantineProvider } from '@mantine/core'
 import { render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { gateApi } from '../../api/client'
+import { charSkillsApi, gateApi } from '../../api/client'
 import CharacterManagementHub from './CharacterManagementHub'
 
 vi.mock('../../api/client', () => ({
   gateApi: { status: vi.fn() },
+  charSkillsApi: { warnings: vi.fn() },
 }))
 
 function renderHub() {
@@ -29,6 +30,8 @@ function renderHub() {
 const base = { enabled: true, logged_in: true, character_name: 'Alice', suspended: false, pending_access_requests: null }
 
 describe('CharacterManagementHub', () => {
+  beforeEach(() => vi.resetAllMocks())
+
   it('lists the Characters sub-tool when the grant is held', async () => {
     vi.mocked(gateApi.status).mockResolvedValue({ ...base, tools: ['characters'] })
     renderHub()
@@ -52,6 +55,26 @@ describe('CharacterManagementHub', () => {
     expect(await screen.findByRole('heading', { name: 'Skills' })).toBeInTheDocument()
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Character Info' })).not.toBeInTheDocument())
     expect(screen.getByRole('link', { name: /open/i })).toHaveAttribute('href', '/character-management/skills')
+  })
+
+  it('shows how many skill queues need attention as a badge on the Skills card', async () => {
+    vi.mocked(gateApi.status).mockResolvedValue({ ...base, tools: ['char_skills'] })
+    vi.mocked(charSkillsApi.warnings).mockResolvedValue({ count: 2, characters: [], queue_warning_hours: 24 })
+    renderHub()
+    expect(await screen.findByText('2 queue warnings')).toBeInTheDocument()
+  })
+
+  it('does not ask for warnings without the Skills grant, and shows no badge for zero', async () => {
+    vi.mocked(gateApi.status).mockResolvedValue({ ...base, tools: ['char_mail'] })
+    renderHub()
+    await screen.findByRole('heading', { name: 'Mail' })
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Skills' })).not.toBeInTheDocument())
+    expect(charSkillsApi.warnings).not.toHaveBeenCalled()
+    vi.mocked(gateApi.status).mockResolvedValue({ ...base, tools: ['char_skills'] })
+    vi.mocked(charSkillsApi.warnings).mockResolvedValue({ count: 0, characters: [], queue_warning_hours: 24 })
+    renderHub()
+    await screen.findAllByRole('heading', { name: 'Skills' })
+    expect(screen.queryByText(/queue warning/)).not.toBeInTheDocument()
   })
 
   it('lists Mail when char_mail is granted', async () => {

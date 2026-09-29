@@ -6,11 +6,16 @@ Gated on tool_key `char_skills` via `_TOOL_PATH_PREFIXES` (api/app.py).
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from ...actions import ActionError
 from ...character_management import skills_actions
 
 router = APIRouter()
+
+
+class SettingsRequest(BaseModel):
+    queue_warning_hours: float
 
 
 def _wrap(fn, **kwargs):
@@ -38,3 +43,18 @@ def matrix():
 @router.post("/sync")
 def sync():
     return _wrap(skills_actions.do_sync_char_skills)
+
+
+@router.get("/warnings")
+def warnings():
+    return _wrap(skills_actions.do_queue_warnings)
+
+
+@router.get("/settings")
+def get_settings():
+    return _wrap(skills_actions.do_get_skills_settings)
+
+
+@router.post("/settings")
+def set_settings(req: SettingsRequest):
+    return _wrap(skills_actions.do_set_queue_warning_hours, hours=req.queue_warning_hours)

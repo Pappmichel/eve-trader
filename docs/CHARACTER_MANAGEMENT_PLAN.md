@@ -738,7 +738,16 @@ Original design:
   the new POST, PUT and DELETE routes against it.
 
 ### Phase 5
-- **5a Queue guard:** config `queue_warning_hours`, default 24. Warnings go
+- **5a Queue guard (implemented):** `queue_warning` classifies a queue as `empty`,
+  `paused`, `ended` (every finish date passed - snapshot older than the queue) or
+  `ends_soon` (< threshold, strict); threshold `TradingConfig.
+  char_skills_queue_warning_hours` (default 24, range 0-1440, 0 = all warnings
+  off, edited on the Skills page - put next to the other cross-tool ESI settings
+  instead of a new config scope, which would need every `tenant_settings` scope
+  CHECK widened). Warnings come from the stored snapshots only (no ESI call):
+  `GET /warnings` feeds the Skills page banner and the hub badge on the Skills
+  card; a character whose queue is unshared / unsynced / needs re-auth
+  contributes nothing (its row says why). Original text: config `queue_warning_hours`, default 24. Warnings go
   to the Skills page and as a hub card badge (same mechanism as Admin's
   pending badge; the count is computed server-side). Push, Discord or email
   stays deferred (CLAUDE.md).

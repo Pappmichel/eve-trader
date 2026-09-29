@@ -3,9 +3,10 @@ import { IconArrowLeft } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 
-import { gateApi } from '../../api/client'
+import { charSkillsApi, gateApi } from '../../api/client'
 import { ToolCard } from '../../components/ToolCard'
 import { CHARACTER_MANAGEMENT_TOOL_KEYS, hasAnyToolGrant } from '../../toolKeys'
+import { warningSummary } from './skills/queueWarning'
 
 // docs/CHARACTER_MANAGEMENT_PLAN.md. The hub has no grant of its own: it lists
 // whichever sub-tools the session holds. Later phases add cards here (Info,
@@ -13,6 +14,13 @@ import { CHARACTER_MANAGEMENT_TOOL_KEYS, hasAnyToolGrant } from '../../toolKeys'
 export default function CharacterManagementHub() {
   const { data: gateStatus } = useQuery({ queryKey: ['gate', 'status'], queryFn: gateApi.status })
   const tools = gateStatus?.tools
+  // The Skills card's badge: how many skill queues need attention. Only asked
+  // once the grant is known to be held (never while the gate status loads), and
+  // a failure just means no badge.
+  const skillsWarnings = useQuery({
+    queryKey: ['char-skills', 'warnings'], queryFn: charSkillsApi.warnings,
+    enabled: tools !== undefined && tools.includes('char_skills'), retry: false,
+  })
 
   return (
     <Container size="md" py="xl">
@@ -33,6 +41,7 @@ export default function CharacterManagementHub() {
           <ToolCard tools={tools} toolKey="char_info" to="/character-management/info" title="Character Info"
             description="Location, ship, online status, wallet, standings, loyalty points and corporation history for each character." />
           <ToolCard tools={tools} toolKey="char_skills" to="/character-management/skills" title="Skills"
+            badge={warningSummary(skillsWarnings.data?.count ?? 0)}
             description="Skill points, attributes, training queues, every trained skill and a skills matrix across your characters." />
           <ToolCard tools={tools} toolKey="char_mail" to="/character-management/mail" title="Mail"
             description="A mail client for all your characters: read live from ESI, with an optional searchable archive." />

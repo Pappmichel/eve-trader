@@ -11,7 +11,10 @@ import type { CharacterSkills, SkillMatrix, SkillsOverviewRow } from '../../../a
 import SkillsPage from './SkillsPage'
 
 vi.mock('../../../api/client', () => ({
-  charSkillsApi: { overview: vi.fn(), character: vi.fn(), matrix: vi.fn(), sync: vi.fn() },
+  charSkillsApi: {
+    overview: vi.fn(), character: vi.fn(), matrix: vi.fn(), sync: vi.fn(), warnings: vi.fn(), settings: vi.fn(),
+    setSettings: vi.fn(),
+  },
   ApiError: class ApiError extends Error {},
 }))
 
@@ -42,7 +45,10 @@ function renderPage() {
   )
 }
 
-beforeEach(() => vi.resetAllMocks())
+beforeEach(() => {
+  vi.resetAllMocks()
+  vi.mocked(charSkillsApi.warnings).mockResolvedValue({ count: 0, characters: [], queue_warning_hours: 24 })
+})
 
 const runningQueue = {
   entries: [{
@@ -50,7 +56,7 @@ const runningQueue = {
     start_date: null, finish_date: '2099-01-01T00:00:00Z',
     training_start_sp: null, level_start_sp: null, level_end_sp: null,
   }],
-  length: 1, empty: false, paused: false, current: null, ends_at: '2099-01-01T00:00:00Z',
+  length: 1, empty: false, paused: false, current: null, ends_at: '2099-01-01T00:00:00Z', warning: null,
 }
 
 describe('Skills page overview', () => {
@@ -82,8 +88,8 @@ describe('Skills page overview', () => {
   it('flags an empty and a paused queue instead of showing a date', async () => {
     vi.mocked(charSkillsApi.overview).mockResolvedValue({
       characters: [
-        row({ queue: { state: 'ok', value: { entries: [], length: 0, empty: true, paused: false, current: null, ends_at: null } } }),
-        row({ character_id: 2, character_name: 'Bob', queue: { state: 'ok', value: { ...runningQueue, paused: true, ends_at: null } } }),
+        row({ queue: { state: 'ok', value: { entries: [], length: 0, empty: true, paused: false, current: null, ends_at: null, warning: { kind: 'empty', hours_left: null } } } }),
+        row({ character_id: 2, character_name: 'Bob', queue: { state: 'ok', value: { ...runningQueue, paused: true, ends_at: null, warning: { kind: 'paused', hours_left: null } } } }),
       ],
     })
     renderPage()
@@ -198,5 +204,49 @@ describe('Skills page matrix tab', () => {
     await screen.findByText('Alice')
     await user.click(screen.getByRole('tab', { name: 'Matrix' }))
     expect(await screen.findByText(/No character shares Skills yet/)).toBeInTheDocument()
+  })
+})
+
+describe('Queue guard (phase 5a)', () => {
+  const soon = {
+    ...runningQueue, warning: { kind: 'ends_soon', hours_left: 5.5 } as const,
+    current: runningQueue.entries[0],
+  }
+
+  it('flags a queue that ends soon on its row and lists it in a banner', async () => {
+    vi.mocked(charSkillsApi.overview).mockResolvedValue({ characters: [
+      row({ queue: { state: 'ok', value: soon } }),
+      row({ character_id: 2, character_name: 'Bob', queue: { state: 'ok', value: { ...runningQueue, current: runningQueue.entries[0] } } }),
+    ] })
+    vi.mocked(charSkillsApi.warnings).mockResolvedValue({
+      count: 1, queue_warning_hours: 24,
+      characters: [{ character_id: 1, character_name: 'Alice', kind: 'ends_soon', hours_left: 5.5 }],
+    })
+    renderPage()
+    expect(await screen.findByText('Skill queues need attention')).toBeInTheDocument()
+    expect(screen.getByText('ends in 5.5 h')).toBeInTheDocument()          // the row badge
+    expect(screen.getByText('Alice: ends in 5.5 h')).toBeInTheDocument()   // the banner line
+  })
+
+  it('shows no banner when nothing needs attention', async () => {
+    vi.mocked(charSkillsApi.overview).mockResolvedValue({ characters: [row()] })
+    renderPage()
+    await screen.findByText('Alice')
+    expect(screen.queryByText('Skill queues need attention')).not.toBeInTheDocument()
+  })
+
+  it('saves a new warning threshold (0 turns warnings off) and refetches', async () => {
+    vi.mocked(charSkillsApi.overview).mockResolvedValue({ characters: [row()] })
+    vi.mocked(charSkillsApi.setSettings).mockResolvedValue({ queue_warning_hours: 48 })
+    const user = userEvent.setup()
+    renderPage()
+    const input = await screen.findByLabelText('Warn when a queue ends within (hours)')
+    await waitFor(() => expect(input).toHaveValue('24'))
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()          // unchanged
+    await user.clear(input)
+    await user.type(input, '48')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(charSkillsApi.setSettings).toHaveBeenCalledWith(48))
+    await waitFor(() => expect(charSkillsApi.warnings).toHaveBeenCalledTimes(2))
   })
 })
