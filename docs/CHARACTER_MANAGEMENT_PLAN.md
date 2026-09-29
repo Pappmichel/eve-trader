@@ -275,6 +275,21 @@ Every phase must satisfy the following before it counts as done:
   place, grep `production_buy_list_schema`.
 
 ### Phase 0 - hub shell (no new ESI data)
+
+**Status: implemented (frontend only).** Deviations from the text below:
+- The Characters table column groups (R6) are deferred to **Phase 1**. With
+  the 7 existing kinds there is nothing to group yet; the grouping and the
+  `section` field in `esiRegistry.ts` land together with the first new kinds.
+- The `skipped: in_flight` rendering (R10) is deferred too: no frontend code
+  reads that field today. It belongs with the first per-page Refresh button
+  (Phase 1).
+- Shared constants live in `frontend/src/toolKeys.ts` (`ALL_TOOL_KEYS`,
+  `ESI_CONSUMING_TOOLS` incl. `portfolio`, `CHARACTER_MANAGEMENT_TOOL_KEYS`,
+  `hasAnyToolGrant`); `ToolCard` moved to `components/ToolCard.tsx` and takes
+  one key or a list. `toolKeys.test.ts` checks `ESI_CONSUMING_TOOLS` equals
+  the union of `esiRegistry` consumers.
+- QuickNav's hub entry is mapped to `characters` only; widen it to any-of
+  when a second sub-tool grant exists.
 Backend:
 - `access_gate.ALL_TOOL_KEYS`: no new keys yet (R5). Keys arrive with their
   routers.

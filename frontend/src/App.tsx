@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect } from 'react'
-import { Routes, Route, useSearchParams, useNavigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useSearchParams, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { notifications } from '@mantine/notifications'
 import { Center, Loader } from '@mantine/core'
@@ -87,6 +87,7 @@ const ModuleReprocessingSettings = lazy(() => import('./pages/module_reprocessin
 const AdminPage = lazy(() => import('./pages/admin/AdminPage'))
 const SdePreviewPage = lazy(() => import('./pages/admin/SdePreviewPage'))
 const CharactersPage = lazy(() => import('./pages/characters/CharactersPage'))
+const CharacterManagementHub = lazy(() => import('./pages/character_management/CharacterManagementHub'))
 
 function RouteFallback() {
   return (
@@ -214,7 +215,10 @@ function App() {
           <Routes>
             <Route path="/" element={<Landing />} />
             <Route path="/portfolio" element={<Portfolio />} />
-            <Route path="/characters" element={<CharactersPage />} />
+            <Route path="/character-management" element={<CharacterManagementHub />} />
+            <Route path="/character-management/characters" element={<CharactersPage />} />
+            {/* Characters moved into the Character Management hub; keep old bookmarks working. */}
+            <Route path="/characters" element={<Navigate to="/character-management/characters" replace />} />
             <Route path="/admin" element={<AdminPage />} />
             <Route path="/admin/sde-preview" element={<SdePreviewPage />} />
 

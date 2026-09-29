@@ -18,7 +18,8 @@ import { gateApi } from '../api/client'
 const ACTIONS: SpotlightActionData[] = [
   { id: 'home', label: 'Tools (Landing)', description: 'Back to the tool picker', onClick: () => {}, keywords: ['home', 'landing'] },
   { id: 'portfolio', label: 'Portfolio', description: 'Combined Trading + Production overview', onClick: () => {} },
-  { id: 'characters', label: 'Characters', description: 'ESI access, sharing, and re-authorize', onClick: () => {} },
+  { id: 'character-management', label: 'Character Management', description: 'Character tools hub', onClick: () => {}, keywords: ['characters'] },
+  { id: 'characters', label: 'Character Management — Characters', description: 'ESI access, sharing, and re-authorize', onClick: () => {} },
   { id: 'admin', label: 'Admin', description: 'Cross-tenant superadmin tools', onClick: () => {} },
 
   { id: 'trading', label: 'Trading — Shortlist', description: 'Trading', onClick: () => {} },
@@ -68,7 +69,7 @@ const ACTIONS: SpotlightActionData[] = [
 // component-free data array - useNavigate() is only available inside a
 // Router, so the actual onClick wiring happens once, here, at render time.
 const PATHS: Record<string, string> = {
-  home: '/', portfolio: '/portfolio', admin: '/admin', characters: '/characters',
+  home: '/', portfolio: '/portfolio', admin: '/admin', 'character-management': '/character-management', characters: '/character-management/characters',
   trading: '/trading/shortlist', 'trading-candidates': '/trading/candidates', 'trading-new-candidates': '/trading/new-candidates',
   'trading-history': '/trading/history', 'trading-trades': '/trading/trades', 'trading-unlisted-stock': '/trading/unlisted-stock',
   'trading-undercut': '/trading/undercut', 'trading-settings': '/trading/settings',
@@ -91,7 +92,7 @@ const PATHS: Record<string, string> = {
 // (`_TOOL_PATH_PREFIXES` on the backend). 'home' has no entry, since jumping
 // back to the tool picker is always allowed regardless of tool grants.
 const TOOL_KEYS: Record<string, string> = {
-  portfolio: 'portfolio', admin: 'admin', characters: 'characters',
+  portfolio: 'portfolio', admin: 'admin', characters: 'characters', 'character-management': 'characters', // hub: widen to any-of once a second sub-tool grant exists
   trading: 'trading', 'trading-candidates': 'trading', 'trading-new-candidates': 'trading',
   'trading-history': 'trading', 'trading-trades': 'trading', 'trading-unlisted-stock': 'trading',
   'trading-undercut': 'trading', 'trading-settings': 'trading',

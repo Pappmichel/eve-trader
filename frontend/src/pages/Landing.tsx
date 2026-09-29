@@ -1,11 +1,11 @@
-import { Container, Title, Text, SimpleGrid, Card, Button, Stack, Group, Badge, Alert } from '@mantine/core'
-import { IconArrowRight } from '@tabler/icons-react'
-import { Link } from 'react-router-dom'
+import { Container, Title, Text, SimpleGrid, Button, Group, Badge, Alert } from '@mantine/core'
 import { useQuery } from '@tanstack/react-query'
 
 import { authApi, gateApi } from '../api/client'
+import { ToolCard } from '../components/ToolCard'
 import { useAction } from '../hooks/useAction'
 import { openGateAccessConfirmModal } from '../roleAccessDescriptions'
+import { CHARACTER_MANAGEMENT_TOOL_KEYS } from '../toolKeys'
 
 // Browser-local acknowledgement for the identity-only gate login. Before a
 // first gate login there's no tenant yet to attach a server-side record
@@ -70,35 +70,6 @@ function AccessGateStatus() {
   )
 }
 
-// Each card below is only rendered if `tools` contains its own tool_key -
-// `tools` is undefined while /api/gate/status hasn't loaded yet (or the gate
-// is disabled, in which case the backend already returns every tool_key -
-// see gate.py's status handler), so `undefined` means "show everything",
-// matching this app's pre-tool-grants behavior for local/dev installs
-// rather than flashing an empty page during the initial load.
-function ToolCard({ tools, toolKey, to, title, description, badge }: {
-  tools: string[] | undefined
-  toolKey: string
-  to: string
-  title: string
-  description: string
-  badge?: string
-}) {
-  if (tools !== undefined && !tools.includes(toolKey)) return null
-  return (
-    <Card withBorder padding="lg" radius="md">
-      <Stack gap="xs">
-        <Group justify="space-between" wrap="nowrap">
-          <Title order={3}>{title}</Title>
-          {badge && <Badge color="warn" variant="filled">{badge}</Badge>}
-        </Group>
-        <Text c="dimmed" size="sm">{description}</Text>
-        <Button component={Link} to={to} mt="sm" rightSection={<IconArrowRight size={14} />}>Open</Button>
-      </Stack>
-    </Card>
-  )
-}
-
 export default function Landing() {
   const { data: gateStatus } = useQuery({ queryKey: ['gate', 'status'], queryFn: gateApi.status })
   const tools = gateStatus?.tools
@@ -144,8 +115,8 @@ export default function Landing() {
       <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }} spacing="md" mt="md">
         <ToolCard tools={tools} toolKey="portfolio" to="/portfolio" title="Portfolio Overview"
           description="Combined read-only snapshot of Trading realized profit and Production stock value." />
-        <ToolCard tools={tools} toolKey="characters" to="/characters" title="Characters"
-          description="Who is logged in for ESI data, which tools may read it, and which scopes still need a re-authorize." />
+        <ToolCard tools={tools} toolKey={CHARACTER_MANAGEMENT_TOOL_KEYS} to="/character-management" title="Character Management"
+          description="Your EVE characters: ESI access and sharing, with more character tools to come." />
         <ToolCard tools={tools} toolKey="admin" to="/admin" title="Admin"
           description="Manage tenants, users, and which tools each character can see."
           badge={

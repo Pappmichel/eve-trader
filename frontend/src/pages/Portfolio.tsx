@@ -236,7 +236,7 @@ function TotalWealthSection() {
           {data.characters_missing_wallet_scope.length === 1 ? 'shares' : 'share'} Assets/Blueprints with Portfolio
           but {data.characters_missing_wallet_scope.length === 1 ? 'has' : 'have'} no wallet scope
           shared - reauthorize on the{' '}
-          <Text component={Link} to="/characters" span c="accent" td="underline">Characters page</Text>
+          <Text component={Link} to="/character-management/characters" span c="accent" td="underline">Characters page</Text>
           {' '}to include their ISK balance.
         </Alert>
       )}

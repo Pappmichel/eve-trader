@@ -15,6 +15,7 @@ import { useAction } from '../../hooks/useAction'
 import { useBackgroundJob, useBackgroundJobStart } from '../../hooks/useBackgroundJob'
 import { ActionTierIcon, TIER_COPY } from '../../components/ActionTierIcon'
 import { dateTime } from '../../format'
+import { ALL_TOOL_KEYS, ESI_CONSUMING_TOOLS } from '../../toolKeys'
 import type {
   AdminTenant, AdminUser, AllowlistCandidate, AllowlistEntry, AllowlistImpact, AccessRequestRow, ErrorLogRow,
 } from '../../api/types'
@@ -220,12 +221,6 @@ function BackupsSection() {
     </div>
   )
 }
-
-// Mirrors access_gate.ALL_TOOL_KEYS (eve_trader/access_gate.py) - kept in
-// sync by hand, same as every other small fixed-vocabulary list already
-// hardcoded on the frontend elsewhere in this app.
-const ALL_TOOL_KEYS = ['trading', 'production', 'doctrine', 'refining', 'station_trading', 'sorting', 'portfolio', 'admin', 'characters', 'module_reprocessing']
-const ESI_CONSUMING_TOOLS = ['trading', 'production', 'doctrine', 'station_trading', 'sorting']
 
 function withAutoCharacters(keys: string[]): string[] {
   const hasEsi = keys.some((k) => ESI_CONSUMING_TOOLS.includes(k))

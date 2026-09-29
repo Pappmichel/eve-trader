@@ -703,7 +703,7 @@ export default function CharactersPage() {
               Sync everything
             </Button>
           </Tooltip>
-          <Button component={Link} to="/" variant="subtle" leftSection={<IconArrowLeft size={14} />}>Back</Button>
+          <Button component={Link} to="/character-management" variant="subtle" leftSection={<IconArrowLeft size={14} />}>Back</Button>
         </Group>
       </Group>
 
