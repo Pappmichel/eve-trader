@@ -47,6 +47,8 @@ export default function CharacterManagementHub() {
             description="A mail client for all your characters: read live from ESI, with an optional searchable archive." />
           <ToolCard tools={tools} toolKey="char_notifications" to="/character-management/notifications" title="Notifications"
             description="Structure attacks, war declarations, sovereignty and other in-game notifications across your characters." />
+          <ToolCard tools={tools} toolKey="char_contacts" to="/character-management/contacts" title="Contacts & Calendar"
+            description="Contacts with standings and labels, and upcoming calendar events, read live from ESI." />
         </SimpleGrid>
       )}
     </Container>

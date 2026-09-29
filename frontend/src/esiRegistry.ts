@@ -110,6 +110,14 @@ export const OWNED_DATA_KINDS: readonly OwnedDataKind[] = [
     consumingTools: ['char_info'], corpRoles: [],
   },
   {
+    key: 'contacts', section: 'character', label: 'Contacts', group: 2, liveOnly: true,
+    consumingTools: ['char_contacts'], corpRoles: [],
+  },
+  {
+    key: 'calendar', section: 'character', label: 'Calendar', group: 2, liveOnly: true,
+    consumingTools: ['char_contacts'], corpRoles: [],
+  },
+  {
     key: 'notifications', section: 'character', label: 'Notifications', group: 2,
     consumingTools: ['char_notifications'], corpRoles: [],
   },
@@ -169,11 +177,12 @@ export const TOOL_LABELS: Record<string, string> = {
   char_skills: 'Skills',
   char_mail: 'Mail',
   char_notifications: 'Notifications',
+  char_contacts: 'Contacts & Calendar',
 }
 
 export const CONSUMING_TOOL_KEYS = [
   'trading', 'production', 'doctrine', 'station_trading', 'sorting', 'portfolio', 'char_info', 'char_skills', 'char_mail',
-  'char_notifications',
+  'char_notifications', 'char_contacts',
 ] as const
 
 export function kindByKey(key: string): OwnedDataKind | undefined {

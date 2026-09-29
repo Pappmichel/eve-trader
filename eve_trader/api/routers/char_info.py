@@ -30,6 +30,11 @@ def character_detail(character_id: int):
     return _wrap(info_actions.do_character_detail, character_id=character_id)
 
 
+@router.get("/characters/{character_id}/wallet-journal")
+def wallet_journal(character_id: int):
+    return _wrap(info_actions.do_wallet_journal, character_id=character_id)
+
+
 @router.post("/sync")
 def sync():
     return _wrap(info_actions.do_sync_char_info)

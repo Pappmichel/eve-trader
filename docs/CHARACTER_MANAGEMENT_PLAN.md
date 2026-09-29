@@ -834,6 +834,32 @@ Original design:
   `clones.last_clone_jump_date`.
 
 ### Phase 8 - Contacts & calendar (`char_contacts`), wallet journal
+**Status: implemented, with one deviation (wallet journal).**
+- Grant `char_contacts`; two kinds, one scope each (R1): `contacts`
+  (`esi-characters.read_contacts.v1`) and `calendar`
+  (`esi-calendar.read_calendar_events.v1`), both `live_only`: read per request
+  (2 min cache, keyed by tenant), never stored, no new tables. Read-only. Routes
+  `/api/char-contacts/{characters, contacts/{cid}, calendar/{cid},
+  calendar/{cid}/{event_id}}`. The event route only serves ids that are on that
+  character's own calendar list (one extra cached list call), so it cannot be
+  used to probe arbitrary events; details are fetched only when an event is
+  opened. `fields.live` is the shared "gate, one ESI call, redacted failure"
+  helper for live-only kinds.
+- **Deviation - wallet journal is live, not the stored `wallet` kind.** The
+  merged Wallet row on the Characters page already maps Character Info to
+  `wallet_balance` (`toolDataKind`), and one tool can only map to one kind
+  there; ticking `wallet` for Character Info as well would have needed a second
+  checkbox for the same scope, and syncing the stored journal for a tool that
+  only wants to look at it duplicates data. So `GET /api/char-info/characters/
+  {cid}/wallet-journal` reads ESI's 30-day journal live (2 min cache, never
+  stored, R15's window is ESI's own), gated by the Wallet checkbox of Character
+  Info (`wallet_balance` row + scope). It shows the newest 500 entries and
+  totals (income, expenses, per `ref_type`) over all of them, and is only
+  fetched when the user presses "Show wallet journal".
+- Not done: contact/label editing and event responses (would need the write
+  scopes; not asked for).
+
+Original design:
 - Contacts and calendar are read-only. Calendar event details are one call
   per event, fetched lazily like mail bodies.
 - The wallet journal view goes into Character Info through the existing

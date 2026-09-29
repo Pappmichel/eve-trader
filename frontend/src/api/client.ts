@@ -631,6 +631,8 @@ export const adminApi = {
 export const charInfoApi = {
   overview: () => get<T.CharInfoOverview>('/api/char-info/overview'),
   detail: (characterId: number) => get<T.CharInfoCharacter>(`/api/char-info/characters/${characterId}`),
+  walletJournal: (characterId: number) =>
+    get<T.CharInfoField<T.WalletJournalValue>>(`/api/char-info/characters/${characterId}/wallet-journal`),
   sync: () => post<T.CharInfoSyncResult>('/api/char-info/sync', {}),
 }
 
@@ -645,6 +647,17 @@ export const charSkillsApi = {
     post<{ queue_warning_hours: number }>('/api/char-skills/settings', { queue_warning_hours: queueWarningHours }),
   doctrineCheck: () => get<T.DoctrineCheck>('/api/char-skills/doctrine-check'),
   sync: () => post<T.CharInfoSyncResult>('/api/char-skills/sync', {}),
+}
+
+// -------------------------------------------------------------- contacts & calendar
+export const charContactsApi = {
+  characters: () => get<{ characters: T.ContactsCharacter[] }>('/api/char-contacts/characters'),
+  contacts: (characterId: number) =>
+    get<T.CharInfoField<T.ContactsValue>>(`/api/char-contacts/contacts/${characterId}`),
+  calendar: (characterId: number) =>
+    get<T.CharInfoField<T.CalendarEvent[]>>(`/api/char-contacts/calendar/${characterId}`),
+  event: (characterId: number, eventId: number) =>
+    get<T.CharInfoField<T.CalendarEventDetail>>(`/api/char-contacts/calendar/${characterId}/${eventId}`),
 }
 
 // -------------------------------------------------------------- notifications

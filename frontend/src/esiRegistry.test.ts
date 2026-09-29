@@ -10,7 +10,7 @@ describe('esiRegistry Character Management kinds', () => {
       expect(kind.group).toBe(2)
     }
     expect(OWNED_DATA_KINDS.filter((k) => k.liveOnly).map((k) => k.key).sort())
-      .toEqual(['fatigue', 'location', 'mail', 'online', 'ship'])
+      .toEqual(['calendar', 'contacts', 'fatigue', 'location', 'mail', 'online', 'ship'])
   })
 
   it('lets Character Info read the wallet balance through the merged Wallet row', () => {

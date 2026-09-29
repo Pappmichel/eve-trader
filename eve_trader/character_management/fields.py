@@ -19,6 +19,7 @@ from typing import Any, Callable, Optional
 from .. import storage
 from ..auth import TokenManager
 from ..config import OAUTH_CONFIG
+from ..esi_client import ESIError
 from ..esi_data import is_shared, read_esi, select_auth_role
 from ..esi_data.registry import OWNED_DATA_KINDS
 
@@ -53,6 +54,23 @@ def freshness_by_kind(character_id: int) -> dict[str, dict]:
         if ot == "character" and oid == character_id:
             out[kind] = {"last_success_at": success, "last_attempt_at": attempt, "last_error": err}
     return out
+
+
+def live(
+    kind: str, tool_key: str, character_id: int, tokens: TokenManager,
+    fetch: Callable[[str], Any], shape: Callable[[Any], Any] = lambda v: v,
+) -> dict:
+    """A live-only kind: gate, then one ESI call with the token that holds the
+    kind's scope. An ESI failure is a field state (redacted text), never an
+    exception, so one dead token cannot blank a page."""
+    blocked = gate(kind, tool_key, character_id, tokens)
+    if blocked:
+        return field(blocked)
+    role = select_auth_role(character_id, SCOPE_BY_KIND[kind], tokens=tokens)
+    try:
+        return field(STATE_OK, shape(fetch(role)))
+    except ESIError as e:
+        return field(STATE_ERROR, detail=esi_failure(e))
 
 
 def snapshot(

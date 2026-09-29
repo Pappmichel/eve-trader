@@ -329,6 +329,59 @@ def do_character_detail(character_id: int) -> dict:
     return _character_summary(match, client, tokens, detail=True)
 
 
+JOURNAL_MAX_ROWS = 500
+JOURNAL_WINDOW_DAYS = 30      # ESI's own window; nothing older exists to show
+
+
+def _journal_value(raw: list) -> dict:
+    """Newest first, capped, plus totals over *every* entry (not just the rows
+    shown): income, expenses and a per-`ref_type` breakdown."""
+    entries = sorted(
+        (e for e in raw if isinstance(e, dict) and e.get("date")),
+        key=lambda e: (str(e["date"]), int(e.get("id") or 0)), reverse=True,
+    )
+    income = sum(float(e.get("amount") or 0) for e in entries if float(e.get("amount") or 0) > 0)
+    expense = sum(float(e.get("amount") or 0) for e in entries if float(e.get("amount") or 0) < 0)
+    by_type: dict[str, float] = {}
+    for e in entries:
+        by_type[e.get("ref_type") or "unknown"] = by_type.get(e.get("ref_type") or "unknown", 0.0) + float(e.get("amount") or 0)
+    return {
+        "window_days": JOURNAL_WINDOW_DAYS,
+        "entries": [
+            {
+                "id": e.get("id"), "date": e["date"], "ref_type": e.get("ref_type"),
+                "amount": float(e.get("amount") or 0),
+                "balance": float(e["balance"]) if e.get("balance") is not None else None,
+                "description": e.get("description"),
+            }
+            for e in entries[:JOURNAL_MAX_ROWS]
+        ],
+        "total_entries": len(entries),
+        "truncated": len(entries) > JOURNAL_MAX_ROWS,
+        "income": income, "expense": expense,
+        "by_type": sorted(
+            ({"ref_type": t, "total": v} for t, v in by_type.items()), key=lambda x: -abs(x["total"]),
+        ),
+    }
+
+
+def do_wallet_journal(character_id: int) -> dict:
+    """The character's wallet journal for ESI's 30-day window, read live (2 min
+    cache) and never stored - it is not the journal Trading syncs. Gated by the
+    Wallet checkbox of Character Info (the `wallet_balance` sharing row)."""
+    try:
+        character_id = int(character_id)
+    except (TypeError, ValueError) as e:
+        raise ActionError(f"Invalid character_id {character_id!r}") from e
+    if not any(c["character_id"] == character_id for c in fields.token_characters()):
+        raise ActionError(f"Character {character_id} is not registered for ESI access.")
+    client, tokens = _client_and_tokens()
+    return fields.live(
+        "wallet_balance", TOOL_KEY, character_id, tokens,
+        lambda role: client.character_wallet_journal_live(character_id, role), _journal_value,
+    )
+
+
 def do_sync_char_info() -> dict:
     """Refresh the snapshot kinds shared with Character Info (wallet
     balance, standings, loyalty points, clones, implants). Live kinds need no sync.

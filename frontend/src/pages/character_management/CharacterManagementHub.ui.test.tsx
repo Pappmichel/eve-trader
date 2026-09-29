@@ -93,6 +93,14 @@ describe('CharacterManagementHub', () => {
     expect(screen.getByRole('link', { name: /open/i })).toHaveAttribute('href', '/character-management/notifications')
   })
 
+  it('lists Contacts & Calendar when char_contacts is granted', async () => {
+    vi.mocked(gateApi.status).mockResolvedValue({ ...base, tools: ['char_contacts'] })
+    renderHub()
+    expect(await screen.findByRole('heading', { name: 'Contacts & Calendar' })).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Skills' })).not.toBeInTheDocument())
+    expect(screen.getByRole('link', { name: /open/i })).toHaveAttribute('href', '/character-management/contacts')
+  })
+
   it('says so when no sub-tool grant is held', async () => {
     vi.mocked(gateApi.status).mockResolvedValue({ ...base, tools: ['trading'] })
     renderHub()

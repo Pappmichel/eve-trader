@@ -1654,6 +1654,52 @@ export interface DoctrineCheck {
 }
 
 
+// Mirrors eve_trader/character_management/contacts_actions.py.
+export interface ContactRow {
+  contact_id: number
+  name: string
+  contact_type: string
+  standing: number
+  is_blocked: boolean
+  is_watched: boolean
+  labels: string[]
+}
+export interface ContactsValue { contacts: ContactRow[]; labels: string[] }
+export interface CalendarEvent {
+  event_id: number
+  title: string
+  event_date: string | null
+  importance: number | null
+  response: string | null
+}
+export interface CalendarEventDetail {
+  event_id: number
+  title: string | null
+  date: string | null
+  duration: number | null
+  importance: number | null
+  owner_name: string | null
+  owner_type: string | null
+  response: string | null
+  text: string | null
+}
+export interface ContactsCharacter {
+  character_id: number
+  character_name: string
+  contacts: CharInfoField<null>
+  calendar: CharInfoField<null>
+}
+
+export interface WalletJournalValue {
+  window_days: number
+  entries: { id: number | null; date: string; ref_type: string | null; amount: number; balance: number | null; description: string | null }[]
+  total_entries: number
+  truncated: boolean
+  income: number
+  expense: number
+  by_type: { ref_type: string; total: number }[]
+}
+
 // Mirrors eve_trader/character_management/notification_actions.py.
 export interface NotificationItem {
   character_id: number

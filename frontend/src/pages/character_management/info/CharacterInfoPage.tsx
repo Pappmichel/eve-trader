@@ -34,6 +34,46 @@ function StandingsTable({ title, rows }: { title: string; rows: CharInfoStanding
   )
 }
 
+// The journal is a live ESI read (never stored), so it is only fetched when asked for.
+function WalletJournal({ characterId }: { characterId: number }) {
+  const [wanted, setWanted] = useState(false)
+  const { data, isLoading } = useQuery({
+    queryKey: ['char-info', 'wallet-journal', characterId], queryFn: () => charInfoApi.walletJournal(characterId),
+    enabled: wanted, retry: false,
+  })
+  if (!wanted) {
+    return <Button size="compact-sm" variant="default" onClick={() => setWanted(true)}>Show wallet journal</Button>
+  }
+  if (isLoading || !data) return <Loader color="accent" size="sm" />
+  return (
+    <FieldState field={data}>
+      {(j) => (
+        <Stack gap="xs">
+          <Text size="xs" c="dimmed">
+            Last {j.window_days} days (all ESI keeps) · income {isk(j.income)} · expenses {isk(j.expense)}
+            {j.truncated ? ` · showing the newest ${j.entries.length} of ${j.total_entries}` : ''}
+          </Text>
+          {j.entries.length === 0 ? <Text size="sm" c="dimmed">No journal entries.</Text> : (
+            <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+              <Table withTableBorder striped>
+                <Table.Tbody>
+                  {j.entries.map((e, i) => (
+                    <Table.Tr key={e.id ?? i}>
+                      <Table.Td>{dateTime(e.date)}</Table.Td>
+                      <Table.Td>{(e.ref_type ?? 'unknown').replace(/_/g, ' ')}</Table.Td>
+                      <Table.Td ta="right" c={e.amount < 0 ? 'danger' : undefined}>{isk(e.amount)}</Table.Td>
+                    </Table.Tr>
+                  ))}
+                </Table.Tbody>
+              </Table>
+            </div>
+          )}
+        </Stack>
+      )}
+    </FieldState>
+  )
+}
+
 function CharacterDetail({ characterId }: { characterId: number }) {
   const { data, isLoading, error } = useQuery({
     queryKey: ['char-info', 'detail', characterId],
@@ -98,6 +138,13 @@ function CharacterDetail({ characterId }: { characterId: number }) {
               )}
           </FieldState>
         )}
+      </div>
+
+      <div>
+        <Title order={4} mb={4}>Wallet journal</Title>
+        {data.wallet_balance.state === 'not_shared'
+          ? <Text size="xs" c="dimmed">Not shared: tick Wallet for Character Info on the Characters page.</Text>
+          : <WalletJournal characterId={data.character_id} />}
       </div>
 
       <div>

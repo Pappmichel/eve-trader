@@ -1298,7 +1298,7 @@ class ESIClient:
     def _live_character_read(
         self, what: str, character_id: int, auth_role: str, path: str,
         params: Optional[dict] = None, ttl: Optional[float] = None, extra: tuple = (),
-        cache: bool = True,
+        cache: bool = True, paged: bool = False,
     ):
         """TTL-cached authenticated GET keyed by (tenant_id, what, character_id,
         *extra).
@@ -1313,15 +1313,16 @@ class ESIClient:
         if not tenant_id:
             raise RuntimeError("live character read requires a tenant in scope")
         request_params = {"datasource": "tranquility", **(params or {})}
+        fetch = self._get_all_pages if paged else self._get
         if not cache:
-            return self._get(path, params=request_params, auth_role=auth_role)
+            return fetch(path, params=request_params, auth_role=auth_role)
         key = (str(tenant_id), what, int(character_id), *extra)
         ttl = self._LIVE_CHARACTER_CACHE_TTL if ttl is None else ttl
         with self._lock_for_key(self._live_character_locks, key):
             cached_at = self._live_character_cache_at.get(key, 0.0)
             if key in self._live_character_cache and (time.time() - cached_at) < ttl:
                 return self._live_character_cache[key]
-            value = self._get(path, params=request_params, auth_role=auth_role)
+            value = fetch(path, params=request_params, auth_role=auth_role)
             self._live_character_cache[key] = value
             self._live_character_cache_at[key] = time.time()
         self._prune_live_character_cache(ttl)
@@ -1377,6 +1378,43 @@ class ESIClient:
         stored."""
         return self._live_character_read(
             "fatigue", character_id, auth_role, f"/characters/{character_id}/fatigue/")
+
+    def character_wallet_journal_live(self, character_id: int, auth_role: str) -> list[dict]:
+        """Requires esi-wallet.read_character_wallet.v1. The same journal
+        `character_wallet_journal` fetches for Trading, but read live for
+        Character Info: 2 min cache, never stored. ESI holds 30 days."""
+        return self._live_character_read(
+            "wallet_journal", character_id, auth_role, f"/characters/{character_id}/wallet/journal/",
+            ttl=120.0, paged=True)
+
+    def character_contacts(self, character_id: int, auth_role: str) -> list[dict]:
+        """Requires esi-characters.read_contacts.v1. [{"contact_id",
+        "contact_type", "standing", "is_blocked"?, "is_watched"?,
+        "label_ids"?}]. Live, 2 min cache, never stored."""
+        return self._live_character_read(
+            "contacts", character_id, auth_role, f"/characters/{character_id}/contacts/", ttl=120.0, paged=True)
+
+    def character_contact_labels(self, character_id: int, auth_role: str) -> list[dict]:
+        """Requires esi-characters.read_contacts.v1. [{"label_id",
+        "label_name"}]. Live, 2 min cache, never stored."""
+        return self._live_character_read(
+            "contact_labels", character_id, auth_role, f"/characters/{character_id}/contacts/labels/", ttl=120.0)
+
+    def character_calendar(self, character_id: int, auth_role: str) -> list[dict]:
+        """Requires esi-calendar.read_calendar_events.v1. Up to 50 upcoming
+        events: [{"event_id", "event_date", "title", "importance",
+        "event_response"}]. Live, 2 min cache, never stored."""
+        return self._live_character_read(
+            "calendar", character_id, auth_role, f"/characters/{character_id}/calendar/", ttl=120.0)
+
+    def character_calendar_event(self, character_id: int, auth_role: str, event_id: int) -> dict:
+        """Requires esi-calendar.read_calendar_events.v1. {"event_id", "date",
+        "duration", "importance", "owner_id", "owner_name", "owner_type",
+        "response", "text", "title"}. One call per event, fetched only when
+        the user opens it; live, 10 min cache, never stored."""
+        return self._live_character_read(
+            "calendar_event", character_id, auth_role, f"/characters/{character_id}/calendar/{int(event_id)}/",
+            ttl=600.0, extra=(int(event_id),))
 
     def character_standings(self, character_id: int, auth_role: str) -> list[dict]:
         """Requires esi-characters.read_standings.v1. [{"from_id",

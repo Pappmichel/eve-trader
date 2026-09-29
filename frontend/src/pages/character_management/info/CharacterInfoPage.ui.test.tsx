@@ -11,7 +11,7 @@ import type { CharInfoCharacter } from '../../../api/types'
 import CharacterInfoPage from './CharacterInfoPage'
 
 vi.mock('../../../api/client', () => ({
-  charInfoApi: { overview: vi.fn(), detail: vi.fn(), sync: vi.fn() },
+  charInfoApi: { overview: vi.fn(), detail: vi.fn(), sync: vi.fn(), walletJournal: vi.fn() },
   ApiError: class ApiError extends Error {},
 }))
 
@@ -191,5 +191,43 @@ describe('Character Info page', () => {
     expect(screen.getByText('none')).toBeInTheDocument()
     await user.click(screen.getAllByRole('button', { name: 'Details' })[0])
     expect(await screen.findByText(/^4h 5\dm$|^5h 0m$/)).toBeInTheDocument()
+  })
+
+  it('fetches the wallet journal only when asked, and only if the wallet is shared', async () => {
+    vi.mocked(charInfoApi.overview).mockResolvedValue({ characters: [character()] })
+    vi.mocked(charInfoApi.detail).mockResolvedValue(character({
+      wallet_balance: { state: 'ok', value: 1000 },
+    }))
+    vi.mocked(charInfoApi.walletJournal).mockResolvedValue({
+      state: 'ok',
+      value: {
+        window_days: 30, total_entries: 2, truncated: false, income: 1500, expense: -400, by_type: [],
+        entries: [
+          { id: 2, date: '2026-09-03T00:00:00Z', ref_type: 'market_escrow', amount: -400, balance: 1100, description: null },
+          { id: 1, date: '2026-09-01T00:00:00Z', ref_type: 'bounty_prizes', amount: 1500, balance: 1500, description: null },
+        ],
+      },
+    })
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Alice')
+    await user.click(screen.getByRole('button', { name: 'Details' }))
+    const show = await screen.findByRole('button', { name: 'Show wallet journal' })
+    expect(charInfoApi.walletJournal).not.toHaveBeenCalled()
+    await user.click(show)
+    expect(await screen.findByText('market escrow')).toBeInTheDocument()
+    expect(screen.getByText('bounty prizes')).toBeInTheDocument()
+    expect(charInfoApi.walletJournal).toHaveBeenCalledWith(1)
+  })
+
+  it('does not offer the wallet journal when the wallet is not shared', async () => {
+    vi.mocked(charInfoApi.overview).mockResolvedValue({ characters: [character()] })
+    vi.mocked(charInfoApi.detail).mockResolvedValue(character())
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Alice')
+    await user.click(screen.getByRole('button', { name: 'Details' }))
+    expect(await screen.findByText(/Tick Wallet for Character Info|tick Wallet for Character Info/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Show wallet journal' })).not.toBeInTheDocument()
   })
 })
