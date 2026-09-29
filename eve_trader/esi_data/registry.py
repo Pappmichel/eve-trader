@@ -19,6 +19,10 @@ TIER_FREQUENT = "frequent"
 TIER_NORMAL = "normal"
 TIER_RARE = "rare"
 
+# Scheduling modes (OwnedDataKind.schedule_mode).
+SCHEDULE_ALWAYS = "always"
+ON_DEMAND = "on_demand"
+
 GROUP_1 = 1  # owned data, character and corporation variant
 GROUP_2 = 2  # owned data, character only
 GROUP_3 = 3  # access capabilities: no freshness, no per-tool sharing
@@ -41,6 +45,14 @@ class OwnedDataKind:
     # from ESI, after an `is_shared` check. The orchestrator ignores its
     # sharing rows entirely. `freshness_tier` is a placeholder there.
     live_only: bool = False
+    # docs/SCHEDULER_REWORK_PLAN.md (char sheets): "always" kinds are refreshed
+    # by the scheduler whenever they are due. An "on_demand" kind is display-
+    # only: the scheduler refreshes it only for an owner someone explicitly
+    # asked for (a `demand` entry - the opt-in alerts, later) and otherwise it
+    # is synced when its page is opened or via the manual sync. Manual syncs
+    # (do_sync_for_tool / do_sync_all) always include it. Its snapshot is
+    # expected to age, so the stale clear never deletes it.
+    schedule_mode: str = SCHEDULE_ALWAYS
 
 
 @dataclass(frozen=True)
@@ -176,6 +188,7 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         corp_roles=(),
         consuming_tools=("char_skills",),
         freshness_tier=TIER_NORMAL,
+        schedule_mode=ON_DEMAND,
     ),
     # Phase 5c: clones (home, jump clones, their implants) and the active
     # implants. Two kinds because each ESI scope gates exactly one endpoint (R1).
@@ -188,6 +201,7 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         corp_roles=(),
         consuming_tools=("char_info",),
         freshness_tier=TIER_RARE,
+        schedule_mode=ON_DEMAND,
     ),
     OwnedDataKind(
         key="implants",
@@ -198,6 +212,7 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         corp_roles=(),
         consuming_tools=("char_info",),
         freshness_tier=TIER_RARE,
+        schedule_mode=ON_DEMAND,
     ),
     # Character Management, phase 1 (docs/CHARACTER_MANAGEMENT_PLAN.md).
     # One scope per kind (R1): the selector, orchestrator and Characters
@@ -211,6 +226,7 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         corp_roles=(),
         consuming_tools=("char_info",),
         freshness_tier=TIER_RARE,
+        schedule_mode=ON_DEMAND,
     ),
     OwnedDataKind(
         key="loyalty",
@@ -221,6 +237,7 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         corp_roles=(),
         consuming_tools=("char_info",),
         freshness_tier=TIER_RARE,
+        schedule_mode=ON_DEMAND,
     ),
     # Phase 6: notifications, a snapshot kind (the raw YAML text is parsed on
     # read). One scope, consumed only by Notifications.
@@ -233,6 +250,7 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         corp_roles=(),
         consuming_tools=("char_notifications",),
         freshness_tier=TIER_NORMAL,
+        schedule_mode=ON_DEMAND,
     ),
     OwnedDataKind(
         key="location",

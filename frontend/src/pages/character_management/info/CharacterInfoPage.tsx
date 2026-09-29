@@ -12,6 +12,7 @@ import { Countdown } from '../../../components/Countdown'
 import { FieldState } from '../../../components/FieldState'
 import { dateTime, isk, qty } from '../../../format'
 import { useCharacterSync } from '../../../hooks/useCharacterSync'
+import { isStale, newestStamp, useSyncWhenStale } from '../../../hooks/useSyncWhenStale'
 
 const OVERVIEW_KEY = ['char-info', 'overview']
 
@@ -229,6 +230,9 @@ function lastSynced(c: CharInfoCharacter): string | null {
   return stamps.length ? stamps[stamps.length - 1] : null
 }
 
+const SNAPSHOT_KINDS = ['wallet_balance', 'standings', 'loyalty', 'clones', 'implants']
+const AUTO_SYNC_KEYS = [['char-info']]
+
 export default function CharacterInfoPage() {
   const [selected, setSelected] = useState<number | null>(null)
   const overview = useQuery({ queryKey: OVERVIEW_KEY, queryFn: charInfoApi.overview })
@@ -245,6 +249,15 @@ export default function CharacterInfoPage() {
   )
 
   const newest = characters.map(lastSynced).filter((v): v is string => !!v).sort().at(-1) ?? null
+
+  // These snapshot kinds are no longer refreshed in the background (esi_data
+  // `on_demand`), so opening the page with old data syncs them once.
+  useSyncWhenStale({
+    ready: overview.isSuccess,
+    stale: isStale(characters.map((c) => newestStamp(SNAPSHOT_KINDS.map((k) => c.freshness[k]?.last_attempt_at)))),
+    sync: charInfoApi.sync,
+    invalidateKeys: AUTO_SYNC_KEYS,
+  })
 
   return (
     <Container size="xl" py="xl">

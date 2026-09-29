@@ -18,7 +18,7 @@ from ..auth import TokenManager, TokenRecord
 from ..config import OAUTH_CONFIG, TRADING_CONFIG
 from ..esi_client import ESIClient, ESIError
 from .fetchers import fetcher_for
-from .registry import OWNED_DATA_KINDS, TIER_FREQUENT, TIER_NORMAL, TIER_RARE
+from .registry import OWNED_DATA_KINDS, ON_DEMAND, TIER_FREQUENT, TIER_NORMAL, TIER_RARE
 from .selector import REAUTH_NEEDED, select_auth_role
 from .stale import clear_stale_owner_kind
 
@@ -218,6 +218,10 @@ def _record_failure(owner_type: str, owner_id: int, data_kind: str, error: BaseE
     storage.upsert_esi_freshness(
         owner_type, owner_id, data_kind, success=False, error=str(error),
     )
+    if _KIND_BY_KEY[data_kind].schedule_mode == ON_DEMAND:
+        # Display-only snapshots are expected to age between page visits; one
+        # failed page-open sync must not wipe them (SCHEDULER_REWORK_PLAN.md).
+        return
     try:
         clear_stale_owner_kind(
             owner_type, owner_id, data_kind,
@@ -622,6 +626,7 @@ def do_sync_all(*, client: Optional[ESIClient] = None, extra: Optional[dict] = N
 def pending_due(
     *,
     granted_tools: Optional[Iterable[str]] = None,
+    demand: Iterable[tuple[str, int, str]] = (),
     now: Optional[datetime] = None,
 ) -> list[tuple[str, int, str, str]]:
     """The sharing rows `do_sync_due` would refresh right now. The scheduler
@@ -634,7 +639,12 @@ def pending_due(
     corporation rows the kind has no corp scope for are never fetched by the
     orchestrator, so they must not count as due either (they have no
     freshness row and would otherwise be due on every tick forever).
+
+    `on_demand` kinds (registry `schedule_mode`) are only due for an
+    `(owner_type, owner_id, kind)` present in `demand`; nothing supplies one
+    yet - the opt-in alerts will (docs/DISCORD_ALERTS_HANDOFF.md).
     """
+    wanted = set(demand)
     sharing = storage.list_esi_sharing()
     if granted_tools is not None:
         granted = set(granted_tools)
@@ -645,6 +655,8 @@ def pending_due(
         if spec is None or spec.live_only:
             continue
         if row[0] == "corporation" and spec.corporation_scope is None:
+            continue
+        if spec.schedule_mode == ON_DEMAND and (row[0], row[1], row[2]) not in wanted:
             continue
         candidates.append(row)
     if not candidates:
@@ -662,6 +674,7 @@ def do_sync_due(
     extra: Optional[dict] = None,
     now: Optional[datetime] = None,
     granted_tools: Optional[Iterable[str]] = None,
+    demand: Iterable[tuple[str, int, str]] = (),
 ) -> dict:
     """Refresh every shared (owner, kind) that is past its freshness-tier
     interval since the last success and past the failure backoff since the
@@ -672,7 +685,7 @@ def do_sync_due(
     due-ness and stamp freshness, which pushes those pairs past the next
     scheduled tick. The scheduler calls this once per tenant.
     """
-    due = pending_due(granted_tools=granted_tools, now=now)
+    due = pending_due(granted_tools=granted_tools, demand=demand, now=now)
     if not due:
         return _empty_result(None)
     return _sync(due, client=client, tool_key=None, extra=extra)
