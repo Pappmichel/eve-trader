@@ -159,6 +159,34 @@ describe('Mail page', () => {
     expect(screen.getByText(/From/)).toBeInTheDocument()
   })
 
+  it('on a narrow screen a mail opens as its own view with a way back to the list', async () => {
+    const realMatchMedia = window.matchMedia
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes('max-width'), media: query, onchange: null,
+      addListener: () => {}, removeListener: () => {}, addEventListener: () => {}, removeEventListener: () => {},
+      dispatchEvent: () => false,
+    })) as typeof window.matchMedia
+    const scrollTo = vi.fn()
+    window.scrollTo = scrollTo as unknown as typeof window.scrollTo
+    try {
+      api.open.mockResolvedValue({ ...row(1), character_id: 1, archived: false, body: 'Hello narrow' })
+      const user = userEvent.setup()
+      renderPage()
+      const item = await screen.findByRole('button', { name: /Open mail Subject 1/ })
+      expect(screen.queryByRole('button', { name: /Back to list/ })).not.toBeInTheDocument()
+      await user.click(item)
+      expect(await screen.findByTestId('mail-body')).toBeVisible()
+      expect(screen.getByRole('button', { name: /Back to list/ })).toBeInTheDocument()
+      expect(item).not.toBeVisible()                       // the list is out of the way, not below the fold
+      expect(scrollTo).toHaveBeenCalled()
+      await user.click(screen.getByRole('button', { name: /Back to list/ }))
+      expect(item).toBeVisible()
+      expect(screen.queryByTestId('mail-body')).not.toBeInTheDocument()
+    } finally {
+      window.matchMedia = realMatchMedia
+    }
+  })
+
   it('filters the loaded mail client-side without another request', async () => {
     api.mails.mockResolvedValue(page([row(1, { subject: 'Fleet doctrine' }), row(2, { subject: 'Hello' })]))
     const user = userEvent.setup()
