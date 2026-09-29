@@ -7,7 +7,7 @@ import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 
 import { charInfoApi } from '../../../api/client'
-import type { CharInfoCharacter, CharInfoStandingRow } from '../../../api/types'
+import type { CharInfoCharacter, CharInfoImplant, CharInfoStandingRow } from '../../../api/types'
 import { FieldState } from '../../../components/FieldState'
 import { dateTime, isk, qty } from '../../../format'
 import { useCharacterSync } from '../../../hooks/useCharacterSync'
@@ -100,6 +100,44 @@ function CharacterDetail({ characterId }: { characterId: number }) {
       </div>
 
       <div>
+        <Title order={4} mb={4}>Implants</Title>
+        {data.implants && (
+          <FieldState field={data.implants}>
+            {(rows) => <ImplantList implants={rows} empty="No implants plugged in." />}
+          </FieldState>
+        )}
+      </div>
+
+      <div>
+        <Title order={4} mb={4}>Clones</Title>
+        {data.clones && (
+          <FieldState field={data.clones}>
+            {(c) => (
+              <Stack gap="xs">
+                <Text size="sm">
+                  Home: {c.home ? (c.home.location_name ?? `${c.home.location_type ?? 'location'} #${c.home.location_id}`) : 'not set'}
+                </Text>
+                <Text size="xs" c="dimmed">
+                  Last jump {dateTime(c.last_clone_jump_date)} · last home change {dateTime(c.last_station_change_date)}
+                </Text>
+                {c.jump_clones.length === 0
+                  ? <Text size="sm" c="dimmed">No jump clones.</Text>
+                  : c.jump_clones.map((jc) => (
+                    <div key={jc.jump_clone_id}>
+                      <Text size="sm" fw={600}>
+                        {jc.name ? `${jc.name} – ` : ''}
+                        {jc.location_name ?? `${jc.location_type ?? 'location'} #${jc.location_id ?? '?'}`}
+                      </Text>
+                      <ImplantList implants={jc.implants} empty="No implants." />
+                    </div>
+                  ))}
+              </Stack>
+            )}
+          </FieldState>
+        )}
+      </div>
+
+      <div>
         <Title order={4} mb={4}>Corporation history</Title>
         {(data.corporation_history ?? []).length === 0
           ? <Text size="sm" c="dimmed">Unavailable.</Text>
@@ -120,8 +158,17 @@ function CharacterDetail({ characterId }: { characterId: number }) {
   )
 }
 
+function ImplantList({ implants, empty }: { implants: CharInfoImplant[]; empty: string }) {
+  if (implants.length === 0) return <Text size="xs" c="dimmed">{empty}</Text>
+  return (
+    <Stack gap={0}>
+      {implants.map((i) => <Text size="xs" key={i.type_id}>{i.name}</Text>)}
+    </Stack>
+  )
+}
+
 function lastSynced(c: CharInfoCharacter): string | null {
-  const stamps = ['wallet_balance', 'standings', 'loyalty']
+  const stamps = ['wallet_balance', 'standings', 'loyalty', 'clones', 'implants']
     .map((k) => c.freshness[k]?.last_success_at)
     .filter((v): v is string => !!v)
     .sort()
@@ -133,14 +180,14 @@ export default function CharacterInfoPage() {
   const overview = useQuery({ queryKey: OVERVIEW_KEY, queryFn: charInfoApi.overview })
   const characters = overview.data?.characters ?? []
 
-  // Refresh = sync the snapshot kinds (wallet balance, standings, loyalty).
+  // Refresh = sync the snapshot kinds (wallet balance, standings, loyalty, clones, implants).
   // Location/ship/online are live reads and are refetched with the overview
   // itself.
   const refresh = useCharacterSync(
     'Character Info refresh',
     charInfoApi.sync,
     [['char-info']],
-    'Syncs wallet balance, standings and loyalty points for every character shared with Character Info, and re-reads live location, ship and online status.',
+    'Syncs wallet balance, standings, loyalty points, clones and implants for every character shared with Character Info, and re-reads live location, ship and online status.',
   )
 
   const newest = characters.map(lastSynced).filter((v): v is string => !!v).sort().at(-1) ?? null

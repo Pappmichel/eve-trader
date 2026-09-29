@@ -1447,6 +1447,21 @@ export interface CharInfoStandings {
   agent: CharInfoStandingRow[]
 }
 export interface CharInfoLoyaltyRow { corporation_id: number; corporation_name: string; loyalty_points: number }
+export interface CharInfoImplant { type_id: number; name: string }
+export interface CharInfoJumpClone {
+  jump_clone_id: number
+  name: string | null
+  location_id: number | null
+  location_type: string | null
+  location_name: string | null
+  implants: CharInfoImplant[]
+}
+export interface CharInfoClones {
+  home: { location_id: number; location_type: string | null; location_name: string | null } | null
+  jump_clones: CharInfoJumpClone[]
+  last_clone_jump_date: string | null
+  last_station_change_date: string | null
+}
 export interface CharInfoCorpHistoryRow { corporation_id: number; corporation_name: string; start_date: string | null }
 
 export interface CharInfoCharacter {
@@ -1466,6 +1481,8 @@ export interface CharInfoCharacter {
   // Detail only:
   standings?: CharInfoField<CharInfoStandings>
   loyalty_points?: CharInfoField<CharInfoLoyaltyRow[]>
+  clones?: CharInfoField<CharInfoClones>
+  implants?: CharInfoField<CharInfoImplant[]>
   corporation_history?: CharInfoCorpHistoryRow[]
 }
 

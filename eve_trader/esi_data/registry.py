@@ -175,6 +175,28 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         consuming_tools=("char_skills",),
         freshness_tier=TIER_NORMAL,
     ),
+    # Phase 5c: clones (home, jump clones, their implants) and the active
+    # implants. Two kinds because each ESI scope gates exactly one endpoint (R1).
+    OwnedDataKind(
+        key="clones",
+        label="Clones",
+        group=GROUP_2,
+        character_scope="esi-clones.read_clones.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_info",),
+        freshness_tier=TIER_RARE,
+    ),
+    OwnedDataKind(
+        key="implants",
+        label="Implants",
+        group=GROUP_2,
+        character_scope="esi-clones.read_implants.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_info",),
+        freshness_tier=TIER_RARE,
+    ),
     # Character Management, phase 1 (docs/CHARACTER_MANAGEMENT_PLAN.md).
     # One scope per kind (R1): the selector, orchestrator and Characters
     # page all assume it, so multi-scope features are split into kinds.

@@ -769,7 +769,18 @@ Original design:
   expanded recursively through skill prerequisites. Compare them against
   `character_skills`. Output per fitting: characters who can fly it, and for
   the others the missing skills with an estimated training time (R14 caveat).
-- **5c Clones & implants:** add the `clones` and `implants` kinds plus
+- **5c Clones & implants (implemented):** two kinds, one scope each (R1):
+  `clones` (`esi-clones.read_clones.v1`) fills `character_clone_meta` (home,
+  `last_clone_jump_date`, `last_station_change_date` - always written, so a
+  character with no jump clones still counts as synced),
+  `character_jump_clones` and `character_jump_clone_implants`; `implants`
+  (`esi-clones.read_implants.v1`) fills `character_implants`. Both are
+  `char_info` snapshot kinds (rare tier, stale-clear covered). Character Info's
+  detail drawer shows the active implants, the home location and each jump clone
+  with its implants; location names use `storage.get_location_names`, an
+  unresolved structure keeps its id. Phase 7 reads
+  `character_clone_meta.last_clone_jump_date`. Existing deployments apply the
+  schema file again. Original text: add the `clones` and `implants` kinds plus
   tables. Show them on Character Info. Location names come from the existing
   resolution chain.
 

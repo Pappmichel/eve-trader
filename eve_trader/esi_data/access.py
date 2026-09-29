@@ -125,6 +125,10 @@ def read_esi(data_kind: str, tool_key: str, **filters) -> list[dict]:
         rows.extend(_read_standings(tool_key, owner_id_filter))
     elif data_kind == "loyalty":
         rows.extend(_read_loyalty(tool_key, owner_id_filter))
+    elif data_kind == "clones":
+        rows.extend(_read_clones(tool_key, owner_id_filter))
+    elif data_kind == "implants":
+        rows.extend(_read_implants(tool_key, owner_id_filter))
     else:
         raise AccessorError(f"unknown data_kind {data_kind!r}")
     return rows
@@ -418,6 +422,23 @@ def _read_loyalty(tool_key: str, owner_id) -> list[dict]:
         {"owner_type": "character", "owner_id": int(r[0]), "corporation_id": int(r[1]),
          "loyalty_points": int(r[2])}
         for r in storage.load_character_loyalty_points(ids)
+    ]
+
+
+def _read_clones(tool_key: str, owner_id) -> list[dict]:
+    """One row per synced character: `meta` plus its `jump_clones`."""
+    ids = _filter_ids(_shared_owner_ids("clones", tool_key, "character"), owner_id)
+    return [
+        {"owner_type": "character", "owner_id": cid, "meta": row["meta"], "jump_clones": row["jump_clones"]}
+        for cid, row in sorted(storage.load_character_clones(ids).items())
+    ]
+
+
+def _read_implants(tool_key: str, owner_id) -> list[dict]:
+    ids = _filter_ids(_shared_owner_ids("implants", tool_key, "character"), owner_id)
+    return [
+        {"owner_type": "character", "owner_id": int(r[0]), "type_id": int(r[1])}
+        for r in storage.load_character_implants(ids)
     ]
 
 

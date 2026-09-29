@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest'
 import { CHARACTER_KINDS, KIND_SECTIONS, OWNED_DATA_KINDS, kindByKey, toolLabel } from './esiRegistry'
 
 describe('esiRegistry Character Management kinds', () => {
-  it('mirrors the backend: five char_info kinds, three of them live-only', () => {
-    for (const key of ['standings', 'loyalty', 'location', 'ship', 'online']) {
+  it('mirrors the backend: seven char_info kinds, three of them live-only', () => {
+    for (const key of ['standings', 'loyalty', 'clones', 'implants', 'location', 'ship', 'online']) {
       const kind = kindByKey(key)!
       expect(kind.consumingTools).toEqual(['char_info'])
       expect(kind.group).toBe(2)

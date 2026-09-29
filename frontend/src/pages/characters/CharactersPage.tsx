@@ -45,7 +45,7 @@ const CHARACTERS_KEYS = [
 ]
 
 const DECISION_4 =
-  'Sharing governs raw ESI snapshots only — assets, jobs, blueprints, orders, contracts, wallet, skills, skill queue, standings, and loyalty points. '
+  'Sharing governs raw ESI snapshots only — assets, jobs, blueprints, orders, contracts, wallet, skills, skill queue, standings, loyalty points, clones, and implants. '
   + 'Derived tables (realized trades, shortlists, production plans) are not filtered by it. '
   + 'Unticking Wallet does not erase last week\'s realized trades. '
   + 'Location, current ship, and online status are read live from ESI while Character Info is open and are never stored. '

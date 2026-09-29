@@ -1377,6 +1377,20 @@ class ESIClient:
         return self._get(f"/characters/{character_id}/standings/",
                          params={"datasource": "tranquility"}, auth_role=auth_role)
 
+    def character_clones(self, character_id: int, auth_role: str) -> dict:
+        """Requires esi-clones.read_clones.v1. {"home_location": {"location_id",
+        "location_type"}, "jump_clones": [{"jump_clone_id", "location_id",
+        "location_type", "implants": [type_id], "name"?}],
+        "last_clone_jump_date", "last_station_change_date"}. Snapshot-synced."""
+        return self._get(f"/characters/{character_id}/clones/",
+                         params={"datasource": "tranquility"}, auth_role=auth_role)
+
+    def character_implants(self, character_id: int, auth_role: str) -> list[int]:
+        """Requires esi-clones.read_implants.v1. [type_id] of the active
+        implants. Snapshot-synced."""
+        return self._get(f"/characters/{character_id}/implants/",
+                         params={"datasource": "tranquility"}, auth_role=auth_role)
+
     def character_loyalty_points(self, character_id: int, auth_role: str) -> list[dict]:
         """Requires esi-characters.read_loyalty.v1. [{"corporation_id",
         "loyalty_points"}]. Snapshot-synced by the loyalty fetcher."""

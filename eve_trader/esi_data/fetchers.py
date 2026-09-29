@@ -380,6 +380,37 @@ def fetch_character_loyalty(
     return {"written": len(rows)}
 
 
+def fetch_character_clones(
+    client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
+) -> dict:
+    raw = client.character_clones(owner_id, auth_role=auth_role)
+    home = raw.get("home_location") or {}
+    meta = {
+        "home_location_id": home.get("location_id"),
+        "home_location_type": home.get("location_type"),
+        "last_clone_jump_date": raw.get("last_clone_jump_date"),
+        "last_station_change_date": raw.get("last_station_change_date"),
+    }
+    jump_clones = [
+        {
+            "jump_clone_id": int(jc["jump_clone_id"]), "location_id": jc.get("location_id"),
+            "location_type": jc.get("location_type"), "name": jc.get("name"),
+            "implants": jc.get("implants") or [],
+        }
+        for jc in raw.get("jump_clones") or []
+    ]
+    storage.replace_character_clones(owner_id, meta, jump_clones)
+    return {"written": len(jump_clones)}
+
+
+def fetch_character_implants(
+    client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
+) -> dict:
+    raw = client.character_implants(owner_id, auth_role=auth_role)
+    storage.replace_character_implants(owner_id, list(raw))
+    return {"written": len(raw)}
+
+
 # ------------------------------------------------------------------- skills
 def fetch_character_skills(
     client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
@@ -631,6 +662,8 @@ FETCHERS: dict[tuple[str, str], Callable] = {
     ("wallet_balance", "corporation"): fetch_corporation_wallet_balance,
     ("skills", "character"): fetch_character_skills,
     ("skillqueue", "character"): fetch_character_skillqueue,
+    ("clones", "character"): fetch_character_clones,
+    ("implants", "character"): fetch_character_implants,
     ("standings", "character"): fetch_character_standings,
     ("loyalty", "character"): fetch_character_loyalty,
     ("contracts", "character"): fetch_character_contracts,

@@ -2785,6 +2785,7 @@ def delete_owner_snapshot_rows(
         "doctrine_contracts", "character_wallet_balances", "corp_wallet_balances",
         "character_standings", "character_loyalty_points",
         "character_skills", "character_attributes", "character_skillqueue",
+        "character_clone_meta", "character_jump_clones", "character_jump_clone_implants", "character_implants",
     }
     if table not in allowed:
         raise ValueError(f"not a per-owner snapshot table: {table}")
@@ -2792,7 +2793,8 @@ def delete_owner_snapshot_rows(
         if table in ("esi_wallet_transactions", "esi_wallet_journal",
                       "character_wallet_balances", "corp_wallet_balances",
                       "character_standings", "character_loyalty_points",
-                      "character_skills", "character_attributes", "character_skillqueue"):
+                      "character_skills", "character_attributes", "character_skillqueue",
+                      "character_clone_meta", "character_jump_clones", "character_jump_clone_implants", "character_implants"):
             col = "owner_character_id" if owner_character_id is not None else "owner_corporation_id"
             oid = owner_character_id if owner_character_id is not None else owner_corporation_id
             if oid is None:
@@ -3489,6 +3491,107 @@ def load_character_loyalty_points(character_ids: list[int]) -> list[tuple]:
             "SELECT owner_character_id, corporation_id, loyalty_points FROM character_loyalty_points "
             f"WHERE owner_character_id IN ({placeholders}) "
             "ORDER BY owner_character_id, loyalty_points DESC, corporation_id",
+            character_ids,
+        ).fetchall()
+
+
+# ------------------------------------------- Character Management: clones (phase 5c)
+def replace_character_clones(
+    character_id: int, meta: dict, jump_clones: list[dict],
+) -> None:
+    """Replaces one character's clone snapshot. `meta`: home_location_id,
+    home_location_type, last_clone_jump_date, last_station_change_date (any may
+    be None); `jump_clones`: [{jump_clone_id, location_id, location_type, name,
+    implants: [type_id]}]. The meta row is always written - it is what marks
+    the character as synced even when it has no home or no jump clones."""
+    with connect() as conn:
+        for table in ("character_clone_meta", "character_jump_clones", "character_jump_clone_implants"):
+            conn.execute(f"DELETE FROM {table} WHERE owner_character_id = ?", (character_id,))
+        conn.execute(
+            "INSERT INTO character_clone_meta (owner_character_id, home_location_id, home_location_type, "
+            "last_clone_jump_date, last_station_change_date, synced_at) VALUES (?,?,?,?,?, now())",
+            (character_id, meta.get("home_location_id"), meta.get("home_location_type"),
+             meta.get("last_clone_jump_date"), meta.get("last_station_change_date")),
+        )
+        for jc in jump_clones:
+            conn.execute(
+                "INSERT INTO character_jump_clones (owner_character_id, jump_clone_id, location_id, "
+                "location_type, name, synced_at) VALUES (?,?,?,?,?, now())",
+                (character_id, jc["jump_clone_id"], jc.get("location_id"), jc.get("location_type"), jc.get("name")),
+            )
+            implants = sorted(set(int(t) for t in jc.get("implants") or []))
+            if implants:
+                conn.executemany(
+                    "INSERT INTO character_jump_clone_implants (owner_character_id, jump_clone_id, type_id, synced_at) "
+                    "VALUES (?,?,?, now())",
+                    [(character_id, jc["jump_clone_id"], t) for t in implants],
+                )
+
+
+def load_character_clones(character_ids: list[int]) -> dict[int, dict]:
+    """`{character_id: {"meta": {...}, "jump_clones": [{..., "implants": [type_id]}]}}`
+    for characters that have a synced meta row (empty list -> {}, never
+    unfiltered)."""
+    if not character_ids:
+        return {}
+    ph = ",".join("?" * len(character_ids))
+    out: dict[int, dict] = {}
+    with connect() as conn:
+        for r in conn.execute(
+            "SELECT owner_character_id, home_location_id, home_location_type, last_clone_jump_date, "
+            f"last_station_change_date FROM character_clone_meta WHERE owner_character_id IN ({ph})",
+            character_ids,
+        ).fetchall():
+            out[int(r[0])] = {
+                "meta": {
+                    "home_location_id": r[1], "home_location_type": r[2],
+                    "last_clone_jump_date": r[3], "last_station_change_date": r[4],
+                },
+                "jump_clones": [],
+            }
+        by_clone: dict[tuple[int, int], dict] = {}
+        for r in conn.execute(
+            "SELECT owner_character_id, jump_clone_id, location_id, location_type, name "
+            f"FROM character_jump_clones WHERE owner_character_id IN ({ph}) "
+            "ORDER BY owner_character_id, jump_clone_id",
+            character_ids,
+        ).fetchall():
+            jc = {"jump_clone_id": int(r[1]), "location_id": r[2], "location_type": r[3], "name": r[4], "implants": []}
+            by_clone[(int(r[0]), int(r[1]))] = jc
+            if int(r[0]) in out:
+                out[int(r[0])]["jump_clones"].append(jc)
+        for r in conn.execute(
+            "SELECT owner_character_id, jump_clone_id, type_id FROM character_jump_clone_implants "
+            f"WHERE owner_character_id IN ({ph}) ORDER BY owner_character_id, jump_clone_id, type_id",
+            character_ids,
+        ).fetchall():
+            jc = by_clone.get((int(r[0]), int(r[1])))
+            if jc is not None:
+                jc["implants"].append(int(r[2]))
+    return out
+
+
+def replace_character_implants(character_id: int, type_ids: list[int]) -> None:
+    """Replaces one character's active implants."""
+    with connect() as conn:
+        conn.execute("DELETE FROM character_implants WHERE owner_character_id = ?", (character_id,))
+        unique = sorted(set(int(t) for t in type_ids))
+        if unique:
+            conn.executemany(
+                "INSERT INTO character_implants (owner_character_id, type_id, synced_at) VALUES (?,?, now())",
+                [(character_id, t) for t in unique],
+            )
+
+
+def load_character_implants(character_ids: list[int]) -> list[tuple]:
+    """`(owner_character_id, type_id)` (empty list -> empty result)."""
+    if not character_ids:
+        return []
+    ph = ",".join("?" * len(character_ids))
+    with connect() as conn:
+        return conn.execute(
+            f"SELECT owner_character_id, type_id FROM character_implants WHERE owner_character_id IN ({ph}) "
+            "ORDER BY owner_character_id, type_id",
             character_ids,
         ).fetchall()
 

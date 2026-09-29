@@ -127,4 +127,40 @@ describe('Character Info page', () => {
     expect(screen.getByText('12,345 LP')).toBeInTheDocument()
     expect(charInfoApi.detail).toHaveBeenCalledWith(1)
   })
+
+  it('shows implants, the home location and jump clones with their implants', async () => {
+    vi.mocked(charInfoApi.overview).mockResolvedValue({ characters: [character()] })
+    vi.mocked(charInfoApi.detail).mockResolvedValue(character({
+      implants: { state: 'ok', value: [{ type_id: 9941, name: 'Genolution Core Augmentation CA-1' }] },
+      clones: {
+        state: 'ok',
+        value: {
+          home: { location_id: 60003760, location_type: 'station', location_name: 'Jita IV - Moon 4' },
+          last_clone_jump_date: null,
+          last_station_change_date: null,
+          jump_clones: [
+            {
+              jump_clone_id: 7, name: null, location_id: 60008494, location_type: 'station',
+              location_name: 'Amarr VIII', implants: [{ type_id: 9899, name: 'Ocular Filter' }],
+            },
+            {
+              jump_clone_id: 8, name: 'Mining', location_id: 1035466617946, location_type: 'structure',
+              location_name: null, implants: [],
+            },
+          ],
+        },
+      },
+    }))
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText('Alice')
+    await user.click(screen.getByRole('button', { name: 'Details' }))
+
+    expect(await screen.findByText('Genolution Core Augmentation CA-1')).toBeInTheDocument()
+    expect(screen.getByText(/Home: Jita IV - Moon 4/)).toBeInTheDocument()
+    expect(screen.getByText('Amarr VIII')).toBeInTheDocument()
+    expect(screen.getByText('Ocular Filter')).toBeInTheDocument()
+    expect(screen.getByText(/Mining – structure #1035466617946/)).toBeInTheDocument()   // unresolved keeps its id
+    expect(screen.getByText('No implants.')).toBeInTheDocument()
+  })
 })

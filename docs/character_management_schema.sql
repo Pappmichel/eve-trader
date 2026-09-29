@@ -269,3 +269,73 @@ CREATE POLICY tenant_isolation ON mail_lists
     USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 GRANT SELECT, INSERT, UPDATE, DELETE ON mail_lists TO eve_trader_app;
+
+-- ------------------------------------------------------------------ phase 5c
+-- Clones and implants. `clones` fills the first three tables (home location,
+-- jump clones and the implants sitting in each jump clone), `implants` the
+-- active implants. Character-partitioned snapshots, replaced per owner on each
+-- successful sync. character_clone_meta also carries last_clone_jump_date,
+-- which phase 7 (jump timers) reads.
+
+CREATE TABLE IF NOT EXISTS character_clone_meta (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    owner_character_id BIGINT NOT NULL,
+    home_location_id BIGINT,
+    home_location_type TEXT,
+    last_clone_jump_date TIMESTAMPTZ,
+    last_station_change_date TIMESTAMPTZ,
+    synced_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, owner_character_id)
+);
+ALTER TABLE character_clone_meta ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON character_clone_meta;
+CREATE POLICY tenant_isolation ON character_clone_meta
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON character_clone_meta TO eve_trader_app;
+
+CREATE TABLE IF NOT EXISTS character_jump_clones (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    owner_character_id BIGINT NOT NULL,
+    jump_clone_id BIGINT NOT NULL,
+    location_id BIGINT,
+    location_type TEXT,
+    name TEXT,
+    synced_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, owner_character_id, jump_clone_id)
+);
+ALTER TABLE character_jump_clones ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON character_jump_clones;
+CREATE POLICY tenant_isolation ON character_jump_clones
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON character_jump_clones TO eve_trader_app;
+
+CREATE TABLE IF NOT EXISTS character_jump_clone_implants (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    owner_character_id BIGINT NOT NULL,
+    jump_clone_id BIGINT NOT NULL,
+    type_id INTEGER NOT NULL,
+    synced_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, owner_character_id, jump_clone_id, type_id)
+);
+ALTER TABLE character_jump_clone_implants ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON character_jump_clone_implants;
+CREATE POLICY tenant_isolation ON character_jump_clone_implants
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON character_jump_clone_implants TO eve_trader_app;
+
+CREATE TABLE IF NOT EXISTS character_implants (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    owner_character_id BIGINT NOT NULL,
+    type_id INTEGER NOT NULL,
+    synced_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, owner_character_id, type_id)
+);
+ALTER TABLE character_implants ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON character_implants;
+CREATE POLICY tenant_isolation ON character_implants
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON character_implants TO eve_trader_app;

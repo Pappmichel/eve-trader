@@ -98,6 +98,14 @@ export const OWNED_DATA_KINDS: readonly OwnedDataKind[] = [
     consumingTools: ['char_info'], corpRoles: [],
   },
   {
+    key: 'clones', section: 'character', label: 'Clones', group: 2,
+    consumingTools: ['char_info'], corpRoles: [],
+  },
+  {
+    key: 'implants', section: 'character', label: 'Implants', group: 2,
+    consumingTools: ['char_info'], corpRoles: [],
+  },
+  {
     key: 'location', section: 'character', label: 'Location', group: 2, liveOnly: true,
     consumingTools: ['char_info'], corpRoles: [],
   },

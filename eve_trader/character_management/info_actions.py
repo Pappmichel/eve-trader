@@ -153,6 +153,8 @@ def _character_summary(
     if detail:
         out["standings"] = _standings_field(cid, client, tokens, freshness)
         out["loyalty_points"] = _loyalty_field(cid, client, tokens, freshness)
+        out["clones"] = _clones_field(cid, tokens, freshness)
+        out["implants"] = _implants_field(cid, tokens, freshness)
         out["corporation_history"] = _corp_history(cid, client)
     return out
 
@@ -185,6 +187,63 @@ def _loyalty_field(cid: int, client: ESIClient, tokens: TokenManager, freshness:
             for r in rows
         ]
     return _snapshot("loyalty", cid, tokens, freshness, shape)
+
+
+def _type_names(type_ids) -> dict[int, str]:
+    ids = sorted({int(t) for t in type_ids})
+    if not ids:
+        return {}
+    return {tid: row[2] for tid, row in storage.get_sde_types_bulk(ids).items() if row}
+
+
+def _implant_list(type_ids, names: dict[int, str]) -> list[dict]:
+    return sorted(
+        ({"type_id": int(t), "name": names.get(int(t)) or f"Type {t}"} for t in type_ids),
+        key=lambda i: i["name"],
+    )
+
+
+def _clones_field(cid: int, tokens: TokenManager, freshness: dict) -> dict:
+    """Home location plus jump clones with their implants. Location names come
+    from the same lookup chain as everything else (SDE stations, global and
+    per-tenant structure-name caches); an unresolved one keeps its id."""
+    def shape(rows: list[dict]) -> dict:
+        row = rows[0] if rows else None
+        if row is None:
+            return {"home": None, "jump_clones": [], "last_clone_jump_date": None, "last_station_change_date": None}
+        meta, clones = row["meta"], row["jump_clones"]
+        loc_ids = [c["location_id"] for c in clones if c["location_id"]]
+        if meta["home_location_id"]:
+            loc_ids.append(meta["home_location_id"])
+        loc_names = storage.get_location_names([int(i) for i in loc_ids]) if loc_ids else {}
+        names = _type_names(t for c in clones for t in c["implants"])
+        home = None
+        if meta["home_location_id"]:
+            home = {
+                "location_id": meta["home_location_id"], "location_type": meta["home_location_type"],
+                "location_name": loc_names.get(int(meta["home_location_id"])),
+            }
+        return {
+            "home": home,
+            "jump_clones": [
+                {
+                    "jump_clone_id": c["jump_clone_id"], "name": c["name"],
+                    "location_id": c["location_id"], "location_type": c["location_type"],
+                    "location_name": loc_names.get(int(c["location_id"])) if c["location_id"] else None,
+                    "implants": _implant_list(c["implants"], names),
+                }
+                for c in clones
+            ],
+            "last_clone_jump_date": meta["last_clone_jump_date"],
+            "last_station_change_date": meta["last_station_change_date"],
+        }
+    return _snapshot("clones", cid, tokens, freshness, shape)
+
+
+def _implants_field(cid: int, tokens: TokenManager, freshness: dict) -> dict:
+    def shape(rows: list[dict]) -> list[dict]:
+        return _implant_list([r["type_id"] for r in rows], _type_names(r["type_id"] for r in rows))
+    return _snapshot("implants", cid, tokens, freshness, shape)
 
 
 def _corp_history(cid: int, client: ESIClient) -> list[dict]:
@@ -245,7 +304,7 @@ def do_character_detail(character_id: int) -> dict:
 
 def do_sync_char_info() -> dict:
     """Refresh the snapshot kinds shared with Character Info (wallet
-    balance, standings, loyalty points). Live kinds need no sync.
+    balance, standings, loyalty points, clones, implants). Live kinds need no sync.
 
     `in_flight` lists owners another pass is already syncing - the UI must
     say "sync already running" for those, not treat them as success or
