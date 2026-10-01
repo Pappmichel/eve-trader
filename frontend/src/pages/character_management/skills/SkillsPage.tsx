@@ -94,7 +94,7 @@ function OverviewTab({ rows, onOpen }: { rows: SkillsOverviewRow[]; onOpen: (cha
       ),
     },
     {
-      header: 'Attributes', id: 'attributes', size: 260, enableSorting: false,
+      header: 'Attributes', id: 'attributes', size: 340, enableSorting: false,
       cell: (i) => <FieldState field={i.row.original.summary}>{(s: SkillsSummary) => <Attributes attrs={s.attributes} />}</FieldState>,
     },
     {

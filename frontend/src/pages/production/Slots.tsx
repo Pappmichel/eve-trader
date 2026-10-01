@@ -51,7 +51,7 @@ export default function Slots() {
   const slotColumn = (jt: string, kind: 'total' | 'used' | 'free', label: string): ColumnDef<PivotedRow, any> => ({
     header: `${jt} ${label}`,
     id: `${jt}-${kind}`,
-    size: 110,
+    size: 160,
     accessorFn: (r) => r.byJobType[jt]?.[kind] ?? null,
     cell: (i) => dim(i.row.original, i.getValue() === null ? '–' : qty(i.getValue() as number)),
   })

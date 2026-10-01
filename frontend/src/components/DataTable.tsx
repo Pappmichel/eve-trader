@@ -156,7 +156,7 @@ const exactFilter: FilterFn<any> = (row, columnId, value) => String(row.getValue
 
 // Header row + a little slack: tables with few rows shrink to their content
 // instead of reserving `maxHeight`.
-const TABLE_CHROME_HEIGHT = 48
+const TABLE_CHROME_HEIGHT = 64
 const CHANGE_FLASH_MS = 2500
 const KEY_PAGE_STEP = 10
 
