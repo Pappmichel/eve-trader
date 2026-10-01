@@ -166,7 +166,7 @@ describe('DataTable', () => {
 describe('DataTable row click', () => {
   it('does nothing and is not marked clickable when onRowClick is not set', async () => {
     const user = userEvent.setup()
-    renderTable()
+    renderTable({ rowDetail: false })
     await user.click(bodyRows()[0])
     expect(bodyRows()[0]).not.toHaveAttribute('data-clickable')
   })
@@ -239,7 +239,7 @@ describe('DataTable keyboard navigation', () => {
   it('moves a cursor with arrows, opens with Enter and focuses the filter with "/"', async () => {
     const user = userEvent.setup()
     const onRowClick = vi.fn()
-    const { container } = renderTable({ onRowClick, getRowId: (r) => r.item })
+    const { container } = renderTable({ onRowClick, getRowId: (r) => r.item, rowDetail: false })
     const wrapper = container.querySelector('[tabindex="0"]') as HTMLElement
     wrapper.focus()
 
@@ -502,5 +502,58 @@ describe('DataTable column resizing', () => {
     expect(colWidths()[0]).toBe('160px')
     await user.click(await screen.findByText('Wide item'))
     expect(colWidths()[0]).toBe('150px')
+  })
+})
+
+describe('DataTable defaults (same behaviour on every table)', () => {
+  it('opens the row detail drawer by default and not with rowDetail={false}', async () => {
+    const user = userEvent.setup()
+    const { unmount } = renderTable()
+    await user.click(screen.getByText('Mid Ore'))
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    unmount()
+
+    renderTable({ rowDetail: false })
+    await user.click(screen.getByText('Mid Ore'))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('persists order and widths under an automatic key when no tableId is given', () => {
+    renderTable()
+    fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize column Item' }), { key: 'ArrowRight' })
+    const keys = Object.keys(localStorage).filter((k) => k.startsWith('datatable:auto:'))
+    expect(keys.some((k) => k.endsWith(':sizes'))).toBe(true)
+    expect(screen.getByRole('button', { name: /Views/ })).toBeInTheDocument()
+  })
+
+  it('does not share the automatic key between tables with different columns', () => {
+    const { unmount } = renderTable()
+    fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize column Item' }), { key: 'ArrowRight' })
+    unmount()
+    const other: ColumnDef<Row, any>[] = [{ header: 'Other', accessorKey: 'item' }]
+    render(<MantineProvider><DataTable data={rows} columns={other} /></MantineProvider>)
+    expect(colWidths()).toEqual(['140px'])
+  })
+
+  it('applies the name/category defaults, and an explicit meta value overrides them', async () => {
+    vi.resetModules()
+    vi.stubGlobal('isSecureContext', true)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: vi.fn() }, configurable: true })
+    const { DataTable: Fresh, columnDefaults } = await import('./DataTable')
+    expect(columnDefaults('Item', 'item')).toEqual({ copyable: true, filterable: false })
+    expect(columnDefaults('Type', 'type_name')).toEqual({ copyable: true, filterable: false })
+    expect(columnDefaults('Category', 'category')).toEqual({ copyable: false, filterable: true })
+    expect(columnDefaults('Score', 'score')).toEqual({ copyable: false, filterable: false })
+
+    type R = { item: string; category: string }
+    const data: R[] = [{ item: 'A', category: 'Ship' }, { item: 'B', category: 'Drone' }]
+    const cols: ColumnDef<R, any>[] = [
+      { header: 'Item', accessorKey: 'item' },
+      { header: 'Category', accessorKey: 'category', meta: { filterable: false } },
+    ]
+    render(<MantineProvider><Fresh data={data} columns={cols} /></MantineProvider>)
+    expect(screen.getAllByRole('button', { name: /copy value/i })).toHaveLength(2) // item column, by default
+    expect(screen.queryByRole('button', { name: /Filter Category/ })).not.toBeInTheDocument() // opted out
+    vi.unstubAllGlobals()
   })
 })

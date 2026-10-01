@@ -145,6 +145,7 @@ interface DataTableProps<T> {
   // its formatted value - including columns hidden in the table. Zero per-page
   // code; pass `title` to override the default (the first column's value).
   // Works alongside `onRowClick` (both run).
+  // On by default; pass `rowDetail={false}` where a page opens its own detail view.
   rowDetail?: boolean | { title?: (row: T) => ReactNode }
 }
 
@@ -185,6 +186,36 @@ const SKELETON_ROWS = 8
 const canHover = typeof window !== 'undefined'
   && typeof window.matchMedia === 'function'
   && window.matchMedia('(pointer: fine)').matches
+
+// Defaults so every table behaves the same without per-page wiring. A column's
+// own `meta.copyable` / `meta.filterable` (true or false) always wins.
+const COPY_HEADER = /^(item|item name|name|ship|product|blueprint|material|mineral|skill|fitting|character|corporation|location|system|station)$/i
+const FILTER_HEADER = /^(category|status|decision|source|group|activity|state|recommendation|market|kind|role|type)$/i
+
+export function columnDefaults(header: unknown, accessorKey: unknown): { copyable: boolean; filterable: boolean } {
+  const label = typeof header === 'string' ? header.trim() : ''
+  const key = typeof accessorKey === 'string' ? accessorKey : ''
+  const nameLike = /(^|_)name$/.test(key)
+  return {
+    copyable: COPY_HEADER.test(label) || nameLike,
+    // "Type" is a name column when it is backed by *_name (e.g. type_name).
+    filterable: FILTER_HEADER.test(label) && !nameLike,
+  }
+}
+
+function hashString(value: string): string {
+  let h = 5381
+  for (let i = 0; i < value.length; i++) h = ((h << 5) + h + value.charCodeAt(i)) | 0
+  return (h >>> 0).toString(36)
+}
+
+function autoTableId<T>(columns: ColumnDef<T, any>[]): string {
+  const signature = columns
+    .map((c) => (typeof c.header === 'string' ? c.header : ((c as { id?: string }).id ?? (c as { accessorKey?: string }).accessorKey ?? '')))
+    .join('|')
+  const path = typeof window !== 'undefined' ? window.location.pathname : ''
+  return `auto:${path}:${hashString(signature)}`
+}
 
 const canCopy = typeof window !== 'undefined'
   && window.isSecureContext !== false
@@ -228,15 +259,19 @@ export function DataTable<T>({
   isError = false,
   errorMessage,
   onRetry,
-  tableId,
+  tableId: tableIdProp,
   exportFilename = 'export',
   getRowId,
   dataUpdatedAt,
   onRowClick,
   activeRowId,
   extraViewState,
-  rowDetail,
+  rowDetail = true,
 }: DataTableProps<T>) {
+  // Every table remembers its column layout and saved views. Without an
+  // explicit `tableId` the key is derived from the page path plus the column
+  // headers, so two different tables never share state by accident.
+  const tableId = tableIdProp ?? autoTableId(columns)
   const [sorting, setSorting] = useState<SortingState>([])
   const [globalFilter, setGlobalFilter] = useState('')
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(() => loadPersistedVisibility(tableId))
@@ -812,15 +847,20 @@ export function DataTable<T>({
                     >
                       {row.getVisibleCells()
                         .map((cell) => {
-                          const copyText = cell.column.columnDef.meta?.copyable && canCopy
-                            ? cellText(cell.getValue())
+                          const colMeta = cell.column.columnDef.meta
+                          const defaults = columnDefaults(
+                            cell.column.columnDef.header, (cell.column.columnDef as { accessorKey?: unknown }).accessorKey,
+                          )
+                          const cellValue = cell.getValue()
+                          const copyText = (colMeta?.copyable ?? defaults.copyable) && canCopy && typeof cellValue === 'string'
+                            ? cellText(cellValue)
                             : undefined
                           const hoverContent = canHover ? cell.column.columnDef.meta?.hoverCard : undefined
                           const content = (
                             <>
                               {flexRender(cell.column.columnDef.cell, cell.getContext())}
                               {copyText !== undefined && <CopyCell value={copyText} />}
-                              {cell.column.columnDef.meta?.filterable && cell.getValue() != null && (
+                              {(colMeta?.filterable ?? defaults.filterable) && typeof cellValue === 'string' && cellValue !== '' && (
                                 <ActionIcon
                                   className="et-copy" size="xs" variant="subtle" color="gray"
                                   aria-label={`Filter ${columnLabel(cell.column.columnDef.header, cell.column.id)} = ${String(cell.getValue())}`}

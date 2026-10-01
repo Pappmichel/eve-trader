@@ -261,7 +261,7 @@ export default function Shortlist() {
           data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt}
           tableId="trading-shortlist" exportFilename="trading-shortlist"
           getRowId={(r) => String(r.item_id)}
-          onRowClick={openItem} activeRowId={openItemId ?? undefined}
+          rowDetail={false} onRowClick={openItem} activeRowId={openItemId ?? undefined}
           extraViewState={{
             value: { selCategories, selDecisions, selMeta, search, minMarginPct },
             apply: (v) => {
