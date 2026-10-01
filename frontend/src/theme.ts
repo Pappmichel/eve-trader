@@ -50,6 +50,26 @@ export const theme = createTheme({
   components: {
     Table: {
       defaultProps: { highlightOnHover: true, verticalSpacing: 'xs', fontFamily: 'JetBrains Mono, monospace' },
+      styles: {
+        th: {
+          color: COLORS.textDim,
+          fontFamily: 'Rajdhani, sans-serif',
+          fontSize: 13,
+          letterSpacing: '0.06em',
+          textTransform: 'uppercase',
+          borderBottom: `1px solid ${COLORS.border}`,
+          background: COLORS.surface,
+        },
+        td: { borderBottom: `1px solid ${COLORS.border}` },
+      },
+    },
+    Badge: {
+      defaultProps: { radius: 'xs', variant: 'light' },
+      styles: { root: { fontFamily: 'Rajdhani, sans-serif', letterSpacing: '0.05em', fontWeight: 700 } },
+    },
+    Button: {
+      defaultProps: { radius: 'sm' },
+      styles: { root: { fontFamily: 'Rajdhani, sans-serif', letterSpacing: '0.05em', fontWeight: 700 } },
     },
   },
 })
