@@ -18,7 +18,7 @@ export default function ShoppingList() {
 
   const columns = useMemo<ColumnDef<ShoppingListRow, any>[]>(() => [
     { header: 'Type', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
-    { header: 'Shortfall', accessorKey: 'shortfall', size: 110, cell: (i) => qty(i.getValue()) },
+    { header: 'Shortfall', accessorKey: 'shortfall', size: 110, cell: (i) => qty(i.getValue()), meta: { exportRole: 'qty' } },
     { header: 'Build', accessorKey: 'build_cost', size: 130, cell: (i) => (i.getValue() != null ? isk(i.getValue()) : '–') },
     { header: 'C-J', accessorKey: 'cj_price', size: 130, cell: (i) => (i.getValue() != null ? isk(i.getValue()) : '–') },
     {

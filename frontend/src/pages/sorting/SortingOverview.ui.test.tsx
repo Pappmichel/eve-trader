@@ -51,7 +51,7 @@ describe('SortingOverview table chrome', () => {
     expect(await screen.findByText('Mexallon')).toBeInTheDocument()
     expect(screen.getByPlaceholderText('Filter...')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Columns' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Export CSV' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Export table' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Item/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Wanted by/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /By source/ })).toBeInTheDocument()

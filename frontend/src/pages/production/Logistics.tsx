@@ -165,7 +165,7 @@ export default function Logistics() {
     { header: 'Needed', accessorKey: 'needed', size: 110, cell: (i) => qty(i.getValue()) },
     { header: 'Available on Site', accessorKey: 'available', size: 140, cell: (i) => qty(i.getValue()) },
     {
-      header: 'Missing', accessorKey: 'missing', size: 100,
+      header: 'Missing', accessorKey: 'missing', size: 100, meta: { exportRole: 'qty' },
       cell: (i) => <Text c={i.getValue() > 0 ? 'warn' : 'accent'} fw={i.getValue() > 0 ? 600 : 400}>{qty(i.getValue())}</Text>,
     },
     { header: 'Volume', accessorKey: 'volume_m3', size: 100, cell: (i) => volume(i.getValue()) },

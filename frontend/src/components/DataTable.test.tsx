@@ -99,10 +99,11 @@ describe('DataTable', () => {
     URL.revokeObjectURL = vi.fn()
 
     renderTable({ exportFilename: 'test-export' })
-    await user.click(screen.getByRole('button', { name: 'Export CSV' }))
+    await user.click(screen.getByRole('button', { name: 'Export table' }))
+    await user.click(await screen.findByRole('menuitem', { name: 'CSV' }))
 
     expect(csv).toBeDefined()
-    expect(csv!.split('\r\n')[0]).toBe('Item,Amount')
+    expect(csv!.split('\r\n')[0]).toBe('"Item","Amount"')
     expect(csv).toContain('"Zebra Ore","5"')
 
     globalThis.Blob = OriginalBlob
@@ -554,6 +555,80 @@ describe('DataTable defaults (same behaviour on every table)', () => {
     render(<MantineProvider><Fresh data={data} columns={cols} /></MantineProvider>)
     expect(screen.getAllByRole('button', { name: /copy value/i })).toHaveLength(2) // item column, by default
     expect(screen.queryByRole('button', { name: /Filter Category/ })).not.toBeInTheDocument() // opted out
+    vi.unstubAllGlobals()
+  })
+})
+
+describe('DataTable export menu', () => {
+  it('offers the download formats, and the clipboard formats only with a clipboard', async () => {
+    const user = userEvent.setup()
+    renderTable()
+    await user.click(screen.getByRole('button', { name: 'Export table' }))
+    for (const name of ['CSV', 'CSV for German Excel (; and decimal comma)', 'Excel (.xlsx)', 'JSON']) {
+      expect(await screen.findByRole('menuitem', { name })).toBeInTheDocument()
+    }
+    // jsdom has no navigator.clipboard, so the copy entries are hidden here.
+    expect(screen.queryByRole('menuitem', { name: /Markdown/ })).not.toBeInTheDocument()
+  })
+
+  it('copies a tab-separated table and an in-game list from the filtered rows', async () => {
+    vi.resetModules()
+    vi.stubGlobal('isSecureContext', true)
+    // userEvent.setup() installs its own navigator.clipboard stub, so set it up
+    // first and spy on that one instead of replacing it.
+    const user = userEvent.setup()
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+    const { DataTable: Fresh } = await import('./DataTable')
+    type R = { item: string; quantity: number }
+    const data: R[] = [{ item: 'Tritanium', quantity: 1500 }, { item: 'Pyerite', quantity: 0 }, { item: 'Mexallon', quantity: 20 }]
+    const cols: ColumnDef<R, any>[] = [
+      { header: 'Item', accessorKey: 'item' },
+      { header: 'Quantity', accessorKey: 'quantity' },
+    ]
+    render(<MantineProvider><Fresh data={data} columns={cols} /></MantineProvider>)
+
+    await user.click(screen.getByRole('button', { name: 'Export table' }))
+    await user.click(await screen.findByRole('menuitem', { name: /Table \(paste into Excel/ }))
+    expect(writeText).toHaveBeenLastCalledWith('Item\tQuantity\nTritanium\t1500\nPyerite\t0\nMexallon\t20')
+
+    await user.click(screen.getByRole('button', { name: 'Export table' }))
+    await user.click(await screen.findByRole('menuitem', { name: /In-game list/ }))
+    expect(writeText).toHaveBeenLastCalledWith('Tritanium\t1500\nMexallon\t20') // zero quantity skipped
+    vi.unstubAllGlobals()
+  })
+
+  it('has no in-game list entry when the table has no item + quantity pair', async () => {
+    vi.resetModules()
+    vi.stubGlobal('isSecureContext', true)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: vi.fn() }, configurable: true })
+    const { DataTable: Fresh } = await import('./DataTable')
+    const user = userEvent.setup()
+    render(<MantineProvider><Fresh data={rows} columns={[{ header: 'Item', accessorKey: 'item' }, { header: 'Score', accessorKey: 'amount' }]} /></MantineProvider>)
+    await user.click(screen.getByRole('button', { name: 'Export table' }))
+    expect(await screen.findByRole('menuitem', { name: /Markdown/ })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: /In-game list/ })).not.toBeInTheDocument()
+    vi.unstubAllGlobals()
+  })
+})
+
+describe('DataTable in-game list roles', () => {
+  it('an explicit meta.exportRole wins over the header guess', async () => {
+    vi.resetModules()
+    vi.stubGlobal('isSecureContext', true)
+    const user = userEvent.setup()
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+    const { DataTable: Fresh } = await import('./DataTable')
+    type R = { item: string; needed: number; missing: number }
+    const data: R[] = [{ item: 'Tritanium', needed: 100, missing: 40 }]
+    const cols: ColumnDef<R, any>[] = [
+      { header: 'Item', accessorKey: 'item' },
+      { header: 'Needed', accessorKey: 'needed' },
+      { header: 'Missing', accessorKey: 'missing', meta: { exportRole: 'qty' } },
+    ]
+    render(<MantineProvider><Fresh data={data} columns={cols} /></MantineProvider>)
+    await user.click(screen.getByRole('button', { name: 'Export table' }))
+    await user.click(await screen.findByRole('menuitem', { name: /In-game list/ }))
+    expect(writeText).toHaveBeenLastCalledWith('Tritanium\t40')
     vi.unstubAllGlobals()
   })
 })

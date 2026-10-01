@@ -18,6 +18,10 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon, Stack, CopyButton, HoverCard, Popover, UnstyledButton, Drawer, Badge, Tooltip } from '@mantine/core'
 import { IconSearch, IconDownload, IconColumns, IconX, IconAlertTriangle, IconRefresh, IconCopy, IconCheck, IconChevronUp, IconChevronDown, IconBookmark, IconTrash, IconFilter } from '@tabler/icons-react'
 import { relativeTime } from '../format'
+import { notify } from '../notify'
+import {
+  firstRolesOnly, hasGameList, inferRole, toCsv, toGameList, toJson, toMarkdown, toTsv, toXlsxBlob, type ExportMatrix,
+} from './dataTableExport'
 import {
   KEYBOARD_RESIZE_STEP, MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH,
   loadColumnOrder, loadColumnSizes, loadViews, moveColumn, moveColumnTo, saveColumnOrder, saveColumnSizes, saveViews, upsertView,
@@ -61,6 +65,9 @@ declare module '@tanstack/react-table' {
     detail?: boolean
     // Tooltip shown on the column header (explains an abbreviation or estimate).
     headerHint?: string
+    // Marks the item-name / quantity column for the "In-game list" export when the
+    // header text alone is not enough to tell (otherwise inferred from the header).
+    exportRole?: 'item' | 'qty'
   }
 }
 
@@ -237,13 +244,6 @@ function columnLabel(header: unknown, id: string): string {
   return typeof header === 'string' ? header : id
 }
 
-// RFC4126-ish CSV quoting - always quotes (simplest correct approach: never
-// have to special-case which fields *need* it) and doubles internal quotes.
-function csvField(value: unknown): string {
-  const text = cellText(value) ?? ''
-  return `"${text.replace(/"/g, '""')}"`
-}
-
 function loadPersistedVisibility(tableId: string | undefined): VisibilityState {
   if (!tableId) return {}
   try {
@@ -265,7 +265,7 @@ export function DataTable<T>({
   errorMessage,
   onRetry,
   tableId: tableIdProp,
-  exportFilename = 'export',
+  exportFilename: exportFilenameProp,
   getRowId,
   dataUpdatedAt,
   onRowClick,
@@ -277,6 +277,10 @@ export function DataTable<T>({
   // explicit `tableId` the key is derived from the page path plus the column
   // headers, so two different tables never share state by accident.
   const tableId = tableIdProp ?? autoTableId(columns)
+  // Download name: the page's own name (or the page path), plus today's date.
+  const exportFilename = `${exportFilenameProp
+    ?? (typeof window !== 'undefined' ? window.location.pathname.replace(/^\/+|\/+$/g, '').replace(/\//g, '-') : '')
+    ?? ''}`.replace(/[^\w.-]+/g, '-') || 'export'
   const [sorting, setSorting] = useState<SortingState>([])
   const [globalFilter, setGlobalFilter] = useState('')
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(() => loadPersistedVisibility(tableId))
@@ -496,24 +500,77 @@ export function DataTable<T>({
     setColumnOrder(moveColumn(table.getAllLeafColumns().map((c) => c.id), id, delta))
   }
 
-  const exportCsv = () => {
-    // Deliberately table.getVisibleLeafColumns() (the user's real Columns-menu
-    // choice), not the mobile-filtered `leafColumns` below - exporting data
-    // shouldn't silently drop columns just because the viewport is narrow
-    // right now.
-    const exportColumns = table.getVisibleLeafColumns()
-    const header = exportColumns.map((col) => columnLabel(col.columnDef.header, col.id)).join(',')
-    const body = rows
-      .map((row) => row.getVisibleCells().map((cell) => csvField(cell.getValue())).join(','))
-      .join('\r\n')
-    const blob = new Blob([`${header}\r\n${body}`], { type: 'text/csv;charset=utf-8;' })
+  // Export matrix: the visible columns in their current order, over the rows as
+  // currently filtered and sorted. Raw values (not the formatted display text), so
+  // "1234567" rather than "1,234,567 ISK". Header-less (action) columns are left out.
+  const buildExportMatrix = (): ExportMatrix & { visibleCount: number } => {
+    const exportColumns = table.getVisibleLeafColumns().filter((col) => col.columnDef.header !== '')
+    // An explicit `meta.exportRole` wins over the header-based guess for that role.
+    const allColumns = table.getAllLeafColumns()
+    const explicit = new Set(allColumns.map((col) => col.columnDef.meta?.exportRole).filter(Boolean))
+    const roles = firstRolesOnly(allColumns.map((col) => {
+      const declared = col.columnDef.meta?.exportRole
+      const guessed = inferRole(col.columnDef.header, (col.columnDef as { accessorKey?: unknown }).accessorKey)
+      return { id: col.id, role: declared ?? (guessed && !explicit.has(guessed) ? guessed : undefined) }
+    }))
+    const roleById = new Map(roles.map((r) => [r.id, r.role]))
+    const gameColumns = table.getAllLeafColumns().filter((col) => roleById.get(col.id))
+    // The in-game list needs its item/quantity columns even when they are hidden in the table.
+    const columns = [...exportColumns]
+    for (const col of gameColumns) if (!columns.includes(col)) columns.push(col)
+    return {
+      columns: columns.map((col) => ({
+        id: col.id, label: columnLabel(col.columnDef.header, col.id), role: roleById.get(col.id),
+      })),
+      rows: rows.map((row) => columns.map((col) => row.getValue(col.id))),
+      visibleCount: exportColumns.length,
+    }
+  }
+
+  const download = (content: BlobPart, type: string, extension: string) => {
+    const blob = new Blob([content], { type })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `${exportFilename}.csv`
+    a.download = `${exportFilename}-${new Date().toISOString().slice(0, 10)}.${extension}`
     a.click()
     URL.revokeObjectURL(url)
   }
+  // Same matrix but without the hidden game-list-only columns, for every format except the game list.
+  const exportMatrix = (): ExportMatrix => {
+    const m = buildExportMatrix()
+    const keep = m.columns.slice(0, m.visibleCount)
+    return { columns: keep, rows: m.rows.map((r) => r.slice(0, m.visibleCount)) }
+  }
+  const copyText = async (text: string, what: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      notify({ title: 'Copied', message: `${rows.length} rows copied as ${what}.`, color: 'accent' })
+    } catch {
+      notify({ title: 'Copy failed', message: 'The browser did not allow access to the clipboard.', color: 'danger' })
+    }
+  }
+  const exportAs = async (format: 'csv' | 'csv-de' | 'xlsx' | 'json' | 'tsv' | 'markdown' | 'game') => {
+    if (format === 'game') {
+      const list = toGameList(buildExportMatrix())
+      if (list) await copyText(list, 'an in-game item list')
+      return
+    }
+    const m = exportMatrix()
+    switch (format) {
+      case 'csv': return download(toCsv(m), 'text/csv;charset=utf-8;', 'csv')
+      case 'csv-de': return download(toCsv(m, { delimiter: ';', bom: true, decimalComma: true }), 'text/csv;charset=utf-8;', 'csv')
+      case 'json': return download(toJson(m), 'application/json', 'json')
+      case 'xlsx':
+        return download(
+          await toXlsxBlob(m, exportFilename),
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'xlsx',
+        )
+      case 'tsv': return copyText(toTsv(m), 'a tab-separated table')
+      case 'markdown': return copyText(toMarkdown(m), 'a Markdown table')
+    }
+  }
+  const gameListAvailable = rows.length > 0 && hasGameList(buildExportMatrix())
 
   // Rendered instead of the real table while the owning page's query is
   // still in flight - keeps the exact same column widths (colgroup) so
@@ -685,9 +742,31 @@ export function DataTable<T>({
               </Group>
             </Menu.Dropdown>
           </Menu>
-          <Button size="xs" variant="default" leftSection={<IconDownload size={14} />} onClick={exportCsv} aria-label="Export CSV">
-            Export
-          </Button>
+          <Menu shadow="md" position="bottom-end">
+            <Menu.Target>
+              <Button size="xs" variant="default" leftSection={<IconDownload size={14} />} aria-label="Export table">
+                Export
+              </Button>
+            </Menu.Target>
+            <Menu.Dropdown>
+              <Menu.Label>Download</Menu.Label>
+              <Menu.Item onClick={() => void exportAs('csv')}>CSV</Menu.Item>
+              <Menu.Item onClick={() => void exportAs('csv-de')}>CSV for German Excel (; and decimal comma)</Menu.Item>
+              <Menu.Item onClick={() => void exportAs('xlsx')}>Excel (.xlsx)</Menu.Item>
+              <Menu.Item onClick={() => void exportAs('json')}>JSON</Menu.Item>
+              {canCopy && (
+                <>
+                  <Menu.Divider />
+                  <Menu.Label>Copy to clipboard</Menu.Label>
+                  <Menu.Item onClick={() => void exportAs('tsv')}>Table (paste into Excel / Sheets)</Menu.Item>
+                  <Menu.Item onClick={() => void exportAs('markdown')}>Markdown table</Menu.Item>
+                  {gameListAvailable && (
+                    <Menu.Item onClick={() => void exportAs('game')}>In-game list (Item and quantity)</Menu.Item>
+                  )}
+                </>
+              )}
+            </Menu.Dropdown>
+          </Menu>
         </Group>
       </Group>
 
