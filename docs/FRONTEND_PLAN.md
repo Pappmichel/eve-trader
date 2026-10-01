@@ -1,82 +1,81 @@
-# Frontend-Plan: Theme und Interaktivität
+# Frontend plan: theme and interactivity
 
-Stand 2026-10-01. Fasst `THEME_DRAFT.md` und
-`docs/FRONTEND_INTERACTIVITY_PLAN.md` zusammen (beide ersetzt). Grundlage:
-Branch `ccr-e0ccb567-s04qgg`, React 19, Mantine 9, `@tanstack/react-table` 8,
+As of 2026-10-01. Merges the former `THEME_DRAFT.md` and
+`docs/FRONTEND_INTERACTIVITY_PLAN.md` (both removed). Basis: branch
+`ccr-e0ccb567-s04qgg`, React 19, Mantine 9, `@tanstack/react-table` 8,
 `@tanstack/react-virtual` 3, React Query 5, Recharts 3.
-Aufwand: S = bis ½ Tag, M = 1-2 Tage, L = 3+ Tage.
+Effort: S = up to half a day, M = 1-2 days, L = 3+ days.
 
 ## Status
 
-| Teil | Stand |
+| Part | State |
 |---|---|
-| Theme Schritt 1 (Table, Badge, Button, Tabellenziffern) | umgesetzt, committet |
-| Abgeschnittene Spaltenköpfe nach Schritt 1 | offen, siehe Abschnitt A.1 |
-| Theme Schritt 2-4 | Entwurf |
-| Befunde B1-B3 (Preisverlauf-Endpunkt) | offen, ungeprüft (kein Backend in der Cloud-Session) |
-| Interaktivität, alle 14 Punkte | nur Plan |
+| Theme step 1 (Table, Badge, Button, tabular numbers) | implemented, committed |
+| Truncated column headers after step 1 | open, see section A.1 |
+| Theme steps 2-4 | draft |
+| Findings B1-B3 (price history endpoint) | open, unverified (no backend in the cloud session) |
+| Interactivity, all 14 items | plan only |
 
-Nichts davon ist gegen ein echtes Backend geprüft. Die Screenshots zum Theme
-entstanden mit gemockter API. Rajdhani wird in der Cloud-Umgebung nicht
-geladen (Google Fonts ist geblockt), der Schrifteindruck ist dort also nicht
-beurteilbar.
+None of this has been checked against a real backend. The theme screenshots
+were taken with a mocked API. Rajdhani does not load in the cloud environment
+(Google Fonts is blocked), so the font impression cannot be judged there.
 
-## Leitlinien
+## Guidelines
 
-- **Mantine bleibt.** Kein Wechsel auf Tailwind/shadcn (siehe Entscheidung
-  unten). Anpassung über `theme.ts` (Komponenten-Overrides) und `index.css`.
-- **`DataTable` ist der Hebel.** `frontend/src/components/DataTable.tsx` nutzt
-  jede Tabellenseite; jede Erweiterung kommt allen Seiten zugute.
-- **Opt-in-Props.** Neue Props sind optional, eine Seite ohne sie verhält sich
-  wie heute (wie `isError`, `dataUpdatedAt`).
-- **Virtualisierung:** Nur ~20 Zeilen sind gemountet. Zeilenbezug über
-  `getRowId`, nicht über DOM-Knoten; Scrollen über `virtualizer.scrollToIndex`.
-- **Feste Zeilenhöhe** (`rowHeight`, Ellipsis): Zellinhalte müssen in 36 px
-  passen.
-- **Stabile Zeilen-ID** (`getRowId`) ist Pflicht für Zustand pro Zeile
-  (Drawer, Hervorhebung, Inline-Edit), sonst springt er beim Sortieren auf eine
-  andere Zeile.
-- **Prüfung je Schritt:** `npm run lint`, `npx tsc -b`, `npm test` in
-  `frontend/`; bei Backend-Teilen `pytest`; live per Playwright-Wegwerfskript
-  mit Screenshots vorher/nachher, Konsole prüfen, Skript danach löschen
-  (Regel aus `CLAUDE.md`).
-- **Commits ohne Claude-Attribution** (Regel aus `CLAUDE.md`).
+- **Mantine stays.** No switch to Tailwind/shadcn (see decision below).
+  Customize through `theme.ts` (component overrides) and `index.css`.
+- **`DataTable` is the lever.** `frontend/src/components/DataTable.tsx` is used
+  by every table page; each extension benefits all pages.
+- **Opt-in props.** New props are optional; a page that does not set them
+  behaves as it does today (like `isError`, `dataUpdatedAt`).
+- **Virtualization:** only ~20 rows are mounted. Reference rows via
+  `getRowId`, not DOM nodes; scroll with `virtualizer.scrollToIndex`.
+- **Fixed row height** (`rowHeight`, ellipsis): cell content must fit in 36 px.
+- **Stable row id** (`getRowId`) is mandatory for per-row state (drawer,
+  highlighting, inline edit); otherwise the state jumps to another row on sort.
+- **Checks per step:** `npm run lint`, `npx tsc -b`, `npm test` in
+  `frontend/`; `pytest` for backend parts; live check with a throwaway
+  Playwright script and before/after screenshots, check the console, delete the
+  script afterwards (rule from `CLAUDE.md`).
+- **Commits carry no Claude attribution** (rule from `CLAUDE.md`).
+- **Everything that goes into the repo is written in English** (code,
+  comments, docs, commit messages).
 
-## Entscheidung: Mantine behalten
+## Decision: keep Mantine
 
-Die Tailwind/shadcn-Vorlagen aus der Recherche (TailAdmin, Shadcn Admin,
-Windmill, Admin One) würden ein zweites Styling-System neben Mantine einführen
-und alle Seiten betreffen. Der generische Mantine-Look lässt sich über
-Theme-Overrides beheben. MUI (Material-Look schwer anzupassen, DataGrid
-teilweise kostenpflichtig), Chakra, Ant Design und Radix Themes bringen keinen
-Vorteil, der den Umbau rechtfertigt. Optional ausleihen: einzelne Ideen aus
-`CSS-sci-fi-ui` für Panel-Rahmen. Nicht verwenden: ARWES (nicht mehr gepflegt),
-SCIFICN/UI (setzt shadcn/Tailwind voraus).
+The Tailwind/shadcn templates from the research (TailAdmin, Shadcn Admin,
+Windmill, Admin One) would introduce a second styling system next to Mantine
+and touch every page. The generic Mantine look can be fixed with theme
+overrides. MUI (Material look is hard to adapt, parts of the DataGrid are
+paid), Chakra, Ant Design and Radix Themes offer no advantage that justifies
+the migration. Optionally borrow individual ideas from `CSS-sci-fi-ui` for
+panel borders. Do not use: ARWES (no longer maintained), SCIFICN/UI (requires
+shadcn/Tailwind).
 
 ---
 
-# Teil A: Theme
+# Part A: Theme
 
-Ziel: das bestehende "Trade-Terminal"-Theme stimmiger machen, ohne Palette
-(`COLORS`), Schriften oder Dark-Only zu ändern.
+Goal: make the existing "trade terminal" theme more cohesive without changing
+the palette (`COLORS`), fonts or dark-only mode.
 
-## A.1 Schritt 1 (umgesetzt) und offener Rest
+## A.1 Step 1 (implemented) and open remainder
 
-Eingebaut in `frontend/src/theme.ts` und `frontend/src/index.css`:
-Tabellenköpfe als Rajdhani-Versalien mit Buchstabenabstand und Trennlinien,
-eckigere Badges, fette Rajdhani-Schrift bei Buttons, Tabellenziffern mit
-gleicher Breite (`font-variant-numeric: tabular-nums`).
+Added in `frontend/src/theme.ts` and `frontend/src/index.css`: table headers
+as Rajdhani uppercase with letter spacing and divider lines, squarer badges,
+bold Rajdhani button text, equal-width table digits
+(`font-variant-numeric: tabular-nums`).
 
-**Offen:** Versalien sind breiter. Bei den festen Spaltenbreiten
-(`DataTable`, `colgroup`) werden Köpfe stärker abgeschnitten, z. B. "DAYS UNTIL
-AU…" und "TREND (3D VS 3…". Lösung, eine von zwei:
-1. Schriftgröße der Köpfe von 13 auf 12 px und `letterSpacing` auf 0.04em.
-2. Breiten der betroffenen Spalten in den Seiten anheben (Shortlist:
-   "Days Until Auto-…", "Trend").
-Empfehlung: erst 1, dann mit echter Rajdhani-Schrift im Browser prüfen, da die
-Schrift schmaler ist als die Ersatzschrift in den Screenshots.
+**Open:** uppercase is wider. With the fixed column widths (`DataTable`,
+`colgroup`) headers are truncated more, e.g. "DAYS UNTIL AU…" and "TREND (3D
+VS 3…". Fix, one of two:
+1. Header font size from 13 to 12 px and `letterSpacing` to 0.04em.
+2. Widen the affected columns in the pages (Shortlist: "Days Until Auto-…",
+   "Trend").
+Recommendation: 1 first, then check in a real browser with the real Rajdhani
+font, which is narrower than the fallback font in the screenshots.
 
-## A.2 Schritt 2: Tabs und NavLink
+## A.2 Step 2: Tabs and NavLink
 
 ```ts
 Tabs: { styles: {
@@ -88,7 +87,7 @@ NavLink: { styles: {
   label: { fontFamily: 'Rajdhani, sans-serif', letterSpacing: '0.03em' } } },
 ```
 
-## A.3 Schritt 3: Karten, Paper, Eingabefelder
+## A.3 Step 3: cards, paper, inputs
 
 ```ts
 Paper: { defaultProps: { radius: 'sm', withBorder: true },
@@ -103,7 +102,7 @@ NumberInput: { styles: { input: { background: COLORS.bg, borderColor: COLORS.bor
 Select:      { styles: { input: { background: COLORS.bg, borderColor: COLORS.border } } },
 ```
 
-## A.4 Schritt 4: Panel-Dekor und Scrollbars (`index.css`)
+## A.4 Step 4: panel decoration and scrollbars (`index.css`)
 
 ```css
 .et-panel { position: relative; border: 1px solid #24313F; border-radius: 4px;
@@ -114,202 +113,197 @@ Select:      { styles: { input: { background: COLORS.bg, borderColor: COLORS.bor
 .et-panel::after { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
 * { scrollbar-width: thin; scrollbar-color: #24313F #0B0F14; }
 ```
-`.et-panel` nur auf Landing-Karten und Seitenköpfen setzen.
+Apply `.et-panel` only to Landing cards and page headers.
 
-## A.5 Hinweise
+## A.5 Notes
 
-- Ob verschachtelte Selektoren (`'&:hover'`, `'&[data-active]'`) in
-  Mantine-9-`styles` greifen, ist ungeprüft. Falls nicht: Regeln nach
-  `index.css` über `.mantine-Card-root:hover` und `[data-active]`.
-- Keine neuen Schriften, keine Palettenänderung, keine Animation über den
-  120-ms-Rahmenübergang hinaus.
-- Reihenfolge: A.1-Rest → A.2 → A.3 → A.4. Je Schritt Screenshots
-  vorher/nachher von Landing und Shortlist.
+- Whether nested selectors (`'&:hover'`, `'&[data-active]'`) work inside
+  Mantine 9 `styles` is unverified. If not: move the rules to `index.css`
+  using `.mantine-Card-root:hover` and `[data-active]`.
+- No new fonts, no palette change, no animation beyond the 120 ms border
+  transition.
+- Order: A.1 remainder → A.2 → A.3 → A.4. Before/after screenshots of Landing
+  and Shortlist for each step.
 
 ---
 
-# Teil B: Interaktivität
+# Part B: Interactivity
 
-## B.0 Befunde zuerst klären (Phase 0)
+## B.0 Clarify findings first (phase 0)
 
-Alle drei betreffen `GET /api/trading/history/{type_id}` in
-`eve_trader/api/routers/trading.py`. Sparklines, Drawer und Charts bauen
-darauf auf. Alle ungeprüft, da kein Backend.
+All three concern `GET /api/trading/history/{type_id}` in
+`eve_trader/api/routers/trading.py`. Sparklines, drawer and charts build on
+it. All unverified, since there is no backend here.
 
-**B1. Zwei Regionen werden gemischt (wahrscheinlicher Fehler).** Der Endpunkt
-filtert nur auf `type_id`. `goonmetrics_history` enthält Reihen für
-`jita_region_id` und `reference_region_id`. Die Antwort ist nach Datum
-sortiert, `PriceHistory.tsx` zeichnet daraus eine Linie. Erwartung: Zickzack
-zwischen zwei Preisniveaus. Behebung: nach Region trennen, im Frontend zwei
-Linien.
+**B1. Two regions are mixed (likely bug).** The endpoint filters only by
+`type_id`. `goonmetrics_history` holds rows for `jita_region_id` and
+`reference_region_id`. The response is sorted by date, and `PriceHistory.tsx`
+draws a single line from it. Expected: a zigzag between two price levels.
+Fix: separate by region, two lines in the frontend.
 
-**B2. Liest die ganze Tabelle.** `storage.read_table("goonmetrics_history")`,
-Filter erst in Pandas. `storage.read_goonmetrics_history_for_types` filtert in
-SQL und existiert schon (für `do_shortlist_trends`).
+**B2. Reads the whole table.** `storage.read_table("goonmetrics_history")`,
+filtered only afterwards in pandas. `storage.read_goonmetrics_history_for_types`
+filters in SQL and already exists (for `do_shortlist_trends`).
 
-**B3. Nicht auf den Tenant beschränkt.** Die Auswahlliste `/history/type-ids`
-ist seit T3-03 auf eigene Items beschränkt, `/history/{type_id}` liefert für
-jede geratene ID Daten aus dem geteilten Cache. Behebung: gegen
-`goonmetrics_history_type_ids_for_tenant()` prüfen, sonst 404.
+**B3. Not scoped to the tenant.** The selection list `/history/type-ids` has
+been limited to own items since T3-03, but `/history/{type_id}` returns data
+from the shared cache for any guessed id. Fix: check against
+`goonmetrics_history_type_ids_for_tenant()`, otherwise 404.
 
-## B.1 Zeilen-Detail per Klick (Drawer) · M
+## B.1 Row detail on click (drawer) · M
 
-Machbarkeit gut, erster Wurf ohne Backend. Heute kein Click-Handler auf
-`Table.Tr`, Drawer gibt es noch nicht (Modals schon).
+Feasibility good, first version needs no backend. Today `Table.Tr` has no
+click handler and there is no drawer yet (modals exist).
 - `DataTable`: `onRowClick?: (row) => void`, `activeRowId?: string`
-  (`data-active`, `cursor: pointer` nur wenn gesetzt). Klicks auf Buttons,
-  Inputs, Links ignorieren (`closest('button, input, a, [role=button]')`).
-- Neue `components/RowDetailDrawer.tsx` (Mantine `Drawer`, rechts ~420 px,
-  mobil volle Breite). Offene Zeile in der URL (`?item=<type_id>`).
-- Erste Seite Trading Shortlist: Jita-Preis, Importkosten, Landed Cost,
-  Netto-Verkauf, Gewinn/Einheit, Marge, Volumen, Ø Tagesvolumen, Mini-Verlauf
-  (nach B.0). Aktionen nur über bestehende Endpunkte; eine Watchlist gibt es
-  nicht. Stattdessen Link "In Price History öffnen" (dafür muss
-  `PriceHistory.tsx` die Auswahl aus der URL lesen, S).
-- Danach Build Candidates, Market Status, Stock Targets (je S).
+  (`data-active`, `cursor: pointer` only when set). Ignore clicks on buttons,
+  inputs and links (`closest('button, input, a, [role=button]')`).
+- New `components/RowDetailDrawer.tsx` (Mantine `Drawer`, right side ~420 px,
+  full width on mobile). Keep the open row in the URL (`?item=<type_id>`).
+- First page: Trading Shortlist: Jita price, import cost, landed cost, net
+  sell, profit per unit, margin, volume, average daily volume, mini history
+  (after B.0). Actions only through existing endpoints; there is no watchlist.
+  Instead a link "Open in Price History" (needs `PriceHistory.tsx` to read the
+  selection from the URL, S).
+- Then Build Candidates, Market Status, Stock Targets (S each).
 
 ## B.2 Sparklines · M
 
-Machbarkeit mittel. 50 Zeilen mit je einem Request wären zu viel, jeder
-liest heute die ganze Tabelle (B2).
-- Backend: `GET /api/trading/history/sparklines`, liefert für die
-  Shortlist-Items dieses Tenants je Region die letzten ~28 Tage
-  (`{type_id: {"jita": [...], "ref": [...]}}`), über
-  `read_goonmetrics_history_for_types`. Reine Lese-Abfrage, darf im Router
-  stehen; bei Aggregation (z. B. Marge) ein `do_*`.
-- Frontend: `components/Sparkline.tsx` als Inline-SVG (`<polyline>`, ~80×24 px),
-  kein Recharts pro Zeile. Farbe nach Richtung, Tooltip über `meta.cellTitle`.
-  Eine Query pro Seite (`['trading','sparklines']`).
+Feasibility medium. 50 rows with one request each would be too much, and each
+request currently reads the whole table (B2).
+- Backend: `GET /api/trading/history/sparklines`, returns for this tenant's
+  shortlist items the last ~28 days per region
+  (`{type_id: {"jita": [...], "ref": [...]}}`), via
+  `read_goonmetrics_history_for_types`. Pure read, may live in the router; if
+  aggregation is added (e.g. margin), put it in a `do_*`.
+- Frontend: `components/Sparkline.tsx` as inline SVG (`<polyline>`, ~80×24 px),
+  not Recharts per row. Color by direction, tooltip via `meta.cellTitle`. One
+  query per page (`['trading','sparklines']`).
 
-## B.3 Filter-Chips · S bis M
+## B.3 Filter chips · S to M
 
-- Shortlist (S): Klick auf Status-Badge setzt `setSelDecisions([decision])`,
-  zweiter Klick setzt zurück; Badge als `UnstyledButton` mit `aria-pressed`.
-- Generisch (M): `columnFilters` von tanstack-table, Spalten über
-  `meta: { filterValue }`; Chip-Leiste mit "x" und "Alle zurücksetzen".
-  `getFilteredRowModel` ist eingebunden.
-- Badge-Handler mit `stopPropagation()`, damit er den Drawer (B.1) nicht
-  öffnet.
+- Shortlist (S): clicking a status badge calls `setSelDecisions([decision])`,
+  a second click resets; badge as `UnstyledButton` with `aria-pressed`.
+- Generic (M): tanstack-table `columnFilters`, columns via
+  `meta: { filterValue }`; chip bar with "x" and "Reset all".
+  `getFilteredRowModel` is already wired up.
+- Badge handler with `stopPropagation()` so it does not open the drawer (B.1).
 
-## B.4 Kopierbare Zellen · S
+## B.4 Copyable cells · S
 
-- `useClipboard` aus `@mantine/hooks`. Spalten mit `meta: { copyable: true }`
-  zeigen beim Hover ein Kopier-Icon (nicht die ganze Zelle klickbar).
-- Rohwert (`cell.getValue()`), kurzes "Kopiert" im Icon statt Toast.
-- `navigator.clipboard` braucht HTTPS oder `localhost`; bei
-  `!window.isSecureContext` Icon ausblenden.
+- `useClipboard` from `@mantine/hooks`. Columns with `meta: { copyable: true }`
+  show a copy icon on hover (not the whole cell clickable).
+- Raw value (`cell.getValue()`), short "Copied" state in the icon instead of a
+  toast.
+- `navigator.clipboard` needs HTTPS or `localhost`; hide the icon when
+  `!window.isSecureContext`.
 
-## B.5 Lade- und Erfolgszustände · M
+## B.5 Loading and success states · M
 
-- `components/JobProgress.tsx` (Mantine `Progress`) aus dem Status von
-  `useBackgroundJob` (`batch/total_batches`, sonst unbestimmt), im
-  Tool-Layout unter dem Header.
-- Geänderte Zeilen kurz hervorheben: `DataTable` merkt sich per `useRef`
-  Vorwerte je `getRowId`, nur für Spalten mit `meta.trackChanges`, opt-in und
-  nur auf Seiten mit unter ~2.000 Zeilen (Candidate Universe hat 45k+).
+- `components/JobProgress.tsx` (Mantine `Progress`) fed from the
+  `useBackgroundJob` status (`batch/total_batches`, otherwise indeterminate),
+  placed in the tool layout under the header.
+- Briefly highlight changed rows: `DataTable` remembers previous values per
+  `getRowId` via `useRef`, only for columns with `meta.trackChanges`, opt-in
+  and only on pages with under ~2,000 rows (Candidate Universe has 45k+).
 
-## B.6 Gespeicherte Ansichten · M (lokal), M-L (Server)
+## B.6 Saved views · M (local), M-L (server)
 
-- Stufe 1 (empfohlen, lokal): Ansicht = `{name, sorting, columnVisibility,
-  columnOrder, columnFilters, globalFilter}` unter `datatable:<id>:views`,
-  Menü "Ansichten" neben "Columns". Seitenfilter außerhalb von `DataTable`
-  (Shortlist-`MultiSelect`s) entweder nach `columnFilters` überführen (B.3
-  generisch) oder per `extraViewState` anbinden. `try/catch` wie bisher.
-- Stufe 2 (nur bei Bedarf): Server-Speicherung braucht eine neue
-  per-Tenant-Tabelle mit RLS. Eine neue Schema-Datei muss laut `CLAUDE.md`
-  in `deploy/deploy.sh`, `deploy/README.md`, `README.md` und `.cursor/start.sh`
-  eingetragen werden.
+- Stage 1 (recommended, local): a view = `{name, sorting, columnVisibility,
+  columnOrder, columnFilters, globalFilter}` under `datatable:<id>:views`,
+  "Views" menu next to "Columns". Page filters outside `DataTable` (Shortlist
+  `MultiSelect`s) are either moved into `columnFilters` (B.3 generic) or wired
+  through `extraViewState`. `try/catch` as today.
+- Stage 2 (only if needed): server storage needs a new per-tenant table with
+  RLS. Per `CLAUDE.md`, a new schema file must be added to `deploy/deploy.sh`,
+  `deploy/README.md`, `README.md` and `.cursor/start.sh`.
 
-## B.7 Inline-Bearbeitung · S
+## B.7 Inline editing · S
 
-`EditableNumberCell` in `StockTargets.tsx` (Issue #16) hat schon das Muster
-(lokaler Entwurf, Haken, `PATCH /api/production/stock-targets/{type_id}`).
-Nach `components/EditableCell.tsx` heben, DoctrineDetail (`TargetEditor`)
-darauf umstellen. Enter speichert, Escape verwirft, **kein** automatisches
-Speichern bei Blur (bewusst, siehe Shortlist-Cap-Kommentar). Weitere
-Kandidaten nur mit PATCH-Endpunkt (manuelle Bestände, Listed Quantities,
-Logistik-Kategorien). Settings-Seiten bleiben Formulare
-(`validate_config_overrides` prüft das ganze Objekt).
+`EditableNumberCell` in `StockTargets.tsx` (issue #16) already has the pattern
+(local draft, check mark, `PATCH /api/production/stock-targets/{type_id}`).
+Lift it to `components/EditableCell.tsx`, switch DoctrineDetail
+(`TargetEditor`) to it. Enter saves, Escape discards, **no** automatic save on
+blur (deliberate, see the Shortlist cap comment). Further candidates only with
+a PATCH endpoint (manual stock, listed quantities, logistics categories).
+Settings pages stay forms (`validate_config_overrides` checks the whole
+object).
 
-## B.8 Hover-Karten · S (niedrige Priorität)
+## B.8 Hover cards · S (low priority)
 
-`HoverCard` auf der Namensspalte, ~400 ms Verzögerung, Inhalt nur aus
-Zeilen- und Sparkline-Daten (keine Abfrage pro Hover), auf Touch aus
-(`(pointer: coarse)`). Überschneidet sich mit B.1; lohnt sich danach nur für
-sehr dichte Tabellen.
+`HoverCard` on the name column, ~400 ms delay, content only from row and
+sparkline data (no request per hover), off on touch (`(pointer: coarse)`).
+Overlaps with B.1; afterwards only worthwhile for very dense tables.
 
-## B.9 Tastatur und Spotlight-Aktionen · M + M
+## B.9 Keyboard and Spotlight actions · M + M
 
-- Tabelle: fokussierbarer Container, `activeIndex`, Pfeile/Enter/Home/End,
-  `virtualizer.scrollToIndex`, `aria-activedescendant` (Zeilen-IDs aus
-  `getRowId`). `/` fokussiert den Filter über `useHotkeys` (mit
-  `tagsToIgnore`).
-- Spotlight (`QuickNav.tsx`, bisher nur Navigation): zweite Gruppe "Aktionen"
-  ("Refresh Shortlist", "Reconcile Trades", "Sync ESI") mit derselben
-  Grant-Filterung (`TOOL_KEYS`). Aktionen über dieselben Hooks wie die Buttons
-  (`useAction`, `useTradingPipelineJob`), damit Toasts, Invalidierung und
-  Job-Lock gleich bleiben. Aktionen der Stufe `live` (ESI/Goonmetrics) mit
-  Bestätigungsdialog.
+- Table: focusable container, `activeIndex`, arrows/Enter/Home/End,
+  `virtualizer.scrollToIndex`, `aria-activedescendant` (row ids from
+  `getRowId`). `/` focuses the filter via `useHotkeys` (with `tagsToIgnore`).
+- Spotlight (`QuickNav.tsx`, navigation only so far): second group "Actions"
+  ("Refresh Shortlist", "Reconcile Trades", "Sync ESI") with the same grant
+  filtering (`TOOL_KEYS`). Actions go through the same hooks as the buttons
+  (`useAction`, `useTradingPipelineJob`) so toasts, invalidation and job lock
+  stay identical. Actions of tier `live` (ESI/Goonmetrics) get a confirmation
+  dialog.
 
-## B.10 Interaktive Charts · M
+## B.10 Interactive charts · M
 
-Erst nach B1. `PriceHistory.tsx`: Recharts `<Brush>`, Schnellwahl 7/30/90 Tage
-(`SegmentedControl`), zwei Linien für Jita und Referenzregion, Mehrfachauswahl
-(`useQueries`, auf Index 100 normiert, maximal ~5 Items). "Klick auf
-Datenpunkt springt zur Tabelle" entfällt (Seite hat keine Tabelle); stattdessen
-Link aus Shortlist/Drawer (B.1). Portfolio-Verlauf (`/api/portfolio/history`
-nimmt `days`) bekommt denselben Zeitraumwähler.
+Only after B1. `PriceHistory.tsx`: Recharts `<Brush>`, quick range 7/30/90
+days (`SegmentedControl`), two lines for Jita and the reference region,
+multi-select (`useQueries`, normalized to index 100, at most ~5 items).
+"Click a data point to jump to the table" is dropped (the page has no table);
+instead a link from Shortlist/drawer (B.1). The portfolio history
+(`/api/portfolio/history` accepts `days`) gets the same range picker.
 
-## B.11 Dashboard-Kacheln · M bis L
+## B.11 Dashboard tiles · M to L
 
-Landing-Karten bekommen eine optionale KPI-Zeile, nur wenn der Grant da ist
-(`gateStatus.tools`). Trading: vorhandener `/kpis`. Portfolio: Total Wealth aus
-`/overview` (löst beim ersten Aufruf des Tages einen Snapshot aus, nicht in ein
-Polling hängen). Production: `/market-status` und `/plan` sind zu teuer, daher
-neuer schlanker `GET /api/production/kpis` (nur zählen). Jede Kachel lädt
-unabhängig, Skeleton statt Spinner.
+Landing cards get an optional KPI line, only when the grant is present
+(`gateStatus.tools`). Trading: existing `/kpis`. Portfolio: total wealth from
+`/overview` (triggers a snapshot on the first call of the day, do not hang it
+on polling). Production: `/market-status` and `/plan` are too expensive, so a
+new lean `GET /api/production/kpis` (counts only). Each tile loads
+independently, skeleton instead of spinner.
 
-## B.12 Automatisches Aktualisieren · S, Nutzen gering
+## B.12 Automatic refresh · S, low benefit
 
-Der Scheduler ist absichtlich aus (`CLAUDE.md`), Daten ändern sich praktisch
-nur durch eigene Aktionen, die ihre Queries schon invalidieren (`useAction`).
-Kein globales `refetchInterval`. Stattdessen prüfen, ob `useBackgroundJob` nach
-Jobende überall invalidiert, und `refetchOnWindowFocus` nur für ausgewählte
-Queries einschalten. Hinweisleiste "Neue Daten verfügbar" erst sinnvoll, wenn
-der Scheduler wieder läuft.
+The scheduler is deliberately off (`CLAUDE.md`), data practically only changes
+through the user's own actions, which already invalidate their queries
+(`useAction`). No global `refetchInterval`. Instead check that
+`useBackgroundJob` invalidates everywhere after a job ends, and enable
+`refetchOnWindowFocus` only for selected queries. A "New data available" bar
+only makes sense once the scheduler runs again.
 
-## B.13 Drag & Drop · M (Spalten), L (Prioritäten)
+## B.13 Drag and drop · M (columns), L (priorities)
 
-Spalten: `columnOrder` von tanstack-table, Ziehen per `@dnd-kit/*`
-(~15 kB gz, einzige mögliche neue Abhängigkeit) oder ohne Abhängigkeit mit
-Hoch/Runter-Pfeilen im "Columns"-Menü. Speichern wie B.6. Prioritäten
-(Stock-Targets): `stock_targets` hat keine Reihenfolge-Spalte, bräuchte
-`sort_order`, Migration, PATCH-Feld und Anpassung aller Leser. Zurückstellen,
-bis klar ist, was die Reihenfolge steuern soll.
+Columns: tanstack-table `columnOrder`, dragging via `@dnd-kit/*` (~15 kB gz,
+the only possible new dependency) or without a dependency using up/down arrows
+in the "Columns" menu. Persist like B.6. Priorities (stock targets):
+`stock_targets` has no order column; it would need `sort_order`, a migration, a
+PATCH field and changes to all readers. Defer until it is clear what the order
+should control.
 
-## B.14 Benachrichtigungszentrale · M
+## B.14 Notification center · M
 
-42 direkte `notifications.show`-Aufrufe. Zentraler Wrapper `src/notify.ts`
-(reicht an Mantine weiter, schreibt in einen kleinen Store über
-`useSyncExternalStore`), Aufrufe einmal umstellen, oxlint
-`no-restricted-imports` gegen Rückfälle. Glocke im Header mit ungelesen-Zähler
-und den letzten ~50 Einträgen, Speicher `sessionStorage`. Fehler bleiben
-zusätzlich als Toast sichtbar. Ob Erfolge nur noch in der Zentrale landen, ist
-offen.
+42 direct `notifications.show` calls. A central wrapper `src/notify.ts`
+(forwards to Mantine, writes into a small store via `useSyncExternalStore`),
+switch the calls once, oxlint `no-restricted-imports` against regressions. A
+bell in the header with an unread counter and the last ~50 entries, storage in
+`sessionStorage`. Errors also stay visible as a toast. Whether successes only
+land in the center is open.
 
 ---
 
-# Reihenfolge (gesamt)
+# Order (overall)
 
-| Phase | Inhalt | Grund |
+| Phase | Content | Reason |
 |---|---|---|
-| 0 | A.1-Rest (Spaltenköpfe) · B1-B3 prüfen und beheben | Fehler vor neuen Funktionen; Charts und Drawer bauen darauf auf |
-| 1 | Theme A.2 und A.3 (Tabs, NavLink, Karten, Eingabefelder) · `DataTable`: `onRowClick`/`activeRowId`, Tastatur, Kopier-Icon | Fundament für B.1, B.4, B.9 |
-| 2 | Drawer Shortlist (B.1) · Status-Chips Shortlist (B.3) · Spotlight-Aktionen (B.9) | sichtbarster Effekt, kein Schema |
-| 3 | Sparkline-Endpunkt und Komponente (B.2) · Charts (B.10) · Theme A.4 | braucht Phase 0 |
-| 4 | Gespeicherte Ansichten lokal (B.6) · generische Spaltenfilter · Spaltenreihenfolge im Menü | baut auf Phase 1 |
-| 5 | Notification-Zentrale (B.14) · Job-Fortschritt und Änderungs-Hervorhebung (B.5) | unabhängig |
-| 6 | Dashboard-Kacheln mit Production-`/kpis` (B.11) | neuer Endpunkt |
-| später | Inline-Edit verallgemeinern (B.7), Hover-Karten (B.8), Auto-Refresh (B.12), Drag & Drop (B.13) | geringer Zusatznutzen oder Schema nötig |
+| 0 | A.1 remainder (column headers) · verify and fix B1-B3 | Bugs before new features; charts and drawer build on them |
+| 1 | Theme A.2 and A.3 (tabs, NavLink, cards, inputs) · `DataTable`: `onRowClick`/`activeRowId`, keyboard, copy icon | Foundation for B.1, B.4, B.9 |
+| 2 | Shortlist drawer (B.1) · Shortlist status chips (B.3) · Spotlight actions (B.9) | Most visible effect, no schema |
+| 3 | Sparkline endpoint and component (B.2) · charts (B.10) · theme A.4 | Needs phase 0 |
+| 4 | Saved views, local (B.6) · generic column filters · column order in the menu | Builds on phase 1 |
+| 5 | Notification center (B.14) · job progress and change highlighting (B.5) | Independent |
+| 6 | Dashboard tiles with production `/kpis` (B.11) | New endpoint |
+| later | Generalize inline edit (B.7), hover cards (B.8), auto refresh (B.12), drag and drop (B.13) | Low added value or schema needed |
 
-Neue Abhängigkeiten: keine zwingend (optional `@dnd-kit/*` für B.13).
+New dependencies: none required (optionally `@dnd-kit/*` for B.13).
