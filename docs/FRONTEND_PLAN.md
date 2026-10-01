@@ -10,12 +10,18 @@ Effort: S = up to half a day, M = 1-2 days, L = 3+ days.
 
 | Part | State |
 |---|---|
-| Theme steps 1-3 (Table, Badge, Button, Tabs, NavLink, Paper, Card, inputs, tabular numbers) | implemented, committed |
+| Theme steps 1-4 (Table, Badge, Button, Tabs, NavLink, Paper, Card, inputs, tabular numbers, `.et-panel` corners on Landing cards, thin scrollbars) | implemented, committed |
 | Truncated column headers after step 1 | fixed (header font 12 px, letter spacing 0.04em) |
-| Theme step 4 (`.et-panel`, scrollbars) | draft, deliberately not applied yet |
-| `DataTable` foundation: `onRowClick`, `activeRowId`, `meta.copyable` | implemented, opt-in, covered by tests; only the Shortlist item column uses `copyable` so far |
+| `DataTable`: `onRowClick`/`activeRowId`, keyboard navigation (arrows, Home/End, PageUp/PageDown, Enter, `/`), `meta.copyable`, `meta.hoverCard`, `meta.trackChanges`, saved views (`tableId`), column reordering in the Columns menu | implemented, opt-in, covered by tests (B.1, B.4, B.5, B.6, B.8, B.9, B.13 columns) |
+| Trading Shortlist: status chips (B.3), detail drawer with `?item=` (B.1), saved views incl. page filters, change flash, hover card, copyable item name | implemented |
+| Price History reads `?item=<type_id>` (target of the drawer link) | implemented |
+| Notification center: `notify()` wrapper, bell in tool headers and Landing (B.14) | implemented; all former `notifications.show` call sites switched |
+| Job progress bar (`JobProgress`) in the Trading layout (B.5) | implemented |
+| `EditableNumberCell` extracted to `components/EditableCell.tsx`; Enter saves, Escape discards; Doctrine target editor has the same keys (B.7) | implemented |
+| Spotlight "Run:" commands with confirmation dialog (B.9) | implemented, Trading only (refresh shortlist, search, reconcile, pipeline) |
 | Findings B1-B3 (price history endpoint) | open, unverified (no backend in the cloud session) |
-| Remaining interactivity items | plan only |
+| B.2 sparklines, B.10 charts, B.11 dashboard tiles | blocked on backend work (new/changed endpoints) |
+| B.12 auto refresh, B.13 priority drag and drop | deferred (low benefit / needs schema) |
 
 None of this has been checked against a real backend. The theme screenshots
 were taken with a mocked API. Rajdhani does not load in the cloud environment
@@ -41,6 +47,8 @@ were taken with a mocked API. Rajdhani does not load in the cloud environment
 - **Commits carry no Claude attribution** (rule from `CLAUDE.md`).
 - **Everything that goes into the repo is written in English** (code,
   comments, docs, commit messages).
+- **Toasts go through `notify()`** (`frontend/src/notify.ts`), never
+  `notifications.show` directly, so they also land in the bell history.
 
 ## Decision: keep Mantine
 
