@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import {
   useReactTable,
   getCoreRowModel,
@@ -6,13 +6,17 @@ import {
   getFilteredRowModel,
   flexRender,
   type ColumnDef,
+  type ColumnOrderState,
   type SortingState,
   type VisibilityState,
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon, Stack, CopyButton } from '@mantine/core'
-import { IconSearch, IconDownload, IconColumns, IconX, IconAlertTriangle, IconRefresh, IconCopy, IconCheck } from '@tabler/icons-react'
+import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon, Stack, CopyButton, HoverCard, Popover, UnstyledButton } from '@mantine/core'
+import { IconSearch, IconDownload, IconColumns, IconX, IconAlertTriangle, IconRefresh, IconCopy, IconCheck, IconChevronUp, IconChevronDown, IconBookmark, IconTrash } from '@tabler/icons-react'
 import { relativeTime } from '../format'
+import {
+  loadColumnOrder, loadViews, moveColumn, saveColumnOrder, saveViews, upsertView, type SavedView,
+} from './dataTableViews'
 
 // GitHub issue #52 used to force-hide columns marked `meta: { mobileHide:
 // true } }` below Mantine's `sm` breakpoint, on top of whatever the user
@@ -36,6 +40,12 @@ declare module '@tanstack/react-table' {
     // formatted text, so "1234567" rather than "1,234,567 ISK"). Opt-in per
     // column; hidden when the browser has no clipboard (non-secure context).
     copyable?: boolean
+    // Extra content shown in a hover card (after a short delay) on a fine
+    // pointer; never on touch, where a row click / drawer is the way in.
+    hoverCard?: (row: TData) => ReactNode
+    // Briefly highlights a row when this column's value changed after a data
+    // refetch. Needs `getRowId` on the table; keep to small tables.
+    trackChanges?: boolean
   }
 }
 
@@ -115,7 +125,13 @@ interface DataTableProps<T> {
   // `activeRowId` (a `getRowId` value) highlights the currently open row.
   onRowClick?: (row: T) => void
   activeRowId?: string
+  // Lets a saved view also capture/restore page-owned filter state that lives
+  // outside the table (e.g. a status MultiSelect). Needs `tableId`.
+  extraViewState?: { value: unknown; apply: (value: unknown) => void }
 }
+
+const CHANGE_FLASH_MS = 2500
+const KEY_PAGE_STEP = 10
 
 // Elements inside a row that handle their own clicks.
 const INTERACTIVE_SELECTOR = 'button, input, textarea, select, a, [role="button"], [role="checkbox"]'
@@ -144,6 +160,11 @@ const SKELETON_ROWS = 8
 
 // navigator.clipboard only exists in secure contexts (HTTPS / localhost); on a
 // plain-HTTP LAN install the copy button would silently do nothing, so hide it.
+// Hover cards only make sense with a real hover-capable pointer.
+const canHover = typeof window !== 'undefined'
+  && typeof window.matchMedia === 'function'
+  && window.matchMedia('(pointer: fine)').matches
+
 const canCopy = typeof window !== 'undefined'
   && window.isSecureContext !== false
   && typeof navigator !== 'undefined'
@@ -192,10 +213,19 @@ export function DataTable<T>({
   dataUpdatedAt,
   onRowClick,
   activeRowId,
+  extraViewState,
 }: DataTableProps<T>) {
   const [sorting, setSorting] = useState<SortingState>([])
   const [globalFilter, setGlobalFilter] = useState('')
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(() => loadPersistedVisibility(tableId))
+  const [columnOrder, setColumnOrder] = useState<ColumnOrderState>(() => loadColumnOrder(tableId))
+  const [views, setViews] = useState<SavedView[]>(() => loadViews(tableId))
+  const [viewName, setViewName] = useState('')
+  const [cursorId, setCursorId] = useState<string | null>(null)
+  const [changedIds, setChangedIds] = useState<ReadonlySet<string>>(new Set())
+  const uid = useId()
+  const wrapperRef = useRef<HTMLDivElement | null>(null)
+  const filterRef = useRef<HTMLInputElement | null>(null)
 
   // Ticks every 30s so the relative-time label below ("2m ago" -> "3m ago")
   // stays live without a full data refetch - cheap (one re-render, no
@@ -214,8 +244,39 @@ export function DataTable<T>({
   // previous tab's hidden-columns selection.
   useEffect(() => {
     setColumnVisibility(loadPersistedVisibility(tableId))
+    setColumnOrder(loadColumnOrder(tableId))
+    setViews(loadViews(tableId))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tableId])
+
+  useEffect(() => {
+    saveColumnOrder(tableId, columnOrder)
+  }, [tableId, columnOrder])
+
+  // Flash rows whose tracked columns changed since the previous `data`. The
+  // first load (no previous snapshot) flashes nothing.
+  const prevSignatures = useRef<Map<string, string> | null>(null)
+  useEffect(() => {
+    const tracked = columns.filter((c) => c.meta?.trackChanges)
+    if (!getRowId || tracked.length === 0) return
+    const valueOf = (c: ColumnDef<T, any>, row: T): unknown => {
+      if ('accessorFn' in c && c.accessorFn) return c.accessorFn(row, 0)
+      if ('accessorKey' in c) return (row as Record<string, unknown>)[c.accessorKey as string]
+      return undefined
+    }
+    const next = new Map<string, string>()
+    for (const row of data) next.set(getRowId(row), tracked.map((c) => String(valueOf(c, row))).join('|'))
+    const prev = prevSignatures.current
+    prevSignatures.current = next
+    if (!prev) return
+    const changed = new Set<string>()
+    for (const [id, sig] of next) if (prev.has(id) && prev.get(id) !== sig) changed.add(id)
+    if (changed.size === 0) return
+    setChangedIds(changed)
+    const t = setTimeout(() => setChangedIds(new Set()), CHANGE_FLASH_MS)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data])
 
   useEffect(() => {
     if (!tableId) return
@@ -230,7 +291,8 @@ export function DataTable<T>({
   const table = useReactTable({
     data,
     columns,
-    state: { sorting, globalFilter, columnVisibility },
+    state: { sorting, globalFilter, columnVisibility, columnOrder },
+    onColumnOrderChange: setColumnOrder,
     onSortingChange: setSorting,
     onGlobalFilterChange: setGlobalFilter,
     onColumnVisibilityChange: setColumnVisibility,
@@ -252,6 +314,69 @@ export function DataTable<T>({
     estimateSize: () => rowHeight,
     overscan: 12,
   })
+
+  const cursorIndex = cursorId === null ? -1 : rows.findIndex((r) => r.id === cursorId)
+
+  // Keyboard navigation (only with onRowClick): the wrapper itself is focused,
+  // arrows move a cursor row, Enter opens it, "/" jumps to the filter box.
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget || !onRowClick || rows.length === 0) return
+    let next = cursorIndex
+    switch (e.key) {
+      case 'ArrowDown': next = Math.min(cursorIndex + 1, rows.length - 1); break
+      case 'ArrowUp': next = Math.max(cursorIndex - 1, 0); break
+      case 'PageDown': next = Math.min(Math.max(cursorIndex, 0) + KEY_PAGE_STEP, rows.length - 1); break
+      case 'PageUp': next = Math.max(Math.max(cursorIndex, 0) - KEY_PAGE_STEP, 0); break
+      case 'Home': next = 0; break
+      case 'End': next = rows.length - 1; break
+      case 'Enter':
+      case ' ':
+        if (cursorIndex >= 0) {
+          e.preventDefault()
+          onRowClick(rows[cursorIndex].original)
+        }
+        return
+      case '/':
+        e.preventDefault()
+        filterRef.current?.focus()
+        return
+      default:
+        return
+    }
+    e.preventDefault()
+    setCursorId(rows[next].id)
+    virtualizer.scrollToIndex(next)
+  }
+
+  const applyView = (view: SavedView) => {
+    setSorting(view.sorting)
+    setColumnVisibility(view.columnVisibility)
+    setColumnOrder(view.columnOrder)
+    setGlobalFilter(view.globalFilter)
+    if (view.extra !== undefined) extraViewState?.apply(view.extra)
+  }
+
+  const saveCurrentView = () => {
+    const name = viewName.trim()
+    if (!name) return
+    const next = upsertView(views, {
+      name, sorting, columnVisibility, columnOrder, globalFilter,
+      extra: extraViewState?.value,
+    })
+    setViews(next)
+    saveViews(tableId, next)
+    setViewName('')
+  }
+
+  const deleteView = (name: string) => {
+    const next = views.filter((v) => v.name !== name)
+    setViews(next)
+    saveViews(tableId, next)
+  }
+
+  const moveColumnBy = (id: string, delta: -1 | 1) => {
+    setColumnOrder(moveColumn(table.getAllLeafColumns().map((c) => c.id), id, delta))
+  }
 
   const exportCsv = () => {
     // Deliberately table.getVisibleLeafColumns() (the user's real Columns-menu
@@ -346,7 +471,13 @@ export function DataTable<T>({
   }
 
   return (
-    <div>
+    <div
+      ref={wrapperRef}
+      className={onRowClick ? 'et-table-nav' : undefined}
+      tabIndex={onRowClick ? 0 : undefined}
+      onKeyDown={onRowClick ? handleKeyDown : undefined}
+      aria-activedescendant={onRowClick && cursorIndex >= 0 ? `${uid}-r${cursorIndex}` : undefined}
+    >
       {/* Wraps below the search box on a phone: one line squeezed the box to a few pixels. */}
       <Group justify="space-between" mb="xs" gap="xs">
         <TextInput
@@ -358,6 +489,7 @@ export function DataTable<T>({
               <IconX size={12} />
             </ActionIcon>
           ) : undefined}
+          ref={filterRef}
           value={globalFilter}
           onChange={(e) => setGlobalFilter(e.currentTarget.value)}
           style={{ flex: '1 1 160px', maxWidth: 280 }}
@@ -368,6 +500,37 @@ export function DataTable<T>({
               Updated {relativeTime(dataUpdatedAt)}
             </Text>
           )}
+          {tableId && (
+            <Popover width={260} position="bottom-end" shadow="md" withArrow>
+              <Popover.Target>
+                <Button size="xs" variant="default" leftSection={<IconBookmark size={14} />}>
+                  Views{views.length > 0 ? ` (${views.length})` : ''}
+                </Button>
+              </Popover.Target>
+              <Popover.Dropdown p="xs">
+                {views.length === 0 && <Text size="xs" c="dimmed" mb="xs">No saved views yet.</Text>}
+                {views.map((v) => (
+                  <Group key={v.name} justify="space-between" wrap="nowrap" gap={4} mb={4}>
+                    <UnstyledButton onClick={() => applyView(v)} style={{ flex: 1, minWidth: 0 }}>
+                      <Text size="sm" truncate>{v.name}</Text>
+                    </UnstyledButton>
+                    <ActionIcon size="xs" variant="subtle" color="danger" aria-label={`Delete view ${v.name}`}
+                      onClick={() => deleteView(v.name)}>
+                      <IconTrash size={12} />
+                    </ActionIcon>
+                  </Group>
+                ))}
+                <Group gap={4} wrap="nowrap" mt="xs">
+                  <TextInput
+                    size="xs" placeholder="Name for current view" aria-label="View name" style={{ flex: 1 }}
+                    value={viewName} onChange={(e) => setViewName(e.currentTarget.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') saveCurrentView() }}
+                  />
+                  <Button size="xs" onClick={saveCurrentView} disabled={!viewName.trim()}>Save</Button>
+                </Group>
+              </Popover.Dropdown>
+            </Popover>
+          )}
           <Menu shadow="md" closeOnItemClick={false}>
             <Menu.Target>
               <Button size="xs" variant="default" leftSection={<IconColumns size={14} />}>
@@ -375,15 +538,27 @@ export function DataTable<T>({
               </Button>
             </Menu.Target>
             <Menu.Dropdown>
-              {allColumns.map((col) => (
-                <Menu.Item key={col.id} onClick={() => col.toggleVisibility()} closeMenuOnClick={false}>
+              {allColumns.map((col, i) => (
+                <Group key={col.id} justify="space-between" wrap="nowrap" gap="xs" px="xs" py={4}>
                   <Checkbox
                     size="xs"
-                    readOnly
                     checked={col.getIsVisible()}
+                    onChange={() => col.toggleVisibility()}
                     label={columnLabel(col.columnDef.header, col.id)}
                   />
-                </Menu.Item>
+                  <Group gap={2} wrap="nowrap">
+                    <ActionIcon size="xs" variant="subtle" color="gray" disabled={i === 0}
+                      aria-label={`Move ${columnLabel(col.columnDef.header, col.id)} up`}
+                      onClick={() => moveColumnBy(col.id, -1)}>
+                      <IconChevronUp size={12} />
+                    </ActionIcon>
+                    <ActionIcon size="xs" variant="subtle" color="gray" disabled={i === allColumns.length - 1}
+                      aria-label={`Move ${columnLabel(col.columnDef.header, col.id)} down`}
+                      onClick={() => moveColumnBy(col.id, 1)}>
+                      <IconChevronDown size={12} />
+                    </ActionIcon>
+                  </Group>
+                </Group>
               ))}
             </Menu.Dropdown>
           </Menu>
@@ -460,10 +635,14 @@ export function DataTable<T>({
                   return (
                     <Table.Tr
                       key={row.id}
+                      id={onRowClick ? `${uid}-r${vItem.index}` : undefined}
                       data-clickable={onRowClick ? '' : undefined}
                       data-active={activeRowId !== undefined && row.id === activeRowId ? '' : undefined}
+                      data-cursor={onRowClick && row.id === cursorId ? '' : undefined}
+                      data-changed={changedIds.has(row.id) ? '' : undefined}
                       onClick={onRowClick ? (e) => {
                         if ((e.target as HTMLElement).closest(INTERACTIVE_SELECTOR)) return
+                        setCursorId(row.id)
                         onRowClick(row.original)
                       } : undefined}
                     >
@@ -472,14 +651,25 @@ export function DataTable<T>({
                           const copyText = cell.column.columnDef.meta?.copyable && canCopy
                             ? cellText(cell.getValue())
                             : undefined
+                          const hoverContent = canHover ? cell.column.columnDef.meta?.hoverCard : undefined
+                          const content = (
+                            <>
+                              {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                              {copyText !== undefined && <CopyCell value={copyText} />}
+                            </>
+                          )
                           return (
                             <Table.Td
                               key={cell.id}
                               style={cellStyle}
-                              title={cell.column.columnDef.meta?.cellTitle?.(cell.row.original, cell.getValue()) ?? cellText(cell.getValue())}
+                              title={hoverContent ? undefined : (cell.column.columnDef.meta?.cellTitle?.(cell.row.original, cell.getValue()) ?? cellText(cell.getValue()))}
                             >
-                              {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                              {copyText !== undefined && <CopyCell value={copyText} />}
+                              {hoverContent ? (
+                                <HoverCard openDelay={400} withArrow shadow="md" position="bottom-start" withinPortal>
+                                  <HoverCard.Target><span>{content}</span></HoverCard.Target>
+                                  <HoverCard.Dropdown>{hoverContent(cell.row.original)}</HoverCard.Dropdown>
+                                </HoverCard>
+                              ) : content}
                             </Table.Td>
                           )
                         })}

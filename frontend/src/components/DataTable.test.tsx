@@ -229,3 +229,110 @@ describe('DataTable copyable columns', () => {
     vi.unstubAllGlobals()
   })
 })
+
+describe('DataTable keyboard navigation', () => {
+  it('is not focusable without onRowClick', () => {
+    const { container } = renderTable()
+    expect(container.firstElementChild?.hasAttribute('tabindex')).toBe(false)
+  })
+
+  it('moves a cursor with arrows, opens with Enter and focuses the filter with "/"', async () => {
+    const user = userEvent.setup()
+    const onRowClick = vi.fn()
+    const { container } = renderTable({ onRowClick, getRowId: (r) => r.item })
+    const wrapper = container.querySelector('[tabindex="0"]') as HTMLElement
+    wrapper.focus()
+
+    await user.keyboard('{ArrowDown}{ArrowDown}')
+    expect(bodyRows()[1]).toHaveAttribute('data-cursor')
+    expect(wrapper.getAttribute('aria-activedescendant')).toBe(bodyRows()[1].id)
+
+    await user.keyboard('{Enter}')
+    expect(onRowClick).toHaveBeenCalledWith(rows[1])
+
+    await user.keyboard('{End}')
+    expect(bodyRows()[2]).toHaveAttribute('data-cursor')
+    await user.keyboard('{Home}')
+    expect(bodyRows()[0]).toHaveAttribute('data-cursor')
+
+    await user.keyboard('/')
+    expect(screen.getByPlaceholderText('Filter...')).toHaveFocus()
+  })
+})
+
+describe('DataTable saved views and column order', () => {
+  it('saves the current sort under a name, restores it later and can delete it', async () => {
+    localStorage.clear()
+    const user = userEvent.setup()
+    renderTable({ tableId: 'views-test' })
+
+    await user.click(screen.getByRole('button', { name: /Amount/ })) // sort by Amount
+    await user.click(screen.getByRole('button', { name: /Views/ }))
+    await user.type(await screen.findByLabelText('View name'), 'Big first')
+    await user.click(await screen.findByRole('button', { name: 'Save' }))
+    expect(JSON.parse(localStorage.getItem('datatable:views-test:views')!)).toHaveLength(1)
+
+    await user.click(screen.getByRole('button', { name: /Item/ })) // change sort
+    await user.click(await screen.findByText('Big first'))
+    const cells = bodyRows().map((r) => within(r).getAllByRole('cell')[0].textContent)
+    expect(cells).toEqual(['Alpha Ore', 'Mid Ore', 'Zebra Ore'])
+
+    await user.click(await screen.findByRole('button', { name: 'Delete view Big first' }))
+    expect(JSON.parse(localStorage.getItem('datatable:views-test:views')!)).toHaveLength(0)
+  })
+
+  it('hands page-owned state to extraViewState on save and apply', async () => {
+    localStorage.clear()
+    const user = userEvent.setup()
+    const apply = vi.fn()
+    renderTable({ tableId: 'extra-test', extraViewState: { value: { status: ['Import'] }, apply } })
+    await user.click(screen.getByRole('button', { name: /Views/ }))
+    await user.type(await screen.findByLabelText('View name'), 'Imports')
+    await user.click(await screen.findByRole('button', { name: 'Save' }))
+    await user.click(await screen.findByText('Imports'))
+    expect(apply).toHaveBeenCalledWith({ status: ['Import'] })
+  })
+
+  it('reorders columns from the Columns menu and persists the order', async () => {
+    localStorage.clear()
+    const user = userEvent.setup()
+    renderTable({ tableId: 'order-test' })
+    await user.click(screen.getByRole('button', { name: /Columns/ }))
+    await user.click(await screen.findByRole('button', { name: 'Move Item down' }))
+    const headers = Array.from(document.querySelectorAll('thead th')).map((h) => h.textContent?.replace(/[▲▼]/g, '').trim())
+    expect(headers).toEqual(['Amount', 'Item'])
+    expect(JSON.parse(localStorage.getItem('datatable:order-test:order')!)).toEqual(['amount', 'item'])
+  })
+})
+
+describe('DataTable change highlighting', () => {
+  it('flashes only rows whose tracked column changed after a refetch', () => {
+    const cols: ColumnDef<Row, any>[] = [
+      { header: 'Item', accessorKey: 'item' },
+      { header: 'Amount', accessorKey: 'amount', meta: { trackChanges: true } },
+    ]
+    const ui = (data: Row[]) => (
+      <MantineProvider>
+        <DataTable data={data} columns={cols} getRowId={(r) => r.item} />
+      </MantineProvider>
+    )
+    const { rerender } = render(ui(rows))
+    expect(bodyRows().some((r) => r.hasAttribute('data-changed'))).toBe(false) // first load: no flash
+
+    rerender(ui(rows.map((r) => (r.item === 'Mid Ore' ? { ...r, amount: 51 } : r))))
+    const flashed = bodyRows().filter((r) => r.hasAttribute('data-changed'))
+    expect(flashed).toHaveLength(1)
+    expect(within(flashed[0]).getAllByRole('cell')[0].textContent).toBe('Mid Ore')
+  })
+})
+
+describe('DataTable hover card', () => {
+  it('renders no hover content on a coarse pointer (no matchMedia match)', () => {
+    const cols: ColumnDef<Row, any>[] = [
+      { header: 'Item', accessorKey: 'item', meta: { hoverCard: (r: Row) => <div>detail {r.item}</div> } },
+    ]
+    render(<MantineProvider><DataTable data={rows} columns={cols} /></MantineProvider>)
+    expect(screen.queryByText(/detail Zebra Ore/)).not.toBeInTheDocument()
+    expect(bodyRows()[0].querySelector('td')?.getAttribute('title')).toBe('Zebra Ore')
+  })
+})
