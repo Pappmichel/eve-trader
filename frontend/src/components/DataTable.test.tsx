@@ -564,7 +564,7 @@ describe('DataTable export menu', () => {
     const user = userEvent.setup()
     renderTable()
     await user.click(screen.getByRole('button', { name: 'Export table' }))
-    for (const name of ['CSV', 'CSV for German Excel (; and decimal comma)', 'Excel (.xlsx)', 'JSON']) {
+    for (const name of ['CSV', 'Excel (.xlsx)', 'JSON']) {
       expect(await screen.findByRole('menuitem', { name })).toBeInTheDocument()
     }
     // jsdom has no navigator.clipboard, so the copy entries are hidden here.

@@ -550,7 +550,7 @@ export function DataTable<T>({
       notify({ title: 'Copy failed', message: 'The browser did not allow access to the clipboard.', color: 'danger' })
     }
   }
-  const exportAs = async (format: 'csv' | 'csv-de' | 'xlsx' | 'json' | 'tsv' | 'markdown' | 'game') => {
+  const exportAs = async (format: 'csv' | 'xlsx' | 'json' | 'tsv' | 'markdown' | 'game') => {
     if (format === 'game') {
       const list = toGameList(buildExportMatrix())
       if (list) await copyText(list, 'an in-game item list')
@@ -559,7 +559,6 @@ export function DataTable<T>({
     const m = exportMatrix()
     switch (format) {
       case 'csv': return download(toCsv(m), 'text/csv;charset=utf-8;', 'csv')
-      case 'csv-de': return download(toCsv(m, { delimiter: ';', bom: true, decimalComma: true }), 'text/csv;charset=utf-8;', 'csv')
       case 'json': return download(toJson(m), 'application/json', 'json')
       case 'xlsx':
         return download(
@@ -751,7 +750,6 @@ export function DataTable<T>({
             <Menu.Dropdown>
               <Menu.Label>Download</Menu.Label>
               <Menu.Item onClick={() => void exportAs('csv')}>CSV</Menu.Item>
-              <Menu.Item onClick={() => void exportAs('csv-de')}>CSV for German Excel (; and decimal comma)</Menu.Item>
               <Menu.Item onClick={() => void exportAs('xlsx')}>Excel (.xlsx)</Menu.Item>
               <Menu.Item onClick={() => void exportAs('json')}>JSON</Menu.Item>
               {canCopy && (

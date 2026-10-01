@@ -27,33 +27,28 @@ export function guardFormula(text: string): string {
   return /^[=+@\t\r]/.test(text) || /^-(?!\d|\.\d)/.test(text) ? `'${text}` : text
 }
 
-function textCell(value: unknown, decimalComma: boolean): string {
+function textCell(value: unknown): string {
   const v = scalar(value)
   if (v === null) return ''
-  if (typeof v === 'number') return decimalComma ? String(v).replace('.', ',') : String(v)
   return typeof v === 'string' ? guardFormula(v) : String(v)
 }
 
-export function toCsv(
-  m: ExportMatrix,
-  opts: { delimiter?: ',' | ';'; bom?: boolean; decimalComma?: boolean } = {},
-): string {
-  const { delimiter = ',', bom = false, decimalComma = false } = opts
+export function toCsv(m: ExportMatrix): string {
   // Always quotes (never has to special-case which fields need it), doubles inner quotes.
-  const field = (value: unknown) => `"${textCell(value, decimalComma).replace(/"/g, '""')}"`
-  const header = m.columns.map((c) => field(c.label)).join(delimiter)
-  const body = m.rows.map((r) => r.map(field).join(delimiter)).join('\r\n')
-  return `${bom ? '\uFEFF' : ''}${header}\r\n${body}`
+  const field = (value: unknown) => `"${textCell(value).replace(/"/g, '""')}"`
+  const header = m.columns.map((c) => field(c.label)).join(',')
+  const body = m.rows.map((r) => r.map(field).join(',')).join('\r\n')
+  return `${header}\r\n${body}`
 }
 
 // Tab-separated: pastes straight into Excel / Google Sheets.
 export function toTsv(m: ExportMatrix): string {
-  const clean = (value: unknown) => textCell(value, false).replace(/[\t\r\n]+/g, ' ')
+  const clean = (value: unknown) => textCell(value).replace(/[\t\r\n]+/g, ' ')
   return [m.columns.map((c) => clean(c.label)).join('\t'), ...m.rows.map((r) => r.map(clean).join('\t'))].join('\n')
 }
 
 export function toMarkdown(m: ExportMatrix): string {
-  const clean = (value: unknown) => textCell(value, false).replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' ')
+  const clean = (value: unknown) => textCell(value).replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' ')
   const line = (cells: string[]) => `| ${cells.join(' | ')} |`
   return [
     line(m.columns.map((c) => clean(c.label))),

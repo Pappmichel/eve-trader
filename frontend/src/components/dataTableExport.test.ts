@@ -16,11 +16,6 @@ describe('toCsv', () => {
     expect(csv.split('\r\n')[0]).toBe('"Item","Quantity","Price"')
     expect(csv).toContain('"Mexallon ""Pro""","20",""')
   })
-  it('German Excel variant: semicolon, BOM and decimal comma', () => {
-    const csv = toCsv(m, { delimiter: ';', bom: true, decimalComma: true })
-    expect(csv.startsWith('﻿"Item";"Quantity";"Price"')).toBe(true)
-    expect(csv).toContain('"Tritanium";"1500";"4,5"')
-  })
   it('neutralises spreadsheet formulas in text but not negative numbers', () => {
     const csv = toCsv({ columns: [{ id: 'a', label: 'A' }], rows: [['=1+1'], ['+x'], ['@SUM'], ['-abc'], [-5], ['-5']] })
     expect(csv).toContain(`"'=1+1"`)
