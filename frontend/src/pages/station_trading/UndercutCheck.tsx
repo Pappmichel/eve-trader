@@ -48,7 +48,7 @@ export default function UndercutCheck() {
             ) : (
               <>
                 <Text size="sm" c="dimmed" mb="xs">{result.sell.length} sell orders currently undercut</Text>
-                <DataTable rowDetail data={result.sell} columns={sellColumns} maxHeight={400} />
+                <DataTable tableId="station-trading-undercut-check" rowDetail data={result.sell} columns={sellColumns} maxHeight={400} />
               </>
             )}
           </div>
@@ -60,7 +60,7 @@ export default function UndercutCheck() {
             ) : (
               <>
                 <Text size="sm" c="dimmed" mb="xs">{result.buy.length} buy orders currently outbid</Text>
-                <DataTable rowDetail data={result.buy} columns={buyColumns} maxHeight={400} />
+                <DataTable tableId="station-trading-undercut-check-2" rowDetail data={result.buy} columns={buyColumns} maxHeight={400} />
               </>
             )}
           </div>

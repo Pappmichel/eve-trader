@@ -134,7 +134,7 @@ export default function Shortlist() {
       {filtered.length === 0 ? (
         <HintCard>No items match the current filters.</HintCard>
       ) : (
-        <DataTable rowDetail data={filtered} columns={columns} maxHeight={560} getRowId={(r) => String(r.type_id)} />
+        <DataTable tableId="station-trading-shortlist" rowDetail data={filtered} columns={columns} maxHeight={560} getRowId={(r) => String(r.type_id)} />
       )}
     </>
   )

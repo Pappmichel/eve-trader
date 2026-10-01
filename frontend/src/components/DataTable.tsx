@@ -8,6 +8,7 @@ import {
   type ColumnDef,
   type ColumnFiltersState,
   type ColumnOrderState,
+  type ColumnSizingState,
   type FilterFn,
   type Row,
   type SortingState,
@@ -18,7 +19,9 @@ import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Bu
 import { IconSearch, IconDownload, IconColumns, IconX, IconAlertTriangle, IconRefresh, IconCopy, IconCheck, IconChevronUp, IconChevronDown, IconBookmark, IconTrash, IconFilter } from '@tabler/icons-react'
 import { relativeTime } from '../format'
 import {
-  loadColumnOrder, loadViews, moveColumn, saveColumnOrder, saveViews, upsertView, type SavedView,
+  KEYBOARD_RESIZE_STEP, MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH,
+  loadColumnOrder, loadColumnSizes, loadViews, moveColumn, moveColumnTo, saveColumnOrder, saveColumnSizes, saveViews, upsertView,
+  type SavedView,
 } from './dataTableViews'
 
 // GitHub issue #52 used to force-hide columns marked `meta: { mobileHide:
@@ -241,6 +244,10 @@ export function DataTable<T>({
   const [views, setViews] = useState<SavedView[]>(() => loadViews(tableId))
   const [viewName, setViewName] = useState('')
   const [cursorId, setCursorId] = useState<string | null>(null)
+  const [columnSizing, setColumnSizing] = useState<ColumnSizingState>(() => loadColumnSizes(tableId))
+  const [dragColumnId, setDragColumnId] = useState<string | null>(null)
+  const [dropColumnId, setDropColumnId] = useState<string | null>(null)
+  const resizingRef = useRef(false)
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
   // The clicked Row object itself, not just its id: without a `getRowId` the id is
   // the row's index, which a re-sort or refetch would point at a different row.
@@ -268,6 +275,7 @@ export function DataTable<T>({
   useEffect(() => {
     setColumnVisibility(loadPersistedVisibility(tableId))
     setColumnOrder(loadColumnOrder(tableId))
+    setColumnSizing(loadColumnSizes(tableId))
     setViews(loadViews(tableId))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tableId])
@@ -275,6 +283,10 @@ export function DataTable<T>({
   useEffect(() => {
     saveColumnOrder(tableId, columnOrder)
   }, [tableId, columnOrder])
+
+  useEffect(() => {
+    saveColumnSizes(tableId, columnSizing)
+  }, [tableId, columnSizing])
 
   // Flash rows whose tracked columns changed since the previous `data`. The
   // first load (no previous snapshot) flashes nothing.
@@ -314,7 +326,10 @@ export function DataTable<T>({
   const table = useReactTable({
     data,
     columns,
-    state: { sorting, globalFilter, columnVisibility, columnOrder, columnFilters },
+    state: { sorting, globalFilter, columnVisibility, columnOrder, columnFilters, columnSizing },
+    enableColumnResizing: true,
+    columnResizeMode: 'onChange',
+    onColumnSizingChange: setColumnSizing,
     onColumnOrderChange: setColumnOrder,
     onColumnFiltersChange: setColumnFilters,
     onSortingChange: setSorting,
@@ -324,7 +339,7 @@ export function DataTable<T>({
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
     getRowId: getRowId ? (row) => getRowId(row) : undefined,
-    defaultColumn: { size: 140, minSize: 60, filterFn: exactFilter },
+    defaultColumn: { size: 140, minSize: MIN_COLUMN_WIDTH, maxSize: MAX_COLUMN_WIDTH, filterFn: exactFilter },
   })
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -398,6 +413,7 @@ export function DataTable<T>({
     setColumnOrder(view.columnOrder)
     setGlobalFilter(view.globalFilter)
     setColumnFilters(view.columnFilters ?? [])
+    setColumnSizing(view.columnSizing ?? {})
     if (view.extra !== undefined) extraViewState?.apply(view.extra)
   }
 
@@ -405,7 +421,7 @@ export function DataTable<T>({
     const name = viewName.trim()
     if (!name) return
     const next = upsertView(views, {
-      name, sorting, columnVisibility, columnOrder, globalFilter, columnFilters,
+      name, sorting, columnVisibility, columnOrder, globalFilter, columnFilters, columnSizing,
       extra: extraViewState?.value,
     })
     setViews(next)
@@ -418,6 +434,23 @@ export function DataTable<T>({
     setViews(next)
     saveViews(tableId, next)
   }
+
+  // Drag a header onto another header to move the dragged column to that
+  // position. Native HTML5 drag and drop: no dependency, mouse only (touch
+  // users reorder with the arrows in the Columns menu).
+  const allLeafIds = () => table.getAllLeafColumns().map((c) => c.id)
+  const endDrag = () => { setDragColumnId(null); setDropColumnId(null) }
+  const dropOn = (targetId: string) => {
+    if (dragColumnId && dragColumnId !== targetId) setColumnOrder(moveColumnTo(allLeafIds(), dragColumnId, targetId))
+    endDrag()
+  }
+  const resizeBy = (id: string, delta: number) => {
+    const col = table.getColumn(id)
+    if (!col) return
+    const next = Math.min(MAX_COLUMN_WIDTH, Math.max(MIN_COLUMN_WIDTH, col.getSize() + delta))
+    setColumnSizing((prev) => ({ ...prev, [id]: next }))
+  }
+  const isResized = Object.keys(columnSizing).length > 0
 
   const moveColumnBy = (id: string, delta: -1 | 1) => {
     setColumnOrder(moveColumn(table.getAllLeafColumns().map((c) => c.id), id, delta))
@@ -605,6 +638,11 @@ export function DataTable<T>({
                   </Group>
                 </Group>
               ))}
+              <Menu.Divider />
+              <Group gap={4} px="xs" py={4}>
+                <Button size="compact-xs" variant="subtle" onClick={() => setColumnOrder([])}>Reset order</Button>
+                <Button size="compact-xs" variant="subtle" onClick={() => setColumnSizing({})}>Reset widths</Button>
+              </Group>
             </Menu.Dropdown>
           </Menu>
           <Button size="xs" variant="default" leftSection={<IconDownload size={14} />} onClick={exportCsv}>
@@ -637,7 +675,10 @@ export function DataTable<T>({
       )}
 
       <ScrollArea h={maxHeight} type="auto" viewportRef={scrollRef}>
-        <Table stickyHeader striped style={{ tableLayout: 'fixed', width: '100%' }}>
+        {/* Until a column is resized the table fills its container (columns scale
+            proportionally, as before). Once one is resized, widths are exact px so
+            the dragged edge stays under the pointer; the area then scrolls sideways. */}
+        <Table stickyHeader striped style={{ tableLayout: 'fixed', width: isResized ? table.getTotalSize() : '100%' }}>
           <colgroup>
             {leafColumns.map((col) => (
               <col key={col.id} style={{ width: col.getSize() }} />
@@ -660,6 +701,20 @@ export function DataTable<T>({
                   return (
                     <Table.Th
                       key={h.id}
+                      draggable
+                      onDragStart={(e) => {
+                        if (resizingRef.current) { e.preventDefault(); return }
+                        setDragColumnId(h.column.id)
+                        e.dataTransfer?.setData('text/plain', h.column.id)
+                        if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
+                      }}
+                      onDragOver={(e) => {
+                        if (!dragColumnId) return
+                        e.preventDefault()
+                        if (dropColumnId !== h.column.id) setDropColumnId(h.column.id)
+                      }}
+                      onDrop={(e) => { e.preventDefault(); dropOn(h.column.id) }}
+                      onDragEnd={endDrag}
                       onClick={toggleSort}
                       tabIndex={canSort ? 0 : undefined}
                       role={canSort ? 'button' : undefined}
@@ -674,10 +729,51 @@ export function DataTable<T>({
                       style={{
                         cursor: canSort ? 'pointer' : undefined, userSelect: 'none',
                         whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                        position: 'relative', // anchors the resize handle
+                        opacity: dragColumnId === h.column.id ? 0.4 : undefined,
+                        boxShadow: dropColumnId === h.column.id && dragColumnId !== h.column.id ? 'inset 2px 0 0 #35D0BA' : undefined,
                       }}
                     >
                       {flexRender(h.column.columnDef.header, h.getContext())}
                       {sorted === 'asc' ? ' ▲' : sorted === 'desc' ? ' ▼' : ''}
+                      {h.column.getCanResize() && (
+                        <div
+                          role="separator"
+                          aria-orientation="vertical"
+                          aria-label={`Resize column ${columnLabel(h.column.columnDef.header, h.column.id)}`}
+                          aria-valuenow={h.column.getSize()}
+                          aria-valuemin={MIN_COLUMN_WIDTH}
+                          aria-valuemax={MAX_COLUMN_WIDTH}
+                          tabIndex={0}
+                          className="et-resizer"
+                          data-resizing={h.column.getIsResizing() ? '' : undefined}
+                          draggable={false}
+                          onClick={(e) => e.stopPropagation()}
+                          onDoubleClick={(e) => {
+                            e.stopPropagation()
+                            setColumnSizing((prev) => { const { [h.column.id]: _removed, ...rest } = prev; return rest })
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              resizeBy(h.column.id, e.key === 'ArrowLeft' ? -KEYBOARD_RESIZE_STEP : KEYBOARD_RESIZE_STEP)
+                            } else if (e.key === 'Enter' || e.key === ' ') {
+                              e.stopPropagation() // do not trigger the header's sort toggle
+                            }
+                          }}
+                          onMouseDown={(e) => {
+                            resizingRef.current = true
+                            window.addEventListener('mouseup', () => { resizingRef.current = false }, { once: true })
+                            h.getResizeHandler()(e)
+                          }}
+                          onTouchStart={(e) => {
+                            resizingRef.current = true
+                            window.addEventListener('touchend', () => { resizingRef.current = false }, { once: true })
+                            h.getResizeHandler()(e)
+                          }}
+                        />
+                      )}
                     </Table.Th>
                   )
                 })}

@@ -100,7 +100,7 @@ export default function Margin() {
       {isLoading && <Text c="dimmed" size="sm">Loading…</Text>}
       {isError && <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />}
       {data && data.length === 0 && <HintCard>No ships found - Refresh SDE (Admin tool) first?</HintCard>}
-      {data && data.length > 0 && <DataTable rowDetail data={data} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />}
+      {data && data.length > 0 && <DataTable tableId="production-margin" rowDetail data={data} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />}
     </Stack>
   )
 }

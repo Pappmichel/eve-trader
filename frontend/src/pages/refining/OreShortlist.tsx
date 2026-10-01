@@ -113,7 +113,7 @@ export default function OreShortlist() {
       {filtered.length === 0 ? (
         <HintCard>No items match the current filters.</HintCard>
       ) : (
-        <DataTable rowDetail data={filtered} columns={columns} maxHeight={560} getRowId={(r) => String(r.item_id)} />
+        <DataTable tableId="refining-ore-shortlist" rowDetail data={filtered} columns={columns} maxHeight={560} getRowId={(r) => String(r.item_id)} />
       )}
     </Stack>
   )

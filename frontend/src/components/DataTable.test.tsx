@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MantineProvider } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
@@ -403,5 +403,104 @@ describe('DataTable column filter chips', () => {
     await user.click(screen.getByRole('button', { name: 'Filter Item = Zebra Ore' }))
     await user.click(screen.getByRole('button', { name: 'Remove filter Item' }))
     expect(bodyRows()).toHaveLength(3)
+  })
+})
+
+const headerTexts = () =>
+  Array.from(document.querySelectorAll('thead th')).map((h) => h.textContent?.replace(/[▲▼]/g, '').trim())
+const colWidths = () =>
+  Array.from(document.querySelectorAll('colgroup col')).map((c) => (c as HTMLElement).style.width)
+const dnd = () => ({ dataTransfer: { setData: vi.fn(), effectAllowed: '' } })
+
+describe('DataTable header drag and drop', () => {
+  it('moves a column to the position of the header it is dropped on, and persists the order', () => {
+    localStorage.clear()
+    renderTable({ tableId: 'dnd-test' })
+    const [itemTh, amountTh] = Array.from(document.querySelectorAll('thead th'))
+    fireEvent.dragStart(amountTh, dnd())
+    fireEvent.dragOver(itemTh, dnd())
+    fireEvent.drop(itemTh, dnd())
+    fireEvent.dragEnd(amountTh, dnd())
+    expect(headerTexts()).toEqual(['Amount', 'Item'])
+    expect(JSON.parse(localStorage.getItem('datatable:dnd-test:order')!)).toEqual(['amount', 'item'])
+  })
+
+  it('leaves the order alone when dropped on itself or outside any header', () => {
+    renderTable()
+    const [itemTh] = Array.from(document.querySelectorAll('thead th'))
+    fireEvent.dragStart(itemTh, dnd())
+    fireEvent.drop(itemTh, dnd())
+    expect(headerTexts()).toEqual(['Item', 'Amount'])
+  })
+})
+
+describe('DataTable column resizing', () => {
+  it('has a resize handle per column and does not sort when it is clicked', async () => {
+    const user = userEvent.setup()
+    renderTable()
+    const handle = screen.getByRole('separator', { name: 'Resize column Item' })
+    await user.click(handle)
+    expect(bodyRows().map((r) => within(r).getAllByRole('cell')[0].textContent)).toEqual(['Zebra Ore', 'Alpha Ore', 'Mid Ore'])
+  })
+
+  it('resizes with the keyboard, keeps exact px widths and persists them', () => {
+    localStorage.clear()
+    renderTable({ tableId: 'resize-test' })
+    expect(colWidths()).toEqual(['140px', '140px'])
+    const handle = screen.getByRole('separator', { name: 'Resize column Item' })
+    fireEvent.keyDown(handle, { key: 'ArrowRight' })
+    fireEvent.keyDown(handle, { key: 'ArrowRight' })
+    expect(colWidths()).toEqual(['160px', '140px'])
+    expect((document.querySelector('table') as HTMLElement).style.width).toBe('300px')
+    expect(JSON.parse(localStorage.getItem('datatable:resize-test:sizes')!)).toEqual({ item: 160 })
+
+    fireEvent.keyDown(handle, { key: 'ArrowLeft' })
+    expect(colWidths()[0]).toBe('150px')
+  })
+
+  it('clamps to the minimum width', () => {
+    renderTable()
+    const handle = screen.getByRole('separator', { name: 'Resize column Item' })
+    for (let i = 0; i < 20; i++) fireEvent.keyDown(handle, { key: 'ArrowLeft' })
+    expect(colWidths()[0]).toBe('60px')
+  })
+
+  it('resizes by dragging the handle with the mouse', () => {
+    renderTable()
+    const handle = screen.getByRole('separator', { name: 'Resize column Item' })
+    fireEvent.mouseDown(handle, { clientX: 100 })
+    fireEvent.mouseMove(document, { clientX: 160 })
+    fireEvent.mouseUp(document, { clientX: 160 })
+    expect(colWidths()[0]).toBe('200px')
+  })
+
+  it('resets one column on double click and all widths from the Columns menu', async () => {
+    const user = userEvent.setup()
+    renderTable()
+    const handle = screen.getByRole('separator', { name: 'Resize column Item' })
+    fireEvent.keyDown(handle, { key: 'ArrowRight' })
+    fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize column Amount' }), { key: 'ArrowRight' })
+    expect(colWidths()).toEqual(['150px', '150px'])
+
+    fireEvent.doubleClick(handle)
+    expect(colWidths()).toEqual(['140px', '150px'])
+
+    await user.click(screen.getByRole('button', { name: /Columns/ }))
+    await user.click(await screen.findByRole('button', { name: 'Reset widths' }))
+    expect(colWidths()).toEqual(['140px', '140px'])
+  })
+
+  it('includes column widths in saved views', async () => {
+    localStorage.clear()
+    const user = userEvent.setup()
+    renderTable({ tableId: 'size-view-test' })
+    fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize column Item' }), { key: 'ArrowRight' })
+    await user.click(screen.getByRole('button', { name: /Views/ }))
+    await user.type(await screen.findByLabelText('View name'), 'Wide item')
+    await user.click(await screen.findByRole('button', { name: 'Save' }))
+    fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize column Item' }), { key: 'ArrowRight' })
+    expect(colWidths()[0]).toBe('160px')
+    await user.click(await screen.findByText('Wide item'))
+    expect(colWidths()[0]).toBe('150px')
   })
 })

@@ -41,7 +41,7 @@ export default function UndercutCheck() {
       {data && data.length > 0 && (
         <>
           <Text size="sm" c="dimmed">{data.length} orders currently undercut</Text>
-          <DataTable rowDetail data={data} columns={columns} maxHeight={560} />
+          <DataTable tableId="trading-undercut-check" rowDetail data={data} columns={columns} maxHeight={560} />
         </>
       )}
     </Stack>

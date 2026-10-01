@@ -179,7 +179,7 @@ export default function Jobs() {
           {filtered.length === 0 ? (
             <HintCard>No jobs match the selected activity.</HintCard>
           ) : (
-            <DataTable rowDetail data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt}
+            <DataTable tableId="production-jobs" rowDetail data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt}
               getRowId={(r) => `${r.source}:${r.job_id}`} />
           )}
         </>

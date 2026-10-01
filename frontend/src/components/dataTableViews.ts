@@ -12,6 +12,7 @@ export interface SavedView {
   columnOrder: string[]
   globalFilter: string
   columnFilters?: ColumnFiltersState
+  columnSizing?: Record<string, number>
   // Page-owned state outside the table (e.g. Shortlist's status/category
   // filters), opaque to DataTable - handed back to the page's `apply`.
   extra?: unknown
@@ -76,3 +77,36 @@ export function moveColumn(ids: string[], id: string, delta: -1 | 1): string[] {
   ;[next[from], next[to]] = [next[to], next[from]]
   return next
 }
+
+// Column widths, persisted per table like visibility and order.
+export type ColumnSizes = Record<string, number>
+
+const sizesKey = (tableId: string) => `datatable:${tableId}:sizes`
+
+export function loadColumnSizes(tableId: string | undefined): ColumnSizes {
+  if (!tableId) return {}
+  const raw = readJson<unknown>(sizesKey(tableId), {})
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const out: ColumnSizes = {}
+  for (const [id, v] of Object.entries(raw)) if (typeof v === 'number' && Number.isFinite(v)) out[id] = v
+  return out
+}
+
+export function saveColumnSizes(tableId: string | undefined, sizes: ColumnSizes) {
+  if (tableId) writeJson(sizesKey(tableId), sizes)
+}
+
+// Move `id` to the position currently held by `targetId` (the drag-and-drop
+// result); no-op when either is unknown or they are the same.
+export function moveColumnTo(ids: string[], id: string, targetId: string): string[] {
+  const from = ids.indexOf(id)
+  const to = ids.indexOf(targetId)
+  if (from < 0 || to < 0 || from === to) return ids
+  const next = ids.filter((x) => x !== id)
+  next.splice(to, 0, id)
+  return next
+}
+
+export const MIN_COLUMN_WIDTH = 60
+export const MAX_COLUMN_WIDTH = 800
+export const KEYBOARD_RESIZE_STEP = 10

@@ -387,7 +387,7 @@ export default function Logistics() {
                   Total missing volume: <Text span fw={600} c="accent">{volume(totalVolume)}</Text>
                 </Text>
               )}
-              <DataTable rowDetail data={categoryRows} columns={columns} maxHeight={320} />
+              <DataTable tableId="production-logistics" rowDetail data={categoryRows} columns={columns} maxHeight={320} />
             </Card>
           )
         })
@@ -416,7 +416,7 @@ export default function Logistics() {
             <Text size="xs" c="dimmed" mb="xs">
               Total volume: <Text span fw={600} c="accent">{volume(distributionTotalVolume)}</Text>
             </Text>
-            <DataTable rowDetail data={distributionRows} columns={distributionColumns} maxHeight={320} />
+            <DataTable tableId="production-logistics-2" rowDetail data={distributionRows} columns={distributionColumns} maxHeight={320} />
           </>
         )}
       </Card>
@@ -450,7 +450,7 @@ export default function Logistics() {
                 </Text>
               )
             })()}
-            <DataTable rowDetail data={inventionRows} columns={columns} maxHeight={320} />
+            <DataTable tableId="production-logistics-3" rowDetail data={inventionRows} columns={columns} maxHeight={320} />
           </>
         )}
       </Card>

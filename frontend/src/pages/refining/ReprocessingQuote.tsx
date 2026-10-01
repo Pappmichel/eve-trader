@@ -120,7 +120,7 @@ export default function ReprocessingQuote() {
           {result.rows.length === 0 ? (
             <HintCard>No items parsed from the paste.</HintCard>
           ) : (
-            <DataTable rowDetail data={result.rows} columns={columns} maxHeight={480} getRowId={(r) => `${r.name}-${r.type_id ?? 'unknown'}`} />
+            <DataTable tableId="refining-reprocessing-quote" rowDetail data={result.rows} columns={columns} maxHeight={480} getRowId={(r) => `${r.name}-${r.type_id ?? 'unknown'}`} />
           )}
 
           {result.mineral_totals.length > 0 && (
@@ -129,7 +129,7 @@ export default function ReprocessingQuote() {
               <Text size="xs" c="dimmed">
                 Summed across every item above marked "Reprocess" - what you'd actually walk away with.
               </Text>
-              <DataTable rowDetail data={result.mineral_totals} columns={mineralColumns} maxHeight={320}
+              <DataTable tableId="refining-reprocessing-quote-2" rowDetail data={result.mineral_totals} columns={mineralColumns} maxHeight={320}
                 getRowId={(m) => String(m.type_id)} />
             </>
           )}

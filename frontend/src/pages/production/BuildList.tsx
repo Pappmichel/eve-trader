@@ -103,7 +103,7 @@ export default function BuildList() {
       {filtered.length === 0 ? (
         <HintCard>No jobs in the selected categories.</HintCard>
       ) : (
-        <DataTable rowDetail data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
+        <DataTable tableId="production-build-list" rowDetail data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
       )}
       <Text size="xs" c="dimmed">
         Decryptor 'None' means: no decryptor is the best choice (not 'no computation'). '–' = Tech I/Reaction

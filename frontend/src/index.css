@@ -60,3 +60,8 @@ tr[data-changed] > td { animation: et-flash 2.5s ease-out; }
 
 /* Thin scrollbars that match the surface colours */
 * { scrollbar-width: thin; scrollbar-color: #24313F #0B0F14; }
+
+/* DataTable column resize handle (right edge of each header cell) and drag state */
+.et-resizer { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; user-select: none; touch-action: none; }
+.et-resizer:hover, .et-resizer[data-resizing], .et-resizer:focus-visible { background: #35D0BA; opacity: 0.8; outline: none; }
+th[draggable="true"] { cursor: grab; }

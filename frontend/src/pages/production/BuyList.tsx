@@ -93,7 +93,7 @@ export default function BuyList() {
       {filtered.length === 0 ? (
         <HintCard>No items in the selected categories.</HintCard>
       ) : (
-        <DataTable rowDetail data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
+        <DataTable tableId="production-buy-list" rowDetail data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
       )}
     </Stack>
   )
