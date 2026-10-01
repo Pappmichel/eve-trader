@@ -1,14 +1,16 @@
 import { useState } from 'react'
 import {
-  Badge, Button, Container, Drawer, Group, Image, Loader, Stack, Table, Text, Title, Tooltip,
+  Badge, Button, Container, Drawer, Group, Image, Loader, Stack, Text, Title, Tooltip,
 } from '@mantine/core'
 import { IconArrowLeft } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
+import type { ColumnDef } from '@tanstack/react-table'
 
 import { charInfoApi } from '../../../api/client'
 import type { CharInfoCharacter, CharInfoImplant, CharInfoStandingRow } from '../../../api/types'
 import { Countdown } from '../../../components/Countdown'
+import { DataTable } from '../../../components/DataTable'
 import { FieldState } from '../../../components/FieldState'
 import { dateTime, isk, qty } from '../../../format'
 import { useCharacterSync } from '../../../hooks/useCharacterSync'
@@ -16,23 +18,53 @@ import { isStale, newestStamp, useSyncWhenStale } from '../../../hooks/useSyncWh
 
 const OVERVIEW_KEY = ['char-info', 'overview']
 
+const STANDING_COLUMNS: ColumnDef<CharInfoStandingRow, any>[] = [
+  { header: 'Name', accessorKey: 'name', size: 260 },
+  {
+    header: 'Standing', accessorKey: 'standing', size: 100,
+    cell: (i) => {
+      const v = i.getValue() as number
+      return <Text size="sm" c={v < 0 ? 'danger' : undefined}>{v.toFixed(2)}</Text>
+    },
+  },
+]
+
+type JournalRow = { id?: number | null; date: string; ref_type?: string | null; amount: number; row: number }
+const JOURNAL_COLUMNS: ColumnDef<JournalRow, any>[] = [
+  { header: 'Date', accessorKey: 'date', size: 170, cell: (i) => dateTime(i.getValue() as string) },
+  {
+    header: 'Type', id: 'ref_type', size: 200, meta: { filterable: true },
+    accessorFn: (e) => (e.ref_type ?? 'unknown').replace(/_/g, ' '),
+  },
+  {
+    header: 'Amount', accessorKey: 'amount', size: 150,
+    cell: (i) => {
+      const v = i.getValue() as number
+      return <Text size="sm" c={v < 0 ? 'danger' : undefined}>{isk(v)}</Text>
+    },
+  },
+]
+
+const LOYALTY_COLUMNS: ColumnDef<{ corporation_id: number; corporation_name: string; loyalty_points: number }, any>[] = [
+  { header: 'Corporation', accessorKey: 'corporation_name', size: 260 },
+  { header: 'Loyalty points', accessorKey: 'loyalty_points', size: 140, cell: (i) => `${qty(i.getValue())} LP` },
+]
+
+type CorpHistoryRow = { corporation_id: number; corporation_name: string; start_date: string | null; row: number }
+const CORP_HISTORY_COLUMNS: ColumnDef<CorpHistoryRow, any>[] = [
+  { header: 'Corporation', accessorKey: 'corporation_name', size: 260 },
+  { header: 'Since', accessorKey: 'start_date', size: 170, cell: (i) => dateTime(i.getValue() as string | null) },
+]
+
 function StandingsTable({ title, rows }: { title: string; rows: CharInfoStandingRow[] }) {
   if (rows.length === 0) return null
   return (
     <div>
       <Text size="sm" fw={600} mb={4}>{title}</Text>
-      <Table.ScrollContainer minWidth={0}>
-        <Table withTableBorder striped>
-          <Table.Tbody>
-            {rows.map((r) => (
-              <Table.Tr key={r.from_id}>
-                <Table.Td>{r.name}</Table.Td>
-                <Table.Td ta="right" c={r.standing < 0 ? 'danger' : undefined}>{r.standing.toFixed(2)}</Table.Td>
-              </Table.Tr>
-            ))}
-          </Table.Tbody>
-        </Table>
-      </Table.ScrollContainer>
+      <DataTable
+        data={rows} columns={STANDING_COLUMNS} maxHeight={320}
+        getRowId={(r) => String(r.from_id)} exportFilename={`standings-${title.toLowerCase().replace(/\s+/g, '-')}`}
+      />
     </div>
   )
 }
@@ -57,21 +89,10 @@ function WalletJournal({ characterId }: { characterId: number }) {
             {j.truncated ? ` · showing the newest ${j.entries.length} of ${j.total_entries}` : ''}
           </Text>
           {j.entries.length === 0 ? <Text size="sm" c="dimmed">No journal entries.</Text> : (
-            <div style={{ maxHeight: 320, overflowY: 'auto' }}>
-              <Table.ScrollContainer minWidth={0}>
-                <Table withTableBorder striped>
-                  <Table.Tbody>
-                    {j.entries.map((e, i) => (
-                      <Table.Tr key={e.id ?? i}>
-                        <Table.Td>{dateTime(e.date)}</Table.Td>
-                        <Table.Td>{(e.ref_type ?? 'unknown').replace(/_/g, ' ')}</Table.Td>
-                        <Table.Td ta="right" c={e.amount < 0 ? 'danger' : undefined}>{isk(e.amount)}</Table.Td>
-                      </Table.Tr>
-                    ))}
-                  </Table.Tbody>
-                </Table>
-              </Table.ScrollContainer>
-            </div>
+            <DataTable
+              data={j.entries.map((e, i) => ({ ...e, row: e.id ?? i }))} columns={JOURNAL_COLUMNS} maxHeight={320}
+              getRowId={(e) => String(e.row)} exportFilename="wallet-journal"
+            />
           )}
         </Stack>
       )}
@@ -130,18 +151,10 @@ function CharacterDetail({ characterId }: { characterId: number }) {
             {(rows) => rows.length === 0
               ? <Text size="sm" c="dimmed">No loyalty points.</Text>
               : (
-                <Table.ScrollContainer minWidth={0}>
-                  <Table withTableBorder striped>
-                    <Table.Tbody>
-                      {rows.map((r) => (
-                        <Table.Tr key={r.corporation_id}>
-                          <Table.Td>{r.corporation_name}</Table.Td>
-                          <Table.Td ta="right">{qty(r.loyalty_points)} LP</Table.Td>
-                        </Table.Tr>
-                      ))}
-                    </Table.Tbody>
-                  </Table>
-                </Table.ScrollContainer>
+                <DataTable
+                  data={rows} columns={LOYALTY_COLUMNS} maxHeight={320}
+                  getRowId={(r) => String(r.corporation_id)} exportFilename="loyalty-points"
+                />
               )}
           </FieldState>
         )}
@@ -203,18 +216,10 @@ function CharacterDetail({ characterId }: { characterId: number }) {
         {(data.corporation_history ?? []).length === 0
           ? <Text size="sm" c="dimmed">Unavailable.</Text>
           : (
-            <Table.ScrollContainer minWidth={0}>
-              <Table withTableBorder striped>
-                <Table.Tbody>
-                  {(data.corporation_history ?? []).map((h, i) => (
-                    <Table.Tr key={`${h.corporation_id}-${i}`}>
-                      <Table.Td>{h.corporation_name}</Table.Td>
-                      <Table.Td ta="right">{dateTime(h.start_date)}</Table.Td>
-                    </Table.Tr>
-                  ))}
-                </Table.Tbody>
-              </Table>
-            </Table.ScrollContainer>
+            <DataTable
+              data={(data.corporation_history ?? []).map((h, i) => ({ ...h, row: i }))} columns={CORP_HISTORY_COLUMNS} maxHeight={320}
+              getRowId={(h) => `${h.corporation_id}-${h.row}`} exportFilename="corporation-history"
+            />
           )}
       </div>
     </Stack>
@@ -245,6 +250,91 @@ export default function CharacterInfoPage() {
   const [selected, setSelected] = useState<number | null>(null)
   const overview = useQuery({ queryKey: OVERVIEW_KEY, queryFn: charInfoApi.overview })
   const characters = overview.data?.characters ?? []
+  // Cells are two lines tall (name + corporation, system + station), so the overview rows are taller.
+  const overviewColumns: ColumnDef<CharInfoCharacter, any>[] = [
+    {
+      header: 'Character', id: 'character', size: 220,
+      accessorFn: (c) => c.character_name ?? `#${c.character_id}`,
+      cell: (i) => {
+        const c = i.row.original
+        return (
+          <>
+            <Text size="sm" fw={600}>{c.character_name ?? `#${c.character_id}`}</Text>
+            <Text size="xs" c="dimmed">{c.corporation_name ?? '–'}{c.alliance_name ? ` · ${c.alliance_name}` : ''}</Text>
+          </>
+        )
+      },
+    },
+    {
+      header: 'Security', accessorKey: 'security_status', size: 100,
+      cell: (i) => (i.getValue() === null ? '–' : (i.getValue() as number).toFixed(2)),
+    },
+    {
+      header: 'Wallet', id: 'wallet', size: 150,
+      accessorFn: (c) => (c.wallet_balance.state === 'ok' ? c.wallet_balance.value : null),
+      cell: (i) => <FieldState field={i.row.original.wallet_balance}>{(v) => isk(v)}</FieldState>,
+    },
+    {
+      header: 'Status', id: 'status', size: 110,
+      accessorFn: (c) => (c.online.state === 'ok' && c.online.value ? (c.online.value.online ? 'online' : 'offline') : null),
+      cell: (i) => (
+        <FieldState field={i.row.original.online}>
+          {(o) => (
+            <Badge size="sm" color={o.online ? 'accent' : 'gray'} variant="light">{o.online ? 'online' : 'offline'}</Badge>
+          )}
+        </FieldState>
+      ),
+    },
+    {
+      header: 'Location', id: 'location', size: 240,
+      accessorFn: (c) => (c.location.state === 'ok' ? c.location.value?.solar_system_name ?? null : null),
+      cell: (i) => (
+        <FieldState field={i.row.original.location}>
+          {(l) => (
+            <div>
+              <Text size="sm">{l.solar_system_name ?? (l.solar_system_id ? `System ${l.solar_system_id}` : '–')}</Text>
+              {l.location_id && (
+                <Text size="xs" c="dimmed">
+                  {l.location_name ?? `${l.location_kind === 'structure' ? 'Structure' : 'Station'} ${l.location_id}`}
+                </Text>
+              )}
+            </div>
+          )}
+        </FieldState>
+      ),
+    },
+    {
+      header: 'Ship', id: 'ship', size: 200,
+      accessorFn: (c) => (c.ship.state === 'ok' ? c.ship.value?.ship_type_name ?? null : null),
+      cell: (i) => (
+        <FieldState field={i.row.original.ship}>
+          {(sh) => (
+            <div>
+              <Text size="sm">{sh.ship_type_name ?? (sh.ship_type_id ? `Type ${sh.ship_type_id}` : '–')}</Text>
+              {sh.ship_name && <Text size="xs" c="dimmed">{sh.ship_name}</Text>}
+            </div>
+          )}
+        </FieldState>
+      ),
+    },
+    {
+      header: 'Jump fatigue', id: 'fatigue', size: 140, enableSorting: false,
+      cell: (i) => {
+        const c = i.row.original
+        return c.fatigue ? (
+          <FieldState field={c.fatigue}>
+            {(f) => <Countdown until={f.jump_fatigue_expire_date} doneLabel="none" />}
+          </FieldState>
+        ) : null
+      },
+    },
+    {
+      header: '', id: 'details', size: 90, enableSorting: false, enableResizing: false,
+      cell: (i) => (
+        <Button size="compact-xs" variant="default" onClick={() => setSelected(i.row.original.character_id)}>Details</Button>
+      ),
+    },
+  ]
 
   // Refresh = sync the snapshot kinds (wallet balance, standings, loyalty, clones, implants).
   // Location/ship/online are live reads and are refetched with the overview
@@ -301,81 +391,10 @@ export default function CharacterInfoPage() {
       {overview.isLoading ? <Loader color="accent" /> : characters.length === 0 ? (
         <Text c="dimmed">No ESI characters registered yet. Add one on the Characters page.</Text>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <Table striped highlightOnHover withTableBorder>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Character</Table.Th>
-                <Table.Th>Security</Table.Th>
-                <Table.Th>Wallet</Table.Th>
-                <Table.Th>Status</Table.Th>
-                <Table.Th>Location</Table.Th>
-                <Table.Th>Ship</Table.Th>
-                <Table.Th>Jump fatigue</Table.Th>
-                <Table.Th />
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {characters.map((c) => (
-                <Table.Tr key={c.character_id}>
-                  <Table.Td>
-                    <Text size="sm" fw={600}>{c.character_name ?? `#${c.character_id}`}</Text>
-                    <Text size="xs" c="dimmed">
-                      {c.corporation_name ?? '–'}{c.alliance_name ? ` · ${c.alliance_name}` : ''}
-                    </Text>
-                  </Table.Td>
-                  <Table.Td>{c.security_status === null ? '–' : c.security_status.toFixed(2)}</Table.Td>
-                  <Table.Td><FieldState field={c.wallet_balance}>{(v) => isk(v)}</FieldState></Table.Td>
-                  <Table.Td>
-                    <FieldState field={c.online}>
-                      {(o) => (
-                        <Badge size="sm" color={o.online ? 'accent' : 'gray'} variant="light">
-                          {o.online ? 'online' : 'offline'}
-                        </Badge>
-                      )}
-                    </FieldState>
-                  </Table.Td>
-                  <Table.Td>
-                    <FieldState field={c.location}>
-                      {(l) => (
-                        <div>
-                          <Text size="sm">{l.solar_system_name ?? (l.solar_system_id ? `System ${l.solar_system_id}` : '–')}</Text>
-                          {l.location_id && (
-                            <Text size="xs" c="dimmed">
-                              {l.location_name ?? `${l.location_kind === 'structure' ? 'Structure' : 'Station'} ${l.location_id}`}
-                            </Text>
-                          )}
-                        </div>
-                      )}
-                    </FieldState>
-                  </Table.Td>
-                  <Table.Td>
-                    <FieldState field={c.ship}>
-                      {(s) => (
-                        <div>
-                          <Text size="sm">{s.ship_type_name ?? (s.ship_type_id ? `Type ${s.ship_type_id}` : '–')}</Text>
-                          {s.ship_name && <Text size="xs" c="dimmed">{s.ship_name}</Text>}
-                        </div>
-                      )}
-                    </FieldState>
-                  </Table.Td>
-                  <Table.Td>
-                    {c.fatigue && (
-                      <FieldState field={c.fatigue}>
-                        {(f) => <Countdown until={f.jump_fatigue_expire_date} doneLabel="none" />}
-                      </FieldState>
-                    )}
-                  </Table.Td>
-                  <Table.Td>
-                    <Button size="compact-xs" variant="default" onClick={() => setSelected(c.character_id)}>
-                      Details
-                    </Button>
-                  </Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
-        </div>
+        <DataTable
+          data={characters} columns={overviewColumns} rowHeight={56} maxHeight={600}
+          getRowId={(c) => String(c.character_id)} exportFilename="character-overview"
+        />
       )}
 
       <Drawer
