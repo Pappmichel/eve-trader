@@ -10,8 +10,8 @@ import {
   type VisibilityState,
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon, Stack } from '@mantine/core'
-import { IconSearch, IconDownload, IconColumns, IconX, IconAlertTriangle, IconRefresh } from '@tabler/icons-react'
+import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon, Stack, CopyButton } from '@mantine/core'
+import { IconSearch, IconDownload, IconColumns, IconX, IconAlertTriangle, IconRefresh, IconCopy, IconCheck } from '@tabler/icons-react'
 import { relativeTime } from '../format'
 
 // GitHub issue #52 used to force-hide columns marked `meta: { mobileHide:
@@ -32,6 +32,10 @@ declare module '@tanstack/react-table' {
     // wants a richer title (or none) should set this instead of fighting
     // the Td's default `title`.
     cellTitle?: (row: TData, value: TValue) => string | undefined
+    // Shows a copy button on hover that copies the raw cell value (not the
+    // formatted text, so "1234567" rather than "1,234,567 ISK"). Opt-in per
+    // column; hidden when the browser has no clipboard (non-secure context).
+    copyable?: boolean
   }
 }
 
@@ -106,9 +110,44 @@ interface DataTableProps<T> {
   // (usually `(row) => String(row.type_id)`) for any table with editable
   // cells.
   getRowId?: (row: T) => string
+  // Opt-in row click (e.g. to open a detail drawer). Clicks on buttons, inputs
+  // and links inside a row are ignored so editable/action cells keep working.
+  // `activeRowId` (a `getRowId` value) highlights the currently open row.
+  onRowClick?: (row: T) => void
+  activeRowId?: string
+}
+
+// Elements inside a row that handle their own clicks.
+const INTERACTIVE_SELECTOR = 'button, input, textarea, select, a, [role="button"], [role="checkbox"]'
+
+function CopyCell({ value }: { value: string }) {
+  return (
+    <CopyButton value={value} timeout={2000}>
+      {({ copied, copy }) => (
+        <ActionIcon
+          className="et-copy"
+          size="xs"
+          variant="subtle"
+          color={copied ? 'accent' : 'gray'}
+          aria-label={copied ? 'Copied' : 'Copy value'}
+          onClick={(e) => { e.stopPropagation(); copy() }}
+          style={{ marginLeft: 4, verticalAlign: 'middle' }}
+        >
+          {copied ? <IconCheck size={12} /> : <IconCopy size={12} />}
+        </ActionIcon>
+      )}
+    </CopyButton>
+  )
 }
 
 const SKELETON_ROWS = 8
+
+// navigator.clipboard only exists in secure contexts (HTTPS / localhost); on a
+// plain-HTTP LAN install the copy button would silently do nothing, so hide it.
+const canCopy = typeof window !== 'undefined'
+  && window.isSecureContext !== false
+  && typeof navigator !== 'undefined'
+  && !!navigator.clipboard
 
 function cellText(value: unknown): string | undefined {
   if (value === null || value === undefined) return undefined
@@ -151,6 +190,8 @@ export function DataTable<T>({
   exportFilename = 'export',
   getRowId,
   dataUpdatedAt,
+  onRowClick,
+  activeRowId,
 }: DataTableProps<T>) {
   const [sorting, setSorting] = useState<SortingState>([])
   const [globalFilter, setGlobalFilter] = useState('')
@@ -417,17 +458,31 @@ export function DataTable<T>({
                 {virtualItems.map((vItem) => {
                   const row = rows[vItem.index]
                   return (
-                    <Table.Tr key={row.id}>
+                    <Table.Tr
+                      key={row.id}
+                      data-clickable={onRowClick ? '' : undefined}
+                      data-active={activeRowId !== undefined && row.id === activeRowId ? '' : undefined}
+                      onClick={onRowClick ? (e) => {
+                        if ((e.target as HTMLElement).closest(INTERACTIVE_SELECTOR)) return
+                        onRowClick(row.original)
+                      } : undefined}
+                    >
                       {row.getVisibleCells()
-                        .map((cell) => (
-                          <Table.Td
-                            key={cell.id}
-                            style={cellStyle}
-                            title={cell.column.columnDef.meta?.cellTitle?.(cell.row.original, cell.getValue()) ?? cellText(cell.getValue())}
-                          >
-                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                          </Table.Td>
-                        ))}
+                        .map((cell) => {
+                          const copyText = cell.column.columnDef.meta?.copyable && canCopy
+                            ? cellText(cell.getValue())
+                            : undefined
+                          return (
+                            <Table.Td
+                              key={cell.id}
+                              style={cellStyle}
+                              title={cell.column.columnDef.meta?.cellTitle?.(cell.row.original, cell.getValue()) ?? cellText(cell.getValue())}
+                            >
+                              {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                              {copyText !== undefined && <CopyCell value={copyText} />}
+                            </Table.Td>
+                          )
+                        })}
                     </Table.Tr>
                   )
                 })}

@@ -91,7 +91,7 @@ export default function Shortlist() {
   }, [filtered])
 
   const columns = useMemo<ColumnDef<ShortlistRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'item', size: 220 },
+    { header: 'Item', accessorKey: 'item', size: 220, meta: { copyable: true } },
     { header: 'Category', accessorKey: 'category', size: 110 },
     { header: 'Meta Level', accessorKey: 'meta_level', size: 90, cell: (i) => i.getValue() ?? '–' },
     {

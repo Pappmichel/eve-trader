@@ -54,8 +54,8 @@ export const theme = createTheme({
         th: {
           color: COLORS.textDim,
           fontFamily: 'Rajdhani, sans-serif',
-          fontSize: 13,
-          letterSpacing: '0.06em',
+          fontSize: 12,
+          letterSpacing: '0.04em',
           textTransform: 'uppercase',
           borderBottom: `1px solid ${COLORS.border}`,
           background: COLORS.surface,
@@ -67,6 +67,31 @@ export const theme = createTheme({
       defaultProps: { radius: 'xs', variant: 'light' },
       styles: { root: { fontFamily: 'Rajdhani, sans-serif', letterSpacing: '0.05em', fontWeight: 700 } },
     },
+    Tabs: {
+      styles: {
+        tab: { fontFamily: 'Rajdhani, sans-serif', color: COLORS.textDim },
+        list: { borderColor: COLORS.border },
+      },
+    },
+    NavLink: {
+      styles: { label: { fontFamily: 'Rajdhani, sans-serif', letterSpacing: '0.03em' } },
+    },
+    Paper: {
+      defaultProps: { radius: 'sm' },
+      styles: { root: { background: COLORS.surface, borderColor: COLORS.border } },
+    },
+    Card: {
+      defaultProps: { radius: 'sm' },
+      styles: {
+        root: {
+          background: `linear-gradient(180deg, ${COLORS.surface2} 0%, ${COLORS.surface} 100%)`,
+          borderColor: COLORS.border,
+        },
+      },
+    },
+    TextInput: { styles: { input: { background: COLORS.bg, borderColor: COLORS.border } } },
+    NumberInput: { styles: { input: { background: COLORS.bg, borderColor: COLORS.border } } },
+    Select: { styles: { input: { background: COLORS.bg, borderColor: COLORS.border } } },
     Button: {
       defaultProps: { radius: 'sm' },
       styles: { root: { fontFamily: 'Rajdhani, sans-serif', letterSpacing: '0.05em', fontWeight: 700 } },

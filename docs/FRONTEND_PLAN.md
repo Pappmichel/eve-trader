@@ -10,11 +10,12 @@ Effort: S = up to half a day, M = 1-2 days, L = 3+ days.
 
 | Part | State |
 |---|---|
-| Theme step 1 (Table, Badge, Button, tabular numbers) | implemented, committed |
-| Truncated column headers after step 1 | open, see section A.1 |
-| Theme steps 2-4 | draft |
+| Theme steps 1-3 (Table, Badge, Button, Tabs, NavLink, Paper, Card, inputs, tabular numbers) | implemented, committed |
+| Truncated column headers after step 1 | fixed (header font 12 px, letter spacing 0.04em) |
+| Theme step 4 (`.et-panel`, scrollbars) | draft, deliberately not applied yet |
+| `DataTable` foundation: `onRowClick`, `activeRowId`, `meta.copyable` | implemented, opt-in, covered by tests; only the Shortlist item column uses `copyable` so far |
 | Findings B1-B3 (price history endpoint) | open, unverified (no backend in the cloud session) |
-| Interactivity, all 14 items | plan only |
+| Remaining interactivity items | plan only |
 
 None of this has been checked against a real backend. The theme screenshots
 were taken with a mocked API. Rajdhani does not load in the cloud environment
@@ -117,9 +118,12 @@ Apply `.et-panel` only to Landing cards and page headers.
 
 ## A.5 Notes
 
-- Whether nested selectors (`'&:hover'`, `'&[data-active]'`) work inside
-  Mantine 9 `styles` is unverified. If not: move the rules to `index.css`
-  using `.mantine-Card-root:hover` and `[data-active]`.
+- Mantine's `styles` API applies plain inline styles, so nested selectors
+  (`'&:hover'`, `'&[data-active]'`) cannot work there. Static values live in
+  `theme.ts`; hover and active states live in `index.css` via
+  `.mantine-Card-root:hover`, `.mantine-Tabs-tab[data-active]` and
+  `.mantine-NavLink-root[data-active]`. Tab letter spacing was dropped
+  because it made the Trading tab row wrap at 1500 px.
 - No new fonts, no palette change, no animation beyond the 120 ms border
   transition.
 - Order: A.1 remainder → A.2 → A.3 → A.4. Before/after screenshots of Landing

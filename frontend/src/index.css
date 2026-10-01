@@ -28,3 +28,17 @@ html, body, #root {
 
 /* Tabular numbers so price columns align */
 table td { font-variant-numeric: tabular-nums; }
+
+/* Interactive states for theme overrides. Mantine's `styles` API applies plain
+   inline styles, which cannot express :hover / [data-active], so those live here. */
+.mantine-Card-root { transition: border-color 120ms ease; }
+.mantine-Card-root:hover { border-color: #35D0BA; }
+.mantine-Tabs-tab[data-active] { color: #35D0BA; border-color: #35D0BA; }
+.mantine-NavLink-root { border-radius: 4px; }
+.mantine-NavLink-root[data-active] { background: rgba(53, 208, 186, 0.10); color: #35D0BA; }
+
+/* DataTable: clickable rows and the hover-only copy button */
+tr[data-clickable] { cursor: pointer; }
+tr[data-active] > td { background: rgba(53, 208, 186, 0.12) !important; }
+.et-copy { opacity: 0; transition: opacity 120ms ease; }
+td:hover .et-copy, .et-copy:focus-visible { opacity: 1; }

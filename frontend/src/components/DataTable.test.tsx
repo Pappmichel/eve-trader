@@ -162,3 +162,70 @@ describe('DataTable', () => {
     vi.unstubAllGlobals()
   })
 })
+
+describe('DataTable row click', () => {
+  it('does nothing and is not marked clickable when onRowClick is not set', async () => {
+    const user = userEvent.setup()
+    renderTable()
+    await user.click(bodyRows()[0])
+    expect(bodyRows()[0]).not.toHaveAttribute('data-clickable')
+  })
+
+  it('calls onRowClick with the clicked row and marks rows clickable', async () => {
+    const user = userEvent.setup()
+    const onRowClick = vi.fn()
+    renderTable({ onRowClick })
+    expect(bodyRows()[1]).toHaveAttribute('data-clickable')
+    await user.click(bodyRows()[1])
+    expect(onRowClick).toHaveBeenCalledWith(rows[1])
+  })
+
+  it('ignores clicks on interactive elements inside a row', async () => {
+    const user = userEvent.setup()
+    const onRowClick = vi.fn()
+    const cols: ColumnDef<Row, any>[] = [
+      { header: 'Item', accessorKey: 'item' },
+      { header: 'Act', id: 'act', cell: () => <button type="button">Go</button> },
+    ]
+    render(
+      <MantineProvider>
+        <DataTable data={rows} columns={cols} onRowClick={onRowClick} />
+      </MantineProvider>,
+    )
+    await user.click(screen.getAllByRole('button', { name: 'Go' })[0])
+    expect(onRowClick).not.toHaveBeenCalled()
+  })
+
+  it('highlights the row whose getRowId matches activeRowId', () => {
+    renderTable({ getRowId: (r) => r.item, activeRowId: 'Mid Ore' })
+    const active = bodyRows().filter((r) => r.hasAttribute('data-active'))
+    expect(active).toHaveLength(1)
+    expect(within(active[0]).getAllByRole('cell')[0].textContent).toBe('Mid Ore')
+  })
+})
+
+describe('DataTable copyable columns', () => {
+  const copyColumns: ColumnDef<Row, any>[] = [
+    { header: 'Item', accessorKey: 'item', meta: { copyable: true } },
+    { header: 'Amount', accessorKey: 'amount' },
+  ]
+
+  it('renders no copy button unless a column is marked copyable', () => {
+    renderTable()
+    expect(screen.queryAllByRole('button', { name: /copy value/i })).toHaveLength(0)
+  })
+
+  it('renders a copy button on copyable cells when a clipboard exists', async () => {
+    vi.resetModules()
+    vi.stubGlobal('isSecureContext', true)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: vi.fn() }, configurable: true })
+    const { DataTable: Fresh } = await import('./DataTable')
+    render(
+      <MantineProvider>
+        <Fresh data={rows} columns={copyColumns} />
+      </MantineProvider>,
+    )
+    expect(screen.getAllByRole('button', { name: /copy value/i })).toHaveLength(rows.length)
+    vi.unstubAllGlobals()
+  })
+})
