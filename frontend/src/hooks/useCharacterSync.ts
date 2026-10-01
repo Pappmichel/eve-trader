@@ -1,4 +1,4 @@
-import { notifications } from '@mantine/notifications'
+import { notify } from '../notify'
 
 import type { CharInfoSyncResult } from '../api/types'
 import { useAction } from './useAction'
@@ -17,14 +17,14 @@ export function useCharacterSync(
     async () => {
       const result = await sync()
       if (result.in_flight.length > 0) {
-        notifications.show({
+        notify({
           title: 'Sync already running',
           message: `${result.in_flight.length} character(s) are already being synced by another run. Their data updates when it finishes.`,
           color: 'info',
         })
       }
       for (const f of result.failed) {
-        notifications.show({
+        notify({
           title: `Sync failed for ${f.name ?? f.owner_id}`,
           message: f.error ?? 'Unknown error',
           color: 'danger',

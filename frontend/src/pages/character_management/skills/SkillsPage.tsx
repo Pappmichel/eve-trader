@@ -3,7 +3,7 @@ import {
   Accordion, Alert, Badge, Button, Container, Group, Loader, NumberInput, Select, SimpleGrid, Stack, Table, Tabs,
   Text, TextInput, Title, Tooltip,
 } from '@mantine/core'
-import { notifications } from '@mantine/notifications'
+import { notify } from '../../../notify'
 import { IconArrowLeft } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -184,7 +184,7 @@ function QueueGuard() {
   const save = useMutation({
     mutationFn: (h: number) => charSkillsApi.setSettings(h),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['char-skills'] }),
-    onError: (err: unknown) => notifications.show({
+    onError: (err: unknown) => notify({
       title: 'Could not save', color: 'danger', message: err instanceof ApiError ? err.message : String(err),
     }),
   })

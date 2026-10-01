@@ -1,7 +1,7 @@
 import { Alert, Button, ColorSwatch, Divider, Group, Select, Stack, Switch, Text, TextInput, Tooltip } from '@mantine/core'
 import { modals } from '@mantine/modals'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { notifications } from '@mantine/notifications'
+import { notify } from '../../../notify'
 
 import { ApiError, charMailApi } from '../../../api/client'
 import type { MailArchiveRow } from '../../../api/types'
@@ -21,7 +21,7 @@ function ArchiveRow({ row }: { row: MailArchiveRow }) {
       queryClient.invalidateQueries({ queryKey: ['char-mail'] })
     },
     onError: (err: unknown) => {
-      notifications.show({
+      notify({
         title: 'Mail archive', color: 'danger',
         message: err instanceof ApiError ? err.message : String(err),
       })
@@ -94,7 +94,7 @@ function LabelManager() {
   const chars = (data?.characters ?? []).filter((c) => c.capabilities?.organize === 'ready')
   const active = chars.find((c) => String(c.character_id) === characterId) ?? chars[0]
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['char-mail'] })
-  const fail = (title: string) => (err: unknown) => notifications.show({
+  const fail = (title: string) => (err: unknown) => notify({
     title, color: 'danger', message: err instanceof ApiError ? err.message : String(err),
   })
   const create = useMutation({

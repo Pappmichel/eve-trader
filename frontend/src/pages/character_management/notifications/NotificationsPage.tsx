@@ -2,7 +2,7 @@ import { useState } from 'react'
 import {
   Badge, Button, Checkbox, Container, Group, Loader, Modal, Select, Stack, Table, Text, Title, Tooltip,
 } from '@mantine/core'
-import { notifications } from '@mantine/notifications'
+import { notify } from '../../../notify'
 import { IconArrowLeft } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -80,7 +80,7 @@ export default function NotificationsPage() {
     mutationFn: (v: { item: NotificationItem; read: boolean }) =>
       charNotificationsApi.setRead(v.item.character_id, [v.item.notification_id], v.read),
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
-    onError: (e) => notifications.show({
+    onError: (e) => notify({
       title: 'Could not change the flag', message: e instanceof ApiError ? e.message : 'Request failed.', color: 'danger',
     }),
   })

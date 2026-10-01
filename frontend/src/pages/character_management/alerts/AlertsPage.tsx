@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import {
   Alert, Anchor, Badge, Button, Checkbox, Container, Group, Loader, NumberInput, Paper, Stack, Switch, Table, Text, Title,
 } from '@mantine/core'
-import { notifications } from '@mantine/notifications'
+import { notify } from '../../../notify'
 import { IconArrowLeft } from '@tabler/icons-react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -75,12 +75,12 @@ export default function AlertsPage() {
   useEffect(() => {
     if (!result) return
     const info = LINK_RESULT[result]
-    if (info) notifications.show(info)
+    if (info) notify(info)
     qc.invalidateQueries({ queryKey: KEY })
     setParams({}, { replace: true })
   }, [result, qc, setParams])
 
-  const notifyError = (e: unknown) => notifications.show({ title: 'Discord Alerts', message: errorMessage(e), color: 'danger' })
+  const notifyError = (e: unknown) => notify({ title: 'Discord Alerts', message: errorMessage(e), color: 'danger' })
   const refresh = () => qc.invalidateQueries({ queryKey: KEY })
 
   const link = useMutation({
@@ -91,7 +91,7 @@ export default function AlertsPage() {
   const unlink = useMutation({ mutationFn: charAlertsApi.unlink, onSuccess: refresh, onError: notifyError })
   const test = useMutation({
     mutationFn: charAlertsApi.test,
-    onSuccess: () => notifications.show({ title: 'Test message sent', message: 'Check your Discord DMs.', color: 'accent' }),
+    onSuccess: () => notify({ title: 'Test message sent', message: 'Check your Discord DMs.', color: 'accent' }),
     onError: notifyError,
   })
   const subscribe = useMutation({ mutationFn: charAlertsApi.setSubscription, onSuccess: refresh, onError: notifyError })

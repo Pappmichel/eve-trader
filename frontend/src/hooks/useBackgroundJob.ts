@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { notifications } from '@mantine/notifications'
+import { notify } from '../notify'
 
 import { ApiError } from '../api/client'
 import type { PipelineRunProgress, PipelineRunStatus } from '../api/types'
@@ -126,11 +126,11 @@ export function useBackgroundJob(opts: {
       }
     }
     if (prev === 'running' && status === 'succeeded') {
-      notifications.show({ title: label, message: 'Done', color: 'accent' })
+      notify({ title: label, message: 'Done', color: 'accent' })
       applySucceededSideEffects()
     }
     if (prev === 'running' && status === 'degraded') {
-      notifications.show({
+      notify({
         title: `${label} - Partial failure`,
         message: formatDegradedJobMessage(statusQuery.data as PipelineRunStatus),
         color: 'warn',
@@ -138,7 +138,7 @@ export function useBackgroundJob(opts: {
       applySucceededSideEffects()
     }
     if (prev === 'running' && status === 'failed') {
-      notifications.show({
+      notify({
         title: `${label} - Error`,
         message: statusQuery.data?.error || 'The background job failed.',
         color: 'danger',
@@ -163,7 +163,7 @@ export function useBackgroundJob(opts: {
   const onStartError = (err: unknown) => {
     if (err instanceof ApiError && err.status === 409) {
       queryClient.invalidateQueries({ queryKey })
-      notifications.show({
+      notify({
         title: 'Job already running',
         message: err.message,
         color: 'warn',
@@ -171,7 +171,7 @@ export function useBackgroundJob(opts: {
       return
     }
     const message = err instanceof ApiError ? err.message : String(err)
-    notifications.show({ title: `${defaultLabel} - Error`, message, color: 'danger' })
+    notify({ title: `${defaultLabel} - Error`, message, color: 'danger' })
   }
 
   return {

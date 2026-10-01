@@ -1,7 +1,7 @@
 import { Suspense, lazy, useEffect } from 'react'
 import { Routes, Route, Navigate, useSearchParams, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { notifications } from '@mantine/notifications'
+import { notify } from './notify'
 import { Center, Loader } from '@mantine/core'
 
 import Landing from './pages/Landing'
@@ -114,33 +114,33 @@ function AuthRedirectHandler() {
     if (auth === 'success') {
       const role = params.get('role')
       const character = params.get('character')
-      notifications.show({ title: 'Login successful', message: `${role}: ${character}`, color: 'accent' })
+      notify({ title: 'Login successful', message: `${role}: ${character}`, color: 'accent' })
     } else if (auth === 'error') {
-      notifications.show({ title: 'Login failed', message: params.get('message') ?? 'unknown error', color: 'danger' })
+      notify({ title: 'Login failed', message: params.get('message') ?? 'unknown error', color: 'danger' })
     } else if (gate === 'success') {
-      notifications.show({
+      notify({
         title: 'Access granted', message: `Logged in as ${params.get('character')}`, color: 'accent',
       })
     } else if (gate === 'pending') {
-      notifications.show({
+      notify({
         title: 'Request submitted',
         message: 'An admin will review it.',
         color: 'warn', autoClose: false,
       })
     } else if (gate === 'rejected') {
-      notifications.show({
+      notify({
         title: 'Access rejected',
         message: 'An admin rejected this request. It stays closed until they delete the rejection.',
         color: 'danger', autoClose: false,
       })
     } else if (gate === 'suspended') {
-      notifications.show({
+      notify({
         title: 'Access suspended',
         message: 'Your corporation or alliance is no longer allowlisted.',
         color: 'danger', autoClose: false,
       })
     } else if (gate === 'denied') {
-      notifications.show({
+      notify({
         title: 'Access denied',
         message: 'Your corporation or alliance is not allowlisted.',
         color: 'danger', autoClose: false,
@@ -150,7 +150,7 @@ function AuthRedirectHandler() {
       const message = raw === 'affiliation_unavailable'
         ? "Couldn't verify your corporation, try again later."
         : (raw ?? 'unknown error')
-      notifications.show({ title: 'Login failed', message, color: 'danger' })
+      notify({ title: 'Login failed', message, color: 'danger' })
     } else {
       return
     }
@@ -187,7 +187,7 @@ function SdeFreshnessChecker() {
   useEffect(() => {
     if (!data) return
     if (data.newer_sde_available) {
-      notifications.show({
+      notify({
         id: 'sde-newer-available',
         title: 'Newer SDE available',
         message: "CCP/Fuzzwork have published a newer Static Data Export than the one currently cached. "
@@ -197,7 +197,7 @@ function SdeFreshnessChecker() {
       })
     }
     if (data.trading_universe_stale) {
-      notifications.show({
+      notify({
         id: 'trading-universe-stale',
         title: 'Trading candidate list may be outdated',
         message: "The SDE cache was refreshed after Trading's candidate universe was last built. "

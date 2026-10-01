@@ -3,7 +3,7 @@ import {
   ActionIcon, Alert, Autocomplete, Badge, Button, Container, Group, Loader, Modal, Progress, Select, Stack, Table,
   Tabs, Text, Textarea, TextInput, Title, Tooltip,
 } from '@mantine/core'
-import { notifications } from '@mantine/notifications'
+import { notify } from '../../../notify'
 import { IconArrowDown, IconArrowLeft, IconArrowUp, IconTrash } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -27,7 +27,7 @@ function useSaving(qc: ReturnType<typeof useQueryClient>, planId: number) {
       qc.invalidateQueries({ queryKey: [...KEY, 'list'] })
       qc.invalidateQueries({ queryKey: [...KEY, 'progress', planId] })
     },
-    onError: (e: unknown) => notifications.show({ title: 'Could not change the plan', message: message(e), color: 'danger' }),
+    onError: (e: unknown) => notify({ title: 'Could not change the plan', message: message(e), color: 'danger' }),
   }
 }
 
@@ -48,7 +48,7 @@ function AddSkill({ plan }: { plan: SkillPlan }) {
   })
   const onDone = (p: SkillPlan) => {
     setText('')
-    notifications.show({
+    notify({
       title: p.added ? `Added ${p.added} step${p.added === 1 ? '' : 's'}` : 'Nothing to add',
       message: p.added ? 'Lower levels and prerequisites are included.' : 'Those steps are already in the plan.', color: 'info',
     })
@@ -78,7 +78,7 @@ function StepsTable({ plan }: { plan: SkillPlan }) {
     onSuccess: (p: SkillPlan) => {
       saving.onSuccess(p)
       if ((p.removed ?? 0) > 1) {
-        notifications.show({ title: `Removed ${p.removed} steps`, message: 'Steps that needed it were removed too.', color: 'info' })
+        notify({ title: `Removed ${p.removed} steps`, message: 'Steps that needed it were removed too.', color: 'info' })
       }
     },
   })
@@ -202,11 +202,11 @@ function PlanEditor({ planId, onDeleted }: { planId: number; onDeleted: () => vo
   const del = useMutation({
     mutationFn: () => charSkillPlansApi.remove(planId),
     onSuccess: () => { qc.invalidateQueries({ queryKey: [...KEY, 'list'] }); setConfirmDelete(false); onDeleted() },
-    onError: (e) => notifications.show({ title: 'Could not delete', message: message(e), color: 'danger' }),
+    onError: (e) => notify({ title: 'Could not delete', message: message(e), color: 'danger' }),
   })
   const doExport = useMutation({
     mutationFn: () => charSkillPlansApi.exportText(planId), onSuccess: (r) => setExportText(r.text),
-    onError: (e) => notifications.show({ title: 'Could not export', message: message(e), color: 'danger' }),
+    onError: (e) => notify({ title: 'Could not export', message: message(e), color: 'danger' }),
   })
 
   if (isLoading) return <Loader color="accent" />
@@ -276,10 +276,10 @@ function NewPlanModal({ opened, onClose, onCreated }: {
       const notes: string[] = []
       if (plan.steps_added_for_prerequisites) notes.push(`${plan.steps_added_for_prerequisites} prerequisite step(s) added`)
       if (plan.unresolved?.length) notes.push(`${plan.unresolved.length} line(s) not recognised: ${plan.unresolved.slice(0, 3).join('; ')}`)
-      if (notes.length) notifications.show({ title: 'Plan imported', message: notes.join(' · '), color: 'info' })
+      if (notes.length) notify({ title: 'Plan imported', message: notes.join(' · '), color: 'info' })
       onCreated(plan)
     },
-    onError: (e) => notifications.show({ title: 'Could not create the plan', message: message(e), color: 'danger' }),
+    onError: (e) => notify({ title: 'Could not create the plan', message: message(e), color: 'danger' }),
   })
   return (
     <Modal opened={opened} onClose={onClose} title="New skill plan" size="md">

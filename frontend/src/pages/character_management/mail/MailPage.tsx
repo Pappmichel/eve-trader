@@ -5,7 +5,7 @@ import {
 } from '@mantine/core'
 import { useMediaQuery } from '@mantine/hooks'
 import { modals } from '@mantine/modals'
-import { notifications } from '@mantine/notifications'
+import { notify } from '../../../notify'
 import { IconArrowLeft, IconChevronDown, IconChevronUp, IconPencil, IconSettings, IconTag } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -251,7 +251,7 @@ export default function MailPage() {
     queryClient.invalidateQueries({ queryKey: ['char-mail', 'mails'] })
     queryClient.invalidateQueries({ queryKey: ['char-mail', 'folders'] })
   }
-  const notifyError = (title: string) => (err: unknown) => notifications.show({
+  const notifyError = (title: string) => (err: unknown) => notify({
     title, color: 'danger', message: err instanceof ApiError ? err.message : String(err),
   })
   const markRead = useMutation({
