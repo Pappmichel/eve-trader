@@ -6,13 +6,16 @@ import {
   getFilteredRowModel,
   flexRender,
   type ColumnDef,
+  type ColumnFiltersState,
   type ColumnOrderState,
+  type FilterFn,
+  type Row,
   type SortingState,
   type VisibilityState,
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon, Stack, CopyButton, HoverCard, Popover, UnstyledButton } from '@mantine/core'
-import { IconSearch, IconDownload, IconColumns, IconX, IconAlertTriangle, IconRefresh, IconCopy, IconCheck, IconChevronUp, IconChevronDown, IconBookmark, IconTrash } from '@tabler/icons-react'
+import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon, Stack, CopyButton, HoverCard, Popover, UnstyledButton, Drawer, Badge } from '@mantine/core'
+import { IconSearch, IconDownload, IconColumns, IconX, IconAlertTriangle, IconRefresh, IconCopy, IconCheck, IconChevronUp, IconChevronDown, IconBookmark, IconTrash, IconFilter } from '@tabler/icons-react'
 import { relativeTime } from '../format'
 import {
   loadColumnOrder, loadViews, moveColumn, saveColumnOrder, saveViews, upsertView, type SavedView,
@@ -46,6 +49,13 @@ declare module '@tanstack/react-table' {
     // Briefly highlights a row when this column's value changed after a data
     // refetch. Needs `getRowId` on the table; keep to small tables.
     trackChanges?: boolean
+    // Shows a filter icon on hover; clicking it filters the table to rows
+    // with exactly this cell value (shown as a removable chip above the table).
+    filterable?: boolean
+    // Set to false to leave this column out of the row detail drawer
+    // (`rowDetail`). Columns without a text header (action columns) are
+    // always left out.
+    detail?: boolean
   }
 }
 
@@ -128,7 +138,15 @@ interface DataTableProps<T> {
   // Lets a saved view also capture/restore page-owned filter state that lives
   // outside the table (e.g. a status MultiSelect). Needs `tableId`.
   extraViewState?: { value: unknown; apply: (value: unknown) => void }
+  // Clicking a row opens a side drawer listing every column of that row with
+  // its formatted value - including columns hidden in the table. Zero per-page
+  // code; pass `title` to override the default (the first column's value).
+  // Works alongside `onRowClick` (both run).
+  rowDetail?: boolean | { title?: (row: T) => ReactNode }
 }
+
+// Exact-match column filter (the table's default would be a substring match).
+const exactFilter: FilterFn<any> = (row, columnId, value) => String(row.getValue(columnId)) === String(value)
 
 const CHANGE_FLASH_MS = 2500
 const KEY_PAGE_STEP = 10
@@ -214,6 +232,7 @@ export function DataTable<T>({
   onRowClick,
   activeRowId,
   extraViewState,
+  rowDetail,
 }: DataTableProps<T>) {
   const [sorting, setSorting] = useState<SortingState>([])
   const [globalFilter, setGlobalFilter] = useState('')
@@ -222,6 +241,8 @@ export function DataTable<T>({
   const [views, setViews] = useState<SavedView[]>(() => loadViews(tableId))
   const [viewName, setViewName] = useState('')
   const [cursorId, setCursorId] = useState<string | null>(null)
+  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
+  const [detailRowId, setDetailRowId] = useState<string | null>(null)
   const [changedIds, setChangedIds] = useState<ReadonlySet<string>>(new Set())
   const uid = useId()
   const wrapperRef = useRef<HTMLDivElement | null>(null)
@@ -291,8 +312,9 @@ export function DataTable<T>({
   const table = useReactTable({
     data,
     columns,
-    state: { sorting, globalFilter, columnVisibility, columnOrder },
+    state: { sorting, globalFilter, columnVisibility, columnOrder, columnFilters },
     onColumnOrderChange: setColumnOrder,
+    onColumnFiltersChange: setColumnFilters,
     onSortingChange: setSorting,
     onGlobalFilterChange: setGlobalFilter,
     onColumnVisibilityChange: setColumnVisibility,
@@ -300,7 +322,7 @@ export function DataTable<T>({
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
     getRowId: getRowId ? (row) => getRowId(row) : undefined,
-    defaultColumn: { size: 140, minSize: 60 },
+    defaultColumn: { size: 140, minSize: 60, filterFn: exactFilter },
   })
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -316,11 +338,32 @@ export function DataTable<T>({
   })
 
   const cursorIndex = cursorId === null ? -1 : rows.findIndex((r) => r.id === cursorId)
+  const rowActivatable = !!onRowClick || !!rowDetail
+  const activateRow = (row: Row<T>) => {
+    onRowClick?.(row.original)
+    if (rowDetail) setDetailRowId(row.id)
+  }
+  const highlightedRowId = activeRowId ?? (rowDetail ? detailRowId ?? undefined : undefined)
+  const detailRow = detailRowId ? table.getCoreRowModel().rowsById[detailRowId] : undefined
+
+  const detailTitle = (row: Row<T>): ReactNode => {
+    if (typeof rowDetail === 'object' && rowDetail.title) return rowDetail.title(row.original)
+    const first = row.getAllCells().find((c) => c.column.columnDef.meta?.detail !== false)
+    return first ? (cellText(first.getValue()) ?? '') : ''
+  }
+
+  const toggleColumnFilter = (columnId: string, value: unknown) => {
+    setColumnFilters((prev) => {
+      const same = prev.some((f) => f.id === columnId && String(f.value) === String(value))
+      const without = prev.filter((f) => f.id !== columnId)
+      return same ? without : [...without, { id: columnId, value }]
+    })
+  }
 
   // Keyboard navigation (only with onRowClick): the wrapper itself is focused,
   // arrows move a cursor row, Enter opens it, "/" jumps to the filter box.
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (e.target !== e.currentTarget || !onRowClick || rows.length === 0) return
+    if (e.target !== e.currentTarget || !rowActivatable || rows.length === 0) return
     let next = cursorIndex
     switch (e.key) {
       case 'ArrowDown': next = Math.min(cursorIndex + 1, rows.length - 1); break
@@ -333,7 +376,7 @@ export function DataTable<T>({
       case ' ':
         if (cursorIndex >= 0) {
           e.preventDefault()
-          onRowClick(rows[cursorIndex].original)
+          activateRow(rows[cursorIndex])
         }
         return
       case '/':
@@ -353,6 +396,7 @@ export function DataTable<T>({
     setColumnVisibility(view.columnVisibility)
     setColumnOrder(view.columnOrder)
     setGlobalFilter(view.globalFilter)
+    setColumnFilters(view.columnFilters ?? [])
     if (view.extra !== undefined) extraViewState?.apply(view.extra)
   }
 
@@ -360,7 +404,7 @@ export function DataTable<T>({
     const name = viewName.trim()
     if (!name) return
     const next = upsertView(views, {
-      name, sorting, columnVisibility, columnOrder, globalFilter,
+      name, sorting, columnVisibility, columnOrder, globalFilter, columnFilters,
       extra: extraViewState?.value,
     })
     setViews(next)
@@ -473,10 +517,10 @@ export function DataTable<T>({
   return (
     <div
       ref={wrapperRef}
-      className={onRowClick ? 'et-table-nav' : undefined}
-      tabIndex={onRowClick ? 0 : undefined}
-      onKeyDown={onRowClick ? handleKeyDown : undefined}
-      aria-activedescendant={onRowClick && cursorIndex >= 0 ? `${uid}-r${cursorIndex}` : undefined}
+      className={rowActivatable ? 'et-table-nav' : undefined}
+      tabIndex={rowActivatable ? 0 : undefined}
+      onKeyDown={rowActivatable ? handleKeyDown : undefined}
+      aria-activedescendant={rowActivatable && cursorIndex >= 0 ? `${uid}-r${cursorIndex}` : undefined}
     >
       {/* Wraps below the search box on a phone: one line squeezed the box to a few pixels. */}
       <Group justify="space-between" mb="xs" gap="xs">
@@ -568,6 +612,29 @@ export function DataTable<T>({
         </Group>
       </Group>
 
+      {columnFilters.length > 0 && (
+        <Group gap={6} mb="xs" wrap="wrap">
+          {columnFilters.map((f) => {
+            const col = table.getColumn(f.id)
+            const label = col ? columnLabel(col.columnDef.header, col.id) : f.id
+            return (
+              <Badge
+                key={f.id} variant="light" color="accent" tt="none" size="lg"
+                rightSection={(
+                  <ActionIcon size="xs" variant="transparent" color="accent" aria-label={`Remove filter ${label}`}
+                    onClick={() => toggleColumnFilter(f.id, f.value)}>
+                    <IconX size={10} />
+                  </ActionIcon>
+                )}
+              >
+                {label}: {String(f.value)}
+              </Badge>
+            )
+          })}
+          <Button size="compact-xs" variant="subtle" onClick={() => setColumnFilters([])}>Reset filters</Button>
+        </Group>
+      )}
+
       <ScrollArea h={maxHeight} type="auto" viewportRef={scrollRef}>
         <Table stickyHeader striped style={{ tableLayout: 'fixed', width: '100%' }}>
           <colgroup>
@@ -635,15 +702,15 @@ export function DataTable<T>({
                   return (
                     <Table.Tr
                       key={row.id}
-                      id={onRowClick ? `${uid}-r${vItem.index}` : undefined}
-                      data-clickable={onRowClick ? '' : undefined}
-                      data-active={activeRowId !== undefined && row.id === activeRowId ? '' : undefined}
-                      data-cursor={onRowClick && row.id === cursorId ? '' : undefined}
+                      id={rowActivatable ? `${uid}-r${vItem.index}` : undefined}
+                      data-clickable={rowActivatable ? '' : undefined}
+                      data-active={highlightedRowId !== undefined && row.id === highlightedRowId ? '' : undefined}
+                      data-cursor={rowActivatable && row.id === cursorId ? '' : undefined}
                       data-changed={changedIds.has(row.id) ? '' : undefined}
-                      onClick={onRowClick ? (e) => {
+                      onClick={rowActivatable ? (e) => {
                         if ((e.target as HTMLElement).closest(INTERACTIVE_SELECTOR)) return
                         setCursorId(row.id)
-                        onRowClick(row.original)
+                        activateRow(row)
                       } : undefined}
                     >
                       {row.getVisibleCells()
@@ -656,6 +723,16 @@ export function DataTable<T>({
                             <>
                               {flexRender(cell.column.columnDef.cell, cell.getContext())}
                               {copyText !== undefined && <CopyCell value={copyText} />}
+                              {cell.column.columnDef.meta?.filterable && cell.getValue() != null && (
+                                <ActionIcon
+                                  className="et-copy" size="xs" variant="subtle" color="gray"
+                                  aria-label={`Filter ${columnLabel(cell.column.columnDef.header, cell.column.id)} = ${String(cell.getValue())}`}
+                                  onClick={(e) => { e.stopPropagation(); toggleColumnFilter(cell.column.id, cell.getValue()) }}
+                                  style={{ marginLeft: 4, verticalAlign: 'middle' }}
+                                >
+                                  <IconFilter size={12} />
+                                </ActionIcon>
+                              )}
                             </>
                           )
                           return (
@@ -686,6 +763,24 @@ export function DataTable<T>({
           </Table.Tbody>
         </Table>
       </ScrollArea>
+
+      {rowDetail && (
+        <Drawer
+          opened={!!detailRow} onClose={() => setDetailRowId(null)} position="right" size="md" padding="md"
+          title={detailRow ? detailTitle(detailRow) : ''}
+        >
+          <Stack gap={6}>
+            {detailRow?.getAllCells()
+              .filter((c) => c.column.columnDef.meta?.detail !== false && typeof c.column.columnDef.header === 'string' && c.column.columnDef.header !== '')
+              .map((c) => (
+                <Group key={c.id} justify="space-between" wrap="nowrap" gap="md" align="flex-start">
+                  <Text size="sm" c="dimmed">{columnLabel(c.column.columnDef.header, c.column.id)}</Text>
+                  <div style={{ textAlign: 'right', minWidth: 0 }}>{flexRender(c.column.columnDef.cell, c.getContext())}</div>
+                </Group>
+              ))}
+          </Stack>
+        </Drawer>
+      )}
     </div>
   )
 }

@@ -336,3 +336,72 @@ describe('DataTable hover card', () => {
     expect(bodyRows()[0].querySelector('td')?.getAttribute('title')).toBe('Zebra Ore')
   })
 })
+
+describe('DataTable row detail drawer', () => {
+  it('opens a drawer with every column, including hidden ones, and closes again', async () => {
+    const user = userEvent.setup()
+    const cols: ColumnDef<Row, any>[] = [
+      { header: 'Item', accessorKey: 'item' },
+      { header: 'Amount', accessorKey: 'amount', cell: (i) => i.getValue().toLocaleString('en-US') },
+      { header: '', id: 'actions', cell: () => <span>actions-cell</span> },
+    ]
+    render(
+      <MantineProvider>
+        <DataTable data={rows} columns={cols} rowDetail getRowId={(r) => r.item} tableId="detail-test" />
+      </MantineProvider>,
+    )
+    // Hide the Amount column in the table first - the drawer must still show it.
+    await user.click(screen.getByRole('button', { name: /Columns/ }))
+    await user.click(await screen.findByLabelText('Amount'))
+    await user.keyboard('{Escape}')
+
+    await user.click(screen.getByText('Alpha Ore'))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByRole('heading', { name: 'Alpha Ore' })).toBeInTheDocument() // default title: first column
+    expect(within(dialog).getByText('Amount')).toBeInTheDocument()
+    expect(within(dialog).getByText('1,000,000')).toBeInTheDocument()
+    expect(within(dialog).queryByText('actions-cell')).not.toBeInTheDocument() // header-less column skipped
+  })
+
+  it('uses a custom title and also runs onRowClick', async () => {
+    const user = userEvent.setup()
+    const onRowClick = vi.fn()
+    renderTable({ rowDetail: { title: (r: Row) => `Details: ${r.item}` }, onRowClick })
+    await user.click(screen.getByText('Mid Ore'))
+    expect(await screen.findByText('Details: Mid Ore')).toBeInTheDocument()
+    expect(onRowClick).toHaveBeenCalledWith(rows[2])
+  })
+})
+
+describe('DataTable column filter chips', () => {
+  const filterCols: ColumnDef<Row, any>[] = [
+    { header: 'Item', accessorKey: 'item', meta: { filterable: true } },
+    { header: 'Amount', accessorKey: 'amount' },
+  ]
+  const renderFilterable = () => render(
+    <MantineProvider><DataTable data={rows} columns={filterCols} /></MantineProvider>,
+  )
+
+  it('filters to the exact value, shows a chip, and resets', async () => {
+    const user = userEvent.setup()
+    renderFilterable()
+    await user.click(screen.getByRole('button', { name: 'Filter Item = Mid Ore' }))
+    expect(bodyRows()).toHaveLength(1)
+    expect(screen.getByText('Item: Mid Ore')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Reset filters' }))
+    expect(bodyRows()).toHaveLength(3)
+  })
+
+  it('toggles the same filter off from the cell icon and removes via the chip', async () => {
+    const user = userEvent.setup()
+    renderFilterable()
+    await user.click(screen.getByRole('button', { name: 'Filter Item = Zebra Ore' }))
+    await user.click(screen.getByRole('button', { name: 'Filter Item = Zebra Ore' }))
+    expect(bodyRows()).toHaveLength(3)
+
+    await user.click(screen.getByRole('button', { name: 'Filter Item = Zebra Ore' }))
+    await user.click(screen.getByRole('button', { name: 'Remove filter Item' }))
+    expect(bodyRows()).toHaveLength(3)
+  })
+})

@@ -1,4 +1,4 @@
-import type { SortingState, VisibilityState } from '@tanstack/react-table'
+import type { ColumnFiltersState, SortingState, VisibilityState } from '@tanstack/react-table'
 
 // Saved views and column order for DataTable, persisted per `tableId` in
 // localStorage next to the existing column-visibility entry. Every read/write
@@ -11,6 +11,7 @@ export interface SavedView {
   columnVisibility: VisibilityState
   columnOrder: string[]
   globalFilter: string
+  columnFilters?: ColumnFiltersState
   // Page-owned state outside the table (e.g. Shortlist's status/category
   // filters), opaque to DataTable - handed back to the page's `apply`.
   extra?: unknown
