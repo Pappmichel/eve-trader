@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Accordion, Button, Container, Group, Stack, Table, Text, Title,
+  Accordion, Button, Container, Group, Stack, Text, Title,
 } from '@mantine/core'
 import { IconArrowLeft } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
@@ -90,101 +90,42 @@ function ChangedItemList({ items, tableId }: { items: SdeChangedItem[]; tableId:
   )
 }
 
+type OtherChangeRow = { field: string; old: unknown; new: unknown }
+
+const MATERIAL_COLUMNS: ColumnDef<SdeChangedBlueprint['materials'][number], unknown>[] = [
+  { header: 'Material', accessorKey: 'name', size: 260 },
+  { header: 'Old', accessorKey: 'old_qty', size: 100, cell: (i) => formatValue(i.getValue()) },
+  { header: 'New', accessorKey: 'new_qty', size: 100, cell: (i) => formatValue(i.getValue()) },
+]
+
+const OTHER_CHANGE_COLUMNS: ColumnDef<OtherChangeRow, unknown>[] = [
+  { header: 'Field', accessorKey: 'field', size: 200 },
+  { header: 'Old', id: 'old', size: 120, accessorFn: (row) => formatValue(row.old) },
+  { header: 'New', id: 'new', size: 120, accessorFn: (row) => formatValue(row.new) },
+]
+
 function BlueprintPanel({ bp }: { bp: SdeChangedBlueprint }) {
+  const otherChanges: OtherChangeRow[] = []
+  if (bp.products) otherChanges.push({ field: 'Product quantity', old: bp.products.old_qty, new: bp.products.new_qty })
+  if (bp.time) otherChanges.push({ field: 'Build time', old: bp.time.old, new: bp.time.new })
+  if (bp.invention_probability) {
+    otherChanges.push({ field: 'Invention probability', old: bp.invention_probability.old, new: bp.invention_probability.new })
+  }
   return (
     <Stack gap="sm">
       {bp.materials.length > 0 && (
         <div>
           <Text size="sm" fw={600} mb={4}>Materials</Text>
-          <Table.ScrollContainer minWidth={400}>
-            <Table>
-              <Table.Thead>
-                <Table.Tr>
-                  <Table.Th>Material</Table.Th>
-                  <Table.Th>Old</Table.Th>
-                  <Table.Th>New</Table.Th>
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                {bp.materials.map((row) => (
-                  <Table.Tr key={row.material_type_id}>
-                    <Table.Td>{row.name}</Table.Td>
-                    <Table.Td>{row.old_qty}</Table.Td>
-                    <Table.Td>{row.new_qty}</Table.Td>
-                  </Table.Tr>
-                ))}
-              </Table.Tbody>
-            </Table>
-          </Table.ScrollContainer>
+          <DataTable
+            data={bp.materials} columns={MATERIAL_COLUMNS} maxHeight={320}
+            getRowId={(row) => String(row.material_type_id)}
+          />
         </div>
       )}
-      {bp.products && (
+      {otherChanges.length > 0 && (
         <div>
-          <Text size="sm" fw={600} mb={4}>Products</Text>
-          <Table.ScrollContainer minWidth={400}>
-            <Table>
-              <Table.Thead>
-                <Table.Tr>
-                  <Table.Th>Field</Table.Th>
-                  <Table.Th>Old</Table.Th>
-                  <Table.Th>New</Table.Th>
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                <Table.Tr>
-                  <Table.Td>Quantity</Table.Td>
-                  <Table.Td>{bp.products.old_qty}</Table.Td>
-                  <Table.Td>{bp.products.new_qty}</Table.Td>
-                </Table.Tr>
-              </Table.Tbody>
-            </Table>
-          </Table.ScrollContainer>
-        </div>
-      )}
-      {bp.time && (
-        <div>
-          <Text size="sm" fw={600} mb={4}>Build Time</Text>
-          <Table.ScrollContainer minWidth={400}>
-            <Table>
-              <Table.Thead>
-                <Table.Tr>
-                  <Table.Th>Field</Table.Th>
-                  <Table.Th>Old</Table.Th>
-                  <Table.Th>New</Table.Th>
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                <Table.Tr>
-                  <Table.Td>Time</Table.Td>
-                  <Table.Td>{formatValue(bp.time.old)}</Table.Td>
-                  <Table.Td>{formatValue(bp.time.new)}</Table.Td>
-                </Table.Tr>
-              </Table.Tbody>
-            </Table>
-          </Table.ScrollContainer>
-        </div>
-      )}
-      {bp.invention_probability && (
-        <div>
-          <Text size="sm" fw={600} mb={4}>Invention Probability</Text>
-          <Table.ScrollContainer minWidth={400}>
-            <Table>
-              <Table.Thead>
-                <Table.Tr>
-                  <Table.Th>Field</Table.Th>
-                  <Table.Th>Old</Table.Th>
-                  <Table.Th>New</Table.Th>
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                <Table.Tr>
-                  <Table.Td>Probability</Table.Td>
-                  <Table.Td>{formatValue(bp.invention_probability.old)}</Table.Td>
-                  <Table.Td>{formatValue(bp.invention_probability.new)}</Table.Td>
-                </Table.Tr>
-              </Table.Tbody>
-            </Table>
-          </Table.ScrollContainer>
+          <Text size="sm" fw={600} mb={4}>Other changes</Text>
+          <DataTable data={otherChanges} columns={OTHER_CHANGE_COLUMNS} maxHeight={200} getRowId={(row) => row.field} />
         </div>
       )}
     </Stack>

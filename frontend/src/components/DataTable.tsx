@@ -15,7 +15,7 @@ import {
   type VisibilityState,
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon, Stack, CopyButton, HoverCard, Popover, UnstyledButton, Drawer, Badge } from '@mantine/core'
+import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon, Stack, CopyButton, HoverCard, Popover, UnstyledButton, Drawer, Badge, Tooltip } from '@mantine/core'
 import { IconSearch, IconDownload, IconColumns, IconX, IconAlertTriangle, IconRefresh, IconCopy, IconCheck, IconChevronUp, IconChevronDown, IconBookmark, IconTrash, IconFilter } from '@tabler/icons-react'
 import { relativeTime } from '../format'
 import {
@@ -59,6 +59,8 @@ declare module '@tanstack/react-table' {
     // (`rowDetail`). Columns without a text header (action columns) are
     // always left out.
     detail?: boolean
+    // Tooltip shown on the column header (explains an abbreviation or estimate).
+    headerHint?: string
   }
 }
 
@@ -152,6 +154,9 @@ interface DataTableProps<T> {
 // Exact-match column filter (the table's default would be a substring match).
 const exactFilter: FilterFn<any> = (row, columnId, value) => String(row.getValue(columnId)) === String(value)
 
+// Header row + a little slack: tables with few rows shrink to their content
+// instead of reserving `maxHeight`.
+const TABLE_CHROME_HEIGHT = 48
 const CHANGE_FLASH_MS = 2500
 const KEY_PAGE_STEP = 10
 
@@ -680,7 +685,7 @@ export function DataTable<T>({
               </Group>
             </Menu.Dropdown>
           </Menu>
-          <Button size="xs" variant="default" leftSection={<IconDownload size={14} />} onClick={exportCsv}>
+          <Button size="xs" variant="default" leftSection={<IconDownload size={14} />} onClick={exportCsv} aria-label="Export CSV">
             Export
           </Button>
         </Group>
@@ -709,7 +714,7 @@ export function DataTable<T>({
         </Group>
       )}
 
-      <ScrollArea h={maxHeight} type="auto" viewportRef={scrollRef}>
+      <ScrollArea h={Math.min(maxHeight, rows.length * rowHeight + TABLE_CHROME_HEIGHT)} type="auto" viewportRef={scrollRef}>
         {/* Until a column is resized the table fills its container (columns scale
             proportionally, as before). Once one is resized, widths are exact px so
             the dragged edge stays under the pointer; the area then scrolls sideways. */}
@@ -769,7 +774,11 @@ export function DataTable<T>({
                         boxShadow: dropColumnId === h.column.id && dragColumnId !== h.column.id ? 'inset 2px 0 0 #35D0BA' : undefined,
                       }}
                     >
-                      {flexRender(h.column.columnDef.header, h.getContext())}
+                      {h.column.columnDef.meta?.headerHint ? (
+                        <Tooltip label={h.column.columnDef.meta.headerHint} multiline w={280}>
+                          <span>{flexRender(h.column.columnDef.header, h.getContext())}</span>
+                        </Tooltip>
+                      ) : flexRender(h.column.columnDef.header, h.getContext())}
                       {sorted === 'asc' ? ' ▲' : sorted === 'desc' ? ' ▼' : ''}
                       {h.column.getCanResize() && (
                         <div

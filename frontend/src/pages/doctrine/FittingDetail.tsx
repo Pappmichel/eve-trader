@@ -1,12 +1,15 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
-  Stack, Title, Text, Table, Badge, Group, Grid, Card, CopyButton, Button, Collapse, NumberInput, Modal,
+  Stack, Title, Text, Badge, Group, Grid, Card, CopyButton, Button, Collapse, NumberInput, Modal,
 } from '@mantine/core'
 import { useParams } from 'react-router-dom'
 import { IconCopy, IconCheck, IconPencil } from '@tabler/icons-react'
+import type { ColumnDef } from '@tanstack/react-table'
 
 import { doctrineApi } from '../../api/client'
+import type { DoctrineDeviation } from '../../api/types'
+import { DataTable } from '../../components/DataTable'
 import { useAction } from '../../hooks/useAction'
 import { isk, dateTime } from '../../format'
 import { EftFittingForm } from './EftFittingForm'
@@ -43,6 +46,19 @@ function EditFittingModal({ fittingId, initialRawEft, initialFuelBayText, initia
 }
 
 const SEVERITY_COLOR: Record<string, string> = { critical: 'danger', tolerable: 'warn', info: 'dimmed' }
+
+const DEVIATION_COLUMNS: ColumnDef<DoctrineDeviation, any>[] = [
+  { header: 'Item', accessorKey: 'type_name', size: 200 },
+  { header: 'Kind', accessorKey: 'kind', size: 110, meta: { filterable: true } },
+  {
+    header: 'Quantity', id: 'qty', size: 190,
+    accessorFn: (d) => `${d.expected_qty} expected / ${d.actual_qty} actual`,
+  },
+  {
+    header: 'Severity', accessorKey: 'severity', size: 110,
+    cell: (i) => <Badge size="xs" color={SEVERITY_COLOR[i.getValue() as string] ?? 'dimmed'} variant="light">{i.getValue()}</Badge>,
+  },
+]
 const AMPEL_COLOR: Record<string, string> = { green: 'accent', yellow: 'warn', red: 'danger', gray: 'dimmed' }
 
 const SECTION_ORDER = ['low', 'med', 'high', 'rig', 'subsystem', 'service', 'drone', 'cargo', 'charge',
@@ -179,20 +195,10 @@ export default function FittingDetail() {
                   </Group>
                   <Text size="xs" c="dimmed">{isk(c.price)} — expires {dateTime(c.date_expired)}</Text>
                   {c.deviations.length > 0 && (
-                    <Table.ScrollContainer minWidth={0}>
-                      <Table mt="xs" fz="xs">
-                        <Table.Tbody>
-                          {c.deviations.map((d, i) => (
-                            <Table.Tr key={i}>
-                              <Table.Td>{d.type_name}</Table.Td>
-                              <Table.Td>{d.kind}</Table.Td>
-                              <Table.Td>{d.expected_qty} expected / {d.actual_qty} actual</Table.Td>
-                              <Table.Td><Badge size="xs" color={SEVERITY_COLOR[d.severity] ?? 'dimmed'} variant="light">{d.severity}</Badge></Table.Td>
-                            </Table.Tr>
-                          ))}
-                        </Table.Tbody>
-                      </Table>
-                    </Table.ScrollContainer>
+                    <DataTable
+                      data={c.deviations} columns={DEVIATION_COLUMNS} maxHeight={240}
+                      getRowId={(d) => `${d.type_id}-${d.kind}`} exportFilename={`contract-${c.contract_id}-deviations`}
+                    />
                   )}
                 </div>
               ))}

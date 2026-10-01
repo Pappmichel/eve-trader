@@ -99,7 +99,7 @@ describe('DataTable', () => {
     URL.revokeObjectURL = vi.fn()
 
     renderTable({ exportFilename: 'test-export' })
-    await user.click(screen.getByRole('button', { name: 'Export' }))
+    await user.click(screen.getByRole('button', { name: 'Export CSV' }))
 
     expect(csv).toBeDefined()
     expect(csv!.split('\r\n')[0]).toBe('Item,Amount')
