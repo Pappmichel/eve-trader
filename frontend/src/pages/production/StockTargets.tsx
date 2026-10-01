@@ -129,7 +129,7 @@ export default function StockTargets() {
 
   const columns = useMemo<ColumnDef<StockTarget, any>[]>(() => [
     { header: 'TypeID', accessorKey: 'type_id', size: 90 },
-    { header: 'Item', accessorKey: 'type_name', size: 220 },
+    { header: 'Item', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
     {
       header: 'Backup Target', accessorKey: 'backup_stock', size: 140,
       cell: (i) => (
@@ -387,7 +387,7 @@ function ManualStockEntriesSection() {
   const [locationId, setLocationId] = useState<number | null>(0)
 
   const columns = useMemo<ColumnDef<ManualStockEntry, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 240 },
+    { header: 'Item', accessorKey: 'type_name', size: 240, meta: { copyable: true } },
     {
       header: 'Location', id: 'location', size: 200,
       cell: (i) => (i.row.original.location_id === 0 ? 'No location' : String(i.row.original.location_id)),
@@ -587,7 +587,7 @@ function AssetPastePanel() {
             <DataTable
               data={preview.rows}
               columns={[
-                { header: 'Item', accessorKey: 'name', size: 220 },
+                { header: 'Item', accessorKey: 'name', size: 220, meta: { copyable: true } },
                 { header: 'Old', accessorKey: 'old', size: 100, cell: (i) => qty(i.getValue()) },
                 { header: 'New', accessorKey: 'new', size: 100, cell: (i) => qty(i.getValue()) },
                 {

@@ -161,7 +161,7 @@ export default function Logistics() {
   }, [rows])
 
   const columns = useMemo<ColumnDef<LogisticsRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 240 },
+    { header: 'Item', accessorKey: 'type_name', size: 240, meta: { copyable: true } },
     { header: 'Needed', accessorKey: 'needed', size: 110, cell: (i) => qty(i.getValue()) },
     { header: 'Available on Site', accessorKey: 'available', size: 140, cell: (i) => qty(i.getValue()) },
     {
@@ -186,7 +186,7 @@ export default function Logistics() {
   ], [structureNames])
 
   const distributionColumns = useMemo<ColumnDef<DistributionRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 220 },
+    { header: 'Item', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
     {
       header: 'From', accessorKey: 'from_location_id', size: 200,
       cell: (i) => structureNames?.[String(i.getValue())] ?? i.getValue(),
@@ -387,7 +387,7 @@ export default function Logistics() {
                   Total missing volume: <Text span fw={600} c="accent">{volume(totalVolume)}</Text>
                 </Text>
               )}
-              <DataTable data={categoryRows} columns={columns} maxHeight={320} />
+              <DataTable rowDetail data={categoryRows} columns={columns} maxHeight={320} />
             </Card>
           )
         })
@@ -416,7 +416,7 @@ export default function Logistics() {
             <Text size="xs" c="dimmed" mb="xs">
               Total volume: <Text span fw={600} c="accent">{volume(distributionTotalVolume)}</Text>
             </Text>
-            <DataTable data={distributionRows} columns={distributionColumns} maxHeight={320} />
+            <DataTable rowDetail data={distributionRows} columns={distributionColumns} maxHeight={320} />
           </>
         )}
       </Card>
@@ -450,7 +450,7 @@ export default function Logistics() {
                 </Text>
               )
             })()}
-            <DataTable data={inventionRows} columns={columns} maxHeight={320} />
+            <DataTable rowDetail data={inventionRows} columns={columns} maxHeight={320} />
           </>
         )}
       </Card>

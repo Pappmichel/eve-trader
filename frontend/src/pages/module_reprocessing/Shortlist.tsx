@@ -45,7 +45,7 @@ export default function Shortlist() {
   }, [data, selDecisions, search])
 
   const columns = useMemo<ColumnDef<ModuleShortlistRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'item', size: 260 },
+    { header: 'Item', accessorKey: 'item', size: 260, meta: { copyable: true } },
     {
       header: 'Status', accessorKey: 'decision', size: 130,
       cell: (i) => <Badge color={DECISION_COLOR[i.getValue() as string] ?? 'gray'} variant="light">{i.getValue()}</Badge>,
@@ -101,7 +101,7 @@ export default function Shortlist() {
       {filtered.length === 0 ? (
         <HintCard>No items match the current filters.</HintCard>
       ) : (
-        <DataTable data={filtered} columns={columns} maxHeight={560} getRowId={(r) => String(r.item_id)} />
+        <DataTable rowDetail data={filtered} columns={columns} maxHeight={560} getRowId={(r) => String(r.item_id)} />
       )}
     </Stack>
   )

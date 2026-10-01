@@ -56,7 +56,7 @@ function ManualBlueprintCopyCostsSection() {
   const [runs, setRuns] = useState<number | ''>('')
 
   const columns = useMemo<ColumnDef<ManualBlueprintCopyCostRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 260 },
+    { header: 'Item', accessorKey: 'type_name', size: 260, meta: { copyable: true } },
     {
       header: 'Purchase Cost', accessorKey: 'purchase_cost', size: 170,
       cell: (i) => (
@@ -220,7 +220,7 @@ function ManualBlueprintMeTeOverridesSection() {
   const [timeEfficiency, setTimeEfficiency] = useState<number | ''>('')
 
   const columns = useMemo<ColumnDef<ManualBlueprintMeTeOverrideRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 260 },
+    { header: 'Item', accessorKey: 'type_name', size: 260, meta: { copyable: true } },
     {
       header: 'ME', accessorKey: 'material_efficiency', size: 140,
       cell: (i) => (
@@ -329,7 +329,7 @@ export default function Blueprints() {
   )
 
   const columns = useMemo<ColumnDef<OwnedBlueprintRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 240 },
+    { header: 'Item', accessorKey: 'type_name', size: 240, meta: { copyable: true } },
     {
       header: 'Type', accessorKey: 'is_original', size: 90,
       cell: (i) => <Badge color={i.getValue() ? 'accent' : 'info'} variant="light">{i.getValue() ? 'BPO' : 'BPC'}</Badge>,

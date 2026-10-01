@@ -64,7 +64,7 @@ export default function SortingOverview() {
   )
 
   const columns = useMemo<ColumnDef<SortingRow, unknown>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 220 },
+    { header: 'Item', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
     {
       header: 'In Intake', accessorKey: 'intake_qty', size: 140,
       cell: (i) => qty(i.getValue() as number),
@@ -136,6 +136,7 @@ export default function SortingOverview() {
         <HintCard>No items match the current filters.</HintCard>
       ) : (
         <DataTable
+          rowDetail
           tableId="sorting-overview"
           exportFilename="sorting-overview"
           data={filtered}

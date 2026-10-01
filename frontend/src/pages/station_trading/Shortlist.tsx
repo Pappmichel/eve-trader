@@ -51,8 +51,8 @@ export default function Shortlist() {
   }, [data, effectiveCategories, search])
 
   const columns = useMemo<ColumnDef<StationTradingShortlistRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'name', size: 220 },
-    { header: 'Category', accessorKey: 'category', size: 130 },
+    { header: 'Item', accessorKey: 'name', size: 220, meta: { copyable: true } },
+    { header: 'Category', accessorKey: 'category', size: 130, meta: { filterable: true } },
     { header: 'Spread', accessorKey: 'spread_pct', size: 90, cell: (i) => pct(i.getValue()) },
     { header: 'Avg Daily Volume', accessorKey: 'avg_daily_volume', size: 150, cell: (i) => qty(i.getValue()) },
     { header: 'Live Buy', accessorKey: 'live_buy', size: 120, cell: (i) => isk(i.getValue()) },
@@ -134,7 +134,7 @@ export default function Shortlist() {
       {filtered.length === 0 ? (
         <HintCard>No items match the current filters.</HintCard>
       ) : (
-        <DataTable data={filtered} columns={columns} maxHeight={560} getRowId={(r) => String(r.type_id)} />
+        <DataTable rowDetail data={filtered} columns={columns} maxHeight={560} getRowId={(r) => String(r.type_id)} />
       )}
     </>
   )

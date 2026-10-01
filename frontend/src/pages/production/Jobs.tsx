@@ -56,7 +56,7 @@ export default function Jobs() {
   const removeManual = useAction('Remove Manual Job', productionApi.removeManualIndustryJob, JOBS_KEY)
 
   const columns = useMemo<ColumnDef<IndustryJobRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 200 },
+    { header: 'Item', accessorKey: 'type_name', size: 200, meta: { copyable: true } },
     { header: 'Activity', accessorKey: 'activity', size: 120 },
     {
       header: 'Source', accessorKey: 'source', size: 90,
@@ -179,7 +179,7 @@ export default function Jobs() {
           {filtered.length === 0 ? (
             <HintCard>No jobs match the selected activity.</HintCard>
           ) : (
-            <DataTable data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt}
+            <DataTable rowDetail data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt}
               getRowId={(r) => `${r.source}:${r.job_id}`} />
           )}
         </>

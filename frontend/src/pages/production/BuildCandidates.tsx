@@ -160,7 +160,7 @@ export default function BuildCandidates() {
           {filtered.length === 0 ? (
             <HintCard>No candidates match the current filters.</HintCard>
           ) : (
-            <DataTable data={filtered} columns={columns} maxHeight={560} />
+            <DataTable rowDetail data={filtered} columns={columns} maxHeight={560} />
           )}
         </>
       )}

@@ -135,7 +135,7 @@ function ManualPricesSection() {
   const [priceInput, setPriceInput] = useState<number | ''>('')
 
   const columns = useMemo<ColumnDef<ManualItemPriceRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 260 },
+    { header: 'Item', accessorKey: 'type_name', size: 260, meta: { copyable: true } },
     {
       header: 'Price (ISK)', accessorKey: 'price', size: 170,
       cell: (i) => (

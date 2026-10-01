@@ -32,7 +32,7 @@ export default function BuyList() {
   const total = useMemo(() => filtered.reduce((sum, e) => sum + (e.total_price ?? 0), 0), [filtered])
 
   const columns = useMemo<ColumnDef<BuyListEntry, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 220 },
+    { header: 'Item', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
     { header: 'Category', accessorKey: 'category', size: 150, cell: (i) => i.getValue() ?? '–' },
     {
       header: 'Buy From', accessorKey: 'buy_from', size: 120,
@@ -93,7 +93,7 @@ export default function BuyList() {
       {filtered.length === 0 ? (
         <HintCard>No items in the selected categories.</HintCard>
       ) : (
-        <DataTable data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
+        <DataTable rowDetail data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
       )}
     </Stack>
   )

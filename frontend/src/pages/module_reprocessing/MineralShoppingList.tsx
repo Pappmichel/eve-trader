@@ -90,7 +90,7 @@ export default function MineralShoppingList() {
   ], [])
 
   const moduleColumns = useMemo<ColumnDef<ReprocessPurchase, any>[]>(() => [
-    { header: 'Item', accessorKey: 'item', size: 260 },
+    { header: 'Item', accessorKey: 'item', size: 260, meta: { copyable: true } },
     { header: 'Units', accessorKey: 'units', size: 110, cell: (i) => qty(i.getValue()) },
     { header: 'Portions', accessorKey: 'portions', size: 100, cell: (i) => qty(i.getValue()) },
     { header: 'Volume (m³)', accessorKey: 'volume_m3', size: 120, cell: (i) => qty(i.getValue()) },

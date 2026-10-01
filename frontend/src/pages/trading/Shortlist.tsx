@@ -119,7 +119,7 @@ export default function Shortlist() {
         ),
       },
     },
-    { header: 'Category', accessorKey: 'category', size: 110 },
+    { header: 'Category', accessorKey: 'category', size: 110, meta: { filterable: true } },
     { header: 'Meta Level', accessorKey: 'meta_level', size: 90, cell: (i) => i.getValue() ?? '–' },
     {
       header: 'Status', accessorKey: 'decision', size: 170, meta: { trackChanges: true },

@@ -65,7 +65,7 @@ export default function AssetSearch() {
             <Text size="sm" c="dimmed">
               {result.type_name}: {qty(total)} total across {result.locations.length} location(s)
             </Text>
-            <DataTable data={result.locations} columns={columns} maxHeight={480} />
+            <DataTable rowDetail data={result.locations} columns={columns} maxHeight={480} />
           </Stack>
         )
       )}

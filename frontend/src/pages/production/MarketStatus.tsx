@@ -13,7 +13,7 @@ export default function MarketStatus() {
   const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['production', 'market-status'], queryFn: productionApi.marketStatus })
 
   const columns = useMemo<ColumnDef<MarketStatusRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 220 },
+    { header: 'Item', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
     { header: 'Backup Target', accessorKey: 'backup_target', size: 130, cell: (i) => qty(i.getValue()) },
     { header: 'Backup Current', accessorKey: 'backup_current', size: 130, cell: (i) => qty(i.getValue()) },
     { header: 'Home Market Target', accessorKey: 'home_target', size: 150, cell: (i) => qty(i.getValue()) },
@@ -28,7 +28,7 @@ export default function MarketStatus() {
 
   return (
     <Stack>
-      <DataTable data={data} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
+      <DataTable rowDetail data={data} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
       <Text size="xs" c="dimmed">
         'Current'/'listed' come from the last 'Sync ESI Data' run (assets + personal and corp sell orders); without a sync they stay at 0.
       </Text>

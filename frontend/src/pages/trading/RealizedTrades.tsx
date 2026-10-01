@@ -81,7 +81,7 @@ export default function RealizedTrades() {
   }, [data])
 
   const columns = useMemo<ColumnDef<ItemSummary, any>[]>(() => [
-    { header: 'Item', accessorKey: 'item', size: 220 },
+    { header: 'Item', accessorKey: 'item', size: 220, meta: { copyable: true } },
     { header: 'Trades', accessorKey: 'trades', size: 90, cell: (i) => qty(i.getValue()) },
     { header: 'Total Qty', accessorKey: 'matchedQty', size: 120, cell: (i) => qty(i.getValue()) },
     { header: 'Avg Buy Price', accessorKey: 'avgBuyPrice', size: 130, cell: (i) => isk(i.getValue()) },
@@ -105,7 +105,7 @@ export default function RealizedTrades() {
 
       <Text size="sm" c="dimmed">{byItem.length} items, {data.length} trades total</Text>
 
-      <DataTable data={byItem} columns={columns} maxHeight={480} dataUpdatedAt={dataUpdatedAt} />
+      <DataTable rowDetail data={byItem} columns={columns} maxHeight={480} dataUpdatedAt={dataUpdatedAt} />
 
       <Title order={6} c="dimmed" tt="uppercase" mt="lg">Cumulative Profit Over Time</Title>
       <ResponsiveContainer width="100%" height={300}>

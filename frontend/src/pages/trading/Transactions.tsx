@@ -50,7 +50,7 @@ export default function Transactions() {
 
   const columns = useMemo<ColumnDef<WalletTransaction, any>[]>(() => [
     { header: 'Date', accessorKey: 'date', size: 160, cell: (i) => dateTime(i.getValue()) },
-    { header: 'Item', accessorKey: 'item', size: 220 },
+    { header: 'Item', accessorKey: 'item', size: 220, meta: { copyable: true } },
     {
       header: 'Side', accessorKey: 'is_buy', size: 90,
       cell: (i) => <Badge color={i.getValue() ? 'info' : 'accent'}>{i.getValue() ? 'Buy' : 'Sell'}</Badge>,
@@ -100,6 +100,7 @@ export default function Transactions() {
       </Group>
 
       <DataTable
+        rowDetail
         data={filtered}
         columns={columns}
         maxHeight={560}

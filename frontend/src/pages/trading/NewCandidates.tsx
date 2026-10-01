@@ -16,8 +16,8 @@ export default function NewCandidates() {
   const sorted = useMemo(() => [...(data ?? [])].sort((a, b) => b.score - a.score), [data])
 
   const columns = useMemo<ColumnDef<NewCandidateResult, any>[]>(() => [
-    { header: 'Item', accessorKey: 'item', size: 220 },
-    { header: 'Category', accessorKey: 'category', size: 120 },
+    { header: 'Item', accessorKey: 'item', size: 220, meta: { copyable: true } },
+    { header: 'Category', accessorKey: 'category', size: 120, meta: { filterable: true } },
     {
       header: 'Recommendation', accessorKey: 'recommendation', size: 150,
       cell: (i) => <Badge color={i.getValue() !== 'Skip' ? 'accent' : 'warn'} variant="light">{i.getValue()}</Badge>,
@@ -40,7 +40,7 @@ export default function NewCandidates() {
 
   return (
     <Stack>
-      <DataTable data={sorted} columns={columns} maxHeight={480} dataUpdatedAt={dataUpdatedAt} />
+      <DataTable rowDetail data={sorted} columns={columns} maxHeight={480} dataUpdatedAt={dataUpdatedAt} />
       <Title order={6} c="dimmed" tt="uppercase" mt="lg">Score · Top 15</Title>
       <ResponsiveContainer width="100%" height={300}>
         <BarChart data={top15} layout="vertical" margin={{ left: 120 }}>

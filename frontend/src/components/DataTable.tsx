@@ -242,7 +242,9 @@ export function DataTable<T>({
   const [viewName, setViewName] = useState('')
   const [cursorId, setCursorId] = useState<string | null>(null)
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
-  const [detailRowId, setDetailRowId] = useState<string | null>(null)
+  // The clicked Row object itself, not just its id: without a `getRowId` the id is
+  // the row's index, which a re-sort or refetch would point at a different row.
+  const [detailRow, setDetailRow] = useState<Row<T> | null>(null)
   const [changedIds, setChangedIds] = useState<ReadonlySet<string>>(new Set())
   const uid = useId()
   const wrapperRef = useRef<HTMLDivElement | null>(null)
@@ -341,10 +343,9 @@ export function DataTable<T>({
   const rowActivatable = !!onRowClick || !!rowDetail
   const activateRow = (row: Row<T>) => {
     onRowClick?.(row.original)
-    if (rowDetail) setDetailRowId(row.id)
+    if (rowDetail) setDetailRow(row)
   }
-  const highlightedRowId = activeRowId ?? (rowDetail ? detailRowId ?? undefined : undefined)
-  const detailRow = detailRowId ? table.getCoreRowModel().rowsById[detailRowId] : undefined
+  const highlightedRowId = activeRowId ?? (rowDetail ? detailRow?.id : undefined)
 
   const detailTitle = (row: Row<T>): ReactNode => {
     if (typeof rowDetail === 'object' && rowDetail.title) return rowDetail.title(row.original)
@@ -766,7 +767,7 @@ export function DataTable<T>({
 
       {rowDetail && (
         <Drawer
-          opened={!!detailRow} onClose={() => setDetailRowId(null)} position="right" size="md" padding="md"
+          opened={!!detailRow} onClose={() => setDetailRow(null)} position="right" size="md" padding="md"
           title={detailRow ? detailTitle(detailRow) : ''}
         >
           <Stack gap={6}>

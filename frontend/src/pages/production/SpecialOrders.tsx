@@ -80,7 +80,7 @@ function ComputeResultView({ result }: { result: SpecialOrderComputeResult }) {
   const grandTotal = totalCost + totalJobCost
 
   const buyColumns = useMemo<ColumnDef<BuyListEntry, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 220 },
+    { header: 'Item', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
     { header: 'Category', accessorKey: 'category', size: 150, cell: (i) => i.getValue() ?? '–' },
     {
       header: 'Buy From', accessorKey: 'buy_from', size: 120,
@@ -103,7 +103,7 @@ function ComputeResultView({ result }: { result: SpecialOrderComputeResult }) {
   ], [])
 
   const buildColumns = useMemo<ColumnDef<BuildJobEntry, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 220 },
+    { header: 'Item', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
     { header: 'Category', accessorKey: 'job_category', size: 150, cell: (i) => i.getValue() ?? '–' },
     { header: 'Activity', accessorKey: 'activity', size: 120 },
     { header: 'Job Runs', accessorKey: 'job_runs', size: 100, cell: (i) => qty(i.getValue()) },
@@ -322,7 +322,7 @@ function OrderItemsEditor({ order, items, autoRecompute, onPreview }: {
   const [newQuantity, setNewQuantity] = useState<number | ''>(1)
 
   const columns = useMemo<ColumnDef<SpecialOrderLineItem, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 240 },
+    { header: 'Item', accessorKey: 'type_name', size: 240, meta: { copyable: true } },
     {
       header: 'Quantity', accessorKey: 'quantity', size: 160,
       cell: (i) => (
