@@ -13,6 +13,7 @@ import type {
 import { DataTable } from '../../components/DataTable'
 import { useAction } from '../../hooks/useAction'
 import { useBackgroundJob, useBackgroundJobStart } from '../../hooks/useBackgroundJob'
+import { JobProgress } from '../../components/JobProgress'
 
 const SDE_RESULT_KEYS: string[][] = [['production', 'sde', 'counts'], ['production', 'sde-freshness']]
 const SDE_LABELS = { sde_preview: 'Preview SDE' }
@@ -276,9 +277,7 @@ export default function SdePreviewPage() {
         </Group>
 
         {running && (
-          <Text size="sm" c="dimmed">
-            {sdeJob.formatProgress(sdeJob.status?.progress, sdeJob.jobName)}
-          </Text>
+          <JobProgress label={sdeJob.formatProgress(sdeJob.status?.progress, sdeJob.jobName)} progress={sdeJob.status?.progress} />
         )}
 
         {sdeJob.status?.status === 'failed' && (

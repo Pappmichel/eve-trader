@@ -8,6 +8,7 @@ import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { modals } from '@mantine/modals'
 import { notify } from '../../notify'
+import { JobProgress } from '../../components/JobProgress'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { adminApi, productionApi } from '../../api/client'
@@ -151,7 +152,9 @@ function StructureResolveSection() {
         </Button>
       </Group>
       {running && (
-        <Text size="sm" c="dimmed" mb="xs">{job.formatProgress(job.status?.progress, job.jobName)}</Text>
+        <div style={{ marginBottom: 'var(--mantine-spacing-xs)' }}>
+          <JobProgress label={job.formatProgress(job.status?.progress, job.jobName)} progress={job.status?.progress} />
+        </div>
       )}
       {!running && job.status?.status === 'failed' && (
         <Text size="sm" c="danger" mb="xs">{job.status.error || 'Structure name resolution failed.'}</Text>

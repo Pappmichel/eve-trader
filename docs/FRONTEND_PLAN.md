@@ -19,6 +19,8 @@ Effort: S = up to half a day, M = 1-2 days, L = 3+ days.
 | Job progress bar (`JobProgress`) in the Trading layout (B.5) | implemented |
 | `EditableNumberCell` extracted to `components/EditableCell.tsx`; Enter saves, Escape discards; Doctrine target editor has the same keys (B.7) | implemented |
 | Spotlight "Run:" commands with confirmation dialog (B.9) | implemented, Trading only (refresh shortlist, search, reconcile, pipeline) |
+| `DataTable` generic extras: `rowDetail` (row click opens a drawer with every column, incl. hidden ones) and `meta.filterable` (exact-value filter icon + removable chips, part of saved views) | implemented; `rowDetail` enabled on ~25 main tables, `copyable` on item-name columns, `filterable` on category columns |
+| `JobProgress` bars on Admin (structure names), SDE preview, Doctrine sync, Build Candidates | implemented |
 | Findings B1-B3 (price history endpoint) | open, unverified (no backend in the cloud session) |
 | B.2 sparklines, B.10 charts, B.11 dashboard tiles | blocked on backend work (new/changed endpoints) |
 | B.12 auto refresh, B.13 priority drag and drop | deferred (low benefit / needs schema) |
