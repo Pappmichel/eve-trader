@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Select, Skeleton, Stack } from '@mantine/core'
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from 'recharts'
@@ -10,8 +11,12 @@ import { COLORS } from '../../theme'
 export default function PriceHistory() {
   const { data: typeIds, isLoading } = useQuery({ queryKey: ['trading', 'history', 'type-ids'], queryFn: tradingApi.historyTypeIds })
   const [chosen, setChosen] = useState<string | null>(null)
+  // ?item=<type_id> (e.g. from the Shortlist detail drawer) preselects an item.
+  const [searchParams] = useSearchParams()
+  const fromUrl = searchParams.get('item')
+  const urlChoice = fromUrl && typeIds?.some((t) => String(t.type_id) === fromUrl) ? fromUrl : null
 
-  const effectiveId = chosen ?? (typeIds && typeIds.length > 0 ? String(typeIds[0].type_id) : null)
+  const effectiveId = chosen ?? urlChoice ?? (typeIds && typeIds.length > 0 ? String(typeIds[0].type_id) : null)
   const { data: history } = useQuery({
     queryKey: ['trading', 'history', effectiveId],
     queryFn: () => tradingApi.history(Number(effectiveId)),

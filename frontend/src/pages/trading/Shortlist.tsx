@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Button, Checkbox, Group, MultiSelect, TextInput, NumberInput, Badge, Text, Stack, Title, Paper, Tooltip } from '@mantine/core'
+import { Link, useSearchParams } from 'react-router-dom'
+import { Button, Checkbox, Group, MultiSelect, TextInput, NumberInput, Badge, Text, Stack, Title, Paper, Tooltip, UnstyledButton } from '@mantine/core'
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip as ChartTooltip } from 'recharts'
 import { IconMinus, IconTrendingDown, IconTrendingUp } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
@@ -9,6 +10,7 @@ import { tradingApi } from '../../api/client'
 import type { ShortlistRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
+import { DetailRow, RowDetailDrawer } from '../../components/RowDetailDrawer'
 import { useAction } from '../../hooks/useAction'
 import { isk, pct, qty } from '../../format'
 import { COLORS } from '../../theme'
@@ -62,6 +64,17 @@ export default function Shortlist() {
     if (settings) setCapDraft(settings.max_active_shortlist_items)
   }, [settings?.max_active_shortlist_items])
 
+  // Detail drawer: the open item lives in the URL (?item=<item_id>) so
+  // back/forward and shared links reopen it.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const openItemId = searchParams.get('item')
+  const openRow = useMemo(
+    () => (openItemId ? (data ?? []).find((r) => String(r.item_id) === openItemId) : undefined),
+    [data, openItemId],
+  )
+  const openItem = (row: ShortlistRow) => setSearchParams((p) => { p.set('item', String(row.item_id)); return p })
+  const closeItem = () => setSearchParams((p) => { p.delete('item'); return p })
+
   const effectiveCategories = selCategories.length ? selCategories : categories
   const effectiveMeta = selMeta.length ? selMeta : metaLevels
 
@@ -91,12 +104,38 @@ export default function Shortlist() {
   }, [filtered])
 
   const columns = useMemo<ColumnDef<ShortlistRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'item', size: 220, meta: { copyable: true } },
+    {
+      header: 'Item', accessorKey: 'item', size: 220,
+      meta: {
+        copyable: true,
+        hoverCard: (r: ShortlistRow) => (
+          <Stack gap={2} miw={200}>
+            <Text size="sm" fw={600}>{r.item}</Text>
+            <DetailRow label="Cost (Jita)" value={isk(r.landed_cost)} />
+            <DetailRow label="Sale (Structure)" value={isk(r.net_sell)} />
+            <DetailRow label="Profit / unit" value={isk(r.profit_per_unit)} />
+            <DetailRow label="Margin" value={pct(r.margin)} />
+          </Stack>
+        ),
+      },
+    },
     { header: 'Category', accessorKey: 'category', size: 110 },
     { header: 'Meta Level', accessorKey: 'meta_level', size: 90, cell: (i) => i.getValue() ?? '–' },
     {
-      header: 'Status', accessorKey: 'decision', size: 170,
-      cell: (i) => <Badge color={DECISION_COLOR[i.getValue() as string] ?? 'gray'} variant="light">{i.getValue()}</Badge>,
+      header: 'Status', accessorKey: 'decision', size: 170, meta: { trackChanges: true },
+      // Clicking the badge filters the table to that status; clicking it again
+      // (when it is the only one selected) shows every status again.
+      cell: (i) => {
+        const decision = i.getValue() as string
+        return (
+          <UnstyledButton
+            aria-label={`Filter by status ${decision}`}
+            onClick={() => setSelDecisions((prev) => (prev.length === 1 && prev[0] === decision ? ALL_DECISIONS : [decision]))}
+          >
+            <Badge color={DECISION_COLOR[decision] ?? 'gray'} variant="light" style={{ cursor: 'pointer' }}>{decision}</Badge>
+          </UnstyledButton>
+        )
+      },
     },
     {
       header: 'Days Until Auto-Deactivation', accessorKey: 'days_until_deactivation', size: 150,
@@ -106,7 +145,7 @@ export default function Shortlist() {
         return <Text size="sm" c={days <= 5 ? 'danger' : undefined}>{days}</Text>
       },
     },
-    { header: 'Margin', accessorKey: 'margin', size: 90, cell: (i) => pct(i.getValue()) },
+    { header: 'Margin', accessorKey: 'margin', size: 90, meta: { trackChanges: true }, cell: (i) => pct(i.getValue()) },
     {
       header: 'Trend (3d vs 30d)', id: 'trend', size: 150,
       accessorFn: (r) => trends?.[r.item_id]?.trend_pct ?? null,
@@ -125,7 +164,7 @@ export default function Shortlist() {
         )
       },
     },
-    { header: 'Profit / Unit', accessorKey: 'profit_per_unit', size: 120, cell: (i) => isk(i.getValue()) },
+    { header: 'Profit / Unit', accessorKey: 'profit_per_unit', size: 120, meta: { trackChanges: true }, cell: (i) => isk(i.getValue()) },
     {
       // GitHub issue #100: real average daily *market-wide* traded quantity
       // (Goonmetrics region history for C-J's own home region), not
@@ -218,8 +257,61 @@ export default function Shortlist() {
       {filtered.length === 0 ? (
         <HintCard>No items match the current filters.</HintCard>
       ) : (
-        <DataTable data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
+        <DataTable
+          data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt}
+          tableId="trading-shortlist" exportFilename="trading-shortlist"
+          getRowId={(r) => String(r.item_id)}
+          onRowClick={openItem} activeRowId={openItemId ?? undefined}
+          extraViewState={{
+            value: { selCategories, selDecisions, selMeta, search, minMarginPct },
+            apply: (v) => {
+              const f = v as Partial<{ selCategories: string[]; selDecisions: string[]; selMeta: string[]; search: string; minMarginPct: number | '' }>
+              setSelCategories(f.selCategories ?? [])
+              setSelDecisions(f.selDecisions ?? ALL_DECISIONS)
+              setSelMeta(f.selMeta ?? [])
+              setSearch(f.search ?? '')
+              setMinMarginPct(f.minMarginPct ?? 0)
+            },
+          }}
+        />
       )}
+
+      <RowDetailDrawer opened={!!openRow} onClose={closeItem} title={openRow?.item ?? ''}>
+        {openRow && (
+          <>
+            <Group gap="xs">
+              <Badge color={DECISION_COLOR[openRow.decision] ?? 'gray'} variant="light">{openRow.decision}</Badge>
+              <Badge color="gray" variant="outline">{openRow.category}</Badge>
+              {!openRow.active && <Badge color="danger" variant="outline">inactive</Badge>}
+            </Group>
+            <Stack gap={6}>
+              <Title order={6} c="dimmed" tt="uppercase">Pricing</Title>
+              <DetailRow label="Jita sell" value={isk(openRow.jita_sell)} />
+              <DetailRow label="Import cost" value={isk(openRow.import_cost)} />
+              <DetailRow label="Cost (Jita, landed)" value={isk(openRow.landed_cost)} />
+              <DetailRow label="Sale (Structure, net)" value={isk(openRow.net_sell)} />
+              <DetailRow label="Profit / unit" value={isk(openRow.profit_per_unit)} />
+              <DetailRow label="Margin" value={pct(openRow.margin)} />
+              <DetailRow label="Profit / m³" value={qty(openRow.profit_per_m3)} />
+            </Stack>
+            <Stack gap={6}>
+              <Title order={6} c="dimmed" tt="uppercase">Market</Title>
+              <DetailRow label="Avg. daily volume (market)" value={qty(openRow.avg_daily_volume)} />
+              <DetailRow label="Listed qty (Structure)" value={qty(openRow.sell_volume)} />
+              <DetailRow label="Own orders" value={qty(openRow.own_orders_remaining)} />
+              <DetailRow label="Volume (m³ / unit)" value={qty(openRow.volume_m3)} />
+              <DetailRow label="Meta level" value={openRow.meta_level ?? '–'} muted={openRow.meta_level === null} />
+              <DetailRow
+                label="Days until auto-deactivation"
+                value={openRow.days_until_deactivation ?? '–'} muted={openRow.days_until_deactivation === null}
+              />
+            </Stack>
+            <Button component={Link} to={`/trading/history?item=${openRow.item_id}`} variant="default" size="xs">
+              Open in Price History
+            </Button>
+          </>
+        )}
+      </RowDetailDrawer>
 
       {topImports.length > 0 && (
         <Stack mt="lg">
