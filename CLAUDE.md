@@ -846,6 +846,13 @@ manual-entry section/form alongside the ESI-synced rows (`source: "esi" |
   full history and every PR description were already scrubbed of these once
   (2026-08-24, ahead of making the repo public) - don't reintroduce the
   pattern going forward.
+- **Everything that goes into the repo is written in English (confirmed
+  2026-10-01).** Code, comments, docs, plan files, commit messages, PR and
+  issue text - regardless of the language the conversation with the user is
+  held in. Chat replies may be in the user's language; anything committed or
+  pushed is English. Some existing files still contain German; don't spread
+  that, and translate a file only when you are already editing it or the user
+  asks.
 - **User preference (confirmed 2026-08-22): delegate to an Opus subagent
   without asking first** whenever a task/sub-task is algorithmically heavy
   (e.g. a real optimization/LP formulation, a tricky correctness-critical
