@@ -31,8 +31,8 @@ Effort: S = up to half a day, M = 1-2 days, L = 3+ days.
 | Test fixes after a local run (2026-10-02): unknown `POST /api/...` returned 405 instead of 404 while `frontend/dist` was mounted (also on Linux); hover summary formatted numbers with the browser locale instead of en-US; Module Reprocessing and Station Trading tables missing from `sqlite_migration.KNOWN_NON_MIGRATED_TABLES` (the drift test depended on test order); Windows-only test issues | fixed, full backend and frontend suites green |
 | Finding B3 | dropped: conflicts with the documented T3-03 decision (see B.0) |
 | B1, B2, B4 | fixed (2026-10-02): history endpoint split by region with indexed queries, Price History draws two lines, shortlist refresh saves both regions' history, trends limited to the last 30 calendar days. Verified on the test server: a refresh made 1,298 shortlist items' reference-region history current |
-| Goonmetrics history only covers Jita (The Forge) and the reference region, not Amarr, Dodixie or Rens (checked 2026-10-02 on the test server). With a non-Jita Trading hub the candidate search finds nothing, trends stay empty and Price History has no hub line. ESI `/markets/{region}/history/` covers every region | open, needs a decision |
-| B.2 sparklines, B.10 charts | unblocked by B1, B2, B4 (hub line only for Jita, see above) |
+| Goonmetrics history only covers a few regions (The Forge, Insmother, Delve; not Amarr, Dodixie, Rens) | fixed (PR #226): untracked regions are read from ESI daily history, cut to the same 30-day window |
+| B.2 sparklines, B.10 charts | unblocked |
 | B.11 dashboard tiles | open, needs a new Production `/kpis` endpoint |
 | B.12 auto refresh, B.13 priority drag and drop | deferred (low benefit / needs schema); re-checked 2026-10-02, still right |
 
