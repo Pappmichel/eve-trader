@@ -814,3 +814,30 @@ def test_failed_on_demand_sync_never_runs_the_stale_clear(tenant, monkeypatch):
     do_sync_for_tool("production", client=failing)
     assert len(calls) == 1
 
+
+
+def test_non_esi_failure_is_recorded_against_its_kind(tenant, monkeypatch):
+    """A storage error inside a fetch (seen on production 2026-10-02: a
+    doctrine_contract_items primary-key conflict) used to be recorded as the
+    unknown kind '?', which _record_failure refuses, so nothing showed the
+    error."""
+    _share("character", ALICE, "assets", "production")
+    storage.save_tenant_token("producer:1001", asdict(TokenRecord(
+        role="producer:1001", character_id=ALICE, character_name="Alice",
+        access_token="ok", refresh_token="ok", expires_at=9e12, scopes=ASSETS_SCOPE,
+    )))
+
+    def boom(**kwargs):
+        raise RuntimeError("duplicate key value violates unique constraint")
+    monkeypatch.setattr(orchestrator, "_run_kind", boom)
+
+    result = do_sync_for_tool("production", client=ESIClient())
+
+    assert result["ok"] is False
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT data_kind, last_error FROM esi_freshness WHERE owner_type = 'character' AND owner_id = ?",
+            (ALICE,),
+        ).fetchall()
+    assert [r[0] for r in rows] == ["assets"]
+    assert "duplicate key" in rows[0][1]

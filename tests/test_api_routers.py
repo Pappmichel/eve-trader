@@ -2012,6 +2012,36 @@ def test_price_history_is_split_by_region(monkeypatch):
     assert sorted(calls) == sorted([(hub, 34), (ref, 34)])
 
 
+def test_history_sparklines_shape_and_calendar_cutoff(monkeypatch):
+    from datetime import date, timedelta
+    from eve_trader.config import TRADING_CONFIG
+
+    calls = []
+
+    def fake_read(region_id, type_ids, since):
+        calls.append((region_id, list(type_ids), since))
+        return {5: [("2026-10-01", float(region_id))]}
+
+    monkeypatch.setattr(storage, "read_goonmetrics_avg_prices_since", fake_read)
+    resp = client.get("/api/trading/history/sparklines?type_ids=6,5,5")
+    assert resp.status_code == 200
+    hub, ref = TRADING_CONFIG.jita_region_id, TRADING_CONFIG.reference_region_id
+    body = resp.json()
+    assert body["5"] == {"hub": [["2026-10-01", float(hub)]], "ref": [["2026-10-01", float(ref)]]}
+    assert body["6"] == {"hub": [], "ref": []}
+    since = (date.today() - timedelta(days=30)).isoformat()
+    assert calls == [(hub, [5, 6], since), (ref, [5, 6], since)]
+
+
+def test_history_sparklines_rejects_too_many_ids_and_bad_input(monkeypatch):
+    monkeypatch.setattr(storage, "read_goonmetrics_avg_prices_since", lambda *a: {})
+    ok = ",".join(str(i) for i in range(200))
+    assert client.get(f"/api/trading/history/sparklines?type_ids={ok}").status_code == 200
+    too_many = ",".join(str(i) for i in range(201))
+    assert client.get(f"/api/trading/history/sparklines?type_ids={too_many}").status_code == 400
+    assert client.get("/api/trading/history/sparklines?type_ids=a,b").status_code == 400
+
+
 def test_get_sde_regions_serializes_storage_rows(monkeypatch):
     monkeypatch.setattr(storage, "list_all_regions", lambda: [(10000009, "Insmother"), (10000002, "The Forge")])
 
@@ -2036,3 +2066,24 @@ def test_hub_freight_routes_pass_rows_to_the_action(monkeypatch):
                                                    {"region_id": 10000002}])
     assert resp.status_code == 200
     assert seen == {10000043: 950.0, 10000002: None}
+
+
+def test_data_versions_route_returns_the_action_result(monkeypatch):
+    from eve_trader import data_versions
+
+    monkeypatch.setattr(data_versions, "do_data_versions", lambda: {"esi": "x", "portfolio": None})
+    resp = client.get("/api/updates/versions")
+    assert resp.status_code == 200
+    assert resp.json() == {"esi": "x", "portfolio": None}
+
+
+def test_production_kpis_returns_counts_only(monkeypatch):
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(1, "A", 0, 1, 1), (2, "B", 0, 1, 1)])
+    monkeypatch.setattr(storage, "list_industry_jobs", lambda *a, **k: [("esi-job",)])
+    monkeypatch.setattr(storage, "load_manual_industry_jobs", lambda: [("m1",), ("m2",)])
+    monkeypatch.setattr(storage, "list_special_orders", lambda: [
+        ("a", None, False, "open", None), ("b", None, False, "done", None),
+    ])
+    resp = client.get("/api/production/kpis")
+    assert resp.status_code == 200
+    assert resp.json() == {"stock_targets": 2, "active_jobs": 3, "open_special_orders": 1}

@@ -208,7 +208,7 @@ def do_list_token_characters() -> list[dict]:
     return out
 
 
-def do_remove_token_character(character_id: int) -> dict:
+def do_remove_token_character(character_id: int, delete_mail_archive: bool = False) -> dict:
     """Drop every ESI token for `character_id`.
 
     Character-centric, not prefix-centric: a re-auth-merged `buyer:<id>`
@@ -228,6 +228,11 @@ def do_remove_token_character(character_id: int) -> dict:
 
     Listings that resolve a token (`do_list_token_characters`,
     `list_shared_*_characters`) omit the character immediately.
+
+    The one exception is the mail archive (R8 in
+    docs/CHARACTER_MANAGEMENT_PLAN.md): archived mail is private, so the
+    remove dialog offers `delete_mail_archive=True`, which deletes it the
+    same way unticking "Archive mail" does.
     """
     try:
         character_id = int(character_id)
@@ -255,12 +260,17 @@ def do_remove_token_character(character_id: int) -> dict:
     for role in roles:
         tm.remove_token(role)
 
+    mail_deleted = None
+    if delete_mail_archive:
+        mail_deleted = storage.delete_mail_archive(character_id)
+
     return {
         "removed": character_id,
         "character_name": name,
         "roles": roles,
         "shared_tools": shared_tools,
         "capabilities": capabilities,
+        "mail_archive_deleted": mail_deleted,
     }
 
 

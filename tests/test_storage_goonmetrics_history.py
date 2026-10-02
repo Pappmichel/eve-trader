@@ -71,3 +71,26 @@ def test_goonmetrics_history_type_ids_for_tenant_covers_both_shortlist_and_candi
         conn.execute("INSERT INTO candidate_universe (type_id) VALUES (?)", (2,))
 
     assert sorted(storage.goonmetrics_history_type_ids_for_tenant()) == [1, 2]
+
+
+def test_read_goonmetrics_avg_prices_since_filters_region_ids_and_date(tenant):
+    # goonmetrics_history is global and not reset between tests: use ids no
+    # other test touches and clean up afterwards.
+    a, b, c, d = 900001, 900002, 900003, 900004
+
+    def pt(type_id, date, avg, region_id=10000002):
+        return HistoryPoint(region_id=region_id, type_id=type_id, date=date, min_price=1.0, max_price=2.0,
+                            avg_price=avg, movement=1.0, num_orders=1)
+
+    storage.save_goonmetrics_history([
+        pt(a, "2026-09-01", 1.0), pt(a, "2026-09-20", 2.0), pt(a, "2026-09-21", 3.0),
+        pt(b, "2026-09-25", 5.0), pt(c, "2026-09-25", 9.0),
+        pt(a, "2026-09-25", 7.0, region_id=10000009),
+    ])
+    try:
+        out = storage.read_goonmetrics_avg_prices_since(10000002, [a, b, d], "2026-09-20")
+        assert out == {a: [("2026-09-20", 2.0), ("2026-09-21", 3.0)], b: [("2026-09-25", 5.0)]}
+        assert storage.read_goonmetrics_avg_prices_since(10000002, [], "2026-09-20") == {}
+    finally:
+        with storage.connect() as conn:
+            conn.execute("DELETE FROM goonmetrics_history WHERE type_id IN (?,?,?,?)", (a, b, c, d))

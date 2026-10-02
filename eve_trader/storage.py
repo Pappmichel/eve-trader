@@ -5393,6 +5393,25 @@ def read_goonmetrics_history(region_id: int, type_id: int) -> list[dict]:
         return [dict(zip(columns, row)) for row in cur.fetchall()]
 
 
+def read_goonmetrics_avg_prices_since(region_id: int, type_ids: list[int], since_date: str) -> dict[int, list[tuple[str, float]]]:
+    """(date, avg_price) points for many items in one region, oldest first,
+    only rows with date >= `since_date` (ISO YYYY-MM-DD, compared as text).
+    One query for the whole id list; items with no rows are absent."""
+    if not type_ids:
+        return {}
+    placeholders = ",".join("?" * len(type_ids))
+    out: dict[int, list[tuple[str, float]]] = {}
+    with connect() as conn:
+        cur = conn.execute(
+            f"SELECT type_id, date, avg_price FROM goonmetrics_history "
+            f"WHERE region_id = ? AND type_id IN ({placeholders}) AND date >= ? ORDER BY type_id, date",
+            (region_id, *type_ids, since_date),
+        )
+        for type_id, date, avg_price in cur.fetchall():
+            out.setdefault(int(type_id), []).append((date, float(avg_price)))
+    return out
+
+
 def goonmetrics_history_type_ids_for_tenant() -> list[int]:
     """type_ids in goonmetrics_history (a global, shared-across-every-tenant
     cache - see this file's own module docstring) that are ALSO in this
@@ -6591,6 +6610,17 @@ def _replace_doctrine_sync_one(
             f"ON CONFLICT (tenant_id, contract_id) DO UPDATE SET {update_clause}",
             stamped,
         )
+        # Same shared-contract case for the child rows: another member's
+        # partition can still hold this contract's items/deviations, so a
+        # plain INSERT hit their primary keys (confirmed on production,
+        # 2026-10-02). Replace the child rows of exactly the contracts this
+        # sync brings items for; a contract whose item fetch failed keeps
+        # what it had.
+        refreshed_ids = sorted({int(r[0]) for r in items} | {int(r[0]) for r in deviations})
+        if refreshed_ids:
+            marks = ",".join("?" * len(refreshed_ids))
+            conn.execute(f"DELETE FROM doctrine_contract_items WHERE contract_id IN ({marks})", refreshed_ids)
+            conn.execute(f"DELETE FROM doctrine_contract_deviations WHERE contract_id IN ({marks})", refreshed_ids)
         conn.executemany(
             "INSERT INTO doctrine_contract_items (contract_id, record_id, type_id, quantity, is_included, "
             "is_singleton) VALUES (?,?,?,?,?,?)",
@@ -6957,7 +6987,7 @@ def delete_manual_item_price(type_id: int) -> None:
 
 
 
-# --------------------------------------- Discord alerts (docs/DISCORD_ALERTS_HANDOFF.md)
+# --------------------------------------- Discord alerts (CLAUDE.md "Discord alerts")
 def get_alert_destination() -> Optional[str]:
     """This tenant's linked Discord user id, or None."""
     with connect() as conn:

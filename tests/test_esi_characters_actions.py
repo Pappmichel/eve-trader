@@ -264,6 +264,7 @@ def test_remove_token_character_deletes_only_that_characters_tokens(tenant):
         "roles": [f"buyer:{ALICE}", f"producer:{ALICE}"],
         "shared_tools": ["production", "trading"],
         "capabilities": ["structure_market_book"],
+        "mail_archive_deleted": None,
     }
     tm = TokenManager()
     assert tm.get_record(f"buyer:{ALICE}") is None

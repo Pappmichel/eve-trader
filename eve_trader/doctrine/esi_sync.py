@@ -43,23 +43,6 @@ DOCTRINE_ASSET_SCOPES = [
 ]
 
 
-def list_doctrine_characters(tm: Optional[TokenManager] = None) -> list[tuple[str, int, str]]:
-    """Deprecated (bug found 2026-09-21, same class as docs/
-    ESI_ACCESS_PLAN.md's Known gap 4): discovers by the legacy
-    `doctrine:<id>` token prefix, so a character added via the Characters
-    page's add-a-character path (`esi:<id>`, gap 1) is invisible here
-    regardless of sharing. Superseded by list_shared_doctrine_characters
-    below. Kept only because deleting a function with real test coverage on
-    a whim is its own risk; do not add a new caller of this one."""
-    tm = tm or TokenManager(OAUTH_CONFIG)
-    out = []
-    for role in tm.list_roles(DOCTRINE_ROLE_PREFIX):
-        record = tm.get_record(role)
-        if record is not None:
-            out.append((role, record.character_id, record.character_name))
-    return out
-
-
 def list_shared_doctrine_characters(tm: Optional[TokenManager] = None) -> list[tuple[str, int, str]]:
     """Returns (auth_role, character_id, character_name) for every character
     currently sharing Contracts with `doctrine` - the sharing-based
@@ -197,19 +180,6 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG, progress_callback=None
 
 
 # =========================================================== asset sync (Stockpile)
-def list_doctrine_asset_characters(tm: Optional[TokenManager] = None) -> list[tuple[str, int, str]]:
-    """Deprecated - same Known-gap-4-class bug as list_doctrine_characters
-    above, for the `doctrine-assets:<id>` prefix. Superseded by
-    list_shared_doctrine_asset_characters below."""
-    tm = tm or TokenManager(OAUTH_CONFIG)
-    out = []
-    for role in tm.list_roles(DOCTRINE_ASSET_ROLE_PREFIX):
-        record = tm.get_record(role)
-        if record is not None:
-            out.append((role, record.character_id, record.character_name))
-    return out
-
-
 def list_shared_doctrine_asset_characters(tm: Optional[TokenManager] = None) -> list[tuple[str, int, str]]:
     """Returns (auth_role, character_id, character_name) for every character
     currently sharing Assets with `doctrine` - the sharing-based

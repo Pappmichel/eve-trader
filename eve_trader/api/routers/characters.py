@@ -45,8 +45,9 @@ def list_owners():
 
 
 @router.delete("/owners/{character_id}")
-def remove_owner(character_id: int):
-    return _wrap(esi_actions.do_remove_token_character, character_id=character_id)
+def remove_owner(character_id: int, delete_mail_archive: bool = False):
+    return _wrap(esi_actions.do_remove_token_character, character_id=character_id,
+                 delete_mail_archive=delete_mail_archive)
 
 
 class SetSharingRequest(BaseModel):

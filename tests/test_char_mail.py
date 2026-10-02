@@ -686,3 +686,22 @@ def test_router_converts_action_errors_and_passes_archive_flags(monkeypatch):
     monkeypatch.setattr(mail_actions, "do_refresh_mail_archive", lambda **kw: seen.update(kw) or {"characters": []})
     _client.post("/api/char-mail/archive/refresh", json={})
     assert seen["character_id"] is None
+
+
+def test_remove_character_can_delete_its_mail_archive(tenant):
+    """R8: removing a character keeps its snapshots, but the dialog can also
+    delete its archived mail; without the flag the archive stays."""
+    from eve_trader.esi_data import actions as esi_actions
+
+    _token(ALICE, "Alice")
+    storage.enable_mail_archive(ALICE)
+    storage.store_mail_headers(ALICE, [_raw(10), _raw(11)])
+
+    kept = esi_actions.do_remove_token_character(ALICE)
+    assert kept["mail_archive_deleted"] is None
+    assert storage.mail_archive_counts(ALICE)["headers"] == 2
+
+    _token(ALICE, "Alice")
+    removed = esi_actions.do_remove_token_character(ALICE, delete_mail_archive=True)
+    assert removed["mail_archive_deleted"]["headers"] == 2
+    assert all(_count(t) == 0 for t in _MAIL_TABLES)

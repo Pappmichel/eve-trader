@@ -24,23 +24,6 @@ STATION_TRADING_SCOPES = [
 ]
 
 
-def list_trader_characters(tm: TokenManager | None = None) -> list[tuple[str, int, str]]:
-    """Deprecated (bug found 2026-09-21, same class as docs/
-    ESI_ACCESS_PLAN.md's Known gap 4): discovers by the legacy `trader:<id>`
-    token prefix, so a character added via the Characters page's
-    add-a-character path (`esi:<id>`, gap 1) is invisible here regardless
-    of sharing. Superseded by list_shared_trader_characters below. Kept
-    only because deleting a function with real test coverage on a whim is
-    its own risk; do not add a new caller of this one."""
-    tm = tm or TokenManager(OAUTH_CONFIG)
-    out = []
-    for role in tm.list_roles(STATION_TRADING_ROLE_PREFIX):
-        record = tm.get_record(role)
-        if record is not None:
-            out.append((role, record.character_id, record.character_name))
-    return out
-
-
 def list_shared_trader_characters(tm: TokenManager | None = None) -> list[tuple[str, int, str]]:
     """Returns (auth_role, character_id, character_name) for every character
     currently sharing Market Orders and/or Skills with `station_trading` -
