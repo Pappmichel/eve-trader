@@ -176,6 +176,12 @@ export interface PriceHistory {
   reference: PriceHistoryPoint[]
 }
 
+/** [date, avg_price] points of the last 30 calendar days, per region. */
+export interface SparklineSeries {
+  hub: [string, number][]
+  ref: [string, number][]
+}
+
 export interface TradingSettings {
   import_cost_per_m3: number
   structure_sell_haircut: number

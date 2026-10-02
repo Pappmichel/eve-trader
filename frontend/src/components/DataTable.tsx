@@ -152,6 +152,10 @@ interface DataTableProps<T> {
   // `activeRowId` (a `getRowId` value) highlights the currently open row.
   onRowClick?: (row: T) => void
   activeRowId?: string
+  // Opt-in: called (debounced ~150 ms) with the ids (`getRowId`, else the row
+  // index) of the rows the virtualizer currently mounts - visible rows plus its
+  // overscan. For cells that lazily fetch data for what is on screen.
+  onVisibleRowsChange?: (rowIds: string[]) => void
   // Lets a saved view also capture/restore page-owned filter state that lives
   // outside the table (e.g. a status MultiSelect). Needs `tableId`.
   extraViewState?: { value: unknown; apply: (value: unknown) => void }
@@ -332,6 +336,7 @@ export function DataTable<T>({
   dataUpdatedAt,
   onRowClick,
   activeRowId,
+  onVisibleRowsChange,
   extraViewState,
   rowDetail = true,
 }: DataTableProps<T>) {
@@ -507,6 +512,19 @@ export function DataTable<T>({
     estimateSize: () => rowHeight,
     overscan: 12,
   })
+
+  const visibleRowsKey = onVisibleRowsChange
+    ? virtualizer.getVirtualItems().map((v) => rows[v.index]?.id).filter((id): id is string => id !== undefined).join(',')
+    : ''
+  const onVisibleRowsChangeRef = useRef(onVisibleRowsChange)
+  onVisibleRowsChangeRef.current = onVisibleRowsChange
+  useEffect(() => {
+    if (!onVisibleRowsChangeRef.current) return
+    const timer = setTimeout(() => {
+      onVisibleRowsChangeRef.current?.(visibleRowsKey === '' ? [] : visibleRowsKey.split(','))
+    }, 150)
+    return () => clearTimeout(timer)
+  }, [visibleRowsKey])
 
   const cursorIndex = cursorId === null ? -1 : rows.findIndex((r) => r.id === cursorId)
   const rowActivatable = !!onRowClick || !!rowDetail
