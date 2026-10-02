@@ -733,6 +733,8 @@ class ShoppingListRow(_Base):
     jita_landed_price: Optional[float] = None
     recommended_source: Optional[str] = None
     total_cost: Optional[float] = None
+    hub_region_id: Optional[int] = None
+    hub_name: Optional[str] = None
 
 
 class FittingStatus(_Base):

@@ -213,6 +213,8 @@ class ShoppingListRow:
     jita_landed_price: Optional[float]  # per unit, includes DoctrineConfig.import_cost_per_m3
     recommended_source: Optional[str]   # "Build" | "C-J" | "Jita" | None (no price data at all)
     total_cost: Optional[float]         # recommended price * shortfall
+    hub_region_id: Optional[int] = None  # hub behind jita_landed_price (#222)
+    hub_name: Optional[str] = None
 
 
 # --------------------------------------------------------------- status / ampel
