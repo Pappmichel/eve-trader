@@ -1,8 +1,8 @@
 # Frontend plan: theme and interactivity
 
 As of 2026-10-02. Merges the former `THEME_DRAFT.md` and
-`docs/FRONTEND_INTERACTIVITY_PLAN.md` (both removed). Basis: `dev` (the
-feature branch `ccr-e0ccb567-s04qgg` was merged as PR #224), React 19, Mantine 9, `@tanstack/react-table` 8,
+`docs/FRONTEND_INTERACTIVITY_PLAN.md` (both removed). Basis: `dev` after
+PRs #224, #225 and #226, React 19, Mantine 9, `@tanstack/react-table` 8,
 `@tanstack/react-virtual` 3, React Query 5, Recharts 3.
 Effort: S = up to half a day, M = 1-2 days, L = 3+ days.
 
@@ -30,19 +30,25 @@ Effort: S = up to half a day, M = 1-2 days, L = 3+ days.
 | Partial items extended to more pages: hover summary card is now the default on every name column (`meta.hoverCard` overrides, `false` opts out); change flash is now the default for every table with `getRowId` (up to 2,000 rows; `meta.trackChanges` narrows/excludes) and `getRowId` was added to Market Status, Margin, Unlisted Stock, Build Candidates, Candidates, New Candidates; the three duplicate inline-edit components (Special Orders, Blueprints x2) now use the shared `EditableNumberCell` (Enter saves, Escape discards; `min`/`max`/`step`/`width`); Spotlight "Run:" commands now cover Production, Doctrine, Station Trading, Ore & Minerals and Module Reprocessing besides Trading; corner accents on tool overview and portfolio cards | implemented |
 | Test fixes after a local run (2026-10-02): unknown `POST /api/...` returned 405 instead of 404 while `frontend/dist` was mounted (also on Linux); hover summary formatted numbers with the browser locale instead of en-US; Module Reprocessing and Station Trading tables missing from `sqlite_migration.KNOWN_NON_MIGRATED_TABLES` (the drift test depended on test order); Windows-only test issues | fixed, full backend and frontend suites green |
 | Finding B3 | dropped: conflicts with the documented T3-03 decision (see B.0) |
-| B1, B2, B4 | fixed (2026-10-02): history endpoint split by region with indexed queries, Price History draws two lines, shortlist refresh saves both regions' history, trends limited to the last 30 calendar days. Verified on the test server: a refresh made 1,298 shortlist items' reference-region history current |
+| B1, B2, B4 | fixed (PR #225): history endpoint split by region with indexed queries, Price History draws two lines, shortlist refresh saves both regions' history, trends limited to the last 30 calendar days. Verified on the test server: before, no active shortlist item had history newer than 2026-09-21; after two refreshes 2,414 items have current Jita history and 1,850 have a trend |
+| GitHub #221 Breakeven price | fixed (PR #225): `breakeven_buy_price` = highest hub buy price that still breaks even after broker fee, freight and structure sale fees (was the structure price) |
+| GitHub #222 Trade hubs | fixed (PR #225): Trading's buy hub is picked on the Shortlist page and affects Trading only; every other tool has its own hub setting; Doctrine, Production, Ore & Minerals and Module Reprocessing also offer "All hubs (best per item)" with a "Best hub" column and a shared per-hub freight table (`/api/hubs/freight`); Station Trading stays on one hub |
+| GitHub #223 Region names | fixed (PR #225): `sde_regions` from the SDE refresh, searchable `RegionSelect`; shows "Region <id>" until the next SDE refresh |
+| Stale `index.html` after a deploy | fixed (PR #225): `Cache-Control: no-cache` on `index.html`, immutable on hashed assets; verified through nginx on the test server |
 | Goonmetrics history only covers a few regions (The Forge, Insmother, Delve; not Amarr, Dodixie, Rens) | fixed (PR #226): untracked regions are read from ESI daily history, cut to the same 30-day window |
 | B.2 sparklines, B.10 charts | unblocked |
 | B.11 dashboard tiles | open, needs a new Production `/kpis` endpoint |
 | B.12 auto refresh, B.13 priority drag and drop | deferred (low benefit / needs schema); re-checked 2026-10-02, still right |
 
-Not yet checked against a real backend with real data: the converted pages
-(especially Skills, Character Info, Contacts/Notifications, Doctrine skill
-check), the Spotlight commands outside Trading, and the Excel export in real
-Excel. The local dev database has too little data for this (no active
-shortlist items), so it needs a run against real data. The theme screenshots
-were taken with a mocked API. Rajdhani does not load in the cloud environment
-(Google Fonts is blocked), so the font impression cannot be judged there.
+Real data is available on the test server (92.5.11.10, a copy of the old
+production database; see `.ssh-local/server-info.txt`). Checked there so far:
+history freshness, shortlist refresh, best-hub pricing against live ESI and
+the cache headers. Not yet clicked through with a logged-in session: the
+converted pages (especially Skills, Character Info, Contacts/Notifications,
+Doctrine skill check), the Spotlight commands outside Trading, the new hub
+settings and "Best hub" columns, and the Excel export in real Excel. Browser
+checks so far used the built frontend with a mocked API (EVE SSO login can't
+be automated here).
 
 ## Guidelines
 
@@ -163,7 +169,8 @@ Apply `.et-panel` only to Landing cards and page headers.
 B1-B3 concern `GET /api/trading/history/{type_id}` in
 `eve_trader/api/routers/trading.py`; B4 concerns where its data comes from.
 Sparklines, drawer and charts build on both. Checked against the code on
-2026-10-02.
+2026-10-02. All four are resolved (B1, B2, B4 fixed in PR #225, B3 dropped);
+the text below is kept as the record of what was found.
 
 **B1. Two regions are mixed (confirmed bug).** The endpoint filters only by
 `type_id`. `goonmetrics_history` holds rows for `jita_region_id` and
@@ -360,12 +367,13 @@ land in the center is open.
 
 # Order (overall)
 
-Phases 0-5 are done except B1-B4 (see Status). Next, as of 2026-10-02:
-1. B1 + B2 (endpoint split by region, two chart lines) together with B4
-   (save shortlist history on refresh).
-2. B.2 sparklines and B.10 charts.
+Phases 0-5 and the B.0 findings are done (see Status). Next, as of
+2026-10-02:
+1. Click through against real data with a logged-in session on the test
+   server (see Status), including the new hub settings.
+2. B.2 sparklines and B.10 charts (unblocked; history is now refreshed and
+   available for every hub).
 3. B.11 dashboard tiles.
-4. Click through against real data (see Status).
 
 Original order:
 
