@@ -1,6 +1,6 @@
 # Frontend plan: theme and interactivity
 
-As of 2026-10-01. Merges the former `THEME_DRAFT.md` and
+As of 2026-10-02. Merges the former `THEME_DRAFT.md` and
 `docs/FRONTEND_INTERACTIVITY_PLAN.md` (both removed). Basis: branch
 `ccr-e0ccb567-s04qgg`, React 19, Mantine 9, `@tanstack/react-table` 8,
 `@tanstack/react-virtual` 3, React Query 5, Recharts 3.
@@ -18,7 +18,7 @@ Effort: S = up to half a day, M = 1-2 days, L = 3+ days.
 | Notification center: `notify()` wrapper, bell in tool headers and Landing (B.14) | implemented; all former `notifications.show` call sites switched |
 | Job progress bar (`JobProgress`) in the Trading layout (B.5) | implemented |
 | `EditableNumberCell` extracted to `components/EditableCell.tsx`; Enter saves, Escape discards; Doctrine target editor has the same keys (B.7) | implemented |
-| Spotlight "Run:" commands with confirmation dialog (B.9) | implemented, Trading only (refresh shortlist, search, reconcile, pipeline) |
+| Spotlight "Run:" commands with confirmation dialog (B.9) | implemented; first Trading only, later extended to every tool (see below) |
 | `DataTable` generic extras: `rowDetail` (row click opens a drawer with every column, incl. hidden ones) and `meta.filterable` (exact-value filter icon + removable chips, part of saved views) | implemented; `rowDetail` enabled on ~25 main tables, `copyable` on item-name columns, `filterable` on category columns |
 | `JobProgress` bars on Admin (structure names), SDE preview, Doctrine sync, Build Candidates | implemented |
 | `DataTable` columns: drag a header onto another to reorder (native HTML5 drag and drop, no dependency), drag the right edge of a header to resize (also arrow keys on the handle, double click resets one column, "Reset order"/"Reset widths" in the Columns menu); both persist per `tableId` and are part of saved views. Touch users reorder with the arrows in the Columns menu. | implemented (B.13 columns); `tableId` added to the main tables so order, widths and Views work there |
@@ -28,11 +28,19 @@ Effort: S = up to half a day, M = 1-2 days, L = 3+ days.
 | `DataTable` export menu (replaces the single CSV button): download CSV (international: comma, dot), Excel `.xlsx` (real numbers, bold header, widths; writer `write-excel-file` loaded on demand), JSON; copy as tab-separated table, Markdown table, and an in-game list (`Item<TAB>Qty`, only when the table has an item column and a quantity column; `meta.exportRole` overrides the header guess). Raw values, current filter/sort/visible columns; text cells that look like spreadsheet formulas are neutralised; file names default to the page path plus the date. | implemented for every `DataTable` (formats in `components/dataTableExport.ts`) |
 | Merged with `dev` (column pinning, buy-hub labels, breakeven column, tap-target CSS): the Columns menu keeps `dev`'s `Menu.Item component="div"` rows and adds the move arrows; export and saved views follow the pinned order/state; dropping an unpinned column on a pinned header is ignored; drawer labels follow the configured hub | resolved |
 | Partial items extended to more pages: hover summary card is now the default on every name column (`meta.hoverCard` overrides, `false` opts out); change flash is now the default for every table with `getRowId` (up to 2,000 rows; `meta.trackChanges` narrows/excludes) and `getRowId` was added to Market Status, Margin, Unlisted Stock, Build Candidates, Candidates, New Candidates; the three duplicate inline-edit components (Special Orders, Blueprints x2) now use the shared `EditableNumberCell` (Enter saves, Escape discards; `min`/`max`/`step`/`width`); Spotlight "Run:" commands now cover Production, Doctrine, Station Trading, Ore & Minerals and Module Reprocessing besides Trading; corner accents on tool overview and portfolio cards | implemented |
-| Findings B1-B3 (price history endpoint) | open, unverified (no backend in the cloud session) |
-| B.2 sparklines, B.10 charts, B.11 dashboard tiles | blocked on backend work (new/changed endpoints) |
-| B.12 auto refresh, B.13 priority drag and drop | deferred (low benefit / needs schema) |
+| Test fixes after a local run (2026-10-02): unknown `POST /api/...` returned 405 instead of 404 while `frontend/dist` was mounted (also on Linux); hover summary formatted numbers with the browser locale instead of en-US; Module Reprocessing and Station Trading tables missing from `sqlite_migration.KNOWN_NON_MIGRATED_TABLES` (the drift test depended on test order); Windows-only test issues | fixed, full backend and frontend suites green |
+| Findings B1 and B2 (price history endpoint) | confirmed in code, open |
+| Finding B3 | dropped: conflicts with the documented T3-03 decision (see B.0) |
+| Finding B4: shortlist price history is never refreshed | confirmed in code, open, blocks B.2 and B.10 (see B.0) |
+| B.2 sparklines, B.10 charts | blocked on B1, B2 and B4 |
+| B.11 dashboard tiles | open, needs a new Production `/kpis` endpoint |
+| B.12 auto refresh, B.13 priority drag and drop | deferred (low benefit / needs schema); re-checked 2026-10-02, still right |
 
-None of this has been checked against a real backend. The theme screenshots
+Not yet checked against a real backend with real data: the converted pages
+(especially Skills, Character Info, Contacts/Notifications, Doctrine skill
+check), the Spotlight commands outside Trading, and the Excel export in real
+Excel. The local dev database has too little data for this (no active
+shortlist items), so it needs a run against real data. The theme screenshots
 were taken with a mocked API. Rajdhani does not load in the cloud environment
 (Google Fonts is blocked), so the font impression cannot be judged there.
 
@@ -152,24 +160,47 @@ Apply `.et-panel` only to Landing cards and page headers.
 
 ## B.0 Clarify findings first (phase 0)
 
-All three concern `GET /api/trading/history/{type_id}` in
-`eve_trader/api/routers/trading.py`. Sparklines, drawer and charts build on
-it. All unverified, since there is no backend here.
+B1-B3 concern `GET /api/trading/history/{type_id}` in
+`eve_trader/api/routers/trading.py`; B4 concerns where its data comes from.
+Sparklines, drawer and charts build on both. Checked against the code on
+2026-10-02.
 
-**B1. Two regions are mixed (likely bug).** The endpoint filters only by
+**B1. Two regions are mixed (confirmed bug).** The endpoint filters only by
 `type_id`. `goonmetrics_history` holds rows for `jita_region_id` and
-`reference_region_id`. The response is sorted by date, and `PriceHistory.tsx`
-draws a single line from it. Expected: a zigzag between two price levels.
+`reference_region_id` (both written by `history_backtest.py`'s candidate
+search). The response is sorted by date, and `PriceHistory.tsx` draws a single
+`avg_price` line from it, so it zigzags between two price levels.
 Fix: separate by region, two lines in the frontend.
 
-**B2. Reads the whole table.** `storage.read_table("goonmetrics_history")`,
-filtered only afterwards in pandas. `storage.read_goonmetrics_history_for_types`
-filters in SQL and already exists (for `do_shortlist_trends`).
+**B2. Reads the whole table (confirmed).** `storage.read_table("goonmetrics_history")`,
+filtered only afterwards in pandas. Fix together with B1 as one query per
+region, `WHERE region_id = ? AND type_id = ?`: that uses the primary key
+`(region_id, type_id, date)`, the table's only index.
+`read_goonmetrics_history_for_types` (`WHERE type_id IN (...)`) cannot use it,
+because `type_id` is not the leading column.
 
-**B3. Not scoped to the tenant.** The selection list `/history/type-ids` has
-been limited to own items since T3-03, but `/history/{type_id}` returns data
-from the shared cache for any guessed id. Fix: check against
-`goonmetrics_history_type_ids_for_tenant()`, otherwise 404.
+**B3. Not scoped to the tenant: dropped.** Leaving `/history/{type_id}`
+reachable for any known id is a documented decision (T3-03, docstring of
+`storage.goonmetrics_history_type_ids_for_tenant`): the price data is public
+market data, only the item *listing* was tenant-private. Revisit only if that
+decision changes.
+
+**B4. Shortlist price history is never refreshed (confirmed bug, new).** The
+only writer of `goonmetrics_history` is the candidate search
+(`do_find_new_candidates` → `history_backtest.find_new_import_candidates`,
+`history_sink=storage.save_goonmetrics_history`), and it skips every item that
+is already active on the shortlist (`history_backtest.py`, `existing_item_ids`).
+The shortlist refresh fetches reference-region history for the same items
+(`actions.py`, `gm.price_history_chunked(cfg.reference_region_id, ...)` for
+Profit/Day) but does not save it. So once an item is on the shortlist its
+stored history stops at the day it was added. Affected today: Price History
+and the Shortlist "Trend" column (`do_shortlist_trends` uses the last stored
+days, not the last calendar days). Planned B.2/B.10 would show the same stale
+data. Fix: in the shortlist refresh, fetch both regions and pass the points to
+`storage.save_goonmetrics_history` (one extra Goonmetrics request per batch for
+Jita). The table is shared across tenants, so every tenant benefits. Not
+confirmed against real data yet: the local dev database has no active
+shortlist items.
 
 ## B.1 Row detail on click (drawer) · M
 
@@ -196,6 +227,11 @@ request currently reads the whole table (B2).
   (`{type_id: {"jita": [...], "ref": [...]}}`), via
   `read_goonmetrics_history_for_types`. Pure read, may live in the router; if
   aggregation is added (e.g. margin), put it in a `do_*`.
+- Needs B4 first. Select by calendar date (last 28 days before today), not
+  the last 28 stored rows, so stale data shows as missing instead of as a
+  current trend.
+- Register the route before `/history/{type_id}` (like `/history/type-ids`),
+  otherwise the dynamic route swallows it.
 - Frontend: `components/Sparkline.tsx` as inline SVG (`<polyline>`, ~80×24 px),
   not Recharts per row. Color by direction, tooltip via `meta.cellTitle`. One
   query per page (`['trading','sparklines']`).
@@ -236,7 +272,10 @@ request currently reads the whole table (B2).
   through `extraViewState`. `try/catch` as today.
 - Stage 2 (only if needed): server storage needs a new per-tenant table with
   RLS. Per `CLAUDE.md`, a new schema file must be added to `deploy/deploy.sh`,
-  `deploy/README.md`, `README.md` and `.cursor/start.sh`.
+  `deploy/README.md`, `README.md` and `.cursor/start.sh`. The new table also
+  goes into `sqlite_migration.KNOWN_NON_MIGRATED_TABLES`, and its schema
+  fixture into `tests/test_sqlite_migration_table_drift.py`, otherwise the
+  drift test fails.
 
 ## B.7 Inline editing · S
 
@@ -269,7 +308,7 @@ Overlaps with B.1; afterwards only worthwhile for very dense tables.
 
 ## B.10 Interactive charts · M
 
-Only after B1. `PriceHistory.tsx`: Recharts `<Brush>`, quick range 7/30/90
+Only after B1, B2 and B4. `PriceHistory.tsx`: Recharts `<Brush>`, quick range 7/30/90
 days (`SegmentedControl`), two lines for Jita and the reference region,
 multi-select (`useQueries`, normalized to index 100, at most ~5 items).
 "Click a data point to jump to the table" is dropped (the page has no table);
@@ -283,7 +322,8 @@ Landing cards get an optional KPI line, only when the grant is present
 `/overview` (triggers a snapshot on the first call of the day, do not hang it
 on polling). Production: `/market-status` and `/plan` are too expensive, so a
 new lean `GET /api/production/kpis` (counts only). Each tile loads
-independently, skeleton instead of spinner.
+independently, skeleton instead of spinner. With the access gate off,
+`/api/gate/status` has no `tools`; show every tile then.
 
 ## B.12 Automatic refresh · S, low benefit
 
@@ -315,6 +355,15 @@ land in the center is open.
 ---
 
 # Order (overall)
+
+Phases 0-5 are done except B1-B4 (see Status). Next, as of 2026-10-02:
+1. B1 + B2 (endpoint split by region, two chart lines) together with B4
+   (save shortlist history on refresh).
+2. B.2 sparklines and B.10 charts.
+3. B.11 dashboard tiles.
+4. Click through against real data (see Status).
+
+Original order:
 
 | Phase | Content | Reason |
 |---|---|---|
