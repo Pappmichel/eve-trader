@@ -7,6 +7,7 @@ import type { TradingSettings as TradingSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { useStructureNameOptions } from '../../hooks/useStaticOptions'
 import { HintCard } from '../../components/HintCard'
+import { RegionSelect } from '../../components/RegionSelect'
 import { StructureIdField } from '../../components/StructureIdField'
 import { TRADE_HUBS, hubLabel } from '../../tradingHubs'
 
@@ -102,8 +103,8 @@ export default function TradingSettings() {
           ]),
         ]} value={String(form.jita_region_id)}
           onChange={(v) => v && set('jita_region_id', Number(v))} />
-        <NumberInput label="Reference region ID" value={form.reference_region_id} min={1}
-          onChange={(v) => set('reference_region_id', Number(v))} />
+        <RegionSelect label="Reference region" value={form.reference_region_id}
+          onChange={(v) => set('reference_region_id', v)} />
         <StructureIdField label="Structure ID" value={form.structure_id ?? null}
           onChange={(v) => set('structure_id', v)} structureNames={structureNames} />
       </SimpleGrid>

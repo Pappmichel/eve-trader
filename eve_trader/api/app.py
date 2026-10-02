@@ -29,7 +29,7 @@ from ..config import ACCESS_CONFIG, OAUTH_CONFIG, TRADING_CONFIG, apply_config_o
 from ..doctrine.config import DOCTRINE_CONFIG
 from ..production.config import PRODUCTION_CONFIG
 from .routers import (
-    admin, auth, char_contacts, char_info, char_mail, char_notifications, char_alerts, char_skill_plans, char_skills, characters, doctrine, errors, gate, module_reprocessing, portfolio, production, refining, sorting,
+    admin, auth, char_contacts, char_info, char_mail, char_notifications, char_alerts, char_skill_plans, char_skills, characters, doctrine, errors, gate, module_reprocessing, portfolio, production, refining, sde, sorting,
     station_trading, trading,
 )
 
@@ -116,6 +116,10 @@ _GATE_EXEMPT_PATHS = {
 # without an explicit bucket (see tests/test_gate_route_coverage.py).
 _SESSION_ONLY_API_PREFIXES = (
     "/api/errors",
+    # Public SDE reference data (region names, issue #223) read by several
+    # tools' Settings pages; no single tool grant fits, and nothing tenant-
+    # private is exposed.
+    "/api/sde",
 )
 
 # Path prefix -> the tool_key a request under it requires (see
@@ -430,6 +434,7 @@ def create_app() -> FastAPI:
     app.include_router(char_skill_plans.router, prefix="/api/char-skill-plans", tags=["char_skill_plans"])
     app.include_router(char_alerts.router, prefix="/api/char-alerts", tags=["char_alerts"])
     app.include_router(errors.router, prefix="/api/errors", tags=["errors"])
+    app.include_router(sde.router, prefix="/api/sde", tags=["sde"])
 
     if FRONTEND_DIST.exists():
         app.mount("/", SPAStaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")

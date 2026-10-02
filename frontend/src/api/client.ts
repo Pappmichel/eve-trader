@@ -818,6 +818,10 @@ export const charactersApi = {
 // ErrorBoundary.tsx/main.tsx's global error listeners on every page, for
 // every tenant - unlike adminApi.errors (the list view), it needs no
 // "admin" tool grant (see api/routers/errors.py's own docstring).
+export const sdeApi = {
+  regions: () => get<T.RegionOption[]>('/api/sde/regions'),
+}
+
 export const errorsApi = {
   report: (source: string, message: string, detail?: string, path?: string) =>
     post<{ recorded: boolean }>('/api/errors', { source, message, detail, path }),

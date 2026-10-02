@@ -1988,3 +1988,15 @@ def test_production_hangar_division_options_excludes_deliveries():
     resp = client.get("/api/production/settings/structure-options")
     assert resp.status_code == 200
     assert "Deliveries" not in resp.json()["hangar_division_flags"]
+
+
+def test_get_sde_regions_serializes_storage_rows(monkeypatch):
+    monkeypatch.setattr(storage, "list_all_regions", lambda: [(10000009, "Insmother"), (10000002, "The Forge")])
+
+    resp = client.get("/api/sde/regions")
+
+    assert resp.status_code == 200
+    assert resp.json() == [
+        {"region_id": 10000009, "region_name": "Insmother"},
+        {"region_id": 10000002, "region_name": "The Forge"},
+    ]
