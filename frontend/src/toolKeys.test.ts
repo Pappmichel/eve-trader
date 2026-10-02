@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { OWNED_DATA_KINDS } from './esiRegistry'
 import {
-  ALL_TOOL_KEYS, CHARACTER_MANAGEMENT_TOOL_KEYS, ESI_CONSUMING_TOOLS, hasAnyToolGrant,
+  ALL_TOOL_KEYS, CHARACTER_MANAGEMENT_TOOL_KEYS, DEFAULT_TOOL_KEYS, ESI_CONSUMING_TOOLS, hasAnyToolGrant,
 } from './toolKeys'
 
 describe('toolKeys drift guards', () => {
@@ -27,5 +27,14 @@ describe('hasAnyToolGrant', () => {
     expect(hasAnyToolGrant(['trading', 'characters'], ['a', 'characters'])).toBe(true)
     expect(hasAnyToolGrant(['trading'], ['characters'])).toBe(false)
     expect(hasAnyToolGrant([], ['characters'])).toBe(false)
+  })
+})
+
+describe('DEFAULT_TOOL_KEYS', () => {
+  it('is every tool except admin and module_reprocessing (mirrors access_gate.DEFAULT_TOOL_KEYS)', () => {
+    expect([...DEFAULT_TOOL_KEYS].sort()).toEqual(
+      ALL_TOOL_KEYS.filter((k) => k !== 'admin' && k !== 'module_reprocessing').sort(),
+    )
+    expect(DEFAULT_TOOL_KEYS).toContain('characters')
   })
 })

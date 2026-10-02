@@ -541,5 +541,20 @@ def admin_bootstrap(character_id: int, character_name: str | None, all_tools: bo
     )
 
 
+@admin_group.command("grant-defaults")
+@click.option("--dry-run", is_flag=True, default=False, help="Only show what would be granted.")
+def admin_grant_defaults(dry_run: bool):
+    """Grant every registered character the default tool set (everything
+    except admin and module_reprocessing). Additive: existing extra grants
+    are kept."""
+    from . import admin as admin_mod
+    result = admin_mod.do_grant_default_tools(dry_run=dry_run)
+    for row in result["changed"]:
+        click.echo(f"{'would grant' if dry_run else 'granted'} {row['character_name']} "
+                   f"({row['character_id']}): {', '.join(row['added'])}")
+    click.echo(f"{len(result['changed'])} changed, {result['unchanged']} already complete"
+               + (" (dry run)" if dry_run else ""))
+
+
 if __name__ == "__main__":
     main()

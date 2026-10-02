@@ -53,6 +53,12 @@ SESSION_MAX_AGE_SECONDS = 30 * 24 * 3600  # 30 days
 # char_mail, ... each with its own router. "char_skills" is phase 2, "char_mail" phase 3, "char_notifications" phase 6, "char_contacts" phase 8, "char_skill_plans" phase 9, "char_alerts" (Discord alerts).
 ALL_TOOL_KEYS = ("trading", "production", "doctrine", "refining", "station_trading", "sorting", "portfolio", "admin", "characters", "module_reprocessing", "char_info", "char_skills", "char_mail", "char_notifications", "char_contacts", "char_skill_plans", "char_alerts")
 
+# Granted to every new user by default (Admin "Add User", preselected when
+# approving an access request) and backfilled by `eve-trader admin
+# grant-defaults`. Everything except the cross-tenant Admin tool and Module
+# Reprocessing, which stay explicit opt-ins. Mirrored in frontend/src/toolKeys.ts.
+DEFAULT_TOOL_KEYS = tuple(k for k in ALL_TOOL_KEYS if k not in ("admin", "module_reprocessing"))
+
 
 @dataclass(frozen=True)
 class AuthorizedSession:
