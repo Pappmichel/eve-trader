@@ -74,3 +74,12 @@ def test_refresh_shortlist_wraps_goonmetrics_outage(monkeypatch):
         assert False, "expected ActionError"
     except ActionError as e:
         assert "Could not fetch Jita prices" in str(e)
+
+
+def test_station_trading_rejects_all_hubs():
+    import pytest as _pytest
+    from eve_trader.actions import ActionError
+    from eve_trader.station_trading import actions as st_actions
+
+    with _pytest.raises(ActionError, match="one hub"):
+        st_actions.do_update_settings({"hub_region_id": 0})

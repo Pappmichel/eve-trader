@@ -2022,3 +2022,17 @@ def test_get_sde_regions_serializes_storage_rows(monkeypatch):
         {"region_id": 10000009, "region_name": "Insmother"},
         {"region_id": 10000002, "region_name": "The Forge"},
     ]
+
+
+def test_hub_freight_routes_pass_rows_to_the_action(monkeypatch):
+    from eve_trader import hubs
+
+    seen = {}
+    monkeypatch.setattr(hubs, "do_get_hub_freight", lambda: [{"region_id": 10000002, "hub": "Jita",
+                                                               "freight_cost_per_m3": None}])
+    monkeypatch.setattr(hubs, "do_update_hub_freight", lambda rates: seen.update(rates) or [])
+    assert client.get("/api/hubs/freight").json()[0]["hub"] == "Jita"
+    resp = client.post("/api/hubs/freight", json=[{"region_id": 10000043, "freight_cost_per_m3": 950},
+                                                   {"region_id": 10000002}])
+    assert resp.status_code == 200
+    assert seen == {10000043: 950.0, 10000002: None}

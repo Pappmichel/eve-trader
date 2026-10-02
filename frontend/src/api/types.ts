@@ -131,6 +131,14 @@ export interface SdeItemNameOption {
   type_name: string
 }
 
+// One row of the shared per-hub freight table (#222); null = no entry, the
+// tool's own freight value applies.
+export interface HubFreightRow {
+  region_id: number
+  hub: string
+  freight_cost_per_m3: number | null
+}
+
 export interface RegionOption {
   region_id: number
   region_name: string

@@ -17,15 +17,20 @@ export const TRADE_HUBS: readonly TradeHub[] = [
   { label: 'Rens (Heimatar)', regionId: 10000030 },
 ]
 
+// Hub setting value for "price every item at its best hub" (hubs.ALL_HUBS).
+export const ALL_HUBS = 0
+
 export function hubLabel(regionId: number | undefined | null): string {
+  if (regionId === ALL_HUBS) return 'Best hub'
   const hub = TRADE_HUBS.find((h) => h.regionId === regionId)
   return hub ? hub.label.split(' (')[0] : `Region ${regionId ?? '?'}`
 }
 
 // Select options for a hub picker; a stored region id outside the four hubs
 // stays selectable as "Custom" instead of being silently dropped.
-export function hubSelectData(regionId: number | undefined | null): { value: string; label: string }[] {
+export function hubSelectData(regionId: number | undefined | null, allowAll = false): { value: string; label: string }[] {
   const known = TRADE_HUBS.map((h) => ({ value: String(h.regionId), label: h.label }))
-  if (regionId == null || TRADE_HUBS.some((h) => h.regionId === regionId)) return known
+  if (allowAll) known.push({ value: String(ALL_HUBS), label: 'All hubs (best per item)' })
+  if (regionId == null || (allowAll && regionId === ALL_HUBS) || TRADE_HUBS.some((h) => h.regionId === regionId)) return known
   return [...known, { value: String(regionId), label: `Custom (region ${regionId})` }]
 }

@@ -202,6 +202,9 @@ def do_get_skill_summary(oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> list[dict]:
 def do_update_settings(updates: dict, cfg: StationTradingConfig = STATION_TRADING_CONFIG) -> dict:
     """Persists `updates` to tenant_settings and applies them to the live
     STATION_TRADING_CONFIG immediately (see Station Trading Settings tab)."""
+    if updates.get("hub_region_id") == 0:
+        # A station trader sits at one hub; there is no "best hub" here.
+        raise ActionError("Station Trading needs one hub; 'All hubs' is not available.")
     try:
         save_tenant_config_overrides("station_trading", updates, cfg, cfg_type=StationTradingConfig)
     except ConfigError as e:

@@ -818,6 +818,12 @@ export const charactersApi = {
 // ErrorBoundary.tsx/main.tsx's global error listeners on every page, for
 // every tenant - unlike adminApi.errors (the list view), it needs no
 // "admin" tool grant (see api/routers/errors.py's own docstring).
+export const hubsApi = {
+  freight: () => get<T.HubFreightRow[]>('/api/hubs/freight'),
+  updateFreight: (rows: { region_id: number; freight_cost_per_m3: number | null }[]) =>
+    post<T.HubFreightRow[]>('/api/hubs/freight', rows),
+}
+
 export const sdeApi = {
   regions: () => get<T.RegionOption[]>('/api/sde/regions'),
 }

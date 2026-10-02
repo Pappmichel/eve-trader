@@ -370,7 +370,8 @@ def test_per_tool_hub_fields_are_range_checked():
     from eve_trader.module_reprocessing.config import ModuleReprocessingConfig
     validate_config_overrides(DoctrineConfig(), {"hub_region_id": 10000043})
     validate_config_overrides(ModuleReprocessingConfig(), {"input_hub_region_id": 10000043})
+    validate_config_overrides(DoctrineConfig(), {"hub_region_id": 0})  # 0 = all hubs
     with pytest.raises(ConfigError, match="hub_region_id"):
-        validate_config_overrides(DoctrineConfig(), {"hub_region_id": 0})
+        validate_config_overrides(DoctrineConfig(), {"hub_region_id": -1})
     with pytest.raises(ConfigError, match="input_hub_region_id"):
         validate_config_overrides(ModuleReprocessingConfig(), {"input_hub_region_id": -5})
