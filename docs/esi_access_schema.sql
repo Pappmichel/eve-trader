@@ -247,13 +247,18 @@ CREATE INDEX IF NOT EXISTS idx_character_slots_owner_character
 -- a silent no-op here, not an error. Re-running this file after them
 -- (the deploy loop always re-runs every file) adds the columns. CREATE
 -- TABLE IF NOT EXISTS in those files will not add columns to an
--- already-created table.
+-- already-created table. The doctrine asset tables also get
+-- resolved_hangar_flag here: tables created before the hangar-sorting
+-- feature never had it, and the Phase 3b copy below selects it (a missing
+-- column aborted the whole file on older deploys, fixed by hand on the
+-- flex server 2026-09-26).
 DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM information_schema.tables
         WHERE table_schema = 'public' AND table_name = 'doctrine_character_assets'
     ) THEN
+        ALTER TABLE doctrine_character_assets ADD COLUMN IF NOT EXISTS resolved_hangar_flag TEXT;
         ALTER TABLE doctrine_character_assets ADD COLUMN IF NOT EXISTS owner_character_id BIGINT;
         ALTER TABLE doctrine_character_assets ADD COLUMN IF NOT EXISTS owner_corporation_id BIGINT;
         CREATE INDEX IF NOT EXISTS idx_doctrine_character_assets_owner_character
@@ -263,6 +268,7 @@ BEGIN
         SELECT 1 FROM information_schema.tables
         WHERE table_schema = 'public' AND table_name = 'doctrine_corp_assets'
     ) THEN
+        ALTER TABLE doctrine_corp_assets ADD COLUMN IF NOT EXISTS resolved_hangar_flag TEXT;
         ALTER TABLE doctrine_corp_assets ADD COLUMN IF NOT EXISTS owner_character_id BIGINT;
         ALTER TABLE doctrine_corp_assets ADD COLUMN IF NOT EXISTS owner_corporation_id BIGINT;
         CREATE INDEX IF NOT EXISTS idx_doctrine_corp_assets_owner_corporation

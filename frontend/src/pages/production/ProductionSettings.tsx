@@ -7,6 +7,7 @@ import type { ProductionSettings as ProductionSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { useSolarSystemOptions, useStructureNameOptions } from '../../hooks/useStaticOptions'
 import { HintCard } from '../../components/HintCard'
+import { HubSelect } from '../../components/HubSelect'
 import { SearchableSelect } from '../../components/SearchableSelect'
 import { StructureIdField } from '../../components/StructureIdField'
 
@@ -89,6 +90,8 @@ export default function ProductionSettings() {
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <NumberInput label="Component overbuild buffer" suffix="%" decimalScale={2} value={form.component_overbuild * 100} min={0} step={5}
           onChange={(v) => set('component_overbuild', Number(v) / 100)} />
+        <HubSelect label="Market hub" description="Region Production prices its 'Jita' side against (independent of Trading's). Best hub buys each item where it lands cheapest; margins and listings keep using Jita."
+          allowAll value={form.hub_region_id} onChange={(v) => set('hub_region_id', v)} />
         <NumberInput label="Freight cost (ISK/m³)" value={form.haul_cost_per_m3} min={0} step={50}
           onChange={(v) => set('haul_cost_per_m3', Number(v))} />
         <NumberInput label="Market sell fees" suffix="%" decimalScale={2} value={form.market_fees * 100} min={0} max={100} step={0.5}

@@ -31,6 +31,8 @@ export default function BuyList() {
 
   const total = useMemo(() => filtered.reduce((sum, e) => sum + (e.total_price ?? 0), 0), [filtered])
 
+  // Best-hub mode (hub setting 'Best hub'): rows carry the hub their buy is priced at.
+  const showHub = buyList.some((e) => e.hub_name)
   const columns = useMemo<ColumnDef<BuyListEntry, any>[]>(() => [
     { header: 'Item', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
     { header: 'Category', accessorKey: 'category', size: 150, cell: (i) => i.getValue() ?? '–' },
@@ -41,6 +43,7 @@ export default function BuyList() {
         return v ? <Badge color={v === 'C-J' ? 'accent' : 'info'} variant="light">{v}</Badge> : '–'
       },
     },
+    ...(showHub ? [{ header: 'Best hub', accessorKey: 'hub_name', size: 100, cell: (i: any) => i.getValue() ?? '–' }] : []),
     { header: 'Quantity', accessorKey: 'quantity', size: 110, cell: (i) => qty(i.getValue()) },
     {
       header: 'On Hand', accessorKey: 'on_hand_pct', size: 100,
@@ -52,7 +55,7 @@ export default function BuyList() {
     },
     { header: 'Unit Price', accessorKey: 'unit_price', size: 120, cell: (i) => isk(i.getValue()) },
     { header: 'Total Price', accessorKey: 'total_price', size: 140, cell: (i) => isk(i.getValue()) },
-  ], [])
+  ], [showHub])
 
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
   if (isError) return <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />

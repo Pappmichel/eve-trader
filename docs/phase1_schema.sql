@@ -128,6 +128,13 @@ CREATE TABLE IF NOT EXISTS sde_solar_systems (
     region_id INTEGER
 );
 
+-- Region names for the Settings region pickers (GitHub issue #223). Global SDE
+-- table like sde_solar_systems: no tenant_id, no RLS, filled by refresh_sde().
+CREATE TABLE IF NOT EXISTS sde_regions (
+    region_id INTEGER PRIMARY KEY,
+    region_name TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sde_stations (
     station_id INTEGER PRIMARY KEY,
     solar_system_id INTEGER,
@@ -816,6 +823,8 @@ BEGIN
 END
 $$;
 ALTER TABLE shortlist_snapshot ADD COLUMN IF NOT EXISTS avg_daily_volume REAL;
+-- GitHub issue #221: highest hub buy price that still breaks even.
+ALTER TABLE shortlist_snapshot ADD COLUMN IF NOT EXISTS breakeven_buy_price DOUBLE PRECISION;
 CREATE INDEX IF NOT EXISTS idx_shortlist_snapshot_tenant ON shortlist_snapshot (tenant_id);
 ALTER TABLE shortlist_snapshot ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON shortlist_snapshot;

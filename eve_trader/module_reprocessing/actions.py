@@ -30,7 +30,7 @@ from typing import Optional
 
 import requests
 
-from .. import storage
+from .. import hubs, storage
 from ..actions import ActionError, list_shared_trading_characters, structure_book_auth_roles
 from ..auth import TokenManager
 from ..config import OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, TradingConfig, save_tenant_config_overrides
@@ -260,7 +260,8 @@ def do_save_module_shopping_requirements(requirements: list[dict]) -> dict:
 
 
 def _ore_reprocess_option(candidate, jita_stats, refining_cfg: RefiningConfig,
-                           trading_cfg: TradingConfig) -> Optional[ReprocessOption]:
+                           trading_cfg: TradingConfig, hub_region_id: Optional[int] = None,
+                           freight_per_m3: Optional[float] = None) -> Optional[ReprocessOption]:
     """One compressed ore/ice LP column - the same pricing/yield as refining/
     actions.py's _ore_option (refining.pricing.landed_cost_per_unit,
     refining.engine.ore_ice_yield net of RefiningConfig.refining_tax_rate,
@@ -269,7 +270,7 @@ def _ore_reprocess_option(candidate, jita_stats, refining_cfg: RefiningConfig,
     listed, no portion size, nothing to reprocess into)."""
     portion_size = storage.get_portion_size(candidate.type_id)
     jita_sell = jita_stats.sell_percentile if jita_stats else None
-    unit_cost = refining_pricing.landed_cost_per_unit(jita_sell, candidate.volume_m3, trading_cfg)
+    unit_cost = refining_pricing.landed_cost_per_unit(jita_sell, candidate.volume_m3, trading_cfg, freight_per_m3)
     if unit_cost is None or not portion_size:
         return None
     # Tax as reduced yield - see shopping_optimizer.py's decision 2.
@@ -280,11 +281,12 @@ def _ore_reprocess_option(candidate, jita_stats, refining_cfg: RefiningConfig,
     return ReprocessOption(type_id=candidate.type_id, item=candidate.item, category=ORE_CATEGORY,
                             family=candidate.family, is_ice=candidate.is_ice, volume_m3=candidate.volume_m3,
                             portion_size=portion_size, landed_cost_per_unit=unit_cost,
-                            yield_per_portion=yield_per_portion)
+                            yield_per_portion=yield_per_portion, hub_region_id=hub_region_id)
 
 
 def _module_reprocess_option(candidate: ModuleCandidate, item_stats, cfg: ModuleReprocessingConfig,
-                              trading_cfg: TradingConfig) -> Optional[ReprocessOption]:
+                              trading_cfg: TradingConfig,
+                              hub_region_id: Optional[int] = None) -> Optional[ReprocessOption]:
     """One module/drone LP column - this tool's own pricing (module_
     reprocessing.pricing.landed_cost_per_unit, i.e. cfg.freight_cost_per_m3)
     and scrapmetal yield net of cfg.refining_tax_rate, same shape as
@@ -302,7 +304,7 @@ def _module_reprocess_option(candidate: ModuleCandidate, item_stats, cfg: Module
     return ReprocessOption(type_id=candidate.type_id, item=candidate.item, category=MODULE_CATEGORY,
                             family=None, is_ice=False, volume_m3=candidate.volume_m3,
                             portion_size=portion_size, landed_cost_per_unit=unit_cost,
-                            yield_per_portion=yield_per_portion)
+                            yield_per_portion=yield_per_portion, hub_region_id=hub_region_id)
 
 
 def _home_mineral_prices(mineral_ids: set[int], trading_cfg: TradingConfig) -> dict:
@@ -343,7 +345,7 @@ def do_optimize_module_shopping_list(requirements: Optional[list[dict]] = None,
 
     Like Ore & Minerals' own do_optimize_mineral_shopping_list this needs NO
     logged-in character: every price is a *buy* price from a public regional
-    order book (ore and minerals from trading_cfg.jita_region_id, modules
+    order book (ore and minerals from cfg.input_hub_region_id, modules
     from cfg.purchase_region_id - the same source do_refresh_shortlist
     buys from) or an unauthenticated Goonmetrics home-market quote.
 
@@ -378,22 +380,42 @@ def do_optimize_module_shopping_list(requirements: Optional[list[dict]] = None,
     module_ids = [c.type_id for c in module_candidates]
     mineral_ids = [r.type_id for r in wanted]
     jita_ids = set(ore_ids + mineral_ids)
+    volumes = {c.type_id: c.volume_m3 for c in ore_candidates}
+    for req in wanted:
+        sde_row = storage.get_sde_type(req.type_id)
+        volumes.setdefault(req.type_id, sde_row[3] if sde_row and sde_row[3] else 0.0)
+    # Ore/minerals are landed with TradingConfig.import_cost_per_m3 (shared with
+    # Ore & Minerals), so that is the freight fallback for hubs without an entry
+    # in the shared table; single-hub pricing stays exactly as before.
+    ore_freight = trading_cfg.import_cost_per_m3
     try:
-        if cfg.purchase_region_id == trading_cfg.jita_region_id:
+        if cfg.purchase_region_id == cfg.input_hub_region_id != hubs.ALL_HUBS:
             # The common case (both default to Jita) - one bulk call, not two.
-            stats_by_id = client.region_order_stats_bulk(trading_cfg.jita_region_id, sorted(jita_ids | set(module_ids)))
+            stats_by_id = client.region_order_stats_bulk(cfg.input_hub_region_id, sorted(jita_ids | set(module_ids)))
             module_stats_by_id = stats_by_id
+            pricing = hubs.HubPricing(
+                stats=stats_by_id,
+                hub_by_type={t: cfg.input_hub_region_id for t in stats_by_id},
+                freight_by_type={t: float(ore_freight) for t in stats_by_id})
         else:
-            stats_by_id = client.region_order_stats_bulk(trading_cfg.jita_region_id, sorted(jita_ids))
+            # ALL_HUBS never matches the purchase region: input items go through
+            # hub_pricing (best landed hub per item, never region 0), modules
+            # keep their single purchase region.
+            pricing = hubs.hub_pricing(client, cfg.input_hub_region_id, sorted(jita_ids), volumes,
+                                       trading_cfg.jita_buy_broker_fee, ore_freight, trading_cfg)
+            stats_by_id = pricing.stats
             module_stats_by_id = (client.region_order_stats_bulk(cfg.purchase_region_id, sorted(set(module_ids)))
                                   if module_ids else {})
     except (ESIError, requests.RequestException) as e:
         # Transport-level failure - see refining/actions.py's identical wrap.
         raise ActionError(f"Could not fetch the order book ({e}).") from e
 
-    options = [o for o in (_ore_reprocess_option(c, stats_by_id.get(c.type_id), refining_cfg, trading_cfg)
+    options = [o for o in (_ore_reprocess_option(c, stats_by_id.get(c.type_id), refining_cfg, trading_cfg,
+                                                 pricing.hub_by_type.get(c.type_id),
+                                                 pricing.freight_by_type.get(c.type_id))
                            for c in ore_candidates) if o is not None]
-    options += [o for o in (_module_reprocess_option(c, module_stats_by_id.get(c.type_id), cfg, trading_cfg)
+    options += [o for o in (_module_reprocess_option(c, module_stats_by_id.get(c.type_id), cfg, trading_cfg,
+                                                     cfg.purchase_region_id)
                             for c in module_candidates) if o is not None]
 
     home_quotes = _home_mineral_prices(set(mineral_ids), trading_cfg)
@@ -403,21 +425,24 @@ def do_optimize_module_shopping_list(requirements: Optional[list[dict]] = None,
         sde_row = storage.get_sde_type(req.type_id)
         volume = sde_row[3] if sde_row and sde_row[3] else 0.0
         stats = stats_by_id.get(req.type_id)
-        jita_cost = refining_pricing.landed_cost_per_unit(stats.sell_percentile if stats else None, volume, trading_cfg)
+        jita_cost = refining_pricing.landed_cost_per_unit(stats.sell_percentile if stats else None, volume, trading_cfg,
+                                                          pricing.freight_by_type.get(req.type_id))
 
         home_quote = home_quotes.get(req.type_id)
         home_cost = (home_quote.sell * (1 + trading_cfg.jita_buy_broker_fee)
                      if home_quote and home_quote.sell and home_quote.sell > 0 else None)
 
         if home_cost is not None and (jita_cost is None or home_cost < jita_cost):
-            unit_cost, source = home_cost, "Home"
+            unit_cost, source, mineral_hub = home_cost, "Home", None
         elif jita_cost is not None:
-            unit_cost, source = jita_cost, "Jita"
+            mineral_hub = pricing.hub_by_type.get(req.type_id)
+            unit_cost, source = jita_cost, hubs.hub_name(mineral_hub) if mineral_hub is not None else "Jita"
         else:
-            unit_cost, source = None, None
+            unit_cost, source, mineral_hub = None, None, None
 
         mineral_options[req.type_id] = MineralOption(
             type_id=req.type_id, name=req.name, landed_cost_per_unit=unit_cost, source=source,
+            hub_region_id=mineral_hub,
         )
 
     try:
@@ -429,7 +454,8 @@ def do_optimize_module_shopping_list(requirements: Optional[list[dict]] = None,
 
 def _shopping_plan_to_dict(plan: ModuleShoppingListPlan) -> dict:
     return {
-        "reprocess_purchases": [vars(p) for p in plan.reprocess_purchases],
+        "reprocess_purchases": [{**vars(p), "hub_name": hubs.hub_name(p.hub_region_id) if p.hub_region_id is not None else None}
+                                for p in plan.reprocess_purchases],
         "direct_purchases": [vars(p) for p in plan.direct_purchases],
         "coverage": [vars(c) for c in plan.coverage],
         "reprocess_cost": plan.reprocess_cost, "direct_cost": plan.direct_cost, "total_cost": plan.total_cost,

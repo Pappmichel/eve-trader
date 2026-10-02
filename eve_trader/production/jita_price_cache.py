@@ -33,6 +33,10 @@ from ..goonmetrics_client import CurrentPrice
 
 log = logging.getLogger("eve_trader.production.jita_price_cache")
 
+# This is a Jita-only cache (The Forge) - process-wide, cross-tenant, no region
+# in its key. Consumers with another hub must bypass it (#222).
+JITA_REGION_ID = 10000002
+
 _lock = threading.Lock()
 _cache: dict[int, CurrentPrice] = {}
 _updated_at: Optional[str] = None
@@ -67,14 +71,13 @@ def refresh_jita_price_cache() -> int:
     pushes back the next scheduled tick too, same mechanism the backup job's
     own mtime-based check already relies on.
 
-    Local imports (engine, tenant_scope, TRADING_CONFIG) avoid pulling this
+    Local imports (engine, tenant_scope) avoid pulling this
     module into the engine.py <-> pricing.py import graph at load time -
     only this function, called from scheduler.py/admin.py, ever needs them.
 
     Returns the number of type_ids now cached (0 if no tenant has any stock
     targets configured yet - not an error, just nothing to price)."""
     from .. import tenant_eligibility, tenant_scope
-    from ..config import TRADING_CONFIG
     from ..esi_client import ESIClient
     from .engine import _structural_material_closure
 
@@ -114,10 +117,9 @@ def refresh_jita_price_cache() -> int:
     if not type_ids:
         return 0
 
-    with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
-        jita_region_id = TRADING_CONFIG.jita_region_id
-
-    stats = ESIClient().region_order_stats_bulk(jita_region_id, list(type_ids))
+    # Always Jita: this cache is process-wide and cross-tenant with no region
+    # in its key, so it must not follow any tenant's/tool's hub setting (#222).
+    stats = ESIClient().region_order_stats_bulk(JITA_REGION_ID, list(type_ids))
     # Skip type_ids whose bulk lookup returned no real percentile - region_
     # order_stats_bulk isolates per-type ESIError as OrderStats(None, 0, ...),
     # and ESIClient now converts transport timeouts to ESIError too. Writing

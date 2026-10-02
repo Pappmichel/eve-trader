@@ -1,8 +1,8 @@
 # Frontend plan: theme and interactivity
 
 As of 2026-10-02. Merges the former `THEME_DRAFT.md` and
-`docs/FRONTEND_INTERACTIVITY_PLAN.md` (both removed). Basis: branch
-`ccr-e0ccb567-s04qgg`, React 19, Mantine 9, `@tanstack/react-table` 8,
+`docs/FRONTEND_INTERACTIVITY_PLAN.md` (both removed). Basis: `dev` (the
+feature branch `ccr-e0ccb567-s04qgg` was merged as PR #224), React 19, Mantine 9, `@tanstack/react-table` 8,
 `@tanstack/react-virtual` 3, React Query 5, Recharts 3.
 Effort: S = up to half a day, M = 1-2 days, L = 3+ days.
 
@@ -29,10 +29,10 @@ Effort: S = up to half a day, M = 1-2 days, L = 3+ days.
 | Merged with `dev` (column pinning, buy-hub labels, breakeven column, tap-target CSS): the Columns menu keeps `dev`'s `Menu.Item component="div"` rows and adds the move arrows; export and saved views follow the pinned order/state; dropping an unpinned column on a pinned header is ignored; drawer labels follow the configured hub | resolved |
 | Partial items extended to more pages: hover summary card is now the default on every name column (`meta.hoverCard` overrides, `false` opts out); change flash is now the default for every table with `getRowId` (up to 2,000 rows; `meta.trackChanges` narrows/excludes) and `getRowId` was added to Market Status, Margin, Unlisted Stock, Build Candidates, Candidates, New Candidates; the three duplicate inline-edit components (Special Orders, Blueprints x2) now use the shared `EditableNumberCell` (Enter saves, Escape discards; `min`/`max`/`step`/`width`); Spotlight "Run:" commands now cover Production, Doctrine, Station Trading, Ore & Minerals and Module Reprocessing besides Trading; corner accents on tool overview and portfolio cards | implemented |
 | Test fixes after a local run (2026-10-02): unknown `POST /api/...` returned 405 instead of 404 while `frontend/dist` was mounted (also on Linux); hover summary formatted numbers with the browser locale instead of en-US; Module Reprocessing and Station Trading tables missing from `sqlite_migration.KNOWN_NON_MIGRATED_TABLES` (the drift test depended on test order); Windows-only test issues | fixed, full backend and frontend suites green |
-| Findings B1 and B2 (price history endpoint) | confirmed in code, open |
 | Finding B3 | dropped: conflicts with the documented T3-03 decision (see B.0) |
-| Finding B4: shortlist price history is never refreshed | confirmed in code, open, blocks B.2 and B.10 (see B.0) |
-| B.2 sparklines, B.10 charts | blocked on B1, B2 and B4 |
+| B1, B2, B4 | fixed (2026-10-02): history endpoint split by region with indexed queries, Price History draws two lines, shortlist refresh saves both regions' history, trends limited to the last 30 calendar days. Verified on the test server: a refresh made 1,298 shortlist items' reference-region history current |
+| Goonmetrics history only covers Jita (The Forge) and the reference region, not Amarr, Dodixie or Rens (checked 2026-10-02 on the test server). With a non-Jita Trading hub the candidate search finds nothing, trends stay empty and Price History has no hub line. ESI `/markets/{region}/history/` covers every region | open, needs a decision |
+| B.2 sparklines, B.10 charts | unblocked by B1, B2, B4 (hub line only for Jita, see above) |
 | B.11 dashboard tiles | open, needs a new Production `/kpis` endpoint |
 | B.12 auto refresh, B.13 priority drag and drop | deferred (low benefit / needs schema); re-checked 2026-10-02, still right |
 
@@ -198,9 +198,13 @@ and the Shortlist "Trend" column (`do_shortlist_trends` uses the last stored
 days, not the last calendar days). Planned B.2/B.10 would show the same stale
 data. Fix: in the shortlist refresh, fetch both regions and pass the points to
 `storage.save_goonmetrics_history` (one extra Goonmetrics request per batch for
-Jita). The table is shared across tenants, so every tenant benefits. Not
-confirmed against real data yet: the local dev database has no active
-shortlist items.
+Jita). The table is shared across tenants, so every tenant benefits.
+Confirmed against real data on 2026-10-02 (test server, database copy of the
+old production server, 2,457 active shortlist items): in both regions no
+active shortlist item has stored history newer than 2026-09-21, while 282
+other items in the reference region have rows up to the same day (newest
+2026-10-02). Most shortlist items stop between 2026-08-03 and 2026-09-17;
+253 (Jita) and 276 (reference region) have no stored history at all.
 
 ## B.1 Row detail on click (drawer) · M
 

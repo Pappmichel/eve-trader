@@ -174,6 +174,10 @@ def _check_type(key: str, value: Any, expected: type) -> None:
 # choice.
 _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "jita_region_id": (1, None),
+    # Per-tool market hubs (#222) - same validation as Trading's own hub.
+    # 0 = hubs.ALL_HUBS (best hub per item); any other value is a region id.
+    "hub_region_id": (0, None),
+    "input_hub_region_id": (0, None),
     "reference_region_id": (1, None),
     "structure_id": (1, None),
     "buyer_character_id": (1, None),
@@ -294,11 +298,23 @@ def validate_config_overrides(cfg: Any, overrides: dict[str, Any], cfg_type: Opt
         _check_range(key, value)
 
 
+def _validate_hub_freight(rates: Any) -> None:
+    if not isinstance(rates, dict):
+        raise ConfigError(f"hub_freight_cost_per_m3: expected a mapping, got {rates!r}")
+    for key, value in rates.items():
+        if not (isinstance(key, str) and key.isdigit() and int(key) > 0):
+            raise ConfigError(f"hub_freight_cost_per_m3: {key!r} is not a region id")
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            raise ConfigError(f"hub_freight_cost_per_m3[{key}]: expected a number >= 0, got {value!r}")
+
+
 def validate_trading_overrides(overrides: dict[str, Any]) -> None:
     """Enum-checks TradingConfig fields whose valid values are a closed set
     the generic type/range checks cannot see — same extra layer as
     validate_production_overrides for stock_hangar_flags. Empty
     wallet_division_ids is valid (all seven divisions)."""
+    if "hub_freight_cost_per_m3" in overrides:
+        _validate_hub_freight(overrides["hub_freight_cost_per_m3"])
     if "wallet_division_ids" not in overrides:
         return
     values = overrides["wallet_division_ids"]
@@ -374,6 +390,10 @@ class TradingConfig:
 
     # -- Economics --
     import_cost_per_m3: float = 800.0        # ISK freight cost per m3 to move goods to the structure
+    # Freight per hub to the structure (region id as string -> ISK/m3), shared
+    # by every tool whose hub setting is "All hubs" (eve_trader/hubs.py). A
+    # hub without an entry uses that tool's own single freight value.
+    hub_freight_cost_per_m3: dict[str, float] = field(default_factory=dict)
     # Multiplier applied to the C-J structure sell price when no real
     # per-sale tax figure is available (trade_reconciliation.py's fallback
     # path only - see structure_broker_fee below for the journal-matched

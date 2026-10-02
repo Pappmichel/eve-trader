@@ -65,6 +65,8 @@ class ShortlistRow(_Base):
     # Real average daily *market-wide* traded quantity (GitHub issue #100) -
     # see shortlist.average_market_daily_volume / models.ShortlistRow.
     avg_daily_volume: Optional[float] = None
+    # Highest hub buy price that still breaks even (GitHub issue #221).
+    breakeven_buy_price: Optional[float] = None
     # Not part of the underlying shortlist_snapshot row - computed by the
     # router from storage.get_shortlist_skip_since() +
     # TradingConfig.skip_grace_period_days. None unless this item is
@@ -178,6 +180,8 @@ class BuyListEntry(_Base):
     total_price: Optional[float]
     on_hand_pct: float = 0.0
     buy_from: Optional[str] = None
+    hub_region_id: Optional[int] = None
+    hub_name: Optional[str] = None
     category: Optional[str] = None
 
 
@@ -453,6 +457,8 @@ class OreShortlistRow(_Base):
     margin: Optional[float]
     profit_per_m3: Optional[float]
     decision: str
+    hub_region_id: Optional[int] = None
+    hub_name: Optional[str] = None
 
 
 class ReprocessingQuoteRow(_Base):
@@ -507,6 +513,8 @@ class OrePurchase(_Base):
     volume_m3: float
     landed_cost_per_unit: float
     total_cost: float
+    hub_region_id: Optional[int] = None
+    hub_name: Optional[str] = None
 
 
 class DirectMineralPurchase(_Base):
@@ -522,6 +530,7 @@ class DirectMineralPurchase(_Base):
     # silently dropping it before it ever reached the frontend, which then
     # fell back to showing "-" for every row.
     source: Optional[str] = None
+    hub_region_id: Optional[int] = None
 
 
 class MineralCoverage(_Base):
@@ -553,6 +562,7 @@ class RefinableMineral(_Base):
 
 
 class RefiningSettings(_Base):
+    hub_region_id: int = 10000002
     structure_type: str
     rig_tier: str
     security_status: float
@@ -567,6 +577,7 @@ class RefiningSettings(_Base):
 # ------------------------------------------------------------ station trading
 class StationTradingSettings(_Base):
     station_id: int
+    hub_region_id: int = 10000002
     broker_fee_rate: float
     sales_tax_rate: float
     min_spread_threshold: float
@@ -729,6 +740,8 @@ class ShoppingListRow(_Base):
     jita_landed_price: Optional[float] = None
     recommended_source: Optional[str] = None
     total_cost: Optional[float] = None
+    hub_region_id: Optional[int] = None
+    hub_name: Optional[str] = None
 
 
 class FittingStatus(_Base):
@@ -971,6 +984,8 @@ class ReprocessPurchase(_Base):
     volume_m3: float
     landed_cost_per_unit: float
     total_cost: float
+    hub_region_id: Optional[int] = None
+    hub_name: Optional[str] = None
 
 
 class ReprocessMineralCoverage(_Base):
@@ -1005,5 +1020,6 @@ class ModuleReprocessingSettings(_Base):
     ignore_thresholds: bool
     purchase_region_id: int
     purchase_structure_id: Optional[int] = None
+    input_hub_region_id: int = 10000002
     enforce_shortlist_cap: bool
     max_active_shortlist_items: int

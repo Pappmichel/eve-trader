@@ -75,6 +75,17 @@ user that freighting finished Production goods to Jita isn't part of this
 tool's business model. Don't reintroduce Jita as a Production sales channel
 without asking first.
 
+**Market hubs are per tool (GitHub issue #222).** `TradingConfig.jita_region_id`
+is Trading's own hub only. Every other tool has its own region setting
+(default Jita 10000002), read in one place per tool: `ProductionConfig.
+hub_region_id`, `DoctrineConfig.hub_region_id`, `RefiningConfig.hub_region_id`,
+`StationTradingConfig.hub_region_id` (set together with `station_id` by its
+Settings page) and `ModuleReprocessingConfig.input_hub_region_id` (ore/mineral
+inputs; modules keep `purchase_region_id`). `production/jita_price_cache.py`
+is a Jita-only, cross-tenant cache (constant region, no config read), and the
+Goonmetrics "jita" slug fallbacks apply only to a Jita hub - a non-Jita hub
+goes straight to live ESI and missing prices stay missing.
+
 **Price sources matrix** - three different price sources answer three
 different questions, deliberately, not by accident, but nowhere else are
 they laid out side by side:

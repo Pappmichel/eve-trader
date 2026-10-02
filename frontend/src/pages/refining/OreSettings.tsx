@@ -9,6 +9,7 @@ import type { RefiningSettings as RefiningSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
+import { HubSelect } from '../../components/HubSelect'
 
 export default function OreSettings() {
   const { data } = useQuery({ queryKey: ['refining', 'settings'], queryFn: refiningApi.settings })
@@ -120,6 +121,8 @@ export default function OreSettings() {
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Economy</Title>
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
+        <HubSelect label="Market hub" description="Where ore/ice and minerals are priced (independent of Trading's)"
+          allowAll value={form.hub_region_id} onChange={(v) => set('hub_region_id', v)} />
         <NumberInput label="Refining tax" suffix="%" decimalScale={2} value={form.refining_tax_rate * 100}
           min={0} max={100} step={1} onChange={(v) => set('refining_tax_rate', Number(v) / 100)} />
       </SimpleGrid>

@@ -208,3 +208,32 @@ def test_summary_counts_and_audit():
     assert audit["duplicate_type_ids"] == 1
     assert audit["missing_type_ids"] == 1
     assert audit["invalid_volume"] == 1
+
+
+def test_breakeven_buy_price_is_highest_hub_price_with_zero_profit():
+    cfg = TradingConfig(import_cost_per_m3=900.0, jita_buy_broker_fee=0.0147, structure_sell_haircut=0.95)
+    item = ShortlistItem(item="Test Widget", item_id=123, category="Module/Rig", volume_m3=0.1, active=True)
+    jita = OrderStats(sell_percentile=1000.0, sell_volume=500, buy_percentile=900.0, buy_volume=300)
+    structure = OrderStats(sell_percentile=2000.0, sell_volume=10, buy_percentile=1500.0, buy_volume=5)
+
+    row = evaluate_shortlist_item(item, own_orders_remaining=0.0,
+                                   jita_stats=jita, structure_stats=structure, cfg=cfg)
+
+    # net_sell = 1900, import = 90 -> (1900 - 90) / 1.0147
+    assert round(row.breakeven_buy_price, 4) == round(1810 / 1.0147, 4)
+    assert row.breakeven_buy_price != row.net_sell
+    # Buying at exactly the breakeven price yields zero profit.
+    landed_at_breakeven = row.breakeven_buy_price * 1.0147 + row.import_cost
+    assert abs(row.net_sell - landed_at_breakeven) < 1e-9
+
+
+def test_breakeven_buy_price_is_none_without_structure_price():
+    cfg = TradingConfig()
+    item = ShortlistItem(item="Test Widget", item_id=123, category="Module/Rig", volume_m3=0.1, active=True)
+    jita = OrderStats(sell_percentile=1000.0, sell_volume=500, buy_percentile=900.0, buy_volume=300)
+    row = evaluate_shortlist_item(item, own_orders_remaining=0.0,
+                                   jita_stats=jita, structure_stats=None, cfg=cfg)
+    assert row.breakeven_buy_price is None
+    missing = evaluate_shortlist_item(ShortlistItem(item="x", item_id=0, category="c", volume_m3=1.0, active=True),
+                                       own_orders_remaining=0.0, jita_stats=jita, structure_stats=None, cfg=cfg)
+    assert missing.breakeven_buy_price is None

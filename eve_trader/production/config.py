@@ -57,6 +57,11 @@ class ProductionConfig:
                                             # you've seen real potential_daily_profit values for good
                                             # candidates in the Build Candidates tab and know what "enough"
                                             # looks like; this field exists so that's a config change, not code.
+    # Market hub (region id) Production prices its "Jita" side against and
+    # counts listed sell orders in - its own setting, no longer
+    # TradingConfig.jita_region_id (#222). Default Jita. The API fields keep
+    # their jita_* names. Read via this field only (one place per tool).
+    hub_region_id: int = 10000002
     haul_cost_per_m3: float = 900.0       # ISK/m3 to move goods to the home structure
     facility_tax_rate: float = 0.0025     # job-fee facility tax, additive on top of the system cost index
                                             # (see engine.py _job_cost_rate) - EVE's real formula is

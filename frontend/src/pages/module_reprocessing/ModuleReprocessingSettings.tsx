@@ -6,6 +6,8 @@ import { moduleReprocessingApi } from '../../api/client'
 import type { ModuleReprocessingSettings as ModuleReprocessingSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { HintCard } from '../../components/HintCard'
+import { HubSelect } from '../../components/HubSelect'
+import { RegionSelect } from '../../components/RegionSelect'
 
 export default function ModuleReprocessingSettings() {
   const { data } = useQuery({ queryKey: ['module_reprocessing', 'settings'], queryFn: moduleReprocessingApi.settings })
@@ -58,8 +60,14 @@ export default function ModuleReprocessingSettings() {
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Purchase Source</Title>
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
-        <NumberInput label="Purchase region ID (default: Jita/The Forge)" value={form.purchase_region_id} min={1}
-          onChange={(v) => set('purchase_region_id', Number(v))} />
+        <RegionSelect label="Purchase region (default: The Forge)" value={form.purchase_region_id}
+          onChange={(v) => set('purchase_region_id', v)} />
+      </SimpleGrid>
+
+      <Title order={6} c="dimmed" tt="uppercase" mt="md">Ore &amp; Mineral Inputs (Shopping List)</Title>
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
+        <HubSelect label="Input market hub" description="Where ore/ice and minerals are priced (independent of Trading's)"
+          allowAll value={form.input_hub_region_id} onChange={(v) => set('input_hub_region_id', v)} />
       </SimpleGrid>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Shortlist Size</Title>

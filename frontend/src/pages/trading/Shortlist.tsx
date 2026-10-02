@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Button, Checkbox, Group, MultiSelect, TextInput, NumberInput, Badge, Text, Stack, Title, Paper, Tooltip, UnstyledButton } from '@mantine/core'
+import { Button, Checkbox, Group, MultiSelect, Select, TextInput, NumberInput, Badge, Text, Stack, Title, Paper, Tooltip, UnstyledButton } from '@mantine/core'
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip as ChartTooltip } from 'recharts'
 import { IconMinus, IconTrendingDown, IconTrendingUp } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
@@ -14,7 +14,7 @@ import { DetailRow, RowDetailDrawer } from '../../components/RowDetailDrawer'
 import { useAction } from '../../hooks/useAction'
 import { isk, pct, qty } from '../../format'
 import { COLORS } from '../../theme'
-import { hubLabel } from '../../tradingHubs'
+import { hubLabel, hubSelectData } from '../../tradingHubs'
 
 const ALL_DECISIONS = ['Inactive', 'Missing ID', 'No market data', 'Skip', 'Already ordered', 'Import']
 const DECISION_COLOR: Record<string, string> = {
@@ -36,6 +36,8 @@ export default function Shortlist() {
   const { data: trends } = useQuery({ queryKey: ['trading', 'shortlist', 'trends'], queryFn: tradingApi.shortlistTrends })
   const toggleCap = useAction('Shortlist Cap', tradingApi.updateSettings, [['trading', 'settings']],
     { tier: 'local' })
+  const setHub = useAction('Buy Hub', tradingApi.updateSettings, [['trading', 'settings'], ['trading', 'history']],
+    { tier: 'local', effect: 'Saves the buy hub. Prices follow on the next Refresh Shortlist.' })
   const recategorize = useAction('Recategorize', tradingApi.recategorizeShortlist, [['trading', 'shortlist', 'snapshot']],
     { tier: 'local', effect: 'Reclassifies Drugs-vs-Implant locally from already-stored category data.' })
 
@@ -195,20 +197,13 @@ export default function Shortlist() {
     // hardcoded "Cost (Jita)" regardless of jita_region_id's actual value.
     { header: `Cost (${hubLabel(settings?.jita_region_id)})`, accessorKey: 'landed_cost', size: 120, cell: (i) => isk(i.getValue()) },
     {
-      // User feedback, 2026-10-01: the highest landed cost (incl. broker fee
-      // + freight, same basis as "Cost (Jita)" right before it) at which
-      // profit_per_unit is exactly zero - buying at or below this is
-      // profitable, above it is a loss. Not the min_profit_threshold/
-      // min_margin_threshold-aware price (the user picked plain breakeven):
-      // profit = net_sell - landed_cost, so the zero-profit landed_cost is
-      // just net_sell itself (net_sell doesn't depend on landed_cost in this
-      // pricing model) - same raw number as "Sale (Structure)" two columns
-      // over, shown under its own breakeven-specific label/meaning so it
-      // doesn't have to be derived by eye from the other two columns.
-      header: 'Breakeven Price', id: 'breakevenPrice', size: 140,
-      accessorFn: (r) => r.net_sell,
+      // Highest hub buy price that still yields profit_per_unit >= 0 (GitHub
+      // issue #221). Computed server-side: (net_sell - import_cost) /
+      // (1 + broker fee). Comparable to the hub sell price, not to "Cost".
+      header: `Breakeven Buy (${hubLabel(settings?.jita_region_id)})`, id: 'breakevenPrice', size: 150,
+      accessorFn: (r) => r.breakeven_buy_price,
       cell: (i) => isk(i.getValue()),
-      meta: { cellTitle: () => 'Buy at or below this landed cost to keep profit_per_unit ≥ 0.' },
+      meta: { cellTitle: () => 'Highest hub buy price that still breaks even after broker fee, freight and structure sale fees.' },
     },
     { header: 'Sale (Structure)', accessorKey: 'net_sell', size: 140, cell: (i) => isk(i.getValue()) },
     { header: 'Listed Qty (Structure)', accessorKey: 'sell_volume', size: 150, cell: (i) => qty(i.getValue()) },
@@ -223,6 +218,27 @@ export default function Shortlist() {
 
   return (
     <Stack>
+      {settings && (
+        <Paper withBorder p="md" radius="md">
+          <Group gap="md" align="flex-end" wrap="wrap">
+            <Select
+              label="Buy hub"
+              data={hubSelectData(settings.jita_region_id)}
+              value={String(settings.jita_region_id)}
+              onChange={(v) => v && Number(v) !== settings.jita_region_id
+                && setHub.mutate({ ...settings, jita_region_id: Number(v) })}
+              disabled={setHub.isPending}
+              allowDeselect={false}
+              w={240}
+            />
+            <Text size="xs" c="dimmed" maw={520}>
+              Where this list buys. Applies to the Trading tool only; other tools have their own hub
+              setting. New prices appear after the next <b>Refresh Shortlist</b>. Freight cost per m³
+              (Settings) is a single value, so adjust it if the route to the structure changes.
+            </Text>
+          </Group>
+        </Paper>
+      )}
       {settings && (
         <Paper withBorder p="md" radius="md">
           <Title order={6} mb={4}>Limit active shortlist size</Title>
@@ -312,7 +328,7 @@ export default function Shortlist() {
               <DetailRow label="Import cost" value={isk(openRow.import_cost)} />
               <DetailRow label={`Cost (${hub}, landed)`} value={isk(openRow.landed_cost)} />
               <DetailRow label="Sale (Structure, net)" value={isk(openRow.net_sell)} />
-              <DetailRow label="Breakeven price" value={isk(openRow.net_sell)} />
+              <DetailRow label={`Breakeven buy (${hub})`} value={isk(openRow.breakeven_buy_price)} />
               <DetailRow label="Profit / unit" value={isk(openRow.profit_per_unit)} />
               <DetailRow label="Margin" value={pct(openRow.margin)} />
               <DetailRow label="Profit / m³" value={qty(openRow.profit_per_m3)} />

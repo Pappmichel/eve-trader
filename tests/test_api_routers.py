@@ -1752,6 +1752,56 @@ def test_spa_fallback_root_serves_index_html():
     assert "<html" in resp.text.lower()
 
 
+# Cache-Control on the SPA mount: index.html (also via the client-route
+# fallback) must revalidate on every load, hashed assets may be cached
+# forever. Mounted on a throwaway dist directory so these run without a real
+# frontend build (the backend-only CI job has none).
+@pytest.fixture
+def spa_client(tmp_path):
+    from fastapi import FastAPI
+
+    from eve_trader.api.app import SPAStaticFiles
+
+    (tmp_path / "index.html").write_text("<html></html>")
+    (tmp_path / "favicon.svg").write_text("<svg></svg>")
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "index-abc123.js").write_text("export {}")
+    app = FastAPI()
+    app.mount("/", SPAStaticFiles(directory=tmp_path, html=True), name="frontend")
+    return TestClient(app)
+
+
+def test_index_html_is_never_cached(spa_client):
+    resp = spa_client.get("/")
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "no-cache"
+
+
+def test_spa_fallback_shell_is_never_cached(spa_client):
+    resp = spa_client.get("/production/asset-plan")
+    assert resp.status_code == 200
+    assert "<html" in resp.text
+    assert resp.headers["cache-control"] == "no-cache"
+
+
+def test_hashed_asset_is_cached_long_term_and_immutable(spa_client):
+    resp = spa_client.get("/assets/index-abc123.js")
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+
+def test_unhashed_root_file_is_revalidated(spa_client):
+    resp = spa_client.get("/favicon.svg")
+    assert resp.headers["cache-control"] == "no-cache"
+
+
+def test_revalidated_index_html_keeps_no_cache(spa_client):
+    etag = spa_client.get("/").headers["etag"]
+    resp = spa_client.get("/", headers={"If-None-Match": etag})
+    assert resp.status_code == 304
+    assert resp.headers["cache-control"] == "no-cache"
+
+
 # Backup routes moved to /api/admin/backups (confirmed real misplacement
 # 2026-09-21, see admin.do_create_backup's own docstring) - their router
 # tests moved to test_admin_router.py alongside the rest of /api/admin/*.
@@ -1938,3 +1988,51 @@ def test_production_hangar_division_options_excludes_deliveries():
     resp = client.get("/api/production/settings/structure-options")
     assert resp.status_code == 200
     assert "Deliveries" not in resp.json()["hangar_division_flags"]
+
+
+# B1/B2 (docs/FRONTEND_PLAN.md): the buy hub and the reference region come
+# back as two separate series, each read with its own indexed query.
+def test_price_history_is_split_by_region(monkeypatch):
+    from eve_trader.config import TRADING_CONFIG
+
+    calls = []
+
+    def fake_read(region_id, type_id):
+        calls.append((region_id, type_id))
+        return [{"date": "2026-10-01", "avg_price": float(region_id)}]
+
+    monkeypatch.setattr(storage, "read_goonmetrics_history", fake_read)
+    resp = client.get("/api/trading/history/34")
+    assert resp.status_code == 200
+    body = resp.json()
+    hub, ref = TRADING_CONFIG.jita_region_id, TRADING_CONFIG.reference_region_id
+    assert body["hub_region_id"] == hub and body["reference_region_id"] == ref
+    assert body["hub"] == [{"date": "2026-10-01", "avg_price": float(hub)}]
+    assert body["reference"] == [{"date": "2026-10-01", "avg_price": float(ref)}]
+    assert sorted(calls) == sorted([(hub, 34), (ref, 34)])
+
+
+def test_get_sde_regions_serializes_storage_rows(monkeypatch):
+    monkeypatch.setattr(storage, "list_all_regions", lambda: [(10000009, "Insmother"), (10000002, "The Forge")])
+
+    resp = client.get("/api/sde/regions")
+
+    assert resp.status_code == 200
+    assert resp.json() == [
+        {"region_id": 10000009, "region_name": "Insmother"},
+        {"region_id": 10000002, "region_name": "The Forge"},
+    ]
+
+
+def test_hub_freight_routes_pass_rows_to_the_action(monkeypatch):
+    from eve_trader import hubs
+
+    seen = {}
+    monkeypatch.setattr(hubs, "do_get_hub_freight", lambda: [{"region_id": 10000002, "hub": "Jita",
+                                                               "freight_cost_per_m3": None}])
+    monkeypatch.setattr(hubs, "do_update_hub_freight", lambda rates: seen.update(rates) or [])
+    assert client.get("/api/hubs/freight").json()[0]["hub"] == "Jita"
+    resp = client.post("/api/hubs/freight", json=[{"region_id": 10000043, "freight_cost_per_m3": 950},
+                                                   {"region_id": 10000002}])
+    assert resp.status_code == 200
+    assert seen == {10000043: 950.0, 10000002: None}

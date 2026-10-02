@@ -29,7 +29,7 @@ from ..config import ACCESS_CONFIG, OAUTH_CONFIG, TRADING_CONFIG, apply_config_o
 from ..doctrine.config import DOCTRINE_CONFIG
 from ..production.config import PRODUCTION_CONFIG
 from .routers import (
-    admin, auth, char_contacts, char_info, char_mail, char_notifications, char_alerts, char_skill_plans, char_skills, characters, doctrine, errors, gate, module_reprocessing, portfolio, production, refining, sorting,
+    admin, auth, char_contacts, char_info, char_mail, char_notifications, char_alerts, char_skill_plans, char_skills, characters, doctrine, errors, gate, hubs, module_reprocessing, portfolio, production, refining, sde, sorting,
     station_trading, trading,
 )
 
@@ -78,11 +78,26 @@ class SPAStaticFiles(StaticFiles):
         # fired, since execution never reaches it) - has to be caught, not
         # branched on.
         try:
-            return await super().get_response(path, scope)
+            response = await super().get_response(path, scope)
         except StarletteHTTPException as exc:
-            if exc.status_code == 404:
-                return await super().get_response("index.html", scope)
-            raise
+            if exc.status_code != 404:
+                raise
+            response = await super().get_response("index.html", scope)
+            posix_path = "index.html"
+        # StaticFiles sends no Cache-Control by default (only ETag/
+        # Last-Modified), so a browser may cache index.html heuristically
+        # (RFC 9111 4.2.2). After a deploy a stale index.html then names
+        # hashed chunks that no longer exist. "no-cache" forces an ETag
+        # revalidation on every load (cheap for this file); hashed files
+        # under assets/ change name on every build and can be cached forever.
+        # chunkReload.ts (frontend) only recovers once the stale page has
+        # already failed; this keeps it from happening in the first place.
+        response.headers["Cache-Control"] = (
+            "public, max-age=31536000, immutable"
+            if posix_path.startswith("assets/")
+            else "no-cache"
+        )
+        return response
 
 # Reachable without a gate session even while AccessConfig.access_gate_enabled
 # is true - the login flow itself, plus the one status/logout pair the
@@ -101,6 +116,13 @@ _GATE_EXEMPT_PATHS = {
 # without an explicit bucket (see tests/test_gate_route_coverage.py).
 _SESSION_ONLY_API_PREFIXES = (
     "/api/errors",
+    # Public SDE reference data (region names, issue #223) read by several
+    # tools' Settings pages; no single tool grant fits, and nothing tenant-
+    # private is exposed.
+    "/api/sde",
+    # The tenant's shared per-hub freight table (issue #222), edited from the
+    # Settings pages of every tool with an "All hubs" option.
+    "/api/hubs",
 )
 
 # Path prefix -> the tool_key a request under it requires (see
@@ -415,6 +437,8 @@ def create_app() -> FastAPI:
     app.include_router(char_skill_plans.router, prefix="/api/char-skill-plans", tags=["char_skill_plans"])
     app.include_router(char_alerts.router, prefix="/api/char-alerts", tags=["char_alerts"])
     app.include_router(errors.router, prefix="/api/errors", tags=["errors"])
+    app.include_router(sde.router, prefix="/api/sde", tags=["sde"])
+    app.include_router(hubs.router, prefix="/api/hubs", tags=["hubs"])
 
     if FRONTEND_DIST.exists():
         app.mount("/", SPAStaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")

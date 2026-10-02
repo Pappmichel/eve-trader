@@ -349,7 +349,7 @@ def test_shopping_list_rows_picks_cheapest_of_build_cj_jita(monkeypatch):
     monkeypatch.setattr(engine, "aggregate_stockpile_rows", lambda rows: [agg_row])
 
     class _FakePlanContext:
-        def __init__(self, cfg, extra_type_ids=()):
+        def __init__(self, cfg, extra_type_ids=(), **kwargs):
             self.home = {MODULE: CurrentPrice(type_id=MODULE, updated="2026-01-01", buy=90.0, sell=100.0)}
             self.jita = {MODULE: CurrentPrice(type_id=MODULE, updated="2026-01-01", buy=45.0, sell=50.0)}
             self.cost_indices = {}
@@ -400,7 +400,7 @@ def test_shopping_list_rows_recommends_none_when_no_price_data(monkeypatch):
     monkeypatch.setattr(engine, "aggregate_stockpile_rows", lambda rows: [agg_row])
 
     class _FakePlanContext:
-        def __init__(self, cfg, extra_type_ids=()):
+        def __init__(self, cfg, extra_type_ids=(), **kwargs):
             self.home, self.jita, self.cost_indices, self.adjusted_prices, self.selected_decryptors = {}, {}, {}, {}, {}
     monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
     monkeypatch.setattr(engine, "unit_cost_detail", lambda *a, **k: (None, None, None))
@@ -427,7 +427,7 @@ def test_shopping_list_rows_suppresses_jita_price_with_no_live_orders(monkeypatc
     monkeypatch.setattr(engine, "aggregate_stockpile_rows", lambda rows: [agg_row])
 
     class _FakePlanContext:
-        def __init__(self, cfg, extra_type_ids=()):
+        def __init__(self, cfg, extra_type_ids=(), **kwargs):
             self.home = {}
             self.jita = {MODULE: CurrentPrice(type_id=MODULE, updated="2026-01-01", buy=45.0, sell=50.0)}
             self.cost_indices, self.adjusted_prices, self.selected_decryptors = {}, {}, {}
@@ -508,3 +508,75 @@ def test_aggregate_stockpile_rows_sorted_by_shortfall_descending():
     aggregated = engine.aggregate_stockpile_rows(rows)
 
     assert [r.type_id for r in aggregated] == [2, 3, 1]
+
+
+def test_shopping_list_reads_the_doctrine_hub_not_trading_config(monkeypatch):
+    # #222: Doctrine's order-book check and its price context both follow
+    # DoctrineConfig.hub_region_id, never TradingConfig.jita_region_id.
+    monkeypatch.setattr(engine.TRADING_CONFIG, "jita_region_id", 10000043)
+    agg_row = AggregatedStockpileRow(type_id=MODULE, type_name="Damage Control II", required_total=10.0,
+                                      available=4.0, shortfall=6.0, severity=SEVERITY_CRITICAL, fitting_count=1)
+    monkeypatch.setattr(engine, "stockpile_rows_for_doctrine", lambda doctrine_id, cfg: ([], True))
+    monkeypatch.setattr(engine, "aggregate_stockpile_rows", lambda rows: [agg_row])
+    seen = {}
+
+    class _Ctx:
+        def __init__(self, cfg, extra_type_ids=(), hub_region_id=None):
+            seen["ctx_hub"] = hub_region_id
+            self.home, self.jita, self.cost_indices, self.adjusted_prices, self.selected_decryptors = {}, {}, {}, {}, {}
+    monkeypatch.setattr(engine, "_PlanContext", _Ctx)
+    monkeypatch.setattr(engine, "unit_cost_detail", lambda *a, **k: (None, None, None))
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: None)
+    monkeypatch.setattr(production_esi_sync, "list_capability_characters", lambda *a, **k: [])
+
+    class _ESI(_FakeESIClient):
+        def region_order_stats_bulk(self, region_id, type_ids):
+            seen["order_book_region"] = region_id
+            return {}
+    monkeypatch.setattr(engine, "ESIClient", _ESI)
+
+    engine.shopping_list_rows(cfg=DoctrineConfig(hub_region_id=10000032))
+
+    assert seen == {"ctx_hub": 10000032, "order_book_region": 10000032}
+
+
+def test_shopping_list_rows_all_hubs_picks_cheapest_landed_hub_and_never_queries_region_0(monkeypatch):
+    from eve_trader import hubs
+    from eve_trader.esi_client import OrderStats
+    agg_row = AggregatedStockpileRow(type_id=MODULE, type_name="Damage Control II", required_total=10.0,
+                                      available=4.0, shortfall=6.0, severity=SEVERITY_CRITICAL, fitting_count=1)
+    monkeypatch.setattr(engine, "stockpile_rows_for_doctrine", lambda doctrine_id, cfg: ([], True))
+    monkeypatch.setattr(engine, "aggregate_stockpile_rows", lambda rows: [agg_row])
+    plan_regions = []
+
+    class _FakePlanContext:
+        def __init__(self, cfg, extra_type_ids=(), hub_region_id=None, **kwargs):
+            plan_regions.append(hub_region_id)
+            self.home, self.jita = {}, {}
+            self.cost_indices, self.adjusted_prices, self.selected_decryptors = {}, {}, {}
+    monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
+    monkeypatch.setattr(engine, "unit_cost_detail", lambda *a, **k: (None, None, None))
+    monkeypatch.setattr(engine, "_haul_volume", lambda type_id, cfg: 5.0)
+    monkeypatch.setattr(production_esi_sync, "list_capability_characters", lambda *a, **k: [])
+
+    # Jita is cheapest on the shelf (100) but Amarr (110) wins landed once freight is added.
+    prices = {10000002: 100.0, 10000043: 110.0, 10000032: 150.0, 10000030: 150.0}
+    calls = []
+
+    class _Client(_FakeESIClient):
+        def region_order_stats_bulk(self, region_id, type_ids):
+            calls.append(region_id)
+            return {t: OrderStats(prices[region_id], 1000, None, 0) for t in type_ids}
+    monkeypatch.setattr(engine, "ESIClient", _Client)
+    cfg = DoctrineConfig(import_cost_per_m3=100.0, hub_region_id=hubs.ALL_HUBS)
+    monkeypatch.setattr(engine.TRADING_CONFIG, "hub_freight_cost_per_m3",
+                        {"10000002": 100.0, "10000043": 10.0}, raising=False)
+
+    rows = engine.shopping_list_rows(cfg=cfg)
+
+    fee = engine.TRADING_CONFIG.jita_buy_broker_fee
+    assert 0 not in calls and 0 not in plan_regions
+    assert set(calls) == set(hubs.TRADE_HUBS)
+    assert rows[0].hub_region_id == 10000043 and rows[0].hub_name == "Amarr"
+    assert rows[0].jita_landed_price == pytest.approx(110.0 * (1 + fee) + 10.0 * 5.0)
+    assert rows[0].recommended_source == "Jita"

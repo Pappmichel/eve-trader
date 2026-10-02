@@ -23,7 +23,7 @@ import Shortlist from './Shortlist'
 
 function row(over: Partial<ShortlistRow>): ShortlistRow {
   return {
-    item: 'Item', category: 'Ship', landed_cost: 1_000_000, net_sell: 1_300_000, sell_volume: 10,
+    item: 'Item', category: 'Ship', landed_cost: 1_000_000, net_sell: 1_300_000, breakeven_buy_price: 1_250_000, sell_volume: 10,
     own_orders_remaining: 0, profit_per_unit: 300_000, margin: 0.3, profit_per_m3: 100,
     decision: 'Import', active: true, item_id: 1, volume_m3: 5, jita_sell: 900_000, import_cost: 50_000,
     meta_level: 0, days_until_deactivation: null, avg_daily_volume: 20, ...over,
@@ -87,3 +87,34 @@ describe('Trading Shortlist interactivity', () => {
     expect(within(screen.getByRole('dialog')).getByText('Warp Scrambler II')).toBeInTheDocument()
   })
 })
+
+
+// GitHub issue #222: the buy hub is picked on the Shortlist page itself.
+describe('Trading Shortlist buy hub', () => {
+  const SETTINGS = { jita_region_id: 10000002, enforce_shortlist_cap: false, max_active_shortlist_items: 500 }
+
+  beforeEach(() => {
+    vi.mocked(tradingApi.shortlistSnapshot).mockResolvedValue(rows)
+    vi.mocked(tradingApi.shortlistTrends).mockResolvedValue({})
+    vi.mocked(tradingApi.settings).mockResolvedValue(SETTINGS as never)
+    vi.mocked(tradingApi.updateSettings).mockReset()
+    vi.mocked(tradingApi.updateSettings).mockResolvedValue(SETTINGS as never)
+  })
+
+  it('saves the picked hub as its region id', async () => {
+    const user = userEvent.setup()
+    renderShortlist()
+    await user.click(await screen.findByRole('combobox', { name: 'Buy hub' }))
+    await user.click(await screen.findByRole('option', { name: 'Dodixie (Sinq Laison)' }))
+
+    await waitFor(() => expect(tradingApi.updateSettings).toHaveBeenCalled())
+    expect(vi.mocked(tradingApi.updateSettings).mock.calls[0][0]).toMatchObject({ jita_region_id: 10000032 })
+  })
+
+  it('keeps an unknown region id selectable as Custom', async () => {
+    vi.mocked(tradingApi.settings).mockResolvedValue({ ...SETTINGS, jita_region_id: 10000016 } as never)
+    renderShortlist()
+    expect(await screen.findByDisplayValue('Custom (region 10000016)')).toBeInTheDocument()
+  })
+})
+

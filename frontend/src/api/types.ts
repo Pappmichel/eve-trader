@@ -37,6 +37,8 @@ export interface ShortlistRow {
   import_cost: number | null
   meta_level: number | null
   days_until_deactivation: number | null
+  // Highest hub buy price that still breaks even (GitHub issue #221)
+  breakeven_buy_price: number | null
   // Real average daily *market-wide* traded quantity (GitHub issue #100,
   // Goonmetrics region history for C-J's own home region) - what
   // "Profit / Day" is actually computed from, NOT sell_volume (order-book
@@ -129,6 +131,19 @@ export interface SdeItemNameOption {
   type_name: string
 }
 
+// One row of the shared per-hub freight table (#222); null = no entry, the
+// tool's own freight value applies.
+export interface HubFreightRow {
+  region_id: number
+  hub: string
+  freight_cost_per_m3: number | null
+}
+
+export interface RegionOption {
+  region_id: number
+  region_name: string
+}
+
 export interface SolarSystemOption {
   solar_system_id: number
   solar_system_name: string
@@ -145,14 +160,20 @@ export interface SystemCostIndices {
 }
 
 export interface PriceHistoryPoint {
-  region_id: number
-  type_id: number
   date: string
   min_price: number
   max_price: number
   avg_price: number
   movement: number
   num_orders: number
+}
+
+// Buy hub and reference region as separate series (never mixed into one line).
+export interface PriceHistory {
+  hub_region_id: number
+  reference_region_id: number
+  hub: PriceHistoryPoint[]
+  reference: PriceHistoryPoint[]
 }
 
 export interface TradingSettings {
@@ -295,6 +316,8 @@ export interface BuyListEntry {
   total_price: number | null
   on_hand_pct: number
   buy_from: string | null
+  hub_region_id?: number | null
+  hub_name?: string | null
   category: string | null
 }
 
@@ -671,6 +694,7 @@ export interface ProductionSettings {
   min_margin: number
   min_daily_profit: number
   haul_cost_per_m3: number
+  hub_region_id: number
   facility_tax_rate: number
   home_market: string | null
   home_location_id: number | null
@@ -1058,6 +1082,8 @@ export interface ShoppingListRow {
   jita_landed_price: number | null
   recommended_source: 'Build' | 'C-J' | 'Jita' | null
   total_cost: number | null
+  hub_region_id: number | null
+  hub_name: string | null
 }
 
 export interface FittingStatus {
@@ -1109,6 +1135,7 @@ export interface DoctrineSettings {
   cargo_tolerance_pct: number
   strict_extras: boolean
   import_cost_per_m3: number
+  hub_region_id: number
   stockpile_hangar_flags: string[]
 }
 
@@ -1144,6 +1171,9 @@ export interface OreShortlistRow {
   margin: number | null
   profit_per_m3: number | null
   decision: string
+  // Hub the ore was priced at; the winning hub when the tool is set to "All hubs" (GitHub issue #222).
+  hub_region_id: number | null
+  hub_name: string | null
 }
 
 export interface RefinableMineral {
@@ -1167,6 +1197,8 @@ export interface OrePurchase {
   volume_m3: number
   landed_cost_per_unit: number
   total_cost: number
+  hub_region_id: number | null
+  hub_name: string | null
 }
 
 export interface DirectMineralPurchase {
@@ -1175,7 +1207,9 @@ export interface DirectMineralPurchase {
   quantity: number
   landed_cost_per_unit: number
   total_cost: number
-  source: 'Jita' | 'Home' | null
+  // "Home" or the name of the trade hub it is bought at (e.g. "Jita", "Amarr").
+  source: string | null
+  hub_region_id: number | null
 }
 
 export interface MineralCoverage {
@@ -1202,6 +1236,7 @@ export interface ShoppingListPlan {
 }
 
 export interface RefiningSettings {
+  hub_region_id: number
   structure_type: string
   rig_tier: string
   security_status: number
@@ -1252,6 +1287,7 @@ export interface ReprocessingQuoteResult {
 // ------------------------------------------------------------ station trading
 export interface StationTradingSettings {
   station_id: number
+  hub_region_id: number
   broker_fee_rate: number
   sales_tax_rate: number
   min_spread_threshold: number
@@ -1368,6 +1404,8 @@ export interface ReprocessPurchase {
   volume_m3: number
   landed_cost_per_unit: number
   total_cost: number
+  hub_region_id: number | null
+  hub_name: string | null
 }
 
 export interface ReprocessMineralCoverage {
@@ -1402,6 +1440,7 @@ export interface ModuleReprocessingSettings {
   ignore_thresholds: boolean
   purchase_region_id: number
   purchase_structure_id: number | null
+  input_hub_region_id: number
   enforce_shortlist_cap: boolean
   max_active_shortlist_items: number
 }

@@ -1208,8 +1208,8 @@ def mark_shortlist_refreshed(item_ids: Iterable[int], refreshed_at: str) -> None
 _SHORTLIST_SNAPSHOT_INSERT = (
     "INSERT INTO shortlist_snapshot (run_ts, item_id, item, category, landed_cost, net_sell, "
     "sell_volume, own_orders_remaining, profit_per_unit, margin, profit_per_m3, decision, active, "
-    "volume_m3, jita_sell, import_cost, meta_level, avg_daily_volume) "
-    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    "volume_m3, jita_sell, import_cost, meta_level, avg_daily_volume, breakeven_buy_price) "
+    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 )
 
 
@@ -1217,7 +1217,7 @@ def _shortlist_snapshot_params(rows: list[ShortlistRow], run_ts: str) -> list[tu
     return [(run_ts, r.item_id, r.item, r.category, r.landed_cost, r.net_sell, r.sell_volume,
              r.own_orders_remaining, r.profit_per_unit, r.margin, r.profit_per_m3, r.decision,
              int(r.active), r.volume_m3, r.jita_sell, r.import_cost, r.meta_level,
-             r.avg_daily_volume) for r in rows]
+             r.avg_daily_volume, r.breakeven_buy_price) for r in rows]
 
 
 def replace_shortlist_snapshot_run(rows: list[ShortlistRow], run_ts: str) -> None:
@@ -1288,6 +1288,7 @@ def load_latest_shortlist_rows() -> list[ShortlistRow]:
             import_cost=_snapshot_opt_float(rec.get("import_cost")),
             meta_level=_snapshot_opt_int(rec.get("meta_level")),
             avg_daily_volume=_snapshot_opt_float(rec.get("avg_daily_volume")),
+            breakeven_buy_price=_snapshot_opt_float(rec.get("breakeven_buy_price")),
         ))
     return rows
 
@@ -1342,6 +1343,9 @@ def save_new_candidates(results: list[NewCandidateResult], run_ts: str) -> None:
 
 
 def save_goonmetrics_history(points) -> None:
+    points = list(points)
+    if not points:
+        return
     with connect() as conn:
         conn.executemany(
             "INSERT INTO goonmetrics_history VALUES (?,?,?,?,?,?,?,?) "
@@ -1381,6 +1385,7 @@ def replace_sde_data(
     blueprint_time: list[tuple], blueprint_materials: list[tuple], blueprint_products: list[tuple],
     invention_probability: list[tuple] = (), solar_systems: list[tuple] = (),
     stations: list[tuple] = (), categories: list[tuple] = (), type_slots: list[tuple] = (),
+    regions: list[tuple] = (),
     type_materials: list[tuple] = (), blueprint_skills: list[tuple] = (),
     skill_requirements: list[tuple] = (), skill_meta: list[tuple] = (),
 ) -> None:
@@ -1417,6 +1422,7 @@ def replace_sde_data(
         conn.execute("DELETE FROM sde_blueprint_products")
         conn.execute("DELETE FROM sde_invention_probability")
         conn.execute("DELETE FROM sde_solar_systems")
+        conn.execute("DELETE FROM sde_regions")
         conn.execute("DELETE FROM sde_stations")
         conn.execute("DELETE FROM sde_categories")
         conn.execute("DELETE FROM sde_type_slots")
@@ -1432,6 +1438,7 @@ def replace_sde_data(
         conn.executemany("INSERT INTO sde_blueprint_products VALUES (?,?,?,?)", blueprint_products)
         conn.executemany("INSERT INTO sde_invention_probability VALUES (?,?,?)", invention_probability)
         conn.executemany("INSERT INTO sde_solar_systems VALUES (?,?,?,?)", solar_systems)
+        conn.executemany("INSERT INTO sde_regions VALUES (?,?)", regions)
         conn.executemany("INSERT INTO sde_stations VALUES (?,?,?)", stations)
         conn.executemany("INSERT INTO sde_categories VALUES (?,?)", categories)
         conn.executemany("INSERT INTO sde_type_slots VALUES (?,?)", type_slots)
@@ -1458,7 +1465,7 @@ SDE_TABLES = (
     "sde_types", "sde_groups", "sde_market_groups", "sde_blueprint_time",
     "sde_blueprint_materials", "sde_blueprint_products", "sde_invention_probability",
     "sde_blueprint_skills",
-    "sde_solar_systems", "sde_stations", "sde_categories", "sde_type_slots",
+    "sde_solar_systems", "sde_regions", "sde_stations", "sde_categories", "sde_type_slots",
     "sde_type_materials",
     "sde_skill_requirements", "sde_skill_meta",
 )
@@ -1653,6 +1660,16 @@ def list_all_solar_systems() -> list[tuple[int, str]]:
     with connect() as conn:
         return conn.execute(
             "SELECT solar_system_id, solar_system_name FROM sde_solar_systems ORDER BY solar_system_name"
+        ).fetchall()
+
+
+def list_all_regions() -> list[tuple[int, str]]:
+    """Every SDE region (region_id, region_name), name-ordered - feeds the
+    region pickers in Trading/Module Reprocessing Settings (issue #223).
+    Empty until the SDE has been refreshed once after sde_regions was added."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT region_id, region_name FROM sde_regions ORDER BY region_name"
         ).fetchall()
 
 
@@ -5361,6 +5378,21 @@ def read_goonmetrics_history_for_types(type_ids: list[int]) -> pd.DataFrame:
         return pd.DataFrame(cur.fetchall(), columns=columns)
 
 
+def read_goonmetrics_history(region_id: int, type_id: int) -> list[dict]:
+    """One item's history in one region, oldest first. Filters on the full
+    primary key prefix (region_id, type_id), the table's only index - unlike
+    read_goonmetrics_history_for_types, whose `type_id IN (...)` cannot use
+    it because type_id is not the leading column."""
+    with connect() as conn:
+        cur = conn.execute(
+            "SELECT date, min_price, max_price, avg_price, movement, num_orders "
+            "FROM goonmetrics_history WHERE region_id = ? AND type_id = ? ORDER BY date",
+            (region_id, type_id),
+        )
+        columns = [d[0] for d in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
 def goonmetrics_history_type_ids_for_tenant() -> list[int]:
     """type_ids in goonmetrics_history (a global, shared-across-every-tenant
     cache - see this file's own module docstring) that are ALSO in this
@@ -5450,8 +5482,9 @@ def save_ore_shortlist_snapshot(rows: list[tuple], run_ts: str) -> None:
         conn.executemany(
             "INSERT INTO ore_shortlist_snapshot (run_ts, item_id, item, family, is_ice, active, volume_m3, "
             "landed_cost, yield_pct, mineral_value, refining_tax, net_sell, sell_listed_qty, profit_per_unit, "
-            "margin, profit_per_m3, decision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            [(run_ts, *row) for row in rows],
+            "margin, profit_per_m3, decision, hub_region_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            # rows without hub_region_id (older callers) store NULL.
+            [(run_ts, *row, *([None] * (17 - len(row)))) for row in rows],
         )
 
 

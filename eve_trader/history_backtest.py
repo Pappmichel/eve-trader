@@ -131,7 +131,8 @@ def _score_candidate(candidate: Candidate, hist_index: dict,
 
 
 def compute_margin_trends(history_df: pd.DataFrame, volumes: dict[int, float],
-                           cfg: TradingConfig = TRADING_CONFIG) -> dict[int, dict]:
+                           cfg: TradingConfig = TRADING_CONFIG,
+                           today: Optional[str] = None) -> dict[int, dict]:
     """Momentum signal inspired by comparable EVE trading tools (3-day vs
     30-day VWAP trend detection): for every type_id in `volumes`, compares
     the average landed-cost margin over the most recent RECENT_WINDOW_DAYS
@@ -156,10 +157,18 @@ def compute_margin_trends(history_df: pd.DataFrame, volumes: dict[int, float],
     Returns {type_id: {"recent_avg_margin", "baseline_avg_margin",
     "trend_pct"}} - trend_pct = (recent - baseline) / abs(baseline), positive
     means the margin is improving, negative means it's eroding.
+
+    `today` (ISO date) limits both windows to the last BASELINE_WINDOW_DAYS
+    calendar days before it, so stored history that stopped being refreshed
+    reads as "no trend" instead of as a current one. None keeps every
+    stored day (tests with fixed dates).
     """
     df = history_df
     if df.empty:
         return {}
+    if today is not None:
+        cutoff = (pd.Timestamp(today) - pd.Timedelta(days=BASELINE_WINDOW_DAYS)).strftime("%Y-%m-%d")
+        df = df[df["date"].astype(str) > cutoff]
 
     jita = df[df["region_id"] == cfg.jita_region_id][["type_id", "date", "avg_price"]] \
         .rename(columns={"avg_price": "jita_price"})

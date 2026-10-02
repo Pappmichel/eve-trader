@@ -15,6 +15,7 @@ import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
 import { isk, qty } from '../../format'
+import { ALL_HUBS, hubLabel } from '../../tradingHubs'
 
 // Same feature and UX shape as Ore & Minerals' own Mineral Shopping List
 // (pages/refining/MineralShoppingList.tsx), but the optimizer also considers
@@ -28,6 +29,12 @@ export default function MineralShoppingList() {
   const { data: saved } = useQuery({
     queryKey: ['module_reprocessing', 'shopping-requirements'], queryFn: moduleReprocessingApi.shoppingRequirements,
   })
+
+  const { data: settings } = useQuery({
+    queryKey: ['module_reprocessing', 'settings'], queryFn: moduleReprocessingApi.settings,
+  })
+  const allHubs = settings?.input_hub_region_id === ALL_HUBS
+  const hub = hubLabel(settings?.input_hub_region_id)
 
   const [rows, setRows] = useState<MineralRequirement[]>([])
   useEffect(() => { if (saved) setRows(saved) }, [saved])
@@ -104,14 +111,15 @@ export default function MineralShoppingList() {
   ], [])
 
   const oreColumns = useMemo<ColumnDef<ReprocessPurchase, any>[]>(() => [
-    { header: 'Buy in Jita', accessorKey: 'item', size: 220 },
+    { header: allHubs ? 'Buy' : `Buy in ${hub}`, accessorKey: 'item', size: 220 },
+    ...(allHubs ? [{ header: 'Best hub', accessorKey: 'hub_name', size: 100, cell: (i: any) => i.getValue() ?? '–' }] : []),
     { header: 'Family', accessorKey: 'family', size: 130 },
     { header: 'Units', accessorKey: 'units', size: 110, cell: (i) => qty(i.getValue()) },
     { header: 'Portions', accessorKey: 'portions', size: 100, cell: (i) => qty(i.getValue()) },
     { header: 'Volume (m3)', accessorKey: 'volume_m3', size: 120, cell: (i) => qty(i.getValue()) },
     { header: 'Landed / Unit', accessorKey: 'landed_cost_per_unit', size: 130, cell: (i) => isk(i.getValue()) },
     { header: 'Total Cost', accessorKey: 'total_cost', size: 140, cell: (i) => isk(i.getValue()) },
-  ], [])
+  ], [allHubs, hub])
 
   const moduleColumns = useMemo<ColumnDef<ReprocessPurchase, any>[]>(() => [
     { header: 'Item', accessorKey: 'item', size: 260, meta: { copyable: true } },

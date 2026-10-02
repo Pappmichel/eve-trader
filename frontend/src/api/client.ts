@@ -120,7 +120,7 @@ export const tradingApi = {
   focusedCandidates: () => get<T.Candidate[]>('/api/trading/candidates/focused'),
   newCandidates: () => get<T.NewCandidateResult[]>('/api/trading/candidates/new'),
   historyTypeIds: () => get<T.HistoryTypeIdOption[]>('/api/trading/history/type-ids'),
-  history: (typeId: number) => get<T.PriceHistoryPoint[]>(`/api/trading/history/${typeId}`),
+  history: (typeId: number) => get<T.PriceHistory>(`/api/trading/history/${typeId}`),
   realizedTrades: () => get<T.RealizedTrade[]>('/api/trading/trades/realized'),
   settings: () => get<T.TradingSettings>('/api/trading/settings'),
   updateSettings: (s: T.TradingSettings) => post<T.TradingSettings>('/api/trading/settings', s),
@@ -818,6 +818,16 @@ export const charactersApi = {
 // ErrorBoundary.tsx/main.tsx's global error listeners on every page, for
 // every tenant - unlike adminApi.errors (the list view), it needs no
 // "admin" tool grant (see api/routers/errors.py's own docstring).
+export const hubsApi = {
+  freight: () => get<T.HubFreightRow[]>('/api/hubs/freight'),
+  updateFreight: (rows: { region_id: number; freight_cost_per_m3: number | null }[]) =>
+    post<T.HubFreightRow[]>('/api/hubs/freight', rows),
+}
+
+export const sdeApi = {
+  regions: () => get<T.RegionOption[]>('/api/sde/regions'),
+}
+
 export const errorsApi = {
   report: (source: string, message: string, detail?: string, path?: string) =>
     post<{ recorded: boolean }>('/api/errors', { source, message, detail, path }),

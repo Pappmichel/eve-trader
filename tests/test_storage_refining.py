@@ -283,6 +283,16 @@ def test_save_and_read_latest_ore_snapshot(tenant):
     assert df.iloc[0]["decision"] == "Import"
 
 
+def test_ore_snapshot_round_trips_the_hub_region_id(tenant):
+    base = (34, "Compressed Veldspar", "Veldspar", False, True, 0.01, 1.9, 0.5, 1958.8, 0.0, 1958.8, 5000.0,
+            17.67, 9.23, 1767.0, "Import")
+    storage.save_ore_shortlist_snapshot([base + (10000043,)], "2026-08-22T00:00:00")
+
+    df = storage.latest_ore_snapshot()
+
+    assert int(df.iloc[0]["hub_region_id"]) == 10000043
+
+
 def test_latest_ore_snapshot_only_returns_the_newest_run(tenant):
     old_row = (34, "Compressed Veldspar", "Veldspar", False, True, 0.01, 1.9, 0.5, 1958.8, 0.0, 1958.8, 5000.0,
                17.67, 9.23, 1767.0, "Skip")

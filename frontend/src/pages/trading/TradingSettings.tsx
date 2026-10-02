@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, TagsInput, Button, Center, Loader, MultiSelect, Select, Switch } from '@mantine/core'
+import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, TagsInput, Button, Center, Loader, MultiSelect, Switch } from '@mantine/core'
 
 import { tradingApi } from '../../api/client'
 import type { TradingSettings as TradingSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { useStructureNameOptions } from '../../hooks/useStaticOptions'
 import { HintCard } from '../../components/HintCard'
+import { RegionSelect } from '../../components/RegionSelect'
 import { StructureIdField } from '../../components/StructureIdField'
-import { TRADE_HUBS, hubLabel } from '../../tradingHubs'
+import { hubLabel } from '../../tradingHubs'
 
 export default function TradingSettings() {
   const { data } = useQuery({ queryKey: ['trading', 'settings'], queryFn: tradingApi.settings })
@@ -86,24 +87,12 @@ export default function TradingSettings() {
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Regions &amp; Structure</Title>
       <Text size="xs" c="dimmed">
-        Only change if your trading location shifts entirely. "Buy hub" is the region Trading buys from and
-        prices its live shortlist against (user feedback, 2026-10-01: previously a bare region-id number field
-        always labelled "Jita" in every other Trading screen, regardless of what was actually entered here) -
-        Production, Doctrine, Ore &amp; Minerals, Station Trading and Module Reprocessing all read this same
-        value for their own order-book lookups, so changing it affects every tool, not just Trading.
-        Known gap: a character's own assets sitting in the new hub are not yet recognized by the shortlist's
-        "already covered" check, which still looks for them in Jita specifically.
+        Only change if your trading location shifts entirely. The buy hub ({hubLabel(form.jita_region_id)}) is
+        picked on the Shortlist page.
       </Text>
       <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }}>
-        <Select label="Buy hub" data={[
-          ...TRADE_HUBS.map((h) => ({ value: String(h.regionId), label: h.label })),
-          ...(TRADE_HUBS.some((h) => h.regionId === form.jita_region_id) ? [] : [
-            { value: String(form.jita_region_id), label: `Custom (region ${form.jita_region_id})` },
-          ]),
-        ]} value={String(form.jita_region_id)}
-          onChange={(v) => v && set('jita_region_id', Number(v))} />
-        <NumberInput label="Reference region ID" value={form.reference_region_id} min={1}
-          onChange={(v) => set('reference_region_id', Number(v))} />
+        <RegionSelect label="Reference region" value={form.reference_region_id}
+          onChange={(v) => set('reference_region_id', v)} />
         <StructureIdField label="Structure ID" value={form.structure_id ?? null}
           onChange={(v) => set('structure_id', v)} structureNames={structureNames} />
       </SimpleGrid>

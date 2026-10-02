@@ -62,6 +62,10 @@ class ShortlistRow:
     # for). None means Goonmetrics has no history for this item in that
     # region.
     avg_daily_volume: Optional[float] = None
+    # Highest hub buy price (comparable to jita_sell) at which profit_per_unit
+    # is still >= 0 after broker fee and freight (GitHub issue #221). May be
+    # <= 0 when freight alone exceeds net_sell. None without a structure price.
+    breakeven_buy_price: Optional[float] = None
 
 
 @dataclass
