@@ -36,7 +36,8 @@ ALL_DECISIONS = ["Inactive", NO_MARKET_DATA_DECISION, SKIP_DECISION, IMPORT_DECI
 
 
 def landed_cost_per_unit(jita_sell: Optional[float], volume_m3: float,
-                          trading_cfg: TradingConfig = TRADING_CONFIG) -> Optional[float]:
+                          trading_cfg: TradingConfig = TRADING_CONFIG,
+                          freight_per_m3: Optional[float] = None) -> Optional[float]:
     """The one definition of "what one unit really costs me, sitting in C-J":
     Jita's sell percentile plus the buy-side broker fee, plus this app's flat
     per-m3 haul charge. Extracted from evaluate_ore_item (unchanged formula)
@@ -46,7 +47,10 @@ def landed_cost_per_unit(jita_sell: Optional[float], volume_m3: float,
     None out (nothing listed in Jita right now)."""
     if jita_sell is None:
         return None
-    return jita_sell * (1 + trading_cfg.jita_buy_broker_fee) + volume_m3 * trading_cfg.import_cost_per_m3
+    # freight_per_m3 (issue #222): the winning hub's own rate from
+    # hubs.hub_pricing; None keeps the tool-wide import_cost_per_m3.
+    freight = trading_cfg.import_cost_per_m3 if freight_per_m3 is None else freight_per_m3
+    return jita_sell * (1 + trading_cfg.jita_buy_broker_fee) + volume_m3 * freight
 
 
 def mineral_type_ids_for(candidates: list[OreCandidate]) -> list[int]:
@@ -78,7 +82,9 @@ def _decision(active: bool, have_data: bool, profit: Optional[float], margin: Op
 def evaluate_ore_item(candidate: OreCandidate, active: bool,
                        jita_stats: Optional[OrderStats], mineral_stats_by_id: dict[int, OrderStats],
                        trading_cfg: TradingConfig = TRADING_CONFIG,
-                       refining_cfg: RefiningConfig = REFINING_CONFIG) -> OreShortlistRow:
+                       refining_cfg: RefiningConfig = REFINING_CONFIG,
+                       hub_region_id: Optional[int] = None,
+                       freight_per_m3: Optional[float] = None) -> OreShortlistRow:
     """Pure - `jita_stats`/`mineral_stats_by_id` are pre-fetched by the caller
     (see evaluate_ore_shortlist), no network calls here."""
     portion_size = storage.get_portion_size(candidate.type_id)
@@ -91,9 +97,10 @@ def evaluate_ore_item(candidate: OreCandidate, active: bool,
             active=active, volume_m3=candidate.volume_m3, landed_cost=None, yield_pct=None, mineral_value=None,
             refining_tax=None, net_sell=None, sell_listed_qty=sell_listed_qty, profit_per_unit=None, margin=None,
             profit_per_m3=None, decision=_decision(active, False, None, None, trading_cfg),
+            hub_region_id=hub_region_id,
         )
 
-    unit_landed_cost = landed_cost_per_unit(jita_sell, candidate.volume_m3, trading_cfg)
+    unit_landed_cost = landed_cost_per_unit(jita_sell, candidate.volume_m3, trading_cfg, freight_per_m3)
     landed_cost_per_portion = unit_landed_cost * portion_size
 
     yield_pct = ore_ice_yield(refining_cfg, candidate.family)
@@ -114,7 +121,7 @@ def evaluate_ore_item(candidate: OreCandidate, active: bool,
             active=active, volume_m3=candidate.volume_m3, landed_cost=unit_landed_cost, yield_pct=yield_pct,
             mineral_value=None, refining_tax=None, net_sell=None, sell_listed_qty=sell_listed_qty,
             profit_per_unit=None, margin=None, profit_per_m3=None,
-            decision=_decision(active, False, None, None, trading_cfg),
+            decision=_decision(active, False, None, None, trading_cfg), hub_region_id=hub_region_id,
         )
 
     refining_tax = mineral_value * refining_cfg.refining_tax_rate
@@ -137,16 +144,21 @@ def evaluate_ore_item(candidate: OreCandidate, active: bool,
         active=active, volume_m3=candidate.volume_m3, landed_cost=unit_landed_cost, yield_pct=yield_pct,
         mineral_value=mineral_value, refining_tax=refining_tax, net_sell=net_sell,
         sell_listed_qty=sell_listed_qty, profit_per_unit=profit_per_unit, margin=margin,
-        profit_per_m3=profit_per_m3, decision=decision,
+        profit_per_m3=profit_per_m3, decision=decision, hub_region_id=hub_region_id,
     )
 
 
 def evaluate_ore_shortlist(candidates: list[OreCandidate], active_by_id: dict[int, bool],
                             jita_stats_by_id: dict[int, OrderStats], mineral_stats_by_id: dict[int, OrderStats],
                             trading_cfg: TradingConfig = TRADING_CONFIG,
-                            refining_cfg: RefiningConfig = REFINING_CONFIG) -> list[OreShortlistRow]:
+                            refining_cfg: RefiningConfig = REFINING_CONFIG,
+                            hub_by_type: Optional[dict[int, int]] = None,
+                            freight_by_type: Optional[dict[int, float]] = None) -> list[OreShortlistRow]:
+    hub_by_type = hub_by_type or {}
+    freight_by_type = freight_by_type or {}
     return [
         evaluate_ore_item(c, active_by_id.get(c.type_id, True), jita_stats_by_id.get(c.type_id),
-                           mineral_stats_by_id, trading_cfg, refining_cfg)
+                           mineral_stats_by_id, trading_cfg, refining_cfg,
+                           hub_by_type.get(c.type_id), freight_by_type.get(c.type_id))
         for c in candidates
     ]

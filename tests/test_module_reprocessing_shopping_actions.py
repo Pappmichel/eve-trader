@@ -363,3 +363,37 @@ def test_optimize_prices_ore_and_minerals_at_the_input_hub_not_trading_config(mo
     _optimize((cfg, trading_cfg, refining_cfg), [{"type_id": TRIT, "name": "Tritanium", "required_qty": 1000}])
     regions = {region for region, _ids in esi}
     assert regions == {10000032, 10000030}
+
+
+# ------------------------------------------------- All hubs (GitHub issue #222)
+def test_optimize_all_hubs_prices_inputs_at_the_cheapest_landed_hub(monkeypatch, sde, candidates, cfgs):
+    jita, amarr = 10000002, 10000043
+    ore_stat = lambda p: OrderStats(sell_percentile=p, sell_volume=1e6, buy_percentile=None, buy_volume=0.0)
+    books = {
+        jita: {VELDSPAR: ore_stat(10.0), TRIT: ore_stat(6.0), AUTOCANNON: ore_stat(60.0)},
+        amarr: {VELDSPAR: ore_stat(9.0), TRIT: ore_stat(7.0)},
+    }
+    calls = []
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            pass
+
+        def region_order_stats_bulk(self, region_id, type_ids, **kw):
+            calls.append((region_id, list(type_ids)))
+            return {t: books.get(region_id, {})[t] for t in type_ids if t in books.get(region_id, {})}
+
+    monkeypatch.setattr(actions, "ESIClient", _Client)
+    monkeypatch.setattr(actions, "TokenManager", lambda *a, **kw: None)
+    cfg, trading_cfg, refining_cfg = cfgs
+    cfg.input_hub_region_id = 0
+    trading_cfg.hub_freight_cost_per_m3 = {str(amarr): 1.0}  # Amarr ore: 9.0 + 0.15 = 9.15 < Jita 10.0
+
+    plan = _optimize(cfgs, [{"type_id": TRIT, "name": "Tritanium", "required_qty": 4150}])
+
+    ore = next(p for p in plan["reprocess_purchases"] if p["category"] == "ore")
+    assert (ore["hub_region_id"], ore["hub_name"]) == (amarr, "Amarr")
+    assert ore["landed_cost_per_unit"] == pytest.approx(9.15)
+    assert all(region != 0 for region, _ in calls)
+    # Modules still come from the single purchase region (Jita), never an all-hub pass.
+    assert [ids for region, ids in calls if AUTOCANNON in ids] == [[AUTOCANNON]]

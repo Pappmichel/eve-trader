@@ -224,6 +224,7 @@ def optimize_shopping_list(requirements: list[MineralRequirement], ore_options: 
             portions=portions[i], units=units, volume_m3=units * ore.volume_m3,
             landed_cost_per_unit=ore.landed_cost_per_unit,
             total_cost=units * ore.landed_cost_per_unit,
+            hub_region_id=ore.hub_region_id,
         ))
     ore_purchases.sort(key=lambda p: -p.total_cost)
 
@@ -241,6 +242,7 @@ def optimize_shopping_list(requirements: list[MineralRequirement], ore_options: 
             landed_cost_per_unit=direct_price[mineral_id],
             total_cost=quantity * direct_price[mineral_id],
             source=mineral_options[mineral_id].source if mineral_id in mineral_options else None,
+            hub_region_id=mineral_options[mineral_id].hub_region_id if mineral_id in mineral_options else None,
         ))
     direct_purchases.sort(key=lambda p: -p.total_cost)
 

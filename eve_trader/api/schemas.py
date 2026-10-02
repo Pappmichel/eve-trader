@@ -455,6 +455,8 @@ class OreShortlistRow(_Base):
     margin: Optional[float]
     profit_per_m3: Optional[float]
     decision: str
+    hub_region_id: Optional[int] = None
+    hub_name: Optional[str] = None
 
 
 class ReprocessingQuoteRow(_Base):
@@ -509,6 +511,8 @@ class OrePurchase(_Base):
     volume_m3: float
     landed_cost_per_unit: float
     total_cost: float
+    hub_region_id: Optional[int] = None
+    hub_name: Optional[str] = None
 
 
 class DirectMineralPurchase(_Base):
@@ -524,6 +528,7 @@ class DirectMineralPurchase(_Base):
     # silently dropping it before it ever reached the frontend, which then
     # fell back to showing "-" for every row.
     source: Optional[str] = None
+    hub_region_id: Optional[int] = None
 
 
 class MineralCoverage(_Base):
@@ -975,6 +980,8 @@ class ReprocessPurchase(_Base):
     volume_m3: float
     landed_cost_per_unit: float
     total_cost: float
+    hub_region_id: Optional[int] = None
+    hub_name: Optional[str] = None
 
 
 class ReprocessMineralCoverage(_Base):

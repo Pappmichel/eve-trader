@@ -5482,8 +5482,9 @@ def save_ore_shortlist_snapshot(rows: list[tuple], run_ts: str) -> None:
         conn.executemany(
             "INSERT INTO ore_shortlist_snapshot (run_ts, item_id, item, family, is_ice, active, volume_m3, "
             "landed_cost, yield_pct, mineral_value, refining_tax, net_sell, sell_listed_qty, profit_per_unit, "
-            "margin, profit_per_m3, decision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            [(run_ts, *row) for row in rows],
+            "margin, profit_per_m3, decision, hub_region_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            # rows without hub_region_id (older callers) store NULL.
+            [(run_ts, *row, *([None] * (17 - len(row)))) for row in rows],
         )
 
 

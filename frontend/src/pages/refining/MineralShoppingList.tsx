@@ -13,10 +13,15 @@ import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
 import { isk, qty } from '../../format'
+import { ALL_HUBS, hubLabel } from '../../tradingHubs'
 
 export default function MineralShoppingList() {
   const { data: minerals } = useQuery({ queryKey: ['refining', 'refinable-minerals'], queryFn: refiningApi.refinableMinerals })
   const { data: saved } = useQuery({ queryKey: ['refining', 'mineral-requirements'], queryFn: refiningApi.mineralRequirements })
+
+  const { data: settings } = useQuery({ queryKey: ['refining', 'settings'], queryFn: refiningApi.settings })
+  const allHubs = settings?.hub_region_id === ALL_HUBS
+  const hub = hubLabel(settings?.hub_region_id)
 
   const [rows, setRows] = useState<MineralRequirement[]>([])
   useEffect(() => { if (saved) setRows(saved) }, [saved])
@@ -31,7 +36,7 @@ export default function MineralShoppingList() {
   // Solved from the on-screen list rather than the saved one, so the button
   // always reflects what the user is looking at - no "save first" step.
   const optimize = useAction('Optimize', (r: MineralRequirement[]) => refiningApi.optimizeShoppingList(r), [],
-    { tier: 'live', effect: 'Solves the buy/refine mix with current Jita prices (cached with live fallback).' })
+    { tier: 'live', effect: 'Solves the buy/refine mix with current hub prices (cached with live fallback).' })
 
   // GitHub issue #94: manual, one-directional pull of Production's
   // already-computed buy-list shortfall - reads GET /api/production/plan
@@ -95,14 +100,15 @@ export default function MineralShoppingList() {
   ], [])
 
   const oreColumns = useMemo<ColumnDef<OrePurchase, any>[]>(() => [
-    { header: 'Buy in Jita', accessorKey: 'item', size: 220 },
+    { header: allHubs ? 'Buy' : `Buy in ${hub}`, accessorKey: 'item', size: 220 },
+    ...(allHubs ? [{ header: 'Best hub', accessorKey: 'hub_name', size: 100, cell: (i: any) => i.getValue() ?? '–' }] : []),
     { header: 'Family', accessorKey: 'family', size: 130 },
     { header: 'Units', accessorKey: 'units', size: 110, cell: (i) => qty(i.getValue()) },
     { header: 'Portions', accessorKey: 'portions', size: 100, cell: (i) => qty(i.getValue()) },
     { header: 'Volume (m3)', accessorKey: 'volume_m3', size: 120, cell: (i) => qty(i.getValue()) },
     { header: 'Landed / Unit', accessorKey: 'landed_cost_per_unit', size: 130, cell: (i) => isk(i.getValue()) },
     { header: 'Total Cost', accessorKey: 'total_cost', size: 140, cell: (i) => isk(i.getValue()) },
-  ], [])
+  ], [allHubs, hub])
 
   const directColumns = useMemo<ColumnDef<DirectMineralPurchase, any>[]>(() => [
     { header: 'Buy Directly', accessorKey: 'name', size: 220 },
@@ -133,7 +139,7 @@ export default function MineralShoppingList() {
     <Stack>
       <HintCard>
         Enter how many of each mineral you need. The optimizer finds the cheapest mix of buy-and-refine vs.
-        buying outright, using landed Jita prices and your Settings' refining yield.
+        buying outright, using landed prices at the configured hub and your Settings' refining yield.
       </HintCard>
 
       <Group align="flex-end">

@@ -13,7 +13,7 @@ from ...actions import ActionError
 from ...refining import actions
 from ...refining.config import REFINING_CONFIG
 from ...refining.constants import implant_options, rig_options, structure_options
-from ... import storage
+from ... import hubs, storage
 
 router = APIRouter()
 
@@ -29,7 +29,13 @@ def _wrap(fn, **kwargs):
 @router.get("/shortlist/snapshot", response_model=list[schemas.OreShortlistRow])
 def get_ore_shortlist_snapshot():
     df = storage.latest_ore_snapshot()
-    return [schemas.OreShortlistRow(**r) for r in schemas.records(df)]
+    rows = []
+    for r in schemas.records(df):
+        if r.get("hub_region_id") is not None:
+            r["hub_region_id"] = int(r["hub_region_id"])
+            r["hub_name"] = hubs.hub_name(r["hub_region_id"])
+        rows.append(schemas.OreShortlistRow(**r))
+    return rows
 
 
 @router.get("/shortlist/items", response_model=list[schemas.OreShortlistItem])

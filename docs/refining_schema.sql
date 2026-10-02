@@ -109,6 +109,8 @@ CREATE TABLE IF NOT EXISTS ore_shortlist_snapshot (
     profit_per_m3 DOUBLE PRECISION,
     decision TEXT NOT NULL
 );
+-- GitHub issue #222: the hub each row was priced at (the winning hub in All-hubs mode).
+ALTER TABLE ore_shortlist_snapshot ADD COLUMN IF NOT EXISTS hub_region_id BIGINT;
 CREATE INDEX IF NOT EXISTS idx_ore_shortlist_snapshot_tenant ON ore_shortlist_snapshot (tenant_id);
 ALTER TABLE ore_shortlist_snapshot ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON ore_shortlist_snapshot;

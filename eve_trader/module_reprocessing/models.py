@@ -106,6 +106,7 @@ class ReprocessOption:
     portion_size: int
     landed_cost_per_unit: float
     yield_per_portion: dict[int, int] = field(default_factory=dict)
+    hub_region_id: Optional[int] = None  # hub it was priced at (issue #222)
 
     @property
     def landed_cost_per_portion(self) -> float:
@@ -124,6 +125,7 @@ class MineralOption:
     name: str
     landed_cost_per_unit: Optional[float]
     source: Optional[str] = None
+    hub_region_id: Optional[int] = None
 
 
 @dataclass
@@ -140,6 +142,7 @@ class ReprocessPurchase:
     volume_m3: float          # total haul volume for `units`
     landed_cost_per_unit: float
     total_cost: float
+    hub_region_id: Optional[int] = None
 
 
 @dataclass
@@ -152,6 +155,7 @@ class DirectMineralPurchase:
     landed_cost_per_unit: float
     total_cost: float
     source: Optional[str] = None
+    hub_region_id: Optional[int] = None
 
 
 @dataclass

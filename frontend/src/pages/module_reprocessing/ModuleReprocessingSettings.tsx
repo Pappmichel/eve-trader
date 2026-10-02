@@ -67,7 +67,7 @@ export default function ModuleReprocessingSettings() {
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Ore &amp; Mineral Inputs (Shopping List)</Title>
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <HubSelect label="Input market hub" description="Where ore/ice and minerals are priced (independent of Trading's)"
-          value={form.input_hub_region_id} onChange={(v) => set('input_hub_region_id', v)} />
+          allowAll value={form.input_hub_region_id} onChange={(v) => set('input_hub_region_id', v)} />
       </SimpleGrid>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Shortlist Size</Title>

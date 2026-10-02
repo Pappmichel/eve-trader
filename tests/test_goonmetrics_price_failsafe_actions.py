@@ -85,8 +85,12 @@ def test_refresh_ore_shortlist_wraps_jita_order_book_outage(monkeypatch):
     from eve_trader.actions import ActionError
     from eve_trader.esi_client import ESIError
 
+    from eve_trader.refining.models import OreCandidate
+
     trading_cfg = TradingConfig(structure_id=1000, structure_market_slug="my-structure")
-    monkeypatch.setattr(refining_actions, "build_ore_candidate_universe", lambda: [])
+    # hub_pricing skips the ESI call for an empty id list, so one candidate is needed.
+    monkeypatch.setattr(refining_actions, "build_ore_candidate_universe",
+                        lambda: [OreCandidate(34, "Test Ore", "Veldspar", False, 0.1)])
     monkeypatch.setattr(storage, "load_ore_shortlist", lambda: [(34, "Test Ore", "Veldspar", False, True)])
     monkeypatch.setattr(refining_actions, "_seller_roles", lambda tm: [])
 
