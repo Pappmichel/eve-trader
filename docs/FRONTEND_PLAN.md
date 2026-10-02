@@ -40,15 +40,17 @@ Effort: S = up to half a day, M = 1-2 days, L = 3+ days.
 | B.11 dashboard tiles | open, needs a new Production `/kpis` endpoint |
 | B.12 auto refresh, B.13 priority drag and drop | deferred (low benefit / needs schema); re-checked 2026-10-02, still right |
 
-Real data is available on the test server (92.5.11.10, a copy of the old
-production database; see `.ssh-local/server-info.txt`). Checked there so far:
-history freshness, shortlist refresh, best-hub pricing against live ESI and
-the cache headers. Not yet clicked through with a logged-in session: the
-converted pages (especially Skills, Character Info, Contacts/Notifications,
-Doctrine skill check), the Spotlight commands outside Trading, the new hub
-settings and "Best hub" columns, and the Excel export in real Excel. Browser
-checks so far used the built frontend with a mocked API (EVE SSO login can't
-be automated here).
+Clicked through with a logged-in session on the test server (2026-10-03,
+`dev` at 359131f, Playwright with a session cookie minted on that server):
+all 64 pages load without console errors or failed API calls, except
+Production's Invention and Logistics tabs right after a backend restart -
+their build list lives in memory only, so they answer 400 "No build list
+computed yet"; Logistics already showed a hint, Invention now does too.
+Slow pages there (Stock Targets' stock value, Station Trading shortlist,
+Doctrine shopping list, shortlist trends: 7-14 s) are mostly the test VM
+(1 vCPU, 1 GB): on production the trends take 1.5 s and the stock value
+1 s warm, about 10 s on the first call while prices are fetched. Still not
+checked: the Excel export in real Excel.
 
 ## Guidelines
 
@@ -369,11 +371,12 @@ land in the center is open.
 
 Phases 0-5 and the B.0 findings are done (see Status). Next, as of
 2026-10-02:
-1. Click through against real data with a logged-in session on the test
-   server (see Status), including the new hub settings.
-2. B.2 sparklines and B.10 charts (unblocked; history is now refreshed and
-   available for every hub).
-3. B.11 dashboard tiles.
+1. B.12 as a "new data available" notice: the scheduler runs again since
+   2026-10-02, so data now changes without the user's own actions.
+2. B.2 sparklines (load only the visible rows' history) and B.10 charts
+   (offer only ranges the stored history covers).
+3. B.11 dashboard tiles (Production needs a lean `/kpis`; read Portfolio
+   from the stored snapshot, not `/overview`).
 
 Original order:
 
