@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { Badge, Button, Card, Group, Stack, Text, Title } from '@mantine/core'
 import { IconArrowRight } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
@@ -12,13 +13,16 @@ import { hasAnyToolGrant } from '../toolKeys'
 // an empty page during the initial load. `toolKey` may be a list (a card that
 // fronts several grants, e.g. the Character Management hub): shown if the
 // session holds any of them.
-export function ToolCard({ tools, toolKey, to, title, description, badge }: {
+export function ToolCard({ tools, toolKey, to, title, description, badge, kpi }: {
   tools: string[] | undefined
   toolKey: string | readonly string[]
   to: string
   title: string
   description: string
   badge?: string
+  // Optional compact KPI line (see LandingTiles.tsx); only mounted, and so
+  // only fetched, when this card is shown.
+  kpi?: ReactNode
 }) {
   const keys = typeof toolKey === 'string' ? [toolKey] : toolKey
   if (!hasAnyToolGrant(tools, keys)) return null
@@ -30,6 +34,7 @@ export function ToolCard({ tools, toolKey, to, title, description, badge }: {
           {badge && <Badge color="warn" variant="filled">{badge}</Badge>}
         </Group>
         <Text c="dimmed" size="sm">{description}</Text>
+        {kpi}
         <Button component={Link} to={to} mt="sm" rightSection={<IconArrowRight size={14} />}>Open</Button>
       </Stack>
     </Card>

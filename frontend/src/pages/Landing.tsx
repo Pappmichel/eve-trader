@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 
 import { authApi, gateApi } from '../api/client'
 import { NotificationBell } from '../components/NotificationBell'
+import { PortfolioTile, ProductionTile, TradingTile } from '../components/LandingTiles'
 import { ToolCard } from '../components/ToolCard'
 import { useAction } from '../hooks/useAction'
 import { openGateAccessConfirmModal } from '../roleAccessDescriptions'
@@ -100,9 +101,9 @@ export default function Landing() {
       )}
 
       <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }} spacing="md">
-        <ToolCard tools={tools} toolKey="trading" to="/trading" title="Trading"
+        <ToolCard tools={tools} toolKey="trading" to="/trading" title="Trading" kpi={gateStatus && <TradingTile />}
           description="C-J import trading: candidate search, shortlist, margins, trade reconciliation." />
-        <ToolCard tools={tools} toolKey="production" to="/production" title="Production"
+        <ToolCard tools={tools} toolKey="production" to="/production" title="Production" kpi={gateStatus && <ProductionTile />}
           description="Stock targets, buy-vs-build decisions, buy/build lists for T2 manufacturing." />
         <ToolCard tools={tools} toolKey="doctrine" to="/doctrine" title="Doctrine"
           description="Fleet doctrine fittings, contract validation against C-J stock contracts, stockpile tracking." />
@@ -117,7 +118,7 @@ export default function Landing() {
       </SimpleGrid>
 
       <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }} spacing="md" mt="md">
-        <ToolCard tools={tools} toolKey="portfolio" to="/portfolio" title="Portfolio Overview"
+        <ToolCard tools={tools} toolKey="portfolio" to="/portfolio" title="Portfolio Overview" kpi={gateStatus && <PortfolioTile />}
           description="Combined read-only snapshot of Trading realized profit and Production stock value." />
         <ToolCard tools={tools} toolKey={CHARACTER_MANAGEMENT_TOOL_KEYS} to="/character-management" title="Character Management"
           description="Your EVE characters: ESI access and sharing, with more character tools to come." />
