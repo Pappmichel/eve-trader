@@ -53,6 +53,7 @@ class OreShortlistRow:
     margin: Optional[float]
     profit_per_m3: Optional[float]
     decision: str
+    hub_region_id: Optional[int] = None  # hub the ore was priced at (issue #222; the winning hub in All-hubs mode)
 
 
 # ------------------------------------------- Mineral Shopping List (issue #93)
@@ -84,6 +85,7 @@ class OreOption:
     portion_size: int
     landed_cost_per_unit: float
     yield_per_portion: dict[int, int] = field(default_factory=dict)
+    hub_region_id: Optional[int] = None
 
     @property
     def landed_cost_per_portion(self) -> float:
@@ -102,6 +104,7 @@ class MineralOption:
     name: str
     landed_cost_per_unit: Optional[float]
     source: Optional[str] = None
+    hub_region_id: Optional[int] = None  # set when source is a trade hub (not "Home")
 
 
 @dataclass
@@ -117,6 +120,7 @@ class OrePurchase:
     volume_m3: float          # total haul volume for `units`
     landed_cost_per_unit: float
     total_cost: float
+    hub_region_id: Optional[int] = None
 
 
 @dataclass
@@ -130,6 +134,7 @@ class DirectMineralPurchase:
     landed_cost_per_unit: float
     total_cost: float
     source: Optional[str] = None
+    hub_region_id: Optional[int] = None
 
 
 @dataclass

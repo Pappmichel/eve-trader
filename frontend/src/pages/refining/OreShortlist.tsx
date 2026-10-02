@@ -10,7 +10,7 @@ import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
 import { isk, pct, qty } from '../../format'
-import { hubLabel } from '../../tradingHubs'
+import { ALL_HUBS, hubLabel } from '../../tradingHubs'
 
 const ALL_DECISIONS = ['Inactive', 'No market data', 'Skip', 'Import']
 const DECISION_COLOR: Record<string, string> = {
@@ -27,6 +27,7 @@ export default function OreShortlist() {
 
   const { data: settings } = useQuery({ queryKey: ['refining', 'settings'], queryFn: refiningApi.settings })
   const hub = hubLabel(settings?.hub_region_id)
+  const allHubs = settings?.hub_region_id === ALL_HUBS
 
   // Reversible (activate below undoes it), so no confirmation prompt - same
   // "not truly destructive" reasoning already applied elsewhere in this app
@@ -72,6 +73,7 @@ export default function OreShortlist() {
     { header: `Cost (${hub})`, accessorKey: 'landed_cost', size: 120, cell: (i) => isk(i.getValue()) },
     { header: 'Mineral Value (C-J)', accessorKey: 'net_sell', size: 150, cell: (i) => isk(i.getValue()) },
     { header: 'Refining Tax', accessorKey: 'refining_tax', size: 110, cell: (i) => isk(i.getValue()) },
+    ...(allHubs ? [{ header: 'Best hub', accessorKey: 'hub_name', size: 100, cell: (i: any) => i.getValue() ?? '–' }] : []),
     { header: `${hub} Listed Qty`, accessorKey: 'sell_listed_qty', size: 130, cell: (i) => qty(i.getValue()) },
     {
       header: '', id: 'actions', size: 50, enableSorting: false,
@@ -95,7 +97,7 @@ export default function OreShortlist() {
       },
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  ], [activate, deactivate, hub])
+  ], [activate, deactivate, hub, allHubs])
 
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
   if (!data || data.length === 0) {

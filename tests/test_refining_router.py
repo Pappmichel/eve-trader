@@ -149,3 +149,26 @@ def test_quote_reprocessing_action_error_maps_to_400(monkeypatch):
 
     assert resp.status_code == 400
     assert "Paste is empty" in resp.json()["detail"]
+
+
+def test_get_shortlist_snapshot_adds_the_hub_name(monkeypatch):
+    import pandas as pd
+    from eve_trader import storage
+
+    df = pd.DataFrame([{
+        "item_id": 34, "item": "Compressed Veldspar", "family": "Veldspar", "is_ice": False, "active": True,
+        "volume_m3": 0.15, "landed_cost": 9.15, "yield_pct": 0.5, "mineral_value": None, "refining_tax": None,
+        "net_sell": None, "sell_listed_qty": 1.0, "profit_per_unit": None, "margin": None,
+        "profit_per_m3": None, "decision": "No market data", "hub_region_id": 10000043.0,
+    }, {
+        "item_id": 35, "item": "Other", "family": "Veldspar", "is_ice": False, "active": True,
+        "volume_m3": 0.15, "landed_cost": None, "yield_pct": None, "mineral_value": None, "refining_tax": None,
+        "net_sell": None, "sell_listed_qty": None, "profit_per_unit": None, "margin": None,
+        "profit_per_m3": None, "decision": "No market data", "hub_region_id": None,
+    }])
+    monkeypatch.setattr(storage, "latest_ore_snapshot", lambda: df)
+
+    body = client.get("/api/refining/shortlist/snapshot").json()
+
+    assert (body[0]["hub_region_id"], body[0]["hub_name"]) == (10000043, "Amarr")
+    assert body[1]["hub_region_id"] is None and body[1]["hub_name"] is None

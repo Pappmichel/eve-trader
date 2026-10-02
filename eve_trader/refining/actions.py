@@ -15,6 +15,8 @@ from ..actions import ActionError, list_shared_trading_characters, structure_boo
 from ..auth import TokenManager
 from ..config import OAUTH_CONFIG, TRADING_CONFIG, ConfigError, OAuthConfig, TradingConfig, save_tenant_config_overrides
 from ..esi_client import ESIClient, ESIError
+from .. import hubs
+from .. import hubs
 from ..goonmetrics_client import GoonmetricsClient
 from ..production.config import PRODUCTION_CONFIG, ProductionConfig
 from ..production.engine import invalidate_discover_cache, invalidate_ship_margin_cache
@@ -104,7 +106,13 @@ def do_refresh_ore_shortlist(trading_cfg: TradingConfig = TRADING_CONFIG,
         # a transport-level failure (ESI down) is not, and without this
         # would 500 Refresh after the shortlist was already loaded. Same
         # wrap do_optimize_mineral_shopping_list already has.
-        jita_stats_by_id = client.region_order_stats_bulk(refining_cfg.hub_region_id, ore_type_ids)
+        # ALL_HUBS (issue #222): hub_pricing picks each ore's cheapest
+        # landed hub; region 0 never reaches ESI.
+        ore_pricing = hubs.hub_pricing(
+            client, refining_cfg.hub_region_id, ore_type_ids,
+            {c.type_id: c.volume_m3 for c in tracked_candidates},
+            trading_cfg.jita_buy_broker_fee, trading_cfg.import_cost_per_m3, trading_cfg)
+        jita_stats_by_id = ore_pricing.stats
     except (ESIError, requests.RequestException) as e:
         raise ActionError(f"Could not fetch Jita's order book ({e}).") from e
 
@@ -122,7 +130,8 @@ def do_refresh_ore_shortlist(trading_cfg: TradingConfig = TRADING_CONFIG,
                            f"Does the seller character still have docking access?") from e
 
     rows = evaluate_ore_shortlist(tracked_candidates, active_by_id, jita_stats_by_id, mineral_stats_by_id,
-                                   trading_cfg, refining_cfg)
+                                   trading_cfg, refining_cfg,
+                                   ore_pricing.hub_by_type, ore_pricing.freight_by_type)
     run_ts = now_ts()
     storage.save_ore_shortlist_snapshot([_row_to_tuple(r) for r in rows], run_ts)
     storage.set_esi_sync_time("refining", run_ts)
@@ -134,7 +143,7 @@ def do_refresh_ore_shortlist(trading_cfg: TradingConfig = TRADING_CONFIG,
 def _row_to_tuple(r: OreShortlistRow) -> tuple:
     return (r.item_id, r.item, r.family, r.is_ice, r.active, r.volume_m3, r.landed_cost, r.yield_pct,
             r.mineral_value, r.refining_tax, r.net_sell, r.sell_listed_qty, r.profit_per_unit, r.margin,
-            r.profit_per_m3, r.decision)
+            r.profit_per_m3, r.decision, r.hub_region_id)
 
 
 def do_deactivate_ore_shortlist_items(item_ids: list[int]) -> dict:
@@ -325,14 +334,15 @@ def do_save_mineral_requirements(requirements: list[dict]) -> dict:
 
 
 def _ore_option(candidate, jita_stats, refining_cfg: RefiningConfig,
-                 trading_cfg: TradingConfig) -> Optional[OreOption]:
+                 trading_cfg: TradingConfig, hub_region_id: Optional[int] = None,
+                 freight_per_m3: Optional[float] = None) -> Optional[OreOption]:
     """Prices one compressed ore/ice candidate and pre-refines one whole
     portion of it, producing a single LP column. Returns None when the type
     can't be used at all (not listed in Jita right now, no SDE portion size,
     or nothing to refine into)."""
     portion_size = storage.get_portion_size(candidate.type_id)
     jita_sell = jita_stats.sell_percentile if jita_stats else None
-    unit_cost = landed_cost_per_unit(jita_sell, candidate.volume_m3, trading_cfg)
+    unit_cost = landed_cost_per_unit(jita_sell, candidate.volume_m3, trading_cfg, freight_per_m3)
     if unit_cost is None or not portion_size:
         return None
     # The structure's reprocessing tax is taken out of the refined materials
@@ -344,7 +354,8 @@ def _ore_option(candidate, jita_stats, refining_cfg: RefiningConfig,
         return None
     return OreOption(type_id=candidate.type_id, item=candidate.item, family=candidate.family,
                       is_ice=candidate.is_ice, volume_m3=candidate.volume_m3, portion_size=portion_size,
-                      landed_cost_per_unit=unit_cost, yield_per_portion=yield_per_portion)
+                      landed_cost_per_unit=unit_cost, yield_per_portion=yield_per_portion,
+                      hub_region_id=hub_region_id)
 
 
 def do_optimize_mineral_shopping_list(requirements: Optional[list[dict]] = None,
@@ -396,8 +407,17 @@ def do_optimize_mineral_shopping_list(requirements: Optional[list[dict]] = None,
     client = ESIClient(trading_cfg, TokenManager(oauth_cfg))
     ore_ids = [c.type_id for c in candidates]
     mineral_ids = [r.type_id for r in wanted]
+    volumes = {c.type_id: c.volume_m3 for c in candidates}
+    for req in wanted:
+        sde_row = storage.get_sde_type(req.type_id)
+        volumes.setdefault(req.type_id, sde_row[3] if sde_row and sde_row[3] else 0.0)
     try:
-        stats_by_id = client.region_order_stats_bulk(refining_cfg.hub_region_id, sorted(set(ore_ids + mineral_ids)))
+        # ALL_HUBS (issue #222): each ore/mineral is priced at its own cheapest
+        # landed hub; region 0 never reaches ESI.
+        pricing = hubs.hub_pricing(
+            client, refining_cfg.hub_region_id, sorted(set(ore_ids + mineral_ids)), volumes,
+            trading_cfg.jita_buy_broker_fee, trading_cfg.import_cost_per_m3, trading_cfg)
+        stats_by_id = pricing.stats
     except (ESIError, requests.RequestException) as e:
         # region_order_stats_bulk swallows a per-type_id ESI *error response*
         # but not a transport-level failure (ESI down, no route out) - that
@@ -405,7 +425,9 @@ def do_optimize_mineral_shopping_list(requirements: Optional[list[dict]] = None,
         # a bare 500 instead of the app's one user-facing error type.
         raise ActionError(f"Could not fetch Jita's order book ({e}).") from e
 
-    ore_options = [o for o in (_ore_option(c, stats_by_id.get(c.type_id), refining_cfg, trading_cfg)
+    ore_options = [o for o in (_ore_option(c, stats_by_id.get(c.type_id), refining_cfg, trading_cfg,
+                                           pricing.hub_by_type.get(c.type_id),
+                                           pricing.freight_by_type.get(c.type_id))
                                for c in candidates) if o is not None]
 
     # Best-effort - a Goonmetrics outage shouldn't break the whole shopping
@@ -424,21 +446,24 @@ def do_optimize_mineral_shopping_list(requirements: Optional[list[dict]] = None,
         sde_row = storage.get_sde_type(req.type_id)
         volume = sde_row[3] if sde_row and sde_row[3] else 0.0
         stats = stats_by_id.get(req.type_id)
-        jita_cost = landed_cost_per_unit(stats.sell_percentile if stats else None, volume, trading_cfg)
+        jita_cost = landed_cost_per_unit(stats.sell_percentile if stats else None, volume, trading_cfg,
+                                         pricing.freight_by_type.get(req.type_id))
 
         home_quote = home_quotes.get(req.type_id)
         home_cost = (home_quote.sell * (1 + trading_cfg.jita_buy_broker_fee)
                      if home_quote and home_quote.sell > 0 else None)
 
         if home_cost is not None and (jita_cost is None or home_cost < jita_cost):
-            cost, source = home_cost, "Home"
+            cost, source, mineral_hub = home_cost, "Home", None
         elif jita_cost is not None:
-            cost, source = jita_cost, "Jita"
+            mineral_hub = pricing.hub_by_type.get(req.type_id)
+            cost, source = jita_cost, hubs.hub_name(mineral_hub) if mineral_hub is not None else "Jita"
         else:
-            cost, source = None, None
+            cost, source, mineral_hub = None, None, None
 
         mineral_options[req.type_id] = MineralOption(
             type_id=req.type_id, name=req.name, landed_cost_per_unit=cost, source=source,
+            hub_region_id=mineral_hub,
         )
 
     try:
@@ -448,9 +473,13 @@ def do_optimize_mineral_shopping_list(requirements: Optional[list[dict]] = None,
     return _plan_to_dict(plan)
 
 
+def _hub_label(hub_region_id: Optional[int]) -> Optional[str]:
+    return hubs.hub_name(hub_region_id) if hub_region_id is not None else None
+
+
 def _plan_to_dict(plan: ShoppingListPlan) -> dict:
     return {
-        "ore_purchases": [vars(p) for p in plan.ore_purchases],
+        "ore_purchases": [{**vars(p), "hub_name": _hub_label(p.hub_region_id)} for p in plan.ore_purchases],
         "direct_purchases": [vars(p) for p in plan.direct_purchases],
         "coverage": [vars(c) for c in plan.coverage],
         "ore_cost": plan.ore_cost, "direct_cost": plan.direct_cost, "total_cost": plan.total_cost,

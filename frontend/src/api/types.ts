@@ -1171,6 +1171,9 @@ export interface OreShortlistRow {
   margin: number | null
   profit_per_m3: number | null
   decision: string
+  // Hub the ore was priced at; the winning hub when the tool is set to "All hubs" (GitHub issue #222).
+  hub_region_id: number | null
+  hub_name: string | null
 }
 
 export interface RefinableMineral {
@@ -1194,6 +1197,8 @@ export interface OrePurchase {
   volume_m3: number
   landed_cost_per_unit: number
   total_cost: number
+  hub_region_id: number | null
+  hub_name: string | null
 }
 
 export interface DirectMineralPurchase {
@@ -1202,7 +1207,9 @@ export interface DirectMineralPurchase {
   quantity: number
   landed_cost_per_unit: number
   total_cost: number
-  source: 'Jita' | 'Home' | null
+  // "Home" or the name of the trade hub it is bought at (e.g. "Jita", "Amarr").
+  source: string | null
+  hub_region_id: number | null
 }
 
 export interface MineralCoverage {
@@ -1397,6 +1404,8 @@ export interface ReprocessPurchase {
   volume_m3: number
   landed_cost_per_unit: number
   total_cost: number
+  hub_region_id: number | null
+  hub_name: string | null
 }
 
 export interface ReprocessMineralCoverage {
