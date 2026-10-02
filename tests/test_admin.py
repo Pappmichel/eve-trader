@@ -188,7 +188,7 @@ def test_list_users_with_grants_excludes_orphaned_tool_grants_from_a_stale_tenan
     real_tenant_id = result["tenant_id"]
     stale_tenant_id = storage.create_tenant("Some other, unrelated tenant")
 
-    storage.set_tool_grant(42, "trading", real_tenant_id)  # this character's real, current grant
+    storage.replace_tool_grants(42, ["trading"], real_tenant_id)  # this character's real, current grant
     storage.set_tool_grant(42, "admin", stale_tenant_id)   # orphaned - wrong tenant_id for this character
 
     users = {u["character_id"]: u for u in admin.do_list_users()}
@@ -353,3 +353,42 @@ def test_do_set_structure_resolution_fallback_is_scoped_to_default_tenant_only()
             assert storage.load_tenant_settings("production").get("global_structure_resolution_fallback") is None
     finally:
         admin.do_set_structure_resolution_fallback(False)
+
+
+def test_default_tool_keys_are_everything_but_admin_and_module_reprocessing():
+    from eve_trader import access_gate
+    assert set(access_gate.DEFAULT_TOOL_KEYS) == set(access_gate.ALL_TOOL_KEYS) - {"admin", "module_reprocessing"}
+
+
+def test_do_add_user_grants_the_default_tools(monkeypatch):
+    from eve_trader import access_gate
+    monkeypatch.setattr(ESIClient, "character_search", lambda self, name: 43)
+
+    result = admin.do_add_user("New Pilot")
+
+    users = {u["character_id"]: u for u in admin.do_list_users()}
+    assert sorted(users[43]["tool_keys"]) == sorted(access_gate.DEFAULT_TOOL_KEYS)
+    assert result["tool_keys"] == sorted(access_gate.DEFAULT_TOOL_KEYS)
+
+
+def test_grant_default_tools_is_additive_and_keeps_extra_grants():
+    from eve_trader import access_gate
+    t1 = storage.create_tenant("Admin Pilot")
+    storage.add_tenant_registry_entry(t1, 51, character_name="Admin Pilot")
+    storage.replace_tool_grants(51, ["admin", "module_reprocessing", "trading"], t1)
+    t2 = storage.create_tenant("Plain Pilot")
+    storage.add_tenant_registry_entry(t2, 52, character_name="Plain Pilot")
+    storage.replace_tool_grants(52, sorted(access_gate.DEFAULT_TOOL_KEYS), t2)
+
+    dry = admin.do_grant_default_tools(dry_run=True)
+    assert [c["character_id"] for c in dry["changed"]] == [51]
+    assert "trading" not in dry["changed"][0]["added"]
+    assert sorted({u["character_id"]: u for u in admin.do_list_users()}[51]["tool_keys"]) == sorted(
+        ["admin", "module_reprocessing", "trading"])  # dry run writes nothing
+
+    result = admin.do_grant_default_tools()
+    users = {u["character_id"]: u for u in admin.do_list_users()}
+    assert set(users[51]["tool_keys"]) == set(access_gate.DEFAULT_TOOL_KEYS) | {"admin", "module_reprocessing"}
+    assert sorted(users[52]["tool_keys"]) == sorted(access_gate.DEFAULT_TOOL_KEYS)
+    assert result["unchanged"] == 1 and len(result["changed"]) == 1
+    assert admin.do_grant_default_tools()["changed"] == []

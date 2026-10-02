@@ -72,7 +72,31 @@ def do_add_user(character_name: str) -> dict:
 
     tenant_id = storage.create_tenant(character_name)
     storage.add_tenant_registry_entry(tenant_id, character_id, character_name=character_name)
-    return {"character_id": character_id, "character_name": character_name, "tenant_id": tenant_id}
+    # New users start with the default tool set; the Admin UI can narrow it.
+    tool_keys = sorted(access_gate.DEFAULT_TOOL_KEYS)
+    storage.replace_tool_grants(character_id, tool_keys, tenant_id)
+    return {"character_id": character_id, "character_name": character_name,
+            "tenant_id": tenant_id, "tool_keys": tool_keys}
+
+
+def do_grant_default_tools(dry_run: bool = False) -> dict:
+    """Adds every DEFAULT_TOOL_KEYS grant a registered character is missing.
+    Additive only: grants beyond the defaults (admin, module_reprocessing)
+    are kept, nothing is revoked. Returns what changed per character."""
+    defaults = set(access_gate.DEFAULT_TOOL_KEYS)
+    changed = []
+    unchanged = 0
+    for user in do_list_users():
+        current = set(user["tool_keys"])
+        missing = defaults - current
+        if not missing:
+            unchanged += 1
+            continue
+        if not dry_run:
+            storage.replace_tool_grants(user["character_id"], sorted(current | defaults), user["tenant_id"])
+        changed.append({"character_id": user["character_id"], "character_name": user["character_name"],
+                        "added": sorted(missing)})
+    return {"changed": changed, "unchanged": unchanged, "dry_run": dry_run}
 
 
 def do_remove_user(character_id: int) -> dict:

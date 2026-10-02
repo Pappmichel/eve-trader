@@ -16,7 +16,7 @@ import { useAction } from '../../hooks/useAction'
 import { useBackgroundJob, useBackgroundJobStart } from '../../hooks/useBackgroundJob'
 import { ActionTierIcon, TIER_COPY } from '../../components/ActionTierIcon'
 import { dateTime } from '../../format'
-import { ALL_TOOL_KEYS, ESI_CONSUMING_TOOLS } from '../../toolKeys'
+import { ALL_TOOL_KEYS, DEFAULT_TOOL_KEYS, ESI_CONSUMING_TOOLS } from '../../toolKeys'
 import type {
   AdminTenant, AdminUser, AllowlistCandidate, AllowlistEntry, AllowlistImpact, AccessRequestRow, ErrorLogRow,
 } from '../../api/types'
@@ -339,7 +339,7 @@ function UsersSection() {
   const [characterName, setCharacterName] = useState('')
   const addUser = useAction('Add User', () => adminApi.addUser(characterName),
     [['admin', 'users'], ['admin', 'tenants']],
-    { tier: 'live', effect: 'Resolves the character name live via ESI and creates a new tenant.' })
+    { tier: 'live', effect: 'Resolves the character name live via ESI, creates a new tenant and grants every tool except admin and module_reprocessing.' })
   const removeUser = useAction('Remove User', adminApi.removeUser, [['admin', 'users']])
   const refreshAffiliations = useAction(
     'Refresh affiliations', adminApi.refreshAffiliations, [['admin', 'users']],
@@ -592,9 +592,9 @@ function ApproveRequestModal({ request, opened, onClose }: {
   opened: boolean
   onClose: () => void
 }) {
-  const [toolKeys, setToolKeys] = useState<string[]>([])
+  const [toolKeys, setToolKeys] = useState<string[]>([...DEFAULT_TOOL_KEYS])
   useEffect(() => {
-    if (opened) setToolKeys([])
+    if (opened) setToolKeys([...DEFAULT_TOOL_KEYS])
   }, [opened, request?.character_id])
   const approve = useAction(
     'Approve access request',
@@ -606,6 +606,7 @@ function ApproveRequestModal({ request, opened, onClose }: {
       <Stack>
         <Text size="sm" c="dimmed">
           Creates a new tenant named after this character and grants exactly the tools you tick.
+          Preselected: every tool except admin and module_reprocessing.
         </Text>
         <ToolGrantCheckboxes value={toolKeys} onChange={setToolKeys} />
         <Group justify="flex-end">
