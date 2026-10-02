@@ -5,9 +5,11 @@ import {
   getSortedRowModel,
   getFilteredRowModel,
   flexRender,
+  type Column,
   type ColumnDef,
   type ColumnFiltersState,
   type ColumnOrderState,
+  type ColumnPinningState,
   type ColumnSizingState,
   type FilterFn,
   type Row,
@@ -16,7 +18,7 @@ import {
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon, Stack, CopyButton, HoverCard, Popover, UnstyledButton, Drawer, Badge, Tooltip } from '@mantine/core'
-import { IconSearch, IconDownload, IconColumns, IconX, IconAlertTriangle, IconRefresh, IconCopy, IconCheck, IconChevronUp, IconChevronDown, IconBookmark, IconTrash, IconFilter } from '@tabler/icons-react'
+import { IconSearch, IconDownload, IconColumns, IconX, IconAlertTriangle, IconRefresh, IconCopy, IconCheck, IconChevronUp, IconChevronDown, IconBookmark, IconTrash, IconFilter, IconPin, IconPinFilled } from '@tabler/icons-react'
 import { relativeTime } from '../format'
 import { notify } from '../notify'
 import {
@@ -254,6 +256,37 @@ function loadPersistedVisibility(tableId: string | undefined): VisibilityState {
   }
 }
 
+// Confirmed real request (user feedback on Trading's Shortlist, 2026-10-01):
+// scrolling right to see Market Volume loses sight of the Item column - the
+// user wants to pin a column so it stays put regardless of horizontal scroll.
+// Left-pinning only (no right-pin UI) - that is the actual use case (keep an
+// identifying column, usually the leftmost one, in view), and it keeps the
+// sticky-offset math to one side. Same persistence shape/pattern as
+// columnVisibility above, own localStorage key so the two never collide.
+function loadPersistedPinning(tableId: string | undefined): ColumnPinningState {
+  if (!tableId) return {}
+  try {
+    const raw = localStorage.getItem(`datatable:${tableId}:pinning`)
+    return raw ? JSON.parse(raw) : {}
+  } catch {
+    return {} // corrupt/unavailable storage - fall back to "nothing pinned", never crash the page over this
+  }
+}
+
+// Cumulative left offset (sum of the pinned widths before it) for every
+// column in `pinnedColumns`, in their pinned order - tanstack-table v8.21
+// doesn't ship a getStart()/getAfter() helper (added in a later version), so
+// this is the same sum any caller of one would need to do.
+function pinnedLeftOffsets(pinnedColumns: Column<any, any>[]): Map<string, number> {
+  const offsets = new Map<string, number>()
+  let running = 0
+  for (const col of pinnedColumns) {
+    offsets.set(col.id, running)
+    running += col.getSize()
+  }
+  return offsets
+}
+
 export function DataTable<T>({
   data,
   columns,
@@ -300,6 +333,7 @@ export function DataTable<T>({
   const uid = useId()
   const wrapperRef = useRef<HTMLDivElement | null>(null)
   const filterRef = useRef<HTMLInputElement | null>(null)
+  const [columnPinning, setColumnPinning] = useState<ColumnPinningState>(() => loadPersistedPinning(tableId))
 
   // Ticks every 30s so the relative-time label below ("2m ago" -> "3m ago")
   // stays live without a full data refetch - cheap (one re-render, no
@@ -321,6 +355,7 @@ export function DataTable<T>({
     setColumnOrder(loadColumnOrder(tableId))
     setColumnSizing(loadColumnSizes(tableId))
     setViews(loadViews(tableId))
+    setColumnPinning(loadPersistedPinning(tableId))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tableId])
 
@@ -367,10 +402,19 @@ export function DataTable<T>({
     }
   }, [tableId, columnVisibility])
 
+  useEffect(() => {
+    if (!tableId) return
+    try {
+      localStorage.setItem(`datatable:${tableId}:pinning`, JSON.stringify(columnPinning))
+    } catch {
+      // see the columnVisibility effect above - same reasoning
+    }
+  }, [tableId, columnPinning])
+
   const table = useReactTable({
     data,
     columns,
-    state: { sorting, globalFilter, columnVisibility, columnOrder, columnFilters, columnSizing },
+    state: { sorting, globalFilter, columnVisibility, columnOrder, columnFilters, columnSizing, columnPinning },
     enableColumnResizing: true,
     columnResizeMode: 'onChange',
     onColumnSizingChange: setColumnSizing,
@@ -379,6 +423,8 @@ export function DataTable<T>({
     onSortingChange: setSorting,
     onGlobalFilterChange: setGlobalFilter,
     onColumnVisibilityChange: setColumnVisibility,
+    onColumnPinningChange: setColumnPinning,
+    enableColumnPinning: true,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
@@ -388,8 +434,37 @@ export function DataTable<T>({
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const rows = table.getRowModel().rows
-  const leafColumns = table.getVisibleLeafColumns()
+  // Pinned-left columns first, then the rest - tanstack's own
+  // getVisibleLeafColumns() keeps the user's column *order* (unaffected by
+  // pinning), but this component needs the actual left-to-right render
+  // order once a column is pinned. getLeftLeafColumns()/getCenterLeafColumns()
+  // are unfiltered by visibility (unlike the row-level getLeftVisibleCells()),
+  // so filter them here.
+  const pinnedLeftColumns = table.getLeftLeafColumns().filter((c) => c.getIsVisible())
+  const leafColumns = [...pinnedLeftColumns, ...table.getCenterLeafColumns().filter((c) => c.getIsVisible())]
   const allColumns = table.getAllLeafColumns()
+  const pinnedOffsets = pinnedLeftOffsets(pinnedLeftColumns)
+  const lastPinnedId = pinnedLeftColumns.length > 0 ? pinnedLeftColumns[pinnedLeftColumns.length - 1].id : null
+
+  // Sticky styling for a pinned-left header/cell: opaque background (a
+  // scrolling row's own cells would otherwise show through underneath as the
+  // table scrolls horizontally - Mantine's `striped` alternation is per-row
+  // CSS, not reproduced here, so a pinned column loses the stripe, a small
+  // trade-off for staying put) plus a right-edge shadow on the last pinned
+  // column marking where the pinned area ends.
+  const pinnedCellStyle = (columnId: string, opts?: { header?: boolean }): React.CSSProperties | undefined => {
+    const offset = pinnedOffsets.get(columnId)
+    if (offset === undefined) return undefined
+    return {
+      position: 'sticky', left: offset,
+      // Mantine's own stickyHeader puts sticky-top header cells at z-index 3
+      // (styles.css); a header cell that is both sticky-top AND pinned-left
+      // needs to sit above that, a plain body cell just above unpinned ones.
+      zIndex: opts?.header ? 4 : 2,
+      backgroundColor: 'var(--mantine-color-body)',
+      boxShadow: columnId === lastPinnedId ? '4px 0 4px -2px rgba(0, 0, 0, 0.35)' : undefined,
+    }
+  }
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -458,6 +533,7 @@ export function DataTable<T>({
     setGlobalFilter(view.globalFilter)
     setColumnFilters(view.columnFilters ?? [])
     setColumnSizing(view.columnSizing ?? {})
+    setColumnPinning(view.columnPinning ?? {})
     if (view.extra !== undefined) extraViewState?.apply(view.extra)
   }
 
@@ -465,7 +541,7 @@ export function DataTable<T>({
     const name = viewName.trim()
     if (!name) return
     const next = upsertView(views, {
-      name, sorting, columnVisibility, columnOrder, globalFilter, columnFilters, columnSizing,
+      name, sorting, columnVisibility, columnOrder, globalFilter, columnFilters, columnSizing, columnPinning,
       extra: extraViewState?.value,
     })
     setViews(next)
@@ -485,7 +561,12 @@ export function DataTable<T>({
   const allLeafIds = () => table.getAllLeafColumns().map((c) => c.id)
   const endDrag = () => { setDragColumnId(null); setDropColumnId(null) }
   const dropOn = (targetId: string) => {
-    if (dragColumnId && dragColumnId !== targetId) setColumnOrder(moveColumnTo(allLeafIds(), dragColumnId, targetId))
+    // Pinned columns always render first, so dropping an unpinned column onto one would not
+    // move it where the user points; ignore that drop (unpin the column first).
+    const intoPinned = !!table.getColumn(targetId)?.getIsPinned() && !table.getColumn(dragColumnId ?? '')?.getIsPinned()
+    if (dragColumnId && dragColumnId !== targetId && !intoPinned) {
+      setColumnOrder(moveColumnTo(allLeafIds(), dragColumnId, targetId))
+    }
     endDrag()
   }
   const resizeBy = (id: string, delta: number) => {
@@ -504,7 +585,8 @@ export function DataTable<T>({
   // currently filtered and sorted. Raw values (not the formatted display text), so
   // "1234567" rather than "1,234,567 ISK". Header-less (action) columns are left out.
   const buildExportMatrix = (): ExportMatrix & { visibleCount: number } => {
-    const exportColumns = table.getVisibleLeafColumns().filter((col) => col.columnDef.header !== '')
+    // `leafColumns` (not getVisibleLeafColumns) so the export follows what the table shows: pinned columns first.
+    const exportColumns = leafColumns.filter((col) => col.columnDef.header !== '')
     // An explicit `meta.exportRole` wins over the header-based guess for that role.
     const allColumns = table.getAllLeafColumns()
     const explicit = new Set(allColumns.map((col) => col.columnDef.meta?.exportRole).filter(Boolean))
@@ -712,28 +794,47 @@ export function DataTable<T>({
               </Button>
             </Menu.Target>
             <Menu.Dropdown>
-              {allColumns.map((col, i) => (
-                <Group key={col.id} justify="space-between" wrap="nowrap" gap="xs" px="xs" py={4}>
-                  <Checkbox
-                    size="xs"
-                    checked={col.getIsVisible()}
-                    onChange={() => col.toggleVisibility()}
-                    label={columnLabel(col.columnDef.header, col.id)}
-                  />
-                  <Group gap={2} wrap="nowrap">
-                    <ActionIcon size="xs" variant="subtle" color="gray" disabled={i === 0}
-                      aria-label={`Move ${columnLabel(col.columnDef.header, col.id)} up`}
-                      onClick={() => moveColumnBy(col.id, -1)}>
-                      <IconChevronUp size={12} />
-                    </ActionIcon>
-                    <ActionIcon size="xs" variant="subtle" color="gray" disabled={i === allColumns.length - 1}
-                      aria-label={`Move ${columnLabel(col.columnDef.header, col.id)} down`}
-                      onClick={() => moveColumnBy(col.id, 1)}>
-                      <IconChevronDown size={12} />
-                    </ActionIcon>
-                  </Group>
-                </Group>
-              ))}
+              {allColumns.map((col, i) => {
+                const pinned = col.getIsPinned() === 'left'
+                const label = columnLabel(col.columnDef.header, col.id)
+                return (
+                  // component="div": Menu.Item renders a <button> by default, and a <button> may
+                  // not nest other buttons (the pin and move icons below are real buttons).
+                  <Menu.Item component="div" key={col.id} onClick={() => col.toggleVisibility()} closeMenuOnClick={false}>
+                    <Group justify="space-between" gap="xs" wrap="nowrap">
+                      <Checkbox size="xs" readOnly checked={col.getIsVisible()} label={label} />
+                      <Group gap={2} wrap="nowrap">
+                        {col.getCanPin() && (
+                          <Tooltip label={pinned ? 'Unpin column' : 'Pin column (stays visible while scrolling right)'}>
+                            <ActionIcon
+                              size="xs"
+                              variant={pinned ? 'filled' : 'subtle'}
+                              color={pinned ? 'accent' : 'dimmed'}
+                              aria-label={pinned ? `Unpin ${label}` : `Pin ${label}`}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                col.pin(pinned ? false : 'left')
+                              }}
+                            >
+                              {pinned ? <IconPinFilled size={12} /> : <IconPin size={12} />}
+                            </ActionIcon>
+                          </Tooltip>
+                        )}
+                        <ActionIcon size="xs" variant="subtle" color="gray" disabled={i === 0}
+                          aria-label={`Move ${label} up`}
+                          onClick={(e) => { e.stopPropagation(); moveColumnBy(col.id, -1) }}>
+                          <IconChevronUp size={12} />
+                        </ActionIcon>
+                        <ActionIcon size="xs" variant="subtle" color="gray" disabled={i === allColumns.length - 1}
+                          aria-label={`Move ${label} down`}
+                          onClick={(e) => { e.stopPropagation(); moveColumnBy(col.id, 1) }}>
+                          <IconChevronDown size={12} />
+                        </ActionIcon>
+                      </Group>
+                    </Group>
+                  </Menu.Item>
+                )
+              })}
               <Menu.Divider />
               <Group gap={4} px="xs" py={4}>
                 <Button size="compact-xs" variant="subtle" onClick={() => setColumnOrder([])}>Reset order</Button>
@@ -802,9 +903,14 @@ export function DataTable<T>({
             ))}
           </colgroup>
           <Table.Thead>
-            {table.getHeaderGroups().map((hg) => (
+            {/* Pinned-left headers first, then center - same order as `leafColumns`/
+                colgroup above. getLeftHeaderGroups()/getCenterHeaderGroups() (not a
+                flat getHeaderGroups()) so a pinned column also reorders correctly
+                for a page with grouped/nested headers, not just this app's usual
+                flat ones. */}
+            {table.getLeftHeaderGroups().map((hg, i) => (
               <Table.Tr key={hg.id}>
-                {hg.headers.map((h) => {
+                {[...hg.headers, ...(table.getCenterHeaderGroups()[i]?.headers ?? [])].map((h) => {
                   const sorted = h.column.getIsSorted()
                   const canSort = h.column.getCanSort()
                   const toggleSort = h.column.getToggleSortingHandler()
@@ -849,6 +955,7 @@ export function DataTable<T>({
                         position: 'relative', // anchors the resize handle
                         opacity: dragColumnId === h.column.id ? 0.4 : undefined,
                         boxShadow: dropColumnId === h.column.id && dragColumnId !== h.column.id ? 'inset 2px 0 0 #35D0BA' : undefined,
+                        ...pinnedCellStyle(h.column.id, { header: true }),
                       }}
                     >
                       {h.column.columnDef.meta?.headerHint ? (
@@ -931,7 +1038,7 @@ export function DataTable<T>({
                         activateRow(row)
                       } : undefined}
                     >
-                      {row.getVisibleCells()
+                      {[...row.getLeftVisibleCells(), ...row.getCenterVisibleCells()]
                         .map((cell) => {
                           const colMeta = cell.column.columnDef.meta
                           const defaults = columnDefaults(
@@ -961,7 +1068,7 @@ export function DataTable<T>({
                           return (
                             <Table.Td
                               key={cell.id}
-                              style={cellStyle}
+                              style={{ ...cellStyle, ...pinnedCellStyle(cell.column.id) }}
                               title={hoverContent ? undefined : (cell.column.columnDef.meta?.cellTitle?.(cell.row.original, cell.getValue()) ?? cellText(cell.getValue()))}
                             >
                               {hoverContent ? (

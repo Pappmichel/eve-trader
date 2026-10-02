@@ -35,6 +35,15 @@ HTMLElement.prototype.getBoundingClientRect = function () {
   return { x: 0, y: 0, top: 0, left: 0, bottom: 600, right: 800, width: 800, height: 600, toJSON() {} }
 }
 
+// jsdom has no Element.scrollIntoView - Mantine's Combobox (Select/
+// MultiSelect/Autocomplete) calls it to keep the highlighted option in view
+// while navigating options, which otherwise throws as an uncaught exception
+// on a delayed timer (outside the triggering test's own try/catch) the first
+// time any test opens one of those dropdowns.
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {}
+}
+
 // jsdom has no FontFaceSet: Mantine's autosizing <Textarea> subscribes to
 // document.fonts (to re-measure once fonts load) and would throw on mount.
 if (!('fonts' in document)) {

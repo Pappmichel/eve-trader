@@ -58,7 +58,9 @@ export const theme = createTheme({
           letterSpacing: '0.04em',
           textTransform: 'uppercase',
           borderBottom: `1px solid ${COLORS.border}`,
-          background: COLORS.surface,
+          // backgroundColor, not the `background` shorthand: DataTable's pinned header sets
+          // backgroundColor inline, and mixing both makes React warn on re-render.
+          backgroundColor: COLORS.surface,
         },
         td: { borderBottom: `1px solid ${COLORS.border}` },
       },

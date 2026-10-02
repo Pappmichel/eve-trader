@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MantineProvider } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
@@ -161,6 +161,73 @@ describe('DataTable', () => {
     })
     expect(() => renderTable({ tableId: 'unavailable-test' })).not.toThrow()
     vi.unstubAllGlobals()
+  })
+
+  // GitHub feedback (Trading's Shortlist, 2026-10-01): scrolling right to see
+  // Market Volume loses sight of the Item column - pin a column so it stays
+  // visible regardless of horizontal scroll. Mantine's Menu.Dropdown mounts
+  // asynchronously (a Transition, not a synchronous re-render), so every
+  // interaction here goes through `findBy*`/`waitFor`, not a synchronous
+  // `getBy*` right after the triggering click.
+  describe('column pinning', () => {
+    async function openColumnsMenu(user: ReturnType<typeof userEvent.setup>) {
+      await user.click(screen.getByRole('button', { name: 'Columns' }))
+      // getByRole('checkbox', ...), not getByText('Amount') - the table's own
+      // "Amount" column header matches that text too (confirmed real
+      // ambiguity: getByText silently preferred the header th over the
+      // menu's checkbox label, since both have "Amount" as their sole text).
+      const checkbox = await screen.findByRole('checkbox', { name: 'Amount' })
+      return within(checkbox.closest('[role="menuitem"]') as HTMLElement)
+    }
+
+    it('moves a pinned column to the front of both the header and every row, without touching its visibility', async () => {
+      const user = userEvent.setup()
+      renderTable()
+
+      const amountItem = await openColumnsMenu(user)
+      await user.click(amountItem.getByRole('button', { name: /Pin Amount/ }))
+
+      const headerCells = within(screen.getByRole('row', { name: /Amount/ })).getAllByRole('button')
+      expect(headerCells.map((c) => c.textContent)).toEqual(['Amount', 'Item'])
+      const firstRowCells = within(bodyRows()[0]).getAllByRole('cell')
+      expect(firstRowCells.map((c) => c.textContent)).toEqual(['5', 'Zebra Ore'])
+
+      // Both columns are still visible - pinning is not a visibility toggle.
+      const checkboxes = screen.getAllByRole('checkbox') as HTMLInputElement[]
+      expect(checkboxes.every((c) => c.checked)).toBe(true)
+    })
+
+    it('unpins on a second click of the same button', async () => {
+      const user = userEvent.setup()
+      renderTable()
+
+      const amountItem = await openColumnsMenu(user)
+      await user.click(amountItem.getByRole('button', { name: /Pin Amount/ }))
+      await user.click(amountItem.getByRole('button', { name: /Unpin Amount/ }))
+
+      const headerCells = within(screen.getByRole('row', { name: /Amount/ })).getAllByRole('button')
+      expect(headerCells.map((c) => c.textContent)).toEqual(['Item', 'Amount'])
+    })
+
+    it('persists the pin across a remount under the same tableId', async () => {
+      const store: Record<string, string> = {}
+      vi.stubGlobal('localStorage', {
+        getItem: (k: string) => store[k] ?? null,
+        setItem: (k: string, v: string) => { store[k] = v },
+        removeItem: (k: string) => { delete store[k] },
+      })
+      const user = userEvent.setup()
+      const { unmount } = renderTable({ tableId: 'pin-persist-test' })
+      const amountItem = await openColumnsMenu(user)
+      await user.click(amountItem.getByRole('button', { name: /Pin Amount/ }))
+      unmount()
+      cleanup() // unmount() alone leaves its (now-empty) container in document.body
+
+      renderTable({ tableId: 'pin-persist-test' })
+      const headerCells = within(screen.getByRole('row', { name: /Amount/ })).getAllByRole('button')
+      expect(headerCells.map((c) => c.textContent)).toEqual(['Amount', 'Item'])
+      vi.unstubAllGlobals()
+    })
   })
 })
 
@@ -630,5 +697,47 @@ describe('DataTable in-game list roles', () => {
     await user.click(await screen.findByRole('menuitem', { name: /In-game list/ }))
     expect(writeText).toHaveBeenLastCalledWith('Tritanium\t40')
     vi.unstubAllGlobals()
+  })
+})
+
+describe('DataTable pinning together with export and saved views', () => {
+  it('exports in the order the table shows, with the pinned column first', async () => {
+    vi.resetModules()
+    vi.stubGlobal('isSecureContext', true)
+    const user = userEvent.setup()
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+    const { DataTable: Fresh } = await import('./DataTable')
+    render(<MantineProvider><Fresh data={rows} columns={columns} /></MantineProvider>)
+
+    await user.click(screen.getByRole('button', { name: 'Columns' }))
+    await user.click(await screen.findByRole('button', { name: 'Pin Amount' }))
+    await user.keyboard('{Escape}')
+
+    await user.click(screen.getByRole('button', { name: 'Export table' }))
+    await user.click(await screen.findByRole('menuitem', { name: /Table \(paste into Excel/ }))
+    expect(writeText.mock.calls.at(-1)![0].split('\n')[0]).toBe('Amount\tItem')
+    vi.unstubAllGlobals()
+  })
+
+  it('restores a pinned column from a saved view', async () => {
+    const user = userEvent.setup()
+    renderTable({ tableId: 'pin-view-test' })
+
+    await user.click(screen.getByRole('button', { name: 'Columns' }))
+    await user.click(await screen.findByRole('button', { name: 'Pin Amount' }))
+    await user.keyboard('{Escape}')
+    await user.click(screen.getByRole('button', { name: /Views/ }))
+    await user.type(await screen.findByLabelText('View name'), 'Amount first')
+    await user.click(await screen.findByRole('button', { name: 'Save' }))
+    await user.keyboard('{Escape}')
+
+    await user.click(screen.getByRole('button', { name: 'Columns' }))
+    await user.click(await screen.findByRole('button', { name: 'Unpin Amount' }))
+    await user.keyboard('{Escape}')
+    expect(headerTexts()).toEqual(['Item', 'Amount'])
+
+    await user.click(screen.getByRole('button', { name: /Views/ }))
+    await user.click(await screen.findByText('Amount first'))
+    expect(headerTexts()).toEqual(['Amount', 'Item'])
   })
 })

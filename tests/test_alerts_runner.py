@@ -256,6 +256,55 @@ def test_revoked_sharing_stops_alerts_immediately(tenant, _env):
     assert _env == [] and fake.calls == ["headers"]
 
 
+# ------------------------------------------------------------- in-flight guard
+def test_a_second_concurrent_run_for_the_same_tenant_is_skipped_not_duplicated(tenant, _env, monkeypatch):
+    """Confirmed real gap (code review 2026-10-01): scheduler._run_job abandons
+    a job thread after its timeout rather than waiting for it, so a slow run
+    (ESI/Discord both near their own timeouts) could still be in flight when
+    the next 5-minute tick starts a second one for the same tenant - both would
+    read alert_state before either writes it and could send the same alert
+    twice. A second run_for_tenant() while the first is still inside its
+    critical section must return immediately (skipped, not a duplicate send),
+    and the first must still complete normally once unblocked."""
+    import threading
+
+    _setup()
+    aa.do_set_subscription(ALICE, "mail_new", True)
+    _run(FakeClient(headers=[_h(1)]))    # baseline: cursor=1, nothing sent yet
+    assert _env == []
+
+    entered = threading.Event()
+    release = threading.Event()
+    real_names = runner._names
+
+    def blocking_names():
+        entered.set()
+        assert release.wait(5), "first run was never released - guard held forever?"
+        return real_names()
+
+    monkeypatch.setattr(runner, "_names", blocking_names)
+
+    result: dict = {}
+    later = NOW + timedelta(minutes=11)  # past the poll backoff from the baseline run above
+    first = threading.Thread(
+        target=storage.with_current_tenant(
+            lambda: result.update(first=_run(FakeClient(headers=[_h(2)]), now=later))
+        ),
+    )
+    first.start()
+    assert entered.wait(5), "first run never reached its critical section"
+
+    second = _run(FakeClient(headers=[_h(2)]), now=later)  # same tenant, still in-process
+
+    release.set()
+    first.join(5)
+    assert not first.is_alive()
+
+    assert second == {"subscriptions": 0, "ran": False, "skipped": "in_flight"}
+    assert result["first"]["ran"] is True
+    assert _env == ["Alice: 1 new EVE mail.\n- unknown sender: s"]  # sent exactly once, not twice
+
+
 # ---------------------------------------------------------------- scheduler
 def test_scheduler_runs_alerts_only_when_the_operator_switch_is_on(tenant, monkeypatch):
     _setup()

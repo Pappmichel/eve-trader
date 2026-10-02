@@ -14,6 +14,7 @@ import { DetailRow, RowDetailDrawer } from '../../components/RowDetailDrawer'
 import { useAction } from '../../hooks/useAction'
 import { isk, pct, qty } from '../../format'
 import { COLORS } from '../../theme'
+import { hubLabel } from '../../tradingHubs'
 
 const ALL_DECISIONS = ['Inactive', 'Missing ID', 'No market data', 'Skip', 'Already ordered', 'Import']
 const DECISION_COLOR: Record<string, string> = {
@@ -72,6 +73,7 @@ export default function Shortlist() {
     () => (openItemId ? (data ?? []).find((r) => String(r.item_id) === openItemId) : undefined),
     [data, openItemId],
   )
+  const hub = hubLabel(settings?.jita_region_id)
   const openItem = (row: ShortlistRow) => setSearchParams((p) => { p.set('item', String(row.item_id)); return p })
   const closeItem = () => setSearchParams((p) => { p.delete('item'); return p })
 
@@ -104,14 +106,16 @@ export default function Shortlist() {
   }, [filtered])
 
   const columns = useMemo<ColumnDef<ShortlistRow, any>[]>(() => [
+    // Widened from 220 (user feedback, 2026-10-01): long item names were truncated already at
+    // the default width. Pin the column from the Columns menu to keep it visible while scrolling.
     {
-      header: 'Item', accessorKey: 'item', size: 220,
+      header: 'Item', accessorKey: 'item', size: 280,
       meta: {
         copyable: true,
         hoverCard: (r: ShortlistRow) => (
           <Stack gap={2} miw={200}>
             <Text size="sm" fw={600}>{r.item}</Text>
-            <DetailRow label="Cost (Jita)" value={isk(r.landed_cost)} />
+            <DetailRow label={`Cost (${hubLabel(settings?.jita_region_id)})`} value={isk(r.landed_cost)} />
             <DetailRow label="Sale (Structure)" value={isk(r.net_sell)} />
             <DetailRow label="Profit / unit" value={isk(r.profit_per_unit)} />
             <DetailRow label="Margin" value={pct(r.margin)} />
@@ -187,11 +191,29 @@ export default function Shortlist() {
       cell: (i) => isk(i.getValue()),
     },
     { header: 'Profit / m³', accessorKey: 'profit_per_m3', size: 110, cell: (i) => qty(i.getValue()) },
-    { header: 'Cost (Jita)', accessorKey: 'landed_cost', size: 120, cell: (i) => isk(i.getValue()) },
+    // Label follows the configured buy hub (user feedback, 2026-10-01) - was
+    // hardcoded "Cost (Jita)" regardless of jita_region_id's actual value.
+    { header: `Cost (${hubLabel(settings?.jita_region_id)})`, accessorKey: 'landed_cost', size: 120, cell: (i) => isk(i.getValue()) },
+    {
+      // User feedback, 2026-10-01: the highest landed cost (incl. broker fee
+      // + freight, same basis as "Cost (Jita)" right before it) at which
+      // profit_per_unit is exactly zero - buying at or below this is
+      // profitable, above it is a loss. Not the min_profit_threshold/
+      // min_margin_threshold-aware price (the user picked plain breakeven):
+      // profit = net_sell - landed_cost, so the zero-profit landed_cost is
+      // just net_sell itself (net_sell doesn't depend on landed_cost in this
+      // pricing model) - same raw number as "Sale (Structure)" two columns
+      // over, shown under its own breakeven-specific label/meaning so it
+      // doesn't have to be derived by eye from the other two columns.
+      header: 'Breakeven Price', id: 'breakevenPrice', size: 140,
+      accessorFn: (r) => r.net_sell,
+      cell: (i) => isk(i.getValue()),
+      meta: { cellTitle: () => 'Buy at or below this landed cost to keep profit_per_unit ≥ 0.' },
+    },
     { header: 'Sale (Structure)', accessorKey: 'net_sell', size: 140, cell: (i) => isk(i.getValue()) },
     { header: 'Listed Qty (Structure)', accessorKey: 'sell_volume', size: 150, cell: (i) => qty(i.getValue()) },
     { header: 'Own Orders', accessorKey: 'own_orders_remaining', size: 110, cell: (i) => qty(i.getValue()) },
-  ], [trends])
+  ], [trends, settings?.jita_region_id])
 
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
   if (isError) return <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />
@@ -286,10 +308,11 @@ export default function Shortlist() {
             </Group>
             <Stack gap={6}>
               <Title order={6} c="dimmed" tt="uppercase">Pricing</Title>
-              <DetailRow label="Jita sell" value={isk(openRow.jita_sell)} />
+              <DetailRow label={`${hub} sell`} value={isk(openRow.jita_sell)} />
               <DetailRow label="Import cost" value={isk(openRow.import_cost)} />
-              <DetailRow label="Cost (Jita, landed)" value={isk(openRow.landed_cost)} />
+              <DetailRow label={`Cost (${hub}, landed)`} value={isk(openRow.landed_cost)} />
               <DetailRow label="Sale (Structure, net)" value={isk(openRow.net_sell)} />
+              <DetailRow label="Breakeven price" value={isk(openRow.net_sell)} />
               <DetailRow label="Profit / unit" value={isk(openRow.profit_per_unit)} />
               <DetailRow label="Margin" value={pct(openRow.margin)} />
               <DetailRow label="Profit / m³" value={qty(openRow.profit_per_m3)} />

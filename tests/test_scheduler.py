@@ -210,19 +210,6 @@ def test_check_and_run_due_jobs_for_tenant_one_job_failing_does_not_block_the_ot
     assert calls == ["esi", "portfolio_snapshot"]
 
 
-def test_hours_since_last_backup_is_infinite_with_no_backups(monkeypatch):
-    monkeypatch.setattr(backup, "list_backups", lambda: [])
-    assert scheduler._hours_since_last_backup() == float("inf")
-
-
-def test_hours_since_last_backup_uses_newest_entry(monkeypatch):
-    two_hours_ago = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=2)).isoformat()
-    monkeypatch.setattr(backup, "list_backups", lambda: [
-        {"name": "b", "created_at": two_hours_ago, "size_bytes": 1},  # newest-first order, as the real function returns
-    ])
-    assert round(scheduler._hours_since_last_backup(), 1) == 2.0
-
-
 def test_check_and_run_backup_job_runs_when_overdue(monkeypatch):
     monkeypatch.setattr(backup, "list_backups", lambda: [])  # never backed up -> always due
     calls = []

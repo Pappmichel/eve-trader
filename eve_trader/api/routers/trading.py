@@ -130,6 +130,11 @@ class TradingSettings(BaseModel):
     esi_normal_interval_hours: float = 6.0
     esi_rare_interval_hours: float = 24.0
     esi_stale_clear_multiples: float = 3.0
+    # Was previously reachable only via a direct tenant_settings write (no UI,
+    # no route) - see CLAUDE.md's Scheduler section. This tenant's own switch;
+    # it is also a no-op unless the Default tenant's own copy is on too
+    # (scheduler.py's master switch), which the UI text below spells out.
+    scheduler_enabled: bool = False
 
 
 @router.get("/settings", response_model=TradingSettings)
