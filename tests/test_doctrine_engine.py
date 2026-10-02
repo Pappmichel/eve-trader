@@ -538,3 +538,45 @@ def test_shopping_list_reads_the_doctrine_hub_not_trading_config(monkeypatch):
     engine.shopping_list_rows(cfg=DoctrineConfig(hub_region_id=10000032))
 
     assert seen == {"ctx_hub": 10000032, "order_book_region": 10000032}
+
+
+def test_shopping_list_rows_all_hubs_picks_cheapest_landed_hub_and_never_queries_region_0(monkeypatch):
+    from eve_trader import hubs
+    from eve_trader.esi_client import OrderStats
+    agg_row = AggregatedStockpileRow(type_id=MODULE, type_name="Damage Control II", required_total=10.0,
+                                      available=4.0, shortfall=6.0, severity=SEVERITY_CRITICAL, fitting_count=1)
+    monkeypatch.setattr(engine, "stockpile_rows_for_doctrine", lambda doctrine_id, cfg: ([], True))
+    monkeypatch.setattr(engine, "aggregate_stockpile_rows", lambda rows: [agg_row])
+    plan_regions = []
+
+    class _FakePlanContext:
+        def __init__(self, cfg, extra_type_ids=(), hub_region_id=None, **kwargs):
+            plan_regions.append(hub_region_id)
+            self.home, self.jita = {}, {}
+            self.cost_indices, self.adjusted_prices, self.selected_decryptors = {}, {}, {}
+    monkeypatch.setattr(engine, "_PlanContext", _FakePlanContext)
+    monkeypatch.setattr(engine, "unit_cost_detail", lambda *a, **k: (None, None, None))
+    monkeypatch.setattr(engine, "_haul_volume", lambda type_id, cfg: 5.0)
+    monkeypatch.setattr(production_esi_sync, "list_capability_characters", lambda *a, **k: [])
+
+    # Jita is cheapest on the shelf (100) but Amarr (110) wins landed once freight is added.
+    prices = {10000002: 100.0, 10000043: 110.0, 10000032: 150.0, 10000030: 150.0}
+    calls = []
+
+    class _Client(_FakeESIClient):
+        def region_order_stats_bulk(self, region_id, type_ids):
+            calls.append(region_id)
+            return {t: OrderStats(prices[region_id], 1000, None, 0) for t in type_ids}
+    monkeypatch.setattr(engine, "ESIClient", _Client)
+    cfg = DoctrineConfig(import_cost_per_m3=100.0, hub_region_id=hubs.ALL_HUBS)
+    monkeypatch.setattr(engine.TRADING_CONFIG, "hub_freight_cost_per_m3",
+                        {"10000002": 100.0, "10000043": 10.0}, raising=False)
+
+    rows = engine.shopping_list_rows(cfg=cfg)
+
+    fee = engine.TRADING_CONFIG.jita_buy_broker_fee
+    assert 0 not in calls and 0 not in plan_regions
+    assert set(calls) == set(hubs.TRADE_HUBS)
+    assert rows[0].hub_region_id == 10000043 and rows[0].hub_name == "Amarr"
+    assert rows[0].jita_landed_price == pytest.approx(110.0 * (1 + fee) + 10.0 * 5.0)
+    assert rows[0].recommended_source == "Jita"

@@ -1080,6 +1080,8 @@ export interface ShoppingListRow {
   jita_landed_price: number | null
   recommended_source: 'Build' | 'C-J' | 'Jita' | null
   total_cost: number | null
+  hub_region_id: number | null
+  hub_name: string | null
 }
 
 export interface FittingStatus {

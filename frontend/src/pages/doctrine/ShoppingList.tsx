@@ -7,7 +7,7 @@ import { doctrineApi } from '../../api/client'
 import type { ShoppingListRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { qty, isk } from '../../format'
-import { hubLabel } from '../../tradingHubs'
+import { ALL_HUBS, hubLabel } from '../../tradingHubs'
 
 const SOURCE_COLOR: Record<string, string> = { Build: 'accent', 'C-J': 'warn', Jita: 'dimmed' }
 
@@ -18,6 +18,7 @@ export default function ShoppingList() {
   const rows = data?.rows ?? []
   const { data: settings } = useQuery({ queryKey: ['doctrine', 'settings'], queryFn: doctrineApi.settings })
   const hub = hubLabel(settings?.hub_region_id)
+  const allHubs = settings?.hub_region_id === ALL_HUBS
 
   const columns = useMemo<ColumnDef<ShoppingListRow, any>[]>(() => [
     { header: 'Type', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
@@ -28,6 +29,10 @@ export default function ShoppingList() {
       header: `${hub} (landed)`, accessorKey: 'jita_landed_price', size: 140,
       cell: (i) => (i.getValue() != null ? isk(i.getValue()) : '–'),
     },
+    ...(allHubs ? [{
+      header: 'Best hub', accessorKey: 'hub_name', size: 110,
+      cell: (i: any) => (i.getValue() ?? '–'),
+    }] : []),
     {
       header: 'Recommended', accessorKey: 'recommended_source', size: 130,
       cell: (i) => {
@@ -36,7 +41,7 @@ export default function ShoppingList() {
       },
     },
     { header: 'Total Cost', accessorKey: 'total_cost', size: 140, cell: (i) => (i.getValue() != null ? isk(i.getValue()) : '–') },
-  ], [hub])
+  ], [hub, allHubs])
 
   return (
     <Stack>

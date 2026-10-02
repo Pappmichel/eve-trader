@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from .. import storage
+from .. import hubs, storage
 from ..config import TRADING_CONFIG
 from ..esi_client import ESIClient, ESIError, OrderStats
 from ..esi_data.access import read_esi
@@ -297,7 +297,8 @@ def aggregate_stockpile_rows(rows: list[StockpileRow]) -> list[AggregatedStockpi
 # ------------------------------------------------------------- shopping list
 def _shopping_prices(type_id: int, home: dict, jita: dict, volume: Optional[float],
                       cfg: DoctrineConfig, home_stats: Optional[OrderStats] = None,
-                      jita_stats: Optional[OrderStats] = None) -> tuple[Optional[float], Optional[float]]:
+                      jita_stats: Optional[OrderStats] = None,
+                      hub_landed: Optional[float] = None) -> tuple[Optional[float], Optional[float]]:
     """(cj_price, jita_landed_price) for the Shopping List's own Buy columns -
     mirrors production.pricing's own buy-candidate formula, but uses
     Doctrine's own cfg.import_cost_per_m3 for the Jita leg instead of
@@ -326,7 +327,11 @@ def _shopping_prices(type_id: int, home: dict, jita: dict, volume: Optional[floa
     if home_quote and home_quote.sell > 0 and (home_stats is None or home_stats.sell_volume > 0):
         cj = home_quote.sell * (1 + broker_fee)
     jita_landed = None
-    if jita_quote and jita_quote.sell > 0 and (jita_stats is None or jita_stats.sell_volume > 0):
+    if hub_landed is not None:
+        # ALL_HUBS mode (#222): hubs.hub_pricing already picked the cheapest
+        # landed hub per item from live order books, so use its figure.
+        jita_landed = hub_landed if (jita_stats is None or jita_stats.sell_volume > 0) else None
+    elif jita_quote and jita_quote.sell > 0 and (jita_stats is None or jita_stats.sell_volume > 0):
         jita_landed = jita_quote.sell * (1 + broker_fee) + cfg.import_cost_per_m3 * (volume or 0)
     return cj, jita_landed
 
@@ -352,7 +357,12 @@ def shopping_list_rows(doctrine_id: Optional[str] = None, cfg: DoctrineConfig = 
     # Same mechanism plan_special_order already relies on for its own
     # never-a-stock-target line items.
     type_ids = [row.type_id for row in aggregated]
-    ctx = _PlanContext(PRODUCTION_CONFIG, extra_type_ids=type_ids, hub_region_id=cfg.hub_region_id)
+    all_hubs = cfg.hub_region_id == hubs.ALL_HUBS
+    # Build-cost material quotes need one real region; ALL_HUBS must never
+    # reach an ESI region call as 0 (the per-item best hub comes from
+    # hubs.hub_pricing below instead).
+    ctx = _PlanContext(PRODUCTION_CONFIG, extra_type_ids=type_ids,
+                       hub_region_id=(next(iter(hubs.TRADE_HUBS)) if all_hubs else cfg.hub_region_id))
     cost_memo: dict[int, Optional[float]] = {}
     t2_memo: dict[int, tuple[float, float, Optional[str]]] = {}
 
@@ -368,10 +378,13 @@ def shopping_list_rows(doctrine_id: Optional[str] = None, cfg: DoctrineConfig = 
     # effort, degrades to trusting Goonmetrics for whichever leg it can't
     # verify rather than failing the whole page.
     esi = ESIClient()
+    volumes = {t: (_haul_volume(t, PRODUCTION_CONFIG) or 0.0) for t in type_ids}
     try:
-        jita_stats = esi.region_order_stats_bulk(cfg.hub_region_id, type_ids)
+        hub_prices = hubs.hub_pricing(esi, cfg.hub_region_id, type_ids, volumes,
+                                      TRADING_CONFIG.jita_buy_broker_fee, cfg.import_cost_per_m3)
     except Exception:  # noqa: BLE001 - best-effort; falls back to trusting Goonmetrics for every row
-        jita_stats = {}
+        hub_prices = hubs.HubPricing()
+    jita_stats = hub_prices.stats
     home_stats: dict[int, OrderStats] = {}
     structure_id = cfg.effective_structure_id
     # Group 3 ("structure_market_book"), not a "seller:" prefix scan
@@ -405,7 +418,10 @@ def shopping_list_rows(doctrine_id: Optional[str] = None, cfg: DoctrineConfig = 
         volume = _haul_volume(row.type_id, PRODUCTION_CONFIG)
         cj_price, jita_landed_price = _shopping_prices(
             row.type_id, ctx.home, ctx.jita, volume, cfg,
-            home_stats.get(row.type_id), jita_stats.get(row.type_id))
+            home_stats.get(row.type_id), jita_stats.get(row.type_id),
+            hub_landed=hub_prices.landed(row.type_id, volume or 0.0, TRADING_CONFIG.jita_buy_broker_fee)
+            if all_hubs else None)
+        hub_id = hub_prices.hub_by_type.get(row.type_id) if jita_landed_price is not None else None
 
         candidates = {"Build": build_cost, "C-J": cj_price, "Jita": jita_landed_price}
         priced = {k: v for k, v in candidates.items() if v is not None}
@@ -416,6 +432,7 @@ def shopping_list_rows(doctrine_id: Optional[str] = None, cfg: DoctrineConfig = 
             type_id=row.type_id, type_name=row.type_name, shortfall=row.shortfall,
             build_cost=build_cost, cj_price=cj_price, jita_landed_price=jita_landed_price,
             recommended_source=recommended_source, total_cost=total_cost,
+            hub_region_id=hub_id, hub_name=hubs.hub_name(hub_id) if hub_id is not None else None,
         ))
     return result
 
