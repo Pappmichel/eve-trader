@@ -280,3 +280,75 @@ class _XmlResponse:
 
     def raise_for_status(self):
         pass
+
+
+EMPTY_HISTORY_XML = '<goonmetrics method="price_history" version="1.0"><price_history /></goonmetrics>'
+
+
+class _XmlResponse:
+    def __init__(self, text):
+        self.text = text
+
+    def raise_for_status(self):
+        pass
+
+
+def _esi_rows(dates):
+    return [{"date": d, "average": 5.0, "highest": 5.5, "lowest": 4.5, "order_count": 3, "volume": 10}
+            for d in dates]
+
+
+def test_region_goonmetrics_does_not_track_goes_to_esi(monkeypatch):
+    # Goonmetrics answers an empty history for Domain (Amarr), even for
+    # Tritanium; that region must be read from ESI instead.
+    cfg = TradingConfig()
+    client = GoonmetricsClient(cfg)
+    urls = []
+    monkeypatch.setattr(client.session, "get",
+                        lambda url, timeout=None: urls.append(url) or _XmlResponse(EMPTY_HISTORY_XML))
+    esi_calls = []
+    monkeypatch.setattr(ESIClient, "region_market_history",
+                        lambda self, region_id, type_id: esi_calls.append((region_id, type_id)) or _esi_rows(["2026-09-30"]))
+
+    points = client.price_history(10000043, [34, 35])
+    client.price_history(10000043, [36])
+
+    assert sorted(esi_calls) == [(10000043, 34), (10000043, 35), (10000043, 36)]
+    assert {p.type_id for p in points} == {34, 35}
+    assert len(urls) == 1  # one coverage probe, remembered; no batch request
+
+
+def test_tracked_region_keeps_using_goonmetrics(monkeypatch):
+    cfg = TradingConfig()
+    client = GoonmetricsClient(cfg)
+    monkeypatch.setattr(client.session, "get", lambda url, timeout=None: _XmlResponse(SAMPLE_XML))
+    monkeypatch.setattr(ESIClient, "region_market_history",
+                        lambda self, region_id, type_id: pytest.fail("ESI must not be called"))
+
+    points = client.price_history(cfg.jita_region_id, [34])
+
+    assert points and all(p.region_id == cfg.jita_region_id for p in points)
+
+
+def test_failed_probe_is_not_remembered_as_untracked(monkeypatch):
+    cfg = TradingConfig()
+    client = GoonmetricsClient(cfg)
+
+    def _down(*a, **k):
+        raise requests.ConnectionError("down")
+    monkeypatch.setattr(client.session, "get", _down)
+    assert client.region_has_goonmetrics_history(10000043) is True
+    monkeypatch.setattr(client.session, "get", lambda url, timeout=None: _XmlResponse(EMPTY_HISTORY_XML))
+    assert client.region_has_goonmetrics_history(10000043) is False
+
+
+def test_esi_history_is_cut_to_goonmetrics_window(monkeypatch):
+    cfg = TradingConfig()
+    client = GoonmetricsClient(cfg)
+    monkeypatch.setattr(client.session, "get", lambda url, timeout=None: _XmlResponse(EMPTY_HISTORY_XML))
+    dates = ["2025-10-01", "2026-08-31", "2026-09-01", "2026-09-30"]
+    monkeypatch.setattr(ESIClient, "region_market_history", lambda self, region_id, type_id: _esi_rows(dates))
+
+    points = client.price_history(10000043, [34])
+
+    assert sorted(p.date for p in points) == ["2026-09-01", "2026-09-30"]
