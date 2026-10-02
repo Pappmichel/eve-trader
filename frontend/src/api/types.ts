@@ -37,6 +37,8 @@ export interface ShortlistRow {
   import_cost: number | null
   meta_level: number | null
   days_until_deactivation: number | null
+  // Highest hub buy price that still breaks even (GitHub issue #221)
+  breakeven_buy_price: number | null
   // Real average daily *market-wide* traded quantity (GitHub issue #100,
   // Goonmetrics region history for C-J's own home region) - what
   // "Profit / Day" is actually computed from, NOT sell_volume (order-book

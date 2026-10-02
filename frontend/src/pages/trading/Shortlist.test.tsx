@@ -21,7 +21,7 @@ const ROW = {
   sell_volume: 1000, own_orders_remaining: 0, profit_per_unit: 50, margin: 0.5,
   profit_per_m3: 500, decision: 'Import', active: true, item_id: 1, volume_m3: 0.01,
   jita_sell: 95, import_cost: 5, meta_level: null, days_until_deactivation: null,
-  avg_daily_volume: 10000,
+  avg_daily_volume: 10000, breakeven_buy_price: 142,
 }
 
 function renderPage() {
@@ -33,12 +33,10 @@ function renderPage() {
   )
 }
 
-// User feedback, 2026-10-01: "I'd really love a column for 'breakeven price'" -
-// the user picked plain zero-profit breakeven (profit_per_unit === 0), which
-// is just net_sell (profit = net_sell - landed_cost, and net_sell doesn't
-// depend on landed_cost in this pricing model).
+// GitHub issue #221: the column shows the highest hub buy price that still
+// breaks even (server-computed breakeven_buy_price), not net_sell.
 describe('Shortlist breakeven price column', () => {
-  it('shows net_sell under the Breakeven Price header, distinct from Cost and Sale', async () => {
+  it('shows breakeven_buy_price under the Breakeven Buy header, distinct from Cost and Sale', async () => {
     vi.mocked(tradingApi.shortlistSnapshot).mockResolvedValue([ROW] as any)
     vi.mocked(tradingApi.shortlistTrends).mockResolvedValue({})
     vi.mocked(tradingApi.settings).mockResolvedValue({ jita_region_id: 10000002 } as any)
@@ -64,13 +62,13 @@ describe('Shortlist breakeven price column', () => {
     // whether it's sortable (role="button" then overrides the implicit
     // "columnheader" role - see DataTable.test.tsx) - title is the stable,
     // role-independent way to find a specific column header in a test.
-    const breakevenHeader = within(table).getByTitle('Breakeven Price')
+    const breakevenHeader = within(table).getByTitle('Breakeven Buy (Jita)')
     const headerRow = breakevenHeader.closest('tr') as HTMLElement
     const headerIdx = Array.from(headerRow.children).indexOf(breakevenHeader)
 
     const bodyRow = cell.closest('tr') as HTMLElement
     const cells = within(bodyRow).getAllByRole('cell')
-    expect(cells[headerIdx].textContent).toContain('150') // net_sell
+    expect(cells[headerIdx].textContent).toContain('142') // breakeven_buy_price
     expect(within(table).getByTitle('Cost (Jita)')).toBeInTheDocument()
     expect(within(table).getByTitle('Sale (Structure)')).toBeInTheDocument()
   })
