@@ -36,7 +36,8 @@ Effort: S = up to half a day, M = 1-2 days, L = 3+ days.
 | GitHub #223 Region names | fixed (PR #225): `sde_regions` from the SDE refresh, searchable `RegionSelect`; shows "Region <id>" until the next SDE refresh |
 | Stale `index.html` after a deploy | fixed (PR #225): `Cache-Control: no-cache` on `index.html`, immutable on hashed assets; verified through nginx on the test server |
 | Goonmetrics history only covers a few regions (The Forge, Insmother, Delve; not Amarr, Dodixie, Rens) | fixed (PR #226): untracked regions are read from ESI daily history, cut to the same 30-day window |
-| B.2 sparklines, B.10 charts | unblocked |
+| B.2 sparklines | unblocked |
+| B.10 charts | implemented: Price History has a 7/30/90d/All range picker (ranges beyond the stored history are disabled), a zoom Brush, the reference region's real name, and compare mode (up to 5 items, one line each, indexed to 100 at the first common date, buy hub or reference region); Portfolio already had the same range picker, unchanged |
 | B.11 dashboard tiles | open, needs a new Production `/kpis` endpoint |
 | B.12 auto refresh, B.13 priority drag and drop | deferred (low benefit / needs schema); re-checked 2026-10-02, still right |
 
