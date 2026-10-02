@@ -10,7 +10,7 @@ store (RLS-isolated per tenant - see `docs/MULTI_TENANT_PLAN.md`):
 - **Production** — Tech I/II/Reaction manufacturing planning for the same
   home structure: buy-vs-build decisions, stock targets, buy/build lists,
   invention cost/probability, logistics status, and Special Orders (frozen
-  semantics in `docs/PRODUCTION_SEMANTICS.md`, certified `0.2.0rc1`).
+  semantics in `docs/PRODUCTION_SEMANTICS.md`, certified in release candidate `0.2.0rc1`).
 - **Doctrine** — tracks fitted-ship contracts and stockpile against a
   doctrine's EFT fittings: per-fitting/per-doctrine status, a shopping list
   for what's missing, synced from ESI contracts/assets.

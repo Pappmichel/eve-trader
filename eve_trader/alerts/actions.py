@@ -1,4 +1,4 @@
-"""Discord alert `do_*` actions (docs/DISCORD_ALERTS_HANDOFF.md).
+"""Discord alert `do_*` actions (CLAUDE.md "Discord alerts").
 
 UI-agnostic, no FastAPI imports. Every alert is opt-in per character x type,
 default off, and needs BOTH the opt-in and an `esi_sharing` row for the

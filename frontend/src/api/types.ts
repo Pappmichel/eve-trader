@@ -843,6 +843,7 @@ export interface EsiRemovedCharacter {
   roles: string[]
   shared_tools: string[]
   capabilities: string[]
+  mail_archive_deleted: { headers: number; messages: number } | null
 }
 
 /** Known gap 2's role warning - POST /api/characters/corporation-roles/check. */

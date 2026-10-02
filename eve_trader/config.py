@@ -722,7 +722,7 @@ class SchedulerOperatorConfig:
     - backup_job_enabled / jita_price_cache_job_enabled: the two global jobs.
       Defaults keep today's behaviour (both run whenever the scheduler
       thread runs).
-    - alerts_job_enabled: the Discord alerts job (docs/DISCORD_ALERTS_HANDOFF.md),
+    - alerts_job_enabled: the Discord alerts job (CLAUDE.md "Discord alerts"),
       runs independently of every tenant's scheduler_enabled.
     - alerts_mail_poll_minutes: how often an opted-in character's mail headers
       are polled (ESI caches the mail list ~30 s; more often only costs calls).

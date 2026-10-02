@@ -775,8 +775,9 @@ export const charMailApi = {
 // -------------------------------------------------------------- characters
 export const charactersApi = {
   owners: () => get<T.EsiTokenCharacter[]>('/api/characters/owners'),
-  removeCharacter: (characterId: number) =>
-    del<T.EsiRemovedCharacter>(`/api/characters/owners/${characterId}`),
+  removeCharacter: (args: { characterId: number; deleteMailArchive?: boolean }) =>
+    del<T.EsiRemovedCharacter>(
+      `/api/characters/owners/${args.characterId}${args.deleteMailArchive ? '?delete_mail_archive=true' : ''}`),
   sharing: (toolKey?: string) =>
     get<T.EsiSharingRow[]>(toolKey ? `/api/characters/sharing?tool_key=${encodeURIComponent(toolKey)}` : '/api/characters/sharing'),
   freshness: () => get<T.EsiFreshnessRow[]>('/api/characters/freshness'),

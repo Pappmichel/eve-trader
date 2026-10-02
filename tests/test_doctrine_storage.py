@@ -253,6 +253,45 @@ def test_same_contract_synced_by_two_owners_updates_not_crashes(tenant):
     assert owner[0] == 111  # attribution stays with whoever recorded it first
 
 
+
+def test_same_contract_with_items_synced_by_two_owners_replaces_child_rows(tenant):
+    # Confirmed on production 2026-10-02: the contract row already upserted,
+    # but its items/deviations were plain INSERTs and hit their primary keys
+    # when a second member's sync carried the same shared contract.
+    contract = (43, "doctrine:1", True, 1, 1, "outstanding", "shared", 1.0, None, None, None,
+                "unmatched", "2026-01-01T00:00:00Z")
+    storage.replace_doctrine_sync_snapshot(
+        contracts=[contract],
+        items=[(43, 1, 34, 10.0, True, False), (43, 2, 35, 5.0, True, False)],
+        deviations=[(43, 34, "missing", 12.0, 10.0, "critical")],
+        owner_character_id=111,
+    )
+    storage.replace_doctrine_sync_snapshot(
+        contracts=[contract],
+        items=[(43, 1, 34, 12.0, True, False)],
+        deviations=[],
+        owner_character_id=222,
+    )
+
+    assert storage.load_doctrine_contract_items(43) == [(1, 34, 12.0, True, False)]
+    with storage.connect() as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM doctrine_contract_deviations WHERE contract_id = 43").fetchone()[0] == 0
+
+
+def test_contract_without_fresh_items_keeps_its_child_rows(tenant):
+    contract = (44, "doctrine:1", True, 1, 1, "outstanding", "c", 1.0, None, None, None,
+                "unmatched", "2026-01-01T00:00:00Z")
+    storage.replace_doctrine_sync_snapshot(
+        contracts=[contract], items=[(44, 1, 34, 3.0, True, False)], deviations=[],
+        owner_character_id=111,
+    )
+    # Another owner sees the contract but its item fetch failed: no items passed.
+    storage.replace_doctrine_sync_snapshot(
+        contracts=[contract], items=[], deviations=[], owner_character_id=222,
+    )
+    assert storage.load_doctrine_contract_items(44) == [(1, 34, 3.0, True, False)]
+
 @pytest.fixture(autouse=True)
 def _wipe_doctrine_assets():
     # character_assets/corp_assets are column-only-bucket tables (PK =

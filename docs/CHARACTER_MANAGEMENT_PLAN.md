@@ -1,6 +1,6 @@
 # Character Management hub (Mail, Skills, Character Info, ...)
 
-Status: **plan, nothing implemented.** Product decisions confirmed with the
+Status: **implemented - phases 0-9 are done (2026-09-29), plus Discord alerts (`char_alerts`, live 2026-10-02).** The text below is the original plan and its per-phase notes. Product decisions confirmed with the
 user 2026-09-29. Revision 2 (same day) adds a code review of the plan against
 the actual `esi_data/` / gate / SDE code: the "Review findings" section lists
 what revision 1 got wrong and how each point is resolved; the phase sections
@@ -226,6 +226,7 @@ entries.
 | Notifications | `char_notifications` | `notifications` | 6 |
 | Contacts & Calendar | `char_contacts` | `contacts`, `calendar` | 8 |
 | Skill plans | `char_skill_plans` | `skills`, `skillqueue` | 9 |
+| Discord alerts | `char_alerts` | `skillqueue`, `mail` | after phase 10 (see CLAUDE.md) |
 
 Only add a key in the phase that ships its router. A dead grant in Admin
 confuses admins.
@@ -277,7 +278,7 @@ Every phase must satisfy the following before it counts as done:
 ### Phase 0 - hub shell (no new ESI data)
 
 **Status: implemented (frontend only).** Deviations from the text below:
-- The Characters table column groups (R6) are deferred to **Phase 1**. With
+- (Update: both R6 and R10 below shipped in Phase 1.) The Characters table column groups (R6) are deferred to **Phase 1**. With
   the 7 existing kinds there is nothing to group yet; the grouping and the
   `section` field in `esiRegistry.ts` land together with the first new kinds.
 - The `skipped: in_flight` rendering (R10) is deferred too: no frontend code
@@ -289,7 +290,8 @@ Every phase must satisfy the following before it counts as done:
   one key or a list. `toolKeys.test.ts` checks `ESI_CONSUMING_TOOLS` equals
   the union of `esiRegistry` consumers.
 - QuickNav's hub entry is mapped to `characters` only; widen it to any-of
-  when a second sub-tool grant exists.
+  when a second sub-tool grant exists. (Done: `QuickNav.tsx` uses
+  `hasAnyToolGrant(tools, CHARACTER_MANAGEMENT_TOOL_KEYS)`.)
 Backend:
 - `access_gate.ALL_TOOL_KEYS`: no new keys yet (R5). Keys arrive with their
   routers.
@@ -535,9 +537,9 @@ Original design:
   `confirm_delete=True` when anything is stored; nothing else deletes archived
   mail. A mail two characters received is stored once (R4). Unsharing a
   character hides its archive (reads go through `shared_owner_ids`), it does
-  not delete it. **Not done:** offering archive deletion in the
-  Characters "Remove character" dialog (R8) - removing a character keeps its
-  archive like every other snapshot; delete it in Mail settings first.
+  not delete it. The Characters "Remove character" dialog offers deleting
+  the archive too (R8, done 2026-10-03; off by default, like every other
+  snapshot the archive stays unless ticked).
 - **Frontend:** three-pane client (folders with unread badges incl. unified
   system folders and per-character labels, list with per-character chips and
   "Load more" via per-character cursors, reader). Mail bodies go through the
@@ -692,8 +694,8 @@ Original design:
   browser run, ESI was unreachable, which exercised the failure paths: the
   auto mark-read and the send both showed their redacted error toasts and the
   draft stayed open.
-- **Not done:** the Characters "Remove character" dialog still does not offer
-  deleting an archive (R8); scheduled/deferred sends; mailing-list management.
+- **Not done:** scheduled/deferred sends; mailing-list management. (Archive
+  deletion from the "Remove character" dialog, R8, was added 2026-10-03.)
 - Capabilities `mail_send` and `mail_organize` go into
   `ACCESS_CAPABILITIES`, the `esiRegistry.ts` mirror, and the capabilities
   table on the Characters page.
@@ -749,8 +751,8 @@ Original design:
   card; a character whose queue is unshared / unsynced / needs re-auth
   contributes nothing (its row says why). Original text: config `queue_warning_hours`, default 24. Warnings go
   to the Skills page and as a hub card badge (same mechanism as Admin's
-  pending badge; the count is computed server-side). Push, Discord or email
-  stays deferred (CLAUDE.md).
+  pending badge; the count is computed server-side). Push and email
+  stay deferred; Discord alerts shipped later (CLAUDE.md).
 - **5b Doctrine skill check (implemented):** `character_management/skill_check.py`,
   `GET /api/char-skills/doctrine-check?doctrine_id=`. The route sits under the
   `char_skills` prefix and additionally requires the `doctrine` grant, checked

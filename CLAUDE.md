@@ -30,8 +30,11 @@ re-deriving a prefix-per-tool layout from a stale reading of this
 paragraph. Tool `do_sync_esi` / `do_sync_contracts` / `do_sync_assets`
 are wrappers around `do_sync_for_tool` plus tool-specific post-processing
 (slots are written by the skills fetcher; Doctrine matching stays in
-`doctrine/esi_sync.py`). Token selection is still today's prefix
-listings until Phase 4.
+`doctrine/esi_sync.py`). Token selection (Phase 4) goes through
+`esi_data/selector.py`'s `select_auth_role`, used by the orchestrator and the
+alerts runner; a few per-tool character listings still enumerate token
+prefixes directly (e.g. `actions.py`'s buyer/seller character list,
+`doctrine/esi_sync.py`).
 
 The app has since grown more tenant-facing tools that follow the exact
 same `do_*`-actions/router/RLS pattern described in the rest of this
@@ -85,6 +88,20 @@ inputs; modules keep `purchase_region_id`). `production/jita_price_cache.py`
 is a Jita-only, cross-tenant cache (constant region, no config read), and the
 Goonmetrics "jita" slug fallbacks apply only to a Jita hub - a non-Jita hub
 goes straight to live ESI and missing prices stay missing.
+
+The four non-Trading tools that have a hub setting (Production, Doctrine,
+Refining, Module Reprocessing's input hub) may also pick **All hubs (best per
+item)**: the setting value `0` (`hubs.ALL_HUBS`, `eve_trader/hubs.py`), where
+`hubs.hub_pricing` prices each item at the hub with the lowest landed cost
+(sell price + buy broker fee + that hub's freight). Freight per hub is one
+tenant-wide table, `TradingConfig.hub_freight_cost_per_m3` (region id string ->
+ISK/m3, edited via `/api/hubs/freight`); a hub without an entry falls back to
+the calling tool's own freight value. Station Trading rejects `0` (its hub is
+tied to one `station_id`), and Production only *buys* at the best hub - listing
+status/valuation still uses Jita (`production/engine.py`). Goonmetrics history
+covers only a few regions (The Forge, Insmother, Delve); for any other region
+`goonmetrics_client.region_has_goonmetrics_history` is false and
+`price_history` reads ESI daily history instead.
 
 **Price sources matrix** - three different price sources answer three
 different questions, deliberately, not by accident, but nowhere else are
@@ -331,6 +348,11 @@ Landing cards and the middleware cannot disagree. Both layers are no-ops
 while `AccessConfig.access_gate_enabled` is `False` (trusted local
 operator, filesystem/SSH only — not a request parameter).
 
+`access_gate.DEFAULT_TOOL_KEYS` is every tool in `ALL_TOOL_KEYS` except
+`admin` and `module_reprocessing`. Admin's Add User grants it, approving an
+access request preselects it, and `eve-trader admin grant-defaults` applies
+it to existing tenants.
+
 `tool_grants` (`character_id, tool_key, tenant_id`) is deliberately **not
 RLS-scoped**, same reasoning as `tenants`/`tenant_registry_entries`
 (`docs/phase3_schema.sql`) - queried via `storage.connect_unscoped()`.
@@ -404,8 +426,8 @@ otherwise never learn this hub exists at all).
 
 **Seven tool_keys, one `char_` prefix, one module.** `char_info`,
 `char_skills`, `char_mail`, `char_notifications`, `char_contacts`,
-`char_skill_plans` and `char_alerts` (Discord alerts, its own paragraph
-under "Deferred, not rejected" below) each gate their own router/page -
+`char_skill_plans` and `char_alerts` (Discord alerts, see "Discord alerts"
+below) each gate their own router/page -
 decision 8 in the plan: a `char_` prefix specifically so a tool_key never
 collides with a data-kind key like `"skills"` (`esi_data/registry.py`'s
 `OwnedDataKind.key`). All seven live in `ALL_TOOL_KEYS` (17 grants total
@@ -488,6 +510,42 @@ which doctrine fitting - reads Doctrine's stored fittings via `storage`
 directly, never importing the doctrine package, and its route additionally
 requires the `doctrine` grant checked against `request.state.tool_keys`,
 since a `char_skills` grant alone must not expose another tool's fittings).
+
+**Discord alerts.** Implemented and live in production since 2026-10-02 (test DM confirmed;
+scheduled 2026-09-29): bot DMs
+to an OAuth-linked Discord account, tool_key `char_alerts`, opt-in per
+character x alert type (`skillqueue_empty`, `mail_new`). Code lives in
+`eve_trader/alerts/` (`discord_client.py`, pure `logic.py`, `actions.py` with
+`deliver()` as the one send path that re-checks opt-in/sharing/token at send
+time), router `/api/char-alerts/`. Bot token and OAuth client are operator env
+variables (`DISCORD_*`, see `.env.example`), never stored per tenant. The
+`alerts` job (`alerts/runner.py`, hooked in `scheduler._check_and_run_alerts_job`)
+runs only with the operator switch `alerts_job_enabled`, independent of every
+tenant's `scheduler_enabled` and of tenant inactivity
+(`tenant_eligibility.alerts_allowed`: gate on -> registered, not suspended,
+holds `char_alerts`). Frontend: `/character-management/alerts`.
+`runner.run_for_tenant` guards itself per tenant (`_try_begin_tenant`/
+`_end_tenant`, same shape as `esi_data.orchestrator`'s own per-owner
+`_try_begin_owner`/`_end_owner`, one level up) - confirmed real gap fixed
+2026-10-01: `scheduler._run_job` abandons a job thread after
+`JOB_TIMEOUT_SECONDS` rather than waiting for it, so a slow run could still be
+mid-flight when the next 5-minute tick started a second one for the same
+tenant, and both would read `alert_state` before either wrote it - a real
+double-DM risk, not just a wasted ESI call.
+
+Operator setup: `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`
+and optionally `DISCORD_REDIRECT_URI` (see `.env.example`); the redirect URI
+(default `FRONTEND_ORIGIN` + `/api/char-alerts/discord/callback`) must be
+registered in the Discord developer portal. The bot is one shared application,
+so only one server should run the alerts job (`alerts_job_enabled`) or two
+servers would send duplicate DMs for the same subscriptions. Alert design
+rules: opt-in per character x alert type, default off; opt-in never replaces ESI
+sharing (re-checked at send time); `skillqueue_empty` default lead time 12 h,
+sent once per `finish_date`, with one live re-check before sending;
+`mail_new` sends count, sender and subject, the mail text only with the separate
+`include_content` opt-in, and takes a baseline on first poll so old mail is never
+announced; `mail` stays `live_only` (polled by the alerts job, not
+`do_sync_due`); messages disable mentions and are English-only, no quiet hours.
 
 **Scheduler integration** is covered by the Scheduler section above
 (`schedule_mode = "on_demand"`, `useSyncWhenStale.ts`'s page-open sync) -
@@ -652,8 +710,7 @@ them):
   not on the Settings page): `backup_job_enabled`, `jita_price_cache_job_enabled`
   (both default on - the global jobs run when the master switch is on and their
   own switch is on), `alerts_job_enabled` (`scheduler._check_and_run_alerts_job`
-  reads it every tick - see "Deferred, not rejected" below for the Discord
-  alerts feature this gates, shipped later the same branch) and
+  reads it every tick - see "Discord alerts" below for the feature this gates, shipped later the same branch) and
   `inactive_tenant_days`. The thread now starts for the master switch **or**
   `alerts_job_enabled` alone, so alerts never require turning the backup,
   pipeline and ESI jobs on. Re-enabling the scheduler therefore no longer has to
@@ -741,6 +798,13 @@ scheduler's own global backup job (opt-in via `DEFAULT_TENANT_ID`'s
 `backup_interval_hours`).
 Filenames include microseconds and a uuid so two backups cannot collide;
 `pg_dump` stderr stays in the process log, not in the HTTP 400.
+
+**Update (2026-10-02): the scheduler is now fully on in production**
+(`config.yaml` `scheduler_enabled: true` and the Default tenant's
+`tenant_settings` override set to true), so `trading_pipeline`/
+`esi_data_sync`/`portfolio_snapshot`/the global backup job/the Jita price
+cache job run automatically. The paragraph below is the history of the
+earlier decision (2026-09-26) and no longer describes production.
 
 **Live operational decision (business-logic audit follow-up, confirmed
 with the user 2026-09-26): the scheduler stays off; backups are run by
@@ -994,28 +1058,6 @@ were explicitly discussed and deferred (not rejected) as of 2026-07-14 -
 they're legitimate future scope, just not started. Don't start on these
 without asking first.
 
-**Discord alerts** (user-scheduled 2026-09-29, branch
-`feat/discord-alerts`, decisions in `docs/DISCORD_ALERTS_HANDOFF.md`): bot DMs
-to an OAuth-linked Discord account, tool_key `char_alerts`, opt-in per
-character x alert type (`skillqueue_empty`, `mail_new`). Code lives in
-`eve_trader/alerts/` (`discord_client.py`, pure `logic.py`, `actions.py` with
-`deliver()` as the one send path that re-checks opt-in/sharing/token at send
-time), router `/api/char-alerts/`. Bot token and OAuth client are operator env
-variables (`DISCORD_*`, see `.env.example`), never stored per tenant. The
-`alerts` job (`alerts/runner.py`, hooked in `scheduler._check_and_run_alerts_job`)
-runs only with the operator switch `alerts_job_enabled`, independent of every
-tenant's `scheduler_enabled` and of tenant inactivity
-(`tenant_eligibility.alerts_allowed`: gate on -> registered, not suspended,
-holds `char_alerts`). Frontend: `/character-management/alerts`.
-`runner.run_for_tenant` guards itself per tenant (`_try_begin_tenant`/
-`_end_tenant`, same shape as `esi_data.orchestrator`'s own per-owner
-`_try_begin_owner`/`_end_owner`, one level up) - confirmed real gap fixed
-2026-10-01: `scheduler._run_job` abandons a job thread after
-`JOB_TIMEOUT_SECONDS` rather than waiting for it, so a slow run could still be
-mid-flight when the next 5-minute tick started a second one for the same
-tenant, and both would read `alert_state` before either wrote it - a real
-double-DM risk, not just a wasted ESI call.
-
 A full codebase audit (2026-08-18) turned up four more low-priority items,
 deliberately left unfixed at the time (everything else the audit found -
 critical/important bugs, nice-to-haves, architecture docs, EVE-mechanic
@@ -1043,3 +1085,8 @@ its own project, not a build target of this one, unless the user says
 otherwise. Do not assume packaging work is unstarted or "deferred until
 feature-complete" - that framing was true earlier in this project's history
 but is now stale; the packaging already happened once, over there.
+
+`SYNC.md` (repo root) holds the manual sync mapping to `eve-trader-local`
+(https://github.com/Pappmichel/eve-trader-local), a different sibling project
+from the packaged copy above. `../eve_trader_electron` is not present on the
+current dev machine (`C:\Dev` holds `eve_trader` and worktrees only).

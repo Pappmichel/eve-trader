@@ -1,4 +1,4 @@
-"""The alerts job body (docs/DISCORD_ALERTS_HANDOFF.md): one call per tenant per
+"""The alerts job body (CLAUDE.md "Discord alerts"): one call per tenant per
 scheduler tick. Only work an explicit opt-in asks for ever happens here.
 
 Skill queue: evaluated every tick from the stored snapshot (a local read, no
