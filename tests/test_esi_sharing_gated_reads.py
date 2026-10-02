@@ -604,3 +604,21 @@ def test_production_stock_helpers_respect_sharing_end_to_end(tenant):
     production_engine.invalidate_shared_production_owner_ids_cache()
 
     assert production_engine._stock_at_location(TYPE_ID, None) == 9.0
+
+
+def test_buyer_covered_assets_follow_the_buy_hub_system(monkeypatch):
+    # Amarr as buy hub: assets count at Amarr's system stations, not Jita's.
+    from eve_trader import own_orders
+
+    systems = []
+    monkeypatch.setattr(storage, "get_station_ids_in_system",
+                        lambda sid: systems.append(sid) or frozenset())
+    own_orders._hub_station_ids(10000043)
+    own_orders._hub_station_ids(10000002)
+    assert systems == [30002187, 30000142]
+
+    regions = []
+    monkeypatch.setattr(storage, "get_station_ids_in_region",
+                        lambda rid: regions.append(rid) or frozenset())
+    own_orders._hub_station_ids(10000060)
+    assert regions == [10000060]

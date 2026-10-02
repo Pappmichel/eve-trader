@@ -219,3 +219,15 @@ def test_mounted_api_subapp_unauthenticated_is_401_at_runtime():
     resp = client.get("/api/coverage-probe/leaked")
     assert resp.status_code == 401
     assert resp.json() == {"detail": "Not authenticated"}
+
+
+def test_sde_reference_reads_are_session_only_not_tool_gated():
+    # Region names (issue #223) are read from several tools' Settings pages.
+    assert _required_tool_for_path("/api/sde/regions", "GET") is None
+    assert _classify("GET", "/api/sde/regions") == "session_only"
+
+
+def test_hub_freight_table_is_session_only_not_tool_gated():
+    # Edited from several tools' Settings pages (issue #222).
+    assert _required_tool_for_path("/api/hubs/freight", "POST") is None
+    assert _classify("POST", "/api/hubs/freight") == "session_only"

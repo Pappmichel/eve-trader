@@ -6,6 +6,8 @@ import { moduleReprocessingApi } from '../../api/client'
 import type { ModuleReprocessingSettings as ModuleReprocessingSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { HintCard } from '../../components/HintCard'
+import { HubSelect } from '../../components/HubSelect'
+import { RegionSelect } from '../../components/RegionSelect'
 
 export default function ModuleReprocessingSettings() {
   const { data } = useQuery({ queryKey: ['module_reprocessing', 'settings'], queryFn: moduleReprocessingApi.settings })
@@ -29,7 +31,7 @@ export default function ModuleReprocessingSettings() {
       </HintCard>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Reprocessing Yield</Title>
-      <SimpleGrid cols={2}>
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <NumberInput label="Scrapmetal Processing skill (0-5)" value={form.scrapmetal_processing_skill_level}
           min={0} max={5} step={1} onChange={(v) => set('scrapmetal_processing_skill_level', Number(v))} />
         <NumberInput label="Refining tax" suffix="%" decimalScale={2} value={form.refining_tax_rate * 100}
@@ -37,7 +39,7 @@ export default function ModuleReprocessingSettings() {
       </SimpleGrid>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Economy</Title>
-      <SimpleGrid cols={2}>
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <NumberInput label="Freight cost per m³" value={form.freight_cost_per_m3} min={0} step={10}
           onChange={(v) => set('freight_cost_per_m3', Number(v))} />
         <NumberInput label="Minimum profit / unit" value={form.min_profit_threshold} min={0} step={100}
@@ -57,13 +59,19 @@ export default function ModuleReprocessingSettings() {
       </Text>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Purchase Source</Title>
-      <SimpleGrid cols={2}>
-        <NumberInput label="Purchase region ID (default: Jita/The Forge)" value={form.purchase_region_id} min={1}
-          onChange={(v) => set('purchase_region_id', Number(v))} />
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
+        <RegionSelect label="Purchase region (default: The Forge)" value={form.purchase_region_id}
+          onChange={(v) => set('purchase_region_id', v)} />
+      </SimpleGrid>
+
+      <Title order={6} c="dimmed" tt="uppercase" mt="md">Ore &amp; Mineral Inputs (Shopping List)</Title>
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
+        <HubSelect label="Input market hub" description="Where ore/ice and minerals are priced (independent of Trading's)"
+          allowAll value={form.input_hub_region_id} onChange={(v) => set('input_hub_region_id', v)} />
       </SimpleGrid>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Shortlist Size</Title>
-      <SimpleGrid cols={2}>
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <Checkbox label="Cap the shortlist at a maximum size" checked={form.enforce_shortlist_cap}
           onChange={(e) => set('enforce_shortlist_cap', e.currentTarget.checked)} mt={6} />
         <NumberInput label="Max. active shortlist entries (when cap is on)" value={form.max_active_shortlist_items}

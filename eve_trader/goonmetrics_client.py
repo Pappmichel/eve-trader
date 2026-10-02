@@ -31,6 +31,19 @@ from .config import TRADING_CONFIG, TradingConfig
 
 log = logging.getLogger(__name__)
 
+# Goonmetrics accepts any region_id for price_history but only tracks a few
+# regions (checked 2026-10-02: The Forge, Insmother and Delve have data;
+# Domain, Sinq Laison, Heimatar, Metropolis and others answer an empty
+# <price_history />, even for Tritanium). Those regions are read from ESI's
+# own daily history instead. Coverage is probed once per region and process.
+_COVERAGE_PROBE_TYPE_ID = 34  # Tritanium: traded daily in every tracked region
+# Goonmetrics returns about 30 days; ESI returns about a year. Points from
+# ESI are cut to the same window so averages over "the history" (e.g.
+# shortlist.average_market_daily_volume) mean the same for both sources.
+HISTORY_WINDOW_DAYS = 30
+_region_covered: dict[int, bool] = {}
+_region_covered_lock = threading.Lock()
+
 USER_AGENT = "eve-trader-python"
 
 APPRAISE_BASE = "https://appraise.gnf.lt"
@@ -203,11 +216,37 @@ class GoonmetricsClient:
             out.update(_parse_price_data_xml(resp.text))
         return out
 
+    def region_has_goonmetrics_history(self, region_id: int) -> bool:
+        """Whether Goonmetrics tracks `region_id` at all (see
+        _COVERAGE_PROBE_TYPE_ID). A failed probe counts as covered, so an
+        outage still goes through price_history's own ESI fallback instead of
+        being remembered as "not tracked"."""
+        with _region_covered_lock:
+            if region_id in _region_covered:
+                return _region_covered[region_id]
+        url = f"{self.cfg.goonmetrics_history_base}?region_id={region_id}&type_id={_COVERAGE_PROBE_TYPE_ID}"
+        try:
+            resp = self.session.get(url, timeout=30)
+            resp.raise_for_status()
+            covered = bool(_parse_history_xml(resp.text, region_id))
+        except Exception:  # noqa: BLE001 - unknown, not "untracked"; don't cache
+            return True
+        with _region_covered_lock:
+            _region_covered[region_id] = covered
+        if not covered:
+            log.info("Goonmetrics has no history for region %d - using ESI daily history.", region_id)
+        return covered
+
     def price_history(self, region_id: int, type_ids: Iterable[int]) -> list[HistoryPoint]:
         """Never raises on a Goonmetrics failure - silently falls back to
         the slower per-type_id ESI history endpoint instead (see except
-        clause below), so callers don't need their own fallback handling."""
+        clause below), so callers don't need their own fallback handling.
+        A region Goonmetrics doesn't track goes to ESI directly."""
         type_ids = list(type_ids)
+        if not type_ids:
+            return []
+        if not self.region_has_goonmetrics_history(region_id):
+            return self._esi_price_history_fallback(region_id, type_ids)
         ids = ",".join(str(t) for t in type_ids)
         url = f"{self.cfg.goonmetrics_history_base}?region_id={region_id}&type_id={ids}"
         try:
@@ -236,20 +275,29 @@ class GoonmetricsClient:
         request."""
         from .esi_client import ESIClient, ESIError  # local import: avoids a hard esi_client<->goonmetrics_client coupling for callers that never hit this fallback
 
+        from . import storage
+
         esi = ESIClient(self.cfg)
-        points: list[HistoryPoint] = []
-        for type_id in type_ids:
+
+        def _one(type_id: int) -> list[HistoryPoint]:
             try:
                 rows = esi.region_market_history(region_id, type_id)
             except ESIError as e:
                 log.warning("ESI price history fallback also failed for type_id %d (%s) - skipping it.", type_id, e)
-                continue
-            for r in rows:
-                points.append(HistoryPoint(
-                    region_id=region_id, type_id=type_id, date=r["date"],
-                    min_price=r["lowest"], max_price=r["highest"], avg_price=r["average"],
-                    movement=r["volume"], num_orders=r["order_count"],
-                ))
+                return []
+            points = [HistoryPoint(
+                region_id=region_id, type_id=type_id, date=r["date"],
+                min_price=r["lowest"], max_price=r["highest"], avg_price=r["average"],
+                movement=r["volume"], num_orders=r["order_count"],
+            ) for r in rows]
+            return _last_days(points, HISTORY_WINDOW_DAYS)
+
+        # One ESI call per type_id; run them concurrently. Worker threads
+        # don't inherit the ambient tenant (CLAUDE.md), hence the wrapper.
+        points: list[HistoryPoint] = []
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            for chunk in pool.map(storage.with_current_tenant(_one), type_ids):
+                points.extend(chunk)
         return points
 
     def price_history_chunked(self, region_id: int, type_ids: list[int],
@@ -284,6 +332,20 @@ class GoonmetricsClient:
             for points in pool.map(_fetch, chunks):
                 out.extend(points)
         return out
+
+
+def _today() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _last_days(points: list[HistoryPoint], days: int) -> list[HistoryPoint]:
+    """Points from the last `days` calendar days before today (UTC), the
+    window Goonmetrics itself returns. Anchored on today, not on an item's
+    own newest point, so a rarely traded item doesn't keep months-old days."""
+    from datetime import date, timedelta
+    cutoff = (date.fromisoformat(_today()) - timedelta(days=days)).isoformat()
+    return [p for p in points if p.date[:10] > cutoff]
 
 
 def _parse_price_data_xml(xml_text: str) -> dict[int, CurrentPrice]:
@@ -328,3 +390,9 @@ def _parse_history_xml(xml_text: str, region_id: int) -> list[HistoryPoint]:
                 num_orders=int(hist_el.attrib["numOrders"]),
             ))
     return points
+
+
+def clear_region_coverage_cache() -> None:
+    """Forget probed Goonmetrics region coverage (tests)."""
+    with _region_covered_lock:
+        _region_covered.clear()

@@ -65,6 +65,7 @@ _SDE_CSV_FILES = (
     "industryActivityProducts.csv",
     "industryActivityProbabilities.csv",
     "mapSolarSystems.csv",
+    "mapRegions.csv",
     "staStations.csv",
     "dgmTypeEffects.csv",
     "invTypeMaterials.csv",
@@ -100,6 +101,96 @@ def _fetch_csv(session: requests.Session, base_url: str, filename: str) -> list[
     return list(csv.DictReader(io.StringIO(text)))
 
 
+# Character Management (docs/CHARACTER_MANAGEMENT_PLAN.md R7): the skill
+# catalogue needs a handful of dogma attributes out of dgmTypeAttributes.csv.
+# That file has a row per (type, attribute) for the *whole* SDE - millions of
+# rows - so it is streamed and filtered while parsing instead of going through
+# _fetch_csv (which holds the whole body and a dict per row in memory).
+_SKILL_ATTRIBUTES_FILE = "dgmTypeAttributes.csv"
+_REQUIRED_SKILL_ATTRS = (182, 183, 184, 1285, 1289, 1290)        # requiredSkill1..6
+_REQUIRED_SKILL_LEVEL_ATTRS = (277, 278, 279, 1286, 1287, 1288)  # requiredSkill1..6Level
+_ATTR_SKILL_TIME_CONSTANT = 275   # skill rank
+_ATTR_PRIMARY = 180
+_ATTR_SECONDARY = 181
+_KEPT_SKILL_ATTRS = frozenset(
+    _REQUIRED_SKILL_ATTRS + _REQUIRED_SKILL_LEVEL_ATTRS
+    + (_ATTR_SKILL_TIME_CONSTANT, _ATTR_PRIMARY, _ATTR_SECONDARY)
+)
+
+
+def _attr_value(row: dict) -> Optional[float]:
+    for col in ("valueFloat", "valueInt"):
+        v = row.get(col)
+        if v not in (None, ""):
+            return float(v)
+    return None
+
+
+def _fetch_skill_attributes(session: requests.Session, base_url: str) -> dict[int, dict[int, float]]:
+    """{typeID: {attributeID: value}} for `_KEPT_SKILL_ATTRS` only, read as a
+    stream. Same retry policy as _fetch_csv, wrapped around the *whole*
+    stream - a connection reset half-way through restarts the download
+    rather than yielding a silently truncated table."""
+    last_exc: Optional[requests.RequestException] = None
+    for attempt in range(1, 4):
+        try:
+            with session.get(f"{base_url}{_SKILL_ATTRIBUTES_FILE}", timeout=120, stream=True) as resp:
+                resp.raise_for_status()
+                lines = _decode_lines(resp.iter_lines())
+                kept: dict[int, dict[int, float]] = {}
+                for row in csv.DictReader(lines):
+                    attr_id = int(row["attributeID"])
+                    if attr_id not in _KEPT_SKILL_ATTRS:
+                        continue
+                    value = _attr_value(row)
+                    if value is not None:
+                        kept.setdefault(int(row["typeID"]), {})[attr_id] = value
+                return kept
+        except requests.RequestException as e:
+            last_exc = e
+            if attempt < 3:
+                time.sleep(attempt * 2)
+    raise last_exc
+
+
+def _decode_lines(raw_lines):
+    """Streamed byte lines -> str lines. The UTF-8 BOM (Fuzzwork's files
+    carry one, which is why _fetch_csv decodes as utf-8-sig) can only sit on
+    the very first line and would otherwise glue itself onto the first CSV
+    column name."""
+    for i, raw in enumerate(raw_lines):
+        line = raw.decode("utf-8")
+        yield line.lstrip("\ufeff") if i == 0 else line
+
+
+def skill_rows_from_attributes(attrs_by_type: dict[int, dict[int, float]]) -> tuple[list[tuple], list[tuple]]:
+    """(skill_requirements, skill_meta) rows from the filtered attribute map.
+
+    requirements: (type_id, skill_id, level) for every requiredSkillN whose
+    matching level attribute is present (a skill id without a level is
+    skipped rather than guessed). meta: (skill_id, rank, primary, secondary)
+    for every type that has a skillTimeConstant, i.e. every skill."""
+    requirements: list[tuple] = []
+    meta: list[tuple] = []
+    for type_id, attrs in attrs_by_type.items():
+        for skill_attr, level_attr in zip(_REQUIRED_SKILL_ATTRS, _REQUIRED_SKILL_LEVEL_ATTRS):
+            skill_id = attrs.get(skill_attr)
+            level = attrs.get(level_attr)
+            if skill_id is None or level is None:
+                continue
+            requirements.append((type_id, int(skill_id), int(level)))
+        rank = attrs.get(_ATTR_SKILL_TIME_CONSTANT)
+        if rank is not None:
+            primary = attrs.get(_ATTR_PRIMARY)
+            secondary = attrs.get(_ATTR_SECONDARY)
+            meta.append((
+                type_id, rank,
+                int(primary) if primary is not None else None,
+                int(secondary) if secondary is not None else None,
+            ))
+    return requirements, meta
+
+
 def _dump_etag(session: requests.Session, base_url: str) -> Optional[str]:
     """A plain HEAD request's ETag (no CSV body downloaded) - best-effort,
     returns None on any failure (a third-party server's freshness metadata
@@ -111,6 +202,17 @@ def _dump_etag(session: requests.Session, base_url: str) -> Optional[str]:
     except requests.RequestException:
         return None
     return resp.headers.get("ETag")
+
+
+def region_rows_from_csv(rows: list[dict]) -> list[tuple]:
+    """mapRegions.csv -> (region_id, region_name) rows for sde_regions. Every
+    region is kept (no filtering); only rows missing an id or a name are
+    skipped, since region_name is NOT NULL."""
+    return [
+        (int(r["regionID"]), r["regionName"])
+        for r in rows
+        if r.get("regionID") not in (None, "") and r.get("regionName") not in (None, "")
+    ]
 
 
 def _int_or_none(v: str):
@@ -145,11 +247,15 @@ class FetchedSde:
     blueprint_products: list[tuple] = field(default_factory=list)
     invention_probability: list[tuple] = field(default_factory=list)
     solar_systems: list[tuple] = field(default_factory=list)
+    regions: list[tuple] = field(default_factory=list)
     stations: list[tuple] = field(default_factory=list)
     categories: list[tuple] = field(default_factory=list)
     type_slots: list[tuple] = field(default_factory=list)
     type_materials: list[tuple] = field(default_factory=list)
     blueprint_skills: list[tuple] = field(default_factory=list)
+    # From dgmTypeAttributes.csv (Character Management) - see skill_rows_from_attributes.
+    skill_requirements: list[tuple] = field(default_factory=list)
+    skill_meta: list[tuple] = field(default_factory=list)
     dump_etag: Optional[str] = None
 
 
@@ -167,7 +273,7 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
     dump_etag = _dump_etag(session, base)  # captured before the real fetches - see check_for_newer_sde
 
     fetched: dict[str, list[dict]] = {}
-    total = len(_SDE_CSV_FILES)
+    total = len(_SDE_CSV_FILES) + 1  # + the streamed dgmTypeAttributes.csv below
     for i, filename in enumerate(_SDE_CSV_FILES, start=1):
         _emit_progress(progress_callback, {
             "phase": "run",
@@ -176,6 +282,15 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
             "message": f"Fetching {filename}",
         })
         fetched[filename] = _fetch_csv(session, base, filename)
+    _emit_progress(progress_callback, {
+        "phase": "run",
+        "batch": total,
+        "total_batches": total,
+        "message": f"Fetching {_SKILL_ATTRIBUTES_FILE} (filtered to skill attributes)",
+    })
+    skill_requirement_rows, skill_meta_rows = skill_rows_from_attributes(
+        _fetch_skill_attributes(session, base)
+    )
 
     inv_types = fetched["invTypes.csv"]
     inv_groups = fetched["invGroups.csv"]
@@ -192,6 +307,7 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
     activity_products = fetched["industryActivityProducts.csv"]
     activity_probabilities = fetched["industryActivityProbabilities.csv"]
     solar_systems = fetched["mapSolarSystems.csv"]
+    regions = fetched["mapRegions.csv"]
     stations = fetched["staStations.csv"]
     # typeID -> fitting slot, for the Doctrine tool's EFT parser (see
     # doctrine/parser.py's SDE-verification step). dgmTypeEffects.csv is a
@@ -267,6 +383,7 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
         (int(r["solarSystemID"]), r["solarSystemName"], float(r["security"]), _int_or_none(r.get("regionID")))
         for r in solar_systems if r.get("security") not in (None, "")
     ]
+    region_rows = region_rows_from_csv(regions)
     station_rows = [
         (int(r["stationID"]), int(r["solarSystemID"]), r.get("stationName"))
         for r in stations if r.get("solarSystemID") not in (None, "")
@@ -283,9 +400,10 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
         types=types_rows, groups=groups_rows, market_groups=market_groups_rows,
         blueprint_time=time_rows, blueprint_materials=material_rows,
         blueprint_products=product_rows, invention_probability=probability_rows,
-        solar_systems=solar_system_rows, stations=station_rows,
+        solar_systems=solar_system_rows, regions=region_rows, stations=station_rows,
         categories=category_rows, type_slots=type_slot_rows,
         type_materials=type_materials_rows, blueprint_skills=blueprint_skill_rows,
+        skill_requirements=skill_requirement_rows, skill_meta=skill_meta_rows,
         dump_etag=dump_etag,
     )
 
@@ -298,8 +416,10 @@ def apply_sde(fetched: FetchedSde) -> dict:
         blueprint_time=fetched.blueprint_time, blueprint_materials=fetched.blueprint_materials,
         blueprint_products=fetched.blueprint_products, stations=fetched.stations,
         invention_probability=fetched.invention_probability, solar_systems=fetched.solar_systems,
+        regions=fetched.regions,
         categories=fetched.categories, type_slots=fetched.type_slots,
         type_materials=fetched.type_materials, blueprint_skills=fetched.blueprint_skills,
+        skill_requirements=fetched.skill_requirements, skill_meta=fetched.skill_meta,
     )
     storage.set_sde_refresh_state(datetime.now(timezone.utc).isoformat(), fetched.dump_etag)
     return storage.sde_row_counts()

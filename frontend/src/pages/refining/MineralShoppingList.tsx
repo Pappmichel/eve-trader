@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
-  ActionIcon, Badge, Button, Card, Center, Group, Loader, NumberInput, Select, SimpleGrid, Stack, Table, Text,
+  ActionIcon, Badge, Button, Card, Center, Group, Loader, NumberInput, Select, SimpleGrid, Stack, Text,
   Title, Tooltip,
 } from '@mantine/core'
 import { IconCalculator, IconDeviceFloppy, IconDownload, IconPlus, IconTrash } from '@tabler/icons-react'
@@ -13,10 +13,15 @@ import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
 import { isk, qty } from '../../format'
+import { ALL_HUBS, hubLabel } from '../../tradingHubs'
 
 export default function MineralShoppingList() {
   const { data: minerals } = useQuery({ queryKey: ['refining', 'refinable-minerals'], queryFn: refiningApi.refinableMinerals })
   const { data: saved } = useQuery({ queryKey: ['refining', 'mineral-requirements'], queryFn: refiningApi.mineralRequirements })
+
+  const { data: settings } = useQuery({ queryKey: ['refining', 'settings'], queryFn: refiningApi.settings })
+  const allHubs = settings?.hub_region_id === ALL_HUBS
+  const hub = hubLabel(settings?.hub_region_id)
 
   const [rows, setRows] = useState<MineralRequirement[]>([])
   useEffect(() => { if (saved) setRows(saved) }, [saved])
@@ -31,7 +36,7 @@ export default function MineralShoppingList() {
   // Solved from the on-screen list rather than the saved one, so the button
   // always reflects what the user is looking at - no "save first" step.
   const optimize = useAction('Optimize', (r: MineralRequirement[]) => refiningApi.optimizeShoppingList(r), [],
-    { tier: 'live', effect: 'Solves the buy/refine mix with current Jita prices (cached with live fallback).' })
+    { tier: 'live', effect: 'Solves the buy/refine mix with current hub prices (cached with live fallback).' })
 
   // GitHub issue #94: manual, one-directional pull of Production's
   // already-computed buy-list shortfall - reads GET /api/production/plan
@@ -70,15 +75,40 @@ export default function MineralShoppingList() {
     setNewQty('')
   }
 
+  // Editable list of required minerals; rows are keyed by type_id so editing or
+  // removing one never touches another (sorting/filtering can reorder the view).
+  const requirementColumns = useMemo<ColumnDef<MineralRequirement, any>[]>(() => [
+    { header: 'Mineral', accessorKey: 'name', size: 240 },
+    {
+      header: 'Required Quantity', accessorKey: 'required_qty', size: 200,
+      cell: (i) => (
+        <NumberInput size="xs" min={1} value={i.row.original.required_qty} thousandSeparator
+          aria-label={`Required quantity ${i.row.original.name}`}
+          onChange={(v) => setRows((all) => all.map((row) =>
+            row.type_id === i.row.original.type_id ? { ...row, required_qty: Number(v) || 0 } : row))} />
+      ),
+    },
+    {
+      header: '', id: 'remove', size: 60, enableSorting: false, enableResizing: false,
+      cell: (i) => (
+        <ActionIcon variant="subtle" color="danger" aria-label={`Remove ${i.row.original.name}`}
+          onClick={() => setRows((all) => all.filter((row) => row.type_id !== i.row.original.type_id))}>
+          <IconTrash size={14} />
+        </ActionIcon>
+      ),
+    },
+  ], [])
+
   const oreColumns = useMemo<ColumnDef<OrePurchase, any>[]>(() => [
-    { header: 'Buy in Jita', accessorKey: 'item', size: 220 },
+    { header: allHubs ? 'Buy' : `Buy in ${hub}`, accessorKey: 'item', size: 220 },
+    ...(allHubs ? [{ header: 'Best hub', accessorKey: 'hub_name', size: 100, cell: (i: any) => i.getValue() ?? '–' }] : []),
     { header: 'Family', accessorKey: 'family', size: 130 },
     { header: 'Units', accessorKey: 'units', size: 110, cell: (i) => qty(i.getValue()) },
     { header: 'Portions', accessorKey: 'portions', size: 100, cell: (i) => qty(i.getValue()) },
     { header: 'Volume (m3)', accessorKey: 'volume_m3', size: 120, cell: (i) => qty(i.getValue()) },
     { header: 'Landed / Unit', accessorKey: 'landed_cost_per_unit', size: 130, cell: (i) => isk(i.getValue()) },
     { header: 'Total Cost', accessorKey: 'total_cost', size: 140, cell: (i) => isk(i.getValue()) },
-  ], [])
+  ], [allHubs, hub])
 
   const directColumns = useMemo<ColumnDef<DirectMineralPurchase, any>[]>(() => [
     { header: 'Buy Directly', accessorKey: 'name', size: 220 },
@@ -109,7 +139,7 @@ export default function MineralShoppingList() {
     <Stack>
       <HintCard>
         Enter how many of each mineral you need. The optimizer finds the cheapest mix of buy-and-refine vs.
-        buying outright, using landed Jita prices and your Settings' refining yield.
+        buying outright, using landed prices at the configured hub and your Settings' refining yield.
       </HintCard>
 
       <Group align="flex-end">
@@ -133,33 +163,10 @@ export default function MineralShoppingList() {
       {rows.length === 0 ? (
         <HintCard>No mineral requirements yet - add one above.</HintCard>
       ) : (
-        <Table maw={640} withTableBorder>
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th>Mineral</Table.Th>
-              <Table.Th>Required Quantity</Table.Th>
-              <Table.Th />
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {rows.map((r, index) => (
-              <Table.Tr key={r.type_id}>
-                <Table.Td>{r.name}</Table.Td>
-                <Table.Td>
-                  <NumberInput size="xs" min={1} value={r.required_qty} thousandSeparator
-                    onChange={(v) => setRows((all) => all.map((row, i) =>
-                      i === index ? { ...row, required_qty: Number(v) || 0 } : row))} />
-                </Table.Td>
-                <Table.Td w={50}>
-                  <ActionIcon variant="subtle" color="danger" aria-label={`Remove ${r.name}`}
-                    onClick={() => setRows((all) => all.filter((_, i) => i !== index))}>
-                    <IconTrash size={14} />
-                  </ActionIcon>
-                </Table.Td>
-              </Table.Tr>
-            ))}
-          </Table.Tbody>
-        </Table>
+        <DataTable
+          data={rows} columns={requirementColumns} maxHeight={420}
+          getRowId={(r) => String(r.type_id)} exportFilename="mineral-requirements"
+        />
       )}
 
       <Group>

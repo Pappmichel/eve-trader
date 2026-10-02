@@ -59,7 +59,7 @@ def _build_shortlist_rows(rows: list[tuple[int, float, float, str, bool]],
     category/profit/margin from that live price, not the persisted
     discovery-time spread (see _profit's own docstring)."""
     type_ids = [type_id for type_id, *_rest in rows]
-    live = confirm_live(type_ids)
+    live = confirm_live(type_ids, hub_region_id=cfg.hub_region_id)
     category_names = storage.load_sde_category_names()
     result = []
     for type_id, spread_pct, avg_daily_volume, discovered_at, active in rows:
@@ -202,6 +202,9 @@ def do_get_skill_summary(oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> list[dict]:
 def do_update_settings(updates: dict, cfg: StationTradingConfig = STATION_TRADING_CONFIG) -> dict:
     """Persists `updates` to tenant_settings and applies them to the live
     STATION_TRADING_CONFIG immediately (see Station Trading Settings tab)."""
+    if updates.get("hub_region_id") == 0:
+        # A station trader sits at one hub; there is no "best hub" here.
+        raise ActionError("Station Trading needs one hub; 'All hubs' is not available.")
     try:
         save_tenant_config_overrides("station_trading", updates, cfg, cfg_type=StationTradingConfig)
     except ConfigError as e:

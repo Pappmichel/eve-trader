@@ -10,7 +10,7 @@ import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Iterable, Optional
 
 from .. import storage
 from ..access_gate import ALL_TOOL_KEYS
@@ -18,7 +18,7 @@ from ..auth import TokenManager, TokenRecord
 from ..config import OAUTH_CONFIG, TRADING_CONFIG
 from ..esi_client import ESIClient, ESIError
 from .fetchers import fetcher_for
-from .registry import OWNED_DATA_KINDS, TIER_FREQUENT, TIER_NORMAL, TIER_RARE
+from .registry import OWNED_DATA_KINDS, ON_DEMAND, TIER_FREQUENT, TIER_NORMAL, TIER_RARE
 from .selector import REAUTH_NEEDED, select_auth_role
 from .stale import clear_stale_owner_kind
 
@@ -90,11 +90,41 @@ def _hours_since_success(iso_or_dt, now: Optional[datetime] = None) -> float:
     return (clock - since).total_seconds() / 3600.0
 
 
+# A kind whose last attempt failed (or could not even start) is not retried
+# every scheduler tick: it waits min(its tier interval, this many hours) since
+# the last attempt (docs/SCHEDULER_REWORK_PLAN.md decision 6). Manual syncs
+# ignore this.
+FAILURE_BACKOFF_HOURS = 6.0
+
+
+def _backoff_hours(data_kind: str) -> float:
+    return min(_tier_hours(data_kind), FAILURE_BACKOFF_HOURS)
+
+
+def _freshness_map() -> dict[tuple[str, int, str], tuple[Optional[str], Optional[str]]]:
+    """`{(owner_type, owner_id, kind): (last_success_at, last_attempt_at)}` in
+    one query - due-ness used to cost one query per sharing row per tick."""
+    return {
+        (ot, oid, kind): (success, attempt)
+        for ot, oid, kind, success, attempt, _err in storage.list_esi_freshness()
+    }
+
+
 def _kind_is_due(
     owner_type: str, owner_id: int, data_kind: str, *, now: Optional[datetime] = None,
+    freshness: Optional[dict] = None,
 ) -> bool:
-    last = storage.get_esi_freshness_success_at(owner_type, owner_id, data_kind)
-    return _hours_since_success(last, now) >= _tier_hours(data_kind)
+    """Past its tier interval since the last success *and* past the failure
+    backoff since the last attempt. After a success the two timestamps are
+    equal, so the backoff only ever matters after a failed/skipped attempt."""
+    if freshness is None:
+        freshness = _freshness_map()
+    success, attempt = freshness.get((owner_type, owner_id, data_kind), (None, None))
+    if _hours_since_success(success, now) < _tier_hours(data_kind):
+        return False
+    if attempt is not None and _hours_since_success(attempt, now) < _backoff_hours(data_kind):
+        return False
+    return True
 
 
 def _required_scope(data_kind: str, owner_type: str) -> Optional[str]:
@@ -162,6 +192,22 @@ def _record_success(owner_type: str, owner_id: int, data_kind: str) -> None:
     storage.upsert_esi_freshness(owner_type, owner_id, data_kind, success=True)
 
 
+def _record_reauth_attempts(owner_type: str, owner_id: int, kinds: list[str]) -> None:
+    """Kinds skipped for REAUTH_NEEDED get an attempt stamp (no error, no
+    stale clear - the old behaviour) so they back off instead of staying due
+    on every scheduler tick until the user re-authorizes."""
+    for data_kind in kinds:
+        if data_kind not in _KIND_TIER:
+            continue
+        try:
+            storage.record_esi_attempt(owner_type, owner_id, data_kind)
+        except Exception:  # noqa: BLE001 - bookkeeping must not fail the pass
+            log.warning(
+                "could not record reauth attempt for %s %s %s", owner_type, owner_id, data_kind,
+                exc_info=True,
+            )
+
+
 def _record_failure(owner_type: str, owner_id: int, data_kind: str, error: BaseException) -> None:
     if data_kind not in _KIND_TIER:
         log.warning(
@@ -172,6 +218,10 @@ def _record_failure(owner_type: str, owner_id: int, data_kind: str, error: BaseE
     storage.upsert_esi_freshness(
         owner_type, owner_id, data_kind, success=False, error=str(error),
     )
+    if _KIND_BY_KEY[data_kind].schedule_mode == ON_DEMAND:
+        # Display-only snapshots are expected to age between page visits; one
+        # failed page-open sync must not wipe them (SCHEDULER_REWORK_PLAN.md).
+        return
     try:
         clear_stale_owner_kind(
             owner_type, owner_id, data_kind,
@@ -195,6 +245,8 @@ def _kinds_for_owner(
     # (replace_blueprints walks the matching asset table).
     wanted = {kind for ot, oid, kind, _tool in sharing if ot == owner_type and oid == owner_id}
     for spec in OWNED_DATA_KINDS:
+        if spec.live_only:
+            continue
         if spec.key in wanted and spec.key not in seen:
             if owner_type == "corporation" and spec.corporation_scope is None:
                 continue
@@ -221,6 +273,7 @@ def _run_character_owner(
     owner_name = _display_name(owner_type, owner_id, characters, {})
     kind_report: dict = {}
     failed: Optional[tuple[str, BaseException]] = None
+    reauth_kinds: list[str] = []
     try:
         with storage.batch_session():
             for data_kind in kinds:
@@ -230,6 +283,7 @@ def _run_character_owner(
                     # Distinguishable from a fetch failure and from "nothing
                     # shared": Characters will map this to pending re-auth.
                     kind_report[data_kind] = REAUTH_NEEDED
+                    reauth_kinds.append(data_kind)
                     continue
                 try:
                     wrote = _run_kind(
@@ -249,6 +303,8 @@ def _run_character_owner(
             kind_report["error"] = str(e)
     finally:
         _end_owner(owner_type, owner_id)
+
+    _record_reauth_attempts(owner_type, owner_id, reauth_kinds)
 
     if failed is not None:
         # Freshness for the failed kind is recorded *outside* the rolled-back
@@ -295,6 +351,7 @@ def _run_corporation_kinds_for_members(
     owner_name = f"{corp_name} (corp)"
     kind_report: dict = {}
     failed_kinds: dict[str, str] = {}
+    reauth_kinds: list[str] = []
     try:
         with storage.batch_session():
             for data_kind in kinds:
@@ -316,6 +373,7 @@ def _run_corporation_kinds_for_members(
                         candidate_roles.append(role)
                     if not candidate_roles:
                         kind_report[data_kind] = REAUTH_NEEDED
+                        reauth_kinds.append(data_kind)
                         continue
                     any_candidate = True
                     try:
@@ -347,6 +405,7 @@ def _run_corporation_kinds_for_members(
                             continue
                 if not any_candidate:
                     kind_report[data_kind] = REAUTH_NEEDED
+                    reauth_kinds.append(data_kind)
                     continue
                 if last_error is not None or wrote is None:
                     failed_kinds[data_kind] = str(last_error or "no member could fetch")
@@ -361,6 +420,8 @@ def _run_corporation_kinds_for_members(
             failed_kinds["?"] = str(e)
     finally:
         _end_owner(owner_type, corp_id)
+
+    _record_reauth_attempts(owner_type, corp_id, reauth_kinds)
 
     if failed_kinds:
         # Record failure for the first unclaimed kind (the one that aborted).
@@ -395,6 +456,13 @@ def _owners_from_sharing(
     )
 
 
+def _empty_result(tool_key: Optional[str]) -> dict:
+    return {
+        "tool_key": tool_key, "characters": {}, "corporations": {}, "owners": [],
+        "ok": True, "null_id_sweep": None,
+    }
+
+
 def _sync(
     sharing: list[tuple[str, int, str, str]],
     *,
@@ -402,6 +470,18 @@ def _sync(
     tool_key: Optional[str],
     extra: Optional[dict] = None,
 ) -> dict:
+    # Live-only kinds (registry `live_only`, docs/CHARACTER_MANAGEMENT_PLAN.md
+    # R9) have sharing rows but nothing to fetch or store. Drop them before
+    # owners are derived: otherwise a character that shares only a live kind
+    # would still get an (empty) owner task, count as `attempted`, and
+    # trigger the NULL-id sweep for no reason.
+    sharing = [
+        row for row in sharing
+        if not (_KIND_BY_KEY.get(row[2]) and _KIND_BY_KEY[row[2]].live_only)
+    ]
+    if not sharing:
+        # Nothing to fetch: no token read, no ESI client, no public-info calls.
+        return _empty_result(tool_key)
     tm = TokenManager(OAUTH_CONFIG)
     characters = _list_known_characters(tm)
     esi = client or ESIClient(tokens=tm)
@@ -454,7 +534,9 @@ def _sync(
     # two characters to claim the same corp.
     members_by_corp: dict[int, list[TokenRecord]] = {}
     corp_names: dict[int, str] = {}
-    for rec in characters:
+    # Only needed to serve corporation owners; without one this loop was one
+    # (cached) public-info call per known character per pass for nothing.
+    for rec in (characters if corp_owners else ()):
         try:
             info = esi.character_public_info(rec.character_id)
         except Exception:  # noqa: BLE001 - skip this character's corp
@@ -541,22 +623,69 @@ def do_sync_all(*, client: Optional[ESIClient] = None, extra: Optional[dict] = N
     return _sync(sharing, client=client, tool_key=None, extra=extra)
 
 
+def pending_due(
+    *,
+    granted_tools: Optional[Iterable[str]] = None,
+    demand: Iterable[tuple[str, int, str]] = (),
+    now: Optional[datetime] = None,
+) -> list[tuple[str, int, str, str]]:
+    """The sharing rows `do_sync_due` would refresh right now. The scheduler
+    asks this first so an idle tick starts no job thread at all; `do_sync_due`
+    uses the very same list, so the two can never disagree.
+
+    `granted_tools` None = no tool filter (CLI / gate off); otherwise rows
+    whose `tool_key` is not in it are dropped - a tenant that lost a tool
+    stops paying for its ESI data (decision 2a). Live-only kinds and
+    corporation rows the kind has no corp scope for are never fetched by the
+    orchestrator, so they must not count as due either (they have no
+    freshness row and would otherwise be due on every tick forever).
+
+    `on_demand` kinds (registry `schedule_mode`) are only due for an
+    `(owner_type, owner_id, kind)` present in `demand`; nothing supplies one
+    yet - the opt-in alerts will (docs/DISCORD_ALERTS_HANDOFF.md).
+    """
+    wanted = set(demand)
+    sharing = storage.list_esi_sharing()
+    if granted_tools is not None:
+        granted = set(granted_tools)
+        sharing = [row for row in sharing if row[3] in granted]
+    candidates = []
+    for row in sharing:
+        spec = _KIND_BY_KEY.get(row[2])
+        if spec is None or spec.live_only:
+            continue
+        if row[0] == "corporation" and spec.corporation_scope is None:
+            continue
+        if spec.schedule_mode == ON_DEMAND and (row[0], row[1], row[2]) not in wanted:
+            continue
+        candidates.append(row)
+    if not candidates:
+        return []
+    freshness = _freshness_map()
+    return [
+        row for row in candidates
+        if _kind_is_due(row[0], row[1], row[2], now=now, freshness=freshness)
+    ]
+
+
 def do_sync_due(
     *,
     client: Optional[ESIClient] = None,
     extra: Optional[dict] = None,
     now: Optional[datetime] = None,
+    granted_tools: Optional[Iterable[str]] = None,
+    demand: Iterable[tuple[str, int, str]] = (),
 ) -> dict:
-    """Refresh every shared (owner, kind) whose last_success_at is older
-    than that kind's freshness-tier interval (or missing).
+    """Refresh every shared (owner, kind) that is past its freshness-tier
+    interval since the last success and past the failure backoff since the
+    last attempt (see `pending_due`). Returns immediately - no token read, no
+    ESI client - when nothing is due.
 
     Manual `do_sync_for_tool` / `do_sync_all` still fetch regardless of
     due-ness and stamp freshness, which pushes those pairs past the next
     scheduled tick. The scheduler calls this once per tenant.
     """
-    sharing = storage.list_esi_sharing()
-    due = [
-        row for row in sharing
-        if _kind_is_due(row[0], row[1], row[2], now=now)
-    ]
+    due = pending_due(granted_tools=granted_tools, demand=demand, now=now)
+    if not due:
+        return _empty_result(None)
     return _sync(due, client=client, tool_key=None, extra=extra)

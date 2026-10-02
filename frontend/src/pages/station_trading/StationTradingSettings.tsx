@@ -1,12 +1,47 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Stack, Title, Text, SimpleGrid, NumberInput, Button, Center, Loader, Table } from '@mantine/core'
+import { Stack, Title, Text, SimpleGrid, NumberInput, Button, Center, Loader } from '@mantine/core'
+import type { ColumnDef } from '@tanstack/react-table'
 
 import { stationTradingApi } from '../../api/client'
 import type { StationTradingSettings as StationTradingSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
+import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
+import { HubSelect } from '../../components/HubSelect'
 import { pct } from '../../format'
+
+type SkillRow = NonNullable<Awaited<ReturnType<typeof stationTradingApi.skills>>>[number]
+
+const skillLevel = (name: string): ColumnDef<SkillRow, any> => ({
+  header: name === 'Advanced Broker Relations' ? 'Adv. Broker Relations' : name,
+  id: name,
+  size: 120,
+  // A character whose skills could not be read shows "–" instead of a made-up 0.
+  accessorFn: (r) => (r.error ? null : (r.levels?.[name] ?? 0)),
+  cell: (i) => i.getValue() ?? '–',
+})
+
+const SKILL_COLUMNS: ColumnDef<SkillRow, any>[] = [
+  { header: 'Character', accessorKey: 'character_name', size: 200 },
+  {
+    header: 'Order Slots', id: 'order_slots', size: 110,
+    accessorFn: (r) => (r.error ? null : r.order_slots),
+    cell: (i) => i.getValue() ?? '–',
+  },
+  ...['Trade', 'Retail', 'Wholesale', 'Tycoon', 'Accounting', 'Broker Relations', 'Advanced Broker Relations'].map(skillLevel),
+  {
+    header: 'Note', id: 'error', size: 260, enableSorting: false,
+    accessorFn: (r) => r.error ?? '',
+  },
+]
+
+// Main NPC trade station per hub region (ids checked against ESI
+// /universe/stations: Jita IV - Moon 4 CNAP, Amarr VIII (Oris) EFA,
+// Dodixie IX - Moon 20 FNAP, Rens VI - Moon 8 Brutor Tribe Treasury).
+const HUB_STATIONS: Record<number, number> = {
+  10000002: 60003760, 10000043: 60008494, 10000032: 60011866, 10000030: 60004588,
+}
 
 export default function StationTradingSettings() {
   const { data } = useQuery({ queryKey: ['station-trading', 'settings'], queryFn: stationTradingApi.settings })
@@ -30,13 +65,20 @@ export default function StationTradingSettings() {
       </HintCard>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Station</Title>
-      <SimpleGrid cols={2}>
-        <NumberInput label="Trade hub station ID" description="Default: Jita IV - Moon 4 - Caldari Navy Assembly Plant"
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
+        <HubSelect label="Market hub" description="Sets the region and its main trade station together"
+          value={form.hub_region_id}
+          onChange={(v) => setForm((f) => {
+            if (!f) return f
+            const station = HUB_STATIONS[v]
+            return { ...f, hub_region_id: v, ...(station ? { station_id: station } : {}) }
+          })} />
+        <NumberInput label="Trade hub station ID" description="Set by the hub above (Jita: Jita IV - Moon 4 - Caldari Navy Assembly Plant); edit only for a custom station"
           value={form.station_id} min={1} onChange={(v) => set('station_id', Number(v))} />
       </SimpleGrid>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Economy</Title>
-      <SimpleGrid cols={2}>
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <NumberInput label="Broker fee" suffix="%" decimalScale={2} value={form.broker_fee_rate * 100} min={0} max={100} step={0.1}
           onChange={(v) => set('broker_fee_rate', Number(v) / 100)} />
         <NumberInput label="Sales tax" suffix="%" decimalScale={2} value={form.sales_tax_rate * 100} min={0} max={100} step={0.1}
@@ -44,7 +86,7 @@ export default function StationTradingSettings() {
       </SimpleGrid>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Candidate Discovery</Title>
-      <SimpleGrid cols={2}>
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <NumberInput label="Minimum spread" suffix="%" decimalScale={2} value={form.min_spread_threshold * 100} min={0} max={100} step={1}
           onChange={(v) => set('min_spread_threshold', Number(v) / 100)} />
         <NumberInput label="Minimum avg daily volume" value={form.min_daily_volume} min={0} step={1}
@@ -64,42 +106,10 @@ export default function StationTradingSettings() {
       {!skills || skills.length === 0 ? (
         <Text size="xs" c="dimmed">No trader characters registered yet - share Skills with Station Trading on the Characters page.</Text>
       ) : (
-        <Table>
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th>Character</Table.Th>
-              <Table.Th>Order Slots</Table.Th>
-              <Table.Th>Trade</Table.Th>
-              <Table.Th>Retail</Table.Th>
-              <Table.Th>Wholesale</Table.Th>
-              <Table.Th>Tycoon</Table.Th>
-              <Table.Th>Accounting</Table.Th>
-              <Table.Th>Broker Relations</Table.Th>
-              <Table.Th>Adv. Broker Relations</Table.Th>
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {skills.map((s) => (
-              <Table.Tr key={s.character_name}>
-                <Table.Td>{s.character_name}</Table.Td>
-                {s.error ? (
-                  <Table.Td colSpan={8}><Text size="xs" c="dimmed">{s.error}</Text></Table.Td>
-                ) : (
-                  <>
-                    <Table.Td>{s.order_slots}</Table.Td>
-                    <Table.Td>{s.levels?.Trade ?? 0}</Table.Td>
-                    <Table.Td>{s.levels?.Retail ?? 0}</Table.Td>
-                    <Table.Td>{s.levels?.Wholesale ?? 0}</Table.Td>
-                    <Table.Td>{s.levels?.Tycoon ?? 0}</Table.Td>
-                    <Table.Td>{s.levels?.Accounting ?? 0}</Table.Td>
-                    <Table.Td>{s.levels?.['Broker Relations'] ?? 0}</Table.Td>
-                    <Table.Td>{s.levels?.['Advanced Broker Relations'] ?? 0}</Table.Td>
-                  </>
-                )}
-              </Table.Tr>
-            ))}
-          </Table.Tbody>
-        </Table>
+        <DataTable
+          data={skills} columns={SKILL_COLUMNS} maxHeight={320}
+          getRowId={(r) => r.character_name} exportFilename="station-trading-skills"
+        />
       )}
       <Text size="xs" c="dimmed">
         Effective spread needed to clear fees, base game: {pct(form.broker_fee_rate * 2 + form.sales_tax_rate)}{' '}

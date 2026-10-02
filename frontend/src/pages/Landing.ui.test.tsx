@@ -27,8 +27,8 @@ function renderLanding() {
   )
 }
 
-describe('Landing Characters card', () => {
-  it('hides the Characters card when the grant is missing', async () => {
+describe('Landing Character Management card', () => {
+  it('hides the Character Management card when no sub-tool grant is present', async () => {
     vi.mocked(gateApi.status).mockResolvedValue({
       enabled: true, logged_in: true, character_name: 'Alice',
       tools: ['trading', 'production', 'portfolio'],
@@ -37,21 +37,32 @@ describe('Landing Characters card', () => {
     renderLanding()
     expect(await screen.findByRole('heading', { name: 'Trading' })).toBeInTheDocument()
     await waitFor(() => {
-      expect(screen.queryByRole('heading', { name: 'Characters' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('heading', { name: 'Character Management' })).not.toBeInTheDocument()
     })
     expect(screen.queryByRole('heading', { name: 'Admin' })).not.toBeInTheDocument()
   })
 
-  it('shows the Characters card when the grant is present', async () => {
+  it('shows the Character Management card when the characters grant is present', async () => {
     vi.mocked(gateApi.status).mockResolvedValue({
       enabled: true, logged_in: true, character_name: 'Alice',
       tools: ['trading', 'characters'],
       suspended: false, pending_access_requests: null,
     })
     renderLanding()
-    expect(await screen.findByRole('heading', { name: 'Characters' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Character Management' })).toBeInTheDocument()
     await waitFor(() => {
       expect(screen.queryByRole('heading', { name: 'Admin' })).not.toBeInTheDocument()
     })
+  })
+
+  it('has no standalone Characters card any more', async () => {
+    vi.mocked(gateApi.status).mockResolvedValue({
+      enabled: true, logged_in: true, character_name: 'Alice',
+      tools: ['trading', 'characters'],
+      suspended: false, pending_access_requests: null,
+    })
+    renderLanding()
+    await screen.findByRole('heading', { name: 'Character Management' })
+    expect(screen.queryByRole('heading', { name: 'Characters' })).not.toBeInTheDocument()
   })
 })

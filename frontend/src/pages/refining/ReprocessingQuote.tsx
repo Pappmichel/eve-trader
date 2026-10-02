@@ -24,9 +24,9 @@ export default function ReprocessingQuote() {
     { tier: 'live', effect: 'Prices every pasted item live via ESI (with a Goonmetrics fallback) at the C-J structure.' })
 
   const columns = useMemo<ColumnDef<ReprocessingQuoteRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'name', size: 220 },
+    { header: 'Item', accessorKey: 'name', size: 220, meta: { copyable: true } },
     { header: 'Qty', accessorKey: 'quantity', size: 90, cell: (i) => qty(i.getValue()) },
-    { header: 'Category', accessorKey: 'category', size: 120 },
+    { header: 'Category', accessorKey: 'category', size: 120, meta: { filterable: true } },
     {
       header: 'Recommendation', accessorKey: 'decision', size: 150,
       cell: (i) => <Badge color={DECISION_COLOR[i.getValue() as string] ?? 'gray'} variant="light">{i.getValue()}</Badge>,
@@ -120,7 +120,7 @@ export default function ReprocessingQuote() {
           {result.rows.length === 0 ? (
             <HintCard>No items parsed from the paste.</HintCard>
           ) : (
-            <DataTable data={result.rows} columns={columns} maxHeight={480} getRowId={(r) => `${r.name}-${r.type_id ?? 'unknown'}`} />
+            <DataTable tableId="refining-reprocessing-quote" rowDetail data={result.rows} columns={columns} maxHeight={480} getRowId={(r) => `${r.name}-${r.type_id ?? 'unknown'}`} />
           )}
 
           {result.mineral_totals.length > 0 && (
@@ -129,7 +129,7 @@ export default function ReprocessingQuote() {
               <Text size="xs" c="dimmed">
                 Summed across every item above marked "Reprocess" - what you'd actually walk away with.
               </Text>
-              <DataTable data={result.mineral_totals} columns={mineralColumns} maxHeight={320}
+              <DataTable tableId="refining-reprocessing-quote-2" rowDetail data={result.mineral_totals} columns={mineralColumns} maxHeight={320}
                 getRowId={(m) => String(m.type_id)} />
             </>
           )}

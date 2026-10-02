@@ -24,10 +24,12 @@ class StationTradingConfig:
     # Jita 4 - Moon 4 - Caldari Navy Assembly Plant - the real trade hub
     # station (confirmed against the local SDE's sde_stations table, not
     # assumed from memory). Region is deliberately not a separate field
-    # here - reused directly from TRADING_CONFIG.jita_region_id wherever
-    # needed (see production/pricing.py's jita_prices for the same
-    # precedent), since it's a Trading-level concept this tool doesn't own.
+    # here - see hub_region_id below. Must stay consistent with station_id:
+    # the Settings page's hub dropdown sets both together (#222).
     station_id: int = 60003760
+    # Market hub region (default The Forge/Jita) - this tool's own setting,
+    # no longer TradingConfig.jita_region_id (#222).
+    hub_region_id: int = 10000002
 
     # Starting defaults for the base-game NPC-station rates (no standings/
     # skill reduction applied) - not asserted precise, meant to be checked

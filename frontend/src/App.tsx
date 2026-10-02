@@ -1,7 +1,7 @@
 import { Suspense, lazy, useEffect } from 'react'
-import { Routes, Route, useSearchParams, useNavigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useSearchParams, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { notifications } from '@mantine/notifications'
+import { notify } from './notify'
 import { Center, Loader } from '@mantine/core'
 
 import Landing from './pages/Landing'
@@ -87,6 +87,14 @@ const ModuleReprocessingSettings = lazy(() => import('./pages/module_reprocessin
 const AdminPage = lazy(() => import('./pages/admin/AdminPage'))
 const SdePreviewPage = lazy(() => import('./pages/admin/SdePreviewPage'))
 const CharactersPage = lazy(() => import('./pages/characters/CharactersPage'))
+const CharacterManagementHub = lazy(() => import('./pages/character_management/CharacterManagementHub'))
+const CharacterInfoPage = lazy(() => import('./pages/character_management/info/CharacterInfoPage'))
+const SkillsPage = lazy(() => import('./pages/character_management/skills/SkillsPage'))
+const MailPage = lazy(() => import('./pages/character_management/mail/MailPage'))
+const SkillPlansPage = lazy(() => import('./pages/character_management/skill_plans/SkillPlansPage'))
+const AlertsPage = lazy(() => import('./pages/character_management/alerts/AlertsPage'))
+const ContactsPage = lazy(() => import('./pages/character_management/contacts/ContactsPage'))
+const NotificationsPage = lazy(() => import('./pages/character_management/notifications/NotificationsPage'))
 
 function RouteFallback() {
   return (
@@ -106,33 +114,33 @@ function AuthRedirectHandler() {
     if (auth === 'success') {
       const role = params.get('role')
       const character = params.get('character')
-      notifications.show({ title: 'Login successful', message: `${role}: ${character}`, color: 'accent' })
+      notify({ title: 'Login successful', message: `${role}: ${character}`, color: 'accent' })
     } else if (auth === 'error') {
-      notifications.show({ title: 'Login failed', message: params.get('message') ?? 'unknown error', color: 'danger' })
+      notify({ title: 'Login failed', message: params.get('message') ?? 'unknown error', color: 'danger' })
     } else if (gate === 'success') {
-      notifications.show({
+      notify({
         title: 'Access granted', message: `Logged in as ${params.get('character')}`, color: 'accent',
       })
     } else if (gate === 'pending') {
-      notifications.show({
+      notify({
         title: 'Request submitted',
         message: 'An admin will review it.',
         color: 'warn', autoClose: false,
       })
     } else if (gate === 'rejected') {
-      notifications.show({
+      notify({
         title: 'Access rejected',
         message: 'An admin rejected this request. It stays closed until they delete the rejection.',
         color: 'danger', autoClose: false,
       })
     } else if (gate === 'suspended') {
-      notifications.show({
+      notify({
         title: 'Access suspended',
         message: 'Your corporation or alliance is no longer allowlisted.',
         color: 'danger', autoClose: false,
       })
     } else if (gate === 'denied') {
-      notifications.show({
+      notify({
         title: 'Access denied',
         message: 'Your corporation or alliance is not allowlisted.',
         color: 'danger', autoClose: false,
@@ -142,7 +150,7 @@ function AuthRedirectHandler() {
       const message = raw === 'affiliation_unavailable'
         ? "Couldn't verify your corporation, try again later."
         : (raw ?? 'unknown error')
-      notifications.show({ title: 'Login failed', message, color: 'danger' })
+      notify({ title: 'Login failed', message, color: 'danger' })
     } else {
       return
     }
@@ -179,7 +187,7 @@ function SdeFreshnessChecker() {
   useEffect(() => {
     if (!data) return
     if (data.newer_sde_available) {
-      notifications.show({
+      notify({
         id: 'sde-newer-available',
         title: 'Newer SDE available',
         message: "CCP/Fuzzwork have published a newer Static Data Export than the one currently cached. "
@@ -189,7 +197,7 @@ function SdeFreshnessChecker() {
       })
     }
     if (data.trading_universe_stale) {
-      notifications.show({
+      notify({
         id: 'trading-universe-stale',
         title: 'Trading candidate list may be outdated',
         message: "The SDE cache was refreshed after Trading's candidate universe was last built. "
@@ -214,7 +222,17 @@ function App() {
           <Routes>
             <Route path="/" element={<Landing />} />
             <Route path="/portfolio" element={<Portfolio />} />
-            <Route path="/characters" element={<CharactersPage />} />
+            <Route path="/character-management" element={<CharacterManagementHub />} />
+            <Route path="/character-management/characters" element={<CharactersPage />} />
+            <Route path="/character-management/info" element={<CharacterInfoPage />} />
+            <Route path="/character-management/skills" element={<SkillsPage />} />
+            <Route path="/character-management/mail" element={<MailPage />} />
+            <Route path="/character-management/notifications" element={<NotificationsPage />} />
+            <Route path="/character-management/contacts" element={<ContactsPage />} />
+            <Route path="/character-management/skill-plans" element={<SkillPlansPage />} />
+            <Route path="/character-management/alerts" element={<AlertsPage />} />
+            {/* Characters moved into the Character Management hub; keep old bookmarks working. */}
+            <Route path="/characters" element={<Navigate to="/character-management/characters" replace />} />
             <Route path="/admin" element={<AdminPage />} />
             <Route path="/admin/sde-preview" element={<SdePreviewPage />} />
 

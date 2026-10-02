@@ -30,7 +30,7 @@ export function ToolOverview({ description, noEsiFeatures, esiFeatureGroups, noE
     <Stack>
       <Text c="dimmed">{description}</Text>
 
-      <Card withBorder>
+      <Card withBorder className="et-panel">
         <Title order={4} mb="xs">
           <IconWifiOff size={18} style={{ verticalAlign: 'text-bottom', marginRight: 6 }} />
           Works without any EVE character logged in
@@ -48,7 +48,7 @@ export function ToolOverview({ description, noEsiFeatures, esiFeatureGroups, noE
         )}
       </Card>
 
-      <Card withBorder>
+      <Card withBorder className="et-panel">
         <Title order={4} mb="xs">
           <IconWifi size={18} style={{ verticalAlign: 'text-bottom', marginRight: 6 }} />
           Needs an EVE character logged in

@@ -1,9 +1,13 @@
 import { useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { modals } from '@mantine/modals'
+import { Text } from '@mantine/core'
 import { Spotlight, type SpotlightActionData } from '@mantine/spotlight'
 import { IconSearch } from '@tabler/icons-react'
 
 import { gateApi } from '../api/client'
+import { CHARACTER_MANAGEMENT_TOOL_KEYS, hasAnyToolGrant } from '../toolKeys'
+import { executeQuickCommand, visibleCommands, type QuickCommand } from './quickCommands'
 
 // GitHub issue #79: the only way to navigate was each tool's own sidebar -
 // no fast, cross-tool way to jump from e.g. "Trading > Shortlist" straight
@@ -18,7 +22,15 @@ import { gateApi } from '../api/client'
 const ACTIONS: SpotlightActionData[] = [
   { id: 'home', label: 'Tools (Landing)', description: 'Back to the tool picker', onClick: () => {}, keywords: ['home', 'landing'] },
   { id: 'portfolio', label: 'Portfolio', description: 'Combined Trading + Production overview', onClick: () => {} },
-  { id: 'characters', label: 'Characters', description: 'ESI access, sharing, and re-authorize', onClick: () => {} },
+  { id: 'character-management', label: 'Character Management', description: 'Character tools hub', onClick: () => {}, keywords: ['characters'] },
+  { id: 'characters', label: 'Character Management — Characters', description: 'ESI access, sharing, and re-authorize', onClick: () => {} },
+  { id: 'char-info', label: 'Character Management — Character Info', description: 'Location, wallet, standings, LP', onClick: () => {} },
+  { id: 'char-skills', label: 'Character Management — Skills', description: 'SP, attributes, skill queue, matrix', onClick: () => {} },
+  { id: 'char-mail', label: 'Character Management — Mail', description: 'Read mail for all characters', onClick: () => {} },
+  { id: 'char-notifications', label: 'Character Management — Notifications', description: 'Structure, war and sov alerts', onClick: () => {} },
+  { id: 'char-contacts', label: 'Character Management — Contacts & Calendar', description: 'Contacts and upcoming events', onClick: () => {} },
+  { id: 'char-skill-plans', label: 'Character Management — Skill Plans', description: 'Plan skills and track progress', onClick: () => {} },
+  { id: 'char-alerts', label: 'Character Management — Discord Alerts', description: 'Skill queue and mail pings on Discord', onClick: () => {} },
   { id: 'admin', label: 'Admin', description: 'Cross-tenant superadmin tools', onClick: () => {} },
 
   { id: 'trading', label: 'Trading — Shortlist', description: 'Trading', onClick: () => {} },
@@ -68,7 +80,7 @@ const ACTIONS: SpotlightActionData[] = [
 // component-free data array - useNavigate() is only available inside a
 // Router, so the actual onClick wiring happens once, here, at render time.
 const PATHS: Record<string, string> = {
-  home: '/', portfolio: '/portfolio', admin: '/admin', characters: '/characters',
+  home: '/', portfolio: '/portfolio', admin: '/admin', 'character-management': '/character-management', characters: '/character-management/characters', 'char-info': '/character-management/info', 'char-skills': '/character-management/skills', 'char-mail': '/character-management/mail', 'char-notifications': '/character-management/notifications', 'char-contacts': '/character-management/contacts', 'char-skill-plans': '/character-management/skill-plans', 'char-alerts': '/character-management/alerts',
   trading: '/trading/shortlist', 'trading-candidates': '/trading/candidates', 'trading-new-candidates': '/trading/new-candidates',
   'trading-history': '/trading/history', 'trading-trades': '/trading/trades', 'trading-unlisted-stock': '/trading/unlisted-stock',
   'trading-undercut': '/trading/undercut', 'trading-settings': '/trading/settings',
@@ -91,7 +103,8 @@ const PATHS: Record<string, string> = {
 // (`_TOOL_PATH_PREFIXES` on the backend). 'home' has no entry, since jumping
 // back to the tool picker is always allowed regardless of tool grants.
 const TOOL_KEYS: Record<string, string> = {
-  portfolio: 'portfolio', admin: 'admin', characters: 'characters',
+  portfolio: 'portfolio', admin: 'admin', characters: 'characters', 'char-info': 'char_info', 'char-skills': 'char_skills', 'char-mail': 'char_mail', 'char-notifications': 'char_notifications', 'char-contacts': 'char_contacts', 'char-skill-plans': 'char_skill_plans', 'char-alerts': 'char_alerts',
+  // 'character-management' (the hub) has no single key: see visibleActions.
   trading: 'trading', 'trading-candidates': 'trading', 'trading-new-candidates': 'trading',
   'trading-history': 'trading', 'trading-trades': 'trading', 'trading-unlisted-stock': 'trading',
   'trading-undercut': 'trading', 'trading-settings': 'trading',
@@ -111,6 +124,7 @@ const TOOL_KEYS: Record<string, string> = {
 
 export function QuickNav() {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   // Same gate-status/tools source and "undefined -> not yet loaded, show
   // everything" convention as Landing.tsx's own ToolCard - a per-character
   // tool grant that hides a Landing card should hide its Quick-Nav entries
@@ -118,16 +132,36 @@ export function QuickNav() {
   const { data: gateStatus } = useQuery({ queryKey: ['gate', 'status'], queryFn: gateApi.status })
   const tools = gateStatus?.tools
   const visibleActions = ACTIONS.filter((a) => {
+    // The hub has no grant of its own - visible if any sub-tool grant is held.
+    if (a.id === 'character-management') return hasAnyToolGrant(tools, CHARACTER_MANAGEMENT_TOOL_KEYS)
     const toolKey = TOOL_KEYS[a.id]
     if (!toolKey || tools === undefined) return true
     return tools.includes(toolKey)
   })
   const pending = gateStatus?.pending_access_requests
-  const actions = visibleActions.map((a) => ({
+  const pageActions = visibleActions.map((a) => ({
     ...a,
     label: a.id === 'admin' && pending ? `Admin (${pending} pending)` : a.label,
     onClick: () => navigate(PATHS[a.id]),
   }))
+  // Commands that start live jobs - always behind a confirmation dialog.
+  const confirmAndRun = (cmd: QuickCommand) => modals.openConfirmModal({
+    title: cmd.label.replace(/^Run: /, ''),
+    children: <Text size="sm">{cmd.effect} This calls external services live.</Text>,
+    labels: { confirm: 'Run', cancel: 'Cancel' },
+    onConfirm: () => {
+      void executeQuickCommand(cmd, {
+        invalidate: (key) => queryClient.invalidateQueries({ queryKey: key }),
+        navigate,
+      })
+    },
+  })
+  const commandActions = visibleCommands(tools).map((c) => ({
+    id: c.id, label: c.label, description: c.description, onClick: () => confirmAndRun(c),
+  }))
+  const actions = commandActions.length > 0
+    ? [{ group: 'Pages', actions: pageActions }, { group: 'Actions', actions: commandActions }]
+    : pageActions
 
   return (
     <Spotlight

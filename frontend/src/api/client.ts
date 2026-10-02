@@ -120,7 +120,7 @@ export const tradingApi = {
   focusedCandidates: () => get<T.Candidate[]>('/api/trading/candidates/focused'),
   newCandidates: () => get<T.NewCandidateResult[]>('/api/trading/candidates/new'),
   historyTypeIds: () => get<T.HistoryTypeIdOption[]>('/api/trading/history/type-ids'),
-  history: (typeId: number) => get<T.PriceHistoryPoint[]>(`/api/trading/history/${typeId}`),
+  history: (typeId: number) => get<T.PriceHistory>(`/api/trading/history/${typeId}`),
   realizedTrades: () => get<T.RealizedTrade[]>('/api/trading/trades/realized'),
   settings: () => get<T.TradingSettings>('/api/trading/settings'),
   updateSettings: (s: T.TradingSettings) => post<T.TradingSettings>('/api/trading/settings', s),
@@ -627,6 +627,151 @@ export const adminApi = {
   refreshAffiliations: () => post<{ updated: number }>('/api/admin/users/refresh-affiliations'),
 }
 
+// -------------------------------------------------------------- character info
+export const charInfoApi = {
+  overview: () => get<T.CharInfoOverview>('/api/char-info/overview'),
+  detail: (characterId: number) => get<T.CharInfoCharacter>(`/api/char-info/characters/${characterId}`),
+  walletJournal: (characterId: number) =>
+    get<T.CharInfoField<T.WalletJournalValue>>(`/api/char-info/characters/${characterId}/wallet-journal`),
+  sync: () => post<T.CharInfoSyncResult>('/api/char-info/sync', {}),
+}
+
+// -------------------------------------------------------------- skills
+export const charSkillsApi = {
+  overview: () => get<T.SkillsOverview>('/api/char-skills/overview'),
+  character: (characterId: number) => get<T.CharacterSkills>(`/api/char-skills/characters/${characterId}`),
+  matrix: () => get<T.SkillMatrix>('/api/char-skills/matrix'),
+  warnings: () => get<T.SkillsWarnings>('/api/char-skills/warnings'),
+  settings: () => get<{ queue_warning_hours: number }>('/api/char-skills/settings'),
+  setSettings: (queueWarningHours: number) =>
+    post<{ queue_warning_hours: number }>('/api/char-skills/settings', { queue_warning_hours: queueWarningHours }),
+  doctrineCheck: () => get<T.DoctrineCheck>('/api/char-skills/doctrine-check'),
+  sync: () => post<T.CharInfoSyncResult>('/api/char-skills/sync', {}),
+}
+
+// -------------------------------------------------------------- skill plans
+const PLANS = '/api/char-skill-plans'
+export const charSkillPlansApi = {
+  list: () => get<{ plans: T.SkillPlanSummary[]; sde_ready: boolean }>(`${PLANS}/plans`),
+  create: (name: string, description: string, text?: string) =>
+    post<T.SkillPlan>(`${PLANS}/plans`, { name, description, text: text?.trim() ? text : null }),
+  get: (planId: number) => get<T.SkillPlan>(`${PLANS}/plans/${planId}`),
+  update: (planId: number, name: string, description: string) =>
+    put<T.SkillPlan>(`${PLANS}/plans/${planId}`, { name, description }),
+  remove: (planId: number) => del<{ deleted: number }>(`${PLANS}/plans/${planId}`),
+  addStep: (planId: number, skillId: number, level: number) =>
+    post<T.SkillPlan>(`${PLANS}/plans/${planId}/steps`, { skill_id: skillId, level }),
+  removeStep: (planId: number, skillId: number, level: number) =>
+    del<T.SkillPlan>(`${PLANS}/plans/${planId}/steps/${skillId}/${level}`),
+  reorder: (planId: number, order: { skill_id: number; level: number }[]) =>
+    put<T.SkillPlan>(`${PLANS}/plans/${planId}/order`, { order }),
+  exportText: (planId: number) => get<{ name: string; text: string }>(`${PLANS}/plans/${planId}/export`),
+  searchSkills: (q: string) =>
+    get<{ skills: { skill_id: number; name: string; group_name: string | null }[] }>(
+      `${PLANS}/skills/search?q=${encodeURIComponent(q)}`),
+  progress: (planId: number) => get<T.SkillPlanProgress>(`${PLANS}/plans/${planId}/progress`),
+  sync: () => post<T.CharInfoSyncResult>(`${PLANS}/sync`, {}),
+}
+
+// -------------------------------------------------------------- contacts & calendar
+export const charContactsApi = {
+  characters: () => get<{ characters: T.ContactsCharacter[] }>('/api/char-contacts/characters'),
+  contacts: (characterId: number) =>
+    get<T.CharInfoField<T.ContactsValue>>(`/api/char-contacts/contacts/${characterId}`),
+  calendar: (characterId: number) =>
+    get<T.CharInfoField<T.CalendarEvent[]>>(`/api/char-contacts/calendar/${characterId}`),
+  event: (characterId: number, eventId: number) =>
+    get<T.CharInfoField<T.CalendarEventDetail>>(`/api/char-contacts/calendar/${characterId}/${eventId}`),
+}
+
+// -------------------------------------------------------------- notifications
+export interface NotificationQuery {
+  characterId?: number | null
+  type?: string | null
+  category?: string | null
+  unreadOnly?: boolean
+  limit?: number
+  offset?: number
+}
+
+export const charNotificationsApi = {
+  list: (o: NotificationQuery = {}) => {
+    const q = new URLSearchParams()
+    if (o.characterId) q.set('character_id', String(o.characterId))
+    if (o.type) q.set('type', o.type)
+    if (o.category) q.set('category', o.category)
+    if (o.unreadOnly) q.set('unread_only', 'true')
+    if (o.limit) q.set('limit', String(o.limit))
+    if (o.offset) q.set('offset', String(o.offset))
+    const qs = q.toString()
+    return get<T.NotificationsList>(`/api/char-notifications/notifications${qs ? `?${qs}` : ''}`)
+  },
+  detail: (characterId: number, notificationId: number) =>
+    get<T.NotificationDetail>(`/api/char-notifications/notifications/${characterId}/${notificationId}`),
+  setRead: (characterId: number, notificationIds: number[], read: boolean) =>
+    post<{ changed: number }>('/api/char-notifications/read', {
+      character_id: characterId, notification_ids: notificationIds, read,
+    }),
+  sync: () => post<T.CharInfoSyncResult>('/api/char-notifications/sync', {}),
+}
+
+// -------------------------------------------------------------- discord alerts
+export const charAlertsApi = {
+  settings: () => get<T.AlertSettings>('/api/char-alerts/settings'),
+  setSubscription: (s: {
+    character_id: number; alert_type: T.AlertType; enabled: boolean; include_content?: boolean; lead_hours?: number
+  }) => post<unknown>('/api/char-alerts/subscriptions', s),
+  linkStart: () => get<{ url: string }>('/api/char-alerts/discord/start'),
+  unlink: () => del<{ unlinked: boolean }>('/api/char-alerts/discord'),
+  test: () => post<{ sent: boolean }>('/api/char-alerts/test', {}),
+}
+
+// -------------------------------------------------------------- mail
+export const charMailApi = {
+  folders: () => get<T.MailFolders>('/api/char-mail/folders'),
+  mails: (opts: { labelId?: number | null; characterId?: number | null; cursors?: Record<string, number> | null }) => {
+    const q = new URLSearchParams()
+    if (opts.labelId) q.set('label_id', String(opts.labelId))
+    if (opts.characterId) q.set('character_id', String(opts.characterId))
+    if (opts.cursors) q.set('cursors', JSON.stringify(opts.cursors))
+    const qs = q.toString()
+    return get<T.MailPage>(`/api/char-mail/mails${qs ? `?${qs}` : ''}`)
+  },
+  open: (characterId: number, mailId: number) => get<T.MailOpened>(`/api/char-mail/mails/${characterId}/${mailId}`),
+  search: (q: string, characterId?: number | null) =>
+    get<T.MailSearchResult>(
+      `/api/char-mail/search?q=${encodeURIComponent(q)}${characterId ? `&character_id=${characterId}` : ''}`,
+    ),
+  archive: () => get<{ characters: T.MailArchiveRow[] }>('/api/char-mail/archive'),
+  setArchive: (body: { character_id: number; enabled: boolean; confirm_delete?: boolean }) =>
+    post<T.MailArchiveRow | { character_id: number; archive_enabled: false; deleted: { headers: number; messages: number } }>(
+      '/api/char-mail/archive', body,
+    ),
+  searchRecipients: (characterId: number, q: string) =>
+    get<{ results: T.MailRecipientHit[] }>(
+      `/api/char-mail/recipients?character_id=${characterId}&q=${encodeURIComponent(q)}`,
+    ),
+  send: (body: T.MailSendRequest) => post<T.MailSendResult>('/api/char-mail/send', body),
+  markRead: (characterId: number, mailId: number, read: boolean) =>
+    post<{ character_id: number; mail_id: number; read: boolean }>(
+      `/api/char-mail/mails/${characterId}/${mailId}/read`, { read },
+    ),
+  setLabels: (characterId: number, mailId: number, labels: number[]) =>
+    post<{ character_id: number; mail_id: number; labels: number[] }>(
+      `/api/char-mail/mails/${characterId}/${mailId}/labels`, { labels },
+    ),
+  deleteMail: (characterId: number, mailId: number) =>
+    del<{ character_id: number; mail_id: number; deleted: true }>(`/api/char-mail/mails/${characterId}/${mailId}`),
+  createLabel: (body: { character_id: number; name: string; color?: string }) =>
+    post<{ character_id: number; label_id: number; name: string; color: string }>('/api/char-mail/labels', body),
+  deleteLabel: (characterId: number, labelId: number) =>
+    del<{ character_id: number; label_id: number; deleted: true }>(`/api/char-mail/labels/${characterId}/${labelId}`),
+  refreshArchive: (characterId?: number | null) =>
+    post<{ characters: (T.MailCharacterStatus & { new_mails?: number; covered?: number })[] }>(
+      '/api/char-mail/archive/refresh', { character_id: characterId ?? null },
+    ),
+}
+
 // -------------------------------------------------------------- characters
 export const charactersApi = {
   owners: () => get<T.EsiTokenCharacter[]>('/api/characters/owners'),
@@ -673,6 +818,16 @@ export const charactersApi = {
 // ErrorBoundary.tsx/main.tsx's global error listeners on every page, for
 // every tenant - unlike adminApi.errors (the list view), it needs no
 // "admin" tool grant (see api/routers/errors.py's own docstring).
+export const hubsApi = {
+  freight: () => get<T.HubFreightRow[]>('/api/hubs/freight'),
+  updateFreight: (rows: { region_id: number; freight_cost_per_m3: number | null }[]) =>
+    post<T.HubFreightRow[]>('/api/hubs/freight', rows),
+}
+
+export const sdeApi = {
+  regions: () => get<T.RegionOption[]>('/api/sde/regions'),
+}
+
 export const errorsApi = {
   report: (source: string, message: string, detail?: string, path?: string) =>
     post<{ recorded: boolean }>('/api/errors', { source, message, detail, path }),

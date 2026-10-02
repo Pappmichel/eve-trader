@@ -33,6 +33,10 @@ from ..goonmetrics_client import CurrentPrice
 
 log = logging.getLogger("eve_trader.production.jita_price_cache")
 
+# This is a Jita-only cache (The Forge) - process-wide, cross-tenant, no region
+# in its key. Consumers with another hub must bypass it (#222).
+JITA_REGION_ID = 10000002
+
 _lock = threading.Lock()
 _cache: dict[int, CurrentPrice] = {}
 _updated_at: Optional[str] = None
@@ -67,19 +71,31 @@ def refresh_jita_price_cache() -> int:
     pushes back the next scheduled tick too, same mechanism the backup job's
     own mtime-based check already relies on.
 
-    Local imports (engine, tenant_scope, TRADING_CONFIG) avoid pulling this
+    Local imports (engine, tenant_scope) avoid pulling this
     module into the engine.py <-> pricing.py import graph at load time -
     only this function, called from scheduler.py/admin.py, ever needs them.
 
     Returns the number of type_ids now cached (0 if no tenant has any stock
     targets configured yet - not an error, just nothing to price)."""
-    from .. import tenant_scope
-    from ..config import TRADING_CONFIG
+    from .. import tenant_eligibility, tenant_scope
     from ..esi_client import ESIClient
     from .engine import _structural_material_closure
 
+    try:
+        last_active = storage.list_tenant_last_active()
+    except Exception:  # noqa: BLE001 - unknown activity must not shrink the universe
+        log.warning("Could not read tenant activity for the Jita price cache", exc_info=True)
+        last_active = {}
+
     type_ids: set[int] = set()
     for tenant_id, _name, _created_at in storage.list_tenants():
+        # Only tenants that can actually use Production prices and are still
+        # around cost ESI calls here (docs/SCHEDULER_REWORK_PLAN.md decision 4).
+        # Also applies to the manual admin refresh - same function.
+        if not tenant_eligibility.is_active(str(tenant_id), last_active):
+            continue
+        if not tenant_eligibility.may_use("production", tenant_eligibility.granted_tools(str(tenant_id))):
+            continue
         with tenant_scope.enter_tenant(str(tenant_id)):
             stock_targets = storage.load_stock_targets()
             # Confirmed real bug, caught live on first restart-after-deploy
@@ -101,10 +117,9 @@ def refresh_jita_price_cache() -> int:
     if not type_ids:
         return 0
 
-    with tenant_scope.enter_tenant(storage.DEFAULT_TENANT_ID):
-        jita_region_id = TRADING_CONFIG.jita_region_id
-
-    stats = ESIClient().region_order_stats_bulk(jita_region_id, list(type_ids))
+    # Always Jita: this cache is process-wide and cross-tenant with no region
+    # in its key, so it must not follow any tenant's/tool's hub setting (#222).
+    stats = ESIClient().region_order_stats_bulk(JITA_REGION_ID, list(type_ids))
     # Skip type_ids whose bulk lookup returned no real percentile - region_
     # order_stats_bulk isolates per-type ESIError as OrderStats(None, 0, ...),
     # and ESIClient now converts transport timeouts to ESIError too. Writing

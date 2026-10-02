@@ -56,7 +56,7 @@ export default function Jobs() {
   const removeManual = useAction('Remove Manual Job', productionApi.removeManualIndustryJob, JOBS_KEY)
 
   const columns = useMemo<ColumnDef<IndustryJobRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 200 },
+    { header: 'Item', accessorKey: 'type_name', size: 200, meta: { copyable: true } },
     { header: 'Activity', accessorKey: 'activity', size: 120 },
     {
       header: 'Source', accessorKey: 'source', size: 90,
@@ -172,14 +172,14 @@ export default function Jobs() {
       ) : isError ? (
         <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />
       ) : !data || data.length === 0 ? (
-        <HintCard>No active industry jobs - or not synced yet (&apos;Refresh what I need&apos; in the sidebar).</HintCard>
+        <HintCard>No active industry jobs - or not synced yet (&apos;Refresh what I need&apos; in the side menu).</HintCard>
       ) : (
         <>
           <Text size="xs" c="dimmed">{filtered.length} of {jobs.length} jobs</Text>
           {filtered.length === 0 ? (
             <HintCard>No jobs match the selected activity.</HintCard>
           ) : (
-            <DataTable data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt}
+            <DataTable tableId="production-jobs" rowDetail data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt}
               getRowId={(r) => `${r.source}:${r.job_id}`} />
           )}
         </>

@@ -4,6 +4,7 @@ mode is a single process/port."""
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -19,14 +20,16 @@ from starlette.responses import JSONResponse
 from starlette.types import Scope
 
 from .. import access_policy, scheduler, storage, tenant_scope
-from ..access_gate import SESSION_COOKIE_NAME, AuthorizedSession, authorize_session_cookie
+from ..access_gate import (
+    ALL_TOOL_KEYS, SESSION_COOKIE_NAME, AuthorizedSession, authorize_session_cookie, note_tenant_activity,
+)
 
 log = logging.getLogger(__name__)
 from ..config import ACCESS_CONFIG, OAUTH_CONFIG, TRADING_CONFIG, apply_config_overrides
 from ..doctrine.config import DOCTRINE_CONFIG
 from ..production.config import PRODUCTION_CONFIG
 from .routers import (
-    admin, auth, characters, doctrine, errors, gate, module_reprocessing, portfolio, production, refining, sorting,
+    admin, auth, char_contacts, char_info, char_mail, char_notifications, char_alerts, char_skill_plans, char_skills, characters, doctrine, errors, gate, hubs, module_reprocessing, portfolio, production, refining, sde, sorting,
     station_trading, trading,
 )
 
@@ -60,17 +63,41 @@ class SPAStaticFiles(StaticFiles):
     let exactly these two through)."""
 
     async def get_response(self, path: str, scope: Scope):
+        # StaticFiles.get_path builds `path` with os.path.normpath, so on
+        # Windows it arrives as "api\\auth\\..." - normalize before the
+        # prefix check or every unknown /api route falls back to 200.
+        posix_path = path.replace(os.sep, "/")
+        # Checked before StaticFiles runs at all: it rejects any non-GET/HEAD
+        # method with 405 first, so an unknown POST /api/... route answered
+        # 405 instead of 404 whenever frontend/dist was mounted.
+        if posix_path == "api" or posix_path.startswith("api/"):
+            raise StarletteHTTPException(status_code=404)
         # StaticFiles doesn't return a 404 Response here on a missing file -
         # it *raises* HTTPException(404) (confirmed live: a plain
         # `if response.status_code == 404` check on the return value never
         # fired, since execution never reaches it) - has to be caught, not
         # branched on.
         try:
-            return await super().get_response(path, scope)
+            response = await super().get_response(path, scope)
         except StarletteHTTPException as exc:
-            if exc.status_code == 404 and path != "api" and not path.startswith("api/"):
-                return await super().get_response("index.html", scope)
-            raise
+            if exc.status_code != 404:
+                raise
+            response = await super().get_response("index.html", scope)
+            posix_path = "index.html"
+        # StaticFiles sends no Cache-Control by default (only ETag/
+        # Last-Modified), so a browser may cache index.html heuristically
+        # (RFC 9111 4.2.2). After a deploy a stale index.html then names
+        # hashed chunks that no longer exist. "no-cache" forces an ETag
+        # revalidation on every load (cheap for this file); hashed files
+        # under assets/ change name on every build and can be cached forever.
+        # chunkReload.ts (frontend) only recovers once the stale page has
+        # already failed; this keeps it from happening in the first place.
+        response.headers["Cache-Control"] = (
+            "public, max-age=31536000, immutable"
+            if posix_path.startswith("assets/")
+            else "no-cache"
+        )
+        return response
 
 # Reachable without a gate session even while AccessConfig.access_gate_enabled
 # is true - the login flow itself, plus the one status/logout pair the
@@ -89,6 +116,13 @@ _GATE_EXEMPT_PATHS = {
 # without an explicit bucket (see tests/test_gate_route_coverage.py).
 _SESSION_ONLY_API_PREFIXES = (
     "/api/errors",
+    # Public SDE reference data (region names, issue #223) read by several
+    # tools' Settings pages; no single tool grant fits, and nothing tenant-
+    # private is exposed.
+    "/api/sde",
+    # The tenant's shared per-hub freight table (issue #222), edited from the
+    # Settings pages of every tool with an "All hubs" option.
+    "/api/hubs",
 )
 
 # Path prefix -> the tool_key a request under it requires (see
@@ -105,6 +139,13 @@ _TOOL_PATH_PREFIXES = {
     "/api/admin/": "admin",
     "/api/characters/": "characters",
     "/api/module-reprocessing/": "module_reprocessing",
+    "/api/char-info/": "char_info",
+    "/api/char-skills/": "char_skills",
+    "/api/char-mail/": "char_mail",
+    "/api/char-notifications/": "char_notifications",
+    "/api/char-contacts/": "char_contacts",
+    "/api/char-skill-plans/": "char_skill_plans",
+    "/api/char-alerts/": "char_alerts",
 }
 
 
@@ -286,9 +327,19 @@ class AccessGateMiddleware(BaseHTTPMiddleware):
         if blocked is not None:
             return blocked
 
+        # Scheduler inactivity signal (throttled to one UPDATE/hour/tenant,
+        # never raises) - after the suspension check so a suspended tenant
+        # does not count as active.
+        note_tenant_activity(session.tenant_id)
+
         required_tool = _required_tool_for_path(path, request.method)
         if required_tool is not None and required_tool not in session.tool_keys:
             return JSONResponse({"detail": "Forbidden - missing tool grant"}, status_code=403)
+
+        # Handlers that need a grant beyond their path's tool (a route reading
+        # two tools' data, e.g. Skills x Doctrine) check this - fail closed when
+        # it is absent - instead of the middleware growing multi-tool paths.
+        request.state.tool_keys = tuple(session.tool_keys)
 
         # Gate on - the request could genuinely be any of several different
         # real tenants, so their own TRADING_CONFIG/PRODUCTION_CONFIG must be
@@ -299,6 +350,10 @@ class AccessGateMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     async def _call_with_default_tenant(call_next, request: Request):
+        # Gate off: the trusted local operator holds every tool (same as
+        # /api/gate/status reporting every key), so handlers that need a second
+        # grant on top of their path's tool see them all.
+        request.state.tool_keys = tuple(ALL_TOOL_KEYS)
         context_token = storage.set_current_tenant(storage.DEFAULT_TENANT_ID)
         try:
             return await call_next(request)
@@ -374,7 +429,16 @@ def create_app() -> FastAPI:
     app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
     app.include_router(characters.router, prefix="/api/characters", tags=["characters"])
     app.include_router(module_reprocessing.router, prefix="/api/module-reprocessing", tags=["module_reprocessing"])
+    app.include_router(char_info.router, prefix="/api/char-info", tags=["char_info"])
+    app.include_router(char_skills.router, prefix="/api/char-skills", tags=["char_skills"])
+    app.include_router(char_mail.router, prefix="/api/char-mail", tags=["char_mail"])
+    app.include_router(char_notifications.router, prefix="/api/char-notifications", tags=["char_notifications"])
+    app.include_router(char_contacts.router, prefix="/api/char-contacts", tags=["char_contacts"])
+    app.include_router(char_skill_plans.router, prefix="/api/char-skill-plans", tags=["char_skill_plans"])
+    app.include_router(char_alerts.router, prefix="/api/char-alerts", tags=["char_alerts"])
     app.include_router(errors.router, prefix="/api/errors", tags=["errors"])
+    app.include_router(sde.router, prefix="/api/sde", tags=["sde"])
+    app.include_router(hubs.router, prefix="/api/hubs", tags=["hubs"])
 
     if FRONTEND_DIST.exists():
         app.mount("/", SPAStaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")

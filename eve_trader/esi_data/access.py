@@ -87,6 +87,14 @@ def read_esi(data_kind: str, tool_key: str, **filters) -> list[dict]:
     kind = _KIND_BY_KEY.get(data_kind)
     if kind is None:
         raise AccessorError(f"unknown data_kind {data_kind!r}")
+    if kind.live_only:
+        # No snapshot exists to read. Failing loudly (rather than returning
+        # []) stops a caller mistaking "live-only" for "shared with nobody";
+        # the caller must gate a live ESI call on `is_shared` instead.
+        raise AccessorError(
+            f"{data_kind!r} is live-only: it has no snapshot, use is_shared() "
+            "and read it live"
+        )
 
     owner_type_filter = filters.get("owner_type")
     owner_id_filter = filters.get("owner_id")
@@ -105,7 +113,24 @@ def read_esi(data_kind: str, tool_key: str, **filters) -> list[dict]:
     elif data_kind == "contracts":
         rows.extend(_read_contracts(tool_key, owner_type_filter, owner_id_filter))
     elif data_kind == "skills":
-        rows.extend(_read_skills(tool_key, owner_id_filter))
+        if tool_key in ("char_skills", "char_skill_plans"):
+            rows.extend(_read_character_skills(tool_key, owner_id_filter, filters.get("table")))
+        else:
+            rows.extend(_read_skills(tool_key, owner_id_filter))
+    elif data_kind == "skillqueue":
+        rows.extend(_read_skillqueue(tool_key, owner_id_filter))
+    elif data_kind == "wallet_balance":
+        rows.extend(_read_wallet_balance(tool_key, owner_id_filter))
+    elif data_kind == "standings":
+        rows.extend(_read_standings(tool_key, owner_id_filter))
+    elif data_kind == "loyalty":
+        rows.extend(_read_loyalty(tool_key, owner_id_filter))
+    elif data_kind == "notifications":
+        rows.extend(_read_notifications(tool_key, owner_id_filter))
+    elif data_kind == "clones":
+        rows.extend(_read_clones(tool_key, owner_id_filter))
+    elif data_kind == "implants":
+        rows.extend(_read_implants(tool_key, owner_id_filter))
     else:
         raise AccessorError(f"unknown data_kind {data_kind!r}")
     return rows
@@ -370,3 +395,103 @@ def _read_skills(tool_key: str, owner_id) -> list[dict]:
                 "owner_id": r[5],
             })
     return out
+
+
+def _read_wallet_balance(tool_key: str, owner_id) -> list[dict]:
+    """Character wallet balances only (`owner_type='character'`). Corporation
+    balances are Portfolio's own read (`storage.sum_wallet_balances`); no
+    other consumer needs them."""
+    ids = _filter_ids(_shared_owner_ids("wallet_balance", tool_key, "character"), owner_id)
+    balances = storage.load_character_wallet_balances(ids)
+    return [
+        {"owner_type": "character", "owner_id": cid, "balance": bal}
+        for cid, bal in sorted(balances.items())
+    ]
+
+
+def _read_standings(tool_key: str, owner_id) -> list[dict]:
+    ids = _filter_ids(_shared_owner_ids("standings", tool_key, "character"), owner_id)
+    return [
+        {"owner_type": "character", "owner_id": int(r[0]), "from_id": int(r[1]),
+         "from_type": r[2], "standing": float(r[3])}
+        for r in storage.load_character_standings(ids)
+    ]
+
+
+def _read_loyalty(tool_key: str, owner_id) -> list[dict]:
+    ids = _filter_ids(_shared_owner_ids("loyalty", tool_key, "character"), owner_id)
+    return [
+        {"owner_type": "character", "owner_id": int(r[0]), "corporation_id": int(r[1]),
+         "loyalty_points": int(r[2])}
+        for r in storage.load_character_loyalty_points(ids)
+    ]
+
+
+def _read_notifications(tool_key: str, owner_id) -> list[dict]:
+    ids = _filter_ids(_shared_owner_ids("notifications", tool_key, "character"), owner_id)
+    return [
+        {"owner_type": "character", "owner_id": int(r[0]), "notification_id": int(r[1]), "type": r[2],
+         "sender_id": r[3], "sender_type": r[4], "sent_at": r[5], "esi_is_read": bool(r[6]), "text": r[7]}
+        for r in storage.load_character_notifications(ids)
+    ]
+
+
+def _read_clones(tool_key: str, owner_id) -> list[dict]:
+    """One row per synced character: `meta` plus its `jump_clones`."""
+    ids = _filter_ids(_shared_owner_ids("clones", tool_key, "character"), owner_id)
+    return [
+        {"owner_type": "character", "owner_id": cid, "meta": row["meta"], "jump_clones": row["jump_clones"]}
+        for cid, row in sorted(storage.load_character_clones(ids).items())
+    ]
+
+
+def _read_implants(tool_key: str, owner_id) -> list[dict]:
+    ids = _filter_ids(_shared_owner_ids("implants", tool_key, "character"), owner_id)
+    return [
+        {"owner_type": "character", "owner_id": int(r[0]), "type_id": int(r[1])}
+        for r in storage.load_character_implants(ids)
+    ]
+
+
+def _read_character_skills(tool_key: str, owner_id, table: Optional[str]) -> list[dict]:
+    """`read_esi("skills", "char_skills")` (also `"char_skill_plans"`, each
+    under its own sharing row): per-skill rows, or with
+    `table="attributes"` the attribute block + SP totals (one row per
+    character). Deliberately a separate shape from `_read_skills`, which
+    returns Production's job-slot rows from `character_slots` - the same
+    data kind, two tools, two row shapes, each under its own sharing row."""
+    ids = _filter_ids(_shared_owner_ids("skills", tool_key, "character"), owner_id)
+    if table == "attributes":
+        return [
+            {
+                "owner_type": "character", "owner_id": int(r[0]), "total_sp": r[1],
+                "unallocated_sp": r[2], "charisma": r[3], "intelligence": r[4],
+                "memory": r[5], "perception": r[6], "willpower": r[7],
+                "bonus_remaps": r[8], "last_remap_date": r[9],
+                "accrued_remap_cooldown_date": r[10],
+            }
+            for r in storage.load_character_attributes(ids)
+        ]
+    if table not in (None, "skills"):
+        raise AccessorError(f"unknown skills table {table!r}")
+    return [
+        {
+            "owner_type": "character", "owner_id": int(r[0]), "skill_id": int(r[1]),
+            "active_level": int(r[2]), "trained_level": int(r[3]),
+            "skillpoints_in_skill": int(r[4]),
+        }
+        for r in storage.load_character_skills(ids)
+    ]
+
+
+def _read_skillqueue(tool_key: str, owner_id) -> list[dict]:
+    ids = _filter_ids(_shared_owner_ids("skillqueue", tool_key, "character"), owner_id)
+    return [
+        {
+            "owner_type": "character", "owner_id": int(r[0]), "queue_position": int(r[1]),
+            "skill_id": int(r[2]), "finished_level": int(r[3]), "start_date": r[4],
+            "finish_date": r[5], "training_start_sp": r[6], "level_start_sp": r[7],
+            "level_end_sp": r[8],
+        }
+        for r in storage.load_character_skillqueue(ids)
+    ]

@@ -117,3 +117,34 @@ def test_confirm_live_bounded_to_given_type_ids():
 def test_confirm_live_empty_type_ids_makes_no_call():
     result = confirm_live([], client=FakeESIClient({}))
     assert result == {}
+
+
+def test_confirm_live_reads_the_given_hub_region():
+    seen = []
+
+    class _Client:
+        def region_order_stats_bulk(self, region_id, type_ids):
+            seen.append(region_id)
+            return {}
+    confirm_live([1], client=_Client(), hub_region_id=10000043)
+    assert seen == [10000043]
+
+
+def test_discovery_skips_goonmetrics_for_a_non_jita_hub():
+    class _Boom:
+        def current_prices(self, market):
+            raise AssertionError("Goonmetrics' Jita dump must not be used for another hub")
+    cfg = _cfg(hub_region_id=10000043)
+    assert discover_candidates(cfg, client=_Boom()) == []
+
+
+def test_discovery_uses_the_hub_region_for_history():
+    seen = []
+
+    class _Client(FakeGoonmetricsClient):
+        def price_history_chunked(self, region_id, type_ids):
+            seen.append(region_id)
+            return super().price_history_chunked(region_id, type_ids)
+    cfg = _cfg(min_spread_threshold=0.10, min_daily_volume=0.0)
+    discover_candidates(cfg, client=_Client([_price(100, buy=90.0, sell=100.0)], [_history(100, 5.0)]))
+    assert seen == [cfg.hub_region_id] == [10000002]

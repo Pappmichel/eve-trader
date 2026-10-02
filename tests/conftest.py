@@ -49,6 +49,17 @@ def _access_gate_test_mode(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _reset_goonmetrics_region_coverage():
+    """goonmetrics_client remembers per process which regions Goonmetrics
+    tracks; a probe answered by one test's mocked session must not decide
+    another test's source."""
+    from eve_trader.goonmetrics_client import clear_region_coverage_cache
+    clear_region_coverage_cache()
+    yield
+    clear_region_coverage_cache()
+
+
+@pytest.fixture(autouse=True)
 def _reset_character_public_info_cache():
     """ESIClient.character_public_info's cache (docs/ESI_ACCESS_PLAN.md
     Known gap 2) is class-wide and keyed only by character_id, unscoped by
@@ -62,6 +73,7 @@ def _reset_character_public_info_cache():
     dict.clear() under a lock, no I/O, not a forced real connection."""
     ESIClient.clear_character_public_info_cache()
     ESIClient.clear_corporation_public_info_cache()
+    ESIClient.clear_live_character_caches()
     yield
     ESIClient.clear_character_public_info_cache()
     ESIClient.clear_corporation_public_info_cache()

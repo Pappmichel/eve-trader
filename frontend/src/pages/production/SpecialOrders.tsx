@@ -4,7 +4,7 @@ import {
   Alert, Badge, Button, Card, Checkbox, Group, MultiSelect, NumberInput, SegmentedControl, Stack, Text, Textarea, Title, ActionIcon, Tooltip,
 } from '@mantine/core'
 import { modals } from '@mantine/modals'
-import { IconCheck, IconPlus, IconTrash } from '@tabler/icons-react'
+import { IconPlus, IconTrash } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
@@ -13,6 +13,7 @@ import type {
   SpecialOrderLineItem, SpecialOrderPreviewResult,
 } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
+import { EditableNumberCell } from '../../components/EditableCell'
 import { HintCard } from '../../components/HintCard'
 import { SearchableSelect } from '../../components/SearchableSelect'
 import { useAction } from '../../hooks/useAction'
@@ -25,33 +26,6 @@ const CATEGORY_UNKNOWN = 'no category'
 function stockpileBadge(v: number) {
   const color = v >= 50 ? 'accent' : v > 0 ? 'warn' : 'gray'
   return <Badge color={color} variant="light">{v.toFixed(0)}%</Badge>
-}
-
-// Same "local draft state, checkmark appears once it differs from the saved
-// value, click to save" pattern as StockTargets.tsx's own EditableNumberCell
-// - see that component's comment for why getRowId (used below) matters here.
-function EditableQuantityCell({ value, ariaLabel, isPending, onSave }: {
-  value: number
-  ariaLabel: string
-  isPending: boolean
-  onSave: (value: number) => void
-}) {
-  const [draft, setDraft] = useState(value)
-  const dirty = draft !== value
-  return (
-    <Group gap={4} wrap="nowrap">
-      <NumberInput
-        value={draft} onChange={(v) => setDraft(v === '' ? 0 : Number(v))}
-        min={0.01} size="xs" w={110} aria-label={ariaLabel}
-      />
-      {dirty && (
-        <ActionIcon size="sm" variant="filled" color="accent" aria-label={`Save ${ariaLabel}`}
-          onClick={() => onSave(draft)} loading={isPending}>
-          <IconCheck size={14} />
-        </ActionIcon>
-      )}
-    </Group>
-  )
 }
 
 // Shared Buy/Build/Invention/overlap-warning rendering - used by both a
@@ -79,8 +53,9 @@ function ComputeResultView({ result }: { result: SpecialOrderComputeResult }) {
   )
   const grandTotal = totalCost + totalJobCost
 
+  const showHub = result.buy_list.some((e) => e.hub_name)
   const buyColumns = useMemo<ColumnDef<BuyListEntry, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 220 },
+    { header: 'Item', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
     { header: 'Category', accessorKey: 'category', size: 150, cell: (i) => i.getValue() ?? '–' },
     {
       header: 'Buy From', accessorKey: 'buy_from', size: 120,
@@ -89,6 +64,7 @@ function ComputeResultView({ result }: { result: SpecialOrderComputeResult }) {
         return v ? <Badge color={v === 'C-J' ? 'accent' : 'info'} variant="light">{v}</Badge> : '–'
       },
     },
+    ...(showHub ? [{ header: 'Best hub', accessorKey: 'hub_name', size: 100, cell: (i: any) => i.getValue() ?? '–' }] : []),
     { header: 'Quantity', accessorKey: 'quantity', size: 110, cell: (i) => qty(i.getValue()) },
     {
       header: 'On Hand', accessorKey: 'on_hand_pct', size: 100,
@@ -100,10 +76,10 @@ function ComputeResultView({ result }: { result: SpecialOrderComputeResult }) {
     },
     { header: 'Unit Price', accessorKey: 'unit_price', size: 120, cell: (i) => isk(i.getValue()) },
     { header: 'Total Price', accessorKey: 'total_price', size: 140, cell: (i) => isk(i.getValue()) },
-  ], [])
+  ], [showHub])
 
   const buildColumns = useMemo<ColumnDef<BuildJobEntry, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 220 },
+    { header: 'Item', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
     { header: 'Category', accessorKey: 'job_category', size: 150, cell: (i) => i.getValue() ?? '–' },
     { header: 'Activity', accessorKey: 'activity', size: 120 },
     { header: 'Job Runs', accessorKey: 'job_runs', size: 100, cell: (i) => qty(i.getValue()) },
@@ -322,11 +298,11 @@ function OrderItemsEditor({ order, items, autoRecompute, onPreview }: {
   const [newQuantity, setNewQuantity] = useState<number | ''>(1)
 
   const columns = useMemo<ColumnDef<SpecialOrderLineItem, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 240 },
+    { header: 'Item', accessorKey: 'type_name', size: 240, meta: { copyable: true } },
     {
       header: 'Quantity', accessorKey: 'quantity', size: 160,
       cell: (i) => (
-        <EditableQuantityCell
+        <EditableNumberCell min={0.01} width={110}
           value={i.getValue()} ariaLabel={`Quantity for ${i.row.original.type_name}`}
           isPending={setItem.isPending && pendingTypeId === i.row.original.type_id}
           onSave={(value) => {

@@ -60,6 +60,10 @@ class ModuleReprocessingConfig:
     # -- Purchase source (Default Jita - a region-wide buy, same shape as
     # Ore & Minerals' own Jita-only ore sourcing) --
     purchase_region_id: int = JITA_REGION_ID
+    # Market hub (region id) the ore/mineral inputs of the shopping-list
+    # optimizer are priced at - independent of purchase_region_id (modules)
+    # and no longer TradingConfig.jita_region_id (#222). Default Jita.
+    input_hub_region_id: int = JITA_REGION_ID
     # Set to source from a specific player structure's own sell orders
     # instead of the whole region's public order book - None (the default)
     # means "region only", matching this tool's initial scope.

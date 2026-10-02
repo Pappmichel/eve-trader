@@ -22,7 +22,7 @@ import type { ManualItemPriceRow, PortfolioSnapshotRow } from '../api/types'
 
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
-    <Card withBorder padding="lg" radius="md">
+    <Card withBorder padding="lg" radius="md" className="et-panel">
       <Title order={6} c="dimmed" tt="uppercase" mb="xs">{label}</Title>
       <Text size="xl" fw={700}>{value}</Text>
       {hint && <Text size="xs" c="dimmed" mt={4}>{hint}</Text>}
@@ -52,14 +52,14 @@ function HistoryChart({ title, hint, rows, lines }: {
   // data" precedent rather than rendering an empty/broken chart.
   if (rows.length < 2) {
     return (
-      <Card withBorder padding="lg" radius="md">
+      <Card withBorder padding="lg" radius="md" className="et-panel">
         <Title order={6} c="dimmed" tt="uppercase" mb="xs">{title}</Title>
         <Text size="sm" c="dimmed">History builds up from here - check back tomorrow.</Text>
       </Card>
     )
   }
   return (
-    <Card withBorder padding="lg" radius="md">
+    <Card withBorder padding="lg" radius="md" className="et-panel">
       <Title order={6} c="dimmed" tt="uppercase" mb="xs">{title}</Title>
       {hint && <Text size="xs" c="dimmed" mb="sm">{hint}</Text>}
       <ResponsiveContainer width="100%" height={220}>
@@ -135,7 +135,7 @@ function ManualPricesSection() {
   const [priceInput, setPriceInput] = useState<number | ''>('')
 
   const columns = useMemo<ColumnDef<ManualItemPriceRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 260 },
+    { header: 'Item', accessorKey: 'type_name', size: 260, meta: { copyable: true } },
     {
       header: 'Price (ISK)', accessorKey: 'price', size: 170,
       cell: (i) => (
@@ -216,7 +216,7 @@ function TotalWealthSection() {
       <Stat label="Total Wealth" value={isk(data.total_wealth)}
         hint="Every asset, wallet balance and blueprint shared with Portfolio - a separate, broader figure from Combined Value above" />
 
-      <SimpleGrid cols={3} spacing="md">
+      <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }} spacing="md">
         <Stat label="Assets" value={isk(data.wealth_assets_value)} />
         <Stat label="Blueprints" value={isk(data.wealth_blueprints_value)}
           hint="One market quote per BPO, regardless of its own ME/TE - a BPC has no separate quote of its own, so it counts here only once you set a manual price for it" />
@@ -236,7 +236,7 @@ function TotalWealthSection() {
           {data.characters_missing_wallet_scope.length === 1 ? 'shares' : 'share'} Assets/Blueprints with Portfolio
           but {data.characters_missing_wallet_scope.length === 1 ? 'has' : 'have'} no wallet scope
           shared - reauthorize on the{' '}
-          <Text component={Link} to="/characters" span c="accent" td="underline">Characters page</Text>
+          <Text component={Link} to="/character-management/characters" span c="accent" td="underline">Characters page</Text>
           {' '}to include their ISK balance.
         </Alert>
       )}
@@ -269,7 +269,7 @@ export default function Portfolio() {
           <Stat label="Combined Value" value={isk(data.combined_value)}
             hint="Trading realized profit (latest reconciliation) + current Production stock value" />
 
-          <SimpleGrid cols={2} spacing="md">
+          <SimpleGrid cols={{ base: 1, xs: 2 }} spacing="md">
             <Stat label="Trading: Realized Profit" value={isk(data.trading_realized_profit)}
               hint={`${qty(data.trading_trade_count)} matched trades in latest reconciliation`} />
             <Stat label="Trading: Average Margin" value={pct(data.trading_average_margin)} />
@@ -294,7 +294,7 @@ export default function Portfolio() {
               { dataKey: 'production_stock_value', name: 'Production Stock Value', color: COLORS.info, formatter: isk },
             ]} />
 
-          <SimpleGrid cols={2} spacing="md">
+          <SimpleGrid cols={{ base: 1, xs: 2 }} spacing="md">
             <HistoryChart title="Trading Average Margin" rows={history ?? []}
               lines={[{ dataKey: 'trading_average_margin', name: 'Average Margin', color: COLORS.info, formatter: pct }]} />
             <HistoryChart title="Trading Daily Profit Volatility" rows={history ?? []}

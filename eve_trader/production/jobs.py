@@ -52,7 +52,9 @@ def list_current_jobs(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[Industr
     # must scope type_ids explicitly now.
     product_type_ids = list({j[3] for j in jobs if j[3] is not None} | {m[1] for m in manual_jobs})
     home = pricing.home_prices(cfg, product_type_ids)
-    jita = pricing.jita_prices(product_type_ids)
+    # Output valuation, not buying: in best-hub mode use the Jita reference,
+    # not whichever hub would be cheapest to buy from (#222).
+    jita = {t: pricing.reference_quote(q) for t, q in pricing.jita_prices(product_type_ids).items()}
 
     now = datetime.now(timezone.utc)
     rows = []

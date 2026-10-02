@@ -7,7 +7,8 @@ import { IconArrowLeft, IconTrash } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { modals } from '@mantine/modals'
-import { notifications } from '@mantine/notifications'
+import { notify } from '../../notify'
+import { JobProgress } from '../../components/JobProgress'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { adminApi, productionApi } from '../../api/client'
@@ -15,6 +16,7 @@ import { useAction } from '../../hooks/useAction'
 import { useBackgroundJob, useBackgroundJobStart } from '../../hooks/useBackgroundJob'
 import { ActionTierIcon, TIER_COPY } from '../../components/ActionTierIcon'
 import { dateTime } from '../../format'
+import { ALL_TOOL_KEYS, ESI_CONSUMING_TOOLS } from '../../toolKeys'
 import type {
   AdminTenant, AdminUser, AllowlistCandidate, AllowlistEntry, AllowlistImpact, AccessRequestRow, ErrorLogRow,
 } from '../../api/types'
@@ -150,7 +152,9 @@ function StructureResolveSection() {
         </Button>
       </Group>
       {running && (
-        <Text size="sm" c="dimmed" mb="xs">{job.formatProgress(job.status?.progress, job.jobName)}</Text>
+        <div style={{ marginBottom: 'var(--mantine-spacing-xs)' }}>
+          <JobProgress label={job.formatProgress(job.status?.progress, job.jobName)} progress={job.status?.progress} />
+        </div>
       )}
       {!running && job.status?.status === 'failed' && (
         <Text size="sm" c="danger" mb="xs">{job.status.error || 'Structure name resolution failed.'}</Text>
@@ -220,12 +224,6 @@ function BackupsSection() {
     </div>
   )
 }
-
-// Mirrors access_gate.ALL_TOOL_KEYS (eve_trader/access_gate.py) - kept in
-// sync by hand, same as every other small fixed-vocabulary list already
-// hardcoded on the frontend elsewhere in this app.
-const ALL_TOOL_KEYS = ['trading', 'production', 'doctrine', 'refining', 'station_trading', 'sorting', 'portfolio', 'admin', 'characters', 'module_reprocessing']
-const ESI_CONSUMING_TOOLS = ['trading', 'production', 'doctrine', 'station_trading', 'sorting']
 
 function withAutoCharacters(keys: string[]): string[] {
   const hasEsi = keys.some((k) => ESI_CONSUMING_TOOLS.includes(k))
@@ -509,7 +507,7 @@ function AllowlistSection() {
       impact = await adminApi.allowlistImpact(entryType, entryId, action)
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Could not load the impact preview'
-      notifications.show({ title: 'Allowlist', message, color: 'danger' })
+      notify({ title: 'Allowlist', message, color: 'danger' })
       return
     }
     modals.openConfirmModal({
@@ -529,7 +527,7 @@ function AllowlistSection() {
       setHits(await adminApi.searchAllowlist(q))
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Search failed'
-      notifications.show({ title: 'Allowlist search', message, color: 'danger' })
+      notify({ title: 'Allowlist search', message, color: 'danger' })
     } finally {
       setSearching(false)
     }

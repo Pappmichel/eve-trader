@@ -36,7 +36,7 @@ import threading
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from functools import lru_cache
 from typing import Iterable, Optional
 
@@ -445,6 +445,21 @@ def list_tenants() -> list[tuple]:
         return conn.execute("SELECT tenant_id, name, created_at FROM tenants ORDER BY created_at").fetchall()
 
 
+def touch_tenant_active(tenant_id: str) -> None:
+    """Stamp `tenants.last_active_at = now()`. Called (throttled) from the
+    access-gate middleware - see access_gate.note_tenant_activity."""
+    with connect_unscoped() as conn:
+        conn.execute("UPDATE tenants SET last_active_at = now() WHERE tenant_id = ?", (tenant_id,))
+
+
+def list_tenant_last_active() -> dict[str, Optional["datetime"]]:
+    """`{tenant_id: last_active_at or None}` for every tenant - one query for
+    the scheduler's per-tick inactivity check."""
+    with connect_unscoped() as conn:
+        rows = conn.execute("SELECT tenant_id, last_active_at FROM tenants").fetchall()
+    return {str(r[0]): r[1] for r in rows}
+
+
 def list_tenant_registry_entries(tenant_id: str) -> list[tuple]:
     """Returns (entry_type, entry_id) for every id registered to `tenant_id`
     - admin-CLI-only (`tenant list`)."""
@@ -541,6 +556,20 @@ def replace_tool_grants(character_id: int, tool_keys: list[str], tenant_id: str)
                 "ON CONFLICT (character_id, tool_key) DO UPDATE SET tenant_id = excluded.tenant_id",
                 (character_id, tool_key, tenant_id),
             )
+
+
+def list_tool_grants_for_tenant(tenant_id: str) -> list[str]:
+    """Distinct tool_keys granted to the character(s) registered to
+    `tenant_id` (one character per tenant, so this is normally that one
+    character's grants). `tool_grants` is unscoped, hence connect_unscoped.
+    The scheduler uses it to skip work for tools a tenant no longer holds
+    (docs/SCHEDULER_REWORK_PLAN.md decision 2a)."""
+    with connect_unscoped() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT tool_key FROM tool_grants WHERE tenant_id = ? ORDER BY tool_key",
+            (tenant_id,),
+        ).fetchall()
+    return [r[0] for r in rows]
 
 
 def list_tool_grants_for_character(character_id: int) -> list[str]:
@@ -1179,8 +1208,8 @@ def mark_shortlist_refreshed(item_ids: Iterable[int], refreshed_at: str) -> None
 _SHORTLIST_SNAPSHOT_INSERT = (
     "INSERT INTO shortlist_snapshot (run_ts, item_id, item, category, landed_cost, net_sell, "
     "sell_volume, own_orders_remaining, profit_per_unit, margin, profit_per_m3, decision, active, "
-    "volume_m3, jita_sell, import_cost, meta_level, avg_daily_volume) "
-    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    "volume_m3, jita_sell, import_cost, meta_level, avg_daily_volume, breakeven_buy_price) "
+    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 )
 
 
@@ -1188,7 +1217,7 @@ def _shortlist_snapshot_params(rows: list[ShortlistRow], run_ts: str) -> list[tu
     return [(run_ts, r.item_id, r.item, r.category, r.landed_cost, r.net_sell, r.sell_volume,
              r.own_orders_remaining, r.profit_per_unit, r.margin, r.profit_per_m3, r.decision,
              int(r.active), r.volume_m3, r.jita_sell, r.import_cost, r.meta_level,
-             r.avg_daily_volume) for r in rows]
+             r.avg_daily_volume, r.breakeven_buy_price) for r in rows]
 
 
 def replace_shortlist_snapshot_run(rows: list[ShortlistRow], run_ts: str) -> None:
@@ -1259,6 +1288,7 @@ def load_latest_shortlist_rows() -> list[ShortlistRow]:
             import_cost=_snapshot_opt_float(rec.get("import_cost")),
             meta_level=_snapshot_opt_int(rec.get("meta_level")),
             avg_daily_volume=_snapshot_opt_float(rec.get("avg_daily_volume")),
+            breakeven_buy_price=_snapshot_opt_float(rec.get("breakeven_buy_price")),
         ))
     return rows
 
@@ -1313,6 +1343,9 @@ def save_new_candidates(results: list[NewCandidateResult], run_ts: str) -> None:
 
 
 def save_goonmetrics_history(points) -> None:
+    points = list(points)
+    if not points:
+        return
     with connect() as conn:
         conn.executemany(
             "INSERT INTO goonmetrics_history VALUES (?,?,?,?,?,?,?,?) "
@@ -1352,7 +1385,9 @@ def replace_sde_data(
     blueprint_time: list[tuple], blueprint_materials: list[tuple], blueprint_products: list[tuple],
     invention_probability: list[tuple] = (), solar_systems: list[tuple] = (),
     stations: list[tuple] = (), categories: list[tuple] = (), type_slots: list[tuple] = (),
+    regions: list[tuple] = (),
     type_materials: list[tuple] = (), blueprint_skills: list[tuple] = (),
+    skill_requirements: list[tuple] = (), skill_meta: list[tuple] = (),
 ) -> None:
     """Wholesale-replaces the SDE cache tables (each refresh reflects one Fuzzwork
     dump snapshot, not an incremental merge - stale rows from a previous CCP
@@ -1371,7 +1406,13 @@ def replace_sde_data(
     requires, used by production/engine.py's job-time skill bonus (see
     get_blueprint_skills, constants.SPECIALIST_TIME_SKILLS) to tell whether a
     blueprint's own "specialist" skill (e.g. Molecular Engineering) applies on
-    top of the universal Industry/Advanced Industry/Reactions bonus."""
+    top of the universal Industry/Advanced Industry/Reactions bonus.
+
+    `skill_requirements` (type_id, skill_id, level) and `skill_meta`
+    (skill_id, rank, primary_attribute, secondary_attribute) come from
+    `dgmTypeAttributes.csv`, filtered while parsing (see production/sde.py) -
+    Character Management's skill catalogue, doctrine skill check and skill
+    planner (docs/CHARACTER_MANAGEMENT_PLAN.md R7)."""
     with connect() as conn:
         conn.execute("DELETE FROM sde_types")
         conn.execute("DELETE FROM sde_groups")
@@ -1381,11 +1422,14 @@ def replace_sde_data(
         conn.execute("DELETE FROM sde_blueprint_products")
         conn.execute("DELETE FROM sde_invention_probability")
         conn.execute("DELETE FROM sde_solar_systems")
+        conn.execute("DELETE FROM sde_regions")
         conn.execute("DELETE FROM sde_stations")
         conn.execute("DELETE FROM sde_categories")
         conn.execute("DELETE FROM sde_type_slots")
         conn.execute("DELETE FROM sde_type_materials")
         conn.execute("DELETE FROM sde_blueprint_skills")
+        conn.execute("DELETE FROM sde_skill_requirements")
+        conn.execute("DELETE FROM sde_skill_meta")
         conn.executemany("INSERT INTO sde_types VALUES (?,?,?,?,?,?,?,?,?)", types)
         conn.executemany("INSERT INTO sde_groups VALUES (?,?,?)", groups)
         conn.executemany("INSERT INTO sde_market_groups VALUES (?,?,?)", market_groups)
@@ -1394,11 +1438,14 @@ def replace_sde_data(
         conn.executemany("INSERT INTO sde_blueprint_products VALUES (?,?,?,?)", blueprint_products)
         conn.executemany("INSERT INTO sde_invention_probability VALUES (?,?,?)", invention_probability)
         conn.executemany("INSERT INTO sde_solar_systems VALUES (?,?,?,?)", solar_systems)
+        conn.executemany("INSERT INTO sde_regions VALUES (?,?)", regions)
         conn.executemany("INSERT INTO sde_stations VALUES (?,?,?)", stations)
         conn.executemany("INSERT INTO sde_categories VALUES (?,?)", categories)
         conn.executemany("INSERT INTO sde_type_slots VALUES (?,?)", type_slots)
         conn.executemany("INSERT INTO sde_type_materials VALUES (?,?,?)", type_materials)
         conn.executemany("INSERT INTO sde_blueprint_skills VALUES (?,?,?,?)", blueprint_skills)
+        conn.executemany("INSERT INTO sde_skill_requirements VALUES (?,?,?)", skill_requirements)
+        conn.executemany("INSERT INTO sde_skill_meta VALUES (?,?,?,?)", skill_meta)
     get_system_security.cache_clear()
     get_sde_type.cache_clear()
     get_type_category.cache_clear()
@@ -1418,8 +1465,9 @@ SDE_TABLES = (
     "sde_types", "sde_groups", "sde_market_groups", "sde_blueprint_time",
     "sde_blueprint_materials", "sde_blueprint_products", "sde_invention_probability",
     "sde_blueprint_skills",
-    "sde_solar_systems", "sde_stations", "sde_categories", "sde_type_slots",
+    "sde_solar_systems", "sde_regions", "sde_stations", "sde_categories", "sde_type_slots",
     "sde_type_materials",
+    "sde_skill_requirements", "sde_skill_meta",
 )
 
 # Every sde_* table is diffed row-by-row (see get_sde_snapshot_for_diff).
@@ -1587,6 +1635,23 @@ def get_system_security(system_id: Optional[int]) -> Optional[float]:
     return row[0] if row else None
 
 
+def get_solar_system_names(system_ids: Iterable[int]) -> dict[int, Optional[str]]:
+    """Batched solar_system_id -> SDE name (None for an id the SDE cache does
+    not know, e.g. before the first SDE refresh or a wormhole system)."""
+    ids = list(dict.fromkeys(int(i) for i in system_ids))
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    with connect() as conn:
+        rows = conn.execute(
+            f"SELECT solar_system_id, solar_system_name FROM sde_solar_systems "
+            f"WHERE solar_system_id IN ({placeholders})",
+            ids,
+        ).fetchall()
+    found = {int(r[0]): r[1] for r in rows}
+    return {i: found.get(i) for i in ids}
+
+
 def list_all_solar_systems() -> list[tuple[int, str]]:
     """Every SDE solar system (solar_system_id, solar_system_name), name-
     ordered - full candidate list for the system-name autocomplete
@@ -1595,6 +1660,16 @@ def list_all_solar_systems() -> list[tuple[int, str]]:
     with connect() as conn:
         return conn.execute(
             "SELECT solar_system_id, solar_system_name FROM sde_solar_systems ORDER BY solar_system_name"
+        ).fetchall()
+
+
+def list_all_regions() -> list[tuple[int, str]]:
+    """Every SDE region (region_id, region_name), name-ordered - feeds the
+    region pickers in Trading/Module Reprocessing Settings (issue #223).
+    Empty until the SDE has been refreshed once after sde_regions was added."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT region_id, region_name FROM sde_regions ORDER BY region_name"
         ).fetchall()
 
 
@@ -2754,12 +2829,20 @@ def delete_owner_snapshot_rows(
     allowed = _ASSET_TABLES | _JOB_TABLES | _BP_TABLES | {
         "character_sell_orders", "esi_wallet_transactions", "esi_wallet_journal",
         "doctrine_contracts", "character_wallet_balances", "corp_wallet_balances",
+        "character_standings", "character_loyalty_points",
+        "character_skills", "character_attributes", "character_skillqueue",
+        "character_clone_meta", "character_jump_clones", "character_jump_clone_implants", "character_implants",
+        "character_notifications", "character_notification_reads",
     }
     if table not in allowed:
         raise ValueError(f"not a per-owner snapshot table: {table}")
     with connect() as conn:
         if table in ("esi_wallet_transactions", "esi_wallet_journal",
-                      "character_wallet_balances", "corp_wallet_balances"):
+                      "character_wallet_balances", "corp_wallet_balances",
+                      "character_standings", "character_loyalty_points",
+                      "character_skills", "character_attributes", "character_skillqueue",
+                      "character_clone_meta", "character_jump_clones", "character_jump_clone_implants", "character_implants",
+                      "character_notifications", "character_notification_reads"):
             col = "owner_character_id" if owner_character_id is not None else "owner_corporation_id"
             oid = owner_character_id if owner_character_id is not None else owner_corporation_id
             if oid is None:
@@ -3244,6 +3327,27 @@ def upsert_esi_freshness(
         )
 
 
+def record_esi_attempt(
+    owner_type: str, owner_id: int, data_kind: str, *, now: Optional[str] = None,
+) -> None:
+    """Stamp `last_attempt_at` only - success timestamp and `last_error` are
+    left untouched. Used for kinds the orchestrator could not even try (no
+    token holds the scope yet), so the scheduler's failure backoff applies to
+    them without surfacing a fake fetch error (SCHEDULER_REWORK_PLAN.md,
+    decision 6)."""
+    from datetime import datetime, timezone
+    ts = now or datetime.now(timezone.utc).isoformat()
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO esi_freshness "
+            "(owner_type, owner_id, data_kind, last_success_at, last_attempt_at, last_error) "
+            "VALUES (?,?,?,NULL,?,NULL) "
+            "ON CONFLICT (tenant_id, owner_type, owner_id, data_kind) DO UPDATE SET "
+            "last_attempt_at = excluded.last_attempt_at",
+            (owner_type, owner_id, data_kind, ts),
+        )
+
+
 def get_esi_freshness_success_at(
     owner_type: str, owner_id: int, data_kind: str,
 ) -> Optional[str]:
@@ -3394,6 +3498,922 @@ def upsert_character_wallet_balance(character_id: int, balance: float) -> None:
             "balance=excluded.balance, synced_at=excluded.synced_at",
             (character_id, balance),
         )
+
+
+def replace_character_standings(character_id: int, rows: list[tuple[int, str, float]]) -> None:
+    """Replaces one character's standings snapshot. `rows`: [(from_id,
+    from_type, standing), ...] with from_type in agent|npc_corp|faction.
+    An empty list clears the character's partition (ESI legitimately returns
+    [] for a character with no standings)."""
+    with connect() as conn:
+        conn.execute(
+            "DELETE FROM character_standings WHERE owner_character_id = ?", (character_id,),
+        )
+        if rows:
+            conn.executemany(
+                "INSERT INTO character_standings "
+                "(owner_character_id, from_id, from_type, standing, synced_at) "
+                "VALUES (?,?,?,?, now())",
+                [(character_id, from_id, from_type, standing) for from_id, from_type, standing in rows],
+            )
+
+
+def load_character_standings(character_ids: list[int]) -> list[tuple]:
+    """`(owner_character_id, from_id, from_type, standing)` for the given
+    characters (empty list -> empty result, never unfiltered)."""
+    if not character_ids:
+        return []
+    placeholders = ",".join("?" * len(character_ids))
+    with connect() as conn:
+        return conn.execute(
+            "SELECT owner_character_id, from_id, from_type, standing FROM character_standings "
+            f"WHERE owner_character_id IN ({placeholders}) "
+            "ORDER BY owner_character_id, standing DESC, from_id",
+            character_ids,
+        ).fetchall()
+
+
+def replace_character_loyalty_points(character_id: int, rows: list[tuple[int, int]]) -> None:
+    """Replaces one character's loyalty-point snapshot. `rows`:
+    [(corporation_id, loyalty_points), ...]."""
+    with connect() as conn:
+        conn.execute(
+            "DELETE FROM character_loyalty_points WHERE owner_character_id = ?", (character_id,),
+        )
+        if rows:
+            conn.executemany(
+                "INSERT INTO character_loyalty_points "
+                "(owner_character_id, corporation_id, loyalty_points, synced_at) "
+                "VALUES (?,?,?, now())",
+                [(character_id, corp_id, lp) for corp_id, lp in rows],
+            )
+
+
+def load_character_loyalty_points(character_ids: list[int]) -> list[tuple]:
+    """`(owner_character_id, corporation_id, loyalty_points)` for the given
+    characters (empty list -> empty result, never unfiltered)."""
+    if not character_ids:
+        return []
+    placeholders = ",".join("?" * len(character_ids))
+    with connect() as conn:
+        return conn.execute(
+            "SELECT owner_character_id, corporation_id, loyalty_points FROM character_loyalty_points "
+            f"WHERE owner_character_id IN ({placeholders}) "
+            "ORDER BY owner_character_id, loyalty_points DESC, corporation_id",
+            character_ids,
+        ).fetchall()
+
+
+# ------------------------------------------- Character Management: clones (phase 5c)
+def replace_character_clones(
+    character_id: int, meta: dict, jump_clones: list[dict],
+) -> None:
+    """Replaces one character's clone snapshot. `meta`: home_location_id,
+    home_location_type, last_clone_jump_date, last_station_change_date (any may
+    be None); `jump_clones`: [{jump_clone_id, location_id, location_type, name,
+    implants: [type_id]}]. The meta row is always written - it is what marks
+    the character as synced even when it has no home or no jump clones."""
+    with connect() as conn:
+        for table in ("character_clone_meta", "character_jump_clones", "character_jump_clone_implants"):
+            conn.execute(f"DELETE FROM {table} WHERE owner_character_id = ?", (character_id,))
+        conn.execute(
+            "INSERT INTO character_clone_meta (owner_character_id, home_location_id, home_location_type, "
+            "last_clone_jump_date, last_station_change_date, synced_at) VALUES (?,?,?,?,?, now())",
+            (character_id, meta.get("home_location_id"), meta.get("home_location_type"),
+             meta.get("last_clone_jump_date"), meta.get("last_station_change_date")),
+        )
+        for jc in jump_clones:
+            conn.execute(
+                "INSERT INTO character_jump_clones (owner_character_id, jump_clone_id, location_id, "
+                "location_type, name, synced_at) VALUES (?,?,?,?,?, now())",
+                (character_id, jc["jump_clone_id"], jc.get("location_id"), jc.get("location_type"), jc.get("name")),
+            )
+            implants = sorted(set(int(t) for t in jc.get("implants") or []))
+            if implants:
+                conn.executemany(
+                    "INSERT INTO character_jump_clone_implants (owner_character_id, jump_clone_id, type_id, synced_at) "
+                    "VALUES (?,?,?, now())",
+                    [(character_id, jc["jump_clone_id"], t) for t in implants],
+                )
+
+
+def load_character_clones(character_ids: list[int]) -> dict[int, dict]:
+    """`{character_id: {"meta": {...}, "jump_clones": [{..., "implants": [type_id]}]}}`
+    for characters that have a synced meta row (empty list -> {}, never
+    unfiltered)."""
+    if not character_ids:
+        return {}
+    ph = ",".join("?" * len(character_ids))
+    out: dict[int, dict] = {}
+    with connect() as conn:
+        for r in conn.execute(
+            "SELECT owner_character_id, home_location_id, home_location_type, last_clone_jump_date, "
+            f"last_station_change_date FROM character_clone_meta WHERE owner_character_id IN ({ph})",
+            character_ids,
+        ).fetchall():
+            out[int(r[0])] = {
+                "meta": {
+                    "home_location_id": r[1], "home_location_type": r[2],
+                    "last_clone_jump_date": r[3], "last_station_change_date": r[4],
+                },
+                "jump_clones": [],
+            }
+        by_clone: dict[tuple[int, int], dict] = {}
+        for r in conn.execute(
+            "SELECT owner_character_id, jump_clone_id, location_id, location_type, name "
+            f"FROM character_jump_clones WHERE owner_character_id IN ({ph}) "
+            "ORDER BY owner_character_id, jump_clone_id",
+            character_ids,
+        ).fetchall():
+            jc = {"jump_clone_id": int(r[1]), "location_id": r[2], "location_type": r[3], "name": r[4], "implants": []}
+            by_clone[(int(r[0]), int(r[1]))] = jc
+            if int(r[0]) in out:
+                out[int(r[0])]["jump_clones"].append(jc)
+        for r in conn.execute(
+            "SELECT owner_character_id, jump_clone_id, type_id FROM character_jump_clone_implants "
+            f"WHERE owner_character_id IN ({ph}) ORDER BY owner_character_id, jump_clone_id, type_id",
+            character_ids,
+        ).fetchall():
+            jc = by_clone.get((int(r[0]), int(r[1])))
+            if jc is not None:
+                jc["implants"].append(int(r[2]))
+    return out
+
+
+def replace_character_implants(character_id: int, type_ids: list[int]) -> None:
+    """Replaces one character's active implants."""
+    with connect() as conn:
+        conn.execute("DELETE FROM character_implants WHERE owner_character_id = ?", (character_id,))
+        unique = sorted(set(int(t) for t in type_ids))
+        if unique:
+            conn.executemany(
+                "INSERT INTO character_implants (owner_character_id, type_id, synced_at) VALUES (?,?, now())",
+                [(character_id, t) for t in unique],
+            )
+
+
+def load_character_implants(character_ids: list[int]) -> list[tuple]:
+    """`(owner_character_id, type_id)` (empty list -> empty result)."""
+    if not character_ids:
+        return []
+    ph = ",".join("?" * len(character_ids))
+    with connect() as conn:
+        return conn.execute(
+            f"SELECT owner_character_id, type_id FROM character_implants WHERE owner_character_id IN ({ph}) "
+            "ORDER BY owner_character_id, type_id",
+            character_ids,
+        ).fetchall()
+
+
+# ------------------------------------------- Character Management: notifications (phase 6)
+def replace_character_notifications(character_id: int, rows: list[tuple]) -> None:
+    """Mirrors ESI's current notification list for one character. `rows`:
+    [(notification_id, type, sender_id, sender_type, sent_at, esi_is_read,
+    text), ...]. Local read flags for notifications no longer in the list are
+    dropped (they could never be shown again)."""
+    with connect() as conn:
+        conn.execute("DELETE FROM character_notifications WHERE owner_character_id = ?", (character_id,))
+        if rows:
+            conn.executemany(
+                "INSERT INTO character_notifications (owner_character_id, notification_id, type, sender_id, "
+                "sender_type, sent_at, esi_is_read, text, synced_at) VALUES (?,?,?,?,?,?,?,?, now()) "
+                "ON CONFLICT (tenant_id, owner_character_id, notification_id) DO NOTHING",
+                [(character_id, *row) for row in rows],
+            )
+        keep = [int(r[0]) for r in rows]
+        if keep:
+            ph = ",".join("?" * len(keep))
+            conn.execute(
+                "DELETE FROM character_notification_reads WHERE owner_character_id = ? "
+                f"AND notification_id NOT IN ({ph})", [character_id, *keep],
+            )
+        else:
+            conn.execute("DELETE FROM character_notification_reads WHERE owner_character_id = ?", (character_id,))
+
+
+def load_character_notifications(character_ids: list[int]) -> list[tuple]:
+    """`(owner_character_id, notification_id, type, sender_id, sender_type,
+    sent_at, esi_is_read, text)`, newest first (empty list -> empty result)."""
+    if not character_ids:
+        return []
+    ph = ",".join("?" * len(character_ids))
+    with connect() as conn:
+        return conn.execute(
+            "SELECT owner_character_id, notification_id, type, sender_id, sender_type, sent_at, esi_is_read, text "
+            f"FROM character_notifications WHERE owner_character_id IN ({ph}) "
+            "ORDER BY sent_at DESC, notification_id DESC",
+            character_ids,
+        ).fetchall()
+
+
+def set_notifications_read(character_id: int, notification_ids: list[int], read: bool) -> int:
+    """Sets/clears this app's own read flag; only ids that exist in the
+    character's snapshot are touched. Returns how many rows changed."""
+    ids = sorted({int(i) for i in notification_ids})
+    if not ids:
+        return 0
+    ph = ",".join("?" * len(ids))
+    with connect() as conn:
+        if read:
+            cur = conn.execute(
+                "INSERT INTO character_notification_reads (owner_character_id, notification_id) "
+                f"SELECT owner_character_id, notification_id FROM character_notifications "
+                f"WHERE owner_character_id = ? AND notification_id IN ({ph}) "
+                "ON CONFLICT (tenant_id, owner_character_id, notification_id) DO NOTHING",
+                [character_id, *ids],
+            )
+        else:
+            cur = conn.execute(
+                f"DELETE FROM character_notification_reads WHERE owner_character_id = ? AND notification_id IN ({ph})",
+                [character_id, *ids],
+            )
+        return cur.rowcount
+
+
+def load_notification_reads(character_ids: list[int]) -> set[tuple[int, int]]:
+    """`{(owner_character_id, notification_id)}` flagged read locally."""
+    if not character_ids:
+        return set()
+    ph = ",".join("?" * len(character_ids))
+    with connect() as conn:
+        return {
+            (int(r[0]), int(r[1])) for r in conn.execute(
+                f"SELECT owner_character_id, notification_id FROM character_notification_reads "
+                f"WHERE owner_character_id IN ({ph})", character_ids,
+            ).fetchall()
+        }
+
+
+# ------------------------------------------- Character Management: skills (phase 2)
+def replace_character_skills(character_id: int, rows: list[tuple[int, int, int, int]]) -> None:
+    """Replaces one character's skill rows. `rows`: [(skill_id, active_level,
+    trained_level, skillpoints_in_skill), ...]. An empty list clears the
+    partition (a brand-new character legitimately has none)."""
+    with connect() as conn:
+        conn.execute("DELETE FROM character_skills WHERE owner_character_id = ?", (character_id,))
+        if rows:
+            conn.executemany(
+                "INSERT INTO character_skills "
+                "(owner_character_id, skill_id, active_level, trained_level, skillpoints_in_skill, synced_at) "
+                "VALUES (?,?,?,?,?, now())",
+                [(character_id, sid, active, trained, sp) for sid, active, trained, sp in rows],
+            )
+
+
+def upsert_character_skill_totals(character_id: int, total_sp: Optional[int], unallocated_sp: Optional[int]) -> None:
+    """Writes only the SP-total columns of character_attributes - the
+    attribute block is a separate, best-effort write (upsert_character_
+    attributes) so a failing /attributes/ call never loses these."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO character_attributes (owner_character_id, total_sp, unallocated_sp, synced_at) "
+            "VALUES (?,?,?, now()) "
+            "ON CONFLICT (tenant_id, owner_character_id) DO UPDATE SET "
+            "total_sp=excluded.total_sp, unallocated_sp=excluded.unallocated_sp, synced_at=excluded.synced_at",
+            (character_id, total_sp, unallocated_sp),
+        )
+
+
+def upsert_character_attributes(character_id: int, attrs: dict) -> None:
+    """Writes only the attribute columns of character_attributes (ESI's
+    /attributes/ response); leaves total_sp/unallocated_sp alone."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO character_attributes (owner_character_id, charisma, intelligence, memory, "
+            "perception, willpower, bonus_remaps, last_remap_date, accrued_remap_cooldown_date, synced_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?, now()) "
+            "ON CONFLICT (tenant_id, owner_character_id) DO UPDATE SET "
+            "charisma=excluded.charisma, intelligence=excluded.intelligence, memory=excluded.memory, "
+            "perception=excluded.perception, willpower=excluded.willpower, "
+            "bonus_remaps=excluded.bonus_remaps, last_remap_date=excluded.last_remap_date, "
+            "accrued_remap_cooldown_date=excluded.accrued_remap_cooldown_date, synced_at=excluded.synced_at",
+            (
+                character_id, attrs.get("charisma"), attrs.get("intelligence"), attrs.get("memory"),
+                attrs.get("perception"), attrs.get("willpower"), attrs.get("bonus_remaps"),
+                attrs.get("last_remap_date"), attrs.get("accrued_remap_cooldown_date"),
+            ),
+        )
+
+
+def replace_character_skillqueue(character_id: int, rows: list[tuple]) -> None:
+    """Replaces one character's queue. `rows`: [(queue_position, skill_id,
+    finished_level, start_date, finish_date, training_start_sp, level_start_sp,
+    level_end_sp), ...] - dates may be None (paused queue)."""
+    with connect() as conn:
+        conn.execute("DELETE FROM character_skillqueue WHERE owner_character_id = ?", (character_id,))
+        if rows:
+            conn.executemany(
+                "INSERT INTO character_skillqueue "
+                "(owner_character_id, queue_position, skill_id, finished_level, start_date, finish_date, "
+                "training_start_sp, level_start_sp, level_end_sp, synced_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?, now())",
+                [(character_id, *row) for row in rows],
+            )
+
+
+def load_character_skills(character_ids: list[int]) -> list[tuple]:
+    """`(owner_character_id, skill_id, active_level, trained_level,
+    skillpoints_in_skill)` (empty list -> empty result, never unfiltered)."""
+    if not character_ids:
+        return []
+    placeholders = ",".join("?" * len(character_ids))
+    with connect() as conn:
+        return conn.execute(
+            "SELECT owner_character_id, skill_id, active_level, trained_level, skillpoints_in_skill "
+            f"FROM character_skills WHERE owner_character_id IN ({placeholders}) "
+            "ORDER BY owner_character_id, skill_id",
+            character_ids,
+        ).fetchall()
+
+
+def load_character_attributes(character_ids: list[int]) -> list[tuple]:
+    """`(owner_character_id, total_sp, unallocated_sp, charisma, intelligence,
+    memory, perception, willpower, bonus_remaps, last_remap_date,
+    accrued_remap_cooldown_date)`; dates as ISO strings."""
+    if not character_ids:
+        return []
+    placeholders = ",".join("?" * len(character_ids))
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_character_id, total_sp, unallocated_sp, charisma, intelligence, memory, "
+            "perception, willpower, bonus_remaps, last_remap_date, accrued_remap_cooldown_date "
+            f"FROM character_attributes WHERE owner_character_id IN ({placeholders}) "
+            "ORDER BY owner_character_id",
+            character_ids,
+        ).fetchall()
+    return [
+        tuple(v.isoformat() if hasattr(v, "isoformat") else v for v in row) for row in rows
+    ]
+
+
+def load_character_skillqueue(character_ids: list[int]) -> list[tuple]:
+    """`(owner_character_id, queue_position, skill_id, finished_level,
+    start_date, finish_date, training_start_sp, level_start_sp, level_end_sp)`
+    in queue order; dates as ISO strings (None for a paused queue)."""
+    if not character_ids:
+        return []
+    placeholders = ",".join("?" * len(character_ids))
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_character_id, queue_position, skill_id, finished_level, start_date, finish_date, "
+            "training_start_sp, level_start_sp, level_end_sp "
+            f"FROM character_skillqueue WHERE owner_character_id IN ({placeholders}) "
+            "ORDER BY owner_character_id, queue_position",
+            character_ids,
+        ).fetchall()
+    return [
+        tuple(v.isoformat() if hasattr(v, "isoformat") else v for v in row) for row in rows
+    ]
+
+
+def get_skill_requirements(type_ids: Iterable[int]) -> dict[int, list[tuple[int, int]]]:
+    """type_id -> [(skill_id, level), ...] direct skill requirements from the SDE
+    cache (ships, modules, drones, charges - and skills themselves, whose
+    requirements are their prerequisites). Empty until an SDE refresh has
+    filled sde_skill_requirements."""
+    ids = list(dict.fromkeys(int(i) for i in type_ids))
+    if not ids:
+        return {}
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, skill_id, level FROM sde_skill_requirements WHERE type_id = ANY(?) "
+            "ORDER BY type_id, skill_id",
+            (ids,),
+        ).fetchall()
+    out: dict[int, list[tuple[int, int]]] = {}
+    for type_id, skill_id, level in rows:
+        out.setdefault(int(type_id), []).append((int(skill_id), int(level)))
+    return out
+
+
+def skill_requirements_loaded() -> bool:
+    """True once an SDE refresh has filled sde_skill_requirements (the doctrine
+    skill check is meaningless - every fitting looks flyable - without it)."""
+    with connect() as conn:
+        return conn.execute("SELECT 1 FROM sde_skill_requirements LIMIT 1").fetchone() is not None
+
+
+def get_skill_catalog(skill_ids: Iterable[int]) -> dict[int, dict]:
+    """skill_id -> {name, group_id, group_name, rank, primary_attribute,
+    secondary_attribute} from the SDE cache. `rank`/attributes are None until
+    an SDE refresh has filled sde_skill_meta; a skill the SDE does not know
+    is simply absent from the result (callers fall back to the bare id)."""
+    ids = list(dict.fromkeys(int(i) for i in skill_ids))
+    if not ids:
+        return {}
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT t.type_id, t.type_name, t.group_id, g.group_name, "
+            "m.rank, m.primary_attribute, m.secondary_attribute "
+            "FROM sde_types t "
+            "LEFT JOIN sde_groups g ON g.group_id = t.group_id "
+            "LEFT JOIN sde_skill_meta m ON m.skill_id = t.type_id "
+            "WHERE t.type_id = ANY(?)",
+            (ids,),
+        ).fetchall()
+    return {
+        int(r[0]): {
+            "name": r[1], "group_id": r[2], "group_name": r[3],
+            "rank": r[4], "primary_attribute": r[5], "secondary_attribute": r[6],
+        }
+        for r in rows
+    }
+
+
+# --------------------------------------- Character Management: skill plans (phase 9)
+def create_skill_plan(name: str, description: str = "") -> int:
+    with connect() as conn:
+        return int(conn.execute(
+            "INSERT INTO skill_plans (name, description) VALUES (?, ?) RETURNING id", (name, description),
+        ).fetchone()[0])
+
+
+def count_skill_plans() -> int:
+    with connect() as conn:
+        return int(conn.execute("SELECT count(*) FROM skill_plans").fetchone()[0])
+
+
+def list_skill_plans() -> list[tuple]:
+    """`(id, name, description, created_at, updated_at, item_count)`, newest first."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT p.id, p.name, p.description, p.created_at, p.updated_at, "
+            "(SELECT count(*) FROM skill_plan_items i WHERE i.plan_id = p.id) "
+            "FROM skill_plans p ORDER BY p.updated_at DESC, p.id DESC"
+        ).fetchall()
+
+
+def get_skill_plan(plan_id: int) -> Optional[tuple]:
+    """`(id, name, description, created_at, updated_at)` or None."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT id, name, description, created_at, updated_at FROM skill_plans WHERE id = ?", (plan_id,),
+        ).fetchone()
+
+
+def update_skill_plan(plan_id: int, name: str, description: str) -> bool:
+    with connect() as conn:
+        cur = conn.execute(
+            "UPDATE skill_plans SET name = ?, description = ?, updated_at = now() WHERE id = ?",
+            (name, description, plan_id),
+        )
+        return cur.rowcount > 0
+
+
+def delete_skill_plan(plan_id: int) -> bool:
+    with connect() as conn:
+        return conn.execute("DELETE FROM skill_plans WHERE id = ?", (plan_id,)).rowcount > 0
+
+
+def load_skill_plan_items(plan_id: int) -> list[tuple[int, int]]:
+    """`[(skill_id, level), ...]` in plan order."""
+    with connect() as conn:
+        return [
+            (int(r[0]), int(r[1])) for r in conn.execute(
+                "SELECT skill_id, level FROM skill_plan_items WHERE plan_id = ? ORDER BY position", (plan_id,),
+            ).fetchall()
+        ]
+
+
+def replace_skill_plan_items(plan_id: int, items: list[tuple[int, int]]) -> None:
+    """Rewrites the whole ordered list (positions 0..n-1) and touches the plan."""
+    with connect() as conn:
+        conn.execute("DELETE FROM skill_plan_items WHERE plan_id = ?", (plan_id,))
+        if items:
+            conn.executemany(
+                "INSERT INTO skill_plan_items (plan_id, position, skill_id, level) VALUES (?,?,?,?)",
+                [(plan_id, pos, skill_id, level) for pos, (skill_id, level) in enumerate(items)],
+            )
+        conn.execute("UPDATE skill_plans SET updated_at = now() WHERE id = ?", (plan_id,))
+
+
+def search_skills(query: str, limit: int = 20) -> list[tuple]:
+    """`(skill_id, name, group_name)` of skills (types with an sde_skill_meta
+    row) whose name contains `query`, prefix matches first. Empty until an SDE
+    refresh has filled sde_skill_meta."""
+    like = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    with connect() as conn:
+        return conn.execute(
+            "SELECT t.type_id, t.type_name, g.group_name FROM sde_skill_meta m "
+            "JOIN sde_types t ON t.type_id = m.skill_id LEFT JOIN sde_groups g ON g.group_id = t.group_id "
+            "WHERE t.type_name ILIKE ? ORDER BY (t.type_name ILIKE ?) DESC, t.type_name LIMIT ?",
+            (like, like[1:], limit),
+        ).fetchall()
+
+
+def find_skill_ids_by_name(names: Iterable[str]) -> dict[str, int]:
+    """`{lower-cased name: skill_id}` for the names that are skills."""
+    lowered = list(dict.fromkeys(n.strip().lower() for n in names if n and n.strip()))
+    if not lowered:
+        return {}
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT lower(t.type_name), t.type_id FROM sde_skill_meta m JOIN sde_types t ON t.type_id = m.skill_id "
+            "WHERE lower(t.type_name) = ANY(?)", (lowered,),
+        ).fetchall()
+    return {r[0]: int(r[1]) for r in rows}
+
+
+# --------------------------------------- Character Management: mail archive (phase 3)
+# Only ever written for a character whose archive checkbox is ticked. Every
+# reader takes explicit character ids (never "all"): the caller passes the
+# characters shared with char_mail. Nothing here clears anything except
+# delete_mail_archive, the explicit "stop archiving and delete" path.
+def get_mail_archive_settings(character_ids: Optional[list[int]] = None) -> dict[int, dict]:
+    """{character_id: settings} for archive-enabled characters (None -> all in
+    this tenant, a settings listing rather than mail data). Dates as ISO."""
+    with connect() as conn:
+        if character_ids is None:
+            rows = conn.execute(
+                "SELECT character_id, enabled, backfill_state, backfill_cursor, headers_complete, "
+                "backfill_error, last_refresh_at FROM char_mail_archive_settings WHERE enabled"
+            ).fetchall()
+        elif not character_ids:
+            return {}
+        else:
+            placeholders = ",".join("?" * len(character_ids))
+            rows = conn.execute(
+                "SELECT character_id, enabled, backfill_state, backfill_cursor, headers_complete, "
+                "backfill_error, last_refresh_at FROM char_mail_archive_settings "
+                f"WHERE enabled AND character_id IN ({placeholders})",
+                character_ids,
+            ).fetchall()
+    return {
+        int(r[0]): {
+            "enabled": bool(r[1]), "backfill_state": r[2],
+            "backfill_cursor": int(r[3]) if r[3] is not None else None,
+            "headers_complete": bool(r[4]), "backfill_error": r[5],
+            "last_refresh_at": r[6].isoformat() if hasattr(r[6], "isoformat") else r[6],
+        }
+        for r in rows
+    }
+
+
+def enable_mail_archive(character_id: int) -> None:
+    """Ticks the checkbox. Re-enabling a character whose archive was deleted
+    starts from scratch (cursor/complete flag reset by delete_mail_archive)."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO char_mail_archive_settings (character_id, enabled, backfill_state, updated_at) "
+            "VALUES (?, TRUE, 'idle', now()) "
+            "ON CONFLICT (tenant_id, character_id) DO UPDATE SET enabled = TRUE, updated_at = now()",
+            (character_id,),
+        )
+
+
+def update_mail_archive_state(
+    character_id: int, *, backfill_state: Optional[str] = None,
+    backfill_cursor: Optional[int] = None, set_cursor: bool = False,
+    headers_complete: Optional[bool] = None, backfill_error: Optional[str] = None,
+    clear_error: bool = False, touch_refresh: bool = False,
+) -> None:
+    """Partial update of one settings row (a no-op if the character is not
+    archived). `set_cursor=True` is needed to write a NULL cursor."""
+    sets, params = ["updated_at = now()"], []
+    if backfill_state is not None:
+        sets.append("backfill_state = ?")
+        params.append(backfill_state)
+    if set_cursor:
+        sets.append("backfill_cursor = ?")
+        params.append(backfill_cursor)
+    if headers_complete is not None:
+        sets.append("headers_complete = ?")
+        params.append(headers_complete)
+    if backfill_error is not None:
+        sets.append("backfill_error = ?")
+        params.append(backfill_error)
+    if clear_error:
+        sets.append("backfill_error = NULL")
+    if touch_refresh:
+        sets.append("last_refresh_at = now()")
+    params.append(character_id)
+    with connect() as conn:
+        conn.execute(
+            f"UPDATE char_mail_archive_settings SET {', '.join(sets)} WHERE character_id = ? AND enabled",
+            params,
+        )
+
+
+def _archive_still_enabled(conn, character_id: int) -> bool:
+    """Row-locks (FOR SHARE) the character's settings row for the rest of this
+    transaction. A background backfill/refresh writes through this guard so
+    it can never re-create rows after the user chose "stop archiving and
+    delete": delete_mail_archive removes the settings row FIRST, which blocks
+    until any in-flight write here has committed, and every later write finds
+    no row and does nothing."""
+    return conn.execute(
+        "SELECT 1 FROM char_mail_archive_settings WHERE character_id = ? AND enabled FOR SHARE",
+        (character_id,),
+    ).fetchone() is not None
+
+
+def store_mail_headers(character_id: int, headers: list[dict]) -> bool:
+    """Upserts one page of ESI mail headers for an archived character.
+
+    The message row is insert-if-missing (a stored body is never blanked by a
+    later header page), recipients likewise; the per-character header row is
+    upserted so read state and labels track ESI. Raw ESI shapes in:
+    {"mail_id", "from", "subject", "timestamp", "is_read", "labels",
+    "recipients": [{"recipient_id", "recipient_type"}]}. Returns False (and
+    writes nothing) when the character's archive is not enabled."""
+    if not headers:
+        return True
+    with connect() as conn:
+        if not _archive_still_enabled(conn, character_id):
+            return False
+        conn.executemany(
+            "INSERT INTO mail_messages (mail_id, from_id, subject, \"timestamp\") VALUES (?,?,?,?) "
+            "ON CONFLICT (tenant_id, mail_id) DO NOTHING",
+            [(h["mail_id"], h.get("from"), h.get("subject") or "", h.get("timestamp")) for h in headers],
+        )
+        recipient_rows = [
+            (h["mail_id"], r["recipient_id"], r["recipient_type"])
+            for h in headers for r in h.get("recipients") or []
+        ]
+        if recipient_rows:
+            conn.executemany(
+                "INSERT INTO mail_recipients (mail_id, recipient_id, recipient_type) VALUES (?,?,?) "
+                "ON CONFLICT DO NOTHING",
+                recipient_rows,
+            )
+        conn.executemany(
+            "INSERT INTO mail_character_headers (character_id, mail_id, is_read, labels) VALUES (?,?,?,?) "
+            "ON CONFLICT (tenant_id, character_id, mail_id) DO UPDATE SET "
+            "is_read = excluded.is_read, labels = excluded.labels",
+            [(character_id, h["mail_id"], bool(h.get("is_read")), list(h.get("labels") or [])) for h in headers],
+        )
+    return True
+
+
+def known_mail_ids(character_id: int, mail_ids: list[int]) -> set[int]:
+    if not mail_ids:
+        return set()
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT mail_id FROM mail_character_headers WHERE character_id = ? AND mail_id = ANY(?)",
+            (character_id, list(mail_ids)),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+def mail_ids_without_body(character_id: int, limit: int) -> list[int]:
+    """Newest-first ids of this character's archived mails whose body has not
+    been fetched yet."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT h.mail_id FROM mail_character_headers h "
+            "JOIN mail_messages m ON m.tenant_id = h.tenant_id AND m.mail_id = h.mail_id "
+            "WHERE h.character_id = ? AND m.body_fetched_at IS NULL "
+            "ORDER BY h.mail_id DESC LIMIT ?",
+            (character_id, limit),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def store_mail_body(character_id: int, mail_id: int, body: str) -> bool:
+    """Stores a fetched body for a mail `character_id` (an archived
+    character) received. False (nothing written) if their archive is not
+    enabled or they hold no header for that mail."""
+    with connect() as conn:
+        if not _archive_still_enabled(conn, character_id):
+            return False
+        return conn.execute(
+            "UPDATE mail_messages SET body = ?, body_fetched_at = now() WHERE mail_id = ? "
+            "AND mail_id IN (SELECT mail_id FROM mail_character_headers WHERE character_id = ?)",
+            (body, mail_id, character_id),
+        ).rowcount > 0
+
+
+def _mail_header_dict(row) -> dict:
+    ts = row[3]
+    return {
+        "character_id": int(row[0]), "mail_id": int(row[1]), "from_id": row[2],
+        "timestamp": ts.isoformat() if hasattr(ts, "isoformat") else ts,
+        "subject": row[4], "is_read": bool(row[5]), "labels": list(row[6] or []),
+    }
+
+
+def load_mail_archive_page(
+    character_id: int, label_id: Optional[int], before_mail_id: Optional[int], limit: int,
+) -> list[dict]:
+    """One page of an archived character's headers, newest (highest mail_id)
+    first - the same ordering and cursor semantics as ESI's own paging - with
+    recipients attached."""
+    where, params = ["h.character_id = ?"], [character_id]
+    if label_id:
+        where.append("? = ANY(h.labels)")
+        params.append(label_id)
+    if before_mail_id:
+        where.append("h.mail_id < ?")
+        params.append(before_mail_id)
+    params.append(limit)
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT h.character_id, h.mail_id, m.from_id, m.\"timestamp\", m.subject, h.is_read, h.labels "
+            "FROM mail_character_headers h "
+            "JOIN mail_messages m ON m.tenant_id = h.tenant_id AND m.mail_id = h.mail_id "
+            f"WHERE {' AND '.join(where)} ORDER BY h.mail_id DESC LIMIT ?",
+            params,
+        ).fetchall()
+        headers = [_mail_header_dict(r) for r in rows]
+        recipients = _load_mail_recipients(conn, [h["mail_id"] for h in headers])
+    for h in headers:
+        h["recipients"] = recipients.get(h["mail_id"], [])
+    return headers
+
+
+def _load_mail_recipients(conn, mail_ids: list[int]) -> dict[int, list[dict]]:
+    if not mail_ids:
+        return {}
+    rows = conn.execute(
+        "SELECT mail_id, recipient_id, recipient_type FROM mail_recipients WHERE mail_id = ANY(?) "
+        "ORDER BY mail_id, recipient_type, recipient_id",
+        (list(mail_ids),),
+    ).fetchall()
+    out: dict[int, list[dict]] = {}
+    for mail_id, recipient_id, recipient_type in rows:
+        out.setdefault(int(mail_id), []).append({"recipient_id": int(recipient_id), "recipient_type": recipient_type})
+    return out
+
+
+def get_archived_mail(character_id: int, mail_id: int) -> Optional[dict]:
+    """The archived message as seen by `character_id` (header row required:
+    a mail is only visible through a character that received it), or None."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT h.character_id, h.mail_id, m.from_id, m.\"timestamp\", m.subject, h.is_read, h.labels, m.body "
+            "FROM mail_character_headers h "
+            "JOIN mail_messages m ON m.tenant_id = h.tenant_id AND m.mail_id = h.mail_id "
+            "WHERE h.character_id = ? AND h.mail_id = ?",
+            (character_id, mail_id),
+        ).fetchone()
+        if row is None:
+            return None
+        out = _mail_header_dict(row[:7])
+        out["body"] = row[7]
+        out["recipients"] = _load_mail_recipients(conn, [mail_id]).get(mail_id, [])
+    return out
+
+
+def search_mail_archive(character_ids: list[int], query: str, limit: int) -> list[dict]:
+    """Subject/body search over the given archived characters: Postgres
+    full-text (GIN-indexed) OR a case-insensitive subject match, so a partial
+    word in a subject still finds it. Newest first."""
+    if not character_ids or not query.strip():
+        return []
+    placeholders = ",".join("?" * len(character_ids))
+    like = "%" + query.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT h.character_id, h.mail_id, m.from_id, m.\"timestamp\", m.subject, h.is_read, h.labels "
+            "FROM mail_character_headers h "
+            "JOIN mail_messages m ON m.tenant_id = h.tenant_id AND m.mail_id = h.mail_id "
+            f"WHERE h.character_id IN ({placeholders}) AND ("
+            "to_tsvector('simple', coalesce(m.subject, '') || ' ' || coalesce(m.body, '')) "
+            "@@ plainto_tsquery('simple', ?) OR m.subject ILIKE ?) "
+            "ORDER BY h.mail_id DESC LIMIT ?",
+            [*character_ids, query.strip(), like, limit],
+        ).fetchall()
+        headers = [_mail_header_dict(r) for r in rows]
+        recipients = _load_mail_recipients(conn, [h["mail_id"] for h in headers])
+    for h in headers:
+        h["recipients"] = recipients.get(h["mail_id"], [])
+    return headers
+
+
+def set_archived_mail_read(character_id: int, mail_id: int, is_read: bool) -> bool:
+    """Mirrors a read/unread change made through this app into the archive."""
+    with connect() as conn:
+        if not _archive_still_enabled(conn, character_id):
+            return False
+        return conn.execute(
+            "UPDATE mail_character_headers SET is_read = ? WHERE character_id = ? AND mail_id = ?",
+            (is_read, character_id, mail_id),
+        ).rowcount > 0
+
+
+def set_archived_mail_labels(character_id: int, mail_id: int, labels: list[int]) -> bool:
+    with connect() as conn:
+        if not _archive_still_enabled(conn, character_id):
+            return False
+        return conn.execute(
+            "UPDATE mail_character_headers SET labels = ? WHERE character_id = ? AND mail_id = ?",
+            (list(labels), character_id, mail_id),
+        ).rowcount > 0
+
+
+def delete_archived_mail(character_id: int, mail_id: int) -> bool:
+    """A mail deleted in the game through this app is removed from this
+    character's archive too (and the message itself once no character header
+    references it any more)."""
+    with connect() as conn:
+        if not _archive_still_enabled(conn, character_id):
+            return False
+        deleted = conn.execute(
+            "DELETE FROM mail_character_headers WHERE character_id = ? AND mail_id = ?",
+            (character_id, mail_id),
+        ).rowcount > 0
+        if deleted:
+            orphan = (
+                "mail_id = ? AND mail_id NOT IN (SELECT mail_id FROM mail_character_headers "
+                "WHERE tenant_id = current_setting('app.tenant_id', false)::uuid)"
+            )
+            conn.execute(f"DELETE FROM mail_recipients WHERE {orphan}", (mail_id,))
+            conn.execute(f"DELETE FROM mail_messages WHERE {orphan}", (mail_id,))
+        return deleted
+
+
+def replace_mail_labels(character_id: int, labels: list[tuple]) -> bool:
+    """`labels`: [(label_id, name, color, unread_count), ...]. False (nothing
+    written) when the archive is not enabled."""
+    with connect() as conn:
+        if not _archive_still_enabled(conn, character_id):
+            return False
+        conn.execute("DELETE FROM mail_labels WHERE character_id = ?", (character_id,))
+        if labels:
+            conn.executemany(
+                "INSERT INTO mail_labels (character_id, label_id, name, color, unread_count) VALUES (?,?,?,?,?)",
+                [(character_id, *row) for row in labels],
+            )
+    return True
+
+
+def replace_mail_lists(character_id: int, lists: list[tuple]) -> bool:
+    """`lists`: [(list_id, name), ...]. False when the archive is not enabled."""
+    with connect() as conn:
+        if not _archive_still_enabled(conn, character_id):
+            return False
+        conn.execute("DELETE FROM mail_lists WHERE character_id = ?", (character_id,))
+        if lists:
+            conn.executemany(
+                "INSERT INTO mail_lists (character_id, list_id, name) VALUES (?,?,?)",
+                [(character_id, *row) for row in lists],
+            )
+    return True
+
+
+def load_mail_labels(character_id: int) -> list[tuple]:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT label_id, name, color, unread_count FROM mail_labels WHERE character_id = ? "
+            "ORDER BY label_id",
+            (character_id,),
+        ).fetchall()
+
+
+def load_mail_lists(character_id: int) -> list[tuple]:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT list_id, name FROM mail_lists WHERE character_id = ? ORDER BY name",
+            (character_id,),
+        ).fetchall()
+
+
+def mail_archive_counts(character_id: int) -> dict:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT count(*), count(m.body_fetched_at) FROM mail_character_headers h "
+            "JOIN mail_messages m ON m.tenant_id = h.tenant_id AND m.mail_id = h.mail_id "
+            "WHERE h.character_id = ?",
+            (character_id,),
+        ).fetchone()
+    return {"headers": int(row[0]), "bodies": int(row[1])}
+
+
+def delete_mail_archive(character_id: int) -> dict:
+    """The explicit "stop archiving and delete" path: disables the character's
+    archive, removes their headers/labels/lists and garbage-collects every
+    message (and its recipients) that no character header references any
+    more. A message another archived character also received stays."""
+    with connect() as conn:
+        # Settings row first: see _archive_still_enabled for why the order matters.
+        conn.execute("DELETE FROM char_mail_archive_settings WHERE character_id = ?", (character_id,))
+        deleted_headers = conn.execute(
+            "DELETE FROM mail_character_headers WHERE character_id = ?", (character_id,),
+        ).rowcount
+        conn.execute("DELETE FROM mail_labels WHERE character_id = ?", (character_id,))
+        conn.execute("DELETE FROM mail_lists WHERE character_id = ?", (character_id,))
+        orphan = (
+            "mail_id NOT IN (SELECT mail_id FROM mail_character_headers "
+            "WHERE tenant_id = current_setting('app.tenant_id', false)::uuid)"
+        )
+        conn.execute(f"DELETE FROM mail_recipients WHERE {orphan}")
+        deleted_messages = conn.execute(f"DELETE FROM mail_messages WHERE {orphan}").rowcount
+    return {"headers": int(deleted_headers), "messages": int(deleted_messages)}
+
+
+def load_character_wallet_balances(character_ids: list[int]) -> dict[int, float]:
+    """{character_id: balance} for the given characters (empty list -> {})."""
+    if not character_ids:
+        return {}
+    placeholders = ",".join("?" * len(character_ids))
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_character_id, balance FROM character_wallet_balances "
+            f"WHERE owner_character_id IN ({placeholders})",
+            character_ids,
+        ).fetchall()
+    return {int(r[0]): float(r[1]) for r in rows}
 
 
 def load_character_wallet_balance(character_id: int) -> Optional[float]:
@@ -4358,6 +5378,21 @@ def read_goonmetrics_history_for_types(type_ids: list[int]) -> pd.DataFrame:
         return pd.DataFrame(cur.fetchall(), columns=columns)
 
 
+def read_goonmetrics_history(region_id: int, type_id: int) -> list[dict]:
+    """One item's history in one region, oldest first. Filters on the full
+    primary key prefix (region_id, type_id), the table's only index - unlike
+    read_goonmetrics_history_for_types, whose `type_id IN (...)` cannot use
+    it because type_id is not the leading column."""
+    with connect() as conn:
+        cur = conn.execute(
+            "SELECT date, min_price, max_price, avg_price, movement, num_orders "
+            "FROM goonmetrics_history WHERE region_id = ? AND type_id = ? ORDER BY date",
+            (region_id, type_id),
+        )
+        columns = [d[0] for d in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
 def goonmetrics_history_type_ids_for_tenant() -> list[int]:
     """type_ids in goonmetrics_history (a global, shared-across-every-tenant
     cache - see this file's own module docstring) that are ALSO in this
@@ -4447,8 +5482,9 @@ def save_ore_shortlist_snapshot(rows: list[tuple], run_ts: str) -> None:
         conn.executemany(
             "INSERT INTO ore_shortlist_snapshot (run_ts, item_id, item, family, is_ice, active, volume_m3, "
             "landed_cost, yield_pct, mineral_value, refining_tax, net_sell, sell_listed_qty, profit_per_unit, "
-            "margin, profit_per_m3, decision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            [(run_ts, *row) for row in rows],
+            "margin, profit_per_m3, decision, hub_region_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            # rows without hub_region_id (older callers) store NULL.
+            [(run_ts, *row, *([None] * (17 - len(row)))) for row in rows],
         )
 
 
@@ -5919,3 +6955,111 @@ def delete_manual_item_price(type_id: int) -> None:
         conn.execute("DELETE FROM manual_item_prices WHERE type_id = ?", (type_id,))
 
 
+
+
+# --------------------------------------- Discord alerts (docs/DISCORD_ALERTS_HANDOFF.md)
+def get_alert_destination() -> Optional[str]:
+    """This tenant's linked Discord user id, or None."""
+    with connect() as conn:
+        row = conn.execute("SELECT discord_user_id FROM alert_destinations").fetchone()
+    return str(row[0]) if row else None
+
+
+def set_alert_destination(discord_user_id: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO alert_destinations (discord_user_id) VALUES (?) "
+            "ON CONFLICT (tenant_id) DO UPDATE SET discord_user_id = excluded.discord_user_id, linked_at = now()",
+            (discord_user_id,),
+        )
+
+
+def delete_alert_destination() -> bool:
+    """Unlink Discord. Also switches every subscription off: an opt-in without
+    a destination could never be delivered, and must not silently resume if a
+    different account is linked later."""
+    with connect() as conn:
+        conn.execute("UPDATE alert_subscriptions SET enabled = FALSE, updated_at = now() WHERE enabled")
+        return conn.execute("DELETE FROM alert_destinations").rowcount > 0
+
+
+def list_alert_subscriptions() -> list[tuple]:
+    """`(character_id, alert_type, enabled, include_content, lead_hours)`."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT character_id, alert_type, enabled, include_content, lead_hours "
+            "FROM alert_subscriptions ORDER BY character_id, alert_type"
+        ).fetchall()
+
+
+def get_alert_subscription(character_id: int, alert_type: str) -> Optional[tuple]:
+    """`(enabled, include_content, lead_hours)` or None (never opted in)."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT enabled, include_content, lead_hours FROM alert_subscriptions "
+            "WHERE character_id = ? AND alert_type = ?", (character_id, alert_type),
+        ).fetchone()
+
+
+def upsert_alert_subscription(character_id: int, alert_type: str, enabled: bool,
+                              include_content: bool, lead_hours: int) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO alert_subscriptions (character_id, alert_type, enabled, include_content, lead_hours) "
+            "VALUES (?,?,?,?,?) ON CONFLICT (tenant_id, character_id, alert_type) DO UPDATE SET "
+            "enabled = excluded.enabled, include_content = excluded.include_content, "
+            "lead_hours = excluded.lead_hours, updated_at = now()",
+            (character_id, alert_type, enabled, include_content, lead_hours),
+        )
+
+
+def delete_alert_data_for_character(character_id: int) -> None:
+    """Drop subscriptions and dedupe state of a character (removed owner)."""
+    with connect() as conn:
+        conn.execute("DELETE FROM alert_subscriptions WHERE character_id = ?", (character_id,))
+        conn.execute("DELETE FROM alert_state WHERE character_id = ?", (character_id,))
+
+
+def get_alert_state(character_id: int, alert_type: str) -> Optional[tuple]:
+    """`(last_seen_mail_id, last_key, last_sent_at, last_attempt_at)` or None."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT last_seen_mail_id, last_key, last_sent_at, last_attempt_at FROM alert_state "
+            "WHERE character_id = ? AND alert_type = ?", (character_id, alert_type),
+        ).fetchone()
+
+
+def save_alert_state(character_id: int, alert_type: str, *, last_seen_mail_id: Optional[int] = None,
+                     last_key: Optional[str] = None, sent: bool = False,
+                     at: Optional[datetime] = None) -> None:
+    """Record an attempt at `at` (default now); `sent=True` also stamps
+    `last_sent_at`. A None `last_seen_mail_id`/`last_key` keeps the stored
+    value, so a failed send can note the attempt without advancing the dedupe
+    cursor."""
+    at = at or datetime.now(timezone.utc)
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO alert_state (character_id, alert_type, last_seen_mail_id, last_key, last_sent_at, "
+            "last_attempt_at) VALUES (?,?,?,?, CASE WHEN ? THEN ?::timestamptz END, ?) "
+            "ON CONFLICT (tenant_id, character_id, alert_type) DO UPDATE SET "
+            "last_seen_mail_id = COALESCE(excluded.last_seen_mail_id, alert_state.last_seen_mail_id), "
+            "last_key = COALESCE(excluded.last_key, alert_state.last_key), "
+            "last_sent_at = COALESCE(excluded.last_sent_at, alert_state.last_sent_at), "
+            "last_attempt_at = excluded.last_attempt_at",
+            (character_id, alert_type, last_seen_mail_id, last_key, sent, at, at),
+        )
+
+
+def reset_alert_state(character_id: int, alert_type: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM alert_state WHERE character_id = ? AND alert_type = ?", (character_id, alert_type))
+
+
+def tenant_registry_suspension(tenant_id: str) -> Optional[bool]:
+    """`access_suspended` of the tenant's registry entry, or None when the
+    tenant has no registered character (removed user, orphaned tenant)."""
+    with connect_unscoped() as conn:
+        row = conn.execute(
+            "SELECT access_suspended FROM tenant_registry_entries WHERE tenant_id = ?", (tenant_id,),
+        ).fetchone()
+    return None if row is None else bool(row[0])

@@ -6,6 +6,7 @@ opportunistic). This module imports no tool package.
 """
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Callable, Optional
@@ -13,6 +14,8 @@ from typing import Callable, Optional
 from .. import storage
 from ..config import WALLET_DIVISION_IDS
 from ..esi_client import ESIClient, ESIError
+
+log = logging.getLogger(__name__)
 
 # Confirmed CCP live/SDE mismatch: ESI industry jobs report Reactions as
 # activity_id 9, the SDE files them under 11. Same normalization
@@ -358,6 +361,69 @@ def fetch_corporation_wallet_balance(
     return {"written": len(balances), "divisions": sorted(balances)}
 
 
+# -------------------------------------------- Character Management (phase 1)
+def fetch_character_standings(
+    client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
+) -> dict:
+    raw = client.character_standings(owner_id, auth_role=auth_role)
+    rows = [(int(r["from_id"]), r["from_type"], float(r["standing"])) for r in raw]
+    storage.replace_character_standings(owner_id, rows)
+    return {"written": len(rows)}
+
+
+def fetch_character_loyalty(
+    client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
+) -> dict:
+    raw = client.character_loyalty_points(owner_id, auth_role=auth_role)
+    rows = [(int(r["corporation_id"]), int(r["loyalty_points"])) for r in raw]
+    storage.replace_character_loyalty_points(owner_id, rows)
+    return {"written": len(rows)}
+
+
+def fetch_character_clones(
+    client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
+) -> dict:
+    raw = client.character_clones(owner_id, auth_role=auth_role)
+    home = raw.get("home_location") or {}
+    meta = {
+        "home_location_id": home.get("location_id"),
+        "home_location_type": home.get("location_type"),
+        "last_clone_jump_date": raw.get("last_clone_jump_date"),
+        "last_station_change_date": raw.get("last_station_change_date"),
+    }
+    jump_clones = [
+        {
+            "jump_clone_id": int(jc["jump_clone_id"]), "location_id": jc.get("location_id"),
+            "location_type": jc.get("location_type"), "name": jc.get("name"),
+            "implants": jc.get("implants") or [],
+        }
+        for jc in raw.get("jump_clones") or []
+    ]
+    storage.replace_character_clones(owner_id, meta, jump_clones)
+    return {"written": len(jump_clones)}
+
+
+def fetch_character_implants(
+    client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
+) -> dict:
+    raw = client.character_implants(owner_id, auth_role=auth_role)
+    storage.replace_character_implants(owner_id, list(raw))
+    return {"written": len(raw)}
+
+
+def fetch_character_notifications(
+    client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
+) -> dict:
+    raw = client.character_notifications(owner_id, auth_role=auth_role)
+    rows = [
+        (int(n["notification_id"]), n["type"], n.get("sender_id"), n.get("sender_type"),
+         n["timestamp"], bool(n.get("is_read", False)), n.get("text"))
+        for n in raw
+    ]
+    storage.replace_character_notifications(owner_id, rows)
+    return {"written": len(rows)}
+
+
 # ------------------------------------------------------------------- skills
 def fetch_character_skills(
     client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
@@ -369,7 +435,44 @@ def fetch_character_skills(
         owner_name, slots["manufacturing"], slots["reaction"], slots["science"],
         owner_character_id=owner_id,
     )
-    return {"written": 1, "slots": slots}
+    # Character Management phase 2: the full skill list and SP totals, next to
+    # (never instead of) the slot row Production needs. Written in the same
+    # owner batch, so they roll back together.
+    skill_rows = [
+        (int(s["skill_id"]), int(s["active_skill_level"]),
+         int(s.get("trained_skill_level", s["active_skill_level"])),
+         int(s.get("skillpoints_in_skill", 0)))
+        for s in skills.get("skills", [])
+    ]
+    storage.replace_character_skills(owner_id, skill_rows)
+    storage.upsert_character_skill_totals(
+        owner_id, skills.get("total_sp"), skills.get("unallocated_sp"),
+    )
+    # Best-effort: /attributes/ is a second call under the same scope. Its
+    # failure must never fail this fetch, because the owner batch would then
+    # roll back and Production's job-slot sync would break over a
+    # Character-Management-only detail.
+    try:
+        storage.upsert_character_attributes(owner_id, client.character_attributes(owner_id, auth_role=auth_role))
+    except ESIError as e:
+        log.warning("attributes fetch failed for character %s: %s", owner_id, e)
+    return {"written": 1, "slots": slots, "skills": len(skill_rows)}
+
+
+def fetch_character_skillqueue(
+    client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
+) -> dict:
+    raw = client.character_skillqueue(owner_id, auth_role=auth_role)
+    rows = [
+        (
+            int(q["queue_position"]), int(q["skill_id"]), int(q["finished_level"]),
+            q.get("start_date"), q.get("finish_date"), q.get("training_start_sp"),
+            q.get("level_start_sp"), q.get("level_end_sp"),
+        )
+        for q in raw
+    ]
+    storage.replace_character_skillqueue(owner_id, rows)
+    return {"written": len(rows)}
 
 
 # ---------------------------------------------------------------- contracts
@@ -571,6 +674,12 @@ FETCHERS: dict[tuple[str, str], Callable] = {
     ("wallet_balance", "character"): fetch_character_wallet_balance,
     ("wallet_balance", "corporation"): fetch_corporation_wallet_balance,
     ("skills", "character"): fetch_character_skills,
+    ("skillqueue", "character"): fetch_character_skillqueue,
+    ("clones", "character"): fetch_character_clones,
+    ("implants", "character"): fetch_character_implants,
+    ("notifications", "character"): fetch_character_notifications,
+    ("standings", "character"): fetch_character_standings,
+    ("loyalty", "character"): fetch_character_loyalty,
     ("contracts", "character"): fetch_character_contracts,
     ("contracts", "corporation"): fetch_corporation_contracts,
 }

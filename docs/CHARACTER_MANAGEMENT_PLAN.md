@@ -1,0 +1,926 @@
+# Character Management hub (Mail, Skills, Character Info, ...)
+
+Status: **plan, nothing implemented.** Product decisions confirmed with the
+user 2026-09-29. Revision 2 (same day) adds a code review of the plan against
+the actual `esi_data/` / gate / SDE code: the "Review findings" section lists
+what revision 1 got wrong and how each point is resolved; the phase sections
+are now worked out file by file. Revision 3 (same day) settles all review
+decisions with the user; mail is now live-only by default with an opt-in
+per-character archive.
+
+## Goal
+
+A new Landing card **Character Management** leads to its own landing page
+(`/character-management`) hosting several character-centric tools. It extends
+`docs/ESI_ACCESS_PLAN.md` (registry, sharing, token selector, orchestrator,
+fail-closed accessor) and introduces no new OAuth/token mechanism.
+
+## Settled decisions (product)
+
+1. **One grant per sub-tool.** The hub itself has no grant; its Landing card
+   shows when the session holds any sub-tool grant.
+2. **The existing Characters page moves into the hub.** `/characters` keeps
+   working as a redirect.
+3. **Mail is a real mail client: read and send.**
+4. **Mail is live by default. Nothing about a character's mail is stored
+   server-side** (no headers, no bodies, no metadata) unless that character's
+   **"Archive mail" checkbox** is ticked. The checkbox is per character.
+   - Live mode: every view is fetched from ESI on demand. There is only a
+     short in-memory cache against ESI load (process memory, never the DB,
+     so never in a backup).
+   - Archive mode: headers and bodies are stored, with **no size limit**,
+     and are **never cleared automatically** (no stale clear). Archived mail
+     is only deleted by an explicit user action: unticking the checkbox (with
+     a confirm dialog) or "Delete archived mail".
+5. **Location, ship and online status are live reads only**, with no
+   storage.
+6. **Refresh button per sub-page** plus "last updated". The scheduler stays
+   off (CLAUDE.md "Live operational decision").
+7. **All extras are in scope as later phases:** skillqueue guard,
+   skill-vs-doctrine check, clones & implants, notifications, jump fatigue,
+   contacts & calendar, wallet journal per character, skill-plan editor.
+8. **Tool keys use a `char_` prefix** (R5).
+9. **One scope = one data kind.** Multi-scope features are split (R1).
+
+## Review findings (revision 1 → revision 2)
+
+Each finding was checked against the code, not assumed.
+
+**R1 - The registry allows exactly one character scope per data kind.**
+`OwnedDataKind.character_scope` is a single string. The orchestrator's
+`_required_scope()` returns that one scope, `select_auth_role(char, scope)`
+picks a token by it, and `_scopes_for_kind_or_cap`, `do_access_preview`,
+`fetcher_scope_map` and `frontend/src/esiRegistry.ts` all assume it.
+Revision 1 planned `location` with three scopes and `clones` with two, which
+does not fit. **Resolution:** keep the invariant "one kind = one scope"
+(nothing in the selector/orchestrator/tests changes) and split: `location`,
+`ship`, `online`, `clones`, `implants`. Rationale: a multi-scope kind would
+need "token holding *all* scopes" selection plus partial-failure semantics,
+touching the most load-bearing ESI code for a cosmetic gain. The Characters UI
+groups them visually instead (R6).
+
+**R2 - Stale clear would delete the mail archive.** `_record_failure` calls
+`clear_stale_owner_kind`, which wipes the owner's partition once
+`last_success_at` is older than `tier_hours × esi_stale_clear_multiples`
+(frequent 1 h × 3 = **3 h**). With the scheduler off, the normal case is
+"last sync yesterday". The first ESI hiccup on opening Mail would delete every
+cached header and body. **Resolution (decision 4):** in live mode there is nothing to
+clear. For archive mode, mail is not an orchestrator kind at all (see R11),
+so `_record_failure` or stale clear can never reach it. The mail tables are
+also absent from `stale._KIND_TABLES` and `delete_owner_snapshot_rows`'
+allow-list, a belt-and-braces guard backed by a test. The UI shows the
+archive's age.
+
+**R3 - Sending mail must never auto-retry.** `ESIClient._post_response`
+retries on timeouts and 500/502/503/504, and treats only `200` as success.
+For `POST /characters/{id}/mail/` a retry after a timeout can **send the mail
+twice**. ESI answers `201`, and the organize endpoints answer `204`, so every
+call would currently be misread as a failure. It is also unauthenticated (no
+`auth_role`). **Resolution:** new `ESIClient` write methods: `_write(method,
+path, json, auth_role, expect=(201, 204))`. It retries only on 420/429
+(request provably not processed) and never on transport errors or 5xx; those
+map to an `ESIError` saying "delivery unknown, check Sent before resending".
+PUT/DELETE (organize) are idempotent and may use the normal retry.
+
+**R4 - Mail ids are shared across recipients.** One corp mail received by
+three alts has the same `mail_id` for all three. Read state and labels
+differ per character. A `(character_id, mail_id)` table with the body inline
+stores the body three times, and the unified inbox shows the mail three
+times. **Resolution:** split schema: `mail_messages` (per mail_id: sender,
+subject, timestamp, recipients, body) plus `mail_character_headers`
+(per character × mail_id: is_read, labels). Unified inbox groups by mail_id
+and shows "received by: A, B".
+
+**R5 - The sharing/grant naming collides.** A tool_key `skills` next to the
+data kind `skills` makes `esi_sharing` rows read `('skills', 'skills')` and the
+Characters matrix ambiguous. **Resolution:** tool keys get a prefix:
+`char_skills`, `char_mail`, `char_info`, later `char_notifications`,
+`char_contacts`, `char_skill_plans`. Data kinds keep their plain names.
+Settled (decision 8).
+
+**R6 - The Characters sharing table does not scale.** It renders one *column*
+per data kind (`CharactersPage.tsx`, `CHARACTER_KINDS.map`). Going from 7 to
+roughly 18 kinds makes it unusable. **Resolution:** Phase 0 reworks the table
+into column groups ("Industry & Trading" and "Character") with collapsible
+groups. `esiRegistry.ts` gets a `section` field; the registry mirror is still
+hand-kept.
+
+**R7 - The SDE has no dogma attributes.** `refresh_sde()` loads
+`dgmTypeEffects.csv`, not `dgmTypeAttributes.csv` (CLAUDE.md's "verified
+against dgmTypeAttributes.csv" was a manual check). The following need skill
+requirements (attributes 182/183/184/1285/1289/1290 with levels
+277/278/279/1286/1287/1288), skill rank (275) and primary/secondary
+attributes (180/181):
+- the doctrine skill check,
+- the skill planner,
+- prerequisite chains,
+- training-time maths.
+
+**Resolution:** extend `refresh_sde()` with `dgmTypeAttributes.csv`, filtered
+*at import* to those attribute ids. The whole file is large and not needed.
+It lands in two new global SDE tables, `sde_skill_requirements (type_id,
+skill_id, level)` and `sde_skill_meta (skill_id, rank, primary_attr,
+secondary_attr)`. Skill groups already work: `sde_types.group_id`, then
+`sde_groups` with category 16.
+
+**R8 - Removing a character does not remove data.** `do_remove_token_character`
+keeps snapshots and sharing by design (decision 4 / reversible admin
+operations). For mail that is surprising privacy-wise. **Resolution:** keep
+the general rule. For archive mode, add the explicit deletion paths from
+decision 4: untick the archive checkbox, "Delete archived mail", or the offer
+in the remove-character confirm dialog. Each deletes
+`mail_character_headers` for that character, then garbage-collects
+`mail_messages` no longer referenced by any header. Live-mode characters
+have nothing stored.
+
+**R9 - Location/ship/online are not snapshot data.** Syncing them on a tier is
+pointless (they are stale within minutes) and needs three tables.
+**Resolution (decision 5):** a *live* read on page open with a short
+class-level TTL cache in `ESIClient` (the caching shape for
+per-call-constructed clients). The cache key **must include `tenant_id`**, not
+only `character_id`. Two tenants can each hold a token for the same
+character, and a character-only key would serve tenant A's fetch to tenant B
+(R16). The same rule applies to mail's live cache. It is
+still gated by `is_shared(kind, 'char_info', 'character', id)` first, as
+decision 9 covers live fetches too. There is no table, no freshness row and no
+stale clear. The kinds exist in the registry only for scope and sharing; they
+are flagged `live_only=True` so the orchestrator skips them (new field,
+default `False`).
+
+**R10 - One owner guard for everything.** The orchestrator's `_in_flight`
+guard is per owner, not per (owner, kind). A Mail auto-refresh on open makes
+a concurrent Skills refresh of the same character return `skipped:
+in_flight`. **Resolution:** acceptable. The UI must render `in_flight` as
+"sync already running", not as an error or a silent success. Mail is outside
+the orchestrator (R11), so it does not contend for this guard. It has its
+own per-(tenant, character) lock for archive syncs.
+
+**R11 - Mail sync cost inside a batch session.** Each owner task holds one
+pooled connection for its whole run (pool max 10, 4 workers). A first mail
+backfill (for example 5,000 mails, 100 header pages) and per-mail body calls
+must not run inside that. With unlimited
+retention (decision 4), a first archive backfill for an old character can be
+thousands of pages and bodies. **Resolution:** `mail` is registered with
+`live_only=True`, so the orchestrator, `do_sync_all` and `do_sync_due` never
+touch it. Mail has its own code path in `character_management/mail_*`:
+- **Live mode:** direct ESI reads per request, with no batch session held.
+- **Archive refresh** (Refresh button, or opening Mail when the archive is
+  older than 5 minutes):
+  - incremental header sync, newest to oldest, until it reaches a known
+    `mail_id`;
+  - re-fetch the newest 500 headers for read and label changes;
+  - store new bodies.
+  Short connection use per page, not one long batch session.
+- **Archive backfill** (after ticking the checkbox) is a resumable
+  `pipeline_runner` background job:
+  - It stores its oldest-reached `last_mail_id` cursor, so an interrupted or
+    failed run continues where it stopped.
+  - Headers come first, then bodies, paced by ESI's error budget
+    (`_await_error_budget`).
+  - Progress is shown in the Mail settings.
+
+**R12 - Admin's ESI tool list is already out of sync.**
+`AdminPage.tsx` `ESI_CONSUMING_TOOLS` lacks `portfolio`, which is a real
+consumer since the Portfolio rework. Fix it in Phase 0 while adding the new
+keys, and add a test that compares it against `consuming_tool_keys()` via a
+small constant list.
+
+**R13 - Read state vs. the game.** Opening a mail in the app does not mark it
+read in EVE. That needs `PUT .../mail/{id}` with `organize_mail`.
+**Resolution:** with the `mail_organize` capability, opening marks read in
+EVE too. Without it, the local `is_read` is overwritten by the next sync.
+The UI says so once.
+
+**R14 - Attributes, extractable SP and training time.**
+- `GET /characters/{id}/attributes/` uses the **same** scope as skills
+  (`read_skills`), so the skills fetcher makes two calls and needs no new
+  kind.
+- Extractable SP is not an ESI field. It is computed:
+  `max(0, (total_sp − 5,000,000) // 500,000)` extractors.
+- Whether ESI's attribute values include implant bonuses must be
+  **live-verified** before the planner computes training times from them.
+- For queued skills, always show ESI's own `finish_date`. That covers
+  Alpha/Omega speed. Planner estimates are labelled as estimates.
+
+**R15 - The wallet journal only holds 30 days.** `esi_wallet_journal` is
+replaced per owner on each sync, so it only ever holds ESI's 30-day window.
+The per-character journal view says so. Long history would need an
+accumulating table, which is out of scope unless asked.
+
+**R16 - Existing caches are keyed without a tenant.** The class-level caches
+of public data (`character_public_info`, `corporation_public_info`) are keyed
+by EVE id only. That is fine because the data is public. Every **new
+authenticated** in-memory cache in this plan (location, ship, online, mail
+headers, mail bodies, anything else) is keyed `(tenant_id, character_id,
+...)`. Add a test that two tenants with the same character do not share
+entries.
+
+## Grants and tool keys (proposal, R5)
+
+| Sub-tool | tool_key | Consumes kinds | Phase |
+|---|---|---|---|
+| Characters (exists) | `characters` | none (manages access) | 0 |
+| Character Info | `char_info` | `location`, `ship`, `online`, `standings`, `loyalty`, `wallet_balance`, `clones`, `implants`, `fatigue`, `wallet` (journal view) | 1, 5c, 7, 8 |
+| Skills | `char_skills` | `skills`, `skillqueue` | 2, 5a, 5b |
+| Mail | `char_mail` | `mail` | 3, 4 |
+| Notifications | `char_notifications` | `notifications` | 6 |
+| Contacts & Calendar | `char_contacts` | `contacts`, `calendar` | 8 |
+| Skill plans | `char_skill_plans` | `skills`, `skillqueue` | 9 |
+
+Only add a key in the phase that ships its router. A dead grant in Admin
+confuses admins.
+
+## Registry additions (R1, R9)
+
+| Kind | Scope | Tier | live_only | Phase |
+|---|---|---|---|---|
+| `skills` (consumers extended) | `esi-skills.read_skills.v1` | rare | no | 2 |
+| `skillqueue` | `esi-skills.read_skillqueue.v1` | normal | no | 2 |
+| `mail` | `esi-mail.read_mail.v1` | - | yes (own path, R11) | 3 |
+| `location` | `esi-location.read_location.v1` | - | yes | 1 |
+| `ship` | `esi-location.read_ship_type.v1` | - | yes | 1 |
+| `online` | `esi-location.read_online.v1` | - | yes | 1 |
+| `standings` | `esi-characters.read_standings.v1` | rare | no | 1 |
+| `loyalty` | `esi-characters.read_loyalty.v1` | rare | no | 1 |
+| `clones` | `esi-clones.read_clones.v1` | rare | no | 5c |
+| `implants` | `esi-clones.read_implants.v1` | rare | no | 5c |
+| `notifications` | `esi-characters.read_notifications.v1` | frequent | no | 6 |
+| `fatigue` | `esi-characters.read_fatigue.v1` | - | yes | 7 |
+| `contacts` | `esi-characters.read_contacts.v1` | rare | no | 8 |
+| `calendar` | `esi-calendar.read_calendar_events.v1` | normal | no | 8 |
+
+New access capabilities (group 3: on/off per character, no tool, no
+freshness), phase 4:
+- `mail_send`: `esi-mail.send_mail.v1`
+- `mail_organize`: `esi-mail.organize_mail.v1`
+
+All kinds are group 2 (character only). No new DB constraint is needed:
+`esi_sharing.data_kind`/`tool_key` have no CHECK, which was verified.
+
+Public character info (portrait, corporation/alliance history, security
+status, birthday) needs no scope. `character_public_info` already exists with
+a class-level TTL cache. Corporation history is a new public call with the
+same cache shape.
+
+## Implementation, phase by phase
+
+Every phase must satisfy the following before it counts as done:
+- `pytest` green, frontend tests green;
+- live-verified against the running backend, and in a browser for UI
+  (CLAUDE.md);
+- a deployment note listing which characters must re-authorize for the new
+  scopes;
+- any new `docs/*_schema.sql` registered in `deploy/deploy.sh`,
+  `deploy/README.md`, root `README.md` and `.cursor/start.sh`. To find every
+  place, grep `production_buy_list_schema`.
+
+### Phase 0 - hub shell (no new ESI data)
+
+**Status: implemented (frontend only).** Deviations from the text below:
+- The Characters table column groups (R6) are deferred to **Phase 1**. With
+  the 7 existing kinds there is nothing to group yet; the grouping and the
+  `section` field in `esiRegistry.ts` land together with the first new kinds.
+- The `skipped: in_flight` rendering (R10) is deferred too: no frontend code
+  reads that field today. It belongs with the first per-page Refresh button
+  (Phase 1).
+- Shared constants live in `frontend/src/toolKeys.ts` (`ALL_TOOL_KEYS`,
+  `ESI_CONSUMING_TOOLS` incl. `portfolio`, `CHARACTER_MANAGEMENT_TOOL_KEYS`,
+  `hasAnyToolGrant`); `ToolCard` moved to `components/ToolCard.tsx` and takes
+  one key or a list. `toolKeys.test.ts` checks `ESI_CONSUMING_TOOLS` equals
+  the union of `esiRegistry` consumers.
+- QuickNav's hub entry is mapped to `characters` only; widen it to any-of
+  when a second sub-tool grant exists.
+Backend:
+- `access_gate.ALL_TOOL_KEYS`: no new keys yet (R5). Keys arrive with their
+  routers.
+- No backend change for the move: `/api/characters/` stays and is still
+  mapped in `_TOOL_PATH_PREFIXES`.
+
+Frontend:
+- `pages/character_management/CharacterManagementHub.tsx`: extract `ToolCard`
+  from `Landing.tsx` into `components/ToolCard.tsx` and reuse it. Show only
+  the cards the session holds.
+- `Landing.tsx`: replace the Characters card with a **Character Management**
+  card. Show it if `tools` is undefined (still loading or gate off) or
+  contains any key of a shared `CHARACTER_MANAGEMENT_TOOL_KEYS` constant.
+- `App.tsx`:
+  - add routes `/character-management` (hub) and
+    `/character-management/characters`;
+  - make `/characters` a `<Navigate replace>`, so old bookmarks and the
+    `?auth=success` handling keep working (the OAuth callback redirects to `/`
+    with query params, which is unaffected);
+  - update `Portfolio.tsx`'s link and `QuickNav.tsx` `PATHS`.
+- `CharactersPage.tsx`:
+  - implement the column groups (R6);
+  - add `section` to `esiRegistry.ts`;
+  - render `skipped: in_flight` properly (R10).
+- `AdminPage.tsx`: fix `ESI_CONSUMING_TOOLS` (R12) and move
+  `ALL_TOOL_KEYS` / `ESI_CONSUMING_TOOLS` into one shared TS module that the
+  hub also reads.
+
+Tests:
+- `Landing.ui.test.tsx`: hub card visibility for any, none and undefined
+  tools.
+- A redirect test.
+- A CharactersPage grouping test.
+- Admin auto-tick including `portfolio`.
+
+### Phase 1 - Character Info (`char_info`)
+
+**Status: implemented.** Deviations from the text below (the text is kept as
+the original design; this list is what actually shipped):
+- **Public info:** `security_status`/`birthday`/alliance come from the
+  already-cached `character_public_info`; the only new public call is
+  `character_corporation_history`.
+- **`wallet_balance` reads go through `read_esi`.** The accessor had no
+  branch for that kind (Portfolio reads it via `shared_owner_ids` +
+  `storage.sum_wallet_balances`); phase 1 added one (characters only) so
+  Character Info uses the fail-closed accessor like everything else.
+- **`read_esi` raises `AccessorError` for live-only kinds** instead of
+  returning `[]`, so "live-only" can never be mistaken for "shared with
+  nobody".
+- **Field states.** Every optional field in the overview/detail responses is
+  `{state, value, detail?, synced_at?}` with state `ok | not_shared |
+  reauth_needed | not_synced | error`; one failing field never fails the
+  page or other characters. Order of checks: not shared -> no token holds the
+  scope -> data.
+- **Character list = every character with a token** (`esi_data.actions.
+  do_list_token_characters`), fetched with 4 worker threads
+  (`storage.with_current_tenant`).
+- **Location names** come from the local SDE / structure-name caches only
+  (`storage.get_location_names`, new `get_solar_system_names`); an unresolved
+  structure shows `Structure <id>`. Live structure resolution belongs to
+  Production's resolution chain and needs another scope.
+- **The R10 `in_flight` rendering shipped** with the first Refresh button:
+  `do_sync_char_info` returns `in_flight` / `failed` separately and the page
+  shows "Sync already running" as neutral, not as an error.
+- **R6 (Characters table column groups) shipped** with collapsible sections
+  (`Industry & Trading`, `Character`); a collapsed section shows an `n/m
+  shared` summary. `KIND_SECTIONS`/`section`/`liveOnly` live in
+  `esiRegistry.ts`.
+- **New drift guard found on the way:** `tests/test_sqlite_migration_table_
+  drift.py` fails when a new RLS table is missing from
+  `sqlite_migration.KNOWN_NON_MIGRATED_TABLES` - the two new tables are
+  recorded there. That test also depends on database state: run against a
+  test database that earlier runs already filled with the Module
+  Reprocessing / Station Trading tables it reports them as undocumented
+  (pre-existing, unrelated); use a freshly created `eve_trader` test DB.
+- **Line endings:** `api/app.py`, `esi_client.py`, `esi_data/fetchers.py`
+  and `storage.py` are CRLF in the repo. Edit them so the diff stays small
+  (a plain Python read/write silently converts them to LF).
+- **Not verifiable in the sandbox:** live calls to ESI (no outbound access to
+  `esi.evetech.net` / `images.evetech.net`). Covered by unit tests with a
+  fake client, and by a live run of the real backend + browser in which ESI
+  calls failed and rendered as `error` states without breaking the page.
+  First real-character check still to do on a deployment.
+Backend:
+- `access_gate.ALL_TOOL_KEYS` gains `char_info`. `_TOOL_PATH_PREFIXES` gains
+  `/api/char-info/`.
+- `esi_data/registry.py`:
+  - add `location`, `ship`, `online`, `standings` and `loyalty`;
+  - add the `live_only` field to `OwnedDataKind`, and have
+    `_kinds_for_owner` skip `live_only` kinds;
+  - add `char_info` to `wallet_balance`'s consumers.
+- `esi_client.py`:
+  - add `character_location`, `character_ship`, `character_online`
+    (class-level 60 s TTL cache, keyed per character);
+  - add `character_standings`, `character_loyalty` and
+    `character_corporation_history` (public, TTL cache).
+- `esi_data/fetchers.py`: `fetch_character_standings` and
+  `fetch_character_loyalty` write to new tables. Register both in `FETCHERS`
+  and in `stale._KIND_TABLES`; these are fine to clear.
+- `esi_data/access.py`: add `_read_standings` and `_read_loyalty` branches in
+  `read_esi`.
+- New `docs/character_management_schema.sql` with `character_standings`
+  (`owner_character_id, from_id, from_type, standing`) and
+  `character_loyalty` (`owner_character_id, corporation_id, loyalty_points`).
+  Both have `tenant_id` and RLS, and PKs `(tenant_id, owner_character_id,
+  ...)`, because two tenants can hold the same character.
+- New package `eve_trader/character_management/` with `__init__.py` and
+  `info_actions.py`:
+  - `do_list_character_overview()` combines public info, wallet balance (via
+    `read_esi('wallet_balance', 'char_info')`) and shared live location.
+  - `do_character_detail(character_id)`.
+  - Every live call is preceded by `is_shared`. If it is not shared, the
+    field is `None` plus a `"not_shared"` marker, never a silent fetch.
+- The same package must not be imported by `esi_data`: the
+  `test_importing_registry_does_not_load_tool_packages` rule.
+- `api/routers/char_info.py` uses the `_wrap` helper and imports the module
+  object: `from ...character_management import info_actions` (CLAUDE.md
+  testing convention).
+- `POST /api/char-info/sync` calls `esi_data.do_sync_for_tool('char_info')`.
+
+Frontend:
+- `pages/character_management/info/`:
+  - an overview table of all characters;
+  - a detail drawer;
+  - a Refresh button with "last updated" from `/api/characters/freshness`.
+
+Tests:
+- registry (live_only, consumers);
+- the accessor fails closed for the new kinds;
+- a router grant test (403 without `char_info`);
+- the fetcher writes and stale-clear behaviour.
+
+### Phase 2 - Skills (`char_skills`)
+
+**Status: implemented.** What shipped, next to the design below:
+- **Kinds:** `skills` (consumers now `production`, `station_trading`,
+  `char_skills`) and the new `skillqueue` (`esi-skills.read_skillqueue.v1`,
+  normal tier). `skills` moved to the "Character" column group on the
+  Characters page.
+- **Tables** (all in `docs/character_management_schema.sql`): `character_skills`,
+  `character_attributes` (attribute block + `total_sp`/`unallocated_sp`, all
+  columns nullable, written by two independent upserts), `character_skillqueue`
+  and the global `sde_skill_requirements` / `sde_skill_meta`.
+- **Fetcher:** `fetch_character_skills` still writes `character_slots`
+  first and adds the per-skill rows + totals in the same owner batch. The
+  `/attributes/` call is **best-effort** (`ESIError` is logged and skipped):
+  a failure would otherwise roll the whole batch back and break Production's
+  job-slot sync over a Character-Management-only detail.
+- **Stale clear:** `skills` now clears `character_skills`/`character_attributes`
+  (never `character_slots`); the early return for `skills` is gone.
+- **Accessor:** `read_esi("skills", "char_skills")` returns per-skill rows,
+  `table="attributes"` the attribute block + totals; any other tool keeps the
+  slot-row shape. `read_esi("skillqueue", ...)` is new.
+- **SDE:** `dgmTypeAttributes.csv` is **streamed** and filtered to the ten
+  attribute ids while parsing (`production/sde._fetch_skill_attributes`,
+  retried as a whole so a mid-stream reset never yields a truncated table),
+  then `skill_rows_from_attributes` builds the two tables. `sde_diff` diffs
+  them, the preview job now reports 15 batches. **An existing deployment must
+  run Admin's SDE preview + apply once** - until then ranks are absent (names
+  and groups only need the older tables, so the page still works).
+- **Extractable SP** is `max(0, (total_sp - 5,000,000) // 500,000)` and is
+  labelled an *estimate / upper bound* everywhere: the game also limits what
+  can be pulled from individual skills.
+- **Shared helpers:** `character_management/fields.py` (field states, gate,
+  snapshot read, sync summary) is now used by Character Info and Skills;
+  frontend `components/FieldState.tsx` and `hooks/useCharacterSync.ts` likewise.
+- **Actions/routes:** `do_skills_overview`, `do_character_skills`,
+  `do_skill_matrix`, `do_sync_char_skills` -> `/api/char-skills/{overview,
+  characters/{id}, matrix, sync}`. The page has Overview / Character skills /
+  Matrix tabs.
+- **Not in phase 2:** the queue guard (5a) - the overview only shows
+  "queue empty" / "queue paused" and the end date; no warning threshold yet.
+- **Not verifiable in the sandbox:** the real Fuzzwork download and real ESI
+  responses (see phase 1). The CSV column names (`typeID, attributeID,
+  valueInt, valueFloat`) and the ESI field names come from the public
+  dumps/swagger and are covered by tests against constructed data only -
+  check them on the first real SDE apply and character sync.
+- **Deployment:** new scope `esi-skills.read_skillqueue.v1` -> characters that
+  share Skill Queue must re-authorize; apply the schema file again; run the SDE
+  preview/apply.
+
+Original design:
+- The registry gets `skillqueue` and adds `char_skills` to the `skills`
+  consumers.
+- `fetch_character_skills` writes job slots unchanged (Production depends on
+  them) and additionally:
+  - replaces the character's rows in the new `character_skills` table
+    (`skill_id`, `active_level`, `trained_level`, `sp`);
+  - calls `/attributes/` (same scope, R14) and stores the result in
+    `character_attributes`, along with `total_sp` and `unallocated_sp`.
+- Stale clear: `skills` currently returns early. Keep that for
+  `character_slots` (issue #39), but let the new tables be cleared by
+  splitting the early return per table.
+- `fetch_character_skillqueue` writes `character_skillqueue`.
+- SDE extension (R7): `dgmTypeAttributes.csv` is fetched in `refresh_sde()`
+  and filtered while parsing. It feeds `sde_skill_requirements` and
+  `sde_skill_meta` in the same schema file. These are global SDE tables, not
+  RLS, following the `sde_*` precedent in `phase1_schema.sql`.
+  `storage.replace_sde` gains them, and `get_sde_*` caches are cleared the
+  same way.
+- `character_management/skills_actions.py`:
+  - skill tree grouped by SDE group (category 16);
+  - per-character and all-characters matrix;
+  - total SP;
+  - extractable SP (R14);
+  - queue with ESI finish dates.
+- Production's time-bonus config stays manual (CLAUDE.md, explicitly
+  declined).
+
+### Phase 3 - Mail read (`char_mail`)
+
+**Status: implemented (read, live + opt-in archive).** Deviations/additions:
+- **Registry:** `mail` (`esi-mail.read_mail.v1`, consumer `char_mail`) is
+  `live_only`, i.e. *not an orchestrator kind*: the orchestrator ignores its
+  sharing rows, and it is deliberately absent from `stale._KIND_TABLES` and
+  `delete_owner_snapshot_rows`, so no failed sync can delete an archive (R2).
+- **Backfill runs on its own daemon thread, not `pipeline_runner`.** The
+  runner allows one running job per *tenant*; a backfill of an old mailbox
+  can take a long time and would 409 Trading/Production jobs meanwhile.
+  Progress + the resume cursor live in `char_mail_archive_settings`
+  (`backfill_state/backfill_cursor/headers_complete/backfill_error`); a
+  thread that died with the process is reported as `interrupted` and resumed
+  by the next refresh (`mail_archive.ensure_backfill`, one thread per
+  (tenant, character) per process).
+- **Delete-vs-backfill race is closed in the database:** every archive write
+  goes through `_archive_still_enabled` (`SELECT ... FOR SHARE` on the
+  character's settings row, same transaction) and `delete_mail_archive`
+  deletes the settings row *first* - it blocks until an in-flight write
+  commits, and any later write finds no row and does nothing. Tested.
+- **Names:** `ESIClient.resolve_names_cached` (1 h, shared - public data).
+  Mailing-list names come from the character's own lists endpoint, never from
+  `/universe/names` (one unknown id 404s the whole batch).
+- **Caches:** the live-read cache took `params/ttl/extra`, is pruned (expired
+  entries were previously only ever replaced), can be bypassed
+  (`cache=False`, used by the backfill so thousands of one-off pages never sit
+  in memory) and invalidated per character (`invalidate_live_character_caches`,
+  for phase 4).
+- **Privacy:** `fields.esi_failure` reduces any ESI failure on mail to
+  `ESI returned HTTP <n>` / `network error` - no response text, URL or
+  subject in errors, `pipeline`/`error_log`, or archive state.
+- **Archive semantics:** the archive only ever holds rows for a character with
+  the switch on; `do_set_mail_archive(enabled=False)` deletes it and needs
+  `confirm_delete=True` when anything is stored; nothing else deletes archived
+  mail. A mail two characters received is stored once (R4). Unsharing a
+  character hides its archive (reads go through `shared_owner_ids`), it does
+  not delete it. **Not done:** offering archive deletion in the
+  Characters "Remove character" dialog (R8) - removing a character keeps its
+  archive like every other snapshot; delete it in Mail settings first.
+- **Frontend:** three-pane client (folders with unread badges incl. unified
+  system folders and per-character labels, list with per-character chips and
+  "Load more" via per-character cursors, reader). Mail bodies go through the
+  strict whitelist sanitizer `mailHtml.ts` (DOMPurify; colours/sizes/`<font>`
+  dropped because EVE colours are ARGB and clash with the themes; only
+  http(s) links, opened with `noopener`; `showinfo:` links become text) and
+  are the only HTML in the app. Client-side filter over loaded mail;
+  server-side full-text search only for archived characters. Mail settings
+  drawer: per-character archive switch, backfill progress (polled while
+  running), confirm-before-delete. A stale archive (>5 min) is refreshed once
+  on open.
+- **Not verifiable in the sandbox:** real ESI mail responses (offline).
+  Shapes follow the public swagger; the system-label names ESI returns
+  (`[Inbox]` etc.) are normalised defensively.
+
+**Phase 3a - live mode (default, no storage).**
+- `ESIClient` gets these methods, each with a TTL cache keyed by
+  `(tenant_id, character_id, ...)` (R16):
+  - `character_mail_headers(char, labels, last_mail_id)` (50 per page);
+  - `character_mail_labels`;
+  - `character_mail_lists`;
+  - `character_mail_body(char, mail_id)`.
+  Cache lifetimes: headers, labels and lists about 30 seconds (ESI's own
+  cache time), bodies about 10 minutes.
+- `mail_actions.py`:
+  - `do_list_folders(character_id | None)`: labels and lists live, merged
+    across shared characters.
+  - `do_list_mails(folder, character_id | None, cursors)`: the unified inbox
+    fetches the first page of each shared live-mode character and merges by
+    timestamp. "Load more" carries one `last_mail_id` cursor per character in
+    an opaque client-side cursor.
+  - `do_open_mail(character_id, mail_id)`: body fetched live.
+- In live mode, search is client-side over the headers already loaded
+  (sender and subject). The UI says full-text search needs the archive.
+- Nothing is written to Postgres. A test asserts that a live-mode read does
+  no INSERT (mock `storage`).
+
+**Phase 3b - archive mode (opt-in per character).**
+- A per-character setting table `char_mail_archive_settings`
+  (`tenant_id, character_id, enabled, backfill_cursor, backfill_state,
+  last_refresh_at`) with RLS. It is *not* an `esi_character_capabilities`
+  row, because capabilities imply scopes and this one does not.
+- `do_set_mail_archive(character_id, enabled)`:
+  - Enabling starts the backfill job (R11).
+  - Disabling deletes the archive, and the frontend confirm dialog is
+    required. The server accepts it as an explicit user action; this is the
+    decision-4 deletion path.
+- A mixed unified inbox is allowed: archived characters are read from the
+  DB, live characters live, merged by timestamp. Full-text search covers
+  archived characters only, and the UI shows which ones.
+- Schema (R4): see the table sketch below.
+  - `mail_messages` (`tenant_id, mail_id, from_id, subject, timestamp,
+    body NULL, body_fetched_at`)
+  - `mail_recipients` (`tenant_id, mail_id, recipient_id, recipient_type`)
+  - `mail_character_headers` (`tenant_id, character_id, mail_id, is_read,
+    labels INT[]`)
+  - `mail_labels` (`tenant_id, character_id, label_id, name, color,
+    unread_count`)
+  - `mail_lists` (`tenant_id, character_id, list_id, name`)
+  - Indexes on `(tenant_id, character_id, timestamp desc)`, plus a
+    `to_tsvector('simple', subject || body)` GIN index for search.
+- The archive sync and backfill follow R11, outside the orchestrator. There
+  is **no** `stale._KIND_TABLES` entry (R2). There is **no retention limit**
+  (decision 4): nothing is pruned.
+- A mail that is in the archive and also received by a live-mode character
+  is shown from the archive. The live character's read state is fetched
+  live.
+- Actions added for archive mode:
+  - `do_refresh_mail_archive(character_id | None)`;
+  - `do_mail_archive_status()` (backfill progress);
+  - `do_delete_mail_archive(character_id)` (R8);
+  - `do_search_mail(q)` (full-text, archive only).
+- Every read uses `shared_owner_ids('mail', 'char_mail', 'character')`.
+  Mails visible only through an unshared character are hidden. A message
+  shared through at least one shared recipient is visible, with only that
+  character's header.
+- Names come from `resolve_names` (existing, batched). The cache is
+  class-level, the same shape as structure names, or a small
+  `eve_names` table.
+- Privacy: no subjects or bodies in logs or `error_log.py`. Review this
+  explicitly, because `ESIError` messages embed `resp.text[:300]`: mail
+  endpoints must pass a redacted message.
+- Frontend: a three-pane layout (folders, list, reader).
+  - Unified inbox with a character filter chip.
+  - Search box.
+  - Refresh button (live: invalidate the TTL cache and refetch; archive:
+    incremental sync). Auto-refresh on open when the archive is older than 5
+    minutes (config), debounced.
+  - Mail settings panel: per-character archive checkbox, backfill progress,
+    and "Delete archived mail".
+  - The Characters page note on the `mail` row: "Mail is read live and not
+    stored, unless you enable the archive for this character in Mail
+    settings."
+  - EVE mail bodies are HTML-ish (`<font>`, `<a href="showinfo:...">`), so
+    render them through a whitelist sanitizer (for example DOMPurify with
+    allowed tags). `showinfo:` links become plain text or an internal link.
+    **Never** use `dangerouslySetInnerHTML` unsanitized. This is XSS from any
+    EVE player who can send you mail.
+
+### Phase 4 - Mail write
+
+**Status: implemented.** Deviations/additions:
+- **Capabilities `mail_send` / `mail_organize`** (group 3) added to the registry
+  and the frontend mirror, so the Characters "Access" table shows them and the
+  re-authorize flow requests their scopes. Every write action requires the
+  tick (the user's consent that this app acts for the character) **and** a token
+  holding the scope (`fields.capability_ready` -> `ready | not_enabled |
+  reauth_needed`); a tick without the scope says "re-authorize", not "sent".
+  `organize` does not imply `send` and vice versa.
+- **`ESIClient._write`** (R3): 420/429 are retried for every method (ESI
+  rejected the request before processing it); transport errors and 5xx are
+  retried **only for idempotent writes** (PUT read/labels, DELETE). Sending a
+  mail and creating a label are not retried: they end in `ESIDeliveryUnknown`,
+  which `do_send_mail` turns into "ESI did not confirm the delivery ... check the
+  Sent folder before sending it again". Accepts ESI's 201/204. A definite refusal
+  is `ESIHTTPError(status, body)`; the body stays server-side (only used to parse
+  a CSPA cost), users and logs see `ESI returned HTTP <n>`.
+- **CSPA charge:** `do_send_mail` returns `{sent: false, needs_approval, cost}`
+  when ESI's refusal text carries a cost above `approved_cost`; the UI asks and
+  repeats with `ceil(cost)`. The cost is parsed from ESI's error text
+  (`fields`/`_COST` regex) - **unverified against real ESI** (offline sandbox);
+  if the text is not parseable the user gets a plain refusal instead.
+- **Validation before any ESI call:** recipients (max 50, types, own mailing
+  lists only, exact-name lookup via `/universe/ids`, order preserved, deduped),
+  subject (required, <= 1000), body (<= 10000), label name/colour (ESI's fixed
+  18 colours), system folders cannot be deleted.
+- **Archive stays a faithful copy:** a mail sent by an archived character is
+  stored right away (label Sent, body, recipients); read state / labels are
+  mirrored; a mail deleted through the app is removed from the archive too (and
+  the message garbage-collected if no header references it). All through the
+  guarded archive writes. Live caches of that character (`mail_*`) are
+  invalidated after every write.
+- **Routes** (all under the existing `char_mail` grant; the global Origin/CSRF
+  check covers the POST/DELETE routes - tested with a foreign Origin):
+  `POST /send`, `POST /mails/{c}/{m}/read`, `POST /mails/{c}/{m}/labels`,
+  `DELETE /mails/{c}/{m}`, `POST /labels`, `DELETE /labels/{c}/{l}`,
+  `GET /recipients`. `do_list_folders` now reports per-character write
+  capability states so the UI can disable and explain.
+- **Frontend:** Compose modal (sender picker limited to characters that may send,
+  recipient chips with name entry + autocomplete over own lists and public ESI
+  search, counters, CSPA confirmation, draft kept on failure), Reply / Reply all /
+  Forward (quote via the same sanitizer, replies go out as the receiving
+  character), Mark read/unread, Labels popover (checkboxes, sends the full
+  resulting set), Delete with confirmation, label create/delete in Mail
+  settings. Opening an unread mail marks it read in the game **only** if the
+  character may organize, once per mail per visit (R13); otherwise it stays
+  unread.
+- **Bug found by the UI tests:** reading `e.currentTarget.value` inside a
+  functional `setState` updater (it runs after the handler, when React has nulled
+  `currentTarget`) - fixed by reading the value first.
+- **Not verifiable in the sandbox:** real ESI write responses. In the live
+  browser run, ESI was unreachable, which exercised the failure paths: the
+  auto mark-read and the send both showed their redacted error toasts and the
+  draft stayed open.
+- **Not done:** the Characters "Remove character" dialog still does not offer
+  deleting an archive (R8); scheduled/deferred sends; mailing-list management.
+- Capabilities `mail_send` and `mail_organize` go into
+  `ACCESS_CAPABILITIES`, the `esiRegistry.ts` mirror, and the capabilities
+  table on the Characters page.
+- `ESIClient._write` (R3), plus:
+  - `send_mail` (never retried);
+  - `update_mail(read, labels)`;
+  - `delete_mail`;
+  - `create_label` and `delete_label`.
+- Actions:
+  - `do_send_mail(from_character_id, recipients, subject, body,
+    reply_to_mail_id?)`;
+  - `do_mark_read`;
+  - `do_set_labels`;
+  - `do_delete_mail`;
+  - `do_create_label` and `do_delete_label`.
+- Each action checks:
+  - the character is shared with `char_mail`;
+  - the capability flag is set;
+  - `select_auth_role(char, scope)` is not `None`, otherwise an
+    `ActionError` telling the user to re-authorize with Send or Organize.
+- Recipient resolution uses `/universe/ids` (`_post_universe_ids` exists).
+  Mailing-list recipients must be in the sender's own `mail_lists`.
+- Validate ESI's limits up front with a clear error:
+  - at most 50 recipients;
+  - subject at most 1,000 characters;
+  - body at most 10,000 characters.
+- Surface these ESI errors as `ActionError`:
+  - CSPA charge (`approved_cost`): the UI asks for confirmation and resends
+    with the cost;
+  - rate limits;
+  - blocked recipients.
+- After a successful send, invalidate the sender's live header cache. If
+  the sender is in archive mode, also insert the mail into the local Sent
+  folder right away (ESI returns the new `mail_id`). Organize actions (read,
+  labels, delete) likewise update archived rows and invalidate live caches.
+- Compose UI:
+  - reply, reply-all and forward (quote the original body);
+  - a recipient autocomplete with character, corporation, alliance and list
+    chips;
+  - a sender selector limited to characters with `mail_send`.
+- CSRF: the existing unsafe-method protection in `api/app.py` applies. Check
+  the new POST, PUT and DELETE routes against it.
+
+### Phase 5
+- **5a Queue guard (implemented):** `queue_warning` classifies a queue as `empty`,
+  `paused`, `ended` (every finish date passed - snapshot older than the queue) or
+  `ends_soon` (< threshold, strict); threshold `TradingConfig.
+  char_skills_queue_warning_hours` (default 24, range 0-1440, 0 = all warnings
+  off, edited on the Skills page - put next to the other cross-tool ESI settings
+  instead of a new config scope, which would need every `tenant_settings` scope
+  CHECK widened). Warnings come from the stored snapshots only (no ESI call):
+  `GET /warnings` feeds the Skills page banner and the hub badge on the Skills
+  card; a character whose queue is unshared / unsynced / needs re-auth
+  contributes nothing (its row says why). Original text: config `queue_warning_hours`, default 24. Warnings go
+  to the Skills page and as a hub card badge (same mechanism as Admin's
+  pending badge; the count is computed server-side). Push, Discord or email
+  stays deferred (CLAUDE.md).
+- **5b Doctrine skill check (implemented):** `character_management/skill_check.py`,
+  `GET /api/char-skills/doctrine-check?doctrine_id=`. The route sits under the
+  `char_skills` prefix and additionally requires the `doctrine` grant, checked
+  in the handler against `request.state.tool_keys` (now set by the access-gate
+  middleware; every key while the gate is off). Only characters shared with
+  Skills are checked; the rest are listed as `hidden_characters`. Level SP is
+  `ceil(250 * rank * 32**((level-1)/2))`; the training time is an estimate from
+  the synced attributes (`primary + secondary/2` SP per minute, no implants or
+  boosters) and is null when attributes or any rank are unknown. When the SDE
+  has no skill requirements (`sde_ready: false`, an Admin SDE preview + apply is
+  needed once) the tab explains that instead of showing everyone as able to fly.
+  The Skills page shows the "Doctrine check" tab only with the doctrine grant.
+  Original text: read fittings via storage (a doctrine storage
+  reader, no import of `eve_trader.doctrine` internals). Collect the required
+  skills of the ship and every fitted type from `sde_skill_requirements`,
+  expanded recursively through skill prerequisites. Compare them against
+  `character_skills`. Output per fitting: characters who can fly it, and for
+  the others the missing skills with an estimated training time (R14 caveat).
+- **5c Clones & implants (implemented):** two kinds, one scope each (R1):
+  `clones` (`esi-clones.read_clones.v1`) fills `character_clone_meta` (home,
+  `last_clone_jump_date`, `last_station_change_date` - always written, so a
+  character with no jump clones still counts as synced),
+  `character_jump_clones` and `character_jump_clone_implants`; `implants`
+  (`esi-clones.read_implants.v1`) fills `character_implants`. Both are
+  `char_info` snapshot kinds (rare tier, stale-clear covered). Character Info's
+  detail drawer shows the active implants, the home location and each jump clone
+  with its implants; location names use `storage.get_location_names`, an
+  unresolved structure keeps its id. Phase 7 reads
+  `character_clone_meta.last_clone_jump_date`. Existing deployments apply the
+  schema file again. Original text: add the `clones` and `implants` kinds plus
+  tables. Show them on Character Info. Location names come from the existing
+  resolution chain.
+
+### Phase 6 - Notifications (`char_notifications`)
+**Status: implemented.** What shipped, next to the design below:
+- Grant `char_notifications`, kind `notifications` (scope
+  `esi-characters.read_notifications.v1`, normal tier, a snapshot kind).
+  `character_notifications` mirrors ESI's current list per character (replaced
+  on each sync; ESI decides how far back it goes) and holds the raw YAML `text`;
+  it is parsed on read with `ruamel.yaml`'s safe loader (already a dependency).
+  A body that is oversized, malformed, not a mapping or has non-string keys
+  parses to `{}` and the notification still lists under its humanised type.
+- Only a few types get more than the humanised name: place (solar system) and
+  structure type when the body carries them, and shield/armor/hull percentages
+  for `StructureUnderAttack`. Field names of other types are unverified offline,
+  so the detail modal lists the parsed keys instead of guessing prose.
+  Categories (structures, sovereignty, war, corporation, moon, starbases,
+  combat, other) come from type prefixes; the pickers count what is left after
+  the other filters.
+- Read flag: `character_notification_reads`, this app's own; a notification
+  counts as read if ESI already said so or the flag is set. An in-game read can
+  not be undone from here (no "mark unread" for it). Flags of notifications that
+  left ESI's list are pruned on each sync; stale clear removes both tables.
+- Routes under `/api/char-notifications/`: `GET /notifications` (character,
+  type, category, unread_only, limit<=200, offset), `GET /notifications/{cid}/{nid}`,
+  `POST /read`, `POST /sync`. Existing deployments apply the schema file again.
+- Not done: hub badge for unread notifications (Admin-style badge would need a
+  cheap count endpoint; deferred until asked for).
+
+Original design:
+- Add the `notifications` kind plus a table.
+- The ESI `text` is YAML: parse the known types (structure attacked or
+  reinforced, war declared, sov) into readable lines, and fall back to the
+  raw type name.
+- Filter by type. A read/unread flag is local only (ESI has no write).
+
+### Phase 7 - Jump fatigue / timers
+**Status: implemented.** Kind `fatigue` (`esi-characters.read_fatigue.v1`,
+`live_only`, consumer `char_info`): read live per overview request through the
+60 s live cache, never stored. The overview passes ESI's three optional dates
+through as ISO strings; the browser does the countdown (`components/Countdown`,
+30 s tick), since a server-side "seconds left" would be stale on arrival. The
+clone jump timer is `clone_jump_available_at` = `last_clone_jump_date` + 24 h,
+computed in `info_actions._clones_field` (needs `clones` shared); the tooltip
+says Infomorph Synchronizing can shorten the 24 h, which is not read here.
+Countdown column on the overview table, clone timer in the detail drawer.
+
+Original design:
+- Add `fatigue` (`live_only`).
+- Show countdowns on Character Info. The jump clone cooldown comes from
+  `clones.last_clone_jump_date`.
+
+### Phase 8 - Contacts & calendar (`char_contacts`), wallet journal
+**Status: implemented, with one deviation (wallet journal).**
+- Grant `char_contacts`; two kinds, one scope each (R1): `contacts`
+  (`esi-characters.read_contacts.v1`) and `calendar`
+  (`esi-calendar.read_calendar_events.v1`), both `live_only`: read per request
+  (2 min cache, keyed by tenant), never stored, no new tables. Read-only. Routes
+  `/api/char-contacts/{characters, contacts/{cid}, calendar/{cid},
+  calendar/{cid}/{event_id}}`. The event route only serves ids that are on that
+  character's own calendar list (one extra cached list call), so it cannot be
+  used to probe arbitrary events; details are fetched only when an event is
+  opened. `fields.live` is the shared "gate, one ESI call, redacted failure"
+  helper for live-only kinds.
+- **Deviation - wallet journal is live, not the stored `wallet` kind.** The
+  merged Wallet row on the Characters page already maps Character Info to
+  `wallet_balance` (`toolDataKind`), and one tool can only map to one kind
+  there; ticking `wallet` for Character Info as well would have needed a second
+  checkbox for the same scope, and syncing the stored journal for a tool that
+  only wants to look at it duplicates data. So `GET /api/char-info/characters/
+  {cid}/wallet-journal` reads ESI's 30-day journal live (2 min cache, never
+  stored, R15's window is ESI's own), gated by the Wallet checkbox of Character
+  Info (`wallet_balance` row + scope). It shows the newest 500 entries and
+  totals (income, expenses, per `ref_type`) over all of them, and is only
+  fetched when the user presses "Show wallet journal".
+- Not done: contact/label editing and event responses (would need the write
+  scopes; not asked for).
+
+Original design:
+- Contacts and calendar are read-only. Calendar event details are one call
+  per event, fetched lazily like mail bodies.
+- The wallet journal view goes into Character Info through the existing
+  `wallet` kind (`char_info` added to its consumers). It shows the 30-day
+  window only (R15).
+
+### Phase 9 - Skill-plan editor (`char_skill_plans`)
+**Status: implemented.** What shipped, next to the design below:
+- Grant `char_skill_plans`, tables `skill_plans` (`id BIGSERIAL`, per-tenant by
+  RLS) and `skill_plan_items` (`plan_id, position, skill_id, level`, cascade on
+  delete, unique per skill/level). Tenant data the user writes: no sharing, no
+  sync, no stale clear. Limits: 100 plans, 600 steps per plan, 50 000 characters
+  of import text.
+- A plan is kept **self-contained** (`character_management/skill_plan_logic.py`,
+  pure functions): a step at level L>1 needs `(skill, L-1)` earlier, a level-1
+  step needs the skill's own prerequisites (`sde_skill_requirements`) earlier.
+  Adding a skill inserts everything missing, in dependency order, and leaves
+  existing positions alone; removing a step also removes every step that needed
+  it (the UI says how many went); reordering (up/down) is accepted only as a
+  permutation that keeps every step after what it needs. A prerequisite cycle in
+  the data is cut, not looped on.
+- Import/export text: one `<skill name> <level>` per line, level as roman
+  numeral or digit, `#` comments and blank lines ignored, unknown lines reported
+  back (`unresolved`) instead of failing the import. The in-game client's exact
+  export format could not be checked offline, so import is deliberately lenient
+  and export writes the simplest form (`Gunnery V`).
+- Progress per character: `read_esi("skills", "char_skill_plans")`, i.e.
+  `char_skill_plans` became a consumer of the `skills` kind and has its own
+  sharing row (Skills sharing does not open it). Per character: steps done, SP
+  and estimated time left (same estimate as the doctrine check: attributes as
+  ESI reports them, no implants or boosters, R14), and the next 10 steps in plan
+  order - the plan order is already a valid training order, so it doubles as the
+  suggested queue order. A step's SP is `SP(L) - SP(L-1)`, or only the rest of
+  the level for a character part-way through the level below.
+  `POST /api/char-skill-plans/sync` refreshes the skills of characters shared
+  with Skill Plans.
+- Needs the SDE skill tables (Admin SDE preview + apply once); the page says so
+  instead of offering an unusable editor.
+- Not done: reordering by drag and drop, sharing plans between tenants, pushing a
+  plan into the game's skill queue (no write scope is requested).
+
+Original design:
+- Tenant-scoped `skill_plans` and `skill_plan_items` (`plan_id, position,
+  skill_id, level`).
+- Import and export in the EVE client skill plan text format.
+- Adding a skill auto-inserts its missing prerequisites (R7 tables).
+- Training time per character from attributes and SDE rank (R14:
+  live-verified attribute semantics first).
+- Progress per character, plus the next step as a suggested queue order.
+
+## Open items
+
+None blocking. All five review decisions were settled with the user
+(2026-09-29) and folded into "Settled decisions" 4, 5, 8 and 9 above:
+- `char_*` keys;
+- split kinds;
+- mail live by default, with a per-character archive that is unlimited and
+  never auto-cleared;
+- location live-only.
+
+Still to verify live during implementation:
+- whether ESI attribute values include implants (R14);
+- mail ESI error shapes for the CSPA charge (phase 4);
+- ESI's cache times for the mail endpoints (they set the live TTLs).

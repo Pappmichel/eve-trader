@@ -1,10 +1,15 @@
 import os
 import stat
+import sys
 import zipfile
 
 import pytest
 
 from eve_trader import backup
+
+# Windows has no group/other permission bits: chmod(0o600) only toggles the
+# read-only flag, so a file always reports 0o666. Production runs on Linux.
+posix_modes_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
 
 
 class _FakeCompletedProcess:
@@ -60,6 +65,7 @@ def test_create_backup_produces_a_zip_with_dump_and_config(isolated_backup_dir):
         assert zf.read("eve_trader.dump") == b"FAKE_PG_DUMP_CONTENT"
 
 
+@posix_modes_only
 def test_create_backup_is_never_group_or_world_readable_regardless_of_umask(isolated_backup_dir):
     """T1-05 regression (found in Plan 2's independent challenge pass,
     2026-09-26): a real backup created over a non-interactive SSH session
@@ -80,6 +86,7 @@ def test_create_backup_is_never_group_or_world_readable_regardless_of_umask(isol
     assert mode == 0o600, f"expected 0o600, got {oct(mode)}"
 
 
+@posix_modes_only
 def test_create_backup_chmods_the_tmp_dump_before_pg_dump_writes_to_it(isolated_backup_dir, monkeypatch):
     """Second independent challenge pass (2026-09-26): the first version of
     the T1-05 fix only chmod'd the tmp dump file *after* subprocess.run()

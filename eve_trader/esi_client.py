@@ -32,6 +32,24 @@ class ESIError(RuntimeError):
     pass
 
 
+class ESIHTTPError(ESIError):
+    """A definite HTTP refusal from a write call. `body` is ESI's response text
+    - for the server side only (e.g. to parse a CSPA cost); it must never be
+    shown to a user or logged, callers surface `status` alone."""
+
+    def __init__(self, status: int, body: str, message: str):
+        super().__init__(message)
+        self.status = status
+        self.body = body
+
+
+class ESIDeliveryUnknown(ESIError):
+    """A non-idempotent write (sending a mail) whose outcome is unknown: the
+    request may or may not have been processed (a timeout, a connection reset,
+    or a 5xx). It is never retried automatically - a retry could deliver the
+    mail twice."""
+
+
 def extract_meta_level(type_info: dict) -> Optional[int]:
     """Pulls the metaLevel dogma attribute out of a /universe/types/{id}/
     response, if present (unpublished/no-attribute types return None)."""
@@ -265,6 +283,33 @@ class ESIClient:
     _corporation_public_info_cache_at: dict[int, float] = {}
     _corporation_public_info_locks: dict[int, threading.Lock] = {}
 
+    # Live, *authenticated* per-character reads (docs/CHARACTER_MANAGEMENT_PLAN.md
+    # R9/R16: location, ship, online status). Unlike every cache above this
+    # holds one principal's private data, so the key MUST include tenant_id:
+    # two tenants can each hold a token for the same character, and a
+    # character-id-only key would serve tenant A's fetch (and its sharing
+    # decision) to tenant B. Short TTL - a position is stale within minutes
+    # and nothing is ever written to the DB (decision 5: live only).
+    _LIVE_CHARACTER_CACHE_TTL = 60  # seconds
+    # Mail: ESI itself caches list/label reads for about 30 s; bodies never
+    # change, 10 minutes just spares re-opening the same mail.
+    _MAIL_LIST_CACHE_TTL = 30  # seconds
+    _MAIL_BODY_CACHE_TTL = 600  # seconds
+    _live_character_cache: dict[tuple, Any] = {}
+    _live_character_cache_at: dict[tuple, float] = {}
+    _live_character_locks: dict[tuple, threading.Lock] = {}
+
+    # id -> display name, for mail sender/recipient names. Public data (the
+    # same names any client sees), so - like character_public_info - it is
+    # safe to share across tenants; nothing private is keyed here.
+    _NAMES_CACHE_TTL = 3600  # seconds
+    _names_cache: dict[int, tuple[float, str]] = {}
+
+    # Public corporation history, same shape/TTL as character_public_info.
+    _character_corp_history_cache: dict[int, list] = {}
+    _character_corp_history_cache_at: dict[int, float] = {}
+    _character_corp_history_locks: dict[int, threading.Lock] = {}
+
     def __init__(self, cfg: TradingConfig = TRADING_CONFIG, tokens: Optional[TokenManager] = None):
         self.cfg = cfg
         self.tokens = tokens or TokenManager()
@@ -302,6 +347,18 @@ class ESIClient:
         with cls._order_book_locks_guard:
             cls._character_public_info_cache.clear()
             cls._character_public_info_cache_at.clear()
+
+    @classmethod
+    def clear_live_character_caches(cls) -> None:
+        """Forces the next live character read (location/ship/online, and the
+        public corporation history) to re-fetch - exists for tests, same
+        reason clear_character_public_info_cache does."""
+        with cls._order_book_locks_guard:
+            cls._live_character_cache.clear()
+            cls._live_character_cache_at.clear()
+            cls._character_corp_history_cache.clear()
+            cls._character_corp_history_cache_at.clear()
+            cls._names_cache.clear()
 
     @classmethod
     def clear_corporation_public_info_cache(cls) -> None:
@@ -873,6 +930,64 @@ class ESIClient:
                 return s["id"]
         return None
 
+    def _write(
+        self, method: str, path: str, *, auth_role: str, json_body: Any = None,
+        params: Optional[dict] = None, idempotent: bool = False,
+        expect: tuple[int, ...] = (200, 201, 204), timeout: float = 30,
+    ) -> requests.Response:
+        """Authenticated write (POST/PUT/DELETE) with a retry policy that
+        depends on whether repeating the request is safe.
+
+        `_post_response`/`_get_response` retry on transport errors and 5xx and
+        accept only HTTP 200. For a write that is wrong twice over: ESI answers
+        201/204 for the calls here (so every success would be read as a
+        failure), and a retry after a timeout can repeat a non-idempotent action
+        - a mail sent twice (docs/CHARACTER_MANAGEMENT_PLAN.md R3).
+
+        - 420/429: ESI rejected the request before processing it, so waiting
+          and repeating is always safe (any method).
+        - transport errors and 5xx: retried only when `idempotent` (PUT/DELETE
+          that set a state); otherwise `ESIDeliveryUnknown`.
+        - any other unexpected status: `ESIHTTPError` (no retry).
+        """
+        url = f"{self.cfg.esi_base}{path}"
+        try:
+            headers = dict(self.tokens.auth_header(auth_role))
+        except requests.RequestException as e:
+            raise ESIError(
+                f"Token refresh failed for role '{auth_role}': {e}. Re-authorize this character."
+            ) from e
+        request_params = {"datasource": "tranquility", **(params or {})}
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            self._await_error_budget()
+            try:
+                resp = self.session.request(
+                    method, url, json=json_body, params=request_params, headers=headers, timeout=timeout,
+                )
+            except requests.RequestException as e:
+                if idempotent and attempt < attempts:
+                    time.sleep(attempt * 1.5)
+                    continue
+                error_cls = ESIError if idempotent else ESIDeliveryUnknown
+                raise error_cls(f"Request failed for {url}: {e}") from e
+            self._record_error_budget(resp)
+            if resp.status_code in expect:
+                return resp
+            if resp.status_code in (420, 429) and attempt < attempts:
+                time.sleep(self._retry_after_seconds(resp, attempt))
+                continue
+            if resp.status_code in (500, 502, 503, 504):
+                if idempotent and attempt < attempts:
+                    time.sleep(attempt * 1.5)
+                    continue
+                if not idempotent:
+                    raise ESIDeliveryUnknown(f"HTTP {resp.status_code} for {url}")
+            raise ESIHTTPError(
+                resp.status_code, resp.text[:300], f"HTTP {resp.status_code} for {url}",
+            )
+        raise ESIError(f"Exhausted retries for {url}")  # pragma: no cover - loop always returns/raises
+
     def _post_universe_ids(self, names: list[str]) -> dict:
         return self._post_response("/universe/ids/", names, params={"datasource": "tranquility"}).json()
 
@@ -1178,6 +1293,330 @@ class ESIClient:
         job-slot counts (see production/constants.py job_slots_from_skills)."""
         return self._get(f"/characters/{character_id}/skills/",
                           params={"datasource": "tranquility"}, auth_role=auth_role)
+
+    # ---- Character Management (docs/CHARACTER_MANAGEMENT_PLAN.md phase 1)
+    def _live_character_read(
+        self, what: str, character_id: int, auth_role: str, path: str,
+        params: Optional[dict] = None, ttl: Optional[float] = None, extra: tuple = (),
+        cache: bool = True, paged: bool = False,
+    ):
+        """TTL-cached authenticated GET keyed by (tenant_id, what, character_id,
+        *extra).
+
+        Fail-closed on a missing tenant (same spirit as storage.connect()):
+        an unscoped key would be exactly the cross-tenant leak R16 exists to
+        prevent. The per-key lock serializes two racers on a cold key only.
+        `cache=False` (archive backfill: thousands of one-off pages) goes
+        straight to ESI and never stores anything in process memory.
+        """
+        tenant_id = storage.get_current_tenant()
+        if not tenant_id:
+            raise RuntimeError("live character read requires a tenant in scope")
+        request_params = {"datasource": "tranquility", **(params or {})}
+        fetch = self._get_all_pages if paged else self._get
+        if not cache:
+            return fetch(path, params=request_params, auth_role=auth_role)
+        key = (str(tenant_id), what, int(character_id), *extra)
+        ttl = self._LIVE_CHARACTER_CACHE_TTL if ttl is None else ttl
+        with self._lock_for_key(self._live_character_locks, key):
+            cached_at = self._live_character_cache_at.get(key, 0.0)
+            if key in self._live_character_cache and (time.time() - cached_at) < ttl:
+                return self._live_character_cache[key]
+            value = fetch(path, params=request_params, auth_role=auth_role)
+            self._live_character_cache[key] = value
+            self._live_character_cache_at[key] = time.time()
+        self._prune_live_character_cache(ttl)
+        return value
+
+    @classmethod
+    def _prune_live_character_cache(cls, ttl: float) -> None:
+        """Expired entries are otherwise only ever *replaced*, never removed:
+        paging through a big mailbox would grow this dict without bound. Cheap
+        no-op below a small size; above it, drop everything older than the
+        longest TTL in use (bodies, 10 minutes)."""
+        if len(cls._live_character_cache) <= 256:
+            return
+        horizon = time.time() - max(ttl, cls._MAIL_BODY_CACHE_TTL)
+        with cls._order_book_locks_guard:
+            for key in [k for k, at in cls._live_character_cache_at.items() if at < horizon]:
+                cls._live_character_cache.pop(key, None)
+                cls._live_character_cache_at.pop(key, None)
+
+    @classmethod
+    def invalidate_live_character_caches(cls, tenant_id: str, character_id: int, prefix: str = "") -> None:
+        """Drops one character's live entries (e.g. every `mail_*` read after a
+        send/organize action, so the next list shows the change instantly)."""
+        cid, tid = int(character_id), str(tenant_id)
+        with cls._order_book_locks_guard:
+            for key in [k for k in cls._live_character_cache
+                        if k[0] == tid and k[2] == cid and k[1].startswith(prefix)]:
+                cls._live_character_cache.pop(key, None)
+                cls._live_character_cache_at.pop(key, None)
+
+    def character_location(self, character_id: int, auth_role: str) -> dict:
+        """Requires esi-location.read_location.v1. {"solar_system_id",
+        "station_id"?, "structure_id"?}. Live, 60s cache, never stored."""
+        return self._live_character_read(
+            "location", character_id, auth_role, f"/characters/{character_id}/location/")
+
+    def character_ship(self, character_id: int, auth_role: str) -> dict:
+        """Requires esi-location.read_ship_type.v1. {"ship_type_id",
+        "ship_item_id", "ship_name"}. Live, 60s cache, never stored."""
+        return self._live_character_read(
+            "ship", character_id, auth_role, f"/characters/{character_id}/ship/")
+
+    def character_online(self, character_id: int, auth_role: str) -> dict:
+        """Requires esi-location.read_online.v1. {"online", "last_login",
+        "last_logout", "logins"}. Live, 60s cache, never stored."""
+        return self._live_character_read(
+            "online", character_id, auth_role, f"/characters/{character_id}/online/")
+
+    def character_fatigue(self, character_id: int, auth_role: str) -> dict:
+        """Requires esi-characters.read_fatigue.v1. {"jump_fatigue_expire_date"?,
+        "last_jump_date"?, "last_update_date"?} (all optional: a character
+        without fatigue may return an empty object). Live, 60s cache, never
+        stored."""
+        return self._live_character_read(
+            "fatigue", character_id, auth_role, f"/characters/{character_id}/fatigue/")
+
+    def character_wallet_journal_live(self, character_id: int, auth_role: str) -> list[dict]:
+        """Requires esi-wallet.read_character_wallet.v1. The same journal
+        `character_wallet_journal` fetches for Trading, but read live for
+        Character Info: 2 min cache, never stored. ESI holds 30 days."""
+        return self._live_character_read(
+            "wallet_journal", character_id, auth_role, f"/characters/{character_id}/wallet/journal/",
+            ttl=120.0, paged=True)
+
+    def character_contacts(self, character_id: int, auth_role: str) -> list[dict]:
+        """Requires esi-characters.read_contacts.v1. [{"contact_id",
+        "contact_type", "standing", "is_blocked"?, "is_watched"?,
+        "label_ids"?}]. Live, 2 min cache, never stored."""
+        return self._live_character_read(
+            "contacts", character_id, auth_role, f"/characters/{character_id}/contacts/", ttl=120.0, paged=True)
+
+    def character_contact_labels(self, character_id: int, auth_role: str) -> list[dict]:
+        """Requires esi-characters.read_contacts.v1. [{"label_id",
+        "label_name"}]. Live, 2 min cache, never stored."""
+        return self._live_character_read(
+            "contact_labels", character_id, auth_role, f"/characters/{character_id}/contacts/labels/", ttl=120.0)
+
+    def character_calendar(self, character_id: int, auth_role: str) -> list[dict]:
+        """Requires esi-calendar.read_calendar_events.v1. Up to 50 upcoming
+        events: [{"event_id", "event_date", "title", "importance",
+        "event_response"}]. Live, 2 min cache, never stored."""
+        return self._live_character_read(
+            "calendar", character_id, auth_role, f"/characters/{character_id}/calendar/", ttl=120.0)
+
+    def character_calendar_event(self, character_id: int, auth_role: str, event_id: int) -> dict:
+        """Requires esi-calendar.read_calendar_events.v1. {"event_id", "date",
+        "duration", "importance", "owner_id", "owner_name", "owner_type",
+        "response", "text", "title"}. One call per event, fetched only when
+        the user opens it; live, 10 min cache, never stored."""
+        return self._live_character_read(
+            "calendar_event", character_id, auth_role, f"/characters/{character_id}/calendar/{int(event_id)}/",
+            ttl=600.0, extra=(int(event_id),))
+
+    def character_standings(self, character_id: int, auth_role: str) -> list[dict]:
+        """Requires esi-characters.read_standings.v1. [{"from_id",
+        "from_type" (agent|npc_corp|faction), "standing"}]. Snapshot-synced
+        by the standings fetcher, not cached here."""
+        return self._get(f"/characters/{character_id}/standings/",
+                         params={"datasource": "tranquility"}, auth_role=auth_role)
+
+    def character_notifications(self, character_id: int, auth_role: str) -> list[dict]:
+        """Requires esi-characters.read_notifications.v1. [{"notification_id",
+        "type", "sender_id", "sender_type", "timestamp", "is_read"?, "text"?}].
+        Snapshot-synced; `text` is YAML."""
+        return self._get(f"/characters/{character_id}/notifications/",
+                         params={"datasource": "tranquility"}, auth_role=auth_role)
+
+    def character_clones(self, character_id: int, auth_role: str) -> dict:
+        """Requires esi-clones.read_clones.v1. {"home_location": {"location_id",
+        "location_type"}, "jump_clones": [{"jump_clone_id", "location_id",
+        "location_type", "implants": [type_id], "name"?}],
+        "last_clone_jump_date", "last_station_change_date"}. Snapshot-synced."""
+        return self._get(f"/characters/{character_id}/clones/",
+                         params={"datasource": "tranquility"}, auth_role=auth_role)
+
+    def character_implants(self, character_id: int, auth_role: str) -> list[int]:
+        """Requires esi-clones.read_implants.v1. [type_id] of the active
+        implants. Snapshot-synced."""
+        return self._get(f"/characters/{character_id}/implants/",
+                         params={"datasource": "tranquility"}, auth_role=auth_role)
+
+    def character_loyalty_points(self, character_id: int, auth_role: str) -> list[dict]:
+        """Requires esi-characters.read_loyalty.v1. [{"corporation_id",
+        "loyalty_points"}]. Snapshot-synced by the loyalty fetcher."""
+        return self._get(f"/characters/{character_id}/loyalty/points/",
+                         params={"datasource": "tranquility"}, auth_role=auth_role)
+
+    def character_corporation_history(self, character_id: int) -> list[dict]:
+        """Public endpoint, no auth. [{"corporation_id", "start_date",
+        "record_id", "is_deleted"?}], cached like character_public_info
+        (public data, so sharing the cache across tenants is safe)."""
+        key = int(character_id)
+        with self._lock_for_key(self._character_corp_history_locks, key):
+            cached_at = self._character_corp_history_cache_at.get(key, 0.0)
+            if key in self._character_corp_history_cache and (
+                time.time() - cached_at
+            ) < self._CHARACTER_PUBLIC_INFO_CACHE_TTL:
+                return self._character_corp_history_cache[key]
+            history = self._get(f"/characters/{character_id}/corporationhistory/",
+                                params={"datasource": "tranquility"})
+            self._character_corp_history_cache[key] = history
+            self._character_corp_history_cache_at[key] = time.time()
+            return history
+
+    # ---- Mail (docs/CHARACTER_MANAGEMENT_PLAN.md phase 3): live reads only.
+    # ESIError text can embed the start of a response body - the mail actions
+    # never pass it on (see character_management/mail_actions._esi_failure).
+    def character_mail_headers(
+        self, character_id: int, auth_role: str, labels: Optional[list[int]] = None,
+        last_mail_id: Optional[int] = None, cache: bool = True,
+    ) -> list[dict]:
+        """Requires esi-mail.read_mail.v1. Up to 50 headers, newest first:
+        [{"mail_id", "from", "subject", "timestamp", "is_read", "labels",
+        "recipients": [{"recipient_id", "recipient_type"}]}]. `last_mail_id`
+        is the paging cursor (the smallest id of the previous page)."""
+        params: dict = {}
+        if labels:
+            params["labels"] = ",".join(str(int(x)) for x in labels)
+        if last_mail_id:
+            params["last_mail_id"] = int(last_mail_id)
+        return self._live_character_read(
+            "mail_headers", character_id, auth_role, f"/characters/{character_id}/mail/",
+            params=params, ttl=self._MAIL_LIST_CACHE_TTL,
+            extra=(tuple(sorted(int(x) for x in labels or ())), int(last_mail_id or 0)), cache=cache,
+        )
+
+    def character_mail_labels(self, character_id: int, auth_role: str) -> dict:
+        """{"total_unread_count", "labels": [{"label_id", "name", "color", "unread_count"}]}"""
+        return self._live_character_read(
+            "mail_labels", character_id, auth_role, f"/characters/{character_id}/mail/labels/",
+            ttl=self._MAIL_LIST_CACHE_TTL,
+        )
+
+    def character_mail_lists(self, character_id: int, auth_role: str) -> list[dict]:
+        """[{"mailing_list_id", "name"}] - the lists this character subscribes to."""
+        return self._live_character_read(
+            "mail_lists", character_id, auth_role, f"/characters/{character_id}/mail/lists/",
+            ttl=self._MAIL_LIST_CACHE_TTL,
+        )
+
+    def character_mail_body(
+        self, character_id: int, auth_role: str, mail_id: int, cache: bool = True,
+    ) -> dict:
+        """{"body", "from", "subject", "timestamp", "labels", "read",
+        "recipients"} for one mail."""
+        return self._live_character_read(
+            "mail_body", character_id, auth_role, f"/characters/{character_id}/mail/{int(mail_id)}/",
+            ttl=self._MAIL_BODY_CACHE_TTL, extra=(int(mail_id),), cache=cache,
+        )
+
+    # ---- Mail writes (phase 4). Each needs the matching *capability* ticked
+    # (mail_send / mail_organize) and a token holding its scope.
+    def send_mail(self, character_id: int, auth_role: str, payload: dict) -> int:
+        """Requires esi-mail.send_mail.v1. Sends one mail and returns its
+        mail_id. NEVER retried (see _write): a transport error or 5xx raises
+        ESIDeliveryUnknown, and the caller must tell the user to check the
+        Sent folder before sending again. `payload`: {"approved_cost", "body",
+        "recipients": [{"recipient_id", "recipient_type"}], "subject"}."""
+        resp = self._write(
+            "POST", f"/characters/{character_id}/mail/", auth_role=auth_role, json_body=payload,
+            idempotent=False, expect=(200, 201),
+        )
+        return int(resp.json())
+
+    def update_mail(self, character_id: int, auth_role: str, mail_id: int, changes: dict) -> None:
+        """Requires esi-mail.organize_mail.v1. `changes`: {"read": bool} and/or
+        {"labels": [label_id, ...]}. Idempotent (sets state), so retried."""
+        self._write(
+            "PUT", f"/characters/{character_id}/mail/{int(mail_id)}/", auth_role=auth_role,
+            json_body=changes, idempotent=True, expect=(200, 204),
+        )
+
+    def delete_mail(self, character_id: int, auth_role: str, mail_id: int) -> None:
+        """Requires esi-mail.organize_mail.v1. Deletes one mail in the game."""
+        self._write(
+            "DELETE", f"/characters/{character_id}/mail/{int(mail_id)}/", auth_role=auth_role,
+            idempotent=True, expect=(200, 204),
+        )
+
+    def create_mail_label(self, character_id: int, auth_role: str, name: str, color: str) -> int:
+        """Requires esi-mail.organize_mail.v1. Returns the new label_id. Not
+        idempotent (a repeat would create a second label): no retry on 5xx."""
+        resp = self._write(
+            "POST", f"/characters/{character_id}/mail/labels/", auth_role=auth_role,
+            json_body={"name": name, "color": color}, idempotent=False, expect=(200, 201),
+        )
+        return int(resp.json())
+
+    def delete_mail_label(self, character_id: int, auth_role: str, label_id: int) -> None:
+        """Requires esi-mail.organize_mail.v1."""
+        self._write(
+            "DELETE", f"/characters/{character_id}/mail/labels/{int(label_id)}/", auth_role=auth_role,
+            idempotent=True, expect=(200, 204),
+        )
+
+    def resolve_recipient_names(self, names: list[str]) -> dict[str, list[dict]]:
+        """Exact-name lookup for mail recipients via POST /universe/ids/ (no
+        auth). {"character": [{"id","name"}], "corporation": [...],
+        "alliance": [...]}; a name ESI does not know is simply absent."""
+        result = self._post_universe_ids(list(dict.fromkeys(n for n in names if n)))
+        return {
+            "character": list(result.get("characters") or []),
+            "corporation": list(result.get("corporations") or []),
+            "alliance": list(result.get("alliances") or []),
+        }
+
+    def search_entities(self, query: str, limit: int = 8) -> list[dict]:
+        """Public GET /search/ (no auth) over characters, corporations and
+        alliances, for the compose recipient autocomplete. Returns at most
+        `limit` per category as [{"type", "id", "name"}]."""
+        found = self._get(
+            "/search/", params={"categories": "character,corporation,alliance", "search": query,
+                                "strict": "false", "datasource": "tranquility"},
+        )
+        picked: list[tuple[str, int]] = []
+        for kind in ("character", "corporation", "alliance"):
+            picked.extend((kind, int(i)) for i in (found.get(kind) or [])[:limit])
+        names = self.resolve_names_cached([i for _k, i in picked])
+        return [{"type": k, "id": i, "name": names[i]} for k, i in picked if i in names]
+
+    def resolve_names_cached(self, ids: list[int]) -> dict[int, str]:
+        """resolve_names with a shared 1 h in-memory cache (public data).
+        Mailing-list ids are NOT resolvable via /universe/names/ (one invalid
+        id would 404 the whole batch) - callers take those from the mail
+        lists endpoint instead."""
+        now = time.time()
+        out: dict[int, str] = {}
+        missing: list[int] = []
+        for i in dict.fromkeys(int(x) for x in ids if x):
+            hit = self._names_cache.get(i)
+            if hit and now - hit[0] < self._NAMES_CACHE_TTL:
+                out[i] = hit[1]
+            else:
+                missing.append(i)
+        if missing:
+            for i, name in self.resolve_names(missing).items():
+                self._names_cache[i] = (now, name)
+                out[i] = name
+        return out
+
+    def character_attributes(self, character_id: int, auth_role: str) -> dict:
+        """Requires esi-skills.read_skills.v1 (same scope as character_skills).
+        {"charisma", "intelligence", "memory", "perception", "willpower",
+        "bonus_remaps"?, "last_remap_date"?, "accrued_remap_cooldown_date"?}."""
+        return self._get(f"/characters/{character_id}/attributes/",
+                         params={"datasource": "tranquility"}, auth_role=auth_role)
+
+    def character_skillqueue(self, character_id: int, auth_role: str) -> list[dict]:
+        """Requires esi-skills.read_skillqueue.v1. [{"queue_position",
+        "skill_id", "finished_level", "start_date"?, "finish_date"?,
+        "training_start_sp"?, "level_start_sp"?, "level_end_sp"?}] - the
+        dates are absent for a paused queue."""
+        return self._get(f"/characters/{character_id}/skillqueue/",
+                         params={"datasource": "tranquility"}, auth_role=auth_role)
 
     def resolve_names(self, ids: list[int]) -> dict[int, str]:
         """Batch id->name resolution via POST /universe/names/ (public, no

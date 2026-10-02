@@ -22,10 +22,12 @@
     "@tanstack/react-table": "^8.21.3",
     "@tanstack/react-virtual": "^3.14.5",
     "dayjs": "^1.11.21",
+    "dompurify": "^3.4.16",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-router-dom": "^7.18.1",
-    "recharts": "^3.9.2"
+    "recharts": "^3.9.2",
+    "write-excel-file": "^4.1.1"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",

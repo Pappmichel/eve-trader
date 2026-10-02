@@ -630,7 +630,7 @@ def test_plan_context_loads_manual_me_te_overrides(monkeypatch):
     monkeypatch.setattr(storage, "load_manual_blueprint_me_te_overrides",
                          lambda: [(11567, "Leviathan", 8, 16)])
     monkeypatch.setattr(pricing_module, "home_prices", lambda cfg, type_ids: {})
-    monkeypatch.setattr(pricing_module, "jita_prices", lambda type_ids: {})
+    monkeypatch.setattr(pricing_module, "jita_prices", lambda type_ids, *a, **k: {})
     monkeypatch.setattr(esi_client_module.ESIClient, "__init__", lambda self: None)
     monkeypatch.setattr(esi_client_module.ESIClient, "get_adjusted_prices", lambda self: {})
 
@@ -658,7 +658,7 @@ def test_plan_context_logs_and_falls_back_when_adjusted_prices_fetch_fails(monke
     monkeypatch.setattr(storage, "load_category_cost_index_overrides", lambda: {})
     monkeypatch.setattr(storage, "load_manual_blueprint_me_te_overrides", lambda: [])
     monkeypatch.setattr(pricing_module, "home_prices", lambda cfg, type_ids: {})
-    monkeypatch.setattr(pricing_module, "jita_prices", lambda type_ids: {})
+    monkeypatch.setattr(pricing_module, "jita_prices", lambda type_ids, *a, **k: {})
     monkeypatch.setattr(esi_client_module.ESIClient, "__init__", lambda self: None)
 
     def _raise(self):
@@ -688,7 +688,7 @@ def test_plan_context_adjusted_prices_available_true_on_success(monkeypatch):
     monkeypatch.setattr(storage, "load_category_cost_index_overrides", lambda: {})
     monkeypatch.setattr(storage, "load_manual_blueprint_me_te_overrides", lambda: [])
     monkeypatch.setattr(pricing_module, "home_prices", lambda cfg, type_ids: {})
-    monkeypatch.setattr(pricing_module, "jita_prices", lambda type_ids: {})
+    monkeypatch.setattr(pricing_module, "jita_prices", lambda type_ids, *a, **k: {})
     monkeypatch.setattr(esi_client_module.ESIClient, "__init__", lambda self: None)
     monkeypatch.setattr(esi_client_module.ESIClient, "get_adjusted_prices", lambda self: {34: 5.0})
 
@@ -1203,7 +1203,7 @@ def test_plan_context_populates_category_cost_indices_sharing_fetches_by_system(
     monkeypatch.setattr(storage, "load_category_cost_index_overrides", lambda: {})
     monkeypatch.setattr(storage, "load_manual_blueprint_me_te_overrides", lambda: [])
     monkeypatch.setattr(pricing_module, "home_prices", lambda cfg, type_ids: {})
-    monkeypatch.setattr(pricing_module, "jita_prices", lambda type_ids: {})
+    monkeypatch.setattr(pricing_module, "jita_prices", lambda type_ids, *a, **k: {})
     monkeypatch.setattr(goonmetrics_client_module.GoonmetricsClient, "__init__", lambda self: None)
     monkeypatch.setattr(esi_client_module.ESIClient, "__init__", lambda self: None)
     monkeypatch.setattr(esi_client_module.ESIClient, "get_adjusted_prices", lambda self: {})
@@ -5535,3 +5535,26 @@ def test_plan_asset_optimized_alchemy_disabled_matches_pre_feature_behavior(monk
     assert jobs_by_id[_CAESARIUM].blueprint_type_id == _NORMAL_BP
     assert jobs_by_id[_CAESARIUM].job_runs == 1  # ceil(38 / 200 per normal run)
     assert all(j.recipe_source is None for j in result["jobs"])
+
+
+def test_market_status_and_total_missing_count_listings_in_the_production_hub(monkeypatch):
+    # #222: Production's Jita-side listed quantity follows ProductionConfig.hub_region_id,
+    # never TradingConfig.jita_region_id.
+    from eve_trader.config import TRADING_CONFIG
+    monkeypatch.setattr(TRADING_CONFIG, "jita_region_id", 10000043)
+    cfg = ProductionConfig(home_location_id=1000000000001, hub_region_id=10000032)
+    regions = []
+    monkeypatch.setattr(storage, "sell_order_qty_at_location", lambda type_id, location_id, **kwargs: 0.0)
+    monkeypatch.setattr(storage, "sell_order_qty_in_region",
+                        lambda type_id, region_id, **kwargs: regions.append(region_id) or 0.0)
+    monkeypatch.setattr(storage, "manual_listed_stock_qty", lambda type_id, market: 0.0)
+    monkeypatch.setattr(storage, "load_manual_stock", lambda: {})
+    monkeypatch.setattr(storage, "esi_stock_at_location", lambda type_id, location_id, allowed_flags=None, exclude_intake_at_location_id=None, **kwargs: 0.0)
+    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id, **_kwargs: {"runs": 0, "jobs": 0})
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Input", None))
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(1, "Item", 0.0, 20.0, 20.0)])
+
+    engine.market_status(cfg)
+    _total_missing(1, backup_stock=0.0, home_market_stock=0.0, jita_market_stock=20.0, current_stock=0.0, cfg=cfg)
+
+    assert regions == [10000032, 10000032]

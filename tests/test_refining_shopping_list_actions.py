@@ -304,3 +304,128 @@ def test_optimize_degrades_to_jita_only_on_a_goonmetrics_failure(monkeypatch, sd
 
     assert plan["direct_purchases"][0]["landed_cost_per_unit"] == pytest.approx(12.0)
     assert plan["direct_purchases"][0]["source"] == "Jita"
+
+
+def test_optimize_prices_ore_and_minerals_at_the_refining_hub(monkeypatch, sde, candidates, esi, cfgs):
+    # Trading's hub must not decide where Ore & Minerals prices (#222).
+    seen = []
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            pass
+
+        def region_order_stats_bulk(self, region_id, type_ids, **kw):
+            seen.append(region_id)
+            return {tid: esi[tid] for tid in type_ids if tid in esi}
+    monkeypatch.setattr(actions, "ESIClient", _Client)
+    trading_cfg, _, production_cfg = cfgs
+    trading_cfg.jita_region_id = 10000043
+    refining_cfg = RefiningConfig(refining_tax_rate=0.0, reprocessing_skill_level=0,
+                                  reprocessing_efficiency_skill_level=0, hub_region_id=10000032)
+
+    actions.do_optimize_mineral_shopping_list(
+        requirements=[{"type_id": TRIT, "name": "Tritanium", "required_qty": 1000}],
+        trading_cfg=trading_cfg, refining_cfg=refining_cfg, production_cfg=production_cfg)
+
+    assert seen == [10000032]
+
+
+# ------------------------------------------------- All hubs (GitHub issue #222)
+JITA, AMARR = 10000002, 10000043
+
+
+def _hub_stats(sell):
+    return OrderStats(sell_percentile=sell, sell_volume=1e6, buy_percentile=None, buy_volume=0.0)
+
+
+@pytest.fixture
+def hub_esi(monkeypatch):
+    """Per-region order books; records every region an ESI call receives."""
+    books = {
+        JITA: {VELDSPAR: _hub_stats(10.0), TRIT: _hub_stats(6.0)},
+        AMARR: {VELDSPAR: _hub_stats(9.0), TRIT: _hub_stats(7.0)},
+    }
+    regions = []
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            pass
+
+        def region_order_stats_bulk(self, region_id, type_ids, **kw):
+            regions.append(region_id)
+            return {t: books.get(region_id, {})[t] for t in type_ids if t in books.get(region_id, {})}
+
+    monkeypatch.setattr(actions, "ESIClient", _Client)
+    monkeypatch.setattr(actions, "TokenManager", lambda *a, **kw: None)
+    return regions
+
+
+def test_optimize_all_hubs_prices_each_ore_at_its_cheapest_landed_hub(sde, candidates, hub_esi):
+    # Amarr: 9.0 + 0.15 m3 x 1.0 = 9.15 < Jita 10.0 (freight 0) -> Amarr wins the ore.
+    trading_cfg = TradingConfig(jita_buy_broker_fee=0.0, import_cost_per_m3=0.0,
+                                hub_freight_cost_per_m3={str(AMARR): 1.0})
+    refining_cfg = RefiningConfig(refining_tax_rate=0.0, reprocessing_skill_level=0,
+                                  reprocessing_efficiency_skill_level=0, hub_region_id=0)
+
+    plan = actions.do_optimize_mineral_shopping_list(
+        [{"type_id": TRIT, "name": "Tritanium", "required_qty": 4150}],
+        trading_cfg, refining_cfg, ProductionConfig(home_market=None))
+
+    ore = plan["ore_purchases"][0]
+    assert ore["hub_region_id"] == AMARR
+    assert ore["hub_name"] == "Amarr"
+    assert ore["landed_cost_per_unit"] == pytest.approx(9.15)
+    assert 0 not in hub_esi and set(hub_esi) <= {10000002, 10000043, 10000032, 10000030}
+
+
+def test_optimize_all_hubs_direct_mineral_gets_its_own_hub(sde, candidates, hub_esi, monkeypatch):
+    # Trit: Jita 6.0 vs Amarr 7.0 -> Jita. Ore is made unusable (no portion size) so it is bought directly.
+    monkeypatch.setattr(storage, "get_portion_size", lambda type_id: None)
+    trading_cfg = TradingConfig(jita_buy_broker_fee=0.0, import_cost_per_m3=0.0)
+    refining_cfg = RefiningConfig(hub_region_id=0)
+
+    plan = actions.do_optimize_mineral_shopping_list(
+        [{"type_id": TRIT, "name": "Tritanium", "required_qty": 100}],
+        trading_cfg, refining_cfg, ProductionConfig(home_market=None))
+
+    direct = plan["direct_purchases"][0]
+    assert (direct["hub_region_id"], direct["source"]) == (JITA, "Jita")
+    assert 0 not in hub_esi
+
+
+def test_optimize_single_hub_keeps_the_tool_wide_freight(sde, candidates, hub_esi):
+    trading_cfg = TradingConfig(jita_buy_broker_fee=0.0, import_cost_per_m3=2.0,
+                                hub_freight_cost_per_m3={str(JITA): 99.0})
+    refining_cfg = RefiningConfig(refining_tax_rate=0.0, reprocessing_skill_level=0,
+                                  reprocessing_efficiency_skill_level=0, hub_region_id=JITA)
+
+    plan = actions.do_optimize_mineral_shopping_list(
+        [{"type_id": TRIT, "name": "Tritanium", "required_qty": 4150}],
+        trading_cfg, refining_cfg, ProductionConfig(home_market=None))
+
+    ore = plan["ore_purchases"][0]
+    assert ore["landed_cost_per_unit"] == pytest.approx(10.0 + 0.15 * 2.0)
+    assert ore["hub_region_id"] == JITA
+    assert hub_esi == [JITA]
+
+
+def test_refresh_ore_shortlist_all_hubs_stores_the_winning_hub(sde, candidates, hub_esi, monkeypatch):
+    monkeypatch.setattr(storage, "load_ore_shortlist",
+                        lambda: [(VELDSPAR, "Compressed Veldspar", "Veldspar", False, True)])
+    monkeypatch.setattr(actions, "_seller_roles", lambda tm: [])
+    monkeypatch.setattr(actions.ESIClient, "structure_order_stats_bulk_or_goonmetrics",
+                        lambda self, *a, **k: ({TRIT: _hub_stats(20.0), PYE: _hub_stats(20.0)}, False),
+                        raising=False)
+    saved = {}
+    monkeypatch.setattr(storage, "save_ore_shortlist_snapshot", lambda rows, run_ts: saved.update(rows=rows))
+    monkeypatch.setattr(storage, "set_esi_sync_time", lambda tool, run_ts: None)
+    trading_cfg = TradingConfig(jita_buy_broker_fee=0.0, import_cost_per_m3=0.0,
+                                hub_freight_cost_per_m3={str(AMARR): 1.0}, structure_id=1000)
+
+    actions.do_refresh_ore_shortlist(trading_cfg, RefiningConfig(hub_region_id=0))
+
+    row = saved["rows"][0]
+    assert row[-1] == AMARR          # hub_region_id is the last tuple column
+    assert row[6] == pytest.approx(9.15)  # landed_cost
+    assert row[11] == 1e6            # sell_listed_qty from the winning hub's stats
+    assert 0 not in hub_esi

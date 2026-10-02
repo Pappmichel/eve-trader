@@ -7,6 +7,7 @@ import { doctrineApi } from '../../api/client'
 import type { ShoppingListRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { qty, isk } from '../../format'
+import { ALL_HUBS, hubLabel } from '../../tradingHubs'
 
 const SOURCE_COLOR: Record<string, string> = { Build: 'accent', 'C-J': 'warn', Jita: 'dimmed' }
 
@@ -15,16 +16,23 @@ export default function ShoppingList() {
     queryKey: ['doctrine', 'shopping-list'], queryFn: () => doctrineApi.shoppingList(),
   })
   const rows = data?.rows ?? []
+  const { data: settings } = useQuery({ queryKey: ['doctrine', 'settings'], queryFn: doctrineApi.settings })
+  const hub = hubLabel(settings?.hub_region_id)
+  const allHubs = settings?.hub_region_id === ALL_HUBS
 
   const columns = useMemo<ColumnDef<ShoppingListRow, any>[]>(() => [
-    { header: 'Type', accessorKey: 'type_name', size: 220 },
-    { header: 'Shortfall', accessorKey: 'shortfall', size: 110, cell: (i) => qty(i.getValue()) },
+    { header: 'Type', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
+    { header: 'Shortfall', accessorKey: 'shortfall', size: 110, cell: (i) => qty(i.getValue()), meta: { exportRole: 'qty' } },
     { header: 'Build', accessorKey: 'build_cost', size: 130, cell: (i) => (i.getValue() != null ? isk(i.getValue()) : '–') },
     { header: 'C-J', accessorKey: 'cj_price', size: 130, cell: (i) => (i.getValue() != null ? isk(i.getValue()) : '–') },
     {
-      header: 'Jita (landed)', accessorKey: 'jita_landed_price', size: 140,
+      header: `${hub} (landed)`, accessorKey: 'jita_landed_price', size: 140,
       cell: (i) => (i.getValue() != null ? isk(i.getValue()) : '–'),
     },
+    ...(allHubs ? [{
+      header: 'Best hub', accessorKey: 'hub_name', size: 110,
+      cell: (i: any) => (i.getValue() ?? '–'),
+    }] : []),
     {
       header: 'Recommended', accessorKey: 'recommended_source', size: 130,
       cell: (i) => {
@@ -33,20 +41,21 @@ export default function ShoppingList() {
       },
     },
     { header: 'Total Cost', accessorKey: 'total_cost', size: 140, cell: (i) => (i.getValue() != null ? isk(i.getValue()) : '–') },
-  ], [])
+  ], [hub, allHubs])
 
   return (
     <Stack>
       <Title order={4}>Shopping List</Title>
       <Text size="sm" c="dimmed">
         Everything currently short across every doctrine (same combined shortfall as the Stockpile tab), with
-        whichever of Build / buy at C-J / buy at Jita (landed, including import cost) is cheapest right now.
+        whichever of Build / buy at C-J / buy at {allHubs ? 'the best hub' : hub} (landed, including freight) is cheapest right now.
       </Text>
 
       {!isLoading && !isError && rows.length === 0 && <Text c="dimmed">Nothing short right now.</Text>}
 
       {(isLoading || isError || rows.length > 0) && (
         <DataTable
+          rowDetail
           data={rows}
           columns={columns}
           tableId="doctrine-shopping-list"

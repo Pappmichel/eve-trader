@@ -7,6 +7,7 @@ import type { DoctrineSettings as DoctrineSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { useStructureNameOptions } from '../../hooks/useStaticOptions'
 import { HintCard } from '../../components/HintCard'
+import { HubSelect } from '../../components/HubSelect'
 import { StructureIdField } from '../../components/StructureIdField'
 
 export default function DoctrineSettings() {
@@ -30,7 +31,7 @@ export default function DoctrineSettings() {
       <HintCard>Changes take effect immediately. The scheduled sync interval is configured on the Trading Settings page.</HintCard>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Structure &amp; Stockpile</Title>
-      <SimpleGrid cols={2}>
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <StructureIdField label="Contract structure ID (blank = use Trading's)" value={form.doctrine_structure_id ?? null}
           onChange={(v) => set('doctrine_structure_id', v)} structureNames={structureNames} />
         <StructureIdField label="Stockpile location ID (blank = same as structure)" value={form.stockpile_location_id ?? null}
@@ -47,7 +48,7 @@ export default function DoctrineSettings() {
         placeholder="All divisions" clearable />
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Validation</Title>
-      <SimpleGrid cols={2}>
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
         <NumberInput label="Cargo/drone/charge tolerance" suffix="%" decimalScale={2}
           value={form.cargo_tolerance_pct * 100} min={0} max={100} step={5}
           onChange={(v) => set('cargo_tolerance_pct', Number(v) / 100)} />
@@ -60,7 +61,9 @@ export default function DoctrineSettings() {
       </Text>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Shopping List</Title>
-      <SimpleGrid cols={2}>
+      <SimpleGrid cols={{ base: 1, xs: 2 }}>
+        <HubSelect label="Market hub" description="Order book the Shopping List buys from (its own setting, independent of Trading's)"
+          allowAll value={form.hub_region_id} onChange={(v) => set('hub_region_id', v)} />
         <NumberInput label="Jita import cost (ISK/m³)" value={form.import_cost_per_m3} min={0} step={50}
           onChange={(v) => set('import_cost_per_m3', Number(v))} />
       </SimpleGrid>

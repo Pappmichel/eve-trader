@@ -19,6 +19,10 @@ TIER_FREQUENT = "frequent"
 TIER_NORMAL = "normal"
 TIER_RARE = "rare"
 
+# Scheduling modes (OwnedDataKind.schedule_mode).
+SCHEDULE_ALWAYS = "always"
+ON_DEMAND = "on_demand"
+
 GROUP_1 = 1  # owned data, character and corporation variant
 GROUP_2 = 2  # owned data, character only
 GROUP_3 = 3  # access capabilities: no freshness, no per-tool sharing
@@ -35,6 +39,20 @@ class OwnedDataKind:
     corp_roles: tuple[str, ...]
     consuming_tools: tuple[str, ...]
     freshness_tier: str
+    # docs/CHARACTER_MANAGEMENT_PLAN.md R9: a live-only kind has a scope and
+    # sharing rows (so the Characters page can grant it) but no snapshot
+    # table, no freshness row and no stale clear - tools read it straight
+    # from ESI, after an `is_shared` check. The orchestrator ignores its
+    # sharing rows entirely. `freshness_tier` is a placeholder there.
+    live_only: bool = False
+    # docs/SCHEDULER_REWORK_PLAN.md (char sheets): "always" kinds are refreshed
+    # by the scheduler whenever they are due. An "on_demand" kind is display-
+    # only: the scheduler refreshes it only for an owner someone explicitly
+    # asked for (a `demand` entry - the opt-in alerts, later) and otherwise it
+    # is synced when its page is opened or via the manual sync. Manual syncs
+    # (do_sync_for_tool / do_sync_all) always include it. Its snapshot is
+    # expected to age, so the stale clear never deletes it.
+    schedule_mode: str = SCHEDULE_ALWAYS
 
 
 @dataclass(frozen=True)
@@ -142,8 +160,10 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         character_scope="esi-wallet.read_character_wallet.v1",
         corporation_scope="esi-wallet.read_corporation_wallets.v1",
         corp_roles=("Accountant", "Junior_Accountant"),
-        consuming_tools=("portfolio",),
-        freshness_tier=TIER_FREQUENT,
+        consuming_tools=("portfolio", "char_info"),
+        # Normal, not frequent: Total Wealth is a once-a-day snapshot and
+        # Character Info is display-only (docs/SCHEDULER_REWORK_PLAN.md 2c).
+        freshness_tier=TIER_NORMAL,
     ),
     OwnedDataKind(
         key="skills",
@@ -152,8 +172,171 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         character_scope="esi-skills.read_skills.v1",
         corporation_scope=None,
         corp_roles=(),
-        consuming_tools=("production", "station_trading"),
+        # "char_skills" (Character Management phase 2): the per-skill rows,
+        # attributes and SP totals, read through `read_esi("skills",
+        # "char_skills")`. Production/Station Trading keep reading the slot
+        # rows from `character_slots` under their own sharing rows.
+        consuming_tools=("production", "station_trading", "char_skills", "char_skill_plans"),
         freshness_tier=TIER_RARE,
+    ),
+    OwnedDataKind(
+        key="skillqueue",
+        label="Skill Queue",
+        group=GROUP_2,
+        character_scope="esi-skills.read_skillqueue.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_skills", "char_alerts"),
+        freshness_tier=TIER_NORMAL,
+        schedule_mode=ON_DEMAND,
+    ),
+    # Phase 5c: clones (home, jump clones, their implants) and the active
+    # implants. Two kinds because each ESI scope gates exactly one endpoint (R1).
+    OwnedDataKind(
+        key="clones",
+        label="Clones",
+        group=GROUP_2,
+        character_scope="esi-clones.read_clones.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_info",),
+        freshness_tier=TIER_RARE,
+        schedule_mode=ON_DEMAND,
+    ),
+    OwnedDataKind(
+        key="implants",
+        label="Implants",
+        group=GROUP_2,
+        character_scope="esi-clones.read_implants.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_info",),
+        freshness_tier=TIER_RARE,
+        schedule_mode=ON_DEMAND,
+    ),
+    # Character Management, phase 1 (docs/CHARACTER_MANAGEMENT_PLAN.md).
+    # One scope per kind (R1): the selector, orchestrator and Characters
+    # page all assume it, so multi-scope features are split into kinds.
+    OwnedDataKind(
+        key="standings",
+        label="Standings",
+        group=GROUP_2,
+        character_scope="esi-characters.read_standings.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_info",),
+        freshness_tier=TIER_RARE,
+        schedule_mode=ON_DEMAND,
+    ),
+    OwnedDataKind(
+        key="loyalty",
+        label="Loyalty Points",
+        group=GROUP_2,
+        character_scope="esi-characters.read_loyalty.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_info",),
+        freshness_tier=TIER_RARE,
+        schedule_mode=ON_DEMAND,
+    ),
+    # Phase 6: notifications, a snapshot kind (the raw YAML text is parsed on
+    # read). One scope, consumed only by Notifications.
+    OwnedDataKind(
+        key="notifications",
+        label="Notifications",
+        group=GROUP_2,
+        character_scope="esi-characters.read_notifications.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_notifications",),
+        freshness_tier=TIER_NORMAL,
+        schedule_mode=ON_DEMAND,
+    ),
+    OwnedDataKind(
+        key="location",
+        label="Location",
+        group=GROUP_2,
+        character_scope="esi-location.read_location.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_info",),
+        freshness_tier=TIER_FREQUENT,
+        live_only=True,
+    ),
+    OwnedDataKind(
+        key="ship",
+        label="Current Ship",
+        group=GROUP_2,
+        character_scope="esi-location.read_ship_type.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_info",),
+        freshness_tier=TIER_FREQUENT,
+        live_only=True,
+    ),
+    # Phase 7: jump fatigue, read live like location/ship/online (never stored).
+    OwnedDataKind(
+        key="fatigue",
+        label="Jump Fatigue",
+        group=GROUP_2,
+        character_scope="esi-characters.read_fatigue.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_info",),
+        freshness_tier=TIER_FREQUENT,
+        live_only=True,
+    ),
+    # Phase 8: contacts and calendar, read live (never stored) for their own
+    # tool. One scope per kind (R1), so two kinds under one grant.
+    OwnedDataKind(
+        key="contacts",
+        label="Contacts",
+        group=GROUP_2,
+        character_scope="esi-characters.read_contacts.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_contacts",),
+        freshness_tier=TIER_NORMAL,
+        live_only=True,
+    ),
+    OwnedDataKind(
+        key="calendar",
+        label="Calendar",
+        group=GROUP_2,
+        character_scope="esi-calendar.read_calendar_events.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_contacts",),
+        freshness_tier=TIER_NORMAL,
+        live_only=True,
+    ),
+    # Mail (phase 3). `live_only` here means "not an orchestrator kind": mail
+    # is read live per request, and only a character that ticked the archive
+    # checkbox gets it stored - by character_management/mail_* (own sync and
+    # backfill), never by do_sync_*, so the stale clear can not delete an
+    # archive after one failed refresh (docs/CHARACTER_MANAGEMENT_PLAN.md R2,
+    # R11). The tier is a placeholder.
+    OwnedDataKind(
+        key="mail",
+        label="Mail",
+        group=GROUP_2,
+        character_scope="esi-mail.read_mail.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_mail", "char_alerts"),
+        freshness_tier=TIER_FREQUENT,
+        live_only=True,
+    ),
+    OwnedDataKind(
+        key="online",
+        label="Online Status",
+        group=GROUP_2,
+        character_scope="esi-location.read_online.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("char_info",),
+        freshness_tier=TIER_FREQUENT,
+        live_only=True,
     ),
 )
 
@@ -169,6 +352,26 @@ ACCESS_CAPABILITIES: tuple[AccessCapability, ...] = (
         key="structure_market_book",
         label="Structure market book",
         character_scope="esi-markets.structure_markets.v1",
+        corporation_scope=None,
+        corp_roles=(),
+    ),
+    # Mail write actions (docs/CHARACTER_MANAGEMENT_PLAN.md phase 4). These are
+    # capabilities, not data kinds: on/off per character, no tool dimension, no
+    # freshness, and never fetched by a sync. Ticking one is the user's explicit
+    # consent that this app may act on the character's behalf (send a mail,
+    # change read state/labels, delete); the mail actions check both the tick
+    # and that a token really holds the scope, and fail closed otherwise.
+    AccessCapability(
+        key="mail_send",
+        label="Send mail",
+        character_scope="esi-mail.send_mail.v1",
+        corporation_scope=None,
+        corp_roles=(),
+    ),
+    AccessCapability(
+        key="mail_organize",
+        label="Organize mail",
+        character_scope="esi-mail.organize_mail.v1",
         corporation_scope=None,
         corp_roles=(),
     ),

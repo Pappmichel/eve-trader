@@ -115,3 +115,9 @@ ALTER TABLE tenant_registry_entries ADD COLUMN IF NOT EXISTS corporation_id BIGI
 ALTER TABLE tenant_registry_entries ADD COLUMN IF NOT EXISTS alliance_id BIGINT;
 ALTER TABLE tenant_registry_entries ADD COLUMN IF NOT EXISTS affiliation_checked_at TIMESTAMPTZ;
 ALTER TABLE tenant_registry_entries ADD COLUMN IF NOT EXISTS access_suspended BOOLEAN NOT NULL DEFAULT false;
+
+-- Scheduler rework (docs/SCHEDULER_REWORK_PLAN.md decision 1): last time any
+-- authenticated request came from this tenant, written at most once an hour
+-- per tenant by AccessGateMiddleware. NULL = never recorded = treated as
+-- active, so existing tenants are not switched off by the rollout.
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMPTZ;

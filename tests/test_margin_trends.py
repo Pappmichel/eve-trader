@@ -81,3 +81,14 @@ def test_ignores_type_ids_not_in_volumes():
     # 999 has plenty of history, but isn't one of the shortlist's volumes -
     # must not appear in the result (no volume_m3 to compute landed cost with).
     assert compute_margin_trends(df, {100: 1.0}, cfg) == {}
+
+
+def test_today_drops_days_outside_the_baseline_window():
+    # History that stopped being refreshed must read as "no trend", not as a
+    # current one: ten rising days in January, asked about in March.
+    cfg = TradingConfig(jita_buy_broker_fee=0.0, import_cost_per_m3=0.0, structure_sell_haircut=1.0)
+    jita_rows = [_row(cfg.jita_region_id, 100, f"2026-01-{d:02d}", 100.0) for d in range(1, 11)]
+    ref_rows = [_row(cfg.reference_region_id, 100, f"2026-01-{d:02d}", 150.0 + 10 * d) for d in range(1, 11)]
+    df = _history_df(jita_rows + ref_rows)
+    assert compute_margin_trends(df, {100: 1.0}, cfg, today="2026-03-01") == {}
+    assert 100 in compute_margin_trends(df, {100: 1.0}, cfg, today="2026-01-11")

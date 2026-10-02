@@ -12,5 +12,8 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['./src/test-setup.ts'],
+    // userEvent-heavy UI tests (typing a whole mail) can pass 5 s, the
+    // default, when the full suite runs in parallel on a slower machine.
+    testTimeout: 15000,
   },
 })

@@ -373,7 +373,9 @@ def test_orchestrator_records_reauth_needed_and_keeps_processing_other_owners(te
             "WHERE owner_type = 'character' AND owner_id = ? AND data_kind = 'industry_jobs'",
             (ALICE,),
         ).fetchone()
-    assert err is None
+    # A reauth-needed kind gets an attempt stamp (failure backoff) but never a
+    # fetch error, and never a success.
+    assert err is None or err[0] is None
 
 
 def test_do_sync_due_fetches_only_kinds_past_their_interval(tenant):
@@ -617,3 +619,198 @@ def test_character_worker_thread_sees_tenant_trading_overrides(tenant, monkeypat
     assert captured["live_normal"] == 12.0
     assert captured["tenant"] == tenant
     assert captured["thread"] != caller_thread
+
+
+# ---------------------------------------------------------------- scheduler rework
+# docs/SCHEDULER_REWORK_PLAN.md phase B: idle ticks are free, grant filter,
+# failure backoff.
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+
+def _freshness_row(kind: str, owner_id: int = ALICE):
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT last_success_at, last_attempt_at, last_error FROM esi_freshness "
+            "WHERE owner_type = 'character' AND owner_id = ? AND data_kind = ?",
+            (owner_id, kind),
+        ).fetchone()
+
+
+def test_do_sync_due_does_nothing_when_nothing_is_due(tenant, monkeypatch):
+    """No sharing => no token read, no ESI client, no public-info call."""
+    def boom(*_a, **_k):
+        raise AssertionError("must not be constructed when nothing is due")
+
+    monkeypatch.setattr(orchestrator, "TokenManager", boom)
+    monkeypatch.setattr(orchestrator, "ESIClient", boom)
+    result = do_sync_due()
+    assert result["ok"] is True
+    assert result["owners"] == []
+    # Everything fresh => still nothing.
+    _share("character", ALICE, "assets", "production")
+    storage.upsert_esi_freshness("character", ALICE, "assets", success=True)
+    assert do_sync_due()["owners"] == []
+
+
+def test_pending_due_ignores_live_only_kinds_and_reads_freshness_once(tenant, monkeypatch):
+    _share("character", ALICE, "location", "char_info")  # live_only: never fetched
+    _share("character", ALICE, "assets", "production")
+    storage.upsert_esi_freshness("character", ALICE, "assets", success=True)
+    calls = {"n": 0}
+    real = storage.list_esi_freshness
+
+    def counting():
+        calls["n"] += 1
+        return real()
+
+    monkeypatch.setattr(storage, "list_esi_freshness", counting)
+    monkeypatch.setattr(
+        storage, "get_esi_freshness_success_at",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("per-row query")),
+    )
+    assert orchestrator.pending_due() == []
+    assert calls["n"] == 1
+
+
+def test_do_sync_due_only_refreshes_kinds_of_granted_tools(tenant):
+    _share("character", ALICE, "assets", "production")
+    _share("character", ALICE, "industry_jobs", "doctrine")
+    _tokens((ALICE, "Alice"))
+    client = FakeClient(assets={ALICE: [_asset(1, ALICE)]}, jobs={ALICE: [_job(11, ALICE)]})
+    result = do_sync_due(client=client, granted_tools={"production"})
+    assert result["ok"] is True
+    assert client.asset_calls == [ALICE]
+    assert client.job_calls == []
+    assert orchestrator.pending_due(granted_tools=set()) == []
+    assert [r[2] for r in orchestrator.pending_due(granted_tools=None)] == ["industry_jobs"]
+
+
+def test_failed_kind_backs_off_and_does_not_block_the_other_kinds(tenant):
+    _share("character", ALICE, "assets", "production")
+    _share("character", ALICE, "industry_jobs", "production")
+    _tokens((ALICE, "Alice"))
+    client = FakeClient(assets={ALICE: [_asset(1, ALICE)]}, job_error_for={ALICE})
+    first = do_sync_due(client=client)
+    assert first["ok"] is False
+    assert client.job_calls == [ALICE]
+    # Batch rolled back: assets not written, no success stamp anywhere.
+    assert _count("character_assets", owner_character_id=ALICE) == 0
+
+    # Next tick: jobs is inside its backoff window, assets is retried and lands.
+    assert [r[2] for r in orchestrator.pending_due()] == ["assets"]
+    second = do_sync_due(client=client)
+    assert second["ok"] is True
+    assert client.job_calls == [ALICE]  # not retried
+    assert _count("character_assets", owner_character_id=ALICE) == 1
+
+    # After the backoff (min(tier, 6h) = 6h for the normal tier) it is due again.
+    later = datetime.now(timezone.utc) + timedelta(hours=7)
+    assert "industry_jobs" in [r[2] for r in orchestrator.pending_due(now=later)]
+
+
+def test_reauth_needed_kind_backs_off_instead_of_staying_due(tenant):
+    _share("character", ALICE, "industry_jobs", "production")
+    _tokens((ALICE, "Alice"), scopes=ASSETS_SCOPE)  # no jobs scope
+    client = FakeClient(jobs={ALICE: [_job(11, ALICE)]})
+    assert [r[2] for r in orchestrator.pending_due()] == ["industry_jobs"]
+    do_sync_due(client=client)
+    assert client.job_calls == []
+    row = _freshness_row("industry_jobs")
+    assert row is not None and row[0] is None and row[1] is not None and row[2] is None
+    assert orchestrator.pending_due() == []
+    later = datetime.now(timezone.utc) + timedelta(hours=7)
+    assert [r[2] for r in orchestrator.pending_due(now=later)] == ["industry_jobs"]
+
+
+def test_manual_sync_ignores_the_failure_backoff(tenant):
+    _share("character", ALICE, "industry_jobs", "production")
+    _tokens((ALICE, "Alice"))
+    failing = FakeClient(job_error_for={ALICE})
+    assert do_sync_due(client=failing)["ok"] is False
+    assert orchestrator.pending_due() == []
+    ok = FakeClient(jobs={ALICE: [_job(11, ALICE)]})
+    assert do_sync_for_tool("production", client=ok)["ok"] is True
+    assert ok.job_calls == [ALICE]
+
+
+def test_corp_membership_pass_only_runs_with_a_corporation_owner(tenant):
+    _share("character", ALICE, "assets", "production")
+    _tokens((ALICE, "Alice"))
+
+    class Counting(FakeClient):
+        public_calls = 0
+
+        def character_public_info(self, character_id):
+            Counting.public_calls += 1
+            return {}
+
+    client = Counting(assets={ALICE: [_asset(1, ALICE)]})
+    assert do_sync_for_tool("production", client=client)["ok"] is True
+    assert Counting.public_calls == 0
+
+
+# ---------------------------------------------------------------- on_demand kinds
+SKILLQUEUE_SCOPE = "esi-skills.read_skillqueue.v1"
+
+
+class QueueClient(FakeClient):
+    def __init__(self, *, fail=False, **kw):
+        super().__init__(**kw)
+        self.queue_calls: list[int] = []
+        self._fail = fail
+
+    def character_skillqueue(self, character_id, auth_role):
+        self.queue_calls.append(character_id)
+        if self._fail:
+            raise ESIError("skillqueue 500")
+        return [{"queue_position": 0, "skill_id": 3300, "finished_level": 5}]
+
+
+def test_registry_marks_only_display_kinds_on_demand():
+    from eve_trader.esi_data.registry import OWNED_DATA_KINDS
+    on_demand = {k.key for k in OWNED_DATA_KINDS if k.schedule_mode == "on_demand"}
+    assert on_demand == {"clones", "implants", "standings", "loyalty", "skillqueue", "notifications"}
+    # everything production/trading/doctrine/portfolio consume stays scheduled
+    assert {"assets", "industry_jobs", "blueprints", "market_orders", "contracts", "wallet",
+            "wallet_balance", "skills"}.isdisjoint(on_demand)
+
+
+def test_on_demand_kind_is_only_due_for_an_owner_with_demand(tenant):
+    _share("character", ALICE, "skillqueue", "char_skills")
+    _share("character", ALICE, "assets", "production")
+    assert [r[2] for r in orchestrator.pending_due()] == ["assets"]
+    assert [r[2] for r in orchestrator.pending_due(demand={("character", ALICE, "skillqueue")})] == [
+        "assets", "skillqueue"]
+    assert [r[2] for r in orchestrator.pending_due(demand={("character", BOB, "skillqueue")})] == ["assets"]
+
+
+def test_scheduled_sync_skips_on_demand_kinds_but_manual_sync_includes_them(tenant):
+    _share("character", ALICE, "skillqueue", "char_skills")
+    _tokens((ALICE, "Alice"), scopes=SKILLQUEUE_SCOPE)
+    client = QueueClient()
+    do_sync_due(client=client)
+    assert client.queue_calls == []
+    assert do_sync_for_tool("char_skills", client=client)["ok"] is True
+    assert client.queue_calls == [ALICE]
+    assert _freshness_row("skillqueue")[0] is not None
+    # with demand the scheduler path fetches it too (once past its interval)
+    storage.upsert_esi_freshness("character", ALICE, "skillqueue", success=True, now="2026-01-01T00:00:00+00:00")
+    do_sync_due(client=client, demand={("character", ALICE, "skillqueue")})
+    assert client.queue_calls == [ALICE, ALICE]
+
+
+def test_failed_on_demand_sync_never_runs_the_stale_clear(tenant, monkeypatch):
+    calls = []
+    monkeypatch.setattr(orchestrator, "clear_stale_owner_kind", lambda *a, **k: calls.append((a, k)) or True)
+    _share("character", ALICE, "skillqueue", "char_skills")
+    _share("character", ALICE, "assets", "production")
+    _tokens((ALICE, "Alice"), scopes=SKILLQUEUE_SCOPE)
+    assert do_sync_for_tool("char_skills", client=QueueClient(fail=True))["ok"] is False
+    assert calls == []  # on_demand: exempt
+    # while a scheduled kind still gets its stale clear on failure
+    _tokens((ALICE, "Alice"), scopes=PRODUCER_SCOPES)
+    failing = FakeClient(job_error_for={ALICE})
+    _share("character", ALICE, "industry_jobs", "production")
+    do_sync_for_tool("production", client=failing)
+    assert len(calls) == 1
+

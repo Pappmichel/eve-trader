@@ -137,7 +137,7 @@ export default function Invention() {
           <HintCard>No Tech II stock target with an invention recipe is configured.</HintCard>
         ) : (
           <>
-            <DataTable data={inventionNeeds} columns={needsColumns} maxHeight={360} dataUpdatedAt={planUpdatedAt} />
+            <DataTable rowDetail data={inventionNeeds} columns={needsColumns} maxHeight={360} dataUpdatedAt={planUpdatedAt} />
             <Text size="xs" c="dimmed" mt="xs">
               Covers <b>all</b> Tech II stock targets, including fully-stocked ones. Runs needed = missing
               quantity ÷ quantity per run, rounded up (today&apos;s manufacturing shortfall). BPC Target
@@ -163,7 +163,7 @@ export default function Invention() {
           </HintCard>
         ) : (
           <>
-            <DataTable data={t1BpcNeeds} columns={t1BpcColumns} maxHeight={360} dataUpdatedAt={t1BpcUpdatedAt} />
+            <DataTable rowDetail data={t1BpcNeeds} columns={t1BpcColumns} maxHeight={360} dataUpdatedAt={t1BpcUpdatedAt} />
             <Text size="xs" c="dimmed" mt="xs">
               Just the T1 blueprint copies needed as an independent stock buffer (Settings&apos; BPC stock
               buffer × the base T1 invention runs, not compounded on top of the T2 buffer) - the Logistics
@@ -205,7 +205,7 @@ export default function Invention() {
             <Text size="xs" c="dimmed" tt="uppercase">{best.t1_blueprint_name} → {best.product_name}</Text>
             <Title order={3} c="accent">{best.decryptor}</Title>
           </Card>
-          <DataTable data={results} columns={columns} maxHeight={400} />
+          <DataTable rowDetail data={results} columns={columns} maxHeight={400} />
           <Text size="xs" c="dimmed">
             Net cost/run = cost/run minus the material savings this decryptor's ME gives when building from this
             BPC - 'Best' is then chosen the same way as in the build list.

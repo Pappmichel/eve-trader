@@ -377,6 +377,7 @@ class ProductionSettings(BaseModel):
     min_margin: float
     min_daily_profit: float
     haul_cost_per_m3: float
+    hub_region_id: int = 10000002
     facility_tax_rate: float
     home_market: Optional[str] = None
     home_location_id: Optional[int] = None

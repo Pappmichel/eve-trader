@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { notifications } from '@mantine/notifications'
+import { notify } from '../notify'
 import { ApiError } from '../api/client'
 import { ActionTierIcon, TIER_COPY, type ActionNetworkTier } from '../components/ActionTierIcon'
 
@@ -58,7 +58,7 @@ export function useAction<TArgs = void, TResult = unknown>(
     mutationFn: fn,
     onSuccess: (result) => {
       const summary = typeof result === 'object' ? JSON.stringify(result) : String(result ?? 'OK')
-      notifications.show({
+      notify({
         title: label,
         message: summary.length > MAX_RESULT_MESSAGE_LENGTH ? 'Done' : summary,
         color: 'accent',
@@ -69,7 +69,7 @@ export function useAction<TArgs = void, TResult = unknown>(
     },
     onError: (err: unknown) => {
       const message = err instanceof ApiError ? err.message : String(err)
-      notifications.show({ title: `${label} - Error`, message: truncate(message, MAX_ERROR_MESSAGE_LENGTH), color: 'danger' })
+      notify({ title: `${label} - Error`, message: truncate(message, MAX_ERROR_MESSAGE_LENGTH), color: 'danger' })
     },
   })
   const tier = meta.tier ?? 'local'
@@ -93,7 +93,7 @@ export function useAction<TArgs = void, TResult = unknown>(
 // bury this warning entirely.
 export function warnIfPricedViaFallback(result: unknown): void {
   if (result && typeof result === 'object' && (result as Record<string, unknown>).priced_via_fallback) {
-    notifications.show({
+    notify({
       title: 'Structure prices used the Goonmetrics fallback',
       message: 'No seller token was available, or the real order book was unavailable - prices are a less precise '
         + 'community snapshot (best bid/ask, not a real order-book percentile) until this refreshes normally.',

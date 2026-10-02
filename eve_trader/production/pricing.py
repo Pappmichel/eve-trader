@@ -7,10 +7,12 @@ the actual HTTP calls this wraps.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Optional
 
 import requests
 
+from .. import hubs
 from ..config import TRADING_CONFIG
 from ..esi_client import ESIClient, ESIError
 from ..goonmetrics_client import CurrentPrice, GoonmetricsClient
@@ -20,6 +22,34 @@ from .config import PRODUCTION_CONFIG, ProductionConfig
 log = logging.getLogger("eve_trader.production.pricing")
 
 JITA_MARKET = "jita"
+
+
+@dataclass(frozen=True)
+class HubQuote(CurrentPrice):
+    """A best-hub buy quote (hub setting ALL_HUBS, #222): `sell`/`buy` come
+    from the hub that won this item on landed cost, `freight_per_m3` is that
+    hub's freight rate, and `ref` is the plain Jita quote - what every
+    non-buying reader (margins, output valuation) uses instead, since
+    Production never sells at a hub."""
+    hub_region_id: int = 0
+    freight_per_m3: float = 0.0
+    ref: Optional[CurrentPrice] = None
+
+
+def reference_quote(quote: Optional[CurrentPrice]) -> Optional[CurrentPrice]:
+    """The Jita reference price for non-buying readers: a best-hub quote's
+    Jita `ref`, otherwise the quote itself (single-hub mode, unchanged)."""
+    if isinstance(quote, HubQuote):
+        return quote.ref
+    return quote
+
+
+def quote_hub(quote: Optional[CurrentPrice]) -> tuple[Optional[int], Optional[str]]:
+    """(region id, hub name) a best-hub quote was priced at; (None, None) in
+    single-hub mode (the Buy list then needs no per-item hub)."""
+    if isinstance(quote, HubQuote):
+        return quote.hub_region_id, hubs.hub_name(quote.hub_region_id)
+    return None, None
 
 
 def _goonmetrics_prices(market: str, type_ids: list[int]) -> dict[int, CurrentPrice]:
@@ -102,7 +132,7 @@ def home_prices(cfg: ProductionConfig, type_ids: list[int]) -> dict[int, Current
     return _goonmetrics_prices(cfg.home_market, type_ids) if cfg.home_market else {}
 
 
-def jita_prices(type_ids: list[int]) -> dict[int, CurrentPrice]:
+def jita_prices(type_ids: list[int], hub_region_id: Optional[int] = None) -> dict[int, CurrentPrice]:
     """Same ESI-first/Goonmetrics-fallback shape as home_prices (including
     the fallback only ever being fetched lazily, on an actual ESI failure),
     but region-side (public data, no auth_role needed) via ESIClient.
@@ -118,22 +148,57 @@ def jita_prices(type_ids: list[int]) -> dict[int, CurrentPrice]:
     aren't cached yet (e.g. a stock target added since the last refresh)
     fall through to a live per-type fetch below, same as before.
 
-    Jita's region_id comes from TRADING_CONFIG (not a ProductionConfig
-    field - Jita itself is Trading's own concept, matching every other
-    Production call site that already reaches into TRADING_CONFIG.
-    jita_region_id, e.g. engine.py's market_status/stock_value)."""
+    The hub is `hub_region_id` (default: ProductionConfig.hub_region_id, #222).
+    The shared cache is a Jita-only cache and the Goonmetrics fallback uses
+    the hardcoded "jita" slug, so both apply only when the hub is Jita; any
+    other hub goes straight to live ESI with no fallback (missing stays
+    missing - never substitute Jita prices for another hub)."""
     if not type_ids:
         return {}
-    result = jita_price_cache.get_cached_prices(type_ids)
+    hub = hub_region_id if hub_region_id is not None else PRODUCTION_CONFIG.hub_region_id
+    if hub == hubs.ALL_HUBS:
+        return _best_hub_prices(type_ids)
+    is_jita = hub == jita_price_cache.JITA_REGION_ID
+    result = jita_price_cache.get_cached_prices(type_ids) if is_jita else {}
     missing = [tid for tid in type_ids if tid not in result]
     if not missing:
         return result
     try:
-        stats = ESIClient().region_order_stats_bulk(TRADING_CONFIG.jita_region_id, missing)
+        stats = ESIClient().region_order_stats_bulk(hub, missing)
         result.update(_from_order_stats(stats, missing))
     except Exception:  # noqa: BLE001 - best-effort; Goonmetrics fallback is always safe
-        result.update(_goonmetrics_prices(JITA_MARKET, missing))
+        if is_jita:
+            result.update(_goonmetrics_prices(JITA_MARKET, missing))
+        else:
+            log.warning("ESI order stats for hub region %s failed; no Goonmetrics fallback for non-Jita hubs", hub)
     return result
+
+
+def _best_hub_prices(type_ids: list[int]) -> dict[int, CurrentPrice]:
+    """ALL_HUBS: per item, the quote of the hub with the lowest landed cost
+    (hubs.hub_pricing; freight from the shared table, fallback
+    haul_cost_per_m3), as HubQuote. Always live ESI per hub (ESIClient caches
+    per region/type); the Jita-only price cache and Goonmetrics fallback are
+    used only for the Jita reference carried in each quote's `ref`. An ESI
+    failure leaves items unpriced - never substituted from another source."""
+    from ..production.engine import _haul_volume  # local: engine imports pricing
+
+    cfg = PRODUCTION_CONFIG
+    reference = jita_prices(type_ids, jita_price_cache.JITA_REGION_ID)
+    volumes = {tid: _haul_volume(tid, cfg) or 0.0 for tid in type_ids}
+    try:
+        priced = hubs.hub_pricing(ESIClient(), hubs.ALL_HUBS, type_ids, volumes,
+                                  TRADING_CONFIG.jita_buy_broker_fee, cfg.haul_cost_per_m3)
+    except Exception:  # noqa: BLE001 - best-effort, like single-hub ESI failures
+        log.warning("ESI order stats for the best-hub lookup failed; items stay unpriced")
+        priced = hubs.HubPricing()
+    out: dict[int, CurrentPrice] = {}
+    for tid, s in priced.stats.items():
+        ref = reference.get(tid) or CurrentPrice(type_id=tid, updated="", buy=0.0, sell=0.0)
+        out[tid] = HubQuote(
+            type_id=tid, updated="", buy=s.buy_percentile or 0.0, sell=s.sell_percentile or 0.0,
+            hub_region_id=priced.hub_by_type[tid], freight_per_m3=priced.freight_by_type[tid], ref=ref)
+    return out
 
 
 def _candidate_prices(type_id: int, home: dict[int, CurrentPrice], jita: dict[int, CurrentPrice],
@@ -154,8 +219,14 @@ def _candidate_prices(type_id: int, home: dict[int, CurrentPrice], jita: dict[in
     jita_quote = jita.get(type_id)
     if jita_quote and jita_quote.sell > 0:
         candidates["Jita"] = (jita_quote.sell * (1 + TRADING_CONFIG.jita_buy_broker_fee)
-                               + cfg.haul_cost_per_m3 * (volume_m3 or 0))
+                               + _freight_rate(jita_quote, cfg) * (volume_m3 or 0))
     return candidates
+
+
+def _freight_rate(quote: CurrentPrice, cfg: ProductionConfig) -> float:
+    """Freight for a hub quote: the winning hub's own rate in best-hub mode,
+    otherwise Production's single haul_cost_per_m3."""
+    return quote.freight_per_m3 if isinstance(quote, HubQuote) else cfg.haul_cost_per_m3
 
 
 def buy_source(type_id: int, home: dict[int, CurrentPrice], jita: dict[int, CurrentPrice],

@@ -91,9 +91,17 @@ def get_history_type_ids():
 
 @router.get("/history/{type_id}")
 def get_price_history(type_id: int):
-    df = storage.read_table("goonmetrics_history")
-    subset = df[df["type_id"] == type_id].sort_values("date")
-    return schemas.records(subset)
+    # goonmetrics_history holds the buy hub's region and the reference
+    # region side by side; returned as two separate series so a chart never
+    # zigzags between two price levels. One indexed query per region.
+    hub_region_id = TRADING_CONFIG.jita_region_id
+    reference_region_id = TRADING_CONFIG.reference_region_id
+    return {
+        "hub_region_id": hub_region_id,
+        "reference_region_id": reference_region_id,
+        "hub": storage.read_goonmetrics_history(hub_region_id, type_id),
+        "reference": storage.read_goonmetrics_history(reference_region_id, type_id),
+    }
 
 
 @router.get("/trades/realized", response_model=list[schemas.RealizedTrade])
@@ -130,6 +138,11 @@ class TradingSettings(BaseModel):
     esi_normal_interval_hours: float = 6.0
     esi_rare_interval_hours: float = 24.0
     esi_stale_clear_multiples: float = 3.0
+    # Was previously reachable only via a direct tenant_settings write (no UI,
+    # no route) - see CLAUDE.md's Scheduler section. This tenant's own switch;
+    # it is also a no-op unless the Default tenant's own copy is on too
+    # (scheduler.py's master switch), which the UI text below spells out.
+    scheduler_enabled: bool = False
 
 
 @router.get("/settings", response_model=TradingSettings)

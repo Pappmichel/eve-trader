@@ -81,7 +81,7 @@ export default function RealizedTrades() {
   }, [data])
 
   const columns = useMemo<ColumnDef<ItemSummary, any>[]>(() => [
-    { header: 'Item', accessorKey: 'item', size: 220 },
+    { header: 'Item', accessorKey: 'item', size: 220, meta: { copyable: true } },
     { header: 'Trades', accessorKey: 'trades', size: 90, cell: (i) => qty(i.getValue()) },
     { header: 'Total Qty', accessorKey: 'matchedQty', size: 120, cell: (i) => qty(i.getValue()) },
     { header: 'Avg Buy Price', accessorKey: 'avgBuyPrice', size: 130, cell: (i) => isk(i.getValue()) },
@@ -93,7 +93,7 @@ export default function RealizedTrades() {
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={480} />
   if (isError) return <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={480} />
   if (!data || data.length === 0) {
-    return <HintCard>No realized trades yet. Click <b>Reconcile Trades</b> on the left once Wallet is shared with Trading.</HintCard>
+    return <HintCard>No realized trades yet. Click <b>Reconcile Trades</b> in the side menu once Wallet is shared with Trading.</HintCard>
   }
 
   return (
@@ -105,7 +105,7 @@ export default function RealizedTrades() {
 
       <Text size="sm" c="dimmed">{byItem.length} items, {data.length} trades total</Text>
 
-      <DataTable data={byItem} columns={columns} maxHeight={480} dataUpdatedAt={dataUpdatedAt} />
+      <DataTable tableId="trading-realized-trades" rowDetail data={byItem} columns={columns} maxHeight={480} dataUpdatedAt={dataUpdatedAt} />
 
       <Title order={6} c="dimmed" tt="uppercase" mt="lg">Cumulative Profit Over Time</Title>
       <ResponsiveContainer width="100%" height={300}>

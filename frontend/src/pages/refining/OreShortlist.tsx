@@ -10,6 +10,7 @@ import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
 import { isk, pct, qty } from '../../format'
+import { ALL_HUBS, hubLabel } from '../../tradingHubs'
 
 const ALL_DECISIONS = ['Inactive', 'No market data', 'Skip', 'Import']
 const DECISION_COLOR: Record<string, string> = {
@@ -23,6 +24,10 @@ export default function OreShortlist() {
   const { data, isLoading } = useQuery({
     queryKey: ['refining', 'shortlist', 'snapshot'], queryFn: refiningApi.shortlistSnapshot,
   })
+
+  const { data: settings } = useQuery({ queryKey: ['refining', 'settings'], queryFn: refiningApi.settings })
+  const hub = hubLabel(settings?.hub_region_id)
+  const allHubs = settings?.hub_region_id === ALL_HUBS
 
   // Reversible (activate below undoes it), so no confirmation prompt - same
   // "not truly destructive" reasoning already applied elsewhere in this app
@@ -51,7 +56,7 @@ export default function OreShortlist() {
   }, [data, effectiveFamilies, selDecisions, search])
 
   const columns = useMemo<ColumnDef<OreShortlistRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'item', size: 200 },
+    { header: 'Item', accessorKey: 'item', size: 200, meta: { copyable: true } },
     { header: 'Family', accessorKey: 'family', size: 120 },
     {
       header: 'Type', accessorKey: 'is_ice', size: 80,
@@ -65,10 +70,11 @@ export default function OreShortlist() {
     { header: 'Margin', accessorKey: 'margin', size: 90, cell: (i) => pct(i.getValue()) },
     { header: 'Profit / Unit', accessorKey: 'profit_per_unit', size: 120, cell: (i) => isk(i.getValue()) },
     { header: 'Profit / m³', accessorKey: 'profit_per_m3', size: 110, cell: (i) => qty(i.getValue()) },
-    { header: 'Cost (Jita)', accessorKey: 'landed_cost', size: 120, cell: (i) => isk(i.getValue()) },
+    { header: `Cost (${hub})`, accessorKey: 'landed_cost', size: 120, cell: (i) => isk(i.getValue()) },
     { header: 'Mineral Value (C-J)', accessorKey: 'net_sell', size: 150, cell: (i) => isk(i.getValue()) },
     { header: 'Refining Tax', accessorKey: 'refining_tax', size: 110, cell: (i) => isk(i.getValue()) },
-    { header: 'Jita Listed Qty', accessorKey: 'sell_listed_qty', size: 130, cell: (i) => qty(i.getValue()) },
+    ...(allHubs ? [{ header: 'Best hub', accessorKey: 'hub_name', size: 100, cell: (i: any) => i.getValue() ?? '–' }] : []),
+    { header: `${hub} Listed Qty`, accessorKey: 'sell_listed_qty', size: 130, cell: (i) => qty(i.getValue()) },
     {
       header: '', id: 'actions', size: 50, enableSorting: false,
       cell: (i) => {
@@ -91,12 +97,12 @@ export default function OreShortlist() {
       },
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  ], [activate, deactivate])
+  ], [activate, deactivate, hub, allHubs])
 
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
   if (!data || data.length === 0) {
     return (
-      <HintCard>No run yet. Click <b>Add Candidates</b> then <b>Refresh Ore Shortlist</b> on the left.</HintCard>
+      <HintCard>No run yet. Click <b>Add Candidates</b> then <b>Refresh Ore Shortlist</b> in the side menu.</HintCard>
     )
   }
 
@@ -113,7 +119,7 @@ export default function OreShortlist() {
       {filtered.length === 0 ? (
         <HintCard>No items match the current filters.</HintCard>
       ) : (
-        <DataTable data={filtered} columns={columns} maxHeight={560} getRowId={(r) => String(r.item_id)} />
+        <DataTable tableId="refining-ore-shortlist" rowDetail data={filtered} columns={columns} maxHeight={560} getRowId={(r) => String(r.item_id)} />
       )}
     </Stack>
   )

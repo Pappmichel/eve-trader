@@ -23,6 +23,10 @@ from .constants import (
 
 @dataclass
 class RefiningConfig:
+    # Market hub (region id) ore/ice and mineral prices are read from - this
+    # tool's own setting, no longer TradingConfig.jita_region_id (#222). Default Jita.
+    hub_region_id: int = 10000002
+
     # -- Ore/ice path: structure/rig/security/implant --
     # Settings-page dropdowns, not pulled from ESI (confirmed with the user
     # during planning: "structure type, rig, skill, and implant should be

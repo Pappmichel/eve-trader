@@ -76,24 +76,65 @@ def test_group_1_has_seven_owned_kinds_with_corp_variant():
         assert kind.character_scope
 
 
-def test_group_2_is_skills_with_no_corp_variant():
-    group_2 = [k for k in OWNED_DATA_KINDS if k.group == GROUP_2]
-    assert len(group_2) == 1
-    skills = group_2[0]
-    assert skills.key == "skills"
+def test_group_2_is_character_only_kinds_with_no_corp_variant():
+    group_2 = {k.key: k for k in OWNED_DATA_KINDS if k.group == GROUP_2}
+    # skills + Character Management phase 1 (docs/CHARACTER_MANAGEMENT_PLAN.md).
+    assert set(group_2) == {
+        "skills", "skillqueue", "standings", "loyalty", "location", "ship", "online", "mail",
+        "clones", "implants", "notifications", "fatigue", "contacts", "calendar",
+    }
+    for kind in group_2.values():
+        assert kind.corporation_scope is None
+        assert kind.corp_roles == ()
+    skills = group_2["skills"]
     assert skills.label == "Skills"
-    assert skills.corporation_scope is None
-    assert skills.corp_roles == ()
     assert skills.character_scope == "esi-skills.read_skills.v1"
 
 
-def test_group_3_has_three_capabilities_and_no_consuming_tool_list():
+def test_every_kind_has_exactly_one_character_scope_and_scopes_are_unique():
+    # R1: one scope per kind is an invariant the selector, orchestrator and
+    # Characters page all assume. Two kinds sharing a scope would silently
+    # double-book a token.
+    scopes = [k.character_scope for k in OWNED_DATA_KINDS
+              if k.key not in ("wallet_balance",)]  # wallet_balance shares wallet's scope by design
+    assert all(isinstance(s, str) and s for s in scopes)
+    assert len(scopes) == len(set(scopes))
+
+
+def test_character_management_kinds():
+    by_key = {k.key: k for k in OWNED_DATA_KINDS}
+    assert by_key["standings"].character_scope == "esi-characters.read_standings.v1"
+    assert by_key["loyalty"].character_scope == "esi-characters.read_loyalty.v1"
+    assert by_key["location"].character_scope == "esi-location.read_location.v1"
+    assert by_key["ship"].character_scope == "esi-location.read_ship_type.v1"
+    assert by_key["online"].character_scope == "esi-location.read_online.v1"
+    for key in ("standings", "loyalty", "location", "ship", "online"):
+        assert by_key[key].consuming_tools == ("char_info",)
+    # Live-only kinds: the three location kinds, plus mail (own code path,
+    # phase 3 - never an orchestrator kind, so the stale clear cannot reach it).
+    assert {k.key for k in OWNED_DATA_KINDS if k.live_only} == {"location", "ship", "online", "mail", "fatigue", "contacts", "calendar"}
+    assert by_key["mail"].character_scope == "esi-mail.read_mail.v1"
+    assert by_key["mail"].consuming_tools == ("char_mail", "char_alerts")
+    # char_info also reads the wallet balance (Character Info's ISK column).
+    assert "char_info" in by_key["wallet_balance"].consuming_tools
+    assert "portfolio" in by_key["wallet_balance"].consuming_tools
+    assert "char_info" in consuming_tool_keys()
+
+
+def test_group_3_capabilities_and_no_consuming_tool_list():
     # corporation_roles added for docs/ESI_ACCESS_PLAN.md Known gap 2 (the
-    # Corporations table's role warning).
-    assert len(ACCESS_CAPABILITIES) == 3
+    # Corporations table's role warning); mail_send / mail_organize for the
+    # Character Management mail write actions (phase 4).
+    assert len(ACCESS_CAPABILITIES) == 5
     assert {c.key for c in ACCESS_CAPABILITIES} == {
         "structure_name_resolution", "structure_market_book", "corporation_roles",
+        "mail_send", "mail_organize",
     }
+    by_key = {c.key: c for c in ACCESS_CAPABILITIES}
+    assert by_key["mail_send"].character_scope == "esi-mail.send_mail.v1"
+    assert by_key["mail_organize"].character_scope == "esi-mail.organize_mail.v1"
+    for key in ("mail_send", "mail_organize"):
+        assert by_key[key].corporation_scope is None and by_key[key].corp_roles == ()
     for cap in ACCESS_CAPABILITIES:
         assert isinstance(cap, AccessCapability)
         assert not hasattr(cap, "consuming_tools")
@@ -139,7 +180,7 @@ def test_default_freshness_tiers_match_the_plan():
     by_key = {k.key: k.freshness_tier for k in OWNED_DATA_KINDS}
     assert by_key["market_orders"] == "frequent"
     assert by_key["wallet"] == "frequent"
-    assert by_key["wallet_balance"] == "frequent"
+    assert by_key["wallet_balance"] == "normal"
     assert by_key["assets"] == "normal"
     assert by_key["industry_jobs"] == "normal"
     assert by_key["contracts"] == "normal"

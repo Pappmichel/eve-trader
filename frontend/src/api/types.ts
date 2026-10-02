@@ -37,6 +37,8 @@ export interface ShortlistRow {
   import_cost: number | null
   meta_level: number | null
   days_until_deactivation: number | null
+  // Highest hub buy price that still breaks even (GitHub issue #221)
+  breakeven_buy_price: number | null
   // Real average daily *market-wide* traded quantity (GitHub issue #100,
   // Goonmetrics region history for C-J's own home region) - what
   // "Profit / Day" is actually computed from, NOT sell_volume (order-book
@@ -129,6 +131,19 @@ export interface SdeItemNameOption {
   type_name: string
 }
 
+// One row of the shared per-hub freight table (#222); null = no entry, the
+// tool's own freight value applies.
+export interface HubFreightRow {
+  region_id: number
+  hub: string
+  freight_cost_per_m3: number | null
+}
+
+export interface RegionOption {
+  region_id: number
+  region_name: string
+}
+
 export interface SolarSystemOption {
   solar_system_id: number
   solar_system_name: string
@@ -145,14 +160,20 @@ export interface SystemCostIndices {
 }
 
 export interface PriceHistoryPoint {
-  region_id: number
-  type_id: number
   date: string
   min_price: number
   max_price: number
   avg_price: number
   movement: number
   num_orders: number
+}
+
+// Buy hub and reference region as separate series (never mixed into one line).
+export interface PriceHistory {
+  hub_region_id: number
+  reference_region_id: number
+  hub: PriceHistoryPoint[]
+  reference: PriceHistoryPoint[]
 }
 
 export interface TradingSettings {
@@ -180,6 +201,7 @@ export interface TradingSettings {
   esi_normal_interval_hours: number
   esi_rare_interval_hours: number
   esi_stale_clear_multiples: number
+  scheduler_enabled: boolean
 }
 
 export interface PipelineRunProgress {
@@ -294,6 +316,8 @@ export interface BuyListEntry {
   total_price: number | null
   on_hand_pct: number
   buy_from: string | null
+  hub_region_id?: number | null
+  hub_name?: string | null
   category: string | null
 }
 
@@ -670,6 +694,7 @@ export interface ProductionSettings {
   min_margin: number
   min_daily_profit: number
   haul_cost_per_m3: number
+  hub_region_id: number
   facility_tax_rate: number
   home_market: string | null
   home_location_id: number | null
@@ -1057,6 +1082,8 @@ export interface ShoppingListRow {
   jita_landed_price: number | null
   recommended_source: 'Build' | 'C-J' | 'Jita' | null
   total_cost: number | null
+  hub_region_id: number | null
+  hub_name: string | null
 }
 
 export interface FittingStatus {
@@ -1108,6 +1135,7 @@ export interface DoctrineSettings {
   cargo_tolerance_pct: number
   strict_extras: boolean
   import_cost_per_m3: number
+  hub_region_id: number
   stockpile_hangar_flags: string[]
 }
 
@@ -1143,6 +1171,9 @@ export interface OreShortlistRow {
   margin: number | null
   profit_per_m3: number | null
   decision: string
+  // Hub the ore was priced at; the winning hub when the tool is set to "All hubs" (GitHub issue #222).
+  hub_region_id: number | null
+  hub_name: string | null
 }
 
 export interface RefinableMineral {
@@ -1166,6 +1197,8 @@ export interface OrePurchase {
   volume_m3: number
   landed_cost_per_unit: number
   total_cost: number
+  hub_region_id: number | null
+  hub_name: string | null
 }
 
 export interface DirectMineralPurchase {
@@ -1174,7 +1207,9 @@ export interface DirectMineralPurchase {
   quantity: number
   landed_cost_per_unit: number
   total_cost: number
-  source: 'Jita' | 'Home' | null
+  // "Home" or the name of the trade hub it is bought at (e.g. "Jita", "Amarr").
+  source: string | null
+  hub_region_id: number | null
 }
 
 export interface MineralCoverage {
@@ -1201,6 +1236,7 @@ export interface ShoppingListPlan {
 }
 
 export interface RefiningSettings {
+  hub_region_id: number
   structure_type: string
   rig_tier: string
   security_status: number
@@ -1251,6 +1287,7 @@ export interface ReprocessingQuoteResult {
 // ------------------------------------------------------------ station trading
 export interface StationTradingSettings {
   station_id: number
+  hub_region_id: number
   broker_fee_rate: number
   sales_tax_rate: number
   min_spread_threshold: number
@@ -1367,6 +1404,8 @@ export interface ReprocessPurchase {
   volume_m3: number
   landed_cost_per_unit: number
   total_cost: number
+  hub_region_id: number | null
+  hub_name: string | null
 }
 
 export interface ReprocessMineralCoverage {
@@ -1401,6 +1440,526 @@ export interface ModuleReprocessingSettings {
   ignore_thresholds: boolean
   purchase_region_id: number
   purchase_structure_id: number | null
+  input_hub_region_id: number
   enforce_shortlist_cap: boolean
   max_active_shortlist_items: number
+}
+
+
+// ---------------------------------------------- Character Info (Character Management)
+// Mirrors eve_trader/character_management/info_actions.py. Every optional
+// field is a `CharInfoField`: the `state` says why `value` is missing.
+export type CharInfoFieldState = 'ok' | 'not_shared' | 'reauth_needed' | 'not_synced' | 'error'
+
+export interface CharInfoField<T> {
+  state: CharInfoFieldState
+  value: T | null
+  detail?: string
+  /** Snapshot fields only: when the last successful sync ran. */
+  synced_at?: string
+}
+
+export interface CharInfoLocation {
+  solar_system_id: number | null
+  solar_system_name: string | null
+  location_id: number | null
+  location_kind: 'structure' | 'station' | 'space'
+  location_name: string | null
+}
+
+export interface CharInfoShip {
+  ship_type_id: number | null
+  ship_type_name: string | null
+  ship_name: string | null
+}
+
+export interface CharInfoOnline {
+  online: boolean
+  last_login?: string
+  last_logout?: string
+  logins?: number
+}
+
+export interface CharInfoStandingRow { from_id: number; name: string; standing: number }
+export interface CharInfoStandings {
+  faction: CharInfoStandingRow[]
+  npc_corp: CharInfoStandingRow[]
+  agent: CharInfoStandingRow[]
+}
+export interface CharInfoFatigue {
+  jump_fatigue_expire_date: string | null
+  last_jump_date: string | null
+  last_update_date: string | null
+}
+export interface CharInfoLoyaltyRow { corporation_id: number; corporation_name: string; loyalty_points: number }
+export interface CharInfoImplant { type_id: number; name: string }
+export interface CharInfoJumpClone {
+  jump_clone_id: number
+  name: string | null
+  location_id: number | null
+  location_type: string | null
+  location_name: string | null
+  implants: CharInfoImplant[]
+}
+export interface CharInfoClones {
+  home: { location_id: number; location_type: string | null; location_name: string | null } | null
+  jump_clones: CharInfoJumpClone[]
+  last_clone_jump_date: string | null
+  last_station_change_date: string | null
+  /** last_clone_jump_date + 24 h (the base cooldown; skills can shorten it) */
+  clone_jump_available_at: string | null
+}
+export interface CharInfoCorpHistoryRow { corporation_id: number; corporation_name: string; start_date: string | null }
+
+export interface CharInfoCharacter {
+  character_id: number
+  character_name: string | null
+  corporation_id: number | null
+  corporation_name: string | null
+  alliance_id: number | null
+  alliance_name: string | null
+  security_status: number | null
+  birthday: string | null
+  wallet_balance: CharInfoField<number>
+  location: CharInfoField<CharInfoLocation>
+  ship: CharInfoField<CharInfoShip>
+  online: CharInfoField<CharInfoOnline>
+  fatigue?: CharInfoField<CharInfoFatigue>
+  freshness: Record<string, { last_success_at: string | null; last_attempt_at: string | null; last_error: string | null }>
+  // Detail only:
+  standings?: CharInfoField<CharInfoStandings>
+  loyalty_points?: CharInfoField<CharInfoLoyaltyRow[]>
+  clones?: CharInfoField<CharInfoClones>
+  implants?: CharInfoField<CharInfoImplant[]>
+  corporation_history?: CharInfoCorpHistoryRow[]
+}
+
+export interface CharInfoOverview { characters: CharInfoCharacter[] }
+
+export interface CharInfoSyncResult {
+  ok: boolean
+  characters: Record<string, unknown>
+  /** Owners another sync pass was already running for (not an error). */
+  in_flight: number[]
+  failed: { owner_id: number; name: string | null; error: string | null }[]
+}
+
+
+// ------------------------------------------------- Skills (Character Management)
+// Mirrors eve_trader/character_management/skills_actions.py. Fields reuse the
+// same CharInfoField state wrapper as Character Info.
+export interface SkillAttributes {
+  charisma: number
+  intelligence: number
+  memory: number
+  perception: number
+  willpower: number
+  bonus_remaps: number | null
+  last_remap_date: string | null
+  accrued_remap_cooldown_date: string | null
+}
+
+export interface SkillsSummary {
+  total_sp: number | null
+  unallocated_sp: number | null
+  /** Upper bound: extractors' worth of SP above the 5,000,000 SP floor. */
+  extractable_estimate: number | null
+  attributes: SkillAttributes | null
+}
+
+export interface SkillQueueEntry {
+  queue_position: number
+  skill_id: number
+  name: string
+  finished_level: number
+  start_date: string | null
+  finish_date: string | null
+  training_start_sp: number | null
+  level_start_sp: number | null
+  level_end_sp: number | null
+}
+
+export interface SkillQueue {
+  entries: SkillQueueEntry[]
+  length: number
+  empty: boolean
+  /** Entries exist but none carries a finish date. */
+  paused: boolean
+  current: SkillQueueEntry | null
+  ends_at: string | null
+  /** The queue guard (phase 5a): why this queue needs attention, if it does. */
+  warning: SkillQueueWarning | null
+}
+
+export type SkillQueueWarningKind = 'empty' | 'paused' | 'ended' | 'ends_soon'
+
+export interface SkillQueueWarning {
+  kind: SkillQueueWarningKind
+  hours_left: number | null
+}
+
+export interface SkillsWarnings {
+  count: number
+  characters: (SkillQueueWarning & { character_id: number; character_name: string })[]
+  queue_warning_hours: number
+}
+
+export interface SkillRow {
+  skill_id: number
+  name: string
+  /** null until an SDE refresh has filled sde_skill_meta. */
+  rank: number | null
+  active_level: number
+  trained_level: number
+  skillpoints: number
+  sp_to_level_v: number | null
+}
+
+export interface SkillGroup {
+  group_id: number | null
+  group_name: string
+  skills: SkillRow[]
+  total_sp: number
+  maxed: number
+}
+
+export interface SkillsOverviewRow {
+  character_id: number
+  character_name: string
+  summary: CharInfoField<SkillsSummary>
+  queue: CharInfoField<SkillQueue>
+  freshness: Record<string, { last_success_at: string | null; last_attempt_at: string | null; last_error: string | null }>
+}
+
+export interface SkillsOverview { characters: SkillsOverviewRow[] }
+
+export interface CharacterSkills {
+  character_id: number
+  character_name: string
+  summary: CharInfoField<SkillsSummary>
+  skills: CharInfoField<SkillGroup[]>
+  queue: CharInfoField<SkillQueue>
+  freshness: SkillsOverviewRow['freshness']
+}
+
+export interface SkillMatrixSkill {
+  skill_id: number
+  name: string
+  /** keyed by str(character_id) */
+  levels: Record<string, { active: number; trained: number }>
+}
+
+export interface SkillMatrix {
+  characters: { character_id: number; character_name: string }[]
+  hidden_characters: { character_id: number; character_name: string }[]
+  reauth_needed: number[]
+  groups: { group_id: number | null; group_name: string; skills: SkillMatrixSkill[] }[]
+}
+
+
+// Mirrors eve_trader/character_management/skill_check.py.
+export interface DoctrineMissingSkill {
+  skill_id: number
+  name: string
+  needed: number
+  have: number
+  sp_remaining: number | null
+}
+
+export interface DoctrineCheckCharacter {
+  character_id: number
+  can_fly: boolean
+  missing: DoctrineMissingSkill[]
+  /** estimate from current attributes; null when unknown */
+  train_seconds: number | null
+}
+
+export interface DoctrineCheckFitting {
+  fitting_id: string
+  name: string
+  variant_label: string | null
+  doctrine_id: string
+  doctrine_name: string | null
+  hull_type_id: number
+  hull_name: string | null
+  required_skills: number
+  characters: DoctrineCheckCharacter[]
+}
+
+export interface DoctrineCheck {
+  sde_ready: boolean
+  fittings: DoctrineCheckFitting[]
+  characters: { character_id: number; character_name: string }[]
+  hidden_characters: { character_id: number; character_name: string }[]
+}
+
+
+// Mirrors eve_trader/character_management/skill_plan_actions.py.
+export interface SkillPlanSummary {
+  plan_id: number
+  name: string
+  description: string
+  created_at: string | null
+  updated_at: string | null
+  step_count: number
+}
+export interface SkillPlanStep {
+  position: number
+  skill_id: number
+  level: number
+  level_label: string
+  name: string
+  group_name: string | null
+  rank: number | null
+}
+export interface SkillPlan {
+  plan_id: number
+  name: string
+  description: string
+  created_at: string | null
+  updated_at: string | null
+  steps: SkillPlanStep[]
+  sde_ready: boolean
+  added?: number
+  removed?: number
+  unresolved?: string[]
+  steps_added_for_prerequisites?: number
+}
+export interface SkillPlanProgressStep { skill_id: number; level: number; level_label: string; name: string; sp_remaining: number | null }
+export interface SkillPlanProgressRow {
+  character_id: number
+  character_name: string
+  synced: boolean
+  steps_total?: number
+  steps_done?: number
+  sp_remaining?: number | null
+  train_seconds?: number | null
+  next_steps?: SkillPlanProgressStep[]
+}
+export interface SkillPlanProgress {
+  plan_id: number
+  characters: SkillPlanProgressRow[]
+  hidden_characters: { character_id: number; character_name: string }[]
+}
+
+// Mirrors eve_trader/character_management/contacts_actions.py.
+export interface ContactRow {
+  contact_id: number
+  name: string
+  contact_type: string
+  standing: number
+  is_blocked: boolean
+  is_watched: boolean
+  labels: string[]
+}
+export interface ContactsValue { contacts: ContactRow[]; labels: string[] }
+export interface CalendarEvent {
+  event_id: number
+  title: string
+  event_date: string | null
+  importance: number | null
+  response: string | null
+}
+export interface CalendarEventDetail {
+  event_id: number
+  title: string | null
+  date: string | null
+  duration: number | null
+  importance: number | null
+  owner_name: string | null
+  owner_type: string | null
+  response: string | null
+  text: string | null
+}
+export interface ContactsCharacter {
+  character_id: number
+  character_name: string
+  contacts: CharInfoField<null>
+  calendar: CharInfoField<null>
+}
+
+export interface WalletJournalValue {
+  window_days: number
+  entries: { id: number | null; date: string; ref_type: string | null; amount: number; balance: number | null; description: string | null }[]
+  total_entries: number
+  truncated: boolean
+  income: number
+  expense: number
+  by_type: { ref_type: string; total: number }[]
+}
+
+// Mirrors eve_trader/character_management/notification_actions.py.
+export interface NotificationItem {
+  character_id: number
+  character_name: string | null
+  notification_id: number
+  type: string
+  category: string
+  sent_at: string | null
+  summary: string
+  read: boolean
+  read_in_game: boolean
+  sender_id: number | null
+  sender_type: string | null
+}
+
+export interface NotificationsList {
+  items: NotificationItem[]
+  total: number
+  unread_total: number
+  types: { type: string; label: string; count: number }[]
+  categories: { category: string; label: string; count: number }[]
+  characters: { character_id: number; character_name: string; synced_at: string | null; last_error: string | null }[]
+  hidden_characters: { character_id: number; character_name: string }[]
+}
+
+export interface NotificationDetail {
+  character_id: number
+  notification_id: number
+  type: string
+  category: string
+  sent_at: string | null
+  summary: string
+  details: { key: string; value: string }[]
+  parsed: boolean
+  read: boolean
+}
+
+// ---------------------------------------------------- Mail (Character Management)
+// Mirrors eve_trader/character_management/mail_actions.py.
+export interface MailRecipient {
+  recipient_id: number
+  recipient_type: string   // character | corporation | alliance | mailing_list
+  name: string | null
+}
+
+export interface MailReceivedBy {
+  character_id: number
+  character_name: string
+  is_read: boolean
+  labels: number[]
+  /** true: read from the local archive; false: read live from ESI. */
+  archived: boolean
+}
+
+/** One message, grouped over every selected character that received it. */
+export interface MailRow {
+  mail_id: number
+  from_id: number | null
+  from_name: string | null
+  subject: string
+  timestamp: string | null
+  is_read: boolean
+  recipients: MailRecipient[]
+  received_by: MailReceivedBy[]
+}
+
+export interface MailCharacterStatus {
+  character_id: number
+  character_name: string
+  archived: boolean
+  state: 'ok' | 'reauth_needed' | 'error'
+  detail?: string
+}
+
+export interface MailPage {
+  mails: MailRow[]
+  /** character_id -> last_mail_id to continue from; absent = that character is exhausted. */
+  next_cursors: Record<string, number>
+  characters: MailCharacterStatus[]
+}
+
+export interface MailFolderLabel {
+  label_id: number
+  name: string
+  color: string | null
+  unread_count: number
+  system: boolean
+}
+
+/** ready = ticked on the Characters page AND a token holds the scope. */
+export type MailCapabilityState = 'ready' | 'not_enabled' | 'reauth_needed'
+
+export interface MailFolders {
+  characters: (MailCharacterStatus & {
+    labels: MailFolderLabel[]
+    lists: { list_id: number; name: string }[]
+    total_unread: number
+    capabilities: { send: MailCapabilityState; organize: MailCapabilityState }
+  })[]
+  /** system label id -> unread summed over every character */
+  unread: Record<string, number>
+}
+
+export interface MailOpened extends MailRow {
+  body: string
+  character_id: number
+  archived: boolean
+}
+
+export interface MailSearchResult {
+  mails: MailRow[]
+  searched: MailCharacterStatus[]
+  unsearchable: MailCharacterStatus[]
+}
+
+export type MailBackfillState = 'off' | 'idle' | 'running' | 'done' | 'error' | 'interrupted'
+
+export interface MailArchiveRow {
+  character_id: number
+  character_name: string
+  shared: boolean
+  archive_enabled: boolean
+  reauth_needed: boolean
+  backfill_state: MailBackfillState
+  headers_complete: boolean
+  error: string | null
+  last_refresh_at: string | null
+  counts: { headers: number; bodies: number }
+}
+
+// Mail write actions (phase 4) - mirrors character_management/mail_write.py.
+export interface MailDraftRecipient {
+  type?: string
+  id?: number
+  name?: string
+}
+
+export interface MailSendRequest {
+  from_character_id: number
+  recipients: MailDraftRecipient[]
+  subject: string
+  body: string
+  approved_cost?: number
+}
+
+export type MailSendResult =
+  | { sent: true; mail_id: number; recipients: { recipient_id: number; recipient_type: string; name: string | null }[] }
+  | { sent: false; needs_approval: true; cost: number }
+
+export interface MailRecipientHit {
+  type: 'character' | 'corporation' | 'alliance' | 'mailing_list'
+  id: number
+  name: string
+}
+
+// ------------------------------------------------------------- discord alerts
+export type AlertType = 'skillqueue_empty' | 'mail_new'
+
+export interface AlertSubscription {
+  shared: boolean
+  enabled: boolean
+  include_content: boolean
+  lead_hours: number
+}
+
+export interface AlertSettings {
+  bot_configured: boolean
+  link_configured: boolean
+  linked: boolean
+  characters: Array<{
+    character_id: number
+    character_name: string
+    alerts: Record<AlertType, AlertSubscription>
+  }>
 }

@@ -174,6 +174,10 @@ def _check_type(key: str, value: Any, expected: type) -> None:
 # choice.
 _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "jita_region_id": (1, None),
+    # Per-tool market hubs (#222) - same validation as Trading's own hub.
+    # 0 = hubs.ALL_HUBS (best hub per item); any other value is a region id.
+    "hub_region_id": (0, None),
+    "input_hub_region_id": (0, None),
     "reference_region_id": (1, None),
     "structure_id": (1, None),
     "buyer_character_id": (1, None),
@@ -220,9 +224,12 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "esi_normal_interval_hours": (0, None),
     "esi_rare_interval_hours": (0, None),
     "esi_stale_clear_multiples": (0, None),
+    "char_skills_queue_warning_hours": (0, 24 * 60),
     "backup_interval_hours": (0, None),
     "jita_price_cache_interval_hours": (0, None),
     "portfolio_snapshot_interval_hours": (0, None),
+    "inactive_tenant_days": (0, None),                # SchedulerOperatorConfig (operator-only)
+    "alerts_mail_poll_minutes": (1, None),            # SchedulerOperatorConfig (operator-only)
     # -- Doctrine tool (see doctrine/config.py's DoctrineConfig) --
     "doctrine_structure_id": (1, None),
     "stockpile_location_id": (1, None),
@@ -291,11 +298,23 @@ def validate_config_overrides(cfg: Any, overrides: dict[str, Any], cfg_type: Opt
         _check_range(key, value)
 
 
+def _validate_hub_freight(rates: Any) -> None:
+    if not isinstance(rates, dict):
+        raise ConfigError(f"hub_freight_cost_per_m3: expected a mapping, got {rates!r}")
+    for key, value in rates.items():
+        if not (isinstance(key, str) and key.isdigit() and int(key) > 0):
+            raise ConfigError(f"hub_freight_cost_per_m3: {key!r} is not a region id")
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            raise ConfigError(f"hub_freight_cost_per_m3[{key}]: expected a number >= 0, got {value!r}")
+
+
 def validate_trading_overrides(overrides: dict[str, Any]) -> None:
     """Enum-checks TradingConfig fields whose valid values are a closed set
     the generic type/range checks cannot see — same extra layer as
     validate_production_overrides for stock_hangar_flags. Empty
     wallet_division_ids is valid (all seven divisions)."""
+    if "hub_freight_cost_per_m3" in overrides:
+        _validate_hub_freight(overrides["hub_freight_cost_per_m3"])
     if "wallet_division_ids" not in overrides:
         return
     values = overrides["wallet_division_ids"]
@@ -371,6 +390,10 @@ class TradingConfig:
 
     # -- Economics --
     import_cost_per_m3: float = 800.0        # ISK freight cost per m3 to move goods to the structure
+    # Freight per hub to the structure (region id as string -> ISK/m3), shared
+    # by every tool whose hub setting is "All hubs" (eve_trader/hubs.py). A
+    # hub without an entry uses that tool's own single freight value.
+    hub_freight_cost_per_m3: dict[str, float] = field(default_factory=dict)
     # Multiplier applied to the C-J structure sell price when no real
     # per-sale tax figure is available (trade_reconciliation.py's fallback
     # path only - see structure_broker_fee below for the journal-matched
@@ -562,7 +585,7 @@ class TradingConfig:
     # on-by-default since this is a credentials-handling tool making its
     # own ESI calls in the background.
     scheduler_enabled: bool = False
-    trading_pipeline_interval_hours: float = 24.0     # do_pipeline(safe=True) - no universe rebuild
+    trading_pipeline_interval_hours: float = 48.0     # do_pipeline(safe=True) - no universe rebuild (docs/SCHEDULER_REWORK_PLAN.md)
     # Freshness tiers (docs/ESI_ACCESS_PLAN.md Phase 7 / decision 5).
     # production_sync_interval_hours / doctrine_sync_interval_hours used
     # to be the ESI cadences; they are retired. Defaults match the
@@ -571,8 +594,14 @@ class TradingConfig:
     esi_normal_interval_hours: float = 6.0
     esi_rare_interval_hours: float = 24.0
     esi_stale_clear_multiples: float = 3.0            # passed into clear_stale_owner_kind
+    # Character Management > Skills (docs/CHARACTER_MANAGEMENT_PLAN.md phase 5a):
+    # warn when a character's skill queue ends within this many hours; 0 turns
+    # every queue warning off. Lives here (next to the other cross-tool ESI
+    # settings) rather than in a new config scope, which would need every
+    # tenant_settings scope CHECK widened; edited on the Skills page.
+    char_skills_queue_warning_hours: float = 24.0
     backup_interval_hours: float = 24.0                # backup.create_backup() - see backup.py
-    jita_price_cache_interval_hours: float = 1.0        # production.jita_price_cache.refresh_jita_price_cache()
+    jita_price_cache_interval_hours: float = 3.0        # production.jita_price_cache.refresh_jita_price_cache()
     portfolio_snapshot_interval_hours: float = 24.0     # portfolio.take_portfolio_snapshot() - see PORTFOLIO_REWORK_PLAN.md
 
 
@@ -677,6 +706,34 @@ class AccessConfig:
     access_gate_enabled: bool = True
 
 
+@dataclass
+class SchedulerOperatorConfig:
+    """Operator-only scheduler switches (docs/SCHEDULER_REWORK_PLAN.md).
+
+    Same posture as AccessConfig: plain instance, read from config.yaml,
+    deliberately NOT part of TradingConfig - a TradingConfig field would show
+    up on every tenant's Settings page although only the Default tenant's
+    value counts (the trap CLAUDE.md documents for `scheduler_enabled`), and
+    an authenticated session must not be able to flip operator switches.
+
+    - inactive_tenant_days: tenants without any authenticated request for this
+      many days are skipped by the tenant-level scheduler jobs (0 disables the
+      check). `tenants.last_active_at` NULL counts as active.
+    - backup_job_enabled / jita_price_cache_job_enabled: the two global jobs.
+      Defaults keep today's behaviour (both run whenever the scheduler
+      thread runs).
+    - alerts_job_enabled: the Discord alerts job (docs/DISCORD_ALERTS_HANDOFF.md),
+      runs independently of every tenant's scheduler_enabled.
+    - alerts_mail_poll_minutes: how often an opted-in character's mail headers
+      are polled (ESI caches the mail list ~30 s; more often only costs calls).
+    """
+    inactive_tenant_days: float = 14.0
+    backup_job_enabled: bool = True
+    jita_price_cache_job_enabled: bool = True
+    alerts_job_enabled: bool = False
+    alerts_mail_poll_minutes: float = 10.0
+
+
 _trading_config_yaml_cache: dict[Path, TradingConfig] = {}
 
 
@@ -774,6 +831,20 @@ OAUTH_CONFIG = OAuthConfig()
 # per its own docstring, it's operator-only and becomes the tenant registry
 # in Phase 3, never a per-tenant Settings-page value.
 ACCESS_CONFIG = load_access_config()
+
+
+def load_scheduler_operator_config(path: Path = DEFAULT_CONFIG_PATH) -> SchedulerOperatorConfig:
+    """Same config.yaml, same loading as AccessConfig."""
+    cfg = SchedulerOperatorConfig()
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as f:
+            overrides = yaml.safe_load(f) or {}
+        validate_config_overrides(cfg, overrides)
+        apply_config_overrides(cfg, overrides)
+    return cfg
+
+
+SCHEDULER_OPERATOR_CONFIG = load_scheduler_operator_config()
 
 
 def save_tenant_config_overrides(scope: str, updates: dict[str, Any], *live_configs, cfg_type: type) -> None:

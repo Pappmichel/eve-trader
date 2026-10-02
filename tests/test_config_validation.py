@@ -362,3 +362,16 @@ def test_do_update_settings_persists_asset_plan_slot_days_target(tenant):
         assert storage.load_tenant_settings("production")["asset_plan_slot_days_target"] is None
     finally:
         apply_config_overrides(PRODUCTION_CONFIG, {"asset_plan_slot_days_target": original})
+
+
+def test_per_tool_hub_fields_are_range_checked():
+    # #222: every tool's own hub field is validated like Trading's jita_region_id.
+    from eve_trader.doctrine.config import DoctrineConfig
+    from eve_trader.module_reprocessing.config import ModuleReprocessingConfig
+    validate_config_overrides(DoctrineConfig(), {"hub_region_id": 10000043})
+    validate_config_overrides(ModuleReprocessingConfig(), {"input_hub_region_id": 10000043})
+    validate_config_overrides(DoctrineConfig(), {"hub_region_id": 0})  # 0 = all hubs
+    with pytest.raises(ConfigError, match="hub_region_id"):
+        validate_config_overrides(DoctrineConfig(), {"hub_region_id": -1})
+    with pytest.raises(ConfigError, match="input_hub_region_id"):
+        validate_config_overrides(ModuleReprocessingConfig(), {"input_hub_region_id": -5})

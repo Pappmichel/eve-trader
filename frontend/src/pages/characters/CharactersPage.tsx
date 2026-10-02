@@ -3,7 +3,7 @@ import {
   Badge, Button, Container, Divider, Group, Popover, Stack, Switch, Table, Text, Title, Tooltip,
 } from '@mantine/core'
 import { modals } from '@mantine/modals'
-import { IconArrowLeft } from '@tabler/icons-react'
+import { IconArrowLeft, IconChevronDown, IconChevronRight } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import { useQueries, useQuery } from '@tanstack/react-query'
 
@@ -15,6 +15,7 @@ import {
   ACCESS_CAPABILITIES,
   CHARACTER_KINDS,
   GROUP_1_KINDS,
+  KIND_SECTIONS,
   capabilityByKey,
   dataKindForTool,
   formatCorpRoles,
@@ -44,9 +45,11 @@ const CHARACTERS_KEYS = [
 ]
 
 const DECISION_4 =
-  'Sharing governs raw ESI snapshots only — assets, jobs, blueprints, orders, contracts, wallet, and skills. '
+  'Sharing governs raw ESI snapshots only — assets, jobs, blueprints, orders, contracts, wallet, skills, skill queue, standings, loyalty points, clones, and implants. '
   + 'Derived tables (realized trades, shortlists, production plans) are not filtered by it. '
-  + 'Unticking Wallet does not erase last week\'s realized trades.'
+  + 'Unticking Wallet does not erase last week\'s realized trades. '
+  + 'Location, current ship, online status, jump fatigue, contacts, and calendar (and the wallet journal in Character Info) are read live from ESI while Character Info is open and are never stored. '
+  + 'Mail is read live too and only stored for a character that opts into the mail archive.'
 
 const CELL_LABEL: Record<CellKind, string> = {
   not_shared: 'not shared',
@@ -112,6 +115,11 @@ function SharingCell({
         <Stack gap="xs">
           <Text size="sm" fw={600}>{kind?.label ?? dataKind}</Text>
           <Text size="xs" c="dimmed">Toggling writes or deletes one sharing row. It does not call ESI.</Text>
+          {kind?.liveOnly && (
+            <Text size="xs" c="dimmed">
+              {kind.liveNote ?? 'Read live from ESI while Character Info is open. Never stored, never synced.'}
+            </Text>
+          )}
           {(kind?.consumingTools ?? []).map((toolKey) => (
             <Switch
               key={toolKey}
@@ -157,6 +165,15 @@ function CharactersSection({
   onRemove: (owner: EsiTokenCharacter) => void
   removePendingId: number | null
 }) {
+  // R6: the table has one column per data kind and outgrew a single flat
+  // header row. Kinds are grouped into sections; a section can be collapsed
+  // to one summary column.
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  const sections = KIND_SECTIONS.map((section) => ({
+    ...section,
+    kinds: CHARACTER_KINDS.filter((k) => k.section === section.key),
+    isCollapsed: !!collapsed[section.key],
+  }))
   return (
     <div>
       <Title order={2} mb="xs">Characters</Title>
@@ -175,9 +192,34 @@ function CharactersSection({
         <Table striped highlightOnHover withTableBorder>
           <Table.Thead>
             <Table.Tr>
-              <Table.Th>Character</Table.Th>
-              {CHARACTER_KINDS.map((k) => <Table.Th key={k.key}>{k.label}</Table.Th>)}
-              <Table.Th />
+              <Table.Th rowSpan={2}>Character</Table.Th>
+              {sections.map((section) => (
+                <Table.Th
+                  key={section.key}
+                  colSpan={section.isCollapsed ? 1 : section.kinds.length}
+                  ta="center"
+                >
+                  <Button
+                    size="compact-xs"
+                    variant="subtle"
+                    color="gray"
+                    aria-expanded={!section.isCollapsed}
+                    aria-label={`${section.isCollapsed ? 'Expand' : 'Collapse'} ${section.label}`}
+                    leftSection={section.isCollapsed ? <IconChevronRight size={12} /> : <IconChevronDown size={12} />}
+                    onClick={() => setCollapsed((c) => ({ ...c, [section.key]: !c[section.key] }))}
+                  >
+                    {section.label}
+                  </Button>
+                </Table.Th>
+              ))}
+              <Table.Th rowSpan={2} />
+            </Table.Tr>
+            <Table.Tr>
+              {sections.flatMap((section) => (
+                section.isCollapsed
+                  ? [<Table.Th key={section.key} />]
+                  : section.kinds.map((k) => <Table.Th key={k.key}>{k.label}</Table.Th>)
+              ))}
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
@@ -210,20 +252,32 @@ function CharactersSection({
                       )}
                     </Group>
                   </Table.Td>
-                  {CHARACTER_KINDS.map((k) => (
-                    <Table.Td key={k.key}>
-                      <SharingCell
-                        ownerType="character"
-                        ownerId={owner.character_id}
-                        dataKind={k.key}
-                        sharing={sharing}
-                        freshness={freshness}
-                        pendingKinds={pending}
-                        pendingToggle={pendingToggle}
-                        onToggle={(toolKey, enabled) =>
-                          onToggle('character', owner.character_id, dataKindForTool(k, toolKey), toolKey, enabled)}
-                      />
-                    </Table.Td>
+                  {sections.flatMap((section) => (
+                    section.isCollapsed
+                      ? [(
+                        <Table.Td key={section.key}>
+                          <Text size="xs" c="dimmed">
+                            {section.kinds.filter((k) =>
+                              sharedToolsFor(sharing, 'character', owner.character_id, k).length > 0,
+                            ).length}/{section.kinds.length} shared
+                          </Text>
+                        </Table.Td>
+                      )]
+                      : section.kinds.map((k) => (
+                        <Table.Td key={k.key}>
+                          <SharingCell
+                            ownerType="character"
+                            ownerId={owner.character_id}
+                            dataKind={k.key}
+                            sharing={sharing}
+                            freshness={freshness}
+                            pendingKinds={pending}
+                            pendingToggle={pendingToggle}
+                            onToggle={(toolKey, enabled) =>
+                              onToggle('character', owner.character_id, dataKindForTool(k, toolKey), toolKey, enabled)}
+                          />
+                        </Table.Td>
+                      ))
                   ))}
                   <Table.Td>
                     <Group gap="xs" wrap="nowrap">
@@ -683,7 +737,7 @@ export default function CharactersPage() {
 
   return (
     <Container size="xl" py="xl">
-      <Group justify="space-between" mb="lg" wrap="nowrap">
+      <Group justify="space-between" mb="lg" gap="sm">
         <div>
           <Text tt="uppercase" size="xs" c="dimmed" fw={600} lts={2}>ESI access</Text>
           <Title order={1}>Characters</Title>
@@ -703,7 +757,7 @@ export default function CharactersPage() {
               Sync everything
             </Button>
           </Tooltip>
-          <Button component={Link} to="/" variant="subtle" leftSection={<IconArrowLeft size={14} />}>Back</Button>
+          <Button component={Link} to="/character-management" variant="subtle" leftSection={<IconArrowLeft size={14} />}>Back</Button>
         </Group>
       </Group>
 

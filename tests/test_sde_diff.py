@@ -216,12 +216,15 @@ _OTHER_TABLES = (
     "sde_groups",
     "sde_market_groups",
     "sde_solar_systems",
+    "sde_regions",
     "sde_stations",
     "sde_categories",
     "sde_type_slots",
     "sde_type_materials",
     "sde_invention_probability",
     "sde_blueprint_skills",
+    "sde_skill_requirements",
+    "sde_skill_meta",
 )
 
 
@@ -242,6 +245,8 @@ def test_build_diff_other_tables_skip_types_and_blueprint_tables():
     assert other["sde_categories"]["new"] == [{"key": "6", "name": "Ship"}]
     assert other["sde_type_slots"]["new"] == [{"key": "123", "name": "123"}]
     assert other["sde_invention_probability"] == {"new": [], "removed": [], "changed": []}
+    assert other["sde_skill_requirements"] == {"new": [], "removed": [], "changed": []}
+    assert other["sde_skill_meta"] == {"new": [], "removed": [], "changed": []}
 
 
 def test_build_diff_sde_groups_new_removed_changed_skips_unchanged():
@@ -348,3 +353,14 @@ def test_build_diff_sde_invention_probability_composite_key_not_deduped():
     # The per-blueprint summary still reports the same probability change.
     assert len(diff["changed_blueprints"]) == 1
     assert diff["changed_blueprints"][0]["invention_probability"] == {"old": 0.3, "new": 0.42}
+
+
+def test_region_rows_from_csv_keeps_all_named_regions():
+    from eve_trader.production.sde import region_rows_from_csv
+    rows = region_rows_from_csv([
+        {"regionID": "10000002", "regionName": "The Forge", "x": "1"},
+        {"regionID": "10000009", "regionName": "Insmother"},
+        {"regionID": "10000099", "regionName": ""},
+        {"regionID": "", "regionName": "Nameless"},
+    ])
+    assert rows == [(10000002, "The Forge"), (10000009, "Insmother")]

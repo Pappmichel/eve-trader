@@ -132,3 +132,20 @@ def test_undercut_fetches_raw_orders_in_one_bulk_call_not_per_type():
     assert client.bulk_calls == 1
     assert sorted(client.bulk_type_ids) == [100, 200]
     assert {r["type_id"] for r in result} == {100, 200}
+
+
+def test_undercut_reads_the_stations_own_hub_region(monkeypatch):
+    from eve_trader.config import TRADING_CONFIG
+    monkeypatch.setattr(TRADING_CONFIG, "jita_region_id", 10000043)  # Trading's hub must not matter
+    cfg = StationTradingConfig(hub_region_id=10000032)
+    regions = []
+
+    class _Client(FakeClient):
+        def region_orders_raw_bulk(self, region_id, type_ids, max_workers=10):
+            regions.append(region_id)
+            return super().region_orders_raw_bulk(region_id, type_ids, max_workers)
+
+    client = _Client({1: [_order(1, 100, 500.0, cfg.station_id)]}, [])
+    check_undercut_pooled([(1, "trader")], client, cfg)
+
+    assert regions == [10000032]

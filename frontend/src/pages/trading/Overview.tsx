@@ -3,8 +3,9 @@ import { ToolOverview } from '../../components/ToolOverview'
 export default function Overview() {
   return (
     <ToolOverview
-      description="Buys compressed goods at Jita, imports them, and sells at C-J. Tracks a shortlist of
-        candidate items, computes margins, and finds new profitable candidates via historical backtesting."
+      description="Buys compressed goods at your configured buy hub (Jita by default - Settings), imports them,
+        and sells at C-J. Tracks a shortlist of candidate items, computes margins, and finds new profitable
+        candidates via historical backtesting."
       noEsiFeatures={[
         { label: 'Load Market Groups / Filter Candidates', note: "builds the tradeable item universe from local SDE data plus public (unauthenticated) ESI market-group data" },
         { label: 'Find New Candidates (History Backtest)', note: 'Goonmetrics region-average history only' },

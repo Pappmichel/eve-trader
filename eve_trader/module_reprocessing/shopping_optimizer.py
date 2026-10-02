@@ -195,6 +195,7 @@ def optimize_shopping_list(requirements: list[MineralRequirement], options: list
             is_ice=source.is_ice, portions=portions[i], units=units, volume_m3=units * source.volume_m3,
             landed_cost_per_unit=source.landed_cost_per_unit,
             total_cost=units * source.landed_cost_per_unit,
+            hub_region_id=source.hub_region_id,
         ))
     reprocess_purchases.sort(key=lambda p: -p.total_cost)
 
@@ -212,6 +213,7 @@ def optimize_shopping_list(requirements: list[MineralRequirement], options: list
             landed_cost_per_unit=direct_price[mineral_id],
             total_cost=quantity * direct_price[mineral_id],
             source=mineral_options[mineral_id].source if mineral_id in mineral_options else None,
+            hub_region_id=mineral_options[mineral_id].hub_region_id if mineral_id in mineral_options else None,
         ))
     direct_purchases.sort(key=lambda p: -p.total_cost)
 

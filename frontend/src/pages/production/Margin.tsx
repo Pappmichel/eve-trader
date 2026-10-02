@@ -11,8 +11,9 @@ import { SearchableSelect } from '../../components/SearchableSelect'
 import { useAction } from '../../hooks/useAction'
 import { useItemNameOptions } from '../../hooks/useStaticOptions'
 import { isk, pct } from '../../format'
+import { ALL_HUBS, hubLabel } from '../../tradingHubs'
 
-function MarginDetailCard({ row }: { row: ShipMarginRow }) {
+function MarginDetailCard({ row, hub }: { row: ShipMarginRow; hub: string }) {
   return (
     <Paper withBorder p="md">
       <Group justify="space-between" mb="xs">
@@ -25,7 +26,7 @@ function MarginDetailCard({ row }: { row: ShipMarginRow }) {
           <Text>{row.home_price === null ? '–' : isk(row.home_price)}</Text>
         </div>
         <div>
-          <Text size="xs" c="dimmed">Jita Price</Text>
+          <Text size="xs" c="dimmed">{hub} Price</Text>
           <Text>{row.jita_price === null ? '–' : isk(row.jita_price)}</Text>
         </div>
         <div>
@@ -39,7 +40,7 @@ function MarginDetailCard({ row }: { row: ShipMarginRow }) {
           </Text>
         </div>
         <div>
-          <Text size="xs" c="dimmed">Margin (Jita)</Text>
+          <Text size="xs" c="dimmed">Margin ({hub})</Text>
           <Text c={row.margin_jita !== null && row.margin_jita > 0 ? 'accent' : undefined}>
             {row.margin_jita === null ? '–' : pct(row.margin_jita)}
           </Text>
@@ -56,6 +57,9 @@ function ItemSearch() {
     [itemNameOptions],
   )
   const [itemId, setItemId] = useState<string | null>(null)
+  const { data: settings } = useQuery({ queryKey: ['production', 'settings'], queryFn: productionApi.settings })
+  // Margins are a reference view (Production never sells at a hub): Best hub mode still shows Jita.
+  const hub = settings?.hub_region_id === ALL_HUBS ? 'Jita' : hubLabel(settings?.hub_region_id)
   const search = useAction('Search Item Margin', (name: string) => productionApi.itemMargin(name), [],
     { tier: 'live', effect: 'Prices this item at the current Home price (live ESI) and Jita price (cached with live fallback).' })
 
@@ -70,22 +74,25 @@ function ItemSearch() {
           </Button>
         </Tooltip>
       </Group>
-      {search.data && <MarginDetailCard row={search.data} />}
+      {search.data && <MarginDetailCard row={search.data} hub={hub} />}
     </Stack>
   )
 }
 
 export default function Margin() {
   const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['production', 'margins'], queryFn: productionApi.shipMargins })
+  const { data: settings } = useQuery({ queryKey: ['production', 'settings'], queryFn: productionApi.settings })
+  // Margins are a reference view (Production never sells at a hub): Best hub mode still shows Jita.
+  const hub = settings?.hub_region_id === ALL_HUBS ? 'Jita' : hubLabel(settings?.hub_region_id)
 
   const columns = useMemo<ColumnDef<ShipMarginRow, any>[]>(() => [
-    { header: 'Ship', accessorKey: 'type_name', size: 240 },
+    { header: 'Ship', accessorKey: 'type_name', size: 240, meta: { copyable: true } },
     { header: 'Home Price', accessorKey: 'home_price', size: 130, cell: (i) => i.getValue() === null ? '–' : isk(i.getValue()) },
-    { header: 'Jita Price', accessorKey: 'jita_price', size: 130, cell: (i) => i.getValue() === null ? '–' : isk(i.getValue()) },
+    { header: `${hub} Price`, accessorKey: 'jita_price', size: 130, cell: (i) => i.getValue() === null ? '–' : isk(i.getValue()) },
     { header: 'Build Cost', accessorKey: 'build_cost', size: 130, cell: (i) => i.getValue() === null ? '–' : isk(i.getValue()) },
     { header: 'Margin (Home)', accessorKey: 'margin_home', size: 130, cell: (i) => i.getValue() === null ? '–' : pct(i.getValue()) },
-    { header: 'Margin (Jita)', accessorKey: 'margin_jita', size: 130, cell: (i) => i.getValue() === null ? '–' : pct(i.getValue()) },
-  ], [])
+    { header: `Margin (${hub})`, accessorKey: 'margin_jita', size: 130, cell: (i) => i.getValue() === null ? '–' : pct(i.getValue()) },
+  ], [hub])
 
   return (
     <Stack>
@@ -100,7 +107,7 @@ export default function Margin() {
       {isLoading && <Text c="dimmed" size="sm">Loading…</Text>}
       {isError && <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />}
       {data && data.length === 0 && <HintCard>No ships found - Refresh SDE (Admin tool) first?</HintCard>}
-      {data && data.length > 0 && <DataTable data={data} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />}
+      {data && data.length > 0 && <DataTable getRowId={(r) => String(r.type_id)} tableId="production-margin" rowDetail data={data} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />}
     </Stack>
   )
 }
