@@ -23,7 +23,7 @@ import Shortlist from './Shortlist'
 
 function row(over: Partial<ShortlistRow>): ShortlistRow {
   return {
-    item: 'Item', category: 'Ship', landed_cost: 1_000_000, net_sell: 1_300_000, sell_volume: 10,
+    item: 'Item', category: 'Ship', landed_cost: 1_000_000, net_sell: 1_300_000, breakeven_buy_price: 1_250_000, sell_volume: 10,
     own_orders_remaining: 0, profit_per_unit: 300_000, margin: 0.3, profit_per_m3: 100,
     decision: 'Import', active: true, item_id: 1, volume_m3: 5, jita_sell: 900_000, import_cost: 50_000,
     meta_level: 0, days_until_deactivation: null, avg_daily_volume: 20, ...over,

@@ -197,20 +197,13 @@ export default function Shortlist() {
     // hardcoded "Cost (Jita)" regardless of jita_region_id's actual value.
     { header: `Cost (${hubLabel(settings?.jita_region_id)})`, accessorKey: 'landed_cost', size: 120, cell: (i) => isk(i.getValue()) },
     {
-      // User feedback, 2026-10-01: the highest landed cost (incl. broker fee
-      // + freight, same basis as "Cost (Jita)" right before it) at which
-      // profit_per_unit is exactly zero - buying at or below this is
-      // profitable, above it is a loss. Not the min_profit_threshold/
-      // min_margin_threshold-aware price (the user picked plain breakeven):
-      // profit = net_sell - landed_cost, so the zero-profit landed_cost is
-      // just net_sell itself (net_sell doesn't depend on landed_cost in this
-      // pricing model) - same raw number as "Sale (Structure)" two columns
-      // over, shown under its own breakeven-specific label/meaning so it
-      // doesn't have to be derived by eye from the other two columns.
-      header: 'Breakeven Price', id: 'breakevenPrice', size: 140,
-      accessorFn: (r) => r.net_sell,
+      // Highest hub buy price that still yields profit_per_unit >= 0 (GitHub
+      // issue #221). Computed server-side: (net_sell - import_cost) /
+      // (1 + broker fee). Comparable to the hub sell price, not to "Cost".
+      header: `Breakeven Buy (${hubLabel(settings?.jita_region_id)})`, id: 'breakevenPrice', size: 150,
+      accessorFn: (r) => r.breakeven_buy_price,
       cell: (i) => isk(i.getValue()),
-      meta: { cellTitle: () => 'Buy at or below this landed cost to keep profit_per_unit ≥ 0.' },
+      meta: { cellTitle: () => 'Highest hub buy price that still breaks even after broker fee, freight and structure sale fees.' },
     },
     { header: 'Sale (Structure)', accessorKey: 'net_sell', size: 140, cell: (i) => isk(i.getValue()) },
     { header: 'Listed Qty (Structure)', accessorKey: 'sell_volume', size: 150, cell: (i) => qty(i.getValue()) },
@@ -335,7 +328,7 @@ export default function Shortlist() {
               <DetailRow label="Import cost" value={isk(openRow.import_cost)} />
               <DetailRow label={`Cost (${hub}, landed)`} value={isk(openRow.landed_cost)} />
               <DetailRow label="Sale (Structure, net)" value={isk(openRow.net_sell)} />
-              <DetailRow label="Breakeven price" value={isk(openRow.net_sell)} />
+              <DetailRow label={`Breakeven buy (${hub})`} value={isk(openRow.breakeven_buy_price)} />
               <DetailRow label="Profit / unit" value={isk(openRow.profit_per_unit)} />
               <DetailRow label="Margin" value={pct(openRow.margin)} />
               <DetailRow label="Profit / m³" value={qty(openRow.profit_per_m3)} />

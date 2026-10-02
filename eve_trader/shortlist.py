@@ -115,6 +115,8 @@ def evaluate_shortlist_item(item: ShortlistItem, own_orders_remaining: float,
     net_sell = (structure_stats.sell_percentile * cfg.structure_sell_haircut) \
         if structure_stats and structure_stats.sell_percentile is not None else None
     sell_volume = structure_stats.sell_volume if structure_stats else None
+    # Solves net_sell = jita_sell * (1 + broker_fee) + import_cost for jita_sell.
+    breakeven_buy_price = ((net_sell - import_cost) / (1 + cfg.jita_buy_broker_fee))         if net_sell is not None else None
 
     profit = (net_sell - landed_cost) if (net_sell is not None and landed_cost is not None) else None
     margin = (profit / landed_cost) if (profit is not None and landed_cost not in (None, 0)) else None
@@ -130,6 +132,7 @@ def evaluate_shortlist_item(item: ShortlistItem, own_orders_remaining: float,
         decision=decision, active=item.active, item_id=item.item_id,
         volume_m3=item.volume_m3, jita_sell=jita_sell, import_cost=import_cost,
         meta_level=item.meta_level, avg_daily_volume=avg_daily_volume,
+        breakeven_buy_price=breakeven_buy_price,
     )
 
 
