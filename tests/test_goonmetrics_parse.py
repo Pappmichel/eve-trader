@@ -47,6 +47,8 @@ def test_parses_history_points():
 
 
 def test_price_history_falls_back_to_esi_on_goonmetrics_failure(monkeypatch):
+    from eve_trader import goonmetrics_client
+    monkeypatch.setattr(goonmetrics_client, "_today", lambda: "2026-01-15")
     cfg = TradingConfig()
     client = GoonmetricsClient(cfg)
 
@@ -307,6 +309,8 @@ def test_region_goonmetrics_does_not_track_goes_to_esi(monkeypatch):
     monkeypatch.setattr(client.session, "get",
                         lambda url, timeout=None: urls.append(url) or _XmlResponse(EMPTY_HISTORY_XML))
     esi_calls = []
+    from eve_trader import goonmetrics_client
+    monkeypatch.setattr(goonmetrics_client, "_today", lambda: "2026-10-02")
     monkeypatch.setattr(ESIClient, "region_market_history",
                         lambda self, region_id, type_id: esi_calls.append((region_id, type_id)) or _esi_rows(["2026-09-30"]))
 
@@ -346,9 +350,12 @@ def test_esi_history_is_cut_to_goonmetrics_window(monkeypatch):
     cfg = TradingConfig()
     client = GoonmetricsClient(cfg)
     monkeypatch.setattr(client.session, "get", lambda url, timeout=None: _XmlResponse(EMPTY_HISTORY_XML))
-    dates = ["2025-10-01", "2026-08-31", "2026-09-01", "2026-09-30"]
-    monkeypatch.setattr(ESIClient, "region_market_history", lambda self, region_id, type_id: _esi_rows(dates))
+    from eve_trader import goonmetrics_client
+    monkeypatch.setattr(goonmetrics_client, "_today", lambda: "2026-10-02")
+    rows = {34: ["2025-10-01", "2026-09-02", "2026-09-03", "2026-09-30"],
+            35: ["2026-03-01", "2026-03-02"]}  # rarely traded: nothing recent
+    monkeypatch.setattr(ESIClient, "region_market_history", lambda self, region_id, type_id: _esi_rows(rows[type_id]))
 
-    points = client.price_history(10000043, [34])
+    points = client.price_history(10000043, [34, 35])
 
-    assert sorted(p.date for p in points) == ["2026-09-01", "2026-09-30"]
+    assert sorted((p.type_id, p.date) for p in points) == [(34, "2026-09-03"), (34, "2026-09-30")]

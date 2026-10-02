@@ -334,13 +334,17 @@ class GoonmetricsClient:
         return out
 
 
+def _today() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).date().isoformat()
+
+
 def _last_days(points: list[HistoryPoint], days: int) -> list[HistoryPoint]:
-    """Points within `days` of the newest one (ISO dates compare as text)."""
-    if not points:
-        return points
+    """Points from the last `days` calendar days before today (UTC), the
+    window Goonmetrics itself returns. Anchored on today, not on an item's
+    own newest point, so a rarely traded item doesn't keep months-old days."""
     from datetime import date, timedelta
-    newest = max(p.date for p in points)
-    cutoff = (date.fromisoformat(newest[:10]) - timedelta(days=days)).isoformat()
+    cutoff = (date.fromisoformat(_today()) - timedelta(days=days)).isoformat()
     return [p for p in points if p.date[:10] > cutoff]
 
 
