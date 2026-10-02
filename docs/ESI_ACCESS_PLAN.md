@@ -8,8 +8,14 @@
 > for anything non-obvious. See `HANDOFF.md` at the repo root for a current
 > progress checkpoint if one exists.
 
-This document is the plan, not the implementation. No code lands because of
-this file; each phase below is a later session's work.
+> **Update (2026-10-02):** all phases (0-9a) and the four known gaps are
+> implemented and deployed to production (release PRs #227/#229; `esi_sharing`
+> holds live rows there). Statements below written in the future tense or as
+> "not yet" describe the plan at the time; the "Status" lines and the
+> deployment note are authoritative. `access_gate.ALL_TOOL_KEYS` now has 17
+> entries.
+
+This document was the plan; each phase below was a separate session's work.
 
 ## Context
 
@@ -100,9 +106,10 @@ rather than paper over:
 **One character = one login = one row.** Scopes and tool-sharing become
 settings on that row, not separate logins. A new tenant-facing tool
 **Characters** (`tool_key "characters"`, the ninth entry in
-`access_gate.ALL_TOOL_KEYS` — currently the eight-tuple `trading`,
-`production`, `doctrine`, `refining`, `station_trading`, `sorting`,
-`portfolio`, `admin`) owns the UI and the `do_*` actions. `"characters"`
+`access_gate.ALL_TOOL_KEYS` when added — that tuple has since grown to 17
+entries, see `eve_trader/access_gate.py`; at the time of this plan it was the
+eight-tuple `trading`, `production`, `doctrine`, `refining`,
+`station_trading`, `sorting`, `portfolio`, `admin`) owns the UI and the `do_*` actions. `"characters"`
 is a normal tool grant (see settled decision 11), not an admin surface
 and not implied by `DEFAULT_TENANT_ID`.
 
@@ -197,11 +204,13 @@ today, not from what a tool's sidebar happens to offer:
   needs a structure name or a structure book asks the Access layer
   "which characters can provide this", not "is this shared with me".
 
-`refining` and `portfolio` do not consume raw ESI character/corp data
-today (`portfolio` reads derived tables; Ore & Minerals is Goonmetrics +
-SDE + its own shortlist). `admin` never does. They are not consuming
-tools in the registry. Adding a consumer later is a registry edit, not
-a new login prefix.
+`refining` does not consume raw ESI character/corp data (Ore & Minerals is
+Goonmetrics + SDE + its own shortlist); `admin` never does. Neither is a
+consuming tool in the registry. `portfolio` did not at the time of this
+plan either, but it is a consuming tool now: its Total Wealth figure reads
+raw assets/blueprints/wallet balances (see the Wallet Balance paragraph
+above and `docs/PORTFOLIO_REWORK_PLAN.md` section 10). Adding a consumer
+later is a registry edit, not a new login prefix.
 
 ### UI — four sections, this order
 
@@ -230,9 +239,9 @@ not a sidebar copy-pasted into every tool layout.
    cells, same per-tool popover, same sharing table with
    `owner_type='corporation'`.
 
-   **Not delivered as of Phase 9 — see "Known gaps" below.** "Access via"
-   renders `—` and the per-row role warning does not exist. The corp-role
-   captions are static text.
+   **Delivered by gap 2's closure (PR #184) — see "Known gaps" below.**
+   (As of Phase 9 "Access via" rendered `—` and the per-row role warning did
+   not exist.)
 3. **Access.** Rows = capability (structure name resolution, structure
    market book). Columns show which characters can provide it. No
    freshness, no scheduling, no per-tool sharing; on or off.
@@ -507,7 +516,7 @@ Keep that test permanently; it is this migration's equivalent of
 ### 10. `tenant_role_consents` is retired
 
 Table, `docs/role_consent_schema.sql`, the two `/api/auth/{role_prefix}/consent`
-endpoints, `storage.has_role_consent` / `record_role_consent`, the
+endpoints, `storage.has_role_consent` / `record_role_consent` (since removed), the
 frontend's "you'll only see this once per role" copy, and the
 `KNOWN_NON_MIGRATED_TABLES` entry in `sqlite_migration.py` all go.
 `tests/pg_helpers.py` currently applies `role_consent_schema.sql` as
@@ -1005,7 +1014,7 @@ stable for `ESIClient` caches.
   (`character_has_token_pool`: "this character_id has more than one
   `tenant_tokens` row"), not a frontend guess. Phase 9 renders it.
 - `_ROLE_KEY_RE` gains the `esi` prefix. Nothing writes an `esi:`
-  key yet. `_rekey_legacy_bare_roles` is not touched. No rewrite of
+  key in Phase 4 (Phase 9a's `/api/characters/add/start` later does). `_rekey_legacy_bare_roles` is not touched. No rewrite of
   `tenant_tokens.role` (decision 2).
 - Tests cover: two keys for one id with overlapping scopes pick the
   larger; a broad token lacking the required scope loses to a
@@ -1330,7 +1339,7 @@ highlights, tool view, admin auto-tick) is a lie until 0–7 exist.
   the Deployment checklist when it lands, which is when they can
   actually be performed.
 
-**Status:** this PR. Characters page at `/characters` (grant
+**Status:** landed (PR #179). Characters page at `/characters` (grant
 `"characters"`), four sections in the specified order, five-state
 cells, per-tool popover, re-authorize, sync everything, pool hint
 from `character_has_token_pool`, decision-4 sentence on the page.
@@ -1357,7 +1366,7 @@ deploys once at the end.
 
 - `eve_trader/auth.py` — `TokenRecord`, `ROLE_PREFIX_TOOL`,
   `TOOL_ROLE_PREFIXES`, `_ROLE_KEY_RE` (includes `esi:` as of
-  Phase 4; nothing writes that prefix until Phase 6),
+  Phase 4; first written by Phase 9a's `/api/characters/add/start`),
   `TokenManager.list_records`, persistence to `tenant_tokens`,
   legacy re-key of bare `"buyer"`/`"seller"` (`_rekey_legacy_bare_roles`
   is unrelated to Phase 4 and is not touched).
@@ -1444,6 +1453,11 @@ proven against a copy first (Phase 1); running it against live
 lands, not a mid-flight action.
 
 ## Deployment checklist
+
+> **Executed (2026-10-02 note):** this rebuild is deployed and running in
+> production (release PRs #227/#229; the live database holds `esi_sharing`
+> rows). The individual items below are kept as the record of what the deploy
+> pass covered; they are not re-ticked line by line here.
 
 This rebuild is deployed only once, when every phase is complete.
 There is no re-auth of real characters, no reconcile against live
@@ -1921,7 +1935,8 @@ regardless of whether the fallback is on.
   (decision 11).
 - Changing CLI signatures other than deleting `eve-trader auth`
   (decision 12).
-- Contract-Scanner, Discord alerts, PI calculator (still deferred,
+- Contract-Scanner, PI calculator (still deferred, `CLAUDE.md`). Discord
+  alerts were out of scope here and shipped later (live 2026-10-02, see
   `CLAUDE.md`).
 - Reintroducing Jita as a Production sales channel (`CLAUDE.md`).
 - Parallelism beyond one task per owner (decision 7), including a

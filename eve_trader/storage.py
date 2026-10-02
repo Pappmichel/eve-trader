@@ -6968,7 +6968,7 @@ def delete_manual_item_price(type_id: int) -> None:
 
 
 
-# --------------------------------------- Discord alerts (docs/DISCORD_ALERTS_HANDOFF.md)
+# --------------------------------------- Discord alerts (CLAUDE.md "Discord alerts")
 def get_alert_destination() -> Optional[str]:
     """This tenant's linked Discord user id, or None."""
     with connect() as conn:

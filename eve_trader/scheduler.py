@@ -322,7 +322,7 @@ def _check_and_run_due_jobs() -> None:
         _check_and_run_jita_price_cache_job()
 
     # The opt-in alerts job runs regardless of `master`, gated only by its own
-    # operator switch (docs/DISCORD_ALERTS_HANDOFF.md).
+    # operator switch (CLAUDE.md "Discord alerts").
     _check_and_run_alerts_job()
 
 

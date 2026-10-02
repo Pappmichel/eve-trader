@@ -5,6 +5,12 @@
 > survive a machine switch - this file is the version of record). See `HANDOFF.md` at the
 > repo root for the current progress checkpoint if one exists.
 
+> **Status (2026-10-02):** all five phases are done and production runs on
+> Postgres with RLS (the SQLite cutover happened; `eve-trader migrate-sqlite`
+> remains as the one-time ETL tool). Passages below about leaving the live
+> deployment untouched, SQLite, or the cutover being out of scope describe the
+> plan's constraints at the time, not the current state.
+
 ## Context
 
 `eve_trader` is currently single-tenant: one SQLite DB (`data/eve_trader.db`), one

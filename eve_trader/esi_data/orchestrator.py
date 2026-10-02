@@ -651,7 +651,7 @@ def pending_due(
 
     `on_demand` kinds (registry `schedule_mode`) are only due for an
     `(owner_type, owner_id, kind)` present in `demand`; nothing supplies one
-    yet - the opt-in alerts will (docs/DISCORD_ALERTS_HANDOFF.md).
+    yet - the opt-in alerts will (CLAUDE.md "Discord alerts").
     """
     wanted = set(demand)
     sharing = storage.list_esi_sharing()
