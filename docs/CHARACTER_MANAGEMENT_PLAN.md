@@ -537,9 +537,9 @@ Original design:
   `confirm_delete=True` when anything is stored; nothing else deletes archived
   mail. A mail two characters received is stored once (R4). Unsharing a
   character hides its archive (reads go through `shared_owner_ids`), it does
-  not delete it. **Not done:** offering archive deletion in the
-  Characters "Remove character" dialog (R8) - removing a character keeps its
-  archive like every other snapshot; delete it in Mail settings first.
+  not delete it. The Characters "Remove character" dialog offers deleting
+  the archive too (R8, done 2026-10-03; off by default, like every other
+  snapshot the archive stays unless ticked).
 - **Frontend:** three-pane client (folders with unread badges incl. unified
   system folders and per-character labels, list with per-character chips and
   "Load more" via per-character cursors, reader). Mail bodies go through the
@@ -694,8 +694,8 @@ Original design:
   browser run, ESI was unreachable, which exercised the failure paths: the
   auto mark-read and the send both showed their redacted error toasts and the
   draft stayed open.
-- **Not done:** the Characters "Remove character" dialog still does not offer
-  deleting an archive (R8); scheduled/deferred sends; mailing-list management.
+- **Not done:** scheduled/deferred sends; mailing-list management. (Archive
+  deletion from the "Remove character" dialog, R8, was added 2026-10-03.)
 - Capabilities `mail_send` and `mail_organize` go into
   `ACCESS_CAPABILITIES`, the `esiRegistry.ts` mirror, and the capabilities
   table on the Characters page.
