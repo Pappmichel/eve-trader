@@ -31,7 +31,7 @@ export default function Invention() {
     useQuery({ queryKey: ['production', 'plan'], queryFn: productionApi.plan })
   const inventionNeeds = plan?.invention_list ?? []
   const {
-    data: t1BpcNeeds, isLoading: t1BpcLoading, isError: t1BpcError, refetch: refetchT1Bpc,
+    data: t1BpcNeeds, isLoading: t1BpcLoading, isError: t1BpcError, error: t1BpcErr, refetch: refetchT1Bpc,
     dataUpdatedAt: t1BpcUpdatedAt,
   } = useQuery({
     queryKey: ['production', 'invention', 't1-bpc-needs'], queryFn: productionApi.t1BpcInventionNeeds, retry: false,
@@ -154,6 +154,10 @@ export default function Invention() {
         <Title order={4} mb="xs">T1 BPC Runs Needed at Invention Station</Title>
         {t1BpcLoading ? (
           <DataTable data={[]} columns={t1BpcColumns} isLoading maxHeight={360} />
+        ) : t1BpcError && /No build list computed yet/.test(t1BpcErr?.message ?? '') ? (
+          // Expected after a backend restart: the build list lives in memory
+          // only (same hint as the Logistics tab), not a load failure.
+          <HintCard>No build list computed yet - run <b>Compute Buy/Build List</b> in the Build List tab first.</HintCard>
         ) : t1BpcError ? (
           <DataTable data={[]} columns={t1BpcColumns} isError onRetry={() => refetchT1Bpc()} maxHeight={360} />
         ) : !t1BpcNeeds || t1BpcNeeds.length === 0 ? (
