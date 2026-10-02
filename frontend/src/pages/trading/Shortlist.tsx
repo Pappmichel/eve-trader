@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { Button, Checkbox, Group, MultiSelect, Select, TextInput, NumberInput, Badge, Text, Stack, Title, Paper, Tooltip, UnstyledButton } from '@mantine/core'
@@ -7,8 +7,9 @@ import { IconMinus, IconTrendingDown, IconTrendingUp } from '@tabler/icons-react
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { tradingApi } from '../../api/client'
-import type { ShortlistRow } from '../../api/types'
+import type { ShortlistRow, SparklineSeries } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
+import { Sparkline } from '../../components/Sparkline'
 import { HintCard } from '../../components/HintCard'
 import { DetailRow, RowDetailDrawer } from '../../components/RowDetailDrawer'
 import { useAction } from '../../hooks/useAction'
@@ -27,12 +28,53 @@ const DECISION_COLOR: Record<string, string> = {
 }
 const META_UNKNOWN = 'unknown'
 
+const spark = (points: [string, number][] | undefined) => (points ?? []).map((p) => p[1])
+const sparkTitle = (label: string, points: [string, number][] | undefined) =>
+  points && points.length >= 2
+    ? `${label}: ${isk(points[0][1])} (${points[0][0]}) → ${isk(points[points.length - 1][1])} (${points[points.length - 1][0]})`
+    : `${label}: no data in the last 30 days`
+
+// Fetches 30-day sparkline data only for the rows the table reports as mounted.
+// Results are kept per item (including "no data" empty series) so scrolling back
+// never refetches; only ids not yet seen are requested.
+function useSparklines() {
+  const [visibleIds, setVisibleIds] = useState<string[]>([])
+  const [cache, setCache] = useState<Map<number, SparklineSeries>>(() => new Map())
+  const missing = useMemo(
+    () => visibleIds.map(Number).filter((id) => Number.isFinite(id) && !cache.has(id)).slice(0, 200).sort((a, b) => a - b),
+    [visibleIds, cache],
+  )
+  const { data } = useQuery({
+    queryKey: ['trading', 'sparklines', missing.join(',')],
+    queryFn: async () => {
+      const res = await tradingApi.sparklines(missing)
+      // An id the server did not answer for is cached as empty, never re-requested.
+      return Object.fromEntries(missing.map((id) => [id, res?.[String(id)] ?? { hub: [], ref: [] }])) as Record<number, SparklineSeries>
+    },
+    enabled: missing.length > 0,
+    staleTime: Infinity,
+  })
+  useEffect(() => {
+    if (!data) return
+    setCache((prev) => {
+      const fresh = Object.entries(data).filter(([id]) => !prev.has(Number(id)))
+      if (fresh.length === 0) return prev
+      const next = new Map(prev)
+      for (const [id, series] of fresh) next.set(Number(id), series)
+      return next
+    })
+  }, [data])
+  const onVisibleRowsChange = useCallback((ids: string[]) => setVisibleIds(ids), [])
+  return { cache, onVisibleRowsChange }
+}
+
 export default function Shortlist() {
   const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['trading', 'shortlist', 'snapshot'], queryFn: tradingApi.shortlistSnapshot })
   const { data: settings } = useQuery({ queryKey: ['trading', 'settings'], queryFn: tradingApi.settings })
   // Zero-network-cost signal (pure local computation over already-persisted
   // Goonmetrics history, see history_backtest.compute_margin_trends) - safe
   // to fetch unconditionally alongside the snapshot, no login/ESI needed.
+  const { cache: sparkCache, onVisibleRowsChange } = useSparklines()
   const { data: trends } = useQuery({ queryKey: ['trading', 'shortlist', 'trends'], queryFn: tradingApi.shortlistTrends })
   const toggleCap = useAction('Shortlist Cap', tradingApi.updateSettings, [['trading', 'settings']],
     { tier: 'local' })
@@ -170,6 +212,26 @@ export default function Shortlist() {
         )
       },
     },
+    {
+      // Reference-region (sell side) average price, last 30 calendar days; both
+      // regions' first/last values are in the tooltip. Rows load lazily.
+      header: '30d', id: 'sparkline', size: 110, enableSorting: false,
+      accessorFn: (r) => { const ref = sparkCache.get(r.item_id)?.ref; return ref && ref.length > 0 ? ref[ref.length - 1][1] : null },
+      cell: (i) => {
+        const series = sparkCache.get(i.row.original.item_id)
+        if (!series) return <Text size="sm" c="dimmed">…</Text>
+        return <Sparkline values={spark(series.ref)} />
+      },
+      meta: {
+        copyable: false, filterable: false, hoverCard: false, detail: false, trackChanges: false,
+        headerHint: 'Reference-region average price, last 30 days',
+        cellTitle: (r: ShortlistRow) => {
+          const series = sparkCache.get(r.item_id)
+          return series ? `${sparkTitle('Reference', series.ref)}
+${sparkTitle('Buy hub', series.hub)}` : 'Loading…'
+        },
+      },
+    },
     { header: 'Profit / Unit', accessorKey: 'profit_per_unit', size: 120, meta: { trackChanges: true }, cell: (i) => isk(i.getValue()) },
     {
       // GitHub issue #100: real average daily *market-wide* traded quantity
@@ -208,7 +270,7 @@ export default function Shortlist() {
     { header: 'Sale (Structure)', accessorKey: 'net_sell', size: 140, cell: (i) => isk(i.getValue()) },
     { header: 'Listed Qty (Structure)', accessorKey: 'sell_volume', size: 150, cell: (i) => qty(i.getValue()) },
     { header: 'Own Orders', accessorKey: 'own_orders_remaining', size: 110, cell: (i) => qty(i.getValue()) },
-  ], [trends, settings?.jita_region_id])
+  ], [trends, sparkCache, settings?.jita_region_id])
 
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
   if (isError) return <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />
@@ -298,7 +360,7 @@ export default function Shortlist() {
         <DataTable
           data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt}
           tableId="trading-shortlist" exportFilename="trading-shortlist"
-          getRowId={(r) => String(r.item_id)}
+          getRowId={(r) => String(r.item_id)} onVisibleRowsChange={onVisibleRowsChange}
           rowDetail={false} onRowClick={openItem} activeRowId={openItemId ?? undefined}
           extraViewState={{
             value: { selCategories, selDecisions, selMeta, search, minMarginPct },

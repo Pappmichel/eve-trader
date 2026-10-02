@@ -2012,6 +2012,36 @@ def test_price_history_is_split_by_region(monkeypatch):
     assert sorted(calls) == sorted([(hub, 34), (ref, 34)])
 
 
+def test_history_sparklines_shape_and_calendar_cutoff(monkeypatch):
+    from datetime import date, timedelta
+    from eve_trader.config import TRADING_CONFIG
+
+    calls = []
+
+    def fake_read(region_id, type_ids, since):
+        calls.append((region_id, list(type_ids), since))
+        return {5: [("2026-10-01", float(region_id))]}
+
+    monkeypatch.setattr(storage, "read_goonmetrics_avg_prices_since", fake_read)
+    resp = client.get("/api/trading/history/sparklines?type_ids=6,5,5")
+    assert resp.status_code == 200
+    hub, ref = TRADING_CONFIG.jita_region_id, TRADING_CONFIG.reference_region_id
+    body = resp.json()
+    assert body["5"] == {"hub": [["2026-10-01", float(hub)]], "ref": [["2026-10-01", float(ref)]]}
+    assert body["6"] == {"hub": [], "ref": []}
+    since = (date.today() - timedelta(days=30)).isoformat()
+    assert calls == [(hub, [5, 6], since), (ref, [5, 6], since)]
+
+
+def test_history_sparklines_rejects_too_many_ids_and_bad_input(monkeypatch):
+    monkeypatch.setattr(storage, "read_goonmetrics_avg_prices_since", lambda *a: {})
+    ok = ",".join(str(i) for i in range(200))
+    assert client.get(f"/api/trading/history/sparklines?type_ids={ok}").status_code == 200
+    too_many = ",".join(str(i) for i in range(201))
+    assert client.get(f"/api/trading/history/sparklines?type_ids={too_many}").status_code == 400
+    assert client.get("/api/trading/history/sparklines?type_ids=a,b").status_code == 400
+
+
 def test_get_sde_regions_serializes_storage_rows(monkeypatch):
     monkeypatch.setattr(storage, "list_all_regions", lambda: [(10000009, "Insmother"), (10000002, "The Forge")])
 

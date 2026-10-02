@@ -125,6 +125,7 @@ export const tradingApi = {
   focusedCandidates: () => get<T.Candidate[]>('/api/trading/candidates/focused'),
   newCandidates: () => get<T.NewCandidateResult[]>('/api/trading/candidates/new'),
   historyTypeIds: () => get<T.HistoryTypeIdOption[]>('/api/trading/history/type-ids'),
+  sparklines: (typeIds: number[]) => get<Record<string, T.SparklineSeries>>(`/api/trading/history/sparklines?type_ids=${typeIds.join(',')}`),
   history: (typeId: number) => get<T.PriceHistory>(`/api/trading/history/${typeId}`),
   realizedTrades: () => get<T.RealizedTrade[]>('/api/trading/trades/realized'),
   settings: () => get<T.TradingSettings>('/api/trading/settings'),
