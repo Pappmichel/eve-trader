@@ -129,12 +129,13 @@ import threading
 import time
 from typing import Callable, Iterable, Optional
 
-from .. import storage
+from .. import hubs, storage
 from ..actions import _emit_progress
 from ..config import TRADING_CONFIG
 from ..refining.config import REFINING_CONFIG, RefiningConfig
 from ..refining.engine import apply_reprocessing_yield, scrapmetal_yield
 from . import invention, pricing
+from .jita_price_cache import JITA_REGION_ID
 from .config import PRODUCTION_CONFIG, ProductionConfig
 from .constants import (
     ACTIVITY_MANUFACTURING, ACTIVITY_MODS, ACTIVITY_REACTION, ADVANCED_COMPONENT_GROUP_IDS, ANCIENT_RELIC_CATEGORY_ID,
@@ -347,7 +348,7 @@ def _current_material_prices(cfg: ProductionConfig, type_ids: list[int],
         if home_quote is not None and home_quote.sell > 0:
             out[tid] = home_quote
             continue
-        jita_quote = jita.get(tid)
+        jita_quote = pricing.reference_quote(jita.get(tid))
         if jita_quote is not None and jita_quote.sell > 0:
             out[tid] = jita_quote
     return out
@@ -1262,7 +1263,7 @@ def margin_jita(type_id: int, build_cost: Optional[float], jita: dict, cfg: Prod
     haul_cost_per_m3 rate used for the reverse Jita->C-J import haul, just
     subtracted instead of added). Returns None if there's no Jita sell quote
     to check against."""
-    jita_quote = jita.get(type_id)
+    jita_quote = pricing.reference_quote(jita.get(type_id))
     if not jita_quote or jita_quote.sell <= 0:
         return None
     export_cost = cfg.haul_cost_per_m3 * (_haul_volume(type_id, cfg) or 0)
@@ -1699,6 +1700,13 @@ def _sell_order_qty_at_location(type_id: int, location_id: int) -> float:
         type_id, location_id, owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
 
 
+def _listing_region_id(cfg: ProductionConfig) -> int:
+    """Region whose own sell orders count as "listed at the hub" for market
+    status / shortfall. ALL_HUBS (0) is not a region: listings are not
+    buying, so Jita stays the reference (#222)."""
+    return JITA_REGION_ID if cfg.hub_region_id == hubs.ALL_HUBS else cfg.hub_region_id
+
+
 def _sell_order_qty_in_region(type_id: int, region_id: int) -> float:
     char_ids, corp_ids = shared_production_owner_ids("market_orders")
     return storage.sell_order_qty_in_region(
@@ -1868,7 +1876,7 @@ def _total_missing(type_id: int, backup_stock: float, home_market_stock: Optiona
         missing += home_short - applied
         surplus_stock -= applied
     if jita_market_stock:
-        jita_listed = (_sell_order_qty_in_region(type_id, cfg.hub_region_id)
+        jita_listed = (_sell_order_qty_in_region(type_id, _listing_region_id(cfg))
                        + storage.manual_listed_stock_qty(type_id, "jita"))
         jita_short = max(0.0, jita_market_stock - jita_listed)
         applied = min(surplus_stock, jita_short)
@@ -2049,11 +2057,14 @@ def _build_buy_list(buy_totals: dict[int, float], gross_demand: dict[int, float]
         unit_price = pricing.buy_price(type_id, home, jita, volume, cfg)
         gross = gross_demand.get(type_id, quantity)
         on_hand_pct = max(0.0, min(100.0, (gross - quantity) / gross * 100)) if gross > 0 else 0.0
+        buy_from = pricing.buy_source(type_id, home, jita, volume, cfg)
+        hub_id, hub_nm = pricing.quote_hub(jita.get(type_id)) if buy_from == "Jita" else (None, None)
         buy_list.append(BuyListEntry(
             type_id=type_id, type_name=name, quantity=quantity, unit_price=unit_price,
+            hub_region_id=hub_id, hub_name=hub_nm,
             on_hand_pct=on_hand_pct,
             total_price=(unit_price * quantity) if unit_price is not None else None,
-            buy_from=pricing.buy_source(type_id, home, jita, volume, cfg),
+            buy_from=buy_from,
             category=job_category(type_id) or category_names.get(storage.get_type_category(type_id)),
         ))
     buy_list.sort(key=lambda e: e.total_price or 0, reverse=True)
@@ -3068,7 +3079,7 @@ def market_status(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[MarketStatu
             _sell_order_qty_at_location(type_id, cfg.home_location_id)
             if cfg.home_location_id is not None else 0.0
         ) + storage.manual_listed_stock_qty(type_id, "home")  # docs/MANUAL_TRACKING_PLAN.md phase 7, decision 7
-        jita_listed = (_sell_order_qty_in_region(type_id, cfg.hub_region_id)
+        jita_listed = (_sell_order_qty_in_region(type_id, _listing_region_id(cfg))
                        + storage.manual_listed_stock_qty(type_id, "jita"))
         rows.append(MarketStatusRow(
             type_id=type_id, type_name=type_name,
@@ -3107,7 +3118,7 @@ def stock_value(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         if current <= 0:
             continue
         home_quote = home.get(type_id)
-        jita_quote = jita.get(type_id)
+        jita_quote = pricing.reference_quote(jita.get(type_id))
         if home_quote and home_quote.sell > 0:
             price = home_quote.sell
         elif jita_quote and jita_quote.sell > 0:
@@ -3609,7 +3620,7 @@ def _scan_ship_margins(cfg: ProductionConfig) -> list[dict]:
         build_cost = _unit_cost(type_id, cfg, ctx.home, ctx.jita, cost_memo, ctx.selected_decryptors,
                                  t2_memo, ctx.cost_indices, ctx.adjusted_prices)
         home_quote = ctx.home.get(type_id)
-        jita_quote = ctx.jita.get(type_id)
+        jita_quote = pricing.reference_quote(ctx.jita.get(type_id))
         results.append({
             "type_id": type_id, "type_name": type_name, "activity": activity,
             "home_price": home_quote.sell if home_quote and home_quote.sell > 0 else None,
@@ -3640,7 +3651,7 @@ def _item_margin_detail_with_context(
     build_cost = _unit_cost(type_id, cfg, ctx.home, ctx.jita, cost_memo, ctx.selected_decryptors,
                              t2_memo, ctx.cost_indices, ctx.adjusted_prices)
     home_quote = ctx.home.get(type_id)
-    jita_quote = ctx.jita.get(type_id)
+    jita_quote = pricing.reference_quote(ctx.jita.get(type_id))
     return {
         "type_id": type_id, "type_name": type_name, "activity": activity,
         "home_price": home_quote.sell if home_quote and home_quote.sell > 0 else None,

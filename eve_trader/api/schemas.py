@@ -180,6 +180,8 @@ class BuyListEntry(_Base):
     total_price: Optional[float]
     on_hand_pct: float = 0.0
     buy_from: Optional[str] = None
+    hub_region_id: Optional[int] = None
+    hub_name: Optional[str] = None
     category: Optional[str] = None
 
 

@@ -316,6 +316,8 @@ export interface BuyListEntry {
   total_price: number | null
   on_hand_pct: number
   buy_from: string | null
+  hub_region_id?: number | null
+  hub_name?: string | null
   category: string | null
 }
 

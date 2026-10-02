@@ -54,6 +54,10 @@ class BuyListEntry:
     # complete picture even when everything's already on hand).
     on_hand_pct: float = 0.0
     buy_from: Optional[str] = None  # "C-J" | "Jita" | None (no sell order anywhere)
+    # Best-hub mode (hub setting ALL_HUBS, #222): the hub a "Jita" buy is
+    # priced at. None otherwise (single-hub mode, or bought at C-J).
+    hub_region_id: Optional[int] = None
+    hub_name: Optional[str] = None
     # Build/rig bucket (job_category: "Capital Components", "Advanced
     # Components", ship sizes, ...) when the item is classifiable that way,
     # else the real SDE item category name (Ship/Module/Material/...). A
