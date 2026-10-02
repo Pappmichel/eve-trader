@@ -421,7 +421,7 @@ CREATE POLICY tenant_isolation ON skill_plan_items
 GRANT SELECT, INSERT, UPDATE, DELETE ON skill_plan_items TO eve_trader_app;
 
 -- ----------------------------------------------------------------- phase 10
--- Discord alerts (docs/DISCORD_ALERTS_HANDOFF.md). One Discord user id per
+-- Discord alerts (CLAUDE.md "Discord alerts"). One Discord user id per
 -- tenant (one character per tenant is a DB guarantee), the bot DMs it. The bot
 -- token is an operator env variable, never stored here. Every subscription is
 -- opt-in, default off; `alert_state` holds dedupe/baseline state only.

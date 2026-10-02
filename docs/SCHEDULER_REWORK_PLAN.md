@@ -8,7 +8,7 @@ written" at the end lists where the implementation differs. Goal: limit backgrou
 once the scheduler is switched on again. It is currently off in production
 (CLAUDE.md, "Backup").
 
-Follow-up feature that builds on this: `docs/DISCORD_ALERTS_HANDOFF.md`.
+Follow-up feature that built on this: Discord alerts (see CLAUDE.md, "Discord alerts").
 
 ## What the scheduler runs today (baseline)
 
