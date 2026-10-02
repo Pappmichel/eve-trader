@@ -53,6 +53,7 @@ function ComputeResultView({ result }: { result: SpecialOrderComputeResult }) {
   )
   const grandTotal = totalCost + totalJobCost
 
+  const showHub = result.buy_list.some((e) => e.hub_name)
   const buyColumns = useMemo<ColumnDef<BuyListEntry, any>[]>(() => [
     { header: 'Item', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
     { header: 'Category', accessorKey: 'category', size: 150, cell: (i) => i.getValue() ?? '–' },
@@ -63,6 +64,7 @@ function ComputeResultView({ result }: { result: SpecialOrderComputeResult }) {
         return v ? <Badge color={v === 'C-J' ? 'accent' : 'info'} variant="light">{v}</Badge> : '–'
       },
     },
+    ...(showHub ? [{ header: 'Best hub', accessorKey: 'hub_name', size: 100, cell: (i: any) => i.getValue() ?? '–' }] : []),
     { header: 'Quantity', accessorKey: 'quantity', size: 110, cell: (i) => qty(i.getValue()) },
     {
       header: 'On Hand', accessorKey: 'on_hand_pct', size: 100,
@@ -74,7 +76,7 @@ function ComputeResultView({ result }: { result: SpecialOrderComputeResult }) {
     },
     { header: 'Unit Price', accessorKey: 'unit_price', size: 120, cell: (i) => isk(i.getValue()) },
     { header: 'Total Price', accessorKey: 'total_price', size: 140, cell: (i) => isk(i.getValue()) },
-  ], [])
+  ], [showHub])
 
   const buildColumns = useMemo<ColumnDef<BuildJobEntry, any>[]>(() => [
     { header: 'Item', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
