@@ -6591,6 +6591,17 @@ def _replace_doctrine_sync_one(
             f"ON CONFLICT (tenant_id, contract_id) DO UPDATE SET {update_clause}",
             stamped,
         )
+        # Same shared-contract case for the child rows: another member's
+        # partition can still hold this contract's items/deviations, so a
+        # plain INSERT hit their primary keys (confirmed on production,
+        # 2026-10-02). Replace the child rows of exactly the contracts this
+        # sync brings items for; a contract whose item fetch failed keeps
+        # what it had.
+        refreshed_ids = sorted({int(r[0]) for r in items} | {int(r[0]) for r in deviations})
+        if refreshed_ids:
+            marks = ",".join("?" * len(refreshed_ids))
+            conn.execute(f"DELETE FROM doctrine_contract_items WHERE contract_id IN ({marks})", refreshed_ids)
+            conn.execute(f"DELETE FROM doctrine_contract_deviations WHERE contract_id IN ({marks})", refreshed_ids)
         conn.executemany(
             "INSERT INTO doctrine_contract_items (contract_id, record_id, type_id, quantity, is_included, "
             "is_singleton) VALUES (?,?,?,?,?,?)",

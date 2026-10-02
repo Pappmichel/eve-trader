@@ -225,6 +225,7 @@ describe('Characters page', () => {
       roles: ['buyer:1'],
       shared_tools: ['production', 'trading'],
       capabilities: ['structure_market_book'],
+      mail_archive_deleted: null,
     })
 
     const user = userEvent.setup()
@@ -239,9 +240,12 @@ describe('Characters page', () => {
     expect(within(dialog).getByText(/Access: Structure market book/)).toBeInTheDocument()
     expect(within(dialog).getByText(/Sharing ticks and Access capabilities stay/)).toBeInTheDocument()
 
+    // R8: the archived mail goes along only when ticked.
+    await user.click(within(dialog).getByRole('checkbox', { name: /archived mail/ }))
     await user.click(within(dialog).getByRole('button', { name: 'Remove' }))
     await vi.waitFor(() => {
-      expect(vi.mocked(charactersApi.removeCharacter).mock.calls[0][0]).toBe(1)
+      expect(vi.mocked(charactersApi.removeCharacter).mock.calls[0][0])
+        .toEqual({ characterId: 1, deleteMailArchive: true })
     })
   })
 

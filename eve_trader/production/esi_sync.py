@@ -52,32 +52,6 @@ PRODUCTION_SCOPES = [
 ]
 
 
-def list_producer_characters(tm: TokenManager | None = None) -> list[tuple[str, int, str]]:
-    """Returns (role_key, character_id, character_name) for every registered
-    producer character, e.g. [("producer:2112625428", 2112625428, "Some Character")].
-
-    Superseded (docs/ESI_ACCESS_PLAN.md Known gap 4, closed): every caller
-    this module used to have has moved to `list_shared_producer_characters`/
-    `list_capability_characters` below, which key off `esi_sharing`/
-    `esi_character_capabilities` instead of the legacy `producer:` token
-    prefix - a character added via the Characters page's own add-a-
-    character path (`esi:<id>`, gap 1) never holds a `producer:` token, so
-    this listing is permanently blind to them regardless of sharing. Kept
-    only because deleting a function with real test coverage on a whim is
-    its own risk; do not add a new caller of this one.
-
-    Uses get_record (no refresh), not get_token - a dead refresh token
-    (revoked access, re-registered SSO app, ...) must not take the whole
-    list down."""
-    tm = tm or TokenManager(OAUTH_CONFIG)
-    out = []
-    for role in tm.list_roles(PRODUCTION_ROLE_PREFIX):
-        record = tm.get_record(role)
-        if record is not None:
-            out.append((role, record.character_id, record.character_name))
-    return out
-
-
 def list_shared_producer_characters(tm: TokenManager | None = None) -> list[tuple[str, int, str]]:
     """Returns (auth_role, character_id, character_name) for every character
     currently sharing Assets and/or Market Orders with `production` -

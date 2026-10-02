@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import {
-  Badge, Button, Container, Divider, Group, Popover, Stack, Switch, Table, Text, Title, Tooltip,
+  Badge, Button, Checkbox, Container, Divider, Group, Popover, Stack, Switch, Table, Text, Title, Tooltip,
 } from '@mantine/core'
 import { modals } from '@mantine/modals'
 import { IconArrowLeft, IconChevronDown, IconChevronRight } from '@tabler/icons-react'
@@ -709,6 +709,9 @@ export default function CharactersPage() {
     const capNames = impact.capabilityKeys.length > 0
       ? impact.capabilityKeys.map((key) => capabilityByKey(key)?.label ?? key).join(', ')
       : 'no Access capabilities ticked'
+    // R8: archived mail is private, so removal can take it along. Read on
+    // confirm; the modal content is rendered once, hence no React state.
+    const choice = { deleteMailArchive: false }
     modals.openConfirmModal({
       title: 'Remove character',
       children: (
@@ -724,13 +727,21 @@ export default function CharactersPage() {
             restores them without re-ticking. Last-synced snapshots stay.
             This is not a per-tool unshare.
           </Text>
+          <Checkbox
+            size="sm"
+            label="Also delete this character's archived mail (if the mail archive was on)"
+            onChange={(e) => { choice.deleteMailArchive = e.currentTarget.checked }}
+          />
         </Stack>
       ),
       labels: { confirm: 'Remove', cancel: 'Cancel' },
       confirmProps: { color: 'danger' },
       onConfirm: () => {
         setRemovePendingId(owner.character_id)
-        removeCharacter.mutate(owner.character_id, { onSettled: () => setRemovePendingId(null) })
+        removeCharacter.mutate(
+          { characterId: owner.character_id, deleteMailArchive: choice.deleteMailArchive },
+          { onSettled: () => setRemovePendingId(null) },
+        )
       },
     })
   }

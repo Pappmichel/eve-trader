@@ -121,53 +121,6 @@ def _group_id(type_id: int) -> Optional[int]:
         return None
 
 
-def do_auth(role: str, scopes: list[str] | None = None, oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
-    """`scopes` overrides oauth_cfg.scopes for this role only - lets a new role
-    (e.g. "producer") request its own scope set without changing what buyer/
-    seller request, so an unrelated role's re-auth can't suddenly ask for
-    scopes the EVE dev-portal app doesn't have enabled.
-
-    "buyer"/"seller" register via get_token_interactive_multi (GitHub issue
-    #46: multiple buyer/seller characters, stored as "buyer:<char_id>"/
-    "seller:<char_id>" - same scheme already used for "producer" characters)
-    instead of get_token_interactive's old single fixed-key storage, so
-    running `eve-trader auth --role buyer` twice registers a second buyer
-    character instead of silently overwriting the first one's token."""
-    tm = TokenManager(oauth_cfg)
-    scopes = scopes or list(oauth_cfg.scopes)
-    if role in ("buyer", "seller"):
-        record = tm.get_token_interactive_multi(role, scopes)
-    else:
-        record = tm.get_token_interactive(role, scopes=scopes)
-    return {"role": record.role, "character_name": record.character_name, "character_id": record.character_id}
-
-
-def _list_role_characters(tm: TokenManager, prefix: str) -> list[tuple[str, int, str]]:
-    """Every character registered under f"{prefix}:<char_id>" (see
-    auth.get_token_interactive_multi), PLUS - for backward compatibility
-    with a token stored under the old fixed-key single-buyer/seller scheme
-    (pre-GitHub-issue-#46) - the legacy `prefix` key itself if still present
-    and not already superseded by a multi-key entry for the same character.
-    No live data migration needed: an old token just keeps working under its
-    original key until the user removes/re-adds it, at which point it's
-    naturally stored under the new f"{prefix}:<id>" scheme instead (see
-    api/routers/auth.py's callback, which no longer special-cases buyer/
-    seller into the single fixed key). Mirrors
-    production/esi_sync.list_producer_characters, plus the legacy fallback
-    producer never needed (it was multi-character from the start)."""
-    out = []
-    seen_ids = set()
-    for role in tm.list_roles(prefix):
-        record = tm.get_record(role)
-        if record is not None:
-            out.append((role, record.character_id, record.character_name))
-            seen_ids.add(record.character_id)
-    legacy = tm.get_record(prefix)
-    if legacy is not None and legacy.character_id not in seen_ids:
-        out.append((prefix, legacy.character_id, legacy.character_name))
-    return out
-
-
 def list_shared_trading_characters(tm: TokenManager | None = None,
                                     oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> list[tuple[str, int, str]]:
     """Returns (auth_role, character_id, character_name) for every character

@@ -274,9 +274,14 @@ def _run_character_owner(
     kind_report: dict = {}
     failed: Optional[tuple[str, BaseException]] = None
     reauth_kinds: list[str] = []
+    # The kind being fetched, so a non-ESI error (e.g. a storage write) is
+    # recorded against it instead of the unknown kind "?"; None when the
+    # failure happens outside a kind (e.g. committing the batch).
+    current_kind: Optional[str] = None
     try:
         with storage.batch_session():
             for data_kind in kinds:
+                current_kind = data_kind
                 scope = _required_scope(data_kind, owner_type)
                 role = select_auth_role(owner_id, scope, tokens=tokens) if scope else None
                 if role is None:
@@ -297,10 +302,11 @@ def _run_character_owner(
                     raise
                 _record_success(owner_type, owner_id, data_kind)
                 kind_report[data_kind] = wrote
+            current_kind = None
     except Exception as e:  # noqa: BLE001 - owner task must not abort the pass
         if failed is None:
-            failed = ("?", e)
-            kind_report["error"] = str(e)
+            failed = (current_kind or "?", e)
+            kind_report[current_kind or "error"] = f"failed ({e})" if current_kind else str(e)
     finally:
         _end_owner(owner_type, owner_id)
 
@@ -352,9 +358,11 @@ def _run_corporation_kinds_for_members(
     kind_report: dict = {}
     failed_kinds: dict[str, str] = {}
     reauth_kinds: list[str] = []
+    current_kind: Optional[str] = None  # see _run_character_owner
     try:
         with storage.batch_session():
             for data_kind in kinds:
+                current_kind = data_kind
                 scope = _required_scope(data_kind, owner_type)
                 last_error: Optional[BaseException] = None
                 wrote = None
@@ -415,9 +423,10 @@ def _run_corporation_kinds_for_members(
                     raise RuntimeError(failed_kinds[data_kind])
                 _record_success(owner_type, corp_id, data_kind)
                 kind_report[data_kind] = wrote
+            current_kind = None
     except Exception as e:  # noqa: BLE001
         if not failed_kinds:
-            failed_kinds["?"] = str(e)
+            failed_kinds[current_kind or "?"] = str(e)
     finally:
         _end_owner(owner_type, corp_id)
 
