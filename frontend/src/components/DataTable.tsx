@@ -5,13 +5,15 @@ import {
   getSortedRowModel,
   getFilteredRowModel,
   flexRender,
+  type Column,
   type ColumnDef,
+  type ColumnPinningState,
   type SortingState,
   type VisibilityState,
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon, Stack } from '@mantine/core'
-import { IconSearch, IconDownload, IconColumns, IconX, IconAlertTriangle, IconRefresh } from '@tabler/icons-react'
+import { Table, ScrollArea, Text, Skeleton, Group, TextInput, Menu, Checkbox, Button, ActionIcon, Stack, Tooltip } from '@mantine/core'
+import { IconSearch, IconDownload, IconColumns, IconX, IconAlertTriangle, IconRefresh, IconPin, IconPinFilled } from '@tabler/icons-react'
 import { relativeTime } from '../format'
 
 // GitHub issue #52 used to force-hide columns marked `meta: { mobileHide:
@@ -137,6 +139,37 @@ function loadPersistedVisibility(tableId: string | undefined): VisibilityState {
   }
 }
 
+// Confirmed real request (user feedback on Trading's Shortlist, 2026-10-01):
+// scrolling right to see Market Volume loses sight of the Item column - the
+// user wants to pin a column so it stays put regardless of horizontal scroll.
+// Left-pinning only (no right-pin UI) - that is the actual use case (keep an
+// identifying column, usually the leftmost one, in view), and it keeps the
+// sticky-offset math to one side. Same persistence shape/pattern as
+// columnVisibility above, own localStorage key so the two never collide.
+function loadPersistedPinning(tableId: string | undefined): ColumnPinningState {
+  if (!tableId) return {}
+  try {
+    const raw = localStorage.getItem(`datatable:${tableId}:pinning`)
+    return raw ? JSON.parse(raw) : {}
+  } catch {
+    return {} // corrupt/unavailable storage - fall back to "nothing pinned", never crash the page over this
+  }
+}
+
+// Cumulative left offset (sum of the pinned widths before it) for every
+// column in `pinnedColumns`, in their pinned order - tanstack-table v8.21
+// doesn't ship a getStart()/getAfter() helper (added in a later version), so
+// this is the same sum any caller of one would need to do.
+function pinnedLeftOffsets(pinnedColumns: Column<any, any>[]): Map<string, number> {
+  const offsets = new Map<string, number>()
+  let running = 0
+  for (const col of pinnedColumns) {
+    offsets.set(col.id, running)
+    running += col.getSize()
+  }
+  return offsets
+}
+
 export function DataTable<T>({
   data,
   columns,
@@ -155,6 +188,7 @@ export function DataTable<T>({
   const [sorting, setSorting] = useState<SortingState>([])
   const [globalFilter, setGlobalFilter] = useState('')
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(() => loadPersistedVisibility(tableId))
+  const [columnPinning, setColumnPinning] = useState<ColumnPinningState>(() => loadPersistedPinning(tableId))
 
   // Ticks every 30s so the relative-time label below ("2m ago" -> "3m ago")
   // stays live without a full data refetch - cheap (one re-render, no
@@ -173,6 +207,7 @@ export function DataTable<T>({
   // previous tab's hidden-columns selection.
   useEffect(() => {
     setColumnVisibility(loadPersistedVisibility(tableId))
+    setColumnPinning(loadPersistedPinning(tableId))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tableId])
 
@@ -186,13 +221,24 @@ export function DataTable<T>({
     }
   }, [tableId, columnVisibility])
 
+  useEffect(() => {
+    if (!tableId) return
+    try {
+      localStorage.setItem(`datatable:${tableId}:pinning`, JSON.stringify(columnPinning))
+    } catch {
+      // see the columnVisibility effect above - same reasoning
+    }
+  }, [tableId, columnPinning])
+
   const table = useReactTable({
     data,
     columns,
-    state: { sorting, globalFilter, columnVisibility },
+    state: { sorting, globalFilter, columnVisibility, columnPinning },
     onSortingChange: setSorting,
     onGlobalFilterChange: setGlobalFilter,
     onColumnVisibilityChange: setColumnVisibility,
+    onColumnPinningChange: setColumnPinning,
+    enableColumnPinning: true,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
@@ -202,8 +248,37 @@ export function DataTable<T>({
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const rows = table.getRowModel().rows
-  const leafColumns = table.getVisibleLeafColumns()
+  // Pinned-left columns first, then the rest - tanstack's own
+  // getVisibleLeafColumns() keeps the user's column *order* (unaffected by
+  // pinning), but this component needs the actual left-to-right render
+  // order once a column is pinned. getLeftLeafColumns()/getCenterLeafColumns()
+  // are unfiltered by visibility (unlike the row-level getLeftVisibleCells()),
+  // so filter them here.
+  const pinnedLeftColumns = table.getLeftLeafColumns().filter((c) => c.getIsVisible())
+  const leafColumns = [...pinnedLeftColumns, ...table.getCenterLeafColumns().filter((c) => c.getIsVisible())]
   const allColumns = table.getAllLeafColumns()
+  const pinnedOffsets = pinnedLeftOffsets(pinnedLeftColumns)
+  const lastPinnedId = pinnedLeftColumns.length > 0 ? pinnedLeftColumns[pinnedLeftColumns.length - 1].id : null
+
+  // Sticky styling for a pinned-left header/cell: opaque background (a
+  // scrolling row's own cells would otherwise show through underneath as the
+  // table scrolls horizontally - Mantine's `striped` alternation is per-row
+  // CSS, not reproduced here, so a pinned column loses the stripe, a small
+  // trade-off for staying put) plus a right-edge shadow on the last pinned
+  // column marking where the pinned area ends.
+  const pinnedCellStyle = (columnId: string, opts?: { header?: boolean }): React.CSSProperties | undefined => {
+    const offset = pinnedOffsets.get(columnId)
+    if (offset === undefined) return undefined
+    return {
+      position: 'sticky', left: offset,
+      // Mantine's own stickyHeader puts sticky-top header cells at z-index 3
+      // (styles.css); a header cell that is both sticky-top AND pinned-left
+      // needs to sit above that, a plain body cell just above unpinned ones.
+      zIndex: opts?.header ? 4 : 2,
+      backgroundColor: 'var(--mantine-color-body)',
+      boxShadow: columnId === lastPinnedId ? '4px 0 4px -2px rgba(0, 0, 0, 0.35)' : undefined,
+    }
+  }
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -334,16 +409,45 @@ export function DataTable<T>({
               </Button>
             </Menu.Target>
             <Menu.Dropdown>
-              {allColumns.map((col) => (
-                <Menu.Item key={col.id} onClick={() => col.toggleVisibility()} closeMenuOnClick={false}>
-                  <Checkbox
-                    size="xs"
-                    readOnly
-                    checked={col.getIsVisible()}
-                    label={columnLabel(col.columnDef.header, col.id)}
-                  />
-                </Menu.Item>
-              ))}
+              {allColumns.map((col) => {
+                const pinned = col.getIsPinned() === 'left'
+                return (
+                  // component="div": Menu.Item renders a <button> by default,
+                  // and a <button> may not nest another <button> (invalid
+                  // HTML - confirmed real bug via a React DOM warning during
+                  // manual testing: the browser/jsdom "repairs" the nesting by
+                  // closing the outer button early, which silently broke the
+                  // whole item's structure). The pin ActionIcon below is a
+                  // real button; Menu.Item still keeps its role="menuitem"
+                  // and keyboard handling on a <div> root (polymorphicFactory).
+                  <Menu.Item component="div" key={col.id} onClick={() => col.toggleVisibility()} closeMenuOnClick={false}>
+                    <Group justify="space-between" gap="xs" wrap="nowrap">
+                      <Checkbox
+                        size="xs"
+                        readOnly
+                        checked={col.getIsVisible()}
+                        label={columnLabel(col.columnDef.header, col.id)}
+                      />
+                      {col.getCanPin() && (
+                        <Tooltip label={pinned ? 'Unpin column' : 'Pin column (stays visible while scrolling right)'}>
+                          <ActionIcon
+                            size="xs"
+                            variant={pinned ? 'filled' : 'subtle'}
+                            color={pinned ? 'accent' : 'dimmed'}
+                            aria-label={pinned ? `Unpin ${columnLabel(col.columnDef.header, col.id)}` : `Pin ${columnLabel(col.columnDef.header, col.id)}`}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              col.pin(pinned ? false : 'left')
+                            }}
+                          >
+                            {pinned ? <IconPinFilled size={12} /> : <IconPin size={12} />}
+                          </ActionIcon>
+                        </Tooltip>
+                      )}
+                    </Group>
+                  </Menu.Item>
+                )
+              })}
             </Menu.Dropdown>
           </Menu>
           <Button size="xs" variant="default" leftSection={<IconDownload size={14} />} onClick={exportCsv}>
@@ -360,9 +464,14 @@ export function DataTable<T>({
             ))}
           </colgroup>
           <Table.Thead>
-            {table.getHeaderGroups().map((hg) => (
+            {/* Pinned-left headers first, then center - same order as `leafColumns`/
+                colgroup above. getLeftHeaderGroups()/getCenterHeaderGroups() (not a
+                flat getHeaderGroups()) so a pinned column also reorders correctly
+                for a page with grouped/nested headers, not just this app's usual
+                flat ones. */}
+            {table.getLeftHeaderGroups().map((hg, i) => (
               <Table.Tr key={hg.id}>
-                {hg.headers.map((h) => {
+                {[...hg.headers, ...(table.getCenterHeaderGroups()[i]?.headers ?? [])].map((h) => {
                   const sorted = h.column.getIsSorted()
                   const canSort = h.column.getCanSort()
                   const toggleSort = h.column.getToggleSortingHandler()
@@ -390,6 +499,7 @@ export function DataTable<T>({
                       style={{
                         cursor: canSort ? 'pointer' : undefined, userSelect: 'none',
                         whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                        ...pinnedCellStyle(h.column.id, { header: true }),
                       }}
                     >
                       {flexRender(h.column.columnDef.header, h.getContext())}
@@ -418,11 +528,11 @@ export function DataTable<T>({
                   const row = rows[vItem.index]
                   return (
                     <Table.Tr key={row.id}>
-                      {row.getVisibleCells()
+                      {[...row.getLeftVisibleCells(), ...row.getCenterVisibleCells()]
                         .map((cell) => (
                           <Table.Td
                             key={cell.id}
-                            style={cellStyle}
+                            style={{ ...cellStyle, ...pinnedCellStyle(cell.column.id) }}
                             title={cell.column.columnDef.meta?.cellTitle?.(cell.row.original, cell.getValue()) ?? cellText(cell.getValue())}
                           >
                             {flexRender(cell.column.columnDef.cell, cell.getContext())}

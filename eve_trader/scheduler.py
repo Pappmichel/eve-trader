@@ -113,11 +113,6 @@ def _portfolio_snapshot_due(cfg: TradingConfig) -> bool:
     return (dt.date.today() - latest).days >= interval_days
 
 
-def _hours_since_last_backup() -> float:
-    backups = backup.list_backups()
-    return _hours_since(backups[0]["created_at"]) if backups else float("inf")
-
-
 def _job_due(success_ts: str | None, attempt_ts: str | None, interval_hours: float) -> bool:
     """Interval since the last success *and* failure backoff since the last
     attempt (docs/SCHEDULER_REWORK_PLAN.md decision 6). Without the second

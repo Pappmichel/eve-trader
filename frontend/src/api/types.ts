@@ -180,6 +180,7 @@ export interface TradingSettings {
   esi_normal_interval_hours: number
   esi_rare_interval_hours: number
   esi_stale_clear_multiples: number
+  scheduler_enabled: boolean
 }
 
 export interface PipelineRunProgress {

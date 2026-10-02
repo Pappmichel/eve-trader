@@ -15,6 +15,23 @@ export default function OreSettings() {
   const [form, setForm] = useState<RefiningSettingsT | null>(null)
   useEffect(() => { if (data) setForm(data) }, [data])
 
+  // Confirmed real bug (code review, 2026-10-01): typing "-0.5" into this
+  // field landed as 0.5 - sign silently lost. Root cause, verified with a
+  // real NumberInput render: Mantine's own onChange reports the *raw string*
+  // for an in-progress value like "-0" or "0." (deliberately, so "0.00"
+  // isn't normalized away mid-type) - the previous `Number(v)` on every
+  // keystroke turned that "-0" into the JS value -0, which lost its sign the
+  // moment it round-tripped back in as the controlled `value` prop (`String(
+  // -0) === "0"`, a JS quirk, not a Mantine bug). Every "-0.x" security value
+  // is typed through exactly that "-0" intermediate state, so this hit any
+  // negative value between -1 and 0, not just -0.5. Fix: keep the field's own
+  // live value as whatever onChange reports (string mid-type, number once
+  // complete) in a separate draft, and only write a real number into `form`
+  // once Mantine itself reports one - never re-derive a number from a
+  // partial string ourselves.
+  const [securityDraft, setSecurityDraft] = useState<number | string>(0)
+  useEffect(() => { if (data) setSecurityDraft(data.security_status) }, [data])
+
   const [newFamily, setNewFamily] = useState('')
   const [newLevel, setNewLevel] = useState<number | ''>(0)
 
@@ -37,8 +54,11 @@ export default function OreSettings() {
           onChange={(v) => v && set('structure_type', v)} />
         <Select label="Rig" data={options.rig_tiers} value={form.rig_tier}
           onChange={(v) => v && set('rig_tier', v)} />
-        <NumberInput label="System security (-1 .. 1)" value={form.security_status} min={-1} max={1} step={0.1}
-          onChange={(v) => set('security_status', Number(v))} />
+        <NumberInput label="System security (-1 .. 1)" value={securityDraft} min={-1} max={1} step={0.1}
+          onChange={(v) => {
+            setSecurityDraft(v)
+            if (typeof v === 'number') set('security_status', v)
+          }} />
         <Select label="Implant" data={options.implants} value={form.implant}
           onChange={(v) => v && set('implant', v)} />
       </SimpleGrid>
