@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -38,6 +39,32 @@ log = logging.getLogger(__name__)
 RETRY_BACKOFF_MINUTES = 15
 MAX_BODY_CHARS = 200
 _TAG_RE = re.compile(r"<[^>]+>")
+
+# Per-tenant in-process guard (confirmed real gap, code review 2026-10-01):
+# scheduler._run_job joins a job thread for at most JOB_TIMEOUT_SECONDS (15
+# min) and then abandons it, still running, if it hasn't finished - the next
+# 5-minute tick would otherwise start a second run_for_tenant for the same
+# tenant while the first is still mid-flight. Both would read the same
+# alert_state row before either writes it, so a slow tick (ESI/Discord both
+# near their own timeouts) could send the same Discord DM twice. Same shape
+# as esi_data.orchestrator's own _try_begin_owner/_end_owner, one level up
+# (per tenant, not per owner) since this job's unit of work is the whole
+# tenant's alert pass, not one ESI owner.
+_guard_mu = threading.Lock()
+_in_flight: set[str] = set()
+
+
+def _try_begin_tenant(tenant_id: str) -> bool:
+    with _guard_mu:
+        if tenant_id in _in_flight:
+            return False
+        _in_flight.add(tenant_id)
+        return True
+
+
+def _end_tenant(tenant_id: str) -> None:
+    with _guard_mu:
+        _in_flight.discard(tenant_id)
 
 
 def _aware(value) -> Optional[datetime]:
@@ -182,29 +209,44 @@ def run_for_tenant(
     tokens: Optional[TokenManager] = None, poll_minutes: Optional[float] = None,
 ) -> dict:
     """Run every enabled subscription of the ambient tenant. Returns counts
-    for logging/tests. Caller must have entered the tenant scope."""
-    now = now or datetime.now(timezone.utc)
-    subs = enabled_subscriptions()
-    if not subs or storage.get_alert_destination() is None:
-        return {"subscriptions": len(subs), "ran": False}
-    tokens = tokens or TokenManager(OAUTH_CONFIG)
-    client = client or ESIClient(tokens=tokens)
-    poll = SCHEDULER_OPERATOR_CONFIG.alerts_mail_poll_minutes if poll_minutes is None else poll_minutes
-    demand = skillqueue_demand(subs)
-    if demand:
-        try:                                                # only rows shared with char_alerts: never the tenant's other data
-            esi_orchestrator.do_sync_due(client=client, granted_tools={TOOL_KEY}, demand=demand, now=now)
-        except Exception as e:  # noqa: BLE001 - a failed refresh must not stop mail alerts
-            log.warning("Alert skill queue sync failed: %s", e)
-    names = _names()
-    freshness = {cid: fields.freshness_by_kind(cid) for cid in {s[0] for s in subs}}
-    for cid, alert_type, include_content, lead_hours in subs:
-        name = names.get(cid, f"#{cid}")
-        try:
-            if alert_type == logic.SKILLQUEUE_EMPTY:
-                _run_skillqueue(cid, lead_hours, name, now, client, tokens, freshness)
-            elif alert_type == logic.MAIL_NEW:
-                _run_mail(cid, include_content, name, now, poll, client, tokens)
-        except Exception as e:  # noqa: BLE001 - one character's failure must not skip the others
-            log.warning("Alert %s for character %s failed: %s", alert_type, cid, e)
-    return {"subscriptions": len(subs), "ran": True}
+    for logging/tests. Caller must have entered the tenant scope.
+
+    Guarded per tenant (`_try_begin_tenant`/`_end_tenant`): a run already in
+    flight for this tenant returns immediately with `skipped: "in_flight"`
+    instead of starting a second pass that would read the same `alert_state`
+    row the first hasn't written yet and could re-send an already-delivered
+    alert (see the module-level guard's own comment)."""
+    tenant_id = storage.get_current_tenant()
+    if not tenant_id:
+        raise RuntimeError("alerts run_for_tenant requires a tenant in scope")
+    tenant_id = str(tenant_id)
+    if not _try_begin_tenant(tenant_id):
+        return {"subscriptions": 0, "ran": False, "skipped": "in_flight"}
+    try:
+        now = now or datetime.now(timezone.utc)
+        subs = enabled_subscriptions()
+        if not subs or storage.get_alert_destination() is None:
+            return {"subscriptions": len(subs), "ran": False}
+        tokens = tokens or TokenManager(OAUTH_CONFIG)
+        client = client or ESIClient(tokens=tokens)
+        poll = SCHEDULER_OPERATOR_CONFIG.alerts_mail_poll_minutes if poll_minutes is None else poll_minutes
+        demand = skillqueue_demand(subs)
+        if demand:
+            try:                                            # only rows shared with char_alerts: never the tenant's other data
+                esi_orchestrator.do_sync_due(client=client, granted_tools={TOOL_KEY}, demand=demand, now=now)
+            except Exception as e:  # noqa: BLE001 - a failed refresh must not stop mail alerts
+                log.warning("Alert skill queue sync failed: %s", e)
+        names = _names()
+        freshness = {cid: fields.freshness_by_kind(cid) for cid in {s[0] for s in subs}}
+        for cid, alert_type, include_content, lead_hours in subs:
+            name = names.get(cid, f"#{cid}")
+            try:
+                if alert_type == logic.SKILLQUEUE_EMPTY:
+                    _run_skillqueue(cid, lead_hours, name, now, client, tokens, freshness)
+                elif alert_type == logic.MAIL_NEW:
+                    _run_mail(cid, include_content, name, now, poll, client, tokens)
+            except Exception as e:  # noqa: BLE001 - one character's failure must not skip the others
+                log.warning("Alert %s for character %s failed: %s", alert_type, cid, e)
+        return {"subscriptions": len(subs), "ran": True}
+    finally:
+        _end_tenant(tenant_id)

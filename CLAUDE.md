@@ -10,7 +10,7 @@ temporary, self-deleting note left when a session ends mid-task (e.g.
 continuing on a different computer with no access to this machine's Claude
 memory) and takes priority over re-deriving current status from scratch.
 
-## Two tools, one backend (plus Doctrine, Ore & Minerals, Station Trading, Sorting, Characters, and Admin)
+## Two tools, one backend (plus Doctrine, Ore & Minerals, Station Trading, Sorting, Character Management, and Admin)
 
 - **Trading**: buys in Jita, sells at a private player structure ("C-J").
 - **Production**: Tech I/II/Reaction manufacturing planning for the same C-J
@@ -39,10 +39,9 @@ file: **Doctrine** (fitted-ship contract/stockpile tracking against EFT
 fittings, `eve_trader/doctrine/`), **Ore & Minerals** (ore/ice
 import-refine-sell, reprocessing quotes, mineral shopping list,
 `eve_trader/refining/`, GitHub issue #90), **Station Trading**,
-**Sorting**, and **Characters** (`tool_key "characters"` — the
-tenant-facing surface for ESI access; grant and router landed in Phase 6
-of `docs/ESI_ACCESS_PLAN.md`; the Characters page is Phase 9)
-— plus the cross-tenant **Admin** tool
+**Sorting**, and the **Character Management hub** (`eve_trader/
+character_management/`, `docs/CHARACTER_MANAGEMENT_PLAN.md` - see its own
+section below for the full breakdown) — plus the cross-tenant **Admin** tool
 (`eve_trader/admin.py`, see "Tool permissions & Admin" below), which
 isn't tenant-facing at all. **Portfolio** is also a tenant-facing tool
 (`tool_key "portfolio"`); its four original Trading/Production figures
@@ -384,6 +383,105 @@ deletes the row. Pending requests whose corp/alliance leaves the allowlist stay 
 and are flagged. The pending count is returned only to sessions that hold
 `admin` (`pending_access_requests` on `/api/gate/status`).
 
+## Character Management hub
+
+Full phase-by-phase history/decisions live in `docs/CHARACTER_MANAGEMENT_
+PLAN.md` (926 lines, all 10 phases done as of 2026-09-29) - this section is
+the CLAUDE.md-level summary that section itself flagged as missing in a
+2026-10-01 code review (a repo audit that only reads this file would
+otherwise never learn this hub exists at all).
+
+**Seven tool_keys, one `char_` prefix, one module.** `char_info`,
+`char_skills`, `char_mail`, `char_notifications`, `char_contacts`,
+`char_skill_plans` and `char_alerts` (Discord alerts, its own paragraph
+under "Deferred, not rejected" below) each gate their own router/page -
+decision 8 in the plan: a `char_` prefix specifically so a tool_key never
+collides with a data-kind key like `"skills"` (`esi_data/registry.py`'s
+`OwnedDataKind.key`). All seven live in `ALL_TOOL_KEYS` (17 grants total
+now) and are consuming tools in `esi_data/registry.py` like any other tool.
+Every sub-tool's `do_*` actions live in `eve_trader/character_management/`
+(`info_actions.py`, `skills_actions.py`, `mail_actions.py`/`mail_write.py`/
+`mail_archive.py`, `notification_actions.py`, `contacts_actions.py`,
+`skill_plan_actions.py`/`skill_plan_logic.py`, `skill_check.py`), each with
+its own thin router under `api/routers/char_*.py` - same `do_*`/router/RLS
+pattern as every other tool, not a special case.
+
+**`fields.py` is the shared gate/state vocabulary every sub-tool builds
+on.** Three states cover every value a page can show: `not_shared` (the
+kind isn't shared with this tool for this character - nothing was read),
+`reauth_needed` (shared, but no stored token holds the kind's scope), and
+either `ok`/`not_synced`/`error` for the actual data. `fields.gate()` is the
+one function that decides which of the first two applies; `fields.live()`
+wraps a live ESI call in that gate plus ESI-failure redaction
+(`esi_failure()` - only the HTTP status or "network error" ever surfaces,
+never the response body, since some of this is mail); `fields.snapshot()`
+does the same for a kind read through `read_esi()`. One dead token or one
+missing share never blanks a whole page - only that one field, on that one
+character.
+
+**`OwnedDataKind.live_only`** (registry.py): a kind with a scope and
+sharing rows (so the Characters page can grant it) but deliberately no
+snapshot table, no freshness row, no stale clear - `location`, `ship`,
+`online`, `fatigue`, `contacts`, `calendar` and `mail` are all `live_only`.
+`read_esi()` raises `AccessorError` for one of these (never returns `[]`,
+which would read as "shared with nobody" instead of "there is no snapshot
+to read at all") - the caller must gate on `is_shared()`/`fields.gate()`
+and read ESI directly instead. The orchestrator drops `live_only` sharing
+rows before deriving owner tasks entirely, so a character sharing only a
+live kind never gets an owner task, never counts as "attempted", and never
+triggers the NULL-owner-id sweep. `ESIClient`'s own live-read cache
+(`_live_character_read`, 60s-10min TTL depending on the kind) keys on
+`(tenant_id, what, character_id, *extra)` - the tenant_id is load-bearing:
+two tenants can each hold a token for the same real EVE character, and an
+unscoped cache key would leak one tenant's private read (and its sharing
+decision) to the other.
+
+**Mail (phase 3-4) is live-by-default, archive is opt-in.** Every character
+shared with `char_mail` is read straight from ESI on every list/open,
+nothing stored, unless that character's own "Archive mail" checkbox is on
+(`char_mail_archive_settings`) - then `mail_archive.py` runs a resumable
+background backfill (own daemon thread per character, not `pipeline_
+runner`, since a first backfill of an old mailbox is thousands of pages/
+bodies and must not hold one pooled DB connection for the whole run) and
+mirrors reads/writes into the archive going forward. Turning the archive
+off **deletes** it (the one destructive path here, confirmed-count-then-
+confirm gated). Mail bodies are HTML-ish text written by any player who can
+mail you - `frontend/src/mailHtml.ts` (DOMPurify, strict tag allowlist,
+non-http(s) hrefs stripped, `rel="noopener noreferrer nofollow"`) is the
+one place a mail body becomes DOM markup; nothing else in the app may
+`dangerouslySetInnerHTML` a mail body. Writes (phase 4: send/mark-read/
+labels/delete) are gated by a *capability* tick (`mail_send`/
+`mail_organize` on the Characters page - explicit consent this app may act
+for the character, separate from and in addition to the `char_mail` share)
+plus a token holding the write scope (`fields.capability_ready`).
+`ESIClient._write` splits write failures by whether a retry is safe:
+420/429 always retries (ESI never processed the request), a transport
+error/5xx retries only for an idempotent PUT/DELETE, and a non-idempotent
+POST (sending a mail, creating a label) raises `ESIDeliveryUnknown` instead
+- surfaced as "check the Sent folder before sending it again", never
+silently retried (a retry after a timeout could double-send).
+
+**Skills (phase 2/5b/9)** adds per-skill rows, attributes and SP totals
+(`character_skills`/`character_attributes`, `char_skills`/
+`char_skill_plans` tool_keys) next to - never instead of - the
+`character_slots` row Production/Station Trading already read from the
+same `skills` data kind; same kind, two tools, two row shapes, each under
+its own sharing row (`esi_data/access.py`'s `_read_character_skills` vs.
+`_read_skills`). Needs two new global SDE tables (`sde_skill_requirements`/
+`sde_skill_meta`, filled by streaming-filtering `dgmTypeAttributes.csv`
+during an SDE refresh - see `production/sde.py`'s `skill_rows_from_
+attributes`) for skill prerequisites/rank/attributes, used by both Skill
+Plans' prerequisite expansion (`skill_plan_logic.py`, pure, no I/O) and the
+Doctrine skill check (`skill_check.py`: which of my characters can fly
+which doctrine fitting - reads Doctrine's stored fittings via `storage`
+directly, never importing the doctrine package, and its route additionally
+requires the `doctrine` grant checked against `request.state.tool_keys`,
+since a `char_skills` grant alone must not expose another tool's fittings).
+
+**Scheduler integration** is covered by the Scheduler section above
+(`schedule_mode = "on_demand"`, `useSyncWhenStale.ts`'s page-open sync) -
+not repeated here.
+
 ## Testing conventions
 
 - Router tests (`tests/test_api_routers.py`) monkeypatch the already-imported
@@ -534,17 +632,26 @@ them):
 
 - **Job switches.** `scheduler_enabled` on `DEFAULT_TENANT_ID` is the master
   switch (it also gates every other tenant's per-tenant jobs, which still need
-  their own `scheduler_enabled` too). New **operator-only** switches live in
+  their own `scheduler_enabled` too - now reachable from Trading Settings'
+  "Background scheduler" switch, added 2026-10-01 after a code review found it
+  was previously writable only via a direct `tenant_settings` SQL update, no UI
+  or route at all). New **operator-only** switches live in
   `config.SCHEDULER_OPERATOR_CONFIG` (`SchedulerOperatorConfig`, read from
   `config.yaml` like `AccessConfig`, deliberately *not* on `TradingConfig` and
   not on the Settings page): `backup_job_enabled`, `jita_price_cache_job_enabled`
   (both default on - the global jobs run when the master switch is on and their
-  own switch is on), `alerts_job_enabled` (reserved for the Discord alerts, see
-  `docs/DISCORD_ALERTS_HANDOFF.md`; nothing reads it yet) and
+  own switch is on), `alerts_job_enabled` (`scheduler._check_and_run_alerts_job`
+  reads it every tick - see "Deferred, not rejected" below for the Discord
+  alerts feature this gates, shipped later the same branch) and
   `inactive_tenant_days`. The thread now starts for the master switch **or**
   `alerts_job_enabled` alone, so alerts never require turning the backup,
   pipeline and ESI jobs on. Re-enabling the scheduler therefore no longer has to
-  mean re-enabling everything at once (see "Backup" below).
+  mean re-enabling everything at once (see "Backup" below). Note the master
+  switch's own trap: it is a plain `TradingConfig` field, not part of
+  `SchedulerOperatorConfig` - a `tenant_settings` override (including one from
+  before this UI existed) still shadows a `config.yaml` default the way any
+  other `TradingConfig` field would, unlike the operator-only switches above,
+  which have no per-tenant override path at all.
 - **Failure backoff.** A job/kind is due only if the interval since the last
   *success* has elapsed **and** `min(interval, 6 h)` has elapsed since the last
   *attempt* (`scheduler._job_due`, `orchestrator._kind_is_due`). Before this an
@@ -577,8 +684,11 @@ them):
   `standings`, `loyalty`, `skillqueue`, `notifications` are display-only and no
   longer refreshed by the scheduler. `pending_due(demand=...)` /
   `do_sync_due(demand=...)` include one only for an `(owner_type, owner_id,
-  kind)` in `demand` - nothing supplies one yet; the opt-in Discord alerts will.
-  Manual syncs (`do_sync_for_tool`/`do_sync_all`) still include them, they are
+  kind)` in `demand` - the opt-in Discord alerts job (`alerts/runner.py`)
+  supplies this for `skillqueue`, restricted to characters with a
+  `skillqueue_empty` subscription and to rows shared with `char_alerts`, so an
+  alerts pass never pulls in a tenant's other data. Manual syncs
+  (`do_sync_for_tool`/`do_sync_all`) still include them, they are
   exempt from `clear_stale_owner_kind` (a failed sync after a long gap must not
   wipe the snapshot), and the Character Info / Skills / Notifications pages
   sync themselves once per open when their data was last tried more than 6 h
@@ -879,6 +989,14 @@ runs only with the operator switch `alerts_job_enabled`, independent of every
 tenant's `scheduler_enabled` and of tenant inactivity
 (`tenant_eligibility.alerts_allowed`: gate on -> registered, not suspended,
 holds `char_alerts`). Frontend: `/character-management/alerts`.
+`runner.run_for_tenant` guards itself per tenant (`_try_begin_tenant`/
+`_end_tenant`, same shape as `esi_data.orchestrator`'s own per-owner
+`_try_begin_owner`/`_end_owner`, one level up) - confirmed real gap fixed
+2026-10-01: `scheduler._run_job` abandons a job thread after
+`JOB_TIMEOUT_SECONDS` rather than waiting for it, so a slow run could still be
+mid-flight when the next 5-minute tick started a second one for the same
+tenant, and both would read `alert_state` before either wrote it - a real
+double-DM risk, not just a wasted ESI call.
 
 A full codebase audit (2026-08-18) turned up four more low-priority items,
 deliberately left unfixed at the time (everything else the audit found -
