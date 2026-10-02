@@ -234,6 +234,12 @@ export interface TradingKpis {
   new_recommendations: number
 }
 
+export interface ProductionKpis {
+  stock_targets: number
+  active_jobs: number
+  open_special_orders: number
+}
+
 // ------------------------------------------------------------ production
 // LocationPicker (docs/MANUAL_TRACKING_PLAN.md phase 2) - a search hit from
 // GET /production/locations/search, same three kinds storage.search_locations

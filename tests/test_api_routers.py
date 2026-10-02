@@ -2045,3 +2045,15 @@ def test_data_versions_route_returns_the_action_result(monkeypatch):
     resp = client.get("/api/updates/versions")
     assert resp.status_code == 200
     assert resp.json() == {"esi": "x", "portfolio": None}
+
+
+def test_production_kpis_returns_counts_only(monkeypatch):
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(1, "A", 0, 1, 1), (2, "B", 0, 1, 1)])
+    monkeypatch.setattr(storage, "list_industry_jobs", lambda *a, **k: [("esi-job",)])
+    monkeypatch.setattr(storage, "load_manual_industry_jobs", lambda: [("m1",), ("m2",)])
+    monkeypatch.setattr(storage, "list_special_orders", lambda: [
+        ("a", None, False, "open", None), ("b", None, False, "done", None),
+    ])
+    resp = client.get("/api/production/kpis")
+    assert resp.status_code == 200
+    assert resp.json() == {"stock_targets": 2, "active_jobs": 3, "open_special_orders": 1}

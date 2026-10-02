@@ -37,7 +37,7 @@ Effort: S = up to half a day, M = 1-2 days, L = 3+ days.
 | Stale `index.html` after a deploy | fixed (PR #225): `Cache-Control: no-cache` on `index.html`, immutable on hashed assets; verified through nginx on the test server |
 | Goonmetrics history only covers a few regions (The Forge, Insmother, Delve; not Amarr, Dodixie, Rens) | fixed (PR #226): untracked regions are read from ESI daily history, cut to the same 30-day window |
 | B.2 sparklines, B.10 charts | unblocked |
-| B.11 dashboard tiles | open, needs a new Production `/kpis` endpoint |
+| B.11 dashboard tiles | implemented: Trading tile (shortlisted / to import / own orders from `/api/trading/kpis`), Production tile (stock targets / active jobs / open special orders from the new counts-only `/api/production/kpis`), Portfolio tile (combined value and total wealth of the newest stored snapshot via `/api/portfolio/history`, never `/overview`); Doctrine skipped (no cheap read) |
 | B.12 auto refresh, B.13 priority drag and drop | deferred (low benefit / needs schema); re-checked 2026-10-02, still right |
 
 Clicked through with a logged-in session on the test server (2026-10-03,

@@ -171,6 +171,7 @@ export const tradingApi = {
 
 // ------------------------------------------------------------- production
 export const productionApi = {
+  kpis: () => get<T.ProductionKpis>('/api/production/kpis'),
   sdeCounts: () => get<Record<string, number>>('/api/production/sde/counts'),
   sdeFreshness: () => get<T.SdeFreshness>('/api/production/sde/freshness'),
   stockTargets: () => get<T.StockTarget[]>('/api/production/stock-targets'),

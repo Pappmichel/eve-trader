@@ -74,6 +74,18 @@ def get_sde_item_names():
     return [{"type_id": t, "type_name": n} for t, n in storage.list_all_sde_types()]
 
 
+@router.get("/kpis")
+def get_production_kpis():
+    """Counts only, for the Landing dashboard tile. A bare storage read, no
+    pricing/ESI/Goonmetrics: "below target" would need market_status or the
+    plan, so it is deliberately not part of this."""
+    return {
+        "stock_targets": len(storage.load_stock_targets()),
+        "active_jobs": len(storage.list_industry_jobs()) + len(storage.load_manual_industry_jobs()),
+        "open_special_orders": sum(1 for row in storage.list_special_orders() if row[3] == "open"),
+    }
+
+
 @router.get("/stock-targets", response_model=list[schemas.StockTarget])
 def get_stock_targets():
     return [
