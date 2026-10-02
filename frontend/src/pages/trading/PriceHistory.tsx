@@ -141,7 +141,7 @@ export default function PriceHistory() {
         <MultiSelect
           label={`Compare with (max ${MAX_COMPARE} items in total)`}
           placeholder="Add items"
-          data={options}
+          data={options.filter((o) => o.value !== ids[0])}
           value={ids.slice(1)}
           onChange={(v) => setChosen([ids[0], ...v.filter((x) => x !== ids[0])].slice(0, MAX_COMPARE))}
           maxValues={MAX_COMPARE - 1}
