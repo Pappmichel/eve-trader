@@ -9,6 +9,12 @@ export const ALL_TOOL_KEYS = [
   'char_notifications', 'char_contacts', 'char_skill_plans', 'char_alerts',
 ] as const
 
+// Mirrors access_gate.DEFAULT_TOOL_KEYS: what a new user gets by default
+// (Add User grants it, approving an access request preselects it).
+export const DEFAULT_TOOL_KEYS: readonly string[] = ALL_TOOL_KEYS.filter(
+  (k) => k !== 'admin' && k !== 'module_reprocessing',
+)
+
 // Tools that consume raw ESI data, i.e. the union of every `consumingTools` in
 // esiRegistry.ts (== eve_trader.esi_data.registry.consuming_tool_keys()).
 // Granting any of these auto-ticks `characters` in Admin's UI, since the
