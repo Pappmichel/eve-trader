@@ -87,3 +87,34 @@ describe('Trading Shortlist interactivity', () => {
     expect(within(screen.getByRole('dialog')).getByText('Warp Scrambler II')).toBeInTheDocument()
   })
 })
+
+
+// GitHub issue #222: the buy hub is picked on the Shortlist page itself.
+describe('Trading Shortlist buy hub', () => {
+  const SETTINGS = { jita_region_id: 10000002, enforce_shortlist_cap: false, max_active_shortlist_items: 500 }
+
+  beforeEach(() => {
+    vi.mocked(tradingApi.shortlistSnapshot).mockResolvedValue(rows)
+    vi.mocked(tradingApi.shortlistTrends).mockResolvedValue({})
+    vi.mocked(tradingApi.settings).mockResolvedValue(SETTINGS as never)
+    vi.mocked(tradingApi.updateSettings).mockReset()
+    vi.mocked(tradingApi.updateSettings).mockResolvedValue(SETTINGS as never)
+  })
+
+  it('saves the picked hub as its region id', async () => {
+    const user = userEvent.setup()
+    renderShortlist()
+    await user.click(await screen.findByRole('combobox', { name: 'Buy hub' }))
+    await user.click(await screen.findByRole('option', { name: 'Dodixie (Sinq Laison)' }))
+
+    await waitFor(() => expect(tradingApi.updateSettings).toHaveBeenCalled())
+    expect(vi.mocked(tradingApi.updateSettings).mock.calls[0][0]).toMatchObject({ jita_region_id: 10000032 })
+  })
+
+  it('keeps an unknown region id selectable as Custom', async () => {
+    vi.mocked(tradingApi.settings).mockResolvedValue({ ...SETTINGS, jita_region_id: 10000016 } as never)
+    renderShortlist()
+    expect(await screen.findByDisplayValue('Custom (region 10000016)')).toBeInTheDocument()
+  })
+})
+

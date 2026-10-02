@@ -1342,6 +1342,9 @@ def save_new_candidates(results: list[NewCandidateResult], run_ts: str) -> None:
 
 
 def save_goonmetrics_history(points) -> None:
+    points = list(points)
+    if not points:
+        return
     with connect() as conn:
         conn.executemany(
             "INSERT INTO goonmetrics_history VALUES (?,?,?,?,?,?,?,?) "
@@ -5359,6 +5362,21 @@ def read_goonmetrics_history_for_types(type_ids: list[int]) -> pd.DataFrame:
         cur = conn.execute(f"SELECT * FROM goonmetrics_history WHERE type_id IN ({placeholders})", type_ids)
         columns = [d[0] for d in cur.description]
         return pd.DataFrame(cur.fetchall(), columns=columns)
+
+
+def read_goonmetrics_history(region_id: int, type_id: int) -> list[dict]:
+    """One item's history in one region, oldest first. Filters on the full
+    primary key prefix (region_id, type_id), the table's only index - unlike
+    read_goonmetrics_history_for_types, whose `type_id IN (...)` cannot use
+    it because type_id is not the leading column."""
+    with connect() as conn:
+        cur = conn.execute(
+            "SELECT date, min_price, max_price, avg_price, movement, num_orders "
+            "FROM goonmetrics_history WHERE region_id = ? AND type_id = ? ORDER BY date",
+            (region_id, type_id),
+        )
+        columns = [d[0] for d in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
 
 
 def goonmetrics_history_type_ids_for_tenant() -> list[int]:

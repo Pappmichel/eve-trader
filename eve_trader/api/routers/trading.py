@@ -91,9 +91,17 @@ def get_history_type_ids():
 
 @router.get("/history/{type_id}")
 def get_price_history(type_id: int):
-    df = storage.read_table("goonmetrics_history")
-    subset = df[df["type_id"] == type_id].sort_values("date")
-    return schemas.records(subset)
+    # goonmetrics_history holds the buy hub's region and the reference
+    # region side by side; returned as two separate series so a chart never
+    # zigzags between two price levels. One indexed query per region.
+    hub_region_id = TRADING_CONFIG.jita_region_id
+    reference_region_id = TRADING_CONFIG.reference_region_id
+    return {
+        "hub_region_id": hub_region_id,
+        "reference_region_id": reference_region_id,
+        "hub": storage.read_goonmetrics_history(hub_region_id, type_id),
+        "reference": storage.read_goonmetrics_history(reference_region_id, type_id),
+    }
 
 
 @router.get("/trades/realized", response_model=list[schemas.RealizedTrade])

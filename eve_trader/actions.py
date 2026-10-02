@@ -786,9 +786,19 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
             try:
                 history_points = gm.price_history_chunked(cfg.reference_region_id, batch_ids)
                 avg_daily_volume_by_item.update(average_market_daily_volume(history_points))
+                # Also the only refresh of these items' stored history: the
+                # candidate search (the other writer) skips items already on
+                # the shortlist, so without this their Price History and
+                # Trend froze on the day they were added.
+                storage.save_goonmetrics_history(history_points)
             except Exception:  # noqa: BLE001 - best-effort; a history outage shouldn't skip the Jita prices
                 log.exception("Could not fetch Goonmetrics region history for Profit/Day "
                               "(cleanup batch %d/%d) - leaving those rows empty this run.",
+                              batch_num, total_batches)
+            try:
+                storage.save_goonmetrics_history(gm.price_history_chunked(cfg.jita_region_id, batch_ids))
+            except Exception:  # noqa: BLE001 - best-effort, only feeds Price History and Trend
+                log.exception("Could not refresh Goonmetrics buy-hub history (cleanup batch %d/%d).",
                               batch_num, total_batches)
             batch_rows = evaluate_shortlist(
                 batch,
@@ -875,7 +885,8 @@ def do_shortlist_trends(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     items = storage.load_shortlist()
     volumes = {i.item_id: i.volume_m3 for i in items if i.item_id and i.volume_m3}
     history_df = storage.read_goonmetrics_history_for_types(list(volumes.keys()))
-    return history_backtest.compute_margin_trends(history_df, volumes, cfg)
+    return history_backtest.compute_margin_trends(
+        history_df, volumes, cfg, today=dt.datetime.now(dt.timezone.utc).date().isoformat())
 
 
 def do_check_seller_unlisted_stock(cfg: TradingConfig = TRADING_CONFIG,

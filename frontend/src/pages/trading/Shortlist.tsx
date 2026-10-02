@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Button, Checkbox, Group, MultiSelect, TextInput, NumberInput, Badge, Text, Stack, Title, Paper, Tooltip, UnstyledButton } from '@mantine/core'
+import { Button, Checkbox, Group, MultiSelect, Select, TextInput, NumberInput, Badge, Text, Stack, Title, Paper, Tooltip, UnstyledButton } from '@mantine/core'
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip as ChartTooltip } from 'recharts'
 import { IconMinus, IconTrendingDown, IconTrendingUp } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
@@ -14,7 +14,7 @@ import { DetailRow, RowDetailDrawer } from '../../components/RowDetailDrawer'
 import { useAction } from '../../hooks/useAction'
 import { isk, pct, qty } from '../../format'
 import { COLORS } from '../../theme'
-import { hubLabel } from '../../tradingHubs'
+import { hubLabel, hubSelectData } from '../../tradingHubs'
 
 const ALL_DECISIONS = ['Inactive', 'Missing ID', 'No market data', 'Skip', 'Already ordered', 'Import']
 const DECISION_COLOR: Record<string, string> = {
@@ -36,6 +36,8 @@ export default function Shortlist() {
   const { data: trends } = useQuery({ queryKey: ['trading', 'shortlist', 'trends'], queryFn: tradingApi.shortlistTrends })
   const toggleCap = useAction('Shortlist Cap', tradingApi.updateSettings, [['trading', 'settings']],
     { tier: 'local' })
+  const setHub = useAction('Buy Hub', tradingApi.updateSettings, [['trading', 'settings'], ['trading', 'history']],
+    { tier: 'local', effect: 'Saves the buy hub. Prices follow on the next Refresh Shortlist.' })
   const recategorize = useAction('Recategorize', tradingApi.recategorizeShortlist, [['trading', 'shortlist', 'snapshot']],
     { tier: 'local', effect: 'Reclassifies Drugs-vs-Implant locally from already-stored category data.' })
 
@@ -223,6 +225,27 @@ export default function Shortlist() {
 
   return (
     <Stack>
+      {settings && (
+        <Paper withBorder p="md" radius="md">
+          <Group gap="md" align="flex-end" wrap="wrap">
+            <Select
+              label="Buy hub"
+              data={hubSelectData(settings.jita_region_id)}
+              value={String(settings.jita_region_id)}
+              onChange={(v) => v && Number(v) !== settings.jita_region_id
+                && setHub.mutate({ ...settings, jita_region_id: Number(v) })}
+              disabled={setHub.isPending}
+              allowDeselect={false}
+              w={240}
+            />
+            <Text size="xs" c="dimmed" maw={520}>
+              Where this list buys. Applies to the Trading tool only; other tools have their own hub
+              setting. New prices appear after the next <b>Refresh Shortlist</b>. Freight cost per m³
+              (Settings) is a single value, so adjust it if the route to the structure changes.
+            </Text>
+          </Group>
+        </Paper>
+      )}
       {settings && (
         <Paper withBorder p="md" radius="md">
           <Title order={6} mb={4}>Limit active shortlist size</Title>

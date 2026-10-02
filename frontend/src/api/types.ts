@@ -145,14 +145,20 @@ export interface SystemCostIndices {
 }
 
 export interface PriceHistoryPoint {
-  region_id: number
-  type_id: number
   date: string
   min_price: number
   max_price: number
   avg_price: number
   movement: number
   num_orders: number
+}
+
+// Buy hub and reference region as separate series (never mixed into one line).
+export interface PriceHistory {
+  hub_region_id: number
+  reference_region_id: number
+  hub: PriceHistoryPoint[]
+  reference: PriceHistoryPoint[]
 }
 
 export interface TradingSettings {

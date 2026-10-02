@@ -1988,3 +1988,25 @@ def test_production_hangar_division_options_excludes_deliveries():
     resp = client.get("/api/production/settings/structure-options")
     assert resp.status_code == 200
     assert "Deliveries" not in resp.json()["hangar_division_flags"]
+
+
+# B1/B2 (docs/FRONTEND_PLAN.md): the buy hub and the reference region come
+# back as two separate series, each read with its own indexed query.
+def test_price_history_is_split_by_region(monkeypatch):
+    from eve_trader.config import TRADING_CONFIG
+
+    calls = []
+
+    def fake_read(region_id, type_id):
+        calls.append((region_id, type_id))
+        return [{"date": "2026-10-01", "avg_price": float(region_id)}]
+
+    monkeypatch.setattr(storage, "read_goonmetrics_history", fake_read)
+    resp = client.get("/api/trading/history/34")
+    assert resp.status_code == 200
+    body = resp.json()
+    hub, ref = TRADING_CONFIG.jita_region_id, TRADING_CONFIG.reference_region_id
+    assert body["hub_region_id"] == hub and body["reference_region_id"] == ref
+    assert body["hub"] == [{"date": "2026-10-01", "avg_price": float(hub)}]
+    assert body["reference"] == [{"date": "2026-10-01", "avg_price": float(ref)}]
+    assert sorted(calls) == sorted([(hub, 34), (ref, 34)])

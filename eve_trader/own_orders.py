@@ -14,7 +14,23 @@ from . import storage
 from .config import TRADING_CONFIG, TradingConfig
 from .esi_client import ESIClient, ESIError
 
-JITA_SOLAR_SYSTEM_ID = 30000142  # stable, never changes - distinct from cfg.jita_region_id (The Forge region)
+# Hub solar system per buy-hub region (cfg.jita_region_id), checked against
+# the SDE. Assets count as "already covered" only at the hub's own system's
+# stations, not anywhere in its region.
+HUB_SOLAR_SYSTEM_IDS = {
+    10000002: 30000142,  # Jita (The Forge)
+    10000043: 30002187,  # Amarr (Domain)
+    10000032: 30002659,  # Dodixie (Sinq Laison)
+    10000030: 30002510,  # Rens (Heimatar)
+}
+
+
+def _hub_station_ids(region_id: int) -> frozenset:
+    system_id = HUB_SOLAR_SYSTEM_IDS.get(region_id)
+    if system_id is None:
+        # A custom region has no single hub system: any NPC station in it.
+        return storage.get_station_ids_in_region(region_id)
+    return storage.get_station_ids_in_system(system_id)
 
 
 def _character_assets(character_id: int, auth_role: str, client: ESIClient) -> list[dict]:
@@ -227,9 +243,9 @@ def fetch_seller_stock_without_order(character_id: int, auth_role: str, client: 
 def fetch_buyer_already_covered(character_id: int, auth_role: str, client: ESIClient,
                                  cfg: TradingConfig = TRADING_CONFIG) -> set[int]:
     """Returns the set of item_ids the buyer either already has an open BUY
-    order for in the Jita region or at the destination structure
-    (cfg.structure_id, "C-J"), or already holds in inventory at a Jita
-    station or at the destination structure - all mean "don't need to import
+    order for in the buy-hub region or at the destination structure
+    (cfg.structure_id, "C-J"), or already holds in inventory at a station in
+    the hub's solar system or at the destination structure - all mean "don't need to import
     more of this right now", extending the existing seller-sell-order-based
     "Already ordered" check.
 
@@ -246,10 +262,10 @@ def fetch_buyer_already_covered(character_id: int, auth_role: str, client: ESICl
         if o.get("region_id") == cfg.jita_region_id or o.get("location_id") == cfg.structure_id:
             covered.add(o["type_id"])
 
-    jita_stations = storage.get_station_ids_in_system(JITA_SOLAR_SYSTEM_ID)
+    hub_stations = _hub_station_ids(cfg.jita_region_id)
     assets = _character_assets(character_id, auth_role, client)
     for a in assets:
-        if a.get("location_id") in jita_stations or a.get("location_id") == cfg.structure_id:
+        if a.get("location_id") in hub_stations or a.get("location_id") == cfg.structure_id:
             covered.add(a["type_id"])
 
     return covered

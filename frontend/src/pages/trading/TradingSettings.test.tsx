@@ -1,5 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import { render, screen } from '@testing-library/react'
 import { MantineProvider } from '@mantine/core'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, expect, it, vi } from 'vitest'
@@ -39,63 +38,17 @@ function renderPage() {
   )
 }
 
-// User feedback, 2026-10-01: "Possible to add other market hubs?" - the buy
-// hub (jita_region_id) was a bare region-id number field, labelled "Jita"
-// everywhere regardless of what was actually entered.
-describe('TradingSettings buy hub selection', () => {
-  it('shows the configured hub (Jita) pre-selected, by name', async () => {
-    vi.mocked(tradingApi.settings).mockResolvedValue(SETTINGS as any)
+// The buy hub itself is picked on the Shortlist page (GitHub issue #222);
+// Settings only labels hub-dependent fields with it.
+describe('TradingSettings buy hub labels', () => {
+  it('labels hub-dependent fields with the configured hub', async () => {
+    vi.mocked(tradingApi.settings).mockResolvedValue({ ...SETTINGS, jita_region_id: 10000043 } as any)
     vi.mocked(tradingApi.walletDivisionOptions).mockResolvedValue({ wallet_division_ids: [1, 2] })
     vi.mocked(productionApi.structureNames).mockResolvedValue({})
     renderPage()
 
-    const hubInput = await screen.findByDisplayValue('Jita (The Forge)')
-    expect(hubInput).toBeInTheDocument()
-  })
-
-  it('switches the hub and renames every other "Jita"-labelled field to match', async () => {
-    vi.mocked(tradingApi.settings).mockResolvedValue(SETTINGS as any)
-    vi.mocked(tradingApi.walletDivisionOptions).mockResolvedValue({ wallet_division_ids: [1, 2] })
-    vi.mocked(productionApi.structureNames).mockResolvedValue({})
-    const user = userEvent.setup()
-    renderPage()
-
-    await screen.findByDisplayValue('Jita (The Forge)')
-    expect(screen.getByLabelText(/Buyer name \(Jita\)/)).toBeInTheDocument()
-    expect(screen.getByLabelText(/Freight cost Jita→structure/)).toBeInTheDocument()
-
-    await user.click(screen.getByRole('combobox', { name: 'Buy hub' }))
-    await user.click(await screen.findByRole('option', { name: 'Amarr (Domain)' }))
-
-    expect(screen.getByLabelText(/Buyer name \(Amarr\)/)).toBeInTheDocument()
+    expect(await screen.findByLabelText(/Buyer name \(Amarr\)/)).toBeInTheDocument()
     expect(screen.getByLabelText(/Freight cost Amarr→structure/)).toBeInTheDocument()
-  })
-
-  it('keeps a region id outside the four known hubs as a selectable "Custom" option, not data loss', async () => {
-    vi.mocked(tradingApi.settings).mockResolvedValue({ ...SETTINGS, jita_region_id: 10000016 } as any)
-    vi.mocked(tradingApi.walletDivisionOptions).mockResolvedValue({ wallet_division_ids: [] })
-    vi.mocked(productionApi.structureNames).mockResolvedValue({})
-    renderPage()
-
-    const hubInput = await screen.findByDisplayValue('Custom (region 10000016)')
-    expect(hubInput).toBeInTheDocument()
-  })
-
-  it('saves the real region id for the picked hub, not a label string', async () => {
-    vi.mocked(tradingApi.settings).mockResolvedValue(SETTINGS as any)
-    vi.mocked(tradingApi.walletDivisionOptions).mockResolvedValue({ wallet_division_ids: [] })
-    vi.mocked(productionApi.structureNames).mockResolvedValue({})
-    vi.mocked(tradingApi.updateSettings).mockResolvedValue(SETTINGS as any)
-    const user = userEvent.setup()
-    renderPage()
-
-    await screen.findByDisplayValue('Jita (The Forge)')
-    await user.click(screen.getByRole('combobox', { name: 'Buy hub' }))
-    await user.click(await screen.findByRole('option', { name: 'Dodixie (Sinq Laison)' }))
-    await user.click(screen.getByRole('button', { name: 'Save Settings' }))
-
-    await waitFor(() => expect(tradingApi.updateSettings).toHaveBeenCalled())
-    const sent = vi.mocked(tradingApi.updateSettings).mock.calls[0][0]
-    expect(sent.jita_region_id).toBe(10000032)
+    expect(screen.queryByRole('combobox', { name: 'Buy hub' })).not.toBeInTheDocument()
   })
 })
