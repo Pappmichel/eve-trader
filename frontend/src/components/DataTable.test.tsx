@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MantineProvider } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
@@ -340,7 +340,9 @@ describe('DataTable saved views and column order', () => {
     await user.click(await screen.findByRole('button', { name: 'Save' }))
     expect(JSON.parse(localStorage.getItem('datatable:views-test:views')!)).toHaveLength(1)
 
-    await user.click(screen.getByRole('button', { name: /Item/ })) // change sort
+    await user.click(screen.getByRole('button', { name: /Item/ })) // change sort; the outside click closes the popover
+    await waitFor(() => expect(screen.queryByLabelText('View name')).not.toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: /Views/ }))
     await user.click(await screen.findByText('Big first'))
     const cells = bodyRows().map((r) => within(r).getAllByRole('cell')[0].textContent)
     expect(cells).toEqual(['Alpha Ore', 'Mid Ore', 'Zebra Ore'])

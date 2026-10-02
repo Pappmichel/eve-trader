@@ -4,6 +4,7 @@ mode is a single process/port."""
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -62,6 +63,15 @@ class SPAStaticFiles(StaticFiles):
     let exactly these two through)."""
 
     async def get_response(self, path: str, scope: Scope):
+        # StaticFiles.get_path builds `path` with os.path.normpath, so on
+        # Windows it arrives as "api\\auth\\..." - normalize before the
+        # prefix check or every unknown /api route falls back to 200.
+        posix_path = path.replace(os.sep, "/")
+        # Checked before StaticFiles runs at all: it rejects any non-GET/HEAD
+        # method with 405 first, so an unknown POST /api/... route answered
+        # 405 instead of 404 whenever frontend/dist was mounted.
+        if posix_path == "api" or posix_path.startswith("api/"):
+            raise StarletteHTTPException(status_code=404)
         # StaticFiles doesn't return a 404 Response here on a missing file -
         # it *raises* HTTPException(404) (confirmed live: a plain
         # `if response.status_code == 404` check on the return value never
@@ -70,7 +80,7 @@ class SPAStaticFiles(StaticFiles):
         try:
             return await super().get_response(path, scope)
         except StarletteHTTPException as exc:
-            if exc.status_code == 404 and path != "api" and not path.startswith("api/"):
+            if exc.status_code == 404:
                 return await super().get_response("index.html", scope)
             raise
 

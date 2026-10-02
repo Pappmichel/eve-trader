@@ -186,7 +186,7 @@ function RowSummary<T>({ row, excludeId }: { row: Row<T>; excludeId: string }) {
     .slice(0, HOVER_SUMMARY_COLUMNS)
   const text = (value: unknown) => {
     if (value === null || value === undefined || value === '') return '–'
-    if (typeof value === 'number') return value.toLocaleString()
+    if (typeof value === 'number') return value.toLocaleString('en-US') // same separators as format.ts
     return typeof value === 'string' || typeof value === 'boolean' ? String(value) : '–'
   }
   return (
