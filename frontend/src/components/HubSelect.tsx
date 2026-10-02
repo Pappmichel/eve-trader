@@ -49,7 +49,7 @@ export function HubFreightTable() {
         Shared by every tool set to "All hubs". Each item is priced at the hub with the lowest cost
         including this freight. An empty field uses the tool's own freight value.
       </Text>
-      <SimpleGrid cols={{ base: 2, sm: 4 }}>
+      <SimpleGrid cols={2}>
         {data.map((r) => (
           <NumberInput key={r.region_id} label={r.hub} min={0} step={50} value={draft[r.region_id] ?? ''}
             onChange={(v) => setDraft((d) => ({ ...d, [r.region_id]: v === '' ? '' : Number(v) }))} />
