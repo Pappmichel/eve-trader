@@ -59,7 +59,7 @@ describe('Contacts & Calendar page', () => {
     expect(screen.getByText('watched')).toBeInTheDocument()
     expect(screen.getByText('blocked')).toBeInTheDocument()
     expect(screen.getByText('-10.0')).toBeInTheDocument()
-    await user.type(screen.getByPlaceholderText(/Filter by name or label/), 'friends')
+    await user.type(screen.getByPlaceholderText('Filter...'), 'friends')
     expect(screen.queryByText('Evil Corp')).not.toBeInTheDocument()
     expect(screen.getByText('Zed')).toBeInTheDocument()
   })

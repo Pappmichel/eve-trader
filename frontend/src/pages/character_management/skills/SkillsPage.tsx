@@ -1,17 +1,19 @@
 import { useState } from 'react'
 import {
-  Accordion, Alert, Badge, Button, Container, Group, Loader, NumberInput, Select, SimpleGrid, Stack, Table, Tabs,
+  Accordion, Alert, Badge, Button, Container, Group, Loader, NumberInput, Select, SimpleGrid, Stack, Tabs,
   Text, TextInput, Title, Tooltip,
 } from '@mantine/core'
-import { notifications } from '@mantine/notifications'
+import { notify } from '../../../notify'
 import { IconArrowLeft } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import type { ColumnDef } from '@tanstack/react-table'
 
 import { ApiError, charSkillsApi, gateApi } from '../../../api/client'
 import type {
   CharacterSkills, SkillAttributes, SkillGroup, SkillMatrix, SkillQueue, SkillsOverviewRow, SkillsSummary,
 } from '../../../api/types'
+import { DataTable } from '../../../components/DataTable'
 import { FieldState } from '../../../components/FieldState'
 import { dateTime, duration, qty } from '../../../format'
 import { useCharacterSync } from '../../../hooks/useCharacterSync'
@@ -65,90 +67,95 @@ function QueueSummary({ queue }: { queue: SkillQueue }) {
   )
 }
 
+const fieldValue = <T,>(field: { state: string; value: T | null }): T | null =>
+  (field.state === 'ok' ? field.value : null)
+
 function OverviewTab({ rows, onOpen }: { rows: SkillsOverviewRow[]; onOpen: (characterId: number) => void }) {
+  const columns: ColumnDef<SkillsOverviewRow, any>[] = [
+    {
+      header: 'Character', accessorKey: 'character_name', size: 170,
+      cell: (i) => <Text size="sm" fw={600}>{i.getValue() as string}</Text>,
+    },
+    {
+      header: 'Total SP', id: 'total_sp', size: 120, accessorFn: (c) => fieldValue(c.summary)?.total_sp ?? null,
+      cell: (i) => <FieldState field={i.row.original.summary}>{(s: SkillsSummary) => (s.total_sp === null ? '–' : qty(s.total_sp))}</FieldState>,
+    },
+    {
+      header: 'Unallocated', id: 'unallocated_sp', size: 120, accessorFn: (c) => fieldValue(c.summary)?.unallocated_sp ?? null,
+      cell: (i) => <FieldState field={i.row.original.summary}>{(s: SkillsSummary) => (s.unallocated_sp === null ? '–' : qty(s.unallocated_sp))}</FieldState>,
+    },
+    {
+      header: 'Extractable (est.)', id: 'extractable', size: 150, meta: { headerHint: EXTRACTABLE_HINT },
+      accessorFn: (c) => fieldValue(c.summary)?.extractable_estimate ?? null,
+      cell: (i) => (
+        <FieldState field={i.row.original.summary}>
+          {(s: SkillsSummary) => (s.extractable_estimate === null ? '–' : `${s.extractable_estimate}×`)}
+        </FieldState>
+      ),
+    },
+    {
+      header: 'Attributes', id: 'attributes', size: 340, enableSorting: false,
+      cell: (i) => <FieldState field={i.row.original.summary}>{(s: SkillsSummary) => <Attributes attrs={s.attributes} />}</FieldState>,
+    },
+    {
+      header: 'Skill queue', id: 'queue', size: 300, enableSorting: false,
+      cell: (i) => <FieldState field={i.row.original.queue}>{(q: SkillQueue) => <QueueSummary queue={q} />}</FieldState>,
+    },
+    {
+      header: '', id: 'open', size: 80, enableSorting: false, enableResizing: false,
+      cell: (i) => <Button size="compact-xs" variant="default" onClick={() => onOpen(i.row.original.character_id)}>Skills</Button>,
+    },
+  ]
+  // Cells here are several lines tall (queue summary), so the rows are taller than the default.
   return (
-    <div style={{ overflowX: 'auto' }}>
-      <Table striped highlightOnHover withTableBorder>
-        <Table.Thead>
-          <Table.Tr>
-            <Table.Th>Character</Table.Th>
-            <Table.Th ta="right">Total SP</Table.Th>
-            <Table.Th ta="right">Unallocated</Table.Th>
-            <Table.Th ta="right">
-              <Tooltip label={EXTRACTABLE_HINT} multiline w={280}><span>Extractable (est.)</span></Tooltip>
-            </Table.Th>
-            <Table.Th>Attributes</Table.Th>
-            <Table.Th>Skill queue</Table.Th>
-            <Table.Th />
-          </Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>
-          {rows.map((c) => (
-            <Table.Tr key={c.character_id}>
-              <Table.Td><Text size="sm" fw={600}>{c.character_name}</Text></Table.Td>
-              <Table.Td ta="right">
-                <FieldState field={c.summary}>{(s: SkillsSummary) => (s.total_sp === null ? '–' : qty(s.total_sp))}</FieldState>
-              </Table.Td>
-              <Table.Td ta="right">
-                <FieldState field={c.summary}>{(s: SkillsSummary) => (s.unallocated_sp === null ? '–' : qty(s.unallocated_sp))}</FieldState>
-              </Table.Td>
-              <Table.Td ta="right">
-                <FieldState field={c.summary}>
-                  {(s: SkillsSummary) => (s.extractable_estimate === null ? '–' : `${s.extractable_estimate}×`)}
-                </FieldState>
-              </Table.Td>
-              <Table.Td>
-                <FieldState field={c.summary}>{(s: SkillsSummary) => <Attributes attrs={s.attributes} />}</FieldState>
-              </Table.Td>
-              <Table.Td><FieldState field={c.queue}>{(q: SkillQueue) => <QueueSummary queue={q} />}</FieldState></Table.Td>
-              <Table.Td>
-                <Button size="compact-xs" variant="default" onClick={() => onOpen(c.character_id)}>Skills</Button>
-              </Table.Td>
-            </Table.Tr>
-          ))}
-        </Table.Tbody>
-      </Table>
-    </div>
+    <DataTable
+      data={rows} columns={columns} rowHeight={76} maxHeight={600}
+      getRowId={(c) => String(c.character_id)} exportFilename="skills-overview"
+    />
   )
 }
 
+type SkillRow = SkillGroup['skills'][number]
+
+const SKILL_COLUMNS: ColumnDef<SkillRow, any>[] = [
+  { header: 'Skill', accessorKey: 'name', size: 260 },
+  {
+    header: 'Level', accessorKey: 'trained_level', size: 130,
+    cell: (i) => {
+      const s = i.row.original
+      return (
+        <>
+          <Badge size="sm" variant="light" color={s.trained_level >= 5 ? 'accent' : 'gray'}>
+            {level(s.trained_level)}
+          </Badge>
+          {s.active_level !== s.trained_level && (
+            <Tooltip label={`Active level ${level(s.active_level)} (trained ${level(s.trained_level)})`}>
+              <Text span size="xs" c="dimmed"> ({level(s.active_level)})</Text>
+            </Tooltip>
+          )}
+        </>
+      )
+    },
+  },
+  { header: 'Rank', accessorKey: 'rank', size: 90, cell: (i) => (i.getValue() === null ? '–' : (i.getValue() as number)) },
+  { header: 'SP', accessorKey: 'skillpoints', size: 120, cell: (i) => qty(i.getValue()) },
+  { header: 'SP to V', accessorKey: 'sp_to_level_v', size: 120, cell: (i) => (i.getValue() === null ? '–' : qty(i.getValue())) },
+]
+
 function GroupTable({ group }: { group: SkillGroup }) {
   return (
-    <Table.ScrollContainer minWidth={600}>
-      <Table withTableBorder striped>
-        <Table.Thead>
-          <Table.Tr>
-            <Table.Th>Skill</Table.Th>
-            <Table.Th ta="center">Level</Table.Th>
-            <Table.Th ta="right">Rank</Table.Th>
-            <Table.Th ta="right">SP</Table.Th>
-            <Table.Th ta="right">SP to V</Table.Th>
-          </Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>
-          {group.skills.map((s) => (
-            <Table.Tr key={s.skill_id}>
-              <Table.Td>{s.name}</Table.Td>
-              <Table.Td ta="center">
-                <Badge size="sm" variant="light" color={s.trained_level >= 5 ? 'accent' : 'gray'}>
-                  {level(s.trained_level)}
-                </Badge>
-                {s.active_level !== s.trained_level && (
-                  <Tooltip label={`Active level ${level(s.active_level)} (trained ${level(s.trained_level)})`}>
-                    <Text span size="xs" c="dimmed"> ({level(s.active_level)})</Text>
-                  </Tooltip>
-                )}
-              </Table.Td>
-              <Table.Td ta="right">{s.rank === null ? '–' : s.rank}</Table.Td>
-              <Table.Td ta="right">{qty(s.skillpoints)}</Table.Td>
-              <Table.Td ta="right">{s.sp_to_level_v === null ? '–' : qty(s.sp_to_level_v)}</Table.Td>
-            </Table.Tr>
-          ))}
-        </Table.Tbody>
-      </Table>
-    </Table.ScrollContainer>
+    <DataTable
+      data={group.skills} columns={SKILL_COLUMNS} maxHeight={480}
+      getRowId={(s) => String(s.skill_id)} exportFilename={`skills-${group.group_name ?? 'group'}`}
+    />
   )
 }
+
+const QUEUE_COLUMNS: ColumnDef<SkillQueue['entries'][number], any>[] = [
+  { header: '#', id: 'pos', size: 60, accessorFn: (e) => e.queue_position + 1 },
+  { header: 'Skill', id: 'skill', size: 280, accessorFn: (e) => `${e.name} ${level(e.finished_level)}` },
+  { header: 'Finishes', accessorKey: 'finish_date', size: 180, cell: (i) => (i.getValue() ? dateTime(i.getValue() as string) : '–') },
+]
 
 function QueueTable({ queue }: { queue: SkillQueue }) {
   if (queue.empty) {
@@ -158,19 +165,10 @@ function QueueTable({ queue }: { queue: SkillQueue }) {
     <Stack gap={4}>
       {queue.warning && <Text size="sm" c="warn">{warningText(queue.warning)}</Text>}
       {queue.paused && <Text size="sm" c="warn">The queue is paused - ESI reports no finish dates.</Text>}
-      <Table.ScrollContainer minWidth={0}>
-        <Table withTableBorder striped>
-          <Table.Tbody>
-            {queue.entries.map((e) => (
-              <Table.Tr key={e.queue_position}>
-                <Table.Td>{e.queue_position + 1}</Table.Td>
-                <Table.Td>{e.name} {level(e.finished_level)}</Table.Td>
-                <Table.Td ta="right">{e.finish_date ? dateTime(e.finish_date) : '–'}</Table.Td>
-              </Table.Tr>
-            ))}
-          </Table.Tbody>
-        </Table>
-      </Table.ScrollContainer>
+      <DataTable
+        data={queue.entries} columns={QUEUE_COLUMNS} maxHeight={360}
+        getRowId={(e) => String(e.queue_position)} exportFilename="skill-queue"
+      />
     </Stack>
   )
 }
@@ -184,7 +182,7 @@ function QueueGuard() {
   const save = useMutation({
     mutationFn: (h: number) => charSkillsApi.setSettings(h),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['char-skills'] }),
-    onError: (err: unknown) => notifications.show({
+    onError: (err: unknown) => notify({
       title: 'Could not save', color: 'danger', message: err instanceof ApiError ? err.message : String(err),
     }),
   })
@@ -311,6 +309,17 @@ function MatrixTable({ matrix, filter, onFilter }: {
   const groups = matrix.groups
     .map((g) => ({ ...g, skills: g.skills.filter((s) => !needle || s.name.toLowerCase().includes(needle)) }))
     .filter((g) => g.skills.length > 0)
+  // One column per character that shares Skills; "–" where the character lacks the skill.
+  const matrixColumns: ColumnDef<SkillMatrix['groups'][number]['skills'][number], any>[] = [
+    { header: 'Skill', accessorKey: 'name', size: 260 },
+    ...matrix.characters.map((c): ColumnDef<SkillMatrix['groups'][number]['skills'][number], any> => ({
+      header: c.character_name,
+      id: `char-${c.character_id}`,
+      size: 130,
+      accessorFn: (s) => s.levels[String(c.character_id)]?.trained ?? null,
+      cell: (i) => (i.getValue() === null ? <Text span c="dimmed">–</Text> : level(i.getValue() as number)),
+    })),
+  ]
   return (
     <Stack gap="sm">
       {matrix.characters.length === 0 ? (
@@ -334,31 +343,10 @@ function MatrixTable({ matrix, filter, onFilter }: {
               <Accordion.Item key={g.group_name} value={g.group_name}>
                 <Accordion.Control>{g.group_name} <Text span size="xs" c="dimmed">({g.skills.length})</Text></Accordion.Control>
                 <Accordion.Panel>
-                  <div style={{ overflowX: 'auto' }}>
-                    <Table withTableBorder striped>
-                      <Table.Thead>
-                        <Table.Tr>
-                          <Table.Th>Skill</Table.Th>
-                          {matrix.characters.map((c) => <Table.Th key={c.character_id} ta="center">{c.character_name}</Table.Th>)}
-                        </Table.Tr>
-                      </Table.Thead>
-                      <Table.Tbody>
-                        {g.skills.map((s) => (
-                          <Table.Tr key={s.skill_id}>
-                            <Table.Td>{s.name}</Table.Td>
-                            {matrix.characters.map((c) => {
-                              const l = s.levels[String(c.character_id)]
-                              return (
-                                <Table.Td key={c.character_id} ta="center">
-                                  {l ? level(l.trained) : <Text span c="dimmed">–</Text>}
-                                </Table.Td>
-                              )
-                            })}
-                          </Table.Tr>
-                        ))}
-                      </Table.Tbody>
-                    </Table>
-                  </div>
+                  <DataTable
+                    data={g.skills} columns={matrixColumns} maxHeight={420}
+                    getRowId={(s) => String(s.skill_id)} exportFilename={`skill-matrix-${g.group_name}`}
+                  />
                 </Accordion.Panel>
               </Accordion.Item>
             ))}

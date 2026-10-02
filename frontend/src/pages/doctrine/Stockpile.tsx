@@ -27,7 +27,7 @@ export default function Stockpile() {
   }
 
   const aggregatedColumns = useMemo<ColumnDef<AggregatedStockpileRow, any>[]>(() => [
-    { header: 'Type', accessorKey: 'type_name', size: 220 },
+    { header: 'Type', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
     { header: 'Required', accessorKey: 'required_total', size: 110, cell: (i) => qty(i.getValue()) },
     { header: 'Available', accessorKey: 'available', size: 110, cell: (i) => qty(i.getValue()) },
     {
@@ -43,7 +43,7 @@ export default function Stockpile() {
 
   const doctrineColumns = useMemo<ColumnDef<StockpileRow, any>[]>(() => [
     { header: 'Fitting', accessorKey: 'fitting_name', size: 200 },
-    { header: 'Type', accessorKey: 'type_name', size: 200 },
+    { header: 'Type', accessorKey: 'type_name', size: 200, meta: { copyable: true } },
     { header: 'Section', accessorKey: 'slot_section', size: 110 },
     { header: 'Required', accessorKey: 'required_total', size: 110, cell: (i) => qty(i.getValue()) },
     { header: 'Available', accessorKey: 'available', size: 110, cell: (i) => qty(i.getValue()) },
@@ -60,6 +60,7 @@ export default function Stockpile() {
 
       {isError && (
         <DataTable
+          rowDetail
           data={[]}
           columns={aggregatedColumns}
           isError
@@ -81,6 +82,7 @@ export default function Stockpile() {
             Combined Shortfall (across every doctrine/fitting)
           </Title>
           <DataTable
+            rowDetail
             data={aggregatedRows}
             columns={aggregatedColumns}
             tableId="doctrine-stockpile-aggregated"
@@ -98,6 +100,7 @@ export default function Stockpile() {
         <div key={doctrineId}>
           <Title order={6} c="dimmed" tt="uppercase" mb="xs">{doctrineRows[0]?.doctrine_name}</Title>
           <DataTable
+            rowDetail
             data={doctrineRows}
             columns={doctrineColumns}
             tableId={`doctrine-stockpile-${doctrineId}`}

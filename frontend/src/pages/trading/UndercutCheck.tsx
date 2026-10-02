@@ -15,7 +15,7 @@ export default function UndercutCheck() {
   const data = check.data
 
   const columns = useMemo<ColumnDef<UndercutRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'item', size: 260 },
+    { header: 'Item', accessorKey: 'item', size: 260, meta: { copyable: true } },
     { header: 'My Price', accessorKey: 'my_price', size: 130, cell: (i) => isk(i.getValue()) },
     { header: 'Competitor Price', accessorKey: 'competitor_price', size: 150, cell: (i) => isk(i.getValue()) },
     {
@@ -41,7 +41,7 @@ export default function UndercutCheck() {
       {data && data.length > 0 && (
         <>
           <Text size="sm" c="dimmed">{data.length} orders currently undercut</Text>
-          <DataTable data={data} columns={columns} maxHeight={560} />
+          <DataTable tableId="trading-undercut-check" rowDetail data={data} columns={columns} maxHeight={560} />
         </>
       )}
     </Stack>

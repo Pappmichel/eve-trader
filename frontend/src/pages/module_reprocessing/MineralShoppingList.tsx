@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
-  ActionIcon, Badge, Button, Card, Center, Group, Loader, NumberInput, Select, SimpleGrid, Stack, Table, Text,
+  ActionIcon, Badge, Button, Card, Center, Group, Loader, NumberInput, Select, SimpleGrid, Stack, Text,
   Title, Tooltip,
 } from '@mantine/core'
 import { IconCalculator, IconDeviceFloppy, IconDownload, IconPlus, IconTrash } from '@tabler/icons-react'
@@ -79,6 +79,30 @@ export default function MineralShoppingList() {
   const orePurchases = useMemo(() => (plan?.reprocess_purchases ?? []).filter((p) => p.category === 'ore'), [plan])
   const modulePurchases = useMemo(() => (plan?.reprocess_purchases ?? []).filter((p) => p.category === 'module'), [plan])
 
+  // Editable list of required minerals; rows are keyed by type_id so editing or
+  // removing one never touches another (sorting/filtering can reorder the view).
+  const requirementColumns = useMemo<ColumnDef<MineralRequirement, any>[]>(() => [
+    { header: 'Mineral', accessorKey: 'name', size: 240 },
+    {
+      header: 'Required Quantity', accessorKey: 'required_qty', size: 200,
+      cell: (i) => (
+        <NumberInput size="xs" min={1} value={i.row.original.required_qty} thousandSeparator
+          aria-label={`Required quantity ${i.row.original.name}`}
+          onChange={(v) => setRows((all) => all.map((row) =>
+            row.type_id === i.row.original.type_id ? { ...row, required_qty: Number(v) || 0 } : row))} />
+      ),
+    },
+    {
+      header: '', id: 'remove', size: 60, enableSorting: false, enableResizing: false,
+      cell: (i) => (
+        <ActionIcon variant="subtle" color="danger" aria-label={`Remove ${i.row.original.name}`}
+          onClick={() => setRows((all) => all.filter((row) => row.type_id !== i.row.original.type_id))}>
+          <IconTrash size={14} />
+        </ActionIcon>
+      ),
+    },
+  ], [])
+
   const oreColumns = useMemo<ColumnDef<ReprocessPurchase, any>[]>(() => [
     { header: 'Buy in Jita', accessorKey: 'item', size: 220 },
     { header: 'Family', accessorKey: 'family', size: 130 },
@@ -90,7 +114,7 @@ export default function MineralShoppingList() {
   ], [])
 
   const moduleColumns = useMemo<ColumnDef<ReprocessPurchase, any>[]>(() => [
-    { header: 'Item', accessorKey: 'item', size: 260 },
+    { header: 'Item', accessorKey: 'item', size: 260, meta: { copyable: true } },
     { header: 'Units', accessorKey: 'units', size: 110, cell: (i) => qty(i.getValue()) },
     { header: 'Portions', accessorKey: 'portions', size: 100, cell: (i) => qty(i.getValue()) },
     { header: 'Volume (m³)', accessorKey: 'volume_m3', size: 120, cell: (i) => qty(i.getValue()) },
@@ -153,35 +177,10 @@ export default function MineralShoppingList() {
       {rows.length === 0 ? (
         <HintCard>No mineral requirements yet - add one above.</HintCard>
       ) : (
-        <Table.ScrollContainer minWidth={400}>
-          <Table maw={640} withTableBorder>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Mineral</Table.Th>
-                <Table.Th>Required Quantity</Table.Th>
-                <Table.Th />
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {rows.map((r, index) => (
-                <Table.Tr key={r.type_id}>
-                  <Table.Td>{r.name}</Table.Td>
-                  <Table.Td>
-                    <NumberInput size="xs" min={1} value={r.required_qty} thousandSeparator
-                      onChange={(v) => setRows((all) => all.map((row, i) =>
-                        i === index ? { ...row, required_qty: Number(v) || 0 } : row))} />
-                  </Table.Td>
-                  <Table.Td w={50}>
-                    <ActionIcon variant="subtle" color="danger" aria-label={`Remove ${r.name}`}
-                      onClick={() => setRows((all) => all.filter((_, i) => i !== index))}>
-                      <IconTrash size={14} />
-                    </ActionIcon>
-                  </Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
-        </Table.ScrollContainer>
+        <DataTable
+          data={rows} columns={requirementColumns} maxHeight={420}
+          getRowId={(r) => String(r.type_id)} exportFilename="mineral-requirements"
+        />
       )}
 
       <Group>

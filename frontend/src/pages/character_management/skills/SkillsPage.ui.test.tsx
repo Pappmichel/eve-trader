@@ -210,7 +210,8 @@ describe('Skills page matrix tab', () => {
     expect(await screen.findByText(/Not shared, so no column: Carol/)).toBeInTheDocument()
     expect(screen.getByText(/needs a re-authorize on the Characters page:\s*Bob/)).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /Industry/ }))
-    const columnHeaders = (await screen.findAllByRole('columnheader')).map((h) => h.textContent)
+    await screen.findByText('Industry', { selector: 'td' })
+    const columnHeaders = Array.from(document.querySelectorAll('thead th')).map((h) => h.textContent)
     expect(columnHeaders).toEqual(['Skill', 'Alice', 'Bob'])
     const industryRow = screen.getByText('Industry', { selector: 'td' }).closest('tr') as HTMLElement
     expect(within(industryRow).getByText('V')).toBeInTheDocument()

@@ -51,7 +51,7 @@ export default function OreShortlist() {
   }, [data, effectiveFamilies, selDecisions, search])
 
   const columns = useMemo<ColumnDef<OreShortlistRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'item', size: 200 },
+    { header: 'Item', accessorKey: 'item', size: 200, meta: { copyable: true } },
     { header: 'Family', accessorKey: 'family', size: 120 },
     {
       header: 'Type', accessorKey: 'is_ice', size: 80,
@@ -113,7 +113,7 @@ export default function OreShortlist() {
       {filtered.length === 0 ? (
         <HintCard>No items match the current filters.</HintCard>
       ) : (
-        <DataTable data={filtered} columns={columns} maxHeight={560} getRowId={(r) => String(r.item_id)} />
+        <DataTable tableId="refining-ore-shortlist" rowDetail data={filtered} columns={columns} maxHeight={560} getRowId={(r) => String(r.item_id)} />
       )}
     </Stack>
   )

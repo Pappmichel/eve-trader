@@ -38,3 +38,43 @@ html, body, #root {
     --ai-size-md: 2.5rem;
   }
 }
+
+/* Tabular numbers so price columns align */
+table td { font-variant-numeric: tabular-nums; }
+
+/* Interactive states for theme overrides. Mantine's `styles` API applies plain
+   inline styles, which cannot express :hover / [data-active], so those live here. */
+.mantine-Card-root { transition: border-color 120ms ease; }
+.mantine-Card-root:hover { border-color: #35D0BA; }
+.mantine-Tabs-tab[data-active] { color: #35D0BA; border-color: #35D0BA; }
+.mantine-NavLink-root { border-radius: 4px; }
+.mantine-NavLink-root[data-active] { background: rgba(53, 208, 186, 0.10); color: #35D0BA; }
+
+/* DataTable: clickable rows and the hover-only copy button */
+tr[data-clickable] { cursor: pointer; }
+tr[data-active] > td { background: rgba(53, 208, 186, 0.12) !important; }
+.et-copy { opacity: 0; transition: opacity 120ms ease; }
+td:hover .et-copy, .et-copy:focus-visible { opacity: 1; }
+
+/* DataTable keyboard cursor, focus ring and the "value changed" flash */
+.et-table-nav { outline: none; }
+.et-table-nav:focus-visible { box-shadow: 0 0 0 1px #35D0BA; border-radius: 4px; }
+tr[data-cursor] > td:first-child { box-shadow: inset 2px 0 0 #35D0BA; }
+tr[data-changed] > td { animation: et-flash 2.5s ease-out; }
+@keyframes et-flash { from { background: rgba(242, 166, 90, 0.35); } to { background: transparent; } }
+
+/* Corner accents for hero panels (applied to the Landing tool cards) */
+.et-panel::before, .et-panel::after {
+  content: ''; position: absolute; width: 10px; height: 10px;
+  border: 1px solid #35D0BA; opacity: 0.7; pointer-events: none;
+}
+.et-panel::before { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+.et-panel::after { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
+
+/* Thin scrollbars that match the surface colours */
+* { scrollbar-width: thin; scrollbar-color: #24313F #0B0F14; }
+
+/* DataTable column resize handle (right edge of each header cell) and drag state */
+.et-resizer { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; user-select: none; touch-action: none; }
+.et-resizer:hover, .et-resizer[data-resizing], .et-resizer:focus-visible { background: #35D0BA; opacity: 0.8; outline: none; }
+th[draggable="true"] { cursor: grab; }

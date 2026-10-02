@@ -2,6 +2,7 @@ import { Container, Title, Text, SimpleGrid, Button, Group, Badge, Alert } from 
 import { useQuery } from '@tanstack/react-query'
 
 import { authApi, gateApi } from '../api/client'
+import { NotificationBell } from '../components/NotificationBell'
 import { ToolCard } from '../components/ToolCard'
 import { useAction } from '../hooks/useAction'
 import { openGateAccessConfirmModal } from '../roleAccessDescriptions'
@@ -76,9 +77,12 @@ export default function Landing() {
 
   return (
     <Container size="md" py="xl">
-      <Text tt="uppercase" size="xs" c="dimmed" fw={600} lts={2}>
-        C-J Import & Manufacturing
-      </Text>
+      <Group justify="space-between" align="flex-start" wrap="nowrap">
+        <Text tt="uppercase" size="xs" c="dimmed" fw={600} lts={2}>
+          C-J Import & Manufacturing
+        </Text>
+        <NotificationBell />
+      </Group>
       <Title order={1} mb="lg">EVE Trader</Title>
       <Text c="dimmed" mb="xl">Margins, buy/build decisions and live market data in one place.</Text>
 

@@ -3,6 +3,8 @@ import { spotlight } from '@mantine/spotlight'
 import { IconArrowLeft, IconSearch } from '@tabler/icons-react'
 import { useNavigate } from 'react-router-dom'
 
+import { NotificationBell } from './NotificationBell'
+
 // The header row every tool layout (Trading, Production, Doctrine, ...) puts in
 // its AppShell.Header. The shell's header height is fixed (56px), so this row
 // must never wrap: with the text buttons a phone-width row broke into two
@@ -38,6 +40,7 @@ export function ToolHeader({ title, opened, onToggle, showJump = false }: {
             </ActionIcon>
           </>
         )}
+        <NotificationBell />
         <Button visibleFrom="sm" variant="subtle" size="xs" leftSection={<IconArrowLeft size={14} />}
           onClick={() => navigate('/')}>
           Tools

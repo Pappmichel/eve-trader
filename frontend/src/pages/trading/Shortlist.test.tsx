@@ -1,6 +1,7 @@
 import { render, screen, within } from '@testing-library/react'
 import { MantineProvider } from '@mantine/core'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import Shortlist from './Shortlist'
 import { tradingApi } from '../../api/client'
@@ -27,7 +28,7 @@ function renderPage() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
-      <MantineProvider><Shortlist /></MantineProvider>
+      <MantineProvider><MemoryRouter><Shortlist /></MemoryRouter></MantineProvider>
     </QueryClientProvider>,
   )
 }

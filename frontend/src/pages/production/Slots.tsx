@@ -1,9 +1,11 @@
-import { Fragment, useMemo } from 'react'
+import { useMemo, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Table, Text, Stack, Checkbox } from '@mantine/core'
+import { Text, Stack, Checkbox } from '@mantine/core'
+import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
 import { useAction } from '../../hooks/useAction'
+import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { qty } from '../../format'
 
@@ -44,6 +46,36 @@ export default function Slots() {
     return [...byCharacter.values()]
   }, [data])
 
+  // Excluded characters are shown dimmed, as the old table did with the whole row.
+  const dim = (row: PivotedRow, node: ReactNode) => (row.excluded ? <span style={{ opacity: 0.5 }}>{node}</span> : node)
+  const slotColumn = (jt: string, kind: 'total' | 'used' | 'free', label: string): ColumnDef<PivotedRow, any> => ({
+    header: `${jt} ${label}`,
+    id: `${jt}-${kind}`,
+    size: 160,
+    accessorFn: (r) => r.byJobType[jt]?.[kind] ?? null,
+    cell: (i) => dim(i.row.original, i.getValue() === null ? '–' : qty(i.getValue() as number)),
+  })
+  const columns: ColumnDef<PivotedRow, any>[] = [
+    {
+      header: 'Character', accessorKey: 'character_name', size: 200,
+      cell: (i) => dim(i.row.original, i.row.original.character_name),
+    },
+    {
+      header: 'Excluded', accessorKey: 'excluded', size: 100,
+      cell: (i) => (
+        <Checkbox
+          aria-label={`Exclude ${i.row.original.character_name} from planning`}
+          checked={i.row.original.excluded}
+          disabled={setExcluded.isPending}
+          onChange={(e) => setExcluded.mutate({ characterName: i.row.original.character_name, excluded: e.currentTarget.checked })}
+        />
+      ),
+    },
+    ...JOB_TYPES.flatMap((jt) => [
+      slotColumn(jt, 'total', 'Total'), slotColumn(jt, 'used', 'Used'), slotColumn(jt, 'free', 'Free'),
+    ]),
+  ]
+
   if (isLoading) return <Text c="dimmed">Loading…</Text>
   if (!data || data.length === 0) {
     return (
@@ -53,53 +85,10 @@ export default function Slots() {
 
   return (
     <Stack>
-      <Table.ScrollContainer minWidth={700}>
-        <Table striped highlightOnHover>
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th rowSpan={2}>Character</Table.Th>
-              <Table.Th rowSpan={2}>Excluded</Table.Th>
-              {JOB_TYPES.map((jt) => (
-                <Table.Th key={jt} colSpan={3} style={{ textAlign: 'center' }}>{jt}</Table.Th>
-              ))}
-            </Table.Tr>
-            <Table.Tr>
-              {JOB_TYPES.map((jt) => (
-                <Fragment key={jt}>
-                  <Table.Th>Total</Table.Th>
-                  <Table.Th>Used</Table.Th>
-                  <Table.Th>Free</Table.Th>
-                </Fragment>
-              ))}
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {rows.map((row) => (
-              <Table.Tr key={row.character_name} style={row.excluded ? { opacity: 0.5 } : undefined}>
-                <Table.Td>{row.character_name}</Table.Td>
-                <Table.Td>
-                  <Checkbox
-                    aria-label={`Exclude ${row.character_name} from planning`}
-                    checked={row.excluded}
-                    disabled={setExcluded.isPending}
-                    onChange={(e) => setExcluded.mutate({ characterName: row.character_name, excluded: e.currentTarget.checked })}
-                  />
-                </Table.Td>
-                {JOB_TYPES.map((jt) => {
-                  const cell = row.byJobType[jt]
-                  return (
-                    <Fragment key={jt}>
-                      <Table.Td>{cell ? qty(cell.total) : '–'}</Table.Td>
-                      <Table.Td>{cell ? qty(cell.used) : '–'}</Table.Td>
-                      <Table.Td>{cell ? qty(cell.free) : '–'}</Table.Td>
-                    </Fragment>
-                  )
-                })}
-              </Table.Tr>
-            ))}
-          </Table.Tbody>
-        </Table>
-      </Table.ScrollContainer>
+      <DataTable
+        data={rows} columns={columns} maxHeight={560}
+        getRowId={(r) => r.character_name} exportFilename="character-slots"
+      />
       <Text size="xs" c="dimmed">
         Manufacturing: Mass Production + Advanced Mass Production. Reactions: Mass Reactions + Advanced Mass Reactions.
         Science (ME/TE research, copying, invention): Laboratory Operation + Advanced Laboratory Operation.

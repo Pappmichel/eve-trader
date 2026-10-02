@@ -23,7 +23,7 @@ export function ToolCard({ tools, toolKey, to, title, description, badge }: {
   const keys = typeof toolKey === 'string' ? [toolKey] : toolKey
   if (!hasAnyToolGrant(tools, keys)) return null
   return (
-    <Card withBorder padding="lg" radius="md">
+    <Card withBorder padding="lg" radius="md" className="et-panel">
       <Stack gap="xs">
         <Group justify="space-between" wrap="nowrap">
           <Title order={3}>{title}</Title>

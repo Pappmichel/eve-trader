@@ -4,7 +4,7 @@ import {
 } from '@mantine/core'
 import { useMediaQuery } from '@mantine/hooks'
 import { modals } from '@mantine/modals'
-import { notifications } from '@mantine/notifications'
+import { notify } from '../../../notify'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { ApiError, charMailApi } from '../../../api/client'
@@ -93,12 +93,12 @@ export function ComposeModal({ opened, onClose, draft, senders }: {
         })
         return
       }
-      notifications.show({ title: 'Mail sent', message: `To ${result.recipients.map((r) => r.name ?? `#${r.recipient_id}`).join(', ')}`, color: 'accent' })
+      notify({ title: 'Mail sent', message: `To ${result.recipients.map((r) => r.name ?? `#${r.recipient_id}`).join(', ')}`, color: 'accent' })
       queryClient.invalidateQueries({ queryKey: ['char-mail'] })
       onClose()
     },
     onError: (err: unknown) => {
-      notifications.show({
+      notify({
         title: 'Could not send the mail', color: 'danger',
         message: err instanceof ApiError ? err.message : String(err),
       })

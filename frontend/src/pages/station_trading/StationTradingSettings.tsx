@@ -1,12 +1,39 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Stack, Title, Text, SimpleGrid, NumberInput, Button, Center, Loader, Table } from '@mantine/core'
+import { Stack, Title, Text, SimpleGrid, NumberInput, Button, Center, Loader } from '@mantine/core'
+import type { ColumnDef } from '@tanstack/react-table'
 
 import { stationTradingApi } from '../../api/client'
 import type { StationTradingSettings as StationTradingSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
+import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { pct } from '../../format'
+
+type SkillRow = NonNullable<Awaited<ReturnType<typeof stationTradingApi.skills>>>[number]
+
+const skillLevel = (name: string): ColumnDef<SkillRow, any> => ({
+  header: name === 'Advanced Broker Relations' ? 'Adv. Broker Relations' : name,
+  id: name,
+  size: 120,
+  // A character whose skills could not be read shows "–" instead of a made-up 0.
+  accessorFn: (r) => (r.error ? null : (r.levels?.[name] ?? 0)),
+  cell: (i) => i.getValue() ?? '–',
+})
+
+const SKILL_COLUMNS: ColumnDef<SkillRow, any>[] = [
+  { header: 'Character', accessorKey: 'character_name', size: 200 },
+  {
+    header: 'Order Slots', id: 'order_slots', size: 110,
+    accessorFn: (r) => (r.error ? null : r.order_slots),
+    cell: (i) => i.getValue() ?? '–',
+  },
+  ...['Trade', 'Retail', 'Wholesale', 'Tycoon', 'Accounting', 'Broker Relations', 'Advanced Broker Relations'].map(skillLevel),
+  {
+    header: 'Note', id: 'error', size: 260, enableSorting: false,
+    accessorFn: (r) => r.error ?? '',
+  },
+]
 
 export default function StationTradingSettings() {
   const { data } = useQuery({ queryKey: ['station-trading', 'settings'], queryFn: stationTradingApi.settings })
@@ -64,44 +91,10 @@ export default function StationTradingSettings() {
       {!skills || skills.length === 0 ? (
         <Text size="xs" c="dimmed">No trader characters registered yet - share Skills with Station Trading on the Characters page.</Text>
       ) : (
-        <Table.ScrollContainer minWidth={1000}>
-          <Table>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Character</Table.Th>
-                <Table.Th>Order Slots</Table.Th>
-                <Table.Th>Trade</Table.Th>
-                <Table.Th>Retail</Table.Th>
-                <Table.Th>Wholesale</Table.Th>
-                <Table.Th>Tycoon</Table.Th>
-                <Table.Th>Accounting</Table.Th>
-                <Table.Th>Broker Relations</Table.Th>
-                <Table.Th>Adv. Broker Relations</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {skills.map((s) => (
-                <Table.Tr key={s.character_name}>
-                  <Table.Td>{s.character_name}</Table.Td>
-                  {s.error ? (
-                    <Table.Td colSpan={8}><Text size="xs" c="dimmed">{s.error}</Text></Table.Td>
-                  ) : (
-                    <>
-                      <Table.Td>{s.order_slots}</Table.Td>
-                      <Table.Td>{s.levels?.Trade ?? 0}</Table.Td>
-                      <Table.Td>{s.levels?.Retail ?? 0}</Table.Td>
-                      <Table.Td>{s.levels?.Wholesale ?? 0}</Table.Td>
-                      <Table.Td>{s.levels?.Tycoon ?? 0}</Table.Td>
-                      <Table.Td>{s.levels?.Accounting ?? 0}</Table.Td>
-                      <Table.Td>{s.levels?.['Broker Relations'] ?? 0}</Table.Td>
-                      <Table.Td>{s.levels?.['Advanced Broker Relations'] ?? 0}</Table.Td>
-                    </>
-                  )}
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
-        </Table.ScrollContainer>
+        <DataTable
+          data={skills} columns={SKILL_COLUMNS} maxHeight={320}
+          getRowId={(r) => r.character_name} exportFilename="station-trading-skills"
+        />
       )}
       <Text size="xs" c="dimmed">
         Effective spread needed to clear fees, base game: {pct(form.broker_fee_rate * 2 + form.sales_tax_rate)}{' '}

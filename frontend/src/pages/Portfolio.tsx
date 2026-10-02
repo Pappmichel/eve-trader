@@ -22,7 +22,7 @@ import type { ManualItemPriceRow, PortfolioSnapshotRow } from '../api/types'
 
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
-    <Card withBorder padding="lg" radius="md">
+    <Card withBorder padding="lg" radius="md" className="et-panel">
       <Title order={6} c="dimmed" tt="uppercase" mb="xs">{label}</Title>
       <Text size="xl" fw={700}>{value}</Text>
       {hint && <Text size="xs" c="dimmed" mt={4}>{hint}</Text>}
@@ -52,14 +52,14 @@ function HistoryChart({ title, hint, rows, lines }: {
   // data" precedent rather than rendering an empty/broken chart.
   if (rows.length < 2) {
     return (
-      <Card withBorder padding="lg" radius="md">
+      <Card withBorder padding="lg" radius="md" className="et-panel">
         <Title order={6} c="dimmed" tt="uppercase" mb="xs">{title}</Title>
         <Text size="sm" c="dimmed">History builds up from here - check back tomorrow.</Text>
       </Card>
     )
   }
   return (
-    <Card withBorder padding="lg" radius="md">
+    <Card withBorder padding="lg" radius="md" className="et-panel">
       <Title order={6} c="dimmed" tt="uppercase" mb="xs">{title}</Title>
       {hint && <Text size="xs" c="dimmed" mb="sm">{hint}</Text>}
       <ResponsiveContainer width="100%" height={220}>
@@ -135,7 +135,7 @@ function ManualPricesSection() {
   const [priceInput, setPriceInput] = useState<number | ''>('')
 
   const columns = useMemo<ColumnDef<ManualItemPriceRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 260 },
+    { header: 'Item', accessorKey: 'type_name', size: 260, meta: { copyable: true } },
     {
       header: 'Price (ISK)', accessorKey: 'price', size: 170,
       cell: (i) => (

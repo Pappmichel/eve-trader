@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, Select, Button, Group, Center, Loader, ActionIcon, Table } from '@mantine/core'
+import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, Select, Button, Group, Center, Loader, ActionIcon } from '@mantine/core'
 import { IconTrash } from '@tabler/icons-react'
+import type { ColumnDef } from '@tanstack/react-table'
 
 import { refiningApi } from '../../api/client'
 import type { RefiningSettings as RefiningSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
+import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 
 export default function OreSettings() {
@@ -43,6 +45,22 @@ export default function OreSettings() {
     setForm((f) => (f ? { ...f, [key]: value } : f))
 
   const families = Object.entries(form.ore_family_skill_levels).sort(([a], [b]) => a.localeCompare(b))
+  const familyColumns: ColumnDef<{ family: string; level: number }, any>[] = [
+    { header: 'Family', accessorKey: 'family', size: 220 },
+    { header: 'Level', accessorKey: 'level', size: 100 },
+    {
+      header: '', id: 'remove', size: 60, enableSorting: false, enableResizing: false,
+      cell: (i) => (
+        <ActionIcon size="sm" variant="subtle" color="danger" aria-label={`Remove ${i.row.original.family}`} onClick={() => {
+          const next = { ...form.ore_family_skill_levels }
+          delete next[i.row.original.family]
+          set('ore_family_skill_levels', next)
+        }}>
+          <IconTrash size={14} />
+        </ActionIcon>
+      ),
+    },
+  ]
 
   return (
     <Stack maw={800}>
@@ -79,27 +97,13 @@ export default function OreSettings() {
         Veldspar) - a family missing here is assumed maxed (level 5). Add one only to record a lower level.
       </Text>
       {families.length > 0 && (
-        <Table.ScrollContainer minWidth={0}>
-          <Table>
-            <Table.Tbody>
-              {families.map(([family, level]) => (
-                <Table.Tr key={family}>
-                  <Table.Td>{family}</Table.Td>
-                  <Table.Td>{level}</Table.Td>
-                  <Table.Td>
-                    <ActionIcon size="sm" variant="subtle" color="danger" onClick={() => {
-                      const next = { ...form.ore_family_skill_levels }
-                      delete next[family]
-                      set('ore_family_skill_levels', next)
-                    }}>
-                      <IconTrash size={14} />
-                    </ActionIcon>
-                  </Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
-        </Table.ScrollContainer>
+        <DataTable
+          data={families.map(([family, level]) => ({ family, level }))}
+          columns={familyColumns}
+          getRowId={(r) => r.family}
+          maxHeight={320}
+          exportFilename="ore-family-skills"
+        />
       )}
       <Group align="flex-end">
         <TextInput label="Family (e.g. Veldspar)" value={newFamily} onChange={(e) => setNewFamily(e.currentTarget.value)} />

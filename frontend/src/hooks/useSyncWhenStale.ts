@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { notifications } from '@mantine/notifications'
+import { notify } from '../notify'
 
 import type { CharInfoSyncResult } from '../api/types'
 
@@ -56,7 +56,7 @@ export function useSyncWhenStale(opts: {
       try {
         const result = await sync()
         for (const f of result?.failed ?? []) {
-          notifications.show({
+          notify({
             title: `Sync failed for ${f.name ?? f.owner_id}`,
             message: f.error ?? 'Unknown error',
             color: 'danger',

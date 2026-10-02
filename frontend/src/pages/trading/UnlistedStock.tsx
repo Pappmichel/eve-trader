@@ -15,7 +15,7 @@ export default function UnlistedStock() {
   const data = check.data
 
   const columns = useMemo<ColumnDef<UnlistedStockRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'item', size: 260 },
+    { header: 'Item', accessorKey: 'item', size: 260, meta: { copyable: true } },
     { header: 'Stock on Hand', accessorKey: 'asset_quantity', size: 140, cell: (i) => qty(i.getValue()) },
     { header: 'Listed Qty (Structure)', accessorKey: 'sell_volume', size: 150, cell: (i) => qty(i.getValue()) },
     { header: 'Margin', accessorKey: 'margin', size: 90, cell: (i) => pct(i.getValue()) },
@@ -41,7 +41,7 @@ export default function UnlistedStock() {
       {data && data.length > 0 && (
         <>
           <Text size="sm" c="dimmed">{data.length} shortlist items without a sell order</Text>
-          <DataTable data={data} columns={columns} maxHeight={560} />
+          <DataTable tableId="trading-unlisted-stock" rowDetail data={data} columns={columns} maxHeight={560} />
         </>
       )}
     </Stack>

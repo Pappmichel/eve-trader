@@ -11,6 +11,7 @@ import { useAction } from '../../hooks/useAction'
 import { useTradingPipelineJob } from '../../hooks/useRefreshAndPruneJob'
 import { useRoleCharacters } from '../../hooks/useRoleCharacters'
 import { ActionTierIcon, TIER_COPY } from '../../components/ActionTierIcon'
+import { JobProgress } from '../../components/JobProgress'
 import { dateTime } from '../../format'
 import { ToolHeader } from '../../components/ToolHeader'
 
@@ -148,7 +149,7 @@ export default function TradingLayout() {
                 </Button>
               </Tooltip>
               {tradingJob.progressLabel && (
-                <Text size="xs" c="dimmed">{tradingJob.progressLabel}</Text>
+                <JobProgress label={tradingJob.progressLabel} progress={tradingJob.status?.progress} />
               )}
               <Tooltip label={reconcile.tooltip} disabled={!reconcile.tooltip} multiline w={280}>
                 <Button size="xs" variant="default" leftSection={reconcile.tierIcon}
@@ -202,7 +203,7 @@ export default function TradingLayout() {
                 </Button>
               </Tooltip>
               {tradingJob.progressLabel && (
-                <Text size="xs" c="dimmed">{tradingJob.progressLabel}</Text>
+                <JobProgress label={tradingJob.progressLabel} progress={tradingJob.status?.progress} />
               )}
               <Text size="xs" c="dimmed">
                 Backtests every remaining candidate instead of a 500 window - runs in the background,

@@ -1,10 +1,13 @@
 import { useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { modals } from '@mantine/modals'
+import { Text } from '@mantine/core'
 import { Spotlight, type SpotlightActionData } from '@mantine/spotlight'
 import { IconSearch } from '@tabler/icons-react'
 
 import { gateApi } from '../api/client'
 import { CHARACTER_MANAGEMENT_TOOL_KEYS, hasAnyToolGrant } from '../toolKeys'
+import { executeQuickCommand, visibleCommands, type QuickCommand } from './quickCommands'
 
 // GitHub issue #79: the only way to navigate was each tool's own sidebar -
 // no fast, cross-tool way to jump from e.g. "Trading > Shortlist" straight
@@ -121,6 +124,7 @@ const TOOL_KEYS: Record<string, string> = {
 
 export function QuickNav() {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   // Same gate-status/tools source and "undefined -> not yet loaded, show
   // everything" convention as Landing.tsx's own ToolCard - a per-character
   // tool grant that hides a Landing card should hide its Quick-Nav entries
@@ -135,11 +139,29 @@ export function QuickNav() {
     return tools.includes(toolKey)
   })
   const pending = gateStatus?.pending_access_requests
-  const actions = visibleActions.map((a) => ({
+  const pageActions = visibleActions.map((a) => ({
     ...a,
     label: a.id === 'admin' && pending ? `Admin (${pending} pending)` : a.label,
     onClick: () => navigate(PATHS[a.id]),
   }))
+  // Commands that start live jobs - always behind a confirmation dialog.
+  const confirmAndRun = (cmd: QuickCommand) => modals.openConfirmModal({
+    title: cmd.label.replace(/^Run: /, ''),
+    children: <Text size="sm">{cmd.effect} This calls external services live.</Text>,
+    labels: { confirm: 'Run', cancel: 'Cancel' },
+    onConfirm: () => {
+      void executeQuickCommand(cmd, {
+        invalidate: (key) => queryClient.invalidateQueries({ queryKey: key }),
+        navigate,
+      })
+    },
+  })
+  const commandActions = visibleCommands(tools).map((c) => ({
+    id: c.id, label: c.label, description: c.description, onClick: () => confirmAndRun(c),
+  }))
+  const actions = commandActions.length > 0
+    ? [{ group: 'Pages', actions: pageActions }, { group: 'Actions', actions: commandActions }]
+    : pageActions
 
   return (
     <Spotlight

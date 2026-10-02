@@ -2,12 +2,13 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Badge, Card, Title, Text, Group, NumberInput, Button, Select, Stack, ActionIcon, Textarea, Tooltip } from '@mantine/core'
 import { modals } from '@mantine/modals'
-import { IconCheck, IconAlertTriangle, IconTrash } from '@tabler/icons-react'
+import { IconTrash } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
 import type { AssetPastePreviewResult, ManualListedStockEntry, ManualStockEntry, StockTarget } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
+import { EditableNumberCell } from '../../components/EditableCell'
 import { HintCard } from '../../components/HintCard'
 import { LocationPicker } from '../../components/LocationPicker'
 import { SearchableSelect } from '../../components/SearchableSelect'
@@ -39,55 +40,6 @@ const MANUAL_STOCK_OUTLIER_MULTIPLIER = 50
 function isManualStockOutlier(manual: number, target: StockTarget): boolean {
   const targetSum = target.backup_stock + (target.home_market_stock ?? 0) + (target.jita_market_stock ?? 0)
   return targetSum > 0 && manual > targetSum * MANUAL_STOCK_OUTLIER_MULTIPLIER
-}
-
-// Inline cell editor (GitHub issue #16 - "should be able to change the
-// targets directly in the table, like the targets on the doctrine table")
-// - same "local draft state, checkmark appears once it differs from the
-// saved value, click to save" pattern as doctrine/DoctrineDetail.tsx's own
-// TargetEditor. Safe to key state purely off the initial `value` prop
-// (no resync effect needed) for the same reason that component doesn't need
-// one either: a successful save's own draft value becomes the next `value`
-// this cell receives, so draft and value naturally converge without one -
-// see DataTable's `getRowId` prop (used below) for what actually *would*
-// break this if it were missing: without a stable per-row identity, sorting
-// or filtering could hand this same mounted component a *different* row's
-// data on cell state, silently saving one item's edit against another's
-// type_id (the exact bug StockTargets.tsx's old CurrentStockInput hit once,
-// documented in that component's own history).
-function EditableNumberCell({ value, ariaLabel, isPending, onSave, flagged }: {
-  value: number
-  ariaLabel: string
-  isPending: boolean
-  onSave: (value: number) => void
-  flagged?: boolean
-}) {
-  const [draft, setDraft] = useState(value)
-  const dirty = draft !== value
-  return (
-    <Group gap={4} wrap="nowrap">
-      <NumberInput
-        value={draft}
-        onChange={(v) => setDraft(v === '' ? 0 : Number(v))}
-        min={0}
-        size="xs"
-        w={90}
-        aria-label={ariaLabel}
-        styles={flagged ? { input: { borderColor: 'var(--mantine-color-danger-5)' } } : undefined}
-      />
-      {flagged && !dirty && (
-        <Tooltip label="Far larger than every target set for this item - likely a stray value. Edit and save to fix.">
-          <IconAlertTriangle size={14} color="var(--mantine-color-danger-5)" />
-        </Tooltip>
-      )}
-      {dirty && (
-        <ActionIcon size="sm" variant="filled" color="accent" aria-label={`Save ${ariaLabel}`}
-          onClick={() => onSave(draft)} loading={isPending}>
-          <IconCheck size={14} />
-        </ActionIcon>
-      )}
-    </Group>
-  )
 }
 
 export default function StockTargets() {
@@ -177,7 +129,7 @@ export default function StockTargets() {
 
   const columns = useMemo<ColumnDef<StockTarget, any>[]>(() => [
     { header: 'TypeID', accessorKey: 'type_id', size: 90 },
-    { header: 'Item', accessorKey: 'type_name', size: 220 },
+    { header: 'Item', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
     {
       header: 'Backup Target', accessorKey: 'backup_stock', size: 140,
       cell: (i) => (
@@ -435,7 +387,7 @@ function ManualStockEntriesSection() {
   const [locationId, setLocationId] = useState<number | null>(0)
 
   const columns = useMemo<ColumnDef<ManualStockEntry, any>[]>(() => [
-    { header: 'Item', accessorKey: 'type_name', size: 240 },
+    { header: 'Item', accessorKey: 'type_name', size: 240, meta: { copyable: true } },
     {
       header: 'Location', id: 'location', size: 200,
       cell: (i) => (i.row.original.location_id === 0 ? 'No location' : String(i.row.original.location_id)),
@@ -635,7 +587,7 @@ function AssetPastePanel() {
             <DataTable
               data={preview.rows}
               columns={[
-                { header: 'Item', accessorKey: 'name', size: 220 },
+                { header: 'Item', accessorKey: 'name', size: 220, meta: { copyable: true } },
                 { header: 'Old', accessorKey: 'old', size: 100, cell: (i) => qty(i.getValue()) },
                 { header: 'New', accessorKey: 'new', size: 100, cell: (i) => qty(i.getValue()) },
                 {

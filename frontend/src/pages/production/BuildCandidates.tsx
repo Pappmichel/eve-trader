@@ -10,6 +10,7 @@ import { HintCard } from '../../components/HintCard'
 import { useBackgroundJob, useBackgroundJobStart } from '../../hooks/useBackgroundJob'
 import { ActionTierIcon, TIER_COPY } from '../../components/ActionTierIcon'
 import { isk, pct, qty } from '../../format'
+import { JobProgress } from '../../components/JobProgress'
 
 const META_UNKNOWN = 'unknown'
 const DISCOVER_LABELS = { discover_build_candidates: 'Discover Build Candidates' }
@@ -134,7 +135,7 @@ export default function BuildCandidates() {
         </Tooltip>
       </Group>
       {discoverRunning && (
-        <Text size="xs" c="dimmed">{discoverJob.formatProgress(discoverJob.status?.progress, discoverJob.jobName)}</Text>
+        <JobProgress label={discoverJob.formatProgress(discoverJob.status?.progress, discoverJob.jobName)} progress={discoverJob.status?.progress} />
       )}
 
       {neverRunYet && (!data || data.length === 0) && (
@@ -160,7 +161,7 @@ export default function BuildCandidates() {
           {filtered.length === 0 ? (
             <HintCard>No candidates match the current filters.</HintCard>
           ) : (
-            <DataTable data={filtered} columns={columns} maxHeight={560} />
+            <DataTable getRowId={(r) => String(r.type_id)} tableId="production-build-candidates" rowDetail data={filtered} columns={columns} maxHeight={560} />
           )}
         </>
       )}

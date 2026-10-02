@@ -6,7 +6,11 @@ import '@testing-library/jest-dom/vitest'
 // auto-cleanup-after-each-test only registers itself when globals are on,
 // so without this every test in a file would render on top of the
 // previous test's still-mounted DOM instead of a clean one.
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  // DataTable persists its layout in localStorage; keep tests independent.
+  try { localStorage.clear() } catch { /* ignore */ }
+})
 
 // jsdom has no ResizeObserver and reports every element as 0x0 - both fine
 // for most components, but DataTable.tsx's @tanstack/react-virtual needs a

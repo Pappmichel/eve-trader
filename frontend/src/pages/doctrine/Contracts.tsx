@@ -49,7 +49,7 @@ export default function Contracts() {
         <Title order={4}>Contracts</Title>
         <Select placeholder="All statuses" data={STATUS_OPTIONS} value={status} onChange={setStatus} clearable w={200} />
       </Group>
-      <DataTable data={data ?? []} columns={columns} isLoading={isLoading} isError={isError} onRetry={() => refetch()} maxHeight={640} dataUpdatedAt={dataUpdatedAt} />
+      <DataTable rowDetail data={data ?? []} columns={columns} isLoading={isLoading} isError={isError} onRetry={() => refetch()} maxHeight={640} dataUpdatedAt={dataUpdatedAt} />
     </Stack>
   )
 }

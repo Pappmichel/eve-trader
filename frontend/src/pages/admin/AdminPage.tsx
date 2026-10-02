@@ -7,7 +7,8 @@ import { IconArrowLeft, IconTrash } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { modals } from '@mantine/modals'
-import { notifications } from '@mantine/notifications'
+import { notify } from '../../notify'
+import { JobProgress } from '../../components/JobProgress'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { adminApi, productionApi } from '../../api/client'
@@ -151,7 +152,9 @@ function StructureResolveSection() {
         </Button>
       </Group>
       {running && (
-        <Text size="sm" c="dimmed" mb="xs">{job.formatProgress(job.status?.progress, job.jobName)}</Text>
+        <div style={{ marginBottom: 'var(--mantine-spacing-xs)' }}>
+          <JobProgress label={job.formatProgress(job.status?.progress, job.jobName)} progress={job.status?.progress} />
+        </div>
       )}
       {!running && job.status?.status === 'failed' && (
         <Text size="sm" c="danger" mb="xs">{job.status.error || 'Structure name resolution failed.'}</Text>
@@ -504,7 +507,7 @@ function AllowlistSection() {
       impact = await adminApi.allowlistImpact(entryType, entryId, action)
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Could not load the impact preview'
-      notifications.show({ title: 'Allowlist', message, color: 'danger' })
+      notify({ title: 'Allowlist', message, color: 'danger' })
       return
     }
     modals.openConfirmModal({
@@ -524,7 +527,7 @@ function AllowlistSection() {
       setHits(await adminApi.searchAllowlist(q))
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Search failed'
-      notifications.show({ title: 'Allowlist search', message, color: 'danger' })
+      notify({ title: 'Allowlist search', message, color: 'danger' })
     } finally {
       setSearching(false)
     }

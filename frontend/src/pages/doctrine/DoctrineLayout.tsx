@@ -11,6 +11,7 @@ import { useRoleCharacters, type RoleCharacter } from '../../hooks/useRoleCharac
 import { ActionTierIcon, TIER_COPY } from '../../components/ActionTierIcon'
 import { dateTime } from '../../format'
 import { ToolHeader } from '../../components/ToolHeader'
+import { JobProgress } from '../../components/JobProgress'
 
 const TABS = [
   { path: '/doctrine', label: 'Overview' },
@@ -127,9 +128,9 @@ export default function DoctrineLayout() {
               </Button>
             </Tooltip>
             {syncRunning && (
-              <Text size="xs" c="dimmed" mt={4}>
-                {syncJob.formatProgress(syncJob.status?.progress, syncJob.jobName)}
-              </Text>
+              <div style={{ marginTop: 4 }}>
+                <JobProgress label={syncJob.formatProgress(syncJob.status?.progress, syncJob.jobName)} progress={syncJob.status?.progress} />
+              </div>
             )}
           </div>
 

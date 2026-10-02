@@ -79,7 +79,7 @@ export default function Margin() {
   const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['production', 'margins'], queryFn: productionApi.shipMargins })
 
   const columns = useMemo<ColumnDef<ShipMarginRow, any>[]>(() => [
-    { header: 'Ship', accessorKey: 'type_name', size: 240 },
+    { header: 'Ship', accessorKey: 'type_name', size: 240, meta: { copyable: true } },
     { header: 'Home Price', accessorKey: 'home_price', size: 130, cell: (i) => i.getValue() === null ? '–' : isk(i.getValue()) },
     { header: 'Jita Price', accessorKey: 'jita_price', size: 130, cell: (i) => i.getValue() === null ? '–' : isk(i.getValue()) },
     { header: 'Build Cost', accessorKey: 'build_cost', size: 130, cell: (i) => i.getValue() === null ? '–' : isk(i.getValue()) },
@@ -100,7 +100,7 @@ export default function Margin() {
       {isLoading && <Text c="dimmed" size="sm">Loading…</Text>}
       {isError && <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />}
       {data && data.length === 0 && <HintCard>No ships found - Refresh SDE (Admin tool) first?</HintCard>}
-      {data && data.length > 0 && <DataTable data={data} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />}
+      {data && data.length > 0 && <DataTable getRowId={(r) => String(r.type_id)} tableId="production-margin" rowDetail data={data} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />}
     </Stack>
   )
 }

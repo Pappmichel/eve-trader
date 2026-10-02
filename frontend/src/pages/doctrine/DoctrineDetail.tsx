@@ -72,14 +72,20 @@ function TargetEditor({ fittingId, contractTarget, stockpileTarget, doctrineId }
   const save = useAction('Save Targets',
     () => doctrineApi.updateFitting(fittingId, { contract_target: contract, stockpile_target: stockpile }),
     [['doctrine', 'status'], ['doctrine', 'doctrine-detail', doctrineId]])
+  // Same keys as production's EditableNumberCell: Enter saves a changed value,
+  // Escape discards the draft.
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && dirty) save.mutate()
+    if (e.key === 'Escape') { setContract(contractTarget); setStockpile(stockpileTarget) }
+  }
 
   return (
     <Group gap={4} wrap="nowrap">
       <NumberInput value={contract} onChange={(v) => setContract(Number(v))} min={0} w={64} size="xs"
-        aria-label="Contract target" />
+        aria-label="Contract target" onKeyDown={onKeyDown} />
       <Text size="xs" c="dimmed">/</Text>
       <NumberInput value={stockpile} onChange={(v) => setStockpile(Number(v))} min={0} w={64} size="xs"
-        aria-label="Stockpile target" />
+        aria-label="Stockpile target" onKeyDown={onKeyDown} />
       {dirty && (
         <ActionIcon size="sm" variant="filled" color="accent" aria-label="Save targets"
           onClick={() => save.mutate()} loading={save.isPending}>

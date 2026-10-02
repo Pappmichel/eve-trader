@@ -29,8 +29,8 @@ export default function Candidates() {
   const displayUpdatedAt = focused && focused.length > 0 ? focusedUpdatedAt : universeUpdatedAt
 
   const columns = useMemo<ColumnDef<Candidate, any>[]>(() => [
-    { header: 'Item', accessorKey: 'item', size: 220 },
-    { header: 'Category', accessorKey: 'category', size: 120 },
+    { header: 'Item', accessorKey: 'item', size: 220, meta: { copyable: true } },
+    { header: 'Category', accessorKey: 'category', size: 120, meta: { filterable: true } },
     { header: 'Meta Level', accessorKey: 'meta_level', size: 90, cell: (i) => i.getValue() ?? '–' },
     { header: 'Volume (m³)', accessorKey: 'volume_m3', size: 110, cell: (i) => qty(i.getValue()) },
     { header: 'Market Group Path', accessorKey: 'market_group_path', size: 380 },
@@ -56,7 +56,7 @@ export default function Candidates() {
       ) : display.length === 0 ? (
         <HintCard>No candidates loaded yet. Click <b>Load Market Groups</b> in the side menu, then <b>Filter Candidates</b>.</HintCard>
       ) : (
-        <DataTable data={display} columns={columns} maxHeight={560} dataUpdatedAt={displayUpdatedAt} />
+        <DataTable getRowId={(r) => String(r.type_id)} tableId="trading-candidates" rowDetail data={display} columns={columns} maxHeight={560} dataUpdatedAt={displayUpdatedAt} />
       )}
     </>
   )

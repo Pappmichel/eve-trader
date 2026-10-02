@@ -1,15 +1,17 @@
 import { useState } from 'react'
 import {
-  ActionIcon, Alert, Autocomplete, Badge, Button, Container, Group, Loader, Modal, Progress, Select, Stack, Table,
+  ActionIcon, Alert, Autocomplete, Badge, Button, Container, Group, Loader, Modal, Progress, Select, Stack,
   Tabs, Text, Textarea, TextInput, Title, Tooltip,
 } from '@mantine/core'
-import { notifications } from '@mantine/notifications'
+import { notify } from '../../../notify'
 import { IconArrowDown, IconArrowLeft, IconArrowUp, IconTrash } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import type { ColumnDef } from '@tanstack/react-table'
 
 import { ApiError, charSkillPlansApi } from '../../../api/client'
 import type { SkillPlan, SkillPlanStep } from '../../../api/types'
+import { DataTable } from '../../../components/DataTable'
 import { duration, qty } from '../../../format'
 import { useCharacterSync } from '../../../hooks/useCharacterSync'
 
@@ -27,7 +29,7 @@ function useSaving(qc: ReturnType<typeof useQueryClient>, planId: number) {
       qc.invalidateQueries({ queryKey: [...KEY, 'list'] })
       qc.invalidateQueries({ queryKey: [...KEY, 'progress', planId] })
     },
-    onError: (e: unknown) => notifications.show({ title: 'Could not change the plan', message: message(e), color: 'danger' }),
+    onError: (e: unknown) => notify({ title: 'Could not change the plan', message: message(e), color: 'danger' }),
   }
 }
 
@@ -48,7 +50,7 @@ function AddSkill({ plan }: { plan: SkillPlan }) {
   })
   const onDone = (p: SkillPlan) => {
     setText('')
-    notifications.show({
+    notify({
       title: p.added ? `Added ${p.added} step${p.added === 1 ? '' : 's'}` : 'Nothing to add',
       message: p.added ? 'Lower levels and prerequisites are included.' : 'Those steps are already in the plan.', color: 'info',
     })
@@ -78,7 +80,7 @@ function StepsTable({ plan }: { plan: SkillPlan }) {
     onSuccess: (p: SkillPlan) => {
       saving.onSuccess(p)
       if ((p.removed ?? 0) > 1) {
-        notifications.show({ title: `Removed ${p.removed} steps`, message: 'Steps that needed it were removed too.', color: 'info' })
+        notify({ title: `Removed ${p.removed} steps`, message: 'Steps that needed it were removed too.', color: 'info' })
       }
     },
   })
@@ -92,35 +94,39 @@ function StepsTable({ plan }: { plan: SkillPlan }) {
     move.mutate(order)
   }
   if (plan.steps.length === 0) return <Text c="dimmed">This plan is empty. Add a skill above or import a plan.</Text>
+  // `pos` is the step's place in the plan: the arrows move by plan position even
+  // when the view is sorted differently.
+  const steps = plan.steps.map((s, pos) => ({ ...s, pos }))
+  const columns: ColumnDef<(typeof steps)[number], any>[] = [
+    { header: '#', id: 'pos', size: 60, accessorFn: (s) => s.pos + 1 },
+    { header: 'Skill', accessorKey: 'name', size: 260 },
+    { header: 'Level', accessorKey: 'level_label', size: 90 },
+    { header: 'Group', id: 'group', size: 180, accessorFn: (s) => s.group_name ?? '–' },
+    {
+      header: '', id: 'actions', size: 130, enableSorting: false, enableResizing: false,
+      cell: (i) => {
+        const s = i.row.original
+        return (
+          <Group gap={4} justify="flex-end" wrap="nowrap">
+            <ActionIcon variant="subtle" aria-label={`Move ${s.name} ${s.level_label} up`} disabled={s.pos === 0 || move.isPending}
+              onClick={() => swap(s.pos, s.pos - 1)}><IconArrowUp size={14} /></ActionIcon>
+            <ActionIcon variant="subtle" aria-label={`Move ${s.name} ${s.level_label} down`}
+              disabled={s.pos === plan.steps.length - 1 || move.isPending}
+              onClick={() => swap(s.pos, s.pos + 1)}><IconArrowDown size={14} /></ActionIcon>
+            <Tooltip label="Also removes steps that need this one" multiline w={200}>
+              <ActionIcon variant="subtle" color="danger" aria-label={`Remove ${s.name} ${s.level_label}`}
+                onClick={() => remove.mutate(s)}><IconTrash size={14} /></ActionIcon>
+            </Tooltip>
+          </Group>
+        )
+      },
+    },
+  ]
   return (
-    <Table.ScrollContainer minWidth={600}>
-      <Table withTableBorder striped>
-        <Table.Thead><Table.Tr><Table.Th>#</Table.Th><Table.Th>Skill</Table.Th><Table.Th>Level</Table.Th><Table.Th>Group</Table.Th><Table.Th /></Table.Tr></Table.Thead>
-        <Table.Tbody>
-          {plan.steps.map((s, i) => (
-            <Table.Tr key={`${s.skill_id}-${s.level}`}>
-              <Table.Td>{i + 1}</Table.Td>
-              <Table.Td>{s.name}</Table.Td>
-              <Table.Td>{s.level_label}</Table.Td>
-              <Table.Td>{s.group_name ?? '–'}</Table.Td>
-              <Table.Td ta="right">
-                <Group gap={4} justify="flex-end" wrap="nowrap">
-                  <ActionIcon variant="subtle" aria-label={`Move ${s.name} ${s.level_label} up`} disabled={i === 0 || move.isPending}
-                    onClick={() => swap(i, i - 1)}><IconArrowUp size={14} /></ActionIcon>
-                  <ActionIcon variant="subtle" aria-label={`Move ${s.name} ${s.level_label} down`}
-                    disabled={i === plan.steps.length - 1 || move.isPending}
-                    onClick={() => swap(i, i + 1)}><IconArrowDown size={14} /></ActionIcon>
-                  <Tooltip label="Also removes steps that need this one" multiline w={200}>
-                    <ActionIcon variant="subtle" color="danger" aria-label={`Remove ${s.name} ${s.level_label}`}
-                      onClick={() => remove.mutate(s)}><IconTrash size={14} /></ActionIcon>
-                  </Tooltip>
-                </Group>
-              </Table.Td>
-            </Table.Tr>
-          ))}
-        </Table.Tbody>
-      </Table>
-    </Table.ScrollContainer>
+    <DataTable
+      data={steps} columns={columns} maxHeight={560}
+      getRowId={(s) => `${s.skill_id}-${s.level}`} exportFilename={`skill-plan-${plan.plan_id}`}
+    />
   )
 }
 
@@ -202,11 +208,11 @@ function PlanEditor({ planId, onDeleted }: { planId: number; onDeleted: () => vo
   const del = useMutation({
     mutationFn: () => charSkillPlansApi.remove(planId),
     onSuccess: () => { qc.invalidateQueries({ queryKey: [...KEY, 'list'] }); setConfirmDelete(false); onDeleted() },
-    onError: (e) => notifications.show({ title: 'Could not delete', message: message(e), color: 'danger' }),
+    onError: (e) => notify({ title: 'Could not delete', message: message(e), color: 'danger' }),
   })
   const doExport = useMutation({
     mutationFn: () => charSkillPlansApi.exportText(planId), onSuccess: (r) => setExportText(r.text),
-    onError: (e) => notifications.show({ title: 'Could not export', message: message(e), color: 'danger' }),
+    onError: (e) => notify({ title: 'Could not export', message: message(e), color: 'danger' }),
   })
 
   if (isLoading) return <Loader color="accent" />
@@ -276,10 +282,10 @@ function NewPlanModal({ opened, onClose, onCreated }: {
       const notes: string[] = []
       if (plan.steps_added_for_prerequisites) notes.push(`${plan.steps_added_for_prerequisites} prerequisite step(s) added`)
       if (plan.unresolved?.length) notes.push(`${plan.unresolved.length} line(s) not recognised: ${plan.unresolved.slice(0, 3).join('; ')}`)
-      if (notes.length) notifications.show({ title: 'Plan imported', message: notes.join(' · '), color: 'info' })
+      if (notes.length) notify({ title: 'Plan imported', message: notes.join(' · '), color: 'info' })
       onCreated(plan)
     },
-    onError: (e) => notifications.show({ title: 'Could not create the plan', message: message(e), color: 'danger' }),
+    onError: (e) => notify({ title: 'Could not create the plan', message: message(e), color: 'danger' }),
   })
   return (
     <Modal opened={opened} onClose={onClose} title="New skill plan" size="md">
