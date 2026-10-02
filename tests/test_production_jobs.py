@@ -117,3 +117,22 @@ def test_manual_jobs_are_appended_with_source_and_status(monkeypatch):
 
     assert by_id[3].status == "active"
     assert by_id[3].remaining_seconds is None
+
+
+def test_best_hub_mode_values_output_at_the_jita_reference(monkeypatch):
+    # #222: in best-hub mode jita_prices returns buy quotes from the cheapest
+    # hub; output valuation must still use the Jita reference.
+    from eve_trader.production import pricing
+
+    cfg = ProductionConfig()
+    monkeypatch.setattr(storage, "list_industry_jobs", lambda **kwargs: [_job(1, 1, 101, 10, "X", runs=1)])
+    monkeypatch.setattr(storage, "get_product_quantity", lambda bp, act, prod: 2.0)
+    monkeypatch.setattr(pricing, "home_prices", lambda cfg, ids: {})
+    ref = CurrentPrice(type_id=10, updated="", buy=0.0, sell=100.0)
+    monkeypatch.setattr(pricing, "jita_prices", lambda ids, *a, **k: {
+        10: pricing.HubQuote(type_id=10, updated="", buy=0.0, sell=80.0,
+                             hub_region_id=10000043, freight_per_m3=1.0, ref=ref)})
+
+    rows = jobs.list_current_jobs(cfg)
+
+    assert rows[0].output_value == 200.0
