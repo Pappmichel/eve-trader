@@ -371,6 +371,29 @@ def test_doctrine_asset_tables_are_copied_then_dropped(_apply_esi_access_schema,
         conn.execute(pg_helpers._ESI_ACCESS_SCHEMA_SQL.read_text())
 
 
+def test_doctrine_copy_handles_tables_without_resolved_hangar_flag(_apply_esi_access_schema, tenant):
+    """Doctrine asset tables created before the hangar-sorting feature lack
+    resolved_hangar_flag; the copy selects it, so the file must add it
+    first instead of aborting."""
+    tenant_id = tenant
+    pg_helpers.wipe_tables("character_assets")
+    legacy_ddl = _LEFTOVER_ASSET_DDL.replace("    resolved_hangar_flag TEXT,\n", "")
+    with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
+        conn.execute("DROP TABLE IF EXISTS doctrine_character_assets")
+        conn.execute(legacy_ddl.format(table="doctrine_character_assets"))
+        conn.execute(
+            "INSERT INTO doctrine_character_assets (tenant_id, item_id, type_id, location_id, "
+            "location_flag, quantity, is_blueprint_copy, owner_name, resolved_location_id) "
+            "VALUES (%s, 4, 34, 1000000000001, 'Hangar', 5, 0, 'Carol', 1000000000001)",
+            (tenant_id,),
+        )
+        conn.execute(pg_helpers._ESI_ACCESS_SCHEMA_SQL.read_text())
+        carol = conn.execute(
+            "SELECT quantity, resolved_hangar_flag FROM character_assets WHERE item_id = 4"
+        ).fetchone()
+        assert carol == (5, None)
+
+
 def test_doctrine_copy_takes_incoming_when_shared_row_is_unstamped(_apply_esi_access_schema, tenant):
     tenant_id = tenant
     pg_helpers.wipe_tables("character_assets")
