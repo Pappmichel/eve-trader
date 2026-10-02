@@ -12,6 +12,7 @@ import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
 import { isk, pct, qty } from '../../format'
 import { COLORS } from '../../theme'
+import { hubLabel } from '../../tradingHubs'
 
 const ALL_DECISIONS = ['Inactive', 'Missing ID', 'No market data', 'Skip', 'Already ordered', 'Import']
 const DECISION_COLOR: Record<string, string> = {
@@ -91,7 +92,11 @@ export default function Shortlist() {
   }, [filtered])
 
   const columns = useMemo<ColumnDef<ShortlistRow, any>[]>(() => [
-    { header: 'Item', accessorKey: 'item', size: 220 },
+    // Widened from 220 (user feedback, 2026-10-01): long item names were
+    // truncated already at the default width, before even scrolling right to
+    // see Market Volume/Profit-Day - pair with the Columns menu's new "pin"
+    // button (DataTable.tsx) for staying visible during that scroll too.
+    { header: 'Item', accessorKey: 'item', size: 280 },
     { header: 'Category', accessorKey: 'category', size: 110 },
     { header: 'Meta Level', accessorKey: 'meta_level', size: 90, cell: (i) => i.getValue() ?? '–' },
     {
@@ -148,11 +153,29 @@ export default function Shortlist() {
       cell: (i) => isk(i.getValue()),
     },
     { header: 'Profit / m³', accessorKey: 'profit_per_m3', size: 110, cell: (i) => qty(i.getValue()) },
-    { header: 'Cost (Jita)', accessorKey: 'landed_cost', size: 120, cell: (i) => isk(i.getValue()) },
+    // Label follows the configured buy hub (user feedback, 2026-10-01) - was
+    // hardcoded "Cost (Jita)" regardless of jita_region_id's actual value.
+    { header: `Cost (${hubLabel(settings?.jita_region_id)})`, accessorKey: 'landed_cost', size: 120, cell: (i) => isk(i.getValue()) },
+    {
+      // User feedback, 2026-10-01: the highest landed cost (incl. broker fee
+      // + freight, same basis as "Cost (Jita)" right before it) at which
+      // profit_per_unit is exactly zero - buying at or below this is
+      // profitable, above it is a loss. Not the min_profit_threshold/
+      // min_margin_threshold-aware price (the user picked plain breakeven):
+      // profit = net_sell - landed_cost, so the zero-profit landed_cost is
+      // just net_sell itself (net_sell doesn't depend on landed_cost in this
+      // pricing model) - same raw number as "Sale (Structure)" two columns
+      // over, shown under its own breakeven-specific label/meaning so it
+      // doesn't have to be derived by eye from the other two columns.
+      header: 'Breakeven Price', id: 'breakevenPrice', size: 140,
+      accessorFn: (r) => r.net_sell,
+      cell: (i) => isk(i.getValue()),
+      meta: { cellTitle: () => 'Buy at or below this landed cost to keep profit_per_unit ≥ 0.' },
+    },
     { header: 'Sale (Structure)', accessorKey: 'net_sell', size: 140, cell: (i) => isk(i.getValue()) },
     { header: 'Listed Qty (Structure)', accessorKey: 'sell_volume', size: 150, cell: (i) => qty(i.getValue()) },
     { header: 'Own Orders', accessorKey: 'own_orders_remaining', size: 110, cell: (i) => qty(i.getValue()) },
-  ], [trends])
+  ], [trends, settings?.jita_region_id])
 
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
   if (isError) return <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />

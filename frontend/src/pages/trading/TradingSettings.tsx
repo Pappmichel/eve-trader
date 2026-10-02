@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, TagsInput, Button, Center, Loader, MultiSelect } from '@mantine/core'
+import { Stack, Title, Text, SimpleGrid, NumberInput, TextInput, TagsInput, Button, Center, Loader, MultiSelect, Select, Switch } from '@mantine/core'
 
 import { tradingApi } from '../../api/client'
 import type { TradingSettings as TradingSettingsT } from '../../api/types'
@@ -8,6 +8,7 @@ import { useAction } from '../../hooks/useAction'
 import { useStructureNameOptions } from '../../hooks/useStaticOptions'
 import { HintCard } from '../../components/HintCard'
 import { StructureIdField } from '../../components/StructureIdField'
+import { TRADE_HUBS, hubLabel } from '../../tradingHubs'
 
 export default function TradingSettings() {
   const { data } = useQuery({ queryKey: ['trading', 'settings'], queryFn: tradingApi.settings })
@@ -39,7 +40,8 @@ export default function TradingSettings() {
         Freight and fee rates change with the market/carrier - adjust here if import/sale numbers suddenly look unrealistic.
       </Text>
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
-        <NumberInput label="Freight cost Jita→structure (ISK/m³)" value={form.import_cost_per_m3} min={0} step={50}
+        <NumberInput label={`Freight cost ${hubLabel(form.jita_region_id)}→structure (ISK/m³)`}
+          value={form.import_cost_per_m3} min={0} step={50}
           onChange={(v) => set('import_cost_per_m3', Number(v))} />
         <NumberInput label="Structure sell haircut" suffix="%" decimalScale={2}
           value={form.structure_sell_haircut * 100} min={0} max={100} step={1}
@@ -83,10 +85,23 @@ export default function TradingSettings() {
         placeholder="Add a market-group path prefix" splitChars={[',']} />
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Regions &amp; Structure</Title>
-      <Text size="xs" c="dimmed">Only change if your trading location shifts entirely.</Text>
+      <Text size="xs" c="dimmed">
+        Only change if your trading location shifts entirely. "Buy hub" is the region Trading buys from and
+        prices its live shortlist against (user feedback, 2026-10-01: previously a bare region-id number field
+        always labelled "Jita" in every other Trading screen, regardless of what was actually entered here) -
+        Production, Doctrine, Ore &amp; Minerals, Station Trading and Module Reprocessing all read this same
+        value for their own order-book lookups, so changing it affects every tool, not just Trading.
+        Known gap: a character's own assets sitting in the new hub are not yet recognized by the shortlist's
+        "already covered" check, which still looks for them in Jita specifically.
+      </Text>
       <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }}>
-        <NumberInput label="Jita region ID" value={form.jita_region_id} min={1}
-          onChange={(v) => set('jita_region_id', Number(v))} />
+        <Select label="Buy hub" data={[
+          ...TRADE_HUBS.map((h) => ({ value: String(h.regionId), label: h.label })),
+          ...(TRADE_HUBS.some((h) => h.regionId === form.jita_region_id) ? [] : [
+            { value: String(form.jita_region_id), label: `Custom (region ${form.jita_region_id})` },
+          ]),
+        ]} value={String(form.jita_region_id)}
+          onChange={(v) => v && set('jita_region_id', Number(v))} />
         <NumberInput label="Reference region ID" value={form.reference_region_id} min={1}
           onChange={(v) => set('reference_region_id', Number(v))} />
         <StructureIdField label="Structure ID" value={form.structure_id ?? null}
@@ -101,7 +116,7 @@ export default function TradingSettings() {
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Characters</Title>
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
-        <TextInput label="Buyer name (Jita)" value={form.buyer_character_name ?? ''} autoComplete="off"
+        <TextInput label={`Buyer name (${hubLabel(form.jita_region_id)})`} value={form.buyer_character_name ?? ''} autoComplete="off"
           onChange={(e) => set('buyer_character_name', e.currentTarget.value)} />
         <TextInput label="Seller name (structure)" value={form.seller_character_name ?? ''} autoComplete="off"
           onChange={(e) => set('seller_character_name', e.currentTarget.value)} />
@@ -123,6 +138,15 @@ export default function TradingSettings() {
         value={(form.wallet_division_ids ?? []).map(String)}
         onChange={(v) => set('wallet_division_ids', v.map(Number))}
         placeholder="All divisions" clearable />
+
+      <Title order={6} c="dimmed" tt="uppercase" mt="md">Background scheduler</Title>
+      <Text size="xs" c="dimmed">
+        Runs the trading pipeline, ESI sync and daily portfolio snapshot on a schedule instead of only on a
+        manual Sync/Refresh. This tenant&apos;s own switch - the operator&apos;s installation-wide switch must
+        also be on, or this has no effect (ask the operator if flipping this on doesn&apos;t seem to do anything).
+      </Text>
+      <Switch label="Enable background scheduler for this tenant" checked={form.scheduler_enabled}
+        onChange={(e) => set('scheduler_enabled', e.currentTarget.checked)} />
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">ESI freshness</Title>
       <Text size="xs" c="dimmed">
