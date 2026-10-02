@@ -78,11 +78,26 @@ class SPAStaticFiles(StaticFiles):
         # fired, since execution never reaches it) - has to be caught, not
         # branched on.
         try:
-            return await super().get_response(path, scope)
+            response = await super().get_response(path, scope)
         except StarletteHTTPException as exc:
-            if exc.status_code == 404:
-                return await super().get_response("index.html", scope)
-            raise
+            if exc.status_code != 404:
+                raise
+            response = await super().get_response("index.html", scope)
+            posix_path = "index.html"
+        # StaticFiles sends no Cache-Control by default (only ETag/
+        # Last-Modified), so a browser may cache index.html heuristically
+        # (RFC 9111 4.2.2). After a deploy a stale index.html then names
+        # hashed chunks that no longer exist. "no-cache" forces an ETag
+        # revalidation on every load (cheap for this file); hashed files
+        # under assets/ change name on every build and can be cached forever.
+        # chunkReload.ts (frontend) only recovers once the stale page has
+        # already failed; this keeps it from happening in the first place.
+        response.headers["Cache-Control"] = (
+            "public, max-age=31536000, immutable"
+            if posix_path.startswith("assets/")
+            else "no-cache"
+        )
+        return response
 
 # Reachable without a gate session even while AccessConfig.access_gate_enabled
 # is true - the login flow itself, plus the one status/logout pair the

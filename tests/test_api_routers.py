@@ -1752,6 +1752,56 @@ def test_spa_fallback_root_serves_index_html():
     assert "<html" in resp.text.lower()
 
 
+# Cache-Control on the SPA mount: index.html (also via the client-route
+# fallback) must revalidate on every load, hashed assets may be cached
+# forever. Mounted on a throwaway dist directory so these run without a real
+# frontend build (the backend-only CI job has none).
+@pytest.fixture
+def spa_client(tmp_path):
+    from fastapi import FastAPI
+
+    from eve_trader.api.app import SPAStaticFiles
+
+    (tmp_path / "index.html").write_text("<html></html>")
+    (tmp_path / "favicon.svg").write_text("<svg></svg>")
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "index-abc123.js").write_text("export {}")
+    app = FastAPI()
+    app.mount("/", SPAStaticFiles(directory=tmp_path, html=True), name="frontend")
+    return TestClient(app)
+
+
+def test_index_html_is_never_cached(spa_client):
+    resp = spa_client.get("/")
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "no-cache"
+
+
+def test_spa_fallback_shell_is_never_cached(spa_client):
+    resp = spa_client.get("/production/asset-plan")
+    assert resp.status_code == 200
+    assert "<html" in resp.text
+    assert resp.headers["cache-control"] == "no-cache"
+
+
+def test_hashed_asset_is_cached_long_term_and_immutable(spa_client):
+    resp = spa_client.get("/assets/index-abc123.js")
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+
+def test_unhashed_root_file_is_revalidated(spa_client):
+    resp = spa_client.get("/favicon.svg")
+    assert resp.headers["cache-control"] == "no-cache"
+
+
+def test_revalidated_index_html_keeps_no_cache(spa_client):
+    etag = spa_client.get("/").headers["etag"]
+    resp = spa_client.get("/", headers={"If-None-Match": etag})
+    assert resp.status_code == 304
+    assert resp.headers["cache-control"] == "no-cache"
+
+
 # Backup routes moved to /api/admin/backups (confirmed real misplacement
 # 2026-09-21, see admin.do_create_backup's own docstring) - their router
 # tests moved to test_admin_router.py alongside the rest of /api/admin/*.
