@@ -105,6 +105,11 @@ export const authApi = {
 }
 
 // -------------------------------------------------------------- access gate
+// FRONTEND_PLAN.md B.12: when this tenant's data last changed, per source.
+export const updatesApi = {
+  versions: () => get<Record<string, string | null>>('/api/updates/versions'),
+}
+
 export const gateApi = {
   status: () => get<T.GateStatus>('/api/gate/status'),
   logout: () => post<{ ok: boolean }>('/api/gate/logout'),

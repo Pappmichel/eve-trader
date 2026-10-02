@@ -2036,3 +2036,12 @@ def test_hub_freight_routes_pass_rows_to_the_action(monkeypatch):
                                                    {"region_id": 10000002}])
     assert resp.status_code == 200
     assert seen == {10000043: 950.0, 10000002: None}
+
+
+def test_data_versions_route_returns_the_action_result(monkeypatch):
+    from eve_trader import data_versions
+
+    monkeypatch.setattr(data_versions, "do_data_versions", lambda: {"esi": "x", "portfolio": None})
+    resp = client.get("/api/updates/versions")
+    assert resp.status_code == 200
+    assert resp.json() == {"esi": "x", "portfolio": None}

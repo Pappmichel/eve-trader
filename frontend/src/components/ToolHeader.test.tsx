@@ -1,4 +1,5 @@
 import { MantineProvider } from '@mantine/core'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -6,9 +7,12 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { ToolHeader } from './ToolHeader'
 
+vi.mock('../api/client', () => ({ updatesApi: { versions: vi.fn().mockResolvedValue({}) } }))
+
 function renderHeader(props: Partial<Parameters<typeof ToolHeader>[0]> = {}) {
   const onToggle = vi.fn()
   render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
     <MantineProvider>
       <MemoryRouter initialEntries={['/trading']}>
         <Routes>
@@ -16,7 +20,8 @@ function renderHeader(props: Partial<Parameters<typeof ToolHeader>[0]> = {}) {
           <Route path="/trading" element={<ToolHeader title="Trading" opened={false} onToggle={onToggle} {...props} />} />
         </Routes>
       </MemoryRouter>
-    </MantineProvider>,
+    </MantineProvider>
+    </QueryClientProvider>,
   )
   return onToggle
 }

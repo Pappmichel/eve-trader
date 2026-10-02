@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { notify } from '../notify'
 import { ApiError } from '../api/client'
 import { ActionTierIcon, TIER_COPY, type ActionNetworkTier } from '../components/ActionTierIcon'
+import { acceptOwnDataChange } from '../dataVersions'
 
 export type { ActionNetworkTier } from '../components/ActionTierIcon'
 
@@ -66,6 +67,7 @@ export function useAction<TArgs = void, TResult = unknown>(
       for (const key of invalidateKeys) {
         queryClient.invalidateQueries({ queryKey: key })
       }
+      acceptOwnDataChange(queryClient)
     },
     onError: (err: unknown) => {
       const message = err instanceof ApiError ? err.message : String(err)

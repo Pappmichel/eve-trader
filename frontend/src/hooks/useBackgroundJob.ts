@@ -4,6 +4,7 @@ import { notify } from '../notify'
 
 import { ApiError } from '../api/client'
 import type { PipelineRunProgress, PipelineRunStatus } from '../api/types'
+import { acceptOwnDataChange } from '../dataVersions'
 
 /** Only `running` is in-flight. `degraded` is terminal (partial failure). */
 export function shouldPollBackgroundJob(status: string | undefined): boolean {
@@ -124,6 +125,7 @@ export function useBackgroundJob(opts: {
       for (const key of resultKeys) {
         queryClient.invalidateQueries({ queryKey: key })
       }
+      acceptOwnDataChange(queryClient)
     }
     if (prev === 'running' && status === 'succeeded') {
       notify({ title: label, message: 'Done', color: 'accent' })
