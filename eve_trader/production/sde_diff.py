@@ -124,6 +124,11 @@ def _other_tables(fetched: FetchedSde, snapshot: dict, new_types: dict, old_type
             (("name", 1, False), ("security", 2, True), ("region_id", 3, False)),
         ),
         (
+            "sde_regions", fetched.regions,
+            lambda row: int(row[0]), lambda row: row[1],
+            (("region_name", 1, False),),
+        ),
+        (
             "sde_stations", fetched.stations,
             lambda row: int(row[0]), lambda row: row[2],
             (("system_id", 1, False), ("station_name", 2, False)),

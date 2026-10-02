@@ -65,6 +65,7 @@ _SDE_CSV_FILES = (
     "industryActivityProducts.csv",
     "industryActivityProbabilities.csv",
     "mapSolarSystems.csv",
+    "mapRegions.csv",
     "staStations.csv",
     "dgmTypeEffects.csv",
     "invTypeMaterials.csv",
@@ -203,6 +204,17 @@ def _dump_etag(session: requests.Session, base_url: str) -> Optional[str]:
     return resp.headers.get("ETag")
 
 
+def region_rows_from_csv(rows: list[dict]) -> list[tuple]:
+    """mapRegions.csv -> (region_id, region_name) rows for sde_regions. Every
+    region is kept (no filtering); only rows missing an id or a name are
+    skipped, since region_name is NOT NULL."""
+    return [
+        (int(r["regionID"]), r["regionName"])
+        for r in rows
+        if r.get("regionID") not in (None, "") and r.get("regionName") not in (None, "")
+    ]
+
+
 def _int_or_none(v: str):
     return int(v) if v not in (None, "") else None
 
@@ -235,6 +247,7 @@ class FetchedSde:
     blueprint_products: list[tuple] = field(default_factory=list)
     invention_probability: list[tuple] = field(default_factory=list)
     solar_systems: list[tuple] = field(default_factory=list)
+    regions: list[tuple] = field(default_factory=list)
     stations: list[tuple] = field(default_factory=list)
     categories: list[tuple] = field(default_factory=list)
     type_slots: list[tuple] = field(default_factory=list)
@@ -294,6 +307,7 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
     activity_products = fetched["industryActivityProducts.csv"]
     activity_probabilities = fetched["industryActivityProbabilities.csv"]
     solar_systems = fetched["mapSolarSystems.csv"]
+    regions = fetched["mapRegions.csv"]
     stations = fetched["staStations.csv"]
     # typeID -> fitting slot, for the Doctrine tool's EFT parser (see
     # doctrine/parser.py's SDE-verification step). dgmTypeEffects.csv is a
@@ -369,6 +383,7 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
         (int(r["solarSystemID"]), r["solarSystemName"], float(r["security"]), _int_or_none(r.get("regionID")))
         for r in solar_systems if r.get("security") not in (None, "")
     ]
+    region_rows = region_rows_from_csv(regions)
     station_rows = [
         (int(r["stationID"]), int(r["solarSystemID"]), r.get("stationName"))
         for r in stations if r.get("solarSystemID") not in (None, "")
@@ -385,7 +400,7 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
         types=types_rows, groups=groups_rows, market_groups=market_groups_rows,
         blueprint_time=time_rows, blueprint_materials=material_rows,
         blueprint_products=product_rows, invention_probability=probability_rows,
-        solar_systems=solar_system_rows, stations=station_rows,
+        solar_systems=solar_system_rows, regions=region_rows, stations=station_rows,
         categories=category_rows, type_slots=type_slot_rows,
         type_materials=type_materials_rows, blueprint_skills=blueprint_skill_rows,
         skill_requirements=skill_requirement_rows, skill_meta=skill_meta_rows,
@@ -401,6 +416,7 @@ def apply_sde(fetched: FetchedSde) -> dict:
         blueprint_time=fetched.blueprint_time, blueprint_materials=fetched.blueprint_materials,
         blueprint_products=fetched.blueprint_products, stations=fetched.stations,
         invention_probability=fetched.invention_probability, solar_systems=fetched.solar_systems,
+        regions=fetched.regions,
         categories=fetched.categories, type_slots=fetched.type_slots,
         type_materials=fetched.type_materials, blueprint_skills=fetched.blueprint_skills,
         skill_requirements=fetched.skill_requirements, skill_meta=fetched.skill_meta,

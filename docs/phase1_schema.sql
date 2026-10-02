@@ -128,6 +128,13 @@ CREATE TABLE IF NOT EXISTS sde_solar_systems (
     region_id INTEGER
 );
 
+-- Region names for the Settings region pickers (GitHub issue #223). Global SDE
+-- table like sde_solar_systems: no tenant_id, no RLS, filled by refresh_sde().
+CREATE TABLE IF NOT EXISTS sde_regions (
+    region_id INTEGER PRIMARY KEY,
+    region_name TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sde_stations (
     station_id INTEGER PRIMARY KEY,
     solar_system_id INTEGER,

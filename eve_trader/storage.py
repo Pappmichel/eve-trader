@@ -1385,6 +1385,7 @@ def replace_sde_data(
     blueprint_time: list[tuple], blueprint_materials: list[tuple], blueprint_products: list[tuple],
     invention_probability: list[tuple] = (), solar_systems: list[tuple] = (),
     stations: list[tuple] = (), categories: list[tuple] = (), type_slots: list[tuple] = (),
+    regions: list[tuple] = (),
     type_materials: list[tuple] = (), blueprint_skills: list[tuple] = (),
     skill_requirements: list[tuple] = (), skill_meta: list[tuple] = (),
 ) -> None:
@@ -1421,6 +1422,7 @@ def replace_sde_data(
         conn.execute("DELETE FROM sde_blueprint_products")
         conn.execute("DELETE FROM sde_invention_probability")
         conn.execute("DELETE FROM sde_solar_systems")
+        conn.execute("DELETE FROM sde_regions")
         conn.execute("DELETE FROM sde_stations")
         conn.execute("DELETE FROM sde_categories")
         conn.execute("DELETE FROM sde_type_slots")
@@ -1436,6 +1438,7 @@ def replace_sde_data(
         conn.executemany("INSERT INTO sde_blueprint_products VALUES (?,?,?,?)", blueprint_products)
         conn.executemany("INSERT INTO sde_invention_probability VALUES (?,?,?)", invention_probability)
         conn.executemany("INSERT INTO sde_solar_systems VALUES (?,?,?,?)", solar_systems)
+        conn.executemany("INSERT INTO sde_regions VALUES (?,?)", regions)
         conn.executemany("INSERT INTO sde_stations VALUES (?,?,?)", stations)
         conn.executemany("INSERT INTO sde_categories VALUES (?,?)", categories)
         conn.executemany("INSERT INTO sde_type_slots VALUES (?,?)", type_slots)
@@ -1462,7 +1465,7 @@ SDE_TABLES = (
     "sde_types", "sde_groups", "sde_market_groups", "sde_blueprint_time",
     "sde_blueprint_materials", "sde_blueprint_products", "sde_invention_probability",
     "sde_blueprint_skills",
-    "sde_solar_systems", "sde_stations", "sde_categories", "sde_type_slots",
+    "sde_solar_systems", "sde_regions", "sde_stations", "sde_categories", "sde_type_slots",
     "sde_type_materials",
     "sde_skill_requirements", "sde_skill_meta",
 )
@@ -1657,6 +1660,16 @@ def list_all_solar_systems() -> list[tuple[int, str]]:
     with connect() as conn:
         return conn.execute(
             "SELECT solar_system_id, solar_system_name FROM sde_solar_systems ORDER BY solar_system_name"
+        ).fetchall()
+
+
+def list_all_regions() -> list[tuple[int, str]]:
+    """Every SDE region (region_id, region_name), name-ordered - feeds the
+    region pickers in Trading/Module Reprocessing Settings (issue #223).
+    Empty until the SDE has been refreshed once after sde_regions was added."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT region_id, region_name FROM sde_regions ORDER BY region_name"
         ).fetchall()
 
 

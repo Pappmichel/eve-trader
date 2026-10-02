@@ -2010,3 +2010,15 @@ def test_price_history_is_split_by_region(monkeypatch):
     assert body["hub"] == [{"date": "2026-10-01", "avg_price": float(hub)}]
     assert body["reference"] == [{"date": "2026-10-01", "avg_price": float(ref)}]
     assert sorted(calls) == sorted([(hub, 34), (ref, 34)])
+
+
+def test_get_sde_regions_serializes_storage_rows(monkeypatch):
+    monkeypatch.setattr(storage, "list_all_regions", lambda: [(10000009, "Insmother"), (10000002, "The Forge")])
+
+    resp = client.get("/api/sde/regions")
+
+    assert resp.status_code == 200
+    assert resp.json() == [
+        {"region_id": 10000009, "region_name": "Insmother"},
+        {"region_id": 10000002, "region_name": "The Forge"},
+    ]

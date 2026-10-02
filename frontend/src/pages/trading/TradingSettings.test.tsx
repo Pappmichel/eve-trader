@@ -14,6 +14,9 @@ vi.mock('../../api/client', () => ({
   productionApi: {
     structureNames: vi.fn(),
   },
+  sdeApi: {
+    regions: vi.fn().mockResolvedValue([]),
+  },
 }))
 
 // Minimal but complete TradingSettings shape - every field the page reads.

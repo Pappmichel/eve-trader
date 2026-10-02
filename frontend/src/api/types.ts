@@ -131,6 +131,11 @@ export interface SdeItemNameOption {
   type_name: string
 }
 
+export interface RegionOption {
+  region_id: number
+  region_name: string
+}
+
 export interface SolarSystemOption {
   solar_system_id: number
   solar_system_name: string
