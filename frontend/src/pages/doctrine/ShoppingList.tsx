@@ -48,7 +48,7 @@ export default function ShoppingList() {
       <Title order={4}>Shopping List</Title>
       <Text size="sm" c="dimmed">
         Everything currently short across every doctrine (same combined shortfall as the Stockpile tab), with
-        whichever of Build / buy at C-J / buy at Jita (landed, including import cost) is cheapest right now.
+        whichever of Build / buy at C-J / buy at {allHubs ? 'the best hub' : hub} (landed, including freight) is cheapest right now.
       </Text>
 
       {!isLoading && !isError && rows.length === 0 && <Text c="dimmed">Nothing short right now.</Text>}
