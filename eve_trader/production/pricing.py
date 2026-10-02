@@ -102,7 +102,7 @@ def home_prices(cfg: ProductionConfig, type_ids: list[int]) -> dict[int, Current
     return _goonmetrics_prices(cfg.home_market, type_ids) if cfg.home_market else {}
 
 
-def jita_prices(type_ids: list[int]) -> dict[int, CurrentPrice]:
+def jita_prices(type_ids: list[int], hub_region_id: Optional[int] = None) -> dict[int, CurrentPrice]:
     """Same ESI-first/Goonmetrics-fallback shape as home_prices (including
     the fallback only ever being fetched lazily, on an actual ESI failure),
     but region-side (public data, no auth_role needed) via ESIClient.
@@ -118,21 +118,27 @@ def jita_prices(type_ids: list[int]) -> dict[int, CurrentPrice]:
     aren't cached yet (e.g. a stock target added since the last refresh)
     fall through to a live per-type fetch below, same as before.
 
-    Jita's region_id comes from TRADING_CONFIG (not a ProductionConfig
-    field - Jita itself is Trading's own concept, matching every other
-    Production call site that already reaches into TRADING_CONFIG.
-    jita_region_id, e.g. engine.py's market_status/stock_value)."""
+    The hub is `hub_region_id` (default: ProductionConfig.hub_region_id, #222).
+    The shared cache is a Jita-only cache and the Goonmetrics fallback uses
+    the hardcoded "jita" slug, so both apply only when the hub is Jita; any
+    other hub goes straight to live ESI with no fallback (missing stays
+    missing - never substitute Jita prices for another hub)."""
     if not type_ids:
         return {}
-    result = jita_price_cache.get_cached_prices(type_ids)
+    hub = hub_region_id if hub_region_id is not None else PRODUCTION_CONFIG.hub_region_id
+    is_jita = hub == jita_price_cache.JITA_REGION_ID
+    result = jita_price_cache.get_cached_prices(type_ids) if is_jita else {}
     missing = [tid for tid in type_ids if tid not in result]
     if not missing:
         return result
     try:
-        stats = ESIClient().region_order_stats_bulk(TRADING_CONFIG.jita_region_id, missing)
+        stats = ESIClient().region_order_stats_bulk(hub, missing)
         result.update(_from_order_stats(stats, missing))
     except Exception:  # noqa: BLE001 - best-effort; Goonmetrics fallback is always safe
-        result.update(_goonmetrics_prices(JITA_MARKET, missing))
+        if is_jita:
+            result.update(_goonmetrics_prices(JITA_MARKET, missing))
+        else:
+            log.warning("ESI order stats for hub region %s failed; no Goonmetrics fallback for non-Jita hubs", hub)
     return result
 
 

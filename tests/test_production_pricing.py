@@ -224,3 +224,58 @@ def test_jita_prices_only_live_fetches_type_ids_missing_from_cache(monkeypatch):
     assert seen_type_ids == [99]
     assert result[34].sell == 5.5
     assert result[99].sell == 7.0
+
+
+# ---------------------------------------------------------- per-tool hub (#222)
+def test_jita_prices_reads_the_production_hub_not_trading_config(monkeypatch):
+    # Trading's own hub must not leak into Production: only hub_region_id counts.
+    monkeypatch.setattr(TRADING_CONFIG, "jita_region_id", 10000043)
+    seen = []
+
+    def _fetch(self, region_id, type_ids):
+        seen.append(region_id)
+        return {34: OrderStats(sell_percentile=5.5, sell_volume=1.0, buy_percentile=5.0, buy_volume=1.0)}
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", _fetch)
+
+    jita_prices([34], 10000002)
+    jita_prices([34], 10000032)
+
+    assert seen == [10000002, 10000032]
+
+
+def test_jita_prices_non_jita_hub_bypasses_the_jita_cache(monkeypatch):
+    # The shared cache is Jita-only; a cached Jita quote must never answer for Amarr.
+    jita_price_cache._cache[34] = CurrentPrice(type_id=34, updated="", buy=5.0, sell=5.5)
+    seen = []
+
+    def _fetch(self, region_id, type_ids):
+        seen.append((region_id, list(type_ids)))
+        return {34: OrderStats(sell_percentile=9.0, sell_volume=1.0, buy_percentile=8.0, buy_volume=1.0)}
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", _fetch)
+
+    result = jita_prices([34], 10000043)
+
+    assert seen == [(10000043, [34])]
+    assert result[34].sell == 9.0
+
+
+def test_jita_prices_non_jita_hub_has_no_goonmetrics_fallback(monkeypatch):
+    def _fail(self, region_id, type_ids):
+        raise ESIError("ESI outage")
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", _fail)
+    monkeypatch.setattr(GoonmetricsClient, "current_prices", lambda self, market:
+                         pytest.fail("Goonmetrics' 'jita' slug must never stand in for another hub"))
+
+    assert jita_prices([34], 10000043) == {}
+
+
+def test_jita_prices_defaults_to_the_production_config_hub(monkeypatch):
+    from eve_trader.production.pricing import PRODUCTION_CONFIG
+    monkeypatch.setattr(PRODUCTION_CONFIG, "hub_region_id", 10000030)
+    seen = []
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk",
+                        lambda self, region_id, type_ids: seen.append(region_id) or {})
+
+    jita_prices([34])
+
+    assert seen == [10000030]

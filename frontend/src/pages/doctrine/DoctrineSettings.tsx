@@ -7,6 +7,7 @@ import type { DoctrineSettings as DoctrineSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { useStructureNameOptions } from '../../hooks/useStaticOptions'
 import { HintCard } from '../../components/HintCard'
+import { HubSelect } from '../../components/HubSelect'
 import { StructureIdField } from '../../components/StructureIdField'
 
 export default function DoctrineSettings() {
@@ -61,6 +62,8 @@ export default function DoctrineSettings() {
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Shopping List</Title>
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
+        <HubSelect label="Market hub" description="Order book the Shopping List buys from (its own setting, independent of Trading's)"
+          value={form.hub_region_id} onChange={(v) => set('hub_region_id', v)} />
         <NumberInput label="Jita import cost (ISK/m³)" value={form.import_cost_per_m3} min={0} step={50}
           onChange={(v) => set('import_cost_per_m3', Number(v))} />
       </SimpleGrid>

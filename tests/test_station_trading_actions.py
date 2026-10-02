@@ -35,7 +35,7 @@ def test_build_shortlist_rows_includes_category_and_live_profit(monkeypatch):
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 4)
     monkeypatch.setattr(storage, "load_sde_category_names", lambda: {4: "Mineral"})
     monkeypatch.setattr(actions, "confirm_live",
-                         lambda type_ids: {34: OrderStats(sell_percentile=6.0, sell_volume=1.0,
+                         lambda type_ids, **k: {34: OrderStats(sell_percentile=6.0, sell_volume=1.0,
                                                            buy_percentile=5.0, buy_volume=1.0)})
 
     rows = actions._build_shortlist_rows([(34, 0.1, 5000.0, "2026-08-27T00:00:00", True)], cfg)
@@ -52,7 +52,7 @@ def test_build_shortlist_rows_unknown_category_when_type_not_in_sde(monkeypatch)
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: None)
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: None)
     monkeypatch.setattr(storage, "load_sde_category_names", lambda: {})
-    monkeypatch.setattr(actions, "confirm_live", lambda type_ids: {})
+    monkeypatch.setattr(actions, "confirm_live", lambda type_ids, **k: {})
 
     rows = actions._build_shortlist_rows([(999, 0.1, 5000.0, "2026-08-27T00:00:00", True)], cfg)
 

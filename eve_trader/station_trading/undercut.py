@@ -18,7 +18,6 @@ character).
 """
 from __future__ import annotations
 
-from ..config import TRADING_CONFIG
 from ..esi_client import ESIClient
 from .config import StationTradingConfig
 
@@ -73,7 +72,7 @@ def _check_side(my_orders: list[dict], client: ESIClient, cfg: StationTradingCon
     # taking min/max competitor price. Aggregated percentiles mix stations
     # and would count the trader's own orders as "competition".
     raw_by_type = client.region_orders_raw_bulk(
-        TRADING_CONFIG.jita_region_id, list(my_best_price))
+        cfg.hub_region_id, list(my_best_price))
     competitor_best: dict[int, float] = {}
     for type_id in my_best_price:
         for o in raw_by_type.get(type_id, []):

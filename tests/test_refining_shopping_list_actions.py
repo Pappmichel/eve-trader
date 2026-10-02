@@ -304,3 +304,27 @@ def test_optimize_degrades_to_jita_only_on_a_goonmetrics_failure(monkeypatch, sd
 
     assert plan["direct_purchases"][0]["landed_cost_per_unit"] == pytest.approx(12.0)
     assert plan["direct_purchases"][0]["source"] == "Jita"
+
+
+def test_optimize_prices_ore_and_minerals_at_the_refining_hub(monkeypatch, sde, candidates, esi, cfgs):
+    # Trading's hub must not decide where Ore & Minerals prices (#222).
+    seen = []
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            pass
+
+        def region_order_stats_bulk(self, region_id, type_ids, **kw):
+            seen.append(region_id)
+            return {tid: esi[tid] for tid in type_ids if tid in esi}
+    monkeypatch.setattr(actions, "ESIClient", _Client)
+    trading_cfg, _, production_cfg = cfgs
+    trading_cfg.jita_region_id = 10000043
+    refining_cfg = RefiningConfig(refining_tax_rate=0.0, reprocessing_skill_level=0,
+                                  reprocessing_efficiency_skill_level=0, hub_region_id=10000032)
+
+    actions.do_optimize_mineral_shopping_list(
+        requirements=[{"type_id": TRIT, "name": "Tritanium", "required_qty": 1000}],
+        trading_cfg=trading_cfg, refining_cfg=refining_cfg, production_cfg=production_cfg)
+
+    assert seen == [10000032]

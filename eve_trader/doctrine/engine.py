@@ -352,7 +352,7 @@ def shopping_list_rows(doctrine_id: Optional[str] = None, cfg: DoctrineConfig = 
     # Same mechanism plan_special_order already relies on for its own
     # never-a-stock-target line items.
     type_ids = [row.type_id for row in aggregated]
-    ctx = _PlanContext(PRODUCTION_CONFIG, extra_type_ids=type_ids)
+    ctx = _PlanContext(PRODUCTION_CONFIG, extra_type_ids=type_ids, hub_region_id=cfg.hub_region_id)
     cost_memo: dict[int, Optional[float]] = {}
     t2_memo: dict[int, tuple[float, float, Optional[str]]] = {}
 
@@ -369,7 +369,7 @@ def shopping_list_rows(doctrine_id: Optional[str] = None, cfg: DoctrineConfig = 
     # verify rather than failing the whole page.
     esi = ESIClient()
     try:
-        jita_stats = esi.region_order_stats_bulk(TRADING_CONFIG.jita_region_id, type_ids)
+        jita_stats = esi.region_order_stats_bulk(cfg.hub_region_id, type_ids)
     except Exception:  # noqa: BLE001 - best-effort; falls back to trusting Goonmetrics for every row
         jita_stats = {}
     home_stats: dict[int, OrderStats] = {}

@@ -343,7 +343,7 @@ def do_optimize_module_shopping_list(requirements: Optional[list[dict]] = None,
 
     Like Ore & Minerals' own do_optimize_mineral_shopping_list this needs NO
     logged-in character: every price is a *buy* price from a public regional
-    order book (ore and minerals from trading_cfg.jita_region_id, modules
+    order book (ore and minerals from cfg.input_hub_region_id, modules
     from cfg.purchase_region_id - the same source do_refresh_shortlist
     buys from) or an unauthenticated Goonmetrics home-market quote.
 
@@ -379,12 +379,12 @@ def do_optimize_module_shopping_list(requirements: Optional[list[dict]] = None,
     mineral_ids = [r.type_id for r in wanted]
     jita_ids = set(ore_ids + mineral_ids)
     try:
-        if cfg.purchase_region_id == trading_cfg.jita_region_id:
+        if cfg.purchase_region_id == cfg.input_hub_region_id:
             # The common case (both default to Jita) - one bulk call, not two.
-            stats_by_id = client.region_order_stats_bulk(trading_cfg.jita_region_id, sorted(jita_ids | set(module_ids)))
+            stats_by_id = client.region_order_stats_bulk(cfg.input_hub_region_id, sorted(jita_ids | set(module_ids)))
             module_stats_by_id = stats_by_id
         else:
-            stats_by_id = client.region_order_stats_bulk(trading_cfg.jita_region_id, sorted(jita_ids))
+            stats_by_id = client.region_order_stats_bulk(cfg.input_hub_region_id, sorted(jita_ids))
             module_stats_by_id = (client.region_order_stats_bulk(cfg.purchase_region_id, sorted(set(module_ids)))
                                   if module_ids else {})
     except (ESIError, requests.RequestException) as e:

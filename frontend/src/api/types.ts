@@ -677,6 +677,7 @@ export interface ProductionSettings {
   min_margin: number
   min_daily_profit: number
   haul_cost_per_m3: number
+  hub_region_id: number
   facility_tax_rate: number
   home_market: string | null
   home_location_id: number | null
@@ -1115,6 +1116,7 @@ export interface DoctrineSettings {
   cargo_tolerance_pct: number
   strict_extras: boolean
   import_cost_per_m3: number
+  hub_region_id: number
   stockpile_hangar_flags: string[]
 }
 
@@ -1208,6 +1210,7 @@ export interface ShoppingListPlan {
 }
 
 export interface RefiningSettings {
+  hub_region_id: number
   structure_type: string
   rig_tier: string
   security_status: number
@@ -1258,6 +1261,7 @@ export interface ReprocessingQuoteResult {
 // ------------------------------------------------------------ station trading
 export interface StationTradingSettings {
   station_id: number
+  hub_region_id: number
   broker_fee_rate: number
   sales_tax_rate: number
   min_spread_threshold: number
@@ -1408,6 +1412,7 @@ export interface ModuleReprocessingSettings {
   ignore_thresholds: boolean
   purchase_region_id: number
   purchase_structure_id: number | null
+  input_hub_region_id: number
   enforce_shortlist_cap: boolean
   max_active_shortlist_items: number
 }

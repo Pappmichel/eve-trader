@@ -174,6 +174,9 @@ def _check_type(key: str, value: Any, expected: type) -> None:
 # choice.
 _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "jita_region_id": (1, None),
+    # Per-tool market hubs (#222) - same validation as Trading's own hub.
+    "hub_region_id": (1, None),
+    "input_hub_region_id": (1, None),
     "reference_region_id": (1, None),
     "structure_id": (1, None),
     "buyer_character_id": (1, None),

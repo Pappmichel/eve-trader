@@ -553,6 +553,7 @@ class RefinableMineral(_Base):
 
 
 class RefiningSettings(_Base):
+    hub_region_id: int = 10000002
     structure_type: str
     rig_tier: str
     security_status: float
@@ -567,6 +568,7 @@ class RefiningSettings(_Base):
 # ------------------------------------------------------------ station trading
 class StationTradingSettings(_Base):
     station_id: int
+    hub_region_id: int = 10000002
     broker_fee_rate: float
     sales_tax_rate: float
     min_spread_threshold: float
@@ -1005,5 +1007,6 @@ class ModuleReprocessingSettings(_Base):
     ignore_thresholds: bool
     purchase_region_id: int
     purchase_structure_id: Optional[int] = None
+    input_hub_region_id: int = 10000002
     enforce_shortlist_cap: bool
     max_active_shortlist_items: int

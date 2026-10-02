@@ -1,9 +1,10 @@
 // The four classic NPC trade hubs, by region id (stable EVE data). Used for
-// hub pickers and labels. `TradingConfig.jita_region_id` is the Trading
-// tool's own buy hub (picked on the Shortlist page, GitHub issue #222); the
-// field keeps its historical name. own_orders.py maps each of these regions
-// to its hub solar system for the "already covered" asset check; a custom
-// region falls back to every NPC station in that region.
+// hub pickers and labels. Every tool has its own hub (GitHub issue #222):
+// `TradingConfig.jita_region_id` is the Trading tool's buy hub (picked on the
+// Shortlist page; the field keeps its historical name), the other tools use
+// their own `hub_region_id` via `HubSelect`. own_orders.py maps each of these
+// regions to its hub solar system for the "already covered" asset check; a
+// custom region falls back to every NPC station in that region.
 export interface TradeHub {
   label: string
   regionId: number

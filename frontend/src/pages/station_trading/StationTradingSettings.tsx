@@ -8,6 +8,7 @@ import type { StationTradingSettings as StationTradingSettingsT } from '../../ap
 import { useAction } from '../../hooks/useAction'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
+import { HubSelect } from '../../components/HubSelect'
 import { pct } from '../../format'
 
 type SkillRow = NonNullable<Awaited<ReturnType<typeof stationTradingApi.skills>>>[number]
@@ -35,6 +36,13 @@ const SKILL_COLUMNS: ColumnDef<SkillRow, any>[] = [
   },
 ]
 
+// Main NPC trade station per hub region (ids checked against ESI
+// /universe/stations: Jita IV - Moon 4 CNAP, Amarr VIII (Oris) EFA,
+// Dodixie IX - Moon 20 FNAP, Rens VI - Moon 8 Brutor Tribe Treasury).
+const HUB_STATIONS: Record<number, number> = {
+  10000002: 60003760, 10000043: 60008494, 10000032: 60011866, 10000030: 60004588,
+}
+
 export default function StationTradingSettings() {
   const { data } = useQuery({ queryKey: ['station-trading', 'settings'], queryFn: stationTradingApi.settings })
   const { data: skills } = useQuery({ queryKey: ['station-trading', 'skills'], queryFn: stationTradingApi.skills })
@@ -58,7 +66,14 @@ export default function StationTradingSettings() {
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Station</Title>
       <SimpleGrid cols={{ base: 1, xs: 2 }}>
-        <NumberInput label="Trade hub station ID" description="Default: Jita IV - Moon 4 - Caldari Navy Assembly Plant"
+        <HubSelect label="Market hub" description="Sets the region and its main trade station together"
+          value={form.hub_region_id}
+          onChange={(v) => setForm((f) => {
+            if (!f) return f
+            const station = HUB_STATIONS[v]
+            return { ...f, hub_region_id: v, ...(station ? { station_id: station } : {}) }
+          })} />
+        <NumberInput label="Trade hub station ID" description="Set by the hub above (Jita: Jita IV - Moon 4 - Caldari Navy Assembly Plant); edit only for a custom station"
           value={form.station_id} min={1} onChange={(v) => set('station_id', Number(v))} />
       </SimpleGrid>
 

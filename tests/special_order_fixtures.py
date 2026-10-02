@@ -201,7 +201,7 @@ def patch_planner_network(monkeypatch, home=None, jita=None) -> None:
     home_map = HOME if home is None else home
     jita_map = {} if jita is None else jita
     monkeypatch.setattr(engine.pricing, "home_prices", lambda cfg, type_ids: home_map)
-    monkeypatch.setattr(engine.pricing, "jita_prices", lambda type_ids: jita_map)
+    monkeypatch.setattr(engine.pricing, "jita_prices", lambda type_ids, *a, **k: jita_map)
     monkeypatch.setattr(pricing, "system_cost_indices_for", lambda *a, **k: {})
     # Known gap 3 (docs/ESI_ACCESS_PLAN.md): engine.py's stock/blueprint
     # readers now resolve Production's esi_sharing rows before reading
