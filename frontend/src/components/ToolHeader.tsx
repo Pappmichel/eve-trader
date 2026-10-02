@@ -3,6 +3,7 @@ import { spotlight } from '@mantine/spotlight'
 import { IconArrowLeft, IconSearch } from '@tabler/icons-react'
 import { useNavigate } from 'react-router-dom'
 
+import { NewDataNotice } from './NewDataNotice'
 import { NotificationBell } from './NotificationBell'
 
 // The header row every tool layout (Trading, Production, Doctrine, ...) puts in
@@ -40,6 +41,7 @@ export function ToolHeader({ title, opened, onToggle, showJump = false }: {
             </ActionIcon>
           </>
         )}
+        <NewDataNotice />
         <NotificationBell />
         <Button visibleFrom="sm" variant="subtle" size="xs" leftSection={<IconArrowLeft size={14} />}
           onClick={() => navigate('/')}>

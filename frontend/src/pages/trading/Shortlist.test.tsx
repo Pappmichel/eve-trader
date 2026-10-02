@@ -10,6 +10,7 @@ vi.mock('../../api/client', () => ({
   tradingApi: {
     shortlistSnapshot: vi.fn(),
     shortlistTrends: vi.fn(),
+    sparklines: vi.fn().mockResolvedValue({}),
     settings: vi.fn(),
     updateSettings: vi.fn(),
     recategorizeShortlist: vi.fn(),

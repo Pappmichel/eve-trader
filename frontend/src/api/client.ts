@@ -105,6 +105,11 @@ export const authApi = {
 }
 
 // -------------------------------------------------------------- access gate
+// FRONTEND_PLAN.md B.12: when this tenant's data last changed, per source.
+export const updatesApi = {
+  versions: () => get<Record<string, string | null>>('/api/updates/versions'),
+}
+
 export const gateApi = {
   status: () => get<T.GateStatus>('/api/gate/status'),
   logout: () => post<{ ok: boolean }>('/api/gate/logout'),
@@ -120,6 +125,7 @@ export const tradingApi = {
   focusedCandidates: () => get<T.Candidate[]>('/api/trading/candidates/focused'),
   newCandidates: () => get<T.NewCandidateResult[]>('/api/trading/candidates/new'),
   historyTypeIds: () => get<T.HistoryTypeIdOption[]>('/api/trading/history/type-ids'),
+  sparklines: (typeIds: number[]) => get<Record<string, T.SparklineSeries>>(`/api/trading/history/sparklines?type_ids=${typeIds.join(',')}`),
   history: (typeId: number) => get<T.PriceHistory>(`/api/trading/history/${typeId}`),
   realizedTrades: () => get<T.RealizedTrade[]>('/api/trading/trades/realized'),
   settings: () => get<T.TradingSettings>('/api/trading/settings'),
@@ -166,6 +172,7 @@ export const tradingApi = {
 
 // ------------------------------------------------------------- production
 export const productionApi = {
+  kpis: () => get<T.ProductionKpis>('/api/production/kpis'),
   sdeCounts: () => get<Record<string, number>>('/api/production/sde/counts'),
   sdeFreshness: () => get<T.SdeFreshness>('/api/production/sde/freshness'),
   stockTargets: () => get<T.StockTarget[]>('/api/production/stock-targets'),

@@ -231,3 +231,9 @@ def test_hub_freight_table_is_session_only_not_tool_gated():
     # Edited from several tools' Settings pages (issue #222).
     assert _required_tool_for_path("/api/hubs/freight", "POST") is None
     assert _classify("POST", "/api/hubs/freight") == "session_only"
+
+
+def test_data_versions_are_session_only_not_tool_gated():
+    # Polled from every tool's header (FRONTEND_PLAN.md B.12).
+    assert _required_tool_for_path("/api/updates/versions", "GET") is None
+    assert _classify("GET", "/api/updates/versions") == "session_only"

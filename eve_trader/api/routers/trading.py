@@ -3,6 +3,7 @@ eve_trader/storage.py (reads the old Streamlit page did directly). No business
 logic here - see actions.py/storage.py for that."""
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -87,6 +88,31 @@ def get_history_type_ids():
     # or one outside the published/market-grouped subset sde_type_names
     # covers. Still pickable, just unlabeled, rather than missing entirely.
     return [{"type_id": t, "type_name": names.get(t, str(t))} for t in type_ids]
+
+
+SPARKLINE_MAX_IDS = 200
+SPARKLINE_DAYS = 30
+
+
+@router.get("/history/sparklines")
+def get_history_sparklines(type_ids: str = ""):
+    # Registered before /history/{type_id}, same reason as /history/type-ids.
+    # Only the ids the table currently shows are requested (capped), and rows
+    # are selected by calendar date (last 30 days before today), not "last N
+    # stored rows", so stale data shows up as missing instead of as a trend.
+    try:
+        ids = sorted({int(t) for t in type_ids.split(",") if t.strip()})
+    except ValueError:
+        raise HTTPException(status_code=400, detail="type_ids must be a comma-separated list of integers.")
+    if len(ids) > SPARKLINE_MAX_IDS:
+        raise HTTPException(status_code=400, detail=f"At most {SPARKLINE_MAX_IDS} type_ids per request.")
+    since = (date.today() - timedelta(days=SPARKLINE_DAYS)).isoformat()
+    hub = storage.read_goonmetrics_avg_prices_since(TRADING_CONFIG.jita_region_id, ids, since)
+    ref = storage.read_goonmetrics_avg_prices_since(TRADING_CONFIG.reference_region_id, ids, since)
+    return {
+        str(t): {"hub": [list(p) for p in hub.get(t, [])], "ref": [list(p) for p in ref.get(t, [])]}
+        for t in ids
+    }
 
 
 @router.get("/history/{type_id}")

@@ -806,3 +806,13 @@ describe('DataTable default hover summary and change tracking', () => {
     expect(bodyRows().some((r) => r.hasAttribute('data-changed'))).toBe(false)
   })
 })
+
+describe('DataTable onVisibleRowsChange', () => {
+  it('reports the mounted row ids (debounced) and nothing when the prop is unset', async () => {
+    const onVisible = vi.fn()
+    renderTable({ getRowId: (r) => r.item, onVisibleRowsChange: onVisible })
+    await waitFor(() => expect(onVisible).toHaveBeenCalled())
+    const ids = onVisible.mock.calls[onVisible.mock.calls.length - 1][0] as string[]
+    expect([...ids].sort()).toEqual(['Alpha Ore', 'Mid Ore', 'Zebra Ore'])
+  })
+})
