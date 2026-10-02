@@ -37,15 +37,22 @@ const sparkTitle = (label: string, points: [string, number][] | undefined) =>
 // Fetches 30-day sparkline data only for the rows the table reports as mounted.
 // Results are kept per item (including "no data" empty series) so scrolling back
 // never refetches; only ids not yet seen are requested.
-function useSparklines() {
+// `resetKey` changes whenever the shortlist snapshot reloads (refresh, "New
+// data"): the cached series are dropped so the column shows the new history.
+function useSparklines(resetKey: number) {
   const [visibleIds, setVisibleIds] = useState<string[]>([])
   const [cache, setCache] = useState<Map<number, SparklineSeries>>(() => new Map())
+  const [cacheFor, setCacheFor] = useState(resetKey)
+  if (cacheFor !== resetKey) {
+    setCacheFor(resetKey)
+    setCache(new Map())
+  }
   const missing = useMemo(
     () => visibleIds.map(Number).filter((id) => Number.isFinite(id) && !cache.has(id)).slice(0, 200).sort((a, b) => a - b),
     [visibleIds, cache],
   )
   const { data } = useQuery({
-    queryKey: ['trading', 'sparklines', missing.join(',')],
+    queryKey: ['trading', 'sparklines', resetKey, missing.join(',')],
     queryFn: async () => {
       const res = await tradingApi.sparklines(missing)
       // An id the server did not answer for is cached as empty, never re-requested.
@@ -71,10 +78,10 @@ function useSparklines() {
 export default function Shortlist() {
   const { data, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['trading', 'shortlist', 'snapshot'], queryFn: tradingApi.shortlistSnapshot })
   const { data: settings } = useQuery({ queryKey: ['trading', 'settings'], queryFn: tradingApi.settings })
+  const { cache: sparkCache, onVisibleRowsChange } = useSparklines(dataUpdatedAt)
   // Zero-network-cost signal (pure local computation over already-persisted
   // Goonmetrics history, see history_backtest.compute_margin_trends) - safe
   // to fetch unconditionally alongside the snapshot, no login/ESI needed.
-  const { cache: sparkCache, onVisibleRowsChange } = useSparklines()
   const { data: trends } = useQuery({ queryKey: ['trading', 'shortlist', 'trends'], queryFn: tradingApi.shortlistTrends })
   const toggleCap = useAction('Shortlist Cap', tradingApi.updateSettings, [['trading', 'settings']],
     { tier: 'local' })

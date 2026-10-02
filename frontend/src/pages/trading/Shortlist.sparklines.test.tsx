@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MantineProvider } from '@mantine/core'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -50,5 +50,17 @@ describe('Shortlist 30d sparkline column', () => {
     await waitFor(() => expect(screen.getAllByTestId('sparkline')).toHaveLength(1))
     expect(screen.getByTestId('sparkline').getAttribute('data-direction')).toBe('up')
     expect(screen.getByRole('columnheader', { name: /30d/ })).toBeTruthy()
+  })
+
+  it('drops the cached series when the shortlist snapshot reloads', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <MantineProvider><QueryClientProvider client={client}><MemoryRouter><Shortlist /></MemoryRouter></QueryClientProvider></MantineProvider>,
+    )
+    await waitFor(() => expect(tradingApi.sparklines).toHaveBeenCalledTimes(1))
+
+    await act(() => client.invalidateQueries({ queryKey: ['trading', 'shortlist', 'snapshot'] }))
+    await waitFor(() => expect(tradingApi.sparklines).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(tradingApi.sparklines).mock.calls[1][0]).toEqual([1, 2])
   })
 })
