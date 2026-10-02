@@ -54,9 +54,12 @@ declare module '@tanstack/react-table' {
     copyable?: boolean
     // Extra content shown in a hover card (after a short delay) on a fine
     // pointer; never on touch, where a row click / drawer is the way in.
-    hoverCard?: (row: TData) => ReactNode
-    // Briefly highlights a row when this column's value changed after a data
-    // refetch. Needs `getRowId` on the table; keep to small tables.
+    // `false` turns off the default summary card that name columns show on hover.
+    hoverCard?: ((row: TData) => ReactNode) | false
+    // Briefly highlights a row when a tracked value changed after a data refetch
+    // (needs `getRowId`, tables up to 2,000 rows). With no column set to `true`,
+    // every column with a value is tracked; `false` excludes a column (e.g. a
+    // computed timestamp), `true` on some columns limits tracking to just those.
     trackChanges?: boolean
     // Shows a filter icon on hover; clicking it filters the table to rows
     // with exactly this cell value (shown as a removable chip above the table).
@@ -167,10 +170,36 @@ const exactFilter: FilterFn<any> = (row, columnId, value) => String(row.getValue
 // instead of reserving `maxHeight`.
 const TABLE_CHROME_HEIGHT = 64
 const CHANGE_FLASH_MS = 2500
+const MAX_TRACKED_ROWS = 2000
+const HOVER_SUMMARY_COLUMNS = 8
 const KEY_PAGE_STEP = 10
 
 // Elements inside a row that handle their own clicks.
 const INTERACTIVE_SELECTOR = 'button, input, textarea, select, a, [role="button"], [role="checkbox"]'
+
+// Default hover content: the row's other visible columns as label / raw value. Raw values
+// (not the rendered cells) so editable inputs or buttons in cells never show up twice.
+function RowSummary<T>({ row, excludeId }: { row: Row<T>; excludeId: string }) {
+  const cells = row.getVisibleCells()
+    .filter((c) => c.column.id !== excludeId && c.column.columnDef.meta?.detail !== false
+      && typeof c.column.columnDef.header === 'string' && c.column.columnDef.header !== '')
+    .slice(0, HOVER_SUMMARY_COLUMNS)
+  const text = (value: unknown) => {
+    if (value === null || value === undefined || value === '') return '–'
+    if (typeof value === 'number') return value.toLocaleString()
+    return typeof value === 'string' || typeof value === 'boolean' ? String(value) : '–'
+  }
+  return (
+    <Stack gap={2} miw={220}>
+      {cells.map((c) => (
+        <Group key={c.id} justify="space-between" wrap="nowrap" gap="md">
+          <Text size="xs" c="dimmed">{columnLabel(c.column.columnDef.header, c.column.id)}</Text>
+          <Text size="xs" ff="monospace" ta="right">{text(c.getValue())}</Text>
+        </Group>
+      ))}
+    </Stack>
+  )
+}
 
 function CopyCell({ value }: { value: string }) {
   return (
@@ -371,8 +400,14 @@ export function DataTable<T>({
   // first load (no previous snapshot) flashes nothing.
   const prevSignatures = useRef<Map<string, string> | null>(null)
   useEffect(() => {
-    const tracked = columns.filter((c) => c.meta?.trackChanges)
-    if (!getRowId || tracked.length === 0) return
+    const explicit = columns.filter((c) => c.meta?.trackChanges === true)
+    const tracked = explicit.length > 0
+      ? explicit
+      : columns.filter((c) => c.meta?.trackChanges !== false && ('accessorKey' in c || ('accessorFn' in c && c.accessorFn)))
+    if (!getRowId || tracked.length === 0 || data.length > MAX_TRACKED_ROWS) {
+      prevSignatures.current = null
+      return
+    }
     const valueOf = (c: ColumnDef<T, any>, row: T): unknown => {
       if ('accessorFn' in c && c.accessorFn) return c.accessorFn(row, 0)
       if ('accessorKey' in c) return (row as Record<string, unknown>)[c.accessorKey as string]
@@ -1048,7 +1083,14 @@ export function DataTable<T>({
                           const copyText = (colMeta?.copyable ?? defaults.copyable) && canCopy && typeof cellValue === 'string'
                             ? cellText(cellValue)
                             : undefined
-                          const hoverContent = canHover ? cell.column.columnDef.meta?.hoverCard : undefined
+                          // Name columns show a summary of the row's other columns on hover unless the
+                          // column brings its own card or opts out with `hoverCard: false`.
+                          const hoverMeta = colMeta?.hoverCard
+                          const hoverContent = !canHover || hoverMeta === false ? undefined
+                            : typeof hoverMeta === 'function' ? hoverMeta
+                              : defaults.copyable && row.getVisibleCells().length > 1
+                                ? (() => <RowSummary row={row} excludeId={cell.column.id} />)
+                                : undefined
                           const content = (
                             <>
                               {flexRender(cell.column.columnDef.cell, cell.getContext())}
@@ -1073,7 +1115,7 @@ export function DataTable<T>({
                             >
                               {hoverContent ? (
                                 <HoverCard openDelay={400} withArrow shadow="md" position="bottom-start" withinPortal>
-                                  <HoverCard.Target><span>{content}</span></HoverCard.Target>
+                                  <HoverCard.Target><span style={{ display: 'block' }}>{content}</span></HoverCard.Target>
                                   <HoverCard.Dropdown>{hoverContent(cell.row.original)}</HoverCard.Dropdown>
                                 </HoverCard>
                               ) : content}

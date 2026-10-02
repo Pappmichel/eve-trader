@@ -42,7 +42,7 @@ export default function UnlistedStock() {
       {data && data.length > 0 && (
         <>
           <Text size="sm" c="dimmed">{data.length} listing-target stock items in the C-J hangar without a sell order</Text>
-          <DataTable tableId="production-unlisted-stock" rowDetail data={data} columns={columns} maxHeight={560} />
+          <DataTable getRowId={(r) => String(r.type_id)} tableId="production-unlisted-stock" rowDetail data={data} columns={columns} maxHeight={560} />
         </>
       )}
     </Stack>

@@ -741,3 +741,66 @@ describe('DataTable pinning together with export and saved views', () => {
     expect(headerTexts()).toEqual(['Amount', 'Item'])
   })
 })
+
+describe('DataTable default hover summary and change tracking', () => {
+  type R = { item: string; amount: number; stamp: string }
+  const data: R[] = [{ item: 'Zebra Ore', amount: 1234567, stamp: 'a' }, { item: 'Mid Ore', amount: 50, stamp: 'a' }]
+  const cols: ColumnDef<R, any>[] = [
+    { header: 'Item', accessorKey: 'item' },
+    { header: 'Amount', accessorKey: 'amount' },
+    { header: 'Stamp', accessorKey: 'stamp' },
+  ]
+
+  async function freshWithFinePointer() {
+    vi.resetModules()
+    const original = window.matchMedia
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes('pointer: fine'), media: query, onchange: null,
+      addListener: () => {}, removeListener: () => {}, addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => false,
+    })) as typeof window.matchMedia
+    const mod = await import('./DataTable')
+    window.matchMedia = original
+    return mod.DataTable
+  }
+
+  it('shows the other columns of the row when hovering a name cell', async () => {
+    const Fresh = await freshWithFinePointer()
+    const user = userEvent.setup()
+    render(<MantineProvider><Fresh data={data} columns={cols} rowDetail={false} /></MantineProvider>)
+    await user.hover(screen.getByText('Zebra Ore'))
+    expect(await screen.findByText('1,234,567')).toBeInTheDocument() // raw amount, formatted with separators
+    expect(screen.getAllByText('Stamp')).toHaveLength(2) // table header + hover card label
+  })
+
+  it('does not show a card when the column opts out', async () => {
+    const Fresh = await freshWithFinePointer()
+    const user = userEvent.setup()
+    const optOut: ColumnDef<R, any>[] = [{ header: 'Item', accessorKey: 'item', meta: { hoverCard: false } }, cols[1]]
+    render(<MantineProvider><Fresh data={data} columns={optOut} rowDetail={false} /></MantineProvider>)
+    await user.hover(screen.getByText('Zebra Ore'))
+    await new Promise((r) => setTimeout(r, 600))
+    expect(screen.queryByText('1,234,567')).not.toBeInTheDocument()
+  })
+
+  it('flashes a changed row without any trackChanges flag, and ignores a column opted out', () => {
+    const ui = (rowsData: R[], columns: ColumnDef<R, any>[]) => (
+      <MantineProvider><DataTable data={rowsData} columns={columns} getRowId={(r) => r.item} rowDetail={false} /></MantineProvider>
+    )
+    const { rerender } = render(ui(data, cols))
+    rerender(ui(data.map((r) => (r.item === 'Mid Ore' ? { ...r, amount: 51 } : r)), cols))
+    expect(bodyRows().filter((r) => r.hasAttribute('data-changed'))).toHaveLength(1)
+
+    cleanup()
+    const noStamp: ColumnDef<R, any>[] = [cols[0], cols[1], { header: 'Stamp', accessorKey: 'stamp', meta: { trackChanges: false } }]
+    const second = render(ui(data, noStamp))
+    second.rerender(ui(data.map((r) => (r.item === 'Mid Ore' ? { ...r, stamp: 'b' } : r)), noStamp))
+    expect(bodyRows().some((r) => r.hasAttribute('data-changed'))).toBe(false)
+  })
+
+  it('does not track a table without getRowId', () => {
+    const ui = (rowsData: R[]) => <MantineProvider><DataTable data={rowsData} columns={cols} rowDetail={false} /></MantineProvider>
+    const { rerender } = render(ui(data))
+    rerender(ui(data.map((r) => ({ ...r, amount: r.amount + 1 }))))
+    expect(bodyRows().some((r) => r.hasAttribute('data-changed'))).toBe(false)
+  })
+})

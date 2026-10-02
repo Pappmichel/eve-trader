@@ -28,7 +28,7 @@ export default function MarketStatus() {
 
   return (
     <Stack>
-      <DataTable tableId="production-market-status" rowDetail data={data} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
+      <DataTable getRowId={(r) => String(r.type_id)} tableId="production-market-status" rowDetail data={data} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
       <Text size="xs" c="dimmed">
         'Current'/'listed' come from the last 'Sync ESI Data' run (assets + personal and corp sell orders); without a sync they stay at 0.
       </Text>

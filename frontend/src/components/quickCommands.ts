@@ -1,7 +1,11 @@
-import { ApiError, tradingApi } from '../api/client'
+import {
+  ApiError, doctrineApi, moduleReprocessingApi, productionApi, refiningApi, stationTradingApi, tradingApi,
+} from '../api/client'
 import { notify } from '../notify'
 
 // Spotlight (Ctrl/Cmd+K) commands that start something instead of navigating.
+// One entry per tool-layout button that calls ESI/Goonmetrics live; they run the same API calls
+// and invalidate the same queries as those buttons.
 // Every one of these calls ESI and/or Goonmetrics live, so QuickNav always
 // asks for confirmation first - a stray Enter must not start a long job.
 // Background jobs (shortlist refresh, search, pipeline) share one lock server
@@ -60,6 +64,82 @@ export const QUICK_COMMANDS: QuickCommand[] = [
     goto: '/trading/shortlist',
     invalidate: [TRADING_JOB_STATUS],
     run: () => tradingApi.runPipeline(true, false),
+  },
+  {
+    id: 'cmd-production-sync',
+    label: 'Run: Production - Refresh what I need',
+    description: 'Refreshes the ESI snapshots Production uses',
+    toolKey: 'production',
+    effect: 'Refreshes the ESI snapshots shared with Production.',
+    goto: '/production/stock-targets',
+    invalidate: [
+      ['production', 'jobs'], ['production', 'slots'], ['production', 'market-status'], ['production', 'esi-sync-time'],
+      ['production', 'blueprints'], ['production', 'stock-value'],
+    ],
+    run: () => productionApi.syncEsi(),
+  },
+  {
+    id: 'cmd-production-refresh',
+    label: 'Run: Production - Refresh Buy/Build list',
+    description: 'Recomputes the plan with current prices',
+    toolKey: 'production',
+    effect: 'Recomputes the Buy/Build list with current Home prices (live ESI) and Jita prices (cached with live fallback).',
+    goto: '/production/buy',
+    invalidate: [['production', 'plan'], ['production', 'stock-targets'], ['production', 'logistics']],
+    run: () => productionApi.refreshPlan(),
+  },
+  {
+    id: 'cmd-doctrine-sync',
+    label: 'Run: Doctrine - Refresh contracts',
+    description: 'Syncs contracts from ESI (background job)',
+    toolKey: 'doctrine',
+    effect: 'Syncs the shared contracts live from ESI and matches them against the doctrine fittings.',
+    goto: '/doctrine/contracts',
+    invalidate: [['doctrine', 'pipeline', 'sync']],
+    run: () => doctrineApi.syncContracts(),
+  },
+  {
+    id: 'cmd-doctrine-assets',
+    label: 'Run: Doctrine - Sync assets',
+    description: 'Refreshes the asset snapshots Doctrine uses',
+    toolKey: 'doctrine',
+    effect: 'Refreshes the ESI asset snapshots shared with Doctrine.',
+    goto: '/doctrine/stockpile',
+    invalidate: [['doctrine', 'stockpile'], ['doctrine', 'asset-sync-time']],
+    run: () => doctrineApi.syncAssets(),
+  },
+  {
+    id: 'cmd-station-trading-refresh',
+    label: 'Run: Station Trading - Refresh shortlist',
+    description: 'Scans Jita live for spread candidates',
+    toolKey: 'station_trading',
+    effect: 'Scans Jita live via Goonmetrics/ESI for new spread candidates and reprices the shortlist.',
+    goto: '/station-trading/shortlist',
+    invalidate: [['station-trading', 'shortlist'], ['station-trading', 'esi-sync-time']],
+    run: () => stationTradingApi.refreshShortlist(),
+  },
+  {
+    id: 'cmd-ore-refresh',
+    label: 'Run: Ore & Minerals - Refresh shortlist',
+    description: 'Reprices the ore shortlist live',
+    toolKey: 'refining',
+    effect: 'Reprices the entire shortlist live via ESI (with a Goonmetrics fallback).',
+    goto: '/ore/shortlist',
+    invalidate: [['refining', 'shortlist', 'snapshot'], ['refining', 'esi-sync-time']],
+    run: () => refiningApi.refreshShortlist(),
+  },
+  {
+    id: 'cmd-modules-refresh',
+    label: 'Run: Module Reprocessing - Refresh shortlist',
+    description: 'Scans candidates and reprices live (can take a minute)',
+    toolKey: 'module_reprocessing',
+    effect: 'Scans the full candidate universe against Goonmetrics, auto-adds anything profitable, then reprices the whole shortlist live via ESI.',
+    goto: '/modules/shortlist',
+    invalidate: [
+      ['module_reprocessing', 'shortlist', 'snapshot'], ['module_reprocessing', 'shortlist', 'items'],
+      ['module_reprocessing', 'esi-sync-time'],
+    ],
+    run: () => moduleReprocessingApi.refreshShortlist(),
   },
 ]
 

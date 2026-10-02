@@ -16,12 +16,17 @@ import { IconAlertTriangle, IconCheck } from '@tabler/icons-react'
 // data on cell state, silently saving one item's edit against another's
 // type_id (the exact bug StockTargets.tsx's old CurrentStockInput hit once,
 // documented in that component's own history).
-export function EditableNumberCell({ value, ariaLabel, isPending, onSave, flagged }: {
+export function EditableNumberCell({ value, ariaLabel, isPending, onSave, flagged, min = 0, max, step, width = 90 }: {
   value: number
   ariaLabel: string
   isPending: boolean
   onSave: (value: number) => void
   flagged?: boolean
+  // Bounds/step of the field; an emptied field falls back to `min`.
+  min?: number
+  max?: number
+  step?: number
+  width?: number
 }) {
   const [draft, setDraft] = useState(value)
   const dirty = draft !== value
@@ -36,10 +41,12 @@ export function EditableNumberCell({ value, ariaLabel, isPending, onSave, flagge
     <Group gap={4} wrap="nowrap">
       <NumberInput
         value={draft}
-        onChange={(v) => setDraft(v === '' ? 0 : Number(v))}
-        min={0}
+        onChange={(v) => setDraft(v === '' ? min : Number(v))}
+        min={min}
+        max={max}
+        step={step}
         size="xs"
-        w={90}
+        w={width}
         aria-label={ariaLabel}
         onKeyDown={onKeyDown}
         styles={flagged ? { input: { borderColor: 'var(--mantine-color-danger-5)' } } : undefined}

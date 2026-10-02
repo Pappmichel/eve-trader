@@ -18,9 +18,21 @@ describe('visibleCommands', () => {
   it('shows everything while grants are not loaded', () => {
     expect(visibleCommands(undefined)).toHaveLength(QUICK_COMMANDS.length)
   })
-  it('hides trading commands without the trading grant', () => {
-    expect(visibleCommands(['production'])).toHaveLength(0)
-    expect(visibleCommands(['trading'])).toHaveLength(QUICK_COMMANDS.length)
+  it('only offers the commands of tools the character holds', () => {
+    expect(visibleCommands([])).toHaveLength(0)
+    expect(visibleCommands(['trading']).every((c) => c.toolKey === 'trading')).toBe(true)
+    expect(visibleCommands(['production']).map((c) => c.id)).toEqual(['cmd-production-sync', 'cmd-production-refresh'])
+    expect(visibleCommands(['doctrine', 'station_trading']).map((c) => c.toolKey))
+      .toEqual(['doctrine', 'doctrine', 'station_trading'])
+  })
+  it('covers every tool that has live refresh buttons, each with a route and queries to refresh', () => {
+    expect([...new Set(QUICK_COMMANDS.map((c) => c.toolKey))].sort())
+      .toEqual(['doctrine', 'module_reprocessing', 'production', 'refining', 'station_trading', 'trading'])
+    for (const c of QUICK_COMMANDS) {
+      expect(c.goto.startsWith('/')).toBe(true)
+      expect(c.invalidate.length).toBeGreaterThan(0)
+      expect(c.effect.length).toBeGreaterThan(10)
+    }
   })
 })
 

@@ -14,6 +14,21 @@ function renderCell(onSave = vi.fn()) {
   return onSave
 }
 
+describe('EditableNumberCell bounds', () => {
+  it('uses the given minimum when the field is emptied', async () => {
+    const user = userEvent.setup()
+    const onSave = vi.fn()
+    render(
+      <MantineProvider>
+        <EditableNumberCell value={5} min={1} max={10} ariaLabel="Runs" isPending={false} onSave={onSave} />
+      </MantineProvider>,
+    )
+    await user.clear(screen.getByLabelText('Runs'))
+    await user.click(screen.getByRole('button', { name: 'Save Runs' }))
+    expect(onSave).toHaveBeenCalledWith(1)
+  })
+})
+
 describe('EditableNumberCell', () => {
   it('shows no save button until the value changes', () => {
     renderCell()

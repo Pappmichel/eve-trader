@@ -161,7 +161,7 @@ export default function BuildCandidates() {
           {filtered.length === 0 ? (
             <HintCard>No candidates match the current filters.</HintCard>
           ) : (
-            <DataTable tableId="production-build-candidates" rowDetail data={filtered} columns={columns} maxHeight={560} />
+            <DataTable getRowId={(r) => String(r.type_id)} tableId="production-build-candidates" rowDetail data={filtered} columns={columns} maxHeight={560} />
           )}
         </>
       )}

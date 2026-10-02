@@ -56,7 +56,7 @@ export default function Candidates() {
       ) : display.length === 0 ? (
         <HintCard>No candidates loaded yet. Click <b>Load Market Groups</b> in the side menu, then <b>Filter Candidates</b>.</HintCard>
       ) : (
-        <DataTable tableId="trading-candidates" rowDetail data={display} columns={columns} maxHeight={560} dataUpdatedAt={displayUpdatedAt} />
+        <DataTable getRowId={(r) => String(r.type_id)} tableId="trading-candidates" rowDetail data={display} columns={columns} maxHeight={560} dataUpdatedAt={displayUpdatedAt} />
       )}
     </>
   )

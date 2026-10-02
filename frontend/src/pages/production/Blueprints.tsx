@@ -2,12 +2,13 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Badge, Stack, Card, Title, Text, Group, NumberInput, Button, Select, ActionIcon, Divider } from '@mantine/core'
 import { modals } from '@mantine/modals'
-import { IconTrash, IconCheck } from '@tabler/icons-react'
+import { IconTrash } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
 import type { ManualBlueprintCopyCostRow, ManualBlueprintMeTeOverrideRow, OwnedBlueprintRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
+import { EditableNumberCell } from '../../components/EditableCell'
 import { HintCard } from '../../components/HintCard'
 import { LocationPicker } from '../../components/LocationPicker'
 import { SearchableSelect } from '../../components/SearchableSelect'
@@ -60,7 +61,7 @@ function ManualBlueprintCopyCostsSection() {
     {
       header: 'Purchase Cost', accessorKey: 'purchase_cost', size: 170,
       cell: (i) => (
-        <EditableCopyCostCell value={i.getValue()} ariaLabel={`Purchase cost for ${i.row.original.type_name}`}
+        <EditableNumberCell width={110} value={i.getValue()} ariaLabel={`Purchase cost for ${i.row.original.type_name}`}
           min={0} isPending={updateCost.isPending && pendingEditTypeId === i.row.original.type_id}
           onSave={(v) => {
             setPendingEditTypeId(i.row.original.type_id)
@@ -71,7 +72,7 @@ function ManualBlueprintCopyCostsSection() {
     {
       header: 'Runs', accessorKey: 'runs', size: 130,
       cell: (i) => (
-        <EditableCopyCostCell value={i.getValue()} ariaLabel={`Runs for ${i.row.original.type_name}`}
+        <EditableNumberCell width={110} value={i.getValue()} ariaLabel={`Runs for ${i.row.original.type_name}`}
           min={1} isPending={updateCost.isPending && pendingEditTypeId === i.row.original.type_id}
           onSave={(v) => {
             setPendingEditTypeId(i.row.original.type_id)
@@ -142,39 +143,6 @@ function ManualBlueprintCopyCostsSection() {
   )
 }
 
-// Inline cell editor shared by the manual-copy-costs and manual-me-te-
-// overrides tables below - same "local draft state, checkmark appears once
-// it differs from the saved value, click to save" pattern as
-// StockTargets.tsx's own EditableNumberCell/doctrine/DoctrineDetail.tsx's
-// TargetEditor. Safe to key state purely off the initial `value` prop (no
-// resync effect needed) for the same reason those components don't need
-// one either - see DataTable's `getRowId` prop (used below) for what
-// actually *would* break this if it were missing. `max` is optional
-// (purchase_cost/runs have none; ME/TE are capped at 10/20).
-function EditableCopyCostCell({ value, ariaLabel, min, max, isPending, onSave }: {
-  value: number
-  ariaLabel: string
-  min: number
-  max?: number
-  isPending: boolean
-  onSave: (value: number) => void
-}) {
-  const [draft, setDraft] = useState(value)
-  const dirty = draft !== value
-  return (
-    <Group gap={4} wrap="nowrap">
-      <NumberInput value={draft} onChange={(v) => setDraft(v === '' ? min : Number(v))}
-        min={min} max={max} size="xs" w={110} aria-label={ariaLabel} />
-      {dirty && (
-        <ActionIcon size="sm" variant="filled" color="accent" aria-label={`Save ${ariaLabel}`}
-          onClick={() => onSave(draft)} loading={isPending}>
-          <IconCheck size={14} />
-        </ActionIcon>
-      )}
-    </Group>
-  )
-}
-
 const MANUAL_ME_TE_OVERRIDES_KEY = [['production', 'manual-blueprint-me-te-overrides']]
 
 // Confirmed with the user 2026-09-16: a fixed ME/TE for a blueprint whose
@@ -224,7 +192,7 @@ function ManualBlueprintMeTeOverridesSection() {
     {
       header: 'ME', accessorKey: 'material_efficiency', size: 140,
       cell: (i) => (
-        <EditableCopyCostCell value={i.getValue()} ariaLabel={`Material Efficiency for ${i.row.original.type_name}`}
+        <EditableNumberCell width={110} value={i.getValue()} ariaLabel={`Material Efficiency for ${i.row.original.type_name}`}
           min={0} max={10} isPending={updateOverride.isPending && pendingEditTypeId === i.row.original.type_id}
           onSave={(v) => {
             setPendingEditTypeId(i.row.original.type_id)
@@ -235,7 +203,7 @@ function ManualBlueprintMeTeOverridesSection() {
     {
       header: 'TE', accessorKey: 'time_efficiency', size: 140,
       cell: (i) => (
-        <EditableCopyCostCell value={i.getValue()} ariaLabel={`Time Efficiency for ${i.row.original.type_name}`}
+        <EditableNumberCell width={110} value={i.getValue()} ariaLabel={`Time Efficiency for ${i.row.original.type_name}`}
           min={0} max={20} isPending={updateOverride.isPending && pendingEditTypeId === i.row.original.type_id}
           onSave={(v) => {
             setPendingEditTypeId(i.row.original.type_id)
@@ -341,7 +309,7 @@ export default function Blueprints() {
     {
       header: 'Quantity', accessorKey: 'quantity', size: 110,
       cell: (i) => (i.row.original.source === 'manual' ? (
-        <EditableBlueprintCell value={i.getValue()} min={1} ariaLabel={`Quantity for ${i.row.original.type_name}`}
+        <EditableNumberCell value={i.getValue()} min={1} ariaLabel={`Quantity for ${i.row.original.type_name}`}
           isPending={updateManual.isPending && pendingEditId === i.row.original.manual_id}
           onSave={(v) => {
             setPendingEditId(i.row.original.manual_id)
@@ -355,7 +323,7 @@ export default function Blueprints() {
     {
       header: 'ME', accessorKey: 'material_efficiency', size: 90,
       cell: (i) => (i.row.original.source === 'manual' ? (
-        <EditableBlueprintCell value={i.getValue()} min={0} max={10} ariaLabel={`ME for ${i.row.original.type_name}`}
+        <EditableNumberCell value={i.getValue()} min={0} max={10} ariaLabel={`ME for ${i.row.original.type_name}`}
           isPending={updateManual.isPending && pendingEditId === i.row.original.manual_id}
           onSave={(v) => {
             setPendingEditId(i.row.original.manual_id)
@@ -370,7 +338,7 @@ export default function Blueprints() {
     {
       header: 'TE', accessorKey: 'time_efficiency', size: 90,
       cell: (i) => (i.row.original.source === 'manual' ? (
-        <EditableBlueprintCell value={i.getValue()} min={0} max={20} step={2} ariaLabel={`TE for ${i.row.original.type_name}`}
+        <EditableNumberCell value={i.getValue()} min={0} max={20} step={2} ariaLabel={`TE for ${i.row.original.type_name}`}
           isPending={updateManual.isPending && pendingEditId === i.row.original.manual_id}
           onSave={(v) => {
             setPendingEditId(i.row.original.manual_id)
@@ -387,7 +355,7 @@ export default function Blueprints() {
         if (i.getValue() === null) return '∞'
         if (i.row.original.source !== 'manual') return qty(i.getValue())
         return (
-          <EditableBlueprintCell value={i.getValue()} min={1} ariaLabel={`Runs for ${i.row.original.type_name}`}
+          <EditableNumberCell value={i.getValue()} min={1} ariaLabel={`Runs for ${i.row.original.type_name}`}
             isPending={updateManual.isPending && pendingEditId === i.row.original.manual_id}
             onSave={(v) => {
               setPendingEditId(i.row.original.manual_id)
@@ -441,34 +409,6 @@ export default function Blueprints() {
       <Divider />
       <ManualBlueprintMeTeOverridesSection />
     </Stack>
-  )
-}
-
-// Same "local draft state, checkmark appears once it differs, click to
-// save" pattern as EditableCopyCostCell above - shared here for the
-// owned-blueprints table's four manual-row-only editable columns.
-function EditableBlueprintCell({ value, min, max, step, ariaLabel, isPending, onSave }: {
-  value: number
-  min: number
-  max?: number
-  step?: number
-  ariaLabel: string
-  isPending: boolean
-  onSave: (value: number) => void
-}) {
-  const [draft, setDraft] = useState(value)
-  const dirty = draft !== value
-  return (
-    <Group gap={4} wrap="nowrap">
-      <NumberInput value={draft} onChange={(v) => setDraft(v === '' ? min : Number(v))}
-        min={min} max={max} step={step} size="xs" w={90} aria-label={ariaLabel} />
-      {dirty && (
-        <ActionIcon size="sm" variant="filled" color="accent" aria-label={`Save ${ariaLabel}`}
-          onClick={() => onSave(draft)} loading={isPending}>
-          <IconCheck size={14} />
-        </ActionIcon>
-      )}
-    </Group>
   )
 }
 
