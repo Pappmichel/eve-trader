@@ -16,19 +16,23 @@ from __future__ import annotations
 
 from typing import Optional
 
-from ..config import TRADING_CONFIG
+import logging
+
 from ..esi_client import ESIClient, OrderStats
 from ..goonmetrics_client import GoonmetricsClient
 from .config import StationTradingConfig
 
+log = logging.getLogger("eve_trader.station_trading.candidate_discovery")
+
 JITA_MARKET = "jita"
+JITA_REGION_ID = 10000002  # the only hub the Goonmetrics "jita" slug describes
 
 
 def discover_candidates(cfg: StationTradingConfig, client: GoonmetricsClient | None = None,
                          top_n: Optional[int] = None) -> list[dict]:
     """Every Jita item whose current Goonmetrics spread clears
     cfg.min_spread_threshold and whose real average daily traded volume
-    (Goonmetrics region history for TRADING_CONFIG.jita_region_id, not
+    (Goonmetrics region history for cfg.hub_region_id, not
     order-book depth - see CLAUDE.md's "Theoretical ceiling figures" section
     for why depth is the wrong signal) clears cfg.min_daily_volume. Returns
     dicts sorted by spread * volume, richest first: {"type_id", "buy",
@@ -47,6 +51,16 @@ def discover_candidates(cfg: StationTradingConfig, client: GoonmetricsClient | N
     spread filter - a cheap first pass over the one bulk price dump narrows
     thousands of Jita items down before the second, per-type_id history
     call, rather than fetching history for the entire market up front."""
+    if cfg.hub_region_id != JITA_REGION_ID:
+        # The discovery stage reads Goonmetrics' hardcoded "jita" market
+        # dump; there is no equivalent slug wired up for other hubs, and
+        # mixing Jita spreads into another hub's shortlist would be wrong.
+        # Skip gracefully (existing shortlist rows stay, live prices still
+        # come from ESI via confirm_live) rather than discovering from the
+        # wrong market (#222).
+        log.warning("Station Trading discovery skipped: hub region %s is not Jita and "
+                    "Goonmetrics discovery is Jita-only", cfg.hub_region_id)
+        return []
     client = client or GoonmetricsClient()
     spread_hits = []
     for p in client.current_prices(JITA_MARKET):
@@ -59,7 +73,7 @@ def discover_candidates(cfg: StationTradingConfig, client: GoonmetricsClient | N
         return []
 
     movement_by_type: dict[int, list[float]] = {}
-    for point in client.price_history_chunked(TRADING_CONFIG.jita_region_id, [h[0] for h in spread_hits]):
+    for point in client.price_history_chunked(cfg.hub_region_id, [h[0] for h in spread_hits]):
         movement_by_type.setdefault(point.type_id, []).append(point.movement)
 
     results = []
@@ -77,7 +91,8 @@ def discover_candidates(cfg: StationTradingConfig, client: GoonmetricsClient | N
     return results[:top_n] if top_n is not None else results
 
 
-def confirm_live(type_ids: list[int], client: ESIClient | None = None) -> dict[int, OrderStats]:
+def confirm_live(type_ids: list[int], client: ESIClient | None = None,
+                 hub_region_id: int = JITA_REGION_ID) -> dict[int, OrderStats]:
     """Live ESI order-book confirmation for an already-bounded set of
     type_ids (the persisted shortlist, never the whole market - see this
     module's own docstring). Jita's trade hub is a public NPC station, so
@@ -85,4 +100,4 @@ def confirm_live(type_ids: list[int], client: ESIClient | None = None) -> dict[i
     if not type_ids:
         return {}
     client = client or ESIClient()
-    return client.region_order_stats_bulk(TRADING_CONFIG.jita_region_id, type_ids)
+    return client.region_order_stats_bulk(hub_region_id, type_ids)

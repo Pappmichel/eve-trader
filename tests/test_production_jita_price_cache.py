@@ -223,3 +223,21 @@ def test_refresh_treats_everyone_as_active_when_the_activity_lookup_fails(monkey
         588: OrderStats(sell_percentile=2.0, sell_volume=1.0, buy_percentile=1.0, buy_volume=1.0)})
     assert jita_price_cache.refresh_jita_price_cache() == 1
 
+
+
+def test_refresh_always_prices_jita_regardless_of_trading_hub(monkeypatch):
+    # The cache is process-wide and region-less, so it must stay Jita-only (#222).
+    monkeypatch.setattr(storage, "list_tenants", lambda: [(storage.DEFAULT_TENANT_ID, "Default", None)])
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(587, "Rifter", 10, 0, 0)])
+    monkeypatch.setattr(tenant_scope, "enter_tenant", _fake_enter_tenant(jita_region_id=10000043))
+    monkeypatch.setattr(engine, "_structural_material_closure", lambda seed_type_ids: set(seed_type_ids))
+    seen = {}
+
+    def _fetch(self, region_id, type_ids):
+        seen["region_id"] = region_id
+        return {587: OrderStats(sell_percentile=100.0, sell_volume=1.0, buy_percentile=90.0, buy_volume=1.0)}
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", _fetch)
+
+    jita_price_cache.refresh_jita_price_cache()
+
+    assert seen["region_id"] == jita_price_cache.JITA_REGION_ID == 10000002

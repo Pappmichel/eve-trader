@@ -210,6 +210,7 @@ class DoctrineSettings(BaseModel):
     cargo_tolerance_pct: float
     strict_extras: bool
     import_cost_per_m3: float
+    hub_region_id: int = 10000002
     stockpile_hangar_flags: tuple[str, ...] = ()
 
 

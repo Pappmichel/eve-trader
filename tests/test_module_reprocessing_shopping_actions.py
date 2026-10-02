@@ -353,3 +353,13 @@ def test_optimize_degrades_to_jita_only_on_a_goonmetrics_failure(monkeypatch, sd
     plan = _optimize(cfgs, [{"type_id": PYE, "name": "Pyerite", "required_qty": 100}])
 
     assert plan["direct_purchases"][0]["source"] == "Jita"
+
+
+def test_optimize_prices_ore_and_minerals_at_the_input_hub_not_trading_config(monkeypatch, sde, candidates, esi, cfgs):
+    cfg, trading_cfg, refining_cfg = cfgs
+    trading_cfg.jita_region_id = 10000043          # must be ignored
+    cfg.input_hub_region_id = 10000032             # ore/minerals
+    cfg.purchase_region_id = 10000030              # modules keep their own region
+    _optimize((cfg, trading_cfg, refining_cfg), [{"type_id": TRIT, "name": "Tritanium", "required_qty": 1000}])
+    regions = {region for region, _ids in esi}
+    assert regions == {10000032, 10000030}

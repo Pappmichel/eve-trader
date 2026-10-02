@@ -59,7 +59,7 @@ def _build_shortlist_rows(rows: list[tuple[int, float, float, str, bool]],
     category/profit/margin from that live price, not the persisted
     discovery-time spread (see _profit's own docstring)."""
     type_ids = [type_id for type_id, *_rest in rows]
-    live = confirm_live(type_ids)
+    live = confirm_live(type_ids, hub_region_id=cfg.hub_region_id)
     category_names = storage.load_sde_category_names()
     result = []
     for type_id, spread_pct, avg_daily_volume, discovered_at, active in rows:

@@ -104,7 +104,7 @@ def do_refresh_ore_shortlist(trading_cfg: TradingConfig = TRADING_CONFIG,
         # a transport-level failure (ESI down) is not, and without this
         # would 500 Refresh after the shortlist was already loaded. Same
         # wrap do_optimize_mineral_shopping_list already has.
-        jita_stats_by_id = client.region_order_stats_bulk(trading_cfg.jita_region_id, ore_type_ids)
+        jita_stats_by_id = client.region_order_stats_bulk(refining_cfg.hub_region_id, ore_type_ids)
     except (ESIError, requests.RequestException) as e:
         raise ActionError(f"Could not fetch Jita's order book ({e}).") from e
 
@@ -397,7 +397,7 @@ def do_optimize_mineral_shopping_list(requirements: Optional[list[dict]] = None,
     ore_ids = [c.type_id for c in candidates]
     mineral_ids = [r.type_id for r in wanted]
     try:
-        stats_by_id = client.region_order_stats_bulk(trading_cfg.jita_region_id, sorted(set(ore_ids + mineral_ids)))
+        stats_by_id = client.region_order_stats_bulk(refining_cfg.hub_region_id, sorted(set(ore_ids + mineral_ids)))
     except (ESIError, requests.RequestException) as e:
         # region_order_stats_bulk swallows a per-type_id ESI *error response*
         # but not a transport-level failure (ESI down, no route out) - that

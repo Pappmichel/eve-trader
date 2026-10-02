@@ -50,6 +50,9 @@ class DoctrineConfig:
     # first-setup time only (see engine._shopping_prices) - the two don't
     # stay in sync after that, editing one doesn't touch the other.
     import_cost_per_m3: float = 900.0
+    # Market hub (region id) Doctrine prices its shopping list against -
+    # its own setting, no longer TradingConfig.jita_region_id (#222). Default Jita.
+    hub_region_id: int = 10000002
     # Which hangar/office division(s) at effective_stockpile_location_id count
     # as Doctrine's own stockpile Ist (storage.esi_stock_at_location's
     # allowed_flags - see production/constants.py HANGAR_DIVISION_FLAGS).

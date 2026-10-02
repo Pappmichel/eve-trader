@@ -18,10 +18,10 @@
 // constant used to recognize a character's own assets sitting physically in
 // Jita for shortlist "already covered" bookkeeping - it does not follow this
 // setting. Picking Amarr/Dodixie/Rens here correctly repoints every
-// region-order-book read (`cfg.jita_region_id`, already dynamic everywhere
-// it's read: Trading, Production, Doctrine, Ore & Minerals, Station
-// Trading, Module Reprocessing all consume the same `TRADING_CONFIG`
-// value), but assets physically sitting in the new hub will not be detected
+// region-order-book read of Trading (`cfg.jita_region_id`; since #222 every
+// other tool - Production, Doctrine, Ore & Minerals, Station Trading, Module
+// Reprocessing - has its own `hub_region_id` setting using this same list
+// via `HubSelect`, so Trading's hub no longer affects them), but assets physically sitting in the new hub will not be detected
 // as "already covered" by that one check - a real gap for a non-Jita hub,
 // not a cosmetic one. Don't extend this list or treat the hub as fully
 // interchangeable without fixing that too.

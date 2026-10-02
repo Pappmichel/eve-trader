@@ -10,6 +10,7 @@ import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { useAction } from '../../hooks/useAction'
 import { isk, pct, qty } from '../../format'
+import { hubLabel } from '../../tradingHubs'
 
 const ALL_DECISIONS = ['Inactive', 'No market data', 'Skip', 'Import']
 const DECISION_COLOR: Record<string, string> = {
@@ -23,6 +24,9 @@ export default function OreShortlist() {
   const { data, isLoading } = useQuery({
     queryKey: ['refining', 'shortlist', 'snapshot'], queryFn: refiningApi.shortlistSnapshot,
   })
+
+  const { data: settings } = useQuery({ queryKey: ['refining', 'settings'], queryFn: refiningApi.settings })
+  const hub = hubLabel(settings?.hub_region_id)
 
   // Reversible (activate below undoes it), so no confirmation prompt - same
   // "not truly destructive" reasoning already applied elsewhere in this app
@@ -65,10 +69,10 @@ export default function OreShortlist() {
     { header: 'Margin', accessorKey: 'margin', size: 90, cell: (i) => pct(i.getValue()) },
     { header: 'Profit / Unit', accessorKey: 'profit_per_unit', size: 120, cell: (i) => isk(i.getValue()) },
     { header: 'Profit / m³', accessorKey: 'profit_per_m3', size: 110, cell: (i) => qty(i.getValue()) },
-    { header: 'Cost (Jita)', accessorKey: 'landed_cost', size: 120, cell: (i) => isk(i.getValue()) },
+    { header: `Cost (${hub})`, accessorKey: 'landed_cost', size: 120, cell: (i) => isk(i.getValue()) },
     { header: 'Mineral Value (C-J)', accessorKey: 'net_sell', size: 150, cell: (i) => isk(i.getValue()) },
     { header: 'Refining Tax', accessorKey: 'refining_tax', size: 110, cell: (i) => isk(i.getValue()) },
-    { header: 'Jita Listed Qty', accessorKey: 'sell_listed_qty', size: 130, cell: (i) => qty(i.getValue()) },
+    { header: `${hub} Listed Qty`, accessorKey: 'sell_listed_qty', size: 130, cell: (i) => qty(i.getValue()) },
     {
       header: '', id: 'actions', size: 50, enableSorting: false,
       cell: (i) => {
@@ -91,7 +95,7 @@ export default function OreShortlist() {
       },
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  ], [activate, deactivate])
+  ], [activate, deactivate, hub])
 
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
   if (!data || data.length === 0) {
