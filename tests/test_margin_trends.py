@@ -92,3 +92,46 @@ def test_today_drops_days_outside_the_baseline_window():
     df = _history_df(jita_rows + ref_rows)
     assert compute_margin_trends(df, {100: 1.0}, cfg, today="2026-03-01") == {}
     assert 100 in compute_margin_trends(df, {100: 1.0}, cfg, today="2026-01-11")
+
+def _patch_trend_inputs(monkeypatch, shortlist):
+    from eve_trader import actions, storage
+    calls = []
+    monkeypatch.setattr(storage, "load_shortlist", lambda: shortlist)
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "t1")
+
+    def _read(type_ids, **kwargs):
+        calls.append((tuple(type_ids), kwargs))
+        return _history_df([])
+    monkeypatch.setattr(storage, "read_goonmetrics_history_for_types", _read)
+    return actions, calls
+
+
+def test_do_shortlist_trends_reads_only_two_regions_and_the_baseline_window(monkeypatch):
+    from eve_trader.models import ShortlistItem
+    actions, calls = _patch_trend_inputs(
+        monkeypatch, [ShortlistItem(item="A", item_id=1, category="M", volume_m3=1.0, active=True)])
+    cfg = TradingConfig()
+
+    actions.do_shortlist_trends(cfg)
+
+    kwargs = calls[0][1]
+    assert kwargs["region_ids"] == [cfg.jita_region_id, cfg.reference_region_id]
+    assert len(kwargs["after_date"]) == 10  # ISO date, 30 days back
+
+
+def test_do_shortlist_trends_caches_until_the_shortlist_changes(monkeypatch):
+    from eve_trader.models import ShortlistItem
+    shortlist = [ShortlistItem(item="A", item_id=1, category="M", volume_m3=1.0, active=True)]
+    actions, calls = _patch_trend_inputs(monkeypatch, shortlist)
+    cfg = TradingConfig()
+
+    actions.do_shortlist_trends(cfg)
+    actions.do_shortlist_trends(cfg)
+    assert len(calls) == 1  # second call served from the cache
+
+    shortlist.append(ShortlistItem(item="B", item_id=2, category="M", volume_m3=2.0, active=True))
+    actions.do_shortlist_trends(cfg)
+    assert len(calls) == 2  # new item -> new key -> recomputed
+
+    actions.do_shortlist_trends(TradingConfig(import_cost_per_m3=cfg.import_cost_per_m3 + 1))
+    assert len(calls) == 3  # a Settings change misses too

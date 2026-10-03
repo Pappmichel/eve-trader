@@ -5398,18 +5398,33 @@ def read_latest_new_candidates() -> pd.DataFrame:
         return pd.DataFrame(cur.fetchall(), columns=columns)
 
 
-def read_goonmetrics_history_for_types(type_ids: list[int]) -> pd.DataFrame:
+def read_goonmetrics_history_for_types(type_ids: list[int], *,
+                                        region_ids: Optional[list[int]] = None,
+                                        after_date: Optional[str] = None) -> pd.DataFrame:
     """Same shape as read_table("goonmetrics_history") but filtered to just
     `type_ids` - confirmed real gap: do_shortlist_trends (called on every
     Shortlist page load, see its own docstring) used to pull the *entire*
     table (every candidate/focused-candidate type_id ever price-checked, not
     just the shortlist's own items) just to immediately discard every row
-    outside compute_margin_trends' own `volumes` filter."""
+    outside compute_margin_trends' own `volumes` filter.
+
+    `region_ids` and `after_date` (ISO date, rows with date > it, compared
+    as text) narrow it further - every stored day of every region was still
+    ~330k rows / ~1-2 s for a 3,700-item shortlist (2026-10-03), when the
+    trend only uses two regions and the last 30 days."""
     if not type_ids:
         return pd.DataFrame()
     placeholders = ",".join("?" * len(type_ids))
+    sql = f"SELECT * FROM goonmetrics_history WHERE type_id IN ({placeholders})"
+    params: list = list(type_ids)
+    if region_ids:
+        sql += f" AND region_id IN ({','.join('?' * len(region_ids))})"
+        params.extend(region_ids)
+    if after_date is not None:
+        sql += " AND date > ?"
+        params.append(after_date)
     with connect() as conn:
-        cur = conn.execute(f"SELECT * FROM goonmetrics_history WHERE type_id IN ({placeholders})", type_ids)
+        cur = conn.execute(sql, params)
         columns = [d[0] for d in cur.description]
         return pd.DataFrame(cur.fetchall(), columns=columns)
 

@@ -60,6 +60,16 @@ def _reset_goonmetrics_region_coverage():
 
 
 @pytest.fixture(autouse=True)
+def _reset_shortlist_trends_cache():
+    """actions.do_shortlist_trends caches per tenant; tests that monkeypatch
+    storage must not get an earlier test's result back."""
+    from eve_trader import actions
+    actions.clear_shortlist_trends_cache()
+    yield
+    actions.clear_shortlist_trends_cache()
+
+
+@pytest.fixture(autouse=True)
 def _reset_character_public_info_cache():
     """ESIClient.character_public_info's cache (docs/ESI_ACCESS_PLAN.md
     Known gap 2) is class-wide and keyed only by character_id, unscoped by
