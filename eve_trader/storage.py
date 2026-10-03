@@ -229,6 +229,17 @@ def connect():
     if active is not None:
         yield active
         return
+    with connect_own_transaction() as conn:
+        yield conn
+
+
+@contextmanager
+def connect_own_transaction():
+    """Like connect(), but always checks out its own pooled connection and
+    commits on exit, even inside an active batch_session(). For writes that
+    must be durable and visible to other connections at once, whatever the
+    surrounding batch later does - a refreshed OAuth token (see
+    save_tenant_token) is the case this exists for."""
     tenant_id = _tenant_id_var.get()
     if tenant_id is None:
         raise RuntimeError(
@@ -1073,8 +1084,19 @@ def load_tenant_settings(scope: str) -> dict:
 # -------------------------------------------------------------- tenant tokens
 def save_tenant_token(role: str, record: dict) -> None:
     """Upserts one OAuth token record (see auth.py's TokenRecord/asdict) for
-    `role` under the current tenant."""
-    with connect() as conn:
+    `role` under the current tenant.
+
+    Commits on its own connection, never inside a caller's batch_session()
+    (confirmed real incident 2026-10-03): a token refreshed during an ESI
+    owner sync used to be saved inside that owner's still-open batch. The
+    row stayed locked and other connections kept reading the old, expired
+    record until the batch committed, so a second thread needing the same
+    token refreshed it again and blocked on the row lock while holding
+    TokenManager's per-role lock - a deadlock Postgres cannot see, broken
+    only by idle_in_transaction_session_timeout after 5 minutes. A batch
+    rollback also discarded the new record, and with it EVE's rotated
+    refresh token."""
+    with connect_own_transaction() as conn:
         conn.execute(
             "INSERT INTO tenant_tokens (role, record) VALUES (?, ?) "
             "ON CONFLICT(tenant_id, role) DO UPDATE SET record = excluded.record",
