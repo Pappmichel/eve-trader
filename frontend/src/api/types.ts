@@ -372,6 +372,19 @@ export interface DistributionRow {
   volume_m3: number
 }
 
+export interface MarketRestockRow {
+  type_id: number
+  type_name: string
+  from_location_id: number
+  from_location_name: string | null
+  quantity: number
+  volume_m3: number
+  home_target: number
+  home_listed: number
+  home_unlisted: number
+  home_short: number
+}
+
 export interface MarketStatusRow {
   type_id: number
   type_name: string

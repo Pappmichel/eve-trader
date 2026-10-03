@@ -1842,6 +1842,24 @@ def manual_stock_at_location(type_id: int, location_id: int) -> float:
     return row[0] if row else 0.0
 
 
+def manual_stock_by_location_bulk(type_ids: list[int]) -> dict[int, dict[int, float]]:
+    """{type_id: {location_id: count}} for `type_ids` - location_id 0 is the
+    "no location" convention (docs/MANUAL_TRACKING_PLAN.md). Types with no
+    manual stock map to {}."""
+    unique = list(dict.fromkeys(type_ids))
+    if not unique:
+        return {}
+    out: dict[int, dict[int, float]] = {tid: {} for tid in unique}
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, location_id, count FROM manual_stock WHERE type_id = ANY(?)", (unique,),
+        ).fetchall()
+    for tid, location_id, count in rows:
+        if tid in out and count:
+            out[tid][location_id] = out[tid].get(location_id, 0.0) + count
+    return out
+
+
 # ------------------------------------------------------------- manual owned blueprints
 def is_known_blueprint(type_id: int) -> bool:
     """Whether `type_id` is itself a blueprint (appears as a
@@ -2935,7 +2953,9 @@ def replace_assets(
     owner_name: Optional[str] = None,
 ) -> None:
     """`rows`: (item_id, type_id, location_id, location_flag, quantity,
-    is_blueprint_copy, owner_name) - resolved_location_id (GitHub issue #4/
+    is_blueprint_copy, owner_name[, is_singleton]) - is_singleton defaults
+    to False when omitted; assembled_or_fitted (see assembled_or_fitted_flags)
+    is computed here from it. resolved_location_id (GitHub issue #4/
     #20) and resolved_hangar_flag (the corp-hangar-division flag a nested
     item should actually be counted under - see _resolve_hangar_flags) are
     both computed here, not by the caller, so every existing/future caller
@@ -2981,8 +3001,12 @@ def _replace_assets_one(
     owner_corporation_id: Optional[int],
     owner_name: Optional[str],
 ) -> None:
+    singletons = [bool(row[7]) if len(row) > 7 else False for row in rows]
+    rows = [tuple(row[:7]) for row in rows]
     resolved_locations = _resolve_locations(rows, location_index=2) if rows else []
     resolved_flags = _resolve_hangar_flags(rows, location_index=2, flag_index=3, type_index=1) if rows else []
+    excluded = assembled_or_fitted_flags(
+        [(row[1], row[3], singleton) for row, singleton in zip(rows, singletons)]) if rows else []
     id_column = "owner_character_id" if is_character else "owner_corporation_id"
     owner_id = owner_character_id if is_character else owner_corporation_id
     insert_char = owner_character_id if is_character else None
@@ -2995,11 +3019,12 @@ def _replace_assets_one(
         conn.executemany(
             f"INSERT INTO {table} (item_id, type_id, location_id, location_flag, quantity, "
             "is_blueprint_copy, owner_name, resolved_location_id, resolved_hangar_flag, "
-            "owner_character_id, owner_corporation_id) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "owner_character_id, owner_corporation_id, is_singleton, assembled_or_fitted) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
-                row + (loc, flag, insert_char, insert_corp)
-                for row, loc, flag in zip(rows, resolved_locations, resolved_flags)
+                row + (loc, flag, insert_char, insert_corp, singleton, skip)
+                for row, loc, flag, singleton, skip in zip(
+                    rows, resolved_locations, resolved_flags, singletons, excluded)
             ],
         )
 
@@ -4590,6 +4615,57 @@ OFFICE_TYPE_ID = 27  # generic "Office" item - a corp's rented hangar container,
 # stock" by including quantities that aren't actually available to build with.
 NON_STOCK_LOCATION_FLAGS = ("AssetSafety", "Deliveries", "CorpDeliveries", "CorpMarket")
 
+# Assembled ships and their fittings are not stock (confirmed with the user
+# 2026-10-03) - this applies to every demand calculation (Production,
+# Doctrine Stockpile, Sorting, Trading's covered/unlisted checks), not to
+# valuation (Portfolio wealth) or the Asset Search lookup. A fitting slot,
+# drone bay or fighter bay/tube flag only ever exists on an assembled hull
+# (or a structure's own fitting), so the flag alone identifies "fitted";
+# loaded charges sit in their module's slot flag and are excluded with it.
+# Cargo and other holds of an assembled ship still count.
+SHIP_CATEGORY_ID = 6
+_FITTED_LOCATION_FLAGS = frozenset({"DroneBay", "FighterBay"})
+_FITTED_LOCATION_FLAG_PREFIXES = (
+    "HiSlot", "MedSlot", "LoSlot", "RigSlot", "SubSystemSlot", "ServiceSlot", "FighterTube",
+)
+
+
+def is_fitted_location_flag(flag: Optional[str]) -> bool:
+    return bool(flag) and (flag in _FITTED_LOCATION_FLAGS or flag.startswith(_FITTED_LOCATION_FLAG_PREFIXES))
+
+
+def _ship_type_ids(type_ids: Iterable[int]) -> set[int]:
+    unique = list({t for t in type_ids if t is not None})
+    if not unique:
+        return set()
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT t.type_id FROM sde_types t JOIN sde_groups g ON g.group_id = t.group_id "
+            "WHERE t.type_id = ANY(?) AND g.category_id = ?", (unique, SHIP_CATEGORY_ID),
+        ).fetchall()
+    return {r[0] for r in rows}
+
+
+def assembled_or_fitted_flags(items: list[tuple[int, Optional[str], bool]]) -> list[bool]:
+    """For (type_id, location_flag, is_singleton) triples: True for an
+    assembled ship (Ship category and is_singleton) or a fitted item (see
+    is_fitted_location_flag). One SDE query for the singleton types only."""
+    ships = _ship_type_ids(t for t, _flag, singleton in items if singleton)
+    return [
+        is_fitted_location_flag(flag) or (bool(singleton) and type_id in ships)
+        for type_id, flag, singleton in items
+    ]
+
+
+def mark_assembled_or_fitted(assets: list[dict]) -> list[dict]:
+    """Sets "assembled_or_fitted" on live ESI asset dicts (never written to
+    the DB) in place, same rule replace_assets stores for synced rows."""
+    flags = assembled_or_fitted_flags(
+        [(a.get("type_id"), a.get("location_flag"), a.get("is_singleton", False)) for a in assets])
+    for a, flag in zip(assets, flags):
+        a["assembled_or_fitted"] = flag
+    return assets
+
 
 def _owner_id_clause(table: str, owner_character_ids: Optional[list[int]],
                       owner_corporation_ids: Optional[list[int]]) -> tuple[str, tuple]:
@@ -4739,14 +4815,15 @@ def esi_stock_at_location_bulk(type_ids: list[int], location_id: Optional[int],
             if location_id is None:
                 rows = conn.execute(
                     f"SELECT type_id, COALESCE(SUM(quantity), 0) FROM {table} "
-                    f"WHERE type_id = ANY(?) AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))"
+                    f"WHERE type_id = ANY(?) AND NOT assembled_or_fitted "
+                    f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))"
                     f"{allowed_clause}{exclude_clause}{owner_clause} GROUP BY type_id",
                     (list(unique), *NON_STOCK_LOCATION_FLAGS, *allowed_params, *exclude_params, *owner_params),
                 ).fetchall()
             else:
                 rows = conn.execute(
                     f"SELECT type_id, COALESCE(SUM(quantity), 0) FROM {table} "
-                    f"WHERE type_id = ANY(?) AND resolved_location_id = ? "
+                    f"WHERE type_id = ANY(?) AND resolved_location_id = ? AND NOT assembled_or_fitted "
                     f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))"
                     f"{allowed_clause}{exclude_clause}{owner_clause} GROUP BY type_id",
                     (list(unique), location_id, *NON_STOCK_LOCATION_FLAGS, *allowed_params, *exclude_params, *owner_params),
@@ -4754,6 +4831,42 @@ def esi_stock_at_location_bulk(type_ids: list[int], location_id: Optional[int],
             for tid, qty in rows:
                 if tid in totals:
                     totals[tid] += qty
+    return totals
+
+
+def esi_stock_by_location_bulk(type_ids: list[int],
+                               allowed_flags: Optional[tuple[str, ...]] = None,
+                               owner_character_ids: Optional[list[int]] = None,
+                               owner_corporation_ids: Optional[list[int]] = None,
+                               ) -> dict[int, dict[int, float]]:
+    """Per type, quantity per resolved_location_id across character + corp
+    assets - {type_id: {location_id: qty}}. Same NON_STOCK_LOCATION_FLAGS/
+    `allowed_flags`/owner filters as esi_stock_at_location_bulk, one GROUP BY
+    per asset table instead of one query per (type, location). Types with no
+    stock map to {}. Empty input is `{}` and opens no connection."""
+    unique = list(dict.fromkeys(type_ids))
+    if not unique:
+        return {}
+    flag_placeholders = ",".join("?" * len(NON_STOCK_LOCATION_FLAGS))
+    allowed_clause = ""
+    allowed_params: tuple = ()
+    if allowed_flags:
+        allowed_clause = f" AND resolved_hangar_flag IN ({','.join('?' * len(allowed_flags))})"
+        allowed_params = tuple(allowed_flags)
+    totals: dict[int, dict[int, float]] = {tid: {} for tid in unique}
+    with connect() as conn:
+        for table in ("character_assets", "corp_assets"):
+            owner_clause, owner_params = _owner_id_clause(table, owner_character_ids, owner_corporation_ids)
+            rows = conn.execute(
+                f"SELECT type_id, resolved_location_id, COALESCE(SUM(quantity), 0) FROM {table} "
+                f"WHERE type_id = ANY(?) AND resolved_location_id IS NOT NULL AND NOT assembled_or_fitted "
+                f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))"
+                f"{allowed_clause}{owner_clause} GROUP BY type_id, resolved_location_id",
+                (list(unique), *NON_STOCK_LOCATION_FLAGS, *allowed_params, *owner_params),
+            ).fetchall()
+            for tid, location_id, qty in rows:
+                if tid in totals:
+                    totals[tid][location_id] = totals[tid].get(location_id, 0.0) + qty
     return totals
 
 
@@ -4785,7 +4898,7 @@ def esi_stock_from_asset_rows(
     totals = {tid: 0.0 for tid in unique}
     for row in rows:
         type_id = row.get("type_id")
-        if type_id not in wanted:
+        if type_id not in wanted or row.get("assembled_or_fitted"):
             continue
         flag = row.get("location_flag")
         if flag is not None and flag in non_stock:
@@ -4867,7 +4980,8 @@ def assets_at_flag(flag: str, tables: tuple[str, ...] = ("character_assets", "co
             id_clause, id_params = _owner_id_clause(table, owner_character_ids, owner_corporation_ids)
             rows = conn.execute(
                 f"SELECT type_id, COALESCE(SUM(quantity), 0) FROM {table} "
-                f"WHERE resolved_hangar_flag = ?{owner_clause}{location_clause}{id_clause} GROUP BY type_id",
+                f"WHERE resolved_hangar_flag = ? AND NOT assembled_or_fitted"
+                f"{owner_clause}{location_clause}{id_clause} GROUP BY type_id",
                 (flag, *owner_params, *location_params, *id_params),
             ).fetchall()
             for type_id, qty in rows:

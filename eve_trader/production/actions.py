@@ -26,7 +26,7 @@ from .engine import (
     build_material_tree, compare_alchemy_profitability, discover_build_candidates, discover_ship_margins,
     distribution_recommendations, get_cached_discover_results, invention_logistics, item_margin_detail,
     invalidate_discover_cache, invalidate_ship_margin_cache, t1_bpc_invention_needs,
-    invalidate_production_locations_cache, logistics_status, market_status, plan_asset_optimized,
+    invalidate_production_locations_cache, logistics_status, market_restock, market_status, plan_asset_optimized,
     plan_production, plan_special_order, shared_production_owner_ids, stock_value,
 )
 from .models import (
@@ -926,6 +926,10 @@ def do_get_distribution_recommendations(build_list: list) -> list:
     return distribution_recommendations(build_list)
 
 
+def do_get_market_restock() -> list:
+    return market_restock()
+
+
 def do_get_invention_logistics(invention_list: list) -> list:
     return invention_logistics(invention_list)
 
@@ -1131,7 +1135,9 @@ def _accumulate_stock_at_location(assets: list[dict], location_id: int, out: dic
     """In-memory equivalent of storage.esi_stock_at_location's per-location
     aggregation (same corp-office-unwrap + NON_STOCK_LOCATION_FLAGS exclusion
     logic - see that function's docstring for why both are needed), for
-    live-fetched asset lists that were never written to the DB."""
+    live-fetched asset lists that were never written to the DB. Assembled
+    ships and their fittings don't count (storage.mark_assembled_or_fitted)."""
+    storage.mark_assembled_or_fitted(assets)
     office_item_ids = {
         a["item_id"] for a in assets
         if a.get("type_id") == storage.OFFICE_TYPE_ID and a.get("location_id") == location_id
@@ -1140,7 +1146,7 @@ def _accumulate_stock_at_location(assets: list[dict], location_id: int, out: dic
     for a in assets:
         if a.get("location_id") not in valid_locations:
             continue
-        if a.get("location_flag") in storage.NON_STOCK_LOCATION_FLAGS:
+        if a.get("location_flag") in storage.NON_STOCK_LOCATION_FLAGS or a["assembled_or_fitted"]:
             continue
         out[a["type_id"]] = out.get(a["type_id"], 0.0) + a.get("quantity", 0)
 

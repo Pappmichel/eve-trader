@@ -309,6 +309,7 @@ export const productionApi = {
     del(`/api/production/logistics/location-options/${encodeURIComponent(category)}/${locationId}`),
   logisticsStatus: () => get<T.LogisticsRow[]>('/api/production/logistics'),
   distributionRecommendations: () => get<T.DistributionRow[]>('/api/production/logistics/distribution'),
+  marketRestock: () => get<T.MarketRestockRow[]>('/api/production/logistics/market-restock'),
   inventionLogistics: () => get<T.LogisticsRow[]>('/api/production/logistics/invention'),
   t1BpcInventionNeeds: () => get<T.T1BpcInventionNeedRow[]>('/api/production/invention/t1-bpc-needs'),
   structureNames: () => get<Record<string, string | null>>('/api/production/logistics/structure-names'),

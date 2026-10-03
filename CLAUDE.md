@@ -892,6 +892,24 @@ new heuristic; if the SDE doesn't already carry the field you need, extend
 `refresh_sde()` to fetch it (see the `invMetaTypes.csv` merge that added
 `meta_group_id` for precedent) rather than approximating.
 
+## Assembled ships are not stock (confirmed with the user 2026-10-03)
+
+Every demand calculation ignores assembled ships *and their fitting*
+(slot modules, loaded charges, drone bay, fighter bay/tubes); cargo and
+other holds inside an assembled ship still count. ESI's `is_singleton`
+plus the SDE Ship category identify an assembled hull; a fitting/bay
+`location_flag` identifies a fitted item (`storage.is_fitted_location_flag`).
+`replace_assets` stores the result once at sync time in
+`character_assets`/`corp_assets.assembled_or_fitted` (rows synced before
+the column existed count until their next asset sync); the SQL stock
+readers (`esi_stock_at_location_bulk`, `esi_stock_by_location_bulk`,
+`assets_at_flag`), Doctrine's `esi_stock_from_asset_rows` and Trading's
+`own_orders.py` skip it, and live ESI lists go through
+`storage.mark_assembled_or_fitted`. Deliberately *not* applied to valuation
+(Portfolio's `load_all_assets`) or the Asset Search lookup - an assembled
+ship still has value and still exists. A new stock reader must apply the
+same filter.
+
 ## Job-time character-skill bonus (confirmed real gap, fixed 2026-09-27)
 
 `_activity_mods`/`_tech_ii_mods` (`production/engine.py`) used to combine
