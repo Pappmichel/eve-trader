@@ -5480,9 +5480,11 @@ def goonmetrics_history_type_ids_for_tenant() -> list[int]:
     reachable regardless, same as querying Goonmetrics directly would be."""
     with connect() as conn:
         rows = conn.execute(
-            "SELECT DISTINCT gh.type_id FROM goonmetrics_history gh "
-            "WHERE gh.type_id IN (SELECT item_id FROM shortlist "
-            "UNION SELECT type_id FROM candidate_universe)"
+            # One index probe per item of this tenant (idx_goonmetrics_
+            # history_type) instead of a DISTINCT over the whole shared table.
+            "SELECT t.type_id FROM (SELECT item_id AS type_id FROM shortlist "
+            "UNION SELECT type_id FROM candidate_universe) t "
+            "WHERE EXISTS (SELECT 1 FROM goonmetrics_history gh WHERE gh.type_id = t.type_id)"
         ).fetchall()
     return [r[0] for r in rows]
 
