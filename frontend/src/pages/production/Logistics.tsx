@@ -6,7 +6,7 @@ import { IconX } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
-import type { DistributionRow, LogisticsRow } from '../../api/types'
+import type { DistributionRow, LogisticsRow, MarketRestockRow } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
 import { StructureIdField } from '../../components/StructureIdField'
@@ -25,6 +25,9 @@ export default function Logistics() {
   })
   const { data: distributionRows } = useQuery({
     queryKey: ['production', 'logistics', 'distribution'], queryFn: productionApi.distributionRecommendations, retry: false,
+  })
+  const { data: restockRows, isError: restockError } = useQuery({
+    queryKey: ['production', 'logistics', 'market-restock'], queryFn: productionApi.marketRestock, retry: false,
   })
   const { data: inventionRows } = useQuery({
     queryKey: ['production', 'logistics', 'invention'], queryFn: productionApi.inventionLogistics, retry: false,
@@ -199,6 +202,25 @@ export default function Logistics() {
     { header: 'Quantity', accessorKey: 'quantity', size: 110, cell: (i) => qty(i.getValue()) },
     { header: 'Volume', accessorKey: 'volume_m3', size: 100, cell: (i) => volume(i.getValue()) },
   ], [structureNames])
+
+  const restockColumns = useMemo<ColumnDef<MarketRestockRow, any>[]>(() => [
+    { header: 'Item', accessorKey: 'type_name', size: 220, meta: { copyable: true } },
+    { header: 'Quantity', accessorKey: 'quantity', size: 110, meta: { exportRole: 'qty' }, cell: (i) => qty(i.getValue()) },
+    { header: 'Volume', accessorKey: 'volume_m3', size: 100, cell: (i) => volume(i.getValue()) },
+    { header: 'C-J Target', accessorKey: 'home_target', size: 110, cell: (i) => qty(i.getValue()) },
+    { header: 'Listed', accessorKey: 'home_listed', size: 100, cell: (i) => qty(i.getValue()) },
+    { header: 'In C-J, Unlisted', accessorKey: 'home_unlisted', size: 130, cell: (i) => qty(i.getValue()) },
+    { header: 'C-J Short', accessorKey: 'home_short', size: 110, cell: (i) => qty(i.getValue()) },
+  ], [])
+
+  const restockBySource = useMemo(() => {
+    const map = new Map<number, MarketRestockRow[]>()
+    for (const r of restockRows ?? []) {
+      if (!map.has(r.from_location_id)) map.set(r.from_location_id, [])
+      map.get(r.from_location_id)!.push(r)
+    }
+    return map
+  }, [restockRows])
 
   const distributionTotalVolume = useMemo(
     () => (distributionRows ?? []).reduce((sum, r) => sum + r.volume_m3, 0),
@@ -392,6 +414,43 @@ export default function Logistics() {
           )
         })
       )}
+
+      <Card withBorder>
+        <Title order={4} mb="xs">Market Restock</Title>
+        <Text size="xs" c="dimmed" mb="sm">
+          Stock targets with a home market target that the home structure is short of (target minus your listed and
+          unlisted stock there), and which category structure (current or former) holds the units to cover it - one
+          group per pickup station. Stock anywhere else isn't suggested. The backup stock reserve is left in place,
+          and running jobs don't count.
+        </Text>
+        {restockError ? (
+          <Text size="sm" c="dimmed">Couldn't load the market restock list.</Text>
+        ) : !settings?.home_location_id ? (
+          <Text size="sm" c="dimmed">Set the home structure in Production Settings to track this.</Text>
+        ) : !locations || Object.keys(locations).length === 0 ? (
+          <Text size="sm" c="dimmed">Assign a structure to at least one category above to track this.</Text>
+        ) : restockBySource.size === 0 ? (
+          <Text size="sm" c="dimmed">Nothing to bring to the home structure right now.</Text>
+        ) : (
+          <Stack gap="md">
+            {Array.from(restockBySource.entries()).map(([locationId, sourceRows]) => {
+              const name = sourceRows[0].from_location_name ?? structureNames?.[String(locationId)] ?? `Location ${locationId}`
+              const totalVolume = sourceRows.reduce((sum, r) => sum + r.volume_m3, 0)
+              return (
+                <div key={locationId}>
+                  <Group justify="space-between" mb="xs">
+                    <Title order={5}>{name}</Title>
+                    <Text size="xs" c="dimmed">
+                      Total volume: <Text span fw={600} c="accent">{volume(totalVolume)}</Text>
+                    </Text>
+                  </Group>
+                  <DataTable tableId="production-logistics-restock" rowDetail data={sourceRows} columns={restockColumns} maxHeight={320} />
+                </div>
+              )
+            })}
+          </Stack>
+        )}
+      </Card>
 
       <Card withBorder>
         <Title order={4} mb="xs">Distribution</Title>

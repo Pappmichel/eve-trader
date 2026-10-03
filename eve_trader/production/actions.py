@@ -26,7 +26,7 @@ from .engine import (
     build_material_tree, compare_alchemy_profitability, discover_build_candidates, discover_ship_margins,
     distribution_recommendations, get_cached_discover_results, invention_logistics, item_margin_detail,
     invalidate_discover_cache, invalidate_ship_margin_cache, t1_bpc_invention_needs,
-    invalidate_production_locations_cache, logistics_status, market_status, plan_asset_optimized,
+    invalidate_production_locations_cache, logistics_status, market_restock, market_status, plan_asset_optimized,
     plan_production, plan_special_order, shared_production_owner_ids, stock_value,
 )
 from .models import (
@@ -924,6 +924,10 @@ def do_get_logistics_status(build_list: list) -> list:
 
 def do_get_distribution_recommendations(build_list: list) -> list:
     return distribution_recommendations(build_list)
+
+
+def do_get_market_restock() -> list:
+    return market_restock()
 
 
 def do_get_invention_logistics(invention_list: list) -> list:

@@ -1842,6 +1842,24 @@ def manual_stock_at_location(type_id: int, location_id: int) -> float:
     return row[0] if row else 0.0
 
 
+def manual_stock_by_location_bulk(type_ids: list[int]) -> dict[int, dict[int, float]]:
+    """{type_id: {location_id: count}} for `type_ids` - location_id 0 is the
+    "no location" convention (docs/MANUAL_TRACKING_PLAN.md). Types with no
+    manual stock map to {}."""
+    unique = list(dict.fromkeys(type_ids))
+    if not unique:
+        return {}
+    out: dict[int, dict[int, float]] = {tid: {} for tid in unique}
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, location_id, count FROM manual_stock WHERE type_id = ANY(?)", (unique,),
+        ).fetchall()
+    for tid, location_id, count in rows:
+        if tid in out and count:
+            out[tid][location_id] = out[tid].get(location_id, 0.0) + count
+    return out
+
+
 # ------------------------------------------------------------- manual owned blueprints
 def is_known_blueprint(type_id: int) -> bool:
     """Whether `type_id` is itself a blueprint (appears as a
@@ -4754,6 +4772,42 @@ def esi_stock_at_location_bulk(type_ids: list[int], location_id: Optional[int],
             for tid, qty in rows:
                 if tid in totals:
                     totals[tid] += qty
+    return totals
+
+
+def esi_stock_by_location_bulk(type_ids: list[int],
+                               allowed_flags: Optional[tuple[str, ...]] = None,
+                               owner_character_ids: Optional[list[int]] = None,
+                               owner_corporation_ids: Optional[list[int]] = None,
+                               ) -> dict[int, dict[int, float]]:
+    """Per type, quantity per resolved_location_id across character + corp
+    assets - {type_id: {location_id: qty}}. Same NON_STOCK_LOCATION_FLAGS/
+    `allowed_flags`/owner filters as esi_stock_at_location_bulk, one GROUP BY
+    per asset table instead of one query per (type, location). Types with no
+    stock map to {}. Empty input is `{}` and opens no connection."""
+    unique = list(dict.fromkeys(type_ids))
+    if not unique:
+        return {}
+    flag_placeholders = ",".join("?" * len(NON_STOCK_LOCATION_FLAGS))
+    allowed_clause = ""
+    allowed_params: tuple = ()
+    if allowed_flags:
+        allowed_clause = f" AND resolved_hangar_flag IN ({','.join('?' * len(allowed_flags))})"
+        allowed_params = tuple(allowed_flags)
+    totals: dict[int, dict[int, float]] = {tid: {} for tid in unique}
+    with connect() as conn:
+        for table in ("character_assets", "corp_assets"):
+            owner_clause, owner_params = _owner_id_clause(table, owner_character_ids, owner_corporation_ids)
+            rows = conn.execute(
+                f"SELECT type_id, resolved_location_id, COALESCE(SUM(quantity), 0) FROM {table} "
+                f"WHERE type_id = ANY(?) AND resolved_location_id IS NOT NULL "
+                f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))"
+                f"{allowed_clause}{owner_clause} GROUP BY type_id, resolved_location_id",
+                (list(unique), *NON_STOCK_LOCATION_FLAGS, *allowed_params, *owner_params),
+            ).fetchall()
+            for tid, location_id, qty in rows:
+                if tid in totals:
+                    totals[tid][location_id] = totals[tid].get(location_id, 0.0) + qty
     return totals
 
 
