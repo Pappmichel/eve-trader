@@ -42,10 +42,12 @@ export default function AssetPlanList() {
     () => [...new Set(jobs.map((j) => j.job_category ?? CATEGORY_UNKNOWN))].sort(), [jobs],
   )
   const [selCategories, setSelCategories] = useState<string[]>([])
-  const filtered = useMemo(() => {
-    if (selCategories.length === 0) return jobs
-    return jobs.filter((j) => selCategories.includes(j.job_category ?? CATEGORY_UNKNOWN))
-  }, [jobs, selCategories])
+  const activities = useMemo(() => [...new Set(jobs.map((j) => j.activity))].sort(), [jobs])
+  const [selActivities, setSelActivities] = useState<string[]>([])
+  const filtered = useMemo(() => jobs.filter((j) =>
+    (selCategories.length === 0 || selCategories.includes(j.job_category ?? CATEGORY_UNKNOWN))
+    && (selActivities.length === 0 || selActivities.includes(j.activity)),
+  ), [jobs, selCategories, selActivities])
 
   const readyHours = useMemo(
     () => filtered.reduce((sum, j) => sum + (j.job_runs > 0 ? (j.job_time_seconds * j.runs_ready_now) / j.job_runs : 0), 0) / 3600,
@@ -158,6 +160,10 @@ export default function AssetPlanList() {
             label="Category" data={categories} value={selCategories} onChange={setSelCategories}
             placeholder="All" clearable w={280}
           />
+          <MultiSelect
+            label="Activity" data={activities} value={selActivities} onChange={setSelActivities}
+            placeholder="All" clearable w={220}
+          />
           <NumberInput
             label="Slot target (days to clear backlog)"
             description="Empty = off. Click Recompute after saving."
@@ -179,7 +185,7 @@ export default function AssetPlanList() {
       </Group>
       <Text size="xs" c="dimmed">{filtered.length} of {jobs.length} jobs</Text>
       {filtered.length === 0 ? (
-        <HintCard>No jobs in the selected categories.</HintCard>
+        <HintCard>No jobs match the selected filters.</HintCard>
       ) : (
         <DataTable data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
       )}
