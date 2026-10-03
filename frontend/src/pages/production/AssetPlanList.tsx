@@ -42,10 +42,12 @@ export default function AssetPlanList() {
     () => [...new Set(jobs.map((j) => j.job_category ?? CATEGORY_UNKNOWN))].sort(), [jobs],
   )
   const [selCategories, setSelCategories] = useState<string[]>([])
-  const filtered = useMemo(() => {
-    if (selCategories.length === 0) return jobs
-    return jobs.filter((j) => selCategories.includes(j.job_category ?? CATEGORY_UNKNOWN))
-  }, [jobs, selCategories])
+  const activities = useMemo(() => [...new Set(jobs.map((j) => j.activity))].sort(), [jobs])
+  const [selActivities, setSelActivities] = useState<string[]>([])
+  const filtered = useMemo(() => jobs.filter((j) =>
+    (selCategories.length === 0 || selCategories.includes(j.job_category ?? CATEGORY_UNKNOWN))
+    && (selActivities.length === 0 || selActivities.includes(j.activity)),
+  ), [jobs, selCategories, selActivities])
 
   const readyHours = useMemo(
     () => filtered.reduce((sum, j) => sum + (j.job_runs > 0 ? (j.job_time_seconds * j.runs_ready_now) / j.job_runs : 0), 0) / 3600,
@@ -158,6 +160,10 @@ export default function AssetPlanList() {
             label="Category" data={categories} value={selCategories} onChange={setSelCategories}
             placeholder="All" clearable w={280}
           />
+          <MultiSelect
+            label="Activity" data={activities} value={selActivities} onChange={setSelActivities}
+            placeholder="All" clearable w={220}
+          />
           <NumberInput
             label="Slot target (days to clear backlog)"
             description="Empty = off. Click Recompute after saving."
@@ -179,7 +185,7 @@ export default function AssetPlanList() {
       </Group>
       <Text size="xs" c="dimmed">{filtered.length} of {jobs.length} jobs</Text>
       {filtered.length === 0 ? (
-        <HintCard>No jobs in the selected categories.</HintCard>
+        <HintCard>No jobs match the selected filters.</HintCard>
       ) : (
         <DataTable data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
       )}
@@ -189,8 +195,9 @@ export default function AssetPlanList() {
         is scarce, the jobs with the smallest requirement get fully restocked first, so as many jobs as possible
         are completely (not just partially) ready to start right away. "Ready now" = how many runs of this job you
         can queue in-game right now without waiting on another intermediate product - the rest of "Job Runs (total)"
-        is still blocked (hover the Blocked number to see which direct materials are short, and by how much). "Stock Coverage" is how much of <i>this item itself</i> is already on hand relative to
-        what's currently wanted - for a stock target that's its backup/home/Jita goal, for a pure intermediate
+        is still blocked (hover the Blocked number to see which direct materials are short, and by how much). "Stock Coverage" is how much of <i>this item itself</i> is already covered relative to
+        what's currently wanted - for a stock target that's its backup/home/Jita goal (units you already have listed
+        on the market count as covered, the same way the job size nets them out), for a pure intermediate
         component (no goal of its own) it's this round's pooled demand instead. Distinct from "Blocked", which is
         about whether <i>this item's own materials</i> are available to build it, not about this item's own stock.
         Click the column header to sort by it if you want to see what's closest to running out first; it doesn't

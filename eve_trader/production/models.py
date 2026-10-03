@@ -223,8 +223,9 @@ class AssetPlanJob:
     # right now (engine.margin_home) - see BuildJobEntry's own field comment
     # for why margin_home, not margin_jita.
     margin: Optional[float] = None
-    # How much of this item's own current demand is already covered by owned
-    # stock - 0 (nothing on hand) to 1 (fully covered) - see
+    # How much of this item's own current demand is already covered - for a
+    # stock target, owned stock plus units already listed on the market
+    # (1 - missing / target); 0 (nothing covered) to 1 (fully covered) - see
     # engine.plan_asset_optimized's stock_coverage_by_id docstring for the
     # two different denominators this can come from (a configured stock
     # target's backup/home/Jita goal, or - for a pure intermediate component

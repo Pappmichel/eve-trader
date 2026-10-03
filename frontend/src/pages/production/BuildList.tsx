@@ -24,10 +24,12 @@ export default function BuildList() {
     () => [...new Set(buildList.map((e) => e.job_category ?? CATEGORY_UNKNOWN))].sort(), [buildList],
   )
   const [selCategories, setSelCategories] = useState<string[]>([])
-  const filtered = useMemo(() => {
-    if (selCategories.length === 0) return buildList
-    return buildList.filter((e) => selCategories.includes(e.job_category ?? CATEGORY_UNKNOWN))
-  }, [buildList, selCategories])
+  const activities = useMemo(() => [...new Set(buildList.map((e) => e.activity))].sort(), [buildList])
+  const [selActivities, setSelActivities] = useState<string[]>([])
+  const filtered = useMemo(() => buildList.filter((e) =>
+    (selCategories.length === 0 || selCategories.includes(e.job_category ?? CATEGORY_UNKNOWN))
+    && (selActivities.length === 0 || selActivities.includes(e.activity)),
+  ), [buildList, selCategories, selActivities])
 
   const totalHours = useMemo(() => filtered.reduce((sum, e) => sum + e.job_time_seconds / 3600, 0), [filtered])
 
@@ -92,6 +94,10 @@ export default function BuildList() {
             label="Category" data={categories} value={selCategories} onChange={setSelCategories}
             placeholder="All" clearable w={280}
           />
+          <MultiSelect
+            label="Activity" data={activities} value={selActivities} onChange={setSelActivities}
+            placeholder="All" clearable w={220}
+          />
         </Group>
         <Tooltip label={refreshPlan.tooltip} disabled={!refreshPlan.tooltip} multiline w={280}>
           <Button variant="default" leftSection={refreshPlan.tierIcon} onClick={() => refreshPlan.mutate()} loading={refreshPlan.isPending}>
@@ -101,7 +107,7 @@ export default function BuildList() {
       </Group>
       <Text size="xs" c="dimmed">{filtered.length} of {buildList.length} jobs</Text>
       {filtered.length === 0 ? (
-        <HintCard>No jobs in the selected categories.</HintCard>
+        <HintCard>No jobs match the selected filters.</HintCard>
       ) : (
         <DataTable tableId="production-build-list" rowDetail data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
       )}
