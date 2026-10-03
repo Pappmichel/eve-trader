@@ -189,8 +189,9 @@ export default function AssetPlanList() {
         is scarce, the jobs with the smallest requirement get fully restocked first, so as many jobs as possible
         are completely (not just partially) ready to start right away. "Ready now" = how many runs of this job you
         can queue in-game right now without waiting on another intermediate product - the rest of "Job Runs (total)"
-        is still blocked (hover the Blocked number to see which direct materials are short, and by how much). "Stock Coverage" is how much of <i>this item itself</i> is already on hand relative to
-        what's currently wanted - for a stock target that's its backup/home/Jita goal, for a pure intermediate
+        is still blocked (hover the Blocked number to see which direct materials are short, and by how much). "Stock Coverage" is how much of <i>this item itself</i> is already covered relative to
+        what's currently wanted - for a stock target that's its backup/home/Jita goal (units you already have listed
+        on the market count as covered, the same way the job size nets them out), for a pure intermediate
         component (no goal of its own) it's this round's pooled demand instead. Distinct from "Blocked", which is
         about whether <i>this item's own materials</i> are available to build it, not about this item's own stock.
         Click the column header to sort by it if you want to see what's closest to running out first; it doesn't
