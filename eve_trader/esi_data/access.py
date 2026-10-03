@@ -149,7 +149,7 @@ def _read_assets(tool_key: str, owner_type, owner_id) -> list[dict]:
     cols = (
         "item_id, type_id, location_id, location_flag, quantity, "
         "is_blueprint_copy, owner_name, resolved_location_id, resolved_hangar_flag, "
-        "owner_character_id, owner_corporation_id"
+        "owner_character_id, owner_corporation_id, is_singleton, assembled_or_fitted"
     )
     with storage.connect() as conn:
         if owner_type in (None, "character"):
@@ -177,6 +177,7 @@ def _asset_dict(r, owner_type: str) -> dict:
         "quantity": r[4], "is_blueprint_copy": r[5], "owner_name": r[6],
         "resolved_location_id": r[7], "resolved_hangar_flag": r[8],
         "owner_character_id": r[9], "owner_corporation_id": r[10],
+        "is_singleton": bool(r[11]), "assembled_or_fitted": bool(r[12]),
         "owner_type": owner_type,
         "owner_id": r[9] if owner_type == "character" else r[10],
     }

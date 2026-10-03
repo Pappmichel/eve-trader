@@ -692,3 +692,70 @@ def test_esi_stock_at_location_bulk_one_connect_for_many_types(tenant, monkeypat
     assert result[TYPE_ID] == 100
     assert result[other_type] == 50
     assert result[99] == 0.0
+
+
+# ------------------------------------------- assembled ships are not stock
+_FAKE_SHIP_GROUP = 990001
+_FAKE_MODULE_GROUP = 990002
+HULL = 990101
+MODULE = 990201
+
+
+@pytest.fixture
+def _fake_ship_sde():
+    with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
+        for group_id, category_id in ((_FAKE_SHIP_GROUP, 6), (_FAKE_MODULE_GROUP, 7)):
+            conn.execute(
+                "INSERT INTO sde_groups (group_id, category_id, group_name) VALUES (%s, %s, 'Fake') "
+                "ON CONFLICT (group_id) DO UPDATE SET category_id = excluded.category_id",
+                (group_id, category_id),
+            )
+        for type_id, group_id in ((HULL, _FAKE_SHIP_GROUP), (MODULE, _FAKE_MODULE_GROUP)):
+            conn.execute(
+                "INSERT INTO sde_types (type_id, group_id, type_name, published) VALUES (%s, %s, 'Fake', 1) "
+                "ON CONFLICT (type_id) DO UPDATE SET group_id = excluded.group_id",
+                (type_id, group_id),
+            )
+    yield
+
+
+def test_assembled_ship_and_its_fitting_are_not_stock_but_cargo_is(tenant, _fake_ship_sde):
+    storage.replace_assets("character_assets", [
+        (10, HULL, LOCATION_ID, "Hangar", 1, 0, "pilot", True),     # assembled ship
+        (11, HULL, LOCATION_ID, "Hangar", 3, 0, "pilot", False),    # packaged hulls
+        (12, MODULE, 10, "HiSlot0", 1, 0, "pilot", True),           # fitted
+        (13, MODULE, 10, "DroneBay", 5, 0, "pilot", False),         # drone bay counts as fitting
+        (14, MODULE, 10, "FighterTube0", 1, 0, "pilot", True),
+        (15, MODULE, 10, "Cargo", 2, 0, "pilot", False),            # cargo still counts
+        (16, MODULE, LOCATION_ID, "Hangar", 4, 0, "pilot", True),   # unpackaged module, not a ship
+    ])
+
+    assert storage.esi_stock_at_location(HULL, LOCATION_ID) == 3
+    assert storage.esi_stock_at_location(MODULE, LOCATION_ID) == 6
+    assert storage.esi_stock_at_location(MODULE, None) == 6
+    assert storage.esi_stock_by_location_bulk([HULL, MODULE]) == {HULL: {LOCATION_ID: 3}, MODULE: {LOCATION_ID: 6}}
+    assert dict(storage.assets_at_flag("Hangar")) == {HULL: 3, MODULE: 6}
+
+
+def test_assembled_ship_in_a_corp_container_is_not_stock(tenant, _fake_ship_sde):
+    # Live case (2026-10-03): an assembled freighter parked in a container
+    # in a corp division. Packaged goods in its cargo still count.
+    storage.replace_assets("corp_assets", [
+        (20, storage.OFFICE_TYPE_ID, LOCATION_ID, "OfficeFolder", 1, 0, "Corp (corp)"),
+        (21, 17366, 20, "CorpSAG7", 1, 0, "Corp (corp)", True),        # station container
+        (22, HULL, 21, "Unlocked", 1, 0, "Corp (corp)", True),         # assembled ship inside it
+        (23, HULL, 22, "Cargo", 2, 0, "Corp (corp)", False),           # packaged hulls in its cargo
+    ])
+
+    assert storage.esi_stock_at_location(HULL, LOCATION_ID) == 2
+
+
+def test_replace_assets_stores_singleton_and_assembled_flags(tenant, _fake_ship_sde):
+    storage.replace_assets("character_assets", [
+        (30, HULL, LOCATION_ID, "Hangar", 1, 0, "pilot", True),
+        (31, MODULE, LOCATION_ID, "Hangar", 1, 0, "pilot"),  # 7-tuple: is_singleton defaults to False
+    ])
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT item_id, is_singleton, assembled_or_fitted FROM character_assets ORDER BY item_id").fetchall()
+    assert rows == [(30, True, True), (31, False, False)]

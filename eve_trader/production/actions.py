@@ -1135,7 +1135,9 @@ def _accumulate_stock_at_location(assets: list[dict], location_id: int, out: dic
     """In-memory equivalent of storage.esi_stock_at_location's per-location
     aggregation (same corp-office-unwrap + NON_STOCK_LOCATION_FLAGS exclusion
     logic - see that function's docstring for why both are needed), for
-    live-fetched asset lists that were never written to the DB."""
+    live-fetched asset lists that were never written to the DB. Assembled
+    ships and their fittings don't count (storage.mark_assembled_or_fitted)."""
+    storage.mark_assembled_or_fitted(assets)
     office_item_ids = {
         a["item_id"] for a in assets
         if a.get("type_id") == storage.OFFICE_TYPE_ID and a.get("location_id") == location_id
@@ -1144,7 +1146,7 @@ def _accumulate_stock_at_location(assets: list[dict], location_id: int, out: dic
     for a in assets:
         if a.get("location_id") not in valid_locations:
             continue
-        if a.get("location_flag") in storage.NON_STOCK_LOCATION_FLAGS:
+        if a.get("location_flag") in storage.NON_STOCK_LOCATION_FLAGS or a["assembled_or_fitted"]:
             continue
         out[a["type_id"]] = out.get(a["type_id"], 0.0) + a.get("quantity", 0)
 
