@@ -399,6 +399,7 @@ def do_find_new_candidates(safe: bool = True, cfg: TradingConfig = TRADING_CONFI
             candidates, existing_ids, gm, cfg,
             history_sink=storage.save_goonmetrics_history, results_sink=results_sink,
             progress_callback=progress_callback)
+    storage.prune_new_candidates()
     return {"evaluated": len(results), "recommended": sum(r.add for r in results)}
 
 

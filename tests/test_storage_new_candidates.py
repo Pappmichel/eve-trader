@@ -40,3 +40,27 @@ def test_read_latest_new_candidates_is_empty_without_any_run(tenant):
 
     assert df.empty
     assert "add_flag" in df.columns
+
+def test_prune_new_candidates_keeps_only_the_newest_runs(tenant):
+    for day in range(1, 5):
+        storage.save_new_candidates([_result(day, True), _result(day + 10, False)], f"2026-10-0{day}T10:00:00")
+
+    deleted = storage.prune_new_candidates(keep_runs=2)
+
+    assert deleted == 4
+    df = storage.read_table("new_candidates")
+    assert sorted(set(df["run_ts"])) == ["2026-10-03T10:00:00", "2026-10-04T10:00:00"]
+
+
+def test_prune_new_candidates_leaves_other_tenants_alone(tenant_pair):
+    tenant_a, tenant_b = tenant_pair
+    for t in (tenant_a, tenant_b):
+        with storage.tenant_context(t):
+            for day in range(1, 4):
+                storage.save_new_candidates([_result(day, True)], f"2026-10-0{day}T10:00:00")
+
+    with storage.tenant_context(tenant_a):
+        storage.prune_new_candidates(keep_runs=1)
+
+    with storage.tenant_context(tenant_b):
+        assert len(storage.read_table("new_candidates")) == 3

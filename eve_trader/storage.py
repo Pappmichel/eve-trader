@@ -1364,6 +1364,29 @@ def save_new_candidates(results: list[NewCandidateResult], run_ts: str) -> None:
         )
 
 
+# Runs of new_candidates kept per tenant. Every reader uses only the newest
+# run (read_latest_new_candidates); older ones are kept a little while for
+# manual inspection, not read by the app.
+NEW_CANDIDATES_KEEP_RUNS = 30
+
+
+def prune_new_candidates(keep_runs: int = NEW_CANDIDATES_KEEP_RUNS) -> int:
+    """Deletes every run of this tenant's new_candidates except the newest
+    `keep_runs`; returns the number of rows deleted. Each Search run used to
+    append ~280 rows forever - 1.85M rows / 337 MB on the Default tenant by
+    2026-10-03."""
+    with connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM new_candidates WHERE run_ts < ("
+            "  SELECT min(run_ts) FROM ("
+            "    SELECT DISTINCT run_ts FROM new_candidates ORDER BY run_ts DESC LIMIT ?"
+            "  ) newest"
+            ")",
+            (keep_runs,),
+        )
+        return cur.rowcount
+
+
 def save_goonmetrics_history(points) -> None:
     points = list(points)
     if not points:
