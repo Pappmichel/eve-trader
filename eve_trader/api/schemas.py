@@ -195,6 +195,7 @@ class BuildJobEntry(_Base):
     job_time_seconds: float
     unit_build_cost: Optional[float]
     decryptor: Optional[str] = None
+    tech_level: Optional[str] = None
     job_category: Optional[str] = None
     job_cost: Optional[float] = None
     margin: Optional[float] = None
@@ -295,6 +296,7 @@ class AssetPlanJob(_Base):
     job_time_seconds: float
     unit_build_cost: Optional[float]
     decryptor: Optional[str] = None
+    tech_level: Optional[str] = None
     job_category: Optional[str] = None
     margin: Optional[float] = None
     stock_coverage: Optional[float] = None

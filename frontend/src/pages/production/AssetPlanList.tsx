@@ -12,6 +12,7 @@ import { duration, isk, pct, qty } from '../../format'
 import { blockedRunsTitle } from './assetPlanBlockers'
 
 const CATEGORY_UNKNOWN = 'no category'
+const TECH_LEVEL_UNKNOWN = 'unknown'
 
 export default function AssetPlanList() {
   const { data: plan, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['production', 'asset-plan'], queryFn: productionApi.assetPlan })
@@ -42,12 +43,14 @@ export default function AssetPlanList() {
     () => [...new Set(jobs.map((j) => j.job_category ?? CATEGORY_UNKNOWN))].sort(), [jobs],
   )
   const [selCategories, setSelCategories] = useState<string[]>([])
-  const activities = useMemo(() => [...new Set(jobs.map((j) => j.activity))].sort(), [jobs])
-  const [selActivities, setSelActivities] = useState<string[]>([])
+  const techLevels = useMemo(
+    () => [...new Set(jobs.map((j) => j.tech_level ?? TECH_LEVEL_UNKNOWN))].sort(), [jobs],
+  )
+  const [selTechLevels, setSelTechLevels] = useState<string[]>([])
   const filtered = useMemo(() => jobs.filter((j) =>
     (selCategories.length === 0 || selCategories.includes(j.job_category ?? CATEGORY_UNKNOWN))
-    && (selActivities.length === 0 || selActivities.includes(j.activity)),
-  ), [jobs, selCategories, selActivities])
+    && (selTechLevels.length === 0 || selTechLevels.includes(j.tech_level ?? TECH_LEVEL_UNKNOWN)),
+  ), [jobs, selCategories, selTechLevels])
 
   const readyHours = useMemo(
     () => filtered.reduce((sum, j) => sum + (j.job_runs > 0 ? (j.job_time_seconds * j.runs_ready_now) / j.job_runs : 0), 0) / 3600,
@@ -75,6 +78,7 @@ export default function AssetPlanList() {
     },
     { header: 'Category', accessorKey: 'job_category', size: 160, cell: (i) => i.getValue() ?? '–' },
     { header: 'Activity', accessorKey: 'activity', size: 130 },
+    { header: 'Tech Level', accessorKey: 'tech_level', size: 120, cell: (i) => i.getValue() ?? '–' },
     { header: 'Job Runs (total)', accessorKey: 'job_runs', size: 140, cell: (i) => qty(i.getValue()) },
     {
       header: 'Ready Now', accessorKey: 'runs_ready_now', size: 120,
@@ -161,7 +165,7 @@ export default function AssetPlanList() {
             placeholder="All" clearable w={280}
           />
           <MultiSelect
-            label="Activity" data={activities} value={selActivities} onChange={setSelActivities}
+            label="Tech Level" data={techLevels} value={selTechLevels} onChange={setSelTechLevels}
             placeholder="All" clearable w={220}
           />
           <NumberInput
