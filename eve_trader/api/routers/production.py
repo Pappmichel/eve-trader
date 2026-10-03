@@ -504,6 +504,12 @@ def get_distribution_recommendations():
     return _wrap(actions.do_get_distribution_recommendations, build_list=plan["build_list"])
 
 
+@router.get("/logistics/market-restock", response_model=list[schemas.MarketRestockRow])
+def get_market_restock():
+    # No _last_plan check: reads stock targets/assets/orders, not the Build List.
+    return _wrap(actions.do_get_market_restock)
+
+
 @router.get("/logistics/invention", response_model=list[schemas.LogisticsRow])
 def get_invention_logistics():
     # Deliberately only checks plan is None (not invention_list's own

@@ -356,6 +356,26 @@ class DistributionRow:
 
 
 @dataclass
+class MarketRestockRow:
+    """One row of the Logistics tab's Market Restock section: move `quantity`
+    of a stock target with a home market target from `from_location_id` to
+    the home structure (C-J) so it can be listed there - see engine.
+    market_restock. from_location_id 0 is manual stock with no location.
+    home_target/home_listed/home_unlisted/home_short are the item's own
+    figures, repeated on every source row of that item."""
+    type_id: int
+    type_name: str
+    from_location_id: int
+    from_location_name: Optional[str]
+    quantity: float
+    volume_m3: float
+    home_target: float
+    home_listed: float
+    home_unlisted: float  # physically at C-J, not listed - see do_unlisted_stock
+    home_short: float     # what C-J still lacks after listed + unlisted stock
+
+
+@dataclass
 class AssetLocationRow:
     """One row of the Asset Search tab: how much of a searched item sits at
     one specific station/structure, owned by one specific character or corp

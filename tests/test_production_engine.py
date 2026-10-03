@@ -5558,3 +5558,100 @@ def test_market_status_and_total_missing_count_listings_in_the_production_hub(mo
     _total_missing(1, backup_stock=0.0, home_market_stock=0.0, jita_market_stock=20.0, current_stock=0.0, cfg=cfg)
 
     assert regions == [10000032, 10000032]
+
+
+# ------------------------------------------------------- market_restock
+HOME = 3000
+
+
+def _stub_market_restock(monkeypatch, targets, esi, manual=None, listed=0.0, manual_listed=0.0,
+                         esi_filtered=None):
+    """targets: [(type_id, name, backup, home_target, jita_target)];
+    esi/esi_filtered/manual: {type_id: {location_id: qty}}."""
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: targets)
+
+    def fake_by_location(type_ids, allowed_flags=None, **kwargs):
+        source = esi_filtered if (allowed_flags and esi_filtered is not None) else esi
+        return {t: dict(source.get(t, {})) for t in type_ids}
+    monkeypatch.setattr(storage, "esi_stock_by_location_bulk", fake_by_location)
+    monkeypatch.setattr(storage, "manual_stock_by_location_bulk",
+                        lambda type_ids: {t: dict((manual or {}).get(t, {})) for t in type_ids})
+    monkeypatch.setattr(storage, "sell_order_qty_at_location", lambda type_id, location_id, **kwargs: listed)
+    monkeypatch.setattr(
+        storage, "manual_listed_stock_qty",
+        lambda type_id, market: manual_listed.get(type_id, 0.0) if isinstance(manual_listed, dict) else manual_listed)
+    monkeypatch.setattr(storage, "get_location_names", lambda ids: {i: f"Loc{i}" for i in ids})
+    monkeypatch.setattr(engine, "_haul_volume", lambda type_id, cfg: 2.0)
+
+
+def test_market_restock_pulls_shortfall_from_other_structure(monkeypatch):
+    _stub_market_restock(monkeypatch, [(1, "Sabre", 0.0, 10.0, None)], {1: {HOME: 2.0, 1001: 20.0}}, listed=3.0)
+
+    rows = engine.market_restock(ProductionConfig(home_location_id=HOME))
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert (row.from_location_id, row.from_location_name) == (1001, "Loc1001")
+    assert row.quantity == 5.0  # 10 target - 3 listed - 2 unlisted at C-J
+    assert row.volume_m3 == 10.0
+    assert (row.home_listed, row.home_unlisted, row.home_short) == (3.0, 2.0, 5.0)
+
+
+def test_market_restock_keeps_backup_reserve_outside_cj(monkeypatch):
+    _stub_market_restock(monkeypatch, [(1, "Sabre", 15.0, 10.0, None)], {1: {1001: 20.0}})
+
+    rows = engine.market_restock(ProductionConfig(home_location_id=HOME))
+
+    assert [r.quantity for r in rows] == [5.0]  # 20 owned - 15 reserved
+
+
+def test_market_restock_backup_spills_into_cj_stock(monkeypatch):
+    # 5 elsewhere cover only part of an 8 backup; the other 3 come out of
+    # C-J's 4, so only 1 C-J unit counts toward the market - nothing left to haul.
+    _stub_market_restock(monkeypatch, [(1, "Sabre", 8.0, 10.0, None)], {1: {HOME: 4.0, 1001: 5.0}})
+
+    assert engine.market_restock(ProductionConfig(home_location_id=HOME)) == []
+
+
+def test_market_restock_reserves_from_smallest_stack_and_hauls_from_largest(monkeypatch):
+    _stub_market_restock(monkeypatch, [(1, "Sabre", 3.0, 20.0, None)], {1: {1001: 4.0, 1002: 10.0}})
+
+    rows = engine.market_restock(ProductionConfig(home_location_id=HOME))
+
+    assert {r.from_location_id: r.quantity for r in rows} == {1001: 1.0, 1002: 10.0}
+
+
+def test_market_restock_manual_stock_without_location_last(monkeypatch):
+    _stub_market_restock(monkeypatch, [(1, "Sabre", 0.0, 12.0, None)], {1: {1001: 10.0}},
+                         manual={1: {0: 5.0, HOME: 1.0}})
+
+    rows = engine.market_restock(ProductionConfig(home_location_id=HOME))
+
+    assert [(r.from_location_id, r.quantity) for r in rows] == [(1001, 10.0), (0, 1.0)]
+    assert rows[1].from_location_name is None
+    assert rows[0].home_unlisted == 1.0
+
+
+def test_market_restock_skips_targets_without_home_target_or_shortfall(monkeypatch):
+    _stub_market_restock(monkeypatch, [
+        (1, "BackupOnly", 5.0, None, None),
+        (2, "JitaOnly", 0.0, 0.0, 10.0),
+        (3, "Covered", 0.0, 5.0, None),
+        (4, "NobodyHasIt", 0.0, 5.0, None),
+    ], {1: {1001: 50.0}, 2: {1001: 50.0}, 3: {1001: 50.0}}, manual_listed={3: 5.0})
+    assert engine.market_restock(ProductionConfig(home_location_id=HOME)) == []
+
+
+def test_market_restock_elsewhere_honours_stock_hangar_flags(monkeypatch):
+    _stub_market_restock(monkeypatch, [(1, "Sabre", 0.0, 10.0, None)],
+                         esi={1: {HOME: 1.0, 1001: 20.0}}, esi_filtered={1: {HOME: 0.0, 1001: 4.0}})
+
+    rows = engine.market_restock(ProductionConfig(home_location_id=HOME, stock_hangar_flags=("CorpSAG2",)))
+
+    assert [r.quantity for r in rows] == [4.0]
+    assert rows[0].home_unlisted == 1.0  # C-J counts every hangar
+
+
+def test_market_restock_empty_without_home_location(monkeypatch):
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: pytest.fail("must not read targets"))
+    assert engine.market_restock(ProductionConfig(home_location_id=None)) == []

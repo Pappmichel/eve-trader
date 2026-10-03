@@ -224,6 +224,19 @@ class DistributionRow(_Base):
     volume_m3: float = 0.0
 
 
+class MarketRestockRow(_Base):
+    type_id: int
+    type_name: str
+    from_location_id: int
+    from_location_name: Optional[str] = None
+    quantity: float
+    volume_m3: float
+    home_target: float
+    home_listed: float
+    home_unlisted: float
+    home_short: float
+
+
 class AssetLocationRow(_Base):
     location_id: int
     location_name: Optional[str] = None
