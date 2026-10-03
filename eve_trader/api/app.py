@@ -11,6 +11,7 @@ from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -418,6 +419,12 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Neither nginx nor the app compressed anything, so the shortlist
+    # snapshot went out as up to 1.7 MB of JSON (2026-10-03). Level 5: most of
+    # the size win for little of a single vCPU. Added before (= inside)
+    # AccessGateMiddleware: that BaseHTTPMiddleware re-streams every body in
+    # chunks, and GZip only honors minimum_size for a body it sees whole.
+    app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
     app.add_middleware(AccessGateMiddleware)
 
     app.include_router(auth.router, prefix="/api/auth", tags=["auth"])

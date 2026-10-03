@@ -8,6 +8,8 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import math
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
@@ -423,11 +425,10 @@ def _new_candidates_to_add(df: pd.DataFrame, existing_ids: set[int],
 
 
 def do_add_to_shortlist(cfg: TradingConfig = TRADING_CONFIG) -> dict:
-    df = storage.read_table("new_candidates")
+    df = storage.read_latest_new_candidates()
     if df.empty:
         raise ActionError("No 'New Candidates' available - run '⚡ Search + Add + Clean Up' first.")
-    latest_run = df["run_ts"].max()
-    df = df[(df["run_ts"] == latest_run) & (df["add_flag"] == 1)]
+    df = df[df["add_flag"] == 1]
     existing_ids = {i.item_id for i in storage.load_shortlist() if i.item_id}
     df, deferred = _new_candidates_to_add(df, existing_ids, cfg.max_shortlist_growth_per_run)
     if df.empty:
@@ -822,6 +823,22 @@ def do_refresh_shortlist(cfg: TradingConfig = TRADING_CONFIG,
     }
 
 
+# Per-tenant result cache for do_shortlist_trends. The key holds every input
+# (shortlist volumes, the cfg fields the margin uses, the date), so a
+# shortlist or Settings change misses at once; the TTL only bounds how long
+# newly stored Goonmetrics history (daily data) can go unseen. No lock is
+# held across the computation: two concurrent misses compute twice rather
+# than one tenant waiting on another.
+SHORTLIST_TRENDS_TTL_SECONDS = 600
+_shortlist_trends_cache: dict[str, tuple[float, tuple, dict]] = {}
+_shortlist_trends_lock = threading.Lock()
+
+
+def clear_shortlist_trends_cache() -> None:
+    with _shortlist_trends_lock:
+        _shortlist_trends_cache.clear()
+
+
 def do_shortlist_trends(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     """Momentum signal for every shortlist item with a real item_id - see
     history_backtest.compute_margin_trends. Pure local computation over
@@ -837,9 +854,26 @@ def do_shortlist_trends(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     of the table) on every single page load was pure waste."""
     items = storage.load_shortlist()
     volumes = {i.item_id: i.volume_m3 for i in items if i.item_id and i.volume_m3}
-    history_df = storage.read_goonmetrics_history_for_types(list(volumes.keys()))
-    return history_backtest.compute_margin_trends(
-        history_df, volumes, cfg, today=dt.datetime.now(dt.timezone.utc).date().isoformat())
+    today = dt.datetime.now(dt.timezone.utc).date()
+    tenant_id = storage.get_current_tenant() or ""
+    key = (today.isoformat(), tuple(sorted(volumes.items())), cfg.jita_region_id,
+           cfg.reference_region_id, cfg.jita_buy_broker_fee, cfg.import_cost_per_m3,
+           cfg.structure_sell_haircut)
+    now = time.time()
+    with _shortlist_trends_lock:
+        hit = _shortlist_trends_cache.get(tenant_id)
+    if hit is not None and hit[1] == key and now - hit[0] < SHORTLIST_TRENDS_TTL_SECONDS:
+        return hit[2]
+    # Same window compute_margin_trends applies itself - filtering in SQL
+    # just avoids loading every older day first.
+    cutoff = (today - dt.timedelta(days=history_backtest.BASELINE_WINDOW_DAYS)).isoformat()
+    history_df = storage.read_goonmetrics_history_for_types(
+        list(volumes.keys()), region_ids=[cfg.jita_region_id, cfg.reference_region_id],
+        after_date=cutoff)
+    result = history_backtest.compute_margin_trends(history_df, volumes, cfg, today=today.isoformat())
+    with _shortlist_trends_lock:
+        _shortlist_trends_cache[tenant_id] = (now, key, result)
+    return result
 
 
 def do_check_seller_unlisted_stock(cfg: TradingConfig = TRADING_CONFIG,

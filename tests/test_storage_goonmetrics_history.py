@@ -28,6 +28,27 @@ def test_read_goonmetrics_history_for_types_filters_to_requested_ids(tenant):
     assert sorted(df["type_id"].tolist()) == [1, 3]
 
 
+def test_read_goonmetrics_history_for_types_filters_regions_and_dates(tenant):
+    # Shortlist trends only use two regions and the last 30 days; loading
+    # every stored day was ~330k rows on a large shortlist (2026-10-03).
+    def _at(type_id, region_id, date):
+        return HistoryPoint(region_id=region_id, type_id=type_id, date=date, min_price=1.0,
+                            max_price=2.0, avg_price=1.5, movement=100.0, num_orders=5)
+    # goonmetrics_history is global and not cleaned between tests - an id
+    # no other test uses keeps these rows out of their assertions.
+    type_id = 990001
+    storage.save_goonmetrics_history([
+        _at(type_id, 10000002, "2026-09-01"), _at(type_id, 10000002, "2026-09-20"),
+        _at(type_id, 10000009, "2026-09-20"), _at(type_id, 10000043, "2026-09-20"),
+    ])
+
+    df = storage.read_goonmetrics_history_for_types(
+        [type_id], region_ids=[10000002, 10000009], after_date="2026-09-01")
+
+    assert sorted(zip(df["region_id"], df["date"])) == [
+        (10000002, "2026-09-20"), (10000009, "2026-09-20")]
+
+
 def test_read_goonmetrics_history_for_types_empty_list_returns_empty_df(tenant):
     storage.save_goonmetrics_history([_point(1)])
 
