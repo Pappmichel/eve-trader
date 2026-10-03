@@ -2733,6 +2733,7 @@ def test_plan_asset_optimized_stock_coverage_counts_listed_units(monkeypatch, _e
 
     job = {job.type_id: job for job in result["jobs"]}[1]
     assert job.job_runs == 1
+    assert (job.activity, job.tech_level) == ("Manufacturing", "Tech I")
     assert job.stock_coverage == pytest.approx(29 / 30)
 
 
@@ -3622,6 +3623,8 @@ def test_plan_production_build_list_handles_tech_ii_item_via_t2_memo(monkeypatch
     result = engine.plan_production(cfg)  # must not raise ValueError
 
     assert {row.type_id for row in result["build_list"]} == {10}
+    # activity is the EVE job type; tech_level is what the Tech Level filter groups on
+    assert [(row.activity, row.tech_level) for row in result["build_list"]] == [("Manufacturing", "Tech II")]
 
 
 @pg_helpers.postgres_required()

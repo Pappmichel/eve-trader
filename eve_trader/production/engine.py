@@ -2115,6 +2115,7 @@ def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: di
             type_id=product_type_id, type_name=name, blueprint_type_id=blueprint_id,
             activity=activity_label, quantity=runs * product_qty, job_runs=runs,
             job_time_seconds=job_time, unit_build_cost=unit_cost, decryptor=decryptor_name,
+            tech_level=product_activity,
             job_category=job_category(product_type_id), job_cost=job_cost,
             recipe_source="alchemy" if (blueprint_id, activity_id, product_type_id) in alchemy_keys else None,
             # GitHub issue #38: margin_home, not margin_jita - Production
@@ -2960,6 +2961,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                         activity=activity_label, quantity=runs * product_qty, job_runs=runs,
                         runs_ready_now=ready_increment, job_time_seconds=job_time,
                         unit_build_cost=cost_memo.get(type_id), decryptor=decryptor_name,
+                        tech_level=classify_activity(job_key)[0],
                         job_category=job_category(type_id),
                         stock_coverage=stock_coverage_by_id.get(type_id),
                         # GitHub issue #38: margin_home, not margin_jita - see

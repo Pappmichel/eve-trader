@@ -11,6 +11,7 @@ import { useAction } from '../../hooks/useAction'
 import { isk, pct, qty } from '../../format'
 
 const CATEGORY_UNKNOWN = 'no category'
+const TECH_LEVEL_UNKNOWN = 'unknown'
 
 export default function BuildList() {
   const { data: plan, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['production', 'plan'], queryFn: productionApi.plan })
@@ -24,12 +25,14 @@ export default function BuildList() {
     () => [...new Set(buildList.map((e) => e.job_category ?? CATEGORY_UNKNOWN))].sort(), [buildList],
   )
   const [selCategories, setSelCategories] = useState<string[]>([])
-  const activities = useMemo(() => [...new Set(buildList.map((e) => e.activity))].sort(), [buildList])
-  const [selActivities, setSelActivities] = useState<string[]>([])
+  const techLevels = useMemo(
+    () => [...new Set(buildList.map((e) => e.tech_level ?? TECH_LEVEL_UNKNOWN))].sort(), [buildList],
+  )
+  const [selTechLevels, setSelTechLevels] = useState<string[]>([])
   const filtered = useMemo(() => buildList.filter((e) =>
     (selCategories.length === 0 || selCategories.includes(e.job_category ?? CATEGORY_UNKNOWN))
-    && (selActivities.length === 0 || selActivities.includes(e.activity)),
-  ), [buildList, selCategories, selActivities])
+    && (selTechLevels.length === 0 || selTechLevels.includes(e.tech_level ?? TECH_LEVEL_UNKNOWN)),
+  ), [buildList, selCategories, selTechLevels])
 
   const totalHours = useMemo(() => filtered.reduce((sum, e) => sum + e.job_time_seconds / 3600, 0), [filtered])
 
@@ -52,6 +55,7 @@ export default function BuildList() {
     },
     { header: 'Category', accessorKey: 'job_category', size: 160, cell: (i) => i.getValue() ?? '–' },
     { header: 'Activity', accessorKey: 'activity', size: 130 },
+    { header: 'Tech Level', accessorKey: 'tech_level', size: 120, cell: (i) => i.getValue() ?? '–' },
     { header: 'Job Runs', accessorKey: 'job_runs', size: 100, cell: (i) => qty(i.getValue()) },
     { header: 'Quantity (Output)', accessorKey: 'quantity', size: 140, cell: (i) => qty(i.getValue()) },
     { header: 'Job Time (h)', id: 'hours', size: 120, accessorFn: (r) => r.job_time_seconds / 3600, cell: (i) => (i.getValue() as number).toFixed(2) },
@@ -95,7 +99,7 @@ export default function BuildList() {
             placeholder="All" clearable w={280}
           />
           <MultiSelect
-            label="Activity" data={activities} value={selActivities} onChange={setSelActivities}
+            label="Tech Level" data={techLevels} value={selTechLevels} onChange={setSelTechLevels}
             placeholder="All" clearable w={220}
           />
         </Group>
