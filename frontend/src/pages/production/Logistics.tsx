@@ -419,21 +419,22 @@ export default function Logistics() {
         <Title order={4} mb="xs">Market Restock</Title>
         <Text size="xs" c="dimmed" mb="sm">
           Stock targets with a home market target that the home structure is short of (target minus your listed and
-          unlisted stock there), and where the units to cover it sit right now - one group per pickup station. The
-          backup stock reserve is left in place, and running jobs don't count.
+          unlisted stock there), and which category structure (current or former) holds the units to cover it - one
+          group per pickup station. Stock anywhere else isn't suggested. The backup stock reserve is left in place,
+          and running jobs don't count.
         </Text>
         {restockError ? (
           <Text size="sm" c="dimmed">Couldn't load the market restock list.</Text>
         ) : !settings?.home_location_id ? (
           <Text size="sm" c="dimmed">Set the home structure in Production Settings to track this.</Text>
+        ) : !locations || Object.keys(locations).length === 0 ? (
+          <Text size="sm" c="dimmed">Assign a structure to at least one category above to track this.</Text>
         ) : restockBySource.size === 0 ? (
           <Text size="sm" c="dimmed">Nothing to bring to the home structure right now.</Text>
         ) : (
           <Stack gap="md">
             {Array.from(restockBySource.entries()).map(([locationId, sourceRows]) => {
-              const name = locationId === 0
-                ? 'Manual stock without a location'
-                : sourceRows[0].from_location_name ?? structureNames?.[String(locationId)] ?? `Location ${locationId}`
+              const name = sourceRows[0].from_location_name ?? structureNames?.[String(locationId)] ?? `Location ${locationId}`
               const totalVolume = sourceRows.reduce((sum, r) => sum + r.volume_m3, 0)
               return (
                 <div key={locationId}>

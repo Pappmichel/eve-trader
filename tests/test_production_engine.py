@@ -5565,10 +5565,14 @@ HOME = 3000
 
 
 def _stub_market_restock(monkeypatch, targets, esi, manual=None, listed=0.0, manual_listed=0.0,
-                         esi_filtered=None):
+                         esi_filtered=None, category_locations=None, location_options=None):
     """targets: [(type_id, name, backup, home_target, jita_target)];
-    esi/esi_filtered/manual: {type_id: {location_id: qty}}."""
+    esi/esi_filtered/manual: {type_id: {location_id: qty}}. Pickup locations
+    default to 1001/1002 as active category stations."""
     monkeypatch.setattr(storage, "load_stock_targets", lambda: targets)
+    monkeypatch.setattr(storage, "load_category_locations",
+                        lambda: {"Ships": 1001, "Modules": 1002} if category_locations is None else category_locations)
+    monkeypatch.setattr(storage, "load_category_location_options", lambda: location_options or {})
 
     def fake_by_location(type_ids, allowed_flags=None, **kwargs):
         source = esi_filtered if (allowed_flags and esi_filtered is not None) else esi
@@ -5621,15 +5625,33 @@ def test_market_restock_reserves_from_smallest_stack_and_hauls_from_largest(monk
     assert {r.from_location_id: r.quantity for r in rows} == {1001: 1.0, 1002: 10.0}
 
 
-def test_market_restock_manual_stock_without_location_last(monkeypatch):
-    _stub_market_restock(monkeypatch, [(1, "Sabre", 0.0, 12.0, None)], {1: {1001: 10.0}},
-                         manual={1: {0: 5.0, HOME: 1.0}})
+def test_market_restock_only_picks_up_at_category_and_former_stations(monkeypatch):
+    # 1001 active, 1003 a former Ships station; 5555 (stray NPC station) and
+    # manual stock without a location are never pickups.
+    _stub_market_restock(monkeypatch, [(1, "Sabre", 0.0, 100.0, None)],
+                         {1: {1001: 10.0, 1003: 4.0, 5555: 50.0}}, manual={1: {0: 5.0, HOME: 1.0}},
+                         category_locations={"Ships": 1001}, location_options={"Ships": [1001, 1003, HOME]})
 
     rows = engine.market_restock(ProductionConfig(home_location_id=HOME))
 
-    assert [(r.from_location_id, r.quantity) for r in rows] == [(1001, 10.0), (0, 1.0)]
-    assert rows[1].from_location_name is None
+    assert [(r.from_location_id, r.quantity) for r in rows] == [(1001, 10.0), (1003, 4.0)]
     assert rows[0].home_unlisted == 1.0
+
+
+def test_market_restock_backup_reserved_from_non_pickup_stock_first(monkeypatch):
+    _stub_market_restock(monkeypatch, [(1, "Sabre", 8.0, 100.0, None)],
+                         {1: {1001: 10.0, 5555: 6.0}}, manual={1: {0: 1.0}})
+
+    rows = engine.market_restock(ProductionConfig(home_location_id=HOME))
+
+    assert [(r.from_location_id, r.quantity) for r in rows] == [(1001, 9.0)]  # 8 backup: 1 + 6 + 1 from 1001
+
+
+def test_market_restock_empty_without_category_stations(monkeypatch):
+    _stub_market_restock(monkeypatch, [(1, "Sabre", 0.0, 10.0, None)], {1: {1001: 20.0}},
+                         category_locations={"Ships": HOME})
+
+    assert engine.market_restock(ProductionConfig(home_location_id=HOME)) == []
 
 
 def test_market_restock_skips_targets_without_home_target_or_shortfall(monkeypatch):

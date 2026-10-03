@@ -360,7 +360,8 @@ class MarketRestockRow:
     """One row of the Logistics tab's Market Restock section: move `quantity`
     of a stock target with a home market target from `from_location_id` to
     the home structure (C-J) so it can be listed there - see engine.
-    market_restock. from_location_id 0 is manual stock with no location.
+    market_restock. from_location_id is always a Structure per Category
+    station or one of their former ones.
     home_target/home_listed/home_unlisted/home_short are the item's own
     figures, repeated on every source row of that item."""
     type_id: int

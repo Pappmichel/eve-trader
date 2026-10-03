@@ -4035,10 +4035,15 @@ def distribution_recommendations(build_list: list[BuildJobEntry],
 
 def market_restock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[MarketRestockRow]:
     """Stock targets with a home market target (home_market_stock) that C-J
-    is short of, and where the units to cover that shortfall sit right now -
-    finished goods still at a production structure, not yet hauled to C-J
-    to be listed. Independent of the Build List: reads only stock targets,
-    the asset snapshot and sell orders, so it works without a computed plan.
+    is short of, and which production structure holds the units to cover
+    that shortfall right now - finished goods not yet hauled to C-J to be
+    listed. Pickup locations are the Structure per Category stations plus
+    their former ones (category_location_options history), same set
+    logistics_status draws its pull-from hint from; stock anywhere else
+    (stray hulls in a far-off NPC station, manual stock with no location)
+    is never suggested as a pickup. Independent of the Build List: reads
+    only stock targets, the asset snapshot and sell orders, so it works
+    without a computed plan.
     Jita targets are deliberately out of scope (Production sells at C-J).
 
     Per item:
@@ -4047,18 +4052,25 @@ def market_restock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[MarketRest
       intake included - it is already there, nothing to haul).
     - Stock elsewhere honours cfg.stock_hangar_flags, same as
       _stock_on_hand, and counts only physical stock (no running jobs).
-    - backup_stock is reserved first, preferably outside C-J: from manual
-      stock with no location, then from the smallest other stacks, then
-      from C-J itself (which then no longer counts toward the market).
+    - backup_stock is reserved first, preferably from stock that is never
+      hauled anyway: manual stock with no location and non-pickup
+      locations, then the smallest pickup stacks, then C-J itself (which
+      then no longer counts toward the market).
     - short = max(0, home_target - listed - usable C-J stock), filled from
-      the largest remaining stacks first (fewest pickups); manual stock
-      with no location (from_location_id 0) only after every known one.
+      the largest remaining pickup stacks first (fewest pickups).
 
-    An item C-J is short of but nobody holds anywhere produces no row - that
-    is the Build List's demand, not a haul. Returns [] without a configured
-    home_location_id."""
+    An item C-J is short of but no pickup location holds produces no row -
+    that is the Build List's demand (or a manual haul), not this list's.
+    Returns [] without a configured home_location_id or without any
+    Structure per Category station."""
     home = cfg.home_location_id
     if home is None:
+        return []
+    pickup_locations = set(storage.load_category_locations().values())
+    for options in storage.load_category_location_options().values():
+        pickup_locations.update(options)
+    pickup_locations.discard(home)
+    if not pickup_locations:
         return []
     targets = [t for t in storage.load_stock_targets() if (t[3] or 0) > 0]
     if not targets:
@@ -4088,7 +4100,7 @@ def market_restock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[MarketRest
                 sources[location_id] = sources.get(location_id, 0.0) + qty
 
         reserve = backup_stock or 0.0
-        reserve_order = sorted(sources, key=lambda loc: (loc != 0, sources[loc]))
+        reserve_order = sorted(sources, key=lambda loc: (loc in pickup_locations, sources[loc]))
         for location_id in reserve_order:
             if reserve <= 0:
                 break
@@ -4100,22 +4112,20 @@ def market_restock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[MarketRest
         listed = (_sell_order_qty_at_location(type_id, home)
                   + storage.manual_listed_stock_qty(type_id, "home"))
         short = max(0.0, home_target - listed - usable_home)
-        if short <= 0 or not any(q > 0 for q in sources.values()):
+        pickups = {loc: q for loc, q in sources.items() if loc in pickup_locations and q > 0}
+        if short <= 0 or not pickups:
             continue
-        per_item.append((type_id, type_name, home_target, listed, at_home, short, sources))
+        per_item.append((type_id, type_name, home_target, listed, at_home, short, pickups))
 
-    names = storage.get_location_names(
-        {loc for *_, sources in per_item for loc in sources if loc != 0})
+    names = storage.get_location_names({loc for *_, pickups in per_item for loc in pickups})
     rows: list[MarketRestockRow] = []
-    for type_id, type_name, home_target, listed, at_home, short, sources in per_item:
+    for type_id, type_name, home_target, listed, at_home, short, pickups in per_item:
         unit_volume = _haul_volume(type_id, cfg) or 0.0
         remaining = short
-        for location_id in sorted(sources, key=lambda loc: (loc == 0, -sources[loc])):
+        for location_id in sorted(pickups, key=lambda loc: -pickups[loc]):
             if remaining <= 0:
                 break
-            qty = min(remaining, sources[location_id])
-            if qty <= 0:
-                continue
+            qty = min(remaining, pickups[location_id])
             remaining -= qty
             rows.append(MarketRestockRow(
                 type_id=type_id, type_name=type_name,
@@ -4123,7 +4133,7 @@ def market_restock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[MarketRest
                 quantity=qty, volume_m3=qty * unit_volume,
                 home_target=home_target, home_listed=listed, home_unlisted=at_home, home_short=short,
             ))
-    rows.sort(key=lambda r: (r.from_location_id == 0, r.from_location_id, -r.volume_m3))
+    rows.sort(key=lambda r: (r.from_location_id, -r.volume_m3))
     return rows
 
 
