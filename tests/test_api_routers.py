@@ -33,6 +33,24 @@ def test_get_shortlist_items_serializes_storage_rows(monkeypatch):
     }]
 
 
+def test_large_json_responses_are_gzipped(monkeypatch):
+    monkeypatch.setattr(storage, "load_shortlist", lambda: [
+        ShortlistItem(item=f"Widget {i}", item_id=i, category="Material", volume_m3=0.5, active=True)
+        for i in range(1, 200)
+    ])
+    resp = client.get("/api/trading/shortlist/items", headers={"Accept-Encoding": "gzip"})
+    assert resp.status_code == 200
+    assert resp.headers["content-encoding"] == "gzip"
+    assert len(resp.json()) == 199  # TestClient decompresses transparently
+
+    plain = client.get("/api/trading/shortlist/items", headers={"Accept-Encoding": "identity"})
+    assert "content-encoding" not in plain.headers
+
+    monkeypatch.setattr(storage, "load_shortlist", lambda: [])
+    tiny = client.get("/api/trading/shortlist/items", headers={"Accept-Encoding": "gzip"})
+    assert "content-encoding" not in tiny.headers  # below minimum_size
+
+
 def test_refresh_shortlist_action_error_maps_to_400(monkeypatch):
     def _raise(*args, **kwargs):
         raise ActionError("Shortlist is empty.")

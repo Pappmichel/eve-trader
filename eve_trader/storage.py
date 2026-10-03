@@ -229,6 +229,17 @@ def connect():
     if active is not None:
         yield active
         return
+    with connect_own_transaction() as conn:
+        yield conn
+
+
+@contextmanager
+def connect_own_transaction():
+    """Like connect(), but always checks out its own pooled connection and
+    commits on exit, even inside an active batch_session(). For writes that
+    must be durable and visible to other connections at once, whatever the
+    surrounding batch later does - a refreshed OAuth token (see
+    save_tenant_token) is the case this exists for."""
     tenant_id = _tenant_id_var.get()
     if tenant_id is None:
         raise RuntimeError(
@@ -1073,8 +1084,19 @@ def load_tenant_settings(scope: str) -> dict:
 # -------------------------------------------------------------- tenant tokens
 def save_tenant_token(role: str, record: dict) -> None:
     """Upserts one OAuth token record (see auth.py's TokenRecord/asdict) for
-    `role` under the current tenant."""
-    with connect() as conn:
+    `role` under the current tenant.
+
+    Commits on its own connection, never inside a caller's batch_session()
+    (confirmed real incident 2026-10-03): a token refreshed during an ESI
+    owner sync used to be saved inside that owner's still-open batch. The
+    row stayed locked and other connections kept reading the old, expired
+    record until the batch committed, so a second thread needing the same
+    token refreshed it again and blocked on the row lock while holding
+    TokenManager's per-role lock - a deadlock Postgres cannot see, broken
+    only by idle_in_transaction_session_timeout after 5 minutes. A batch
+    rollback also discarded the new record, and with it EVE's rotated
+    refresh token."""
+    with connect_own_transaction() as conn:
         conn.execute(
             "INSERT INTO tenant_tokens (role, record) VALUES (?, ?) "
             "ON CONFLICT(tenant_id, role) DO UPDATE SET record = excluded.record",
@@ -5362,18 +5384,47 @@ def read_table(table: str) -> pd.DataFrame:
         return pd.DataFrame(cur.fetchall(), columns=columns)
 
 
-def read_goonmetrics_history_for_types(type_ids: list[int]) -> pd.DataFrame:
+def read_latest_new_candidates() -> pd.DataFrame:
+    """Same shape as read_table("new_candidates"), limited to the newest
+    run_ts. Every run appends its rows and nothing prunes them, so the whole
+    table grows without bound while every reader only wants the latest run
+    (served by idx_new_candidates_tenant_run)."""
+    with connect() as conn:
+        cur = conn.execute(
+            "SELECT * FROM new_candidates "
+            "WHERE run_ts = (SELECT max(run_ts) FROM new_candidates)"
+        )
+        columns = [d[0] for d in cur.description]
+        return pd.DataFrame(cur.fetchall(), columns=columns)
+
+
+def read_goonmetrics_history_for_types(type_ids: list[int], *,
+                                        region_ids: Optional[list[int]] = None,
+                                        after_date: Optional[str] = None) -> pd.DataFrame:
     """Same shape as read_table("goonmetrics_history") but filtered to just
     `type_ids` - confirmed real gap: do_shortlist_trends (called on every
     Shortlist page load, see its own docstring) used to pull the *entire*
     table (every candidate/focused-candidate type_id ever price-checked, not
     just the shortlist's own items) just to immediately discard every row
-    outside compute_margin_trends' own `volumes` filter."""
+    outside compute_margin_trends' own `volumes` filter.
+
+    `region_ids` and `after_date` (ISO date, rows with date > it, compared
+    as text) narrow it further - every stored day of every region was still
+    ~330k rows / ~1-2 s for a 3,700-item shortlist (2026-10-03), when the
+    trend only uses two regions and the last 30 days."""
     if not type_ids:
         return pd.DataFrame()
     placeholders = ",".join("?" * len(type_ids))
+    sql = f"SELECT * FROM goonmetrics_history WHERE type_id IN ({placeholders})"
+    params: list = list(type_ids)
+    if region_ids:
+        sql += f" AND region_id IN ({','.join('?' * len(region_ids))})"
+        params.extend(region_ids)
+    if after_date is not None:
+        sql += " AND date > ?"
+        params.append(after_date)
     with connect() as conn:
-        cur = conn.execute(f"SELECT * FROM goonmetrics_history WHERE type_id IN ({placeholders})", type_ids)
+        cur = conn.execute(sql, params)
         columns = [d[0] for d in cur.description]
         return pd.DataFrame(cur.fetchall(), columns=columns)
 
@@ -5429,9 +5480,11 @@ def goonmetrics_history_type_ids_for_tenant() -> list[int]:
     reachable regardless, same as querying Goonmetrics directly would be."""
     with connect() as conn:
         rows = conn.execute(
-            "SELECT DISTINCT gh.type_id FROM goonmetrics_history gh "
-            "WHERE gh.type_id IN (SELECT item_id FROM shortlist "
-            "UNION SELECT type_id FROM candidate_universe)"
+            # One index probe per item of this tenant (idx_goonmetrics_
+            # history_type) instead of a DISTINCT over the whole shared table.
+            "SELECT t.type_id FROM (SELECT item_id AS type_id FROM shortlist "
+            "UNION SELECT type_id FROM candidate_universe) t "
+            "WHERE EXISTS (SELECT 1 FROM goonmetrics_history gh WHERE gh.type_id = t.type_id)"
         ).fetchall()
     return [r[0] for r in rows]
 

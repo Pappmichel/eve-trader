@@ -127,3 +127,46 @@ def test_with_batch_session_decorator_wraps_the_whole_call(tenant, monkeypatch):
     do_several_reads()
 
     assert len(calls) == 1
+
+
+def test_save_tenant_token_inside_a_batch_is_visible_to_other_connections_at_once(tenant):
+    # A token refreshed mid-sync must be readable by every other connection
+    # right away, not only once the surrounding owner batch commits.
+    with storage.batch_session():
+        storage.save_tenant_token("producer:1", {"access_token": "new"})
+        with storage.connect_own_transaction() as other:
+            row = other.execute("SELECT record FROM tenant_tokens WHERE role = 'producer:1'").fetchone()
+        assert row == ({"access_token": "new"},)
+
+
+def test_save_tenant_token_survives_a_batch_rollback(tenant):
+    # EVE rotates refresh tokens - rolling a saved refresh back would lose
+    # the only valid one.
+    with pytest.raises(ValueError):
+        with storage.batch_session():
+            storage.save_tenant_token("producer:2", {"access_token": "kept"})
+            raise ValueError("owner sync failed")
+
+    assert storage.load_all_tenant_tokens()["producer:2"] == {"access_token": "kept"}
+
+
+def test_save_tenant_token_from_another_thread_does_not_block_on_an_open_batch(tenant):
+    # The 2026-10-03 production deadlock: thread A saved a refreshed token
+    # inside its open batch, thread B saved the same role and waited on A's
+    # row lock forever. B must now finish while A's batch is still open.
+    import threading
+
+    done = threading.Event()
+
+    def _other_thread():
+        with storage.tenant_context(tenant):
+            storage.save_tenant_token("producer:3", {"access_token": "b"})
+        done.set()
+
+    with storage.batch_session():
+        storage.save_tenant_token("producer:3", {"access_token": "a"})
+        worker = threading.Thread(target=_other_thread, daemon=True)
+        worker.start()
+        assert done.wait(timeout=10), "second save blocked on the open batch"
+
+    assert storage.load_all_tenant_tokens()["producer:3"] == {"access_token": "b"}
