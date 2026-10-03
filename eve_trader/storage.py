@@ -5384,6 +5384,20 @@ def read_table(table: str) -> pd.DataFrame:
         return pd.DataFrame(cur.fetchall(), columns=columns)
 
 
+def read_latest_new_candidates() -> pd.DataFrame:
+    """Same shape as read_table("new_candidates"), limited to the newest
+    run_ts. Every run appends its rows and nothing prunes them, so the whole
+    table grows without bound while every reader only wants the latest run
+    (served by idx_new_candidates_tenant_run)."""
+    with connect() as conn:
+        cur = conn.execute(
+            "SELECT * FROM new_candidates "
+            "WHERE run_ts = (SELECT max(run_ts) FROM new_candidates)"
+        )
+        columns = [d[0] for d in cur.description]
+        return pd.DataFrame(cur.fetchall(), columns=columns)
+
+
 def read_goonmetrics_history_for_types(type_ids: list[int]) -> pd.DataFrame:
     """Same shape as read_table("goonmetrics_history") but filtered to just
     `type_ids` - confirmed real gap: do_shortlist_trends (called on every

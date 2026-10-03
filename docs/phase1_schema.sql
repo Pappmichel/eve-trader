@@ -890,6 +890,10 @@ CREATE TABLE IF NOT EXISTS new_candidates (
 -- best_margin/score are ratios/scores, not ISK amounts - left as REAL.
 ALTER TABLE new_candidates ALTER COLUMN avg_profit_m3 TYPE DOUBLE PRECISION;
 CREATE INDEX IF NOT EXISTS idx_new_candidates_tenant ON new_candidates (tenant_id);
+-- Every reader wants only the latest run (storage.read_latest_new_candidates);
+-- without this, max(run_ts) scanned every run ever saved (1.86M rows on the
+-- Default tenant by 2026-10-03, ~14 s per Trading KPI load).
+CREATE INDEX IF NOT EXISTS idx_new_candidates_tenant_run ON new_candidates (tenant_id, run_ts);
 ALTER TABLE new_candidates ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON new_candidates;
 CREATE POLICY tenant_isolation ON new_candidates

@@ -18,7 +18,7 @@ def test_do_add_to_shortlist_recomputes_category_fresh_from_sde(monkeypatch):
          "avg_sell_movement": 1.0, "score": 1.0, "recommendation": "Consider import",
          "add_flag": 1, "meta_level": None},
     ])
-    monkeypatch.setattr(storage, "read_table", lambda table: new_candidates_df)
+    monkeypatch.setattr(storage, "read_latest_new_candidates", lambda: new_candidates_df)
     monkeypatch.setattr(storage, "load_sde_category_names", lambda: {16: "Skill"})
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 16)
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 273, "Amarr Frigate", 0.0, 1, 1, 0, None))
@@ -166,7 +166,7 @@ def test_do_add_to_shortlist_caps_growth_and_leaves_the_rest_in_new_candidates(m
     from eve_trader.models import ShortlistItem
 
     rows = [_candidate_row(i, f"Item {i}", score=float(i), latest_margin=0.1) for i in range(1, 6)]
-    monkeypatch.setattr(storage, "read_table", lambda table: pd.DataFrame(rows))
+    monkeypatch.setattr(storage, "read_latest_new_candidates", lambda: pd.DataFrame(rows))
     monkeypatch.setattr(storage, "load_sde_category_names", lambda: {4: "Material"})
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 4)
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item {type_id}", 1.0, 1, 1, 0, None))

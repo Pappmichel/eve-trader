@@ -61,10 +61,10 @@ def get_focused_candidates():
 
 @router.get("/candidates/new", response_model=list[schemas.NewCandidateResult])
 def get_new_candidates():
-    df = storage.read_table("new_candidates")
+    df = storage.read_latest_new_candidates()
     if df.empty:
         return []
-    latest = df[df["run_ts"] == df["run_ts"].max()].rename(columns={"add_flag": "add"})
+    latest = df.rename(columns={"add_flag": "add"})
     return [schemas.NewCandidateResult(**r) for r in schemas.records(latest)]
 
 
@@ -196,12 +196,10 @@ def get_esi_sync_time():
 def get_kpis():
     snap = storage.latest_snapshot()
     shortlist_items = storage.load_shortlist()
-    new_candidates_df = storage.read_table("new_candidates")
+    new_candidates_df = storage.read_latest_new_candidates()
     import_count = int((snap["decision"] == "Import").sum()) if not snap.empty else 0
     own_orders_count = int(snap["own_orders_remaining"].gt(0).sum()) if not snap.empty else 0
-    recommended_count = int(
-        new_candidates_df[new_candidates_df["run_ts"] == new_candidates_df["run_ts"].max()]["add_flag"].sum()
-    ) if not new_candidates_df.empty else 0
+    recommended_count = int(new_candidates_df["add_flag"].sum()) if not new_candidates_df.empty else 0
     return {
         "shortlist_count": len(shortlist_items),
         "import_candidates": import_count,

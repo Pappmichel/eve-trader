@@ -423,11 +423,10 @@ def _new_candidates_to_add(df: pd.DataFrame, existing_ids: set[int],
 
 
 def do_add_to_shortlist(cfg: TradingConfig = TRADING_CONFIG) -> dict:
-    df = storage.read_table("new_candidates")
+    df = storage.read_latest_new_candidates()
     if df.empty:
         raise ActionError("No 'New Candidates' available - run '⚡ Search + Add + Clean Up' first.")
-    latest_run = df["run_ts"].max()
-    df = df[(df["run_ts"] == latest_run) & (df["add_flag"] == 1)]
+    df = df[df["add_flag"] == 1]
     existing_ids = {i.item_id for i in storage.load_shortlist() if i.item_id}
     df, deferred = _new_candidates_to_add(df, existing_ids, cfg.max_shortlist_growth_per_run)
     if df.empty:
