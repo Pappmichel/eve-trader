@@ -2115,6 +2115,7 @@ def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: di
             type_id=product_type_id, type_name=name, blueprint_type_id=blueprint_id,
             activity=activity_label, quantity=runs * product_qty, job_runs=runs,
             job_time_seconds=job_time, unit_build_cost=unit_cost, decryptor=decryptor_name,
+            tech_level=product_activity,
             job_category=job_category(product_type_id), job_cost=job_cost,
             recipe_source="alchemy" if (blueprint_id, activity_id, product_type_id) in alchemy_keys else None,
             # GitHub issue #38: margin_home, not margin_jita - Production
@@ -2757,8 +2758,13 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     # own sort order (see plan_asset_optimized's docstring). Two different
     # denominators feed the same field, deliberately - both answer "how much
     # of what's wanted is already here", just relative to a different goal:
-    # - stock targets (filled below, before the round loop): current_stock /
-    #   configured backup+home+Jita target - a stable, user-set goal.
+    # - stock targets (filled below, before the round loop): 1 - missing /
+    #   configured backup+home+Jita target - a stable, user-set goal, netted
+    #   the same way the job itself is sized (_total_missing), so units
+    #   already listed on the market count as covered. Owned stock alone
+    #   (the original numerator) ignored listings: a target of 30 with 29
+    #   listed and none in the hangar showed 0% next to a 1-unit job
+    #   (confirmed live 2026-10-03, Moa) and claimed slots as if empty.
     # - pure intermediate components (filled in Phase B below, the first
     #   time each material_id turns into a job): available / buffered_total
     #   for the round it was queued in - there's no user-set target for a
@@ -2790,7 +2796,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             continue
         seed_jobs[type_id] = seed_jobs.get(type_id, 0.0) + missing
         total_target = backup_stock + (home_market_stock or 0.0) + (jita_market_stock or 0.0)
-        seed_stock_coverage[type_id] = min(1.0, current_stock / total_target) if total_target > 0 else None
+        seed_stock_coverage[type_id] = max(0.0, 1.0 - missing / total_target) if total_target > 0 else None
 
     def _run_rounds(byproduct_stock: dict[int, float]) -> dict[int, AssetPlanJob]:
         """The whole breadth-first Phase A/B/C walk, from `seed_jobs` down to
@@ -2955,6 +2961,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                         activity=activity_label, quantity=runs * product_qty, job_runs=runs,
                         runs_ready_now=ready_increment, job_time_seconds=job_time,
                         unit_build_cost=cost_memo.get(type_id), decryptor=decryptor_name,
+                        tech_level=classify_activity(job_key)[0],
                         job_category=job_category(type_id),
                         stock_coverage=stock_coverage_by_id.get(type_id),
                         # GitHub issue #38: margin_home, not margin_jita - see

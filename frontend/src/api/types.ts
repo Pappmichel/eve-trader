@@ -343,6 +343,7 @@ export interface BuildJobEntry {
   job_time_seconds: number
   unit_build_cost: number | null
   decryptor: string | null
+  tech_level: string | null
   job_category: string | null
   job_cost: number | null
   margin: number | null
@@ -436,6 +437,7 @@ export interface AssetPlanJob {
   job_time_seconds: number
   unit_build_cost: number | null
   decryptor: string | null
+  tech_level: string | null
   job_category: string | null
   margin: number | null
   stock_coverage: number | null

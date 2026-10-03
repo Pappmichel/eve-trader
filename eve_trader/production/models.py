@@ -78,6 +78,10 @@ class BuildJobEntry:
     job_time_seconds: float
     unit_build_cost: Optional[float]  # materials + facility fee, per unit - not the raw facility fee alone (see engine.py's own job_cost local var)
     decryptor: Optional[str] = None  # Tech II only: which decryptor's ME/TE was assumed
+    # classify_activity's label for the product ("Tech I", "Tech II",
+    # "Reaction", "Faction", ...) - `activity` above is only the EVE job type,
+    # this is what the Build List's Tech Level filter groups on.
+    tech_level: Optional[str] = None
     job_category: Optional[str] = None  # "where do I start this" grouping - see engine.job_category
     # Facility-fee-only slice of unit_build_cost, per unit (EIV * job_cost_rate,
     # not divided out of unit_build_cost after the fact since t2_memo doesn't
@@ -218,13 +222,15 @@ class AssetPlanJob:
     job_time_seconds: float
     unit_build_cost: Optional[float]  # materials + facility fee, per unit - not the raw facility fee alone (see engine.py's own job_cost local var)
     decryptor: Optional[str] = None
+    tech_level: Optional[str] = None  # see BuildJobEntry.tech_level
     job_category: Optional[str] = None  # "where do I start this" grouping - see engine.job_category
     # GitHub issue #38: margin if built and sold at the C-J (home) sell quote
     # right now (engine.margin_home) - see BuildJobEntry's own field comment
     # for why margin_home, not margin_jita.
     margin: Optional[float] = None
-    # How much of this item's own current demand is already covered by owned
-    # stock - 0 (nothing on hand) to 1 (fully covered) - see
+    # How much of this item's own current demand is already covered - for a
+    # stock target, owned stock plus units already listed on the market
+    # (1 - missing / target); 0 (nothing covered) to 1 (fully covered) - see
     # engine.plan_asset_optimized's stock_coverage_by_id docstring for the
     # two different denominators this can come from (a configured stock
     # target's backup/home/Jita goal, or - for a pure intermediate component

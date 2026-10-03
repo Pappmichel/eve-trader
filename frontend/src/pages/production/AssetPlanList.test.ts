@@ -15,6 +15,7 @@ function job(partial: Partial<AssetPlanJob>): AssetPlanJob {
     job_time_seconds: 0,
     unit_build_cost: null,
     decryptor: null,
+    tech_level: 'Reaction',
     job_category: 'Reactions',
     margin: null,
     stock_coverage: null,

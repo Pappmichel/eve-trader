@@ -11,6 +11,7 @@ import { useAction } from '../../hooks/useAction'
 import { isk, pct, qty } from '../../format'
 
 const CATEGORY_UNKNOWN = 'no category'
+const TECH_LEVEL_UNKNOWN = 'unknown'
 
 export default function BuildList() {
   const { data: plan, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['production', 'plan'], queryFn: productionApi.plan })
@@ -24,10 +25,14 @@ export default function BuildList() {
     () => [...new Set(buildList.map((e) => e.job_category ?? CATEGORY_UNKNOWN))].sort(), [buildList],
   )
   const [selCategories, setSelCategories] = useState<string[]>([])
-  const filtered = useMemo(() => {
-    if (selCategories.length === 0) return buildList
-    return buildList.filter((e) => selCategories.includes(e.job_category ?? CATEGORY_UNKNOWN))
-  }, [buildList, selCategories])
+  const techLevels = useMemo(
+    () => [...new Set(buildList.map((e) => e.tech_level ?? TECH_LEVEL_UNKNOWN))].sort(), [buildList],
+  )
+  const [selTechLevels, setSelTechLevels] = useState<string[]>([])
+  const filtered = useMemo(() => buildList.filter((e) =>
+    (selCategories.length === 0 || selCategories.includes(e.job_category ?? CATEGORY_UNKNOWN))
+    && (selTechLevels.length === 0 || selTechLevels.includes(e.tech_level ?? TECH_LEVEL_UNKNOWN)),
+  ), [buildList, selCategories, selTechLevels])
 
   const totalHours = useMemo(() => filtered.reduce((sum, e) => sum + e.job_time_seconds / 3600, 0), [filtered])
 
@@ -50,6 +55,7 @@ export default function BuildList() {
     },
     { header: 'Category', accessorKey: 'job_category', size: 160, cell: (i) => i.getValue() ?? '–' },
     { header: 'Activity', accessorKey: 'activity', size: 130 },
+    { header: 'Tech Level', accessorKey: 'tech_level', size: 120, cell: (i) => i.getValue() ?? '–' },
     { header: 'Job Runs', accessorKey: 'job_runs', size: 100, cell: (i) => qty(i.getValue()) },
     { header: 'Quantity (Output)', accessorKey: 'quantity', size: 140, cell: (i) => qty(i.getValue()) },
     { header: 'Job Time (h)', id: 'hours', size: 120, accessorFn: (r) => r.job_time_seconds / 3600, cell: (i) => (i.getValue() as number).toFixed(2) },
@@ -92,6 +98,10 @@ export default function BuildList() {
             label="Category" data={categories} value={selCategories} onChange={setSelCategories}
             placeholder="All" clearable w={280}
           />
+          <MultiSelect
+            label="Tech Level" data={techLevels} value={selTechLevels} onChange={setSelTechLevels}
+            placeholder="All" clearable w={220}
+          />
         </Group>
         <Tooltip label={refreshPlan.tooltip} disabled={!refreshPlan.tooltip} multiline w={280}>
           <Button variant="default" leftSection={refreshPlan.tierIcon} onClick={() => refreshPlan.mutate()} loading={refreshPlan.isPending}>
@@ -101,7 +111,7 @@ export default function BuildList() {
       </Group>
       <Text size="xs" c="dimmed">{filtered.length} of {buildList.length} jobs</Text>
       {filtered.length === 0 ? (
-        <HintCard>No jobs in the selected categories.</HintCard>
+        <HintCard>No jobs match the selected filters.</HintCard>
       ) : (
         <DataTable tableId="production-build-list" rowDetail data={filtered} columns={columns} maxHeight={560} dataUpdatedAt={dataUpdatedAt} />
       )}

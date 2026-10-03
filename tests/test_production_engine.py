@@ -2712,6 +2712,32 @@ def test_plan_asset_optimized_computes_stock_coverage_for_stock_targets_and_inte
 
 
 @pg_helpers.postgres_required()
+def test_plan_asset_optimized_stock_coverage_counts_listed_units(monkeypatch, _expand_all_bom, tenant):
+    # Live case 2026-10-03 (Moa): home market target 30, 29 already listed
+    # at C-J, nothing in the hangar. The job is 1 run, so coverage must be
+    # 29/30, not the 0% owned stock alone would give.
+    stock_targets = [(1, "ItemA", 0, 30, None)]
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_plan_context(stock_targets))
+    monkeypatch.setattr(engine, "_buy_or_build_decision",
+                         lambda type_id, cfg, home, jita, manual_overrides, cost_memo, bp, depth=0:
+                         "Buy" if bp is None else "Build")
+    monkeypatch.setattr(engine, "_build_margin", lambda *a, **k: None)
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "get_blueprint_time", lambda blueprint_id, activity_id: 100.0)
+    monkeypatch.setattr(engine, "job_category", lambda type_id: None)
+    monkeypatch.setattr(engine, "_current_stock", lambda type_id, *a, **k: 0.0)
+    monkeypatch.setattr(engine, "_sell_order_qty_at_location",
+                         lambda type_id, location_id: 29.0 if type_id == 1 else 0.0)
+
+    result = engine.plan_asset_optimized(ProductionConfig(component_overbuild=0.0, home_location_id=3000))
+
+    job = {job.type_id: job for job in result["jobs"]}[1]
+    assert job.job_runs == 1
+    assert (job.activity, job.tech_level) == ("Manufacturing", "Tech I")
+    assert job.stock_coverage == pytest.approx(29 / 30)
+
+
+@pg_helpers.postgres_required()
 def test_plan_asset_optimized_readiness_ignores_in_progress_industry_jobs(monkeypatch, tenant):
     # Real bug reported live (2026-08-15): user physically tried to queue
     # jobs off the Asset-Optimized list and couldn't, because a shared
@@ -3597,6 +3623,8 @@ def test_plan_production_build_list_handles_tech_ii_item_via_t2_memo(monkeypatch
     result = engine.plan_production(cfg)  # must not raise ValueError
 
     assert {row.type_id for row in result["build_list"]} == {10}
+    # activity is the EVE job type; tech_level is what the Tech Level filter groups on
+    assert [(row.activity, row.tech_level) for row in result["build_list"]] == [("Manufacturing", "Tech II")]
 
 
 @pg_helpers.postgres_required()
