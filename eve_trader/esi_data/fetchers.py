@@ -95,7 +95,8 @@ def _page_wallet_transactions(fetch_page: Callable) -> list[dict]:
 def _asset_rows(assets: list[dict], owner_name: str) -> list[tuple]:
     return [
         (a["item_id"], a["type_id"], a["location_id"], a["location_flag"],
-         a["quantity"], int(bool(a.get("is_blueprint_copy"))), owner_name)
+         a["quantity"], int(bool(a.get("is_blueprint_copy"))), owner_name,
+         bool(a.get("is_singleton")))
         for a in assets
     ]
 

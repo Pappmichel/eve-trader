@@ -40,6 +40,10 @@ def _character_assets(character_id: int, auth_role: str, client: ESIClient) -> l
     does not see the character, even live from ESI. A sharing row with an
     empty snapshot still live-fetches, but only that owner. AccessorError
     and storage.connect()'s missing-tenant RuntimeError propagate.
+
+    Every row carries "assembled_or_fitted" (stored for snapshot rows, set
+    here for a live fetch) - callers skip those, assembled ships and their
+    fittings are not stock.
     """
     from .esi_data.access import is_shared, read_esi
     if not is_shared("assets", "trading", "character", character_id):
@@ -47,7 +51,7 @@ def _character_assets(character_id: int, auth_role: str, client: ESIClient) -> l
     rows = read_esi("assets", "trading", owner_type="character", owner_id=character_id)
     if rows:
         return rows
-    return client.character_assets(character_id, auth_role=auth_role)
+    return storage.mark_assembled_or_fitted(client.character_assets(character_id, auth_role=auth_role))
 
 
 def fetch_own_sell_orders(character_id: int, auth_role: str, client: ESIClient,
@@ -190,7 +194,7 @@ def fetch_seller_stock_without_order_pooled(sellers: list[tuple[int, str]], clie
                 continue
             if a.get("location_id") != cfg.structure_id:
                 continue
-            if a.get("location_flag") in storage.NON_STOCK_LOCATION_FLAGS:
+            if a.get("location_flag") in storage.NON_STOCK_LOCATION_FLAGS or a.get("assembled_or_fitted"):
                 continue
             asset_qty[type_id] += a.get("quantity", 0)
         for type_id, remaining in fetch_own_sell_orders(character_id, auth_role, client, cfg).items():
@@ -265,6 +269,8 @@ def fetch_buyer_already_covered(character_id: int, auth_role: str, client: ESICl
     hub_stations = _hub_station_ids(cfg.jita_region_id)
     assets = _character_assets(character_id, auth_role, client)
     for a in assets:
+        if a.get("assembled_or_fitted"):
+            continue
         if a.get("location_id") in hub_stations or a.get("location_id") == cfg.structure_id:
             covered.add(a["type_id"])
 

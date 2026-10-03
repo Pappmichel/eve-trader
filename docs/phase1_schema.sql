@@ -546,6 +546,15 @@ ALTER TABLE character_assets ADD COLUMN IF NOT EXISTS resolved_location_id BIGIN
 -- reintroduced the exact #4/#20 bug class: an item nested one level inside a
 -- flagged container read as invisible to that container's own division.
 ALTER TABLE character_assets ADD COLUMN IF NOT EXISTS resolved_hangar_flag TEXT;
+-- Assembled ships and their fittings are not stock (confirmed with the user
+-- 2026-10-03): is_singleton is ESI's raw flag, assembled_or_fitted is
+-- computed once at sync time (storage.replace_assets) - an assembled ship
+-- (Ship category + is_singleton) or anything in a fitting slot/drone or
+-- fighter bay. Every demand-side stock read skips assembled_or_fitted rows;
+-- cargo inside an assembled ship still counts. DEFAULT false keeps rows
+-- synced before this column existed counted until their next asset sync.
+ALTER TABLE character_assets ADD COLUMN IF NOT EXISTS is_singleton BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE character_assets ADD COLUMN IF NOT EXISTS assembled_or_fitted BOOLEAN NOT NULL DEFAULT false;
 DROP INDEX IF EXISTS idx_character_assets_type_location;
 CREATE INDEX IF NOT EXISTS idx_character_assets_type_resolved_location
     ON character_assets (type_id, resolved_location_id);
@@ -592,6 +601,8 @@ ALTER TABLE corp_assets DROP CONSTRAINT IF EXISTS corp_assets_pkey;
 ALTER TABLE corp_assets ADD CONSTRAINT corp_assets_pkey PRIMARY KEY (tenant_id, item_id, owner_name);
 ALTER TABLE corp_assets ADD COLUMN IF NOT EXISTS resolved_location_id BIGINT;
 ALTER TABLE corp_assets ADD COLUMN IF NOT EXISTS resolved_hangar_flag TEXT;
+ALTER TABLE corp_assets ADD COLUMN IF NOT EXISTS is_singleton BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE corp_assets ADD COLUMN IF NOT EXISTS assembled_or_fitted BOOLEAN NOT NULL DEFAULT false;
 DROP INDEX IF EXISTS idx_corp_assets_type_location;
 CREATE INDEX IF NOT EXISTS idx_corp_assets_type_resolved_location ON corp_assets (type_id, resolved_location_id);
 ALTER TABLE corp_assets ENABLE ROW LEVEL SECURITY;
