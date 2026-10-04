@@ -181,6 +181,7 @@ export default function SdePreviewPage() {
         newRows: [...rows.new].sort(byName),
         removedRows: [...rows.removed].sort(byName),
         changedRows: [...rows.changed].sort(byName),
+        truncated: rows.truncated,
       }))
       .sort((a, b) => a.table.localeCompare(b.table))
   }, [diff])
@@ -274,14 +275,23 @@ export default function SdePreviewPage() {
                         <div>
                           <Text size="sm" fw={600} mb={4}>New ({entry.newRows.length})</Text>
                           <ItemList items={entry.newRows} tableId={`sde-preview-${entry.table}-new`} />
+                          {!!entry.truncated?.new && (
+                            <Text size="xs" c="dimmed" mt={4}>+{entry.truncated.new} more not shown</Text>
+                          )}
                         </div>
                         <div>
                           <Text size="sm" fw={600} mb={4}>Removed ({entry.removedRows.length})</Text>
                           <ItemList items={entry.removedRows} tableId={`sde-preview-${entry.table}-removed`} />
+                          {!!entry.truncated?.removed && (
+                            <Text size="xs" c="dimmed" mt={4}>+{entry.truncated.removed} more not shown</Text>
+                          )}
                         </div>
                         <div>
                           <Text size="sm" fw={600} mb={4}>Changed ({entry.changedRows.length})</Text>
                           <ChangedItemList items={entry.changedRows} tableId={`sde-preview-${entry.table}-changed`} />
+                          {!!entry.truncated?.changed && (
+                            <Text size="xs" c="dimmed" mt={4}>+{entry.truncated.changed} more not shown</Text>
+                          )}
                         </div>
                       </Stack>
                     </Accordion.Panel>

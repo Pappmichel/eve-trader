@@ -1433,6 +1433,9 @@ def replace_sde_data(
     regions: list[tuple] = (),
     type_materials: list[tuple] = (), blueprint_skills: list[tuple] = (),
     skill_requirements: list[tuple] = (), skill_meta: list[tuple] = (),
+    pi_schematics: list[tuple] = (), pi_schematic_types: list[tuple] = (),
+    pi_schematic_pins: list[tuple] = (), pi_type_attributes: list[tuple] = (),
+    pi_planets: list[tuple] = (),
 ) -> None:
     """Wholesale-replaces the SDE cache tables (each refresh reflects one Fuzzwork
     dump snapshot, not an incremental merge - stale rows from a previous CCP
@@ -1457,8 +1460,22 @@ def replace_sde_data(
     (skill_id, rank, primary_attribute, secondary_attribute) come from
     `dgmTypeAttributes.csv`, filtered while parsing (see production/sde.py) -
     Character Management's skill catalogue, doctrine skill check and skill
-    planner (docs/CHARACTER_MANAGEMENT_PLAN.md R7)."""
+    planner (docs/CHARACTER_MANAGEMENT_PLAN.md R7).
+
+    `pi_*` are the PI tool's tables (docs/pi_schema.sql): schematics and their
+    inputs/outputs/allowed pins, PI dogma attributes (+ basePrice as pseudo
+    attribute -1) and every planet of the 8 PI planet types (~68k rows)."""
     with connect() as conn:
+        conn.execute("DELETE FROM sde_pi_schematics")
+        conn.execute("DELETE FROM sde_pi_schematic_types")
+        conn.execute("DELETE FROM sde_pi_schematic_pins")
+        conn.execute("DELETE FROM sde_pi_type_attributes")
+        conn.execute("DELETE FROM sde_pi_planets")
+        conn.executemany("INSERT INTO sde_pi_schematics VALUES (?,?,?)", pi_schematics)
+        conn.executemany("INSERT INTO sde_pi_schematic_types VALUES (?,?,?,?)", pi_schematic_types)
+        conn.executemany("INSERT INTO sde_pi_schematic_pins VALUES (?,?)", pi_schematic_pins)
+        conn.executemany("INSERT INTO sde_pi_type_attributes VALUES (?,?,?)", pi_type_attributes)
+        conn.executemany("INSERT INTO sde_pi_planets VALUES (?,?,?,?,?)", pi_planets)
         conn.execute("DELETE FROM sde_types")
         conn.execute("DELETE FROM sde_groups")
         conn.execute("DELETE FROM sde_market_groups")
@@ -1504,6 +1521,10 @@ def replace_sde_data(
     get_type_materials.cache_clear()
     get_invention_recipe.cache_clear()
     get_blueprint_skills.cache_clear()
+    # The PI tool's StaticData and design caches (docs/PI_TECHNICAL_DESIGN.md
+    # P-11). Imported lazily: pi.static imports storage.
+    from .pi import static as pi_static
+    pi_static.invalidate()
 
 
 SDE_TABLES = (
@@ -1513,9 +1534,14 @@ SDE_TABLES = (
     "sde_solar_systems", "sde_regions", "sde_stations", "sde_categories", "sde_type_slots",
     "sde_type_materials",
     "sde_skill_requirements", "sde_skill_meta",
+    "sde_pi_schematics", "sde_pi_schematic_types", "sde_pi_schematic_pins",
+    "sde_pi_type_attributes", "sde_pi_planets",
 )
 
 # Every sde_* table is diffed row-by-row (see get_sde_snapshot_for_diff).
+# sde_pi_planets too, but sde_diff caps its output lists - a first refresh
+# after deploying the PI tool would otherwise list ~68k "new" planets in the
+# Admin preview (P-12).
 _SDE_DIFF_FULL_TABLES = SDE_TABLES
 
 
@@ -7315,3 +7341,106 @@ def tenant_registry_suspension(tenant_id: str) -> Optional[bool]:
             "SELECT access_suspended FROM tenant_registry_entries WHERE tenant_id = ?", (tenant_id,),
         ).fetchone()
     return None if row is None else bool(row[0])
+
+
+# ===================================================== PI tool (docs/PI_PLAN.md)
+# SDE reads (global tables, no RLS - but still through connect(), which needs
+# an ambient tenant like every other storage call).
+
+def load_pi_static_rows() -> dict[str, list[tuple]]:
+    """Everything pi.static.StaticData is built from, one query per table.
+    `types` covers every type the PI tables mention (commodities, structures,
+    links) with name, group, category and volume."""
+    with connect() as conn:
+        schematics = conn.execute(
+            "SELECT schematic_id, name, cycle_seconds FROM sde_pi_schematics"
+        ).fetchall()
+        schematic_types = conn.execute(
+            "SELECT schematic_id, type_id, quantity, is_input FROM sde_pi_schematic_types"
+        ).fetchall()
+        schematic_pins = conn.execute(
+            "SELECT schematic_id, pin_type_id FROM sde_pi_schematic_pins"
+        ).fetchall()
+        attributes = conn.execute(
+            "SELECT type_id, attribute_id, value FROM sde_pi_type_attributes"
+        ).fetchall()
+        types = conn.execute(
+            "SELECT t.type_id, t.type_name, t.group_id, g.category_id, t.volume "
+            "FROM sde_types t LEFT JOIN sde_groups g ON g.group_id = t.group_id "
+            "WHERE t.type_id IN (SELECT type_id FROM sde_pi_type_attributes "
+            "                    UNION SELECT type_id FROM sde_pi_schematic_types "
+            "                    UNION SELECT pin_type_id FROM sde_pi_schematic_pins)"
+        ).fetchall()
+    return {
+        "schematics": [tuple(r) for r in schematics],
+        "schematic_types": [tuple(r) for r in schematic_types],
+        "schematic_pins": [tuple(r) for r in schematic_pins],
+        "attributes": [tuple(r) for r in attributes],
+        "types": [tuple(r) for r in types],
+    }
+
+
+def pi_planets_in_system(solar_system_id: int) -> list[tuple]:
+    """(planet_id, planet_name, type_id, radius_km) of every PI planet in the
+    system, ordered by name (= celestial order)."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT planet_id, planet_name, type_id, radius_km FROM sde_pi_planets "
+            "WHERE solar_system_id = ? ORDER BY planet_name, planet_id",
+            (int(solar_system_id),),
+        ).fetchall()
+    return [tuple(r) for r in rows]
+
+
+def get_pi_planet(planet_id: int) -> Optional[tuple]:
+    """(planet_id, planet_name, solar_system_id, type_id, radius_km) or None."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT planet_id, planet_name, solar_system_id, type_id, radius_km FROM sde_pi_planets "
+            "WHERE planet_id = ?",
+            (int(planet_id),),
+        ).fetchone()
+    return tuple(row) if row else None
+
+
+def pi_planet_radius_medians() -> dict[int, float]:
+    """Median radius (km) per PI planet type - the Planner's default radius
+    for a planet type without a concrete planet."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, percentile_cont(0.5) WITHIN GROUP (ORDER BY radius_km) "
+            "FROM sde_pi_planets GROUP BY type_id"
+        ).fetchall()
+    return {int(r[0]): float(r[1]) for r in rows}
+
+
+def get_solar_system(solar_system_id: int) -> Optional[tuple]:
+    """(solar_system_id, name, security, region_id) from the SDE, or None."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT solar_system_id, solar_system_name, security, region_id FROM sde_solar_systems "
+            "WHERE solar_system_id = ?",
+            (int(solar_system_id),),
+        ).fetchone()
+    return tuple(row) if row else None
+
+
+def search_pi_systems(query: str, limit: int = 20) -> list[tuple]:
+    """(solar_system_id, name, security, region_id, planet_count) for systems
+    whose name contains `query` and that have at least one PI planet. Exact
+    and prefix matches first."""
+    q = (query or "").strip()
+    if not q:
+        return []
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT s.solar_system_id, s.solar_system_name, s.security, s.region_id, COUNT(p.planet_id) "
+            "FROM sde_solar_systems s JOIN sde_pi_planets p ON p.solar_system_id = s.solar_system_id "
+            "WHERE s.solar_system_name ILIKE ? "
+            "GROUP BY s.solar_system_id, s.solar_system_name, s.security, s.region_id "
+            "ORDER BY (lower(s.solar_system_name) = lower(?)) DESC, "
+            "         (s.solar_system_name ILIKE ?) DESC, s.solar_system_name "
+            "LIMIT ?",
+            (f"%{q}%", q, f"{q}%", int(limit)),
+        ).fetchall()
+    return [tuple(r) for r in rows]

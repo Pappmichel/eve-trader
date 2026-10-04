@@ -952,6 +952,8 @@ export interface SdeTableRowDiff {
   new: SdeDiffItem[]
   removed: SdeDiffItem[]
   changed: SdeChangedItem[]
+  // Entries per list that were cut off (only sde_pi_planets caps its lists).
+  truncated?: { new: number; removed: number; changed: number }
 }
 
 export interface SdeDiff {
