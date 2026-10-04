@@ -3759,7 +3759,8 @@ def test_plan_production_invention_stockpile_pct_uncapped_above_100(monkeypatch,
     # 30 runs against a backup_stock target of only 10 - 3x over target.
     monkeypatch.setattr(storage, "available_blueprint_copies", lambda blueprint_id, loc, **kwargs: 30)
 
-    cfg = ProductionConfig(min_margin=0.0)
+    # 1x buffer: the target is the 10 backup runs themselves.
+    cfg = ProductionConfig(min_margin=0.0, bpc_inventory=1.0)
     result = engine.plan_production(cfg)
 
     row = next(r for r in result["invention_list"] if r.type_id == 10)
@@ -3880,8 +3881,8 @@ def test_plan_production_invention_buffer_applies_when_item_is_fully_stocked(mon
     cfg = ProductionConfig(min_margin=0.0, bpc_inventory=4.0)
     result = engine.plan_production(cfg)
     row = next(r for r in result["invention_list"] if r.type_id == 10)
-    assert row.runs_needed == 0  # display shortfall stays 0
     assert row.bpc_target_runs == 40  # 4 * ceil(10 / 1)
+    assert row.runs_needed == 40  # one demand: buffer target net of 0 owned
     assert row.bpcs_needed == 8  # ceil(40 / 5)
     assert row.recommended_invention_runs == 8
     assert row.t1_bpc_target_runs == 8  # 4 * ceil(ceil(10/5) / 1)
@@ -4490,23 +4491,35 @@ def _call_invention_need_row(missing, stockpile, multiplier, product_qty=1.0):
 def test_invention_need_row_bpc_buffer_4x_with_zero_owned(monkeypatch):
     _patch_invention_need_row(monkeypatch, owned=0, probability=0.5, output_runs=5.0)
     row = _call_invention_need_row(missing=10, stockpile=10, multiplier=4.0)
-    assert row.runs_needed == 10
+    assert row.runs_needed == 40
     assert row.bpc_target_runs == 40  # 4 * ceil(10 / 1)
     assert row.bpcs_needed == 8  # ceil(40 / 5)
     assert row.recommended_invention_runs == 16  # ceil(8 / 0.5)
     assert row.t1_bpc_target_runs == 16  # 4 * ceil(ceil(10/5) / 0.5) = 4 * 4
     assert row.t2_bpc_owned == 0
+    assert row.stockpile_pct == 0.0
 
 
 def test_invention_need_row_bpc_buffer_applies_when_missing_is_zero(monkeypatch):
     """Decision 2: fully-stocked finished item still builds a BPC buffer."""
     _patch_invention_need_row(monkeypatch, owned=0, probability=0.5, output_runs=5.0)
     row = _call_invention_need_row(missing=0, stockpile=10, multiplier=4.0)
-    assert row.runs_needed == 0
+    assert row.runs_needed == 40  # same demand as with missing=10, not 0
     assert row.bpc_target_runs == 40
     assert row.bpcs_needed == 8
     assert row.recommended_invention_runs == 16
     assert row.t1_bpc_target_runs == 16
+
+
+def test_invention_need_row_target_never_below_shortfall(monkeypatch):
+    """bpc_inventory may be 0 (or < 1): the combined target still covers
+    today's actual shortfall, it just adds no buffer on top."""
+    _patch_invention_need_row(monkeypatch, owned=0, probability=0.5, output_runs=5.0)
+    row = _call_invention_need_row(missing=10, stockpile=10, multiplier=0.0)
+    assert row.bpc_target_runs == 10
+    assert row.runs_needed == 10
+    assert row.bpcs_needed == 2
+    assert row.recommended_invention_runs == 4
 
 
 def test_invention_need_row_owned_t2_nets_t2_target_not_t1_buffer(monkeypatch):
@@ -4518,24 +4531,25 @@ def test_invention_need_row_owned_t2_nets_t2_target_not_t1_buffer(monkeypatch):
     row = _call_invention_need_row(missing=10, stockpile=10, multiplier=4.0)
     assert row.bpc_target_runs == 40
     assert row.t2_bpc_owned == 20
+    assert row.runs_needed == 20  # 40 - 20
+    assert row.stockpile_pct == 50.0  # 20 / 40
     assert row.bpcs_needed == 4  # ceil((40 - 20) / 5)
     assert row.recommended_invention_runs == 8  # ceil(4 / 0.5)
     assert row.t1_bpc_target_runs == 16  # still 4x base (4), not 8 and not 4*8=32
 
 
-def test_invention_need_row_special_order_path_is_unchanged(monkeypatch):
-    """bpc_buffer_multiplier=1.0 and stockpile_quantity==missing: T2 target
-    equals today's runs_needed, so special orders match pre-buffer math."""
+def test_invention_need_row_special_order_path(monkeypatch):
+    """bpc_buffer_multiplier=1.0 and stockpile_quantity==missing: the T2
+    target is the order's own manufacturing runs, net of owned BPC runs."""
     owned = 6
     _patch_invention_need_row(monkeypatch, owned=owned, probability=0.5, output_runs=5.0)
     missing = 10
     row = _call_invention_need_row(missing=missing, stockpile=missing, multiplier=1.0)
-    runs_needed = 10  # ceil(10 / 1)
-    runs_still_needed = max(0, runs_needed - owned)  # 4
-    bpcs_needed = 1  # ceil(4 / 5)
+    target_runs = 10  # ceil(10 / 1)
+    bpcs_needed = 1  # ceil((10 - 6) / 5)
     recommended = 2  # ceil(1 / 0.5)
-    assert row.runs_needed == runs_needed
-    assert row.bpc_target_runs == runs_needed
+    assert row.runs_needed == target_runs - owned
+    assert row.bpc_target_runs == target_runs
     assert row.bpcs_needed == bpcs_needed
     assert row.recommended_invention_runs == recommended
 

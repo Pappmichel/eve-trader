@@ -115,14 +115,14 @@ class InventionNeedRow:
     decryptor: str
     probability: float
     output_runs: float       # BPC runs produced per successful invention
-    runs_needed: int         # total manufacturing runs the Bauliste requires (pure shortfall: ceil(missing / product_qty); display-only, not the buffer target)
-    bpcs_needed: int         # ceil(max(0, bpc_target_runs - t2_bpc_owned) / output_runs) - nets off owned-but-unbuilt BPC runs against the buffered T2 target
+    runs_needed: int         # max(0, bpc_target_runs - t2_bpc_owned) - the one combined demand (shortfall + buffer) still to cover with new BPCs
+    bpcs_needed: int         # ceil(runs_needed / output_runs)
     recommended_invention_runs: int  # ceil(bpcs_needed / probability) - expected attempts to actually queue now
     # Buffered T2 BPC-run target: ceil(bpc_inventory * ceil(stockpile_quantity / product_qty))
-    # on the standing-target path (plan_production), or equal to runs_needed on the
-    # special-order path (bpc_buffer_multiplier=1.0 and stockpile_quantity == missing).
-    # Independent of today's missing quantity - a fully-stocked item still keeps this
-    # BPC-on-hand buffer. See engine._invention_need_row.
+    # on the standing-target path (plan_production), or the order's own manufacturing
+    # runs on the special-order path (bpc_buffer_multiplier=1.0 and stockpile_quantity
+    # == missing). Never below today's shortfall runs; a fully-stocked item still keeps
+    # this BPC-on-hand buffer. See engine._invention_need_row.
     bpc_target_runs: int = 0
     # Independent T1 forward buffer: ceil(bpc_inventory * base T1 invention runs),
     # where base T1 runs are sized from the unbuffered manufacturing target, never
@@ -144,10 +144,9 @@ class InventionNeedRow:
     t2_bpc_owned: int = 0
     # t2_bpc_owned as a % (>=0, deliberately *not* capped at 100 - confirmed
     # with the user, 2026-08-31: owning more than the target is a real,
-    # useful signal, not something to flatten away) of a *fixed* target: the
-    # manufacturing runs needed to fully stock this stock target's own
-    # backup_stock plus home/Jita market-listing targets (backup_stock +
-    # home_market_stock + jita_market_stock, all divided by product_qty) -
+    # useful signal, not something to flatten away) of bpc_target_runs, the
+    # same buffered target runs_needed nets against (since 2026-10-04; it
+    # used to be the unbuffered target, so a full 4x buffer read 400%) -
     # both sides share the same unit (manufacturing runs of the T2/T3
     # blueprint), no conversion through output_runs. A zero configured
     # target with owned BPC runs is 100% (covered, nothing to cover), not a
