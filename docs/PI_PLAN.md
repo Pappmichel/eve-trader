@@ -332,20 +332,6 @@ ESI skills where shared, else the manual setting; D3). This answers "build up to
 directly. A full multi-character allocator (jwebbdev's 60 KB greedy) is
 **not** in scope (see 4).
 
-### 3.6 Production demand (F1, read-only)
-
-A PI page section lists the PI materials Production's stock targets and
-build plans consume (fuel blocks, structure and capital components, ...),
-with daily demand, and for each "make via PI vs. buy": the PI chain's cost
-per unit (incl. taxes, freight, setup share) against your **buy** price at
-Production's hub. Read-only: PI reads Production's demand through
-`production/actions` / `storage` reads (the same way `skill_check.py`
-reads Doctrine's fittings without importing that package's logic), and
-Production itself is not changed. The route needs the `production` grant in
-addition to `pi` (checked against `request.state.tool_keys`, same reasoning
-as the Doctrine skill check: a `pi` grant alone must not expose Production
-data).
-
 ### 3.5 System analysis ("what is worth building in system X")
 
 Requested 2026-10-04. The user enters a solar system and gets back what is
@@ -385,6 +371,20 @@ worth producing there.
 
 The optional planet finder (phase 6) later extends this from one system to
 "all systems within N jumps", ranking systems by the same result.
+
+### 3.6 Production demand (F1, read-only)
+
+A PI page section lists the PI materials Production's stock targets and
+build plans consume (fuel blocks, structure and capital components, ...),
+with daily demand, and for each "make via PI vs. buy": the PI chain's cost
+per unit (incl. taxes, freight, setup share) against your **buy** price at
+Production's hub. Read-only: PI reads Production's demand through
+`production/actions` / `storage` reads (the same way `skill_check.py`
+reads Doctrine's fittings without importing that package's logic), and
+Production itself is not changed. The route needs the `production` grant in
+addition to `pi` (checked against `request.state.tool_keys`, same reasoning
+as the Doctrine skill check: a `pi` grant alone must not expose Production
+data).
 
 ## 4. What is worth building, and what is not
 
