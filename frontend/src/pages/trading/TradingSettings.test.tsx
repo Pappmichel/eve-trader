@@ -24,7 +24,7 @@ const SETTINGS = {
   import_cost_per_m3: 1500, structure_sell_haircut: 0.02, min_profit_threshold: 100,
   min_margin_threshold: 0.1, skip_grace_period_days: 14, enforce_shortlist_cap: false,
   max_active_shortlist_items: 500, max_shortlist_growth_per_run: 50, min_hit_rate: 0.5,
-  min_avg_movement: 10, excluded_path_prefixes: [], safe_mode_max_ids: 500,
+  min_avg_movement: 10, min_paired_days: 5, excluded_path_prefixes: [], safe_mode_max_ids: 500,
   lookback_days: 30, jita_region_id: 10000002, reference_region_id: 10000009,
   structure_id: null, structure_market_slug: null, buyer_character_name: null,
   seller_character_name: null, wallet_division_ids: [], esi_frequent_interval_hours: 1,

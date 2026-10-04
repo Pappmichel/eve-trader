@@ -71,6 +71,10 @@ export default function TradingSettings() {
           onChange={(v) => set('min_hit_rate', Number(v) / 100)} />
         <NumberInput label="Min. avg market movement (reference region)" value={form.min_avg_movement} min={0} step={1}
           onChange={(v) => set('min_avg_movement', Number(v))} />
+        <NumberInput label="Min. days traded in both regions"
+          description="Out of the last 28. Keeps one lucky trade from scoring a 100% hit rate."
+          value={form.min_paired_days} min={1} max={28} step={1}
+          onChange={(v) => set('min_paired_days', Number(v))} />
         <NumberInput label="Safe mode: max IDs/run" value={form.safe_mode_max_ids} min={1} step={50}
           onChange={(v) => set('safe_mode_max_ids', Number(v))} />
         <NumberInput label="Max new shortlist items per run"

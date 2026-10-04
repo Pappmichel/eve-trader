@@ -65,8 +65,8 @@ def _score_candidate(candidate: Candidate, hist_index: dict,
     dampens scale, see MIN_BASELINE_MARGIN_MAGNITUDE elsewhere in this module
     for a related "don't let one axis blow up the result" fix), hit_rate
     rewards consistency over a lucky day. `add` (the actual recommendation)
-    requires *all* of: at least one profitable day, hit_rate clearing
-    cfg.min_hit_rate, the *latest* traded day's margin (not just the average)
+    requires *all* of: at least cfg.min_paired_days traded paired days, at
+    least one profitable day, hit_rate clearing cfg.min_hit_rate, the *latest* traded day's margin (not just the average)
     clearing cfg.min_margin_threshold, a positive score, and average
     liquidity clearing cfg.min_avg_movement - a good historical average
     alone isn't enough if the item isn't profitable or liquid right now.
@@ -119,7 +119,7 @@ def _score_candidate(candidate: Candidate, hist_index: dict,
     avg_move = total_move / HISTORY_WINDOW_DAYS
     score = avg_profit_m3 * math.log(1 + avg_move) * hit_rate
 
-    add = (good_days > 0 and hit_rate >= cfg.min_hit_rate and latest_margin >= cfg.min_margin_threshold
+    add = (days >= cfg.min_paired_days and good_days > 0 and hit_rate >= cfg.min_hit_rate and latest_margin >= cfg.min_margin_threshold
            and score > 0 and avg_move >= cfg.min_avg_movement)
     return NewCandidateResult(
         item=candidate.item, category=candidate.category, type_id=candidate.type_id,

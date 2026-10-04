@@ -196,6 +196,7 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "chunk_size": (1, None),
     "shortlist_refresh_batch_size": (1, None),
     "min_avg_movement": (0, None),
+    "min_paired_days": (1, None),
     "lookback_days": (0, None),
     "component_overbuild": (0, None),
     "bpc_inventory": (0, None),
@@ -533,6 +534,13 @@ class TradingConfig:
     # and know what "enough" looks like; this field exists so that's a
     # config change, not a code change.
     min_avg_movement: float = 0.0
+    # Minimum number of days with a real trade in *both* regions before a
+    # candidate can be recommended. Days without trades are left out of the
+    # hit rate (history_backtest._score_candidate), so without this floor a
+    # single lucky trade in 28 days scored a 100% hit rate - confirmed live
+    # 2026-10-04 on a test-server search run (SKINs with one Insmother trade
+    # at +24,000% margin). 5 is about one traded day a week.
+    min_paired_days: int = 5
 
     # -- Characters (buyer imports in Jita, seller sells in the structure) --
     # Purely informational/display (Settings page) - the real character

@@ -99,7 +99,7 @@ def test_days_without_trades_are_not_scored_as_losses():
     # used to count as -100% margin days and sank the hit rate of every thin
     # item (most blueprints among them).
     cfg = TradingConfig(import_cost_per_m3=900.0, structure_sell_haircut=0.95,
-                         min_margin_threshold=0.05, min_hit_rate=0.3)
+                         min_margin_threshold=0.05, min_hit_rate=0.3, min_paired_days=2)
     candidate = Candidate(item="Thin Thing", type_id=1, volume_m3=0.1,
                            category="Blueprint", market_group_path="x")
     jita_prices = [1000, 1010, 990, 1005, 995]
@@ -112,6 +112,23 @@ def test_days_without_trades_are_not_scored_as_losses():
     assert result.hit_rate == 1.0
     assert result.latest_margin > 0.05  # day 4, the latest day with trades on both sides
     assert result.add is True
+
+
+def test_too_few_traded_days_are_not_recommended():
+    # Live test-server run 2026-10-04: SKINs with a single Insmother trade in
+    # 28 days at a freak price came out as 100% hit rate recommendations.
+    cfg = TradingConfig(import_cost_per_m3=900.0, structure_sell_haircut=0.95,
+                         min_margin_threshold=0.05, min_hit_rate=0.3, min_paired_days=5)
+    candidate = Candidate(item="One Lucky Trade", type_id=1, volume_m3=0.1,
+                           category="SKINs", market_group_path="x")
+    points = (_points(cfg.jita_region_id, 1, [1000, 1000, 1000, 1000, 1000])
+              + _points(cfg.reference_region_id, 1, [0, 0, 0, 0, 250000]))
+
+    result = _score_candidate(candidate, _index_history(points), cfg)
+
+    assert result.paired_days == 1
+    assert result.hit_rate == 1.0
+    assert result.add is False
 
 
 def test_untraded_jita_day_is_not_a_free_buy():
