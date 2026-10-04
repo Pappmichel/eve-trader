@@ -5745,3 +5745,14 @@ def test_market_restock_elsewhere_honours_stock_hangar_flags(monkeypatch):
 def test_market_restock_empty_without_home_location(monkeypatch):
     monkeypatch.setattr(storage, "load_stock_targets", lambda: pytest.fail("must not read targets"))
     assert engine.market_restock(ProductionConfig(home_location_id=None)) == []
+
+
+def test_rounded_security_survives_float4_storage():
+    """sde_solar_systems.security is REAL (float4): a true-sec of 0.45 comes
+    back as 0.449999988 and must still count as high-sec (0.5)."""
+    import struct
+    from eve_trader.production.constants import _rounded_security, rig_security_multiplier
+    stored = struct.unpack("f", struct.pack("f", 0.45))[0]
+    assert stored < 0.45
+    assert _rounded_security(stored) == 0.5
+    assert rig_security_multiplier(stored) == 1.0
