@@ -104,6 +104,19 @@ Everything below was checked live, not copied from a wiki:
 - Templates carry link levels (`Lv`) and import with them.
 - (jwebbdev) La/Lo/Diam must serialize as floats; P0 routes must not pass
   through Basic facilities; template JSON is pasted as one compact line.
+- **EVE accepts free positions**, not just grid rows (a hand-drawn heart shape
+  imported fine). Any layout is valid if it keeps the spacing, budget and route
+  rules.
+- **EVE empties a factory's input routes in creation order.** Route order in
+  `R` is behaviour: the first input route of a factory should come from its
+  nearest pad, or one pad drains while the others stay full.
+- `La` is a **polar angle** (pi/2 = equator), `Lo` the longitude. Away from the
+  equator a longitude step is shorter by `sin(La)`, so layouts are built
+  around the equator (Eve-PI `CENTER_LAT = 1.57079`). jwebbdev's generator
+  treats La/Lo as flat x/y, which we don't copy.
+- A template pin holds only `H` (the **head count**, not "heat" as the EVE Uni
+  page says), `La`, `Lo`, `S`, `T`. **Head positions are not part of a
+  template**; the player places heads on hotspots in game after import.
 
 ### 1.5 Command Center levels and skills
 
@@ -280,12 +293,13 @@ directly. A full multi-character allocator (jwebbdev's 60 KB greedy) is
 | Chain view (planets per stage, value added per tier) | **Build** | Answers "how far up the chain" |
 | Template library: paste/import JSON, analyse (fit, throughput, routes, storage, taxes), store per tenant, export | **Build** | Low risk, matches PI Nexus' useful part, no generator needed |
 | ESI colonies: list own colonies, extractor expiry, convert colony -> template, yield calibration | **Build (phase 4)** | Only reliable yield source; colony -> template is cheap once ESI rows exist |
-| Template generator (design -> importable layout) | **Build later, carefully** | Highest effort; correctness only provable by in-game import (needs the user); own small generator (D1, scope in 6.3) |
+| Full template generator + layout editor (section 6A) | **Build (phases 5a-5c)** | D1: full scope, our own code. Highest effort; correctness only provable by in-game import (needs the user) |
 | Saved plans (`pi_plans`) | **Build (phase 2)** | D6; later compared with real colonies via ESI |
 | Planet finder (planets within N jumps, by type/radius) | **Optional/later** | Planets come with phase 1 (D5); still needs a jump graph (`mapSolarSystemJumps`); nice but not part of "is it worth it" |
 | Discord alert "extractor program expires" | **Later, small** | Natural fit for `alerts/` (like `skillqueue_empty`) once the ESI kind exists |
 | Multi-character greedy allocator | **Don't** | Large, opinionated, hard to verify; the chain view + per-character planet count gives 90% |
-| Layout eye candy (shapes, 3D planet, themes) | **Don't** | PI Nexus already does this; link to it |
+| Layout shapes (ring, star, grid, ...) | **Build (5c, last)** | Part of the full generator (D1); cheap once placement is pluggable, since links cost by length, not by shape |
+| 3D planet view, colour themes | **Don't** | Pure presentation; a 2D planet view is enough |
 | Modelling deposit maps / head placement / depletion | **Don't** | No data source; calibration covers it |
 | Command Center launch tax, POCO standings tiers | **Don't** | Edge cases; SDE CC export multiplier (3.0 vs wiki "x1.5") is unclear anyway. Assume launchpad <-> customs office |
 
@@ -328,14 +342,14 @@ directly. A full multi-character allocator (jwebbdev's 60 KB greedy) is
   zone** (four fields, D2), default program length, collection interval,
   amortisation days, market-share warning %, and the manual fallbacks
   planets per character / CC level / Customs Code Expertise level (D3).
+  Validated by `validate_config_overrides`; enum checks (if any) in a
+  PI-specific validator, not in `config.py`.
 - Skills (D3, phase 2): characters shared with `pi` for the existing
   `skills` kind supply Interplanetary Consolidation (planets = 1 + level),
   Command Center Upgrades (max CC level) and Customs Code Expertise per
   character, read via `read_esi` like `char_skills`; characters without a
   share use the manual settings. `pi` is added to the `skills` kind's
-  consuming tools. Validated by
-  `validate_config_overrides`; enum checks (if any) in a PI-specific
-  validator, not in `config.py`.
+  consuming tools.
 
 ## 6. Templates
 
@@ -350,18 +364,127 @@ directly. A full multi-character allocator (jwebbdev's 60 KB greedy) is
    `P`/`L`/`R`. Verify the lat/lon convention against an exported template of
    the same colony before shipping (ESI lat/lon vs template `La` polar angle,
    see Eve-PI `pin_angle`).
-3. **Generator (phase 5, D1: own small generator)**: emit a template for a
-   `best_design`. "Small" means: one fixed standard layout per chain type
-   (P0->P1, P0->P2, P1->P2, P2->P3, P1->P3, P3->P4) - launchpad hub, factory
-   rows/tree, ECUs - with exactly the counts the planner computed. It must
-   satisfy 0.012 rad spacing, a tree of links within the CPU/power budget,
-   routes of at most 7 structures, P0 never routed through Basic facilities,
-   link levels for loads over 1250 m3/h, floats for La/Lo/Diam. **Not** in
-   scope (PI Nexus does these): alternative shapes, dragging structures,
-   per-factory P2 choice, storage-suggestion rebuilds, variant comparison.
-   Eve-PI's MIT generator is used only as a local test oracle, not ported.
-   Acceptance needs the user to import a fixed set of generated templates in
-   game (one per chain type, small and large radius).
+3. **Generator and editor**: see 6A.
+4. **Retarget**: the same geometry for another product (rewrite `S` and the
+   routed commodities, keep pins/links/route paths, like Eve-PI's mixed-P2
+   approach) or another planet type (rewrite `T` to that type's structure
+   ids). Re-validated afterwards, since a larger radius makes the same links
+   longer and more expensive.
+
+## 6A. Full template generator (D1)
+
+Scope confirmed 2026-10-04: a **full generator**, built for this app, not a
+port. Eve-PI (MIT) and jwebbdev (no licence, ideas only) were read for how
+they do it. What we take over are game rules and lessons, not code:
+
+| Learned from | Lesson | How we use it |
+|---|---|---|
+| Eve-PI | One hand-written generator per chain (8 functions, ~2700 lines) with fixed row geometry; extra modules for shapes, mixed P2, partial sourcing, storage suggestions, route fitting, a separate layout model for edits | We build **one pipeline** (design -> topology -> placement -> links -> routes -> validate) with chain-specific *topology* only. That avoids 8 copies of placement and budget code |
+| Eve-PI | "A refusal builds nothing; a half-done edit keeps what fit and says why"; a shape that doesn't fit falls back to standard with a reason | Same rules for generator, shapes and editor edits |
+| Eve-PI | Routes over 7 structures exist even in "standard" layouts (192 of 3184 default colonies) and needed a post-pass (`fit_routes`) | Our placement bounds tree depth **by construction** (below), and the validator still checks |
+| Eve-PI | Corpus testing: every product x chain x planet type x CC level, compared with golden output | Same corpus as property tests on our own invariants |
+| jwebbdev | Hex lattice, hubs in the centre, factories by ring, each new pin linked to its nearest pin one ring further in; tree depth = ring | Base of our placement, but on the sphere (equator, polar-angle aware), not flat La/Lo |
+| jwebbdev | Fill factories by what the heads feed, not by spare CPU | Counts always come from `best_design`, never "fill the CC" |
+
+### 6A.1 Pipeline (pure code in `eve_trader/pi/layout/`, no I/O)
+
+1. **Design** (input): counts from `best_design` (3.2) or user overrides,
+   plus chain, product(s), planet type, radius, CC level, collection interval,
+   sourcing choices.
+2. **Topology**: what is connected to what, independent of positions:
+   - hubs: launchpads (and storage facilities) as the colony's buffers;
+   - factory groups per stage, each assigned to a hub;
+   - flows: extractor -> hub (never through a Basic facility), hub ->
+     factory inputs, factory -> next stage or hub, imports/exports via
+     launchpads; P4 recipes with a P1 input get that P1 route too.
+3. **Placement**: a hexagonal lattice around (La = pi/2, Lo = 0), cell
+   spacing = 0.012 rad x a safety margin (default 1.05, configurable),
+   using real great-circle angles. Hubs take the centre cells, then
+   factories ring by ring, grouped so each group sits next to its hub,
+   ECUs last on the outside. The **cell provider is pluggable**: the
+   standard provider is the hex rings; shapes (5c) are other providers.
+4. **Links**: a tree; each pin links to the nearest already-placed pin one
+   ring closer to its hub. A hub-to-factory route then passes ring + 1
+   structures, so keeping factories within ring 5 of their hub guarantees
+   **<= 7 structures by construction**, including routes between two hubs
+   through the centre. Link loads come from the routes. Any link over
+   1250 x 2^level m3/h is upgraded to the lowest level that carries it,
+   with its real length-based cost.
+5. **Routes**: ordered on purpose, since EVE drains input routes in creation
+   order. Per factory: input routes from its own (nearest) pad first, then
+   others; outputs spread over the pads; extractor output to the storage
+   facility if there is one, else a pad. Quantities = recipe input/output
+   per cycle; extractor route quantity = heads x yield per cycle.
+6. **Validate** (same validator as the analyser, section 6.1): spacing,
+   CPU/power including links at their levels, route length, link capacity,
+   P0 not through Basic facilities, connectivity, planet-type-correct
+   structure ids, High-Tech only on Barren/Temperate, 1-10 heads per ECU.
+   If the exact link costs push the design over budget, step back into
+   `best_design` with the measured link cost and rebuild. This repeats until
+   it fits; it never hands out a template that fails validation.
+7. **Serialize**: EVE template JSON (`CmdCtrLv`, `Cmt`, `Diam`, `L`, `P`,
+   `Pln`, `R`), 1-based indices, floats for La/Lo/Diam, compact one line for
+   the clipboard, pretty file download. Imported templates round-trip byte
+   for byte when unchanged (Eve-PI invariant).
+
+### 6A.2 Feature scope (all in, ordered by phase)
+
+**5a - Core generator**
+- All chains: P0->P1, P0->P2 (two ECUs), P1->P2, P2->P3, P1->P3, P3->P4,
+  P2->P4, P1->P4 (whole chain on one planet).
+- Storage sizing for the collection interval: pads/storage from **SDE
+  volumes**, and "storage lasts X h" shown.
+- Automatic link upgrades; budget feedback loop into `best_design`.
+- Generate from Planner, Profitability row, Chains view and saved plan;
+  result goes into the template library.
+
+**5b - Layout editor** (2D planet view in the frontend)
+- Planet disc with structures, links coloured by load, routes highlighted on
+  hover (per commodity).
+- Drag structures, add/remove structures, change counts **in place**
+  ("edit, don't replace": only a new product/chain/planet type rebuilds),
+  reset to generated, undo/redo history.
+- Live validation: spacing is checked in the browser while dragging (pure
+  geometry), and everything else by the backend validator
+  (`POST /api/pi/layouts/validate`, debounced). One source of truth for the
+  rules.
+- "Route storage": link and route existing pads/storage to every factory they
+  can feed, for imported templates that arrive without routes.
+
+**5c - Advanced**
+- **Ways to build this**: for a P3/P4, every split of "made here vs. hauled in"
+  per input, each generated, validated and costed with the profit model
+  (CC load, output/h, m3 hauled, ISK/day).
+- **Partial sourcing**: build some inputs on the planet and import the rest
+  (Eve-PI `partial_factory`/`sourcing`); for P0->P2, choose per P1 whether it
+  is extracted or hauled in.
+- **Mixed P2**: a different P2 per Advanced facility on a P1->P2 layout.
+- **Storage suggestion**: when storage runs out before the interval, offer
+  the smallest fix - add storage, else trade the fewest production units for
+  storage (showing the share of output kept), else the same product from the
+  tier above.
+- **Grow to supply**: if the yield setting rises, add factories while the
+  extraction feeds them and the budget holds.
+- **Shapes**: ring, star, grid, plus, diamond, spiral, `#`, letters - other
+  cell providers. Offered only when the result validates, otherwise standard
+  is kept and the reason is shown.
+
+Head positions are not in a template (1.4): the editor shows head count only,
+and the export notes that heads are placed on hotspots in game.
+
+### 6A.3 Acceptance
+
+- Property tests on the corpus (every product x every valid chain x 8 planet
+  types x CC 0-5 x radius buckets 1500/5000/15000/40000 km): every generated
+  template passes the validator, and the counts match `best_design`. Budget
+  numbers are cross-checked against Eve-PI's generator run locally as an
+  oracle (throwaway script outside the repo).
+- **In-game import by the user** of a fixed acceptance set per phase:
+  5a one template per chain type on a small and a large planet, plus one with
+  link upgrades; 5b two hand-edited layouts; 5c one each of mixed P2, partial
+  sourcing, storage suggestion and two shapes. Each must import with no
+  "Some template routes failed to build", and the in-game CPU/power must
+  match ours to the unit. Results are recorded in this file.
 
 ## 7. ESI integration (phase 4)
 
@@ -388,9 +511,16 @@ directly. A full multi-character allocator (jwebbdev's 60 KB greedy) is
 - Pages: **Profitability** (filterable table: product, chain, planet type,
   ISK/planet/day, verdict + reason, click to see the design and the cost
   breakdown); **Planner** (pick planet type/radius/CC level/chain/product,
-  edit counts, live fit/throughput/profit); **Chains**; **Templates**;
-  **Colonies** (phase 4); **Settings**.
-- CLI: `eve-trader pi rank|design|template analyse` calling the same `do_*`.
+  edit counts, live fit/throughput/profit); **Chains**; **Plans**;
+  **Templates** (library, analyser, retarget); **Layout editor** (6A, 2D
+  planet view; opened from a generated or stored template); **Colonies**
+  (phase 4); **Settings**.
+- Layout endpoints: `POST /api/pi/layouts/generate` (design -> template),
+  `POST /api/pi/layouts/validate` (template -> findings + fit/throughput),
+  `POST /api/pi/layouts/edit` (template + edit -> template, "refusal builds
+  nothing"), `GET /api/pi/layouts/variants` (5c).
+- CLI: `eve-trader pi rank|design|template analyse|template generate`
+  calling the same `do_*`.
 
 ## 9. Phases
 
@@ -401,7 +531,9 @@ directly. A full multi-character allocator (jwebbdev's 60 KB greedy) is
 | 2 | Pricing, taxes, freight, profitability, verdicts, chain view; skills from ESI + manual fallback; saved plans; tool key, router, Profitability/Planner/Chains/Plans/Settings pages | Live-verified against the running API and browser |
 | 3 | Template library + analyser + export | Real in-game exports analyse correctly |
 | 4 | ESI `planets` kind, colonies page, yield calibration, colony -> template, plan vs. real colony | Calibration matches in-game totals on a real colony |
-| 5 | Own small template generator (D1) | User-imported test set builds without errors |
+| 5a | Generator core: pipeline, all 8 chains, storage sizing, link upgrades, budget feedback (6A.2) | Corpus property tests green; user's in-game acceptance set 5a imports cleanly |
+| 5b | Layout editor: 2D view, drag/add/remove, in-place count edits, undo, live validation, route storage | Acceptance set 5b |
+| 5c | Ways to build this, partial sourcing, mixed P2, storage suggestion, grow to supply, shapes | Acceptance set 5c |
 | 6 | Optional: planet finder (jump graph), extractor-expiry Discord alert | - |
 
 Each phase is one or more commits on its own branch, with `pytest` green.
@@ -426,7 +558,7 @@ Each phase is one or more commits on its own branch, with `pytest` green.
 
 | # | Question | Decision |
 |---|---|---|
-| D1 | Template generator: own, port Eve-PI's MIT generator, or none? | **Own small generator** for the standard layouts (scope in 6.3), after phases 1-4; Eve-PI only as local test oracle |
+| D1 | Template generator: own, port Eve-PI's MIT generator, or none? | **Full generator, built for this app** (section 6A): all chains, layout editor, variants, partial sourcing, mixed P2, storage suggestions, shapes. Other repos only as reference and test oracle, no port. Revised the same day from "own small generator" |
 | D2 | Yield default before any calibration | **One default per security zone** (high/low/null/wormhole), editable, labelled as assumption; calibration replaces it. Numbers still open, set together in phase 0 |
 | D3 | Planets per character / CC level: manual or ESI skills? | **Both right away** (phase 2): ESI skills per shared character, manual setting as fallback |
 | D4 | Is `pi` a default grant for new users? | **Yes**, in `DEFAULT_TOOL_KEYS` |
