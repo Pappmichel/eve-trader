@@ -247,6 +247,28 @@ def test_null_owner_id_jobs_use_installer_id_without_touching_other_owner(tenant
     assert by_id[2][1] == 1 and by_id[2][2] == BOB_ID and by_id[2][3] is None
 
 
+def test_expected_invention_successes_uses_esi_probability(tenant):
+    corp_id = 98000001
+    storage.replace_industry_jobs(
+        "corp_industry_jobs",
+        [
+            # 200 x 0.5 + 100 x 0.25 = 125 expected successes
+            (1, 8, 838, 3034, 200, LOCATION_ID, "active", "", "", ALICE_ID, "Alice", 0.5),
+            (2, 8, 838, 3034, 100, LOCATION_ID, "ready", "", "", ALICE_ID, "Alice", 0.25),
+            # synced before the column existed: falls back to 0.4
+            (3, 8, 838, 3034, 10, LOCATION_ID, "active", "", "", ALICE_ID, "Alice"),
+            # not invention / other product / not outstanding: ignored
+            (4, 1, 3034, 3033, 50, LOCATION_ID, "active", "", "", ALICE_ID, "Alice", None),
+            (5, 8, 839, 3035, 99, LOCATION_ID, "active", "", "", ALICE_ID, "Alice", 0.5),
+            (6, 8, 838, 3034, 99, LOCATION_ID, "delivered", "", "", ALICE_ID, "Alice", 0.5),
+        ],
+        owner_corporation_id=corp_id,
+    )
+    assert storage.esi_expected_invention_successes(3034, 0.4) == pytest.approx(129.0)
+    assert storage.esi_expected_invention_successes(
+        3034, 0.4, owner_character_ids=[], owner_corporation_ids=[]) == 0.0
+
+
 def test_unqualified_asset_delete_is_refused(tenant):
     with pytest.raises(ValueError, match="unqualified DELETE"):
         storage.replace_assets("character_assets", [])

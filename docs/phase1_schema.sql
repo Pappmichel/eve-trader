@@ -627,6 +627,12 @@ CREATE TABLE IF NOT EXISTS character_industry_jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_character_industry_jobs_product_status
     ON character_industry_jobs (product_type_id, status);
+-- ESI's own success chance of an invention job (activity 8, NULL for every
+-- other activity), with the installer's skills and decryptor applied. The
+-- Invention table counts running jobs' expected T2 BPC runs against the BPC
+-- target (2026-10-04). Rows synced before this column existed read NULL until
+-- the next industry_jobs sync; the engine falls back to its own probability.
+ALTER TABLE character_industry_jobs ADD COLUMN IF NOT EXISTS probability DOUBLE PRECISION;
 -- T1-04 (2026-09-26): bare job_id alone is not tenant-safe (see corp_
 -- industry_jobs' own T1-04 comment below) - low real risk here specifically
 -- (one tenant per character), widened for consistency with the corp table.
@@ -654,6 +660,8 @@ CREATE TABLE IF NOT EXISTS corp_industry_jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_corp_industry_jobs_product_status
     ON corp_industry_jobs (product_type_id, status);
+-- See character_industry_jobs.probability above.
+ALTER TABLE corp_industry_jobs ADD COLUMN IF NOT EXISTS probability DOUBLE PRECISION;
 -- T1-04 (business-logic audit 2026-08-28/30, live-confirmed 2026-09-26):
 -- bare job_id is not tenant-safe - same corp-is-not-1:1-with-a-tenant gap
 -- as corp_assets' own T1-04 comment above (see that comment for the full

@@ -899,18 +899,20 @@ def _invention_need_row(type_id: int, type_name: str, activity: str,
     """One InventionNeedRow for a Tech II/III product, or None if it isn't
     invention-sourced. Reuses `_tech_ii_mods`' chosen InventionResult
     (grade x decryptor already optimized there) instead of re-resolving the
-    recipe. `missing` drives runs_needed (pure manufacturing shortfall, for
-    display); `stockpile_quantity` is the buffer-target and stockpile_pct
-    denominator (a stock target's backup+home+Jita total, or a special
-    order's ordered qty - plan_special_order measures stockpile against the
-    order itself, not a standing backup target).
+    recipe. `stockpile_quantity` sizes the buffered BPC-run target (a stock
+    target's backup+home+Jita total, or a special order's ordered qty -
+    plan_special_order measures stockpile against the order itself, not a
+    standing backup target); `missing` only acts as a floor on that target.
+    runs_needed, bpcs_needed, recommended_invention_runs and stockpile_pct
+    all derive from that one target, net of owned T2 BPC runs and the
+    expected runs of running invention jobs.
 
     `bpc_buffer_multiplier` is ProductionConfig.bpc_inventory on the
     standing-target path (default 4.0 = keep 4x needed BPC runs on stock)
     and 1.0 on the special-order path so a one-off order invents exactly
     the ordered quantity. With multiplier 1.0 and
-    stockpile_quantity == missing, t2_bpc_target_runs equals today's
-    runs_needed (special orders are unchanged).
+    stockpile_quantity == missing, t2_bpc_target_runs is the order's own
+    manufacturing runs.
 
     This is the only constructor of InventionNeedRow in production code
     (SF-7). CLI, API routers, and the frontend must not invent a second
@@ -932,11 +934,21 @@ def _invention_need_row(type_id: int, type_name: str, activity: str,
     # for both rows, so both counted the same T2 BPC runs (live: Crow and
     # Raptor each showing 507).
     t2_bpc_owned = int(_available_blueprint_copies(blueprint_id, None))
-    runs_needed = math.ceil(missing / product_qty) if missing > 0 else 0
+    t2_bpc_in_progress = _invention_bpc_runs_in_progress(blueprint_id, chosen)
+    t2_bpc_covered = t2_bpc_owned + t2_bpc_in_progress
+    shortfall_runs = math.ceil(missing / product_qty) if missing > 0 else 0
     base_target_runs = math.ceil(stockpile_quantity / product_qty) if stockpile_quantity > 0 else 0
-    t2_bpc_target_runs = math.ceil(bpc_buffer_multiplier * base_target_runs)
-    runs_still_needed = max(0, t2_bpc_target_runs - t2_bpc_owned)
-    bpcs_needed = math.ceil(runs_still_needed / chosen.output_runs) if runs_still_needed > 0 else 0
+    # One demand figure (confirmed with the user 2026-10-04): today's
+    # shortfall and the BPC buffer are not two separate numbers. The target
+    # is the buffered stock target, never less than the actual shortfall;
+    # runs_needed is that target net of owned T2 BPC runs and the expected
+    # runs of invention jobs still running, and bpcs_needed/
+    # recommended_invention_runs/stockpile_pct all derive from the same
+    # target. Before, runs_needed showed the bare shortfall (0 for a stocked
+    # item) next to 517 recommended runs sized from the buffer.
+    t2_bpc_target_runs = max(shortfall_runs, math.ceil(bpc_buffer_multiplier * base_target_runs))
+    runs_needed = max(0, t2_bpc_target_runs - t2_bpc_covered)
+    bpcs_needed = math.ceil(runs_needed / chosen.output_runs) if runs_needed > 0 else 0
     recommended_runs = math.ceil(bpcs_needed / chosen.probability) if bpcs_needed > 0 else 0
     # T1 forward buffer is independent of owned T2 BPCs and is never
     # compounded on top of recommended_invention_runs (that would be
@@ -951,19 +963,20 @@ def _invention_need_row(type_id: int, type_name: str, activity: str,
     # table, T2 BPCs Owned is a real number, and a gray 0% badge next to it
     # reads as "you have none". 100% here means "covered relative to a
     # nothing-to-cover target", not "exactly on target". Denominator is the
-    # unbuffered manufacturing-run target (not bpc_target_runs): 400% with
-    # the default 4x buffer means the BPC stockpile is fully filled.
-    if base_target_runs > 0:
-        stockpile_pct = max(0.0, t2_bpc_owned / base_target_runs * 100)
+    # same combined target runs_needed nets against and the numerator the
+    # same owned + in-invention runs, so 100% means runs_needed is 0.
+    if t2_bpc_target_runs > 0:
+        stockpile_pct = max(0.0, t2_bpc_covered / t2_bpc_target_runs * 100)
     else:
-        stockpile_pct = 100.0 if t2_bpc_owned > 0 else 0.0
+        stockpile_pct = 100.0 if t2_bpc_covered > 0 else 0.0
     return InventionNeedRow(
         type_id=type_id, type_name=type_name,
         t1_blueprint_type_id=chosen.t1_blueprint_type_id, t1_blueprint_name=chosen.t1_blueprint_name,
         decryptor=chosen.decryptor, probability=chosen.probability, output_runs=chosen.output_runs,
         runs_needed=runs_needed, bpcs_needed=bpcs_needed,
         recommended_invention_runs=recommended_runs,
-        t2_bpc_owned=t2_bpc_owned, stockpile_pct=stockpile_pct,
+        t2_bpc_owned=t2_bpc_owned, t2_bpc_in_progress=t2_bpc_in_progress,
+        stockpile_pct=stockpile_pct,
         bpc_target_runs=t2_bpc_target_runs, t1_bpc_target_runs=t1_bpc_target_runs,
     )
 
@@ -1743,6 +1756,20 @@ def _has_bpo_at_location(type_id: int, location_id: int) -> bool:
     ) or storage.manual_has_bpo_at_location(type_id, location_id)
 
 
+def _invention_bpc_runs_in_progress(t2_blueprint_id: int, chosen: InventionResult) -> int:
+    """Expected T2 BPC runs from invention jobs still running for this T2
+    blueprint: expected successes (ESI's per-job probability) x the row's
+    chosen output_runs. ESI does not report which decryptor a job used, so
+    runs per BPC assume the decryptor this row recommends (decided with the
+    user 2026-10-04 - inferring it from the probability is ambiguous:
+    Symmetry and no decryptor share the same x1.0 chance)."""
+    char_ids, corp_ids = shared_production_owner_ids("industry_jobs")
+    successes = storage.esi_expected_invention_successes(
+        t2_blueprint_id, chosen.probability,
+        owner_character_ids=char_ids, owner_corporation_ids=corp_ids)
+    return int(round(successes * chosen.output_runs))
+
+
 def _esi_incoming_industry_qty(type_id: int) -> dict[str, float]:
     char_ids, corp_ids = shared_production_owner_ids("industry_jobs")
     return storage.esi_incoming_industry_qty(
@@ -2137,10 +2164,10 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     'invention_list' (InventionNeedRow list, sorted by recommended invention
     runs desc - one row per *configured Tech II stock target* that's actually
     invention-sourced (has a decryptor), regardless of whether it's currently
-    missing or would be bought instead of built right now - runs_needed is 0
-    for a target that's already fully stocked, but bpc_target_runs /
-    recommended_invention_runs still size a BPC-on-hand buffer from
-    cfg.bpc_inventory x the stock-target quantity), and 'adjusted_prices_
+    missing or would be bought instead of built right now - a fully stocked
+    target still keeps a BPC-on-hand buffer of cfg.bpc_inventory x the
+    stock-target quantity, and runs_needed is that buffer net of owned T2
+    BPC runs), and 'adjusted_prices_
     available' (bool - False means ESI's adjusted-price fetch failed this
     run, so every BuildJobEntry.job_cost in this same response silently
     reads 0 rather than its real value - T2-02, business-logic audit,
