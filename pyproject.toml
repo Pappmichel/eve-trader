@@ -58,4 +58,5 @@ markers = [
     "gate_enforced: access gate enabled (production posture)",
     "gate_off: access gate disabled (trusted-operator path)",
     "postgres_required: needs a reachable local Postgres",
+    "pi_corpus: full PI generator corpus (slow; runs only with PI_CORPUS=1)",
 ]
