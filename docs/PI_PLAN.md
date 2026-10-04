@@ -4,7 +4,8 @@ Status: **planned 2026-10-04, not started.** PI was "deferred, not rejected"
 (CLAUDE.md, "Deferred, not rejected"); the user asked for this plan on
 2026-10-04 and confirmed decisions D1-D6 one by one the same day (section 11).
 The per-zone yield defaults (D2) and the review items O1-O2/F1-F7 (11A)
-were settled the same day. Only the phase 0 in-game checks remain.
+were settled the same day, and the phase 0 in-game checks were done by the
+user. Ready for phase 1.
 
 Goal: a PI tool that answers **"which PI is worth doing for me, and which is
 not"** from what a planet can *actually* build - real structure counts under
@@ -87,9 +88,22 @@ Everything below was checked live, not copied from a wiki:
   in game.
 - **EVE Uni "Planetary Commodities"** lists incomplete resources per planet
   type (Gas with 3, Barren with Heavy Metals). Eve-PI and jwebbdev agree
-  independently on **five P0 per planet type** (table in 3.1). This table is
-  **not in the SDE** (planet types have no dogma attributes). It is the only
-  hardcoded game table in this plan; verify it once in game before relying on it.
+  independently on **five P0 per planet type** (table below). This table is
+  **not in the SDE** (planet types have no dogma attributes); it is the only
+  hardcoded game table in this plan. **Checked in game by the user
+  2026-10-04**: Barren and Gas match exactly; the other six were accepted on
+  that basis (same source, both spot checks correct).
+
+  | Planet type (type id) | P0 resources |
+  |---|---|
+  | Barren (2016) | Aqueous Liquids, Base Metals, Carbon Compounds, Micro Organisms, Noble Metals |
+  | Gas (13) | Aqueous Liquids, Base Metals, Ionic Solutions, Noble Gas, Reactive Gas |
+  | Ice (12) | Aqueous Liquids, Heavy Metals, Micro Organisms, Noble Gas, Planktic Colonies |
+  | Lava (2015) | Base Metals, Felsic Magma, Heavy Metals, Non-CS Crystals, Suspended Plasma |
+  | Oceanic (2014) | Aqueous Liquids, Carbon Compounds, Complex Organisms, Micro Organisms, Planktic Colonies |
+  | Plasma (2063) | Base Metals, Heavy Metals, Noble Metals, Non-CS Crystals, Suspended Plasma |
+  | Storm (2017) | Aqueous Liquids, Base Metals, Ionic Solutions, Noble Gas, Suspended Plasma |
+  | Temperate (11) | Aqueous Liquids, Autotrophs, Carbon Compounds, Complex Organisms, Micro Organisms |
 
 ### 1.4 Constraints measured in game by the Eve-PI author (not in the SDE)
 
@@ -123,7 +137,8 @@ Everything below was checked live, not copied from a wiki:
 CPU/power per level (EVE Uni, Eve-PI and jwebbdev all agree; only level 0 is
 in the SDE): L0 1675/6000, L1 7057/9000, L2 12136/12000, L3 17215/15000,
 L4 21315/17000, L5 25415/19000. Upgrade ISK: 580k, 930k, 1.2M, 1.5M, 2.1M
-(EVE Uni). Command Center Upgrades caps the level, Interplanetary
+(EVE Uni). **All levels, CPU, power and upgrade costs confirmed in game by
+the user 2026-10-04.** Command Center Upgrades caps the level, Interplanetary
 Consolidation gives +1 planet per level (up to 6). Customs Code Expertise
 lowers the high-sec NPC customs rate (10% base, 5% at level V). Planetology,
 Advanced Planetology and Remote Sensing only affect scanning, **not yield**.
@@ -650,7 +665,7 @@ and the export notes that heads are placed on hotspots in game.
 
 | Phase | Content | Done when |
 |---|---|---|
-| 0 | One in-game check of the P0 table (1.3) and CC levels | Values recorded here |
+| 0 | One in-game check of the P0 table (1.3) and CC levels | **Done 2026-10-04** |
 | 1 | SDE import (schematics, PI attributes, commodities, structures, all PI planets with radius) + `pi/engine.py` capacity/throughput + unit tests | Golden tests pass (10) |
 | 2 | Pricing, taxes, freight, profitability, verdicts, effort + price-trend columns, chain view, Production demand view; skills from ESI + manual fallback; saved plans; tool key, router, Profitability/Planner/Chains/Plans/Settings pages | Live-verified against the running API and browser |
 | 2b | System analysis (3.5): per-planet ranking, MILP system plan, save as plan; System page | Live-verified on a few real systems (high-sec, null-sec, one without Barren/Temperate) |
@@ -712,8 +727,8 @@ Decided with the user the same day, one by one:
 
 Added afterwards at the user's request: **system analysis** (3.5, phase 2b).
 
-Nothing is open any more apart from the phase 0 in-game checks (P0 table,
-CC levels).
+Phase 0 in-game checks done 2026-10-04 (P0 table 1.3, CC levels 1.5).
+Nothing is open; phase 1 can start.
 
 ## 12. Sources
 
