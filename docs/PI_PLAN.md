@@ -3,7 +3,8 @@
 Status: **planned 2026-10-04, not started.** PI was "deferred, not rejected"
 (CLAUDE.md, "Deferred, not rejected"); the user asked for this plan on
 2026-10-04 and confirmed decisions D1-D6 one by one the same day (section 11).
-The per-zone yield defaults (D2) were set the same day (1.6).
+The per-zone yield defaults (D2) and the review items O1-O2/F1-F7 (11A)
+were settled the same day. Only the phase 0 in-game checks remain.
 
 Goal: a PI tool that answers **"which PI is worth doing for me, and which is
 not"** from what a planet can *actually* build - real structure counts under
@@ -267,7 +268,7 @@ revenue    = sum(out_units * price_out)                    (hub price, see below
 input_cost = sum(in_units * price_in)                      (0 for P0)
 tax        = sum(out_units * export_base * rate)
            + sum(in_units * import_base * rate * 0.5)
-freight    = (m3_in + m3_out) * freight_per_m3             (hub freight table)
+freight    = (m3_in + m3_out) * freight_per_m3             (PI's own rate, O1)
 setup      = (CC upgrades + structures + CC) / amortisation_days
 profit     = revenue - input_cost - tax - freight - setup
 ```
@@ -284,6 +285,11 @@ profit     = revenue - input_cost - tax - freight - setup
   per colony (default from settings), since ESI cannot see foreign
   POCO/Skyhook rates. The UI shows both parts and lets the user override the
   total.
+- **Freight** (O1): PI has its own ISK/m3 rate for hub <-> planets
+  (`PiConfig.freight_per_m3`), overridable per saved plan. The shared
+  `hub_freight_cost_per_m3` table (hub -> home structure) is **not** used by
+  PI, also not in `ALL_HUBS` mode: there PI picks the hub with the lowest
+  price incl. broker fee and adds its own freight rate.
 - **Valuation side** (setting, same idea as the other tools): sell outputs
   into buy orders (instant) or list them as sell orders (minus broker fee and
   sales tax); buy inputs from sell orders. The verdict states which side it
@@ -300,10 +306,20 @@ profit     = revenue - input_cost - tax - freight - setup
   daily volume (X configurable, default 10%). A P4 plan that would flood the
   market is "not worth it" even with a good margin. This is a figure, not a
   cap (same spirit as CLAUDE.md "Theoretical ceiling").
-- **Verdict**: profit > 0 after setup and above a user threshold ISK/planet/day
-  -> worth it; otherwise not worth it, with the **reason that dominates**
-  (tax, freight, input cost, extraction too low, market too thin). Showing
-  the reason is the point of the tool.
+- **Verdict**: profit after setup >= the threshold ISK/planet/day -> worth
+  it; otherwise not worth it, with the **reason that dominates** (tax,
+  freight, input cost, extraction too low, market too thin). Showing the
+  reason is the point of the tool. Defaults (O2): amortisation **30 days**,
+  threshold **1,000,000 ISK per planet per day**, market-share warning
+  **10%** of daily traded volume; all in Settings.
+- **Effort column** (F2): interactions per week = extractor program restarts
+  (168 h / program length per ECU) + hauls (168 h / collection interval for
+  every planet that imports or exports), plus ISK per interaction. Shown and
+  sortable, **not** part of the verdict.
+- **Price trend column** (F6): 30-day trend (%) and volatility per PI product
+  from the existing history plumbing (Goonmetrics where covered, ESI daily
+  history otherwise; see CLAUDE.md "Market hubs are per tool"). Display only;
+  the verdict uses current prices.
 
 ### 3.4 Chains across planets
 
@@ -315,6 +331,20 @@ tier, and the characters it needs (planets per character and CC level from
 ESI skills where shared, else the manual setting; D3). This answers "build up to P2 or sell P1?"
 directly. A full multi-character allocator (jwebbdev's 60 KB greedy) is
 **not** in scope (see 4).
+
+### 3.5 Production demand (F1, read-only)
+
+A PI page section lists the PI materials Production's stock targets and
+build plans consume (fuel blocks, structure and capital components, ...),
+with daily demand, and for each "make via PI vs. buy": the PI chain's cost
+per unit (incl. taxes, freight, setup share) against your **buy** price at
+Production's hub. Read-only: PI reads Production's demand through
+`production/actions` / `storage` reads (the same way `skill_check.py`
+reads Doctrine's fittings without importing that package's logic), and
+Production itself is not changed. The route needs the `production` grant in
+addition to `pi` (checked against `request.state.tool_keys`, same reasoning
+as the Doctrine skill check: a `pi` grant alone must not expose Production
+data).
 
 ## 4. What is worth building, and what is not
 
@@ -328,7 +358,12 @@ directly. A full multi-character allocator (jwebbdev's 60 KB greedy) is
 | Full template generator + layout editor (section 6A) | **Build (phases 5a-5c)** | D1: full scope, our own code. Highest effort; correctness only provable by in-game import (needs the user) |
 | Saved plans (`pi_plans`) | **Build (phase 2)** | D6; later compared with real colonies via ESI |
 | Planet finder (planets within N jumps, by type/radius) | **Optional/later** | Planets come with phase 1 (D5); still needs a jump graph (`mapSolarSystemJumps`); nice but not part of "is it worth it" |
-| Discord alert "extractor program expires" | **Later, small** | Natural fit for `alerts/` (like `skillqueue_empty`) once the ESI kind exists |
+| Production demand view, make-via-PI vs. buy (3.5) | **Build (phase 2)** | F1; read-only, no change to Production |
+| Effort and price-trend columns | **Build (phase 2)** | F2/F6; display only |
+| Colony monitor: projected pads full / inputs empty / extractor end / idle factories | **Build (phase 4)** | F3; estimate from ESI state + rates, labelled as such |
+| Discord alerts: extractor expires, launchpad nearly full, factory nearly out of inputs | **Build (phase 4)** | F4; in `alerts/` like `skillqueue_empty`; the last two come from the monitor's projection and say so |
+| PI colony contents in Portfolio Total Wealth | **Don't** | F5, declined by the user |
+| Own corp customs office tax rates via ESI | **Don't** | F7, declined: only helps POCO owners; the rate is entered once per plan |
 | Multi-character greedy allocator | **Don't** | Large, opinionated, hard to verify; the chain view + per-character planet count gives 90% |
 | Layout shapes (ring, star, grid, ...) | **Build (5c, last)** | Part of the full generator (D1); cheap once placement is pluggable, since links cost by length, not by shape |
 | 3D planet view, colour themes | **Don't** | Pure presentation; a 2D planet view is enough |
@@ -366,13 +401,15 @@ directly. A full multi-character allocator (jwebbdev's 60 KB greedy) is
   per_head_per_hour, program_hours, sampled_at; phase 4),
   `pi_plans` (D6, phase 2): saved designs and chains - name, planet_id (or
   free planet type + radius), character_id (optional), design JSON, customs
-  tax rate, yield override, created/updated. Phase 4 compares a plan with
+  tax rate (owner part), freight override, yield override, created/updated. Phase 4 compares a plan with
   the matching real colony (same character + planet) via ESI: planned vs.
   actual structures and extraction.
 - `PiConfig` dataclass (`eve_trader/pi/config.py`): `hub_region_id`,
-  broker fee, sales tax, default customs rate, yield per head **per security
-  zone** (four fields, D2), default program length, collection interval,
-  amortisation days, market-share warning %, and the manual fallbacks
+  broker fee, sales tax, valuation side, default owner customs rate,
+  `freight_per_m3` (O1), yield per head **per security zone** (four fields,
+  D2), default program length (3 days), collection interval, amortisation
+  days (30), verdict threshold (1M ISK/planet/day), market-share warning %
+  (10), and the manual fallbacks
   planets per character / CC level / Customs Code Expertise level (D3).
   Validated by `validate_config_overrides`; enum checks (if any) in a
   PI-specific validator, not in `config.py`.
@@ -521,7 +558,12 @@ and the export notes that heads are placed on hotspots in game.
 ## 7. ESI integration (phase 4)
 
 - New data kind `planets` in `esi_data/registry.py`: scope
-  `esi-planets.manage_planets.v1`, consuming tool `pi`. Colonies change
+  `esi-planets.manage_planets.v1`, consuming tools `pi` and `char_alerts`
+  (F4: the alert types `pi_extractor_expiry`, `pi_pad_full`,
+  `pi_inputs_empty` live in `alerts/` next to `skillqueue_empty`, opt-in per
+  character x type, and `deliver()` re-checks the `char_alerts` share at send
+  time like every other alert; the alerts job supplies `planets` as
+  `demand`, the same way it does for `skillqueue`). Colonies change
   rarely and extractor expiry matters, so a **snapshot kind** (normal tier,
   `schedule_mode` on-demand + page-open sync like Character Info) rather than
   `live_only`. Reads go through `read_esi`/`fields` like every other tool,
@@ -565,13 +607,13 @@ and the export notes that heads are placed on hotspots in game.
 |---|---|---|
 | 0 | One in-game check of the P0 table (1.3) and CC levels | Values recorded here |
 | 1 | SDE import (schematics, PI attributes, commodities, structures, all PI planets with radius) + `pi/engine.py` capacity/throughput + unit tests | Golden tests pass (10) |
-| 2 | Pricing, taxes, freight, profitability, verdicts, chain view; skills from ESI + manual fallback; saved plans; tool key, router, Profitability/Planner/Chains/Plans/Settings pages | Live-verified against the running API and browser |
-| 3 | Template library + analyser + export | Real in-game exports analyse correctly |
-| 4 | ESI `planets` kind, colonies page, yield calibration, colony -> template, plan vs. real colony | Calibration matches in-game totals on a real colony |
+| 2 | Pricing, taxes, freight, profitability, verdicts, effort + price-trend columns, chain view, Production demand view; skills from ESI + manual fallback; saved plans; tool key, router, Profitability/Planner/Chains/Plans/Settings pages | Live-verified against the running API and browser |
+| 3 | Template library + analyser + export + retarget | Real in-game exports analyse correctly |
+| 4 | ESI `planets` kind, colonies page with monitor (projection), yield calibration, colony -> template, plan vs. real colony; Discord alerts (extractor expiry, pad nearly full, inputs nearly empty) | Calibration matches in-game totals on a real colony; test DM per alert type |
 | 5a | Generator core: pipeline, all 8 chains, storage sizing, link upgrades, budget feedback (6A.2) | Corpus property tests green; user's in-game acceptance set 5a imports cleanly |
 | 5b | Layout editor: 2D view, drag/add/remove, in-place count edits, undo, live validation, route storage | Acceptance set 5b |
 | 5c | Ways to build this, partial sourcing, mixed P2, storage suggestion, grow to supply, shapes | Acceptance set 5c |
-| 6 | Optional: planet finder (jump graph), extractor-expiry Discord alert | - |
+| 6 | Optional: planet finder (jump graph) | - |
 
 Each phase is one or more commits on its own branch, with `pytest` green.
 
@@ -608,19 +650,22 @@ Gaps closed directly in the plan during this review: tax composition with
 Customs Code Expertise (3.3), valuation side (3.3), design cache (3.2),
 wormhole/Pochven/Shattered handling (1.6), ESI colony freshness (7).
 
-Still to decide with the user (answers recorded below as they come in):
+Decided with the user the same day, one by one:
 
-| # | Item |
-|---|---|
-| O1 | **Freight for PI**: `hub_freight_cost_per_m3` means hub -> home structure. PI planets sit elsewhere, so PI needs its own ISK/m3 (hub <-> planets), possibly per plan |
-| O2 | Defaults for the verdict: amortisation days, minimum ISK/planet/day, market-share warning % |
-| F1 | **Production integration**: PI items in Production's demand (fuel blocks, structure/capital components) -> "make via PI vs buy", valued at your buy price |
-| F2 | **Effort metric**: interactions per week (program restarts + hauls) and ISK per interaction next to ISK/planet/day |
-| F3 | **Colony monitor**: per real colony, projected state now (pads full at, inputs empty at, extractor ends at, idle factories), from ESI + rates |
-| F4 | **More Discord alerts** beyond extractor expiry: "launchpad full" / "factory out of inputs" from F3's projection |
-| F5 | **Portfolio**: value PI colony contents (not part of ESI assets) in Total Wealth |
-| F6 | **Price trend** column (30-day history, volatility) for PI products, from the existing history plumbing |
-| F7 | Own corporation's customs office tax rates via ESI (`esi-planets.read_customs_offices.v1`) to prefill the owner part |
+| # | Item | Decision |
+|---|---|---|
+| O1 | Freight for PI (the hub table means hub -> home structure) | **Own PI rate** (hub <-> planets), overridable per plan; hub table not used (3.3) |
+| O2 | Verdict defaults | **30 days** amortisation, **1M ISK/planet/day** threshold, **10%** market-share warning |
+| F1 | Production integration | **Yes, read-only demand view**, make via PI vs. buy (3.5), phase 2 |
+| F2 | Effort metric | **Yes, as a column**, not in the verdict, phase 2 |
+| F3 | Colony monitor | **Yes, phase 4** |
+| F4 | Discord alerts | **Extractor expiry + pad nearly full + inputs nearly empty**, phase 4 |
+| F5 | PI contents in Portfolio | **No** |
+| F6 | Price trend column | **Yes**, display only, phase 2 |
+| F7 | Own corp customs office rates via ESI | **No** |
+
+Nothing is open any more apart from the phase 0 in-game checks (P0 table,
+CC levels).
 
 ## 12. Sources
 
