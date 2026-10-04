@@ -556,5 +556,69 @@ def admin_grant_defaults(dry_run: bool):
                + (" (dry run)" if dry_run else ""))
 
 
+@main.group("pi")
+def pi_group():
+    """Planetary Industry (eve_trader/pi/actions.py) - same do_* actions the
+    web UI calls. Every command takes --tenant-id and runs inside
+    tenant_scope.enter_tenant."""
+
+
+@pi_group.command("profitability")
+@click.option("--zone", default=None, help="Security zone (highsec/lowsec/nullsec/wormhole); default: PI settings.")
+@click.option("--cc-level", type=int, default=None, help="Command Center level 0-5; default: PI settings.")
+@click.option("--limit", type=int, default=25, show_default=True, help="Rows to print.")
+@_tenant_id_option
+def pi_profitability(zone: str | None, cc_level: int | None, limit: int, tenant_id: str | None):
+    """Prints the top PI chains by profit per day."""
+    from .pi import actions as pi_actions
+    try:
+        with tenant_scope.enter_tenant(tenant_id or storage.DEFAULT_TENANT_ID):
+            result = pi_actions.do_profitability(zone=zone, cc_level=cc_level)
+    except actions.ActionError as e:
+        click.echo(str(e), err=True)
+        raise SystemExit(1) from e
+    click.echo(f"zone={result['zone']} cc_level={result['cc_level']}")
+    click.echo(f"{'chain':<7} {'product':<32} {'planet type':<12} {'profit/day':>16}  {'verdict':<8} reason")
+    for r in result["rows"][:limit]:
+        click.echo(
+            f"{r['chain']:<7} {r['product_name']:<32} {(r['planet_type'] or '-'):<12} "
+            f"{r['profit_per_day']:>16,.0f}  {'worth it' if r['worth_it'] else 'no':<8} {r['reason'] or ''}"
+        )
+
+
+@pi_group.command("planner")
+@click.option("--chain", required=True, help="Chain, e.g. P0-P1, P0-P2, P1-P2, P2-P3, P3-P4.")
+@click.option("--product-type-id", type=int, required=True)
+@click.option("--planet-id", type=int, default=None, help="A real planet from the SDE.")
+@click.option("--planet-type-id", type=int, default=None, help="A free planet type (needs --radius-km or uses the median).")
+@click.option("--radius-km", type=float, default=None)
+@click.option("--cc-level", type=int, default=None)
+@click.option("--zone", default=None)
+@_tenant_id_option
+def pi_planner(chain: str, product_type_id: int, planet_id: int | None, planet_type_id: int | None,
+               radius_km: float | None, cc_level: int | None, zone: str | None, tenant_id: str | None):
+    """Prints the best colony design and its profit for one planet."""
+    from .pi import actions as pi_actions
+    try:
+        with tenant_scope.enter_tenant(tenant_id or storage.DEFAULT_TENANT_ID):
+            r = pi_actions.do_planner(
+                chain=chain, product_type_id=product_type_id, planet_id=planet_id,
+                planet_type_id=planet_type_id, radius_km=radius_km, cc_level=cc_level, zone=zone,
+            )
+    except actions.ActionError as e:
+        click.echo(str(e), err=True)
+        raise SystemExit(1) from e
+    planet, design, e = r["planet"], r["evaluation"]["design"], r["economics"]
+    click.echo(f"{r['product']['name']} via {r['chain']} on {planet['planet_type']} "
+               f"(radius {planet['radius_km']:.0f} km, zone {r['zone']}, CC {r['cc_level']})")
+    click.echo(f"launchpads={design['launchpads']} storages={design['storages']}")
+    for f in design["factories_named"]:
+        click.echo(f"  factory {f['name']:<32} x{f['count']}")
+    for x in design["ecus_named"]:
+        click.echo(f"  extractor {x['name']:<30} {x['heads']} heads")
+    click.echo(f"revenue/day {e['revenue_per_day']:,.0f}  profit/day {e['profit_per_day']:,.0f}  "
+               f"{'worth it' if e['worth_it'] else 'not worth it'}" + (f" ({e['reason']})" if e['reason'] else ""))
+
+
 if __name__ == "__main__":
     main()

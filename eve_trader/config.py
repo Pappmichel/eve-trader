@@ -177,6 +177,26 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     # Per-tool market hubs (#222) - same validation as Trading's own hub.
     # 0 = hubs.ALL_HUBS (best hub per item); any other value is a region id.
     "hub_region_id": (0, None),
+    # PI tool (eve_trader/pi/config.py); every field is pi_-prefixed because
+    # this table is keyed by bare field name across all config dataclasses.
+    "pi_broker_fee_rate": (0, 1),
+    "pi_sales_tax_rate": (0, 1),
+    "pi_owner_tax_rate": (0, 1),
+    "pi_market_share_warning": (0, 1),
+    "pi_freight_per_m3": (0, None),
+    "pi_yield_highsec": (0, None),
+    "pi_yield_lowsec": (0, None),
+    "pi_yield_nullsec": (0, None),
+    "pi_yield_wormhole": (0, None),
+    "pi_program_hours": (1, 336),
+    "pi_collection_interval_hours": (1, 336),
+    "pi_amortisation_days": (1, None),
+    "pi_planets_per_character": (1, 6),
+    "pi_characters": (1, 100),
+    "pi_cc_level": (0, 5),
+    "pi_customs_code_expertise_level": (0, 5),
+    "pi_reference_radius_km": (50, 200000),
+    "pi_demand_days": (1, 365),
     "input_hub_region_id": (0, None),
     "reference_region_id": (1, None),
     "structure_id": (1, None),

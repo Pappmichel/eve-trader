@@ -113,7 +113,7 @@ def read_esi(data_kind: str, tool_key: str, **filters) -> list[dict]:
     elif data_kind == "contracts":
         rows.extend(_read_contracts(tool_key, owner_type_filter, owner_id_filter))
     elif data_kind == "skills":
-        if tool_key in ("char_skills", "char_skill_plans"):
+        if tool_key in ("char_skills", "char_skill_plans", "pi"):
             rows.extend(_read_character_skills(tool_key, owner_id_filter, filters.get("table")))
         else:
             rows.extend(_read_skills(tool_key, owner_id_filter))

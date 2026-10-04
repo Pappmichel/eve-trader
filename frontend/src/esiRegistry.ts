@@ -81,7 +81,7 @@ export const OWNED_DATA_KINDS: readonly OwnedDataKind[] = [
     // attributes and SP totals are character data first, and Skills (char_skills)
     // joined Production and Station Trading as a consumer.
     key: 'skills', section: 'character', label: 'Skills', group: 2,
-    consumingTools: ['production', 'station_trading', 'char_skills', 'char_skill_plans'],
+    consumingTools: ['production', 'station_trading', 'char_skills', 'char_skill_plans', 'pi'],
     corpRoles: [],
   },
   {
@@ -180,11 +180,12 @@ export const TOOL_LABELS: Record<string, string> = {
   char_contacts: 'Contacts & Calendar',
   char_skill_plans: 'Skill Plans',
   char_alerts: 'Discord Alerts',
+  pi: 'Planetary Industry',
 }
 
 export const CONSUMING_TOOL_KEYS = [
   'trading', 'production', 'doctrine', 'station_trading', 'sorting', 'portfolio', 'char_info', 'char_skills', 'char_mail',
-  'char_notifications', 'char_contacts', 'char_skill_plans', 'char_alerts',
+  'char_notifications', 'char_contacts', 'char_skill_plans', 'char_alerts', 'pi',
 ] as const
 
 export function kindByKey(key: string): OwnedDataKind | undefined {

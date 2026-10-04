@@ -176,7 +176,7 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         # attributes and SP totals, read through `read_esi("skills",
         # "char_skills")`. Production/Station Trading keep reading the slot
         # rows from `character_slots` under their own sharing rows.
-        consuming_tools=("production", "station_trading", "char_skills", "char_skill_plans"),
+        consuming_tools=("production", "station_trading", "char_skills", "char_skill_plans", "pi"),
         freshness_tier=TIER_RARE,
     ),
     OwnedDataKind(

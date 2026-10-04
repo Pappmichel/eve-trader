@@ -7444,3 +7444,66 @@ def search_pi_systems(query: str, limit: int = 20) -> list[tuple]:
             (f"%{q}%", q, f"{q}%", int(limit)),
         ).fetchall()
     return [tuple(r) for r in rows]
+
+
+# PI saved plans (D6) - per tenant, RLS.
+_PI_PLAN_COLUMNS = (
+    "plan_id, name, planet_id, planet_type_id, radius_km, character_id, design, owner_tax_rate, "
+    "freight_per_m3, yield_override, notes, created_at, updated_at"
+)
+
+
+def _pi_plan_row(r) -> dict:
+    design = r[6]
+    return {
+        "plan_id": int(r[0]), "name": r[1], "planet_id": r[2], "planet_type_id": int(r[3]),
+        "radius_km": float(r[4]), "character_id": r[5], "design": design,
+        "owner_tax_rate": r[7], "freight_per_m3": r[8], "yield_override": r[9], "notes": r[10],
+        "created_at": r[11].isoformat() if r[11] else None,
+        "updated_at": r[12].isoformat() if r[12] else None,
+    }
+
+
+def list_pi_plans() -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(f"SELECT {_PI_PLAN_COLUMNS} FROM pi_plans ORDER BY name, plan_id").fetchall()
+    return [_pi_plan_row(r) for r in rows]
+
+
+def get_pi_plan(plan_id: int) -> Optional[dict]:
+    with connect() as conn:
+        row = conn.execute(f"SELECT {_PI_PLAN_COLUMNS} FROM pi_plans WHERE plan_id = ?", (int(plan_id),)).fetchone()
+    return _pi_plan_row(row) if row else None
+
+
+def save_pi_plan(plan: dict, plan_id: Optional[int] = None) -> int:
+    """Insert (plan_id None) or update; returns the plan id."""
+    values = (
+        plan["name"], plan.get("planet_id"), int(plan["planet_type_id"]), float(plan["radius_km"]),
+        plan.get("character_id"), Jsonb(plan["design"]), plan.get("owner_tax_rate"),
+        plan.get("freight_per_m3"), plan.get("yield_override"), plan.get("notes"),
+    )
+    with connect() as conn:
+        if plan_id is None:
+            row = conn.execute(
+                "INSERT INTO pi_plans (name, planet_id, planet_type_id, radius_km, character_id, design, "
+                "owner_tax_rate, freight_per_m3, yield_override, notes) VALUES (?,?,?,?,?,?,?,?,?,?) "
+                "RETURNING plan_id",
+                values,
+            ).fetchone()
+            return int(row[0])
+        cur = conn.execute(
+            "UPDATE pi_plans SET name = ?, planet_id = ?, planet_type_id = ?, radius_km = ?, character_id = ?, "
+            "design = ?, owner_tax_rate = ?, freight_per_m3 = ?, yield_override = ?, notes = ?, "
+            "updated_at = now() WHERE plan_id = ?",
+            values + (int(plan_id),),
+        )
+        if cur.rowcount == 0:
+            raise KeyError(plan_id)
+        return int(plan_id)
+
+
+def delete_pi_plan(plan_id: int) -> bool:
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM pi_plans WHERE plan_id = ?", (int(plan_id),))
+        return cur.rowcount > 0
