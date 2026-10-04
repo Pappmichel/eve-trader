@@ -217,8 +217,10 @@ behind a lock, `invalidate()` on SDE apply (CLAUDE.md caching shape 3)
 - Link cost at level L: `cpu = 15 + 0.2 * km * (L+1) ** 1.4`,
   `power = 10 + 0.15 * km * (L+1) ** 1.2`, capacity `1250 * 2 ** L`
   (constants from the Link type's attributes). Eve-PI rounds **each link up**
-  (`ceil`) and matched in-game totals to the unit; we do the same, and an
-  acceptance test compares totals with in-game numbers **[P-24]**.
+  (`ceil`) and matched in-game totals to the unit. **Confirmed in game
+  2026-10-04 (V-5)**: a 26 km link shows 21 tf / 14 MW (20.2 / 13.9), a
+  114 km link 38 tf / 28 MW (37.8 / 27.1; plain rounding would give 27 MW).
+  Level-0 capacity shows 1250 m3/h. Golden tests pin both links **[P-24]**.
 - Spacing rule: central angle >= 0.012 rad. Check it **after** rounding
   La/Lo to the 5 decimals templates use; rounding can push two pins under
   the limit **[P-25]**.
@@ -271,22 +273,31 @@ arbitrary layouts (analyser/editor/ESI colonies).
 
 - `cycle_outputs(qty_per_cycle, cycle_seconds, cycles, noise=True)` =
   CCP's algorithm with integer truncation per cycle, as in CCP's sample.
-- **Cycle-time thresholds conflict between sources** **[P-31]**: EVE Uni
-  says the cycle doubles at 25 h -> 30 min, 50 h -> 1 h, 100 h -> 2 h,
-  200 h -> 4 h (so below 25 h it is 15 min); jwebbdev uses <=25 h -> 30 min
-  ... >200 h -> 8 h. `docs/PI_PLAN.md` 1.6 currently quotes jwebbdev's
-  version. **Impact is small**: `t` counts 15-minute bars whatever the cycle
-  length, so the program *average* barely depends on it. Calibration and the
-  monitor use ESI's `cycle_time`, never the table. The table is used only to
-  label the Planner's program length. Settle it with one real extractor in
-  phase 4 (V-1).
-- **`qty_per_cycle` semantics** **[P-32]**: in CCP's formula, a cycle
-  yields `bar_width x qty x ...` with `bar_width = cycle/900`, so the name
-  suggests "per cycle" but it behaves like "per 15-minute bar". Verify
-  against the in-game per-cycle figure of one extractor before trusting
-  calibration (V-2).
+- **Cycle-time thresholds** **[P-31]**, **settled in game 2026-10-04
+  (V-1)**: EVE Uni is right and jwebbdev is wrong. Below 25 h: 15 min;
+  from 25 h: 30 min; 50 h: 1 h; 100 h: 2 h; 200 h up to 14 days: 4 h (no
+  8 h step). Real data still uses ESI's `cycle_time`; the table is for the
+  Planner.
+- **Formula verified exactly in game (V-2, 2026-10-04)**: a real Lava
+  extractor (Heavy Metals, 4 heads, program 2d 2h = 50 h, 1 h cycles, 50
+  cycles) showed cycle 1 = 23,058, cycle 50 = 10,654, total 682,147
+  (avg 13,643/h). CCP's algorithm with **integer truncation per cycle** and
+  base `q = 5903` reproduces all three numbers exactly, and the peak at
+  cycle 10 (~28,000) as well. Golden test: `cycle_outputs(5903, 3600, 50)`
+  must give exactly those values. **`qty_per_cycle` semantics [P-32]**: a
+  cycle yields about `(cycle_seconds / 900) x q`, i.e. `q` is the base per
+  15-minute bar, not per cycle. Phase 4 only needs to confirm that ESI's
+  `qty_per_cycle` for that extractor is 5903 (one comparison).
+- **Noise only adds yield** **[P-64]**: `max(..., 0)` means the noise term
+  is never negative. In the verified example it adds +13% over the
+  noise-free curve (13,643/h vs 12,039/h). So the planning **ratio**
+  between program lengths may use the noise-free curve, but calibration
+  must use the full formula, or it would overstate the base yield by ~10-15%.
 - Planning ratio: noise-free average for program length P divided by the
-  same for 72 h (the D2 reference). Pure function, memoised.
+  same for 72 h (the D2 reference). Pure function, memoised. Data point from
+  the same extractor: 3,411 P0/head/h at 50 h, about 2,890 at 72 h
+  (noise-free ratio 0.848). That sits between the low-sec (2000) and
+  null-sec (4000) defaults.
 
 ### 3.6 Economics (`economics.py`)
 
@@ -384,7 +395,8 @@ arbitrary layouts (analyser/editor/ESI colonies).
 - **Determinism**: same design -> same template (sorted iteration, no set
   ordering), so golden tests and "Reset to generated" work.
 - **Unknown game limits**: max pins per colony and max `Cmt` length are not
-  documented. Keep `Cmt` <= 60 ASCII-safe chars (real exports contain an
+  documented; the in-game name field showed no visible length limit (V-4,
+  2026-10-04). Keep `Cmt` <= 60 ASCII-safe chars (real exports contain an
   en dash in UTF-8; parse UTF-8, emit ASCII) and record the in-game
   acceptance results in the plan (V-4) **[P-46]**.
 
@@ -568,15 +580,15 @@ arbitrary layouts (analyser/editor/ESI colonies).
 | P-21 | empty PI tables before first SDE refresh | clear ActionError |
 | P-22 | acos domain errors | clamp |
 | P-23 | Diam != target planet | analyse with target radius |
-| P-24 | link cost rounding vs game | ceil per link; in-game total check |
+| P-24 | link cost rounding vs game | ceil per link, confirmed in game (V-5) |
 | P-25 | rounding La/Lo breaks spacing | validate after rounding |
 | P-26 | closed form misses unrouted/starved factories | LP for arbitrary layouts |
 | P-27 | doubled volumes from Eve-PI | SDE volumes only |
 | P-28 | ECU locked to one P0 | P0->P2 = 2 ECUs |
 | P-29 | non-deterministic tie-breaks | full ordering key |
 | P-30 | design cache stale or unbounded | radius buckets, explicit invalidation |
-| P-31 | cycle-time table conflict | ESI cycle_time for real data; verify (V-1) |
-| P-32 | qty_per_cycle semantics | verify (V-2) |
+| P-31 | cycle-time table conflict | settled: EVE Uni table (V-1); ESI cycle_time for real data |
+| P-32 | qty_per_cycle semantics | settled: base per 15-min bar, formula exact (V-2) |
 | P-33 | 0.45 sec boundary + float4 | shared rounded-security helper |
 | P-34 | ALL_HUBS uses hub->home freight | `freight_override` in `hub_pricing` |
 | P-35 | 332 cold ESI calls | existing cache; designs first, prices after |
@@ -590,7 +602,7 @@ arbitrary layouts (analyser/editor/ESI colonies).
 | P-43 | feedback loop not terminating | strictly decreasing bound, 10 iterations |
 | P-44 | wrong template field semantics | rules from real exports, tests |
 | P-45 | JS drops `.0` floats | backend-only serialization |
-| P-46 | unknown pin/comment limits | conservative caps, in-game check (V-4) |
+| P-46 | unknown pin limit; comment field has no visible limit (V-4) | `Cmt` <= 60 chars anyway (our choice); pin limit checked by acceptance import |
 | P-47 | bundle size / build memory | lazy route |
 | P-48 | out-of-order validate responses | request sequence numbers |
 | P-49 | snapshot kind touches 7+ places | registry consistency test |
@@ -607,14 +619,15 @@ arbitrary layouts (analyser/editor/ESI colonies).
 | P-60 | slow test suite | corpus behind marker |
 | P-61 | unlicensed reference templates in repo | use MIT/user exports only |
 | P-62 | caches leak between tests | autouse reset fixtures |
+| P-64 | CCP noise term only adds yield | noise-free only for ratios; full formula for calibration |
 | P-63 | the SDE holds 1,976 PI planets in the unreachable Jove regions (UUA-F4, J7HZ-F, A821-A) and 21,084 in J-space | System analysis says "region not reachable" for Jove regions; the later planet finder excludes them; J-space handled as wormhole zone |
 
 ## 14. Verification items (need real data or the game)
 
 | # | What | When | How |
 |---|---|---|---|
-| V-1 | Program length -> cycle time thresholds | phase 4 | compare ESI `cycle_time` of the user's extractors with their program lengths |
-| V-2 | `qty_per_cycle` = per cycle or per 15-min bar | phase 4 | compare with the in-game per-cycle output of the same extractor |
+| V-1 | Program length -> cycle time thresholds | **done 2026-10-04** | in game: EVE Uni table confirmed |
+| V-2 | Extractor formula and `qty_per_cycle` semantics | **done 2026-10-04** (ESI value check in phase 4) | in game: formula exact with q = 5903 |
 | V-3 | ESI pin lat/lon vs template La/Lo | phase 4 | export the same colony in game and compare |
-| V-4 | Pin count / comment limits, link cost totals | phase 5a | in-game import of the acceptance set (PI_PLAN 6A.3) |
-| V-5 | Link cost rounding (per link ceil) | phase 3 | analyse one of the user's in-game exports and compare CPU/power with the game |
+| V-4 | Pin count limit (comment: no visible limit, done) | phase 5a | in-game import of the acceptance set (PI_PLAN 6A.3) |
+| V-5 | Link cost rounding (per link ceil) | **done 2026-10-04** | in game: 26 km and 114 km links |
