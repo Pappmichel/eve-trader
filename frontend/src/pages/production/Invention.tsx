@@ -65,10 +65,11 @@ export default function Invention() {
     { header: 'Success Chance', accessorKey: 'probability', size: 140, cell: (i) => pct(i.getValue()) },
     { header: 'Runs/BPC', accessorKey: 'output_runs', size: 110, cell: (i) => qty(i.getValue()) },
     // Left to right is one calculation: target (stock target x BPC buffer,
-    // never below today's shortfall) - owned = runs needed -> BPCs ->
-    // invention runs. Stockpile % is owned / target.
+    // never below today's shortfall) - owned - in invention = runs needed ->
+    // BPCs -> invention runs. Stockpile % is (owned + in invention) / target.
     { header: 'BPC Target (runs)', accessorKey: 'bpc_target_runs', size: 160, cell: (i) => qty(i.getValue()) },
     { header: 'T2 BPCs Owned', accessorKey: 't2_bpc_owned', size: 140, cell: (i) => qty(i.getValue()) },
+    { header: 'In Invention', accessorKey: 't2_bpc_in_progress', size: 130, cell: (i) => qty(i.getValue()) },
     { header: 'Runs Needed', accessorKey: 'runs_needed', size: 130, cell: (i) => qty(i.getValue()) },
     { header: 'BPCs Needed', accessorKey: 'bpcs_needed', size: 130, cell: (i) => qty(i.getValue()) },
     { header: 'Recommended Invention Runs', accessorKey: 'recommended_invention_runs', size: 200, cell: (i) => qty(i.getValue()) },
@@ -145,10 +146,13 @@ export default function Invention() {
               Covers <b>all</b> Tech II stock targets, including fully-stocked ones. BPC Target = Settings&apos;
               BPC stock buffer × the stock-target quantity in runs, rounded up, never less than today&apos;s
               manufacturing shortfall — kept even when the finished item is already fully stocked. T2 BPCs
-              Owned = remaining runs on copies owned anywhere, not just at the invention station. Runs
-              needed = BPC Target − T2 BPCs Owned. BPCs needed = runs needed ÷ runs per BPC, and
-              recommended invention runs = BPCs needed ÷ success chance, both rounded up. Stockpile % =
-              T2 BPCs Owned ÷ BPC Target.
+              Owned = remaining runs on copies owned anywhere, not just at the invention station. In
+              Invention = expected BPC runs from running invention jobs (job runs × the job&apos;s own
+              success chance from ESI × runs per BPC of this row&apos;s decryptor, since ESI does not say
+              which decryptor a job used). Runs needed = BPC Target − T2 BPCs Owned − In Invention.
+              BPCs needed = runs needed ÷ runs per BPC, and recommended invention runs = BPCs needed ÷
+              success chance, both rounded up. Stockpile % = (T2 BPCs Owned + In Invention) ÷ BPC
+              Target.
             </Text>
           </>
         )}

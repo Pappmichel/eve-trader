@@ -3036,7 +3036,12 @@ def replace_industry_jobs(
     owner_character_id: Optional[int] = None,
     owner_corporation_id: Optional[int] = None,
 ) -> None:
+    """`rows`: (job_id, activity_id, blueprint_type_id, product_type_id, runs,
+    output_location_id, status, end_date, start_date, installer_id,
+    installer_name[, probability]) - probability (ESI's invention success
+    chance) is optional so older 11-field callers keep working."""
     assert table in _JOB_TABLES
+    rows = [tuple(r) if len(r) == 12 else tuple(r) + (None,) for r in rows]
     is_character = table in _CHAR_JOB_TABLES
     if owner_character_id is None and owner_corporation_id is None and rows:
         if is_character:
@@ -3068,8 +3073,8 @@ def replace_industry_jobs(
         conn.executemany(
             f"INSERT INTO {table} (job_id, activity_id, blueprint_type_id, product_type_id, runs, "
             "output_location_id, status, end_date, start_date, installer_id, installer_name, "
-            "owner_character_id, owner_corporation_id) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "probability, owner_character_id, owner_corporation_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [row + (insert_char, insert_corp) for row in rows],
         )
 
@@ -5289,6 +5294,33 @@ def esi_incoming_industry_qty(product_type_id: int,
             runs += row[0]
             jobs += row[1]
     return {"runs": runs, "jobs": jobs}
+
+
+def esi_expected_invention_successes(product_type_id: int, fallback_probability: float,
+                                     owner_character_ids: Optional[list[int]] = None,
+                                     owner_corporation_ids: Optional[list[int]] = None) -> float:
+    """Expected number of successful inventions (= invented BPCs) still
+    outstanding for `product_type_id` (the invented T2/T3 blueprint):
+    SUM(runs x probability) over active/paused/ready invention jobs (activity
+    8), character + corp. `probability` is ESI's own per-job success chance;
+    a row synced before that column existed falls back to
+    `fallback_probability`. Turning BPCs into BPC runs needs the decryptor,
+    which ESI does not report - done in engine.py.
+
+    Same status set and owner filtering as esi_incoming_industry_qty."""
+    total = 0.0
+    with connect() as conn:
+        for table in ("character_industry_jobs", "corp_industry_jobs"):
+            id_clause, id_params = _owner_id_clause(table, owner_character_ids, owner_corporation_ids)
+            row = conn.execute(
+                f"SELECT COALESCE(SUM(runs * COALESCE(probability, ?)), 0) FROM {table} "
+                "WHERE product_type_id = ? AND activity_id = 8 "
+                "AND status IN ('active', 'paused', 'ready')"
+                f"{id_clause}",
+                (fallback_probability, product_type_id, *id_params),
+            ).fetchone()
+            total += float(row[0])
+    return total
 
 
 def load_all_assets(owner_character_ids: Optional[list[int]] = None,

@@ -319,6 +319,7 @@ class InventionNeedRow(_Base):
     bpcs_needed: int
     recommended_invention_runs: int
     t2_bpc_owned: int
+    t2_bpc_in_progress: int = 0
     stockpile_pct: float
     bpc_target_runs: int = 0
     t1_bpc_target_runs: int = 0

@@ -115,7 +115,7 @@ class InventionNeedRow:
     decryptor: str
     probability: float
     output_runs: float       # BPC runs produced per successful invention
-    runs_needed: int         # max(0, bpc_target_runs - t2_bpc_owned) - the one combined demand (shortfall + buffer) still to cover with new BPCs
+    runs_needed: int         # max(0, bpc_target_runs - t2_bpc_owned - t2_bpc_in_progress) - the one combined demand (shortfall + buffer) still to cover with new BPCs
     bpcs_needed: int         # ceil(runs_needed / output_runs)
     recommended_invention_runs: int  # ceil(bpcs_needed / probability) - expected attempts to actually queue now
     # Buffered T2 BPC-run target: ceil(bpc_inventory * ceil(stockpile_quantity / product_qty))
@@ -142,7 +142,12 @@ class InventionNeedRow:
     # count is what actually represents remaining manufacturing capacity,
     # not how many separate copies happen to exist).
     t2_bpc_owned: int = 0
-    # t2_bpc_owned as a % (>=0, deliberately *not* capped at 100 - confirmed
+    # Expected T2 BPC runs from invention jobs still running (active/paused/
+    # ready, activity 8) for this T2 blueprint: SUM(job runs x ESI's per-job
+    # probability) x output_runs of the decryptor this row recommends (ESI
+    # does not report the decryptor a job used). Counts like owned runs.
+    t2_bpc_in_progress: int = 0
+    # (t2_bpc_owned + t2_bpc_in_progress) as a % (>=0, deliberately *not* capped at 100 - confirmed
     # with the user, 2026-08-31: owning more than the target is a real,
     # useful signal, not something to flatten away) of bpc_target_runs, the
     # same buffered target runs_needed nets against (since 2026-10-04; it

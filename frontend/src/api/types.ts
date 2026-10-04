@@ -521,6 +521,7 @@ export interface InventionNeedRow {
   bpcs_needed: number
   recommended_invention_runs: number
   t2_bpc_owned: number
+  t2_bpc_in_progress: number
   stockpile_pct: number
   bpc_target_runs: number
   t1_bpc_target_runs: number

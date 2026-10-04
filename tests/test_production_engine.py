@@ -4465,7 +4465,8 @@ def test_distribution_recommendations_volume_m3_is_quantity_times_unit_volume(mo
 
 
 # ------------------------------------------------------------- _invention_need_row BPC buffer
-def _patch_invention_need_row(monkeypatch, owned=0, probability=1.0, output_runs=1.0):
+def _patch_invention_need_row(monkeypatch, owned=0, probability=1.0, output_runs=1.0,
+                              invention_successes=0.0):
     chosen = InventionResult(
         t1_blueprint_type_id=200, t1_blueprint_name="Widget Blueprint",
         product_type_id=110, product_name="T2 Widget", decryptor="None",
@@ -4476,6 +4477,7 @@ def _patch_invention_need_row(monkeypatch, owned=0, probability=1.0, output_runs
     )
     monkeypatch.setattr(engine, "_tech_ii_mods", lambda *a, **k: (1.0, 1.0, "None", chosen))
     monkeypatch.setattr(storage, "available_blueprint_copies", lambda *a, **k: owned)
+    monkeypatch.setattr(storage, "esi_expected_invention_successes", lambda *a, **k: invention_successes)
     return chosen
 
 
@@ -4520,6 +4522,30 @@ def test_invention_need_row_target_never_below_shortfall(monkeypatch):
     assert row.runs_needed == 10
     assert row.bpcs_needed == 2
     assert row.recommended_invention_runs == 4
+
+
+def test_invention_need_row_running_invention_counts_like_owned_runs(monkeypatch):
+    """Running invention jobs: 6 expected successes x 5 runs per BPC = 30
+    expected BPC runs, netted against the 40-run target like owned runs."""
+    _patch_invention_need_row(monkeypatch, owned=4, probability=0.5, output_runs=5.0,
+                              invention_successes=6.0)
+    row = _call_invention_need_row(missing=10, stockpile=10, multiplier=4.0)
+    assert row.t2_bpc_in_progress == 30
+    assert row.runs_needed == 6  # 40 - 4 owned - 30 in invention
+    assert row.bpcs_needed == 2  # ceil(6 / 5)
+    assert row.recommended_invention_runs == 4  # ceil(2 / 0.5)
+    assert row.stockpile_pct == pytest.approx(85.0)  # (4 + 30) / 40
+    assert row.t1_bpc_target_runs == 16  # T1 buffer stays independent
+
+
+def test_invention_need_row_running_invention_over_target_needs_nothing(monkeypatch):
+    _patch_invention_need_row(monkeypatch, owned=0, probability=0.5, output_runs=5.0,
+                              invention_successes=10.0)
+    row = _call_invention_need_row(missing=0, stockpile=10, multiplier=4.0)
+    assert row.t2_bpc_in_progress == 50
+    assert row.runs_needed == 0
+    assert row.recommended_invention_runs == 0
+    assert row.stockpile_pct == pytest.approx(125.0)
 
 
 def test_invention_need_row_owned_t2_nets_t2_target_not_t1_buffer(monkeypatch):

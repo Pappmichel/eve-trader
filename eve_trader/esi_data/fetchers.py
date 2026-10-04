@@ -106,7 +106,8 @@ def _industry_job_rows(jobs: list[dict], installer_names: dict[int, str]) -> lis
         (j["job_id"], _normalize_activity_id(j["activity_id"]), j["blueprint_type_id"],
          j.get("product_type_id"), j["runs"], j.get("output_location_id"), j["status"],
          j["end_date"], j.get("start_date"), j.get("installer_id"),
-         installer_names.get(j.get("installer_id"), str(j.get("installer_id"))))
+         installer_names.get(j.get("installer_id"), str(j.get("installer_id"))),
+         j.get("probability"))
         for j in jobs
     ]
 
