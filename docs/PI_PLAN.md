@@ -332,7 +332,7 @@ ESI skills where shared, else the manual setting; D3). This answers "build up to
 directly. A full multi-character allocator (jwebbdev's 60 KB greedy) is
 **not** in scope (see 4).
 
-### 3.5 Production demand (F1, read-only)
+### 3.6 Production demand (F1, read-only)
 
 A PI page section lists the PI materials Production's stock targets and
 build plans consume (fuel blocks, structure and capital components, ...),
@@ -346,6 +346,46 @@ addition to `pi` (checked against `request.state.tool_keys`, same reasoning
 as the Doctrine skill check: a `pi` grant alone must not expose Production
 data).
 
+### 3.5 System analysis ("what is worth building in system X")
+
+Requested 2026-10-04. The user enters a solar system and gets back what is
+worth producing there.
+
+1. **Planets**: every PI planet of the system from `sde_pi_planets` (D5)
+   with type, radius and the system's security zone (yield default, D2;
+   NPC customs part, 3.3). The user enters the owner customs rate once for
+   the system, overridable per planet.
+2. **Per planet**: every feasible chain/product (only P0 that planet type
+   carries; High-Tech only on Barren/Temperate), each with `best_design`
+   for that planet's real radius, then profit and verdict (3.3). The result
+   is a ranked list per planet: best extractor use, best factory use.
+3. **System plan**: the best combination for N colony slots (N = planets of
+   the chosen characters from D3, or entered). Two EVE facts shape it:
+   - **Several characters may each put a colony on the same planet** (one
+     Command Center per character per planet). Factory colonies can repeat
+     freely. Extractor colonies on the same planet compete for the same
+     deposits, so repeats are allowed but carry a configurable yield penalty
+     and a warning.
+   - **Chains inside one system save freight**: extractor planets feeding a
+     factory planet in the same system only pay customs export + import, no
+     hub freight. Only the end product (and any bought inputs) travels to or
+     from the hub.
+
+   Formulation: a small mixed-integer program (slot -> planet x option
+   assignment, intermediate flows balanced inside the system, maximise
+   ISK/day after taxes, freight and setup). It uses `scipy.optimize.milp`;
+   SciPy is already a dependency via the Mineral Shopping List's `linprog`,
+   issue #93. Per CLAUDE.md this is algorithmically heavy, so the
+   implementation is delegated to an Opus subagent. The output: which
+   planet gets which colony, the in-system flows, ISK/day total and per
+   slot, and the comparison "best single-planet uses vs. in-system chain".
+4. Also shown: what the system **cannot** do (e.g. no Barren/Temperate, so
+   no P4; a P0 missing for a P2) with the reason, and a one-click "save as
+   plan" (D6) and "generate templates" (6A) for the chosen colonies.
+
+The optional planet finder (phase 6) later extends this from one system to
+"all systems within N jumps", ranking systems by the same result.
+
 ## 4. What is worth building, and what is not
 
 | Feature | Verdict | Why |
@@ -358,7 +398,8 @@ data).
 | Full template generator + layout editor (section 6A) | **Build (phases 5a-5c)** | D1: full scope, our own code. Highest effort; correctness only provable by in-game import (needs the user) |
 | Saved plans (`pi_plans`) | **Build (phase 2)** | D6; later compared with real colonies via ESI |
 | Planet finder (planets within N jumps, by type/radius) | **Optional/later** | Planets come with phase 1 (D5); still needs a jump graph (`mapSolarSystemJumps`); nice but not part of "is it worth it" |
-| Production demand view, make-via-PI vs. buy (3.5) | **Build (phase 2)** | F1; read-only, no change to Production |
+| System analysis: enter a system, get per-planet best uses and the best colony combination incl. in-system chains (3.5) | **Build (phase 2b)** | Requested by the user; needs only phase 1 planets + phase 2 profit model |
+| Production demand view, make-via-PI vs. buy (3.6) | **Build (phase 2)** | F1; read-only, no change to Production |
 | Effort and price-trend columns | **Build (phase 2)** | F2/F6; display only |
 | Colony monitor: projected pads full / inputs empty / extractor end / idle factories | **Build (phase 4)** | F3; estimate from ESI state + rates, labelled as such |
 | Discord alerts: extractor expires, launchpad nearly full, factory nearly out of inputs | **Build (phase 4)** | F4; in `alerts/` like `skillqueue_empty`; the last two come from the monitor's projection and say so |
@@ -590,10 +631,14 @@ and the export notes that heads are placed on hotspots in game.
 - Pages: **Profitability** (filterable table: product, chain, planet type,
   ISK/planet/day, verdict + reason, click to see the design and the cost
   breakdown); **Planner** (pick planet type/radius/CC level/chain/product,
-  edit counts, live fit/throughput/profit); **Chains**; **Plans**;
+  edit counts, live fit/throughput/profit); **System** (3.5: system search,
+  per-planet ranking, system plan); **Chains**; **Plans**;
   **Templates** (library, analyser, retarget); **Layout editor** (6A, 2D
   planet view; opened from a generated or stored template); **Colonies**
   (phase 4); **Settings**.
+- System endpoint: `GET /api/pi/systems/{system_id}/analysis` (slots,
+  characters, owner tax rate as query parameters; a `do_*` action, since it
+  is real logic).
 - Layout endpoints: `POST /api/pi/layouts/generate` (design -> template),
   `POST /api/pi/layouts/validate` (template -> findings + fit/throughput),
   `POST /api/pi/layouts/edit` (template + edit -> template, "refusal builds
@@ -608,6 +653,7 @@ and the export notes that heads are placed on hotspots in game.
 | 0 | One in-game check of the P0 table (1.3) and CC levels | Values recorded here |
 | 1 | SDE import (schematics, PI attributes, commodities, structures, all PI planets with radius) + `pi/engine.py` capacity/throughput + unit tests | Golden tests pass (10) |
 | 2 | Pricing, taxes, freight, profitability, verdicts, effort + price-trend columns, chain view, Production demand view; skills from ESI + manual fallback; saved plans; tool key, router, Profitability/Planner/Chains/Plans/Settings pages | Live-verified against the running API and browser |
+| 2b | System analysis (3.5): per-planet ranking, MILP system plan, save as plan; System page | Live-verified on a few real systems (high-sec, null-sec, one without Barren/Temperate) |
 | 3 | Template library + analyser + export + retarget | Real in-game exports analyse correctly |
 | 4 | ESI `planets` kind, colonies page with monitor (projection), yield calibration, colony -> template, plan vs. real colony; Discord alerts (extractor expiry, pad nearly full, inputs nearly empty) | Calibration matches in-game totals on a real colony; test DM per alert type |
 | 5a | Generator core: pipeline, all 8 chains, storage sizing, link upgrades, budget feedback (6A.2) | Corpus property tests green; user's in-game acceptance set 5a imports cleanly |
@@ -656,13 +702,15 @@ Decided with the user the same day, one by one:
 |---|---|---|
 | O1 | Freight for PI (the hub table means hub -> home structure) | **Own PI rate** (hub <-> planets), overridable per plan; hub table not used (3.3) |
 | O2 | Verdict defaults | **30 days** amortisation, **1M ISK/planet/day** threshold, **10%** market-share warning |
-| F1 | Production integration | **Yes, read-only demand view**, make via PI vs. buy (3.5), phase 2 |
+| F1 | Production integration | **Yes, read-only demand view**, make via PI vs. buy (3.6), phase 2 |
 | F2 | Effort metric | **Yes, as a column**, not in the verdict, phase 2 |
 | F3 | Colony monitor | **Yes, phase 4** |
 | F4 | Discord alerts | **Extractor expiry + pad nearly full + inputs nearly empty**, phase 4 |
 | F5 | PI contents in Portfolio | **No** |
 | F6 | Price trend column | **Yes**, display only, phase 2 |
 | F7 | Own corp customs office rates via ESI | **No** |
+
+Added afterwards at the user's request: **system analysis** (3.5, phase 2b).
 
 Nothing is open any more apart from the phase 0 in-game checks (P0 table,
 CC levels).
