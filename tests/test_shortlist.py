@@ -1,6 +1,6 @@
 from eve_trader.config import TradingConfig
 from eve_trader.esi_client import OrderStats
-from eve_trader.goonmetrics_client import HistoryPoint
+from eve_trader.goonmetrics_client import HISTORY_WINDOW_DAYS, HistoryPoint
 from eve_trader.models import ShortlistItem
 from eve_trader.shortlist import (audit_shortlist, average_market_daily_volume, evaluate_shortlist_item,
                                    summary_counts, top_imports_by_daily_profit)
@@ -171,7 +171,7 @@ def test_top_imports_uses_avg_daily_volume_not_sell_volume():
 # real market-wide history (Goonmetrics region history for C-J's own home
 # region), not this trader's own realized sales.
 
-def test_average_market_daily_volume_averages_across_returned_days():
+def test_average_market_daily_volume_divides_by_the_history_window():
     points = [
         HistoryPoint(region_id=10000009, type_id=123, date="2026-08-21", min_price=1.0, max_price=2.0,
                      avg_price=1.5, movement=10.0, num_orders=5),
@@ -180,7 +180,8 @@ def test_average_market_daily_volume_averages_across_returned_days():
         HistoryPoint(region_id=10000009, type_id=123, date="2026-08-19", min_price=1.0, max_price=2.0,
                      avg_price=1.5, movement=30.0, num_orders=5),
     ]
-    assert average_market_daily_volume(points) == {123: 20.0}
+    # Days the source didn't list are days without trades, not missing data.
+    assert average_market_daily_volume(points) == {123: 60.0 / HISTORY_WINDOW_DAYS}
 
 
 def test_average_market_daily_volume_keeps_type_ids_separate():
@@ -190,7 +191,7 @@ def test_average_market_daily_volume_keeps_type_ids_separate():
         HistoryPoint(region_id=10000009, type_id=2, date="2026-08-21", min_price=1.0, max_price=2.0,
                      avg_price=1.5, movement=100.0, num_orders=5),
     ]
-    assert average_market_daily_volume(points) == {1: 10.0, 2: 100.0}
+    assert average_market_daily_volume(points) == {1: 10.0 / HISTORY_WINDOW_DAYS, 2: 100.0 / HISTORY_WINDOW_DAYS}
 
 
 def test_average_market_daily_volume_empty_history_returns_empty_dict():

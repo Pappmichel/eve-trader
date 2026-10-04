@@ -150,6 +150,7 @@ class TradingSettings(BaseModel):
     max_shortlist_growth_per_run: int
     min_hit_rate: float
     min_avg_movement: float
+    min_paired_days: int = 5
     excluded_path_prefixes: list[str]
     safe_mode_max_ids: int
     lookback_days: int

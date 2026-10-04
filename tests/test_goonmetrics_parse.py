@@ -352,10 +352,64 @@ def test_esi_history_is_cut_to_goonmetrics_window(monkeypatch):
     monkeypatch.setattr(client.session, "get", lambda url, timeout=None: _XmlResponse(EMPTY_HISTORY_XML))
     from eve_trader import goonmetrics_client
     monkeypatch.setattr(goonmetrics_client, "_today", lambda: "2026-10-02")
-    rows = {34: ["2025-10-01", "2026-09-02", "2026-09-03", "2026-09-30"],
+    rows = {34: ["2025-10-01", "2026-09-04", "2026-09-05", "2026-09-30"],
             35: ["2026-03-01", "2026-03-02"]}  # rarely traded: nothing recent
     monkeypatch.setattr(ESIClient, "region_market_history", lambda self, region_id, type_id: _esi_rows(rows[type_id]))
 
     points = client.price_history(10000043, [34, 35])
 
-    assert sorted((p.type_id, p.date) for p in points) == [(34, "2026-09-03"), (34, "2026-09-30")]
+    assert sorted((p.type_id, p.date) for p in points) == [(34, "2026-09-05"), (34, "2026-09-30")]
+
+
+def test_types_goonmetrics_leaves_out_come_from_esi_when_asked(monkeypatch):
+    # Goonmetrics answers nothing for most blueprints (checked live
+    # 2026-10-04 for Rifter Blueprint); esi_for_missing reads exactly those
+    # from ESI, and only those in the set.
+    cfg = TradingConfig()
+    client = GoonmetricsClient(cfg)
+    monkeypatch.setattr(client.session, "get", lambda url, timeout=None: _XmlResponse(SAMPLE_XML))
+    from eve_trader import goonmetrics_client
+    monkeypatch.setattr(goonmetrics_client, "_today", lambda: "2026-10-02")
+    esi_calls = []
+
+    def _history(self, region_id, type_id):
+        esi_calls.append(type_id)
+        return _esi_rows(["2026-09-30"])
+    monkeypatch.setattr(ESIClient, "region_market_history", _history)
+
+    points = client.price_history(cfg.jita_region_id, [34, 691, 692], esi_for_missing={34, 691})
+
+    assert esi_calls == [691]
+    assert {p.type_id for p in points} == {34, 691}
+
+
+def test_types_goonmetrics_leaves_out_stay_missing_by_default(monkeypatch):
+    cfg = TradingConfig()
+    client = GoonmetricsClient(cfg)
+    monkeypatch.setattr(client.session, "get", lambda url, timeout=None: _XmlResponse(SAMPLE_XML))
+    monkeypatch.setattr(ESIClient, "region_market_history",
+                        lambda self, region_id, type_id: pytest.fail("ESI must not be called"))
+
+    points = client.price_history(cfg.jita_region_id, [34, 691])
+
+    assert {p.type_id for p in points} == {34}
+
+
+def test_chunked_fills_missing_types_from_esi_once_across_chunks(monkeypatch):
+    cfg = TradingConfig()
+    client = GoonmetricsClient(cfg)
+    monkeypatch.setattr(client.session, "get", lambda url, timeout=None: _XmlResponse(SAMPLE_XML))
+    from eve_trader import goonmetrics_client
+    monkeypatch.setattr(goonmetrics_client, "_today", lambda: "2026-10-02")
+    esi_calls = []
+
+    def _history(self, region_id, type_id):
+        esi_calls.append(type_id)
+        return _esi_rows(["2026-09-30"])
+    monkeypatch.setattr(ESIClient, "region_market_history", _history)
+
+    points = client.price_history_chunked(cfg.jita_region_id, [34, 691, 692], chunk_size=1,
+                                          esi_for_missing={691, 692})
+
+    assert sorted(esi_calls) == [691, 692]
+    assert {p.type_id for p in points} == {34, 691, 692}

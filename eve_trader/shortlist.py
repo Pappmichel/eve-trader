@@ -16,7 +16,7 @@ from typing import Optional
 
 from .config import TRADING_CONFIG, TradingConfig
 from .esi_client import OrderStats
-from .goonmetrics_client import HistoryPoint
+from .goonmetrics_client import HISTORY_WINDOW_DAYS, HistoryPoint
 from .models import ShortlistItem, ShortlistRow
 
 log = logging.getLogger(__name__)
@@ -170,12 +170,13 @@ def average_market_daily_volume(history_points: list[HistoryPoint]) -> dict[int,
     region C-J's own solar system sits in, confirmed live 2026-08-23 via
     sde_solar_systems; there's no ESI/Goonmetrics history endpoint for a
     player structure's own market at all, region-wide is the closest real
-    signal available). Averages `movement` (confirmed live: a genuine unit
+    signal available). Sums `movement` (confirmed live: a genuine unit
     count, not an ISK value - see goonmetrics_client.HistoryPoint's own
-    field) over every day Goonmetrics returned (its price_history endpoint
-    returns a fixed ~28-day window), not just a recent slice - matches
-    history_backtest.py's own "average over every paired day available"
-    approach for the same reference region.
+    field) and divides by HISTORY_WINDOW_DAYS (the window both sources
+    cover), not by the number of returned days: Goonmetrics lists some
+    untraded days as zero rows and leaves others out, and ESI never lists
+    them, so a per-returned-day average overstated thin items. Same figure
+    history_backtest._score_candidate uses as avg_move.
 
     GitHub issue #100: this - not the buyer/seller's own realized_trades
     (GitHub issue #51's trade_reconciliation.average_daily_sold_by_type) -
@@ -188,10 +189,10 @@ def average_market_daily_volume(history_points: list[HistoryPoint]) -> dict[int,
     sold by this trader yet) - CLAUDE.md's own "Theoretical ceiling figures"
     section already documented the intended whole-market-turnover meaning,
     #51 just never updated the implementation to match it correctly."""
-    by_type: dict[int, list[float]] = defaultdict(list)
+    by_type: dict[int, float] = defaultdict(float)
     for point in history_points:
-        by_type[point.type_id].append(point.movement)
-    return {type_id: sum(movements) / len(movements) for type_id, movements in by_type.items() if movements}
+        by_type[point.type_id] += point.movement
+    return {type_id: total / HISTORY_WINDOW_DAYS for type_id, total in by_type.items()}
 
 
 def summary_counts(rows: list[ShortlistRow]) -> dict[str, float]:

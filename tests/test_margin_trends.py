@@ -135,3 +135,17 @@ def test_do_shortlist_trends_caches_until_the_shortlist_changes(monkeypatch):
 
     actions.do_shortlist_trends(TradingConfig(import_cost_per_m3=cfg.import_cost_per_m3 + 1))
     assert len(calls) == 3  # a Settings change misses too
+
+
+def test_days_without_trades_are_left_out_of_the_trend():
+    # A flat +100% margin with untraded (avgPrice 0) reference days mixed in
+    # must stay flat, not swing to -100% on those days.
+    cfg = TradingConfig(jita_buy_broker_fee=0.0, import_cost_per_m3=0.0, structure_sell_haircut=1.0)
+    jita_rows = [_row(cfg.jita_region_id, 100, f"2026-01-{d:02d}", 100.0) for d in range(1, 11)]
+    ref_rows = [_row(cfg.reference_region_id, 100, f"2026-01-{d:02d}", 0.0 if d in (8, 10) else 200.0)
+                for d in range(1, 11)]
+
+    result = compute_margin_trends(_history_df(jita_rows + ref_rows), {100: 1.0}, cfg)
+
+    assert result[100]["recent_avg_margin"] == 1.0
+    assert result[100]["trend_pct"] == 0.0

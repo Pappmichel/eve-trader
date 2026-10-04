@@ -1,5 +1,5 @@
 from eve_trader.config import TradingConfig
-from eve_trader.goonmetrics_client import HistoryPoint
+from eve_trader.goonmetrics_client import HISTORY_WINDOW_DAYS, HistoryPoint
 from eve_trader.history_backtest import (
     _index_history, _score_candidate, find_new_import_candidates, select_candidate_window,
 )
@@ -86,12 +86,87 @@ def test_same_candidate_recommended_once_movement_clears_the_threshold():
     jita_prices = [1000, 1010, 990, 1005, 995]
     ref_prices = [1900, 1920, 1880, 1910, 1890]
     points = (_points(cfg.jita_region_id, 1, jita_prices)
-              + _points(cfg.reference_region_id, 1, ref_prices, movement=500.0))
+              + _points(cfg.reference_region_id, 1, ref_prices, movement=1000.0))  # 5000 / 28 days ~ 179
     idx = _index_history(points)
 
     result = _score_candidate(candidate, idx, cfg)
     assert result is not None
     assert result.add is True
+
+
+def test_days_without_trades_are_not_scored_as_losses():
+    # Goonmetrics reports a day without trades as avgPrice 0. Those days
+    # used to count as -100% margin days and sank the hit rate of every thin
+    # item (most blueprints among them).
+    cfg = TradingConfig(import_cost_per_m3=900.0, structure_sell_haircut=0.95,
+                         min_margin_threshold=0.05, min_hit_rate=0.3, min_paired_days=2)
+    candidate = Candidate(item="Thin Thing", type_id=1, volume_m3=0.1,
+                           category="Blueprint", market_group_path="x")
+    jita_prices = [1000, 1010, 990, 1005, 995]
+    ref_prices = [1900, 0, 0, 1910, 0]
+    points = _points(cfg.jita_region_id, 1, jita_prices) + _points(cfg.reference_region_id, 1, ref_prices)
+
+    result = _score_candidate(candidate, _index_history(points), cfg)
+
+    assert result.paired_days == 2
+    assert result.hit_rate == 1.0
+    assert result.latest_margin > 0.05  # day 4, the latest day with trades on both sides
+    assert result.add is True
+
+
+def test_too_few_traded_days_are_not_recommended():
+    # Live test-server run 2026-10-04: SKINs with a single Insmother trade in
+    # 28 days at a freak price came out as 100% hit rate recommendations.
+    cfg = TradingConfig(import_cost_per_m3=900.0, structure_sell_haircut=0.95,
+                         min_margin_threshold=0.05, min_hit_rate=0.3, min_paired_days=5)
+    candidate = Candidate(item="One Lucky Trade", type_id=1, volume_m3=0.1,
+                           category="SKINs", market_group_path="x")
+    points = (_points(cfg.jita_region_id, 1, [1000, 1000, 1000, 1000, 1000])
+              + _points(cfg.reference_region_id, 1, [0, 0, 0, 0, 250000]))
+
+    result = _score_candidate(candidate, _index_history(points), cfg)
+
+    assert result.paired_days == 1
+    assert result.hit_rate == 1.0
+    assert result.add is False
+
+
+def test_untraded_jita_day_is_not_a_free_buy():
+    cfg = TradingConfig(import_cost_per_m3=900.0, structure_sell_haircut=0.95,
+                         min_margin_threshold=0.05, min_hit_rate=0.3)
+    candidate = Candidate(item="Bad Thing", type_id=2, volume_m3=1.0,
+                           category="Material", market_group_path="x")
+    jita_prices = [1000, 0, 1000]
+    ref_prices = [1050, 1050, 1050]  # unprofitable whenever Jita really traded
+    points = _points(cfg.jita_region_id, 2, jita_prices) + _points(cfg.reference_region_id, 2, ref_prices)
+
+    result = _score_candidate(candidate, _index_history(points), cfg)
+
+    assert result.paired_days == 2
+    assert result.profitable_days == 0
+    assert result.add is False
+
+
+def test_no_traded_paired_day_returns_none():
+    cfg = TradingConfig()
+    candidate = Candidate(item="Dead", type_id=3, volume_m3=1.0, category="Blueprint", market_group_path="x")
+    points = _points(cfg.jita_region_id, 3, [1000, 1000]) + _points(cfg.reference_region_id, 3, [0, 0])
+
+    assert _score_candidate(candidate, _index_history(points), cfg) is None
+
+
+def test_avg_movement_counts_untraded_days_as_zero():
+    # ESI lists only traded days, Goonmetrics sometimes lists them as zero
+    # rows and sometimes not; dividing by the fixed window gives both the
+    # same per-day figure.
+    cfg = TradingConfig(import_cost_per_m3=900.0, structure_sell_haircut=0.95)
+    candidate = Candidate(item="X", type_id=1, volume_m3=0.1, category="Module", market_group_path="x")
+    points = (_points(cfg.jita_region_id, 1, [1000, 1000])
+              + _points(cfg.reference_region_id, 1, [1900, 1900], movement=14.0))
+
+    result = _score_candidate(candidate, _index_history(points), cfg)
+
+    assert result.avg_sell_movement == 28.0 / HISTORY_WINDOW_DAYS
 
 
 def _candidates(ids):
@@ -141,9 +216,11 @@ class _FakeGoonmetricsClient:
         self.cfg = cfg
         self.fail_type_ids = fail_type_ids
         self.calls = 0
+        self.esi_for_missing: dict = {}
 
-    def price_history_chunked(self, region_id, type_ids):
+    def price_history_chunked(self, region_id, type_ids, esi_for_missing=None):
         self.calls += 1
+        self.esi_for_missing[region_id] = esi_for_missing
         if any(t in self.fail_type_ids for t in type_ids):
             raise RuntimeError("simulated network failure")
         prices = [1000, 1010, 990, 1005, 995] if region_id == self.cfg.jita_region_id \
@@ -208,3 +285,20 @@ def test_find_new_import_candidates_reports_progress_per_batch():
     assert progress[-1]["total_batches"] == 3
     assert progress[-1]["evaluated"] == 7
     assert all(p["phase"] == "search" for p in progress)
+
+
+def test_search_asks_esi_for_jita_gaps_and_only_jita_traded_reference_gaps():
+    cfg = TradingConfig(import_cost_per_m3=900.0, structure_sell_haircut=0.95,
+                         min_margin_threshold=0.05, min_hit_rate=0.3, safe_mode_max_ids=10)
+
+    class _Client(_FakeGoonmetricsClient):
+        def price_history_chunked(self, region_id, type_ids, esi_for_missing=None):
+            points = super().price_history_chunked(region_id, type_ids, esi_for_missing)
+            # type 2 never traded in Jita
+            return [p for p in points if not (p.type_id == 2 and region_id == self.cfg.jita_region_id)]
+
+    client = _Client(cfg)
+    find_new_import_candidates(_candidates([1, 2]), existing_item_ids=set(), client=client, cfg=cfg)
+
+    assert client.esi_for_missing[cfg.jita_region_id] == {1, 2}
+    assert client.esi_for_missing[cfg.reference_region_id] == {1}

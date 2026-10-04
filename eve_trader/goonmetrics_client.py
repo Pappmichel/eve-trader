@@ -22,7 +22,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Iterable, Optional
+from typing import Collection, Iterable, Optional
 from xml.etree import ElementTree as ET
 
 import requests
@@ -37,10 +37,12 @@ log = logging.getLogger(__name__)
 # <price_history />, even for Tritanium). Those regions are read from ESI's
 # own daily history instead. Coverage is probed once per region and process.
 _COVERAGE_PROBE_TYPE_ID = 34  # Tritanium: traded daily in every tracked region
-# Goonmetrics returns about 30 days; ESI returns about a year. Points from
-# ESI are cut to the same window so averages over "the history" (e.g.
-# shortlist.average_market_daily_volume) mean the same for both sources.
-HISTORY_WINDOW_DAYS = 30
+# Goonmetrics returns 28 days (checked 2026-10-04: 2026-09-05..2026-10-02 for
+# Tritanium); ESI returns about a year. Points from ESI are cut to the same
+# length so averages over "the history" (e.g.
+# shortlist.average_market_daily_volume, which divides by this) mean the same
+# for both sources.
+HISTORY_WINDOW_DAYS = 28
 _region_covered: dict[int, bool] = {}
 _region_covered_lock = threading.Lock()
 
@@ -237,11 +239,18 @@ class GoonmetricsClient:
             log.info("Goonmetrics has no history for region %d - using ESI daily history.", region_id)
         return covered
 
-    def price_history(self, region_id: int, type_ids: Iterable[int]) -> list[HistoryPoint]:
+    def price_history(self, region_id: int, type_ids: Iterable[int],
+                      esi_for_missing: Optional[Collection[int]] = None) -> list[HistoryPoint]:
         """Never raises on a Goonmetrics failure - silently falls back to
         the slower per-type_id ESI history endpoint instead (see except
         clause below), so callers don't need their own fallback handling.
-        A region Goonmetrics doesn't track goes to ESI directly."""
+        A region Goonmetrics doesn't track goes to ESI directly.
+
+        `esi_for_missing`: type_ids that Goonmetrics leaves out of its answer
+        are read from ESI instead if they are in this set. Goonmetrics does
+        not track most blueprints at all (checked 2026-10-04: nothing for
+        Rifter Blueprint in The Forge or Insmother, while ESI has daily
+        history for both). Opt-in, because it costs one ESI call per type."""
         type_ids = list(type_ids)
         if not type_ids:
             return []
@@ -259,7 +268,20 @@ class GoonmetricsClient:
             # Goonmetrics outage take down candidate discovery entirely.
             log.warning("Goonmetrics price history unavailable (%s) - falling back to ESI per-type history.", e)
             return self._esi_price_history_fallback(region_id, type_ids)
-        return _parse_history_xml(resp.text, region_id)
+        points = _parse_history_xml(resp.text, region_id)
+        return self._fill_missing_from_esi(region_id, type_ids, points, esi_for_missing)
+
+    def _fill_missing_from_esi(self, region_id: int, type_ids: list[int], points: list[HistoryPoint],
+                               esi_for_missing: Optional[Collection[int]]) -> list[HistoryPoint]:
+        """`points` plus ESI history for every type_id in `esi_for_missing`
+        that has no point in `points` (see price_history)."""
+        if not esi_for_missing:
+            return points
+        returned = {p.type_id for p in points}
+        missing = [t for t in dict.fromkeys(type_ids) if t not in returned and t in esi_for_missing]
+        if not missing:
+            return points
+        return points + self._esi_price_history_fallback(region_id, missing)
 
     def _esi_price_history_fallback(self, region_id: int, type_ids: list[int]) -> list[HistoryPoint]:
         """Refetches via ESI's /markets/{region_id}/history/ (esi_client.py's
@@ -301,7 +323,8 @@ class GoonmetricsClient:
         return points
 
     def price_history_chunked(self, region_id: int, type_ids: list[int],
-                               chunk_size: int | None = None, max_workers: int = 6) -> list[HistoryPoint]:
+                               chunk_size: int | None = None, max_workers: int = 6,
+                               esi_for_missing: Optional[Collection[int]] = None) -> list[HistoryPoint]:
         """Chunks are independent requests (each already batches chunk_size
         type_ids into one call) - fetching them concurrently cuts wall-clock
         time roughly by max_workers vs. one-by-one, since this is
@@ -313,7 +336,11 @@ class GoonmetricsClient:
         response, a parsing bug, anything unexpected - just loses that one
         chunk's history points instead of aborting the whole call and
         everything after it (matters most for a full, non-safe-mode candidate
-        search spanning many chunks over several minutes)."""
+        search spanning many chunks over several minutes).
+
+        `esi_for_missing` works as in price_history, but the ESI calls for
+        all chunks run in one pass after the Goonmetrics chunks, so they
+        share one worker pool instead of one pool per chunk worker."""
         chunk_size = chunk_size or self.cfg.chunk_size
         chunks = [type_ids[i:i + chunk_size] for i in range(0, len(type_ids), chunk_size)]
         if not chunks:
@@ -331,7 +358,9 @@ class GoonmetricsClient:
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             for points in pool.map(_fetch, chunks):
                 out.extend(points)
-        return out
+        if not esi_for_missing or not self.region_has_goonmetrics_history(region_id):
+            return out  # nothing to fill, or already read from ESI in full
+        return self._fill_missing_from_esi(region_id, type_ids, out, esi_for_missing)
 
 
 def _today() -> str:
