@@ -298,7 +298,8 @@ arbitrary layouts (analyser/editor/ESI colonies).
   second classifier. `sde_solar_systems.security` is float4, so 0.45 is
   stored as 0.449999988 **[P-33]**. Wormhole = region id 11000001-11000033,
   checked before security, since J-space has security -1.0. Pochven (region
-  10000070) counts as null-sec.
+  10000070, 220 PI planets) counts as null-sec. Jove regions are unreachable
+  **[P-63]**.
 - Prices: `hubs.hub_pricing` with PI's own `freight_per_m3` passed as
   `freight_fallback`. In `ALL_HUBS` mode `hub_pricing` reads the shared
   hub->home freight table internally, which is **wrong for PI** (O1)
@@ -606,6 +607,7 @@ arbitrary layouts (analyser/editor/ESI colonies).
 | P-60 | slow test suite | corpus behind marker |
 | P-61 | unlicensed reference templates in repo | use MIT/user exports only |
 | P-62 | caches leak between tests | autouse reset fixtures |
+| P-63 | the SDE holds 1,976 PI planets in the unreachable Jove regions (UUA-F4, J7HZ-F, A821-A) and 21,084 in J-space | System analysis says "region not reachable" for Jove regions; the later planet finder excludes them; J-space handled as wormhole zone |
 
 ## 14. Verification items (need real data or the game)
 
