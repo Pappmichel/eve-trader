@@ -3,8 +3,7 @@
 Status: **planned 2026-10-04, not started.** PI was "deferred, not rejected"
 (CLAUDE.md, "Deferred, not rejected"); the user asked for this plan on
 2026-10-04 and confirmed decisions D1-D6 one by one the same day (section 11).
-One item is still open: the per-security-zone yield defaults (D2), to be set
-together with the user in phase 0.
+The per-zone yield defaults (D2) were set the same day (1.6).
 
 Goal: a PI tool that answers **"which PI is worth doing for me, and which is
 not"** from what a planet can *actually* build - real structure counts under
@@ -157,8 +156,22 @@ with no decay; jwebbdev: about 6000/head/h peak; wormhole estimates of
   (P0/head/hour, averaged over the program), labelled as an assumption in the
   UI, with **one default per security zone** (high-sec, low-sec, null-sec,
   wormhole; D2). The zone comes from the planet's system security
-  (`sde_solar_systems.security`, wormhole = J-space region ids). The numbers
-  are set together with the user in phase 0.
+  (`sde_solar_systems.security`, wormhole = J-space region ids
+  11000001-11000033; Pochven counts as null-sec; Shattered planets are not
+  PI planets and are excluded from `sde_pi_planets`).
+  **Defaults (confirmed 2026-10-04), P0 per head per hour, averaged over a
+  3-day program:** high-sec **1000**, low-sec **2000**, null-sec **4000**,
+  wormhole **4000**. Derived from the community rule of thumb
+  high : low : null/WH = 1 : 2 : 4 and checked against reported figures
+  (high-sec 6-15k/h per 10-head extractor; null-sec ~40k/h per planet on
+  3-day programs; low-sec = PI Nexus' flat 2000). For other program lengths
+  the default is scaled by the ratio of CCP's decay curve (noise-free) for
+  that length vs. 3 days, so shorter programs plan higher averages, longer
+  ones lower.
+  Source survey of the other tools: PI Nexus/Eve-PI flat 2000/head/h, no
+  decay, no zones; jwebbdev 40-60k/h per colony (wormhole estimate) but its
+  profit code ignores the rate and assumes fully fed factories;
+  eveonline-industry.com has no extraction model.
 - **Calibration from the user's own colonies** (ESI, optional): for each real
   extractor, apply the formula to `qty_per_cycle`/`cycle_time`/program length
   to get its true average per head and hour. Store it per P0 type and planet
@@ -234,6 +247,17 @@ storage, link levels).
 The template analyser (6) runs the same `throughput`/`fit` on an exact pin
 list. Planning estimate and template are two inputs to one model, not two models.
 
+**Performance**: the Profitability table needs `best_design` for every
+product x chain x planet type (several hundred rows, each a brute-force
+search). Designs do not depend on prices, only on (chain, product, planet
+type, radius bucket, CC level, yield, program length, interval). They are
+therefore cached under that key with a single lock and explicit
+invalidation on settings changes and SDE refresh (CLAUDE.md "Caching
+pattern", the `discover_build_candidates` shape). Prices are applied
+afterwards per request. If the brute force is still too slow, prune by
+dominance (more heads never helps once all factories are fed) before
+reaching for anything cleverer.
+
 ### 3.3 Profitability ("lohnt sich / lohnt sich nicht")
 
 Per design, per day:
@@ -253,9 +277,17 @@ profit     = revenue - input_cost - tax - freight - setup
   uses the sell-side valuation minus sales tax + broker fee (tool settings,
   same shape as Refining's). Buying inputs uses the landed cost from
   `hub_pricing`.
-- **Tax rate**: one effective rate per planned colony (default from settings,
-  e.g. 10% for high-sec NPC customs), entered by the user. No security-based
-  guessing, since ESI cannot see foreign POCO/Skyhook rates.
+- **Tax rate**: one effective rate per planned colony, built from two parts:
+  the **NPC part** (high-sec 10% minus 1% per Customs Code Expertise level,
+  the skill coming from ESI or the manual setting, D3; 0% outside high-sec)
+  plus the **owner part** (POCO/Skyhook owner rate), which the user enters
+  per colony (default from settings), since ESI cannot see foreign
+  POCO/Skyhook rates. The UI shows both parts and lets the user override the
+  total.
+- **Valuation side** (setting, same idea as the other tools): sell outputs
+  into buy orders (instant) or list them as sell orders (minus broker fee and
+  sales tax); buy inputs from sell orders. The verdict states which side it
+  used.
 - **Ranking metric: ISK per planet slot per day**, not ISK/m3 (jwebbdev's
   documented dead end: tiny-volume P4 wins ISK/m3 but uses dozens of planets).
   ISK per m3 hauled and haul m3 per week are shown as secondary columns.
@@ -494,6 +526,11 @@ and the export notes that heads are placed on hotspots in game.
   `schedule_mode` on-demand + page-open sync like Character Info) rather than
   `live_only`. Reads go through `read_esi`/`fields` like every other tool,
   and the `fields.gate()` states apply.
+- **Freshness caveat (verify in phase 4)**: the colony endpoints report the
+  state as of the colony's `last_update`, i.e. the last time the player
+  touched it in game, not a live simulation. Contents and extractor progress
+  shown by ESI can be days old. The Colonies page shows `last_update`
+  prominently, and any "now" figure is an estimate projected from the rates.
 - Re-auth flow is the existing `/api/characters/reauth/start`; no new token
   namespace.
 - Character skills come from the existing `skills` kind already in phase 2
@@ -526,7 +563,7 @@ and the export notes that heads are placed on hotspots in game.
 
 | Phase | Content | Done when |
 |---|---|---|
-| 0 | Set the per-zone yield defaults with the user (D2); one in-game check of the P0 table (1.3) and CC levels | Values recorded here |
+| 0 | One in-game check of the P0 table (1.3) and CC levels | Values recorded here |
 | 1 | SDE import (schematics, PI attributes, commodities, structures, all PI planets with radius) + `pi/engine.py` capacity/throughput + unit tests | Golden tests pass (10) |
 | 2 | Pricing, taxes, freight, profitability, verdicts, chain view; skills from ESI + manual fallback; saved plans; tool key, router, Profitability/Planner/Chains/Plans/Settings pages | Live-verified against the running API and browser |
 | 3 | Template library + analyser + export | Real in-game exports analyse correctly |
@@ -559,11 +596,31 @@ Each phase is one or more commits on its own branch, with `pytest` green.
 | # | Question | Decision |
 |---|---|---|
 | D1 | Template generator: own, port Eve-PI's MIT generator, or none? | **Full generator, built for this app** (section 6A): all chains, layout editor, variants, partial sourcing, mixed P2, storage suggestions, shapes. Other repos only as reference and test oracle, no port. Revised the same day from "own small generator" |
-| D2 | Yield default before any calibration | **One default per security zone** (high/low/null/wormhole), editable, labelled as assumption; calibration replaces it. Numbers still open, set together in phase 0 |
+| D2 | Yield default before any calibration | **One default per security zone** (high/low/null/wormhole), editable, labelled as assumption; calibration replaces it. High 1000 / low 2000 / null 4000 / WH 4000 P0 per head per hour (3-day program) |
 | D3 | Planets per character / CC level: manual or ESI skills? | **Both right away** (phase 2): ESI skills per shared character, manual setting as fallback |
 | D4 | Is `pi` a default grant for new users? | **Yes**, in `DEFAULT_TOOL_KEYS` |
 | D5 | Planet radius source | **Import all ~68k PI planets** with radius from `mapDenormalize` in phase 1 |
 | D6 | Save plans per tenant? | **Yes, from the start** (`pi_plans`, phase 2; compared with real colonies in phase 4) |
+
+## 11A. Review 2026-10-04: still open, and feature candidates
+
+Gaps closed directly in the plan during this review: tax composition with
+Customs Code Expertise (3.3), valuation side (3.3), design cache (3.2),
+wormhole/Pochven/Shattered handling (1.6), ESI colony freshness (7).
+
+Still to decide with the user (answers recorded below as they come in):
+
+| # | Item |
+|---|---|
+| O1 | **Freight for PI**: `hub_freight_cost_per_m3` means hub -> home structure. PI planets sit elsewhere, so PI needs its own ISK/m3 (hub <-> planets), possibly per plan |
+| O2 | Defaults for the verdict: amortisation days, minimum ISK/planet/day, market-share warning % |
+| F1 | **Production integration**: PI items in Production's demand (fuel blocks, structure/capital components) -> "make via PI vs buy", valued at your buy price |
+| F2 | **Effort metric**: interactions per week (program restarts + hauls) and ISK per interaction next to ISK/planet/day |
+| F3 | **Colony monitor**: per real colony, projected state now (pads full at, inputs empty at, extractor ends at, idle factories), from ESI + rates |
+| F4 | **More Discord alerts** beyond extractor expiry: "launchpad full" / "factory out of inputs" from F3's projection |
+| F5 | **Portfolio**: value PI colony contents (not part of ESI assets) in Total Wealth |
+| F6 | **Price trend** column (30-day history, volatility) for PI products, from the existing history plumbing |
+| F7 | Own corporation's customs office tax rates via ESI (`esi-planets.read_customs_offices.v1`) to prefill the owner part |
 
 ## 12. Sources
 
