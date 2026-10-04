@@ -1,9 +1,10 @@
 # Planetary Industry (PI) tool - plan
 
-Status: **draft 2026-10-04, not started.** PI was "deferred, not rejected"
+Status: **planned 2026-10-04, not started.** PI was "deferred, not rejected"
 (CLAUDE.md, "Deferred, not rejected"); the user asked for this plan on
-2026-10-04. The decisions marked **open** in "Open decisions" need answers
-before phase 1 starts.
+2026-10-04 and confirmed decisions D1-D6 one by one the same day (section 11).
+One item is still open: the per-security-zone yield defaults (D2), to be set
+together with the user in phase 0.
 
 Goal: a PI tool that answers **"which PI is worth doing for me, and which is
 not"** from what a planet can *actually* build - real structure counts under
@@ -140,7 +141,11 @@ with no decay; jwebbdev: about 6000/head/h peak; wormhole estimates of
 40-60k/h per colony). So:
 
 - **Planning uses an explicit, user-editable yield assumption**
-  (P0/head/hour, averaged over the program), labelled as an assumption in the UI.
+  (P0/head/hour, averaged over the program), labelled as an assumption in the
+  UI, with **one default per security zone** (high-sec, low-sec, null-sec,
+  wormhole; D2). The zone comes from the planet's system security
+  (`sde_solar_systems.security`, wormhole = J-space region ids). The numbers
+  are set together with the user in phase 0.
 - **Calibration from the user's own colonies** (ESI, optional): for each real
   extractor, apply the formula to `qty_per_cycle`/`cycle_time`/program length
   to get its true average per head and hour. Store it per P0 type and planet
@@ -261,8 +266,8 @@ For a target product, compute the planet count per stage from the per-design
 rates: e.g. one P1->P2 factory planet (about 1920 P1/h) needs N extractor
 planets per P1 input, given the yield assumption. Show total planets,
 ISK/day per planet slot for the whole chain vs. selling at each intermediate
-tier, and the characters it needs (planets per character from settings or
-skills, see open decision D3). This answers "build up to P2 or sell P1?"
+tier, and the characters it needs (planets per character and CC level from
+ESI skills where shared, else the manual setting; D3). This answers "build up to P2 or sell P1?"
 directly. A full multi-character allocator (jwebbdev's 60 KB greedy) is
 **not** in scope (see 4).
 
@@ -275,8 +280,9 @@ directly. A full multi-character allocator (jwebbdev's 60 KB greedy) is
 | Chain view (planets per stage, value added per tier) | **Build** | Answers "how far up the chain" |
 | Template library: paste/import JSON, analyse (fit, throughput, routes, storage, taxes), store per tenant, export | **Build** | Low risk, matches PI Nexus' useful part, no generator needed |
 | ESI colonies: list own colonies, extractor expiry, convert colony -> template, yield calibration | **Build (phase 4)** | Only reliable yield source; colony -> template is cheap once ESI rows exist |
-| Template generator (design -> importable layout) | **Build later, carefully** | Highest effort; correctness only provable by in-game import (needs the user); see D1 |
-| Planet finder (planets within N jumps, by type/radius) | **Optional/later** | Needs `mapDenormalize` (83 MB CSV) + jump graph; nice but not part of "is it worth it" |
+| Template generator (design -> importable layout) | **Build later, carefully** | Highest effort; correctness only provable by in-game import (needs the user); own small generator (D1, scope in 6.3) |
+| Saved plans (`pi_plans`) | **Build (phase 2)** | D6; later compared with real colonies via ESI |
+| Planet finder (planets within N jumps, by type/radius) | **Optional/later** | Planets come with phase 1 (D5); still needs a jump graph (`mapSolarSystemJumps`); nice but not part of "is it worth it" |
 | Discord alert "extractor program expires" | **Later, small** | Natural fit for `alerts/` (like `skillqueue_empty`) once the ESI kind exists |
 | Multi-character greedy allocator | **Don't** | Large, opinionated, hard to verify; the chain view + per-character planet count gives 90% |
 | Layout eye candy (shapes, 3D planet, themes) | **Don't** | PI Nexus already does this; link to it |
@@ -295,9 +301,13 @@ directly. A full multi-character allocator (jwebbdev's 60 KB greedy) is
   (schematic, type, qty, is_input), `sde_pi_schematic_pins`,
   `sde_pi_commodities` (type, tier, volume, import/export tax base),
   `sde_pi_structures` (type, kind, planet_type, cpu, power, capacity,
-  isk_cost, plus link/ECU attributes), `sde_pi_planets` (planet_id,
-  system_id, type_id, radius_km); the last one only if D5 says yes, or
-  load radius-only for planets in systems the user picks.
+  isk_cost, plus link/ECU attributes), `sde_pi_planets` (planet_id, name,
+  system_id, type_id, radius_km) for **all ~68k PI planets** (D5): streamed
+  and filtered out of `mapDenormalize.csv` (83 MB, groupID 7 and a PI
+  planet type) during the SDE refresh, the same streaming approach as
+  `dgmTypeAttributes.csv`, never held in memory whole. The planner then picks
+  a real planet (system search) and gets type, radius and security zone
+  from it; a free planet type + radius stays possible for "what if".
 - `production/sde.py`: add the three `planetSchematics*.csv` files to the
   fetched list; extend the streamed `dgmTypeAttributes.csv` filter (already
   used for skills) with the PI attribute ids (15, 49, 11, 48, 38, 1631-1636,
@@ -308,11 +318,22 @@ directly. A full multi-character allocator (jwebbdev's 60 KB greedy) is
   json, source `paste|generated|esi`, created_at),
   `pi_yield_samples` (character_id, planet_id, p0_type_id, planet_type_id,
   per_head_per_hour, program_hours, sampled_at; phase 4),
-  `pi_plans` (saved designs/chains with their tax rate; optional, D6).
+  `pi_plans` (D6, phase 2): saved designs and chains - name, planet_id (or
+  free planet type + radius), character_id (optional), design JSON, customs
+  tax rate, yield override, created/updated. Phase 4 compares a plan with
+  the matching real colony (same character + planet) via ESI: planned vs.
+  actual structures and extraction.
 - `PiConfig` dataclass (`eve_trader/pi/config.py`): `hub_region_id`,
-  broker fee, sales tax, default customs rate, yield assumption per head,
-  default program length, collection interval, amortisation days,
-  market-share warning %, planets per character, CC level. Validated by
+  broker fee, sales tax, default customs rate, yield per head **per security
+  zone** (four fields, D2), default program length, collection interval,
+  amortisation days, market-share warning %, and the manual fallbacks
+  planets per character / CC level / Customs Code Expertise level (D3).
+- Skills (D3, phase 2): characters shared with `pi` for the existing
+  `skills` kind supply Interplanetary Consolidation (planets = 1 + level),
+  Command Center Upgrades (max CC level) and Customs Code Expertise per
+  character, read via `read_esi` like `char_skills`; characters without a
+  share use the manual settings. `pi` is added to the `skills` kind's
+  consuming tools. Validated by
   `validate_config_overrides`; enum checks (if any) in a PI-specific
   validator, not in `config.py`.
 
@@ -329,11 +350,18 @@ directly. A full multi-character allocator (jwebbdev's 60 KB greedy) is
    `P`/`L`/`R`. Verify the lat/lon convention against an exported template of
    the same colony before shipping (ESI lat/lon vs template `La` polar angle,
    see Eve-PI `pin_angle`).
-3. **Generator (phase 5, D1)**: emit a template for a `best_design`. Must
-   satisfy 0.012 rad spacing, a tree of links within budget, routes of at most
-   7 structures, P0 never routed through Basic facilities, link levels for
-   loads over 1250 m3/h. Acceptance needs the user to import a fixed set of
-   generated templates in game (one per chain type, small and large radius).
+3. **Generator (phase 5, D1: own small generator)**: emit a template for a
+   `best_design`. "Small" means: one fixed standard layout per chain type
+   (P0->P1, P0->P2, P1->P2, P2->P3, P1->P3, P3->P4) - launchpad hub, factory
+   rows/tree, ECUs - with exactly the counts the planner computed. It must
+   satisfy 0.012 rad spacing, a tree of links within the CPU/power budget,
+   routes of at most 7 structures, P0 never routed through Basic facilities,
+   link levels for loads over 1250 m3/h, floats for La/Lo/Diam. **Not** in
+   scope (PI Nexus does these): alternative shapes, dragging structures,
+   per-factory P2 choice, storage-suggestion rebuilds, variant comparison.
+   Eve-PI's MIT generator is used only as a local test oracle, not ported.
+   Acceptance needs the user to import a fixed set of generated templates in
+   game (one per chain type, small and large radius).
 
 ## 7. ESI integration (phase 4)
 
@@ -345,15 +373,17 @@ directly. A full multi-character allocator (jwebbdev's 60 KB greedy) is
   and the `fields.gate()` states apply.
 - Re-auth flow is the existing `/api/characters/reauth/start`; no new token
   namespace.
-- Character skills (CC Upgrades, Interplanetary Consolidation, Customs Code
-  Expertise) can come from the existing `skills` kind if D3 says ESI.
+- Character skills come from the existing `skills` kind already in phase 2
+  (D3, see 5); phase 4 only adds the `planets` kind.
 
 ## 8. API / UI
 
 - Package `eve_trader/pi/` (`engine.py` pure, `constants.py`, `config.py`,
   `actions.py` with `do_*`, `templates.py`), router `api/routers/pi.py`
   using `_wrap`, `ActionError` for user errors. Tool key **`pi`**: add it to
-  `ALL_TOOL_KEYS`, `DEFAULT_TOOL_KEYS` (D4), `frontend/src/toolKeys.ts`,
+  `ALL_TOOL_KEYS`, `DEFAULT_TOOL_KEYS` (D4: default grant, so it is
+  preselected in Add User/access approval and `eve-trader admin
+  grant-defaults` backfills it), `frontend/src/toolKeys.ts`,
   `_TOOL_PATH_PREFIXES`, `esi_data/registry.py` consuming tools.
 - Pages: **Profitability** (filterable table: product, chain, planet type,
   ISK/planet/day, verdict + reason, click to see the design and the cost
@@ -366,13 +396,13 @@ directly. A full multi-character allocator (jwebbdev's 60 KB greedy) is
 
 | Phase | Content | Done when |
 |---|---|---|
-| 0 | Decisions D1-D6; one in-game check of the P0 table (1.3) and CC levels | Answers recorded here |
-| 1 | SDE import (schematics, PI attributes, commodities, structures) + `pi/engine.py` capacity/throughput + unit tests | Golden tests pass (10) |
-| 2 | Pricing, taxes, freight, profitability, verdicts, chain view; tool key, router, Profitability/Planner/Chains/Settings pages | Live-verified against the running API and browser |
+| 0 | Set the per-zone yield defaults with the user (D2); one in-game check of the P0 table (1.3) and CC levels | Values recorded here |
+| 1 | SDE import (schematics, PI attributes, commodities, structures, all PI planets with radius) + `pi/engine.py` capacity/throughput + unit tests | Golden tests pass (10) |
+| 2 | Pricing, taxes, freight, profitability, verdicts, chain view; skills from ESI + manual fallback; saved plans; tool key, router, Profitability/Planner/Chains/Plans/Settings pages | Live-verified against the running API and browser |
 | 3 | Template library + analyser + export | Real in-game exports analyse correctly |
-| 4 | ESI `planets` kind, colonies page, yield calibration, colony -> template | Calibration matches in-game totals on a real colony |
-| 5 | Template generator (if D1 = yes) | User-imported test set builds without errors |
-| 6 | Optional: planet finder, extractor-expiry Discord alert | - |
+| 4 | ESI `planets` kind, colonies page, yield calibration, colony -> template, plan vs. real colony | Calibration matches in-game totals on a real colony |
+| 5 | Own small template generator (D1) | User-imported test set builds without errors |
+| 6 | Optional: planet finder (jump graph), extractor-expiry Discord alert | - |
 
 Each phase is one or more commits on its own branch, with `pytest` green.
 
@@ -392,16 +422,16 @@ Each phase is one or more commits on its own branch, with `pytest` green.
 - Live-verify discipline from CLAUDE.md (API with `Invoke-RestMethod`, UI with
   a throwaway Playwright script).
 
-## 11. Open decisions
+## 11. Decisions (confirmed with the user 2026-10-04)
 
-| # | Question | Recommendation |
+| # | Question | Decision |
 |---|---|---|
-| D1 | Template generator: write our own (simple grid/tree, our constraints) or port Eve-PI's MIT generator (about 4000 lines of French-commented Python, proven in game, wrong volumes to fix)? Or no generator at all (library/analyser/ESI export only)? | Build phases 1-4 first; then decide. Leaning towards **own small generator for the standard layouts**, with Eve-PI as test oracle |
-| D2 | Yield default before any calibration | Flat 2000 P0/head/h averaged (PI Nexus' default), clearly labelled; calibration replaces it |
-| D3 | Planets per character / CC level: manual settings or from ESI skills? | Manual first (matches Production's flat-skill decision), ESI optional later |
-| D4 | Is `pi` a default grant for new users? | Yes (like every other tenant tool except admin/module_reprocessing) |
-| D5 | Import all ~68k PI planets with radius (`mapDenormalize`, 83 MB streamed) or let the user enter radius / pick a few systems? | Radius per planet type median as default; full import only with the planet finder (phase 6) |
-| D6 | Save plans/chains per tenant (`pi_plans`) or keep the planner stateless? | Stateless in phase 2; add saving if it turns out to be needed |
+| D1 | Template generator: own, port Eve-PI's MIT generator, or none? | **Own small generator** for the standard layouts (scope in 6.3), after phases 1-4; Eve-PI only as local test oracle |
+| D2 | Yield default before any calibration | **One default per security zone** (high/low/null/wormhole), editable, labelled as assumption; calibration replaces it. Numbers still open, set together in phase 0 |
+| D3 | Planets per character / CC level: manual or ESI skills? | **Both right away** (phase 2): ESI skills per shared character, manual setting as fallback |
+| D4 | Is `pi` a default grant for new users? | **Yes**, in `DEFAULT_TOOL_KEYS` |
+| D5 | Planet radius source | **Import all ~68k PI planets** with radius from `mapDenormalize` in phase 1 |
+| D6 | Save plans per tenant? | **Yes, from the start** (`pi_plans`, phase 2; compared with real colonies in phase 4) |
 
 ## 12. Sources
 
