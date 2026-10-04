@@ -19,7 +19,7 @@ def test_refresh_saves_hub_and_reference_history(monkeypatch):
     items = [ShortlistItem(item="A", item_id=1, category="X", volume_m3=1.0, meta_level=5, refreshed_at=None)]
     _cleanup_refresh_mocks(monkeypatch, items, lambda self, region_id, type_ids, max_workers=10: {})
     monkeypatch.setattr(GoonmetricsClient, "price_history_chunked",
-                        lambda self, region_id, type_ids: [_point(region_id, t) for t in type_ids])
+                        lambda self, region_id, type_ids, **_kw: [_point(region_id, t) for t in type_ids])
     saved: list[tuple[int, int]] = []
     monkeypatch.setattr(storage, "save_goonmetrics_history",
                         lambda points: saved.extend((p.region_id, p.type_id) for p in points))
@@ -34,7 +34,7 @@ def test_hub_history_failure_does_not_lose_reference_history(monkeypatch):
     items = [ShortlistItem(item="A", item_id=1, category="X", volume_m3=1.0, meta_level=5, refreshed_at=None)]
     _cleanup_refresh_mocks(monkeypatch, items, lambda self, region_id, type_ids, max_workers=10: {})
 
-    def history(self, region_id, type_ids):
+    def history(self, region_id, type_ids, **_kw):
         if region_id == cfg.jita_region_id:
             raise RuntimeError("goonmetrics down")
         return [_point(region_id, t) for t in type_ids]

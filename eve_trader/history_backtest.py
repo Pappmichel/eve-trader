@@ -12,6 +12,10 @@ compute, per day:
 
 Then aggregate across days into a hit-rate/score used to recommend additions
 to the shortlist (see New Candidates' "Add?" recommendation).
+
+A day where either region had no trade (Goonmetrics reports it with
+avgPrice 0) says nothing about the margin and is left out of the per-day
+math. Liquidity (avg movement) still counts it, as a day with zero volume.
 """
 from __future__ import annotations
 
@@ -22,7 +26,7 @@ from typing import Callable, Iterable, Optional
 import pandas as pd
 
 from .config import TRADING_CONFIG, TradingConfig
-from .goonmetrics_client import GoonmetricsClient, HistoryPoint
+from .goonmetrics_client import HISTORY_WINDOW_DAYS, GoonmetricsClient, HistoryPoint
 from .models import Candidate, NewCandidateResult
 
 log = logging.getLogger(__name__)
@@ -51,72 +55,69 @@ def _index_history(points: Iterable[HistoryPoint]) -> dict[tuple[int, int, str],
     return {(p.region_id, p.type_id, p.date): p for p in points}
 
 
-def _latest_margin(hist_index: dict, type_id: int, date: str, volume_m3: float,
-                    cfg: TradingConfig) -> float:
-    """Same landed/net_sell/margin formula as _score_candidate's per-day loop,
-    but for a single day only (`date`, normally the most recent one with
-    data) - used for the `add` gate below, which cares about *current*
-    profitability specifically, not the multi-day average score."""
-    jita = hist_index.get((cfg.jita_region_id, type_id, date))
-    ref = hist_index.get((cfg.reference_region_id, type_id, date))
-    if not jita or not ref:
-        return 0.0
-    landed = jita.avg_price * (1 + cfg.jita_buy_broker_fee) + volume_m3 * cfg.import_cost_per_m3
-    net_sell = ref.avg_price * cfg.structure_sell_haircut
-    return (net_sell - landed) / landed if landed > 0 else 0.0
-
-
 def _score_candidate(candidate: Candidate, hist_index: dict,
                       cfg: TradingConfig) -> NewCandidateResult | None:
-    """Aggregates every paired (Jita, reference-region) day of history for
-    this candidate into a hit-rate/score, and decides whether to recommend
-    it. `score = avg_profit_m3 x log(1+avg_move) x hit_rate`: profit per m3
-    rewards import efficiency, log(1+avg_move) rewards liquidity without
-    letting a single very-high-volume day dominate (log dampens scale, see
-    MIN_BASELINE_MARGIN_MAGNITUDE elsewhere in this module for a related
-    "don't let one axis blow up the result" fix), hit_rate rewards
-    consistency over a lucky day. `add` (the actual recommendation) requires
-    *all* of: at least one profitable day, hit_rate clearing
-    cfg.min_hit_rate, the *latest* day's margin (not just the average)
+    """Aggregates every traded paired (Jita, reference-region) day of history
+    for this candidate into a hit-rate/score, and decides whether to
+    recommend it. `score = avg_profit_m3 x log(1+avg_move) x hit_rate`:
+    profit per m3 rewards import efficiency, log(1+avg_move) rewards
+    liquidity without letting a single very-high-volume day dominate (log
+    dampens scale, see MIN_BASELINE_MARGIN_MAGNITUDE elsewhere in this module
+    for a related "don't let one axis blow up the result" fix), hit_rate
+    rewards consistency over a lucky day. `add` (the actual recommendation)
+    requires *all* of: at least one profitable day, hit_rate clearing
+    cfg.min_hit_rate, the *latest* traded day's margin (not just the average)
     clearing cfg.min_margin_threshold, a positive score, and average
     liquidity clearing cfg.min_avg_movement - a good historical average
-    alone isn't enough if the item isn't profitable or liquid right now."""
-    dates = sorted({d for (r, t, d) in hist_index if r == cfg.jita_region_id and t == candidate.type_id})
-    if not dates:
+    alone isn't enough if the item isn't profitable or liquid right now.
+
+    Only days with a real price on both sides count as paired days (see the
+    module docstring): Goonmetrics reports a day without trades as
+    avgPrice 0, which used to score as a -100% margin (reference side) or a
+    near-free buy (Jita side). avg_move is the reference region's total
+    movement over HISTORY_WINDOW_DAYS calendar days, so days without trades
+    count as zero volume whether the source lists them (Goonmetrics, mostly)
+    or leaves them out (ESI)."""
+    dates: list[str] = []
+    total_move = 0.0
+    for (r, t, d), point in hist_index.items():
+        if t != candidate.type_id:
+            continue
+        if r == cfg.jita_region_id:
+            dates.append(d)
+        elif r == cfg.reference_region_id:
+            total_move += point.movement
+    if not dates or candidate.volume_m3 <= 0:
         return None
 
     days = good_days = 0
     best_margin = -999.0
-    sum_profit_m3 = sum_move = 0.0
-    latest_date = dates[-1]
+    sum_profit_m3 = 0.0
+    latest_margin = 0.0
 
-    for d in dates:
+    for d in sorted(dates):
         jita = hist_index.get((cfg.jita_region_id, candidate.type_id, d))
         ref = hist_index.get((cfg.reference_region_id, candidate.type_id, d))
-        if not jita or not ref:
+        if not jita or not ref or jita.avg_price <= 0 or ref.avg_price <= 0:
             continue
         landed = jita.avg_price * (1 + cfg.jita_buy_broker_fee) + candidate.volume_m3 * cfg.import_cost_per_m3
         net_sell = ref.avg_price * cfg.structure_sell_haircut
-        if landed <= 0 or candidate.volume_m3 <= 0:
-            continue
         profit = net_sell - landed
         margin = profit / landed
-        profit_m3 = profit / candidate.volume_m3
         days += 1
-        sum_profit_m3 += profit_m3
-        sum_move += ref.movement
+        sum_profit_m3 += profit / candidate.volume_m3
         if margin >= cfg.min_margin_threshold:
             good_days += 1
         best_margin = max(best_margin, margin)
+        latest_margin = margin
 
     if days == 0:
         return None
 
     hit_rate = good_days / days
     avg_profit_m3 = sum_profit_m3 / days
-    avg_move = sum_move / days
+    avg_move = total_move / HISTORY_WINDOW_DAYS
     score = avg_profit_m3 * math.log(1 + avg_move) * hit_rate
-    latest_margin = _latest_margin(hist_index, candidate.type_id, latest_date, candidate.volume_m3, cfg)
 
     add = (good_days > 0 and hit_rate >= cfg.min_hit_rate and latest_margin >= cfg.min_margin_threshold
            and score > 0 and avg_move >= cfg.min_avg_movement)
@@ -178,6 +179,8 @@ def compute_margin_trends(history_df: pd.DataFrame, volumes: dict[int, float],
     if merged.empty:
         return {}
 
+    # A day without trades on either side has no margin (see module docstring).
+    merged = merged[(merged["jita_price"] > 0) & (merged["ref_price"] > 0)]
     merged = merged[merged["type_id"].isin(volumes)]
     merged["volume_m3"] = merged["type_id"].map(volumes)
     merged["landed"] = merged["jita_price"] * (1 + cfg.jita_buy_broker_fee) + \
@@ -300,9 +303,15 @@ def find_new_import_candidates(candidates: list[Candidate], existing_item_ids: s
             continue
         try:
             type_ids = [c.type_id for c in batch]
-            points: list[HistoryPoint] = []
-            points.extend(client.price_history_chunked(cfg.jita_region_id, type_ids))
-            points.extend(client.price_history_chunked(cfg.reference_region_id, type_ids))
+            # Types Goonmetrics doesn't track (most blueprints) come from ESI.
+            # The reference region is only asked for types that actually
+            # traded in Jita - without a Jita price there is nothing to score,
+            # so those ESI calls would be wasted.
+            points: list[HistoryPoint] = list(
+                client.price_history_chunked(cfg.jita_region_id, type_ids, esi_for_missing=set(type_ids)))
+            traded_in_jita = {p.type_id for p in points if p.avg_price > 0}
+            points.extend(client.price_history_chunked(cfg.reference_region_id, type_ids,
+                                                       esi_for_missing=traded_in_jita))
 
             if history_sink is not None and points:
                 history_sink(points)
