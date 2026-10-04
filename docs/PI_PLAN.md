@@ -14,6 +14,9 @@ taxes and real hub prices - plus in-game PI templates (import, analyse,
 store, export, later generate) like the PI Nexus web tool
 (https://evepinexus.com/).
 
+Technical design (module layout, schema, pitfalls P-01..P-62, verification
+items V-1..V-5): `docs/PI_TECHNICAL_DESIGN.md`.
+
 ## 1. Research summary
 
 ### 1.1 Sources looked at
@@ -156,8 +159,12 @@ noise       = max((cos(phase + t/12) + cos(phase/2 + t*0.2) + cos(t*0.5)) / 3, 0
 cycle_out   = bar_width * decay * (1 + 0.8 * noise)
 ```
 
-Cycle time follows program length: <=25 h -> 30 min, <=50 h -> 1 h,
-<=100 h -> 2 h, <=200 h -> 4 h, longer -> 8 h (max 14 days). Decay is
+Cycle time grows with program length (max 14 days). The thresholds differ
+between sources (EVE Uni: 15 min below 25 h, then 30 min / 1 h / 2 h / 4 h
+at 25 / 50 / 100 / 200 h; jwebbdev: 30 min up to 25 h ... 8 h above 200 h).
+This barely affects the program average, because `t` counts 15-minute bars
+whatever the cycle length. Real data uses ESI's `cycle_time`; see
+`docs/PI_TECHNICAL_DESIGN.md` P-31 / V-1. Decay is
 steep: averaged over a 24 h program, output is ~0.67 of the first bar;
 over 7 days ~0.27.
 
