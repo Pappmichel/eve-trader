@@ -7507,3 +7507,59 @@ def delete_pi_plan(plan_id: int) -> bool:
     with connect() as conn:
         cur = conn.execute("DELETE FROM pi_plans WHERE plan_id = ?", (int(plan_id),))
         return cur.rowcount > 0
+
+
+# PI template library - per tenant, RLS.
+_PI_TEMPLATE_COLUMNS = "template_id, name, comment, planet_type_id, cc_level, diameter_km, template, source, created_at"
+
+
+def _pi_template_row(r, with_template: bool = True) -> dict:
+    d = {
+        "template_id": int(r[0]), "name": r[1], "comment": r[2], "planet_type_id": r[3],
+        "cc_level": r[4], "diameter_km": r[5], "source": r[7],
+        "created_at": r[8].isoformat() if r[8] else None,
+    }
+    if with_template:
+        d["template"] = r[6]
+    return d
+
+
+def list_pi_templates() -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(f"SELECT {_PI_TEMPLATE_COLUMNS} FROM pi_templates ORDER BY name, template_id").fetchall()
+    return [_pi_template_row(r, with_template=False) for r in rows]
+
+
+def get_pi_template(template_id: int) -> Optional[dict]:
+    with connect() as conn:
+        row = conn.execute(f"SELECT {_PI_TEMPLATE_COLUMNS} FROM pi_templates WHERE template_id = ?",
+                           (int(template_id),)).fetchone()
+    return _pi_template_row(row) if row else None
+
+
+def save_pi_template(name: str, comment: Optional[str], planet_type_id: Optional[int], cc_level: Optional[int],
+                     diameter_km: Optional[float], template: dict, source: str,
+                     template_id: Optional[int] = None) -> int:
+    values = (name, comment, planet_type_id, cc_level, diameter_km, Jsonb(template), source)
+    with connect() as conn:
+        if template_id is None:
+            row = conn.execute(
+                "INSERT INTO pi_templates (name, comment, planet_type_id, cc_level, diameter_km, template, source) "
+                "VALUES (?,?,?,?,?,?,?) RETURNING template_id",
+                values,
+            ).fetchone()
+            return int(row[0])
+        cur = conn.execute(
+            "UPDATE pi_templates SET name = ?, comment = ?, planet_type_id = ?, cc_level = ?, diameter_km = ?, "
+            "template = ?, source = ? WHERE template_id = ?",
+            values + (int(template_id),),
+        )
+        if cur.rowcount == 0:
+            raise KeyError(template_id)
+        return int(template_id)
+
+
+def delete_pi_template(template_id: int) -> bool:
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM pi_templates WHERE template_id = ?", (int(template_id),))
+        return cur.rowcount > 0

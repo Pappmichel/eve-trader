@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ...actions import ActionError
@@ -94,3 +94,105 @@ def get_settings():
 @router.put("/settings")
 def put_settings(updates: dict[str, Any]):
     return _wrap(pi_actions.do_update_settings, updates=updates)
+
+
+@router.get("/characters")
+def get_characters():
+    return _wrap(pi_actions.do_characters)
+
+
+class SystemAnalysisBody(BaseModel):
+    slots: Optional[int] = Field(default=None, ge=1, le=60)
+    characters: Optional[int] = Field(default=None, ge=1, le=100)
+    cc_level: Optional[int] = Field(default=None, ge=0, le=5)
+    owner_tax_rate: Optional[float] = Field(default=None, ge=0, le=1)
+
+
+@router.post("/systems/{system_id}/analysis")
+def post_system_analysis(system_id: int, body: SystemAnalysisBody):
+    return _wrap(pi_actions.do_system_analysis, solar_system_id=system_id, **body.model_dump())
+
+
+@router.get("/production-demand")
+def get_production_demand(request: Request):
+    """Reads Production's buy list, so it needs the `production` grant too
+    (checked against the grants the middleware put on the request - fail
+    closed when absent), like the Doctrine skill check (P-40)."""
+    keys = getattr(request.state, "tool_keys", None)
+    if keys is None or "production" not in keys:
+        raise HTTPException(status_code=403, detail="Forbidden - missing tool grant")
+    return _wrap(pi_actions.do_production_demand)
+
+
+class LayoutBody(BaseModel):
+    template: Any
+    planet_id: Optional[int] = None
+    radius_km: Optional[float] = Field(default=None, gt=0, le=1_000_000)
+    yield_per_head: Optional[float] = Field(default=None, ge=0)
+
+
+@router.post("/layouts/validate")
+def post_validate_layout(body: LayoutBody):
+    return _wrap(pi_actions.do_validate_layout, **body.model_dump())
+
+
+class GenerateBody(PlannerBody):
+    shape: Optional[str] = None
+    comment: Optional[str] = Field(default=None, max_length=200)
+
+
+@router.post("/layouts/generate")
+def post_generate_layout(body: GenerateBody):
+    data = body.model_dump()
+    data.pop("owner_tax_rate", None)
+    data.pop("freight_per_m3", None)
+    return _wrap(pi_actions.do_generate_layout, **data)
+
+
+class RetargetBody(BaseModel):
+    template: Any
+    planet_type_id: Optional[int] = None
+    product_type_id: Optional[int] = None
+    planet_id: Optional[int] = None
+    radius_km: Optional[float] = Field(default=None, gt=0, le=1_000_000)
+
+
+@router.post("/layouts/retarget")
+def post_retarget_layout(body: RetargetBody):
+    return _wrap(pi_actions.do_retarget_template, **body.model_dump())
+
+
+@router.get("/templates")
+def list_templates():
+    return _wrap(pi_actions.do_list_templates)
+
+
+@router.get("/templates/{template_id}")
+def get_template(template_id: int, planet_id: Optional[int] = None, radius_km: Optional[float] = None):
+    return _wrap(pi_actions.do_get_template, template_id=template_id, planet_id=planet_id, radius_km=radius_km)
+
+
+class TemplateBody(BaseModel):
+    template: Any
+    name: Optional[str] = Field(default=None, max_length=100)
+    source: str = "paste"
+
+
+@router.post("/templates")
+def create_template(body: TemplateBody):
+    return _wrap(pi_actions.do_save_template, **body.model_dump())
+
+
+@router.put("/templates/{template_id}")
+def update_template(template_id: int, body: TemplateBody):
+    return _wrap(pi_actions.do_save_template, template_id=template_id, **body.model_dump())
+
+
+@router.delete("/templates/{template_id}")
+def delete_template(template_id: int):
+    return _wrap(pi_actions.do_delete_template, template_id=template_id)
+
+
+@router.get("/templates/{template_id}/export")
+def export_template(template_id: int, pretty: bool = False):
+    return _wrap(pi_actions.do_export_template, template_id=template_id, pretty=pretty)
