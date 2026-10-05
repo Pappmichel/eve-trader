@@ -28,7 +28,7 @@ from dataclasses import dataclass, replace
 from typing import Callable, Optional
 
 from .. import constants as C
-from ..engine import made_types
+from ..engine import made_in
 from ..model import CHAINS, Design, StaticData, factory_kind_for_tier
 from . import validate
 from .geometry import EQUATOR, central_angle
@@ -191,8 +191,7 @@ def build_layout(static: StaticData, design: Design, planet_type_id: int, radius
         return 0
 
     core = 0
-    source_tier, _ = CHAINS[design.chain]
-    made = set(made_types(static, design.product_type_id, source_tier))
+    made = set(made_in(static, design))
     routes: list[Route] = []
     for i, s in enumerate(specs):
         if s.role != "factory":

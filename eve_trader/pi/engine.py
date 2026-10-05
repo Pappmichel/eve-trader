@@ -93,20 +93,21 @@ def balanced_factories(static: StaticData, product: int, source_tier: int, top_c
     return {t: n for t, n in counts.items() if n > 0}
 
 
-def factories_for_rate(static: StaticData, product: int, source_tier: int, rate: float) -> dict[int, int]:
+def factories_for_rate(static: StaticData, product: int, source_tier: int, rate: float,
+                       made: Optional[frozenset] = None) -> dict[int, int]:
     """Factory counts to make `rate` units/h of the product, each stage
     rounded up to whole factories and sized to what the stage above really
     needs. Unlike balanced_factories this allows a partly used top stage -
     real P1->P4 colonies run their High-Tech plant below capacity, since a
     fully fed one needs ~30 factories and never fits a Command Center."""
-    made = made_types(static, product, source_tier)
+    tree = made_types(static, product, source_tier)
     demand: dict[int, float] = {product: rate}
     counts: dict[int, int] = {}
-    for t in reversed(made):  # highest tier first
+    for t in reversed(tree):  # highest tier first
         s = static.schematic_by_output[t]
         d = demand.get(t, 0.0)
-        if d <= EPS:
-            continue
+        if d <= EPS or (made is not None and t != product and t not in made):
+            continue  # not made here: hauled in
         counts[t] = max(1, math.ceil(d / (s.output_qty * s.runs_per_hour) - EPS))
         runs_needed = d / s.output_qty
         for i, q in s.inputs:
@@ -137,8 +138,14 @@ def cc_setup_isk(static: StaticData, planet_type_id: int, cc_level: int) -> floa
     return upgrades + (cc.isk_cost if cc else 0.0)
 
 
+def made_in(static: StaticData, design: Design) -> list[int]:
+    """What the design manufactures, lowest tier first: every type it has
+    factories for. Everything else it consumes is extracted (P0 with an ECU)
+    or hauled in - which also covers partial sourcing and mixed P2 (5c)."""
+    return sorted((t for t, n in design.factories if n > 0), key=lambda t: (static.tier(t) or 0, t))
+
+
 def evaluate(static: StaticData, planet: Planet, design: Design, assumptions: Assumptions) -> Evaluation:
-    source_tier, _target = CHAINS[design.chain]
     pt = planet.planet_type_id
     notes: list[str] = []
     cpu_cap, power_cap, _ = C.CC_LEVELS[design.cc_level]
@@ -146,11 +153,11 @@ def evaluate(static: StaticData, planet: Planet, design: Design, assumptions: As
 
     # --- supply of raw inputs
     extracted: dict[int, float] = {}
-    if design.chain in EXTRACTION_CHAINS:
-        y = assumptions.effective_yield
-        for p0, heads in design.ecus:
-            extracted[p0] = extracted.get(p0, 0.0) + heads * y
-    made = made_types(static, design.product_type_id, source_tier)
+    y = assumptions.effective_yield
+    for p0, heads in design.ecus:
+        extracted[p0] = extracted.get(p0, 0.0) + heads * y
+    made = made_in(static, design)
+    made_set = set(made)
     counts = dict(design.factories)
 
     # --- full-run needs, then bottom-up utilisation with proportional sharing
@@ -162,7 +169,6 @@ def evaluate(static: StaticData, planet: Planet, design: Design, assumptions: As
             full_need[i] = full_need.get(i, 0.0) + runs * q
 
     available: dict[int, float] = dict(extracted)
-    imported_raw = source_tier >= 1
     produced: dict[int, float] = {}
     consumed: dict[int, float] = {}
     utilization: dict[int, float] = {}
@@ -177,8 +183,7 @@ def evaluate(static: StaticData, planet: Planet, design: Design, assumptions: As
         u = 1.0
         for i, q in s.inputs:
             need = runs * q
-            raw = static.tier(i) is not None and static.tier(i) <= source_tier
-            if raw and imported_raw:
+            if i not in made_set and i not in extracted:
                 continue  # hauled in as needed
             share = available.get(i, 0.0) * (need / full_need[i]) if full_need.get(i) else 0.0
             u = min(u, share / need if need > 0 else 1.0)
@@ -192,8 +197,7 @@ def evaluate(static: StaticData, planet: Planet, design: Design, assumptions: As
     imports: dict[int, float] = {}
     exports: dict[int, float] = {}
     for i, used in consumed.items():
-        tier = static.tier(i)
-        if tier is not None and tier <= source_tier and imported_raw:
+        if i not in made_set and i not in extracted:
             imports[i] = used
     for t in made:
         surplus = produced.get(t, 0.0) - consumed.get(t, 0.0)
@@ -348,8 +352,10 @@ def _better(a: Optional[Evaluation], b: Evaluation) -> Evaluation:
 RATE_STEPS_PER_FACTORY = 4
 
 
-def _factory_designs(static, planet, chain, product, cc_level, assumptions) -> Iterable[Evaluation]:
-    source_tier, _ = CHAINS[chain]
+def _factory_designs(static, planet, chain, product, cc_level, assumptions,
+                     made: Optional[frozenset] = None, source_tier: Optional[int] = None) -> Iterable[Evaluation]:
+    if source_tier is None:
+        source_tier, _ = CHAINS[chain]
     pt = planet.planet_type_id
     top = static.schematic_by_output[product]
     per_top = top.output_qty * top.runs_per_hour
@@ -357,7 +363,8 @@ def _factory_designs(static, planet, chain, product, cc_level, assumptions) -> I
         for storages in range(0, MAX_STORAGES + 1):
             seen: set[tuple] = set()
             for m in range(1, MAX_FACTORIES_PER_STAGE * RATE_STEPS_PER_FACTORY + 1):
-                counts = factories_for_rate(static, product, source_tier, per_top * m / RATE_STEPS_PER_FACTORY)
+                counts = factories_for_rate(static, product, source_tier, per_top * m / RATE_STEPS_PER_FACTORY,
+                                            made)
                 factories = tuple(sorted(counts.items()))
                 if factories in seen:
                     continue
