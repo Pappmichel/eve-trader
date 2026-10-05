@@ -65,6 +65,9 @@ def test_generate_layout(monkeypatch):
     assert r.status_code == 200
     assert seen["shape"] == "star" and seen["comment"] == "hi" and seen["chain"] == "P1-P2"
     assert "owner_tax_rate" not in seen and "freight_per_m3" not in seen
+    assert seen["use_references"] is True
+    client.post("/api/pi/layouts/generate", json={"chain": "P1-P2", "product_type_id": 3645, "use_references": False})
+    assert seen["use_references"] is False
     assert client.post("/api/pi/layouts/generate", json={"chain": "x", "product_type_id": 1,
                                                          "comment": "x" * 201}).status_code == 422
     monkeypatch.setattr(pi_actions, "do_generate_layout", _boom)

@@ -852,8 +852,11 @@ def do_generate_layout(chain: str, product_type_id: int, planet_id: Optional[int
                        design: Optional[dict] = None, yield_per_head: Optional[float] = None,
                        program_hours: Optional[float] = None, interval_hours: Optional[float] = None,
                        shape: Optional[str] = None, comment: Optional[str] = None,
-                       cfg: PiConfig = PI_CONFIG) -> dict:
-    """Design (best or given) -> importable template (6A)."""
+                       use_references: bool = True, cfg: PiConfig = PI_CONFIG) -> dict:
+    """Design (best or given) -> importable template (6A). With the standard
+    shape, a community reference layout adapted to this product
+    (layout/reference.py) replaces the generated one when its effective
+    output is at least REFERENCE_MIN_SHARE of the generator's."""
     from .layout import generate
 
     static = _static()
@@ -882,12 +885,17 @@ def do_generate_layout(chain: str, product_type_id: int, planet_id: Optional[int
         except KeyError as e:
             raise ActionError(f"Unknown shape {shape!r}") from e
     shape_note: Optional[str] = None
+    standard = cells_fn is generate.standard_cells
     try:
         res = generate.generate(static, d, planet.planet_type_id, planet.radius_km, a.effective_yield,
-                                comment or "", cells_fn, shrink_to_fit=cells_fn is generate.standard_cells)
+                                comment or "", cells_fn, shrink_to_fit=standard)
     except generate.GenerateError as e:
-        if cells_fn is generate.standard_cells:
-            raise ActionError(str(e)) from e
+        if standard:
+            ref = _reference_layout(static, d, planet, a, comment, None) if use_references else None
+            if ref is None:
+                raise ActionError(str(e)) from e
+            return _generated_payload(static, ref.layout, ref.analysis, ref.design, planet,
+                                      [_reference_note(ref)], "standard", ref)
         # A shape is never applied half-way: standard layout plus the reason.
         shape_note = f"The {shape} shape does not work for this colony ({e}); the standard layout is shown."
         try:
@@ -895,9 +903,45 @@ def do_generate_layout(chain: str, product_type_id: int, planet_id: Optional[int
                                     comment or "")
         except generate.GenerateError as e2:
             raise ActionError(str(e2)) from e2
-    payload = _layout_payload(static, res.layout, res.analysis)
-    payload.update({"design": res.design.to_dict(), "notes": res.notes + ([shape_note] if shape_note else []),
-                    "shape": shape if not shape_note else "standard",
+    if standard and use_references:
+        ref = _reference_layout(static, d, planet, a, comment, res)
+        if ref is not None:
+            return _generated_payload(static, ref.layout, ref.analysis, ref.design, planet,
+                                      [_reference_note(ref)], "standard", ref)
+    return _generated_payload(static, res.layout, res.analysis, res.design, planet,
+                              res.notes + ([shape_note] if shape_note else []),
+                              shape if not shape_note else "standard", None)
+
+
+# A reference layout wins over the generator from this share of its
+# effective output on: proven in game, so a near tie goes to the reference.
+REFERENCE_MIN_SHARE = 0.98
+
+
+def _reference_layout(static, design, planet, a, comment, generated):
+    """The best adapted reference layout, or None when none fits or the
+    generated layout (`generated`, may be None) does clearly better."""
+    from .layout import reference, validate
+
+    ref = reference.from_references(static, design, planet.planet_type_id, planet.radius_km,
+                                    a.effective_yield, a.interval_hours, comment or "")
+    if ref is None or generated is None:
+        return ref
+    own = validate.analyse(static, generated.layout, planet.radius_km, a.effective_yield,
+                           reference.self_supplied(static, generated.design))
+    own_out = reference.effective_output(own, design.product_type_id, a.interval_hours)
+    return ref if ref.effective_output >= own_out * REFERENCE_MIN_SHARE else None
+
+
+def _reference_note(ref) -> str:
+    return (f"Based on a community layout ({ref.reference.upvotes} upvotes on planetsin.space), adapted to this "
+            "product and planet.")
+
+
+def _generated_payload(static, layout, analysis, design, planet, notes, shape, ref) -> dict:
+    payload = _layout_payload(static, layout, analysis)
+    payload.update({"design": design.to_dict(), "notes": notes, "shape": shape,
+                    "source": "reference" if ref is not None else "generator",
                     "planet": {"planet_id": planet.planet_id, "planet_type_id": planet.planet_type_id,
                                "radius_km": planet.radius_km}})
     return payload

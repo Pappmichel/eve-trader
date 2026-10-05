@@ -52,6 +52,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["eve_trader*"]
 
+[tool.setuptools.package-data]
+"eve_trader.pi.layout" = ["reference_templates.json"]
+
 [tool.pytest.ini_options]
 markers = [
     "release: Production Special-Order freeze regression (phases C–H)",

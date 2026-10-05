@@ -592,7 +592,18 @@ widens the alert type CHECK constraints).
   rounding, <= 7 structures per route, per-link `ceil` costs - confirmed in
   game, link loads, throughput LP). The generator never routes P0 through a
   Basic facility (Basic facilities and extractors hang directly off a hub);
-  real in-game exports sometimes do, so the validator only notes it.
+  real in-game exports sometimes do, so the validator only notes it. The
+  spacing check allows 2e-5 rad below 0.012: in-game exports sit at 0.01199x.
+- **Reference layouts** (`pi/layout/reference.py`, `reference_templates.json`):
+  `do_generate_layout` (standard shape, `use_references`) also adapts public
+  community templates from planetsin.space (comments/authors stripped, only
+  validator-clean ones) to the design - recipe tree mapped by shape, planet
+  structure ids and route quantities rewritten, factories rebalanced to the
+  design's stage ratio, unneeded factories/hubs pruned, then grown while the
+  budget allows - and uses it when its *effective* output (interval-aware,
+  colony's own products and P0 barred from import) is >= 98% of the
+  generator's. Otherwise the generator's layout stays. Not an import feature:
+  the site is only a source of examples; its API is unofficial.
 - **Security zone**: use `economics.security_zone` (wormhole by region id
   first, Pochven = null-sec); it relies on `production.constants.
   _rounded_security`, which rounds to 4 decimals first because

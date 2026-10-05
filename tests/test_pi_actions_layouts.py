@@ -296,3 +296,43 @@ def test_unit_cost_sanity(sd):
     from dataclasses import replace
 
     assert demand.unit_cost(ev, replace(e, output_units_per_day=0.0)) is None
+
+
+# ------------------------------------------------------------ reference layouts
+def test_generate_uses_a_reference_when_it_does_as_well(sd, monkeypatch):
+    from eve_trader.pi.layout import reference
+
+    real = reference.from_references
+    seen = {}
+
+    def spy(*a, **kw):
+        seen["res"] = real(*a, **kw)
+        return seen["res"]
+
+    monkeypatch.setattr(reference, "from_references", spy)
+    r = _gen(sd)
+    assert r["source"] in ("reference", "generator")
+    if r["source"] == "reference":
+        assert any("community layout" in n for n in r["notes"])
+        assert r["design"]["factories"] == [[t, n] for t, n in seen["res"].design.factories]
+    assert r["analysis"]["ok"] is True
+
+
+def test_generate_prefers_the_generator_when_it_is_clearly_better(sd, monkeypatch):
+    from eve_trader.pi.layout import reference
+
+    def weak(*a, **kw):
+        res = reference.ReferenceResult.__new__(reference.ReferenceResult)
+        res.effective_output = 1e-6
+        return res
+
+    monkeypatch.setattr(reference, "from_references", weak)
+    assert _gen(sd)["source"] == "generator"
+
+
+def test_generate_can_skip_references(sd, monkeypatch):
+    from eve_trader.pi.layout import reference
+
+    monkeypatch.setattr(reference, "from_references", lambda *a, **kw: pytest.fail("references used"))
+    assert _gen(sd, use_references=False)["source"] == "generator"
+    assert _gen(sd, shape="star")["source"] == "generator"

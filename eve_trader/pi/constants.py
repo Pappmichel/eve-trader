@@ -69,6 +69,10 @@ MAX_CC_LEVEL = 5
 
 # Template/layout rules measured in game by the Eve-PI author (PI_PLAN 1.4).
 MIN_PIN_SEPARATION_RAD = 0.012
+# In-game exports place structures at 0.01199x rad: 5-decimal coordinates
+# cannot hit 0.012 exactly (64 of 410 public community templates). The
+# validator accepts that much; the generator keeps its own 5% margin.
+PIN_SEPARATION_TOLERANCE_RAD = 2e-5
 MAX_ROUTE_STRUCTURES = 7
 MAX_EXTRACTOR_HEADS = 10
 

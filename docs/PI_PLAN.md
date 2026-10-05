@@ -784,6 +784,20 @@ CLAUDE.md "Planetary Industry (PI) tool" has the durable summary.
   replaces the SDE tables with tiny fixtures, so run the Admin SDE refresh
   again before using the PI tool locally after `pytest`.
 
+**Reference layouts (2026-10-05, after the first deploy)**
+- The generator now also starts from public community templates
+  (planetsin.space, 410 validator-clean layouts, anonymised and
+  de-duplicated) - `pi/layout/reference.py`, see CLAUDE.md. Against our own
+  generator at a 24 h interval (effective output, real SDE, highsec and
+  nullsec yields): P1-P3, P2-P4 and P1-P4 match it (100%) and are used;
+  P2-P3 96%, P1-P2 87%, P3-P4 86%, P0-P1 89-95% stay with the generator. The
+  gap is the community layouts' extra launchpads/storage (sized for weekly
+  visits), which cost budget a one-day interval does not need, and whose
+  removal the routes do not always survive.
+- Fair comparison needed a validator option: `analyse(no_import=...)` bars
+  the throughput LP from hauling in what the colony extracts or makes;
+  without it a reference's factories looked fed from the launchpad.
+
 **Still to verify with real data (needs the user)**
 - V-3: ESI pin latitude/longitude vs template La/Lo (export one colony in
   game and compare with the Colonies view's template).
