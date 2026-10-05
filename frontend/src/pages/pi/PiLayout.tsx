@@ -2,10 +2,12 @@ import { AppShell, Stack, Title, Text, Tabs, Container, Divider } from '@mantine
 import { useDisclosure } from '@mantine/hooks'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { ToolHeader } from '../../components/ToolHeader'
+import { confirmLeave } from './unsavedGuard'
 
 const TABS = [
   { path: '/pi', label: 'Profitability' },
   { path: '/pi/planner', label: 'Planner' },
+  { path: '/pi/editor', label: 'Editor' },
   { path: '/pi/system', label: 'System' },
   { path: '/pi/chains', label: 'Chains' },
   { path: '/pi/templates', label: 'Templates' },
@@ -48,7 +50,7 @@ export default function PiLayout() {
 
       <AppShell.Main>
         <Container size="xl" px={0}>
-          <Tabs value={location.pathname} onChange={(v) => v && navigate(v)} mb="md">
+          <Tabs value={location.pathname} onChange={(v) => v && v !== location.pathname && confirmLeave() && navigate(v)} mb="md">
             <Tabs.List>
               {TABS.map((t) => (
                 <Tabs.Tab key={t.path} value={t.path}>

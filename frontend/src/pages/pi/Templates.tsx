@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ActionIcon, Button, CopyButton, Group, NumberInput, Select, SimpleGrid, Stack, Switch, Table, Text, Textarea,
@@ -11,10 +12,12 @@ import type { PiLayoutPayload, PiPlanet } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { notify } from '../../notify'
 import { dateTime } from '../../format'
+import type { EditorOpenState } from './Editor'
 import { AnalysisView, Loading, PlanetPicker, QueryError, SectionTitle, num, usePiMeta } from './common'
 
 export default function Templates() {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const { data: meta } = usePiMeta()
   const { data: list, isLoading, error } = useQuery({ queryKey: ['pi', 'templates'], queryFn: piApi.templates })
 
@@ -74,6 +77,21 @@ export default function Templates() {
     }
   }
 
+  const openInEditor = (p: PiLayoutPayload, source: EditorOpenState['source'], nm: string) => {
+    const g = geometry()
+    const state: EditorOpenState = {
+      template: p.template, template_json: p.template_json, planet_id: g.planet_id, radius_km: g.radius_km,
+      name: nm.trim() || undefined, source,
+    }
+    navigate('/pi/editor', { state })
+  }
+
+  const editStored = useMutation({
+    mutationFn: (id: number) => piApi.template(id),
+    onSuccess: (res) => openInEditor(res, 'paste', res.name),
+    onError: fail('Could not open template'),
+  })
+
   return (
     <Stack>
       <SectionTitle>Analyse a template</SectionTitle>
@@ -111,6 +129,7 @@ export default function Templates() {
           <Group align="flex-end">
             <TextInput label="Name" w={280} value={name} onChange={(e) => setName(e.currentTarget.value)} placeholder="Template name" />
             <Button variant="default" loading={save.isPending} disabled={!text.trim()} onClick={() => save.mutate()}>Save template</Button>
+            <Button onClick={() => openInEditor(payload, 'paste', name)}>Open in editor</Button>
           </Group>
           <AnalysisView analysis={payload.analysis} />
         </Stack>
@@ -141,6 +160,8 @@ export default function Templates() {
                     <Group gap="xs" justify="flex-end" wrap="nowrap">
                       <Button size="compact-xs" variant="default" loading={open.isPending && open.variables === t.template_id}
                         onClick={() => open.mutate(t.template_id)}>Open</Button>
+                      <Button size="compact-xs" variant="default" loading={editStored.isPending && editStored.variables === t.template_id}
+                        onClick={() => editStored.mutate(t.template_id)}>Edit</Button>
                       <Button size="compact-xs" variant="default" onClick={() => copyExport(t.template_id)}>Export</Button>
                       <ActionIcon size="sm" variant="subtle" color="danger" aria-label={`Delete ${t.name}`}
                         onClick={() => { if (window.confirm(`Delete template "${t.name}"?`)) remove.mutate(t.template_id) }}>

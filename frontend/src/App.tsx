@@ -87,6 +87,7 @@ const ModuleReprocessingSettings = lazy(() => import('./pages/module_reprocessin
 const PiLayout = lazy(() => import('./pages/pi/PiLayout'))
 const PiProfitability = lazy(() => import('./pages/pi/Profitability'))
 const PiPlanner = lazy(() => import('./pages/pi/Planner'))
+const PiEditor = lazy(() => import('./pages/pi/Editor'))
 const PiSystem = lazy(() => import('./pages/pi/System'))
 const PiChains = lazy(() => import('./pages/pi/Chains'))
 const PiTemplates = lazy(() => import('./pages/pi/Templates'))
@@ -322,6 +323,7 @@ function App() {
             <Route path="/pi" element={<PiLayout />}>
               <Route index element={<PiProfitability />} />
               <Route path="planner" element={<PiPlanner />} />
+              <Route path="editor" element={<PiEditor />} />
               <Route path="system" element={<PiSystem />} />
               <Route path="chains" element={<PiChains />} />
               <Route path="templates" element={<PiTemplates />} />

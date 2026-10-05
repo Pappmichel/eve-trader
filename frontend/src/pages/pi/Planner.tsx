@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useMutation } from '@tanstack/react-query'
 import {
   Badge, Button, CopyButton, Group, NumberInput, Paper, SegmentedControl, Select, SimpleGrid, Stack, Table,
@@ -8,7 +8,7 @@ import {
 
 import { piApi } from '../../api/client'
 import type {
-  PiDesign, PiGeneratePayload, PiPlan, PiPlanet, PiPlannerBody, PiPlannerResult,
+  PiDesign, PiDesignBase, PiGeneratePayload, PiPlan, PiPlanet, PiPlannerBody, PiPlannerResult,
 } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { notify } from '../../notify'
@@ -17,6 +17,8 @@ import {
   AnalysisView, Bar, CC_OPTIONS, PlanetPicker, QueryError, RatesTable, SHAPES, SectionTitle, Stat,
   VerdictBadge, ZONE_OPTIONS, bufferText, iskPerDay, num, usePiMeta,
 } from './common'
+import PlannerDesignTools from './PlannerDesignTools'
+import type { EditorOpenState } from './Editor'
 
 type NumField = number | string
 
@@ -45,6 +47,7 @@ function coreDesign(d: PiPlannerResult['evaluation']['design']): PiDesign {
 
 export default function Planner() {
   const location = useLocation()
+  const navigate = useNavigate()
   const prefill = (location.state as { prefill?: Prefill } | null)?.prefill
   const { data: meta, error: metaError } = usePiMeta()
 
@@ -83,11 +86,12 @@ export default function Planner() {
     if (productId && meta && !products.some((p) => String(p.type_id) === productId)) setProductId(null)
   }, [products, productId, meta])
 
-  const body = (design?: EditDesign | null): PiPlannerBody | null => {
-    if (!chain || !productId) return null
+  const body = (design?: EditDesign | null, chainOverride?: string): PiPlannerBody | null => {
+    const useChain = chainOverride ?? chain
+    if (!useChain || !productId) return null
     if (mode === 'planet' ? !planet : !planetTypeId) return null
     const b: PiPlannerBody = {
-      chain, product_type_id: Number(productId), cc_level: Number(cc),
+      chain: useChain, product_type_id: Number(productId), cc_level: Number(cc),
       owner_tax_rate: ownerTax === '' ? undefined : Number(ownerTax) / 100,
       freight_per_m3: optNum(freight), yield_per_head: optNum(yieldHead),
       program_hours: optNum(programH), interval_hours: optNum(intervalH),
@@ -106,12 +110,12 @@ export default function Planner() {
     notify({ title, message: e instanceof Error ? e.message : String(e), color: 'danger' })
 
   const evaluate = useMutation({
-    mutationFn: (design: EditDesign | null) => {
-      const b = body(design)
+    mutationFn: ({ design, chain: c }: { design: EditDesign | null; chain?: string }) => {
+      const b = body(design, c)
       if (!b) throw new Error('Choose a chain, a product and a planet or planet type first')
       return piApi.planner(b)
     },
-    onSuccess: (res, design) => {
+    onSuccess: (res, { design }) => {
       setResult(res)
       setGenerated(null)
       if (!design) {
@@ -146,6 +150,30 @@ export default function Planner() {
       owner_tax_rate: ownerTax === '' ? null : Number(ownerTax) / 100,
       freight_per_m3: optNum(freight) ?? null, yield_override: optNum(yieldHead) ?? null,
     }
+  }
+
+  // Load a design from the design tools: switch to its chain/product and re-evaluate.
+  const useDesign = (d: PiDesign) => {
+    setChain(d.chain)
+    setProductId(String(d.product_type_id))
+    const e: EditDesign = { factories: d.factories, ecus: d.ecus, launchpads: d.launchpads, storages: d.storages }
+    setEdit(e)
+    evaluate.mutate({ design: e, chain: d.chain })
+  }
+
+  const openInEditor = (g: PiGeneratePayload) => {
+    const state: EditorOpenState = {
+      template: g.template, template_json: g.template_json,
+      planet_id: g.planet.planet_id ?? undefined, radius_km: g.planet.radius_km,
+      name: name.trim() || (result ? `${result.product.name} (${result.chain})` : undefined), source: 'generated',
+    }
+    navigate('/pi/editor', { state })
+  }
+
+  const planetBits = (): PiDesignBase | null => {
+    const b = body(null)
+    if (!b) return null
+    return { planet_id: b.planet_id, planet_type_id: b.planet_type_id, radius_km: b.radius_km, zone: b.zone, cc_level: b.cc_level }
   }
 
   const ev = result?.evaluation
@@ -190,10 +218,16 @@ export default function Planner() {
           </SimpleGrid>
 
           <Group>
-            <Button onClick={() => evaluate.mutate(null)} loading={evaluate.isPending}>Find best design</Button>
+            <Button onClick={() => evaluate.mutate({ design: null })} loading={evaluate.isPending}>Find best design</Button>
           </Group>
         </Stack>
       </Paper>
+
+      <PlannerDesignTools planetBits={planetBits()} chain={chain} productId={productId ? Number(productId) : null}
+        productTier={meta?.products.find((p) => String(p.type_id) === productId)?.tier ?? null}
+        intervalHours={optNum(intervalH)} yieldPerHead={optNum(yieldHead)}
+        currentDesign={result && edit ? { ...coreDesign(result.evaluation.design), ...edit } : null}
+        onUseDesign={useDesign} onOpenInEditor={openInEditor} />
 
       {result && ev && eco && edit && (
         <Stack>
@@ -255,10 +289,10 @@ export default function Planner() {
             </Table.Tbody>
           </Table>
           <Group>
-            <Button variant="default" size="xs" onClick={() => evaluate.mutate(edit)} loading={evaluate.isPending}>
+            <Button variant="default" size="xs" onClick={() => evaluate.mutate({ design: edit })} loading={evaluate.isPending}>
               Re-evaluate edited design
             </Button>
-            <Button variant="subtle" size="xs" onClick={() => evaluate.mutate(null)}>Reset to best design</Button>
+            <Button variant="subtle" size="xs" onClick={() => evaluate.mutate({ design: null })}>Reset to best design</Button>
           </Group>
 
           <SimpleGrid cols={{ base: 1, sm: 2 }}>
@@ -324,6 +358,7 @@ export default function Planner() {
                 <CopyButton value={generated.template_json}>
                   {({ copied, copy }) => <Button size="xs" variant="default" onClick={copy}>{copied ? 'Copied' : 'Copy'}</Button>}
                 </CopyButton>
+                <Button size="xs" onClick={() => openInEditor(generated)}>Open in editor</Button>
                 <Button size="xs" variant="default" loading={saveTemplate.isPending} onClick={() =>
                   saveTemplate.mutate({ template: generated.template, name: name.trim() || `${result.product.name} (${result.chain})` })}>
                   Save template

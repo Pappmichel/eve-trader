@@ -1976,7 +1976,7 @@ export interface MailRecipientHit {
 }
 
 // ------------------------------------------------------------- discord alerts
-export type AlertType = 'skillqueue_empty' | 'mail_new'
+export type AlertType = 'skillqueue_empty' | 'mail_new' | 'pi_extractor_expiry' | 'pi_pad_full' | 'pi_inputs_empty'
 
 export interface AlertSubscription {
   shared: boolean
@@ -1992,7 +1992,8 @@ export interface AlertSettings {
   characters: Array<{
     character_id: number
     character_name: string
-    alerts: Record<AlertType, AlertSubscription>
+    // The PI alert types are newer; an older backend may not send them.
+  alerts: Partial<Record<AlertType, AlertSubscription>>
   }>
 }
 
@@ -2356,3 +2357,71 @@ export interface PiTemplateRow {
 }
 
 export type PiTemplateDetail = PiTemplateRow & PiLayoutPayload
+
+// ---- PI design tools (phase 5b/5c)
+export interface PiTemplateJson {
+  CmdCtrLv: number
+  Cmt?: string
+  Diam: number
+  L: Array<{ D: number; Lv: number; S: number }>
+  P: Array<{ H: number; La: number; Lo: number; S: number | null; T: number }>
+  Pln: number
+  R: Array<{ P: number[]; Q: number; T: number }>
+}
+
+export type PiEditOp =
+  | { op: 'move'; pin: number; la: number; lo: number }
+  | { op: 'remove'; pin: number }
+  | { op: 'add'; kind: string; product?: number; heads?: number; la: number; lo: number }
+  | { op: 'link_level'; link: number; level: number }
+  | { op: 'route_storage' }
+
+export interface PiNamedRef { type_id: number; name: string }
+
+export interface PiWayRow {
+  made?: PiNamedRef[]
+  extracted?: PiNamedRef
+  hauled: PiNamedRef[]
+  evaluation: PiEvaluation | null
+  economics: PiEconomics | null
+}
+
+export interface PiWays {
+  product: PiNamedRef
+  zone: PiZone
+  cc_level: number
+  variants: PiWayRow[]
+  partial: PiWayRow[]
+}
+
+export interface PiMixedP2 {
+  zone: PiZone
+  cc_level: number
+  evaluation: PiEvaluation
+  economics: PiEconomics
+}
+
+export interface PiStorageSuggestion {
+  interval_hours: number
+  kind: 'covered' | 'add_storage' | 'trade' | 'higher_tier' | 'none'
+  buffer_hours?: number | null
+  storages?: number
+  reaches_interval?: boolean
+  removed_factories?: number
+  output_share?: number
+  chain?: string
+  design?: PiDesign
+}
+
+export interface PiGrow {
+  design: PiDesign
+  evaluation: PiEvaluation
+}
+
+export interface PiDesignBase {
+  planet_id?: number
+  planet_type_id?: number
+  radius_km?: number
+  zone?: string
+  cc_level?: number
+}

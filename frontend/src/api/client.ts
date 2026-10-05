@@ -929,4 +929,16 @@ export const piApi = {
     post<T.PiTemplateRow>('/api/pi/templates', body),
   deleteTemplate: (id: number) => del<{ deleted: number }>(`/api/pi/templates/${id}`),
   exportTemplate: (id: number) => get<{ name: string; json: string }>(`/api/pi/templates/${id}/export`),
+  editLayout: (body: { template: unknown; edit: T.PiEditOp; planet_id?: number; radius_km?: number }) =>
+    post<T.PiLayoutPayload>('/api/pi/design/edit', body),
+  ways: (body: T.PiDesignBase & { product_type_id: number }) =>
+    post<T.PiWays>('/api/pi/design/ways', body),
+  mixedP2: (body: T.PiDesignBase & { assignments: Record<number, number>; launchpads?: number; storages?: number }) =>
+    post<T.PiMixedP2>('/api/pi/design/mixed-p2', body),
+  storageSuggestion: (body: T.PiDesignBase & {
+    chain: string; product_type_id: number; interval_hours?: number; design?: Partial<T.PiDesign>
+  }) => post<T.PiStorageSuggestion>('/api/pi/design/storage-suggestion', body),
+  grow: (body: T.PiDesignBase & {
+    chain: string; product_type_id: number; yield_per_head?: number; design?: Partial<T.PiDesign>
+  }) => post<T.PiGrow>('/api/pi/design/grow', body),
 }
