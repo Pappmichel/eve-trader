@@ -84,6 +84,16 @@ const ModuleReprocessingShortlist = lazy(() => import('./pages/module_reprocessi
 const ModuleReprocessingMineralShoppingList = lazy(() => import('./pages/module_reprocessing/MineralShoppingList'))
 const ModuleReprocessingSettings = lazy(() => import('./pages/module_reprocessing/ModuleReprocessingSettings'))
 
+const PiLayout = lazy(() => import('./pages/pi/PiLayout'))
+const PiProfitability = lazy(() => import('./pages/pi/Profitability'))
+const PiPlanner = lazy(() => import('./pages/pi/Planner'))
+const PiSystem = lazy(() => import('./pages/pi/System'))
+const PiChains = lazy(() => import('./pages/pi/Chains'))
+const PiTemplates = lazy(() => import('./pages/pi/Templates'))
+const PiPlans = lazy(() => import('./pages/pi/Plans'))
+const PiDemand = lazy(() => import('./pages/pi/Demand'))
+const PiSettings = lazy(() => import('./pages/pi/PiSettings'))
+
 const AdminPage = lazy(() => import('./pages/admin/AdminPage'))
 const SdePreviewPage = lazy(() => import('./pages/admin/SdePreviewPage'))
 const CharactersPage = lazy(() => import('./pages/characters/CharactersPage'))
@@ -307,6 +317,17 @@ function App() {
               <Route path="shortlist" element={<ModuleReprocessingShortlist />} />
               <Route path="shopping-list" element={<ModuleReprocessingMineralShoppingList />} />
               <Route path="settings" element={<ModuleReprocessingSettings />} />
+            </Route>
+
+            <Route path="/pi" element={<PiLayout />}>
+              <Route index element={<PiProfitability />} />
+              <Route path="planner" element={<PiPlanner />} />
+              <Route path="system" element={<PiSystem />} />
+              <Route path="chains" element={<PiChains />} />
+              <Route path="templates" element={<PiTemplates />} />
+              <Route path="plans" element={<PiPlans />} />
+              <Route path="demand" element={<PiDemand />} />
+              <Route path="settings" element={<PiSettings />} />
             </Route>
           </Routes>
         </Suspense>

@@ -885,3 +885,48 @@ export const moduleReprocessingApi = {
       requirements: requirements ?? null,
     }),
 }
+
+// ------------------------------------------------- Planetary Industry (pi)
+const piQuery = (params: Record<string, string | number | null | undefined>) => {
+  const qs = Object.entries(params)
+    .filter(([, v]) => v !== null && v !== undefined && v !== '')
+    .map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`)
+    .join('&')
+  return qs ? `?${qs}` : ''
+}
+
+export const piApi = {
+  meta: () => get<T.PiMeta>('/api/pi/meta'),
+  profitability: (zone?: string, ccLevel?: number) =>
+    get<T.PiProfitability>(`/api/pi/profitability${piQuery({ zone, cc_level: ccLevel })}`),
+  planner: (body: T.PiPlannerBody) => post<T.PiPlannerResult>('/api/pi/planner', body),
+  chain: (productTypeId: number, zone?: string, ccLevel?: number) =>
+    get<T.PiChainPlan>(`/api/pi/chain/${productTypeId}${piQuery({ zone, cc_level: ccLevel })}`),
+  searchSystems: (q: string) => get<T.PiSystemHit[]>(`/api/pi/systems${piQuery({ q })}`),
+  systemPlanets: (id: number) => get<T.PiSystemPlanets>(`/api/pi/systems/${id}`),
+  systemAnalysis: (id: number, body: {
+    slots?: number; characters?: number; cc_level?: number; owner_tax_rate?: number
+  }) => post<T.PiSystemAnalysis>(`/api/pi/systems/${id}/analysis`, body),
+  plans: () => get<T.PiPlan[]>('/api/pi/plans'),
+  savePlan: (plan: Record<string, unknown>) => post<T.PiPlan>('/api/pi/plans', plan),
+  updatePlan: (id: number, plan: Record<string, unknown>) => put<T.PiPlan>(`/api/pi/plans/${id}`, plan),
+  deletePlan: (id: number) => del<{ deleted: number }>(`/api/pi/plans/${id}`),
+  settings: () => get<T.PiSettings>('/api/pi/settings'),
+  updateSettings: (updates: Partial<T.PiSettings>) => put<T.PiSettings>('/api/pi/settings', updates),
+  characters: () => get<T.PiCharacters>('/api/pi/characters'),
+  productionDemand: () => get<T.PiDemand>('/api/pi/production-demand'),
+  validateLayout: (body: {
+    template: unknown; planet_id?: number; radius_km?: number; yield_per_head?: number
+  }) => post<T.PiLayoutPayload>('/api/pi/layouts/validate', body),
+  generateLayout: (body: T.PiPlannerBody & { shape?: string; comment?: string }) =>
+    post<T.PiGeneratePayload>('/api/pi/layouts/generate', body),
+  retargetLayout: (body: {
+    template: unknown; planet_type_id?: number; product_type_id?: number; planet_id?: number; radius_km?: number
+  }) => post<T.PiLayoutPayload>('/api/pi/layouts/retarget', body),
+  templates: () => get<T.PiTemplateRow[]>('/api/pi/templates'),
+  template: (id: number) => get<T.PiTemplateDetail>(`/api/pi/templates/${id}`),
+  saveTemplate: (body: { template: unknown; name?: string; source: string }) =>
+    post<T.PiTemplateRow>('/api/pi/templates', body),
+  deleteTemplate: (id: number) => del<{ deleted: number }>(`/api/pi/templates/${id}`),
+  exportTemplate: (id: number) => get<{ name: string; json: string }>(`/api/pi/templates/${id}/export`),
+}
