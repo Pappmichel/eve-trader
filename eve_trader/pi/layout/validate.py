@@ -80,9 +80,11 @@ def _round5(x: float) -> float:
 
 
 def analyse(static: StaticData, layout: Layout, radius_km: Optional[float] = None,
-            yield_per_head: float = 2000.0) -> Analysis:
+            yield_per_head: float = 2000.0, no_import: frozenset = frozenset()) -> Analysis:
     """Full analysis. `radius_km` = the planet the colony is checked for;
-    without it, half the template's own Diam (P-23)."""
+    without it, half the template's own Diam (P-23). `no_import`: commodities
+    the throughput may not haul in (what the colony is meant to extract or
+    make itself) - by default any hub may import anything it routes out."""
     a = Analysis()
     radius = radius_km if radius_km else (layout.diameter_km / 2.0 if layout.diameter_km else 5000.0)
     if not radius_km:
@@ -137,7 +139,7 @@ def analyse(static: StaticData, layout: Layout, radius_km: Optional[float] = Non
     for i in range(len(pins)):
         for j in range(i + 1, len(pins)):
             ang = central_angle(_round5(pins[i].la), _round5(pins[i].lo), _round5(pins[j].la), _round5(pins[j].lo))
-            if ang < C.MIN_PIN_SEPARATION_RAD - 1e-9:
+            if ang < C.MIN_PIN_SEPARATION_RAD - C.PIN_SEPARATION_TOLERANCE_RAD:
                 a.add(ERROR, "too_close",
                       f"Pins {i + 1} and {j + 1} are too close ({ang:.4f} rad < {C.MIN_PIN_SEPARATION_RAD}) - the game refuses the import",
                       pins=(i + 1, j + 1))
@@ -187,7 +189,7 @@ def analyse(static: StaticData, layout: Layout, radius_km: Optional[float] = Non
                           route=r_i)
                     break
 
-    _throughput(static, layout, a, yield_per_head)
+    _throughput(static, layout, a, yield_per_head, no_import)
 
     # --- link loads from the solved route flows
     for k, cap in enumerate(a.link_capacity_m3h):
@@ -215,7 +217,8 @@ def _same_kind_allowed(static: StaticData, spec: StructureSpec, s) -> bool:
     return False
 
 
-def _throughput(static: StaticData, layout: Layout, a: Analysis, yield_per_head: float) -> None:
+def _throughput(static: StaticData, layout: Layout, a: Analysis, yield_per_head: float,
+                no_import: frozenset = frozenset()) -> None:
     """Steady-state LP. Variables: runs/h per factory, flow/h per route,
     import/h per (hub, commodity) for commodities a route takes out of a hub.
     Maximise tier-weighted runs; imports cost a little so on-planet supply is
@@ -270,6 +273,8 @@ def _throughput(static: StaticData, layout: Layout, a: Analysis, yield_per_head:
                 s = schem.get(dst)
                 cap = r.quantity * s.runs_per_hour if s else None
             bounds.append((0.0, cap))
+        elif v[0] == "import" and v[1][1] in no_import:
+            bounds.append((0.0, 0.0))
         else:
             bounds.append((0.0, None))
 

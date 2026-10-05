@@ -139,6 +139,9 @@ def post_validate_layout(body: LayoutBody):
 class GenerateBody(PlannerBody):
     shape: Optional[str] = None
     comment: Optional[str] = Field(default=None, max_length=200)
+    # Start from a community reference layout when it does as well as the
+    # generator (standard shape only).
+    use_references: bool = True
 
 
 @router.post("/layouts/generate")
