@@ -1,11 +1,10 @@
 # Planetary Industry (PI) tool - plan
 
-Status: **planned 2026-10-04, not started.** PI was "deferred, not rejected"
-(CLAUDE.md, "Deferred, not rejected"); the user asked for this plan on
-2026-10-04 and confirmed decisions D1-D6 one by one the same day (section 11).
-The per-zone yield defaults (D2) and the review items O1-O2/F1-F7 (11A)
-were settled the same day, and the phase 0 in-game checks were done by the
-user. Ready for phase 1.
+Status: **implemented 2026-10-05 (phases 1-5c), see section 12.** PI was
+"deferred, not rejected" (CLAUDE.md); the user asked for this plan on
+2026-10-04 and confirmed decisions D1-D6, the per-zone yield defaults (D2),
+the review items O1-O2/F1-F7 (11A) and the phase 0 in-game checks the same
+day.
 
 Goal: a PI tool that answers **"which PI is worth doing for me, and which is
 not"** from what a planet can *actually* build - real structure counts under
@@ -737,7 +736,64 @@ Added afterwards at the user's request: **system analysis** (3.5, phase 2b).
 Phase 0 in-game checks done 2026-10-04 (P0 table 1.3, CC levels 1.5).
 Nothing is open; phase 1 can start.
 
-## 12. Sources
+## 12. Implementation status (2026-10-05)
+
+All phases 1-5c are implemented on branch `feature/pi-tool` (not pushed);
+phase 6 (planet finder over N jumps) is still optional and not started.
+CLAUDE.md "Planetary Industry (PI) tool" has the durable summary.
+
+| Phase | State |
+|---|---|
+| 1 SDE import + engine | done - real SDE refresh live-checked (8 s fetch, 13 s apply, 67,693 planets) |
+| 2 economics, chains, demand, skills, plans, router, frontend pages | done - live-checked against real Jita prices |
+| 2b system analysis | done - live-checked (Jita: 6 slots, 30.2M ISK/day, in-system chain +4.4M/day) |
+| 3 template library + analyser | done - round-trips real in-game exports byte for byte |
+| 4 ESI colonies, monitor, calibration, alerts | done - unit/Postgres tests only; no character on the dev machine shares planets, so live ESI is unverified (V-3 still open) |
+| 5a generator | done - full corpus (every product x chain x planet type x CC 1/3/5 x 4 radii) passes the validator |
+| 5b editor | done - browser-checked (generate -> open in editor -> drag) |
+| 5c variants, partial sourcing, mixed P2, storage suggestion, grow, shapes | done - API live-checked; browser use of the planner design tools only smoke-tested |
+
+**Deviations from the plan / design, and findings during implementation**
+- What a design makes is simply the set of factories it has (engine
+  `made_in`); partial sourcing and mixed P2 need no special chain types.
+- 5b/5c actions live in `pi/design_actions.py` with their own router
+  `/api/pi/design/*` (still under the `pi` grant), not in `pi/actions.py`.
+- Extra endpoint `POST /api/pi/colonies/sync` (the `planets` kind is on
+  demand, so the Colonies view needs a manual refresh).
+- P0 routed through a Basic facility is only an *info* finding: real
+  in-game exports (DalShooth's miner templates) contain such routes, so the
+  "fails on import" claim from jwebbdev is not generally true. Our generator
+  still never builds them.
+- SDE details: launchpad/storage capacity is an `invTypes` column (stored as
+  pseudo attribute -2, like basePrice as -1); the SDE also has one
+  unpublished Command Center type per upgrade level - the placeable one is
+  level 0.
+- Bug found in existing code: `_rounded_security` classified true-sec 0.45
+  (stored as float4 0.449999988) as low-sec; fixed for every caller.
+- Bug found by the live check: `tenant_settings_scope_check` did not allow
+  scope `pi` (every PI settings save was a 500); all schema copies of that
+  ALTER now list the same scopes, pinned by a test.
+- System plan: the repeat penalty for several extraction colonies on one
+  planet applies per planet, not per P0 (an `Option` does not say which P0 it
+  extracts) - conservative.
+- Performance (cold, first call after a restart, incl. ESI prices and
+  history): Profitability ~6.4 s, system analysis ~7 s - above the 2 s / 3 s
+  targets of the technical design; warm calls are fast (design cache). Worth
+  a look if it bothers in practice (e.g. warm the design cache at startup).
+- Tests and the dev app share the local `eve_trader` database: a test run
+  replaces the SDE tables with tiny fixtures, so run the Admin SDE refresh
+  again before using the PI tool locally after `pytest`.
+
+**Still to verify with real data (needs the user)**
+- V-3: ESI pin latitude/longitude vs template La/Lo (export one colony in
+  game and compare with the Colonies view's template).
+- V-2 remainder: ESI `qty_per_cycle` of the verified extractor should be
+  5903.
+- V-4: import the generated acceptance set in game (one template per chain,
+  small and large planet, one with link upgrades, one edited, one shape) -
+  PI_PLAN 6A.3.
+
+## 13. Sources
 
 - PI Nexus: https://evepinexus.com/
 - Eve-PI (MIT): https://github.com/psychojf/Eve-PI (`src/pi_data.py`,

@@ -1,6 +1,6 @@
 # PI tool - technical design
 
-Status: **draft 2026-10-04, implementation not started.** This is the "how"
+Status: **implemented 2026-10-05 (deviations and findings: `docs/PI_PLAN.md` section 12).** This is the "how"
 for `docs/PI_PLAN.md` (the "what" and "why", all decisions D1-D6, O1-O2,
 F1-F7 there). Every hook into existing code below was read in the code on
 2026-10-04, not assumed. Pitfalls are marked **[P-nn]** where they come up
