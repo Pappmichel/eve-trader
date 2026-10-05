@@ -91,7 +91,10 @@ from .system_plan import Market
 
 _EPS = 1e-9
 _TOL = 1e-6
-DEFAULT_TIME_LIMIT_S = 5.0
+# Total solver budget per request; the two phases share it. 30 s solves the
+# usual one-system cases to optimality (~15 s) and stays below nginx's 60 s
+# proxy_read_timeout even with model building on top.
+DEFAULT_TIME_LIMIT_S = 30.0
 DEFAULT_REPEAT_PENALTY = 0.85
 DEFAULT_MAX_EXTRACTION_PER_PLANET = 5
 MAX_PLANETS_PER_CHARACTER = C.BASE_PLANETS_PER_CHARACTER + 5
