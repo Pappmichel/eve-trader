@@ -190,6 +190,19 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         freshness_tier=TIER_NORMAL,
         schedule_mode=ON_DEMAND,
     ),
+    # Planetary Industry (docs/PI_TECHNICAL_DESIGN.md 6/7): one row per colony
+    # with the raw pins/links/routes. Display/alert data - refreshed on demand.
+    OwnedDataKind(
+        key="planets",
+        label="Planetary Industry",
+        group=GROUP_2,
+        character_scope="esi-planets.manage_planets.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("pi", "char_alerts"),
+        freshness_tier=TIER_NORMAL,
+        schedule_mode=ON_DEMAND,
+    ),
     # Phase 5c: clones (home, jump clones, their implants) and the active
     # implants. Two kinds because each ESI scope gates exactly one endpoint (R1).
     OwnedDataKind(

@@ -477,6 +477,32 @@ def fetch_character_skillqueue(
     return {"written": len(rows)}
 
 
+def fetch_character_planets(
+    client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
+) -> dict:
+    """Colony list, then one detail call per colony. A 404 for one planet
+    (colony abandoned between the two calls) skips just that colony; any other
+    error propagates so the owner batch keeps its previous snapshot."""
+    colonies = client.character_planets(owner_id, auth_role=auth_role)
+    rows = []
+    skipped = 0
+    for c in colonies:
+        try:
+            detail = client.character_planet(owner_id, int(c["planet_id"]), auth_role=auth_role)
+        except ESIError as e:
+            if "HTTP 404" in str(e):
+                skipped += 1
+                continue
+            raise
+        layout = {k: detail.get(k) or [] for k in ("pins", "links", "routes")}
+        rows.append((
+            int(c["planet_id"]), c.get("planet_type"), c.get("solar_system_id"), c.get("upgrade_level"),
+            c.get("num_pins"), c.get("last_update"), layout,
+        ))
+    storage.replace_character_pi_colonies(owner_id, rows)
+    return {"written": len(rows), "skipped": skipped}
+
+
 # ---------------------------------------------------------------- contracts
 def _at_structure(contracts: list[dict], structure_id: Optional[int]) -> list[dict]:
     """Doctrine's original pre-filter: items are 1 ESI call per contract,
@@ -677,6 +703,7 @@ FETCHERS: dict[tuple[str, str], Callable] = {
     ("wallet_balance", "corporation"): fetch_corporation_wallet_balance,
     ("skills", "character"): fetch_character_skills,
     ("skillqueue", "character"): fetch_character_skillqueue,
+    ("planets", "character"): fetch_character_planets,
     ("clones", "character"): fetch_character_clones,
     ("implants", "character"): fetch_character_implants,
     ("notifications", "character"): fetch_character_notifications,

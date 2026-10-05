@@ -1618,6 +1618,19 @@ class ESIClient:
         return self._get(f"/characters/{character_id}/skillqueue/",
                          params={"datasource": "tranquility"}, auth_role=auth_role)
 
+    def character_planets(self, character_id: int, auth_role: str) -> list[dict]:
+        """Requires esi-planets.manage_planets.v1. One entry per colony:
+        {"planet_id", "planet_type", "solar_system_id", "upgrade_level",
+        "num_pins", "last_update", "owner_id"}."""
+        return self._get(f"/characters/{character_id}/planets/",
+                         params={"datasource": "tranquility"}, auth_role=auth_role)
+
+    def character_planet(self, character_id: int, planet_id: int, auth_role: str) -> dict:
+        """Requires esi-planets.manage_planets.v1. The colony's pins, links
+        and routes as of its `last_update` (not a live simulation)."""
+        return self._get(f"/characters/{character_id}/planets/{int(planet_id)}/",
+                         params={"datasource": "tranquility"}, auth_role=auth_role)
+
     def resolve_names(self, ids: list[int]) -> dict[int, str]:
         """Batch id->name resolution via POST /universe/names/ (public, no
         auth, up to 1000 ids/call) - used to resolve industry job installer_id

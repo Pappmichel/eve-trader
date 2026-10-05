@@ -88,6 +88,10 @@ export const OWNED_DATA_KINDS: readonly OwnedDataKind[] = [
     key: 'skillqueue', section: 'character', label: 'Skill Queue', group: 2,
     consumingTools: ['char_skills', 'char_alerts'], corpRoles: [],
   },
+  {
+    key: 'planets', section: 'character', label: 'Planetary Industry', group: 2,
+    consumingTools: ['pi', 'char_alerts'], corpRoles: [],
+  },
   // Character Management (docs/CHARACTER_MANAGEMENT_PLAN.md phase 1).
   {
     key: 'standings', section: 'character', label: 'Standings', group: 2,

@@ -57,6 +57,7 @@ _KIND_TABLES: dict[str, dict[str, tuple[str, ...]]] = {
     # Phase 2. `skills` clears only the new tables, never character_slots.
     "skills": {"character": ("character_skills", "character_attributes")},
     "skillqueue": {"character": ("character_skillqueue",)},
+    "planets": {"character": ("character_pi_colonies",)},
     # Phase 5c.
     "clones": {"character": ("character_clone_meta", "character_jump_clones", "character_jump_clone_implants")},
     "implants": {"character": ("character_implants",)},

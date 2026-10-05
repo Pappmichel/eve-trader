@@ -196,3 +196,30 @@ def delete_template(template_id: int):
 @router.get("/templates/{template_id}/export")
 def export_template(template_id: int, pretty: bool = False):
     return _wrap(pi_actions.do_export_template, template_id=template_id, pretty=pretty)
+
+
+# ------------------------------------------------------------------ real colonies (phase 4)
+@router.get("/colonies")
+def get_colonies():
+    return _wrap(pi_actions.do_colonies)
+
+
+@router.post("/colonies/sync")
+def sync_colonies():
+    return _wrap(pi_actions.do_sync_colonies)
+
+
+class ColonyTemplateBody(BaseModel):
+    save: bool = False
+    name: Optional[str] = Field(default=None, max_length=100)
+
+
+@router.post("/colonies/{character_id}/{planet_id}/template")
+def post_colony_template(character_id: int, planet_id: int, body: ColonyTemplateBody):
+    return _wrap(pi_actions.do_colony_template, character_id=character_id, planet_id=planet_id,
+                 save=body.save, name=body.name)
+
+
+@router.get("/calibration")
+def get_calibration():
+    return _wrap(pi_actions.do_calibration)

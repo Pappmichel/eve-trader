@@ -10,6 +10,7 @@ import logging
 import math
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .. import storage
@@ -54,7 +55,11 @@ def _cc_level(cc_level: Optional[int], cfg: PiConfig) -> int:
 
 def _assumptions(cfg: PiConfig, zone: str, yield_override: Optional[float] = None,
                  program_hours: Optional[float] = None, interval_hours: Optional[float] = None) -> engine.Assumptions:
-    y = cfg.yield_for_zone(zone) if yield_override is None else float(yield_override)
+    if yield_override is not None:
+        y = float(yield_override)
+    else:
+        calibrated = _calibrated_yield_for_zone(zone)
+        y = cfg.yield_for_zone(zone) if calibrated is None else calibrated
     return engine.Assumptions(
         yield_per_head=y,
         program_hours=float(program_hours or cfg.pi_program_hours),
@@ -862,3 +867,243 @@ def do_retarget_template(template: Any, planet_type_id: Optional[int] = None,
     y = _assumptions(cfg, cfg.pi_zone).effective_yield
     a = validate.analyse(static, new_layout, _radius_for(planet_id, radius_km), y)
     return _layout_payload(static, new_layout, a)
+
+
+# ------------------------------------------------------------------ calibration (D2, P-54)
+MIN_CALIBRATION_SAMPLES = 3
+_CALIBRATION_TTL = 600.0
+# {tenant_id: (cached_at, {zone: calibrated yield})} - per tenant, since the
+# samples are the tenant's own. Cleared whenever samples are written.
+_calibration_cache: dict[str, tuple[float, dict[str, float]]] = {}
+_calibration_lock = threading.Lock()
+_planet_zone_cache: dict[int, Optional[str]] = {}   # SDE data, tenant independent
+
+
+def clear_calibration_cache() -> None:
+    with _calibration_lock:
+        _calibration_cache.clear()
+
+
+def _planet_zone(planet_id: int) -> Optional[str]:
+    if planet_id in _planet_zone_cache:
+        return _planet_zone_cache[planet_id]
+    zone = None
+    row = storage.get_pi_planet(int(planet_id))
+    if row is not None:
+        system = storage.get_solar_system(row[2])
+        if system is not None:
+            zone = econ.security_zone(system[2], system[3])
+    _planet_zone_cache[planet_id] = zone
+    return zone
+
+
+def _sample_zone(sample: dict) -> Optional[str]:
+    zone = _planet_zone(sample["planet_id"])
+    if zone is None and sample.get("security") is not None:
+        zone = econ.security_zone(sample["security"], None)
+    return zone
+
+
+def _samples_by_zone(samples: list[dict]) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    for smp in samples:
+        zone = _sample_zone(smp)
+        if zone:
+            out.setdefault(zone, []).append(smp)
+    return out
+
+
+def _calibrated_yield_for_zone(zone: str) -> Optional[float]:
+    """Median per-head yield (scaled to the reference program) of this
+    tenant's real extractor programs in `zone`, once there are at least
+    MIN_CALIBRATION_SAMPLES of them; None otherwise - and None whenever
+    storage is unavailable, so pure callers never depend on a database."""
+    from . import colonies
+
+    try:
+        tenant = storage.get_current_tenant()
+        if not tenant:
+            return None
+        tenant = str(tenant)
+        with _calibration_lock:
+            hit = _calibration_cache.get(tenant)
+        if hit and time.time() - hit[0] < _CALIBRATION_TTL:
+            return hit[1].get(zone)
+        yields = {}
+        for z, smps in _samples_by_zone(storage.list_pi_yield_samples()).items():
+            y = colonies.calibrated_yield(smps, min_samples=MIN_CALIBRATION_SAMPLES)
+            if y is not None:
+                yields[z] = y
+        with _calibration_lock:
+            _calibration_cache[tenant] = (time.time(), yields)
+        return yields.get(zone)
+    except Exception:  # noqa: BLE001 - calibration is an optional refinement
+        log.debug("PI calibration unavailable", exc_info=True)
+        return None
+
+
+def do_calibration(cfg: PiConfig = PI_CONFIG) -> dict:
+    """Real-extractor samples per zone and per P0 (per head per hour, scaled
+    to the 72 h reference program) and which zones now replace the D2
+    default yield."""
+    from . import colonies
+
+    samples = storage.list_pi_yield_samples()
+    try:
+        names = _static()
+    except ActionError:
+        names = None
+
+    def median(smps: list[dict]) -> Optional[float]:
+        return colonies.calibrated_yield(smps, min_samples=1)
+
+    zones = []
+    by_zone = _samples_by_zone(samples)
+    for z in C.ZONES:
+        smps = by_zone.get(z, [])
+        zones.append({
+            "zone": z, "count": len(smps), "median": median(smps) if smps else None,
+            "default": cfg.yield_for_zone(z), "active": len(smps) >= MIN_CALIBRATION_SAMPLES,
+        })
+    by_p0: dict[int, list[dict]] = {}
+    for smp in samples:
+        by_p0.setdefault(smp["p0_type_id"], []).append(smp)
+    p0 = [{"type_id": t, "name": names.name(t) if names else None, "count": len(v), "median": median(v)}
+          for t, v in sorted(by_p0.items())]
+    return {"min_samples": MIN_CALIBRATION_SAMPLES, "sample_count": len(samples), "zones": zones, "p0": p0}
+
+
+# ------------------------------------------------------------------ colonies from ESI (phase 4)
+def colony_views(static: StaticData, rows: list[dict], cfg: PiConfig, now: Optional[datetime] = None) -> list[dict]:
+    """Stored ESI colony rows (`read_esi("planets", ...)`) -> one view each:
+    the converted layout, the projection to `now` and display fields. Pure
+    apart from SDE lookups; `colony` (the ColonyLayout) is kept for callers
+    that need it and must be dropped before returning JSON."""
+    from . import colonies
+
+    now = now or datetime.now(timezone.utc)
+    out = []
+    for r in rows:
+        planet = storage.get_pi_planet(int(r["planet_id"]))
+        system_id = int(planet[2]) if planet else r.get("solar_system_id")
+        system = storage.get_solar_system(int(system_id)) if system_id else None
+        zone = econ.security_zone(system[2], system[3]) if system else econ.security_zone(None, None)
+        ptype = colonies.planet_type_id(r.get("planet_type")) or (int(planet[3]) if planet else None)
+        radius = float(planet[4]) if planet else None
+        detail = {**(r.get("layout") or {}), "upgrade_level": r.get("upgrade_level")}
+        colony = colonies.esi_to_layout(static, detail, ptype, radius)
+        last_update = colonies.parse_dt(r.get("last_update"))
+        y = _assumptions(cfg, zone).effective_yield
+        out.append({
+            "owner_id": int(r["owner_id"]), "planet_id": int(r["planet_id"]),
+            "planet_name": planet[1] if planet else None,
+            "planet_type": r.get("planet_type"), "planet_type_id": ptype, "radius_km": radius,
+            "solar_system_id": system_id, "system_name": system[1] if system else None,
+            "security": system[2] if system else None, "zone": zone,
+            "upgrade_level": r.get("upgrade_level"), "last_update": last_update.isoformat() if last_update else None,
+            "projection": colonies.project(static, colony, last_update, now, radius, y),
+            "template_available": bool(colony.layout.pins),
+            "colony": colony,
+        })
+    return out
+
+
+def _sample_rows(view: dict) -> list[dict]:
+    from . import colonies
+
+    return [
+        {**s, "character_id": view["owner_id"], "planet_id": view["planet_id"],
+         "planet_type_id": view["planet_type_id"] or 0, "security": view["security"]}
+        for s in colonies.calibration_samples(view["colony"])
+    ]
+
+
+def do_colonies(cfg: PiConfig = PI_CONFIG) -> dict:
+    """The player's real colonies per character: projected state, extractor
+    expiry, and calibration samples from their extractor programs. A
+    character is `not_shared` / `reauth_needed` / `not_synced` / `ok`, never
+    an error, so one missing share or dead token blanks only that character."""
+    from ..auth import TokenManager
+    from ..character_management import fields
+    from ..config import OAUTH_CONFIG
+    from ..esi_data import read_esi
+
+    static = _static()
+    tokens = TokenManager(OAUTH_CONFIG)
+    characters = fields.token_characters()
+    try:
+        rows = read_esi("planets", TOOL_KEY, owner_type="character")
+    except Exception:  # noqa: BLE001 - no accessor/share -> every character reports its own state
+        log.info("PI colonies not readable from ESI", exc_info=True)
+        rows = []
+    by_char: dict[int, list[dict]] = {}
+    for r in rows:
+        by_char.setdefault(int(r["owner_id"]), []).append(r)
+    now = datetime.now(timezone.utc)
+    samples: list[dict] = []
+    result = []
+    for c in characters:
+        cid = c["character_id"]
+        blocked = fields.gate("planets", TOOL_KEY, cid, tokens)
+        entry: dict = {"character_id": cid, "character_name": c["character_name"],
+                       "state": blocked or fields.STATE_OK, "colonies": [], "synced_at": None}
+        if not blocked:
+            fresh = fields.freshness_by_kind(cid).get("planets")
+            entry["synced_at"] = fresh["last_success_at"] if fresh else None
+            if entry["synced_at"] is None:
+                entry["state"] = fields.STATE_NOT_SYNCED
+                entry["detail"] = fresh.get("last_error") if fresh else None
+            for v in colony_views(static, by_char.get(cid, []), cfg, now):
+                samples.extend(_sample_rows(v))
+                entry["colonies"].append({k: val for k, val in v.items() if k != "colony"})
+        result.append(entry)
+    if samples:
+        try:
+            storage.upsert_pi_yield_samples(samples)
+            clear_calibration_cache()
+        except Exception:  # noqa: BLE001 - calibration must never break the monitor
+            log.exception("PI yield sample upsert failed")
+    return {
+        "characters": result,
+        "shared": any(e["state"] != fields.STATE_NOT_SHARED for e in result),
+        "now": now.isoformat(),
+    }
+
+
+def do_sync_colonies() -> dict:
+    """Refresh the `planets` snapshot (and the PI skills) shared with PI."""
+    from ..character_management import fields
+    from ..esi_data import do_sync_for_tool
+
+    return fields.summarise_sync(do_sync_for_tool(TOOL_KEY))
+
+
+def do_colony_template(character_id: int, planet_id: int, save: bool = False, name: Optional[str] = None,
+                       cfg: PiConfig = PI_CONFIG) -> dict:
+    """A real colony as an importable template, validated like any layout;
+    with `save` it also goes into the template library (source "esi")."""
+    import dataclasses
+
+    from ..esi_data import read_esi
+    from .layout import template_io
+
+    static = _static()
+    try:
+        rows = read_esi("planets", TOOL_KEY, owner_type="character", owner_id=int(character_id))
+    except Exception as e:  # noqa: BLE001
+        raise ActionError("Planetary Industry is not shared with the PI tool for this character") from e
+    row = next((r for r in rows if int(r["planet_id"]) == int(planet_id)), None)
+    if row is None:
+        raise ActionError("Colony not found - share Planetary Industry on the Characters page and sync")
+    view = colony_views(static, [row], cfg)[0]
+    layout = view["colony"].layout
+    if not layout.pins:
+        raise ActionError("This colony has no structures to export")
+    label = (name or "").strip() or view["planet_name"] or f"Planet {planet_id}"
+    layout = dataclasses.replace(layout, comment=template_io.safe_comment(label))
+    template = template_io.to_dict(layout)
+    payload = do_validate_layout(template, planet_id=int(planet_id) if view["planet_name"] else None,
+                                 radius_km=view["radius_km"], cfg=cfg)
+    payload["saved"] = do_save_template(template, label, source="esi") if save else None
+    payload["skipped_routes"] = view["colony"].skipped_routes
+    return payload

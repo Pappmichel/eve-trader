@@ -119,6 +119,8 @@ def read_esi(data_kind: str, tool_key: str, **filters) -> list[dict]:
             rows.extend(_read_skills(tool_key, owner_id_filter))
     elif data_kind == "skillqueue":
         rows.extend(_read_skillqueue(tool_key, owner_id_filter))
+    elif data_kind == "planets":
+        rows.extend(_read_planets(tool_key, owner_id_filter))
     elif data_kind == "wallet_balance":
         rows.extend(_read_wallet_balance(tool_key, owner_id_filter))
     elif data_kind == "standings":
@@ -495,4 +497,17 @@ def _read_skillqueue(tool_key: str, owner_id) -> list[dict]:
             "level_end_sp": r[8],
         }
         for r in storage.load_character_skillqueue(ids)
+    ]
+
+
+def _read_planets(tool_key: str, owner_id) -> list[dict]:
+    """One row per colony; `layout` is the raw ESI detail {pins, links, routes}."""
+    ids = _filter_ids(_shared_owner_ids("planets", tool_key, "character"), owner_id)
+    return [
+        {
+            "owner_type": "character", "owner_id": int(r[0]), "planet_id": int(r[1]), "planet_type": r[2],
+            "solar_system_id": r[3], "upgrade_level": r[4], "num_pins": r[5], "last_update": r[6],
+            "layout": r[7],
+        }
+        for r in storage.load_character_pi_colonies(ids)
     ]

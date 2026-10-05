@@ -2919,7 +2919,7 @@ def delete_owner_snapshot_rows(
         "character_sell_orders", "esi_wallet_transactions", "esi_wallet_journal",
         "doctrine_contracts", "character_wallet_balances", "corp_wallet_balances",
         "character_standings", "character_loyalty_points",
-        "character_skills", "character_attributes", "character_skillqueue",
+        "character_skills", "character_attributes", "character_skillqueue", "character_pi_colonies",
         "character_clone_meta", "character_jump_clones", "character_jump_clone_implants", "character_implants",
         "character_notifications", "character_notification_reads",
     }
@@ -2929,7 +2929,7 @@ def delete_owner_snapshot_rows(
         if table in ("esi_wallet_transactions", "esi_wallet_journal",
                       "character_wallet_balances", "corp_wallet_balances",
                       "character_standings", "character_loyalty_points",
-                      "character_skills", "character_attributes", "character_skillqueue",
+                      "character_skills", "character_attributes", "character_skillqueue", "character_pi_colonies",
                       "character_clone_meta", "character_jump_clones", "character_jump_clone_implants", "character_implants",
                       "character_notifications", "character_notification_reads"):
             col = "owner_character_id" if owner_character_id is not None else "owner_corporation_id"
@@ -7296,6 +7296,7 @@ def delete_alert_data_for_character(character_id: int) -> None:
     with connect() as conn:
         conn.execute("DELETE FROM alert_subscriptions WHERE character_id = ?", (character_id,))
         conn.execute("DELETE FROM alert_state WHERE character_id = ?", (character_id,))
+        conn.execute("DELETE FROM pi_alert_state WHERE character_id = ?", (character_id,))
 
 
 def get_alert_state(character_id: int, alert_type: str) -> Optional[tuple]:
@@ -7563,3 +7564,100 @@ def delete_pi_template(template_id: int) -> bool:
     with connect() as conn:
         cur = conn.execute("DELETE FROM pi_templates WHERE template_id = ?", (int(template_id),))
         return cur.rowcount > 0
+
+
+# PI colonies (ESI `planets` snapshot), calibration samples and alert state.
+def replace_character_pi_colonies(character_id: int, rows: list[tuple]) -> None:
+    """Replaces one character's colonies. `rows`: [(planet_id, planet_type,
+    solar_system_id, upgrade_level, num_pins, last_update, layout_dict), ...]
+    where `layout_dict` is the raw ESI planet detail {pins, links, routes}."""
+    with connect() as conn:
+        conn.execute("DELETE FROM character_pi_colonies WHERE owner_character_id = ?", (character_id,))
+        if rows:
+            conn.executemany(
+                "INSERT INTO character_pi_colonies (owner_character_id, planet_id, planet_type, solar_system_id, "
+                "upgrade_level, num_pins, last_update, layout) VALUES (?,?,?,?,?,?,?,?)",
+                [(character_id, int(r[0]), r[1], r[2], r[3], r[4], r[5], Jsonb(r[6])) for r in rows],
+            )
+
+
+def load_character_pi_colonies(character_ids: list[int]) -> list[tuple]:
+    """`(owner_character_id, planet_id, planet_type, solar_system_id,
+    upgrade_level, num_pins, last_update, layout)`; `last_update` as an ISO
+    string, `layout` the raw ESI detail dict."""
+    if not character_ids:
+        return []
+    placeholders = ",".join("?" * len(character_ids))
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_character_id, planet_id, planet_type, solar_system_id, upgrade_level, num_pins, "
+            "last_update, layout FROM character_pi_colonies "
+            f"WHERE owner_character_id IN ({placeholders}) ORDER BY owner_character_id, planet_id",
+            character_ids,
+        ).fetchall()
+    return [
+        tuple(v.isoformat() if hasattr(v, "isoformat") else v for v in row) for row in rows
+    ]
+
+
+def upsert_pi_yield_samples(rows: list[dict]) -> None:
+    """`rows`: dicts with character_id, planet_id, pin_id, install_time,
+    p0_type_id, planet_type_id, security, heads, program_hours,
+    per_head_per_hour. An existing (character, pin, install_time) is updated."""
+    if not rows:
+        return
+    with connect() as conn:
+        conn.executemany(
+            "INSERT INTO pi_yield_samples (character_id, planet_id, pin_id, install_time, p0_type_id, "
+            "planet_type_id, security, heads, program_hours, per_head_per_hour) VALUES (?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT (tenant_id, character_id, pin_id, install_time) DO UPDATE SET "
+            "planet_id = excluded.planet_id, p0_type_id = excluded.p0_type_id, "
+            "planet_type_id = excluded.planet_type_id, security = excluded.security, heads = excluded.heads, "
+            "program_hours = excluded.program_hours, per_head_per_hour = excluded.per_head_per_hour, "
+            "sampled_at = now()",
+            [(int(r["character_id"]), int(r["planet_id"]), int(r["pin_id"]), r["install_time"],
+              int(r["p0_type_id"]), int(r["planet_type_id"]), r.get("security"), int(r["heads"]),
+              float(r["program_hours"]), float(r["per_head_per_hour"])) for r in rows],
+        )
+
+
+def list_pi_yield_samples() -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT character_id, planet_id, pin_id, install_time, p0_type_id, planet_type_id, security, heads, "
+            "program_hours, per_head_per_hour FROM pi_yield_samples ORDER BY character_id, pin_id, install_time"
+        ).fetchall()
+    return [
+        {"character_id": int(r[0]), "planet_id": int(r[1]), "pin_id": int(r[2]), "install_time": r[3],
+         "p0_type_id": int(r[4]), "planet_type_id": int(r[5]), "security": r[6], "heads": int(r[7]),
+         "program_hours": float(r[8]), "per_head_per_hour": float(r[9])}
+        for r in rows
+    ]
+
+
+def get_pi_alert_states(character_id: int) -> dict[tuple[int, str], tuple]:
+    """{(planet_id, alert_type): (last_key, last_sent_at)} of one character."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT planet_id, alert_type, last_key, last_sent_at FROM pi_alert_state WHERE character_id = ?",
+            (character_id,),
+        ).fetchall()
+    return {(int(r[0]), r[1]): (r[2], r[3]) for r in rows}
+
+
+def set_pi_alert_state(character_id: int, planet_id: int, alert_type: str, last_key: str,
+                       at: Optional[datetime] = None) -> None:
+    at = at or datetime.now(timezone.utc)
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO pi_alert_state (character_id, planet_id, alert_type, last_key, last_sent_at) "
+            "VALUES (?,?,?,?,?) ON CONFLICT (tenant_id, character_id, planet_id, alert_type) DO UPDATE SET "
+            "last_key = excluded.last_key, last_sent_at = excluded.last_sent_at",
+            (character_id, int(planet_id), alert_type, last_key, at),
+        )
+
+
+def reset_pi_alert_state(character_id: int, alert_type: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM pi_alert_state WHERE character_id = ? AND alert_type = ?",
+                     (character_id, alert_type))

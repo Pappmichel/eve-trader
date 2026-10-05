@@ -94,6 +94,12 @@ def skillqueue_demand(subs: list[tuple]) -> set[tuple[str, int, str]]:
     return {("character", cid, "skillqueue") for cid, t, _i, _l in subs if t == logic.SKILLQUEUE_EMPTY}
 
 
+def pi_demand(subs: list[tuple]) -> set[tuple[str, int, str]]:
+    """Subscribed PI alerts need the on-demand `planets` snapshot, restricted
+    (like the skill queue) to rows shared with `char_alerts`."""
+    return {("character", cid, "planets") for cid, t, _i, _l in subs if t in logic.PI_ALERT_TYPES}
+
+
 def _names() -> dict[int, str]:
     return {c["character_id"]: c["character_name"] for c in fields.token_characters()}
 
@@ -144,6 +150,85 @@ def _run_skillqueue(cid: int, lead_hours: int, name: str, now: datetime, client:
         storage.save_alert_state(cid, logic.SKILLQUEUE_EMPTY, at=now)
         return
     _send(cid, logic.SKILLQUEUE_EMPTY, decision, now, tokens=tokens)
+
+
+# In-process retry backoff for PI sends: pi_alert_state has no attempt column,
+# so a broken destination is retried at most every RETRY_BACKOFF_MINUTES here
+# (a restart allows one immediate retry, like the scheduler's own job backoff).
+_pi_attempts: dict[tuple, datetime] = {}
+
+
+def _live_planet_rows(client: ESIClient, cid: int, tokens: TokenManager, planet_ids: set[int]) -> Optional[list[dict]]:
+    """Current state of the given colonies straight from ESI, in the shape of
+    `read_esi("planets", ...)` rows. None = no token for the scope."""
+    role = select_auth_role(cid, fields.SCOPE_BY_KIND["planets"], tokens=tokens)
+    if role is None:
+        return None
+    rows = []
+    for c in client.character_planets(cid, role):
+        if int(c["planet_id"]) not in planet_ids:
+            continue
+        try:
+            detail = client.character_planet(cid, int(c["planet_id"]), role)
+        except ESIError as e:
+            if "HTTP 404" in str(e):
+                continue
+            raise
+        rows.append({
+            "owner_type": "character", "owner_id": cid, "planet_id": int(c["planet_id"]),
+            "planet_type": c.get("planet_type"), "solar_system_id": c.get("solar_system_id"),
+            "upgrade_level": c.get("upgrade_level"), "last_update": c.get("last_update"),
+            "layout": {k: detail.get(k) or [] for k in ("pins", "links", "routes")},
+        })
+    return rows
+
+
+def _pi_colonies(rows: list[dict], now: datetime) -> list[dict]:
+    from ..pi import actions as pi_actions
+    from ..pi.config import PI_CONFIG
+
+    views = pi_actions.colony_views(pi_actions._static(), rows, PI_CONFIG, now)
+    return [{"planet_id": v["planet_id"], "planet_name": v["planet_name"], "projection": v["projection"]}
+            for v in views]
+
+
+def _run_pi(cid: int, alert_type: str, lead_hours: int, name: str, now: datetime, client: ESIClient,
+            tokens: TokenManager, freshness: dict, tenant_id: str) -> None:
+    if fields.gate("planets", TOOL_KEY, cid, tokens):
+        return
+    if not (freshness.get(cid, {}).get("planets") or {}).get("last_success_at"):
+        return                                              # never synced: nothing to project
+    rows = read_esi("planets", TOOL_KEY, owner_type="character", owner_id=cid)
+    states = storage.get_pi_alert_states(cid)
+    last_keys = {k: v[0] for k, v in states.items()}
+    decisions = logic.pi_decisions(alert_type, _pi_colonies(rows, now), now, lead_hours, last_keys, name)
+    decisions = [d for d in decisions
+                 if now - _pi_attempts.get((tenant_id, cid, d.planet_id, alert_type), datetime.min.replace(tzinfo=timezone.utc))
+                 >= timedelta(minutes=RETRY_BACKOFF_MINUTES)]
+    if not decisions:
+        return
+    # One live re-check before anything is sent: the snapshot may predate the
+    # player resetting an extractor or restocking the colony.
+    try:
+        live = _live_planet_rows(client, cid, tokens, {d.planet_id for d in decisions})
+    except ESIError as e:
+        log.warning("PI re-check for character %s failed: %s", cid, e)
+        live = None
+    if live is None:
+        for d in decisions:
+            _pi_attempts[(tenant_id, cid, d.planet_id, alert_type)] = now
+        return
+    decisions = logic.pi_decisions(alert_type, _pi_colonies(live, now), now, lead_hours, last_keys, name)
+    for d in decisions:
+        attempt_key = (tenant_id, cid, d.planet_id, alert_type)
+        try:
+            sent = deliver(cid, alert_type, d.message, tokens=tokens)
+        except discord_client.DiscordError as e:
+            log.warning("Discord alert %s for character %s not delivered: %s", alert_type, cid, e)
+            _pi_attempts[attempt_key] = now
+            continue
+        if sent:
+            storage.set_pi_alert_state(cid, d.planet_id, alert_type, d.key, at=now)
 
 
 def _sender_names(client: ESIClient, ids: list[int]) -> dict[int, str]:
@@ -230,12 +315,12 @@ def run_for_tenant(
         tokens = tokens or TokenManager(OAUTH_CONFIG)
         client = client or ESIClient(tokens=tokens)
         poll = SCHEDULER_OPERATOR_CONFIG.alerts_mail_poll_minutes if poll_minutes is None else poll_minutes
-        demand = skillqueue_demand(subs)
+        demand = skillqueue_demand(subs) | pi_demand(subs)
         if demand:
             try:                                            # only rows shared with char_alerts: never the tenant's other data
                 esi_orchestrator.do_sync_due(client=client, granted_tools={TOOL_KEY}, demand=demand, now=now)
             except Exception as e:  # noqa: BLE001 - a failed refresh must not stop mail alerts
-                log.warning("Alert skill queue sync failed: %s", e)
+                log.warning("Alert on-demand sync failed: %s", e)
         names = _names()
         freshness = {cid: fields.freshness_by_kind(cid) for cid in {s[0] for s in subs}}
         for cid, alert_type, include_content, lead_hours in subs:
@@ -245,6 +330,8 @@ def run_for_tenant(
                     _run_skillqueue(cid, lead_hours, name, now, client, tokens, freshness)
                 elif alert_type == logic.MAIL_NEW:
                     _run_mail(cid, include_content, name, now, poll, client, tokens)
+                elif alert_type in logic.PI_ALERT_TYPES:
+                    _run_pi(cid, alert_type, lead_hours, name, now, client, tokens, freshness, tenant_id)
             except Exception as e:  # noqa: BLE001 - one character's failure must not skip the others
                 log.warning("Alert %s for character %s failed: %s", alert_type, cid, e)
         return {"subscriptions": len(subs), "ran": True}
