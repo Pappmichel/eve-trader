@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useDebouncedValue } from '@mantine/hooks'
 import {
@@ -102,20 +102,29 @@ export function SystemSearch({ onPick, label = 'Solar system' }: {
   const { data, isFetching, error } = useQuery({
     queryKey: ['pi', 'systems', q], queryFn: () => piApi.searchSystems(q), enabled: q.length >= 2,
   })
-  const hits = data ?? []
+  const hits = useMemo(() => data ?? [], [data])
+  const [picked, setPicked] = useState<string | null>(null)
+  // One hit, or a hit whose name is exactly what was typed: take it without
+  // making the user open the dropdown.
+  useEffect(() => {
+    if (picked !== null || hits.length === 0) return
+    const exact = hits.find((h) => h.name.toLowerCase() === q.toLowerCase())
+    const auto = exact ?? (hits.length === 1 ? hits[0] : undefined)
+    if (auto) { setPicked(String(auto.solar_system_id)); onPick(auto) }
+  }, [hits, q, picked, onPick])
   return (
     <Stack gap="xs">
       <TextInput label={label} placeholder="Type at least 2 letters" value={query}
         rightSection={isFetching ? <Loader size="xs" /> : null}
-        onChange={(e) => { setQuery(e.currentTarget.value); onPick(null) }} />
+        onChange={(e) => { setQuery(e.currentTarget.value); setPicked(null); onPick(null) }} />
       {error ? <QueryError error={error} /> : null}
       {hits.length > 0 && (
-        <Select aria-label={`${label} results`} placeholder={`${hits.length} match(es), pick one`}
+        <Select aria-label={`${label} results`} placeholder={`${hits.length} match(es), pick one`} value={picked}
           data={hits.map((h) => ({
             value: String(h.solar_system_id),
             label: `${h.name} (${num(h.security, 1)}, ${h.zone}, ${h.planet_count} planets)`,
           }))}
-          onChange={(v) => onPick(hits.find((h) => String(h.solar_system_id) === v) ?? null)} />
+          onChange={(v) => { setPicked(v); onPick(hits.find((h) => String(h.solar_system_id) === v) ?? null) }} />
       )}
     </Stack>
   )

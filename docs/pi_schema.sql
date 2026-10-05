@@ -183,3 +183,12 @@ ALTER TABLE alert_state DROP CONSTRAINT IF EXISTS alert_state_alert_type_check;
 ALTER TABLE alert_state ADD CONSTRAINT alert_state_alert_type_check
     CHECK (alert_type IN ('skillqueue_empty', 'mail_new',
                           'pi_extractor_expiry', 'pi_pad_full', 'pi_inputs_empty'));
+
+-- ======================================= tenant_settings scope 'pi'
+-- PiConfig Settings saves use tenant_settings scope 'pi'. Restates the FULL
+-- scope list like every other schema file's copy of this ALTER (see
+-- docs/module_reprocessing_schema.sql's comment): deploy.sh re-runs every
+-- file, so all copies must carry the same complete list.
+ALTER TABLE tenant_settings DROP CONSTRAINT IF EXISTS tenant_settings_scope_check;
+ALTER TABLE tenant_settings ADD CONSTRAINT tenant_settings_scope_check
+    CHECK (scope IN ('trading', 'production', 'doctrine', 'refining', 'station_trading', 'module_reprocessing', 'pi'));

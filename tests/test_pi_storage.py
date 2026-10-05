@@ -119,3 +119,35 @@ def test_templates_are_tenant_isolated(tenant_pair, _wipe_templates):
             _save_tpl("hijack", tid=a_id)
     with storage.tenant_context(a):
         assert storage.get_pi_template(a_id)["name"] == "A"
+
+
+def test_pi_settings_scope_is_allowed_by_tenant_settings(tenant):
+    """Live check 2026-10-05 found tenant_settings_scope_check without 'pi':
+    every PI Settings save was a CheckViolation (500). pi_schema.sql (and
+    every other schema file's copy of that ALTER) now includes it."""
+    from pathlib import Path
+
+    import psycopg
+    docs = Path(__file__).resolve().parent.parent / "docs"
+    with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
+        for name in ("phase2_schema.sql", "pi_schema.sql"):
+            conn.execute((docs / name).read_text(encoding="utf-8"))
+    storage.save_tenant_settings("pi", {"pi_owner_tax_rate": 0.05})
+    assert storage.load_tenant_settings("pi")["pi_owner_tax_rate"] == 0.05
+
+
+def test_every_schema_copy_of_the_scope_check_lists_the_same_scopes():
+    """deploy.sh re-runs every schema file; a narrower copy of the
+    tenant_settings scope list would abort the deploy once 'pi' rows exist."""
+    import re
+    from pathlib import Path
+
+    docs = Path(__file__).resolve().parent.parent / "docs"
+    lists = set()
+    for f in docs.glob("*_schema.sql"):
+        text = f.read_text(encoding="utf-8")
+        for m in re.finditer(r"ADD CONSTRAINT tenant_settings_scope_check\s+CHECK \(scope IN \(([^)]*)\)\)", text):
+            lists.add(tuple(s.strip().strip("'") for s in m.group(1).split(",")))
+    assert len(lists) == 1, lists
+    assert "pi" in next(iter(lists))
+
