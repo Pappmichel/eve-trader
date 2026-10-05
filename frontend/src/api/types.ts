@@ -2436,3 +2436,74 @@ export interface PiDesignBase {
   zone?: string
   cc_level?: number
 }
+
+// POST /api/pi/design/chain-plan (eve_trader/pi/chain_actions.py)
+export interface PiChainPlanBody {
+  product_type_id: number
+  solar_system_id?: number
+  characters?: Array<{ name?: string; character_id?: number; planets: number; cc_level: number }>
+  cc_level?: number
+  owner_tax_rate?: number
+  allow_buy?: boolean
+}
+
+export interface PiChainAssignment {
+  character_key: string
+  character: string
+  cc_level: number
+  planet_id: number | null
+  planet_name: string
+  planet_type_id: number | null
+  planet_type: string | null
+  chain: string
+  product_type_id: number
+  product_name: string
+  is_extraction: boolean
+  units_per_day: number
+  layout_request: Record<string, unknown>
+}
+
+export interface PiChainStage {
+  type_id: number
+  name: string
+  tier: number
+  in_tree: boolean
+  colonies: number
+  made: number
+  needed: number
+  internal: number
+  bought: number
+  sold: number
+  discarded: number
+}
+
+export interface PiChainPurchase {
+  type_id: number
+  name: string
+  units_per_day: number
+  cost_per_day: number
+  reason_code: string
+  reason: string
+}
+
+export interface PiChainPlanResult {
+  status: 'optimal' | 'time_limit' | 'fallback' | 'infeasible'
+  mode: 'target' | 'inputs'
+  target_type_id: number
+  target_name: string
+  target_units_per_day: number
+  max_target_units_per_day: number | null
+  profit_per_day: number
+  profit_per_slot: number | null
+  used_slots: number
+  slots: number
+  free_slots: number
+  characters: number
+  assignments: PiChainAssignment[]
+  stages: PiChainStage[]
+  purchases: PiChainPurchase[]
+  notes: string[]
+  system: { solar_system_id?: number; name?: string; zone?: string } | null
+  zone: string
+  allow_buy: boolean
+}

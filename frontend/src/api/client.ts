@@ -941,4 +941,5 @@ export const piApi = {
   grow: (body: T.PiDesignBase & {
     chain: string; product_type_id: number; yield_per_head?: number; design?: Partial<T.PiDesign>
   }) => post<T.PiGrow>('/api/pi/design/grow', body),
+  chainPlan: (body: T.PiChainPlanBody) => post<T.PiChainPlanResult>('/api/pi/design/chain-plan', body),
 }

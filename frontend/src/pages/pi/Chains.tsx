@@ -5,6 +5,7 @@ import { Alert, Group, Select, Stack, Table, Text } from '@mantine/core'
 import { piApi } from '../../api/client'
 import type { PiChainNode, PiZone } from '../../api/types'
 import { isk } from '../../format'
+import ChainPlanner from './ChainPlanner'
 import { CC_OPTIONS, Loading, QueryError, SectionTitle, ZONE_OPTIONS, num, reasonLabel, usePiMeta, usePiSettings, zoneLabel } from './common'
 
 function flatten(node: PiChainNode, depth: number, out: Array<{ node: PiChainNode; depth: number }>) {
@@ -98,6 +99,7 @@ export default function Chains() {
           </Table>
         </Stack>
       )}
+      <ChainPlanner productId={product === null ? null : Number(product)} />
     </Stack>
   )
 }
