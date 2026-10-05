@@ -5,7 +5,7 @@ import { Alert, Group, Select, Stack, Table, Text } from '@mantine/core'
 import { piApi } from '../../api/client'
 import type { PiChainNode, PiZone } from '../../api/types'
 import { isk } from '../../format'
-import { CC_OPTIONS, Loading, QueryError, SectionTitle, ZONE_OPTIONS, num, reasonLabel, usePiMeta } from './common'
+import { CC_OPTIONS, Loading, QueryError, SectionTitle, ZONE_OPTIONS, num, reasonLabel, usePiMeta, usePiSettings, zoneLabel } from './common'
 
 function flatten(node: PiChainNode, depth: number, out: Array<{ node: PiChainNode; depth: number }>) {
   out.push({ node, depth })
@@ -19,6 +19,7 @@ export default function Chains() {
   const [zone, setZone] = useState<PiZone | null>(null)
   const [cc, setCc] = useState<string | null>(null)
 
+  const settings = usePiSettings()
   const { data, isFetching, error } = useQuery({
     queryKey: ['pi', 'chain', product, zone, cc],
     queryFn: () => piApi.chain(Number(product), zone ?? undefined, cc === null ? undefined : Number(cc)),
@@ -34,7 +35,7 @@ export default function Chains() {
       <Group align="flex-end">
         <Select label="Product (P2-P4)" searchable w={300} value={product} onChange={setProduct}
           data={items.map((p) => ({ value: String(p.type_id), label: `${p.name} (P${p.tier})` }))} />
-        <Select label="Security zone" w={160} clearable placeholder="Settings default" data={ZONE_OPTIONS}
+        <Select label="Security zone" w={200} clearable placeholder={`Settings default (${zoneLabel(settings?.pi_zone)})`} data={ZONE_OPTIONS}
           value={zone} onChange={(v) => setZone(v as PiZone | null)} />
         <Select label="Command Center level" w={180} clearable placeholder="Settings default" data={CC_OPTIONS}
           value={cc} onChange={setCc} />

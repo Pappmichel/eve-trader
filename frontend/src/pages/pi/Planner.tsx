@@ -15,7 +15,7 @@ import { notify } from '../../notify'
 import { isk, pct } from '../../format'
 import {
   AnalysisView, Bar, CC_OPTIONS, PlanetPicker, QueryError, RatesTable, SHAPES, SectionTitle, Stat,
-  VerdictBadge, ZONE_OPTIONS, bufferText, iskPerDay, num, usePiMeta,
+  VerdictBadge, ZONE_OPTIONS, bufferText, iskPerDay, num, usePiMeta, usePiSettings, zoneLabel,
 } from './common'
 import PlannerDesignTools from './PlannerDesignTools'
 import type { EditorOpenState } from './Editor'
@@ -61,6 +61,7 @@ export default function Planner() {
   const [radius, setRadius] = useState<NumField>(prefill?.plan?.radius_km ?? '')
   const [cc, setCc] = useState<string>(String(prefill?.plan?.design.cc_level ?? 5))
   const [zone, setZone] = useState<string | null>(null)
+  const settings = usePiSettings()
   const [ownerTax, setOwnerTax] = useState<NumField>(
     prefill?.plan?.owner_tax_rate != null ? prefill.plan.owner_tax_rate * 100 : '')
   const [freight, setFreight] = useState<NumField>(prefill?.plan?.freight_per_m3 ?? '')
@@ -201,7 +202,7 @@ export default function Planner() {
                 data={(meta?.planet_types ?? []).map((t) => ({ value: String(t.type_id), label: t.name }))} />
               <NumberInput label="Radius (km)" placeholder="median of the type" min={50} max={200000}
                 value={radius} onChange={setRadius} />
-              <Select label="Security zone" clearable placeholder="Default from Settings" data={ZONE_OPTIONS}
+              <Select label="Security zone" clearable placeholder={`Settings default (${zoneLabel(settings?.pi_zone)})`} data={ZONE_OPTIONS}
                 value={zone} onChange={setZone} />
             </SimpleGrid>
           )}
@@ -245,7 +246,7 @@ export default function Planner() {
             Assumptions: yield {num(result.assumptions.yield_per_head, 0)}/head/h
             (effective {num(result.assumptions.effective_yield_per_head, 0)}),
             program {num(result.assumptions.program_hours, 0)} h, interval {num(result.assumptions.interval_hours, 0)} h,
-            customs tax {pct(result.assumptions.tax_rate)}, freight {isk(result.assumptions.freight_per_m3)}/m³.
+            customs tax {pct(result.assumptions.tax_rate)}{result.assumptions.npc_tax_rate !== undefined && <> (NPC {pct(result.assumptions.npc_tax_rate)} + owner {pct(result.assumptions.owner_tax_rate ?? 0)}, {result.zone})</>}, freight {isk(result.assumptions.freight_per_m3)}/m³.
           </Text>
 
           <SectionTitle>Design</SectionTitle>

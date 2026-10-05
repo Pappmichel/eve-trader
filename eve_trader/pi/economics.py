@@ -69,6 +69,7 @@ class Prices:
     hub_by_type: Mapping[int, int] = field(default_factory=dict)
     daily_volume: Mapping[int, Optional[float]] = field(default_factory=dict)
     trend: Mapping[int, Optional[dict]] = field(default_factory=dict)
+    source_note: Optional[str] = None     # e.g. "fell back to a Goonmetrics snapshot"
 
 
 @dataclass(frozen=True)

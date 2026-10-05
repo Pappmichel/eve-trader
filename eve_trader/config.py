@@ -179,6 +179,7 @@ _FIELD_RANGES: dict[str, tuple[Optional[float], Optional[float]]] = {
     "hub_region_id": (0, None),
     # PI tool (eve_trader/pi/config.py); every field is pi_-prefixed because
     # this table is keyed by bare field name across all config dataclasses.
+    "pi_price_structure_id": (0, None),
     "pi_broker_fee_rate": (0, 1),
     "pi_sales_tax_rate": (0, 1),
     "pi_owner_tax_rate": (0, 1),

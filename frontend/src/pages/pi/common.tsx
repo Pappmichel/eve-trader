@@ -11,6 +11,16 @@ import type {
 } from '../../api/types'
 import { isk, pct } from '../../format'
 
+// Label of a zone value (for "Settings default (Null-sec)" placeholders).
+export function zoneLabel(zone: string | undefined | null): string {
+  return ZONE_OPTIONS.find((z) => z.value === zone)?.label ?? '?'
+}
+
+// The PI settings, e.g. to show which default zone a page falls back to.
+export function usePiSettings() {
+  return useQuery({ queryKey: ['pi', 'settings'], queryFn: piApi.settings, staleTime: 60_000 }).data
+}
+
 export const ZONE_OPTIONS: Array<{ value: PiZone; label: string }> = [
   { value: 'highsec', label: 'High-sec' },
   { value: 'lowsec', label: 'Low-sec' },

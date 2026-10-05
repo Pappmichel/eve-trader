@@ -119,13 +119,76 @@ def _trends(static: StaticData, region_id: int) -> dict[int, Optional[dict]]:
         return result
 
 
+def _structure_fallback_slug(cfg: PiConfig) -> Optional[str]:
+    """Goonmetrics market for the PI price structure: PI's own setting, else
+    the slug Trading (structure_market_slug) or Production (home_market)
+    already use for that same structure."""
+    return cfg.pi_price_structure_slug or _known_structure_slug(int(cfg.pi_price_structure_id or 0))
+
+
+def _known_structure_slug(sid: int) -> Optional[str]:
+    from ..config import TRADING_CONFIG
+    from ..production.config import PRODUCTION_CONFIG
+
+    if TRADING_CONFIG.structure_id == sid and TRADING_CONFIG.structure_market_slug:
+        return TRADING_CONFIG.structure_market_slug
+    if PRODUCTION_CONFIG.home_location_id == sid and PRODUCTION_CONFIG.home_market:
+        return PRODUCTION_CONFIG.home_market
+    return None
+
+
+def market_label(cfg: PiConfig) -> str:
+    sid = int(cfg.pi_price_structure_id or 0)
+    if sid:
+        try:
+            name = storage.get_location_names([sid]).get(sid)
+        except Exception:  # noqa: BLE001 - names are cosmetic
+            name = None
+        slug = _structure_fallback_slug(cfg)
+        return name or (f"{slug} (structure)" if slug else f"structure {sid}")
+    from ..hubs import hub_name
+
+    return "the best hub per item" if int(cfg.hub_region_id) == ALL_HUBS else hub_name(int(cfg.hub_region_id))
+
+
+def _structure_stats(ids: list[int], cfg: PiConfig) -> tuple[dict, bool]:
+    """(stats per type, used_goonmetrics_fallback) for the PI price structure."""
+    from ..actions import structure_book_auth_roles
+    from ..auth import TokenManager
+    from ..config import OAUTH_CONFIG
+    from ..esi_client import ESIClient, ESIError
+
+    client = ESIClient(tokens=TokenManager(OAUTH_CONFIG))
+    try:
+        return client.structure_order_stats_bulk_or_goonmetrics(
+            int(cfg.pi_price_structure_id), ids, structure_book_auth_roles(), _structure_fallback_slug(cfg))
+    except ESIError as e:
+        raise ActionError(f"Structure market prices unavailable: {e}") from e
+
+
 def _prices(static: StaticData, cfg: PiConfig, with_history: bool = True) -> econ.Prices:
     """Order-book prices for every PI commodity at the PI hub (or the best
-    hub per item), with PI's own freight rate (P-34)."""
+    hub per item, or a player structure such as C-J), with PI's own freight
+    rate (P-34)."""
     from ..esi_client import ESIClient
 
     ids = sorted(static.commodities)
     volumes = {t: c.volume for t, c in static.commodities.items()}
+    if int(cfg.pi_price_structure_id or 0) > 0:
+        stats, fallback = _structure_stats(ids, cfg)
+        sell = {t: (stats[t].sell_percentile if t in stats else None) for t in ids}
+        buy = {t: (stats[t].buy_percentile if t in stats else None) for t in ids}
+        trends: dict[int, Optional[dict]] = {}
+        if with_history:
+            # Structures have no market history; the region the structure
+            # sits in is the closest signal (Trading's reference region).
+            from ..config import TRADING_CONFIG
+
+            trends = _trends(static, int(TRADING_CONFIG.reference_region_id))
+        daily = {t: (tr or {}).get("avg_daily_volume") for t, tr in trends.items()}
+        return econ.Prices(sell=sell, buy=buy, hub_by_type={}, daily_volume=daily, trend=trends,
+                           source_note="Goonmetrics snapshot (no character could read the structure market)"
+                           if fallback else None)
     try:
         hp = hub_pricing(ESIClient(), int(cfg.hub_region_id), ids, volumes, cfg.pi_broker_fee_rate,
                          cfg.pi_freight_per_m3, freight_override=cfg.pi_freight_per_m3)
@@ -224,6 +287,28 @@ def _economics_dict(e: econ.Economics, static: StaticData) -> dict:
 
 
 # ------------------------------------------------------------------ meta
+def price_structures(cfg: PiConfig) -> list[dict]:
+    """Player structures offered as a PI market: the home structures Trading
+    (structure_id) and Production (home_location_id) already use - C-J - plus
+    whatever PI is set to now."""
+    from ..config import TRADING_CONFIG
+    from ..production.config import PRODUCTION_CONFIG
+
+    ids = [i for i in (TRADING_CONFIG.structure_id, PRODUCTION_CONFIG.home_location_id,
+                       int(cfg.pi_price_structure_id or 0)) if i]
+    ids = list(dict.fromkeys(int(i) for i in ids))
+    try:
+        names = storage.get_location_names(ids) if ids else {}
+    except Exception:  # noqa: BLE001 - names are cosmetic
+        names = {}
+    out = []
+    for i in ids:
+        slug = _known_structure_slug(i)
+        out.append({"structure_id": i, "name": names.get(i) or (f"{slug} (structure)" if slug else f"Structure {i}")})
+    return out
+
+
+
 def do_get_meta(cfg: PiConfig = PI_CONFIG) -> dict:
     """Products per tier with the chains each can be built through, planet
     types (with their P0 and whether they have High-Tech plants), zones."""
@@ -243,6 +328,7 @@ def do_get_meta(cfg: PiConfig = PI_CONFIG) -> dict:
     return {
         "products": products,
         "planet_types": planet_types,
+        "price_structures": price_structures(cfg),
         "chains": list(CHAINS),
         "zones": list(C.ZONES),
         "cc_levels": [{"level": lv, "cpu": v[0], "power": v[1], "upgrade_isk": v[2]} for lv, v in C.CC_LEVELS.items()],
@@ -309,7 +395,8 @@ def do_profitability(zone: Optional[str] = None, cc_level: Optional[int] = None,
     lv = _cc_level(cc_level, cfg)
     prices = _prices(static, cfg)
     rows = _profit_rows(static, cfg, z, lv, prices)
-    return {"zone": z, "cc_level": lv, "assumptions": _assumptions_dict(cfg, z), "rows": rows}
+    return {"zone": z, "cc_level": lv, "assumptions": {**_assumptions_dict(cfg, z), "price_note": prices.source_note},
+            "rows": rows}
 
 
 def _assumptions_dict(cfg: PiConfig, zone: str) -> dict:
@@ -320,7 +407,18 @@ def _assumptions_dict(cfg: PiConfig, zone: str) -> dict:
         "program_hours": a.program_hours, "interval_hours": a.interval_hours,
         "tax_rate": m.tax_rate, "freight_per_m3": m.freight_per_m3, "valuation": m.valuation,
         "hub_region_id": int(cfg.hub_region_id),
+        "price_structure_id": int(cfg.pi_price_structure_id or 0),
+        "market_label": market_label(cfg),
+        **_tax_parts(cfg, zone),
     }
+
+
+def _tax_parts(cfg: PiConfig, zone: str, owner_tax_rate: Optional[float] = None) -> dict:
+    """The customs rate split into its NPC part (high-sec only) and the
+    owner part, so the UI can show why a rate is what it is."""
+    owner = cfg.pi_owner_tax_rate if owner_tax_rate is None else float(owner_tax_rate)
+    return {"npc_tax_rate": econ.npc_tax_rate(zone, cfg.pi_customs_code_expertise_level),
+            "owner_tax_rate": owner, "default_zone": cfg.pi_zone}
 
 
 # ------------------------------------------------------------------ planner
@@ -381,7 +479,8 @@ def do_planner(chain: str, product_type_id: int, planet_id: Optional[int] = None
         "product": {"type_id": int(product_type_id), "name": static.name(int(product_type_id))},
         "assumptions": {"yield_per_head": a.yield_per_head, "effective_yield_per_head": a.effective_yield,
                         "program_hours": a.program_hours, "interval_hours": a.interval_hours,
-                        "tax_rate": m.tax_rate, "freight_per_m3": m.freight_per_m3},
+                        "tax_rate": m.tax_rate, "freight_per_m3": m.freight_per_m3,
+                        "market_label": market_label(cfg), **_tax_parts(cfg, z, owner_tax_rate)},
         "evaluation": evaluation_dict(static, ev),
         "economics": _economics_dict(e, static),
         "prices": {t["type_id"]: {"sell": prices.sell.get(t["type_id"]), "buy": prices.buy.get(t["type_id"])}

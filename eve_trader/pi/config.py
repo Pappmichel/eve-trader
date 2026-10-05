@@ -27,6 +27,13 @@ class PiConfig:
     # Market hub (region id) PI prices come from; 0 = all hubs, best per item
     # (hubs.ALL_HUBS). Default Jita.
     hub_region_id: int = 10000002
+    # Price at a player structure's market instead (e.g. the C-J home
+    # structure): its structure id, 0 = use hub_region_id. Read through a
+    # character with the "Structure market book" capability (docking access
+    # needed), falling back to the Goonmetrics market `pi_price_structure_slug`
+    # (empty = the slug Trading/Production already use for that structure).
+    pi_price_structure_id: int = 0
+    pi_price_structure_slug: str = ""
 
     # -- Market fees (the defaults are placeholders, check your own skills) --
     pi_broker_fee_rate: float = 0.03          # buying inputs / listing outputs

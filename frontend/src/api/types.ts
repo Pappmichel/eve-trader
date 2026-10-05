@@ -2001,6 +2001,8 @@ export interface AlertSettings {
 export type PiZone = 'highsec' | 'lowsec' | 'nullsec' | 'wormhole'
 
 export interface PiMeta {
+  // Player structures PI can price at (the C-J home structure of Trading/Production).
+  price_structures?: Array<{ structure_id: number; name: string }>
   products: Array<{ type_id: number; name: string; tier: number; chains: string[] }>
   planet_types: Array<{
     type_id: number; name: string; resources: Array<{ type_id: number; name: string }>
@@ -2055,6 +2057,12 @@ export interface PiProfitAssumptions {
   freight_per_m3: number
   valuation: string
   hub_region_id: number
+  price_structure_id?: number
+  market_label?: string
+  price_note?: string | null
+  npc_tax_rate?: number
+  owner_tax_rate?: number
+  default_zone?: PiZone
 }
 
 export interface PiProfitability {
@@ -2133,6 +2141,7 @@ export interface PiPlannerResult {
   assumptions: {
     yield_per_head: number; effective_yield_per_head: number; program_hours: number
     interval_hours: number; tax_rate: number; freight_per_m3: number
+    market_label?: string; npc_tax_rate?: number; owner_tax_rate?: number; default_zone?: PiZone
   }
   evaluation: PiEvaluation
   economics: PiEconomics
@@ -2247,6 +2256,8 @@ export interface PiPlan {
 
 export interface PiSettings {
   hub_region_id: number
+  pi_price_structure_id: number
+  pi_price_structure_slug: string
   pi_broker_fee_rate: number
   pi_sales_tax_rate: number
   pi_valuation: 'sell_orders' | 'buy_orders'

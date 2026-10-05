@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Badge, Button, Center, Loader, NumberInput, Select, SimpleGrid, Stack, Table, Text, Title } from '@mantine/core'
+import { Badge, Button, Center, Loader, NumberInput, Select, SimpleGrid, Stack, Table, Text, TextInput, Title } from '@mantine/core'
 
 import { piApi } from '../../api/client'
 import type { PiSettings as PiSettingsT } from '../../api/types'
 import { useAction } from '../../hooks/useAction'
 import { HintCard } from '../../components/HintCard'
-import { HubSelect } from '../../components/HubSelect'
+import { hubSelectData } from '../../tradingHubs'
 import { CC_OPTIONS, QueryError, ZONE_OPTIONS } from './common'
 
 type NumKey = {
@@ -16,6 +16,7 @@ type NumKey = {
 export default function PiSettings() {
   const { data, error } = useQuery({ queryKey: ['pi', 'settings'], queryFn: piApi.settings })
   const { data: chars, error: charsError } = useQuery({ queryKey: ['pi', 'characters'], queryFn: piApi.characters })
+  const { data: meta } = useQuery({ queryKey: ['pi', 'meta'], queryFn: piApi.meta })
   const [form, setForm] = useState<PiSettingsT | null>(null)
   useEffect(() => { if (data) setForm(data) }, [data])
   const save = useAction('Save Settings', (s: PiSettingsT) => piApi.updateSettings(s), [
@@ -42,8 +43,27 @@ export default function PiSettings() {
       <HintCard>Changes apply to every PI page once saved. Fee and skill values are entered manually.</HintCard>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Market hub</Title>
-      <HubSelect label="Market hub" description="Where PI commodities are priced (independent of the other tools)"
-        allowAll value={form.hub_region_id} onChange={(v) => set('hub_region_id', v)} />
+      <Select label="Market" allowDeselect={false}
+        description="Where PI commodities are priced (independent of the other tools). PI's own freight rate below applies to every choice."
+        value={form.pi_price_structure_id > 0 ? `structure:${form.pi_price_structure_id}` : `hub:${form.hub_region_id}`}
+        data={[
+          { group: 'Trade hubs', items: hubSelectData(form.hub_region_id, true).map((o) => ({ value: `hub:${o.value}`, label: o.label })) },
+          ...((meta?.price_structures ?? []).length > 0 ? [{
+            group: 'Player structures',
+            items: (meta?.price_structures ?? []).map((s) => ({ value: `structure:${s.structure_id}`, label: s.name })),
+          }] : []),
+        ]}
+        onChange={(v) => {
+          if (!v) return
+          const [kind, id] = v.split(':')
+          if (kind === 'structure') set('pi_price_structure_id', Number(id))
+          else { set('pi_price_structure_id', 0); set('hub_region_id', Number(id)) }
+        }} />
+      {form.pi_price_structure_id > 0 && (
+        <TextInput label="Goonmetrics fallback market (optional)" value={form.pi_price_structure_slug}
+          description="Used when no character with 'Structure market book' can read the structure's order book. Empty = the one Trading/Production use for this structure."
+          onChange={(e) => set('pi_price_structure_slug', e.currentTarget.value)} />
+      )}
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Fees and valuation</Title>
       <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }}>

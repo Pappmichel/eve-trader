@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Group, MultiSelect, Select, Stack, Switch, Text } from '@mantine/core'
+import { Alert, Group, MultiSelect, Select, Stack, Switch, Text } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { piApi } from '../../api/client'
@@ -103,13 +103,14 @@ export default function Profitability() {
         <Text size="xs" c="dimmed">
           Assumptions: yield {num(a.yield_per_head, 0)}/head/h (effective {num(a.effective_yield_per_head, 0)}),
           program {num(a.program_hours, 0)} h, collected every {num(a.interval_hours, 0)} h,
-          customs tax {pct(a.tax_rate)}, freight {isk(a.freight_per_m3)}/m³,
-          prices at {a.hub_region_id === ALL_HUBS ? 'the best hub per item' : `region ${a.hub_region_id}`}
+          customs tax {pct(a.tax_rate)}{a.npc_tax_rate !== undefined && <> (NPC {pct(a.npc_tax_rate)} {a.zone === 'highsec' ? 'in high-sec' : '- none outside high-sec'} + owner {pct(a.owner_tax_rate ?? 0)})</>}, freight {isk(a.freight_per_m3)}/m³,
+          prices at {a.market_label ?? (a.hub_region_id === ALL_HUBS ? 'the best hub per item' : `region ${a.hub_region_id}`)}
           {' '}({a.valuation === 'buy_orders' ? 'sold into buy orders' : 'listed as sell orders'}).
           Change them under Settings.
         </Text>
       )}
 
+      {a?.price_note && <Alert color="yellow">Prices: {a.price_note}. Tick "Structure market book" for a character with docking access on the Characters page for live order-book prices.</Alert>}
       {isError && <QueryError error={error} />}
       {!isError && (
         <>
