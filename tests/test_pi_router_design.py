@@ -61,3 +61,23 @@ def test_limits_and_errors(monkeypatch):
     monkeypatch.setattr(design_actions, "do_edit_layout", _boom)
     r = client.post("/api/pi/design/edit", json={"template": "x", "edit": {"op": "move"}})
     assert r.status_code == 400 and r.json()["detail"] == "nope"
+
+
+def test_chain_plan(monkeypatch):
+    from eve_trader.pi import chain_actions
+
+    seen = {}
+    monkeypatch.setattr(chain_actions, "do_chain_plan", lambda **kw: seen.update(kw) or {"ok": True})
+    r = client.post("/api/pi/design/chain-plan", json={
+        "product_type_id": 2867, "solar_system_id": 30000142,
+        "characters": [{"name": "Main", "planets": 6, "cc_level": 5}], "owner_tax_rate": 0.05})
+    assert r.status_code == 200
+    assert seen["product_type_id"] == 2867 and seen["allow_buy"] is False and seen["cc_level"] is None
+    assert seen["characters"][0]["planets"] == 6 and seen["characters"][0]["cc_level"] == 5
+    for bad in ({"product_type_id": 2867, "characters": [{"planets": 7, "cc_level": 5}]},
+                {"product_type_id": 2867, "characters": [{"planets": 1, "cc_level": 6}]},
+                {"product_type_id": 2867, "owner_tax_rate": 1.5}):
+        assert client.post("/api/pi/design/chain-plan", json=bad).status_code == 422
+    monkeypatch.setattr(chain_actions, "do_chain_plan", _boom)
+    r = client.post("/api/pi/design/chain-plan", json={"product_type_id": 2867})
+    assert r.status_code == 400 and r.json()["detail"] == "nope"
