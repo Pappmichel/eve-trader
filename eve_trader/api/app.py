@@ -28,9 +28,10 @@ from ..access_gate import (
 log = logging.getLogger(__name__)
 from ..config import ACCESS_CONFIG, OAUTH_CONFIG, TRADING_CONFIG, apply_config_overrides
 from ..doctrine.config import DOCTRINE_CONFIG
+from ..pi.config import PI_CONFIG
 from ..production.config import PRODUCTION_CONFIG
 from .routers import (
-    admin, auth, char_contacts, char_info, char_mail, char_notifications, char_alerts, char_skill_plans, char_skills, characters, doctrine, errors, gate, hubs, module_reprocessing, portfolio, production, refining, sde, sorting, updates,
+    admin, auth, char_contacts, char_info, char_mail, char_notifications, char_alerts, char_skill_plans, char_skills, characters, doctrine, errors, gate, hubs, module_reprocessing, pi, pi_design, portfolio, production, refining, sde, sorting, updates,
     station_trading, trading,
 )
 
@@ -150,6 +151,7 @@ _TOOL_PATH_PREFIXES = {
     "/api/char-contacts/": "char_contacts",
     "/api/char-skill-plans/": "char_skill_plans",
     "/api/char-alerts/": "char_alerts",
+    "/api/pi/": "pi",
 }
 
 
@@ -391,12 +393,15 @@ def _load_default_tenant_config() -> None:
         trading_overrides = storage.load_tenant_settings("trading")
         production_overrides = storage.load_tenant_settings("production")
         doctrine_overrides = storage.load_tenant_settings("doctrine")
+        pi_overrides = storage.load_tenant_settings("pi")
     if trading_overrides:
         apply_config_overrides(TRADING_CONFIG, trading_overrides)
     if production_overrides:
         apply_config_overrides(PRODUCTION_CONFIG, production_overrides)
     if doctrine_overrides:
         apply_config_overrides(DOCTRINE_CONFIG, doctrine_overrides)
+    if pi_overrides:
+        apply_config_overrides(PI_CONFIG, pi_overrides)
 
 
 def create_app() -> FastAPI:
@@ -446,6 +451,8 @@ def create_app() -> FastAPI:
     app.include_router(char_contacts.router, prefix="/api/char-contacts", tags=["char_contacts"])
     app.include_router(char_skill_plans.router, prefix="/api/char-skill-plans", tags=["char_skill_plans"])
     app.include_router(char_alerts.router, prefix="/api/char-alerts", tags=["char_alerts"])
+    app.include_router(pi.router, prefix="/api/pi", tags=["pi"])
+    app.include_router(pi_design.router, prefix="/api/pi/design", tags=["pi"])
     app.include_router(errors.router, prefix="/api/errors", tags=["errors"])
     app.include_router(sde.router, prefix="/api/sde", tags=["sde"])
     app.include_router(hubs.router, prefix="/api/hubs", tags=["hubs"])

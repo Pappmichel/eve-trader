@@ -241,7 +241,13 @@ def _rounded_security(security_status: float) -> float:
     own system-security dev docs (developers.eveonline.com/docs/guides/
     system-security). Standard rounding, except CCP's own special case:
     any positive true-sec below 0.05 still rounds to 0.1, never down to a
-    flat 0.0 (0.0 is reserved for genuine null-sec)."""
+    flat 0.0 (0.0 is reserved for genuine null-sec).
+
+    The value is first rounded to 4 decimals: sde_solar_systems.security is a
+    REAL (float4) column, so a true-sec of 0.45 comes back as 0.449999988 and
+    would round down to 0.4 - a high-sec system classified as low-sec
+    (found while building the PI tool, docs/PI_TECHNICAL_DESIGN.md P-33)."""
+    security_status = round(float(security_status), 4)
     if 0.0 < security_status < 0.05:
         return 0.1
     return round(security_status, 1)

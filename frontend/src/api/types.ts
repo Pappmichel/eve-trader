@@ -952,6 +952,8 @@ export interface SdeTableRowDiff {
   new: SdeDiffItem[]
   removed: SdeDiffItem[]
   changed: SdeChangedItem[]
+  // Entries per list that were cut off (only sde_pi_planets caps its lists).
+  truncated?: { new: number; removed: number; changed: number }
 }
 
 export interface SdeDiff {
@@ -1974,7 +1976,7 @@ export interface MailRecipientHit {
 }
 
 // ------------------------------------------------------------- discord alerts
-export type AlertType = 'skillqueue_empty' | 'mail_new'
+export type AlertType = 'skillqueue_empty' | 'mail_new' | 'pi_extractor_expiry' | 'pi_pad_full' | 'pi_inputs_empty'
 
 export interface AlertSubscription {
   shared: boolean
@@ -1990,6 +1992,518 @@ export interface AlertSettings {
   characters: Array<{
     character_id: number
     character_name: string
-    alerts: Record<AlertType, AlertSubscription>
+    // The PI alert types are newer; an older backend may not send them.
+  alerts: Partial<Record<AlertType, AlertSubscription>>
   }>
+}
+
+// ------------------------------------------------- Planetary Industry (pi)
+export type PiZone = 'highsec' | 'lowsec' | 'nullsec' | 'wormhole'
+
+export interface PiMeta {
+  // Player structures PI can price at (the C-J home structure of Trading/Production).
+  price_structures?: Array<{ structure_id: number; name: string }>
+  products: Array<{ type_id: number; name: string; tier: number; chains: string[] }>
+  planet_types: Array<{
+    type_id: number; name: string; resources: Array<{ type_id: number; name: string }>
+    high_tech: boolean; median_radius_km: number | null
+  }>
+  chains: string[]
+  zones: PiZone[]
+  cc_levels: Array<{ level: number; cpu: number; power: number; upgrade_isk: number }>
+}
+
+export interface PiTrend {
+  days: number
+  change: number | null
+  volatility: number | null
+  avg_daily_volume: number | null
+}
+
+export interface PiProfitRow {
+  product_type_id: number
+  product_name: string
+  tier: number
+  chain: string
+  planet_type_id: number
+  planet_type: string | null
+  radius_km: number
+  factories: number
+  heads: number
+  launchpads: number
+  storages: number
+  output_per_day: number
+  profit_per_day: number
+  revenue_per_day: number
+  costs_per_day: { inputs: number; export_tax: number; import_tax: number; freight: number; setup: number }
+  worth_it: boolean
+  reason: string | null
+  interactions_per_week: number
+  isk_per_interaction: number | null
+  isk_per_m3: number | null
+  haul_m3_per_week: number
+  market_share: number | null
+  trend: PiTrend | null
+  buffer_hours: number | null
+}
+
+export interface PiProfitAssumptions {
+  zone: PiZone
+  yield_per_head: number
+  effective_yield_per_head: number
+  program_hours: number
+  interval_hours: number
+  tax_rate: number
+  freight_per_m3: number
+  valuation: string
+  hub_region_id: number
+  price_structure_id?: number
+  market_label?: string
+  price_note?: string | null
+  npc_tax_rate?: number
+  owner_tax_rate?: number
+  default_zone?: PiZone
+}
+
+export interface PiProfitability {
+  zone: PiZone
+  cc_level: number
+  assumptions: PiProfitAssumptions
+  rows: PiProfitRow[]
+}
+
+export interface PiDesign {
+  chain: string
+  product_type_id: number
+  planet_type_id: number
+  cc_level: number
+  factories: Array<[number, number]>
+  ecus: Array<[number, number]>
+  launchpads: number
+  storages: number
+}
+
+export interface PiNamedRate { type_id: number; name: string; tier: number | null; per_hour: number }
+
+export interface PiEvaluation {
+  design: PiDesign & {
+    factories_named: Array<{ type_id: number; name: string; tier: number | null; count: number; utilization?: number }>
+    ecus_named: Array<{ type_id: number; name: string; heads: number }>
+  }
+  fits: boolean
+  cpu_used: number; cpu_capacity: number
+  power_used: number; power_capacity: number
+  links: { count: number; km: number; level: number; cpu: number; power: number }
+  product_per_hour: number
+  effective_product_per_hour: number
+  effective_factor: number
+  buffer_hours: number | null
+  import_m3_per_hour: number
+  export_m3_per_hour: number
+  extracted: PiNamedRate[]
+  produced: PiNamedRate[]
+  imports: PiNamedRate[]
+  exports: PiNamedRate[]
+  idle_factories: number
+  setup_isk: number
+  notes: string[]
+}
+
+export interface PiEconomics {
+  revenue_per_day: number
+  input_cost_per_day: number
+  export_tax_per_day: number
+  import_tax_per_day: number
+  freight_per_day: number
+  setup_per_day: number
+  profit_per_day: number
+  output_units_per_day: number
+  haul_m3_per_week: number
+  interactions_per_week: number
+  isk_per_interaction: number | null
+  isk_per_m3: number | null
+  market_share: number | null
+  worth_it: boolean
+  reason: string | null
+  missing_prices: Array<{ type_id: number; name: string }>
+}
+
+export interface PiPlannerResult {
+  planet: {
+    planet_id: number | null; name: string | null; planet_type_id: number; planet_type: string
+    radius_km: number
+    system: { solar_system_id: number; name: string | null; security: number | null; region_id: number | null } | null
+  }
+  zone: PiZone
+  cc_level: number
+  chain: string
+  product: { type_id: number; name: string }
+  assumptions: {
+    yield_per_head: number; effective_yield_per_head: number; program_hours: number
+    interval_hours: number; tax_rate: number; freight_per_m3: number
+    market_label?: string; npc_tax_rate?: number; owner_tax_rate?: number; default_zone?: PiZone
+  }
+  evaluation: PiEvaluation
+  economics: PiEconomics
+  prices: Record<string, { sell: number | null; buy: number | null }>
+  trend: PiTrend | null
+}
+
+export interface PiPlannerBody {
+  chain: string
+  product_type_id: number
+  planet_id?: number
+  planet_type_id?: number
+  radius_km?: number
+  cc_level?: number
+  zone?: string
+  owner_tax_rate?: number
+  freight_per_m3?: number
+  yield_per_head?: number
+  program_hours?: number
+  interval_hours?: number
+  design?: Partial<PiDesign>
+}
+
+export interface PiSystemHit {
+  solar_system_id: number; name: string; security: number; region_id: number
+  zone: PiZone; planet_count: number
+}
+
+export interface PiPlanet {
+  planet_id: number; name: string; planet_type_id: number; planet_type: string | null; radius_km: number
+}
+
+export interface PiSystemPlanets {
+  solar_system_id: number; name: string; security: number; region_id: number
+  zone: PiZone; reachable: boolean; planets: PiPlanet[]
+}
+
+export interface PiChainNode {
+  product_type_id: number
+  product_name: string
+  tier: number
+  chain: string
+  colonies: number | null
+  colonies_ceil: number | null
+  per_colony_per_hour: number | null
+  profit_per_colony_day: number | null
+  reason: string | null
+  children: PiChainNode[]
+}
+
+export interface PiChainPlan {
+  product_type_id: number
+  product_name: string
+  feasible: boolean
+  tree: PiChainNode
+  stop_at: Array<{
+    tier: number; feasible: boolean; planets?: number; planets_ceil?: number
+    profit_per_day?: number; profit_per_planet_day?: number | null
+  }>
+  zone: PiZone
+  cc_level: number
+}
+
+export interface PiSystemAnalysis {
+  system: { solar_system_id: number; name: string; security: number; region_id: number; zone: PiZone; reachable: boolean }
+  zone: PiZone
+  slots: number
+  characters: number
+  cc_level: number
+  assumptions: { yield_per_head: number; program_hours: number; interval_hours: number; tax_rate: number }
+  planets: Array<PiPlanet & {
+    best: Array<{
+      chain: string; product_type_id: number; product_name: string; profit_per_day: number
+      worth_it: boolean; reason: string | null; output_per_day: number; design: PiDesign
+    }>
+  }>
+  plan: {
+    status: string
+    profit_per_day: number
+    profit_per_slot: number
+    used_slots: number
+    best_single_uses_profit_per_day: number
+    chain_gain_per_day: number
+    colonies: Array<{
+      planet_id: number; planet_name: string | null; chain: string; product_type_id: number
+      product_name: string; count: number; yield_factors: number[]
+    }>
+    flows: Array<{
+      type_id: number; name: string; produced: number; consumed: number
+      internal: number; sold: number; bought: number
+    }>
+    notes: string[]
+  }
+  cannot: string[]
+}
+
+export interface PiPlan {
+  plan_id: number
+  name: string
+  planet_id: number | null
+  planet_type_id: number
+  radius_km: number
+  character_id: number | null
+  design: PiDesign
+  owner_tax_rate: number | null
+  freight_per_m3: number | null
+  yield_override: number | null
+  notes: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface PiSettings {
+  hub_region_id: number
+  pi_price_structure_id: number
+  pi_price_structure_slug: string
+  pi_broker_fee_rate: number
+  pi_sales_tax_rate: number
+  pi_valuation: 'sell_orders' | 'buy_orders'
+  pi_freight_per_m3: number
+  pi_owner_tax_rate: number
+  pi_yield_highsec: number
+  pi_yield_lowsec: number
+  pi_yield_nullsec: number
+  pi_yield_wormhole: number
+  pi_zone: PiZone
+  pi_program_hours: number
+  pi_collection_interval_hours: number
+  pi_amortisation_days: number
+  pi_min_isk_per_planet_day: number
+  pi_market_share_warning: number
+  pi_planets_per_character: number
+  pi_characters: number
+  pi_cc_level: number
+  pi_customs_code_expertise_level: number
+  pi_reference_radius_km: number
+  pi_demand_days: number
+}
+
+export interface PiCharacters {
+  characters: Array<{
+    character_id: number; character_name: string | null; source: 'esi' | 'manual'
+    planets: number; cc_level: number; customs_code_expertise: number
+  }>
+  total_slots: number
+  max_cc_level: number
+  character_count: number
+}
+
+export interface PiDemandRow {
+  type_id: number
+  name: string
+  tier: number
+  quantity: number
+  buy_price: number | null
+  buy_total: number | null
+  pi_unit_cost: number | null
+  chain: string | null
+  planet_type_id?: number | null
+  pi_total?: number | null
+  saving: number | null
+  colonies_needed: number | null
+  colonies_needed_ceil?: number | null
+  make_via_pi: boolean
+}
+
+export interface PiDemand { rows: PiDemandRow[]; days: number; zone: PiZone }
+
+export interface PiFinding {
+  severity: 'error' | 'warning' | 'info'
+  code: string
+  message: string
+  pins: number[]
+  route: number | null
+  link: number | null
+}
+
+export interface PiAnalysis {
+  ok: boolean
+  findings: PiFinding[]
+  kinds: Array<string | null>
+  cpu_used: number; cpu_capacity: number
+  power_used: number; power_capacity: number
+  link_cpu: number; link_power: number
+  links: Array<{ km: number; load_m3h: number; capacity_m3h: number }>
+  runs_per_hour: Record<string, number>
+  max_runs_per_hour: Record<string, number>
+  extracted: PiNamedRate[]
+  produced: PiNamedRate[]
+  imports: PiNamedRate[]
+  exports: PiNamedRate[]
+  storage_m3: number
+  buffer_hours: number | null
+  import_m3_per_hour: number
+  export_m3_per_hour: number
+  product_type_id: number | null
+  product_name: string | null
+  chain: string | null
+  setup_isk: number
+}
+
+export interface PiLayoutPayload {
+  template: Record<string, unknown>
+  template_json: string
+  analysis: PiAnalysis
+}
+
+export interface PiGeneratePayload extends PiLayoutPayload {
+  design: PiDesign
+  notes: string[]
+  shape: string | null
+  planet: { planet_id: number | null; planet_type_id: number; radius_km: number }
+}
+
+export interface PiTemplateRow {
+  template_id: number
+  name: string
+  comment: string | null
+  planet_type_id: number | null
+  cc_level: number | null
+  diameter_km: number | null
+  source: string
+  created_at: string | null
+}
+
+export type PiTemplateDetail = PiTemplateRow & PiLayoutPayload
+
+// ---- PI design tools (phase 5b/5c)
+export interface PiTemplateJson {
+  CmdCtrLv: number
+  Cmt?: string
+  Diam: number
+  L: Array<{ D: number; Lv: number; S: number }>
+  P: Array<{ H: number; La: number; Lo: number; S: number | null; T: number }>
+  Pln: number
+  R: Array<{ P: number[]; Q: number; T: number }>
+}
+
+export type PiEditOp =
+  | { op: 'move'; pin: number; la: number; lo: number }
+  | { op: 'remove'; pin: number }
+  | { op: 'add'; kind: string; product?: number; heads?: number; la: number; lo: number }
+  | { op: 'link_level'; link: number; level: number }
+  | { op: 'route_storage' }
+
+export interface PiNamedRef { type_id: number; name: string }
+
+export interface PiWayRow {
+  made?: PiNamedRef[]
+  extracted?: PiNamedRef
+  hauled: PiNamedRef[]
+  evaluation: PiEvaluation | null
+  economics: PiEconomics | null
+}
+
+export interface PiWays {
+  product: PiNamedRef
+  zone: PiZone
+  cc_level: number
+  variants: PiWayRow[]
+  partial: PiWayRow[]
+}
+
+export interface PiMixedP2 {
+  zone: PiZone
+  cc_level: number
+  evaluation: PiEvaluation
+  economics: PiEconomics
+}
+
+export interface PiStorageSuggestion {
+  interval_hours: number
+  kind: 'covered' | 'add_storage' | 'trade' | 'higher_tier' | 'none'
+  buffer_hours?: number | null
+  storages?: number
+  reaches_interval?: boolean
+  removed_factories?: number
+  output_share?: number
+  chain?: string
+  design?: PiDesign
+}
+
+export interface PiGrow {
+  design: PiDesign
+  evaluation: PiEvaluation
+}
+
+export interface PiDesignBase {
+  planet_id?: number
+  planet_type_id?: number
+  radius_km?: number
+  zone?: string
+  cc_level?: number
+}
+
+// POST /api/pi/design/chain-plan (eve_trader/pi/chain_actions.py)
+export interface PiChainPlanBody {
+  product_type_id: number
+  solar_system_id?: number
+  characters?: Array<{ name?: string; character_id?: number; planets: number; cc_level: number }>
+  cc_level?: number
+  owner_tax_rate?: number
+  allow_buy?: boolean
+}
+
+export interface PiChainAssignment {
+  character_key: string
+  character: string
+  cc_level: number
+  planet_id: number | null
+  planet_name: string
+  planet_type_id: number | null
+  planet_type: string | null
+  chain: string
+  product_type_id: number
+  product_name: string
+  is_extraction: boolean
+  units_per_day: number
+  layout_request: Record<string, unknown>
+}
+
+export interface PiChainStage {
+  type_id: number
+  name: string
+  tier: number
+  in_tree: boolean
+  colonies: number
+  made: number
+  needed: number
+  internal: number
+  bought: number
+  sold: number
+  discarded: number
+}
+
+export interface PiChainPurchase {
+  type_id: number
+  name: string
+  units_per_day: number
+  cost_per_day: number
+  reason_code: string
+  reason: string
+}
+
+export interface PiChainPlanResult {
+  status: 'optimal' | 'time_limit' | 'fallback' | 'infeasible'
+  mode: 'target' | 'inputs'
+  target_type_id: number
+  target_name: string
+  target_units_per_day: number
+  max_target_units_per_day: number | null
+  profit_per_day: number
+  profit_per_slot: number | null
+  used_slots: number
+  slots: number
+  free_slots: number
+  characters: number
+  assignments: PiChainAssignment[]
+  stages: PiChainStage[]
+  purchases: PiChainPurchase[]
+  notes: string[]
+  system: { solar_system_id?: number; name?: string; zone?: string } | null
+  zone: string
+  allow_buy: boolean
 }

@@ -1433,6 +1433,9 @@ def replace_sde_data(
     regions: list[tuple] = (),
     type_materials: list[tuple] = (), blueprint_skills: list[tuple] = (),
     skill_requirements: list[tuple] = (), skill_meta: list[tuple] = (),
+    pi_schematics: list[tuple] = (), pi_schematic_types: list[tuple] = (),
+    pi_schematic_pins: list[tuple] = (), pi_type_attributes: list[tuple] = (),
+    pi_planets: list[tuple] = (),
 ) -> None:
     """Wholesale-replaces the SDE cache tables (each refresh reflects one Fuzzwork
     dump snapshot, not an incremental merge - stale rows from a previous CCP
@@ -1457,8 +1460,22 @@ def replace_sde_data(
     (skill_id, rank, primary_attribute, secondary_attribute) come from
     `dgmTypeAttributes.csv`, filtered while parsing (see production/sde.py) -
     Character Management's skill catalogue, doctrine skill check and skill
-    planner (docs/CHARACTER_MANAGEMENT_PLAN.md R7)."""
+    planner (docs/CHARACTER_MANAGEMENT_PLAN.md R7).
+
+    `pi_*` are the PI tool's tables (docs/pi_schema.sql): schematics and their
+    inputs/outputs/allowed pins, PI dogma attributes (+ basePrice as pseudo
+    attribute -1) and every planet of the 8 PI planet types (~68k rows)."""
     with connect() as conn:
+        conn.execute("DELETE FROM sde_pi_schematics")
+        conn.execute("DELETE FROM sde_pi_schematic_types")
+        conn.execute("DELETE FROM sde_pi_schematic_pins")
+        conn.execute("DELETE FROM sde_pi_type_attributes")
+        conn.execute("DELETE FROM sde_pi_planets")
+        conn.executemany("INSERT INTO sde_pi_schematics VALUES (?,?,?)", pi_schematics)
+        conn.executemany("INSERT INTO sde_pi_schematic_types VALUES (?,?,?,?)", pi_schematic_types)
+        conn.executemany("INSERT INTO sde_pi_schematic_pins VALUES (?,?)", pi_schematic_pins)
+        conn.executemany("INSERT INTO sde_pi_type_attributes VALUES (?,?,?)", pi_type_attributes)
+        conn.executemany("INSERT INTO sde_pi_planets VALUES (?,?,?,?,?)", pi_planets)
         conn.execute("DELETE FROM sde_types")
         conn.execute("DELETE FROM sde_groups")
         conn.execute("DELETE FROM sde_market_groups")
@@ -1504,6 +1521,10 @@ def replace_sde_data(
     get_type_materials.cache_clear()
     get_invention_recipe.cache_clear()
     get_blueprint_skills.cache_clear()
+    # The PI tool's StaticData and design caches (docs/PI_TECHNICAL_DESIGN.md
+    # P-11). Imported lazily: pi.static imports storage.
+    from .pi import static as pi_static
+    pi_static.invalidate()
 
 
 SDE_TABLES = (
@@ -1513,9 +1534,14 @@ SDE_TABLES = (
     "sde_solar_systems", "sde_regions", "sde_stations", "sde_categories", "sde_type_slots",
     "sde_type_materials",
     "sde_skill_requirements", "sde_skill_meta",
+    "sde_pi_schematics", "sde_pi_schematic_types", "sde_pi_schematic_pins",
+    "sde_pi_type_attributes", "sde_pi_planets",
 )
 
 # Every sde_* table is diffed row-by-row (see get_sde_snapshot_for_diff).
+# sde_pi_planets too, but sde_diff caps its output lists - a first refresh
+# after deploying the PI tool would otherwise list ~68k "new" planets in the
+# Admin preview (P-12).
 _SDE_DIFF_FULL_TABLES = SDE_TABLES
 
 
@@ -2893,7 +2919,7 @@ def delete_owner_snapshot_rows(
         "character_sell_orders", "esi_wallet_transactions", "esi_wallet_journal",
         "doctrine_contracts", "character_wallet_balances", "corp_wallet_balances",
         "character_standings", "character_loyalty_points",
-        "character_skills", "character_attributes", "character_skillqueue",
+        "character_skills", "character_attributes", "character_skillqueue", "character_pi_colonies",
         "character_clone_meta", "character_jump_clones", "character_jump_clone_implants", "character_implants",
         "character_notifications", "character_notification_reads",
     }
@@ -2903,7 +2929,7 @@ def delete_owner_snapshot_rows(
         if table in ("esi_wallet_transactions", "esi_wallet_journal",
                       "character_wallet_balances", "corp_wallet_balances",
                       "character_standings", "character_loyalty_points",
-                      "character_skills", "character_attributes", "character_skillqueue",
+                      "character_skills", "character_attributes", "character_skillqueue", "character_pi_colonies",
                       "character_clone_meta", "character_jump_clones", "character_jump_clone_implants", "character_implants",
                       "character_notifications", "character_notification_reads"):
             col = "owner_character_id" if owner_character_id is not None else "owner_corporation_id"
@@ -7270,6 +7296,7 @@ def delete_alert_data_for_character(character_id: int) -> None:
     with connect() as conn:
         conn.execute("DELETE FROM alert_subscriptions WHERE character_id = ?", (character_id,))
         conn.execute("DELETE FROM alert_state WHERE character_id = ?", (character_id,))
+        conn.execute("DELETE FROM pi_alert_state WHERE character_id = ?", (character_id,))
 
 
 def get_alert_state(character_id: int, alert_type: str) -> Optional[tuple]:
@@ -7315,3 +7342,322 @@ def tenant_registry_suspension(tenant_id: str) -> Optional[bool]:
             "SELECT access_suspended FROM tenant_registry_entries WHERE tenant_id = ?", (tenant_id,),
         ).fetchone()
     return None if row is None else bool(row[0])
+
+
+# ===================================================== PI tool (docs/PI_PLAN.md)
+# SDE reads (global tables, no RLS - but still through connect(), which needs
+# an ambient tenant like every other storage call).
+
+def load_pi_static_rows() -> dict[str, list[tuple]]:
+    """Everything pi.static.StaticData is built from, one query per table.
+    `types` covers every type the PI tables mention (commodities, structures,
+    links) with name, group, category and volume."""
+    with connect() as conn:
+        schematics = conn.execute(
+            "SELECT schematic_id, name, cycle_seconds FROM sde_pi_schematics"
+        ).fetchall()
+        schematic_types = conn.execute(
+            "SELECT schematic_id, type_id, quantity, is_input FROM sde_pi_schematic_types"
+        ).fetchall()
+        schematic_pins = conn.execute(
+            "SELECT schematic_id, pin_type_id FROM sde_pi_schematic_pins"
+        ).fetchall()
+        attributes = conn.execute(
+            "SELECT type_id, attribute_id, value FROM sde_pi_type_attributes"
+        ).fetchall()
+        types = conn.execute(
+            "SELECT t.type_id, t.type_name, t.group_id, g.category_id, t.volume "
+            "FROM sde_types t LEFT JOIN sde_groups g ON g.group_id = t.group_id "
+            "WHERE t.type_id IN (SELECT type_id FROM sde_pi_type_attributes "
+            "                    UNION SELECT type_id FROM sde_pi_schematic_types "
+            "                    UNION SELECT pin_type_id FROM sde_pi_schematic_pins)"
+        ).fetchall()
+    return {
+        "schematics": [tuple(r) for r in schematics],
+        "schematic_types": [tuple(r) for r in schematic_types],
+        "schematic_pins": [tuple(r) for r in schematic_pins],
+        "attributes": [tuple(r) for r in attributes],
+        "types": [tuple(r) for r in types],
+    }
+
+
+def pi_planets_in_system(solar_system_id: int) -> list[tuple]:
+    """(planet_id, planet_name, type_id, radius_km) of every PI planet in the
+    system, ordered by name (= celestial order)."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT planet_id, planet_name, type_id, radius_km FROM sde_pi_planets "
+            "WHERE solar_system_id = ? ORDER BY planet_name, planet_id",
+            (int(solar_system_id),),
+        ).fetchall()
+    return [tuple(r) for r in rows]
+
+
+def get_pi_planet(planet_id: int) -> Optional[tuple]:
+    """(planet_id, planet_name, solar_system_id, type_id, radius_km) or None."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT planet_id, planet_name, solar_system_id, type_id, radius_km FROM sde_pi_planets "
+            "WHERE planet_id = ?",
+            (int(planet_id),),
+        ).fetchone()
+    return tuple(row) if row else None
+
+
+def pi_planet_radius_medians() -> dict[int, float]:
+    """Median radius (km) per PI planet type - the Planner's default radius
+    for a planet type without a concrete planet."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, percentile_cont(0.5) WITHIN GROUP (ORDER BY radius_km) "
+            "FROM sde_pi_planets GROUP BY type_id"
+        ).fetchall()
+    return {int(r[0]): float(r[1]) for r in rows}
+
+
+def get_solar_system(solar_system_id: int) -> Optional[tuple]:
+    """(solar_system_id, name, security, region_id) from the SDE, or None."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT solar_system_id, solar_system_name, security, region_id FROM sde_solar_systems "
+            "WHERE solar_system_id = ?",
+            (int(solar_system_id),),
+        ).fetchone()
+    return tuple(row) if row else None
+
+
+def search_pi_systems(query: str, limit: int = 20) -> list[tuple]:
+    """(solar_system_id, name, security, region_id, planet_count) for systems
+    whose name contains `query` and that have at least one PI planet. Exact
+    and prefix matches first."""
+    q = (query or "").strip()
+    if not q:
+        return []
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT s.solar_system_id, s.solar_system_name, s.security, s.region_id, COUNT(p.planet_id) "
+            "FROM sde_solar_systems s JOIN sde_pi_planets p ON p.solar_system_id = s.solar_system_id "
+            "WHERE s.solar_system_name ILIKE ? "
+            "GROUP BY s.solar_system_id, s.solar_system_name, s.security, s.region_id "
+            "ORDER BY (lower(s.solar_system_name) = lower(?)) DESC, "
+            "         (s.solar_system_name ILIKE ?) DESC, s.solar_system_name "
+            "LIMIT ?",
+            (f"%{q}%", q, f"{q}%", int(limit)),
+        ).fetchall()
+    return [tuple(r) for r in rows]
+
+
+# PI saved plans (D6) - per tenant, RLS.
+_PI_PLAN_COLUMNS = (
+    "plan_id, name, planet_id, planet_type_id, radius_km, character_id, design, owner_tax_rate, "
+    "freight_per_m3, yield_override, notes, created_at, updated_at"
+)
+
+
+def _pi_plan_row(r) -> dict:
+    design = r[6]
+    return {
+        "plan_id": int(r[0]), "name": r[1], "planet_id": r[2], "planet_type_id": int(r[3]),
+        "radius_km": float(r[4]), "character_id": r[5], "design": design,
+        "owner_tax_rate": r[7], "freight_per_m3": r[8], "yield_override": r[9], "notes": r[10],
+        "created_at": r[11].isoformat() if r[11] else None,
+        "updated_at": r[12].isoformat() if r[12] else None,
+    }
+
+
+def list_pi_plans() -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(f"SELECT {_PI_PLAN_COLUMNS} FROM pi_plans ORDER BY name, plan_id").fetchall()
+    return [_pi_plan_row(r) for r in rows]
+
+
+def get_pi_plan(plan_id: int) -> Optional[dict]:
+    with connect() as conn:
+        row = conn.execute(f"SELECT {_PI_PLAN_COLUMNS} FROM pi_plans WHERE plan_id = ?", (int(plan_id),)).fetchone()
+    return _pi_plan_row(row) if row else None
+
+
+def save_pi_plan(plan: dict, plan_id: Optional[int] = None) -> int:
+    """Insert (plan_id None) or update; returns the plan id."""
+    values = (
+        plan["name"], plan.get("planet_id"), int(plan["planet_type_id"]), float(plan["radius_km"]),
+        plan.get("character_id"), Jsonb(plan["design"]), plan.get("owner_tax_rate"),
+        plan.get("freight_per_m3"), plan.get("yield_override"), plan.get("notes"),
+    )
+    with connect() as conn:
+        if plan_id is None:
+            row = conn.execute(
+                "INSERT INTO pi_plans (name, planet_id, planet_type_id, radius_km, character_id, design, "
+                "owner_tax_rate, freight_per_m3, yield_override, notes) VALUES (?,?,?,?,?,?,?,?,?,?) "
+                "RETURNING plan_id",
+                values,
+            ).fetchone()
+            return int(row[0])
+        cur = conn.execute(
+            "UPDATE pi_plans SET name = ?, planet_id = ?, planet_type_id = ?, radius_km = ?, character_id = ?, "
+            "design = ?, owner_tax_rate = ?, freight_per_m3 = ?, yield_override = ?, notes = ?, "
+            "updated_at = now() WHERE plan_id = ?",
+            values + (int(plan_id),),
+        )
+        if cur.rowcount == 0:
+            raise KeyError(plan_id)
+        return int(plan_id)
+
+
+def delete_pi_plan(plan_id: int) -> bool:
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM pi_plans WHERE plan_id = ?", (int(plan_id),))
+        return cur.rowcount > 0
+
+
+# PI template library - per tenant, RLS.
+_PI_TEMPLATE_COLUMNS = "template_id, name, comment, planet_type_id, cc_level, diameter_km, template, source, created_at"
+
+
+def _pi_template_row(r, with_template: bool = True) -> dict:
+    d = {
+        "template_id": int(r[0]), "name": r[1], "comment": r[2], "planet_type_id": r[3],
+        "cc_level": r[4], "diameter_km": r[5], "source": r[7],
+        "created_at": r[8].isoformat() if r[8] else None,
+    }
+    if with_template:
+        d["template"] = r[6]
+    return d
+
+
+def list_pi_templates() -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(f"SELECT {_PI_TEMPLATE_COLUMNS} FROM pi_templates ORDER BY name, template_id").fetchall()
+    return [_pi_template_row(r, with_template=False) for r in rows]
+
+
+def get_pi_template(template_id: int) -> Optional[dict]:
+    with connect() as conn:
+        row = conn.execute(f"SELECT {_PI_TEMPLATE_COLUMNS} FROM pi_templates WHERE template_id = ?",
+                           (int(template_id),)).fetchone()
+    return _pi_template_row(row) if row else None
+
+
+def save_pi_template(name: str, comment: Optional[str], planet_type_id: Optional[int], cc_level: Optional[int],
+                     diameter_km: Optional[float], template: dict, source: str,
+                     template_id: Optional[int] = None) -> int:
+    values = (name, comment, planet_type_id, cc_level, diameter_km, Jsonb(template), source)
+    with connect() as conn:
+        if template_id is None:
+            row = conn.execute(
+                "INSERT INTO pi_templates (name, comment, planet_type_id, cc_level, diameter_km, template, source) "
+                "VALUES (?,?,?,?,?,?,?) RETURNING template_id",
+                values,
+            ).fetchone()
+            return int(row[0])
+        cur = conn.execute(
+            "UPDATE pi_templates SET name = ?, comment = ?, planet_type_id = ?, cc_level = ?, diameter_km = ?, "
+            "template = ?, source = ? WHERE template_id = ?",
+            values + (int(template_id),),
+        )
+        if cur.rowcount == 0:
+            raise KeyError(template_id)
+        return int(template_id)
+
+
+def delete_pi_template(template_id: int) -> bool:
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM pi_templates WHERE template_id = ?", (int(template_id),))
+        return cur.rowcount > 0
+
+
+# PI colonies (ESI `planets` snapshot), calibration samples and alert state.
+def replace_character_pi_colonies(character_id: int, rows: list[tuple]) -> None:
+    """Replaces one character's colonies. `rows`: [(planet_id, planet_type,
+    solar_system_id, upgrade_level, num_pins, last_update, layout_dict), ...]
+    where `layout_dict` is the raw ESI planet detail {pins, links, routes}."""
+    with connect() as conn:
+        conn.execute("DELETE FROM character_pi_colonies WHERE owner_character_id = ?", (character_id,))
+        if rows:
+            conn.executemany(
+                "INSERT INTO character_pi_colonies (owner_character_id, planet_id, planet_type, solar_system_id, "
+                "upgrade_level, num_pins, last_update, layout) VALUES (?,?,?,?,?,?,?,?)",
+                [(character_id, int(r[0]), r[1], r[2], r[3], r[4], r[5], Jsonb(r[6])) for r in rows],
+            )
+
+
+def load_character_pi_colonies(character_ids: list[int]) -> list[tuple]:
+    """`(owner_character_id, planet_id, planet_type, solar_system_id,
+    upgrade_level, num_pins, last_update, layout)`; `last_update` as an ISO
+    string, `layout` the raw ESI detail dict."""
+    if not character_ids:
+        return []
+    placeholders = ",".join("?" * len(character_ids))
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_character_id, planet_id, planet_type, solar_system_id, upgrade_level, num_pins, "
+            "last_update, layout FROM character_pi_colonies "
+            f"WHERE owner_character_id IN ({placeholders}) ORDER BY owner_character_id, planet_id",
+            character_ids,
+        ).fetchall()
+    return [
+        tuple(v.isoformat() if hasattr(v, "isoformat") else v for v in row) for row in rows
+    ]
+
+
+def upsert_pi_yield_samples(rows: list[dict]) -> None:
+    """`rows`: dicts with character_id, planet_id, pin_id, install_time,
+    p0_type_id, planet_type_id, security, heads, program_hours,
+    per_head_per_hour. An existing (character, pin, install_time) is updated."""
+    if not rows:
+        return
+    with connect() as conn:
+        conn.executemany(
+            "INSERT INTO pi_yield_samples (character_id, planet_id, pin_id, install_time, p0_type_id, "
+            "planet_type_id, security, heads, program_hours, per_head_per_hour) VALUES (?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT (tenant_id, character_id, pin_id, install_time) DO UPDATE SET "
+            "planet_id = excluded.planet_id, p0_type_id = excluded.p0_type_id, "
+            "planet_type_id = excluded.planet_type_id, security = excluded.security, heads = excluded.heads, "
+            "program_hours = excluded.program_hours, per_head_per_hour = excluded.per_head_per_hour, "
+            "sampled_at = now()",
+            [(int(r["character_id"]), int(r["planet_id"]), int(r["pin_id"]), r["install_time"],
+              int(r["p0_type_id"]), int(r["planet_type_id"]), r.get("security"), int(r["heads"]),
+              float(r["program_hours"]), float(r["per_head_per_hour"])) for r in rows],
+        )
+
+
+def list_pi_yield_samples() -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT character_id, planet_id, pin_id, install_time, p0_type_id, planet_type_id, security, heads, "
+            "program_hours, per_head_per_hour FROM pi_yield_samples ORDER BY character_id, pin_id, install_time"
+        ).fetchall()
+    return [
+        {"character_id": int(r[0]), "planet_id": int(r[1]), "pin_id": int(r[2]), "install_time": r[3],
+         "p0_type_id": int(r[4]), "planet_type_id": int(r[5]), "security": r[6], "heads": int(r[7]),
+         "program_hours": float(r[8]), "per_head_per_hour": float(r[9])}
+        for r in rows
+    ]
+
+
+def get_pi_alert_states(character_id: int) -> dict[tuple[int, str], tuple]:
+    """{(planet_id, alert_type): (last_key, last_sent_at)} of one character."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT planet_id, alert_type, last_key, last_sent_at FROM pi_alert_state WHERE character_id = ?",
+            (character_id,),
+        ).fetchall()
+    return {(int(r[0]), r[1]): (r[2], r[3]) for r in rows}
+
+
+def set_pi_alert_state(character_id: int, planet_id: int, alert_type: str, last_key: str,
+                       at: Optional[datetime] = None) -> None:
+    at = at or datetime.now(timezone.utc)
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO pi_alert_state (character_id, planet_id, alert_type, last_key, last_sent_at) "
+            "VALUES (?,?,?,?,?) ON CONFLICT (tenant_id, character_id, planet_id, alert_type) DO UPDATE SET "
+            "last_key = excluded.last_key, last_sent_at = excluded.last_sent_at",
+            (character_id, int(planet_id), alert_type, last_key, at),
+        )
+
+
+def reset_pi_alert_state(character_id: int, alert_type: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM pi_alert_state WHERE character_id = ? AND alert_type = ?",
+                     (character_id, alert_type))

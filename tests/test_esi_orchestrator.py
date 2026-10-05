@@ -769,7 +769,7 @@ class QueueClient(FakeClient):
 def test_registry_marks_only_display_kinds_on_demand():
     from eve_trader.esi_data.registry import OWNED_DATA_KINDS
     on_demand = {k.key for k in OWNED_DATA_KINDS if k.schedule_mode == "on_demand"}
-    assert on_demand == {"clones", "implants", "standings", "loyalty", "skillqueue", "notifications"}
+    assert on_demand == {"clones", "implants", "standings", "loyalty", "skillqueue", "notifications", "planets"}
     # everything production/trading/doctrine/portfolio consume stays scheduled
     assert {"assets", "industry_jobs", "blueprints", "market_orders", "contracts", "wallet",
             "wallet_balance", "skills"}.isdisjoint(on_demand)

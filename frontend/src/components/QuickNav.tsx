@@ -73,6 +73,15 @@ const ACTIONS: SpotlightActionData[] = [
 
   { id: 'sorting', label: 'Sorting — Overview', description: 'Sorting', onClick: () => {} },
   { id: 'sorting-settings', label: 'Sorting — Settings', description: 'Sorting', onClick: () => {} },
+
+  { id: 'pi', label: 'Planetary Industry — Profitability', description: 'Planetary Industry', onClick: () => {} },
+  { id: 'pi-planner', label: 'Planetary Industry — Planner', description: 'Planetary Industry', onClick: () => {} },
+  { id: 'pi-system', label: 'Planetary Industry — System', description: 'Planetary Industry', onClick: () => {} },
+  { id: 'pi-chains', label: 'Planetary Industry — Chains', description: 'Planetary Industry', onClick: () => {} },
+  { id: 'pi-templates', label: 'Planetary Industry — Templates', description: 'Planetary Industry', onClick: () => {} },
+  { id: 'pi-plans', label: 'Planetary Industry — Plans', description: 'Planetary Industry', onClick: () => {} },
+  { id: 'pi-demand', label: 'Planetary Industry — Production demand', description: 'Planetary Industry', onClick: () => {} },
+  { id: 'pi-settings', label: 'Planetary Industry — Settings', description: 'Planetary Industry', onClick: () => {} },
 ]
 
 // id -> real path, kept as a separate map (rather than baking navigate()
@@ -97,6 +106,7 @@ const PATHS: Record<string, string> = {
   'station-trading': '/station-trading', 'station-trading-shortlist': '/station-trading/shortlist',
   'station-trading-undercut': '/station-trading/undercut', 'station-trading-settings': '/station-trading/settings',
   sorting: '/sorting', 'sorting-settings': '/sorting/settings',
+  'pi': '/pi', 'pi-planner': '/pi/planner', 'pi-system': '/pi/system', 'pi-chains': '/pi/chains', 'pi-templates': '/pi/templates', 'pi-plans': '/pi/plans', 'pi-demand': '/pi/demand', 'pi-settings': '/pi/settings',
 }
 
 // id -> tool_key, same tool_keys as Landing.tsx's own ToolCard filtering
@@ -120,6 +130,7 @@ const TOOL_KEYS: Record<string, string> = {
   'station-trading': 'station_trading', 'station-trading-shortlist': 'station_trading',
   'station-trading-undercut': 'station_trading', 'station-trading-settings': 'station_trading',
   sorting: 'sorting', 'sorting-settings': 'sorting',
+  'pi': 'pi', 'pi-planner': 'pi', 'pi-system': 'pi', 'pi-chains': 'pi', 'pi-templates': 'pi', 'pi-plans': 'pi', 'pi-demand': 'pi', 'pi-settings': 'pi',
 }
 
 export function QuickNav() {

@@ -270,8 +270,9 @@ def test_do_preview_sde_wraps_network_error():
 
 
 def test_do_preview_sde_emits_increasing_batch_progress(monkeypatch):
-    """Track A: each of the 15 sequential CSV fetches, plus the streamed
-    dgmTypeAttributes.csv (Character Management), reports batch/total_batches."""
+    """Track A: each of the 18 sequential CSV fetches, plus the streamed
+    dgmTypeAttributes.csv (Character Management) and mapDenormalize.csv (PI
+    planets), reports batch/total_batches."""
     fetched = []
 
     def fake_fetch(session, base, filename):
@@ -279,7 +280,8 @@ def test_do_preview_sde_emits_increasing_batch_progress(monkeypatch):
         return []
 
     monkeypatch.setattr(sde, "_fetch_csv", fake_fetch)
-    monkeypatch.setattr(sde, "_fetch_skill_attributes", lambda session, base: {})
+    monkeypatch.setattr(sde, "_fetch_skill_attributes", lambda session, base, pi_type_ids=frozenset(): ({}, {}))
+    monkeypatch.setattr(sde, "_fetch_pi_planets", lambda session, base: [])
     monkeypatch.setattr(sde, "_dump_etag", lambda *a, **k: "etag")
     monkeypatch.setattr(storage, "get_sde_snapshot_for_diff", lambda: {
         "sde_types": [], "sde_blueprint_materials": [], "sde_blueprint_products": [],
@@ -292,14 +294,15 @@ def test_do_preview_sde_emits_increasing_batch_progress(monkeypatch):
     seen = []
     result = admin.do_preview_sde(progress_callback=seen.append)
 
-    assert len(sde._SDE_CSV_FILES) == 15
+    assert len(sde._SDE_CSV_FILES) == 18
     assert fetched == list(sde._SDE_CSV_FILES)
-    assert [p["batch"] for p in seen] == list(range(1, 17))
+    assert [p["batch"] for p in seen] == list(range(1, 21))
     assert all(p["phase"] == "run" for p in seen)
-    assert all(p["total_batches"] == 16 for p in seen)
+    assert all(p["total_batches"] == 20 for p in seen)
     assert seen[0]["message"] == "Fetching invTypes.csv"
-    assert seen[-2]["message"] == "Fetching industryActivitySkills.csv"
-    assert seen[-1]["message"].startswith("Fetching dgmTypeAttributes.csv")
+    assert seen[-3]["message"] == f"Fetching {sde._SDE_CSV_FILES[-1]}"
+    assert seen[-2]["message"].startswith("Fetching dgmTypeAttributes.csv")
+    assert seen[-1]["message"].startswith("Fetching mapDenormalize.csv")
     assert result == {"new_items": []}
     assert admin._staged_sde is not None
     assert admin._staged_sde.dump_etag == "etag"

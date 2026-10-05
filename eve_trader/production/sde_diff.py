@@ -100,8 +100,24 @@ def _diff_rows(old_rows, new_rows, key_fn, name_fn, fields) -> dict:
     return {"new": new, "removed": removed, "changed": changed}
 
 
+# sde_pi_planets holds ~68k rows; the first refresh after the PI tool ships
+# would otherwise put all of them into the preview JSON as "new" (P-12).
+_PLANET_DIFF_CAP = 50
+
+
+def _cap_diff(diff: dict, cap: int) -> dict:
+    """Keeps at most `cap` entries per list and reports how many were hidden."""
+    truncated = {}
+    capped = {}
+    for kind in ("new", "removed", "changed"):
+        capped[kind] = diff[kind][:cap]
+        truncated[kind] = max(0, len(diff[kind]) - cap)
+    capped["truncated"] = truncated
+    return capped
+
+
 def _other_tables(fetched: FetchedSde, snapshot: dict, new_types: dict, old_types: dict) -> dict:
-    """Row diffs for the ten tables that are not types or blueprint
+    """Row diffs for the tables that are not types or blueprint
     materials/products/time. Invention probability is also summarized per
     blueprint inside changed_blueprints; both views are kept."""
     def type_label(type_id: int) -> str:
@@ -172,11 +188,42 @@ def _other_tables(fetched: FetchedSde, snapshot: dict, new_types: dict, old_type
             lambda row: int(row[0]), lambda row: type_label(row[0]),
             (("rank", 1, True), ("primary_attribute", 2, False), ("secondary_attribute", 3, False)),
         ),
+        (
+            "sde_pi_schematics", fetched.pi_schematics,
+            lambda row: int(row[0]), lambda row: row[1],
+            (("name", 1, False), ("cycle_seconds", 2, False)),
+        ),
+        (
+            "sde_pi_schematic_types", fetched.pi_schematic_types,
+            lambda row: (int(row[0]), int(row[1])),
+            lambda row: f"{row[0]} {'uses' if row[3] else 'makes'} {type_label(row[1])}",
+            (("quantity", 2, False), ("is_input", 3, False)),
+        ),
+        (
+            "sde_pi_schematic_pins", fetched.pi_schematic_pins,
+            lambda row: (int(row[0]), int(row[1])),
+            lambda row: f"{row[0]} pin {type_label(row[1])}",
+            (),
+        ),
+        (
+            "sde_pi_type_attributes", fetched.pi_type_attributes,
+            lambda row: (int(row[0]), int(row[1])),
+            lambda row: f"{type_label(row[0])} attr {row[1]}",
+            (("value", 2, True),),
+        ),
+        (
+            "sde_pi_planets", fetched.pi_planets,
+            lambda row: int(row[0]), lambda row: row[1] or str(row[0]),
+            (("solar_system_id", 2, False), ("type_id", 3, False), ("radius_km", 4, True)),
+        ),
     )
-    return {
-        table: _diff_rows(_rows(snapshot, table), new_rows, key_fn, name_fn, fields)
-        for table, new_rows, key_fn, name_fn, fields in specs
-    }
+    out = {}
+    for table, new_rows, key_fn, name_fn, fields in specs:
+        diff = _diff_rows(_rows(snapshot, table), new_rows, key_fn, name_fn, fields)
+        if table == "sde_pi_planets":
+            diff = _cap_diff(diff, _PLANET_DIFF_CAP)
+        out[table] = diff
+    return out
 
 
 def _blueprint_ids(*row_groups: list) -> set[int]:

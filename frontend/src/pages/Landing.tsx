@@ -115,6 +115,8 @@ export default function Landing() {
           description="See what's sitting in the intake hangars and which tool still wants it." />
         <ToolCard tools={tools} toolKey="module_reprocessing" to="/modules" title="Module Reprocessing"
           description="Import T1/Meta modules and drones, reprocess at C-J, sell minerals for profit." />
+        <ToolCard tools={tools} toolKey="pi" to="/pi" title="Planetary Industry"
+          description="Which PI is worth it - colony planner, system analysis, templates." />
       </SimpleGrid>
 
       <SimpleGrid cols={{ base: 1, xs: 2, sm: 3 }} spacing="md" mt="md">

@@ -25,7 +25,7 @@
 -- ALTER needs the new scope added too, not just this one.
 ALTER TABLE tenant_settings DROP CONSTRAINT IF EXISTS tenant_settings_scope_check;
 ALTER TABLE tenant_settings ADD CONSTRAINT tenant_settings_scope_check
-    CHECK (scope IN ('trading', 'production', 'doctrine', 'refining', 'station_trading', 'module_reprocessing'));
+    CHECK (scope IN ('trading', 'production', 'doctrine', 'refining', 'station_trading', 'module_reprocessing', 'pi'));
 
 -- ============================================== per-tenant: Module Shortlist
 -- Same two-table shape as Ore & Minerals' own ore_shortlist/

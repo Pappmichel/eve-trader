@@ -440,7 +440,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON alert_destinations TO eve_trader_app;
 CREATE TABLE IF NOT EXISTS alert_subscriptions (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
     character_id BIGINT NOT NULL,
-    alert_type TEXT NOT NULL CHECK (alert_type IN ('skillqueue_empty', 'mail_new')),
+    alert_type TEXT NOT NULL CHECK (alert_type IN ('skillqueue_empty', 'mail_new',
+                                                 'pi_extractor_expiry', 'pi_pad_full', 'pi_inputs_empty')),
     enabled BOOLEAN NOT NULL DEFAULT FALSE,
     include_content BOOLEAN NOT NULL DEFAULT FALSE,
     lead_hours INTEGER NOT NULL DEFAULT 12 CHECK (lead_hours BETWEEN 1 AND 168),
@@ -457,7 +458,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON alert_subscriptions TO eve_trader_app;
 CREATE TABLE IF NOT EXISTS alert_state (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
     character_id BIGINT NOT NULL,
-    alert_type TEXT NOT NULL CHECK (alert_type IN ('skillqueue_empty', 'mail_new')),
+    alert_type TEXT NOT NULL CHECK (alert_type IN ('skillqueue_empty', 'mail_new',
+                                                 'pi_extractor_expiry', 'pi_pad_full', 'pi_inputs_empty')),
     last_seen_mail_id BIGINT,
     last_key TEXT,
     last_sent_at TIMESTAMPTZ,

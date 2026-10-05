@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from . import config, storage
 from .doctrine import config as doctrine_config
 from .module_reprocessing import config as module_reprocessing_config
+from .pi import config as pi_config
 from .production import config as production_config
 from .refining import config as refining_config
 from .station_trading import config as station_trading_config
@@ -25,9 +26,9 @@ from .station_trading import config as station_trading_config
 def enter_tenant(tenant_id: str):
     """Sets storage's ambient tenant, then resolves and sets TRADING_CONFIG's,
     PRODUCTION_CONFIG's, DOCTRINE_CONFIG's, REFINING_CONFIG's,
-    STATION_TRADING_CONFIG's, and MODULE_REPROCESSING_CONFIG's live instance
+    STATION_TRADING_CONFIG's, MODULE_REPROCESSING_CONFIG's, and PI_CONFIG's live instance
     for that same tenant (base defaults + config.yaml, overlaid with that
-    tenant's own tenant_settings) - resets all seven on exit, storage's
+    tenant's own tenant_settings) - resets all eight on exit, storage's
     tenant last, so the config-resolution steps still have a tenant to read
     tenant_settings under for as long as they need it.
 
@@ -55,7 +56,11 @@ def enter_tenant(tenant_id: str):
                                 module_reprocessing_config.resolve_and_set_module_reprocessing_config(tenant_id)
                             )
                             try:
-                                yield
+                                pi_token = pi_config.resolve_and_set_pi_config(tenant_id)
+                                try:
+                                    yield
+                                finally:
+                                    pi_config.reset_pi_config(pi_token)
                             finally:
                                 module_reprocessing_config.reset_module_reprocessing_config(module_reprocessing_token)
                         finally:

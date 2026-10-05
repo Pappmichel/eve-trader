@@ -20,6 +20,7 @@ from typing import Optional
 import requests
 
 from .. import storage
+from ..pi import constants as pi_constants
 from .config import PRODUCTION_CONFIG, ProductionConfig
 from .constants import ACTIVITY_COPYING, ACTIVITY_INVENTION, ACTIVITY_MANUFACTURING, ACTIVITY_REACTION
 
@@ -73,6 +74,11 @@ _SDE_CSV_FILES = (
     # job-time skill bonus - see constants.SPECIALIST_TIME_SKILLS, confirmed
     # 2026-09-27 against a real reaction job's Job Duration Modifiers panel).
     "industryActivitySkills.csv",
+    # Planetary Industry tool (docs/PI_PLAN.md): recipes, inputs/outputs and
+    # which structure type may run which schematic.
+    "planetSchematics.csv",
+    "planetSchematicsTypeMap.csv",
+    "planetSchematicsPinMap.csv",
 )
 
 
@@ -118,6 +124,14 @@ _KEPT_SKILL_ATTRS = frozenset(
 )
 
 
+# PI tool (docs/PI_TECHNICAL_DESIGN.md 2.1): every planet of the 8 PI planet
+# types, out of mapDenormalize.csv. That file is ~83 MB / ~500k rows (every
+# celestial in New Eden), so it is streamed and filtered like
+# dgmTypeAttributes.csv, never held in memory whole (P-04).
+_MAP_DENORMALIZE_FILE = "mapDenormalize.csv"
+_GROUP_PLANET = 7
+
+
 def _attr_value(row: dict) -> Optional[float]:
     for col in ("valueFloat", "valueInt"):
         v = row.get(col)
@@ -126,31 +140,140 @@ def _attr_value(row: dict) -> Optional[float]:
     return None
 
 
-def _fetch_skill_attributes(session: requests.Session, base_url: str) -> dict[int, dict[int, float]]:
-    """{typeID: {attributeID: value}} for `_KEPT_SKILL_ATTRS` only, read as a
-    stream. Same retry policy as _fetch_csv, wrapped around the *whole*
-    stream - a connection reset half-way through restarts the download
-    rather than yielding a silently truncated table."""
+def _fetch_skill_attributes(
+    session: requests.Session, base_url: str, pi_type_ids: frozenset[int] = frozenset(),
+) -> tuple[dict[int, dict[int, float]], dict[int, dict[int, float]]]:
+    """({typeID: {attributeID: value}} for `_KEPT_SKILL_ATTRS`, the same shape
+    for the PI attributes of `pi_type_ids`), read as one stream. The PI
+    filter is by type as well as by attribute: generic attributes such as
+    cpuLoad/powerLoad exist on thousands of ships and modules (P-08).
+    Same retry policy as _fetch_csv, wrapped around the *whole* stream - a
+    connection reset half-way through restarts the download rather than
+    yielding a silently truncated table."""
     last_exc: Optional[requests.RequestException] = None
+    pi_attrs = pi_constants.PI_ATTRIBUTE_IDS
     for attempt in range(1, 4):
         try:
             with session.get(f"{base_url}{_SKILL_ATTRIBUTES_FILE}", timeout=120, stream=True) as resp:
                 resp.raise_for_status()
-                lines = _decode_lines(resp.iter_lines())
-                kept: dict[int, dict[int, float]] = {}
-                for row in csv.DictReader(lines):
-                    attr_id = int(row["attributeID"])
-                    if attr_id not in _KEPT_SKILL_ATTRS:
-                        continue
-                    value = _attr_value(row)
-                    if value is not None:
-                        kept.setdefault(int(row["typeID"]), {})[attr_id] = value
-                return kept
+                return split_attribute_rows(
+                    csv.DictReader(_decode_lines(resp.iter_lines())), pi_type_ids, pi_attrs,
+                )
         except requests.RequestException as e:
             last_exc = e
             if attempt < 3:
                 time.sleep(attempt * 2)
     raise last_exc
+
+
+def split_attribute_rows(rows, pi_type_ids: frozenset[int], pi_attrs: frozenset[int]):
+    """dgmTypeAttributes rows -> (skill attribute map, PI attribute map)."""
+    kept: dict[int, dict[int, float]] = {}
+    pi_kept: dict[int, dict[int, float]] = {}
+    for row in rows:
+        attr_id = int(row["attributeID"])
+        is_skill = attr_id in _KEPT_SKILL_ATTRS
+        if not is_skill and attr_id not in pi_attrs:
+            continue
+        type_id = int(row["typeID"])
+        is_pi = attr_id in pi_attrs and type_id in pi_type_ids
+        if not is_skill and not is_pi:
+            continue
+        value = _attr_value(row)
+        if value is None:
+            continue
+        if is_skill:
+            kept.setdefault(type_id, {})[attr_id] = value
+        if is_pi:
+            pi_kept.setdefault(type_id, {})[attr_id] = value
+    return kept, pi_kept
+
+
+def _fetch_pi_planets(session: requests.Session, base_url: str) -> list[tuple]:
+    """Every planet of the 8 PI planet types, streamed out of
+    mapDenormalize.csv. Same whole-stream retry as above."""
+    last_exc: Optional[requests.RequestException] = None
+    for attempt in range(1, 4):
+        try:
+            with session.get(f"{base_url}{_MAP_DENORMALIZE_FILE}", timeout=180, stream=True) as resp:
+                resp.raise_for_status()
+                return pi_planet_rows(csv.DictReader(_decode_lines(resp.iter_lines())))
+        except requests.RequestException as e:
+            last_exc = e
+            if attempt < 3:
+                time.sleep(attempt * 2)
+    raise last_exc
+
+
+def pi_planet_rows(rows) -> list[tuple]:
+    """mapDenormalize rows -> (planet_id, name, solar_system_id, type_id,
+    radius_km). Only groupID 7 (planets) with a type on the explicit PI
+    whitelist (P-06). `radius` is in metres in the dump (P-05). Rows without
+    a system or radius are skipped rather than guessed."""
+    out: list[tuple] = []
+    for r in rows:
+        if r.get("groupID") != str(_GROUP_PLANET):
+            continue
+        type_id = _int_or_none(r.get("typeID"))
+        if type_id not in pi_constants.PLANET_TYPE_IDS:
+            continue
+        system_id = _int_or_none(r.get("solarSystemID"))
+        radius_m = _float_or_none(r.get("radius"))
+        if system_id is None or radius_m is None or radius_m <= 0:
+            continue
+        out.append((int(r["itemID"]), r.get("itemName") or None, system_id, type_id, radius_m / 1000.0))
+    return out
+
+
+def pi_type_ids_from(inv_types: list[dict], inv_groups: list[dict]) -> frozenset[int]:
+    """Type ids in the PI categories (41 structures/links, 42 P0, 43 P1-P4),
+    decided before the attribute stream so its filter can use them."""
+    pi_groups = {
+        int(g["groupID"]) for g in inv_groups
+        if _int_or_none(g.get("categoryID")) in pi_constants.PI_CATEGORY_IDS
+    }
+    return frozenset(
+        int(t["typeID"]) for t in inv_types
+        if _int_or_none(t.get("groupID")) in pi_groups
+    )
+
+
+def pi_rows_from_csv(
+    schematics: list[dict], type_map: list[dict], pin_map: list[dict],
+    pi_attributes: dict[int, dict[int, float]], inv_types: list[dict], pi_type_ids: frozenset[int],
+) -> tuple[list[tuple], list[tuple], list[tuple], list[tuple]]:
+    """(schematics, schematic_types, schematic_pins, type_attributes) rows.
+    invTypes.basePrice of PI types goes into type_attributes as pseudo
+    attribute -1 (sde_types has no base price column, P-10), invTypes.capacity
+    as pseudo attribute -2."""
+    schematic_rows = [
+        (int(r["schematicID"]), r["schematicName"], int(float(r["cycleTime"])))
+        for r in schematics
+    ]
+    type_rows = [
+        (int(r["schematicID"]), int(r["typeID"]), int(float(r["quantity"])),
+         str(r["isInput"]).strip().lower() in ("1", "true"))
+        for r in type_map
+    ]
+    pin_rows = [(int(r["schematicID"]), int(r["pinTypeID"])) for r in pin_map]
+    attribute_rows = [
+        (type_id, attr_id, value)
+        for type_id, attrs in pi_attributes.items()
+        for attr_id, value in attrs.items()
+    ]
+    for t in inv_types:
+        type_id = int(t["typeID"])
+        if type_id not in pi_type_ids:
+            continue
+        price = _float_or_none(t.get("basePrice"))
+        if price is not None:
+            attribute_rows.append((type_id, pi_constants.ATTR_BASE_PRICE, price))
+        # Launchpad/storage capacity is an invTypes column, not a dogma row
+        # in the Fuzzwork dump - stored as pseudo attribute -2.
+        capacity = _float_or_none(t.get("capacity"))
+        if capacity:
+            attribute_rows.append((type_id, pi_constants.ATTR_TYPE_CAPACITY, capacity))
+    return schematic_rows, type_rows, pin_rows, attribute_rows
 
 
 def _decode_lines(raw_lines):
@@ -256,6 +379,13 @@ class FetchedSde:
     # From dgmTypeAttributes.csv (Character Management) - see skill_rows_from_attributes.
     skill_requirements: list[tuple] = field(default_factory=list)
     skill_meta: list[tuple] = field(default_factory=list)
+    # PI tool (docs/PI_TECHNICAL_DESIGN.md 2.1). pi_planets is ~68k small
+    # tuples; it is staged in memory between preview and apply like the rest.
+    pi_schematics: list[tuple] = field(default_factory=list)
+    pi_schematic_types: list[tuple] = field(default_factory=list)
+    pi_schematic_pins: list[tuple] = field(default_factory=list)
+    pi_type_attributes: list[tuple] = field(default_factory=list)
+    pi_planets: list[tuple] = field(default_factory=list)
     dump_etag: Optional[str] = None
 
 
@@ -273,7 +403,7 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
     dump_etag = _dump_etag(session, base)  # captured before the real fetches - see check_for_newer_sde
 
     fetched: dict[str, list[dict]] = {}
-    total = len(_SDE_CSV_FILES) + 1  # + the streamed dgmTypeAttributes.csv below
+    total = len(_SDE_CSV_FILES) + 2  # + the streamed dgmTypeAttributes.csv and mapDenormalize.csv below
     for i, filename in enumerate(_SDE_CSV_FILES, start=1):
         _emit_progress(progress_callback, {
             "phase": "run",
@@ -282,14 +412,25 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
             "message": f"Fetching {filename}",
         })
         fetched[filename] = _fetch_csv(session, base, filename)
+    pi_type_ids = pi_type_ids_from(fetched["invTypes.csv"], fetched["invGroups.csv"])
+    _emit_progress(progress_callback, {
+        "phase": "run",
+        "batch": total - 1,
+        "total_batches": total,
+        "message": f"Fetching {_SKILL_ATTRIBUTES_FILE} (filtered to skill and PI attributes)",
+    })
+    skill_attrs, pi_attrs = _fetch_skill_attributes(session, base, pi_type_ids)
+    skill_requirement_rows, skill_meta_rows = skill_rows_from_attributes(skill_attrs)
     _emit_progress(progress_callback, {
         "phase": "run",
         "batch": total,
         "total_batches": total,
-        "message": f"Fetching {_SKILL_ATTRIBUTES_FILE} (filtered to skill attributes)",
+        "message": f"Fetching {_MAP_DENORMALIZE_FILE} (filtered to PI planets)",
     })
-    skill_requirement_rows, skill_meta_rows = skill_rows_from_attributes(
-        _fetch_skill_attributes(session, base)
+    pi_planets = _fetch_pi_planets(session, base)
+    pi_schematic_rows, pi_schematic_type_rows, pi_schematic_pin_rows, pi_attribute_rows = pi_rows_from_csv(
+        fetched["planetSchematics.csv"], fetched["planetSchematicsTypeMap.csv"],
+        fetched["planetSchematicsPinMap.csv"], pi_attrs, fetched["invTypes.csv"], pi_type_ids,
     )
 
     inv_types = fetched["invTypes.csv"]
@@ -404,6 +545,9 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
         categories=category_rows, type_slots=type_slot_rows,
         type_materials=type_materials_rows, blueprint_skills=blueprint_skill_rows,
         skill_requirements=skill_requirement_rows, skill_meta=skill_meta_rows,
+        pi_schematics=pi_schematic_rows, pi_schematic_types=pi_schematic_type_rows,
+        pi_schematic_pins=pi_schematic_pin_rows, pi_type_attributes=pi_attribute_rows,
+        pi_planets=pi_planets,
         dump_etag=dump_etag,
     )
 
@@ -420,6 +564,9 @@ def apply_sde(fetched: FetchedSde) -> dict:
         categories=fetched.categories, type_slots=fetched.type_slots,
         type_materials=fetched.type_materials, blueprint_skills=fetched.blueprint_skills,
         skill_requirements=fetched.skill_requirements, skill_meta=fetched.skill_meta,
+        pi_schematics=fetched.pi_schematics, pi_schematic_types=fetched.pi_schematic_types,
+        pi_schematic_pins=fetched.pi_schematic_pins, pi_type_attributes=fetched.pi_type_attributes,
+        pi_planets=fetched.pi_planets,
     )
     storage.set_sde_refresh_state(datetime.now(timezone.utc).isoformat(), fetched.dump_etag)
     return storage.sde_row_counts()

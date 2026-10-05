@@ -19,7 +19,7 @@
 -- already does.
 ALTER TABLE tenant_settings DROP CONSTRAINT IF EXISTS tenant_settings_scope_check;
 ALTER TABLE tenant_settings ADD CONSTRAINT tenant_settings_scope_check
-    CHECK (scope IN ('trading', 'production', 'doctrine', 'refining', 'station_trading', 'module_reprocessing'));
+    CHECK (scope IN ('trading', 'production', 'doctrine', 'refining', 'station_trading', 'module_reprocessing', 'pi'));
 
 -- ================================================== per-tenant: candidate shortlist
 -- Persisted spread/volume candidates from candidate_discovery.

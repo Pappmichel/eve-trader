@@ -6,7 +6,7 @@
 export const ALL_TOOL_KEYS = [
   'trading', 'production', 'doctrine', 'refining', 'station_trading', 'sorting',
   'portfolio', 'admin', 'characters', 'module_reprocessing', 'char_info', 'char_skills', 'char_mail',
-  'char_notifications', 'char_contacts', 'char_skill_plans', 'char_alerts',
+  'char_notifications', 'char_contacts', 'char_skill_plans', 'char_alerts', 'pi',
 ] as const
 
 // Mirrors access_gate.DEFAULT_TOOL_KEYS: what a new user gets by default
@@ -23,7 +23,7 @@ export const DEFAULT_TOOL_KEYS: readonly string[] = ALL_TOOL_KEYS.filter(
 // has been a real consumer since the Portfolio rework.
 export const ESI_CONSUMING_TOOLS: readonly string[] = [
   'trading', 'production', 'doctrine', 'station_trading', 'sorting', 'portfolio', 'char_info', 'char_skills', 'char_mail',
-  'char_notifications', 'char_contacts', 'char_skill_plans', 'char_alerts',
+  'char_notifications', 'char_contacts', 'char_skill_plans', 'char_alerts', 'pi',
 ]
 
 // Sub-tools of the Character Management hub. The hub itself has no grant: its
