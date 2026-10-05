@@ -104,7 +104,10 @@ def _apply_phase1_schema() -> None:
         conn.execute(_ESI_ACCESS_SCHEMA_SQL.read_text())
         # docs/pi_schema.sql: storage.replace_sde_data writes the sde_pi_*
         # tables, so every SDE storage test needs them. pi_schema.sql widens
-        # constraints created by character_management_schema.sql, hence both.
+        # constraints created by character_management_schema.sql, hence both,
+        # and its tenant_settings scope widening needs phase2_schema.sql first
+        # (a fresh CI database has no tenant_settings yet).
+        conn.execute(_PHASE2_SCHEMA_SQL.read_text())
         conn.execute(_CHARACTER_MANAGEMENT_SCHEMA_SQL.read_text())
         conn.execute(_PI_SCHEMA_SQL.read_text(encoding="utf-8"))
 
