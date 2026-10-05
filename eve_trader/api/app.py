@@ -31,7 +31,7 @@ from ..doctrine.config import DOCTRINE_CONFIG
 from ..pi.config import PI_CONFIG
 from ..production.config import PRODUCTION_CONFIG
 from .routers import (
-    admin, auth, char_contacts, char_info, char_mail, char_notifications, char_alerts, char_skill_plans, char_skills, characters, doctrine, errors, gate, hubs, module_reprocessing, pi, portfolio, production, refining, sde, sorting, updates,
+    admin, auth, char_contacts, char_info, char_mail, char_notifications, char_alerts, char_skill_plans, char_skills, characters, doctrine, errors, gate, hubs, module_reprocessing, pi, pi_design, portfolio, production, refining, sde, sorting, updates,
     station_trading, trading,
 )
 
@@ -452,6 +452,7 @@ def create_app() -> FastAPI:
     app.include_router(char_skill_plans.router, prefix="/api/char-skill-plans", tags=["char_skill_plans"])
     app.include_router(char_alerts.router, prefix="/api/char-alerts", tags=["char_alerts"])
     app.include_router(pi.router, prefix="/api/pi", tags=["pi"])
+    app.include_router(pi_design.router, prefix="/api/pi/design", tags=["pi"])
     app.include_router(errors.router, prefix="/api/errors", tags=["errors"])
     app.include_router(sde.router, prefix="/api/sde", tags=["sde"])
     app.include_router(hubs.router, prefix="/api/hubs", tags=["hubs"])
