@@ -256,7 +256,7 @@ export default function ChainPlanner({ productId }: { productId: number | null }
       {plan.isPending && (
         <>
           <Loading />
-          <Text ta="center" size="sm" c="dimmed">Planning the chain - this can take up to 15 seconds.</Text>
+          <Text ta="center" size="sm" c="dimmed">Planning the chain - this can take up to 40 seconds.</Text>
         </>
       )}
       {plan.error ? <QueryError error={plan.error} /> : null}
