@@ -37,6 +37,7 @@ _JOB_CATEGORY_COST_INDEX_OVERRIDES_SCHEMA_SQL = _DOCS_DIR / "job_category_cost_i
 _ESI_ACCESS_SCHEMA_SQL = _DOCS_DIR / "esi_access_schema.sql"
 _PORTFOLIO_SCHEMA_SQL = _DOCS_DIR / "portfolio_schema.sql"
 _CHARACTER_MANAGEMENT_SCHEMA_SQL = _DOCS_DIR / "character_management_schema.sql"
+_PI_SCHEMA_SQL = _DOCS_DIR / "pi_schema.sql"
 
 
 @functools.lru_cache(maxsize=1)
@@ -101,6 +102,14 @@ def _apply_phase1_schema() -> None:
         # Doctrine/sorting fixtures re-apply it after creating those tables
         # so the DO-block ALTERs land on them too.
         conn.execute(_ESI_ACCESS_SCHEMA_SQL.read_text())
+        # docs/pi_schema.sql: storage.replace_sde_data writes the sde_pi_*
+        # tables, so every SDE storage test needs them. pi_schema.sql widens
+        # constraints created by character_management_schema.sql, hence both,
+        # and its tenant_settings scope widening needs phase2_schema.sql first
+        # (a fresh CI database has no tenant_settings yet).
+        conn.execute(_PHASE2_SCHEMA_SQL.read_text())
+        conn.execute(_CHARACTER_MANAGEMENT_SCHEMA_SQL.read_text())
+        conn.execute(_PI_SCHEMA_SQL.read_text(encoding="utf-8"))
 
 
 @pytest.fixture(scope="session", autouse=True)

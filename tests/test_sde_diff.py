@@ -225,6 +225,11 @@ _OTHER_TABLES = (
     "sde_blueprint_skills",
     "sde_skill_requirements",
     "sde_skill_meta",
+    "sde_pi_schematics",
+    "sde_pi_schematic_types",
+    "sde_pi_schematic_pins",
+    "sde_pi_type_attributes",
+    "sde_pi_planets",
 )
 
 
@@ -364,3 +369,63 @@ def test_region_rows_from_csv_keeps_all_named_regions():
         {"regionID": "", "regionName": "Nameless"},
     ])
     assert rows == [(10000002, "The Forge"), (10000009, "Insmother")]
+
+
+def test_build_diff_pi_schematics_new_removed_changed():
+    snapshot = _snapshot(types=[_type(2393, "Bacteria"), _type(2389, "Plasmoids")])
+    snapshot["sde_pi_schematics"] = [(65, "Bacteria", 1800), (66, "Old", 1800)]
+    snapshot["sde_pi_schematic_types"] = [(65, 2393, 20, True), (65, 2389, 3000, False)]
+    snapshot["sde_pi_schematic_pins"] = [(65, 1), (65, 2)]
+    snapshot["sde_pi_type_attributes"] = [(2393, -1, 5.0)]
+    fetched = FetchedSde(
+        pi_schematics=[(65, "Bacteria", 3600), (67, "New", 1800)],
+        pi_schematic_types=[(65, 2393, 40, True), (65, 2389, 3000, False), (67, 2389, 1, True)],
+        pi_schematic_pins=[(65, 1), (65, 3)],
+        pi_type_attributes=[(2393, -1, 6.0), (2389, -1, 1.0)],
+    )
+
+    other = build_diff(fetched, snapshot)["other_tables"]
+
+    schem = other["sde_pi_schematics"]
+    assert schem["new"] == [{"key": "67", "name": "New"}]
+    assert schem["removed"] == [{"key": "66", "name": "Old"}]
+    assert schem["changed"] == [{
+        "key": "65", "name": "Bacteria", "changes": {"cycle_seconds": [1800, 3600]},
+    }]
+    types = other["sde_pi_schematic_types"]
+    assert types["new"] == [{"key": "67:2389", "name": "67 uses Plasmoids"}]
+    assert types["changed"][0]["name"] == "65 uses Bacteria"
+    assert types["changed"][0]["changes"] == {"quantity": [20, 40]}
+    pins = other["sde_pi_schematic_pins"]
+    assert [r["key"] for r in pins["new"]] == ["65:3"]
+    assert [r["key"] for r in pins["removed"]] == ["65:2"]
+    assert pins["changed"] == []
+    attrs = other["sde_pi_type_attributes"]
+    assert attrs["new"] == [{"key": "2389:-1", "name": "Plasmoids attr -1"}]
+    assert attrs["changed"][0]["changes"] == {"value": [5.0, 6.0]}
+
+
+def test_build_diff_pi_planets_are_capped_with_truncated_counts():
+    fetched = FetchedSde(pi_planets=[(1000 + i, f"P{i}", 30000142, 11, 6000.0) for i in range(60)])
+
+    other = build_diff(fetched, _snapshot())["other_tables"]
+
+    planets = other["sde_pi_planets"]
+    assert len(planets["new"]) == 50
+    assert planets["truncated"] == {"new": 10, "removed": 0, "changed": 0}
+    assert all("truncated" not in diff for table, diff in other.items() if table != "sde_pi_planets")
+
+
+def test_build_diff_pi_planets_cap_covers_removed_and_changed_and_name_falls_back_to_id():
+    snapshot = _snapshot()
+    snapshot["sde_pi_planets"] = (
+        [(i, None, 1, 11, 6000.0) for i in range(55)]
+        + [(1000 + i, "C", 1, 11, 6000.0) for i in range(52)]
+    )
+    fetched = FetchedSde(pi_planets=[(1000 + i, "C", 1, 11, 7000.0) for i in range(52)])
+
+    planets = build_diff(fetched, snapshot)["other_tables"]["sde_pi_planets"]
+
+    assert len(planets["removed"]) == 50 and planets["removed"][0]["name"] == "0"
+    assert len(planets["changed"]) == 50
+    assert planets["truncated"] == {"new": 0, "removed": 5, "changed": 2}

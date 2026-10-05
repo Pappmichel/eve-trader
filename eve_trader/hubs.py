@@ -67,12 +67,18 @@ class HubPricing:
 
 def hub_pricing(client, hub_region_id: int, type_ids: Iterable[int],
                 volumes: Mapping[int, float], broker_fee: float, freight_fallback: float,
-                cfg: TradingConfig = TRADING_CONFIG) -> HubPricing:
+                cfg: TradingConfig = TRADING_CONFIG,
+                freight_override: Optional[float] = None) -> HubPricing:
     """Stats for `type_ids` at `hub_region_id`, or - for ALL_HUBS - at the
     hub with the lowest landed cost per item (sell percentile x (1 +
     broker_fee) + that hub's freight x volume). An item no hub sells stays
     in `stats` with an empty OrderStats from the first hub, so callers see
-    "no price" exactly as in single-hub mode."""
+    "no price" exactly as in single-hub mode.
+
+    `freight_override`: one ISK/m3 rate for every hub instead of the shared
+    hub -> home-structure table. The PI tool passes its own rate: its goods
+    travel between a hub and planets, not to the home structure
+    (docs/PI_TECHNICAL_DESIGN.md P-34)."""
     ids = sorted(set(type_ids))
     if hub_region_id != ALL_HUBS:
         stats = client.region_order_stats_bulk(hub_region_id, ids) if ids else {}
@@ -87,7 +93,8 @@ def hub_pricing(client, hub_region_id: int, type_ids: Iterable[int],
         return result
     best_landed: dict[int, float] = {}
     for region_id in TRADE_HUBS:
-        freight = hub_freight_per_m3(region_id, freight_fallback, cfg)
+        freight = (float(freight_override) if freight_override is not None
+                   else hub_freight_per_m3(region_id, freight_fallback, cfg))
         for type_id, s in client.region_order_stats_bulk(region_id, ids).items():
             if s.sell_percentile is None:
                 if type_id not in result.stats:

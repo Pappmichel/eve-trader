@@ -8,7 +8,11 @@ from typing import Optional, Sequence
 
 SKILLQUEUE_EMPTY = "skillqueue_empty"
 MAIL_NEW = "mail_new"
-ALERT_TYPES = (SKILLQUEUE_EMPTY, MAIL_NEW)
+PI_EXTRACTOR_EXPIRY = "pi_extractor_expiry"
+PI_PAD_FULL = "pi_pad_full"
+PI_INPUTS_EMPTY = "pi_inputs_empty"
+PI_ALERT_TYPES = (PI_EXTRACTOR_EXPIRY, PI_PAD_FULL, PI_INPUTS_EMPTY)
+ALERT_TYPES = (SKILLQUEUE_EMPTY, MAIL_NEW) + PI_ALERT_TYPES
 DEFAULT_LEAD_HOURS = 12
 MIN_LEAD_HOURS, MAX_LEAD_HOURS = 1, 168
 MAX_SUBJECT_CHARS = 100
@@ -103,3 +107,72 @@ def mail_decision(
         lines.append(f"... and {n - MAX_MAILS_LISTED} more")
     text = f"{character_name}: {n} new EVE mail" + ("s" if n != 1 else "") + ".\n" + "\n".join(lines)
     return MailDecision(newest, Decision(f"mail:{newest}", text))
+
+
+# ------------------------------------------------------------ Planetary Industry
+@dataclass(frozen=True)
+class PiDecision:
+    """One message for one colony and alert type. `key` is stored per
+    (character, planet, type) in `pi_alert_state` after a successful send."""
+    planet_id: int
+    alert_type: str
+    key: str
+    message: str
+
+
+def _floor_hour(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0).isoformat()
+
+
+def _in_hours(hours: float) -> str:
+    return "now" if hours <= 0 else "in " + _hours(hours * 3600)
+
+
+def pi_decisions(
+    alert_type: str, colonies: Sequence[dict], now: datetime, lead_hours: int,
+    last_keys: dict[tuple[int, str], Optional[str]], character_name: str,
+) -> list[PiDecision]:
+    """`colonies`: [{"planet_id", "planet_name", "projection"}] where
+    `projection` is `pi.colonies.project`'s dict. Nothing is sent for a
+    situation whose key equals the last sent key. The expiry decision of a
+    colony covers all of its due extractors; its key joins their per-pin keys
+    (`expiry:{pin_id}:{expiry}`), so a newly due extractor re-announces.
+    Pad-full and inputs-empty are estimates from the colony state at
+    `last_update` (ESI does not give the live state), and say so."""
+    out: list[PiDecision] = []
+    for c in colonies:
+        pid = int(c["planet_id"])
+        label = c.get("planet_name") or f"planet {pid}"
+        proj = c.get("projection") or {}
+        key = message = None
+        if alert_type == PI_EXTRACTOR_EXPIRY:
+            due = []
+            for e in proj.get("extractors") or []:
+                expiry = parse_iso(e.get("expiry_time"))
+                if expiry is None:
+                    continue
+                hours_left = (expiry - now).total_seconds() / 3600
+                if hours_left <= lead_hours:
+                    due.append((int(e["pin_id"]), expiry, hours_left, e.get("product_name")))
+            if due:
+                due.sort(key=lambda d: d[1])
+                key = "|".join(f"expiry:{pin}:{exp.isoformat()}" for pin, exp, _h, _p in due)
+                lines = [
+                    f"- {product or 'extractor'}: " + ("expired" if h <= 0 else f"expires {_in_hours(h)}")
+                    for _pin, _exp, h, product in due
+                ]
+                message = f"{character_name}: extractors on {label} need attention.\n" + "\n".join(lines)
+        elif alert_type in (PI_PAD_FULL, PI_INPUTS_EMPTY):
+            full = alert_type == PI_PAD_FULL
+            at = parse_iso(proj.get("full_at" if full else "inputs_empty_at"))
+            if at is not None and (at - now).total_seconds() / 3600 <= lead_hours:
+                key = f"{'padfull' if full else 'inputs'}:{pid}:{_floor_hour(at)}"
+                what = "storage is estimated to be full" if full else "imported inputs are estimated to run out"
+                if not full and proj.get("inputs_empty_type"):
+                    what += f" ({proj['inputs_empty_type']})"
+                when = _in_hours((at - now).total_seconds() / 3600)
+                message = (f"{character_name}: on {label} {what} {when}. "
+                           f"Estimate from the colony state of {proj.get('last_update') or 'unknown'}.")
+        if key is not None and key != last_keys.get((pid, alert_type)):
+            out.append(PiDecision(pid, alert_type, key, message))
+    return out

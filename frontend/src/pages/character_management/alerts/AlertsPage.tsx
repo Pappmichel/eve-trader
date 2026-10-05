@@ -17,6 +17,18 @@ const LINK_RESULT: Record<string, { color: string; title: string; message: strin
   error: { color: 'danger', title: 'Discord link failed', message: 'The link request expired or was rejected. Try again.' },
 }
 
+// Labels per alert type. The PI ones read a colony snapshot (Planetary Industry
+// shared with Discord Alerts); pad full / inputs empty are estimates from it.
+const ALERT_LABELS: Record<AlertType, { label: string; aria: string }> = {
+  skillqueue_empty: { label: 'Skill queue ends', aria: 'skill queue' },
+  mail_new: { label: 'New mail', aria: 'new mail' },
+  pi_extractor_expiry: { label: 'PI: extractor program ends', aria: 'PI extractor' },
+  pi_pad_full: { label: 'PI: launchpads nearly full (estimate)', aria: 'PI pad full' },
+  pi_inputs_empty: { label: 'PI: factory inputs nearly used up (estimate)', aria: 'PI inputs empty' },
+}
+const ALERT_TYPES: AlertType[] = ['skillqueue_empty', 'mail_new', 'pi_extractor_expiry', 'pi_pad_full', 'pi_inputs_empty']
+const LEAD_TIME_TYPES = new Set<AlertType>(['skillqueue_empty', 'pi_extractor_expiry', 'pi_pad_full', 'pi_inputs_empty'])
+
 function errorMessage(e: unknown): string {
   return e instanceof ApiError ? e.message : 'Something went wrong.'
 }
@@ -32,18 +44,18 @@ function AlertRow(props: {
     <Stack gap={4}>
       <Group gap="sm" wrap="nowrap">
         <Switch
-          aria-label={`${props.label} ${type === 'mail_new' ? 'new mail' : 'skill queue'} alert`}
-          checked={sub.enabled} disabled={blocked || pending} label={type === 'mail_new' ? 'New mail' : 'Skill queue ends'}
+          aria-label={`${props.label} ${ALERT_LABELS[type].aria} alert`}
+          checked={sub.enabled} disabled={blocked || pending} label={ALERT_LABELS[type].label}
           onChange={(e) => props.onChange({
             enabled: e.currentTarget.checked, include_content: sub.include_content, lead_hours: sub.lead_hours,
           })}
         />
         {hint && <Text size="xs" c="dimmed">{hint}</Text>}
       </Group>
-      {type === 'skillqueue_empty' && sub.enabled && (
+      {LEAD_TIME_TYPES.has(type) && sub.enabled && (
         <NumberInput
           size="xs" w={200} min={1} max={168} value={sub.lead_hours} suffix=" h before" disabled={pending}
-          aria-label={`${props.label} lead time in hours`}
+          aria-label={type === 'skillqueue_empty' ? `${props.label} lead time in hours` : `${props.label} ${ALERT_LABELS[type].aria} lead time in hours`}
           onChange={(v) => typeof v === 'number' && v >= 1 && v <= 168 && props.onChange({ enabled: true, lead_hours: v })}
         />
       )}
@@ -158,10 +170,10 @@ export default function AlertsPage() {
                         <Table.Td fw={600}>{c.character_name}</Table.Td>
                         <Table.Td>
                           <Stack gap="sm">
-                            {(['skillqueue_empty', 'mail_new'] as AlertType[]).map((type) => (
+                            {ALERT_TYPES.filter((type) => c.alerts[type]).map((type) => (
                               <AlertRow
                                 key={type} characterId={c.character_id} label={c.character_name} type={type}
-                                sub={c.alerts[type]} linked={data.linked} pending={subscribe.isPending}
+                                sub={c.alerts[type]!} linked={data.linked} pending={subscribe.isPending}
                                 onChange={(change) => subscribe.mutate({ character_id: c.character_id, alert_type: type, ...change })}
                               />
                             ))}

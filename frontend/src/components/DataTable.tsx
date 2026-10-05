@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import {
   useReactTable,
   getCoreRowModel,
@@ -171,8 +171,14 @@ interface DataTableProps<T> {
 const exactFilter: FilterFn<any> = (row, columnId, value) => String(row.getValue(columnId)) === String(value)
 
 // Header row + a little slack: tables with few rows shrink to their content
-// instead of reserving `maxHeight`.
+// instead of reserving `maxHeight`. Only used until the real header and row
+// heights have been measured (see `measured` below).
 const TABLE_CHROME_HEIGHT = 64
+// The ScrollArea's scrollbar size. Mantine draws scrollbars *over* the
+// content, so the horizontal one hid the last row whenever the table was
+// short (one or a few rows) or scrolled to the bottom; `offsetScrollbars`
+// reserves this much space instead, and the height calculation adds it.
+const SCROLLBAR_SIZE = 10
 const CHANGE_FLASH_MS = 2500
 const MAX_TRACKED_ROWS = 2000
 const HOVER_SUMMARY_COLUMNS = 8
@@ -506,12 +512,40 @@ export function DataTable<T>({
     }
   }
 
+  // Real header/row heights and whether the table scrolls sideways, measured
+  // after render. The theme's cell padding makes a row taller than `rowHeight`
+  // (44 px vs 36 px), so a height computed from `rowHeight` cut the last row
+  // off on short tables; the virtualizer uses the measured height too.
+  const [measured, setMeasured] = useState<{ row: number | null; head: number | null; hScroll: boolean }>(
+    { row: null, head: null, hScroll: false },
+  )
+  const effectiveRowHeight = measured.row ?? rowHeight
+
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => rowHeight,
+    estimateSize: () => effectiveRowHeight,
     overscan: 12,
   })
+
+  useLayoutEffect(() => {
+    const vp = scrollRef.current
+    if (!vp) return
+    const row = vp.querySelector<HTMLElement>('tbody tr[data-dt-row]')
+    const head = vp.querySelector<HTMLElement>('thead')
+    const next = {
+      row: row ? row.offsetHeight : measured.row,
+      head: head ? head.offsetHeight : measured.head,
+      hScroll: vp.scrollWidth > vp.clientWidth + 1,
+    }
+    if (next.row !== measured.row || next.head !== measured.head || next.hScroll !== measured.hScroll) {
+      setMeasured(next)
+    }
+  })
+
+  useEffect(() => {
+    virtualizer.measure()
+  }, [effectiveRowHeight, virtualizer])
 
   const visibleRowsKey = onVisibleRowsChange
     ? virtualizer.getVirtualItems().map((v) => rows[v.index]?.id).filter((id): id is string => id !== undefined).join(',')
@@ -945,7 +979,14 @@ export function DataTable<T>({
         </Group>
       )}
 
-      <ScrollArea h={Math.min(maxHeight, rows.length * rowHeight + TABLE_CHROME_HEIGHT)} type="auto" viewportRef={scrollRef}>
+      <ScrollArea
+        h={Math.min(
+          maxHeight,
+          (measured.head ?? TABLE_CHROME_HEIGHT) + rows.length * effectiveRowHeight
+            + (measured.hScroll ? SCROLLBAR_SIZE : 0) + 2,
+        )}
+        type="auto" scrollbarSize={SCROLLBAR_SIZE} offsetScrollbars="present" viewportRef={scrollRef}
+      >
         {/* Until a column is resized the table fills its container (columns scale
             proportionally, as before). Once one is resized, widths are exact px so
             the dragged edge stays under the pointer; the area then scrolls sideways. */}
@@ -1080,6 +1121,7 @@ export function DataTable<T>({
                   return (
                     <Table.Tr
                       key={row.id}
+                      data-dt-row=""
                       id={rowActivatable ? `${uid}-r${vItem.index}` : undefined}
                       data-clickable={rowActivatable ? '' : undefined}
                       data-active={highlightedRowId !== undefined && row.id === highlightedRowId ? '' : undefined}

@@ -185,7 +185,8 @@ def test_streamed_attribute_fetch_keeps_only_skill_attributes(monkeypatch):
         "999,277,3,",             # ... at level 3
         "",                        # blank line is skipped by DictReader
     ))])
-    kept = sde._fetch_skill_attributes(session, "https://x/")
+    kept, pi_kept = sde._fetch_skill_attributes(session, "https://x/")
+    assert pi_kept == {}
     assert kept == {3380: {275: 1.0, 180: 165.0, 181: 166.0}, 999: {182: 3380.0, 277: 3.0}}
     assert session.requested == ["https://x/dgmTypeAttributes.csv"]
 
@@ -194,7 +195,7 @@ def test_stream_reset_midway_restarts_instead_of_returning_a_truncated_table(mon
     monkeypatch.setattr(sde.time, "sleep", lambda s: None)
     good = _csv("3380,275,,1.0", "3386,275,,2.0")
     session = _FakeSession([_FakeResponse(good, fail_after=2), _FakeResponse(good)])
-    kept = sde._fetch_skill_attributes(session, "https://x/")
+    kept, _pi = sde._fetch_skill_attributes(session, "https://x/")
     assert set(kept) == {3380, 3386}          # the retry's complete data, not the first half
     assert len(session.requested) == 2
 
@@ -223,9 +224,10 @@ def test_skill_rows_from_attributes():
 def test_fetch_sde_carries_the_skill_rows_into_fetchedsde_and_apply_stores_them(tenant, monkeypatch):
     monkeypatch.setattr(sde, "_fetch_csv", lambda session, base, filename: [])
     monkeypatch.setattr(sde, "_dump_etag", lambda *a, **k: "etag")
-    monkeypatch.setattr(sde, "_fetch_skill_attributes", lambda session, base: {
+    monkeypatch.setattr(sde, "_fetch_skill_attributes", lambda session, base, pi_type_ids=frozenset(): ({
         587: {182: 3330.0, 277: 2.0}, 3380: {275: 1.0, 180: 165.0, 181: 166.0},
-    })
+    }, {}))
+    monkeypatch.setattr(sde, "_fetch_pi_planets", lambda session, base: [])
     fetched = sde.fetch_sde()
     assert fetched.skill_requirements == [(587, 3330, 2)]
     assert fetched.skill_meta == [(3380, 1.0, 165, 166)]

@@ -28,7 +28,10 @@ log = logging.getLogger(__name__)
 TOOL_KEY = "char_alerts"
 LINK_STATE_MAX_AGE_SECONDS = 600
 # alert type -> the ESI data kind that must be shared with `char_alerts`
-KIND_BY_ALERT = {logic.SKILLQUEUE_EMPTY: "skillqueue", logic.MAIL_NEW: "mail"}
+KIND_BY_ALERT = {
+    logic.SKILLQUEUE_EMPTY: "skillqueue", logic.MAIL_NEW: "mail",
+    **{t: "planets" for t in logic.PI_ALERT_TYPES},
+}
 
 
 def _serializer() -> URLSafeTimedSerializer:
@@ -111,6 +114,8 @@ def do_set_subscription(
         # Fresh opt-in starts from a clean baseline: no stale dedupe key, and
         # no announcement of mail that predates the opt-in.
         storage.reset_alert_state(character_id, alert_type)
+        if alert_type in logic.PI_ALERT_TYPES:
+            storage.reset_pi_alert_state(character_id, alert_type)
     return {"character_id": character_id, "alert_type": alert_type, "enabled": bool(enabled),
             "include_content": bool(include_content), "lead_hours": lead_hours}
 

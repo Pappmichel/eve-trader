@@ -176,7 +176,7 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         # attributes and SP totals, read through `read_esi("skills",
         # "char_skills")`. Production/Station Trading keep reading the slot
         # rows from `character_slots` under their own sharing rows.
-        consuming_tools=("production", "station_trading", "char_skills", "char_skill_plans"),
+        consuming_tools=("production", "station_trading", "char_skills", "char_skill_plans", "pi"),
         freshness_tier=TIER_RARE,
     ),
     OwnedDataKind(
@@ -187,6 +187,19 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         corporation_scope=None,
         corp_roles=(),
         consuming_tools=("char_skills", "char_alerts"),
+        freshness_tier=TIER_NORMAL,
+        schedule_mode=ON_DEMAND,
+    ),
+    # Planetary Industry (docs/PI_TECHNICAL_DESIGN.md 6/7): one row per colony
+    # with the raw pins/links/routes. Display/alert data - refreshed on demand.
+    OwnedDataKind(
+        key="planets",
+        label="Planetary Industry",
+        group=GROUP_2,
+        character_scope="esi-planets.manage_planets.v1",
+        corporation_scope=None,
+        corp_roles=(),
+        consuming_tools=("pi", "char_alerts"),
         freshness_tier=TIER_NORMAL,
         schedule_mode=ON_DEMAND,
     ),
