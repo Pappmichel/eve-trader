@@ -914,6 +914,12 @@ export const piApi = {
   settings: () => get<T.PiSettings>('/api/pi/settings'),
   updateSettings: (updates: Partial<T.PiSettings>) => put<T.PiSettings>('/api/pi/settings', updates),
   characters: () => get<T.PiCharacters>('/api/pi/characters'),
+  colonies: () => get<T.PiColonies>('/api/pi/colonies'),
+  syncColonies: () => post<Record<string, unknown>>('/api/pi/colonies/sync'),
+  colonyTemplate: (characterId: number, planetId: number, body: { save?: boolean; name?: string } = {}) =>
+    post<T.PiLayoutPayload & { saved: T.PiTemplateRow | null; skipped_routes: number; cc_bypassed: number }>(
+      `/api/pi/colonies/${characterId}/${planetId}/template`, body),
+  calibration: () => get<T.PiCalibration>('/api/pi/calibration'),
   productionDemand: () => get<T.PiDemand>('/api/pi/production-demand'),
   validateLayout: (body: {
     template: unknown; planet_id?: number; radius_km?: number; yield_per_head?: number

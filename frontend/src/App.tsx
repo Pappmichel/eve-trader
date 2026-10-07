@@ -92,6 +92,7 @@ const PiSystem = lazy(() => import('./pages/pi/System'))
 const PiChains = lazy(() => import('./pages/pi/Chains'))
 const PiTemplates = lazy(() => import('./pages/pi/Templates'))
 const PiPlans = lazy(() => import('./pages/pi/Plans'))
+const PiColonies = lazy(() => import('./pages/pi/Colonies'))
 const PiDemand = lazy(() => import('./pages/pi/Demand'))
 const PiSettings = lazy(() => import('./pages/pi/PiSettings'))
 
@@ -328,6 +329,7 @@ function App() {
               <Route path="chains" element={<PiChains />} />
               <Route path="templates" element={<PiTemplates />} />
               <Route path="plans" element={<PiPlans />} />
+              <Route path="colonies" element={<PiColonies />} />
               <Route path="demand" element={<PiDemand />} />
               <Route path="settings" element={<PiSettings />} />
             </Route>

@@ -117,6 +117,12 @@ class Economics:
     market_share: Optional[float]
     worth_it: bool
     reason: Optional[str]
+    # Revenue of exports other than the colony's product (priced side products).
+    byproduct_revenue_per_day: float
+    # Surplus the colony extracts or makes but cannot sell (no market quote).
+    # Left on the planet: no revenue, no customs, no freight, and it does not
+    # by itself make the colony "no price".
+    unpriced_surplus: tuple[int, ...]
     missing_prices: tuple[int, ...]
 
     def to_dict(self) -> dict:
@@ -132,17 +138,29 @@ def compute(ev: Evaluation, static: StaticData, prices: Prices, m: MarketSetting
     colony's effective factor: what it delivers when visited once per
     collection interval."""
     f = ev.effective_factor * 24.0
+    product = ev.design.product_type_id
     missing: list[int] = []
+    unpriced_surplus: list[int] = []
     revenue = 0.0
+    byproduct_revenue = 0.0
     export_tax = 0.0
+    # m3/h of surplus that has no buyer, so it is not hauled off the planet.
+    skipped_export_m3 = 0.0
     for t, qty in ev.exports.items():
         units = qty * f
         value = output_unit_value(t, prices, m)
+        c = static.commodities.get(t)
+        if value is None and t != product:
+            unpriced_surplus.append(t)
+            skipped_export_m3 += qty * (c.volume if c else 0.0)
+            continue
         if value is None:
             missing.append(t)
         else:
-            revenue += units * value
-        c = static.commodities.get(t)
+            part = units * value
+            revenue += part
+            if t != product:
+                byproduct_revenue += part
         export_tax += units * (c.export_tax_base if c else 0.0) * m.tax_rate
     input_cost = 0.0
     import_tax = 0.0
@@ -155,7 +173,8 @@ def compute(ev: Evaluation, static: StaticData, prices: Prices, m: MarketSetting
             input_cost += units * cost
         c = static.commodities.get(t)
         import_tax += units * (c.import_tax_base if c else 0.0) * m.tax_rate * IMPORT_TAX_PIN_FACTOR
-    m3_per_day = (ev.import_m3_per_hour + ev.export_m3_per_hour) * f
+    export_m3 = max(0.0, ev.export_m3_per_hour - skipped_export_m3)
+    m3_per_day = (ev.import_m3_per_hour + export_m3) * f
     freight = m3_per_day * m.freight_per_m3
     setup = ev.setup_isk / max(m.amortisation_days, 1e-9)
     profit = revenue - input_cost - export_tax - import_tax - freight - setup
@@ -204,6 +223,8 @@ def compute(ev: Evaluation, static: StaticData, prices: Prices, m: MarketSetting
         isk_per_interaction=(profit * 7 / interactions) if interactions > 0 else None,
         isk_per_m3=(profit / m3_per_day) if m3_per_day > 0 else None,
         market_share=share, worth_it=worth, reason=reason,
+        byproduct_revenue_per_day=byproduct_revenue,
+        unpriced_surplus=tuple(sorted(set(unpriced_surplus))),
         missing_prices=tuple(sorted(set(missing))),
     )
 

@@ -55,15 +55,34 @@ class ColonyLayout:
     contents: dict[int, dict[int, float]]       # layout pin index (1-based) -> {type_id: amount}
     extractors: list[dict] = field(default_factory=list)
     skipped_routes: int = 0
+    # Routes that went through the Command Center and were rewritten onto the
+    # pins on either side. A route that is only the Command Center stays in
+    # `skipped_routes` (templates have no Command Center pin).
+    cc_bypassed: int = 0
+
+
+def _collapse(ids: list[int]) -> list[int]:
+    out: list[int] = []
+    for x in ids:
+        if not out or out[-1] != x:
+            out.append(x)
+    return out
 
 
 def esi_to_layout(static: StaticData, colony: dict, planet_type: Optional[int], radius_km: Optional[float] = None,
                   comment: str = "") -> ColonyLayout:
     """ESI colony (pins/links/routes as returned by ESI, upgrade_level from
     the planet list) -> Layout. The Command Center is dropped (templates
-    never contain it); factory schematic ids become product type ids (P-51);
+    never contain it). A route that only passed through it is rewritten onto
+    the remaining pins, with a level-0 link where the Command Center was the
+    only connection. Factory schematic ids become product type ids (P-51);
     route waypoints become the path; quantities are rounded to integers."""
     pins_raw = colony.get("pins") or []
+    cc_ids = {
+        int(p["pin_id"]) for p in pins_raw
+        if (spec := static.structures.get(int(p.get("type_id") or 0))) is not None
+        and spec.kind == C.KIND_COMMAND_CENTER
+    }
     index: dict[int, int] = {}
     pins: list[Pin] = []
     pin_ids: list[int] = []
@@ -100,18 +119,33 @@ def esi_to_layout(static: StaticData, colony: dict, planet_type: Optional[int], 
         if amounts:
             contents[len(pins)] = amounts
     links = []
+    adjacency: set[tuple[int, int]] = set()
     for lk in colony.get("links") or []:
         a, b = index.get(int(lk.get("source_pin_id") or 0)), index.get(int(lk.get("destination_pin_id") or 0))
         if a and b and a != b:
-            links.append(Link(a=a, b=b, level=int(lk.get("link_level") or 0)))
+            key = (min(a, b), max(a, b))
+            if key not in adjacency:
+                links.append(Link(a=a, b=b, level=int(lk.get("link_level") or 0)))
+                adjacency.add(key)
     routes = []
     skipped = 0
+    cc_bypassed = 0
     for r in colony.get("routes") or []:
-        path_ids = [r.get("source_pin_id")] + list(r.get("waypoints") or []) + [r.get("destination_pin_id")]
-        path = [index.get(int(x or 0)) for x in path_ids]
+        raw = [int(x or 0) for x in (
+            [r.get("source_pin_id")] + list(r.get("waypoints") or []) + [r.get("destination_pin_id")]
+        )]
+        touched_cc = any(x in cc_ids for x in raw)
+        path = [index.get(x) for x in _collapse([x for x in raw if x not in cc_ids])]
         if any(x is None for x in path) or len(path) < 2:
-            skipped += 1  # a route touching the Command Center has no template form
+            skipped += 1
             continue
+        if touched_cc:
+            cc_bypassed += 1
+            for a, b in zip(path, path[1:]):
+                key = (min(a, b), max(a, b))
+                if key not in adjacency:
+                    links.append(Link(a=key[0], b=key[1], level=0))
+                    adjacency.add(key)
         routes.append(Route(tuple(path), float(round(float(r.get("quantity") or 0))), int(r.get("content_type_id"))))
     pt = planet_type or 0
     layout = Layout(
@@ -121,7 +155,7 @@ def esi_to_layout(static: StaticData, colony: dict, planet_type: Optional[int], 
         planet_type_id=pt,
         pins=tuple(pins), links=tuple(links), routes=tuple(routes),
     )
-    return ColonyLayout(layout, pin_ids, contents, extractors, skipped)
+    return ColonyLayout(layout, pin_ids, contents, extractors, skipped, cc_bypassed)
 
 
 # ------------------------------------------------------------------ monitor
@@ -129,22 +163,70 @@ def _hours(delta: timedelta) -> float:
     return delta.total_seconds() / 3600.0
 
 
-def project(static: StaticData, colony: ColonyLayout, last_update: Optional[datetime], now: datetime,
-            radius_km: Optional[float], yield_per_head: float) -> dict:
-    """Projected state of one colony now: extractor expiry, when the hubs
-    are full, when imported inputs run out, idle factories. Extraction rates
-    come from each extractor's real program (CCP formula) when ESI gives
-    qty/cycle; otherwise from `yield_per_head`."""
-    lay = colony.layout
-    analysis = validate.analyse(static, lay, radius_km, yield_per_head)
-    age_h = _hours(now - last_update) if last_update else None
+def extraction_rates(colony: ColonyLayout, now: datetime, yield_per_head: float,
+                     ) -> tuple[list[dict], dict[int, float], dict[int, int]]:
+    """Per extractor: P0 per head per hour and the program cycle.
 
-    extractors = []
+    An expired program contributes nothing (`rate_source` "expired"). A
+    program ESI fully describes (qty, cycle, heads, install, expiry) uses
+    the CCP formula ("esi"). Anything else keeps the zone planning yield
+    ("assumption"). Pin maps are 1-based layout indexes for `validate.analyse`.
+    """
+    layout_pin = {pid: i + 1 for i, pid in enumerate(colony.pin_ids)}
+    rows: list[dict] = []
+    yield_by_pin: dict[int, float] = {}
+    cycle_by_pin: dict[int, int] = {}
     for e in colony.extractors:
         expiry = parse_dt(e.get("expiry_time"))
         hours_left = _hours(expiry - now) if expiry else None
-        extractors.append({**e, "hours_left": hours_left, "expired": hours_left is not None and hours_left <= 0,
-                           "product_name": static.name(e["product_type_id"]) if e.get("product_type_id") else None})
+        expired = hours_left is not None and hours_left <= 0
+        qty, cycle, heads = e.get("qty_per_cycle"), e.get("cycle_time"), int(e.get("heads") or 0)
+        install = parse_dt(e.get("install_time"))
+        per_head = float(yield_per_head)
+        rate_source = "assumption"
+        cycle_s: Optional[int] = None
+        if expired:
+            per_head = 0.0
+            rate_source = "expired"
+            if cycle:
+                cycle_s = int(cycle)
+        elif qty and cycle and heads and install and expiry:
+            seconds = (expiry - install).total_seconds()
+            if seconds > 0:
+                rate = decay.per_head_per_hour(int(qty), int(cycle), seconds, heads)
+                if math.isfinite(rate) and rate > 0:
+                    per_head = rate
+                    rate_source = "esi"
+                    cycle_s = int(cycle)
+        pin = layout_pin.get(int(e["pin_id"]))
+        if pin is not None:
+            yield_by_pin[pin] = per_head
+            if cycle_s:
+                cycle_by_pin[pin] = cycle_s
+        rows.append({
+            **e, "hours_left": hours_left, "expired": expired,
+            "per_head_per_hour": per_head, "rate_source": rate_source,
+        })
+    return rows, yield_by_pin, cycle_by_pin
+
+
+def project(static: StaticData, colony: ColonyLayout, last_update: Optional[datetime], now: datetime,
+            radius_km: Optional[float], yield_per_head: float) -> dict:
+    """Projected state of one colony now: extractor expiry, when the hubs
+    are full, when imported inputs run out, idle factories. Each extractor
+    uses its own ESI program when that program is still running."""
+    lay = colony.layout
+    rated, yield_by_pin, cycle_by_pin = extraction_rates(colony, now, yield_per_head)
+    analysis = validate.analyse(
+        static, lay, radius_km, yield_per_head,
+        yield_by_pin=yield_by_pin or None, cycle_by_pin=cycle_by_pin or None,
+    )
+    age_h = _hours(now - last_update) if last_update else None
+
+    extractors = [
+        {**e, "product_name": static.name(e["product_type_id"]) if e.get("product_type_id") else None}
+        for e in rated
+    ]
 
     def vol(t: int) -> float:
         c = static.commodities.get(t)
@@ -192,6 +274,7 @@ def project(static: StaticData, colony: ColonyLayout, last_update: Optional[date
         "chain": analysis.chain,
         "findings": [f.to_dict() for f in analysis.findings if f.severity != validate.INFO],
         "skipped_routes": colony.skipped_routes,
+        "cc_bypassed": colony.cc_bypassed,
     }
 
 

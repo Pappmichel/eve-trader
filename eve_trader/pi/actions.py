@@ -283,6 +283,7 @@ def evaluation_dict(static: StaticData, ev: Evaluation) -> dict:
 def _economics_dict(e: econ.Economics, static: StaticData) -> dict:
     d = e.to_dict()
     d["missing_prices"] = [{"type_id": t, "name": static.name(t)} for t in e.missing_prices]
+    d["unpriced_surplus"] = [{"type_id": t, "name": static.name(t)} for t in e.unpriced_surplus]
     return d
 
 
@@ -835,14 +836,24 @@ def _radius_for(planet_id: Optional[int], radius_km: Optional[float]) -> Optiona
 
 
 def do_validate_layout(template: Any, planet_id: Optional[int] = None, radius_km: Optional[float] = None,
-                       yield_per_head: Optional[float] = None, cfg: PiConfig = PI_CONFIG) -> dict:
-    """Analyse any template/layout (pasted, stored, generated or edited)."""
+                       yield_per_head: Optional[float] = None, program_hours: Optional[float] = None,
+                       yield_by_pin: Optional[dict] = None, cycle_by_pin: Optional[dict] = None,
+                       cfg: PiConfig = PI_CONFIG) -> dict:
+    """Analyse any template/layout (pasted, stored, generated or edited).
+
+    `program_hours` sets the extractor cycle the route quantities were written
+    for (a template stores quantity per cycle). `yield_by_pin` / `cycle_by_pin`
+    are 1-based pin maps for a real colony, where each extractor has its own
+    program."""
+    from . import decay
     from .layout import validate
 
     static = _static()
     layout = _parse_template(template)
     y = float(yield_per_head) if yield_per_head else _assumptions(cfg, cfg.pi_zone).effective_yield
-    a = validate.analyse(static, layout, _radius_for(planet_id, radius_km), y)
+    cycle = decay.cycle_seconds_for_program(float(program_hours)) if program_hours else None
+    a = validate.analyse(static, layout, _radius_for(planet_id, radius_km), y,
+                         yield_by_pin=yield_by_pin, cycle_seconds=cycle, cycle_by_pin=cycle_by_pin)
     return _layout_payload(static, layout, a)
 
 
@@ -886,9 +897,12 @@ def do_generate_layout(chain: str, product_type_id: int, planet_id: Optional[int
             raise ActionError(f"Unknown shape {shape!r}") from e
     shape_note: Optional[str] = None
     standard = cells_fn is generate.standard_cells
+    from . import decay
+
+    cycle = decay.cycle_seconds_for_program(a.program_hours)
     try:
         res = generate.generate(static, d, planet.planet_type_id, planet.radius_km, a.effective_yield,
-                                comment or "", cells_fn, shrink_to_fit=standard)
+                                comment or "", cells_fn, shrink_to_fit=standard, cycle_seconds=cycle)
     except generate.GenerateError as e:
         if standard:
             ref = _reference_layout(static, d, planet, a, comment, None) if use_references else None
@@ -900,7 +914,7 @@ def do_generate_layout(chain: str, product_type_id: int, planet_id: Optional[int
         shape_note = f"The {shape} shape does not work for this colony ({e}); the standard layout is shown."
         try:
             res = generate.generate(static, d, planet.planet_type_id, planet.radius_km, a.effective_yield,
-                                    comment or "")
+                                    comment or "", cycle_seconds=cycle)
         except generate.GenerateError as e2:
             raise ActionError(str(e2)) from e2
     if standard and use_references:
@@ -921,14 +935,16 @@ REFERENCE_MIN_SHARE = 0.98
 def _reference_layout(static, design, planet, a, comment, generated):
     """The best adapted reference layout, or None when none fits or the
     generated layout (`generated`, may be None) does clearly better."""
+    from . import decay
     from .layout import reference, validate
 
+    cycle = decay.cycle_seconds_for_program(a.program_hours)
     ref = reference.from_references(static, design, planet.planet_type_id, planet.radius_km,
-                                    a.effective_yield, a.interval_hours, comment or "")
+                                    a.effective_yield, a.interval_hours, comment or "", cycle_seconds=cycle)
     if ref is None or generated is None:
         return ref
     own = validate.analyse(static, generated.layout, planet.radius_km, a.effective_yield,
-                           reference.self_supplied(static, generated.design))
+                           reference.self_supplied(static, generated.design), cycle_seconds=cycle)
     own_out = reference.effective_output(own, design.product_type_id, a.interval_hours)
     return ref if ref.effective_output >= own_out * REFERENCE_MIN_SHARE else None
 
@@ -1228,6 +1244,7 @@ def do_colony_template(character_id: int, planet_id: int, save: bool = False, na
     import dataclasses
 
     from ..esi_data import read_esi
+    from . import colonies
     from .layout import template_io
 
     static = _static()
@@ -1245,8 +1262,12 @@ def do_colony_template(character_id: int, planet_id: int, save: bool = False, na
     label = (name or "").strip() or view["planet_name"] or f"Planet {planet_id}"
     layout = dataclasses.replace(layout, comment=template_io.safe_comment(label))
     template = template_io.to_dict(layout)
+    y = _assumptions(cfg, view["zone"]).effective_yield
+    _rows, yield_by_pin, cycle_by_pin = colonies.extraction_rates(view["colony"], datetime.now(timezone.utc), y)
     payload = do_validate_layout(template, planet_id=int(planet_id) if view["planet_name"] else None,
-                                 radius_km=view["radius_km"], cfg=cfg)
+                                 radius_km=view["radius_km"], yield_by_pin=yield_by_pin or None,
+                                 cycle_by_pin=cycle_by_pin or None, cfg=cfg)
     payload["saved"] = do_save_template(template, label, source="esi") if save else None
     payload["skipped_routes"] = view["colony"].skipped_routes
+    payload["cc_bypassed"] = view["colony"].cc_bypassed
     return payload

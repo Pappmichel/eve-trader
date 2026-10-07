@@ -83,6 +83,63 @@ def test_compute_export_tax_is_units_times_base_times_rate(sd):
     assert e.revenue_per_day == pytest.approx(units * _fake_prices(sd).sell[coolant])
 
 
+def test_unpriced_surplus_does_not_void_a_priced_product(sd):
+    from dataclasses import replace
+
+    coolant = _id(sd, "Coolant")
+    p0 = next(t for t, c in sd.commodities.items() if c.tier == 0)
+    d = Design("P1-P2", coolant, 2016, 5, ((coolant, 24),), (), 2, 0)
+    a = engine.Assumptions(yield_per_head=2000, program_hours=72, interval_hours=24)
+    ev = engine.evaluate(sd, Planet(2016, 5000.0), d, a)
+    ev = replace(ev, exports={coolant: ev.exports[coolant], p0: 500.0})
+    sell = dict(_fake_prices(sd).sell)
+    sell[p0] = None
+    m = econ.MarketSettings(
+        broker_fee=0.0, sales_tax=0.0, valuation="sell_orders", freight_per_m3=10.0, tax_rate=0.10,
+        amortisation_days=30, min_isk_per_planet_day=0.0, market_share_warning=1.0,
+        program_hours=72, interval_hours=24,
+    )
+    e = econ.compute(ev, sd, econ.Prices(sell=sell, buy={}), m)
+    assert e.unpriced_surplus == (p0,)
+    assert e.missing_prices == ()
+    assert e.reason != econ.REASON_NO_PRICE
+    product_units = ev.exports[coolant] * ev.effective_factor * 24
+    assert e.export_tax_per_day == pytest.approx(product_units * sd.commodities[coolant].export_tax_base * 0.10)
+    assert e.byproduct_revenue_per_day == 0.0
+    named = pa._economics_dict(e, sd)
+    assert named["unpriced_surplus"] == [{"type_id": p0, "name": sd.name(p0)}]
+
+
+def test_unit_cost_credits_priced_byproduct_revenue(sd):
+    from dataclasses import replace
+
+    from eve_trader.pi import demand
+
+    coolant = _id(sd, "Coolant")
+    water = _id(sd, "Water")
+    d = Design("P1-P2", coolant, 2016, 5, ((coolant, 24),), (), 2, 0)
+    a = engine.Assumptions(yield_per_head=2000, program_hours=72, interval_hours=24)
+    base = engine.evaluate(sd, Planet(2016, 5000.0), d, a)
+    ev = replace(base, exports={coolant: 10.0, water: 10000.0}, product_per_hour=10.0, imports={},
+                 import_m3_per_hour=0.0)
+    m = econ.MarketSettings(
+        broker_fee=0.0, sales_tax=0.0, valuation="sell_orders", freight_per_m3=0.0, tax_rate=0.0,
+        amortisation_days=30, min_isk_per_planet_day=0.0, market_share_warning=1.0,
+        program_hours=72, interval_hours=24,
+    )
+    e = econ.compute(ev, sd, econ.Prices(sell={coolant: 1000.0, water: 1.0}, buy={}), m)
+    f = ev.effective_factor * 24
+    assert e.byproduct_revenue_per_day == pytest.approx(10000.0 * f)
+    cost = demand.unit_cost(ev, e)
+    costs = e.input_cost_per_day + e.export_tax_per_day + e.import_tax_per_day + e.freight_per_day + e.setup_per_day
+    assert cost == pytest.approx((costs - e.byproduct_revenue_per_day) / e.output_units_per_day)
+    # Quantity-share of total revenue would treat the bulky cheap surplus as
+    # most of the colony's income and drive the product cost far below this.
+    old_credit = e.revenue_per_day * (10000.0 / 10010.0)
+    assert old_credit > e.byproduct_revenue_per_day * 1.5
+    assert cost > (costs - old_credit) / e.output_units_per_day
+
+
 # ----------------------------------------------------------- profitability
 def test_profitability_rows_have_verdicts():
     out = pa.do_profitability(cfg=_cfg())

@@ -102,7 +102,7 @@ export default function PiSettings() {
       </SimpleGrid>
 
       <Title order={6} c="dimmed" tt="uppercase" mt="md">Manual fallbacks</Title>
-      <Text size="xs" c="dimmed">Used for characters whose skills are not shared with Planetary Industry, and when no character is available.</Text>
+      <Text size="xs" c="dimmed">Used when no character shares Skills with Planetary Industry.</Text>
       <SimpleGrid cols={{ base: 1, xs: 2, sm: 4 }}>
         {num('pi_planets_per_character', 'Planets per character', { min: 1, max: 6 })}
         {num('pi_characters', 'Characters', { min: 1, max: 100 })}
@@ -145,7 +145,7 @@ export default function PiSettings() {
                 </Table.Tr>
               ))}
               {chars.characters.length === 0 && (
-                <Table.Tr><Table.Td colSpan={5}><Text c="dimmed" size="sm">No character with a token; manual values apply.</Text></Table.Td></Table.Tr>
+                <Table.Tr><Table.Td colSpan={5}><Text c="dimmed" size="sm">No character shares Skills with Planetary Industry; manual values apply.</Text></Table.Td></Table.Tr>
               )}
             </Table.Tbody>
           </Table>

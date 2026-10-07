@@ -24,17 +24,15 @@ CandidatesFn = Callable[[str, int], list[Evaluation]]
 
 def unit_cost(ev: Evaluation, e: econ.Economics) -> Optional[float]:
     """PI cost per unit of the product: every cost of the colony, minus what
-    its by-products (surplus intermediates) sell for, divided by the product
-    output."""
+    its priced by-products actually sell for, divided by the product output.
+    By-product credit is their own revenue (`byproduct_revenue_per_day`), not
+    a share of colony revenue weighted by unit count - a few expensive units
+    next to a large pile of cheap surplus would otherwise look free."""
     units = e.output_units_per_day
     if units <= 0:
         return None
     costs = e.input_cost_per_day + e.export_tax_per_day + e.import_tax_per_day + e.freight_per_day + e.setup_per_day
-    product = ev.design.product_type_id
-    exports_total = sum(ev.exports.values()) or 1.0
-    by_product_share = 1.0 - ev.exports.get(product, 0.0) / exports_total
-    by_product_value = e.revenue_per_day * by_product_share
-    return (costs - by_product_value) / units
+    return (costs - e.byproduct_revenue_per_day) / units
 
 
 def demand_rows(static: StaticData, buy_list: dict[int, float], prices: econ.Prices,

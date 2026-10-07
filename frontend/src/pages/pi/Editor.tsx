@@ -24,7 +24,7 @@ export interface EditorOpenState {
   planet_id?: number
   radius_km?: number
   name?: string
-  source?: 'generated' | 'paste'
+  source?: 'generated' | 'paste' | 'esi'
 }
 
 const W = 900
@@ -67,7 +67,7 @@ export default function Editor() {
   const [idx, setIdx] = useState(0)
   const [original, setOriginal] = useState<PiLayoutPayload | null>(null)
   const [baselineJson, setBaselineJson] = useState<string | null>(null)
-  const [source, setSource] = useState<'generated' | 'paste'>(openState?.source ?? 'paste')
+  const [source, setSource] = useState<'generated' | 'paste' | 'esi'>(openState?.source ?? 'paste')
   const [name, setName] = useState(openState?.name ?? '')
   const [busy, setBusy] = useState(false)
   const [lastRefusal, setLastRefusal] = useState<string | null>(null)
