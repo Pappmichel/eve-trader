@@ -2128,6 +2128,7 @@ export interface PiEconomics {
   worth_it: boolean
   reason: string | null
   missing_prices: Array<{ type_id: number; name: string }>
+  unpriced_surplus: Array<{ type_id: number; name: string }>
 }
 
 export interface PiPlannerResult {
@@ -2281,6 +2282,67 @@ export interface PiSettings {
   pi_customs_code_expertise_level: number
   pi_reference_radius_km: number
   pi_demand_days: number
+}
+
+export interface PiColonyExtractor {
+  pin_id: number
+  product_type_id: number | null
+  product_name: string | null
+  heads: number
+  hours_left: number | null
+  expired: boolean
+  per_head_per_hour: number
+  rate_source: 'esi' | 'expired' | 'assumption'
+}
+
+export interface PiColonyProjection {
+  age_hours: number | null
+  uncertain: boolean
+  extractors: PiColonyExtractor[]
+  storage_m3: number
+  stored_m3: number
+  hours_until_full: number | null
+  hours_until_inputs_empty: number | null
+  inputs_empty_type: string | null
+  idle_factories: Array<{ pin: number; product_name: string | null }>
+  product_name: string | null
+  chain: string | null
+  skipped_routes: number
+  cc_bypassed: number
+}
+
+export interface PiColonyView {
+  planet_id: number
+  planet_name: string | null
+  planet_type: string | null
+  zone: string
+  upgrade_level: number | null
+  radius_km: number | null
+  last_update: string | null
+  template_available: boolean
+  projection: PiColonyProjection
+}
+
+export interface PiColoniesCharacter {
+  character_id: number
+  character_name: string
+  state: 'ok' | 'not_shared' | 'reauth_needed' | 'not_synced'
+  detail?: string | null
+  synced_at: string | null
+  colonies: PiColonyView[]
+}
+
+export interface PiColonies {
+  characters: PiColoniesCharacter[]
+  shared: boolean
+  now: string
+}
+
+export interface PiCalibration {
+  min_samples: number
+  sample_count: number
+  zones: Array<{ zone: string; count: number; median: number | null; default: number; active: boolean }>
+  p0: Array<{ type_id: number; name: string | null; count: number; median: number | null }>
 }
 
 export interface PiCharacters {

@@ -28,6 +28,7 @@ from dataclasses import dataclass, replace
 from typing import Callable, Optional
 
 from .. import constants as C
+from .. import decay
 from ..engine import made_in
 from ..model import CHAINS, Design, StaticData, factory_kind_for_tier
 from . import validate
@@ -118,7 +119,7 @@ def _pins_for(static: StaticData, design: Design) -> list[_Spec]:
 
 def build_layout(static: StaticData, design: Design, planet_type_id: int, radius_km: float,
                  yield_per_head: float, comment: str = "",
-                 cells_fn: CellProvider = standard_cells) -> Layout:
+                 cells_fn: CellProvider = standard_cells, cycle_seconds: int = 3600) -> Layout:
     """Pins, links and routes for `design` - not yet validated."""
     specs = _pins_for(static, design)
     if not specs:
@@ -209,7 +210,7 @@ def build_layout(static: StaticData, design: Design, planet_type_id: int, radius
     for i, s in enumerate(specs):
         if s.role == "ecu":
             routes.append(Route(tuple(x + 1 for x in path_to(i, core)),
-                                float(max(1, int(s.heads * yield_per_head))), s.product))
+                                decay.ecu_route_quantity(s.heads, yield_per_head, cycle_seconds), s.product))
 
     pins = tuple(Pin(type_id=type_ids[i], la=positions[i][0], lo=positions[i][1],
                      product=specs[i].product, heads=specs[i].heads)
@@ -267,15 +268,15 @@ def _shrink(static: StaticData, design: Design) -> Optional[Design]:
     return None
 
 
-def _attempt(static, design, planet_type_id, radius_km, yield_per_head, comment, cells_fn):
-    layout = build_layout(static, design, planet_type_id, radius_km, yield_per_head, comment, cells_fn)
-    analysis = validate.analyse(static, layout, radius_km, yield_per_head)
+def _attempt(static, design, planet_type_id, radius_km, yield_per_head, comment, cells_fn, cycle_seconds):
+    layout = build_layout(static, design, planet_type_id, radius_km, yield_per_head, comment, cells_fn, cycle_seconds)
+    analysis = validate.analyse(static, layout, radius_km, yield_per_head, cycle_seconds=cycle_seconds)
     for _ in range(3):
         leveled = _set_link_levels(static, layout, analysis)
         if leveled is layout:
             break
         layout = leveled
-        analysis = validate.analyse(static, layout, radius_km, yield_per_head)
+        analysis = validate.analyse(static, layout, radius_km, yield_per_head, cycle_seconds=cycle_seconds)
     errors = [f for f in analysis.findings if f.severity == validate.ERROR]
     return layout, analysis, errors
 
@@ -293,7 +294,7 @@ def _grow(static: StaticData, design: Design, target: Design) -> Optional[Design
 
 def generate(static: StaticData, design: Design, planet_type_id: int, radius_km: float,
              yield_per_head: float, comment: str = "", cells_fn: CellProvider = standard_cells,
-             shrink_to_fit: bool = True) -> GenerateResult:
+             shrink_to_fit: bool = True, cycle_seconds: int = 3600) -> GenerateResult:
     """Lay out `design`, set link levels for the real loads, and - if exact
     link costs push it over the Command Center budget - drop structures until
     it fits, then add factories back one at a time while it still fits
@@ -304,7 +305,8 @@ def generate(static: StaticData, design: Design, planet_type_id: int, radius_km:
     # shrink: proportional to the overshoot, so a far-too-big design converges fast
     while True:
         iterations += 1
-        layout, analysis, errors = _attempt(static, current, planet_type_id, radius_km, yield_per_head, comment, cells_fn)
+        layout, analysis, errors = _attempt(
+            static, current, planet_type_id, radius_km, yield_per_head, comment, cells_fn, cycle_seconds)
         if not errors:
             break
         budget_only = all(f.code in ("cpu", "power") for f in errors)
@@ -328,7 +330,8 @@ def generate(static: StaticData, design: Design, planet_type_id: int, radius_km:
         bigger = _grow(static, current, design)
         if bigger is None:
             break
-        b_layout, b_analysis, b_errors = _attempt(static, bigger, planet_type_id, radius_km, yield_per_head, comment, cells_fn)
+        b_layout, b_analysis, b_errors = _attempt(
+            static, bigger, planet_type_id, radius_km, yield_per_head, comment, cells_fn, cycle_seconds)
         iterations += 1
         if b_errors:
             break

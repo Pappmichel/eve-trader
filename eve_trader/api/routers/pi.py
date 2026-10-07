@@ -129,6 +129,7 @@ class LayoutBody(BaseModel):
     planet_id: Optional[int] = None
     radius_km: Optional[float] = Field(default=None, gt=0, le=1_000_000)
     yield_per_head: Optional[float] = Field(default=None, ge=0)
+    program_hours: Optional[float] = Field(default=None, gt=0, le=336)
 
 
 @router.post("/layouts/validate")

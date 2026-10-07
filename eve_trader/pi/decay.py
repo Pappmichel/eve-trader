@@ -75,6 +75,16 @@ def program_ratio(program_hours: float, reference_hours: float = C.REFERENCE_PRO
     return _noise_free_average(program_hours, decay_factor) / _noise_free_average(reference_hours, decay_factor)
 
 
+def ecu_route_quantity(heads: int, per_head_per_hour: float, cycle_seconds: int) -> float:
+    """Units an extractor route moves each cycle: heads times one cycle of
+    the hourly planning yield. Route quantity in a template is per cycle, not
+    per hour (PI_PLAN 6A.1). At a 1 h cycle the two numbers match; a 2 h
+    cycle must carry twice the hourly figure or half the output stays in the
+    extractor."""
+    per_cycle = float(per_head_per_hour) * max(int(cycle_seconds), 1) / 3600.0
+    return float(max(1, int(heads * per_cycle)))
+
+
 def per_head_per_hour(qty_per_cycle: int, cycle_seconds: int, program_seconds: float, heads: int) -> float:
     """Average units per head per hour of a real program, with noise - the
     calibration figure (P-54/P-64)."""

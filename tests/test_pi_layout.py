@@ -150,6 +150,30 @@ def test_generated_layouts_pass_the_validator(sd, chain, product, pt, radius):
     _check_generated(sd, chain, _id(sd, product), pt, radius)
 
 
+def test_extractor_route_quantity_follows_the_program_cycle(sd):
+    from eve_trader.pi import decay
+
+    assert decay.cycle_seconds_for_program(72) == 3600
+    assert decay.cycle_seconds_for_program(120) == 7200
+    assert decay.ecu_route_quantity(2, 1000, 3600) == 2000
+    assert decay.ecu_route_quantity(2, 767, 7200) == 3068
+
+    ev, _ = engine.search_best(sd, Planet(2016, 8000.0), "P0-P1", _id(sd, "Bacteria"), 4,
+                               engine.Assumptions(1000, 120, 24))
+    assert ev is not None and ev.design.ecus
+    cycle = decay.cycle_seconds_for_program(120)
+    res = generate.generate(sd, ev.design, 2016, 8000.0, 1000.0, cycle_seconds=cycle)
+    ecu_routes = [
+        r for r in res.layout.routes
+        if sd.structures[res.layout.pins[r.path[0] - 1].type_id].kind == C.KIND_ECU
+    ]
+    assert ecu_routes
+    for r in ecu_routes:
+        src = res.layout.pins[r.path[0] - 1]
+        assert r.quantity == decay.ecu_route_quantity(src.heads, 1000.0, cycle)
+        assert r.quantity == pytest.approx(src.heads * 1000.0 * 2, abs=src.heads)
+
+
 def test_generator_is_deterministic(sd):
     ev, _ = engine.search_best(sd, Planet(2016, 5000.0), "P1-P3", _id(sd, "Robotics"), 5, A)
     one = generate.generate(sd, ev.design, 2016, 5000.0, A.effective_yield)

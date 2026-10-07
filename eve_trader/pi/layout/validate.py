@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Mapping, Optional
 
 from .. import constants as C
 from ..model import StaticData, StructureSpec
@@ -80,11 +80,20 @@ def _round5(x: float) -> float:
 
 
 def analyse(static: StaticData, layout: Layout, radius_km: Optional[float] = None,
-            yield_per_head: float = 2000.0, no_import: frozenset = frozenset()) -> Analysis:
+            yield_per_head: float = 2000.0, no_import: frozenset = frozenset(),
+            *, yield_by_pin: Optional[Mapping[int, float]] = None,
+            cycle_seconds: Optional[int] = None,
+            cycle_by_pin: Optional[Mapping[int, int]] = None) -> Analysis:
     """Full analysis. `radius_km` = the planet the colony is checked for;
     without it, half the template's own Diam (P-23). `no_import`: commodities
     the throughput may not haul in (what the colony is meant to extract or
-    make itself) - by default any hub may import anything it routes out."""
+    make itself) - by default any hub may import anything it routes out.
+
+    `yield_by_pin` (1-based pin -> P0 per head per hour) overrides
+    `yield_per_head` for those extractors. `cycle_seconds` / `cycle_by_pin`
+    are the extractor program's cycle length: route quantity is per cycle, so
+    the hourly cap is quantity x (3600 / cycle). Without a cycle length the
+    route quantity cannot be turned into an hourly rate."""
     a = Analysis()
     radius = radius_km if radius_km else (layout.diameter_km / 2.0 if layout.diameter_km else 5000.0)
     if not radius_km:
@@ -189,7 +198,7 @@ def analyse(static: StaticData, layout: Layout, radius_km: Optional[float] = Non
                           route=r_i)
                     break
 
-    _throughput(static, layout, a, yield_per_head, no_import)
+    _throughput(static, layout, a, yield_per_head, no_import, yield_by_pin, cycle_seconds, cycle_by_pin)
 
     # --- link loads from the solved route flows
     for k, cap in enumerate(a.link_capacity_m3h):
@@ -217,8 +226,32 @@ def _same_kind_allowed(static: StaticData, spec: StructureSpec, s) -> bool:
     return False
 
 
+def _pin_yield(pin: int, yield_per_head: float, yield_by_pin: Optional[Mapping[int, float]]) -> float:
+    if yield_by_pin and pin in yield_by_pin:
+        return float(yield_by_pin[pin])
+    return yield_per_head
+
+
+def _pin_cycle(pin: int, cycle_seconds: Optional[int], cycle_by_pin: Optional[Mapping[int, int]]) -> Optional[int]:
+    if cycle_by_pin and pin in cycle_by_pin:
+        return int(cycle_by_pin[pin])
+    return cycle_seconds
+
+
+def _ecu_hourly_cap(heads: int, per_head: float, quantity: float, cycle: Optional[int]) -> float:
+    """P0 per hour an extractor route can move: the program's yield, and,
+    when the cycle length is known, also the route's per-cycle quantity."""
+    hourly = max(0.0, heads * per_head)
+    if cycle and cycle > 0:
+        hourly = min(hourly, quantity * (3600.0 / cycle))
+    return hourly
+
+
 def _throughput(static: StaticData, layout: Layout, a: Analysis, yield_per_head: float,
-                no_import: frozenset = frozenset()) -> None:
+                no_import: frozenset = frozenset(),
+                yield_by_pin: Optional[Mapping[int, float]] = None,
+                cycle_seconds: Optional[int] = None,
+                cycle_by_pin: Optional[Mapping[int, int]] = None) -> None:
     """Steady-state LP. Variables: runs/h per factory, flow/h per route,
     import/h per (hub, commodity) for commodities a route takes out of a hub.
     Maximise tier-weighted runs; imports cost a little so on-planet supply is
@@ -265,7 +298,10 @@ def _throughput(static: StaticData, layout: Layout, a: Analysis, yield_per_head:
             r = layout.routes[v[1] - 1]
             src_kind = a.kinds[r.path[0] - 1]
             if src_kind == C.KIND_ECU:
-                cap = pins[r.path[0] - 1].heads * yield_per_head
+                src = r.path[0]
+                cap = _ecu_hourly_cap(
+                    pins[src - 1].heads, _pin_yield(src, yield_per_head, yield_by_pin), r.quantity,
+                    _pin_cycle(src, cycle_seconds, cycle_by_pin))
             elif src_kind in C.FACTORY_KINDS and schem.get(r.path[0]):
                 cap = None  # bounded by production
             else:
@@ -295,7 +331,7 @@ def _throughput(static: StaticData, layout: Layout, a: Analysis, yield_per_head:
         by_node_commodity[key][idx[("export", key)]] -= 1.0
     ecu_supply: dict[tuple[int, int], float] = {}
     for e in ecus:
-        ecu_supply[(e, pins[e - 1].product)] = pins[e - 1].heads * yield_per_head
+        ecu_supply[(e, pins[e - 1].product)] = pins[e - 1].heads * _pin_yield(e, yield_per_head, yield_by_pin)
     for (node, t), coeffs in by_node_commodity.items():
         row = np.zeros(nvar)
         for j, c in coeffs.items():

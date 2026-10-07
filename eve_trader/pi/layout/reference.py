@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Optional
 
 from .. import constants as C
+from .. import decay
 from ..engine import made_in
 from ..model import Design, StaticData
 from . import validate
@@ -137,7 +138,7 @@ def map_products(static: StaticData, ref_top: int, ref_made: set[int], ref_local
 
 # ------------------------------------------------------------ adaptation
 def adapt(static: StaticData, ref: Reference, design: Design, planet_type_id: int, radius_km: float,
-          yield_per_head: float, comment: str = "") -> Optional[Layout]:
+          yield_per_head: float, comment: str = "", cycle_seconds: int = 3600) -> Optional[Layout]:
     """The reference rebuilt for `design`'s product on `planet_type_id`, not
     yet validated - or None when its recipe tree does not fit."""
     lay = ref.layout
@@ -173,7 +174,8 @@ def adapt(static: StaticData, ref: Reference, design: Design, planet_type_id: in
         if commodity is None:
             return None
         routes.append(replace(r, commodity=commodity,
-                              quantity=_route_quantity(static, pins, r.path, commodity, r.quantity, yield_per_head)))
+                              quantity=_route_quantity(static, pins, r.path, commodity, r.quantity,
+                                                       yield_per_head, cycle_seconds)))
     return Layout(
         cc_level=design.cc_level,
         comment=safe_comment(comment or f"{design.chain} {static.name(design.product_type_id)}"),
@@ -184,10 +186,10 @@ def adapt(static: StaticData, ref: Reference, design: Design, planet_type_id: in
 
 
 def _route_quantity(static: StaticData, pins: list[Pin], path: tuple[int, ...], commodity: int,
-                    old_qty: float, yield_per_head: float) -> float:
+                    old_qty: float, yield_per_head: float, cycle_seconds: int = 3600) -> float:
     """Per-cycle quantity for the new recipe: what the destination factory
     consumes, what the source factory makes, or what the source extractor
-    yields; hub-to-hub routes keep theirs."""
+    yields in one program cycle; hub-to-hub routes keep theirs."""
     src, dst = pins[path[0] - 1], pins[path[-1] - 1]
     if _kind(static, dst.type_id) in C.FACTORY_KINDS:
         s = static.schematic_by_output.get(dst.product)
@@ -197,7 +199,7 @@ def _route_quantity(static: StaticData, pins: list[Pin], path: tuple[int, ...], 
     if _kind(static, src.type_id) in C.FACTORY_KINDS and src.product == commodity:
         return float(static.schematic_by_output[commodity].output_qty)
     if _kind(static, src.type_id) == C.KIND_ECU:
-        return float(max(1, int(src.heads * yield_per_head)))
+        return decay.ecu_route_quantity(src.heads, yield_per_head, cycle_seconds)
     return float(old_qty)
 
 
@@ -246,17 +248,17 @@ def self_supplied(static: StaticData, design: Design) -> frozenset:
 
 
 def settle(static: StaticData, layout: Layout, radius_km: float, yield_per_head: float,
-           local: frozenset = frozenset()) -> tuple[Layout, validate.Analysis]:
+           local: frozenset = frozenset(), cycle_seconds: int = 3600) -> tuple[Layout, validate.Analysis]:
     """Link levels for the real loads, then the final analysis."""
     from .generate import _set_link_levels
 
-    analysis = validate.analyse(static, layout, radius_km, yield_per_head, local)
+    analysis = validate.analyse(static, layout, radius_km, yield_per_head, local, cycle_seconds=cycle_seconds)
     for _ in range(3):
         leveled = _set_link_levels(static, layout, analysis)
         if leveled is layout:
             break
         layout = leveled
-        analysis = validate.analyse(static, layout, radius_km, yield_per_head, local)
+        analysis = validate.analyse(static, layout, radius_km, yield_per_head, local, cycle_seconds=cycle_seconds)
     return layout, analysis
 
 
@@ -361,14 +363,14 @@ def _switch(static: StaticData, layout: Layout, pin: int, model: int) -> Optiona
     return replace(layout, pins=pins, routes=tuple(routes))
 
 
-def _add_head(layout: Layout, ecu: int, yield_per_head: float) -> Optional[Layout]:
+def _add_head(layout: Layout, ecu: int, yield_per_head: float, cycle_seconds: int = 3600) -> Optional[Layout]:
     p = layout.pins[ecu - 1]
     if p.heads >= C.MAX_EXTRACTOR_HEADS:
         return None
     heads = p.heads + 1
     pins = tuple(replace(q, heads=heads) if i == ecu else q for i, q in enumerate(layout.pins, start=1))
-    routes = tuple(replace(r, quantity=float(max(1, int(heads * yield_per_head)))) if r.path[0] == ecu else r
-                   for r in layout.routes)
+    qty = decay.ecu_route_quantity(heads, yield_per_head, cycle_seconds)
+    routes = tuple(replace(r, quantity=qty) if r.path[0] == ecu else r for r in layout.routes)
     return replace(layout, pins=pins, routes=routes)
 
 
@@ -432,28 +434,33 @@ def rebalance(static: StaticData, layout: Layout, design: Design) -> Layout:
     return layout
 
 
-def _ecu_quantities(static: StaticData, layout: Layout, yield_per_head: float) -> Layout:
+def _ecu_quantities(static: StaticData, layout: Layout, yield_per_head: float,
+                    cycle_seconds: int = 3600) -> Layout:
     """Extractor routes carry heads x yield per cycle (the editor's reconnect
     uses a flat figure)."""
-    routes = tuple(replace(r, quantity=float(max(1, int(layout.pins[r.path[0] - 1].heads * yield_per_head))))
-                   if _kind(static, layout.pins[r.path[0] - 1].type_id) == C.KIND_ECU else r
-                   for r in layout.routes)
+    routes = tuple(
+        replace(r, quantity=decay.ecu_route_quantity(layout.pins[r.path[0] - 1].heads, yield_per_head, cycle_seconds))
+        if _kind(static, layout.pins[r.path[0] - 1].type_id) == C.KIND_ECU else r
+        for r in layout.routes)
     return replace(layout, routes=routes)
 
 
-def _without_hub(static: StaticData, layout: Layout, hub: int, yield_per_head: float) -> Optional[Layout]:
+def _without_hub(static: StaticData, layout: Layout, hub: int, yield_per_head: float,
+                 cycle_seconds: int = 3600) -> Optional[Layout]:
     """`hub` removed; what hung off it is linked to the nearest remaining
     hub (or factory) and re-routed - the editor's remove-and-reconnect."""
     from .edit import EditError, apply
 
     try:
-        return _ecu_quantities(static, apply(static, layout, {"op": "remove", "pin": hub}), yield_per_head)
+        return _ecu_quantities(static, apply(static, layout, {"op": "remove", "pin": hub}), yield_per_head,
+                                cycle_seconds)
     except EditError:
         return None
 
 
 def prune(static: StaticData, layout: Layout, analysis: validate.Analysis, product: int, radius_km: float,
-          yield_per_head: float, interval_hours: float, local: frozenset) -> tuple[Layout, validate.Analysis]:
+          yield_per_head: float, interval_hours: float, local: frozenset,
+          cycle_seconds: int = 3600) -> tuple[Layout, validate.Analysis]:
     """Drop what the colony does not need at our yields and collection
     interval, one structure at a time, as long as the effective output stays:
     leaf factories no route passes through (a reference built for a richer
@@ -480,13 +487,13 @@ def prune(static: StaticData, layout: Layout, analysis: validate.Analysis, produ
         if len(hubs) > 1:
             core = max(hubs, key=lambda i: (len(nb[i]), -i))
             for i in sorted((h for h in hubs if h != core), key=lambda i: (len(nb[i]), i)):
-                tries.append(lambda i=i, lay=layout: _without_hub(static, lay, i, yield_per_head))
+                tries.append(lambda i=i, lay=layout: _without_hub(static, lay, i, yield_per_head, cycle_seconds))
         done = False
         for attempt in tries:
             cand = attempt()
             if cand is None:
                 continue
-            cand, cand_analysis = settle(static, cand, radius_km, yield_per_head, local)
+            cand, cand_analysis = settle(static, cand, radius_km, yield_per_head, local, cycle_seconds)
             if cand_analysis.ok and effective_output(cand_analysis, product, interval_hours) >= out - 1e-9:
                 layout, analysis, done = cand, cand_analysis, True
                 break
@@ -496,7 +503,7 @@ def prune(static: StaticData, layout: Layout, analysis: validate.Analysis, produ
 
 def grow(static: StaticData, layout: Layout, analysis: validate.Analysis, product: int, radius_km: float,
          yield_per_head: float, interval_hours: float, local: frozenset,
-         max_steps: int = MAX_GROW_STEPS) -> tuple[Layout, validate.Analysis]:
+         max_steps: int = MAX_GROW_STEPS, cycle_seconds: int = 3600) -> tuple[Layout, validate.Analysis]:
     """One step at a time - the one that raises the score most and still
     validates - until nothing fits or helps: add a factory (a copy of one
     per made product), an extractor (a copy, heads included) or an extractor
@@ -511,7 +518,7 @@ def grow(static: StaticData, layout: Layout, analysis: validate.Analysis, produc
                 seen.add(p.product)
                 moves.append(lambda i=i, lay=layout: _add_factory(static, lay, i))
             elif kind == C.KIND_ECU:
-                moves.append(lambda i=i, lay=layout: _add_head(lay, i, yield_per_head))
+                moves.append(lambda i=i, lay=layout: _add_head(lay, i, yield_per_head, cycle_seconds))
                 if ("ecu", p.product) not in seen:
                     seen.add(("ecu", p.product))
                     moves.append(lambda i=i, lay=layout: _add_factory(static, lay, i))
@@ -520,7 +527,7 @@ def grow(static: StaticData, layout: Layout, analysis: validate.Analysis, produc
             cand = move()
             if cand is None:
                 continue
-            cand, cand_analysis = settle(static, cand, radius_km, yield_per_head, local)
+            cand, cand_analysis = settle(static, cand, radius_km, yield_per_head, local, cycle_seconds)
             if not cand_analysis.ok:
                 continue
             cand_score = _score(static, cand_analysis, product, interval_hours)
@@ -544,7 +551,7 @@ def _distance(static: StaticData, ref: Reference, design: Design) -> int:
 
 def from_references(static: StaticData, design: Design, planet_type_id: int, radius_km: float,
                     yield_per_head: float, interval_hours: float, comment: str = "",
-                    references: Optional[list[Reference]] = None) -> Optional[ReferenceResult]:
+                    references: Optional[list[Reference]] = None, cycle_seconds: int = 3600) -> Optional[ReferenceResult]:
     refs = load() if references is None else references
     # What the colony extracts or makes may not be hauled in - otherwise the
     # throughput LP would feed a reference's factories from the launchpad.
@@ -557,7 +564,8 @@ def from_references(static: StaticData, design: Design, planet_type_id: int, rad
         return effective_output(a, product, interval_hours)
 
     def balanced(layout: Layout, analysis: validate.Analysis) -> tuple[Layout, validate.Analysis]:
-        cand, cand_analysis = settle(static, rebalance(static, layout, design), radius_km, yield_per_head, local)
+        cand, cand_analysis = settle(static, rebalance(static, layout, design), radius_km, yield_per_head, local,
+                                     cycle_seconds)
         if cand_analysis.ok and out(cand_analysis) >= out(analysis):
             return cand, cand_analysis
         return layout, analysis
@@ -566,10 +574,10 @@ def from_references(static: StaticData, design: Design, planet_type_id: int, rad
     for ref in ranked:
         if len(candidates) >= MAX_ANALYSED:
             break
-        layout = adapt(static, ref, design, planet_type_id, radius_km, yield_per_head, comment)
+        layout = adapt(static, ref, design, planet_type_id, radius_km, yield_per_head, comment, cycle_seconds)
         if layout is None:
             continue
-        layout, analysis = settle(static, layout, radius_km, yield_per_head, local)
+        layout, analysis = settle(static, layout, radius_km, yield_per_head, local, cycle_seconds)
         if not analysis.ok:
             continue
         layout, analysis = balanced(layout, analysis)
@@ -578,11 +586,13 @@ def from_references(static: StaticData, design: Design, planet_type_id: int, rad
     candidates.sort(key=lambda c: -out(c[2]))
     best: Optional[ReferenceResult] = None
     for ref, layout, analysis in candidates[:MAX_GROWN]:
-        layout, analysis = prune(static, layout, analysis, product, radius_km, yield_per_head, interval_hours, local)
+        layout, analysis = prune(static, layout, analysis, product, radius_km, yield_per_head, interval_hours, local,
+                                 cycle_seconds)
         # Growing can add intermediate factories the last step then cannot
         # use; balance again and grow into whatever that frees.
         for _ in range(2):
-            layout, analysis = grow(static, layout, analysis, product, radius_km, yield_per_head, interval_hours, local)
+            layout, analysis = grow(static, layout, analysis, product, radius_km, yield_per_head, interval_hours,
+                                    local, cycle_seconds=cycle_seconds)
             layout, analysis = balanced(layout, analysis)
         if best is None or out(analysis) > best.effective_output + 1e-9:
             best = ReferenceResult(layout, analysis, design_of(static, layout, design.chain, product), ref, out(analysis))

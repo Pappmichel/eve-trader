@@ -12,6 +12,7 @@ const TABS = [
   { path: '/pi/chains', label: 'Chains' },
   { path: '/pi/templates', label: 'Templates' },
   { path: '/pi/plans', label: 'Plans' },
+  { path: '/pi/colonies', label: 'Colonies' },
   { path: '/pi/demand', label: 'Production demand' },
   { path: '/pi/settings', label: 'Settings' },
 ]
@@ -34,8 +35,9 @@ export default function PiLayout() {
             <Title order={6} c="dimmed" tt="uppercase" mb="xs">About</Title>
             <Text size="xs" c="dimmed">
               Which planetary industry is worth building: profitability per product, a colony planner, system
-              analysis, chains and importable templates. Planet slots and Command Center level come from your
-              characters when you share Skills with Planetary Industry on the Characters page, otherwise from Settings.
+              analysis, chains and importable templates. Colonies lists the planets synced from EVE. Planet slots
+              and Command Center level come from characters that share Skills with Planetary Industry; otherwise
+              the manual counts in Settings apply.
             </Text>
           </div>
 

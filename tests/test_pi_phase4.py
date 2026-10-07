@@ -140,13 +140,46 @@ def test_fetcher_propagates_other_errors_without_writing(monkeypatch):
 
 # ----------------------------------------------------------------- colony views / actions
 def test_colony_views_project_a_converted_colony(sd, sde_lookups):
+    from eve_trader.pi import decay
+
     (v,) = pa.colony_views(sd, [_row()], PiConfig(), NOW)
     assert v["planet_name"] == "Jita IV" and v["zone"] == "highsec" and v["planet_type_id"] == 2016
     assert v["template_available"] is True
     ext = v["projection"]["extractors"][0]
     assert ext["pin_id"] == 3 and ext["hours_left"] == pytest.approx(10.0) and not ext["expired"]
+    assert ext["rate_source"] == "esi"
+    assert ext["per_head_per_hour"] == pytest.approx(decay.per_head_per_hour(600, 1800, 48 * 3600, 2))
     assert v["projection"]["age_hours"] == pytest.approx(2.0)
     assert v["colony"].layout.cc_level == 5 and len(v["colony"].layout.pins) == 2
+
+
+def test_expired_extractor_contributes_no_yield(sd, sde_lookups):
+    (v,) = pa.colony_views(sd, [_row(expiry_hours=-1)], PiConfig(), NOW)
+    ext = v["projection"]["extractors"][0]
+    assert ext["expired"] is True and ext["rate_source"] == "expired"
+    assert ext["per_head_per_hour"] == 0.0
+
+
+def test_command_center_route_is_rewritten_onto_the_remaining_pins(sd):
+    from eve_trader.pi import colonies
+
+    raw = _esi_colony()
+    raw["links"] = [
+        {"source_pin_id": 1, "destination_pin_id": 2, "link_level": 0},
+        {"source_pin_id": 1, "destination_pin_id": 3, "link_level": 0},
+    ]
+    raw["routes"] = [
+        {"source_pin_id": 3, "destination_pin_id": 2, "waypoints": [1], "quantity": 600, "content_type_id": 2272},
+        {"source_pin_id": 1, "destination_pin_id": 1, "waypoints": [], "quantity": 1, "content_type_id": 2272},
+    ]
+    colony = colonies.esi_to_layout(sd, raw, 2016, 5000.0)
+    assert colony.cc_bypassed == 1 and colony.skipped_routes == 1
+    assert len(colony.layout.routes) == 1
+    route = colony.layout.routes[0]
+    assert route.quantity == 600
+    # CC dropped: launchpad is pin 1, extractor is pin 2.
+    assert route.path == (2, 1)
+    assert any({lk.a, lk.b} == {1, 2} for lk in colony.layout.links)
 
 
 def test_do_colonies_reports_each_character_state_and_stores_samples(sd, sde_lookups, monkeypatch):

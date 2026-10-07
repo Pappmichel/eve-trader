@@ -265,10 +265,16 @@ def test_characters_overview_manual_fallbacks():
     out = skills.characters_overview(cfg, [{"character_id": 1, "character_name": "A"},
                                            {"character_id": 2, "character_name": "B"}],
                                      [{"owner_id": 1, "skill_id": 2495, "active_level": 5}])
-    a, b = out["characters"]
-    assert a["source"] == "esi" and a["planets"] == 6 and a["cc_level"] == 0
-    assert b["source"] == "manual" and (b["planets"], b["cc_level"], b["customs_code_expertise"]) == (4, 3, 2)
-    assert out["total_slots"] == 10 and out["max_cc_level"] == 3
+    # B has a token but does not share skills, so it is not given the manual
+    # planet count or Command Center level.
+    assert len(out["characters"]) == 1
+    a = out["characters"][0]
+    assert a["character_id"] == 1 and a["source"] == "esi" and a["planets"] == 6 and a["cc_level"] == 0
+    assert out["total_slots"] == 6 and out["max_cc_level"] == 0 and out["character_count"] == 1
+
+    tokens_only = skills.characters_overview(cfg, [{"character_id": 2, "character_name": "B"}], [])
+    assert tokens_only["characters"] == [] and tokens_only["total_slots"] == 12
+    assert tokens_only["character_count"] == 3 and tokens_only["max_cc_level"] == 3
 
     none = skills.characters_overview(cfg, [], [])
     assert none["characters"] == [] and none["total_slots"] == 12 and none["character_count"] == 3

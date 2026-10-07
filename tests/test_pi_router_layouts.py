@@ -49,7 +49,8 @@ def test_validate_layout(monkeypatch):
     monkeypatch.setattr(pi_actions, "do_validate_layout", lambda **kw: seen.update(kw) or {"analysis": {"ok": True}})
     r = client.post("/api/pi/layouts/validate", json={"template": "{}", "radius_km": 3000})
     assert r.status_code == 200 and r.json() == {"analysis": {"ok": True}}
-    assert seen == {"template": "{}", "planet_id": None, "radius_km": 3000, "yield_per_head": None}
+    assert seen == {"template": "{}", "planet_id": None, "radius_km": 3000, "yield_per_head": None,
+                    "program_hours": None}
     assert client.post("/api/pi/layouts/validate", json={"template": {}, "radius_km": -1}).status_code == 422
     assert client.post("/api/pi/layouts/validate", json={}).status_code == 422
     monkeypatch.setattr(pi_actions, "do_validate_layout", _boom)

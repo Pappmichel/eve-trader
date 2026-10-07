@@ -1,7 +1,7 @@
 """PI-relevant character skills (D3): planets per character (Interplanetary
 Consolidation), maximum Command Center level (Command Center Upgrades) and
-Customs Code Expertise - from ESI for characters whose `skills` are shared
-with the `pi` tool, manual settings for everyone else.
+Customs Code Expertise. Only characters whose `skills` are shared with the
+`pi` tool count. When none do, the manual settings apply.
 """
 from __future__ import annotations
 
@@ -50,27 +50,33 @@ def character_capacity(levels: Optional[dict[str, int]], cfg: PiConfig) -> dict:
 
 
 def characters_overview(cfg: PiConfig, token_characters: list[dict], esi_rows: list[dict]) -> dict:
-    """One entry per character with a token (ESI values where shared, the
-    manual fallback otherwise) plus the slot total used by chains/system
-    analysis. Without any token character the manual `pi_characters` x
-    `pi_planets_per_character` applies."""
+    """Characters that share skills with Planetary Industry, plus the slot
+    total used by chains and system analysis. A token character whose skills
+    are not shared is left out: giving every alt the manual planet count and
+    Command Center level counted trading characters as PI colonies. When
+    nobody shares skills, the manual `pi_characters` x
+    `pi_planets_per_character` applies and the character list stays empty."""
     levels = skill_levels_from_rows(esi_rows)
     characters = []
     for c in token_characters:
         cid = int(c["character_id"])
-        cap = character_capacity(levels.get(cid), cfg)
+        if cid not in levels:
+            continue
+        cap = character_capacity(levels[cid], cfg)
         characters.append({"character_id": cid, "character_name": c.get("character_name"), **cap})
     if characters:
         slots = sum(c["planets"] for c in characters)
-        cc_levels = [c["cc_level"] for c in characters]
+        max_cc = max(c["cc_level"] for c in characters)
+        count = len(characters)
     else:
         slots = int(cfg.pi_characters) * int(cfg.pi_planets_per_character)
-        cc_levels = [int(cfg.pi_cc_level)]
+        max_cc = int(cfg.pi_cc_level)
+        count = int(cfg.pi_characters)
     return {
         "characters": characters,
         "total_slots": slots,
-        "max_cc_level": max(cc_levels) if cc_levels else int(cfg.pi_cc_level),
-        "character_count": len(characters) or int(cfg.pi_characters),
+        "max_cc_level": max_cc,
+        "character_count": count,
     }
 
 

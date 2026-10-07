@@ -339,6 +339,11 @@ export default function Planner() {
           {eco.missing_prices.length > 0 && (
             <Text size="sm" c="warn">No market price for: {eco.missing_prices.map((m) => m.name).join(', ')}</Text>
           )}
+          {eco.unpriced_surplus.length > 0 && (
+            <Text size="sm" c="dimmed">
+              Left on the planet (no buyer, not hauled): {eco.unpriced_surplus.map((m) => m.name).join(', ')}
+            </Text>
+          )}
 
           <SectionTitle>Template and plan</SectionTitle>
           <Group align="flex-end">
