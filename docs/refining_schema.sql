@@ -111,6 +111,8 @@ CREATE TABLE IF NOT EXISTS ore_shortlist_snapshot (
 );
 -- GitHub issue #222: the hub each row was priced at (the winning hub in All-hubs mode).
 ALTER TABLE ore_shortlist_snapshot ADD COLUMN IF NOT EXISTS hub_region_id BIGINT;
+-- Highest hub buy price per unit that still breaks even (mirrors shortlist_snapshot's column).
+ALTER TABLE ore_shortlist_snapshot ADD COLUMN IF NOT EXISTS breakeven_buy_price DOUBLE PRECISION;
 CREATE INDEX IF NOT EXISTS idx_ore_shortlist_snapshot_tenant ON ore_shortlist_snapshot (tenant_id);
 ALTER TABLE ore_shortlist_snapshot ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON ore_shortlist_snapshot;

@@ -143,7 +143,7 @@ def do_refresh_ore_shortlist(trading_cfg: TradingConfig = TRADING_CONFIG,
 def _row_to_tuple(r: OreShortlistRow) -> tuple:
     return (r.item_id, r.item, r.family, r.is_ice, r.active, r.volume_m3, r.landed_cost, r.yield_pct,
             r.mineral_value, r.refining_tax, r.net_sell, r.sell_listed_qty, r.profit_per_unit, r.margin,
-            r.profit_per_m3, r.decision, r.hub_region_id)
+            r.profit_per_m3, r.decision, r.hub_region_id, r.breakeven_buy_price)
 
 
 def do_deactivate_ore_shortlist_items(item_ids: list[int]) -> dict:

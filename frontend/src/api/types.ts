@@ -1206,6 +1206,8 @@ export interface OreShortlistRow {
   // Hub the ore was priced at; the winning hub when the tool is set to "All hubs" (GitHub issue #222).
   hub_region_id: number | null
   hub_name: string | null
+  // Highest hub buy price per unit that still breaks even after broker fee, freight, structure sale haircut and refining tax.
+  breakeven_buy_price: number | null
 }
 
 export interface RefinableMineral {

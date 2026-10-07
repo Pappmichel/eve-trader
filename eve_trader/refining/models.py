@@ -54,6 +54,7 @@ class OreShortlistRow:
     profit_per_m3: Optional[float]
     decision: str
     hub_region_id: Optional[int] = None  # hub the ore was priced at (issue #222; the winning hub in All-hubs mode)
+    breakeven_buy_price: Optional[float] = None  # highest hub price per unit that still breaks even
 
 
 # ------------------------------------------- Mineral Shopping List (issue #93)
