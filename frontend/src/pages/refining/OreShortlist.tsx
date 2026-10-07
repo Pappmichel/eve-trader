@@ -71,6 +71,7 @@ export default function OreShortlist() {
     { header: 'Profit / Unit', accessorKey: 'profit_per_unit', size: 120, cell: (i) => isk(i.getValue()) },
     { header: 'Profit / m³', accessorKey: 'profit_per_m3', size: 110, cell: (i) => qty(i.getValue()) },
     { header: `Cost (${hub})`, accessorKey: 'landed_cost', size: 120, cell: (i) => isk(i.getValue()) },
+    { header: `Breakeven Buy (${hub})`, accessorKey: 'breakeven_buy_price', size: 150, cell: (i) => isk(i.getValue()) },
     { header: 'Mineral Value (C-J)', accessorKey: 'net_sell', size: 150, cell: (i) => isk(i.getValue()) },
     { header: 'Refining Tax', accessorKey: 'refining_tax', size: 110, cell: (i) => isk(i.getValue()) },
     ...(allHubs ? [{ header: 'Best hub', accessorKey: 'hub_name', size: 100, cell: (i: any) => i.getValue() ?? '–' }] : []),

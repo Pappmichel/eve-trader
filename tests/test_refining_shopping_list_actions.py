@@ -425,7 +425,7 @@ def test_refresh_ore_shortlist_all_hubs_stores_the_winning_hub(sde, candidates, 
     actions.do_refresh_ore_shortlist(trading_cfg, RefiningConfig(hub_region_id=0))
 
     row = saved["rows"][0]
-    assert row[-1] == AMARR          # hub_region_id is the last tuple column
+    assert row[16] == AMARR          # hub_region_id (breakeven_buy_price follows it)
     assert row[6] == pytest.approx(9.15)  # landed_cost
     assert row[11] == 1e6            # sell_listed_qty from the winning hub's stats
     assert 0 not in hub_esi

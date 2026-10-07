@@ -129,6 +129,11 @@ def evaluate_ore_item(candidate: OreCandidate, active: bool,
     profit_per_portion = net_sell - landed_cost_per_portion
     profit_per_unit = profit_per_portion / portion_size
     margin = profit_per_portion / landed_cost_per_portion if landed_cost_per_portion else None
+    # Solves net_sell / portion_size = price * (1 + broker fee) + freight for
+    # price - same definition as Trading's shortlist.py breakeven_buy_price.
+    freight = trading_cfg.import_cost_per_m3 if freight_per_m3 is None else freight_per_m3
+    breakeven_buy_price = ((net_sell / portion_size - candidate.volume_m3 * freight)
+                           / (1 + trading_cfg.jita_buy_broker_fee))
     profit_per_m3 = (profit_per_unit / candidate.volume_m3) if candidate.volume_m3 else None
 
     # min_profit_threshold is a per-unit figure (matches shortlist.py's own
@@ -145,6 +150,7 @@ def evaluate_ore_item(candidate: OreCandidate, active: bool,
         mineral_value=mineral_value, refining_tax=refining_tax, net_sell=net_sell,
         sell_listed_qty=sell_listed_qty, profit_per_unit=profit_per_unit, margin=margin,
         profit_per_m3=profit_per_m3, decision=decision, hub_region_id=hub_region_id,
+        breakeven_buy_price=breakeven_buy_price,
     )
 
 

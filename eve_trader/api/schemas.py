@@ -475,6 +475,7 @@ class OreShortlistRow(_Base):
     decision: str
     hub_region_id: Optional[int] = None
     hub_name: Optional[str] = None
+    breakeven_buy_price: Optional[float] = None
 
 
 class ReprocessingQuoteRow(_Base):

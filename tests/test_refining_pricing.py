@@ -69,6 +69,31 @@ def test_evaluate_ore_item_profitable_is_import(monkeypatch, trading_cfg, refini
     assert row.margin is not None and row.margin > trading_cfg.min_margin_threshold
 
 
+def test_evaluate_ore_item_breakeven_buy_price_gives_zero_profit(monkeypatch, trading_cfg, refining_cfg):
+    monkeypatch.setattr(storage, "get_portion_size", lambda type_id: 100)
+    monkeypatch.setattr(storage, "get_type_materials", lambda type_id: [(35, 415.0)])
+    tritanium = OrderStats(sell_percentile=10.0, sell_volume=1_000_000.0, buy_percentile=None, buy_volume=0.0)
+    jita = OrderStats(sell_percentile=1.0, sell_volume=5000.0, buy_percentile=None, buy_volume=0.0)
+    row = evaluate_ore_item(_candidate(volume_m3=0.001), True, jita, {35: tritanium}, trading_cfg, refining_cfg)
+
+    # net_sell per unit = 1958.84 / 100; breakeven = (19.5884 - 0.001 x 900) / 1.0147
+    assert row.breakeven_buy_price == pytest.approx((row.net_sell / 100 - 0.9) / 1.0147)
+    # Buying at exactly the breakeven price yields zero profit.
+    at_breakeven = OrderStats(sell_percentile=row.breakeven_buy_price, sell_volume=5000.0,
+                              buy_percentile=None, buy_volume=0.0)
+    row2 = evaluate_ore_item(_candidate(volume_m3=0.001), True, at_breakeven, {35: tritanium},
+                             trading_cfg, refining_cfg)
+    assert row2.profit_per_unit == pytest.approx(0.0, abs=1e-9)
+
+
+def test_evaluate_ore_item_breakeven_buy_price_none_without_mineral_data(monkeypatch, trading_cfg, refining_cfg):
+    monkeypatch.setattr(storage, "get_portion_size", lambda type_id: 100)
+    monkeypatch.setattr(storage, "get_type_materials", lambda type_id: [(35, 415.0)])
+    jita = OrderStats(sell_percentile=1000.0, sell_volume=5000.0, buy_percentile=None, buy_volume=0.0)
+    row = evaluate_ore_item(_candidate(), True, jita, {}, trading_cfg, refining_cfg)
+    assert row.breakeven_buy_price is None
+
+
 def test_evaluate_ore_item_min_profit_threshold_is_compared_per_unit_not_per_portion(monkeypatch, refining_cfg):
     # Real bug found in code review: _decision used to receive profit_per_
     # PORTION instead of profit_per_unit, making a per-unit threshold
