@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Alert, Group, Select, Stack, Table, Text } from '@mantine/core'
+import { useDebouncedValue } from '@mantine/hooks'
+import { Alert, Group, NumberInput, Select, Stack, Table, Text } from '@mantine/core'
 
 import { piApi } from '../../api/client'
 import type { PiChainNode, PiZone } from '../../api/types'
@@ -17,14 +18,18 @@ function flatten(node: PiChainNode, depth: number, out: Array<{ node: PiChainNod
 export default function Chains() {
   const { data: meta, error: metaError } = usePiMeta()
   const [product, setProduct] = useState<string | null>(null)
+  const [perHour, setPerHour] = useState<number | string>('')
   const [zone, setZone] = useState<PiZone | null>(null)
   const [cc, setCc] = useState<string | null>(null)
+  const liveRate = typeof perHour === 'number' && Number.isFinite(perHour) && perHour > 0 ? perHour : null
+  const [debouncedRate] = useDebouncedValue(liveRate, 400)
 
   const settings = usePiSettings()
   const { data, isFetching, error } = useQuery({
-    queryKey: ['pi', 'chain', product, zone, cc],
-    queryFn: () => piApi.chain(Number(product), zone ?? undefined, cc === null ? undefined : Number(cc)),
-    enabled: product !== null,
+    queryKey: ['pi', 'chain', product, zone, cc, debouncedRate],
+    queryFn: () => piApi.chain(Number(product), zone ?? undefined, cc === null ? undefined : Number(cc),
+      debouncedRate ?? undefined),
+    enabled: product !== null && debouncedRate !== null,
   })
 
   const items = (meta?.products ?? []).filter((p) => p.tier >= 2)
@@ -36,18 +41,24 @@ export default function Chains() {
       <Group align="flex-end">
         <Select label="Product (P2-P4)" searchable w={300} value={product} onChange={setProduct}
           data={items.map((p) => ({ value: String(p.type_id), label: `${p.name} (P${p.tier})` }))} />
+        <NumberInput label="Wanted output per hour" description="Sizes the chain and the system plan" w={200}
+          min={0} decimalScale={4} value={perHour} onChange={setPerHour} />
         <Select label="Security zone" w={200} clearable placeholder={`Settings default (${zoneLabel(settings?.pi_zone)})`} data={ZONE_OPTIONS}
           value={zone} onChange={(v) => setZone(v as PiZone | null)} />
         <Select label="Command Center level" w={180} clearable placeholder="Settings default" data={CC_OPTIONS}
           value={cc} onChange={setCc} />
       </Group>
-      {isFetching && <Loading />}
+      {product !== null && liveRate === null && (
+        <Text size="sm" c="dimmed">Enter a wanted output per hour to size the chain.</Text>
+      )}
+      {(isFetching || (liveRate !== null && liveRate !== debouncedRate)) && <Loading />}
       {error ? <QueryError error={error} /> : null}
 
-      {data && !isFetching && (
+      {data && !isFetching && liveRate !== null && debouncedRate === liveRate && (
         <Stack>
           {!data.feasible && <Alert color="warn">Part of this chain cannot be built with the current settings.</Alert>}
           <SectionTitle>Chain tree</SectionTitle>
+          <Text size="xs" c="dimmed">Sized to {num(data.per_hour, 4)} per hour. Security zone and Command Center apply to this tree.</Text>
           <Table withRowBorders={false} verticalSpacing={3}>
             <Table.Thead>
               <Table.Tr>
@@ -99,7 +110,7 @@ export default function Chains() {
           </Table>
         </Stack>
       )}
-      <ChainPlanner productId={product === null ? null : Number(product)} />
+      <ChainPlanner productId={product === null ? null : Number(product)} targetPerHour={liveRate} />
     </Stack>
   )
 }

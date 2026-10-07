@@ -492,11 +492,15 @@ def do_planner(chain: str, product_type_id: int, planet_id: Optional[int] = None
 
 # ------------------------------------------------------------------ chains
 def do_chain(product_type_id: int, zone: Optional[str] = None, cc_level: Optional[int] = None,
-             cfg: PiConfig = PI_CONFIG) -> dict:
+             per_hour: Optional[float] = None, cfg: PiConfig = PI_CONFIG) -> dict:
     static = _static()
     product = int(product_type_id)
     if product not in static.commodities or static.tier(product) == 0:
         raise ActionError("Choose a P1-P4 product")
+    if per_hour is not None:
+        per_hour = float(per_hour)
+        if not math.isfinite(per_hour) or not 0 < per_hour <= 1_000_000:
+            raise ActionError("Wanted output per hour must be a positive number up to 1,000,000")
     z = _zone_or_default(zone, cfg)
     lv = _cc_level(cc_level, cfg)
     a = _assumptions(cfg, z)
@@ -520,7 +524,7 @@ def do_chain(product_type_id: int, zone: Optional[str] = None, cc_level: Optiona
                 found = ev
         return (found, None) if found else (None, "No planet type carries the P0")
 
-    result = chains_mod.chain_plan(static, product, best, extract, prices, m)
+    result = chains_mod.chain_plan(static, product, best, extract, prices, m, per_hour=per_hour)
     result["zone"] = z
     result["cc_level"] = lv
     return result

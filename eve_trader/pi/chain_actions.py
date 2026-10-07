@@ -5,6 +5,7 @@ prices and settings through the helpers in actions.py."""
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Optional
 
 from ..actions import ActionError
@@ -72,6 +73,7 @@ def plan_dict(static, plan: cp.ChainPlan, virtual: bool, planet_types: dict[int,
         "top_types": [{"type_id": t, "name": static.name(t), "tier": static.tier(t)} for t in plan.top_type_ids],
         "target_units_per_day": plan.target_units_per_day,
         "max_target_units_per_day": plan.max_target_units_per_day,
+        "requested_units_per_day": plan.requested_units_per_day,
         "profit_per_day": plan.profit_per_day,
         "profit_per_slot": plan.profit_per_slot,
         "used_slots": plan.used_slots,
@@ -110,16 +112,25 @@ def plan_dict(static, plan: cp.ChainPlan, virtual: bool, planet_types: dict[int,
 def do_chain_plan(product_type_id: int, solar_system_id: Optional[int] = None,
                   characters: Optional[list[dict]] = None, cc_level: Optional[int] = None,
                   owner_tax_rate: Optional[float] = None, allow_buy: bool = False,
-                  cfg: PiConfig = PI_CONFIG) -> dict[str, Any]:
+                  target_per_hour: Optional[float] = None, cfg: PiConfig = PI_CONFIG) -> dict[str, Any]:
     """Plan a whole chain for one product (P1-P4) in one system: which
     character puts which colony on which planet. Without a system: a generic
-    plan over one virtual planet per type (median radius, any number)."""
+    plan over one virtual planet per type (median radius, any number).
+
+    `target_per_hour` sizes the plan to that output. None keeps the
+    maximum the slots can make."""
     static = actions._static()
     product = int(product_type_id)
     if product not in static.commodities or (static.tier(product) or 0) < 1:
         raise ActionError("Choose a P1-P4 product")
     if owner_tax_rate is not None and not 0 <= float(owner_tax_rate) <= 1:
         raise ActionError("Owner tax rate must be between 0 and 1")
+    target_per_day = None
+    if target_per_hour is not None:
+        target_per_hour = float(target_per_hour)
+        if not math.isfinite(target_per_hour) or not 0 < target_per_hour <= 1_000_000:
+            raise ActionError("Wanted output per hour must be a positive number up to 1,000,000")
+        target_per_day = target_per_hour * 24.0
     specs = _characters(characters, cc_level, cfg)
 
     system_info: Optional[dict] = None
@@ -151,7 +162,7 @@ def do_chain_plan(product_type_id: int, solar_system_id: Optional[int] = None,
     market = cp.build_market(static, prices, m)
     try:
         plan = cp.plan_chain(static, product, planets, specs, options, market, allow_buy=bool(allow_buy),
-                             unlimited_planets=virtual)
+                             unlimited_planets=virtual, target_per_day=target_per_day)
     except ValueError as e:
         raise ActionError(str(e)) from e
     result = plan_dict(static, plan, virtual, {p.planet_id: p.planet_type_id for p in planets})

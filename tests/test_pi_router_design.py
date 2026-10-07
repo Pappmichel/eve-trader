@@ -73,10 +73,13 @@ def test_chain_plan(monkeypatch):
         "characters": [{"name": "Main", "planets": 6, "cc_level": 5}], "owner_tax_rate": 0.05})
     assert r.status_code == 200
     assert seen["product_type_id"] == 2867 and seen["allow_buy"] is False and seen["cc_level"] is None
+    assert seen["target_per_hour"] is None
     assert seen["characters"][0]["planets"] == 6 and seen["characters"][0]["cc_level"] == 5
     for bad in ({"product_type_id": 2867, "characters": [{"planets": 7, "cc_level": 5}]},
                 {"product_type_id": 2867, "characters": [{"planets": 1, "cc_level": 6}]},
-                {"product_type_id": 2867, "owner_tax_rate": 1.5}):
+                {"product_type_id": 2867, "owner_tax_rate": 1.5},
+                {"product_type_id": 2867, "target_per_hour": 0},
+                {"product_type_id": 2867, "target_per_hour": 1_000_001}):
         assert client.post("/api/pi/design/chain-plan", json=bad).status_code == 422
     monkeypatch.setattr(chain_actions, "do_chain_plan", _boom)
     r = client.post("/api/pi/design/chain-plan", json={"product_type_id": 2867})

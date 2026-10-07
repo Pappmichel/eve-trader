@@ -2,13 +2,14 @@
 
 For a target product of tier T, the classic split is one planet type per
 stage: P0->P1 extraction planets feed P1->P2 factory planets, which feed
-P2->P3, then P3->P4. Starting from one top-stage colony, each stage below is
-sized to what the stage above imports (fractional planet counts, rounded up
-for display). Every stage's colony is costed with the same economics as a
-standalone colony, except that goods passed between own stages are valued
-at the market price on both ends (opportunity cost): a P2 colony fed by own
-P1 is only worth what it adds over selling that P1 (jwebbdev's
-"chains look 2-5x better than they are" lesson).
+P2->P3, then P3->P4. The top stage is sized to a wanted output per hour
+(or to one colony when none is given); each stage below is sized to what
+the stage above imports (fractional planet counts, rounded up for display).
+Every stage's colony is costed with the same economics as a standalone
+colony, except that goods passed between own stages are valued at the
+market price on both ends (opportunity cost): a P2 colony fed by own P1 is
+only worth what it adds over selling that P1 (jwebbdev's "chains look 2-5x
+better than they are" lesson).
 """
 from __future__ import annotations
 
@@ -83,10 +84,14 @@ def _walk(node: StageNode):
 
 
 def chain_plan(static: StaticData, product: int, best: BestFn, extract: ExtractFn,
-               prices: econ.Prices, settings: econ.MarketSettings) -> dict:
+               prices: econ.Prices, settings: econ.MarketSettings,
+               per_hour: Optional[float] = None) -> dict:
     """The full chain down to extraction, plus "stop at tier k" summaries:
-    planets needed and profit per planet per day if you sell at that tier."""
-    root = _stage(static, product, 0.0, best, extract, prices, settings)
+    planets needed and profit per planet per day if you sell at that tier.
+
+    `per_hour` sizes the top stage to that output. None keeps one top colony."""
+    root = _stage(static, product, 0.0 if per_hour is None else float(per_hour),
+                  best, extract, prices, settings)
     nodes = list(_walk(root))
     feasible = all(math.isfinite(n.colonies) for n in nodes)
 
@@ -123,6 +128,7 @@ def chain_plan(static: StaticData, product: int, best: BestFn, extract: ExtractF
     return {
         "product_type_id": product,
         "product_name": static.name(product),
+        "per_hour": per_hour,
         "feasible": feasible,
         "tree": root.to_dict(static),
         "stop_at": summaries,

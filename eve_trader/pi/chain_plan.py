@@ -55,8 +55,12 @@ Forcing the target - lexicographic, two solves:
              intermediates when that is cheaper (e.g. it frees slots for
              more top-stage colonies) - every such purchase is reported.
 
-So the plan always produces the most target the system can make, and profit
-only decides *how*. Intermediates are never sold at the expense of the target:
+So the plan produces the most target the system can make, and profit only
+decides *how*, unless `target_per_day` is set. Then phase B holds output at
+that rate (or at the maximum, when the slots cannot reach it) and profit
+decides how to hit it. Production of each top good is capped at the rate.
+Other goods may overshoot by at most one colony's output, because extractors
+are whole colonies. Intermediates are never sold at the expense of the target:
 selling one below T_A is impossible, and the settlement (`_evaluate`) uses
 own output internally first and sells only what is left over once every
 consumer in the system is fed (the stage above is saturated). If the system
@@ -195,6 +199,7 @@ class ChainPlan:
     purchases: list[Purchase]
     characters: list[dict]
     notes: list[str] = field(default_factory=list)
+    requested_units_per_day: Optional[float] = None
 
     @property
     def free_slots(self) -> int:
@@ -418,7 +423,7 @@ class _Model:
             self.integrality[col] = 1
 
     # -------------------------------------------------------------- rows
-    def _rows(self, tops: Mapping[int, float]):
+    def _rows(self, tops: Mapping[int, float], t_cap: Optional[float] = None):
         n, nt, opts = self.n, len(self.types), self.options
         exp = np.zeros((nt, n))
         imp = np.zeros((nt, n))
@@ -440,6 +445,25 @@ class _Model:
             row[self.col_t] = q
             ub.append(row)
             bub.append(0.0)
+        if t_cap is not None:
+            # Pin each top good at the requested rate. A factory's run level
+            # is continuous, so this can hit the rate; the slack covers
+            # solver tolerance.
+            for t, q in tops.items():
+                row = exp[self.t_index[t]].copy()
+                ub.append(row)
+                bub.append(float(q) * float(t_cap) * (1 + 1e-6) + 1e-6)
+            # Other goods may exceed what the chain consumes by one colony
+            # (an extractor is all-or-nothing) and no more, so spare slots
+            # are not filled with a side business.
+            for t, k in self.t_index.items():
+                if t in tops:
+                    continue
+                one_colony = max((o.exports.get(t, 0.0) for o in opts), default=0.0)
+                if one_colony <= _EPS:
+                    continue
+                ub.append(exp[k] - imp[k])
+                bub.append(float(one_colony))
         for gi, g in enumerate(self.groups):
             row = np.zeros(n)
             for (g2, _oi), col in self.x.items():
@@ -498,7 +522,8 @@ class _Model:
                     prev = row
         return np.vstack(ub), np.array(bub), (np.vstack(eq) if eq else None), (np.array(beq) if eq else None)
 
-    def _bounds(self, buyable: Callable[[int], bool], t_floor: Optional[float]):
+    def _bounds(self, buyable: Callable[[int], bool], t_floor: Optional[float],
+                t_cap: Optional[float] = None):
         bounds: list[tuple[float, Optional[float]]] = [(0.0, None)] * self.n
         for (gi, _oi), col in self.x.items():
             g = self.groups[gi]
@@ -509,12 +534,16 @@ class _Model:
             v = self.values.get(t)
             bounds[self.col_s + k] = (0.0, None) if v is not None and v > 0 else (0.0, 0.0)
             bounds[self.col_b + k] = (0.0, None) if buyable(t) else (0.0, 0.0)
-        bounds[self.col_t] = (0.0 if t_floor is None else t_floor, None)
+        lo = 0.0 if t_floor is None else t_floor
+        if t_cap is not None and lo > t_cap:
+            lo = t_cap
+        bounds[self.col_t] = (lo, t_cap)
         return bounds
 
     def solve(self, tops: Mapping[int, float], buyable: Callable[[int], bool], phase: str,
-              t_floor: Optional[float], time_limit_s: float) -> tuple[Optional[np.ndarray], str]:
-        a_ub, b_ub, a_eq, b_eq = self._rows(tops)
+              t_floor: Optional[float], time_limit_s: float,
+              t_cap: Optional[float] = None) -> tuple[Optional[np.ndarray], str]:
+        a_ub, b_ub, a_eq, b_eq = self._rows(tops, t_cap)
         c = np.zeros(self.n)
         if phase == "A":
             c[self.col_t] = -1.0
@@ -526,9 +555,14 @@ class _Model:
                     c[self.col_s + k] = -v
                 if cost is not None:
                     c[self.col_b + k] = cost
+        # HiGHS presolve marks a feasible capped model infeasible (a tight
+        # output cap plus integer colonies). Skip it only for that solve.
+        options = {"time_limit": max(0.1, float(time_limit_s))}
+        if t_cap is not None:
+            options["presolve"] = False
         result = linprog(c, A_ub=a_ub, b_ub=b_ub, A_eq=a_eq, b_eq=b_eq,
-                         bounds=self._bounds(buyable, t_floor), method="highs",
-                         integrality=self.integrality, options={"time_limit": max(0.1, float(time_limit_s))})
+                         bounds=self._bounds(buyable, t_floor, t_cap), method="highs",
+                         integrality=self.integrality, options=options)
         if result.x is None:
             return None, (result.message or "no solution").strip()
         return result.x, ("optimal" if result.status == 0 else "time_limit")
@@ -625,7 +659,8 @@ def _run_levels(options: Sequence[ChainOption], counts: dict[tuple[int, int], in
     return runs
 
 
-def _greedy(options, groups, unlimited, max_rank, penalty, values, costs, buyable, tops, tier) -> _Sol:
+def _greedy(options, groups, unlimited, max_rank, penalty, values, costs, buyable, tops, tier,
+            goal: Optional[float] = None) -> _Sol:
     counts: dict[tuple[int, int], int] = {}
     scales: dict[int, list[float]] = {}
     used = [0] * len(groups)
@@ -640,6 +675,8 @@ def _greedy(options, groups, unlimited, max_rank, penalty, values, costs, buyabl
     current = _Eval(True, 0.0, 0.0, {})
     best_sol = _Sol({}, {}, {})
     while True:
+        if goal is not None and current.target >= goal - _TOL:
+            return best_sol
         best = None
         for gi, g in enumerate(groups):
             if used[gi] >= g.slots:
@@ -811,13 +848,21 @@ def plan_chain(static: StaticData, target: int, planets: Sequence[Planet], chara
                options: Sequence[ChainOption], market: Market, allow_buy: bool = True,
                extraction_repeat_penalty: float = DEFAULT_REPEAT_PENALTY,
                max_extraction_per_planet: int = DEFAULT_MAX_EXTRACTION_PER_PLANET,
-               unlimited_planets: bool = False, time_limit_s: float = DEFAULT_TIME_LIMIT_S) -> ChainPlan:
+               unlimited_planets: bool = False, time_limit_s: float = DEFAULT_TIME_LIMIT_S,
+               target_per_day: Optional[float] = None) -> ChainPlan:
     """Which character puts which colony on which planet so that `target`
     is made inside the system as far as possible (see the module docstring).
 
     `unlimited_planets`: every planet stands for any number of planets of
     its type (the generic view without a system) - no one-CC-per-planet
-    limit and no extraction repeat penalty."""
+    limit and no extraction repeat penalty.
+
+    `target_per_day`: produce this many units per day, then maximise profit.
+    None keeps the maximum-output plan. A request the slots cannot reach is
+    planned at that maximum and noted."""
+    if target_per_day is not None and (not math.isfinite(target_per_day) or target_per_day <= 0):
+        raise ValueError("target_per_day must be positive and finite")
+    requested = None if target_per_day is None else float(target_per_day)
     _validate(static, target, planets, characters, options, extraction_repeat_penalty,
               max_extraction_per_planet, time_limit_s)
     deadline = time.monotonic() + time_limit_s
@@ -838,7 +883,7 @@ def plan_chain(static: StaticData, target: int, planets: Sequence[Planet], chara
 
     def empty(note: str, mode: str = "target", tops: Optional[list] = None) -> ChainPlan:
         return ChainPlan("infeasible", target, mode, tops or [target], 0.0, 0.0, 0.0, 0.0, 0, slots,
-                         [], [], [], char_rows([]), notes + [note])
+                         [], [], [], char_rows([]), notes + [note], requested)
 
     if not characters:
         return empty("No characters available.")
@@ -914,8 +959,19 @@ def plan_chain(static: StaticData, target: int, planets: Sequence[Planet], chara
                      "(nothing of its tree can be made or bought).")
     mode = "target" if target in chosen_tops else "inputs"
 
-    # ---- phase B: most profitable plan that keeps the target at its maximum
-    if phase_a_policy is strict:
+    # ---- phase B: most profitable plan that keeps the target at its maximum,
+    # or at the requested rate when one was given.
+    t_cap: Optional[float] = None
+    if requested is not None and requested > t_max + _TOL:
+        notes.append(f"Requested {requested:g} units per day, but these slots can make at most {t_max:.6g}. "
+                     "The plan makes that maximum.")
+        floor = max(0.0, t_max * (1 - 1e-6) - 1e-6)
+    elif requested is not None:
+        notes.append(f"The plan stops at the requested {requested:g} units per day "
+                     f"(these slots could make up to {t_max:.6g}).")
+        floor = max(0.0, requested * (1 - 1e-6) - 1e-6)
+        t_cap = requested
+    elif phase_a_policy is strict:
         floor = max(0.0, t_max * (1 - 1e-6) - 1e-6)
     else:
         # Everything may be bought, so T is bounded only by the slots: forcing
@@ -929,7 +985,7 @@ def plan_chain(static: StaticData, target: int, planets: Sequence[Planet], chara
     status = "fallback"
     sol: Optional[_Sol] = None
     try:
-        xv, st = model.solve(chosen_tops, policy, "B", floor, budget())
+        xv, st = model.solve(chosen_tops, policy, "B", floor, budget(), t_cap)
         if xv is not None:
             cand = model.to_sol(xv)
             ev = _evaluate(usable, cand, values, costs, policy, chosen_tops)
@@ -942,7 +998,7 @@ def plan_chain(static: StaticData, target: int, planets: Sequence[Planet], chara
     if sol is None:
         solver_notes.append(f"Optimiser unavailable ({st}); showing a greedy plan instead.")
         sol = _greedy(usable, groups, unlimited_planets, max_rank, extraction_repeat_penalty,
-                      values, costs, policy, chosen_tops, tier)
+                      values, costs, policy, chosen_tops, tier, t_cap)
     elif status == "time_limit":
         solver_notes.append(f"Optimiser hit its {time_limit_s:g} s time limit; the plan is the best found, "
                             "not proven optimal.")
@@ -975,7 +1031,17 @@ def plan_chain(static: StaticData, target: int, planets: Sequence[Planet], chara
     if idle:
         notes.append("Some factory colonies run below capacity (not enough input); their designs are "
                      "resized to the rate they really run at.")
-    if used < slots:
+    if t_cap is not None and requested is not None and ev.target > requested * 1.05 + 1.0:
+        notes.append(f"The plan makes {ev.target:.6g} units per day, above the requested {requested:g}, "
+                     "because a colony cannot be split that finely.")
+    close_to_request = (
+        t_cap is not None and requested is not None
+        and ev.target + 1e-3 * max(1.0, requested) >= requested * (1 - 1e-3)
+        and ev.target <= requested * 1.05 + 1.0
+    )
+    if used < slots and close_to_request:
+        notes.append(f"{used} of {slots} slots used to reach the requested output.")
+    elif used < slots and t_cap is None:
         notes.append(f"{used} of {slots} slots used; more colonies would neither add {static.name(target)} "
                      "nor profit (planet, character or Command Center limits).")
     if ev.profit < 0:
@@ -985,7 +1051,7 @@ def plan_chain(static: StaticData, target: int, planets: Sequence[Planet], chara
         target_units_per_day=ev.target, max_target_units_per_day=t_max,
         profit_per_day=ev.profit, profit_per_slot=ev.profit / used if used else 0.0,
         used_slots=used, slots=slots, assignments=assignments, stages=stages, purchases=purchases,
-        characters=char_rows(assignments), notes=notes,
+        characters=char_rows(assignments), notes=notes, requested_units_per_day=requested,
     )
 
 

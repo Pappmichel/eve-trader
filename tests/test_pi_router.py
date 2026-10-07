@@ -67,7 +67,7 @@ def test_chain_and_systems(monkeypatch):
     monkeypatch.setattr(pi_actions, "do_search_systems", lambda query: seen.update(q=query) or [])
     monkeypatch.setattr(pi_actions, "do_system_planets", lambda solar_system_id: seen.update(sid=solar_system_id) or {})
     assert client.get("/api/pi/chain/2389?zone=nullsec").status_code == 200
-    assert seen["chain"] == {"product_type_id": 2389, "zone": "nullsec", "cc_level": None}
+    assert seen["chain"] == {"product_type_id": 2389, "zone": "nullsec", "cc_level": None, "per_hour": None}
     assert client.get("/api/pi/systems?q=jita").status_code == 200 and seen["q"] == "jita"
     assert client.get("/api/pi/systems/30000142").status_code == 200 and seen["sid"] == 30000142
     monkeypatch.setattr(pi_actions, "do_system_planets", _boom)
