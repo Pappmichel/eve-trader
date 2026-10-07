@@ -52,8 +52,10 @@ def post_planner(body: PlannerBody):
 
 
 @router.get("/chain/{product_type_id}")
-def get_chain(product_type_id: int, zone: Optional[str] = None, cc_level: Optional[int] = None):
-    return _wrap(pi_actions.do_chain, product_type_id=product_type_id, zone=zone, cc_level=cc_level)
+def get_chain(product_type_id: int, zone: Optional[str] = None, cc_level: Optional[int] = None,
+              per_hour: Optional[float] = None):
+    return _wrap(pi_actions.do_chain, product_type_id=product_type_id, zone=zone, cc_level=cc_level,
+                 per_hour=per_hour)
 
 
 @router.get("/systems")

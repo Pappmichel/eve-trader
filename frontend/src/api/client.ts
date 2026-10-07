@@ -900,8 +900,8 @@ export const piApi = {
   profitability: (zone?: string, ccLevel?: number) =>
     get<T.PiProfitability>(`/api/pi/profitability${piQuery({ zone, cc_level: ccLevel })}`),
   planner: (body: T.PiPlannerBody) => post<T.PiPlannerResult>('/api/pi/planner', body),
-  chain: (productTypeId: number, zone?: string, ccLevel?: number) =>
-    get<T.PiChainPlan>(`/api/pi/chain/${productTypeId}${piQuery({ zone, cc_level: ccLevel })}`),
+  chain: (productTypeId: number, zone?: string, ccLevel?: number, perHour?: number) =>
+    get<T.PiChainPlan>(`/api/pi/chain/${productTypeId}${piQuery({ zone, cc_level: ccLevel, per_hour: perHour })}`),
   searchSystems: (q: string) => get<T.PiSystemHit[]>(`/api/pi/systems${piQuery({ q })}`),
   systemPlanets: (id: number) => get<T.PiSystemPlanets>(`/api/pi/systems/${id}`),
   systemAnalysis: (id: number, body: {

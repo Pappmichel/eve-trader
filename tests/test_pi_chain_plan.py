@@ -263,3 +263,87 @@ def test_action_errors(patched):
     with pytest.raises(ActionError):
         chain_actions.do_chain_plan(MECHANICAL_PARTS, characters=[{"name": "x", "planets": 9, "cc_level": 5}],
                                     cfg=PiConfig())
+    with pytest.raises(ActionError, match="per hour"):
+        chain_actions.do_chain_plan(MECHANICAL_PARTS, target_per_hour=0, cfg=PiConfig())
+    with pytest.raises(ActionError, match="per hour"):
+        chain_actions.do_chain_plan(MECHANICAL_PARTS, target_per_hour=1_000_001, cfg=PiConfig())
+
+
+# ------------------------------------------------ requested output rate
+def _rate_options():
+    """Two full chains: each factory needs 1000 of each P1 per 25 units/day,
+    and each extractor makes 1000/day. Six planets, one colony each."""
+    def ext(key, planet, product):
+        return cp.ChainOption(key, planet, 4, "P0-P1", product, True, {product: 1000.0}, {}, 100.0, 50.0)
+
+    def fac(key, planet):
+        return cp.ChainOption(key, planet, 4, "P1-P2", MECHANICAL_PARTS, False, {MECHANICAL_PARTS: 25.0},
+                              {REACTIVE_METALS: 1000.0, PRECIOUS_METALS: 1000.0}, 200.0, 100.0)
+
+    return [ext("rm1", 1, REACTIVE_METALS), ext("pm1", 3, PRECIOUS_METALS),
+            ext("rm2", 2, REACTIVE_METALS), ext("pm2", 4, PRECIOUS_METALS),
+            fac("fac1", 5), fac("fac2", 6)]
+
+
+_RATE_PLANETS = [Planet(BARREN, 4000, i, f"P{i}") for i in range(1, 7)]
+_RATE_MARKET = Market(sell_value={MECHANICAL_PARTS: 1000.0, REACTIVE_METALS: 5.0, PRECIOUS_METALS: 5.0},
+                      buy_cost={REACTIVE_METALS: 10.0, PRECIOUS_METALS: 10.0}, freight_per_unit={})
+
+
+def test_requested_rate_hits_the_quantity_with_fewer_slots(sd):
+    # Six slots run two full chains (50/day). A request of 10/day is one
+    # factory at 40% plus the two extractors that feed it.
+    chars = [cp.CharacterSpec("a", "A", 6, 4)]
+    full = cp.plan_chain(sd, MECHANICAL_PARTS, _RATE_PLANETS, chars, _rate_options(), _RATE_MARKET, allow_buy=False)
+    assert full.requested_units_per_day is None
+    assert full.used_slots == 6
+    assert full.target_units_per_day == pytest.approx(50.0, rel=1e-3)
+
+    capped = cp.plan_chain(sd, MECHANICAL_PARTS, _RATE_PLANETS, chars, _rate_options(), _RATE_MARKET,
+                           allow_buy=False, target_per_day=10.0)
+    assert capped.status == "optimal"
+    assert capped.requested_units_per_day == pytest.approx(10.0)
+    assert capped.target_units_per_day == pytest.approx(10.0, rel=1e-3)
+    assert capped.max_target_units_per_day == pytest.approx(50.0, rel=1e-3)
+    assert capped.used_slots < full.used_slots
+    assert any("requested 10" in n for n in capped.notes)
+    fac = [a for a in capped.assignments if not a.is_extraction]
+    assert len(fac) == 1 and fac[0].run_level == pytest.approx(0.4, rel=1e-2)
+
+
+def test_requested_rate_above_the_maximum_plans_the_maximum(sd):
+    chars = [cp.CharacterSpec("a", "A", 6, 4)]
+    plan = cp.plan_chain(sd, MECHANICAL_PARTS, _RATE_PLANETS, chars, _rate_options(), _RATE_MARKET,
+                         allow_buy=False, target_per_day=1000.0)
+    assert plan.target_units_per_day == pytest.approx(50.0, rel=1e-3)
+    assert plan.requested_units_per_day == pytest.approx(1000.0)
+    assert plan.used_slots == 6
+    assert any("at most" in n for n in plan.notes)
+
+
+def test_requested_rate_still_caps_when_buying_is_allowed(sd):
+    chars = [cp.CharacterSpec("a", "A", 6, 4)]
+    plan = cp.plan_chain(sd, MECHANICAL_PARTS, _RATE_PLANETS, chars, _rate_options(), _RATE_MARKET,
+                         allow_buy=True, target_per_day=10.0)
+    assert plan.target_units_per_day == pytest.approx(10.0, rel=1e-3)
+    assert plan.used_slots < 6
+
+
+def test_greedy_fallback_stops_at_the_requested_rate(sd, monkeypatch):
+    def broken(*_a, **_k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(cp, "linprog", broken)
+    chars = [cp.CharacterSpec("a", "A", 6, 4)]
+    plan = cp.plan_chain(sd, MECHANICAL_PARTS, _RATE_PLANETS, chars, _rate_options(), _RATE_MARKET,
+                         allow_buy=False, target_per_day=10.0)
+    assert plan.status == "fallback"
+    assert plan.target_units_per_day == pytest.approx(25.0, rel=1e-3)   # one whole factory
+    assert plan.used_slots < 6
+    assert any("greedy" in n for n in plan.notes)
+
+
+def test_target_per_day_must_be_positive(sd):
+    chars = [cp.CharacterSpec("a", "A", 3, 4)]
+    with pytest.raises(ValueError, match="target_per_day"):
+        cp.plan_chain(sd, MECHANICAL_PARTS, PLANETS3, chars, _hand_options(), MARKET, target_per_day=0)

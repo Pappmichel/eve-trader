@@ -69,13 +69,22 @@ export function ChainPlanResultView({ result }: { result: PiChainPlanResult }) {
         <Badge variant="outline">{result.zone}</Badge>
       </Group>
       <SimpleGrid cols={{ base: 2, sm: 5 }}>
-        <Stat label="Target units / day" value={num(result.target_units_per_day, 1)}
-          hint={result.max_target_units_per_day !== null ? `Maximum possible: ${num(result.max_target_units_per_day, 1)}` : undefined} />
-        <Stat label="Max target units / day" value={num(result.max_target_units_per_day, 1)} />
+        <Stat label="Output / hour" value={num(result.target_units_per_day / 24, 2)}
+          hint={[
+            result.requested_units_per_day != null ? `Wanted ${num(result.requested_units_per_day / 24, 2)} /h` : null,
+            result.max_target_units_per_day != null ? `Maximum ${num(result.max_target_units_per_day / 24, 2)} /h` : null,
+          ].filter((s): s is string => s !== null).join(' · ') || undefined} />
+        <Stat label="Output / day" value={num(result.target_units_per_day, 1)} />
         <Stat label="Profit / day" value={iskPerDay(result.profit_per_day)} />
         <Stat label="Profit / slot / day" value={result.profit_per_slot === null ? '–' : iskPerDay(result.profit_per_slot)} />
         <Stat label="Slots used" value={`${result.used_slots} / ${result.slots}`} hint={`${result.free_slots} free`} />
       </SimpleGrid>
+      {result.requested_units_per_day != null && (
+        <Text size="sm">
+          Wanted {num(result.requested_units_per_day / 24, 2)} /h, making {num(result.target_units_per_day / 24, 2)} /h
+          {result.max_target_units_per_day != null ? ` (maximum ${num(result.max_target_units_per_day / 24, 2)} /h)` : ''}.
+        </Text>
+      )}
       {result.notes.map((n, i) => <Alert key={i} color="info" py={6}>{n}</Alert>)}
 
       <SectionTitle>Colonies per character</SectionTitle>
@@ -182,7 +191,7 @@ export function ChainPlanResultView({ result }: { result: PiChainPlanResult }) {
 
 let rowKey = 0
 
-export default function ChainPlanner({ productId }: { productId: number | null }) {
+export default function ChainPlanner({ productId, targetPerHour }: { productId: number | null; targetPerHour: number | null }) {
   const [system, setSystem] = useState<PiSystemHit | null>(null)
   const [manual, setManual] = useState(false)
   const [rows, setRows] = useState<CharRow[]>([{ key: rowKey++, name: 'Main', planets: 6, cc: 5 }])
@@ -191,7 +200,7 @@ export default function ChainPlanner({ productId }: { productId: number | null }
 
   const plan = useMutation({
     mutationFn: () => {
-      if (productId === null) throw new Error('Choose a product first')
+      if (productId === null || targetPerHour === null) throw new Error('Choose a product and a wanted output per hour')
       return piApi.chainPlan({
         product_type_id: productId,
         solar_system_id: system?.solar_system_id,
@@ -200,6 +209,7 @@ export default function ChainPlanner({ productId }: { productId: number | null }
           : undefined,
         owner_tax_rate: ownerTax === '' ? undefined : Number(ownerTax) / 100,
         allow_buy: allowBuy,
+        target_per_hour: targetPerHour,
       })
     },
   })
@@ -211,8 +221,9 @@ export default function ChainPlanner({ productId }: { productId: number | null }
     <Stack>
       <SectionTitle>Plan this chain in a system</SectionTitle>
       <Text size="xs" c="dimmed">
-        Spreads the whole chain (e.g. P0 to P4) over the planets of one system and your characters.
-        Without a system it plans over one generic planet of each type.
+        Finds the most profitable way to make the wanted output per hour: which colonies, on which planets,
+        for which characters. Pick a solar system to use its planets, or leave it empty for one generic planet
+        of each type. Owner tax, the character list and buying intermediates still apply.
       </Text>
       <Paper withBorder p="md">
         <Stack gap="sm">
@@ -248,8 +259,11 @@ export default function ChainPlanner({ productId }: { productId: number | null }
             onChange={(e) => setAllowBuy(e.currentTarget.checked)}
             description="Off: a real chain from P0, buying only what the system cannot make." />
           <Group>
-            <Button onClick={() => plan.mutate()} loading={plan.isPending} disabled={productId === null}>Plan chain</Button>
-            {productId === null && <Text size="xs" c="dimmed">Choose a product above first.</Text>}
+            <Button onClick={() => plan.mutate()} loading={plan.isPending}
+              disabled={productId === null || targetPerHour === null}>Plan chain</Button>
+            {(productId === null || targetPerHour === null) && (
+              <Text size="xs" c="dimmed">Choose a product and a wanted output per hour first.</Text>
+            )}
           </Group>
         </Stack>
       </Paper>

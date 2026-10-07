@@ -101,6 +101,7 @@ class ChainPlanBody(BaseModel):
     # False (default): a real chain from P0 - buy only what the system cannot
     # make at all. True: also buy intermediates when that pays more.
     allow_buy: bool = False
+    target_per_hour: Optional[float] = Field(default=None, gt=0, le=1_000_000)
 
 
 @router.post("/chain-plan")

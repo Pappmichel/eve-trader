@@ -183,6 +183,27 @@ def test_planner_explicit_design(sd):
     assert out["evaluation"]["fits"] is False
 
 
+def test_chain_scales_to_wanted_output_per_hour(sd):
+    coolant = _id(sd, "Coolant")
+    one = pa.do_chain(coolant, cfg=_cfg())
+    assert one["per_hour"] is None
+    per = one["tree"]["per_colony_per_hour"]
+    assert per > 0 and one["tree"]["colonies"] == pytest.approx(1.0)
+    rate = per * 2.5
+    scaled = pa.do_chain(coolant, per_hour=rate, cfg=_cfg())
+    assert scaled["per_hour"] == pytest.approx(rate)
+    assert scaled["tree"]["colonies"] == pytest.approx(2.5)
+    assert scaled["tree"]["children"]
+    for child, base in zip(scaled["tree"]["children"], one["tree"]["children"]):
+        assert child["colonies"] == pytest.approx(base["colonies"] * 2.5)
+    top = next(s for s in scaled["stop_at"] if s["tier"] == scaled["tree"]["tier"])
+    base_top = next(s for s in one["stop_at"] if s["tier"] == one["tree"]["tier"])
+    assert top["planets"] == pytest.approx(base_top["planets"] * 2.5)
+    for bad in (0, -1, 1_000_001, float("inf")):
+        with pytest.raises(ActionError, match="per hour"):
+            pa.do_chain(coolant, per_hour=bad, cfg=_cfg())
+
+
 def test_planner_validation_errors(sd):
     coolant = _id(sd, "Coolant")
     with pytest.raises(ActionError, match="Unknown chain"):

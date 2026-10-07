@@ -2198,6 +2198,7 @@ export interface PiChainNode {
 export interface PiChainPlan {
   product_type_id: number
   product_name: string
+  per_hour: number | null
   feasible: boolean
   tree: PiChainNode
   stop_at: Array<{
@@ -2509,6 +2510,7 @@ export interface PiChainPlanBody {
   cc_level?: number
   owner_tax_rate?: number
   allow_buy?: boolean
+  target_per_hour?: number
 }
 
 export interface PiChainAssignment {
@@ -2557,6 +2559,7 @@ export interface PiChainPlanResult {
   target_name: string
   target_units_per_day: number
   max_target_units_per_day: number | null
+  requested_units_per_day: number | null
   profit_per_day: number
   profit_per_slot: number | null
   used_slots: number
