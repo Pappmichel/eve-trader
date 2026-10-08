@@ -4761,6 +4761,274 @@ def test_invention_logistics_t1_buffer_still_demanded_when_no_inventions_queued(
     assert by_type[200].needed == 16.0
 
 
+def _fake_invention_result(t1_blueprint_type_id, decryptor="Parity", probability=1.0, output_runs=1.0):
+    return InventionResult(
+        t1_blueprint_type_id=t1_blueprint_type_id, t1_blueprint_name=f"Input{t1_blueprint_type_id}",
+        product_type_id=1, product_name="Product", decryptor=decryptor,
+        probability=probability, output_runs=output_runs, datacore_cost=0.0, decryptor_cost=0.0,
+        relic_cost=0.0, total_attempt_cost=0.0, expected_cost_per_success=0.0,
+        expected_cost_per_run=0.0, me=2, te=4, material_savings_per_run=0.0, net_cost_per_run=0.0,
+    )
+
+
+def _install_invention_buy_list_plan(monkeypatch, stock_targets, *, blueprint_for, chosen_for,
+                                      materials, datacores, station_stock, categories,
+                                      current_stock=None, manual_stock=None):
+    """Shared plan_production monkeypatches for the invention-on-buy-list
+    tests. `current_stock=None` leaves the real _current_stock in place
+    (the no-invention-station case, which must net against it)."""
+    monkeypatch.setattr(engine, "_PlanContext", _make_fake_plan_context(stock_targets, manual_stock))
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: blueprint_for(type_id))
+    monkeypatch.setattr(storage, "get_blueprint_materials",
+                         lambda blueprint_id, activity_id: materials(blueprint_id, activity_id))
+    monkeypatch.setattr(engine, "_unit_cost", lambda *a, **k: 100.0)
+    monkeypatch.setattr(engine, "_buy_or_build_decision", lambda *a, **k: "Build")
+    monkeypatch.setattr(engine, "_build_margin", lambda type_id, *a, **k: 1.0)
+    monkeypatch.setattr(engine, "margin_home", lambda *a, **k: 0.9)
+
+    def fake_mods(type_id, blueprint_id, *a, **k):
+        chosen = chosen_for(type_id)
+        return (1.0, 1.0, chosen.decryptor, chosen)
+    monkeypatch.setattr(engine, "_tech_ii_mods", fake_mods)
+    monkeypatch.setattr(storage, "get_invention_recipe",
+                         lambda t1_id, product_type_id=None: {"datacores": datacores(t1_id)})
+    monkeypatch.setattr(storage, "available_blueprint_copies", lambda *a, **k: 0.0)
+    monkeypatch.setattr(storage, "esi_stock_at_location",
+                         lambda type_id, location_id, **kwargs: station_stock(type_id, location_id))
+    monkeypatch.setattr(storage, "get_type_category", categories)
+    monkeypatch.setattr(storage, "get_sde_type",
+                         lambda type_id: (type_id, 1, f"Item{type_id}", 1.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "load_sde_category_names",
+                         lambda: {4: "Material", 9: "Blueprint", 34: "Ancient Relics"})
+    if current_stock is not None:
+        monkeypatch.setattr(engine, "_current_stock", current_stock)
+
+
+# ------------------------------------ invention inputs on the Buy List
+@pg_helpers.postgres_required()
+def test_plan_production_buy_list_includes_missing_datacores_and_decryptor(monkeypatch, tenant):
+    """A Tech II stock target's buffered invention demand (bpc_inventory x
+    the stock target) lands on the Buy List in the same quantity the
+    Logistics Invention table shows as missing. Confirmed with the user
+    2026-10-08: full buffer, and the two surfaces share one formula."""
+    from eve_trader.production.constants import DECRYPTORS
+    saved = []
+    monkeypatch.setattr(storage, "save_latest_buy_list", lambda rows: saved.append(list(rows)))
+    stock_targets = [(10, "T2 Widget", 10, 0, 0)]
+    _install_invention_buy_list_plan(
+        monkeypatch, stock_targets,
+        blueprint_for=lambda type_id: ("Tech II", (110, 1, 1.0)),
+        chosen_for=lambda type_id: _fake_invention_result(200, decryptor="Parity"),
+        materials=lambda blueprint_id, activity_id: [],
+        datacores=lambda t1_id: [(300, 2), (301, 3)],
+        station_stock=lambda type_id, location_id: 0.0,
+        categories=lambda type_id: 9,
+        current_stock=lambda *a, **k: 0.0,
+    )
+    cfg = ProductionConfig(invention_location_id=5000, bpc_inventory=4.0, min_margin=0.0)
+    result = engine.plan_production(cfg)
+
+    # 4 x ceil(10) attempts, output_runs=1, probability=1 -> 40 attempts.
+    parity = DECRYPTORS["Parity"].type_id
+    logistics = {row.type_id: row.missing for row in engine.invention_logistics(result["invention_list"], cfg)}
+    buy = {row.type_id: row.quantity for row in result["buy_list"]}
+    assert logistics[300] == pytest.approx(80.0)  # 2 datacores x 40 attempts
+    assert logistics[301] == pytest.approx(120.0)  # 3 datacores x 40 attempts
+    assert logistics[parity] == pytest.approx(40.0)  # one decryptor per attempt
+    assert buy[300] == pytest.approx(logistics[300])
+    assert buy[301] == pytest.approx(logistics[301])
+    assert buy[parity] == pytest.approx(logistics[parity])
+    # Sorting's material pot is the Buy List after this merge.
+    assert saved[0] == [(row.type_id, row.quantity) for row in result["buy_list"]]
+    assert {300, 301, parity} <= {type_id for type_id, _qty in saved[0]}
+
+
+@pg_helpers.postgres_required()
+def test_plan_production_buy_list_nets_datacores_at_the_invention_station(monkeypatch, tenant):
+    """Partial datacore stock at the invention station reduces the Buy List
+    quantity, and on_hand_pct is that stock over the gross invention demand.
+    Corp-wide _current_stock is a different number here so a merge that
+    netted against the wrong pool would not match the Invention table."""
+    stock_targets = [(10, "T2 Widget", 10, 0, 0)]
+
+    def station_stock(type_id, location_id):
+        return 30.0 if type_id == 300 else 0.0
+
+    def current_stock(type_id, manual_stock, cfg, bp):
+        # Finished hull has no stock (full shortfall). Datacores exist
+        # corp-wide in a quantity the Invention table does not use.
+        return 9999.0 if type_id == 300 else 0.0
+
+    _install_invention_buy_list_plan(
+        monkeypatch, stock_targets,
+        blueprint_for=lambda type_id: ("Tech II", (110, 1, 1.0)),
+        chosen_for=lambda type_id: _fake_invention_result(200, decryptor="None"),
+        materials=lambda blueprint_id, activity_id: [],
+        datacores=lambda t1_id: [(300, 2)],
+        station_stock=station_stock,
+        categories=lambda type_id: 9,
+        current_stock=current_stock,
+    )
+    cfg = ProductionConfig(invention_location_id=5000, bpc_inventory=4.0, min_margin=0.0)
+    result = engine.plan_production(cfg)
+
+    logistics = {row.type_id: row for row in engine.invention_logistics(result["invention_list"], cfg)}
+    row = next(entry for entry in result["buy_list"] if entry.type_id == 300)
+    assert logistics[300].needed == pytest.approx(80.0)
+    assert logistics[300].missing == pytest.approx(50.0)  # 80 - 30 at the station
+    assert row.quantity == pytest.approx(logistics[300].missing)
+    assert row.on_hand_pct == pytest.approx(30.0 / 80.0 * 100)
+
+
+@pg_helpers.postgres_required()
+def test_plan_production_buy_list_keeps_invention_inputs_below_min_margin(monkeypatch, tenant):
+    """The margin gate drops the hull from the build chain. Its datacores
+    still go on the Buy List: invention demand is the full buffer for
+    every Tech II stock target, confirmed with the user 2026-10-08."""
+    stock_targets = [(10, "Unprofitable T2", 10, 0, 0)]
+    _install_invention_buy_list_plan(
+        monkeypatch, stock_targets,
+        blueprint_for=lambda type_id: ("Tech II", (110, 1, 1.0)),
+        chosen_for=lambda type_id: _fake_invention_result(200, decryptor="None"),
+        materials=lambda blueprint_id, activity_id: [(999, 5.0)],
+        datacores=lambda t1_id: [(300, 2)],
+        station_stock=lambda type_id, location_id: 0.0,
+        categories=lambda type_id: 9,
+        current_stock=lambda *a, **k: 0.0,
+    )
+    monkeypatch.setattr(engine, "_build_margin", lambda type_id, *a, **k: 0.01)
+    cfg = ProductionConfig(invention_location_id=5000, bpc_inventory=4.0, min_margin=0.15)
+    result = engine.plan_production(cfg)
+
+    assert {row.type_id for row in result["build_list"]} == set()
+    assert {row.type_id for row in result["buy_list"]} == {300}
+    assert result["buy_list"][0].quantity == pytest.approx(80.0)
+    logistics = {row.type_id: row.missing for row in engine.invention_logistics(result["invention_list"], cfg)}
+    assert logistics[300] == pytest.approx(80.0)
+    inventory = {row.type_id: row for row in result["inventory"]}
+    assert inventory[10].total_missing == pytest.approx(10.0)
+
+
+@pg_helpers.postgres_required()
+def test_plan_production_buy_list_skips_t1_blueprints_and_includes_relics(monkeypatch, tenant):
+    """T1 BPC runs are copied from an owned BPO, so they stay off the Buy
+    List. A Tech III relic is a purchasable item and uses the same missing
+    quantity as the Invention table."""
+    stock_targets = [
+        (10, "T2 Widget", 6, 0, 0),
+        (20, "T3 Widget", 6, 0, 0),
+    ]
+
+    def blueprint_for(type_id):
+        blueprint_id = 110 if type_id == 10 else 120
+        return ("Tech II", (blueprint_id, 1, 1.0))
+
+    def chosen_for(type_id):
+        t1 = 200 if type_id == 10 else 302
+        return _fake_invention_result(t1, decryptor="None")
+
+    def categories(type_id):
+        return ANCIENT_RELIC_CATEGORY_ID if type_id == 302 else 9
+
+    _install_invention_buy_list_plan(
+        monkeypatch, stock_targets,
+        blueprint_for=blueprint_for,
+        chosen_for=chosen_for,
+        materials=lambda blueprint_id, activity_id: [],
+        datacores=lambda t1_id: [],
+        station_stock=lambda type_id, location_id: 4.0 if type_id == 302 else 0.0,
+        categories=categories,
+        current_stock=lambda *a, **k: 0.0,
+    )
+    cfg = ProductionConfig(invention_location_id=5000, bpc_inventory=1.0, min_margin=0.0)
+    result = engine.plan_production(cfg)
+
+    buy = {row.type_id: row.quantity for row in result["buy_list"]}
+    logistics = {row.type_id: row.missing for row in engine.invention_logistics(result["invention_list"], cfg)}
+    assert 200 not in buy
+    assert logistics[200] == pytest.approx(6.0)  # T1 runs are still shown on the Invention table
+    assert logistics[302] == pytest.approx(2.0)  # 6 relic units - 4 at the station
+    assert buy[302] == pytest.approx(logistics[302])
+
+
+@pg_helpers.postgres_required()
+def test_plan_production_buy_list_nets_invention_against_current_stock_without_station(monkeypatch, tenant):
+    """No invention station: invention_logistics is empty, and the Buy List
+    still takes the demand, netted against _current_stock (every location,
+    manual stock included)."""
+    stock_targets = [(10, "T2 Widget", 10, 0, 0)]
+    from eve_trader.production.constants import DECRYPTORS
+
+    def station_stock(type_id, location_id):
+        # _current_stock scans location_id=None. A located pile of 100 must
+        # not be what this path nets against, and the decryptor has no
+        # corp-wide stock.
+        if location_id is not None:
+            return 100.0
+        return 3.0 if type_id == 300 else 0.0
+
+    _install_invention_buy_list_plan(
+        monkeypatch, stock_targets,
+        blueprint_for=lambda type_id: ("Tech II", (110, 1, 1.0)),
+        chosen_for=lambda type_id: _fake_invention_result(200, decryptor="Parity"),
+        materials=lambda blueprint_id, activity_id: [],
+        datacores=lambda t1_id: [(300, 2)],
+        station_stock=station_stock,
+        categories=lambda type_id: 9,
+        manual_stock={300: 7.0},
+    )
+    monkeypatch.setattr(storage, "esi_incoming_industry_qty", lambda type_id, **kwargs: {"runs": 0, "jobs": 0})
+    cfg = ProductionConfig(invention_location_id=None, bpc_inventory=1.0, min_margin=0.0)
+    result = engine.plan_production(cfg)
+
+    assert engine.invention_logistics(result["invention_list"], cfg) == []
+    buy = {row.type_id: row.quantity for row in result["buy_list"]}
+    parity = DECRYPTORS["Parity"].type_id
+    # 10 attempts x 2 datacores = 20, minus manual 7 + corp-wide ESI 3.
+    assert buy[300] == pytest.approx(10.0)
+    assert buy[parity] == pytest.approx(10.0)
+    assert 200 not in buy
+
+
+@pg_helpers.postgres_required()
+def test_plan_production_buy_list_does_not_double_count_stock_shared_with_manufacturing(monkeypatch, tenant):
+    """Type 300 is both a manufacturing material and an invention datacore.
+    Manufacturing already consumed 5 of the 5 on hand (buy 3 of its 8).
+    Invention's own 8 must not treat those 5 as free again, and must add
+    onto the manufacturing quantity rather than replacing it."""
+    stock_targets = [(10, "T2 Widget", 1, 0, 0)]
+
+    def blueprint_for(type_id):
+        if type_id == 10:
+            return ("Tech II", (110, 1, 1.0))
+        return ("Input", None)
+
+    def current_stock(type_id, manual_stock, cfg, bp):
+        return 5.0 if type_id == 300 else 0.0
+
+    _install_invention_buy_list_plan(
+        monkeypatch, stock_targets,
+        blueprint_for=blueprint_for,
+        chosen_for=lambda type_id: _fake_invention_result(200, decryptor="None"),
+        materials=lambda blueprint_id, activity_id: [(300, 8.0)] if blueprint_id == 110 else [],
+        datacores=lambda t1_id: [(300, 8)],
+        station_stock=lambda type_id, location_id: 5.0 if type_id == 300 else 0.0,
+        categories=lambda type_id: 9,
+        current_stock=current_stock,
+    )
+    cfg = ProductionConfig(
+        invention_location_id=5000, bpc_inventory=1.0, min_margin=0.0, component_overbuild=0.0,
+    )
+    result = engine.plan_production(cfg)
+
+    buy = {row.type_id: row.quantity for row in result["buy_list"]}
+    # 3 (manufacturing shortfall) + 8 (invention, station stock already consumed).
+    # Ignoring the ledger would buy 3 + (8 - 5) = 6. Overwriting would buy 8.
+    assert buy == {300: pytest.approx(11.0)}
+    row = result["buy_list"][0]
+    assert row.on_hand_pct == pytest.approx(5.0 / 16.0 * 100)
+
+
 # ------------------------------------------------------------- t1_bpc_invention_needs
 def test_t1_bpc_invention_needs_reports_missing_copies_and_bpo_presence(monkeypatch):
     # GitHub issue #114: the T1-blueprint-only slice of invention_logistics'
