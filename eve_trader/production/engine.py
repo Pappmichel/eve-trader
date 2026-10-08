@@ -2059,10 +2059,11 @@ class _PlanContext:
 
 def _build_buy_list(buy_totals: dict[int, float], gross_demand: dict[int, float],
                      cfg: ProductionConfig, home: dict, jita: dict) -> list[BuyListEntry]:
-    """Turns _expand_all's buy_totals into BuyListEntry rows, sorted by total
-    price desc - factored out of plan_production so plan_special_order can
-    build the exact same shape from its own buy_totals/gross_demand without
-    duplicating this loop."""
+    """Turns buy_totals into BuyListEntry rows, sorted by total price desc.
+    plan_production's buy_totals are _expand_all's manufacturing and reaction
+    leaves plus the invention inputs merged afterwards; plan_special_order
+    passes only its own _expand_all result. Factored out so both can build
+    the same row shape without duplicating this loop."""
     # Prefer job_category (the "which structure/rig do I build this in"
     # bucket - "Capital Components", "Advanced Components", ship sizes, ...)
     # whenever it's set, falling back to the real SDE item category name
@@ -2172,6 +2173,22 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     run, so every BuildJobEntry.job_cost in this same response silently
     reads 0 rather than its real value - T2-02, business-logic audit,
     2026-09-25/26; see _PlanContext's own comment).
+
+    buy_list includes invention inputs as well as manufacturing and reaction
+    materials. Datacores, decryptors and Tech III relics are merged in after
+    _expand_all. Gross demand (needed) is the same figure invention_logistics
+    shows: the full buffered demand (recommended_invention_runs, sized from
+    cfg.bpc_inventory x the stock target). The Buy List nets that demand
+    against stock at every location (_current_stock, manual stock included),
+    so a stack already in the home hangar is not bought again. The Logistics
+    Invention table still nets only against the invention station, because
+    that view answers what still has to be hauled there. The two missing
+    figures can differ on purpose. Every Tech II stock target on
+    invention_list contributes, including targets the margin gate dropped
+    from the build chain. Confirmed with the user 2026-10-08. Real T1
+    blueprint runs stay off this list: they are copied from owned BPOs, and
+    Logistics' T1 BPC table already covers them. See
+    _merge_invention_inputs_into_buy_totals.
 
     Track B (2026-09-11): HTTP entry is do_refresh_production — see that
     docstring for the live timing and why this was not moved onto
@@ -2295,6 +2312,12 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                                           selected_decryptors, t2_memo, manual_stock, stock_used, base_runs,
                                           gross_demand, cost_indices=cost_indices, alchemy_memo=alchemy_memo,
                                           byproduct_stock=byproduct_stock)
+
+    # After _expand_all so stock_used already records manufacturing
+    # consumption, and before _build_buy_list so Sorting's persisted pot
+    # (save_latest_buy_list below) includes these rows.
+    _merge_invention_inputs_into_buy_totals(
+        invention_list, buy_totals, gross_demand, stock_used, manual_stock, cfg)
 
     buy_list = _build_buy_list(buy_totals, gross_demand, cfg, home, jita)
     build_list = _build_build_list(build_runs, cost_memo, t2_memo, cfg, home, cost_indices, adjusted_prices)
@@ -4227,10 +4250,63 @@ def invention_logistics(invention_list: list[InventionNeedRow],
     Decryptor/datacore demand was already right - each attempt consumes one
     of each regardless of outcome, so it already scaled with
     recommended_invention_runs. Those stay on esi_stock_at_location - plain
-    items, no BPO/BPC/relic ambiguity to worry about."""
+    items, no BPO/BPC/relic ambiguity to worry about.
+
+    Demand aggregation lives in _invention_input_demand. plan_production's
+    Buy List calls that same helper, so gross demand (needed) is identical
+    on both surfaces. This table's missing is the station shortfall: what
+    still has to be hauled to cfg.invention_location_id. The Buy List
+    answers what still has to be bought and nets that same needed figure
+    against stock at every location, so its quantity can be lower than
+    this table's missing when the inputs are already owned somewhere else.
+    Confirmed with the user 2026-10-08. The demand is the full buffered
+    figure above, and every Tech II stock target on invention_list
+    contributes, including targets the margin gate dropped from the build
+    chain. Real T1 blueprint runs stay off the Buy List (copied from owned
+    BPOs; the T1 BPC table covers them). When invention_location_id is
+    unset this function returns [], because there is no station to compare
+    against."""
     if cfg.invention_location_id is None:
         return []
 
+    demand, t1_blueprint_type_ids = _invention_input_demand(invention_list)
+
+    rows = []
+    for type_id, needed in demand.items():
+        if _is_purchasable_invention_input(type_id, t1_blueprint_type_ids):
+            available = _stock_at_location(
+                type_id, cfg.invention_location_id,
+                exclude_intake_at_location_id=cfg.home_location_id)
+        else:
+            available = _available_blueprint_copies(type_id, cfg.invention_location_id)
+        sde_type = storage.get_sde_type(type_id)
+        name = sde_type[2] if sde_type else str(type_id)
+        missing = max(0.0, needed - available)
+        unit_volume = _haul_volume(type_id, cfg) or 0.0
+        rows.append(LogisticsRow(
+            category="Invention", location_id=cfg.invention_location_id, type_id=type_id, type_name=name,
+            needed=needed, available=available, missing=missing, volume_m3=missing * unit_volume,
+        ))
+    rows.sort(key=lambda r: -r.missing)
+    return rows
+
+
+def _invention_input_demand(invention_list: list[InventionNeedRow]
+                             ) -> tuple[dict[int, float], set[int]]:
+    """Gross invention inputs per type_id, plus the T1 blueprint / relic
+    type_ids those rows consume.
+
+    Datacores and decryptors scale with recommended_invention_runs (one
+    decryptor per attempt, datacore_qty times attempts). T1 blueprint runs
+    and Tech III relics scale with t1_bpc_target_runs. The "None" decryptor
+    sentinel (type_id 0, GitHub issue #13) is never a demand row.
+
+    invention_logistics and the Buy List merge both call this helper, the
+    same single-formula rule as _invention_need_row's SF-7 note: gross
+    needed must not be able to differ between the two surfaces. How much of
+    that needed figure is already on hand is a separate question, and the
+    two surfaces answer it against different stock (the invention station,
+    or every location)."""
     demand: dict[int, float] = {}
     t1_blueprint_type_ids: set[int] = set()
     for need in invention_list:
@@ -4255,26 +4331,61 @@ def invention_logistics(invention_list: list[InventionNeedRow],
         recipe = storage.get_invention_recipe(need.t1_blueprint_type_id)
         for datacore_id, datacore_qty in (recipe.get("datacores", []) if recipe else []):
             demand[datacore_id] = demand.get(datacore_id, 0.0) + datacore_qty * rec
+    return demand, t1_blueprint_type_ids
 
-    rows = []
+
+def _is_purchasable_invention_input(type_id: int, t1_blueprint_type_ids: set[int]) -> bool:
+    """Datacores, decryptors and Tech III relics are bought. A real T1
+    blueprint (BPC runs copied from an owned BPO) is not. type_id 0 is the
+    None-decryptor sentinel (GitHub issue #13)."""
+    if type_id <= 0:
+        return False
+    is_real_t1_blueprint = (
+        type_id in t1_blueprint_type_ids
+        and storage.get_type_category(type_id) != ANCIENT_RELIC_CATEGORY_ID
+    )
+    return not is_real_t1_blueprint
+
+
+def _merge_invention_inputs_into_buy_totals(invention_list: list[InventionNeedRow],
+                                             buy_totals: dict[int, float],
+                                             gross_demand: dict[int, float],
+                                             stock_used: dict[int, float],
+                                             manual_stock: dict[int, float],
+                                             cfg: ProductionConfig) -> None:
+    """Add invention shortfall onto buy_totals and the gross demand that
+    feeds on_hand_pct. Mutates all three dicts; stock_used records what
+    this step consumes.
+
+    Purchasable inputs only (see _is_purchasable_invention_input). needed
+    comes from _invention_input_demand, the same gross figure
+    invention_logistics displays. Availability is always _current_stock
+    across every location, manual stock included, whether or not an
+    invention station is configured. The Logistics table keeps its own
+    station-only netting for the haul list; this function does not call it.
+    Confirmed with the user 2026-10-08.
+
+    stock_used is the ledger _expand_all already updated, against this same
+    _current_stock pool. Stock it consumed for a manufacturing material is
+    subtracted here before the invention shortfall is computed, then this
+    step's own consumption is recorded, so one stack that is both a build
+    material and an invention input is not counted twice. The shortfall is
+    added on top of any quantity _expand_all already put in buy_totals.
+    Gross needed is added to gross_demand. Quantities <= 0 are skipped."""
+    demand, t1_blueprint_type_ids = _invention_input_demand(invention_list)
+
     for type_id, needed in demand.items():
-        is_real_blueprint = type_id in t1_blueprint_type_ids and storage.get_type_category(type_id) != ANCIENT_RELIC_CATEGORY_ID
-        if is_real_blueprint:
-            available = _available_blueprint_copies(type_id, cfg.invention_location_id)
-        else:
-            available = _stock_at_location(
-                type_id, cfg.invention_location_id,
-                exclude_intake_at_location_id=cfg.home_location_id)
-        sde_type = storage.get_sde_type(type_id)
-        name = sde_type[2] if sde_type else str(type_id)
-        missing = max(0.0, needed - available)
-        unit_volume = _haul_volume(type_id, cfg) or 0.0
-        rows.append(LogisticsRow(
-            category="Invention", location_id=cfg.invention_location_id, type_id=type_id, type_name=name,
-            needed=needed, available=available, missing=missing, volume_m3=missing * unit_volume,
-        ))
-    rows.sort(key=lambda r: -r.missing)
-    return rows
+        if needed <= 0 or not _is_purchasable_invention_input(type_id, t1_blueprint_type_ids):
+            continue
+        available = _current_stock(type_id, manual_stock, cfg, None)
+        already = stock_used.get(type_id, 0.0)
+        remaining = max(0.0, available - already)
+        consumed = min(needed, remaining)
+        stock_used[type_id] = already + consumed
+        gross_demand[type_id] = gross_demand.get(type_id, 0.0) + needed
+        shortfall = needed - consumed
+        if shortfall > 0:
+            buy_totals[type_id] = buy_totals.get(type_id, 0.0) + shortfall
 
 
 def t1_bpc_invention_needs(invention_list: list[InventionNeedRow],
