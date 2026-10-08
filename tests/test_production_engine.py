@@ -4775,8 +4775,8 @@ def _install_invention_buy_list_plan(monkeypatch, stock_targets, *, blueprint_fo
                                       materials, datacores, station_stock, categories,
                                       current_stock=None, manual_stock=None):
     """Shared plan_production monkeypatches for the invention-on-buy-list
-    tests. `current_stock=None` leaves the real _current_stock in place
-    (the no-invention-station case, which must net against it)."""
+    tests. The Buy List always nets against _current_stock. `current_stock=
+    None` leaves the real function in place."""
     monkeypatch.setattr(engine, "_PlanContext", _make_fake_plan_context(stock_targets, manual_stock))
     monkeypatch.setattr(engine, "classify_activity", lambda type_id: blueprint_for(type_id))
     monkeypatch.setattr(storage, "get_blueprint_materials",
@@ -4808,9 +4808,10 @@ def _install_invention_buy_list_plan(monkeypatch, stock_targets, *, blueprint_fo
 @pg_helpers.postgres_required()
 def test_plan_production_buy_list_includes_missing_datacores_and_decryptor(monkeypatch, tenant):
     """A Tech II stock target's buffered invention demand (bpc_inventory x
-    the stock target) lands on the Buy List in the same quantity the
-    Logistics Invention table shows as missing. Confirmed with the user
-    2026-10-08: full buffer, and the two surfaces share one formula."""
+    the stock target) lands on the Buy List. With zero stock everywhere,
+    that quantity matches the Logistics Invention table's missing, and
+    needed is the same gross figure on both. Confirmed with the user
+    2026-10-08."""
     from eve_trader.production.constants import DECRYPTORS
     saved = []
     monkeypatch.setattr(storage, "save_latest_buy_list", lambda rows: saved.append(list(rows)))
@@ -4830,34 +4831,40 @@ def test_plan_production_buy_list_includes_missing_datacores_and_decryptor(monke
 
     # 4 x ceil(10) attempts, output_runs=1, probability=1 -> 40 attempts.
     parity = DECRYPTORS["Parity"].type_id
-    logistics = {row.type_id: row.missing for row in engine.invention_logistics(result["invention_list"], cfg)}
+    logistics = {row.type_id: row for row in engine.invention_logistics(result["invention_list"], cfg)}
+    demand, _t1_ids = engine._invention_input_demand(result["invention_list"])
     buy = {row.type_id: row.quantity for row in result["buy_list"]}
-    assert logistics[300] == pytest.approx(80.0)  # 2 datacores x 40 attempts
-    assert logistics[301] == pytest.approx(120.0)  # 3 datacores x 40 attempts
-    assert logistics[parity] == pytest.approx(40.0)  # one decryptor per attempt
-    assert buy[300] == pytest.approx(logistics[300])
-    assert buy[301] == pytest.approx(logistics[301])
-    assert buy[parity] == pytest.approx(logistics[parity])
+    assert logistics[300].needed == pytest.approx(80.0)  # 2 datacores x 40 attempts
+    assert logistics[301].needed == pytest.approx(120.0)  # 3 datacores x 40 attempts
+    assert logistics[parity].needed == pytest.approx(40.0)  # one decryptor per attempt
+    assert demand[300] == pytest.approx(logistics[300].needed)
+    assert demand[301] == pytest.approx(logistics[301].needed)
+    assert demand[parity] == pytest.approx(logistics[parity].needed)
+    # Zero stock at the station and corp-wide, so missing matches the Buy List.
+    assert logistics[300].missing == pytest.approx(logistics[300].needed)
+    assert buy[300] == pytest.approx(logistics[300].missing)
+    assert buy[301] == pytest.approx(logistics[301].missing)
+    assert buy[parity] == pytest.approx(logistics[parity].missing)
     # Sorting's material pot is the Buy List after this merge.
     assert saved[0] == [(row.type_id, row.quantity) for row in result["buy_list"]]
     assert {300, 301, parity} <= {type_id for type_id, _qty in saved[0]}
 
 
 @pg_helpers.postgres_required()
-def test_plan_production_buy_list_nets_datacores_at_the_invention_station(monkeypatch, tenant):
-    """Partial datacore stock at the invention station reduces the Buy List
-    quantity, and on_hand_pct is that stock over the gross invention demand.
-    Corp-wide _current_stock is a different number here so a merge that
-    netted against the wrong pool would not match the Invention table."""
+def test_plan_production_buy_list_nets_invention_inputs_against_all_locations(monkeypatch, tenant):
+    """The Buy List subtracts stock at every location. The Logistics
+    Invention table still subtracts only what is already at the invention
+    station. needed stays the same gross figure on both. Confirmed with
+    the user 2026-10-08."""
     stock_targets = [(10, "T2 Widget", 10, 0, 0)]
 
     def station_stock(type_id, location_id):
         return 30.0 if type_id == 300 else 0.0
 
     def current_stock(type_id, manual_stock, cfg, bp):
-        # Finished hull has no stock (full shortfall). Datacores exist
-        # corp-wide in a quantity the Invention table does not use.
-        return 9999.0 if type_id == 300 else 0.0
+        # 50 owned corp-wide, of which the station mock above accounts for
+        # 30. The finished hull itself has none.
+        return 50.0 if type_id == 300 else 0.0
 
     _install_invention_buy_list_plan(
         monkeypatch, stock_targets,
@@ -4873,11 +4880,43 @@ def test_plan_production_buy_list_nets_datacores_at_the_invention_station(monkey
     result = engine.plan_production(cfg)
 
     logistics = {row.type_id: row for row in engine.invention_logistics(result["invention_list"], cfg)}
+    demand, _t1_ids = engine._invention_input_demand(result["invention_list"])
     row = next(entry for entry in result["buy_list"] if entry.type_id == 300)
-    assert logistics[300].needed == pytest.approx(80.0)
+    assert demand[300] == pytest.approx(80.0)
+    assert logistics[300].needed == pytest.approx(demand[300])
     assert logistics[300].missing == pytest.approx(50.0)  # 80 - 30 at the station
-    assert row.quantity == pytest.approx(logistics[300].missing)
-    assert row.on_hand_pct == pytest.approx(30.0 / 80.0 * 100)
+    assert row.quantity == pytest.approx(30.0)  # 80 - 50 corp-wide
+    assert row.on_hand_pct == pytest.approx(50.0 / 80.0 * 100)
+
+
+@pg_helpers.postgres_required()
+def test_plan_production_buy_list_skips_invention_inputs_stocked_away_from_the_station(monkeypatch, tenant):
+    """Datacores owned somewhere other than the invention station are not
+    bought. Logistics still shows them missing at the station, because that
+    table is the haul list."""
+    stock_targets = [(10, "T2 Widget", 10, 0, 0)]
+
+    def current_stock(type_id, manual_stock, cfg, bp):
+        return 80.0 if type_id == 300 else 0.0
+
+    _install_invention_buy_list_plan(
+        monkeypatch, stock_targets,
+        blueprint_for=lambda type_id: ("Tech II", (110, 1, 1.0)),
+        chosen_for=lambda type_id: _fake_invention_result(200, decryptor="None"),
+        materials=lambda blueprint_id, activity_id: [],
+        datacores=lambda t1_id: [(300, 2)],
+        station_stock=lambda type_id, location_id: 0.0,
+        categories=lambda type_id: 9,
+        current_stock=current_stock,
+    )
+    cfg = ProductionConfig(invention_location_id=5000, bpc_inventory=4.0, min_margin=0.0)
+    result = engine.plan_production(cfg)
+
+    assert 300 not in {row.type_id for row in result["buy_list"]}
+    logistics = {row.type_id: row for row in engine.invention_logistics(result["invention_list"], cfg)}
+    assert logistics[300].needed == pytest.approx(80.0)
+    assert logistics[300].available == pytest.approx(0.0)
+    assert logistics[300].missing == pytest.approx(80.0)
 
 
 @pg_helpers.postgres_required()
@@ -4912,8 +4951,8 @@ def test_plan_production_buy_list_keeps_invention_inputs_below_min_margin(monkey
 @pg_helpers.postgres_required()
 def test_plan_production_buy_list_skips_t1_blueprints_and_includes_relics(monkeypatch, tenant):
     """T1 BPC runs are copied from an owned BPO, so they stay off the Buy
-    List. A Tech III relic is a purchasable item and uses the same missing
-    quantity as the Invention table."""
+    List. A Tech III relic is bought against corp-wide stock. Station stock
+    only changes the Logistics haul figure."""
     stock_targets = [
         (10, "T2 Widget", 6, 0, 0),
         (20, "T3 Widget", 6, 0, 0),
@@ -4944,18 +4983,22 @@ def test_plan_production_buy_list_skips_t1_blueprints_and_includes_relics(monkey
     result = engine.plan_production(cfg)
 
     buy = {row.type_id: row.quantity for row in result["buy_list"]}
-    logistics = {row.type_id: row.missing for row in engine.invention_logistics(result["invention_list"], cfg)}
+    logistics = {row.type_id: row for row in engine.invention_logistics(result["invention_list"], cfg)}
     assert 200 not in buy
-    assert logistics[200] == pytest.approx(6.0)  # T1 runs are still shown on the Invention table
-    assert logistics[302] == pytest.approx(2.0)  # 6 relic units - 4 at the station
-    assert buy[302] == pytest.approx(logistics[302])
+    assert logistics[200].needed == pytest.approx(6.0)  # T1 runs are still shown on the Invention table
+    assert logistics[200].missing == pytest.approx(6.0)
+    assert logistics[302].needed == pytest.approx(6.0)
+    assert logistics[302].missing == pytest.approx(2.0)  # 6 relic units - 4 at the station
+    # Corp-wide stock of the relic is 0, so the Buy List buys the full demand.
+    assert buy[302] == pytest.approx(logistics[302].needed)
 
 
 @pg_helpers.postgres_required()
 def test_plan_production_buy_list_nets_invention_against_current_stock_without_station(monkeypatch, tenant):
-    """No invention station: invention_logistics is empty, and the Buy List
-    still takes the demand, netted against _current_stock (every location,
-    manual stock included)."""
+    """No invention station: invention_logistics is empty. The Buy List
+    still takes the demand and nets it against _current_stock (every
+    location, manual stock included), the same pool it uses when a station
+    is configured."""
     stock_targets = [(10, "T2 Widget", 10, 0, 0)]
     from eve_trader.production.constants import DECRYPTORS
 
@@ -5012,7 +5055,9 @@ def test_plan_production_buy_list_does_not_double_count_stock_shared_with_manufa
         chosen_for=lambda type_id: _fake_invention_result(200, decryptor="None"),
         materials=lambda blueprint_id, activity_id: [(300, 8.0)] if blueprint_id == 110 else [],
         datacores=lambda t1_id: [(300, 8)],
-        station_stock=lambda type_id, location_id: 5.0 if type_id == 300 else 0.0,
+        # A large station pile must not be reused. Availability is corp-wide
+        # _current_stock, and manufacturing already consumed that 5.
+        station_stock=lambda type_id, location_id: 100.0 if type_id == 300 else 0.0,
         categories=lambda type_id: 9,
         current_stock=current_stock,
     )
@@ -5022,8 +5067,10 @@ def test_plan_production_buy_list_does_not_double_count_stock_shared_with_manufa
     result = engine.plan_production(cfg)
 
     buy = {row.type_id: row.quantity for row in result["buy_list"]}
-    # 3 (manufacturing shortfall) + 8 (invention, station stock already consumed).
-    # Ignoring the ledger would buy 3 + (8 - 5) = 6. Overwriting would buy 8.
+    # 3 (manufacturing shortfall) + 8 (invention; the 5 corp-wide units are
+    # already on the stock_used ledger). Ignoring the ledger would buy
+    # 3 + (8 - 5) = 6. Overwriting would buy 8. Netting against the station's
+    # 100 would buy only the manufacturing 3.
     assert buy == {300: pytest.approx(11.0)}
     row = result["buy_list"][0]
     assert row.on_hand_pct == pytest.approx(5.0 / 16.0 * 100)
