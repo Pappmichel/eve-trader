@@ -305,6 +305,7 @@ def do_get_fitting_detail(fitting_id: str) -> dict:
     # ActionError-derived 400.
     if storage.get_fitting(fitting_id) is None:
         raise ActionError(f"Fitting {fitting_id} not found.")
+    match_pending_contracts()
     fitting, items = engine.load_fitting_with_items(fitting_id)
     issue_rows = storage.load_fitting_parse_issues(fitting_id)
     contracts = engine.contract_rows_from_db(storage.list_doctrine_contracts(fitting_id=fitting_id))
@@ -413,7 +414,37 @@ def do_validate_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG,
 
 
 # ------------------------------------------------------------------- status
+def match_pending_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG) -> int:
+    """Matches every stored contract that was never matched yet and returns
+    how many. The ESI contracts fetcher (esi_data/fetchers.py) stores a new
+    or status-changed contract with no match score, and only the Doctrine
+    sync re-runs matching. Contracts fetched any other way - the scheduler's
+    esi_data_sync, or a corp owner the Doctrine sync skipped because another
+    sync already had it in flight - stayed "unmatched" until the next manual
+    sync. Every Doctrine read calls this first, so they are matched on the
+    next page load instead. A never-matched contract is the only kind with
+    a NULL score: matching always stores a number, 0.0 for no hull."""
+    pending = [c for c in engine.contract_rows_from_db(storage.list_doctrine_contracts())
+               if c.match_score is None]
+    if not pending:
+        return 0
+    candidates = engine.load_match_candidates()
+    matches: list[tuple] = []
+    deviation_rows: list[tuple] = []
+    for c in pending:
+        items = [ContractItemRow(c.contract_id, rid, tid, qty, bool(incl), bool(single))
+                 for rid, tid, qty, incl, single in storage.load_doctrine_contract_items(c.contract_id)]
+        fitting_id, score, deviations, status = engine.match_and_validate_contract(
+            c.contract_id, c.title, items, candidates, cfg)
+        matches.append((c.contract_id, fitting_id, score, status))
+        deviation_rows.extend((c.contract_id, d.type_id, d.kind, d.expected_qty, d.actual_qty, d.severity)
+                              for d in deviations)
+    storage.update_doctrine_contract_matches(matches, deviation_rows)
+    return len(matches)
+
+
 def do_get_doctrine_status(doctrine_id: Optional[str] = None) -> dict:
+    match_pending_contracts()
     if doctrine_id is not None:
         row = storage.get_doctrine(doctrine_id)
         if row is None:
@@ -423,6 +454,7 @@ def do_get_doctrine_status(doctrine_id: Optional[str] = None) -> dict:
 
 
 def do_get_stockpile_status(doctrine_id: Optional[str] = None) -> dict:
+    match_pending_contracts()
     rows, assets_available = engine.stockpile_rows_for_doctrine(doctrine_id)
     aggregated_rows = engine.aggregate_stockpile_rows(rows)
     return {
@@ -433,10 +465,12 @@ def do_get_stockpile_status(doctrine_id: Optional[str] = None) -> dict:
 
 
 def do_get_shopping_list(doctrine_id: Optional[str] = None, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> dict:
+    match_pending_contracts(cfg)
     return {"rows": [asdict(r) for r in engine.shopping_list_rows(doctrine_id, cfg)]}
 
 
 def do_list_contracts(fitting_id: Optional[str] = None, status: Optional[str] = None) -> dict:
+    match_pending_contracts()
     contracts = engine.contract_rows_from_db(storage.list_doctrine_contracts(fitting_id=fitting_id, status=status))
 
     # source_role is an ESI-token role key - resolve it to the character's

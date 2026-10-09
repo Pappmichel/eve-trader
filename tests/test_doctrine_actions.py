@@ -194,6 +194,7 @@ def test_do_get_shopping_list_wraps_engine_result(monkeypatch):
     from eve_trader.doctrine import engine
     from eve_trader.doctrine.models import ShoppingListRow
 
+    monkeypatch.setattr(actions, "match_pending_contracts", lambda cfg=None: 0)
     monkeypatch.setattr(engine, "shopping_list_rows", lambda doctrine_id, cfg: [
         ShoppingListRow(type_id=100, type_name="Widget", shortfall=5.0, build_cost=10.0, cj_price=12.0,
                          jita_landed_price=15.0, recommended_source="Build", total_cost=50.0),
@@ -376,3 +377,61 @@ def test_do_get_fitting_detail_missing_id_raises_action_error(monkeypatch):
 
     with pytest.raises(ActionError):
         actions.do_get_fitting_detail("missing")
+
+
+# ------------------------------------------------------- match_pending_contracts
+def test_match_pending_contracts_matches_only_never_matched_contracts(monkeypatch):
+    from eve_trader.doctrine.models import DeviationRow
+
+    monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **k: [
+        _contract_db_row(contract_id=1),  # already matched, score 1.0
+        _contract_db_row(contract_id=2, matched_fitting_id=None, match_score=None, validation_status="unmatched"),
+        _contract_db_row(contract_id=3, matched_fitting_id=None, match_score=0.2, validation_status="unmatched"),
+    ])
+    monkeypatch.setattr(engine, "load_match_candidates", lambda: ["candidate"])
+    monkeypatch.setattr(storage, "load_doctrine_contract_items", lambda cid: [(10, 1000, 1, True, True)])
+    matched: list[int] = []
+
+    def fake_match(contract_id, title, items, candidates, cfg):
+        matched.append(contract_id)
+        assert candidates == ["candidate"] and items[0].type_id == 1000
+        return "f1", 1.0, [DeviationRow(contract_id, 7, "missing", "critical", 1.0, 0.0)], "invalid"
+
+    monkeypatch.setattr(engine, "match_and_validate_contract", fake_match)
+    written = {}
+    monkeypatch.setattr(storage, "update_doctrine_contract_matches",
+                        lambda matches, deviations: written.update(matches=matches, deviations=deviations))
+
+    assert actions.match_pending_contracts() == 1
+
+    assert matched == [2]
+    assert written == {"matches": [(2, "f1", 1.0, "invalid")],
+                       "deviations": [(2, 7, "missing", 1.0, 0.0, "critical")]}
+
+
+def test_match_pending_contracts_writes_nothing_when_all_matched(monkeypatch):
+    monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **k: [_contract_db_row()])
+    monkeypatch.setattr(engine, "load_match_candidates",
+                        lambda: pytest.fail("candidates must not load without pending contracts"))
+    monkeypatch.setattr(storage, "update_doctrine_contract_matches",
+                        lambda *a: pytest.fail("nothing to write"))
+
+    assert actions.match_pending_contracts() == 0
+
+
+def test_doctrine_reads_match_pending_contracts_first(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(actions, "match_pending_contracts", lambda cfg=None: calls.append("match") or 0)
+    monkeypatch.setattr(storage, "list_doctrines", lambda: [])
+    monkeypatch.setattr(engine, "stockpile_rows_for_doctrine", lambda doctrine_id: ([], False))
+    monkeypatch.setattr(engine, "shopping_list_rows", lambda doctrine_id, cfg: [])
+    monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **k: [])
+    monkeypatch.setattr(storage, "list_active_fittings", lambda: [])
+    monkeypatch.setattr(actions, "_character_names_by_role_key", lambda: {})
+
+    actions.do_get_doctrine_status()
+    actions.do_get_stockpile_status()
+    actions.do_get_shopping_list()
+    actions.do_list_contracts()
+
+    assert calls == ["match"] * 4

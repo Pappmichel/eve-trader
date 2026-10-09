@@ -6883,6 +6883,32 @@ def _replace_doctrine_sync_one(
         )
 
 
+def update_doctrine_contract_matches(matches: list[tuple], deviations: list[tuple]) -> None:
+    """Writes match results for already-stored contracts, touching nothing
+    else. matches: (contract_id, matched_fitting_id, match_score,
+    validation_status); deviations: (contract_id, type_id, kind,
+    expected_qty, actual_qty, severity), replacing the deviations of every
+    contract in `matches`. Unlike replace_doctrine_sync_snapshot this never
+    deletes or re-inserts contract rows, so it cannot drop a contract that
+    an ESI sync wrote in the meantime."""
+    if not matches:
+        return
+    with connect() as conn:
+        conn.executemany(
+            "UPDATE doctrine_contracts SET matched_fitting_id = ?, match_score = ?, validation_status = ? "
+            "WHERE contract_id = ?",
+            [(fid, score, status, cid) for cid, fid, score, status in matches],
+        )
+        ids = sorted({int(m[0]) for m in matches})
+        marks = ",".join("?" * len(ids))
+        conn.execute(f"DELETE FROM doctrine_contract_deviations WHERE contract_id IN ({marks})", ids)
+        conn.executemany(
+            "INSERT INTO doctrine_contract_deviations (contract_id, type_id, kind, expected_qty, actual_qty, "
+            "severity) VALUES (?,?,?,?,?,?)",
+            deviations,
+        )
+
+
 def list_doctrine_contracts(fitting_id: Optional[str] = None, status: Optional[str] = None,
                              fitting_ids: Optional[list[str]] = None) -> list[tuple]:
     """`fitting_id` is the single-fitting filter (fitting_status, etc.).

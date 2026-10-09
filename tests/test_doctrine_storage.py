@@ -180,6 +180,31 @@ def test_unmatch_contracts_for_fitting_clears_match_and_deviations(tenant):
     assert storage.load_doctrine_contract_deviations(1) == []
 
 
+def test_update_doctrine_contract_matches_writes_only_match_columns(tenant):
+    doctrine_id = storage.create_doctrine("D", None)
+    fitting_id = storage.create_fitting(doctrine_id, "F", 587, "[Rifter, F]\n", None, 0, 0, None)
+    storage.replace_doctrine_sync_snapshot(
+        contracts=[
+            (1, "doctrine:1", False, 1, 12345, "outstanding", "t", 1.0, None, None, None, "unmatched",
+             "2026-01-01T00:00:00Z"),
+            (2, "doctrine:1", False, 1, 12345, "outstanding", "u", 2.0, None, fitting_id, 1.0, "valid",
+             "2026-01-01T00:00:00Z"),
+        ],
+        items=[(1, 1, 587, 1, True, True), (2, 1, 587, 1, True, True)],
+        deviations=[(1, 100, "missing", 1, 0, "critical"), (2, 101, "extra", 0, 1, "info")],
+    )
+
+    storage.update_doctrine_contract_matches(
+        [(1, fitting_id, 0.95, "tolerable")], [(1, 102, "missing", 2, 1, "tolerable")])
+
+    rows = {r[0]: r for r in storage.list_doctrine_contracts()}
+    assert (str(rows[1][9]), rows[1][10], rows[1][11]) == (fitting_id, pytest.approx(0.95), "tolerable")
+    assert rows[1][6] == "t" and rows[1][7] == 1.0  # contract details untouched
+    assert storage.load_doctrine_contract_deviations(1) == [(102, "missing", 2.0, 1.0, "tolerable")]
+    assert storage.load_doctrine_contract_deviations(2) == [(101, "extra", 0.0, 1.0, "info")]
+    assert len(storage.load_doctrine_contract_items(1)) == 1
+
+
 def test_doctrine_settings_scope_accepted_by_tenant_settings_check(tenant):
     # Confirmed real gap during implementation: tenant_settings.scope's
     # check constraint only allowed 'trading'/'production' until
