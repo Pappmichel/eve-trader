@@ -1134,6 +1134,7 @@ export interface FittingStatus {
   hull_type_id: number
   hull_name: string
   multibuy_cost: number | null
+  multibuy_missing: string[]
 }
 
 export interface DoctrineStatus {

@@ -238,9 +238,12 @@ class FittingStatus:
     # right now, raw sell price with no broker fee (multibuy instantly fills
     # existing sell orders, unlike engine._shopping_prices' own Buy-C-J
     # price which models placing your own order) - see engine.fitting_status.
-    # None when the caller didn't supply live home prices, or any item's
-    # price is missing (a partial total would be misleading).
+    # None when the caller didn't supply live home prices, or no item has a
+    # price at all. When only some items lack a price, this is the partial
+    # total of the priced ones and multibuy_missing names the rest, so the
+    # UI can show the figure together with a warning.
     multibuy_cost: Optional[float] = None
+    multibuy_missing: list[str] = field(default_factory=list)
 
 
 @dataclass

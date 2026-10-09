@@ -777,6 +777,7 @@ class FittingStatus(_Base):
     hull_type_id: int = 0
     hull_name: str = ""
     multibuy_cost: Optional[float] = None
+    multibuy_missing: list[str] = []
 
 
 class DoctrineStatus(_Base):
