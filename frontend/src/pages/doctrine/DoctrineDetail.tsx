@@ -1,11 +1,11 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
-  Stack, Title, Text, Badge, Button, Group, Modal, NumberInput, ActionIcon,
+  Stack, Title, Text, Badge, Button, Group, Modal, NumberInput, ActionIcon, Tooltip,
 } from '@mantine/core'
 import { modals } from '@mantine/modals'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { IconCheck, IconTrash } from '@tabler/icons-react'
+import { IconAlertTriangle, IconCheck, IconTrash } from '@tabler/icons-react'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { doctrineApi } from '../../api/client'
@@ -150,7 +150,26 @@ export default function DoctrineDetail() {
     },
     {
       header: 'Multibuy', accessorKey: 'multibuy_cost', size: 130,
-      cell: (i) => (i.getValue() != null ? isk(i.getValue()) : '–'),
+      cell: (i) => {
+        const missing = i.row.original.multibuy_missing ?? []
+        const value = i.getValue() != null ? isk(i.getValue()) : '–'
+        if (missing.length === 0) return value
+        // Partial total: show what the priced items cost plus a warning
+        // listing what has no sell order at the home market.
+        return (
+          <Tooltip multiline w={280} withArrow label={
+            <Stack gap={2}>
+              <Text size="xs" fw={600}>No sell price for {missing.length} item{missing.length === 1 ? '' : 's'}:</Text>
+              {missing.map((m) => <Text key={m} size="xs">{m}</Text>)}
+            </Stack>
+          }>
+            <Group gap={4} wrap="nowrap">
+              <Text size="sm" c="warn">{value}</Text>
+              <IconAlertTriangle size={14} color="var(--mantine-color-warn-5)" aria-label="Some items have no price" />
+            </Group>
+          </Tooltip>
+        )
+      },
     },
     {
       header: '', id: 'actions', size: 60, enableSorting: false,

@@ -491,19 +491,27 @@ def fitting_status(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG,
     hull_name = hull_sde[2] if hull_sde else str(fitting.hull_type_id)
 
     multibuy_cost = None
+    multibuy_missing: list[str] = []
     if home is not None:
         items = storage.load_fitting_items(fitting.fitting_id)
         quantities: dict[int, float] = {fitting.hull_type_id: 1.0}
         for _line_no, _slot_section, type_id, quantity, _is_offline in items:
             quantities[type_id] = quantities.get(type_id, 0.0) + quantity
         total = 0.0
+        priced = 0
         for type_id, quantity in quantities.items():
             quote = home.get(type_id)
             if quote is None or quote.sell <= 0:
-                total = None
-                break
+                if type_id == fitting.hull_type_id:
+                    name = hull_name
+                else:
+                    sde = storage.get_sde_type(type_id)
+                    name = sde[2] if sde else str(type_id)
+                multibuy_missing.append(f"{quantity:g}x {name}")
+                continue
             total += quote.sell * quantity
-        multibuy_cost = total
+            priced += 1
+        multibuy_cost = total if priced else None
 
     return FittingStatus(fitting_id=fitting.fitting_id, fitting_name=fitting.name, doctrine_id=fitting.doctrine_id,
                           contract_status=contract_ampel, valid_contracts=valid, tolerable_contracts=tolerable,
@@ -511,7 +519,8 @@ def fitting_status(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG,
                           stockpile_target=fitting.stockpile_target,
                           worst_stockpile_shortfall_pct=worst_shortfall_pct, last_synced_at=last_synced_at,
                           assets_available=assets_available, hull_type_id=fitting.hull_type_id,
-                          hull_name=hull_name, multibuy_cost=multibuy_cost)
+                          hull_name=hull_name, multibuy_cost=multibuy_cost,
+                          multibuy_missing=multibuy_missing)
 
 
 def doctrine_status(doctrine_row: tuple, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> DoctrineStatus:

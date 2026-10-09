@@ -262,16 +262,31 @@ def test_fitting_status_multibuy_cost_sums_hull_and_items(monkeypatch):
     assert status.multibuy_cost == 1250.0
 
 
-def test_fitting_status_multibuy_cost_none_when_any_item_price_missing(monkeypatch):
+def test_fitting_status_multibuy_cost_partial_when_some_item_price_missing(monkeypatch):
     monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **kwargs: [])
     monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: None)
-    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Rifter", 20.0, 1, 1, 0, None))
-    monkeypatch.setattr(storage, "load_fitting_items", lambda fitting_id: [(1, "low", MODULE, 1, False)])
+    names = {HULL_A: "Rifter", MODULE: "Damage Control II"}
+    monkeypatch.setattr(storage, "get_sde_type",
+                        lambda type_id: (type_id, 1, names[type_id], 20.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "load_fitting_items", lambda fitting_id: [(1, "low", MODULE, 2, False)])
     home = {HULL_A: CurrentPrice(type_id=HULL_A, updated="2026-01-01", buy=900.0, sell=1000.0)}  # MODULE missing
 
     status = engine.fitting_status(_fitting(), stockpile_rows=[], assets_available=True, home=home)
 
+    assert status.multibuy_cost == 1000.0
+    assert status.multibuy_missing == ["2x Damage Control II"]
+
+
+def test_fitting_status_multibuy_cost_none_when_no_item_priced(monkeypatch):
+    monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **kwargs: [])
+    monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: None)
+    monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Rifter", 20.0, 1, 1, 0, None))
+    monkeypatch.setattr(storage, "load_fitting_items", lambda fitting_id: [(1, "low", MODULE, 1, False)])
+
+    status = engine.fitting_status(_fitting(), stockpile_rows=[], assets_available=True, home={})
+
     assert status.multibuy_cost is None
+    assert len(status.multibuy_missing) == 2  # hull + module
 
 
 # ------------------------------------------------------------- shopping list
