@@ -246,10 +246,8 @@ class AssetPlanJob:
     # about how much of *this item itself* is already sitting in inventory.
     # Deliberately *not* factored into the jobs list's own sort order (still
     # job_runs desc) - see engine.plan_asset_optimized's docstring for why -
-    # but it *is* factored into recommended_slots below (user request
-    # 2026-09-22), as the tie-break under unlock_time_seconds: the lower
-    # this is, the earlier this job claims its slots among equally-unlocking
-    # jobs.
+    # but it is the last tie-break for which jobs start first when there
+    # are fewer free slots than jobs (engine._allocate_slots_min_makespan).
     stock_coverage: Optional[float] = None
     # How much currently-blocked job time (seconds) elsewhere in the plan
     # would newly become workable if this job's own product became
@@ -266,29 +264,22 @@ class AssetPlanJob:
     # second unresolved same-category blocker on that same parent withholds
     # credit from both until only one is left. 0.0 (not None) for a job
     # that unlocks nothing right now, including every job outside the slot-
-    # recommendation categories (this is only ever consulted for
-    # recommended_slots priority below).
+    # recommendation categories (only consulted for which jobs start first
+    # when there are fewer free slots than jobs - see recommended_slots).
     unlock_time_seconds: float = 0.0
     # How many of your currently-free character job slots (see
     # engine._free_slots_by_category) to use for this job's ready runs.
-    # Claimed by unlock_time_seconds descending first, stock_coverage
-    # ascending as the tie-break - the eligible ready job that would unblock
-    # the most job time elsewhere claims its own full need first, ties
-    # going to whichever has the *least of itself already on hand*, and so
-    # on (engine._allocate_slots_by_priority) - so a single job can take the
-    # whole pool and leave every other job sharing the same category at 0
-    # this round, on purpose (confirmed real user correction 2026-09-22,
-    # superseding an earlier coverage-only version, which itself superseded
-    # a time-weighted-proportional split - see _allocate_slots_by_priority's
-    # own docstring for the full history). Each job's own "need" (the
-    # ceiling _allocate_slots_by_priority can hand it) is runs_ready_now by
-    # default, or, when ProductionConfig.asset_plan_slot_days_target is set,
-    # its own days-target need instead (_slots_needed_for_days_target) -
-    # never more than it has ready runs to put on them either way. Only set
-    # for job_category in engine._SLOT_RECOMMENDATION_CATEGORIES (Reactions/
-    # Advanced Components/Capital Components - user request 2026-08-15) and
-    # only when runs_ready_now > 0 (nothing to split otherwise) - None
-    # everywhere else.
+    # Split so the pool's ready work finishes as early as possible
+    # (engine._allocate_slots_min_makespan, user request 2026-10-10): every
+    # job gets one slot (if the pool is smaller than the job count, the
+    # highest-unlock / longest jobs start first and the rest get 0), then
+    # each extra slot goes to whichever job currently takes longest per
+    # slot. Never more than runs_ready_now. With
+    # ProductionConfig.asset_plan_slot_days_target set, allocation stops once
+    # every job fits the target. Only set for job_category in
+    # engine._SLOT_RECOMMENDATION_CATEGORIES (Reactions/Advanced
+    # Components/Capital Components - user request 2026-08-15) and only when
+    # runs_ready_now > 0 (nothing to split otherwise) - None everywhere else.
     recommended_slots: Optional[int] = None
     # Calendar days the recommended_slots split would take to finish this
     # job's ready runs (ready_seconds / recommended_slots / 86400). Always
