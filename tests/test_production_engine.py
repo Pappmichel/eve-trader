@@ -2954,6 +2954,22 @@ def test_allocate_slots_min_makespan_uses_every_slot_runs_allow():
     assert result == {1: 13, 2: 7}
 
 
+def test_runs_per_slot_spreads_evenly_without_a_target():
+    assert engine._runs_per_slot(20, 3, 100.0, 0.0) == 7
+
+
+def test_runs_per_slot_caps_at_the_target():
+    # 5758 runs on 16 slots would be 360 runs (~21 days at 1.404 h); a
+    # 13-day target fits only floor(13 * 24 / 1.404) = 222 runs per slot.
+    assert engine._runs_per_slot(5758, 16, 1.404 * 3600, 13 * 86400) == 222
+    # Below the cap the even spread wins.
+    assert engine._runs_per_slot(100, 10, 3600.0, 13 * 86400) == 10
+
+
+def test_runs_per_slot_at_least_one_run_when_one_run_exceeds_the_target():
+    assert engine._runs_per_slot(5, 5, 2 * 86400.0, 86400.0) == 1
+
+
 def test_allocate_slots_min_makespan_empty_or_zero_pool():
     assert engine._allocate_slots_min_makespan([], available=10) == {}
     assert engine._allocate_slots_min_makespan([(1, 10.0, 5, 0.0, 0.0)], available=0) == {1: 0}
@@ -3306,9 +3322,9 @@ def test_plan_asset_optimized_days_target_surplus_uses_slots_up_to_ready_runs(mo
 @pg_helpers.postgres_required()
 def test_plan_asset_optimized_days_target_does_not_change_the_split(monkeypatch, tenant):
     # Own 1-day needs are 2 (ItemA) + 8 (ItemB) against only 5 free slots -
-    # the target is out of reach. The split is the same fastest split as
-    # without a target: both start, ItemB gets the 3 spare slots (2 days
-    # each, same as ItemA). ItemA's backup is scaled up (4, not 2) so its 0.5
+    # the target is out of reach. The slot split is the same fastest split
+    # as without a target (both start, ItemB gets the 3 spare slots), but no
+    # slot is loaded past the target. ItemA's backup is scaled up (4, not 2) so its 0.5
     # coverage doesn't also shrink its own need below the stated 2.
     day = 86400.0
     cfg = ProductionConfig(component_overbuild=0.0, asset_plan_slot_days_target=1.0)
@@ -3323,6 +3339,11 @@ def test_plan_asset_optimized_days_target_does_not_change_the_split(monkeypatch,
     assert jobs_by_id[1].recommended_slots == 1
     assert jobs_by_id[2].recommended_slots == 4
     assert sum(j.recommended_slots for j in jobs_by_id.values()) == 5
+    # The target is a hard maximum per slot: one 1-day run per slot, the
+    # other runs (1 of ItemA, 4 of ItemB) wait for the next round.
+    assert (jobs_by_id[1].runs_per_slot, jobs_by_id[2].runs_per_slot) == (1, 1)
+    assert jobs_by_id[1].days_to_complete_at_recommended_slots == pytest.approx(1.0)
+    assert jobs_by_id[2].days_to_complete_at_recommended_slots == pytest.approx(1.0)
 
 
 @pg_helpers.postgres_required()
@@ -3344,7 +3365,8 @@ def test_plan_asset_optimized_days_to_complete_computed_in_both_modes(monkeypatc
     assert jobs_by_id[1].recommended_slots == 2
     assert jobs_by_id[1].days_to_complete_at_recommended_slots == pytest.approx((10 * 100.0 / 2) / 86400)
     assert jobs_by_id[2].recommended_slots == 3
-    assert jobs_by_id[2].days_to_complete_at_recommended_slots == pytest.approx((20 * 100.0 / 3) / 86400)
+    assert jobs_by_id[2].runs_per_slot == 7  # ceil(20 / 3)
+    assert jobs_by_id[2].days_to_complete_at_recommended_slots == pytest.approx((7 * 100.0) / 86400)
     assert jobs_by_id[3].recommended_slots == 10
     assert jobs_by_id[3].days_to_complete_at_recommended_slots == pytest.approx((70 * 100.0 / 10) / 86400)
 
@@ -3372,6 +3394,7 @@ def test_plan_asset_optimized_days_to_complete_none_when_no_slots_or_ineligible(
     empty_job = empty_pool["jobs"][0]
     assert empty_job.recommended_slots == 0
     assert empty_job.days_to_complete_at_recommended_slots is None
+    assert empty_job.runs_per_slot is None
 
     ineligible = _ready_reaction_plan(
         monkeypatch,
@@ -3380,7 +3403,8 @@ def test_plan_asset_optimized_days_to_complete_none_when_no_slots_or_ineligible(
     )
     jobs_by_id = {job.type_id: job for job in ineligible["jobs"]}
     assert jobs_by_id[1].recommended_slots == 3
-    assert jobs_by_id[1].days_to_complete_at_recommended_slots == pytest.approx((5 * 100.0 / 3) / 86400)
+    assert jobs_by_id[1].runs_per_slot == 2  # ceil(5 / 3)
+    assert jobs_by_id[1].days_to_complete_at_recommended_slots == pytest.approx((2 * 100.0) / 86400)
     assert jobs_by_id[2].recommended_slots is None
     assert jobs_by_id[2].days_to_complete_at_recommended_slots is None
 
