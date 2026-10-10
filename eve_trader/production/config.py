@@ -171,12 +171,11 @@ class ProductionConfig:
     specialist_skill_level: int = 5
 
     # -- Asset-optimized build list (AssetPlanList) --
-    # Optional day-target for the slot-split recommendation: when set, slots
-    # stop being handed out once every started job would finish its ready
-    # runs within this many days (surplus slots stay free). None (the
-    # default) spreads the whole pool to finish everything as early as
-    # possible. Unreachable targets fall back to that same split (see
-    # engine._allocate_slots_min_makespan). Edited on the Asset-Optimized
+    # Optional maximum days per slot for the slot-split recommendation.
+    # Display only: the split always uses every free slot to finish as early
+    # as possible (engine._allocate_slots_min_makespan), and a job whose
+    # split still takes longer than this is highlighted as missing it. None
+    # (the default) turns the highlight off. Edited on the Asset-Optimized
     # Build List page, not the general Settings tab.
     asset_plan_slot_days_target: Optional[float] = None
 

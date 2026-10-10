@@ -2598,7 +2598,6 @@ def _unlock_time_by_type(jobs: dict[int, AssetPlanJob]) -> dict[int, float]:
 
 def _allocate_slots_min_makespan(
     claims: list[tuple[int, float, int, float, Optional[float]]], available: int,
-    target_seconds: float = 0.0,
 ) -> dict[int, int]:
     """Splits `available` job slots (one shared pool - see
     _free_slots_by_category) across competing claims (job_type_id,
@@ -2619,13 +2618,13 @@ def _allocate_slots_min_makespan(
        per-slot time (ready_seconds / slots), never past its own
        runs_ready_now (one run per slot at most). Greedily shortening the
        current longest job is optimal for the makespan of a one-job-per-slot
-       split.
-    3. With target_seconds > 0 (ProductionConfig.asset_plan_slot_days_target)
-       allocation stops once every started job fits the target - surplus
-       slots stay free, and each job ends up with exactly
-       ceil(ready_seconds / target) slots when the pool allows it. When it
-       doesn't, the target is out of reach and this is the same split as
-       without a target.
+       split, so no job runs longer per slot than it has to.
+
+    Every free slot is used (as far as ready runs allow).
+    ProductionConfig.asset_plan_slot_days_target is a maximum, not a reason
+    to leave slots free (user request 2026-10-10): this split already keeps
+    the longest slot as short as possible, so the target only drives the
+    frontend's "missed" highlight and never changes the allocation.
 
     Returns {job_type_id: slots}, one entry per input claim, summing to at
     most `available`."""
@@ -2645,8 +2644,6 @@ def _allocate_slots_min_makespan(
     remaining = available - len(started)
     while remaining > 0 and heap:
         neg_per_slot, rank, type_id, ready_seconds, runs = heapq.heappop(heap)
-        if target_seconds > 0 and -neg_per_slot <= target_seconds:
-            break
         if allocated[type_id] >= runs:
             continue
         allocated[type_id] += 1
@@ -2738,8 +2735,8 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     recommended_slots - your currently-free character job slots
     (_free_slots_by_category), split so the pool's ready work finishes as
     early as possible (_allocate_slots_min_makespan; capped per job by
-    runs_ready_now, and stopped early once every job fits
-    cfg.asset_plan_slot_days_target when one is set). Also always fills
+    runs_ready_now - cfg.asset_plan_slot_days_target does not change it).
+    Also always fills
     days_to_complete_at_recommended_slots whenever recommended_slots is set
     and > 0, in both modes.
 
@@ -3056,8 +3053,6 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             continue
         pool_label = "Reactions" if job.activity == "Reaction" else "Manufacturing"
         eligible_by_pool.setdefault(pool_label, []).append(job)
-    target_days = cfg.asset_plan_slot_days_target
-    target_seconds = target_days * 86400 if target_days else 0.0
     for pool_label, pool_jobs in eligible_by_pool.items():
         # job_runs is always >=1 here (job.runs_ready_now <= job.job_runs,
         # and the loop above already skipped runs_ready_now <= 0), so
@@ -3068,7 +3063,7 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
              j.unlock_time_seconds, j.stock_coverage)
             for j in pool_jobs
         ]
-        allocation = _allocate_slots_min_makespan(claims, free_slots.get(pool_label, 0), target_seconds)
+        allocation = _allocate_slots_min_makespan(claims, free_slots.get(pool_label, 0))
         for j in pool_jobs:
             j.recommended_slots = allocation[j.type_id]
             ready_seconds = j.runs_ready_now * (j.job_time_seconds / j.job_runs)

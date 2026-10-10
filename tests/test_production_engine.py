@@ -2944,22 +2944,14 @@ def test_allocate_slots_min_makespan_fewer_slots_than_jobs_starts_unlock_then_lo
     assert result == {1: 1, 2: 1, 3: 1, 4: 0}
 
 
-def test_allocate_slots_min_makespan_target_leaves_surplus_free():
-    # With a target, allocation stops once every job fits it:
-    # ceil(5000 / 1000) = 5 and ceil(2500 / 1000) = 3 slots, 12 stay free.
+def test_allocate_slots_min_makespan_uses_every_slot_runs_allow():
+    # 20 slots, 5000s and 2500s of work with plenty of runs: every slot is
+    # used (the days target is only a maximum and never leaves slots free -
+    # user request 2026-10-10), the longest slot ends as early as possible.
     result = engine._allocate_slots_min_makespan(
-        [(1, 5000.0, 50, 0.0, 0.5), (2, 2500.0, 50, 0.0, 0.5)], available=20, target_seconds=1000.0)
+        [(1, 5000.0, 50, 0.0, 0.5), (2, 2500.0, 50, 0.0, 0.5)], available=20)
 
-    assert result == {1: 5, 2: 3}
-
-
-def test_allocate_slots_min_makespan_unreachable_target_uses_the_whole_pool():
-    # ceil(8 days / 1 day) = 8 slots needed for item 2 alone, only 5 exist -
-    # same split as without a target.
-    day = 86400.0
-    claims = [(1, 2 * day, 2, 0.0, 0.5), (2, 8 * day, 8, 0.0, 0.0)]
-    assert engine._allocate_slots_min_makespan(claims, available=5, target_seconds=day) == {1: 1, 2: 4}
-    assert engine._allocate_slots_min_makespan(claims, available=5) == {1: 1, 2: 4}
+    assert result == {1: 13, 2: 7}
 
 
 def test_allocate_slots_min_makespan_empty_or_zero_pool():
@@ -3293,12 +3285,11 @@ def test_plan_asset_optimized_days_target_none_uses_the_whole_pool(monkeypatch, 
 
 
 @pg_helpers.postgres_required()
-def test_plan_asset_optimized_days_target_surplus_gives_each_job_exactly_its_need(monkeypatch, tenant):
-    # Scenario 2: every job's own 1-day need (5 + 3 = 8) fits in 20 free
-    # slots, so coverage order doesn't change the outcome - each job gets
-    # exactly its target_cap regardless of which claims first, and leftover
-    # free slots stay unallocated rather than being piled onto jobs that
-    # don't need them.
+def test_plan_asset_optimized_days_target_surplus_uses_slots_up_to_ready_runs(monkeypatch, tenant):
+    # 20 free slots, 5 + 3 ready runs of one day each. The target is only a
+    # maximum (user request 2026-10-10) - it never leaves slots free - so each
+    # job gets one slot per ready run; the rest stay free only because there
+    # are no more runs to put on them.
     day = 86400.0
     cfg = ProductionConfig(component_overbuild=0.0, asset_plan_slot_days_target=1.0)
     result = _ready_reaction_plan(
@@ -3309,18 +3300,16 @@ def test_plan_asset_optimized_days_target_surplus_gives_each_job_exactly_its_nee
     jobs_by_id = {job.type_id: job for job in result["jobs"]}
     assert jobs_by_id[1].recommended_slots == 5
     assert jobs_by_id[2].recommended_slots == 3
-    allocated = sum(j.recommended_slots for j in jobs_by_id.values())
-    assert allocated == 8
-    assert allocated < 20
+    assert sum(j.recommended_slots for j in jobs_by_id.values()) == 8  # capped by ready runs, not by the target
 
 
 @pg_helpers.postgres_required()
-def test_plan_asset_optimized_days_target_scarcity_falls_back_to_fastest_split(monkeypatch, tenant):
+def test_plan_asset_optimized_days_target_does_not_change_the_split(monkeypatch, tenant):
     # Own 1-day needs are 2 (ItemA) + 8 (ItemB) against only 5 free slots -
-    # the target is out of reach, so the pool is split to finish as early as
-    # possible instead (2026-10-10): both start, ItemB gets the 3 spare slots
-    # (2 days each, same as ItemA). ItemA's backup is scaled up (4, not 2) so
-    # its 0.5 coverage doesn't also shrink its own need below the stated 2.
+    # the target is out of reach. The split is the same fastest split as
+    # without a target: both start, ItemB gets the 3 spare slots (2 days
+    # each, same as ItemA). ItemA's backup is scaled up (4, not 2) so its 0.5
+    # coverage doesn't also shrink its own need below the stated 2.
     day = 86400.0
     cfg = ProductionConfig(component_overbuild=0.0, asset_plan_slot_days_target=1.0)
     result = _ready_reaction_plan(

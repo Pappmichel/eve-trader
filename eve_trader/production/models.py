@@ -274,9 +274,9 @@ class AssetPlanJob:
     # job gets one slot (if the pool is smaller than the job count, the
     # highest-unlock / longest jobs start first and the rest get 0), then
     # each extra slot goes to whichever job currently takes longest per
-    # slot. Never more than runs_ready_now. With
-    # ProductionConfig.asset_plan_slot_days_target set, allocation stops once
-    # every job fits the target. Only set for job_category in
+    # slot. Never more than runs_ready_now. Every free slot is used;
+    # ProductionConfig.asset_plan_slot_days_target is only a display limit.
+    # Only set for job_category in
     # engine._SLOT_RECOMMENDATION_CATEGORIES (Reactions/Advanced
     # Components/Capital Components - user request 2026-08-15) and only when
     # runs_ready_now > 0 (nothing to split otherwise) - None everywhere else.

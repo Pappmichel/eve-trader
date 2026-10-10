@@ -169,8 +169,8 @@ export default function AssetPlanList() {
             placeholder="All" clearable w={220}
           />
           <NumberInput
-            label="Slot target (days to clear backlog)"
-            description="Empty = off. Click Recompute after saving."
+            label="Slot target (max days per slot)"
+            description="Empty = off. Only highlights jobs that take longer."
             placeholder="Off"
             value={daysTargetDraft}
             min={0}
@@ -211,9 +211,9 @@ export default function AssetPlanList() {
         job gets one slot, then each extra slot goes to whichever job would currently take longest per slot (never
         more slots than ready runs). If you have fewer free slots than jobs, jobs that unlock blocked work elsewhere
         in the plan start first ("unlocks ~Xh" in the cell), then the longest ones; the rest show "–" and wait for
-        a slot to free up. With a Slot target set, slots stop being handed out once every job fits the target, so
-        surplus slots stay free; if the target is out of reach, you get the same fastest-possible split. The "~Nd"
-        next to the split is how many days that job takes - orange means it misses the Slot target.
+        a slot to free up. Every free slot is used. The Slot target is a maximum: it never leaves slots free, it
+        only marks a job orange when its "~Nd" (how many days that job takes with this split) is longer than the
+        target - then you need more free slots to meet it.
       </Text>
     </Stack>
   )
