@@ -169,8 +169,8 @@ export default function AssetPlanList() {
             placeholder="All" clearable w={220}
           />
           <NumberInput
-            label="Slot target (days to clear backlog)"
-            description="Empty = off. Click Recompute after saving."
+            label="Slot target (max days per slot)"
+            description="Empty = off. Only highlights jobs that take longer."
             placeholder="Off"
             value={daysTargetDraft}
             min={0}
@@ -207,26 +207,13 @@ export default function AssetPlanList() {
         Click the column header to sort by it if you want to see what's closest to running out first; it doesn't
         affect the list's own sort order or which jobs get queued. "Split Into" (Reactions/Advanced Components/
         Capital Components only) recommends how many of your currently-free character job slots to queue this
-        job's ready runs across in parallel, instead of one long serial batch. Slots are claimed in priority
-        order: first by how much currently-<i>blocked</i> job time elsewhere in the plan finishing this job would
-        newly unblock ("unlocks ~Xh" in the cell, when positive) - e.g. a Reaction whose product is the only thing
-        still missing for several Component jobs outranks one feeding nothing else, even if it's better stocked -
-        then, for jobs tied on that, by Stock Coverage ascending (least of itself already on hand claims first).
-        Whichever job wins claims its own full need before the next one gets anything - so a single high-priority
-        job can take the entire free-slot pool for a category and leave everything else sharing it at 0 this
-        round, on purpose: the goal is to fully finish what unblocks the most downstream work (or, failing that,
-        what's most depleted) rather than spread every job forward a little. Only a job's <i>sole remaining</i>
-        same-category blocker earns unlock credit - "category" here is any buildable grouping (Reaction, Advanced/
-        Capital Component, Equipment, a ship size, ...), never a raw-buy material; a job still short on something
-        else in that same category, or sharing the blocker with another still-missing job of the same kind, earns
-        none yet. Two modes control each job's own "need" (the ceiling it can claim): with
-        Slot target empty (the default), a job's need is simply its own ready runs, uncapped. With a Slot target
-        set, each job's need instead becomes however many slots it would take to finish its own ready runs within
-        that many days (never more than it has ready runs) - priority order still decides who claims first, so if
-        the pool can't cover everyone's need in that order, some jobs may get fewer slots than their target asks
-        for, or none at all. The "~Nd" next to the split is how many days that recommendation would actually take
-        - always shown, in both modes. Orange means it missed the configured Slot target because the pool ran
-        short before reaching this job (the real number is still shown; nothing is hidden or auto-capped).
+        job's ready runs across in parallel, chosen so all ready jobs together finish as early as possible: every
+        job gets one slot, then each extra slot goes to whichever job would currently take longest per slot (never
+        more slots than ready runs). If you have fewer free slots than jobs, jobs that unlock blocked work elsewhere
+        in the plan start first ("unlocks ~Xh" in the cell), then the longest ones; the rest show "–" and wait for
+        a slot to free up. Every free slot is used. The Slot target is a maximum: it never leaves slots free, it
+        only marks a job orange when its "~Nd" (how many days that job takes with this split) is longer than the
+        target - then you need more free slots to meet it.
       </Text>
     </Stack>
   )

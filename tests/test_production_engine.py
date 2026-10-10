@@ -2855,7 +2855,7 @@ def test_plan_asset_optimized_recommends_slot_split_for_eligible_categories_only
     # User request 2026-08-15: recommend how many free character job slots to
     # split a job's ready runs across, but only for Reactions/Advanced
     # Components/Capital Components - not Equipment/Ships/etc. Only one
-    # eligible job in the pool here, so the coverage-priority allocator (see
+    # eligible job in the pool here, so the slot allocator (see
     # the dedicated priority tests below) degenerates to "give it the whole
     # pool, capped at its own ready runs" - ItemP (Reactions, 5 ready runs)
     # and ItemQ (Equipment, 5 ready runs) share the same setup otherwise, so
@@ -2904,72 +2904,59 @@ def test_free_slots_by_category_excludes_flagged_characters(monkeypatch):
     assert totals == {"Reactions": 3}  # Bob's 5 free slots excluded entirely
 
 
-def test_allocate_slots_by_priority_fills_lowest_coverage_first_when_unlock_ties():
-    # User request 2026-09-22 (coverage priority): with every unlock_time_seconds
-    # tied at 0.0, this degenerates to pure coverage ordering - the job with
-    # the least of itself already on hand claims its entire cap before the
-    # next one gets anything, not a proportional split across all three.
-    result = engine._allocate_slots_by_priority(
-        [(1, 10, 0.0, 0.5), (2, 20, 0.0, 0.1), (3, 70, 0.0, 0.9)], available=10)
+def test_allocate_slots_min_makespan_gives_extra_slots_to_the_longest_job():
+    # User request 2026-10-10: spread the pool so everything finishes as early
+    # as possible. Each job gets one slot, the 7 spare slots go to whichever
+    # job currently takes longest per slot (claims: type_id, ready_seconds,
+    # runs_ready_now, unlock_time_seconds, stock_coverage).
+    result = engine._allocate_slots_min_makespan(
+        [(1, 1000.0, 50, 0.0, 0.5), (2, 2000.0, 50, 0.0, 0.1), (3, 7000.0, 50, 0.0, 0.9)], available=10)
 
-    assert result == {1: 0, 2: 10, 3: 0}  # item 2 (lowest coverage) alone takes the whole pool
-
-
-def test_allocate_slots_by_priority_favors_higher_unlock_time_over_lower_coverage():
-    # User request 2026-09-22 (unlock priority): item 1 has by far the worse
-    # coverage (0.9), but item 2 unlocks far more blocked job time elsewhere
-    # (500s vs 10s) - unlock_time_seconds wins, coverage never gets consulted
-    # since the two aren't tied on it.
-    result = engine._allocate_slots_by_priority(
-        [(1, 10, 10.0, 0.1), (2, 10, 500.0, 0.9)], available=10)
-
-    assert result == {1: 0, 2: 10}
+    assert result == {1: 1, 2: 2, 3: 7}  # longest per-slot time ends at 1000s for every job
 
 
-def test_allocate_slots_by_priority_moves_to_next_job_once_a_cap_is_filled():
-    # Highest-priority job (2, tied unlock_time_seconds but lowest coverage)
-    # is fully satisfied by its own cap (3), leaving 7 slots for the next
-    # (1, cap 10, only gets 7), and nothing left for the lowest-priority job
-    # (3).
-    result = engine._allocate_slots_by_priority(
-        [(1, 10, 0.0, 0.5), (2, 3, 0.0, 0.1), (3, 5, 0.0, 0.9)], available=10)
+def test_allocate_slots_min_makespan_one_short_job_no_longer_takes_the_pool():
+    # Regression for the 2026-10-10 export: a short job with a high unlock
+    # score used to claim every free slot (one run per slot) while longer jobs
+    # got nothing.
+    result = engine._allocate_slots_min_makespan(
+        [(1, 9.0, 1000, 500.0, 0.1), (2, 900.0, 1000, 0.0, 0.9)], available=10)
 
-    assert result == {1: 7, 2: 3, 3: 0}
-    assert sum(result.values()) == 10
+    assert result == {1: 1, 2: 9}
 
 
-def test_allocate_slots_by_priority_never_exceeds_a_jobs_own_need():
-    # A huge pool (100) against small caps (2+3+5=10 total) must still cap
-    # at each job's own need, not force-allocate the full pool regardless -
-    # same guarantee the earlier allocator versions gave.
-    result = engine._allocate_slots_by_priority(
-        [(1, 2, 0.0, 0.1), (2, 3, 0.0, 0.2), (3, 5, 0.0, 0.3)], available=100)
+def test_allocate_slots_min_makespan_never_exceeds_ready_runs():
+    # A huge pool still caps every job at one slot per ready run.
+    result = engine._allocate_slots_min_makespan(
+        [(1, 1000.0, 2, 0.0, 0.1), (2, 10.0, 3, 0.0, 0.2)], available=100)
 
-    assert result == {1: 2, 2: 3, 3: 5}  # every job's own need is covered; nothing wasted trying to exceed it
+    assert result == {1: 2, 2: 3}
 
 
-def test_allocate_slots_by_priority_empty_or_zero_pool():
-    assert engine._allocate_slots_by_priority([], available=10) == {}
-    assert engine._allocate_slots_by_priority([(1, 5, 0.0, 0.0)], available=0) == {1: 0}
+def test_allocate_slots_min_makespan_fewer_slots_than_jobs_starts_unlock_then_longest_first():
+    # Pool smaller than the job count: one slot each for the jobs that start
+    # now - highest unlock_time_seconds first, then longest ready_seconds,
+    # then lowest stock_coverage - and 0 for the rest.
+    result = engine._allocate_slots_min_makespan(
+        [(1, 100.0, 5, 0.0, 0.1), (2, 50.0, 5, 10.0, 0.9), (3, 900.0, 5, 0.0, 0.9), (4, 100.0, 5, 0.0, 0.5)],
+        available=3)
+
+    assert result == {1: 1, 2: 1, 3: 1, 4: 0}
 
 
-def test_allocate_slots_by_priority_none_coverage_sorts_last_within_a_tie():
-    # None (shouldn't happen for a real job - see AssetPlanJob.stock_coverage's
-    # docstring) is treated as least urgent, not as if it were 0.0 - it must
-    # not jump ahead of jobs with a real, known coverage value, when both are
-    # tied on unlock_time_seconds.
-    result = engine._allocate_slots_by_priority([(1, 5, 0.0, None), (2, 3, 0.0, 0.9)], available=5)
+def test_allocate_slots_min_makespan_uses_every_slot_runs_allow():
+    # 20 slots, 5000s and 2500s of work with plenty of runs: every slot is
+    # used (the days target is only a maximum and never leaves slots free -
+    # user request 2026-10-10), the longest slot ends as early as possible.
+    result = engine._allocate_slots_min_makespan(
+        [(1, 5000.0, 50, 0.0, 0.5), (2, 2500.0, 50, 0.0, 0.5)], available=20)
 
-    assert result == {1: 2, 2: 3}  # item 2 (known, however high) still claims first
+    assert result == {1: 13, 2: 7}
 
 
-def test_allocate_slots_by_priority_ties_preserve_input_order():
-    # Equal unlock_time_seconds and equal coverage falls back to the order
-    # claims were given in (stable sort) - deterministic, not sorted by
-    # type_id or claim size.
-    result = engine._allocate_slots_by_priority([(1, 5, 0.0, 0.5), (2, 5, 0.0, 0.5)], available=7)
-
-    assert result == {1: 5, 2: 2}
+def test_allocate_slots_min_makespan_empty_or_zero_pool():
+    assert engine._allocate_slots_min_makespan([], available=10) == {}
+    assert engine._allocate_slots_min_makespan([(1, 10.0, 5, 0.0, 0.0)], available=0) == {1: 0}
 
 
 def _make_asset_plan_job(monkeypatch, type_id, job_runs, runs_ready_now, job_time_seconds, blocker_type_ids,
@@ -3087,8 +3074,9 @@ def test_plan_asset_optimized_slot_priority_favors_unlock_time_over_coverage(mon
     # User request 2026-09-22: a Reaction that's the sole thing still
     # blocking a Component job should outrank a better-stocked Reaction that
     # unlocks nothing, even though the unblocking Reaction's own coverage
-    # (0.9) is far better than the other's (0.0) - unlock_time_seconds beats
-    # coverage, not the other way around. This is the end-to-end version of
+    # (0.9) is far better than the other's (0.0) and its job is shorter -
+    # unlock_time_seconds decides who starts first when there are fewer free
+    # slots than jobs (only one Reaction slot here, 2026-10-10). This is the end-to-end version of
     # the motivating "Reactions for Components" example, built through the
     # real dependency-tree expansion rather than hand-built AssetPlanJobs.
     #
@@ -3124,7 +3112,7 @@ def test_plan_asset_optimized_slot_priority_favors_unlock_time_over_coverage(mon
         10: "Advanced Components", 1: "Reactions", 2: "Reactions",
     }.get(type_id))
     monkeypatch.setattr(engine, "character_slot_overview", lambda: [
-        CharacterSlotRow(character_name="Alice", job_type="Reactions", total_slots=10, used_slots=0, free_slots=10),
+        CharacterSlotRow(character_name="Alice", job_type="Reactions", total_slots=1, used_slots=0, free_slots=1),
         CharacterSlotRow(character_name="Alice", job_type="Manufacturing", total_slots=10, used_slots=0, free_slots=10),
     ])
 
@@ -3150,24 +3138,21 @@ def test_plan_asset_optimized_slot_priority_favors_unlock_time_over_coverage(mon
     assert reaction_y.stock_coverage == pytest.approx(0.0)
     assert reaction_y.unlock_time_seconds == pytest.approx(0.0)
 
-    # ReactionX wins the pool despite far worse... no, far *better* coverage
-    # (0.9 vs 0.0) - unlock_time_seconds is consulted first and isn't tied.
-    assert reaction_x.recommended_slots == 5  # its own cap (runs_ready_now)
-    assert reaction_y.recommended_slots == 5  # remaining pool (10 - 5)
+    # ReactionX gets the only slot despite better coverage (0.9 vs 0.0) and
+    # less job time (500s vs 2000s) - unlock_time_seconds is consulted first.
+    assert reaction_x.recommended_slots == 1
+    assert reaction_y.recommended_slots == 0
 
 
 @pg_helpers.postgres_required()
-def test_plan_asset_optimized_slot_priority_favors_lowest_stock_coverage_first(monkeypatch, tenant):
-    # User request 2026-09-22: slots are claimed in stock_coverage order, not
-    # split proportionally across every ready job at once. Three jobs with
-    # 10/20/70 ready runs but distinct coverage - ItemA 0.0 (nothing on
-    # hand), ItemB 0.5, ItemC 0.9 - sharing 15 Reaction slots: ItemA (lowest
-    # coverage) claims its own full need (10) first, the leftover 5 spills
-    # to the next-lowest (ItemB), and ItemC (best stocked) gets nothing this
-    # round even though it has by far the most ready runs.
+def test_plan_asset_optimized_slot_split_finishes_everything_as_early_as_possible(monkeypatch, tenant):
+    # User request 2026-10-10: three jobs with 10/20/70 ready runs at 100s
+    # each (1000/2000/7000s) sharing 15 Reaction slots. Each gets one slot,
+    # the spare slots go to whichever job takes longest per slot, so ItemC
+    # (most work) gets the most slots - regardless of stock_coverage.
     #
     # Backup targets are scaled up (40/700, not a flat 20/70) so that
-    # current_stock can simultaneously produce the desired coverage
+    # current_stock can simultaneously produce distinct coverage
     # (current/backup) *and* leave the desired missing quantity
     # (backup - current, what actually drives ready runs) unchanged -
     # backup=need/(1-coverage), current=coverage*backup.
@@ -3197,24 +3182,18 @@ def test_plan_asset_optimized_slot_priority_favors_lowest_stock_coverage_first(m
     jobs_by_id = {job.type_id: job for job in result["jobs"]}
     assert (jobs_by_id[1].runs_ready_now, jobs_by_id[2].runs_ready_now, jobs_by_id[3].runs_ready_now) == (10, 20, 70)
     assert (jobs_by_id[1].stock_coverage, jobs_by_id[2].stock_coverage, jobs_by_id[3].stock_coverage) == (0.0, 0.5, 0.9)
-    assert jobs_by_id[1].recommended_slots == 10  # lowest coverage - its full need first
-    assert jobs_by_id[2].recommended_slots == 5   # next-lowest - whatever's left
-    assert jobs_by_id[3].recommended_slots == 0   # best-stocked - nothing this round
+    assert jobs_by_id[1].recommended_slots == 2   # 500s per slot
+    assert jobs_by_id[2].recommended_slots == 3   # 667s per slot
+    assert jobs_by_id[3].recommended_slots == 10  # 700s per slot
     assert sum(j.recommended_slots for j in jobs_by_id.values()) == 15  # sums to the real pool
 
 
 @pg_helpers.postgres_required()
-def test_plan_asset_optimized_slot_priority_ignores_job_time_uses_coverage_only(monkeypatch, tenant):
-    # Confirms the older time-weighted behavior (2026-08-16: "jobs needing
-    # more total job-time should get more slots") is gone, not just
-    # renamed - superseded 2026-09-22. ItemA has few ready runs (10) but
-    # each run takes 100s (far more total job-time, 1000s); ItemB has many
-    # ready runs (90) at 1s each (only 90s total). Under the old algorithm A
-    # would have dominated (9 vs 1 slots) purely on job-time. Here ItemB is
-    # given the lower stock_coverage instead, and claims the entire pool
-    # despite needing far less total job-time - proving time no longer
-    # factors into slot priority at all, only stock_coverage does.
-    # Backup targets scaled up the same way as the test above, so ItemA's
+def test_plan_asset_optimized_slot_split_follows_job_time_not_coverage(monkeypatch, tenant):
+    # ItemA has few ready runs (10) but each takes 100s (1000s total); ItemB
+    # has 90 ready runs at 1s each (90s total) and the lower stock_coverage.
+    # Since 2026-10-10 the split minimizes the time until everything is done,
+    # so ItemA gets every spare slot. Backup targets scaled up so ItemA's
     # coverage (0.9) doesn't eat into its stated 10 ready runs.
     bp_by_id = {1: (101, 11, 1), 2: (102, 11, 1)}
     time_by_bp = {101: 100.0, 102: 1.0}
@@ -3243,29 +3222,9 @@ def test_plan_asset_optimized_slot_priority_ignores_job_time_uses_coverage_only(
     jobs_by_id = {job.type_id: job for job in result["jobs"]}
     assert jobs_by_id[1].runs_ready_now == 10
     assert jobs_by_id[2].runs_ready_now == 90
-    assert jobs_by_id[1].recommended_slots == 0    # far more total job-time, but better stocked - nothing
-    assert jobs_by_id[2].recommended_slots == 10   # nearly instant runs, but lowest coverage - claims all
+    assert jobs_by_id[1].recommended_slots == 9    # 1000s of work -> ~111s per slot
+    assert jobs_by_id[2].recommended_slots == 1    # 90s of work fits one slot
     assert sum(j.recommended_slots for j in jobs_by_id.values()) == 10
-
-
-def test_slots_needed_for_days_target_exact_day_boundary():
-    # ready_seconds exactly fills target_days on one slot -> ceil(1.0) = 1.
-    assert engine._slots_needed_for_days_target(86400.0, 10, 1.0) == 1
-    # one second over the boundary needs a second slot.
-    assert engine._slots_needed_for_days_target(86401.0, 10, 1.0) == 2
-
-
-def test_slots_needed_for_days_target_caps_at_runs_ready_now():
-    # 10 days of serial work vs a 1-day target would ask for 10 slots, but
-    # there are only 3 ready runs to put on them.
-    assert engine._slots_needed_for_days_target(10 * 86400.0, 3, 1.0) == 3
-
-
-def test_slots_needed_for_days_target_non_positive_is_max_parallelism():
-    # <= 0 is "no meaningful cap", not a ZeroDivisionError - recommend one
-    # slot per ready run (same upper bound the allocator already applies).
-    assert engine._slots_needed_for_days_target(86400.0, 5, 0.0) == 5
-    assert engine._slots_needed_for_days_target(86400.0, 5, -1.0) == 5
 
 
 def _ready_reaction_plan(monkeypatch, stock_targets, free_slots, cfg, time_by_type=None,
@@ -3306,16 +3265,10 @@ def _ready_reaction_plan(monkeypatch, stock_targets, free_slots, cfg, time_by_ty
 
 
 @pg_helpers.postgres_required()
-def test_plan_asset_optimized_days_target_none_uses_coverage_order_with_uncapped_need(monkeypatch, tenant):
-    # Scenario 1 / regression guard: asset_plan_slot_days_target=None means
-    # each job's own cap is simply its uncapped runs_ready_now - priority
-    # order is still stock_coverage ascending (see the dedicated priority
-    # tests above). ItemA (lowest coverage, 0.0) claims its own full need
-    # (10) from the 10-slot pool before ItemB/ItemC (higher coverage) get a
-    # look-in at all.
-    # Backup targets scaled up (40/700, not a flat 20/70) so coverage and
-    # ready-run count can be set independently - see the dedicated priority
-    # test above for the same reasoning.
+def test_plan_asset_optimized_days_target_none_uses_the_whole_pool(monkeypatch, tenant):
+    # asset_plan_slot_days_target=None: the whole 10-slot pool is spread to
+    # finish 1000/2000/7000s of ready work as early as possible (1000s per
+    # slot at most), regardless of stock_coverage.
     cfg = ProductionConfig(component_overbuild=0.0, asset_plan_slot_days_target=None)
     result = _ready_reaction_plan(
         monkeypatch,
@@ -3325,19 +3278,18 @@ def test_plan_asset_optimized_days_target_none_uses_coverage_order_with_uncapped
     )
     jobs_by_id = {job.type_id: job for job in result["jobs"]}
     assert (jobs_by_id[1].runs_ready_now, jobs_by_id[2].runs_ready_now, jobs_by_id[3].runs_ready_now) == (10, 20, 70)
-    assert jobs_by_id[1].recommended_slots == 10
-    assert jobs_by_id[2].recommended_slots == 0
-    assert jobs_by_id[3].recommended_slots == 0
+    assert jobs_by_id[1].recommended_slots == 1
+    assert jobs_by_id[2].recommended_slots == 2
+    assert jobs_by_id[3].recommended_slots == 7
     assert sum(j.recommended_slots for j in jobs_by_id.values()) == 10
 
 
 @pg_helpers.postgres_required()
-def test_plan_asset_optimized_days_target_surplus_gives_each_job_exactly_its_need(monkeypatch, tenant):
-    # Scenario 2: every job's own 1-day need (5 + 3 = 8) fits in 20 free
-    # slots, so coverage order doesn't change the outcome - each job gets
-    # exactly its target_cap regardless of which claims first, and leftover
-    # free slots stay unallocated rather than being piled onto jobs that
-    # don't need them.
+def test_plan_asset_optimized_days_target_surplus_uses_slots_up_to_ready_runs(monkeypatch, tenant):
+    # 20 free slots, 5 + 3 ready runs of one day each. The target is only a
+    # maximum (user request 2026-10-10) - it never leaves slots free - so each
+    # job gets one slot per ready run; the rest stay free only because there
+    # are no more runs to put on them.
     day = 86400.0
     cfg = ProductionConfig(component_overbuild=0.0, asset_plan_slot_days_target=1.0)
     result = _ready_reaction_plan(
@@ -3348,22 +3300,16 @@ def test_plan_asset_optimized_days_target_surplus_gives_each_job_exactly_its_nee
     jobs_by_id = {job.type_id: job for job in result["jobs"]}
     assert jobs_by_id[1].recommended_slots == 5
     assert jobs_by_id[2].recommended_slots == 3
-    allocated = sum(j.recommended_slots for j in jobs_by_id.values())
-    assert allocated == 8
-    assert allocated < 20
+    assert sum(j.recommended_slots for j in jobs_by_id.values()) == 8  # capped by ready runs, not by the target
 
 
 @pg_helpers.postgres_required()
-def test_plan_asset_optimized_days_target_scarcity_fills_lowest_coverage_need_first(monkeypatch, tenant):
-    # Scenario 3: own 1-day needs are 2 (ItemA) + 8 (ItemB) against only 5
-    # free slots - can't cover both. ItemB is given the lower stock_coverage
-    # (0.0 vs ItemA's 0.5), so it claims the scarce pool first: takes all 5
-    # (still short of its own need of 8), leaving ItemA - the better-stocked
-    # job - at 0 this round, even though ItemA's own need (2) would have
-    # fit easily. This is the deliberate "fully finish what's most urgent,
-    # not spread thin" behavior (2026-09-22) - no job ever exceeds its own
-    # target_cap either way. ItemA's backup is scaled up (4, not 2) so its
-    # 0.5 coverage doesn't also shrink its own need below the stated 2.
+def test_plan_asset_optimized_days_target_does_not_change_the_split(monkeypatch, tenant):
+    # Own 1-day needs are 2 (ItemA) + 8 (ItemB) against only 5 free slots -
+    # the target is out of reach. The split is the same fastest split as
+    # without a target: both start, ItemB gets the 3 spare slots (2 days
+    # each, same as ItemA). ItemA's backup is scaled up (4, not 2) so its 0.5
+    # coverage doesn't also shrink its own need below the stated 2.
     day = 86400.0
     cfg = ProductionConfig(component_overbuild=0.0, asset_plan_slot_days_target=1.0)
     result = _ready_reaction_plan(
@@ -3374,18 +3320,16 @@ def test_plan_asset_optimized_days_target_scarcity_fills_lowest_coverage_need_fi
     )
     jobs_by_id = {job.type_id: job for job in result["jobs"]}
     assert (jobs_by_id[1].runs_ready_now, jobs_by_id[2].runs_ready_now) == (2, 8)
-    assert jobs_by_id[1].recommended_slots == 0
-    assert jobs_by_id[2].recommended_slots == 5
-    assert jobs_by_id[2].recommended_slots <= 8  # never exceeds its own target_cap
+    assert jobs_by_id[1].recommended_slots == 1
+    assert jobs_by_id[2].recommended_slots == 4
     assert sum(j.recommended_slots for j in jobs_by_id.values()) == 5
 
 
 @pg_helpers.postgres_required()
 def test_plan_asset_optimized_days_to_complete_computed_in_both_modes(monkeypatch, tenant):
     # Informational in both modes whenever recommended_slots > 0 - not gated
-    # on asset_plan_slot_days_target. Default coverage-priority 10/5/0 split
-    # of 15 slots (see the dedicated priority test above) gives ItemA and
-    # ItemB each a distinct days-to-complete, and None for ItemC (0 slots).
+    # on asset_plan_slot_days_target. Default 2/3/10 split of 15 slots (see
+    # the dedicated split test above).
     # Days-target surplus case: 5 slots for 5 * 86400s of work -> exactly
     # 1.0 day.
     cfg_default = ProductionConfig(component_overbuild=0.0, asset_plan_slot_days_target=None)
@@ -3397,12 +3341,12 @@ def test_plan_asset_optimized_days_to_complete_computed_in_both_modes(monkeypatc
     )
     jobs_by_id = {job.type_id: job for job in default["jobs"]}
     assert (jobs_by_id[1].runs_ready_now, jobs_by_id[2].runs_ready_now) == (10, 20)
-    assert jobs_by_id[1].recommended_slots == 10
-    assert jobs_by_id[1].days_to_complete_at_recommended_slots == pytest.approx((10 * 100.0 / 10) / 86400)
-    assert jobs_by_id[2].recommended_slots == 5
-    assert jobs_by_id[2].days_to_complete_at_recommended_slots == pytest.approx((20 * 100.0 / 5) / 86400)
-    assert jobs_by_id[3].recommended_slots == 0
-    assert jobs_by_id[3].days_to_complete_at_recommended_slots is None
+    assert jobs_by_id[1].recommended_slots == 2
+    assert jobs_by_id[1].days_to_complete_at_recommended_slots == pytest.approx((10 * 100.0 / 2) / 86400)
+    assert jobs_by_id[2].recommended_slots == 3
+    assert jobs_by_id[2].days_to_complete_at_recommended_slots == pytest.approx((20 * 100.0 / 3) / 86400)
+    assert jobs_by_id[3].recommended_slots == 10
+    assert jobs_by_id[3].days_to_complete_at_recommended_slots == pytest.approx((70 * 100.0 / 10) / 86400)
 
     day = 86400.0
     cfg_target = ProductionConfig(component_overbuild=0.0, asset_plan_slot_days_target=1.0)
