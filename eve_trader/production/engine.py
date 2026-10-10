@@ -2621,10 +2621,10 @@ def _allocate_slots_min_makespan(
        split, so no job runs longer per slot than it has to.
 
     Every free slot is used (as far as ready runs allow).
-    ProductionConfig.asset_plan_slot_days_target is a maximum, not a reason
-    to leave slots free (user request 2026-10-10): this split already keeps
-    the longest slot as short as possible, so the target only drives the
-    frontend's "missed" highlight and never changes the allocation.
+    ProductionConfig.asset_plan_slot_days_target is a maximum per slot, not
+    a reason to leave slots free (user request 2026-10-10): it does not
+    change this split (which already keeps the longest slot as short as
+    possible), only how many runs go on each slot - see _runs_per_slot.
 
     Returns {job_type_id: slots}, one entry per input claim, summing to at
     most `available`."""
@@ -2650,6 +2650,21 @@ def _allocate_slots_min_makespan(
         remaining -= 1
         heapq.heappush(heap, (-ready_seconds / allocated[type_id], rank, type_id, ready_seconds, runs))
     return allocated
+
+
+def _runs_per_slot(runs_ready_now: int, slots: int, seconds_per_run: float,
+                   target_seconds: float) -> int:
+    """Runs to queue on each of a job's recommended slots: its ready runs
+    spread evenly (ceil), but never more than fit into target_seconds
+    (ProductionConfig.asset_plan_slot_days_target - a hard maximum per slot,
+    user request 2026-10-10). When the free slots can't fit every ready run
+    within the target, the runs over the cap simply wait for the next
+    round. At least one run, even if a single run is longer than the
+    target (nothing smaller can be queued). target_seconds <= 0 = no cap."""
+    even = math.ceil(runs_ready_now / slots)
+    if target_seconds <= 0 or seconds_per_run <= 0:
+        return even
+    return max(1, min(even, int(target_seconds // seconds_per_run)))
 
 
 def _merge_asset_plan_blockers(
@@ -2735,8 +2750,8 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     recommended_slots - your currently-free character job slots
     (_free_slots_by_category), split so the pool's ready work finishes as
     early as possible (_allocate_slots_min_makespan; capped per job by
-    runs_ready_now - cfg.asset_plan_slot_days_target does not change it).
-    Also always fills
+    runs_ready_now), plus runs_per_slot (capped so no slot runs longer than
+    cfg.asset_plan_slot_days_target, see _runs_per_slot). Also always fills
     days_to_complete_at_recommended_slots whenever recommended_slots is set
     and > 0, in both modes.
 
@@ -3053,6 +3068,8 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
             continue
         pool_label = "Reactions" if job.activity == "Reaction" else "Manufacturing"
         eligible_by_pool.setdefault(pool_label, []).append(job)
+    target_days = cfg.asset_plan_slot_days_target
+    target_seconds = target_days * 86400 if target_days else 0.0
     for pool_label, pool_jobs in eligible_by_pool.items():
         # job_runs is always >=1 here (job.runs_ready_now <= job.job_runs,
         # and the loop above already skipped runs_ready_now <= 0), so
@@ -3066,11 +3083,12 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         allocation = _allocate_slots_min_makespan(claims, free_slots.get(pool_label, 0))
         for j in pool_jobs:
             j.recommended_slots = allocation[j.type_id]
-            ready_seconds = j.runs_ready_now * (j.job_time_seconds / j.job_runs)
+            if not j.recommended_slots:
+                continue
+            j.runs_per_slot = _runs_per_slot(
+                j.runs_ready_now, j.recommended_slots, j.job_time_seconds / j.job_runs, target_seconds)
             j.days_to_complete_at_recommended_slots = (
-                (ready_seconds / j.recommended_slots) / 86400
-                if j.recommended_slots else None
-            )
+                j.runs_per_slot * (j.job_time_seconds / j.job_runs) / 86400)
 
     return {"jobs": sorted(jobs.values(), key=lambda j: j.job_runs, reverse=True)}
 

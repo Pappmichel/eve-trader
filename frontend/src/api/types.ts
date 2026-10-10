@@ -444,6 +444,7 @@ export interface AssetPlanJob {
   stock_coverage: number | null
   unlock_time_seconds: number
   recommended_slots: number | null
+  runs_per_slot: number | null
   days_to_complete_at_recommended_slots: number | null
   recipe_source: string | null
   blockers: AssetPlanBlocker[]

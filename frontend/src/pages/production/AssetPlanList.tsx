@@ -106,15 +106,17 @@ export default function AssetPlanList() {
         const row = i.row.original
         const n = i.getValue() as number | null
         if (n === null || n <= 0) return '–'
-        const perSlot = Math.ceil(row.runs_ready_now / n)
+        const perSlot = row.runs_per_slot ?? Math.ceil(row.runs_ready_now / n)
+        const waiting = Math.max(0, row.runs_ready_now - n * perSlot)
         const days = row.days_to_complete_at_recommended_slots
         const daysText = days == null ? '' : `, ~${days.toFixed(1)}d`
         const target = settings?.asset_plan_slot_days_target
-        const missed = target != null && days != null && days > target + 0.05
+        const missed = waiting > 0 || (target != null && days != null && days > target + 0.05)
+        const waitingText = waiting > 0 ? `, ${qty(waiting)} runs wait` : ''
         const unlockText = row.unlock_time_seconds > 0 ? `, unlocks ~${duration(row.unlock_time_seconds)}` : ''
         return (
           <Text size="sm" c={missed ? 'warn' : undefined}>
-            {n} slot{n === 1 ? '' : 's'} (~{qty(perSlot)} each{daysText}{unlockText})
+            {n} slot{n === 1 ? '' : 's'} (~{qty(perSlot)} each{daysText}{waitingText}{unlockText})
           </Text>
         )
       },
@@ -170,7 +172,7 @@ export default function AssetPlanList() {
           />
           <NumberInput
             label="Slot target (max days per slot)"
-            description="Empty = off. Only highlights jobs that take longer."
+            description="Empty = off. Click Recompute after saving."
             placeholder="Off"
             value={daysTargetDraft}
             min={0}
@@ -211,9 +213,10 @@ export default function AssetPlanList() {
         job gets one slot, then each extra slot goes to whichever job would currently take longest per slot (never
         more slots than ready runs). If you have fewer free slots than jobs, jobs that unlock blocked work elsewhere
         in the plan start first ("unlocks ~Xh" in the cell), then the longest ones; the rest show "–" and wait for
-        a slot to free up. Every free slot is used. The Slot target is a maximum: it never leaves slots free, it
-        only marks a job orange when its "~Nd" (how many days that job takes with this split) is longer than the
-        target - then you need more free slots to meet it.
+        a slot to free up. Every free slot is used. The Slot target is a maximum per slot: it never leaves slots
+        free, but each slot only gets as many runs as fit into the target ("~Nd" = how long one slot runs). If your
+        free slots can't fit all ready runs within the target, the rest is shown orange as "N runs wait" for the
+        next round.
       </Text>
     </Stack>
   )
