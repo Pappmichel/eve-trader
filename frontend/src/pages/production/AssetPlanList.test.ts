@@ -21,6 +21,7 @@ function job(partial: Partial<AssetPlanJob>): AssetPlanJob {
     stock_coverage: null,
     unlock_time_seconds: 0,
     recommended_slots: null,
+    runs_per_slot: null,
     days_to_complete_at_recommended_slots: null,
     recipe_source: null,
     blockers: [],
