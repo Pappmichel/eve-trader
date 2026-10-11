@@ -89,7 +89,11 @@ def test_include_in_production_round_trip_and_integrated_list(tenant):
     assert storage.get_special_order(newer)[5] is True
 
     events = storage.list_special_order_events(older)
-    assert any(e[2] == "updated" and "include_in_production" in (e[3] or "") for e in events)
+    assert any(e[2] == "updated" and e[3] == "include_in_production=on, net_against_stock=on" for e in events)
+    storage.update_special_order(older, {"include_in_production": False, "status": "done", "note": "x"})
+    events = storage.list_special_order_events(older)
+    assert any(e[3] == "include_in_production=off, note, status=done" for e in events)
+    storage.update_special_order(older, {"include_in_production": True, "status": "open"})
 
     integrated = storage.list_integrated_special_order_items()
     assert [(str(r[0]), r[2], r[4]) for r in integrated] == [

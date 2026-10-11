@@ -45,19 +45,24 @@ def _tenant_key() -> str:
     return tenant_id
 
 
-def _invalidate_cached_plans() -> None:
-    """D9: drop this tenant's cached Build / Asset-Optimized plans so the
-    next GET shows the existing "No computation yet" recompute hint.
-    No-op when no ambient tenant is set (CLI / unit tests without a
-    request scope) — those have no router cache entry to clear."""
+def _mark_cached_plans_stale() -> None:
+    """D9: flag this tenant's cached Build / Asset-Optimized plans as stale
+    (integrated special-order demand changed since they were computed). The
+    plans stay readable - Logistics, Invention and the order progress view
+    keep working on them - and the pages show a recompute hint until the
+    next refresh replaces the cache entry. No-op when no ambient tenant is
+    set (CLI / unit tests without a request scope) - those have no router
+    cache entry."""
     tenant_id = storage.get_current_tenant()
     if tenant_id is None:
         return
-    _last_plan.pop(tenant_id, None)
-    _last_asset_plan.pop(tenant_id, None)
+    for cache in (_last_plan, _last_asset_plan):
+        plan = cache.get(tenant_id)
+        if plan is not None:
+            plan["stale"] = True
 
 
-actions.register_plan_cache_invalidator(_invalidate_cached_plans)
+actions.register_plan_cache_invalidator(_mark_cached_plans_stale)
 
 
 def _wrap(fn, **kwargs):
@@ -840,6 +845,7 @@ def refresh_production():
         "invention_list": plan["invention_list"],
         "adjusted_prices_available": plan["adjusted_prices_available"],
         "order_progress": plan.get("order_progress", []),
+        "stale": False,
     }
     return {
         "stock_targets": result["stock_targets"],
@@ -853,7 +859,7 @@ def refresh_production():
 @router.post("/asset-plan/refresh")
 def refresh_asset_plan():
     result = _wrap(actions.do_refresh_asset_plan)
-    _last_asset_plan[_tenant_key()] = result["plan"]
+    _last_asset_plan[_tenant_key()] = {**result["plan"], "stale": False}
     return {"jobs": result["jobs"]}
 
 

@@ -7,6 +7,7 @@ import { productionApi } from '../../api/client'
 import type { BuildJobEntry } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
+import { StalePlanAlert } from './StalePlanAlert'
 import { useAction } from '../../hooks/useAction'
 import { isk, pct, qty } from '../../format'
 
@@ -88,10 +89,18 @@ export default function BuildList() {
       </Stack>
     )
   }
-  if (buildList.length === 0) return <HintCard>Nothing to build - all stock targets are bought or covered.</HintCard>
+  if (buildList.length === 0) {
+    return (
+      <Stack>
+        <StalePlanAlert stale={plan.stale} />
+        <HintCard>Nothing to build - all stock targets are bought or covered.</HintCard>
+      </Stack>
+    )
+  }
 
   return (
     <Stack>
+      <StalePlanAlert stale={plan.stale} />
       <Group justify="space-between" align="flex-end">
         <Group align="flex-end">
           <Card withBorder padding="sm" w={280}>

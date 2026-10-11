@@ -20,7 +20,10 @@ import { useAction } from '../../hooks/useAction'
 import { useItemNameOptions } from '../../hooks/useStaticOptions'
 import { dateTime, isk, pct, qty } from '../../format'
 
-const SPECIAL_ORDER_KEYS = [['production', 'special-orders']]
+// The cached plans are included so their `stale` flag (set by the backend when
+// an integrated order changes) shows up right away.
+const PLAN_KEYS = [['production', 'plan'], ['production', 'asset-plan']]
+const SPECIAL_ORDER_KEYS = [['production', 'special-orders'], ...PLAN_KEYS]
 const CATEGORY_UNKNOWN = 'no category'
 
 function stockpileBadge(v: number) {
@@ -202,6 +205,7 @@ function OrderProgress({ orderId }: { orderId: string }) {
       <Group gap="xs" mb="xs">
         <Title order={6} c="dimmed" tt="uppercase">Progress</Title>
         {readyToDeliver && <Badge color="accent" variant="light">Ready to deliver</Badge>}
+        {plan?.stale && <Badge color="warn" variant="light">Out of date - recompute the Asset-Optimized list</Badge>}
       </Group>
       {isLoading ? (
         <DataTable data={[]} columns={columns} isLoading maxHeight={240} />
@@ -349,9 +353,9 @@ function OrderItemsEditor({ order, items, autoRecompute, onPreview }: {
     if ('plan' in result && result.plan) onPreview(result.plan)
   }
   const setItem = useAction('Save Item', (args: { typeId: number; quantity: number }) =>
-    productionApi.setSpecialOrderItem(order.order_id, args.typeId, args.quantity, autoRecompute))
+    productionApi.setSpecialOrderItem(order.order_id, args.typeId, args.quantity, autoRecompute), PLAN_KEYS)
   const removeItem = useAction('Remove Item', (typeId: number) =>
-    productionApi.removeSpecialOrderItem(order.order_id, typeId, autoRecompute))
+    productionApi.removeSpecialOrderItem(order.order_id, typeId, autoRecompute), PLAN_KEYS)
   const [pendingTypeId, setPendingTypeId] = useState<number | null>(null)
 
   const { data: itemNameOptions } = useItemNameOptions()
@@ -511,12 +515,6 @@ function OrderDetail({ order }: { order: SpecialOrder }) {
         />
       </Tooltip>
 
-      {integrated && (
-        <Alert color="info" variant="light" mt="sm" title="Included in build lists">
-          Recompute the build lists to apply. Done orders drop out of those lists automatically.
-        </Alert>
-      )}
-
       <Stack mt="md">
         {integrated && <OrderProgress orderId={order.order_id} />}
         {!result && <HintCard>Click Compute to see the Buy/Build/Invention breakdown for this order.</HintCard>}
@@ -651,15 +649,17 @@ export default function SpecialOrders() {
 
   const expandedOrder = orders?.find((o) => o.order_id === expandedId) ?? null
 
-  const hasIntegratedOpen = (orders ?? []).some((o) => o.include_in_production && o.status === 'open')
+  const { data: plan } = useQuery({ queryKey: ['production', 'plan'], queryFn: productionApi.plan })
+  const { data: assetPlan } = useQuery({ queryKey: ['production', 'asset-plan'], queryFn: productionApi.assetPlan })
+  const plansStale = Boolean(plan?.stale || assetPlan?.stale)
 
   return (
     <Stack>
       <NewOrderForm />
 
-      {hasIntegratedOpen && (
-        <Alert color="info" variant="light" title="Orders included in build lists">
-          Recompute the Build List and Asset-Optimized list to apply inclusion, item, or status changes.
+      {plansStale && (
+        <Alert color="warn" variant="light" title="Build lists out of date">
+          An order included in the build lists changed. Recompute the Build List and Asset-Optimized list to apply it.
         </Alert>
       )}
 

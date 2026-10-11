@@ -909,6 +909,10 @@ class ProductionPlan(BaseModel):
     # Per integrated special-order line item: units claimed from stock and
     # what is left to plan (SPECIAL_ORDERS_INTEGRATION_PLAN.md D3/D16).
     order_progress: list[OrderProgressRow] = []
+    # True once integrated special-order demand changed after this plan was
+    # computed (SPECIAL_ORDERS_INTEGRATION_PLAN.md D9) - still shown, with a
+    # recompute hint.
+    stale: bool = False
 
 
 class AssetPlan(BaseModel):
@@ -916,6 +920,10 @@ class AssetPlan(BaseModel):
     # Per integrated special-order line item: hangar / running-job split of
     # the D3 claim, runs ready now and what is still missing (D16).
     order_progress: list[AssetPlanOrderProgressRow] = []
+    # True once integrated special-order demand changed after this plan was
+    # computed (SPECIAL_ORDERS_INTEGRATION_PLAN.md D9) - still shown, with a
+    # recompute hint.
+    stale: bool = False
 
 
 # --------------------------------------------------------- special orders

@@ -3022,11 +3022,14 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     a batch already cooking, every job needing it showed ready, but only one
     could actually be started in EVE.
 
-    Known simplification: if the same type_id is *both* a directly-configured
-    stock target *and* a shared material of another job, its current stock is
-    still netted separately in each role (once against its own backup_stock
-    target, once via the stock_used ledger for the other job's claim) - a
-    rare dual-role case, not worth a fully joint ledger across both.
+    Dual role: if the same type_id is *both* a directly-configured stock
+    target *and* a shared material of another job, the stock filling its own
+    backup_stock is reserved in the sizing ledger up front (the same
+    min(current_stock, backup_stock) plan_production records), so another
+    job's claim only sees the rest - before 2026-10-11 the stock was netted
+    in both roles and this list built fewer of the item than the regular
+    Bauliste. Readiness is not reserved this way: the units physically exist
+    and can start a job.
 
     Each material's per-parent claim also carries the same overbuild buffer
     _expand_all applies (component_overbuild x base_qty x material_mult x
@@ -3188,12 +3191,18 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     #   stable, meaningful number when both exist for the same type_id.
     # - integrated order items (filled above): claimed / ordered; a stock
     #   target for the same type_id overwrites it below.
+    target_reserved: dict[int, float] = {}
     for type_id, type_name, backup_stock, home_market_stock, jita_market_stock in ctx.stock_targets:
         activity, bp = classify_activity(type_id)
         if bp is None:
             continue
         # D3: the stock target sees only what the orders left.
         current_stock = max(0.0, _current_stock(type_id, manual_stock, cfg, bp) - reserved.get(type_id, 0.0))
+        # Same top-level reservation plan_production makes: stock that fills
+        # this item's own backup_stock is not also handed to another job
+        # that needs it as a material (sizing ledger only - readiness still
+        # sees the physical units).
+        target_reserved[type_id] = target_reserved.get(type_id, 0.0) + min(current_stock, backup_stock)
         missing = _total_missing(type_id, backup_stock, home_market_stock, jita_market_stock, current_stock, cfg)
         if missing <= 0:
             continue
@@ -3426,6 +3435,8 @@ def plan_asset_optimized(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         _merge_asset_plan_passes). Returns (jobs, the order pass's
         top_level)."""
         stock_used = dict(reserved)
+        for type_id, qty in target_reserved.items():
+            stock_used[type_id] = stock_used.get(type_id, 0.0) + qty
         stock_used_on_hand = dict(reserved_on_hand)
         stock_coverage_by_id = dict(seed_stock_coverage)
         origins = {type_id: set(ids) for type_id, ids in order_ids_by_type.items()}

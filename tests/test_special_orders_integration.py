@@ -372,6 +372,23 @@ def test_asset_plan_without_orders_is_unchanged(monkeypatch, tenant):
     assert result["order_progress"] == []
 
 
+def test_asset_plan_reserves_a_dual_role_stock_target_like_plan_production(monkeypatch, tenant):
+    # COMPONENT is a stock target (backup 10, 10 in stock) and a material of
+    # the ordered SHIP. Its 10 units fill its own target in both lists, so
+    # the order's 10 Component are built - the asset list used to hand the
+    # same 10 units to the order as well and planned no Component job.
+    _asset_setup(monkeypatch, stock_targets=[(COMPONENT, "Component", 10, 0, 0)],
+                 orders=[("o1", None, SHIP, "Ship", 1.0)], stock={COMPONENT: 10.0})
+    cfg = _asset_cfg()
+
+    jobs = _jobs(engine.plan_asset_optimized(cfg))
+
+    assert {t: j.job_runs for t, j in jobs.items()} == {SHIP: 1, COMPONENT: 10}
+    # Readiness still sees the physical units: the Ship can start now.
+    assert jobs[SHIP].runs_ready_now == 1
+    assert _runs(engine.plan_production(cfg)) == {SHIP: 1, COMPONENT: 10}
+
+
 def test_asset_plan_order_pass_is_unbuffered_and_attributed(monkeypatch, tenant):
     _asset_setup(monkeypatch, stock_targets=[(OTHER, "Other", 1, 0, 0)],
                  orders=[("o1", "Customer", SHIP, "Ship", 1.0)])

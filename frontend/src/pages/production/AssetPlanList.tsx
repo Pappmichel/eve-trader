@@ -7,6 +7,7 @@ import { productionApi } from '../../api/client'
 import type { AssetPlanJob } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
+import { StalePlanAlert } from './StalePlanAlert'
 import { useAction } from '../../hooks/useAction'
 import { duration, isk, pct, qty } from '../../format'
 import { blockedRunsTitle } from './assetPlanBlockers'
@@ -19,23 +20,32 @@ type OrderFilter = 'all' | 'orders' | 'stock'
 // A job row plus the run counts the Job Runs / Ready Now / Blocked columns show
 // for the selected order filter. The job's own totals stay untouched because
 // "Split Into" is per full job (one blueprint, one in-game job).
-type PlanRow = AssetPlanJob & { shown_runs: number; shown_ready: number }
+type PlanRow = AssetPlanJob & { shown_runs: number; shown_ready: number; shown_coverage: number | null }
 
 function orderRuns(j: AssetPlanJob): number {
   return j.special_order_runs ?? 0
 }
 
-function viewRow(j: AssetPlanJob, filter: OrderFilter): PlanRow {
+// orderCoverage: {type_id: claimed / ordered} for items that are themselves
+// order lines (from plan.order_progress). "Orders only" shows that instead of
+// the item's stock-target coverage; intermediates keep their pooled coverage.
+function viewRow(j: AssetPlanJob, filter: OrderFilter, orderCoverage: Map<number, number>): PlanRow {
   const orderReady = j.special_order_ready_runs ?? 0
-  if (filter === 'orders') return { ...j, shown_runs: orderRuns(j), shown_ready: orderReady }
+  if (filter === 'orders') {
+    return {
+      ...j, shown_runs: orderRuns(j), shown_ready: orderReady,
+      shown_coverage: orderCoverage.get(j.type_id) ?? j.stock_coverage ?? null,
+    }
+  }
   if (filter === 'stock') {
     return {
       ...j,
       shown_runs: Math.max(0, j.job_runs - orderRuns(j)),
       shown_ready: Math.max(0, j.runs_ready_now - orderReady),
+      shown_coverage: j.stock_coverage ?? null,
     }
   }
-  return { ...j, shown_runs: j.job_runs, shown_ready: j.runs_ready_now }
+  return { ...j, shown_runs: j.job_runs, shown_ready: j.runs_ready_now, shown_coverage: j.stock_coverage ?? null }
 }
 
 function orderLabels(j: AssetPlanJob): string[] {
@@ -78,6 +88,17 @@ export default function AssetPlanList() {
   )
   const [selTechLevels, setSelTechLevels] = useState<string[]>([])
   const [orderFilter, setOrderFilter] = useState<OrderFilter>('all')
+  const orderCoverage = useMemo(() => {
+    const ordered = new Map<number, number>()
+    const covered = new Map<number, number>()
+    for (const r of plan?.order_progress ?? []) {
+      ordered.set(r.type_id, (ordered.get(r.type_id) ?? 0) + r.ordered)
+      covered.set(r.type_id, (covered.get(r.type_id) ?? 0) + r.covered)
+    }
+    const m = new Map<number, number>()
+    for (const [typeId, total] of ordered) if (total > 0) m.set(typeId, (covered.get(typeId) ?? 0) / total)
+    return m
+  }, [plan])
   const hasOrderJobs = useMemo(() => jobs.some((j) => orderRuns(j) > 0), [jobs])
   const filtered = useMemo(() => jobs
     .filter((j) =>
@@ -86,8 +107,8 @@ export default function AssetPlanList() {
       && (orderFilter === 'all'
         || (orderFilter === 'orders' ? orderRuns(j) > 0 : j.job_runs - orderRuns(j) > 0)),
     )
-    .map((j) => viewRow(j, orderFilter)),
-  [jobs, selCategories, selTechLevels, orderFilter])
+    .map((j) => viewRow(j, orderFilter, orderCoverage)),
+  [jobs, selCategories, selTechLevels, orderFilter, orderCoverage])
 
   const readyHours = useMemo(
     () => filtered.reduce((sum, j) => sum + (j.job_runs > 0 ? (j.job_time_seconds * j.shown_ready) / j.job_runs : 0), 0) / 3600,
@@ -129,7 +150,7 @@ export default function AssetPlanList() {
     },
     {
       header: 'Blocked', id: 'blocked', size: 110, accessorFn: (r) => r.shown_runs - r.shown_ready,
-      meta: { cellTitle: (row) => blockedRunsTitle(row) },
+      meta: { cellTitle: (row) => blockedRunsTitle(row, row.shown_runs - row.shown_ready) },
       cell: (i) => (i.getValue() as number) > 0
         ? <Text c="warn">{qty(i.getValue() as number)}</Text>
         : qty(0),
@@ -143,7 +164,7 @@ export default function AssetPlanList() {
       },
     }] : []),
     {
-      header: 'Stock Coverage', accessorKey: 'stock_coverage', size: 140,
+      header: 'Stock Coverage', accessorKey: 'shown_coverage', size: 140,
       cell: (i) => {
         const v = i.getValue() as number | null
         if (v === null) return '–'
@@ -172,7 +193,11 @@ export default function AssetPlanList() {
         )
       },
     },
-    { header: 'Quantity (Output)', accessorKey: 'quantity', size: 140, cell: (i) => qty(i.getValue()) },
+    {
+      header: 'Quantity (Output)', id: 'quantity', size: 140,
+      accessorFn: (r) => (r.job_runs > 0 ? (r.quantity * r.shown_runs) / r.job_runs : 0),
+      cell: (i) => qty(i.getValue()),
+    },
     { header: 'Job Time (h, total)', id: 'hours', size: 140, accessorFn: (r) => (r.job_runs > 0 ? (r.job_time_seconds * r.shown_runs) / r.job_runs : 0) / 3600, cell: (i) => (i.getValue() as number).toFixed(2) },
     { header: 'Modeled Unit Cost', accessorKey: 'unit_build_cost', size: 150, cell: (i) => isk(i.getValue()) },
     {
@@ -199,10 +224,18 @@ export default function AssetPlanList() {
       </Stack>
     )
   }
-  if (jobs.length === 0) return <HintCard>Nothing to build - all stock targets are bought or covered.</HintCard>
+  if (jobs.length === 0) {
+    return (
+      <Stack>
+        <StalePlanAlert stale={plan.stale} />
+        <HintCard>Nothing to build - all stock targets are bought or covered.</HintCard>
+      </Stack>
+    )
+  }
 
   return (
     <Stack>
+      <StalePlanAlert stale={plan.stale} />
       <Group justify="space-between" align="flex-end">
         <Group align="flex-end">
           <Card withBorder padding="sm" w={220}>
@@ -270,8 +303,10 @@ export default function AssetPlanList() {
         component (no goal of its own) it's this round's pooled demand instead. Distinct from "Blocked", which is
         about whether <i>this item's own materials</i> are available to build it, not about this item's own stock.
         "Orders only" shows just the share of each job that serves open special orders included in the build lists,
-        with the order notes in the "Special orders" column; "Without orders" shows the stock-target share.
-        "Split Into" always covers the whole job. Click the column header to sort by it if you want to see what's closest to running out first; it doesn't
+        with the order notes in the "Special orders" column (Job Runs, Ready Now, Blocked, Quantity and Job Time
+        are the order share; Stock Coverage of an ordered item is how much of the ordered quantity is already in the
+        hangar or in running jobs); "Without orders" shows the stock-target share. "Split Into" always covers the
+        whole job. Click the column header to sort by it if you want to see what's closest to running out first; it doesn't
         affect the list's own sort order or which jobs get queued. "Split Into" (Reactions/Advanced Components/
         Capital Components only) recommends how many of your currently-free character job slots to queue this
         job's ready runs across in parallel, chosen so all ready jobs together finish as early as possible: every

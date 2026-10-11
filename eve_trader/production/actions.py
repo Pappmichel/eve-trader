@@ -683,9 +683,10 @@ def do_refresh_asset_plan(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 _COST_INDEX_KINDS = ("reaction", "component", "manufacturing")
 
 # Callbacks registered by api/routers/production.py so special-order mutations
-# that change integrated demand can clear that router's in-process
-# `_last_plan` / `_last_asset_plan` caches (D9). Empty outside the web app
-# (CLI / unit tests) — those have no cached plan to invalidate.
+# that change integrated demand can mark that router's in-process
+# `_last_plan` / `_last_asset_plan` caches stale (D9) - the plans stay
+# readable, the pages show a recompute hint. Empty outside the web app
+# (CLI / unit tests) - those have no cached plan.
 _plan_cache_invalidators: list = []
 
 
@@ -693,7 +694,7 @@ def register_plan_cache_invalidator(fn) -> None:
     _plan_cache_invalidators.append(fn)
 
 
-def _invalidate_cached_production_plans() -> None:
+def _mark_cached_production_plans_stale() -> None:
     for fn in _plan_cache_invalidators:
         fn()
 
@@ -775,7 +776,7 @@ def do_create_special_order(items: list[dict], note: str | None = None,
         note, net_against_stock, resolved, include_in_production=include_in_production,
     )
     if include_in_production:
-        _invalidate_cached_production_plans()
+        _mark_cached_production_plans_stale()
     return {"order_id": order_id, "item_count": len(resolved)}
 
 
@@ -849,7 +850,7 @@ def do_update_special_order(order_id: str, status: str | None = None, note: str 
     if (was_integrated or now_integrated) and (
             status is not None or include_in_production is not None
     ):
-        _invalidate_cached_production_plans()
+        _mark_cached_production_plans_stale()
     return do_get_special_order(order_id)
 
 
@@ -858,7 +859,7 @@ def do_remove_special_order(order_id: str) -> dict:
     was_integrated = _order_is_integrated(row) if row is not None else False
     storage.delete_special_order(order_id)
     if was_integrated:
-        _invalidate_cached_production_plans()
+        _mark_cached_production_plans_stale()
     return {"removed": order_id}
 
 
@@ -874,7 +875,7 @@ def do_set_special_order_item(order_id: str, type_id: int | str, quantity: float
     resolved_id, type_name = _resolve_type(type_id)
     storage.upsert_special_order_item(order_id, resolved_id, type_name, quantity)
     if _order_is_integrated(row):
-        _invalidate_cached_production_plans()
+        _mark_cached_production_plans_stale()
     return do_get_special_order(order_id)
 
 
@@ -897,7 +898,7 @@ def do_remove_special_order_item(order_id: str, type_id: int | str) -> dict:
         raise ActionError("A special order needs at least one item - remove the whole order instead.")
     storage.remove_special_order_item(order_id, resolved_id)
     if _order_is_integrated(row):
-        _invalidate_cached_production_plans()
+        _mark_cached_production_plans_stale()
     return do_get_special_order(order_id)
 
 

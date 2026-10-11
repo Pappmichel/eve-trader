@@ -461,6 +461,9 @@ export interface AssetPlanJob {
 export interface AssetPlan {
   jobs: AssetPlanJob[]
   order_progress?: AssetPlanOrderProgressRow[]
+  // True once an integrated special order changed after this plan was
+  // computed (still shown, with a recompute hint).
+  stale?: boolean
 }
 
 // ready_to_deliver is per order: true on every line of an order whose
@@ -735,6 +738,8 @@ export interface ProductionPlan {
   // above silently reads 0 rather than its real value.
   adjusted_prices_available: boolean
   order_progress?: OrderProgressRow[]
+  // See AssetPlan.stale.
+  stale?: boolean
 }
 
 export interface OrderProgressRow {

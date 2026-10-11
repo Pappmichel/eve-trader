@@ -1036,7 +1036,7 @@ gives order runs readiness and slots first (with a days target, all order
 ready runs are queued before stock-target runs wait). The Special Orders
 page shows `order_progress` from the cached asset plan and a "Ready to
 deliver" hint; marking `done` stays manual. Cached Build / Asset plans
-are invalidated when integrated demand changes (D9). Schema change is
+are kept but flagged `stale` when integrated demand changes (D9). Schema change is
 `ADD COLUMN IF NOT EXISTS` on the existing `docs/special_orders_schema.sql`.
 
 ## Manual tracking for Production

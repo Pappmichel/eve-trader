@@ -899,7 +899,7 @@ def test_asset_plan_is_isolated_per_tenant(monkeypatch):
     monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-a")
     refresh_resp = client.post("/api/production/asset-plan/refresh")
     assert refresh_resp.status_code == 200
-    assert client.get("/api/production/asset-plan").json() == {"jobs": [], "order_progress": []}
+    assert client.get("/api/production/asset-plan").json() == {"jobs": [], "order_progress": [], "stale": False}
 
     monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-b")
     # tenant-b never refreshed - must see nothing, not tenant-a's plan.
@@ -976,6 +976,36 @@ def test_plan_serializes_special_order_fields(monkeypatch):
     assert plan["buy_list"][0]["special_order_quantity"] == 20.0
     assert plan["build_list"][0]["special_order_quantity"] == 1.0
     assert plan["order_progress"] == progress
+
+
+def test_integrated_order_change_marks_cached_plans_stale_but_keeps_them(monkeypatch):
+    # SPECIAL_ORDERS_INTEGRATION_PLAN.md D9: an integrated order change must
+    # not wipe the cached plans (Logistics / Invention / order progress read
+    # them) - only flag them stale until the next refresh.
+    from eve_trader.api.routers import production as production_router
+    from eve_trader.production.models import BuildJobEntry
+    build = BuildJobEntry(type_id=10, type_name="Ship", blueprint_type_id=110, activity="Manufacturing",
+                          quantity=1, job_runs=1, job_time_seconds=1.0, unit_build_cost=None)
+    monkeypatch.setattr(production_actions, "do_refresh_production", lambda: {
+        "plan": {"inventory": [], "buy_list": [], "build_list": [build], "invention_list": [],
+                 "adjusted_prices_available": True},
+        "stock_targets": 1, "missing_types": 0, "buy_entries": 0, "build_jobs": 1,
+    })
+    monkeypatch.setattr(production_actions, "do_refresh_asset_plan",
+                        lambda: {"jobs": 0, "plan": {"jobs": [], "order_progress": []}})
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-stale")
+    assert client.post("/api/production/plan/refresh").status_code == 200
+    assert client.post("/api/production/asset-plan/refresh").status_code == 200
+
+    production_router._mark_cached_plans_stale()
+
+    plan = client.get("/api/production/plan").json()
+    assert plan["stale"] is True and plan["build_list"][0]["type_id"] == 10
+    assert client.get("/api/production/asset-plan").json()["stale"] is True
+    # A fresh refresh clears the flag again.
+    assert client.post("/api/production/plan/refresh").status_code == 200
+    assert client.get("/api/production/plan").json()["stale"] is False
+    assert client.get("/api/production/asset-plan").json()["stale"] is True
 
 
 # ------------------------------------------------------------ special orders

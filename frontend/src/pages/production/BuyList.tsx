@@ -7,6 +7,7 @@ import { productionApi } from '../../api/client'
 import type { BuyListEntry } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
+import { StalePlanAlert } from './StalePlanAlert'
 import { useAction } from '../../hooks/useAction'
 import { isk, qty } from '../../format'
 
@@ -75,10 +76,18 @@ export default function BuyList() {
       </Stack>
     )
   }
-  if (buyList.length === 0) return <HintCard>Nothing to buy - all stock targets are covered.</HintCard>
+  if (buyList.length === 0) {
+    return (
+      <Stack>
+        <StalePlanAlert stale={plan.stale} />
+        <HintCard>Nothing to buy - all stock targets are covered.</HintCard>
+      </Stack>
+    )
+  }
 
   return (
     <Stack>
+      <StalePlanAlert stale={plan.stale} />
       <Group justify="space-between" align="flex-end">
         <Group align="flex-end">
           <Card withBorder padding="sm" w={280}>

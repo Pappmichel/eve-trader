@@ -7102,8 +7102,14 @@ def update_special_order(order_id: str, updates: dict) -> None:
     cols = ", ".join(f"{k} = ?" for k in updates)
     with connect() as conn:
         conn.execute(f"UPDATE special_orders SET {cols} WHERE order_id = ?", (*updates.values(), order_id))
+        # Flags and status carry their new value (e.g.
+        # "include_in_production=on"); a note edit only names the field.
         _insert_special_order_event(
-            conn, order_id, "updated", ", ".join(sorted(updates.keys())),
+            conn, order_id, "updated", ", ".join(
+                key if key == "note"
+                else f"{key}={'on' if value else 'off'}" if isinstance(value, bool)
+                else f"{key}={value}"
+                for key, value in sorted(updates.items())),
         )
 
 

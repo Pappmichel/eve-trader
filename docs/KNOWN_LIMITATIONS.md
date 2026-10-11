@@ -17,5 +17,5 @@
 - Invention Buy List rows from order demand are not attributed in
   `special_order_quantity` (manufacturing/reaction buys and builds are).
 - Cached Build / Asset-Optimized plans do not recompute themselves when an
-  order's inclusion/items/status change — the UI shows the existing
-  recompute hint (D9).
+  integrated order's inclusion/items/status change - they are kept, flagged
+  `stale`, and the pages show a recompute hint (D9).

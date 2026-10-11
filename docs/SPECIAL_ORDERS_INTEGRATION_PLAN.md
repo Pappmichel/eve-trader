@@ -169,9 +169,11 @@ stock-targets only.
 ### D9 - Staleness
 
 The cached plans (`_last_plan` / `_last_asset_plan`) don't recompute
-themselves. Toggling the checkbox, editing items of an integrated order and
-changing its status mark them stale (the existing "recompute" hint), and the
-Special Orders page says "Recompute the build lists to apply".
+themselves. Toggling the checkbox, editing items of an integrated order,
+changing its status and deleting it set `stale` on both cached plans. They
+stay readable (Logistics, Invention and the order progress read them); the
+Build / Buy / Asset-Optimized pages and the Special Orders page show a
+recompute hint while the flag is set, and the next refresh clears it.
 
 ### D10 - Invention: one row per item
 
