@@ -1,7 +1,8 @@
 # Special orders in the regular build workflow - plan
 
-Status: **plan, not started** (2026-10-11). Open decisions are marked
-**[Q1]**..**[Q4]** and need a user answer before Phase 2.
+Status: **plan, not started** (2026-10-11). Decisions **[Q1]**..**[Q4]**
+were confirmed with the user on 2026-10-11 (all as recommended, see the end
+of this file).
 
 ## Goal
 
@@ -192,10 +193,13 @@ Special Orders page says "Recompute the build lists to apply".
    manual `done`), CLAUDE.md summary. Live check on the test server with a
    real order before production.
 
-## Open decisions
+## Decisions (confirmed with the user 2026-10-11)
 
-- **[Q1]** Net integrated orders' top-level quantity against stock incl.
-  running jobs, order first (recommended), or keep SF-1?
-- **[Q2]** Ignore the margin gate for order demand (recommended)?
-- **[Q3]** Slot priority as in D7 (recommended)?
-- **[Q4]** Build/Buy List: column only (recommended), or a filter as well?
+- **[Q1]** Integrated orders net their top-level quantity against stock
+  including running jobs, the order claiming first (D3). SF-1 stays for the
+  order's own preview.
+- **[Q2]** Order demand ignores the margin gate (D5).
+- **[Q3]** Slot priority as in D7: order jobs start first, and with a days
+  target their order runs are fully queued before stock-target runs.
+- **[Q4]** Build List / Buy List get a "Special order" quantity column only,
+  no filter (D8).
