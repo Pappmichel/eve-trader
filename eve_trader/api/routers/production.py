@@ -45,6 +45,26 @@ def _tenant_key() -> str:
     return tenant_id
 
 
+def _mark_cached_plans_stale() -> None:
+    """D9: flag this tenant's cached Build / Asset-Optimized plans as stale
+    (integrated special-order demand changed since they were computed). The
+    plans stay readable - Logistics, Invention and the order progress view
+    keep working on them - and the pages show a recompute hint until the
+    next refresh replaces the cache entry. No-op when no ambient tenant is
+    set (CLI / unit tests without a request scope) - those have no router
+    cache entry."""
+    tenant_id = storage.get_current_tenant()
+    if tenant_id is None:
+        return
+    for cache in (_last_plan, _last_asset_plan):
+        plan = cache.get(tenant_id)
+        if plan is not None:
+            plan["stale"] = True
+
+
+actions.register_plan_cache_invalidator(_mark_cached_plans_stale)
+
+
 def _wrap(fn, **kwargs):
     try:
         return fn(**kwargs)
@@ -824,6 +844,8 @@ def refresh_production():
         "build_list": plan["build_list"],
         "invention_list": plan["invention_list"],
         "adjusted_prices_available": plan["adjusted_prices_available"],
+        "order_progress": plan.get("order_progress", []),
+        "stale": False,
     }
     return {
         "stock_targets": result["stock_targets"],
@@ -837,7 +859,7 @@ def refresh_production():
 @router.post("/asset-plan/refresh")
 def refresh_asset_plan():
     result = _wrap(actions.do_refresh_asset_plan)
-    _last_asset_plan[_tenant_key()] = result["plan"]
+    _last_asset_plan[_tenant_key()] = {**result["plan"], "stale": False}
     return {"jobs": result["jobs"]}
 
 
@@ -852,12 +874,14 @@ class CreateSpecialOrderRequest(BaseModel):
     items: list[SpecialOrderItemInput]
     note: Optional[str] = None
     net_against_stock: bool = False
+    include_in_production: bool = False
 
 
 @router.post("/special-orders")
 def create_special_order(req: CreateSpecialOrderRequest):
     return _wrap(actions.do_create_special_order, items=[i.model_dump(exclude_none=True) for i in req.items],
-                 note=req.note, net_against_stock=req.net_against_stock)
+                 note=req.note, net_against_stock=req.net_against_stock,
+                 include_in_production=req.include_in_production)
 
 
 @router.get("/special-orders", response_model=list[schemas.SpecialOrder])
@@ -901,6 +925,7 @@ class UpdateSpecialOrderRequest(BaseModel):
     status: Optional[str] = None
     note: Optional[str] = None
     net_against_stock: Optional[bool] = None
+    include_in_production: Optional[bool] = None
 
 
 @router.patch("/special-orders/{order_id}")

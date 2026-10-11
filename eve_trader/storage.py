@@ -7027,14 +7027,16 @@ def _insert_special_order_event(conn, order_id: str, event: str,
     )
 
 
-def create_special_order(note: Optional[str], net_against_stock: bool) -> str:
+def create_special_order(note: Optional[str], net_against_stock: bool,
+                         include_in_production: bool = False) -> str:
     """Header only — tests/audit use this to seed incomplete rows. Production
     create goes through create_special_order_with_items so items cannot be
     dropped mid-write."""
     with connect() as conn:
         row = conn.execute(
-            "INSERT INTO special_orders (note, net_against_stock) VALUES (?, ?) RETURNING order_id",
-            (note, net_against_stock),
+            "INSERT INTO special_orders (note, net_against_stock, include_in_production) "
+            "VALUES (?, ?, ?) RETURNING order_id",
+            (note, net_against_stock, include_in_production),
         ).fetchone()
         order_id = str(row[0])
         _insert_special_order_event(conn, order_id, "created")
@@ -7042,15 +7044,17 @@ def create_special_order(note: Optional[str], net_against_stock: bool) -> str:
 
 
 def create_special_order_with_items(note: Optional[str], net_against_stock: bool,
-                                    items: list[tuple[int, str, float]]) -> str:
+                                    items: list[tuple[int, str, float]],
+                                    include_in_production: bool = False) -> str:
     """Header + line items in one transaction (Phase E.2). `items` is
     `(type_id, type_name, quantity)` already pooled and validated. Uses
     batch_session so a failed item insert rolls back the header."""
     with batch_session():
         with connect() as conn:
             row = conn.execute(
-                "INSERT INTO special_orders (note, net_against_stock) VALUES (?, ?) RETURNING order_id",
-                (note, net_against_stock),
+                "INSERT INTO special_orders (note, net_against_stock, include_in_production) "
+                "VALUES (?, ?, ?) RETURNING order_id",
+                (note, net_against_stock, include_in_production),
             ).fetchone()
             order_id = str(row[0])
             for type_id, type_name, quantity in items:
@@ -7063,11 +7067,16 @@ def create_special_order_with_items(note: Optional[str], net_against_stock: bool
     return order_id
 
 
-_SPECIAL_ORDER_COLUMNS = ("order_id", "note", "net_against_stock", "status", "created_at")
+# include_in_production last so legacy status index (row[3]) stays stable for
+# callers that filter on status without unpacking every column.
+_SPECIAL_ORDER_COLUMNS = (
+    "order_id", "note", "net_against_stock", "status", "created_at", "include_in_production",
+)
 
 
 def list_special_orders() -> list[tuple]:
-    """(order_id, note, net_against_stock, status, created_at), most-recently-created first."""
+    """(order_id, note, net_against_stock, status, created_at, include_in_production),
+    most-recently-created first."""
     with connect() as conn:
         return conn.execute(
             f"SELECT {', '.join(_SPECIAL_ORDER_COLUMNS)} FROM special_orders ORDER BY created_at DESC"
@@ -7083,17 +7092,24 @@ def get_special_order(order_id: str) -> Optional[tuple]:
 
 
 def update_special_order(order_id: str, updates: dict) -> None:
-    """`updates` keys must be a subset of {"note", "net_against_stock", "status"}
-    - caller (production/actions.py's do_update_special_order) is responsible
-    for only passing real fields; this does no validation of its own (same
-    "thin storage layer" convention as storage.update_doctrine)."""
+    """`updates` keys must be a subset of {"note", "net_against_stock",
+    "status", "include_in_production"} - caller (production/actions.py's
+    do_update_special_order) is responsible for only passing real fields;
+    this does no validation of its own (same "thin storage layer" convention
+    as storage.update_doctrine)."""
     if not updates:
         return
     cols = ", ".join(f"{k} = ?" for k in updates)
     with connect() as conn:
         conn.execute(f"UPDATE special_orders SET {cols} WHERE order_id = ?", (*updates.values(), order_id))
+        # Flags and status carry their new value (e.g.
+        # "include_in_production=on"); a note edit only names the field.
         _insert_special_order_event(
-            conn, order_id, "updated", ", ".join(sorted(updates.keys())),
+            conn, order_id, "updated", ", ".join(
+                key if key == "note"
+                else f"{key}={'on' if value else 'off'}" if isinstance(value, bool)
+                else f"{key}={value}"
+                for key, value in sorted(updates.items())),
         )
 
 
@@ -7164,6 +7180,20 @@ def list_all_special_order_item_rows() -> list[tuple[str, int, str, float]]:
         return conn.execute(
             "SELECT order_id, type_id, type_name, quantity FROM special_order_items "
             "ORDER BY order_id, type_name"
+        ).fetchall()
+
+
+def list_integrated_special_order_items() -> list[tuple[str, Optional[str], int, str, float]]:
+    """Open orders with include_in_production: (order_id, note, type_id,
+    type_name, quantity), oldest order first then type_name. One join — no
+    per-header N+1 (SPECIAL_ORDERS_INTEGRATION_PLAN.md D1 / D13)."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT o.order_id, o.note, i.type_id, i.type_name, i.quantity "
+            "FROM special_orders o "
+            "JOIN special_order_items i ON i.tenant_id = o.tenant_id AND i.order_id = o.order_id "
+            "WHERE o.include_in_production AND o.status = 'open' "
+            "ORDER BY o.created_at ASC, o.order_id ASC, i.type_name ASC"
         ).fetchall()
 
 

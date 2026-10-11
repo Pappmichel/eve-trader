@@ -319,6 +319,7 @@ export interface InventoryRow {
   backup_stock: number
   current_stock: number
   total_missing: number
+  reserved_for_orders?: number
 }
 
 export interface BuyListEntry {
@@ -332,6 +333,7 @@ export interface BuyListEntry {
   hub_region_id?: number | null
   hub_name?: string | null
   category: string | null
+  special_order_quantity?: number
 }
 
 export interface BuildJobEntry {
@@ -349,6 +351,7 @@ export interface BuildJobEntry {
   job_cost: number | null
   margin: number | null
   recipe_source: string | null
+  special_order_quantity?: number
 }
 
 export interface LogisticsRow {
@@ -448,10 +451,29 @@ export interface AssetPlanJob {
   days_to_complete_at_recommended_slots: number | null
   recipe_source: string | null
   blockers: AssetPlanBlocker[]
+  special_order_runs?: number
+  special_order_ready_runs?: number
+  special_order_ids?: string[]
+  // Aligned with special_order_ids; "" for an order without a note.
+  special_order_notes?: string[]
 }
 
 export interface AssetPlan {
   jobs: AssetPlanJob[]
+  order_progress?: AssetPlanOrderProgressRow[]
+  // True once an integrated special order changed after this plan was
+  // computed (still shown, with a recompute hint).
+  stale?: boolean
+}
+
+// ready_to_deliver is per order: true on every line of an order whose
+// lines are all fully in the hangar.
+export interface AssetPlanOrderProgressRow extends OrderProgressRow {
+  hangar_covered: number
+  job_covered: number
+  ready_runs: number
+  missing: number
+  ready_to_deliver: boolean
 }
 
 export interface SpecialOrder {
@@ -461,6 +483,7 @@ export interface SpecialOrder {
   status: string // "open" | "done"
   created_at: string | null
   item_count: number
+  include_in_production: boolean
 }
 
 export interface SpecialOrderLineItem {
@@ -527,6 +550,7 @@ export interface InventionNeedRow {
   stockpile_pct: number
   bpc_target_runs: number
   t1_bpc_target_runs: number
+  special_order_runs?: number
 }
 
 export interface T1BpcInventionNeedRow {
@@ -713,6 +737,19 @@ export interface ProductionPlan {
   // adjusted-price fetch failed this run, so every BuildJobEntry.job_cost
   // above silently reads 0 rather than its real value.
   adjusted_prices_available: boolean
+  order_progress?: OrderProgressRow[]
+  // See AssetPlan.stale.
+  stale?: boolean
+}
+
+export interface OrderProgressRow {
+  order_id: string
+  note: string | null
+  type_id: number
+  type_name: string
+  ordered: number
+  covered: number
+  remaining: number
 }
 
 export interface ProductionSettings {

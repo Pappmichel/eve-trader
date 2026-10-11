@@ -1020,6 +1020,25 @@ this, since a tenant can have several producer characters and there is no
 instead - re-opening that question was explicitly declined in favor of
 staying consistent with the existing Invention pattern.
 
+## Special orders in the regular build workflow
+
+Plan and freeze: `docs/SPECIAL_ORDERS_INTEGRATION_PLAN.md` (done),
+`docs/PRODUCTION_SEMANTICS.md` SF-1..SF-10, `docs/KNOWN_LIMITATIONS.md`.
+An open order with `include_in_production` feeds `plan_production` and
+`plan_asset_optimized` next to stock targets. Turning that flag on also
+forces `net_against_stock` (Prefer-stock stays locked while integrated).
+Both planners run an **order pass then a stock-target pass** on one shared
+stock ledger; the order pass uses `base_runs = {}` (no overbuild) and
+ignores `min_margin`. Integrated top-level qty is netted against
+`_current_stock` (incl. running jobs), oldest order first — SF-1 still
+applies to the order's own Compute / Combined preview. Asset-Optimized
+gives order runs readiness and slots first (with a days target, all order
+ready runs are queued before stock-target runs wait). The Special Orders
+page shows `order_progress` from the cached asset plan and a "Ready to
+deliver" hint; marking `done` stays manual. Cached Build / Asset plans
+are kept but flagged `stale` when integrated demand changes (D9). Schema change is
+`ADD COLUMN IF NOT EXISTS` on the existing `docs/special_orders_schema.sql`.
+
 ## Manual tracking for Production
 
 Full history/decision log/phase breakdown lives in `docs/MANUAL_TRACKING_PLAN.md`

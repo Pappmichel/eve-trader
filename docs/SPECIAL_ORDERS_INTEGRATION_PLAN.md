@@ -1,8 +1,9 @@
 # Special orders in the regular build workflow - plan
 
-Status: **plan, not started** (2026-10-11). Decisions **[Q1]**..**[Q4]**
-were confirmed with the user on 2026-10-11 (all as recommended, see the end
-of this file).
+Status: **done** (2026-10-11). Decisions **[Q1]**..**[Q4]** were confirmed
+with the user on 2026-10-11 (all as recommended, see the end of this file).
+Implemented on branch `cursor/special-orders-integration-3535` (phases 1–5);
+semantic freeze updates live in `docs/PRODUCTION_SEMANTICS.md` (SF-9, SF-10).
 
 ## Goal
 
@@ -168,9 +169,11 @@ stock-targets only.
 ### D9 - Staleness
 
 The cached plans (`_last_plan` / `_last_asset_plan`) don't recompute
-themselves. Toggling the checkbox, editing items of an integrated order and
-changing its status mark them stale (the existing "recompute" hint), and the
-Special Orders page says "Recompute the build lists to apply".
+themselves. Toggling the checkbox, editing items of an integrated order,
+changing its status and deleting it set `stale` on both cached plans. They
+stay readable (Logistics, Invention and the order progress read them); the
+Build / Buy / Asset-Optimized pages and the Special Orders page show a
+recompute hint while the flag is set, and the next refresh clears it.
 
 ### D10 - Invention: one row per item
 

@@ -1,8 +1,10 @@
 import type { AssetPlanJob } from '../../api/types'
 import { qty } from '../../format'
 
-export function blockedRunsTitle(row: AssetPlanJob): string | undefined {
-  const blocked = row.job_runs - row.runs_ready_now
+// `blocked` overrides the job's own blocked runs (the Asset-Optimized order
+// filter shows only the order or stock-target share); the missing materials
+// listed are always the whole job's.
+export function blockedRunsTitle(row: AssetPlanJob, blocked = row.job_runs - row.runs_ready_now): string | undefined {
   if (blocked <= 0) return undefined
   if (!row.blockers?.length) return 'Missing materials (see this job\'s bill of materials)'
   return row.blockers.map((b) => {

@@ -400,10 +400,20 @@ export const productionApi = {
 
   specialOrders: (status?: 'open' | 'done') =>
     get<T.SpecialOrder[]>(`/api/production/special-orders${status ? `?status=${status}` : ''}`),
-  createSpecialOrder: (req: { items: { type_id?: number; name?: string; quantity: number }[]; note?: string | null; net_against_stock?: boolean }) =>
+  createSpecialOrder: (req: {
+    items: { type_id?: number; name?: string; quantity: number }[]
+    note?: string | null
+    net_against_stock?: boolean
+    include_in_production?: boolean
+  }) =>
     post<{ order_id: string; item_count: number }>('/api/production/special-orders', req),
   getSpecialOrder: (orderId: string) => get<T.SpecialOrderDetail>(`/api/production/special-orders/${orderId}`),
-  updateSpecialOrder: (orderId: string, updates: { status?: string | null; note?: string | null; net_against_stock?: boolean | null }) =>
+  updateSpecialOrder: (orderId: string, updates: {
+    status?: string | null
+    note?: string | null
+    net_against_stock?: boolean | null
+    include_in_production?: boolean | null
+  }) =>
     patch<T.SpecialOrderDetail>(`/api/production/special-orders/${orderId}`, updates),
   removeSpecialOrder: (orderId: string) => del(`/api/production/special-orders/${orderId}`),
   setSpecialOrderItem: (orderId: string, typeId: number, quantity: number, recompute = false) =>

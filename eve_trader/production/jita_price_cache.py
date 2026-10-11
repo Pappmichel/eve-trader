@@ -62,7 +62,8 @@ def cached_type_id_count() -> int:
 
 def refresh_jita_price_cache() -> int:
     """The actual refresh: prices every type_id reachable from *every
-    tenant's own* stock targets (their structural material closure - the
+    tenant's own* stock targets and integrated special orders (their
+    structural material closure - the
     same bounded, price-agnostic universe plan_production itself prices via
     _PlanContext, see engine._structural_material_closure), in one shared
     ESI fetch, then replaces the cache wholesale. Called from either the
@@ -113,6 +114,11 @@ def refresh_jita_price_cache() -> int:
             # ambient tenant at all outside this `with`) is often the very
             # first caller.
             type_ids |= _structural_material_closure(t[0] for t in stock_targets)
+            # Integrated special orders are priced by plan_production too
+            # (SPECIAL_ORDERS_INTEGRATION_PLAN.md D14).
+            order_type_ids = {row[2] for row in storage.list_integrated_special_order_items()}
+            if order_type_ids:
+                type_ids |= _structural_material_closure(order_type_ids)
 
     if not type_ids:
         return 0

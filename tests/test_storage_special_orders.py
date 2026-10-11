@@ -43,6 +43,7 @@ def test_special_order_and_item_crud(tenant):
     assert row[1] == "Customer X"  # note
     assert row[2] is True          # net_against_stock
     assert row[3] == "open"        # status
+    assert row[5] is False         # include_in_production default
 
     storage.upsert_special_order_item(order_id, 12058, "Cruise Missile Launcher II", 6000.0)
     storage.upsert_special_order_item(order_id, 638, "Republic Fleet Firetail", 10.0)
@@ -67,6 +68,47 @@ def test_special_order_and_item_crud(tenant):
     storage.delete_special_order(order_id)
     assert storage.get_special_order(order_id) is None
     assert storage.list_special_order_items(order_id) == []
+
+
+def test_include_in_production_round_trip_and_integrated_list(tenant):
+    """D1: column round-trip, events, and list_integrated_special_order_items
+    (open + include only; oldest order first)."""
+    older = storage.create_special_order_with_items(
+        "Older", False, [(34, "Tritanium", 10.0)], include_in_production=False,
+    )
+    newer = storage.create_special_order_with_items(
+        "Newer", False, [(35, "Pyerite", 20.0)], include_in_production=False,
+    )
+    storage.update_special_order(older, {
+        "include_in_production": True, "net_against_stock": True,
+    })
+    storage.update_special_order(newer, {
+        "include_in_production": True, "net_against_stock": True,
+    })
+    assert storage.get_special_order(older)[5] is True
+    assert storage.get_special_order(newer)[5] is True
+
+    events = storage.list_special_order_events(older)
+    assert any(e[2] == "updated" and e[3] == "include_in_production=on, net_against_stock=on" for e in events)
+    storage.update_special_order(older, {"include_in_production": False, "status": "done", "note": "x"})
+    events = storage.list_special_order_events(older)
+    assert any(e[3] == "include_in_production=off, note, status=done" for e in events)
+    storage.update_special_order(older, {"include_in_production": True, "status": "open"})
+
+    integrated = storage.list_integrated_special_order_items()
+    assert [(str(r[0]), r[2], r[4]) for r in integrated] == [
+        (older, 34, 10.0),
+        (newer, 35, 20.0),
+    ]
+
+    # Done orders drop out; reopening puts them back.
+    storage.update_special_order(older, {"status": "done"})
+    assert [str(r[0]) for r in storage.list_integrated_special_order_items()] == [newer]
+    storage.update_special_order(older, {"status": "open"})
+    assert [str(r[0]) for r in storage.list_integrated_special_order_items()] == [older, newer]
+
+    storage.delete_special_order(older)
+    storage.delete_special_order(newer)
 
 
 def test_list_special_orders_most_recent_first(tenant):

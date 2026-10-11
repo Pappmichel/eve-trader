@@ -649,7 +649,7 @@ def do_refresh_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     / discover / item_margin_detail)."""
     if sum(storage.sde_row_counts().values()) == 0:
         raise ActionError("SDE cache is empty. Run 'Refresh SDE' first.")
-    if not storage.load_stock_targets():
+    if not storage.load_stock_targets() and not storage.list_integrated_special_order_items():
         raise ActionError("No stock targets configured.")
     plan = plan_production(cfg)
     return {
@@ -666,7 +666,7 @@ def do_refresh_asset_plan(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     Raises under the same conditions as do_refresh_production."""
     if sum(storage.sde_row_counts().values()) == 0:
         raise ActionError("SDE cache is empty. Run 'Refresh SDE' first.")
-    if not storage.load_stock_targets():
+    if not storage.load_stock_targets() and not storage.list_integrated_special_order_items():
         raise ActionError("No stock targets configured.")
     plan = plan_asset_optimized(cfg)
     return {"jobs": len(plan["jobs"]), "plan": plan}
@@ -682,11 +682,35 @@ def do_refresh_asset_plan(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 
 _COST_INDEX_KINDS = ("reaction", "component", "manufacturing")
 
+# Callbacks registered by api/routers/production.py so special-order mutations
+# that change integrated demand can mark that router's in-process
+# `_last_plan` / `_last_asset_plan` caches stale (D9) - the plans stay
+# readable, the pages show a recompute hint. Empty outside the web app
+# (CLI / unit tests) - those have no cached plan.
+_plan_cache_invalidators: list = []
+
+
+def register_plan_cache_invalidator(fn) -> None:
+    _plan_cache_invalidators.append(fn)
+
+
+def _mark_cached_production_plans_stale() -> None:
+    for fn in _plan_cache_invalidators:
+        fn()
+
 
 def _special_order_to_model(row: tuple, item_count: int) -> SpecialOrder:
-    order_id, note, net_against_stock, status, created_at = row
-    return SpecialOrder(order_id=str(order_id), note=note, net_against_stock=net_against_stock,
-                         status=status, created_at=str(created_at) if created_at else None, item_count=item_count)
+    order_id, note, net_against_stock, status, created_at, include_in_production = row
+    return SpecialOrder(
+        order_id=str(order_id), note=note, net_against_stock=net_against_stock,
+        status=status, created_at=str(created_at) if created_at else None,
+        item_count=item_count, include_in_production=bool(include_in_production),
+    )
+
+
+def _order_is_integrated(row: tuple) -> bool:
+    """Integrated = include_in_production AND status = 'open' (plan D1)."""
+    return bool(row[5]) and row[3] == "open"
 
 
 def _resolve_type(type_id_or_name: int | str) -> tuple[int, str]:
@@ -727,11 +751,15 @@ def _plan_special_order_items(items: list[tuple[int, str, float]], cfg: Producti
     return plan_special_order(items, cfg, net_against_stock=net_against_stock)
 
 
-def do_create_special_order(items: list[dict], note: str | None = None, net_against_stock: bool = False) -> dict:
+def do_create_special_order(items: list[dict], note: str | None = None,
+                             net_against_stock: bool = False,
+                             include_in_production: bool = False) -> dict:
     """`items`: [{"type_id": int, "quantity": float}, ...] and/or
     {"name"|"type_id_or_name", "quantity"}. At least one item. Duplicate
     type_ids are summed (SF-3 / E.2 pooling). Header + items write in one
-    transaction — a failed item does not leave an empty order."""
+    transaction — a failed item does not leave an empty order.
+    Turning `include_in_production` on also forces `net_against_stock`
+    (SPECIAL_ORDERS_INTEGRATION_PLAN.md D2)."""
     if not items:
         raise ActionError("A special order needs at least one item.")
     pooled: dict[int, list] = {}
@@ -742,7 +770,13 @@ def do_create_special_order(items: list[dict], note: str | None = None, net_agai
         else:
             pooled[type_id] = [type_name, quantity]
     resolved = [(type_id, type_name, quantity) for type_id, (type_name, quantity) in pooled.items()]
-    order_id = storage.create_special_order_with_items(note, net_against_stock, resolved)
+    if include_in_production:
+        net_against_stock = True
+    order_id = storage.create_special_order_with_items(
+        note, net_against_stock, resolved, include_in_production=include_in_production,
+    )
+    if include_in_production:
+        _mark_cached_production_plans_stale()
     return {"order_id": order_id, "item_count": len(resolved)}
 
 
@@ -769,30 +803,63 @@ def do_get_special_order(order_id: str) -> dict:
 
 
 def do_update_special_order(order_id: str, status: str | None = None, note: str | None = None,
-                             net_against_stock: bool | None = None) -> dict:
+                             net_against_stock: bool | None = None,
+                             include_in_production: bool | None = None) -> dict:
     """Partial update - same dynamic-dict shape as doctrine/actions.py's
     do_update_fitting/storage.update_doctrine. Used for "mark complete"
-    (status="done"), "reopen" (status="open"), editing the note, and
-    flipping net_against_stock after creation (confirmed with the user,
-    2026-09-02: an order shouldn't be locked to whatever was picked at
-    creation time). Combined preview still ignores stored flags (SF-5)."""
-    if storage.get_special_order(order_id) is None:
+    (status="done"), "reopen" (status="open"), editing the note,
+    flipping net_against_stock after creation, and include_in_production
+    (SPECIAL_ORDERS_INTEGRATION_PLAN.md D1/D2). Turning integration on
+    also sets net_against_stock=true; turning Prefer-stock off while
+    integrated is refused. Combined preview still ignores stored flags
+    (SF-5)."""
+    row = storage.get_special_order(order_id)
+    if row is None:
         raise ActionError(f"Special order {order_id} not found.")
     if status is not None and status not in ("open", "done"):
         raise ActionError(f"Unknown status {status!r} - must be 'open' or 'done'.")
-    updates = {}
+    was_integrated = _order_is_integrated(row)
+    current_include = bool(row[5])
+    updates: dict = {}
     if status is not None:
         updates["status"] = status
     if note is not None:
         updates["note"] = note
+    if include_in_production is not None:
+        updates["include_in_production"] = include_in_production
+        if include_in_production:
+            # D2: integrated orders always net against stock.
+            updates["net_against_stock"] = True
     if net_against_stock is not None:
-        updates["net_against_stock"] = net_against_stock
+        effective_include = (
+            include_in_production if include_in_production is not None else current_include
+        )
+        if effective_include and not net_against_stock:
+            raise ActionError(
+                "Cannot turn off Prefer stock while the order is included in build lists."
+            )
+        # When turning integration on we already force True above; skip a
+        # redundant / conflicting write if the caller also sent net=True.
+        if "net_against_stock" not in updates:
+            updates["net_against_stock"] = net_against_stock
     storage.update_special_order(order_id, updates)
+    new_row = storage.get_special_order(order_id)
+    now_integrated = _order_is_integrated(new_row) if new_row is not None else False
+    # D9: mark cached Build / Asset-Optimized plans stale when integrated
+    # demand changes. Note-only edits do not.
+    if (was_integrated or now_integrated) and (
+            status is not None or include_in_production is not None
+    ):
+        _mark_cached_production_plans_stale()
     return do_get_special_order(order_id)
 
 
 def do_remove_special_order(order_id: str) -> dict:
+    row = storage.get_special_order(order_id)
+    was_integrated = _order_is_integrated(row) if row is not None else False
     storage.delete_special_order(order_id)
+    if was_integrated:
+        _mark_cached_production_plans_stale()
     return {"removed": order_id}
 
 
@@ -800,12 +867,15 @@ def do_set_special_order_item(order_id: str, type_id: int | str, quantity: float
     """Adds a new line item to an existing order, or updates an existing
     one's quantity (upsert). Does not compute a plan (SF-6). `type_id` may
     be a numeric id or an exact item name (E.3)."""
-    if storage.get_special_order(order_id) is None:
+    row = storage.get_special_order(order_id)
+    if row is None:
         raise ActionError(f"Special order {order_id} not found.")
     if quantity <= 0:
         raise ActionError(f"Quantity for type_id {type_id} must be positive.")
     resolved_id, type_name = _resolve_type(type_id)
     storage.upsert_special_order_item(order_id, resolved_id, type_name, quantity)
+    if _order_is_integrated(row):
+        _mark_cached_production_plans_stale()
     return do_get_special_order(order_id)
 
 
@@ -814,7 +884,8 @@ def do_remove_special_order_item(order_id: str, type_id: int | str) -> dict:
     least one item" invariant do_create_special_order enforces at creation,
     kept true for the lifetime of the order rather than only checked once.
     Unknown type on that order is an error (SF-6), not a silent no-op."""
-    if storage.get_special_order(order_id) is None:
+    row = storage.get_special_order(order_id)
+    if row is None:
         raise ActionError(f"Special order {order_id} not found.")
     if isinstance(type_id, int) or (isinstance(type_id, str) and str(type_id).strip().isdigit()):
         resolved_id = int(type_id)
@@ -826,6 +897,8 @@ def do_remove_special_order_item(order_id: str, type_id: int | str) -> dict:
     if len(items) <= 1:
         raise ActionError("A special order needs at least one item - remove the whole order instead.")
     storage.remove_special_order_item(order_id, resolved_id)
+    if _order_is_integrated(row):
+        _mark_cached_production_plans_stale()
     return do_get_special_order(order_id)
 
 
@@ -840,7 +913,7 @@ def do_compute_special_order(order_id: str, cfg: ProductionConfig = PRODUCTION_C
     row = storage.get_special_order(order_id)
     if row is None:
         raise ActionError(f"Special order {order_id} not found.")
-    _order_id, _note, net_against_stock, _status, _created_at = row
+    _order_id, _note, net_against_stock, _status, _created_at, _include = row
     items = storage.list_special_order_items(order_id)
     return _plan_special_order_items(items, cfg, net_against_stock=net_against_stock)
 

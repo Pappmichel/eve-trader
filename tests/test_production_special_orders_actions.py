@@ -9,8 +9,8 @@ def test_do_create_special_order_validates_and_creates_items(monkeypatch):
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Type{type_id}", 0.01, 1, 1, 0, None))
     captured = {}
 
-    def _create(note, net_against_stock, items):
-        captured["args"] = (note, net_against_stock, items)
+    def _create(note, net_against_stock, items, include_in_production=False):
+        captured["args"] = (note, net_against_stock, items, include_in_production)
         return "order-1"
     monkeypatch.setattr(storage, "create_special_order_with_items", _create)
 
@@ -27,6 +27,7 @@ def test_do_create_special_order_validates_and_creates_items(monkeypatch):
         (12058, "Type12058", 6000.0),
         (638, "Type638", 10.0),
     ]
+    assert captured["args"][3] is False
 
 
 def test_do_create_special_order_rejects_empty_item_list():
@@ -52,8 +53,8 @@ def test_do_create_special_order_rejects_unknown_type_id(monkeypatch):
 
 def test_do_list_special_orders_includes_item_count(monkeypatch):
     monkeypatch.setattr(storage, "list_special_orders", lambda: [
-        ("order-1", "Note A", True, "open", "2026-09-01T00:00:00"),
-        ("order-2", None, False, "done", "2026-08-31T00:00:00"),
+        ("order-1", "Note A", True, "open", "2026-09-01T00:00:00", False),
+        ("order-2", None, False, "done", "2026-08-31T00:00:00", False),
     ])
     items_by_order = {"order-1": [(34, "Tritanium", 100.0)], "order-2": []}
     monkeypatch.setattr(storage, "list_special_order_items", lambda order_id: items_by_order[order_id])
@@ -74,7 +75,7 @@ def test_do_get_special_order_not_found_raises(monkeypatch):
 
 
 def test_do_update_special_order_rejects_unknown_status(monkeypatch):
-    monkeypatch.setattr(storage, "get_special_order", lambda order_id: ("order-1", None, False, "open", None))
+    monkeypatch.setattr(storage, "get_special_order", lambda order_id: ("order-1", None, False, "open", None, False))
     monkeypatch.setattr(storage, "update_special_order", lambda *a: pytest.fail("must not reach storage"))
 
     with pytest.raises(ActionError, match="Unknown status"):
@@ -82,7 +83,7 @@ def test_do_update_special_order_rejects_unknown_status(monkeypatch):
 
 
 def test_do_update_special_order_mark_complete(monkeypatch):
-    monkeypatch.setattr(storage, "get_special_order", lambda order_id: ("order-1", None, False, "open", None))
+    monkeypatch.setattr(storage, "get_special_order", lambda order_id: ("order-1", None, False, "open", None, False))
     captured = {}
     monkeypatch.setattr(storage, "update_special_order", lambda order_id, updates: captured.setdefault("updates", updates))
     monkeypatch.setattr(storage, "list_special_order_items", lambda order_id: [])
@@ -109,7 +110,7 @@ def test_do_compute_special_order_not_found_raises(monkeypatch):
 
 def test_do_compute_special_order_calls_plan_special_order_with_stored_items(monkeypatch):
     monkeypatch.setattr(storage, "sde_row_counts", lambda: {"sde_types": 1})
-    monkeypatch.setattr(storage, "get_special_order", lambda order_id: (order_id, "Note", True, "open", None))
+    monkeypatch.setattr(storage, "get_special_order", lambda order_id: (order_id, "Note", True, "open", None, False))
     monkeypatch.setattr(storage, "list_special_order_items", lambda order_id: [(34, "Tritanium", 100.0)])
     captured = {}
 
@@ -126,7 +127,7 @@ def test_do_compute_special_order_calls_plan_special_order_with_stored_items(mon
 
 
 def test_do_update_special_order_can_flip_net_against_stock(monkeypatch):
-    monkeypatch.setattr(storage, "get_special_order", lambda order_id: ("order-1", None, False, "open", None))
+    monkeypatch.setattr(storage, "get_special_order", lambda order_id: ("order-1", None, False, "open", None, False))
     captured = {}
     monkeypatch.setattr(storage, "update_special_order", lambda order_id, updates: captured.setdefault("updates", updates))
     monkeypatch.setattr(storage, "list_special_order_items", lambda order_id: [])
@@ -137,7 +138,7 @@ def test_do_update_special_order_can_flip_net_against_stock(monkeypatch):
 
 
 def test_do_set_special_order_item_adds_or_updates(monkeypatch):
-    monkeypatch.setattr(storage, "get_special_order", lambda order_id: ("order-1", None, False, "open", None))
+    monkeypatch.setattr(storage, "get_special_order", lambda order_id: ("order-1", None, False, "open", None, False))
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, f"Type{type_id}", 0.01, 1, 1, 0, None))
     captured = {}
     monkeypatch.setattr(storage, "upsert_special_order_item",
@@ -150,7 +151,7 @@ def test_do_set_special_order_item_adds_or_updates(monkeypatch):
 
 
 def test_do_set_special_order_item_rejects_non_positive_quantity(monkeypatch):
-    monkeypatch.setattr(storage, "get_special_order", lambda order_id: ("order-1", None, False, "open", None))
+    monkeypatch.setattr(storage, "get_special_order", lambda order_id: ("order-1", None, False, "open", None, False))
     monkeypatch.setattr(storage, "upsert_special_order_item", lambda *a: pytest.fail("must not reach storage"))
 
     with pytest.raises(ActionError, match="must be positive"):
@@ -165,7 +166,7 @@ def test_do_set_special_order_item_order_not_found_raises(monkeypatch):
 
 
 def test_do_remove_special_order_item_removes_when_others_remain(monkeypatch):
-    monkeypatch.setattr(storage, "get_special_order", lambda order_id: ("order-1", None, False, "open", None))
+    monkeypatch.setattr(storage, "get_special_order", lambda order_id: ("order-1", None, False, "open", None, False))
     monkeypatch.setattr(storage, "list_special_order_items",
                          lambda order_id: [(34, "Type34", 1.0), (638, "Type638", 1.0)])
     removed = []
@@ -178,7 +179,7 @@ def test_do_remove_special_order_item_removes_when_others_remain(monkeypatch):
 
 
 def test_do_remove_special_order_item_refuses_to_remove_the_last_item(monkeypatch):
-    monkeypatch.setattr(storage, "get_special_order", lambda order_id: ("order-1", None, False, "open", None))
+    monkeypatch.setattr(storage, "get_special_order", lambda order_id: ("order-1", None, False, "open", None, False))
     monkeypatch.setattr(storage, "list_special_order_items", lambda order_id: [(34, "Type34", 1.0)])
     monkeypatch.setattr(storage, "remove_special_order_item", lambda *a: pytest.fail("must not reach storage"))
 
@@ -188,7 +189,7 @@ def test_do_remove_special_order_item_refuses_to_remove_the_last_item(monkeypatc
 
 def test_do_compute_combined_special_orders_pools_shared_items(monkeypatch):
     monkeypatch.setattr(storage, "sde_row_counts", lambda: {"sde_types": 1})
-    monkeypatch.setattr(storage, "get_special_order", lambda order_id: (order_id, None, False, "open", None))
+    monkeypatch.setattr(storage, "get_special_order", lambda order_id: (order_id, None, False, "open", None, False))
     items_by_order = {
         "order-1": [(34, "Tritanium", 100.0), (638, "Republic Fleet Firetail", 5.0)],
         "order-2": [(34, "Tritanium", 50.0)],
@@ -226,3 +227,48 @@ def test_do_compute_combined_special_orders_raises_when_sde_cache_empty(monkeypa
 
     with pytest.raises(ActionError, match="SDE cache is empty"):
         actions.do_compute_combined_special_orders(["order-1"], net_against_stock=False)
+
+
+def test_do_update_special_order_include_forces_net_against_stock(monkeypatch):
+    """D2: turning include_in_production on also sets net_against_stock."""
+    monkeypatch.setattr(storage, "get_special_order",
+                         lambda order_id: ("order-1", None, False, "open", None, False))
+    captured = {}
+    monkeypatch.setattr(storage, "update_special_order",
+                         lambda order_id, updates: captured.setdefault("updates", updates))
+    monkeypatch.setattr(storage, "list_special_order_items", lambda order_id: [])
+
+    actions.do_update_special_order("order-1", include_in_production=True)
+
+    assert captured["updates"] == {
+        "include_in_production": True,
+        "net_against_stock": True,
+    }
+
+
+def test_do_update_special_order_refuses_net_off_while_integrated(monkeypatch):
+    monkeypatch.setattr(storage, "get_special_order",
+                         lambda order_id: ("order-1", None, True, "open", None, True))
+    monkeypatch.setattr(storage, "update_special_order", lambda *a: pytest.fail("must not write"))
+
+    with pytest.raises(ActionError, match="Prefer stock"):
+        actions.do_update_special_order("order-1", net_against_stock=False)
+
+
+def test_do_create_special_order_include_forces_net_against_stock(monkeypatch):
+    monkeypatch.setattr(storage, "get_sde_type",
+                         lambda type_id: (type_id, 1, f"Type{type_id}", 0.01, 1, 1, 0, None))
+    captured = {}
+
+    def _create(note, net_against_stock, items, include_in_production=False):
+        captured["args"] = (note, net_against_stock, items, include_in_production)
+        return "order-1"
+    monkeypatch.setattr(storage, "create_special_order_with_items", _create)
+
+    actions.do_create_special_order(
+        [{"type_id": 34, "quantity": 1.0}],
+        include_in_production=True, net_against_stock=False,
+    )
+
+    assert captured["args"][1] is True
+    assert captured["args"][3] is True

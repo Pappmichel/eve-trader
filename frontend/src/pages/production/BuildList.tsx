@@ -7,6 +7,7 @@ import { productionApi } from '../../api/client'
 import type { BuildJobEntry } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
+import { StalePlanAlert } from './StalePlanAlert'
 import { useAction } from '../../hooks/useAction'
 import { isk, pct, qty } from '../../format'
 
@@ -57,6 +58,10 @@ export default function BuildList() {
     { header: 'Activity', accessorKey: 'activity', size: 130 },
     { header: 'Tech Level', accessorKey: 'tech_level', size: 120, cell: (i) => i.getValue() ?? '–' },
     { header: 'Job Runs', accessorKey: 'job_runs', size: 100, cell: (i) => qty(i.getValue()) },
+    {
+      header: 'Special order', accessorKey: 'special_order_quantity', size: 130,
+      cell: (i) => ((i.getValue() as number | undefined) ? qty(i.getValue()) : '–'),
+    },
     { header: 'Quantity (Output)', accessorKey: 'quantity', size: 140, cell: (i) => qty(i.getValue()) },
     { header: 'Job Time (h)', id: 'hours', size: 120, accessorFn: (r) => r.job_time_seconds / 3600, cell: (i) => (i.getValue() as number).toFixed(2) },
     { header: 'Modeled Unit Cost', accessorKey: 'unit_build_cost', size: 150, cell: (i) => isk(i.getValue()) },
@@ -84,10 +89,18 @@ export default function BuildList() {
       </Stack>
     )
   }
-  if (buildList.length === 0) return <HintCard>Nothing to build - all stock targets are bought or covered.</HintCard>
+  if (buildList.length === 0) {
+    return (
+      <Stack>
+        <StalePlanAlert stale={plan.stale} />
+        <HintCard>Nothing to build - all stock targets are bought or covered.</HintCard>
+      </Stack>
+    )
+  }
 
   return (
     <Stack>
+      <StalePlanAlert stale={plan.stale} />
       <Group justify="space-between" align="flex-end">
         <Group align="flex-end">
           <Card withBorder padding="sm" w={280}>
