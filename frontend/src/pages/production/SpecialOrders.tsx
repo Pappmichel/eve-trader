@@ -9,7 +9,7 @@ import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
 import type {
-  BuildJobEntry, BuyListEntry, InventionNeedRow, SpecialOrder, SpecialOrderComputeResult, SpecialOrderDetail,
+  AssetPlanOrderProgressRow, BuildJobEntry, BuyListEntry, InventionNeedRow, SpecialOrder, SpecialOrderComputeResult, SpecialOrderDetail,
   SpecialOrderLineItem, SpecialOrderPreviewResult,
 } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
@@ -31,7 +31,7 @@ function stockpileBadge(v: number) {
 // Shared Buy/Build/Invention/overlap-warning rendering - used by both a
 // single order's own detail view and the temporary combined-orders preview,
 // so the two can never drift apart on columns/filtering/total-cost display.
-function ComputeResultView({ result }: { result: SpecialOrderComputeResult }) {
+function ComputeResultView({ result, integrated = false }: { result: SpecialOrderComputeResult; integrated?: boolean }) {
   const [selCategories, setSelCategories] = useState<string[]>([])
   const categories = useMemo(
     () => [...new Set(result.buy_list.map((e) => e.category ?? CATEGORY_UNKNOWN))].sort(), [result.buy_list],
@@ -117,7 +117,7 @@ function ComputeResultView({ result }: { result: SpecialOrderComputeResult }) {
           again before trusting these numbers.
         </Alert>
       )}
-      {result.stock_overlap_warning.length > 0 && (
+      {!integrated && result.stock_overlap_warning.length > 0 && (
         <Alert color="warn" variant="light" title="Possible stock overlap with your Stock Targets">
           These items are on hand right now and also reachable from your configured Stock Targets - the same
           physical stock might get claimed by both this order and a separately-computed regular Buy/Build list:
@@ -173,6 +173,44 @@ function ComputeResultView({ result }: { result: SpecialOrderComputeResult }) {
         </div>
       )}
     </Stack>
+  )
+}
+
+// Per-line progress of an integrated order, read from the last computed
+// Asset-Optimized plan (nothing is recomputed here).
+function OrderProgress({ orderId }: { orderId: string }) {
+  const { data: plan, isLoading } = useQuery({ queryKey: ['production', 'asset-plan'], queryFn: productionApi.assetPlan })
+  const rows = useMemo(
+    () => (plan?.order_progress ?? []).filter((r) => r.order_id === orderId),
+    [plan, orderId],
+  )
+  const columns = useMemo<ColumnDef<AssetPlanOrderProgressRow, any>[]>(() => [
+    { header: 'Item', accessorKey: 'type_name', size: 220 },
+    { header: 'Ordered', accessorKey: 'ordered', size: 100, cell: (i) => qty(i.getValue()) },
+    { header: 'In hangar', accessorKey: 'hangar_covered', size: 110, cell: (i) => qty(i.getValue()) },
+    { header: 'In running jobs', accessorKey: 'job_covered', size: 130, cell: (i) => qty(i.getValue()) },
+    { header: 'Ready runs', accessorKey: 'ready_runs', size: 110, cell: (i) => qty(i.getValue()) },
+    {
+      header: 'Missing', accessorKey: 'missing', size: 100,
+      cell: (i) => ((i.getValue() as number) > 0 ? <Text c="warn">{qty(i.getValue())}</Text> : qty(0)),
+    },
+  ], [])
+  const readyToDeliver = rows.length > 0 && rows.every((r) => r.ready_to_deliver)
+
+  return (
+    <div>
+      <Group gap="xs" mb="xs">
+        <Title order={6} c="dimmed" tt="uppercase">Progress</Title>
+        {readyToDeliver && <Badge color="accent" variant="light">Ready to deliver</Badge>}
+      </Group>
+      {isLoading ? (
+        <DataTable data={[]} columns={columns} isLoading maxHeight={240} />
+      ) : rows.length === 0 ? (
+        <HintCard>No progress yet - recompute the Asset-Optimized list to see how much of this order is covered.</HintCard>
+      ) : (
+        <DataTable data={rows} columns={columns} maxHeight={240} />
+      )}
+    </div>
   )
 }
 
@@ -480,8 +518,9 @@ function OrderDetail({ order }: { order: SpecialOrder }) {
       )}
 
       <Stack mt="md">
+        {integrated && <OrderProgress orderId={order.order_id} />}
         {!result && <HintCard>Click Compute to see the Buy/Build/Invention breakdown for this order.</HintCard>}
-        {result && <ComputeResultView result={result} />}
+        {result && <ComputeResultView result={result} integrated={integrated} />}
       </Stack>
     </Card>
   )

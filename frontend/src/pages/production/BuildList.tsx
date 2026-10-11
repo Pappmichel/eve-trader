@@ -57,6 +57,10 @@ export default function BuildList() {
     { header: 'Activity', accessorKey: 'activity', size: 130 },
     { header: 'Tech Level', accessorKey: 'tech_level', size: 120, cell: (i) => i.getValue() ?? '–' },
     { header: 'Job Runs', accessorKey: 'job_runs', size: 100, cell: (i) => qty(i.getValue()) },
+    {
+      header: 'Special order', accessorKey: 'special_order_quantity', size: 130,
+      cell: (i) => ((i.getValue() as number | undefined) ? qty(i.getValue()) : '–'),
+    },
     { header: 'Quantity (Output)', accessorKey: 'quantity', size: 140, cell: (i) => qty(i.getValue()) },
     { header: 'Job Time (h)', id: 'hours', size: 120, accessorFn: (r) => r.job_time_seconds / 3600, cell: (i) => (i.getValue() as number).toFixed(2) },
     { header: 'Modeled Unit Cost', accessorKey: 'unit_build_cost', size: 150, cell: (i) => isk(i.getValue()) },

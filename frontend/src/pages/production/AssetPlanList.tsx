@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Title, Text, Stack, Button, Group, MultiSelect, Badge, NumberInput, Tooltip } from '@mantine/core'
+import { Card, Title, Text, Stack, Button, Group, MultiSelect, Badge, NumberInput, SegmentedControl, Tooltip } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import { productionApi } from '../../api/client'
@@ -13,6 +13,36 @@ import { blockedRunsTitle } from './assetPlanBlockers'
 
 const CATEGORY_UNKNOWN = 'no category'
 const TECH_LEVEL_UNKNOWN = 'unknown'
+
+type OrderFilter = 'all' | 'orders' | 'stock'
+
+// A job row plus the run counts the Job Runs / Ready Now / Blocked columns show
+// for the selected order filter. The job's own totals stay untouched because
+// "Split Into" is per full job (one blueprint, one in-game job).
+type PlanRow = AssetPlanJob & { shown_runs: number; shown_ready: number }
+
+function orderRuns(j: AssetPlanJob): number {
+  return j.special_order_runs ?? 0
+}
+
+function viewRow(j: AssetPlanJob, filter: OrderFilter): PlanRow {
+  const orderReady = j.special_order_ready_runs ?? 0
+  if (filter === 'orders') return { ...j, shown_runs: orderRuns(j), shown_ready: orderReady }
+  if (filter === 'stock') {
+    return {
+      ...j,
+      shown_runs: Math.max(0, j.job_runs - orderRuns(j)),
+      shown_ready: Math.max(0, j.runs_ready_now - orderReady),
+    }
+  }
+  return { ...j, shown_runs: j.job_runs, shown_ready: j.runs_ready_now }
+}
+
+function orderLabels(j: AssetPlanJob): string[] {
+  const ids = j.special_order_ids ?? []
+  const notes = j.special_order_notes ?? []
+  return ids.map((id, idx) => notes[idx]?.trim() || id.slice(0, 8))
+}
 
 export default function AssetPlanList() {
   const { data: plan, isLoading, isError, refetch, dataUpdatedAt } = useQuery({ queryKey: ['production', 'asset-plan'], queryFn: productionApi.assetPlan })
@@ -47,19 +77,32 @@ export default function AssetPlanList() {
     () => [...new Set(jobs.map((j) => j.tech_level ?? TECH_LEVEL_UNKNOWN))].sort(), [jobs],
   )
   const [selTechLevels, setSelTechLevels] = useState<string[]>([])
-  const filtered = useMemo(() => jobs.filter((j) =>
-    (selCategories.length === 0 || selCategories.includes(j.job_category ?? CATEGORY_UNKNOWN))
-    && (selTechLevels.length === 0 || selTechLevels.includes(j.tech_level ?? TECH_LEVEL_UNKNOWN)),
-  ), [jobs, selCategories, selTechLevels])
+  const [orderFilter, setOrderFilter] = useState<OrderFilter>('all')
+  const hasOrderJobs = useMemo(() => jobs.some((j) => orderRuns(j) > 0), [jobs])
+  const filtered = useMemo(() => jobs
+    .filter((j) =>
+      (selCategories.length === 0 || selCategories.includes(j.job_category ?? CATEGORY_UNKNOWN))
+      && (selTechLevels.length === 0 || selTechLevels.includes(j.tech_level ?? TECH_LEVEL_UNKNOWN))
+      && (orderFilter === 'all'
+        || (orderFilter === 'orders' ? orderRuns(j) > 0 : j.job_runs - orderRuns(j) > 0)),
+    )
+    .map((j) => viewRow(j, orderFilter)),
+  [jobs, selCategories, selTechLevels, orderFilter])
 
   const readyHours = useMemo(
-    () => filtered.reduce((sum, j) => sum + (j.job_runs > 0 ? (j.job_time_seconds * j.runs_ready_now) / j.job_runs : 0), 0) / 3600,
+    () => filtered.reduce((sum, j) => sum + (j.job_runs > 0 ? (j.job_time_seconds * j.shown_ready) / j.job_runs : 0), 0) / 3600,
     [filtered],
   )
-  const totalHours = useMemo(() => filtered.reduce((sum, j) => sum + j.job_time_seconds, 0) / 3600, [filtered])
-  const readyJobs = useMemo(() => filtered.filter((j) => j.runs_ready_now > 0).length, [filtered])
+  const totalHours = useMemo(
+    () => filtered.reduce((sum, j) => sum + (j.job_runs > 0 ? (j.job_time_seconds * j.shown_runs) / j.job_runs : 0), 0) / 3600,
+    [filtered],
+  )
+  const readyJobs = useMemo(() => filtered.filter((j) => j.shown_ready > 0).length, [filtered])
 
-  const columns = useMemo<ColumnDef<AssetPlanJob, any>[]>(() => [
+  const runsSuffix = orderFilter === 'orders' ? 'orders' : orderFilter === 'stock' ? 'stock targets' : 'total'
+  const showOrderColumn = orderFilter !== 'stock' && hasOrderJobs
+
+  const columns = useMemo<ColumnDef<PlanRow, any>[]>(() => [
     {
       header: 'Item', accessorKey: 'type_name', size: 220,
       cell: (i) => {
@@ -79,18 +122,26 @@ export default function AssetPlanList() {
     { header: 'Category', accessorKey: 'job_category', size: 160, cell: (i) => i.getValue() ?? '–' },
     { header: 'Activity', accessorKey: 'activity', size: 130 },
     { header: 'Tech Level', accessorKey: 'tech_level', size: 120, cell: (i) => i.getValue() ?? '–' },
-    { header: 'Job Runs (total)', accessorKey: 'job_runs', size: 140, cell: (i) => qty(i.getValue()) },
+    { header: `Job Runs (${runsSuffix})`, accessorKey: 'shown_runs', size: 160, cell: (i) => qty(i.getValue()) },
     {
-      header: 'Ready Now', accessorKey: 'runs_ready_now', size: 120,
+      header: 'Ready Now', accessorKey: 'shown_ready', size: 120,
       cell: (i) => <Text c={i.getValue() > 0 ? 'accent' : 'dimmed'} fw={i.getValue() > 0 ? 600 : 400}>{qty(i.getValue())}</Text>,
     },
     {
-      header: 'Blocked', id: 'blocked', size: 110, accessorFn: (r) => r.job_runs - r.runs_ready_now,
+      header: 'Blocked', id: 'blocked', size: 110, accessorFn: (r) => r.shown_runs - r.shown_ready,
       meta: { cellTitle: (row) => blockedRunsTitle(row) },
       cell: (i) => (i.getValue() as number) > 0
         ? <Text c="warn">{qty(i.getValue() as number)}</Text>
         : qty(0),
     },
+    ...(showOrderColumn ? [{
+      header: 'Special orders', id: 'special_orders', size: 220,
+      accessorFn: (r: PlanRow) => orderLabels(r).join(', '),
+      cell: (i: any) => {
+        const label = i.getValue() as string
+        return label ? <Text size="sm" style={{ whiteSpace: 'normal' }}>{label}</Text> : '–'
+      },
+    }] : []),
     {
       header: 'Stock Coverage', accessorKey: 'stock_coverage', size: 140,
       cell: (i) => {
@@ -122,7 +173,7 @@ export default function AssetPlanList() {
       },
     },
     { header: 'Quantity (Output)', accessorKey: 'quantity', size: 140, cell: (i) => qty(i.getValue()) },
-    { header: 'Job Time (h, total)', id: 'hours', size: 140, accessorFn: (r) => r.job_time_seconds / 3600, cell: (i) => (i.getValue() as number).toFixed(2) },
+    { header: 'Job Time (h, total)', id: 'hours', size: 140, accessorFn: (r) => (r.job_runs > 0 ? (r.job_time_seconds * r.shown_runs) / r.job_runs : 0) / 3600, cell: (i) => (i.getValue() as number).toFixed(2) },
     { header: 'Modeled Unit Cost', accessorKey: 'unit_build_cost', size: 150, cell: (i) => isk(i.getValue()) },
     {
       header: 'Margin', accessorKey: 'margin', size: 110,
@@ -132,7 +183,7 @@ export default function AssetPlanList() {
       },
     },
     { header: 'Decryptor', accessorKey: 'decryptor', size: 130, cell: (i) => i.getValue() ?? '–' },
-  ], [settings?.asset_plan_slot_days_target])
+  ], [settings?.asset_plan_slot_days_target, runsSuffix, showOrderColumn])
 
   if (isLoading) return <DataTable data={[]} columns={columns} isLoading maxHeight={560} />
   if (isError) return <DataTable data={[]} columns={columns} isError onRetry={() => refetch()} maxHeight={560} />
@@ -170,6 +221,18 @@ export default function AssetPlanList() {
             label="Tech Level" data={techLevels} value={selTechLevels} onChange={setSelTechLevels}
             placeholder="All" clearable w={220}
           />
+          <div>
+            <Text size="sm" fw={500} mb={4}>Special orders</Text>
+            <SegmentedControl
+              value={orderFilter}
+              onChange={(v) => setOrderFilter(v as OrderFilter)}
+              data={[
+                { label: 'All', value: 'all' },
+                { label: 'Orders only', value: 'orders' },
+                { label: 'Without orders', value: 'stock' },
+              ]}
+            />
+          </div>
           <NumberInput
             label="Slot target (max days per slot)"
             description="Empty = off. Click Recompute after saving."
@@ -206,7 +269,9 @@ export default function AssetPlanList() {
         on the market count as covered, the same way the job size nets them out), for a pure intermediate
         component (no goal of its own) it's this round's pooled demand instead. Distinct from "Blocked", which is
         about whether <i>this item's own materials</i> are available to build it, not about this item's own stock.
-        Click the column header to sort by it if you want to see what's closest to running out first; it doesn't
+        "Orders only" shows just the share of each job that serves open special orders included in the build lists,
+        with the order notes in the "Special orders" column; "Without orders" shows the stock-target share.
+        "Split Into" always covers the whole job. Click the column header to sort by it if you want to see what's closest to running out first; it doesn't
         affect the list's own sort order or which jobs get queued. "Split Into" (Reactions/Advanced Components/
         Capital Components only) recommends how many of your currently-free character job slots to queue this
         job's ready runs across in parallel, chosen so all ready jobs together finish as early as possible: every

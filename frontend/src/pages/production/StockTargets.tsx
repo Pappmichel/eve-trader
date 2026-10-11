@@ -82,6 +82,14 @@ export default function StockTargets() {
     return m
   }, [plan])
 
+  const reservedForOrders = useMemo(() => {
+    const m = new Map<number, number>()
+    for (const row of plan?.inventory ?? []) {
+      if ((row.reserved_for_orders ?? 0) > 0) m.set(row.type_id, row.reserved_for_orders ?? 0)
+    }
+    return m
+  }, [plan])
+
   const { data: itemNameOptions } = useItemNameOptions()
   const newItemOptions = useMemo(
     () => (itemNameOptions ?? []).map((t) => ({ value: String(t.type_id), label: t.type_name })),
@@ -174,6 +182,17 @@ export default function StockTargets() {
       header: 'Current Stock (incl. ESI)', id: 'computed', size: 180, accessorFn: (r) => computedStock.get(r.type_id) ?? null,
       cell: (i) => (i.getValue() === null ? '–' : qty(i.getValue())),
     },
+    ...(reservedForOrders.size > 0 ? [{
+      header: 'Reserved for orders', id: 'reservedForOrders', size: 160,
+      accessorFn: (r: StockTarget) => reservedForOrders.get(r.type_id) ?? 0,
+      cell: (i: any) => ((i.getValue() as number) > 0
+        ? (
+          <Tooltip label="Finished units claimed by open special orders included in the build lists - already subtracted from Current Stock" multiline w={260}>
+            <Text size="sm" c="info">{qty(i.getValue())}</Text>
+          </Tooltip>
+        )
+        : '–'),
+    }] : []),
     {
       header: 'Home Market Target', accessorKey: 'home_market_stock', size: 170,
       cell: (i) => (
@@ -255,7 +274,7 @@ export default function StockTargets() {
         </ActionIcon>
       ),
     },
-  ], [manualStock, entriesByType, manualListedByType, computedStock, overrides, updateTarget, setManualStockAction,
+  ], [manualStock, entriesByType, manualListedByType, computedStock, reservedForOrders, overrides, updateTarget, setManualStockAction,
       setManualListed, removeTarget, pendingRemoveId])
 
   return (

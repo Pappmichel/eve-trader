@@ -46,6 +46,10 @@ export default function BuyList() {
     ...(showHub ? [{ header: 'Best hub', accessorKey: 'hub_name', size: 100, cell: (i: any) => i.getValue() ?? '–' }] : []),
     { header: 'Quantity', accessorKey: 'quantity', size: 110, cell: (i) => qty(i.getValue()) },
     {
+      header: 'Special order', accessorKey: 'special_order_quantity', size: 130,
+      cell: (i) => ((i.getValue() as number | undefined) ? qty(i.getValue()) : '–'),
+    },
+    {
       header: 'On Hand', accessorKey: 'on_hand_pct', size: 100,
       cell: (i) => {
         const v = i.getValue() as number
