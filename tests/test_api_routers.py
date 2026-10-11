@@ -899,11 +899,35 @@ def test_asset_plan_is_isolated_per_tenant(monkeypatch):
     monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-a")
     refresh_resp = client.post("/api/production/asset-plan/refresh")
     assert refresh_resp.status_code == 200
-    assert client.get("/api/production/asset-plan").json() == {"jobs": []}
+    assert client.get("/api/production/asset-plan").json() == {"jobs": [], "order_progress": [], "stale": False}
 
     monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-b")
     # tenant-b never refreshed - must see nothing, not tenant-a's plan.
     assert client.get("/api/production/asset-plan").json() is None
+
+
+def test_asset_plan_serializes_special_order_fields(monkeypatch):
+    # SPECIAL_ORDERS_INTEGRATION_PLAN.md D7/D16: the cached asset plan keeps
+    # the per-job order share and order_progress.
+    from eve_trader.production.models import AssetPlanJob
+    progress = [{"order_id": "o1", "note": "Customer", "type_id": 10, "type_name": "Ship",
+                 "ordered": 2.0, "covered": 1.0, "remaining": 1.0, "hangar_covered": 1.0,
+                 "job_covered": 0.0, "ready_runs": 1, "missing": 0.0, "ready_to_deliver": False}]
+    job = AssetPlanJob(type_id=10, type_name="Ship", blueprint_type_id=110, activity="Manufacturing",
+                       quantity=3, job_runs=3, runs_ready_now=1, job_time_seconds=1.0, unit_build_cost=None,
+                       special_order_runs=1, special_order_ready_runs=1,
+                       special_order_ids=["o1"], special_order_notes=["Customer"])
+    monkeypatch.setattr(production_actions, "do_refresh_asset_plan",
+                        lambda: {"jobs": 1, "plan": {"jobs": [job], "order_progress": progress}})
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-asset-orders")
+
+    assert client.post("/api/production/asset-plan/refresh").status_code == 200
+    plan = client.get("/api/production/asset-plan").json()
+
+    row = plan["jobs"][0]
+    assert (row["special_order_runs"], row["special_order_ready_runs"]) == (1, 1)
+    assert (row["special_order_ids"], row["special_order_notes"]) == (["o1"], ["Customer"])
+    assert plan["order_progress"] == progress
 
 
 def test_plan_is_isolated_per_tenant(monkeypatch):
@@ -923,6 +947,67 @@ def test_plan_is_isolated_per_tenant(monkeypatch):
     assert resp.status_code == 400
 
 
+def test_plan_serializes_special_order_fields(monkeypatch):
+    # SPECIAL_ORDERS_INTEGRATION_PLAN.md D8/D12/D16: the cached plan keeps
+    # the order attribution, the reservation and order_progress.
+    from eve_trader.production.models import BuildJobEntry, BuyListEntry, InventoryRow
+    progress = [{"order_id": "o1", "note": "Customer", "type_id": 10, "type_name": "Ship",
+                 "ordered": 2.0, "covered": 1.0, "remaining": 1.0}]
+    monkeypatch.setattr(production_actions, "do_refresh_production", lambda: {
+        "plan": {
+            "inventory": [InventoryRow(type_id=10, type_name="Ship", activity="Tech I", backup_stock=3,
+                                       current_stock=0, total_missing=3, reserved_for_orders=1)],
+            "buy_list": [BuyListEntry(type_id=34, type_name="Tritanium", quantity=50, unit_price=None,
+                                      total_price=None, special_order_quantity=20)],
+            "build_list": [BuildJobEntry(type_id=10, type_name="Ship", blueprint_type_id=110,
+                                         activity="Manufacturing", quantity=4, job_runs=4,
+                                         job_time_seconds=1.0, unit_build_cost=None,
+                                         special_order_quantity=1)],
+            "invention_list": [], "adjusted_prices_available": True, "order_progress": progress,
+        },
+        "stock_targets": 1, "missing_types": 1, "buy_entries": 1, "build_jobs": 1,
+    })
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-orders")
+
+    assert client.post("/api/production/plan/refresh").status_code == 200
+    plan = client.get("/api/production/plan").json()
+
+    assert plan["inventory"][0]["reserved_for_orders"] == 1.0
+    assert plan["buy_list"][0]["special_order_quantity"] == 20.0
+    assert plan["build_list"][0]["special_order_quantity"] == 1.0
+    assert plan["order_progress"] == progress
+
+
+def test_integrated_order_change_marks_cached_plans_stale_but_keeps_them(monkeypatch):
+    # SPECIAL_ORDERS_INTEGRATION_PLAN.md D9: an integrated order change must
+    # not wipe the cached plans (Logistics / Invention / order progress read
+    # them) - only flag them stale until the next refresh.
+    from eve_trader.api.routers import production as production_router
+    from eve_trader.production.models import BuildJobEntry
+    build = BuildJobEntry(type_id=10, type_name="Ship", blueprint_type_id=110, activity="Manufacturing",
+                          quantity=1, job_runs=1, job_time_seconds=1.0, unit_build_cost=None)
+    monkeypatch.setattr(production_actions, "do_refresh_production", lambda: {
+        "plan": {"inventory": [], "buy_list": [], "build_list": [build], "invention_list": [],
+                 "adjusted_prices_available": True},
+        "stock_targets": 1, "missing_types": 0, "buy_entries": 0, "build_jobs": 1,
+    })
+    monkeypatch.setattr(production_actions, "do_refresh_asset_plan",
+                        lambda: {"jobs": 0, "plan": {"jobs": [], "order_progress": []}})
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-stale")
+    assert client.post("/api/production/plan/refresh").status_code == 200
+    assert client.post("/api/production/asset-plan/refresh").status_code == 200
+
+    production_router._mark_cached_plans_stale()
+
+    plan = client.get("/api/production/plan").json()
+    assert plan["stale"] is True and plan["build_list"][0]["type_id"] == 10
+    assert client.get("/api/production/asset-plan").json()["stale"] is True
+    # A fresh refresh clears the flag again.
+    assert client.post("/api/production/plan/refresh").status_code == 200
+    assert client.get("/api/production/plan").json()["stale"] is False
+    assert client.get("/api/production/asset-plan").json()["stale"] is True
+
+
 # ------------------------------------------------------------ special orders
 def test_create_special_order_forwards_items_note_and_net_against_stock(monkeypatch):
     captured = {}
@@ -940,7 +1025,8 @@ def test_create_special_order_forwards_items_note_and_net_against_stock(monkeypa
     assert resp.status_code == 200
     assert resp.json() == {"order_id": "order-1", "item_count": 1}
     assert captured["kwargs"] == {
-        "items": [{"type_id": 12058, "quantity": 6000.0}], "note": "Customer X", "net_against_stock": True,
+        "items": [{"type_id": 12058, "quantity": 6000.0}], "note": "Customer X",
+        "net_against_stock": True, "include_in_production": False,
     }
 
 
@@ -975,7 +1061,8 @@ def test_list_special_orders_serializes_rows(monkeypatch):
     from eve_trader.production.models import SpecialOrder
     monkeypatch.setattr(production_actions, "do_list_special_orders", lambda status=None: [
         SpecialOrder(order_id="order-1", note="Customer X", net_against_stock=True,
-                     status="open", created_at="2026-09-01T00:00:00", item_count=2),
+                     status="open", created_at="2026-09-01T00:00:00", item_count=2,
+                     include_in_production=False),
     ])
 
     resp = client.get("/api/production/special-orders")
@@ -984,6 +1071,7 @@ def test_list_special_orders_serializes_rows(monkeypatch):
     assert resp.json() == [{
         "order_id": "order-1", "note": "Customer X", "net_against_stock": True,
         "status": "open", "created_at": "2026-09-01T00:00:00", "item_count": 2,
+        "include_in_production": False,
     }]
 
 
@@ -998,7 +1086,10 @@ def test_update_special_order_forwards_status(monkeypatch):
     resp = client.patch("/api/production/special-orders/order-1", json={"status": "done"})
 
     assert resp.status_code == 200
-    assert captured["kwargs"] == {"order_id": "order-1", "status": "done", "note": None, "net_against_stock": None}
+    assert captured["kwargs"] == {
+        "order_id": "order-1", "status": "done", "note": None,
+        "net_against_stock": None, "include_in_production": None,
+    }
 
 
 def test_remove_special_order(monkeypatch):
@@ -1074,7 +1165,10 @@ def test_update_special_order_forwards_net_against_stock(monkeypatch):
     resp = client.patch("/api/production/special-orders/order-1", json={"net_against_stock": True})
 
     assert resp.status_code == 200
-    assert captured["kwargs"] == {"order_id": "order-1", "status": None, "note": None, "net_against_stock": True}
+    assert captured["kwargs"] == {
+        "order_id": "order-1", "status": None, "note": None,
+        "net_against_stock": True, "include_in_production": None,
+    }
 
 
 def test_set_special_order_item_forwards_type_id_and_quantity(monkeypatch):
@@ -2100,7 +2194,7 @@ def test_production_kpis_returns_counts_only(monkeypatch):
     monkeypatch.setattr(storage, "list_industry_jobs", lambda *a, **k: [("esi-job",)])
     monkeypatch.setattr(storage, "load_manual_industry_jobs", lambda: [("m1",), ("m2",)])
     monkeypatch.setattr(storage, "list_special_orders", lambda: [
-        ("a", None, False, "open", None), ("b", None, False, "done", None),
+        ("a", None, False, "open", None, False), ("b", None, False, "done", None, False),
     ])
     resp = client.get("/api/production/kpis")
     assert resp.status_code == 200

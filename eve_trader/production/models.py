@@ -23,6 +23,10 @@ class InventoryRow:
     backup_stock: float
     current_stock: float
     total_missing: float
+    # Units of this item claimed by integrated special orders before the
+    # stock target sees any (SPECIAL_ORDERS_INTEGRATION_PLAN.md D3/D12) -
+    # already subtracted from current_stock above.
+    reserved_for_orders: float = 0.0
 
 
 @dataclass
@@ -65,6 +69,9 @@ class BuyListEntry:
     # so build/rig-classifiable rows show that bucket instead - see
     # engine._build_buy_list's own comment.
     category: Optional[str] = None
+    # Share of `quantity` that comes from integrated special orders
+    # (SPECIAL_ORDERS_INTEGRATION_PLAN.md D8), never above `quantity`.
+    special_order_quantity: float = 0.0
 
 
 @dataclass
@@ -100,6 +107,9 @@ class BuildJobEntry:
     # formula - that's the job actually queued in EVE; the target item comes
     # out of reprocessing it afterwards.
     recipe_source: Optional[str] = None
+    # Share of `quantity` (product units) that comes from integrated special
+    # orders (SPECIAL_ORDERS_INTEGRATION_PLAN.md D8), never above `quantity`.
+    special_order_quantity: float = 0.0
 
 
 @dataclass
@@ -167,6 +177,10 @@ class InventionNeedRow:
     # covers the whole backup_stock target on its own), landed on nothing
     # but 0%/100% in practice (confirmed real bug, 2026-08-30).
     stockpile_pct: float = 0.0
+    # T2 BPC target runs added for integrated special orders, unbuffered
+    # (SPECIAL_ORDERS_INTEGRATION_PLAN.md D6/D10) - already inside
+    # bpc_target_runs above.
+    special_order_runs: int = 0
 
 
 @dataclass
@@ -313,6 +327,16 @@ class AssetPlanJob:
     # this list populated/accurate even in a future fast path that doesn't
     # need it for display; the slot-priority feature depends on it too now.
     blockers: list[AssetPlanBlocker] = field(default_factory=list)
+    # Share of job_runs / runs_ready_now that comes from integrated special
+    # orders (engine.plan_asset_optimized's order pass,
+    # SPECIAL_ORDERS_INTEGRATION_PLAN.md D4/D7); the rest is stock-target
+    # demand. Order runs get readiness and slots first.
+    special_order_runs: int = 0
+    special_order_ready_runs: int = 0
+    # Orders whose demand reaches this job (oldest first), and their notes
+    # in the same order ("" for an order without a note).
+    special_order_ids: list[str] = field(default_factory=list)
+    special_order_notes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -606,13 +630,18 @@ class SpecialOrder:
     See engine.plan_special_order for the computed Buy/Build/Invention
     breakdown, kept separate from this header row (not persisted -
     recomputed on demand, same "last computed plan" convention as the
-    regular Bauliste, see api/routers/production.py)."""
+    regular Bauliste, see api/routers/production.py).
+    `include_in_production`: when True and status is open, the order also
+    feeds the regular Build/Buy and Asset-Optimized lists (see
+    docs/SPECIAL_ORDERS_INTEGRATION_PLAN.md). While integrated,
+    net_against_stock is forced on."""
     order_id: str
     note: Optional[str]
     net_against_stock: bool
     status: str  # "open" | "done"
     created_at: Optional[str]
     item_count: int
+    include_in_production: bool = False
 
 
 @dataclass

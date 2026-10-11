@@ -23,6 +23,12 @@ CREATE TABLE IF NOT EXISTS special_orders (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (tenant_id, order_id)
 );
+-- Special-orders integration (docs/SPECIAL_ORDERS_INTEGRATION_PLAN.md D1):
+-- when true and status='open', the order feeds the regular Build/Buy lists.
+-- ADD COLUMN IF NOT EXISTS so existing installs pick it up without a new
+-- schema file (same idempotent pattern as other ALTERs in this repo).
+ALTER TABLE special_orders
+    ADD COLUMN IF NOT EXISTS include_in_production BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE special_orders ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON special_orders;
 CREATE POLICY tenant_isolation ON special_orders

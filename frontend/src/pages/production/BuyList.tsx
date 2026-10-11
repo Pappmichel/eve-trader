@@ -7,6 +7,7 @@ import { productionApi } from '../../api/client'
 import type { BuyListEntry } from '../../api/types'
 import { DataTable } from '../../components/DataTable'
 import { HintCard } from '../../components/HintCard'
+import { StalePlanAlert } from './StalePlanAlert'
 import { useAction } from '../../hooks/useAction'
 import { isk, qty } from '../../format'
 
@@ -46,6 +47,10 @@ export default function BuyList() {
     ...(showHub ? [{ header: 'Best hub', accessorKey: 'hub_name', size: 100, cell: (i: any) => i.getValue() ?? '–' }] : []),
     { header: 'Quantity', accessorKey: 'quantity', size: 110, cell: (i) => qty(i.getValue()) },
     {
+      header: 'Special order', accessorKey: 'special_order_quantity', size: 130,
+      cell: (i) => ((i.getValue() as number | undefined) ? qty(i.getValue()) : '–'),
+    },
+    {
       header: 'On Hand', accessorKey: 'on_hand_pct', size: 100,
       cell: (i) => {
         const v = i.getValue() as number
@@ -71,10 +76,18 @@ export default function BuyList() {
       </Stack>
     )
   }
-  if (buyList.length === 0) return <HintCard>Nothing to buy - all stock targets are covered.</HintCard>
+  if (buyList.length === 0) {
+    return (
+      <Stack>
+        <StalePlanAlert stale={plan.stale} />
+        <HintCard>Nothing to buy - all stock targets are covered.</HintCard>
+      </Stack>
+    )
+  }
 
   return (
     <Stack>
+      <StalePlanAlert stale={plan.stale} />
       <Group justify="space-between" align="flex-end">
         <Group align="flex-end">
           <Card withBorder padding="sm" w={280}>
