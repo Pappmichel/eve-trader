@@ -36,7 +36,11 @@ Routers and the React Special Orders page must not call `plan_special_order`,
 ### SF-1 — B1 (top-level hangar)
 
 Top-level items of a special order are **never** netted against hangar
-stock. Ordered quantity N always seeds N units of demand.
+stock in the order's own preview (`plan_special_order` /
+`do_compute_special_order` / Combined). Ordered quantity N always seeds N
+units of demand there. **Exception (SF-9):** integrated orders in the
+standing Build / Asset-Optimized lists net top-level quantity against
+current stock including running jobs.
 
 ### SF-2 — Combined preview
 
@@ -55,7 +59,8 @@ or decryptor overrides.
 ### SF-5 — `net_against_stock`
 
 For **combined** preview, `net_against_stock` is a per-call argument. A
-stored per-order flag is used **only** by `do_compute_special_order`.
+stored per-order flag is used by `do_compute_special_order`. Integrated
+orders (SF-9) force this flag on while included.
 
 ### SF-6 — Upsert / remove
 
@@ -68,7 +73,30 @@ plan. `do_remove_special_order_item` errors on unknown type / last item.
 
 ### SF-8 — Shared planner path
 
-API and UI reach the engine only through the actions above.
+API and UI reach the engine only through the actions above (plus
+`plan_production` / `plan_asset_optimized` for the standing lists).
+
+### SF-9 — Integration into standing build lists
+
+An order with `include_in_production` and `status = 'open'` feeds
+`plan_production` and `plan_asset_optimized` next to stock targets
+(`docs/SPECIAL_ORDERS_INTEGRATION_PLAN.md`). While integrated:
+
+- `net_against_stock` is forced on (Prefer-stock checkbox locked).
+- Top-level quantity is netted against `_current_stock` (incl. running
+  jobs); oldest order claims first; stock targets see the remainder.
+- Two planner passes share one stock ledger; the order pass uses
+  `base_runs = {}` (no `component_overbuild`) and ignores `min_margin`.
+- Done or unticked orders behave as today; the order page preview keeps
+  SF-1..SF-8 unchanged.
+
+### SF-10 — Asset-Optimized order priority
+
+In `plan_asset_optimized`, order runs get readiness and slots first.
+With `asset_plan_slot_days_target` set, all order ready runs are queued
+within the target before any stock-target run waits. Marking an order
+`done` after delivery stays manual (`order_progress.ready_to_deliver` is
+a hint only).
 
 ## CURRENT POLICY — missing market prices
 

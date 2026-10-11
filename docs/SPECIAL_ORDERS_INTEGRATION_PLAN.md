@@ -1,8 +1,9 @@
 # Special orders in the regular build workflow - plan
 
-Status: **plan, not started** (2026-10-11). Decisions **[Q1]**..**[Q4]**
-were confirmed with the user on 2026-10-11 (all as recommended, see the end
-of this file).
+Status: **done** (2026-10-11). Decisions **[Q1]**..**[Q4]** were confirmed
+with the user on 2026-10-11 (all as recommended, see the end of this file).
+Implemented on branch `cursor/special-orders-integration-3535` (phases 1–5);
+semantic freeze updates live in `docs/PRODUCTION_SEMANTICS.md` (SF-9, SF-10).
 
 ## Goal
 
