@@ -461,6 +461,7 @@ export interface SpecialOrder {
   status: string // "open" | "done"
   created_at: string | null
   item_count: number
+  include_in_production: boolean
 }
 
 export interface SpecialOrderLineItem {

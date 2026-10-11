@@ -940,7 +940,8 @@ def test_create_special_order_forwards_items_note_and_net_against_stock(monkeypa
     assert resp.status_code == 200
     assert resp.json() == {"order_id": "order-1", "item_count": 1}
     assert captured["kwargs"] == {
-        "items": [{"type_id": 12058, "quantity": 6000.0}], "note": "Customer X", "net_against_stock": True,
+        "items": [{"type_id": 12058, "quantity": 6000.0}], "note": "Customer X",
+        "net_against_stock": True, "include_in_production": False,
     }
 
 
@@ -975,7 +976,8 @@ def test_list_special_orders_serializes_rows(monkeypatch):
     from eve_trader.production.models import SpecialOrder
     monkeypatch.setattr(production_actions, "do_list_special_orders", lambda status=None: [
         SpecialOrder(order_id="order-1", note="Customer X", net_against_stock=True,
-                     status="open", created_at="2026-09-01T00:00:00", item_count=2),
+                     status="open", created_at="2026-09-01T00:00:00", item_count=2,
+                     include_in_production=False),
     ])
 
     resp = client.get("/api/production/special-orders")
@@ -984,6 +986,7 @@ def test_list_special_orders_serializes_rows(monkeypatch):
     assert resp.json() == [{
         "order_id": "order-1", "note": "Customer X", "net_against_stock": True,
         "status": "open", "created_at": "2026-09-01T00:00:00", "item_count": 2,
+        "include_in_production": False,
     }]
 
 
@@ -998,7 +1001,10 @@ def test_update_special_order_forwards_status(monkeypatch):
     resp = client.patch("/api/production/special-orders/order-1", json={"status": "done"})
 
     assert resp.status_code == 200
-    assert captured["kwargs"] == {"order_id": "order-1", "status": "done", "note": None, "net_against_stock": None}
+    assert captured["kwargs"] == {
+        "order_id": "order-1", "status": "done", "note": None,
+        "net_against_stock": None, "include_in_production": None,
+    }
 
 
 def test_remove_special_order(monkeypatch):
@@ -1074,7 +1080,10 @@ def test_update_special_order_forwards_net_against_stock(monkeypatch):
     resp = client.patch("/api/production/special-orders/order-1", json={"net_against_stock": True})
 
     assert resp.status_code == 200
-    assert captured["kwargs"] == {"order_id": "order-1", "status": None, "note": None, "net_against_stock": True}
+    assert captured["kwargs"] == {
+        "order_id": "order-1", "status": None, "note": None,
+        "net_against_stock": True, "include_in_production": None,
+    }
 
 
 def test_set_special_order_item_forwards_type_id_and_quantity(monkeypatch):
@@ -2100,7 +2109,7 @@ def test_production_kpis_returns_counts_only(monkeypatch):
     monkeypatch.setattr(storage, "list_industry_jobs", lambda *a, **k: [("esi-job",)])
     monkeypatch.setattr(storage, "load_manual_industry_jobs", lambda: [("m1",), ("m2",)])
     monkeypatch.setattr(storage, "list_special_orders", lambda: [
-        ("a", None, False, "open", None), ("b", None, False, "done", None),
+        ("a", None, False, "open", None, False), ("b", None, False, "done", None, False),
     ])
     resp = client.get("/api/production/kpis")
     assert resp.status_code == 200

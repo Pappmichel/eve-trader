@@ -894,6 +894,7 @@ class SpecialOrder(_Base):
     status: str
     created_at: Optional[str] = None
     item_count: int
+    include_in_production: bool = False
 
 
 class SpecialOrderLineItem(_Base):

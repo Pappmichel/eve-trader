@@ -200,6 +200,7 @@ function NewOrderForm() {
   const [draftItems, setDraftItems] = useState<DraftItem[]>([newDraftItem()])
   const [note, setNote] = useState('')
   const [netAgainstStock, setNetAgainstStock] = useState(false)
+  const [includeInProduction, setIncludeInProduction] = useState(false)
 
   const createOrder = useAction('Create Special Order', productionApi.createSpecialOrder, SPECIAL_ORDER_KEYS)
 
@@ -213,12 +214,18 @@ function NewOrderForm() {
 
   const handleCreate = () => {
     createOrder.mutate(
-      { items: validItems, note: note.trim() || null, net_against_stock: netAgainstStock },
+      {
+        items: validItems,
+        note: note.trim() || null,
+        net_against_stock: includeInProduction || netAgainstStock,
+        include_in_production: includeInProduction,
+      },
       {
         onSuccess: () => {
           setDraftItems([newDraftItem()])
           setNote('')
           setNetAgainstStock(false)
+          setIncludeInProduction(false)
         },
       },
     )
@@ -229,8 +236,8 @@ function NewOrderForm() {
       <Title order={6} c="dimmed" tt="uppercase" mb="xs">New Special Order</Title>
       <Text size="xs" c="dimmed" mb="sm">
         A one-off order (multiple items allowed) - never added to Stock Targets. Computed independently from the
-        regular Buy/Build list, always in full (no margin gate). Items, quantities, and "prefer stock" stay
-        editable after creation.
+        regular Buy/Build list, always in full (no margin gate). Tick &quot;Include in build lists&quot; to also feed
+        the standing Build / Buy / Asset-Optimized lists. Items, quantities, and flags stay editable after creation.
       </Text>
       <Stack gap="xs">
         {draftItems.map((row) => (
@@ -258,9 +265,29 @@ function NewOrderForm() {
       <Textarea label="Note (optional)" placeholder="Customer / purpose" value={note}
         onChange={(e) => setNote(e.currentTarget.value)} mt="sm" autosize minRows={1} maxRows={3} />
       <Checkbox
-        label="Prefer current stock (net component/material demand against real stock instead of planning from scratch - the ordered quantity itself is always sourced fresh either way)"
-        checked={netAgainstStock} onChange={(e) => setNetAgainstStock(e.currentTarget.checked)} mt="sm"
+        label="Include in build lists (feeds the regular Build / Buy / Asset-Optimized lists while the order is open)"
+        checked={includeInProduction}
+        onChange={(e) => {
+          const on = e.currentTarget.checked
+          setIncludeInProduction(on)
+          if (on) setNetAgainstStock(true)
+        }}
+        mt="sm"
       />
+      <Tooltip
+        label="Required while the order is included in build lists — both plans share one hangar stock ledger."
+        disabled={!includeInProduction}
+        multiline
+        w={280}
+      >
+        <Checkbox
+          label="Prefer current stock (net component/material demand against real stock instead of planning from scratch - the ordered quantity itself is always sourced fresh either way)"
+          checked={includeInProduction || netAgainstStock}
+          disabled={includeInProduction}
+          onChange={(e) => setNetAgainstStock(e.currentTarget.checked)}
+          mt="sm"
+        />
+      </Tooltip>
       <Button mt="sm" onClick={handleCreate} loading={createOrder.isPending} disabled={validItems.length === 0}>
         Create Order
       </Button>
@@ -372,11 +399,15 @@ function OrderDetail({ order }: { order: SpecialOrder }) {
   const setNetAgainstStock = useAction('Save Special Order',
     (netAgainstStock: boolean) => productionApi.updateSpecialOrder(order.order_id, { net_against_stock: netAgainstStock }),
     SPECIAL_ORDER_KEYS)
+  const setIncludeInProduction = useAction('Save Special Order',
+    (include: boolean) => productionApi.updateSpecialOrder(order.order_id, { include_in_production: include }),
+    SPECIAL_ORDER_KEYS)
   const saveNote = useAction('Save Special Order',
     (note: string) => productionApi.updateSpecialOrder(order.order_id, { note: note || null }),
     SPECIAL_ORDER_KEYS)
   const [noteDraft, setNoteDraft] = useState(order.note ?? '')
   const [autoRecompute, setAutoRecompute] = useState(false)
+  const integrated = order.include_in_production && order.status === 'open'
 
   return (
     <Card withBorder mt="sm">
@@ -416,12 +447,37 @@ function OrderDetail({ order }: { order: SpecialOrder }) {
 
       <Checkbox
         mt="sm"
-        label="Prefer current stock (net component/material demand against real stock - the ordered quantity itself is always sourced fresh either way)"
-        checked={order.net_against_stock} disabled={setNetAgainstStock.isPending}
-        onChange={(e) => setNetAgainstStock.mutate(e.currentTarget.checked, {
+        label="Include in build lists"
+        description="While open, this order feeds the regular Build / Buy / Asset-Optimized lists. Recompute those lists to apply."
+        checked={order.include_in_production}
+        disabled={setIncludeInProduction.isPending}
+        onChange={(e) => setIncludeInProduction.mutate(e.currentTarget.checked, {
           onSuccess: () => queryClient.invalidateQueries({ queryKey: ['production', 'special-orders'] }),
         })}
       />
+
+      <Tooltip
+        label="Required while the order is included in build lists — both plans share one hangar stock ledger."
+        disabled={!order.include_in_production}
+        multiline
+        w={280}
+      >
+        <Checkbox
+          mt="sm"
+          label="Prefer current stock (net component/material demand against real stock - the ordered quantity itself is always sourced fresh either way)"
+          checked={order.net_against_stock}
+          disabled={order.include_in_production || setNetAgainstStock.isPending}
+          onChange={(e) => setNetAgainstStock.mutate(e.currentTarget.checked, {
+            onSuccess: () => queryClient.invalidateQueries({ queryKey: ['production', 'special-orders'] }),
+          })}
+        />
+      </Tooltip>
+
+      {integrated && (
+        <Alert color="info" variant="light" mt="sm" title="Included in build lists">
+          Recompute the build lists to apply. Done orders drop out of those lists automatically.
+        </Alert>
+      )}
 
       <Stack mt="md">
         {!result && <HintCard>Click Compute to see the Buy/Build/Invention breakdown for this order.</HintCard>}
@@ -505,6 +561,10 @@ export default function SpecialOrders() {
       cell: (i) => <Badge color={i.getValue() === 'done' ? 'gray' : 'accent'} variant="light">{i.getValue()}</Badge>,
     },
     {
+      header: 'In Build Lists', accessorKey: 'include_in_production', size: 130,
+      cell: (i) => (i.getValue() ? <Badge color="accent" variant="light">Yes</Badge> : '–'),
+    },
+    {
       header: 'Prefers Stock', accessorKey: 'net_against_stock', size: 130,
       cell: (i) => (i.getValue() ? <Badge color="info" variant="light">Yes</Badge> : '–'),
     },
@@ -552,9 +612,17 @@ export default function SpecialOrders() {
 
   const expandedOrder = orders?.find((o) => o.order_id === expandedId) ?? null
 
+  const hasIntegratedOpen = (orders ?? []).some((o) => o.include_in_production && o.status === 'open')
+
   return (
     <Stack>
       <NewOrderForm />
+
+      {hasIntegratedOpen && (
+        <Alert color="info" variant="light" title="Orders included in build lists">
+          Recompute the Build List and Asset-Optimized list to apply inclusion, item, or status changes.
+        </Alert>
+      )}
 
       <Group justify="space-between" align="flex-end" mb="xs">
         <Text size="xs" c="dimmed">Select 2 or more orders to combine them into a temporary preview.</Text>

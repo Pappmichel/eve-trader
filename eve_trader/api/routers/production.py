@@ -45,6 +45,21 @@ def _tenant_key() -> str:
     return tenant_id
 
 
+def _invalidate_cached_plans() -> None:
+    """D9: drop this tenant's cached Build / Asset-Optimized plans so the
+    next GET shows the existing "No computation yet" recompute hint.
+    No-op when no ambient tenant is set (CLI / unit tests without a
+    request scope) — those have no router cache entry to clear."""
+    tenant_id = storage.get_current_tenant()
+    if tenant_id is None:
+        return
+    _last_plan.pop(tenant_id, None)
+    _last_asset_plan.pop(tenant_id, None)
+
+
+actions.register_plan_cache_invalidator(_invalidate_cached_plans)
+
+
 def _wrap(fn, **kwargs):
     try:
         return fn(**kwargs)
@@ -852,12 +867,14 @@ class CreateSpecialOrderRequest(BaseModel):
     items: list[SpecialOrderItemInput]
     note: Optional[str] = None
     net_against_stock: bool = False
+    include_in_production: bool = False
 
 
 @router.post("/special-orders")
 def create_special_order(req: CreateSpecialOrderRequest):
     return _wrap(actions.do_create_special_order, items=[i.model_dump(exclude_none=True) for i in req.items],
-                 note=req.note, net_against_stock=req.net_against_stock)
+                 note=req.note, net_against_stock=req.net_against_stock,
+                 include_in_production=req.include_in_production)
 
 
 @router.get("/special-orders", response_model=list[schemas.SpecialOrder])
@@ -901,6 +918,7 @@ class UpdateSpecialOrderRequest(BaseModel):
     status: Optional[str] = None
     note: Optional[str] = None
     net_against_stock: Optional[bool] = None
+    include_in_production: Optional[bool] = None
 
 
 @router.patch("/special-orders/{order_id}")

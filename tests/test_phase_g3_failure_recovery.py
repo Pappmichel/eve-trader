@@ -69,7 +69,7 @@ def test_injected_failure_after_header_rolls_back(order_sde, monkeypatch):
     snapshot_events = storage.list_special_order_events()
     fake_id = "99999999-9999-9999-9999-999999999901"
 
-    def exploding(note, net_against_stock, items):
+    def exploding(note, net_against_stock, items, include_in_production=False):
         with storage.batch_session():
             with storage.connect() as conn:
                 conn.execute(

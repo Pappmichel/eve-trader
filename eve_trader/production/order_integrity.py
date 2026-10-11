@@ -17,7 +17,8 @@ def audit() -> list[dict]:
     """
     issues: list[dict] = []
     headers = {str(row[0]) for row in storage.list_special_orders()}
-    for order_id, _note, _net, _status, _created in storage.list_special_orders():
+    for order_id, _note, net_against_stock, _status, _created, include_in_production in (
+            storage.list_special_orders()):
         oid = str(order_id)
         items = storage.list_special_order_items(oid)
         if not items:
@@ -25,6 +26,14 @@ def audit() -> list[dict]:
                 "kind": "empty_order",
                 "order_id": oid,
                 "detail": "header has no line items",
+            })
+        # Integrated orders always net against stock (D2) — flag a drift if
+        # something wrote include_in_production without that companion flag.
+        if include_in_production and not net_against_stock:
+            issues.append({
+                "kind": "integrated_without_net_against_stock",
+                "order_id": oid,
+                "detail": "include_in_production is set but net_against_stock is false",
             })
         for type_id, type_name, quantity in items:
             if quantity <= 0:

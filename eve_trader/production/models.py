@@ -606,13 +606,18 @@ class SpecialOrder:
     See engine.plan_special_order for the computed Buy/Build/Invention
     breakdown, kept separate from this header row (not persisted -
     recomputed on demand, same "last computed plan" convention as the
-    regular Bauliste, see api/routers/production.py)."""
+    regular Bauliste, see api/routers/production.py).
+    `include_in_production`: when True and status is open, the order also
+    feeds the regular Build/Buy and Asset-Optimized lists (see
+    docs/SPECIAL_ORDERS_INTEGRATION_PLAN.md). While integrated,
+    net_against_stock is forced on."""
     order_id: str
     note: Optional[str]
     net_against_stock: bool
     status: str  # "open" | "done"
     created_at: Optional[str]
     item_count: int
+    include_in_production: bool = False
 
 
 @dataclass
