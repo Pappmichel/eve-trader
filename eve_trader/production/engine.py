@@ -896,6 +896,7 @@ def _invention_need_row(type_id: int, type_name: str, activity: str,
                         home: dict, jita: dict, selected_decryptors: dict[int, str],
                         t2_memo: dict[int, tuple[float, float, Optional[str], Optional[InventionResult]]],
                         bpc_buffer_multiplier: float = 1.0,
+                        extra_target_quantity: float = 0.0,
                         ) -> Optional[InventionNeedRow]:
     """One InventionNeedRow for a Tech II/III product, or None if it isn't
     invention-sourced. Reuses `_tech_ii_mods`' chosen InventionResult
@@ -914,6 +915,15 @@ def _invention_need_row(type_id: int, type_name: str, activity: str,
     the ordered quantity. With multiplier 1.0 and
     stockpile_quantity == missing, t2_bpc_target_runs is the order's own
     manufacturing runs.
+
+    `extra_target_quantity` is integrated special-order demand for the same
+    item (SPECIAL_ORDERS_INTEGRATION_PLAN.md D6/D10): its manufacturing runs
+    are added to the T2 target *after* the buffered stock-target formula,
+    unbuffered, so one row carries the combined target and owned/in-progress
+    BPC runs are subtracted once. An order-only item passes missing=0,
+    stockpile_quantity=0 and its order quantity here. The same runs, as T1
+    invention runs, are added to t1_bpc_target_runs; special_order_runs
+    reports them.
 
     This is the only constructor of InventionNeedRow in production code
     (SF-7). CLI, API routers, and the frontend must not invent a second
@@ -947,7 +957,8 @@ def _invention_need_row(type_id: int, type_name: str, activity: str,
     # recommended_invention_runs/stockpile_pct all derive from the same
     # target. Before, runs_needed showed the bare shortfall (0 for a stocked
     # item) next to 517 recommended runs sized from the buffer.
-    t2_bpc_target_runs = max(shortfall_runs, math.ceil(bpc_buffer_multiplier * base_target_runs))
+    extra_runs = math.ceil(extra_target_quantity / product_qty) if extra_target_quantity > 0 else 0
+    t2_bpc_target_runs = max(shortfall_runs, math.ceil(bpc_buffer_multiplier * base_target_runs)) + extra_runs
     runs_needed = max(0, t2_bpc_target_runs - t2_bpc_covered)
     bpcs_needed = math.ceil(runs_needed / chosen.output_runs) if runs_needed > 0 else 0
     recommended_runs = math.ceil(bpcs_needed / chosen.probability) if bpcs_needed > 0 else 0
@@ -957,7 +968,9 @@ def _invention_need_row(type_id: int, type_name: str, activity: str,
     base_bpcs_needed = math.ceil(base_target_runs / chosen.output_runs) if base_target_runs > 0 else 0
     base_t1_invention_runs = (
         math.ceil(base_bpcs_needed / chosen.probability) if base_bpcs_needed > 0 else 0)
-    t1_bpc_target_runs = math.ceil(bpc_buffer_multiplier * base_t1_invention_runs)
+    extra_bpcs = math.ceil(extra_runs / chosen.output_runs) if extra_runs > 0 else 0
+    extra_t1_runs = math.ceil(extra_bpcs / chosen.probability) if extra_bpcs > 0 else 0
+    t1_bpc_target_runs = math.ceil(bpc_buffer_multiplier * base_t1_invention_runs) + extra_t1_runs
     # Owning BPC runs against a zero configured target must not collapse to
     # a hardcoded 0% (same class of bug as backup_stock=0 hiding a real
     # market-listing target, 2026-08-31): the row is still on the Invention
@@ -979,6 +992,7 @@ def _invention_need_row(type_id: int, type_name: str, activity: str,
         t2_bpc_owned=t2_bpc_owned, t2_bpc_in_progress=t2_bpc_in_progress,
         stockpile_pct=stockpile_pct,
         bpc_target_runs=t2_bpc_target_runs, t1_bpc_target_runs=t1_bpc_target_runs,
+        special_order_runs=extra_runs,
     )
 
 
@@ -2158,6 +2172,75 @@ def _build_build_list(build_runs: dict[tuple[int, int, int], int], cost_memo: di
     return build_list
 
 
+def _claim_integrated_order_demand(
+    manual_stock: dict[int, float], cfg: ProductionConfig,
+    rows: Optional[list[tuple]] = None,
+) -> tuple[dict[int, float], dict[int, str], dict[int, float], list[dict]]:
+    """Top-level demand of integrated special orders (include_in_production
+    and open, SPECIAL_ORDERS_INTEGRATION_PLAN.md D3/D13), netted against
+    _current_stock (running jobs included) before any stock target sees it.
+    Lines are claimed in storage.list_integrated_special_order_items order
+    (oldest order first), each taking min(ordered, stock left after earlier
+    claims).
+
+    Returns (order_seed, type_names, reserved, claim_rows):
+    - order_seed: {type_id: quantity still to plan}, only types with > 0.
+    - type_names: {type_id: type_name} for every claimed type.
+    - reserved: {type_id: units claimed from stock}; callers add this to
+      their stock ledger so neither a stock target nor a deeper material
+      reach counts the same units again.
+    - claim_rows: one dict per line item (order_id, note, type_id,
+      type_name, ordered, covered, remaining), for per-order progress.
+
+    `rows` lets a caller that already read the integrated items pass them in.
+    plan_special_order does not use this - its own preview keeps SF-1."""
+    if rows is None:
+        rows = storage.list_integrated_special_order_items()
+    order_seed: dict[int, float] = {}
+    type_names: dict[int, str] = {}
+    reserved: dict[int, float] = {}
+    claim_rows: list[dict] = []
+    stock_by_type: dict[int, float] = {}
+    for order_id, note, type_id, type_name, quantity in rows:
+        ordered = float(quantity or 0.0)
+        type_names[type_id] = type_name
+        if type_id not in stock_by_type:
+            _, bp = classify_activity(type_id)
+            stock_by_type[type_id] = _current_stock(type_id, manual_stock, cfg, bp)
+        left = max(0.0, stock_by_type[type_id] - reserved.get(type_id, 0.0))
+        covered = min(max(0.0, ordered), left)
+        remaining = max(0.0, ordered - covered)
+        if covered > 0:
+            reserved[type_id] = reserved.get(type_id, 0.0) + covered
+        if remaining > 0:
+            order_seed[type_id] = order_seed.get(type_id, 0.0) + remaining
+        claim_rows.append({
+            "order_id": str(order_id), "note": note, "type_id": type_id, "type_name": type_name,
+            "ordered": ordered, "covered": covered, "remaining": remaining,
+        })
+    return order_seed, type_names, reserved, claim_rows
+
+
+def _annotate_special_order_quantities(buy_list: list[BuyListEntry], build_list: list[BuildJobEntry],
+                                        order_buy: dict[int, float],
+                                        order_runs: dict[tuple[int, int, int], int]) -> None:
+    """Sets special_order_quantity on Build/Buy List rows from the order
+    pass's own totals (SPECIAL_ORDERS_INTEGRATION_PLAN.md D8), capped at the
+    row's quantity."""
+    for entry in buy_list:
+        share = order_buy.get(entry.type_id, 0.0)
+        if share > 0:
+            entry.special_order_quantity = min(entry.quantity, share)
+    runs_by_job: dict[tuple[int, int], int] = {}
+    for (blueprint_id, _activity_id, product_type_id), runs in order_runs.items():
+        runs_by_job[(blueprint_id, product_type_id)] = runs_by_job.get((blueprint_id, product_type_id), 0) + runs
+    for entry in build_list:
+        runs = runs_by_job.get((entry.blueprint_type_id, entry.type_id), 0)
+        if runs > 0 and entry.job_runs > 0:
+            product_qty = entry.quantity / entry.job_runs
+            entry.special_order_quantity = min(entry.quantity, runs * product_qty)
+
+
 @storage.with_batch_session()
 def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     """Runs the full Stock Targets -> Inventory -> Buy/Build pipeline. Returns
@@ -2191,11 +2274,32 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     Logistics' T1 BPC table already covers them. See
     _merge_invention_inputs_into_buy_totals.
 
+    Integrated special orders (include_in_production and open,
+    docs/SPECIAL_ORDERS_INTEGRATION_PLAN.md D3-D6, D8, D10, D12, D13) are
+    planned next to the stock targets:
+    - Their top-level quantity is netted against _current_stock first,
+      oldest order first (_claim_integrated_order_demand); a stock target for
+      the same item sees only what is left (InventoryRow.current_stock) and
+      reports the claim as reserved_for_orders.
+    - Demand runs through two _expand_all passes sharing one stock ledger:
+      the order pass first with base_runs={} (no overbuild buffer anywhere
+      below order demand), then the stock-target pass with today's buffer.
+      Runs are rounded up per pass, so an item both need can get one extra
+      run.
+    - Order demand skips the min_margin gate.
+    - A Tech II item gets one invention row; order runs are added to the
+      buffered stock-target BPC target unbuffered (special_order_runs).
+    - Build/Buy List rows carry special_order_quantity from the order pass;
+      'order_progress' lists each line item's claim (order_id, note,
+      type_id, type_name, ordered, covered, remaining).
+    With no integrated order everything above is a no-op.
+
     Track B (2026-09-11): HTTP entry is do_refresh_production — see that
     docstring for the live timing and why this was not moved onto
     pipeline_runner. Do not hang a progress_callback on _PlanContext /
     _expand_all; those are shared with other callers."""
-    ctx = _PlanContext(cfg)
+    integrated_rows = storage.list_integrated_special_order_items()
+    ctx = _PlanContext(cfg, extra_type_ids=[row[2] for row in integrated_rows])
     stock_targets, manual_stock, manual_overrides, selected_decryptors = (
         ctx.stock_targets, ctx.manual_stock, ctx.manual_overrides, ctx.selected_decryptors)
     home, jita, cost_indices, adjusted_prices = ctx.home, ctx.jita, ctx.cost_indices, ctx.adjusted_prices
@@ -2223,23 +2327,38 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     # today's snapshot).
     base_runs = _base_runs(cfg, home, jita, manual_overrides, cost_memo, selected_decryptors, t2_memo,
                             cost_indices, adjusted_prices, stock_targets, alchemy_memo)
-    seed_missing: dict[int, float] = {}
+    target_seed: dict[int, float] = {}
     # {type_id: total pre-stock/pre-listing target}, for the Buy List's "on
     # hand %" column (see _expand_all's gross_demand param) - seeded here
     # with each top-level stock target's own raw backup+home+Jita target
     # (missing's ancestor, before _total_missing's netting), since
     # _expand_all only tracks this for materials reached via recursion, not
-    # for the initial seed_missing entries themselves.
+    # for the initial seed entries themselves.
     gross_demand: dict[int, float] = {}
+
+    # Integrated orders claim finished units first (D3/D13); the claimed
+    # units go into stock_used so no later reach of the same type_id counts
+    # them again.
+    order_seed, order_type_names, reserved, order_progress = _claim_integrated_order_demand(
+        manual_stock, cfg, integrated_rows)
+    for type_id, qty in reserved.items():
+        stock_used[type_id] = stock_used.get(type_id, 0.0) + qty
+    for row in order_progress:
+        gross_demand[row["type_id"]] = gross_demand.get(row["type_id"], 0.0) + row["ordered"]
+    # Order quantity not yet folded into a stock target's invention row.
+    invention_order_qty = dict(order_seed)
 
     for type_id, type_name, backup_stock, home_market_stock, jita_market_stock in stock_targets:
         activity, bp = classify_activity(type_id)
         current_stock = _current_stock(type_id, manual_stock, cfg, bp)
-        missing = _total_missing(type_id, backup_stock, home_market_stock, jita_market_stock, current_stock, cfg)
-        stock_used[type_id] = stock_used.get(type_id, 0.0) + min(current_stock, backup_stock)
+        reserved_here = reserved.get(type_id, 0.0)
+        available = max(0.0, current_stock - reserved_here)
+        missing = _total_missing(type_id, backup_stock, home_market_stock, jita_market_stock, available, cfg)
+        stock_used[type_id] = stock_used.get(type_id, 0.0) + min(available, backup_stock)
         inventory.append(InventoryRow(
             type_id=type_id, type_name=type_name, activity=activity,
-            backup_stock=backup_stock, current_stock=current_stock, total_missing=missing,
+            backup_stock=backup_stock, current_stock=available, total_missing=missing,
+            reserved_for_orders=reserved_here,
         ))
 
         # Every configured Tech II stock target gets an invention-needs row,
@@ -2249,11 +2368,13 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
         # invent enough BPCs for this stock target"), not just today's
         # Bauliste (see plan_production docstring). Stockpile % is against
         # backup+home+Jita (not backup_stock alone) - see _invention_need_row.
+        # An integrated order for the same item joins this row (D10).
         invention_row = _invention_need_row(
             type_id, type_name, activity, bp, missing,
             backup_stock + (home_market_stock or 0) + (jita_market_stock or 0),
             cfg, home, jita, selected_decryptors, t2_memo,
             bpc_buffer_multiplier=cfg.bpc_inventory,
+            extra_target_quantity=invention_order_qty.pop(type_id, 0.0),
         )
         if invention_row is not None:
             invention_list.append(invention_row)
@@ -2285,9 +2406,25 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
                     skip_due_to_margin = True
 
             if not skip_due_to_margin:
-                seed_missing[type_id] = missing
+                target_seed[type_id] = missing
                 gross_demand[type_id] = gross_demand.get(type_id, 0.0) + (
                     backup_stock + (home_market_stock or 0.0) + (jita_market_stock or 0.0))
+
+    # Order-only Tech II items: their invention row invents exactly the
+    # ordered quantity (D6).
+    for type_id, qty in invention_order_qty.items():
+        activity, bp = classify_activity(type_id)
+        invention_row = _invention_need_row(
+            type_id, order_type_names.get(type_id, str(type_id)), activity, bp, 0.0, 0.0,
+            cfg, home, jita, selected_decryptors, t2_memo,
+            bpc_buffer_multiplier=1.0, extra_target_quantity=qty,
+        )
+        if invention_row is not None:
+            invention_list.append(invention_row)
+    # No margin gate on order demand (D5): an order is delivered either way.
+    for type_id in order_seed:
+        _unit_cost(type_id, cfg, home, jita, cost_memo, selected_decryptors, t2_memo, cost_indices,
+                    adjusted_prices, 0, alchemy_memo)
 
     # Byproduct discovery pass: alchemy jobs drop a second material out of
     # their reprocess step (Mercury, Hafnium, ...) that really does offset
@@ -2301,18 +2438,33 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     # pre-pass feeding the real pass" shape _base_runs above already uses.
     # One pass, not an iterated fixed point - a deliberate approximation
     # (the overlay can only shrink demand, so a second round would at most
-    # shave a little more off).
+    # shave a little more off). Runs on the combined order + stock-target
+    # seed.
     byproduct_stock: dict[int, float] = {}
     if any(alchemy_memo.values()):
-        _, provisional_runs = _expand_all(seed_missing, cfg, home, jita, manual_overrides, cost_memo,
+        combined_seed = dict(target_seed)
+        for type_id, qty in order_seed.items():
+            combined_seed[type_id] = combined_seed.get(type_id, 0.0) + qty
+        _, provisional_runs = _expand_all(combined_seed, cfg, home, jita, manual_overrides, cost_memo,
                                            selected_decryptors, t2_memo, manual_stock, dict(stock_used), base_runs,
                                            cost_indices=cost_indices, alchemy_memo=alchemy_memo)
         byproduct_stock = _alchemy_byproduct_stock(provisional_runs, cost_indices)
 
-    buy_totals, build_runs = _expand_all(seed_missing, cfg, home, jita, manual_overrides, cost_memo,
+    # Two passes over one stock ledger (D4): orders first with an empty
+    # base_runs, so nothing below order demand gets an overbuild buffer, then
+    # the stock targets with today's buffer against whatever stock is left.
+    order_buy, order_runs = _expand_all(order_seed, cfg, home, jita, manual_overrides, cost_memo,
+                                        selected_decryptors, t2_memo, manual_stock, stock_used, {},
+                                        gross_demand, cost_indices=cost_indices, alchemy_memo=alchemy_memo,
+                                        byproduct_stock=byproduct_stock)
+    buy_totals, build_runs = _expand_all(target_seed, cfg, home, jita, manual_overrides, cost_memo,
                                           selected_decryptors, t2_memo, manual_stock, stock_used, base_runs,
                                           gross_demand, cost_indices=cost_indices, alchemy_memo=alchemy_memo,
                                           byproduct_stock=byproduct_stock)
+    for type_id, qty in order_buy.items():
+        buy_totals[type_id] = buy_totals.get(type_id, 0.0) + qty
+    for key, runs in order_runs.items():
+        build_runs[key] = build_runs.get(key, 0) + runs
 
     # After _expand_all so stock_used already records manufacturing
     # consumption, and before _build_buy_list so Sorting's persisted pot
@@ -2322,6 +2474,7 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 
     buy_list = _build_buy_list(buy_totals, gross_demand, cfg, home, jita)
     build_list = _build_build_list(build_runs, cost_memo, t2_memo, cfg, home, cost_indices, adjusted_prices)
+    _annotate_special_order_quantities(buy_list, build_list, order_buy, order_runs)
 
     invention_list.sort(key=lambda e: e.recommended_invention_runs, reverse=True)
 
@@ -2334,7 +2487,8 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     storage.save_latest_buy_list([(e.type_id, e.quantity) for e in buy_list])
 
     return {"inventory": inventory, "buy_list": buy_list, "build_list": build_list, "invention_list": invention_list,
-            "adjusted_prices_available": ctx.adjusted_prices_available}
+            "adjusted_prices_available": ctx.adjusted_prices_available,
+            "order_progress": order_progress}
 
 
 @storage.with_batch_session()
@@ -4090,10 +4244,14 @@ def market_restock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[MarketRest
       intake included - it is already there, nothing to haul).
     - Stock elsewhere honours cfg.stock_hangar_flags, same as
       _stock_on_hand, and counts only physical stock (no running jobs).
-    - backup_stock is reserved first, preferably from stock that is never
-      hauled anyway: manual stock with no location and non-pickup
-      locations, then the smallest pickup stacks, then C-J itself (which
-      then no longer counts toward the market).
+    - Units ordered by integrated special orders (SPECIAL_ORDERS_
+      INTEGRATION_PLAN.md D11) and backup_stock are reserved first,
+      preferably from stock that is never hauled anyway: manual stock with
+      no location and non-pickup locations, then the smallest pickup
+      stacks, then C-J itself (which then no longer counts toward the
+      market). The full ordered quantity is reserved: only physical stock
+      is seen here, so this keeps every unit the order could take from a
+      hangar, however much of its D3 claim running jobs cover.
     - short = max(0, home_target - listed - usable C-J stock), filled from
       the largest remaining pickup stacks first (fewest pickups).
 
@@ -4124,6 +4282,9 @@ def market_restock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[MarketRest
         if cfg.stock_hangar_flags else all_hangars
     )
     manual = storage.manual_stock_by_location_bulk(type_ids)
+    ordered: dict[int, float] = {}
+    for _order_id, _note, type_id, _type_name, quantity in storage.list_integrated_special_order_items():
+        ordered[type_id] = ordered.get(type_id, 0.0) + float(quantity or 0.0)
 
     per_item: list[tuple[int, str, float, float, float, float, dict[int, float]]] = []
     for type_id, type_name, backup_stock, home_target, _jita_target in targets:
@@ -4137,7 +4298,7 @@ def market_restock(cfg: ProductionConfig = PRODUCTION_CONFIG) -> list[MarketRest
             if location_id != home and qty > 0:
                 sources[location_id] = sources.get(location_id, 0.0) + qty
 
-        reserve = backup_stock or 0.0
+        reserve = ordered.get(type_id, 0.0) + (backup_stock or 0.0)
         reserve_order = sorted(sources, key=lambda loc: (loc in pickup_locations, sources[loc]))
         for location_id in reserve_order:
             if reserve <= 0:

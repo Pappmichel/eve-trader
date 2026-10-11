@@ -923,6 +923,37 @@ def test_plan_is_isolated_per_tenant(monkeypatch):
     assert resp.status_code == 400
 
 
+def test_plan_serializes_special_order_fields(monkeypatch):
+    # SPECIAL_ORDERS_INTEGRATION_PLAN.md D8/D12/D16: the cached plan keeps
+    # the order attribution, the reservation and order_progress.
+    from eve_trader.production.models import BuildJobEntry, BuyListEntry, InventoryRow
+    progress = [{"order_id": "o1", "note": "Customer", "type_id": 10, "type_name": "Ship",
+                 "ordered": 2.0, "covered": 1.0, "remaining": 1.0}]
+    monkeypatch.setattr(production_actions, "do_refresh_production", lambda: {
+        "plan": {
+            "inventory": [InventoryRow(type_id=10, type_name="Ship", activity="Tech I", backup_stock=3,
+                                       current_stock=0, total_missing=3, reserved_for_orders=1)],
+            "buy_list": [BuyListEntry(type_id=34, type_name="Tritanium", quantity=50, unit_price=None,
+                                      total_price=None, special_order_quantity=20)],
+            "build_list": [BuildJobEntry(type_id=10, type_name="Ship", blueprint_type_id=110,
+                                         activity="Manufacturing", quantity=4, job_runs=4,
+                                         job_time_seconds=1.0, unit_build_cost=None,
+                                         special_order_quantity=1)],
+            "invention_list": [], "adjusted_prices_available": True, "order_progress": progress,
+        },
+        "stock_targets": 1, "missing_types": 1, "buy_entries": 1, "build_jobs": 1,
+    })
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-orders")
+
+    assert client.post("/api/production/plan/refresh").status_code == 200
+    plan = client.get("/api/production/plan").json()
+
+    assert plan["inventory"][0]["reserved_for_orders"] == 1.0
+    assert plan["buy_list"][0]["special_order_quantity"] == 20.0
+    assert plan["build_list"][0]["special_order_quantity"] == 1.0
+    assert plan["order_progress"] == progress
+
+
 # ------------------------------------------------------------ special orders
 def test_create_special_order_forwards_items_note_and_net_against_stock(monkeypatch):
     captured = {}

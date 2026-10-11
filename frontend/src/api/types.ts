@@ -319,6 +319,7 @@ export interface InventoryRow {
   backup_stock: number
   current_stock: number
   total_missing: number
+  reserved_for_orders?: number
 }
 
 export interface BuyListEntry {
@@ -332,6 +333,7 @@ export interface BuyListEntry {
   hub_region_id?: number | null
   hub_name?: string | null
   category: string | null
+  special_order_quantity?: number
 }
 
 export interface BuildJobEntry {
@@ -349,6 +351,7 @@ export interface BuildJobEntry {
   job_cost: number | null
   margin: number | null
   recipe_source: string | null
+  special_order_quantity?: number
 }
 
 export interface LogisticsRow {
@@ -528,6 +531,7 @@ export interface InventionNeedRow {
   stockpile_pct: number
   bpc_target_runs: number
   t1_bpc_target_runs: number
+  special_order_runs?: number
 }
 
 export interface T1BpcInventionNeedRow {
@@ -714,6 +718,17 @@ export interface ProductionPlan {
   // adjusted-price fetch failed this run, so every BuildJobEntry.job_cost
   // above silently reads 0 rather than its real value.
   adjusted_prices_available: boolean
+  order_progress?: OrderProgressRow[]
+}
+
+export interface OrderProgressRow {
+  order_id: string
+  note: string | null
+  type_id: number
+  type_name: string
+  ordered: number
+  covered: number
+  remaining: number
 }
 
 export interface ProductionSettings {

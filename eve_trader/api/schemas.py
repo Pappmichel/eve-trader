@@ -170,6 +170,7 @@ class InventoryRow(_Base):
     backup_stock: float
     current_stock: float
     total_missing: float
+    reserved_for_orders: float = 0.0
 
 
 class BuyListEntry(_Base):
@@ -183,6 +184,7 @@ class BuyListEntry(_Base):
     hub_region_id: Optional[int] = None
     hub_name: Optional[str] = None
     category: Optional[str] = None
+    special_order_quantity: float = 0.0
 
 
 class BuildJobEntry(_Base):
@@ -200,6 +202,7 @@ class BuildJobEntry(_Base):
     job_cost: Optional[float] = None
     margin: Optional[float] = None
     recipe_source: Optional[str] = None
+    special_order_quantity: float = 0.0
 
 
 class LogisticsRow(_Base):
@@ -324,6 +327,7 @@ class InventionNeedRow(_Base):
     stockpile_pct: float
     bpc_target_runs: int = 0
     t1_bpc_target_runs: int = 0
+    special_order_runs: int = 0
 
 
 class T1BpcInventionNeedRow(_Base):
@@ -870,6 +874,16 @@ class ErrorLogRow(_Base):
 
 
 # ------------------------------------------------------------ plan payloads
+class OrderProgressRow(BaseModel):
+    order_id: str
+    note: Optional[str] = None
+    type_id: int
+    type_name: str
+    ordered: float
+    covered: float
+    remaining: float
+
+
 class ProductionPlan(BaseModel):
     inventory: list[InventoryRow]
     buy_list: list[BuyListEntry]
@@ -880,6 +894,9 @@ class ProductionPlan(BaseModel):
     # above silently reads 0 rather than its real value - see
     # production/engine.py's _PlanContext for the root cause.
     adjusted_prices_available: bool = True
+    # Per integrated special-order line item: units claimed from stock and
+    # what is left to plan (SPECIAL_ORDERS_INTEGRATION_PLAN.md D3/D16).
+    order_progress: list[OrderProgressRow] = []
 
 
 class AssetPlan(BaseModel):

@@ -839,6 +839,7 @@ def refresh_production():
         "build_list": plan["build_list"],
         "invention_list": plan["invention_list"],
         "adjusted_prices_available": plan["adjusted_prices_available"],
+        "order_progress": plan.get("order_progress", []),
     }
     return {
         "stock_targets": result["stock_targets"],

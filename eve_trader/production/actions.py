@@ -649,7 +649,7 @@ def do_refresh_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     / discover / item_margin_detail)."""
     if sum(storage.sde_row_counts().values()) == 0:
         raise ActionError("SDE cache is empty. Run 'Refresh SDE' first.")
-    if not storage.load_stock_targets():
+    if not storage.load_stock_targets() and not storage.list_integrated_special_order_items():
         raise ActionError("No stock targets configured.")
     plan = plan_production(cfg)
     return {

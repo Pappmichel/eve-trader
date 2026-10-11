@@ -23,6 +23,11 @@ def _reset_cache():
     jita_price_cache._updated_at = None
 
 
+@pytest.fixture(autouse=True)
+def _no_integrated_orders(monkeypatch):
+    monkeypatch.setattr(storage, "list_integrated_special_order_items", lambda: [])
+
+
 def _fake_enter_tenant(jita_region_id: int = 10000002):
     # Same stand-in tenant_scope.enter_tenant already used by
     # tests/test_scheduler.py - resolves TRADING_CONFIG via a direct
@@ -110,6 +115,29 @@ def test_refresh_prices_the_union_of_every_tenants_structural_material_closure(m
     assert cached[587].sell == 100.0
     assert cached[588].sell == 200.0
     assert jita_price_cache.last_updated_at() is not None
+
+
+def test_refresh_also_prices_integrated_special_order_closure(monkeypatch):
+    # SPECIAL_ORDERS_INTEGRATION_PLAN.md D14: plan_production prices
+    # integrated order items, so the shared cache must cover them too.
+    monkeypatch.setattr(storage, "list_tenants", lambda: [(storage.DEFAULT_TENANT_ID, "Default", None)])
+    monkeypatch.setattr(storage, "load_stock_targets", lambda: [(587, "Rifter", 10, 0, 0)])
+    monkeypatch.setattr(storage, "list_integrated_special_order_items",
+                        lambda: [("o1", None, 24692, "Abaddon", 1.0)])
+    monkeypatch.setattr(tenant_scope, "enter_tenant", _fake_enter_tenant())
+    monkeypatch.setattr(engine, "_structural_material_closure",
+                        lambda seed_type_ids: {x for t in seed_type_ids for x in (t, t * 10)})
+    seen = {}
+
+    def _fetch(self, region_id, type_ids):
+        seen["type_ids"] = sorted(type_ids)
+        return {t: OrderStats(sell_percentile=1.0, sell_volume=1.0, buy_percentile=1.0, buy_volume=1.0)
+                for t in type_ids}
+    monkeypatch.setattr(ESIClient, "region_order_stats_bulk", _fetch)
+
+    jita_price_cache.refresh_jita_price_cache()
+
+    assert seen["type_ids"] == [587, 5870, 24692, 246920]
 
 
 def test_refresh_replaces_the_cache_wholesale(monkeypatch):

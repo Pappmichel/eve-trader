@@ -3412,7 +3412,7 @@ def test_plan_asset_optimized_days_to_complete_none_when_no_slots_or_ineligible(
 # ------------------------------------------------------------- plan_production
 def _make_fake_plan_context(stock_targets, manual_stock=None):
     class _FakeCtx:
-        def __init__(self, cfg):
+        def __init__(self, cfg, extra_type_ids=()):
             self.stock_targets = stock_targets
             self.manual_stock = manual_stock or {}
             self.manual_overrides = {}
@@ -3541,7 +3541,7 @@ def test_plan_production_build_list_includes_job_cost(monkeypatch, tenant):
     ctx_cls = _make_fake_plan_context(stock_targets)
     real_init = ctx_cls.__init__
 
-    def fake_init(self, cfg):
+    def fake_init(self, cfg, extra_type_ids=()):
         real_init(self, cfg)
         self.adjusted_prices = {99: 1000.0}
     monkeypatch.setattr(ctx_cls, "__init__", fake_init)
@@ -3897,7 +3897,7 @@ def test_plan_production_manual_override_bypasses_the_margin_gate(monkeypatch, t
     ctx_cls = _make_fake_plan_context(stock_targets)
 
     class _FakeCtxWithOverride(ctx_cls):
-        def __init__(self, cfg):
+        def __init__(self, cfg, extra_type_ids=()):
             super().__init__(cfg)
             self.manual_overrides = {20: "Build"}
 
@@ -5656,7 +5656,7 @@ def _install_alchemy_plan_sde(monkeypatch):
 
 def _install_alchemy_plan_context(monkeypatch, home, cost_indices):
     class _FakeCtx:
-        def __init__(self, cfg):
+        def __init__(self, cfg, extra_type_ids=()):
             self.stock_targets = [
                 (_CAESARIUM, "Caesarium Cadmide", 38, 0, 0),
                 (_WIDGET, "Widget", 1, 0, 0),
@@ -5916,11 +5916,14 @@ HOME = 3000
 
 
 def _stub_market_restock(monkeypatch, targets, esi, manual=None, listed=0.0, manual_listed=0.0,
-                         esi_filtered=None, category_locations=None, location_options=None):
+                         esi_filtered=None, category_locations=None, location_options=None,
+                         integrated_orders=None):
     """targets: [(type_id, name, backup, home_target, jita_target)];
     esi/esi_filtered/manual: {type_id: {location_id: qty}}. Pickup locations
-    default to 1001/1002 as active category stations."""
+    default to 1001/1002 as active category stations. integrated_orders:
+    storage.list_integrated_special_order_items rows."""
     monkeypatch.setattr(storage, "load_stock_targets", lambda: targets)
+    monkeypatch.setattr(storage, "list_integrated_special_order_items", lambda: list(integrated_orders or []))
     monkeypatch.setattr(storage, "load_category_locations",
                         lambda: {"Ships": 1001, "Modules": 1002} if category_locations is None else category_locations)
     monkeypatch.setattr(storage, "load_category_location_options", lambda: location_options or {})
@@ -5996,6 +5999,18 @@ def test_market_restock_backup_reserved_from_non_pickup_stock_first(monkeypatch)
     rows = engine.market_restock(ProductionConfig(home_location_id=HOME))
 
     assert [(r.from_location_id, r.quantity) for r in rows] == [(1001, 9.0)]  # 8 backup: 1 + 6 + 1 from 1001
+
+
+def test_market_restock_keeps_units_of_integrated_orders(monkeypatch):
+    # SPECIAL_ORDERS_INTEGRATION_PLAN.md D11: 20 Sabres at 1001, 6 ordered
+    # by two integrated orders and 4 backup -> only 10 are left to haul.
+    _stub_market_restock(monkeypatch, [(1, "Sabre", 4.0, 100.0, None)], {1: {1001: 20.0}},
+                         integrated_orders=[("o1", None, 1, "Sabre", 2.0), ("o2", None, 1, "Sabre", 4.0),
+                                            ("o2", None, 2, "Other", 50.0)])
+
+    rows = engine.market_restock(ProductionConfig(home_location_id=HOME))
+
+    assert [(r.from_location_id, r.quantity) for r in rows] == [(1001, 10.0)]
 
 
 def test_market_restock_empty_without_category_stations(monkeypatch):
