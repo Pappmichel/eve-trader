@@ -666,7 +666,7 @@ def do_refresh_asset_plan(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
     Raises under the same conditions as do_refresh_production."""
     if sum(storage.sde_row_counts().values()) == 0:
         raise ActionError("SDE cache is empty. Run 'Refresh SDE' first.")
-    if not storage.load_stock_targets():
+    if not storage.load_stock_targets() and not storage.list_integrated_special_order_items():
         raise ActionError("No stock targets configured.")
     plan = plan_asset_optimized(cfg)
     return {"jobs": len(plan["jobs"]), "plan": plan}

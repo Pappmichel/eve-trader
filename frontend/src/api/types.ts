@@ -451,10 +451,26 @@ export interface AssetPlanJob {
   days_to_complete_at_recommended_slots: number | null
   recipe_source: string | null
   blockers: AssetPlanBlocker[]
+  special_order_runs?: number
+  special_order_ready_runs?: number
+  special_order_ids?: string[]
+  // Aligned with special_order_ids; "" for an order without a note.
+  special_order_notes?: string[]
 }
 
 export interface AssetPlan {
   jobs: AssetPlanJob[]
+  order_progress?: AssetPlanOrderProgressRow[]
+}
+
+// ready_to_deliver is per order: true on every line of an order whose
+// lines are all fully in the hangar.
+export interface AssetPlanOrderProgressRow extends OrderProgressRow {
+  hangar_covered: number
+  job_covered: number
+  ready_runs: number
+  missing: number
+  ready_to_deliver: boolean
 }
 
 export interface SpecialOrder {

@@ -309,6 +309,10 @@ class AssetPlanJob(_Base):
     days_to_complete_at_recommended_slots: Optional[float] = None
     recipe_source: Optional[str] = None
     blockers: list[AssetPlanBlocker] = []
+    special_order_runs: int = 0
+    special_order_ready_runs: int = 0
+    special_order_ids: list[str] = []
+    special_order_notes: list[str] = []
 
 
 class InventionNeedRow(_Base):
@@ -884,6 +888,14 @@ class OrderProgressRow(BaseModel):
     remaining: float
 
 
+class AssetPlanOrderProgressRow(OrderProgressRow):
+    hangar_covered: float
+    job_covered: float
+    ready_runs: int
+    missing: float
+    ready_to_deliver: bool
+
+
 class ProductionPlan(BaseModel):
     inventory: list[InventoryRow]
     buy_list: list[BuyListEntry]
@@ -901,6 +913,9 @@ class ProductionPlan(BaseModel):
 
 class AssetPlan(BaseModel):
     jobs: list[AssetPlanJob]
+    # Per integrated special-order line item: hangar / running-job split of
+    # the D3 claim, runs ready now and what is still missing (D16).
+    order_progress: list[AssetPlanOrderProgressRow] = []
 
 
 # --------------------------------------------------------- special orders

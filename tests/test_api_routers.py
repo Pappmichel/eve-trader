@@ -899,11 +899,35 @@ def test_asset_plan_is_isolated_per_tenant(monkeypatch):
     monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-a")
     refresh_resp = client.post("/api/production/asset-plan/refresh")
     assert refresh_resp.status_code == 200
-    assert client.get("/api/production/asset-plan").json() == {"jobs": []}
+    assert client.get("/api/production/asset-plan").json() == {"jobs": [], "order_progress": []}
 
     monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-b")
     # tenant-b never refreshed - must see nothing, not tenant-a's plan.
     assert client.get("/api/production/asset-plan").json() is None
+
+
+def test_asset_plan_serializes_special_order_fields(monkeypatch):
+    # SPECIAL_ORDERS_INTEGRATION_PLAN.md D7/D16: the cached asset plan keeps
+    # the per-job order share and order_progress.
+    from eve_trader.production.models import AssetPlanJob
+    progress = [{"order_id": "o1", "note": "Customer", "type_id": 10, "type_name": "Ship",
+                 "ordered": 2.0, "covered": 1.0, "remaining": 1.0, "hangar_covered": 1.0,
+                 "job_covered": 0.0, "ready_runs": 1, "missing": 0.0, "ready_to_deliver": False}]
+    job = AssetPlanJob(type_id=10, type_name="Ship", blueprint_type_id=110, activity="Manufacturing",
+                       quantity=3, job_runs=3, runs_ready_now=1, job_time_seconds=1.0, unit_build_cost=None,
+                       special_order_runs=1, special_order_ready_runs=1,
+                       special_order_ids=["o1"], special_order_notes=["Customer"])
+    monkeypatch.setattr(production_actions, "do_refresh_asset_plan",
+                        lambda: {"jobs": 1, "plan": {"jobs": [job], "order_progress": progress}})
+    monkeypatch.setattr(storage, "get_current_tenant", lambda: "tenant-asset-orders")
+
+    assert client.post("/api/production/asset-plan/refresh").status_code == 200
+    plan = client.get("/api/production/asset-plan").json()
+
+    row = plan["jobs"][0]
+    assert (row["special_order_runs"], row["special_order_ready_runs"]) == (1, 1)
+    assert (row["special_order_ids"], row["special_order_notes"]) == (["o1"], ["Customer"])
+    assert plan["order_progress"] == progress
 
 
 def test_plan_is_isolated_per_tenant(monkeypatch):

@@ -327,6 +327,16 @@ class AssetPlanJob:
     # this list populated/accurate even in a future fast path that doesn't
     # need it for display; the slot-priority feature depends on it too now.
     blockers: list[AssetPlanBlocker] = field(default_factory=list)
+    # Share of job_runs / runs_ready_now that comes from integrated special
+    # orders (engine.plan_asset_optimized's order pass,
+    # SPECIAL_ORDERS_INTEGRATION_PLAN.md D4/D7); the rest is stock-target
+    # demand. Order runs get readiness and slots first.
+    special_order_runs: int = 0
+    special_order_ready_runs: int = 0
+    # Orders whose demand reaches this job (oldest first), and their notes
+    # in the same order ("" for an order without a note).
+    special_order_ids: list[str] = field(default_factory=list)
+    special_order_notes: list[str] = field(default_factory=list)
 
 
 @dataclass
