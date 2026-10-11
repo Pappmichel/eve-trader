@@ -152,10 +152,11 @@ Slots (`_allocate_slots_min_makespan`) **[Q3]** - recommendation:
   are always stock-target runs before order runs. Without a target, order
   jobs just take part in the normal split.
 
-Filter: a "Special orders only" switch next to the Category / Tech Level
-filters. When on, it shows only jobs with `special_order_runs > 0`, with the
-order share in the run/ready columns and a "Special orders" column listing
-the order notes. "Split Into" stays per job (one blueprint, one in-game job).
+Filter (confirmed 2026-10-11): a three-state control next to the Category /
+Tech Level filters - **All / Orders only / Without orders**. "Orders only"
+shows jobs with `special_order_runs > 0`, with the order share in the
+run/ready columns and a "Special orders" column listing the order notes;
+"Without orders" shows the stock-target share of every job that has one. "Split Into" stays per job (one blueprint, one in-game job).
 Optional: a MultiSelect to pick single orders.
 
 ### D8 - Regular Build List / Buy List **[Q4]**
@@ -171,29 +172,87 @@ themselves. Toggling the checkbox, editing items of an integrated order and
 changing its status mark them stale (the existing "recompute" hint), and the
 Special Orders page says "Recompute the build lists to apply".
 
+### D10 - Invention: one row per item
+
+`_invention_need_row` nets the owned and in-progress T2 BPC runs inside each
+row. A Tech II item that is both a stock target and an order line must
+therefore get **one** row with the combined BPC target
+(`stock target x bpc_inventory + order quantity`), not two rows that both
+subtract the same owned BPCs (the same double count the Crow fix in that
+function already guards against for another case).
+
+### D11 - Market restock keeps ordered units
+
+`market_restock` reserves `backup_stock` before it suggests hauling finished
+goods to C-J for listing. Units an integrated order claims (D3) are reserved
+the same way, first, so an ordered ship is never suggested for the market.
+
+### D12 - Stock target view shows the reservation
+
+When an order claims finished units of an item that is also a stock target,
+the stock target sees less current stock (D3). The inventory rows get a
+"Reserved for orders" figure so the lower number is explained, not a
+surprise.
+
+### D13 - Several orders for the same item: oldest first
+
+Finished units (D3) and scarce readiness are given to orders by
+`created_at`, oldest first, so the result is deterministic and the order
+that waited longest is served first.
+
+### D14 - Jita price cache covers integrated orders
+
+`jita_price_cache` prices the material closure of the stock targets only.
+It also takes the closure of integrated order items; otherwise those are
+priced live on every plan (slower, and possibly against different quotes
+than the rest of the plan).
+
+### D15 - Bookkeeping
+
+`order_integrity.audit`, the `sqlite_migration` column list and the event
+log learn the new column; deleting an integrated order marks the cached
+plans stale like the other order changes (D9).
+
+### D16 - Progress per order (confirmed 2026-10-11)
+
+The Special Orders page shows, per integrated order and line item, from the
+last computed Asset-Optimized plan: units already in the hangar, units in
+running jobs (both from D3's claim), runs ready to start, and what is still
+missing. When every line is fully in the hangar the order gets a "Ready to
+deliver" badge (a hint only - marking it `done` stays manual). Needs the
+plan to keep the per-order D3 claims next to the jobs (`order_progress` in
+the plan result), read from the cached plan - no extra computation on page
+load.
+
 ## Phases
 
 1. **Data + toggle**: column, storage read, action + event, forced
    `net_against_stock`, API/schema/types, checkbox on the order page
-   (header and list column), staleness hint. Tests: storage round-trip,
+   (header and list column), staleness hint, bookkeeping (D15). Tests: storage round-trip,
    event, toggle forces `net_against_stock`, done/reopen.
-2. **plan_production**: order demand (D3), two-pass `_expand_all` (D4),
-   margin bypass (D5), invention rows (D6), attribution on Build/Buy rows
-   (D8). Tests: no overbuild on order demand, buffer unchanged for a shared
+2. **plan_production**: order demand (D3, oldest first D13), two-pass
+   `_expand_all` (D4), margin bypass (D5), invention rows merged per item
+   (D6, D10), attribution on Build/Buy rows (D8), reservation figure (D12),
+   market restock reservation (D11), Jita price cache (D14). Tests: no overbuild on order demand, buffer unchanged for a shared
    component, orders consume stock first, top-level netting incl. running
    jobs, done order drops out, margin bypass, invention row multiplier 1.0.
 3. **plan_asset_optimized**: two-pass `_run_rounds` with shared ledgers,
    readiness priority, attribution fields, slot priority (D7). Tests:
    readiness goes to order claims first, order runs never wait while
    stock-target runs are queued, fewer-slots-than-jobs ordering.
-4. **Frontend**: "Special orders only" filter + columns, Build/Buy List
-   column, hide `stock_overlap_warning` for integrated orders.
+4. **Frontend**: All / Orders only / Without orders filter + columns,
+   Build/Buy List column, progress per order with "Ready to deliver" badge
+   (D16), hide `stock_overlap_warning` for integrated orders.
 5. **Docs**: new SF rule(s) in `docs/PRODUCTION_SEMANTICS.md` (integration,
    D3 exception to SF-1 if chosen), `docs/KNOWN_LIMITATIONS.md` (rounding,
    manual `done`), CLAUDE.md summary. Live check on the test server with a
    real order before production.
 
 ## Decisions (confirmed with the user 2026-10-11)
+
+Optional additions: progress per order (D16) and the three-state filter (D7)
+are in; a due date per order and a Discord "order ready" alert were
+considered and left out for now.
 
 - **[Q1]** Integrated orders net their top-level quantity against stock
   including running jobs, the order claiming first (D3). SF-1 stays for the
