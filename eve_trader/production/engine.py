@@ -1018,14 +1018,17 @@ def _use_stocked_relics(invention_list: list[InventionNeedRow], cfg: ProductionC
     minus the summed t1_bpc_target_runs of the rows choosing that relic), so
     a relic that is some other item's best grade is not taken away from it.
     Relics shared by several items (one Hull Section grade serves all four
-    Tech III cruisers) are handed out in invention_list order. A from_stock
-    row's t1_bpc_target_runs never exceeds the stock it was given, so only
-    the most profitable grade can reach the Buy List; its datacores and
+    Tech III cruisers) are handed out in two passes, lowest stockpile_pct
+    first: the runs to invent now for every row, then the buffers. One item's
+    buffer must not use up stock another item needs now (2026-10-12: Proteus,
+    Legion and Tengu buffers took every Malfunctioning Hull Section while the
+    Loki had to buy Wrecked ones for its current runs). A from_stock row's
+    t1_bpc_target_runs never exceeds the stock it was given, so only the
+    most profitable grade can reach the Buy List; its datacores and
     decryptor are still bought as needed. The build cost keeps the most
     profitable grade's ME/TE (_tech_ii_mods)."""
     relic_rows = [r for r in invention_list
                   if storage.get_type_category(r.t1_blueprint_type_id) == ANCIENT_RELIC_CATEGORY_ID]
-    relic_row_ids = {id(r) for r in relic_rows}
     if not relic_rows:
         return invention_list
 
@@ -1040,23 +1043,19 @@ def _use_stocked_relics(invention_list: list[InventionNeedRow], cfg: ProductionC
                 _current_stock(relic_id, manual_stock, cfg, None) - claimed.get(relic_id, 0.0)))
         return free[relic_id]
 
-    result: list[InventionNeedRow] = []
-    for row in invention_list:
-        if id(row) not in relic_row_ids:
-            result.append(row)
-            continue
+    # Per relic row: its stocked-grade options (best net cost first), what is
+    # still uncovered, and per option the relics granted now / for the buffer.
+    plans: dict[int, dict] = {}
+    for row in relic_rows:
         _, bp = classify_activity(row.type_id)
         best_yield = row.probability * row.output_runs
         if bp is None or best_yield <= 0:
-            result.append(row)
             continue
         blueprint_id, activity_id, _ = bp
         others = [c for c in storage.find_invention_recipe_candidates_by_product_type_id(blueprint_id)
                   if c != row.t1_blueprint_type_id and _free(c) >= 1]
         if not others:
-            result.append(row)
             continue
-
         reducible_cost = invention.reducible_material_cost(blueprint_id, activity_id, home, jita, cfg)
         override = selected_decryptors.get(row.type_id)
         options: list[InventionResult] = []
@@ -1072,39 +1071,68 @@ def _use_stocked_relics(invention_list: list[InventionNeedRow], cfg: ProductionC
                 continue
             if option.probability > 0 and option.output_runs > 0:
                 options.append(option)
+        if not options:
+            continue
         options.sort(key=lambda o: o.net_cost_per_run if o.net_cost_per_run is not None else float("inf"))
+        plans[id(row)] = {
+            "options": options, "best_yield": best_yield,
+            "runs_left": float(row.runs_needed), "buffer_left": row.t1_bpc_target_runs * best_yield,
+            "now": [0] * len(options), "extra": [0] * len(options), "covered": [0.0] * len(options),
+        }
 
-        runs_left = float(row.runs_needed)
-        buffer_left = row.t1_bpc_target_runs * best_yield
-        for option in options:
-            if buffer_left <= 0 and runs_left <= 0:
+    by_urgency = sorted((r for r in relic_rows if id(r) in plans), key=lambda r: r.stockpile_pct)
+    for r in by_urgency:  # pass 1: runs to invent now
+        plan = plans[id(r)]
+        for i, option in enumerate(plan["options"]):
+            if plan["runs_left"] <= 0:
                 break
-            relic_id = option.t1_blueprint_type_id
             option_yield = option.probability * option.output_runs
-            wanted = max(math.ceil(buffer_left / option_yield) if buffer_left > 0 else 0,
-                         math.ceil(runs_left / option_yield) if runs_left > 0 else 0)
-            allotted = int(min(_free(relic_id), wanted))
+            take = int(min(_free(option.t1_blueprint_type_id), math.ceil(plan["runs_left"] / option_yield)))
+            if take <= 0:
+                continue
+            covered = min(plan["runs_left"], take * option_yield)
+            free[option.t1_blueprint_type_id] -= take
+            plan["now"][i] += take
+            plan["covered"][i] += covered
+            plan["runs_left"] -= covered
+            plan["buffer_left"] -= take * option_yield
+    for r in by_urgency:  # pass 2: relic buffers
+        plan = plans[id(r)]
+        for i, option in enumerate(plan["options"]):
+            if plan["buffer_left"] <= 0:
+                break
+            option_yield = option.probability * option.output_runs
+            take = int(min(_free(option.t1_blueprint_type_id), math.ceil(plan["buffer_left"] / option_yield)))
+            if take <= 0:
+                continue
+            free[option.t1_blueprint_type_id] -= take
+            plan["extra"][i] += take
+            plan["buffer_left"] -= take * option_yield
+
+    result: list[InventionNeedRow] = []
+    for row in invention_list:
+        plan = plans.get(id(row))
+        if plan is None:
+            result.append(row)
+            continue
+        for i, option in enumerate(plan["options"]):
+            allotted = plan["now"][i] + plan["extra"][i]
             if allotted <= 0:
                 continue
-            use_now = min(allotted, math.ceil(runs_left / option_yield)) if runs_left > 0 else 0
-            covered_runs = min(runs_left, use_now * option_yield)
-            free[relic_id] -= allotted
-            buffer_left -= allotted * option_yield
-            runs_left -= covered_runs
+            covered_runs = plan["covered"][i]
             result.append(replace(
-                row, t1_blueprint_type_id=relic_id, t1_blueprint_name=option.t1_blueprint_name,
+                row, t1_blueprint_type_id=option.t1_blueprint_type_id, t1_blueprint_name=option.t1_blueprint_name,
                 decryptor=option.decryptor, probability=option.probability, output_runs=option.output_runs,
                 runs_needed=math.ceil(covered_runs),
                 bpcs_needed=math.ceil(covered_runs / option.output_runs) if covered_runs > 0 else 0,
-                recommended_invention_runs=use_now, t1_bpc_target_runs=allotted, from_stock=True,
+                recommended_invention_runs=plan["now"][i], t1_bpc_target_runs=allotted, from_stock=True,
             ))
-
-        runs_needed = max(0, math.ceil(runs_left - 1e-9))
+        runs_needed = max(0, math.ceil(plan["runs_left"] - 1e-9))
         bpcs_needed = math.ceil(runs_needed / row.output_runs) if runs_needed > 0 else 0
         result.append(replace(
             row, runs_needed=runs_needed, bpcs_needed=bpcs_needed,
             recommended_invention_runs=math.ceil(bpcs_needed / row.probability) if bpcs_needed > 0 else 0,
-            t1_bpc_target_runs=max(0, math.ceil(buffer_left / best_yield - 1e-9)),
+            t1_bpc_target_runs=max(0, math.ceil(plan["buffer_left"] / plan["best_yield"] - 1e-9)),
         ))
     return result
 

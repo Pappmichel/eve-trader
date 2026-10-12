@@ -6154,6 +6154,26 @@ def test_use_stocked_relics_leaves_stock_claimed_by_a_best_grade_row(monkeypatch
     assert len(rows) == 2
 
 
+def test_use_stocked_relics_covers_every_row_now_before_any_buffer(monkeypatch):
+    # 6 Malfunctioning (301, 4.5 runs each) in stock. Item 21 comes first in
+    # the list, is well stocked and only wants a buffer; item 20 needs 18 runs
+    # now. Item 20's current runs get the stock first: ceil(18 / 4.5) = 4,
+    # the remaining 2 go to item 21's buffer.
+    from dataclasses import replace
+    _install_relic_grades(monkeypatch, {301: 6.0}, {301: (0.45, 10, 1.0)})
+    buffered = replace(_relic_need(0, 20), type_id=21, stockpile_pct=90.0)
+    urgent = replace(_relic_need(18, 4), stockpile_pct=0.0)
+    rows = engine._use_stocked_relics([buffered, urgent], ProductionConfig(), {}, {}, {}, {})
+
+    stocked = {r.type_id: r for r in rows if r.from_stock}
+    assert stocked[20].recommended_invention_runs == 4
+    assert stocked[20].t1_bpc_target_runs == 4
+    assert stocked[21].recommended_invention_runs == 0
+    assert stocked[21].t1_bpc_target_runs == 2
+    wrecked_20 = next(r for r in rows if r.type_id == 20 and not r.from_stock)
+    assert wrecked_20.recommended_invention_runs == 0
+
+
 def test_use_stocked_relics_keeps_rows_unchanged_without_relics(monkeypatch):
     from eve_trader.production.models import InventionNeedRow
     monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)
