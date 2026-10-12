@@ -551,6 +551,7 @@ export interface InventionNeedRow {
   bpc_target_runs: number
   t1_bpc_target_runs: number
   special_order_runs?: number
+  from_stock?: boolean
 }
 
 export interface T1BpcInventionNeedRow {

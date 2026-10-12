@@ -181,6 +181,11 @@ class InventionNeedRow:
     # (SPECIAL_ORDERS_INTEGRATION_PLAN.md D6/D10) - already inside
     # bpc_target_runs above.
     special_order_runs: int = 0
+    # Tech III only: True for a row that invents from relics already in
+    # stock in a grade other than the most profitable one
+    # (engine._use_stocked_relics). Its t1_bpc_target_runs never exceeds
+    # that stock, so it never adds a relic to the Buy List.
+    from_stock: bool = False
 
 
 @dataclass

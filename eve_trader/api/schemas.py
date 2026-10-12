@@ -332,6 +332,7 @@ class InventionNeedRow(_Base):
     bpc_target_runs: int = 0
     t1_bpc_target_runs: int = 0
     special_order_runs: int = 0
+    from_stock: bool = False
 
 
 class T1BpcInventionNeedRow(_Base):

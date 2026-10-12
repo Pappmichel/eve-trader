@@ -1,5 +1,6 @@
 ﻿import pytest
 
+import math
 from pathlib import Path
 
 from eve_trader import storage
@@ -6073,3 +6074,90 @@ def test_rounded_security_survives_float4_storage():
     assert stored < 0.45
     assert _rounded_security(stored) == 0.5
     assert rig_security_multiplier(stored) == 1.0
+
+
+# ------------------------------------ stocked relics of other grades
+def _install_relic_grades(monkeypatch, stock, grades):
+    """Loki-like item 20 (blueprint 120) invented from relics 300 (Wrecked,
+    the most profitable), 301 (Malfunctioning) and 302 (Intact).
+    `grades`: {relic_id: (probability, output_runs, net_cost_per_run)}."""
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: ANCIENT_RELIC_CATEGORY_ID)
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: ("Tech II", (120, 1, 1.0)))
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id",
+                        lambda bp_id: (302, 301, 300))
+    monkeypatch.setattr(engine, "_current_stock", lambda type_id, *a, **k: stock.get(type_id, 0.0))
+    monkeypatch.setattr(engine.invention, "reducible_material_cost", lambda *a, **k: 0.0)
+
+    def compare(relic_id, *a, **k):
+        probability, output_runs, net = grades[relic_id]
+        result = _fake_invention_result(relic_id, decryptor="Process", probability=probability,
+                                        output_runs=output_runs)
+        result.net_cost_per_run = net
+        return [result]
+    monkeypatch.setattr(engine.invention, "compare_decryptors", compare)
+
+
+def _relic_need(runs_needed, t1_target, probability=0.4, output_runs=10):
+    from eve_trader.production.models import InventionNeedRow
+    bpcs = math.ceil(runs_needed / output_runs)
+    return InventionNeedRow(
+        type_id=20, type_name="Loki", t1_blueprint_type_id=300, t1_blueprint_name="Wrecked",
+        decryptor="Parity", probability=probability, output_runs=output_runs, runs_needed=runs_needed,
+        bpcs_needed=bpcs, recommended_invention_runs=math.ceil(bpcs / probability),
+        t2_bpc_owned=0, bpc_target_runs=runs_needed, t1_bpc_target_runs=t1_target)
+
+
+def test_use_stocked_relics_invents_from_other_grades_in_stock_first(monkeypatch):
+    # Need 40 T2 runs now, buffer 10 Wrecked attempts (10 x 0.4 x 10 = 40
+    # expected runs). 2 Intact in stock (0.5 x 20 = 10 runs each) cover 20.
+    _install_relic_grades(monkeypatch, {302: 2.0}, {302: (0.5, 20, 5.0), 301: (0.45, 10, 4.0)})
+    rows = engine._use_stocked_relics([_relic_need(40, 10)], ProductionConfig(), {}, {}, {}, {})
+
+    by_relic = {r.t1_blueprint_type_id: r for r in rows}
+    assert set(by_relic) == {302, 300}
+    intact = by_relic[302]
+    assert intact.from_stock and intact.decryptor == "Process"
+    assert intact.recommended_invention_runs == 2
+    assert intact.t1_bpc_target_runs == 2  # never more than in stock: nothing to buy
+    assert intact.runs_needed == 20
+    wrecked = by_relic[300]
+    assert not wrecked.from_stock
+    assert wrecked.runs_needed == 20
+    assert wrecked.recommended_invention_runs == 5  # 2 BPCs / 0.4
+    assert wrecked.t1_bpc_target_runs == 5  # (40 - 20) / 4 expected runs per attempt
+
+
+def test_use_stocked_relics_prefers_the_cheaper_stocked_grade_and_caps_at_demand(monkeypatch):
+    _install_relic_grades(monkeypatch, {302: 50.0, 301: 50.0},
+                          {302: (0.5, 20, 9.0), 301: (0.45, 10, 1.0)})
+    rows = engine._use_stocked_relics([_relic_need(18, 5)], ProductionConfig(), {}, {}, {}, {})
+
+    by_relic = {r.t1_blueprint_type_id: r for r in rows}
+    # Malfunctioning (cheaper net cost) covers the whole 20-run buffer:
+    # ceil(20 / 4.5) = 5 relics; Intact stays untouched.
+    assert 302 not in by_relic
+    assert by_relic[301].t1_bpc_target_runs == 5
+    assert by_relic[301].recommended_invention_runs == 4  # ceil(18 / 4.5)
+    assert by_relic[300].t1_bpc_target_runs == 0
+    assert by_relic[300].recommended_invention_runs == 0
+
+
+def test_use_stocked_relics_leaves_stock_claimed_by_a_best_grade_row(monkeypatch):
+    # Item 20 picks Wrecked (300), but another row's best grade is Intact
+    # (302) and claims all 3 Intact in stock - item 20 must not take them.
+    from dataclasses import replace
+    _install_relic_grades(monkeypatch, {302: 3.0}, {302: (0.5, 20, 5.0), 301: (0.45, 10, 4.0)})
+    other = replace(_relic_need(10, 3), type_id=21, t1_blueprint_type_id=302)
+    rows = engine._use_stocked_relics([_relic_need(40, 10), other], ProductionConfig(), {}, {}, {}, {})
+
+    assert not any(r.from_stock for r in rows)
+    assert len(rows) == 2
+
+
+def test_use_stocked_relics_keeps_rows_unchanged_without_relics(monkeypatch):
+    from eve_trader.production.models import InventionNeedRow
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: 9)
+    need = InventionNeedRow(type_id=10, type_name="T2", t1_blueprint_type_id=200, t1_blueprint_name="T1",
+                            decryptor="None", probability=0.5, output_runs=10, runs_needed=10, bpcs_needed=1,
+                            recommended_invention_runs=2, t2_bpc_owned=0)
+    assert engine._use_stocked_relics([need], ProductionConfig(), {}, {}, {}, {}) == [need]
