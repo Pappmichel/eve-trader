@@ -105,18 +105,20 @@ def do_check_sde_freshness(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 
     1. newer_sde_available - is there a newer Fuzzwork dump than the one
        currently cached (see sde.check_for_newer_sde)?
-    2. trading_universe_stale - has the SDE cache itself been refreshed more
-       recently than Trading's "Load Market Groups" candidate_universe
-       snapshot was last rebuilt? Production's own scans (discover_build_
-       candidates, plan_production) always walk the live SDE cache directly,
-       so they never need this - but Trading caches a snapshot (see
-       actions.do_build_universe), and a new item added to the SDE isn't
-       visible there until that snapshot is explicitly rebuilt. True whenever
-       both timestamps are known and the SDE is newer; False (not "unknown")
-       if either side has never run at all - nothing to compare yet."""
+    2. trading_universe_stale - has an SDE apply *changed the data Trading's
+       candidate universe is built from* more recently than Trading's "Load
+       Market Groups" candidate_universe snapshot was last rebuilt?
+       Production's own scans (discover_build_candidates, plan_production)
+       always walk the live SDE cache directly, so they never need this -
+       but Trading caches a snapshot (see actions.do_build_universe), and a
+       new item added to the SDE isn't visible there until that snapshot is
+       explicitly rebuilt. An apply that changed nothing Trading reads does
+       not count (sde.apply_sde only stamps trading_inputs_changed_at on a
+       real change). True whenever both timestamps are known and the SDE
+       change is newer; False (not "unknown") if either side has never
+       happened - nothing to compare yet."""
     freshness = sde.check_for_newer_sde(cfg)
-    sde_state = storage.get_sde_refresh_state()
-    sde_refreshed_at = sde_state[0] if sde_state else None
+    sde_refreshed_at = storage.get_sde_trading_inputs_changed_at()
     universe_built_at = storage.get_candidate_universe_built_at()
     # Timestamps come from two different isoformat() calls (this module's own
     # tz-aware datetime.now(timezone.utc).isoformat() vs Trading's actions.

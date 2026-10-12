@@ -124,7 +124,7 @@ def test_do_check_sde_freshness_flags_stale_trading_universe(monkeypatch):
         "local_refreshed_at": "2026-07-16T10:00:00+00:00",
         "remote_check_succeeded": True, "newer_sde_available": False,
     })
-    monkeypatch.setattr(storage, "get_sde_refresh_state", lambda: ("2026-07-16T10:00:00+00:00", "etag"))
+    monkeypatch.setattr(storage, "get_sde_trading_inputs_changed_at", lambda: "2026-07-16T10:00:00+00:00")
     # Trading's universe was built the day BEFORE the SDE was last refreshed.
     monkeypatch.setattr(storage, "get_candidate_universe_built_at", lambda: "2026-07-15T09:00:00")
 
@@ -138,7 +138,7 @@ def test_do_check_sde_freshness_not_stale_when_universe_rebuilt_after_sde(monkey
         "local_refreshed_at": "2026-07-16T10:00:00+00:00",
         "remote_check_succeeded": True, "newer_sde_available": False,
     })
-    monkeypatch.setattr(storage, "get_sde_refresh_state", lambda: ("2026-07-16T10:00:00+00:00", "etag"))
+    monkeypatch.setattr(storage, "get_sde_trading_inputs_changed_at", lambda: "2026-07-16T10:00:00+00:00")
     monkeypatch.setattr(storage, "get_candidate_universe_built_at", lambda: "2026-07-16T11:00:00")
 
     result = production_actions.do_check_sde_freshness()
@@ -150,9 +150,55 @@ def test_do_check_sde_freshness_not_stale_when_nothing_has_run_yet(monkeypatch):
     monkeypatch.setattr(sde, "check_for_newer_sde", lambda cfg: {
         "local_refreshed_at": None, "remote_check_succeeded": True, "newer_sde_available": False,
     })
-    monkeypatch.setattr(storage, "get_sde_refresh_state", lambda: None)
+    monkeypatch.setattr(storage, "get_sde_trading_inputs_changed_at", lambda: None)
     monkeypatch.setattr(storage, "get_candidate_universe_built_at", lambda: None)
 
     result = production_actions.do_check_sde_freshness()
 
     assert result["trading_universe_stale"] is False
+
+
+def _fetched(volume=0.1, extra_types=()):
+    # types rows: type_id, group_id, name, volume, published, market_group_id,
+    # meta_level, meta_group_id, portion_size (see sde.fetch_sde).
+    types = [(34, 18, "Tritanium", volume, 1, 1857, 0, None, 1), *extra_types]
+    return sde.FetchedSde(
+        types=types, groups=[(18, 4, "Mineral")], categories=[(4, "Material")],
+        market_groups=[(1857, None, "Minerals")], dump_etag="etag",
+    )
+
+
+def test_trading_universe_inputs_ignores_unpublished_and_unrelated_fields():
+    base = _fetched()
+    same = _fetched(extra_types=[(99, 18, "Test Thing", 1.0, 0, 1857, 0, None, 1)])
+    # 65449847 is not exactly representable as float4 - the cache returns
+    # 65449848, which must not count as a change.
+    big_old = _fetched(volume=65449848.0)
+    big_new = _fetched(volume=65449847.0)
+
+    def inputs(f):
+        return sde.trading_universe_inputs(f.types, f.groups, f.market_groups, f.categories)
+
+    assert inputs(base) == inputs(same)
+    assert inputs(big_old) == inputs(big_new)
+    assert inputs(base) != inputs(_fetched(volume=0.2))
+    assert inputs(base) != inputs(_fetched(extra_types=[(35, 18, "Pyerite", 0.01, 1, 1857, 0, None, 1)]))
+
+
+@pg_helpers.postgres_required()
+def test_apply_sde_stamps_trading_inputs_only_on_a_real_change(tenant):
+    pg_helpers.wipe_tables("sde_refresh_state")
+    storage.replace_sde_data(types=[], groups=[], market_groups=[], blueprint_time=[],
+                             blueprint_materials=[], blueprint_products=[])
+
+    sde.apply_sde(_fetched())
+    first = storage.get_sde_trading_inputs_changed_at()
+    assert first is not None
+
+    # Same dump again: refreshed_at moves, the Trading stamp does not.
+    sde.apply_sde(_fetched())
+    assert storage.get_sde_trading_inputs_changed_at() == first
+    assert storage.get_sde_refresh_state()[0] > first
+
+    sde.apply_sde(_fetched(extra_types=[(35, 18, "Pyerite", 0.01, 1, 1857, 0, None, 1)]))
+    assert storage.get_sde_trading_inputs_changed_at() > first
