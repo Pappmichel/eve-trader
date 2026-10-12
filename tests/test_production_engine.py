@@ -1170,6 +1170,25 @@ def test_structural_material_closure_visits_a_shared_material_only_once(monkeypa
     assert classify_calls.count(300) == 1
 
 
+def test_structural_material_closure_includes_invention_inputs(monkeypatch):
+    # A Tech III hull (100, blueprint 1000) invented from two relic grades
+    # (500, 501): datacores, decryptors and the relics are not blueprint
+    # materials but must be priced too, or every invention cost reads 0.
+    monkeypatch.setattr(engine, "classify_activity", lambda type_id: (
+        ("Tech II", (1000, 1, 1.0)) if type_id == 100 else ("Input", None)))
+    monkeypatch.setattr(storage, "get_blueprint_materials", lambda bp_id, activity_id: [(200, 5.0)])
+    monkeypatch.setattr(storage, "find_invention_recipe_candidates_by_product_type_id",
+                        lambda bp_id: (500, 501) if bp_id == 1000 else ())
+    monkeypatch.setattr(storage, "get_invention_recipe",
+                        lambda source_id, product_type_id=None: {"datacores": [(600, 3), (601, 3)]})
+    monkeypatch.setattr(storage, "get_type_category", lambda type_id: engine.ANCIENT_RELIC_CATEGORY_ID)
+
+    result = _structural_material_closure([100])
+
+    decryptor_ids = {d.type_id for d in engine.DECRYPTORS.values() if d.type_id}
+    assert {100, 200, 500, 501, 600, 601} | decryptor_ids <= result
+
+
 def test_structural_material_closure_capped_at_max_depth(monkeypatch):
     # A chain deeper than MAX_DEPTH (10) - the walk must stop instead of
     # recursing forever (a real EVE BOM never legitimately goes this deep;
