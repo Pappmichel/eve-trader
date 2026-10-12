@@ -20,8 +20,10 @@ from .. import storage
 from ..actions import ActionError, _emit_progress
 from ..auth import TokenManager
 from ..config import OAUTH_CONFIG
-from ..esi_client import ESIClient
+from ..esi_client import ESIClient, ESIError
+from . import engine
 from .config import DOCTRINE_CONFIG, DoctrineConfig
+from .models import ContractItemRow
 from .constants import CONTRACT_TYPE_ITEM_EXCHANGE, FINISHED_CONTRACT_STATUSES, SYNCABLE_CONTRACT_STATUSES
 
 log = logging.getLogger("eve_trader.doctrine.esi_sync")
@@ -110,8 +112,10 @@ def _issued_by_own_identity(contract: dict, character_id: int, corporation_id: O
 
 def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG, progress_callback=None) -> dict:
     """Fetch is the Phase 3 orchestrator (`do_sync_for_tool("doctrine")`).
-    Matching against fittings and finished-contract history stay here —
-    they are tool-specific, not owned-data writes."""
+    Matching against fittings stays here. Finished contracts the snapshot
+    had matched are recorded into history by the contracts fetcher itself
+    (every sync path drops them from the snapshot); the rest are matched
+    from their ESI items here (`_record_unmatched_finished`)."""
     from ..esi_data.orchestrator import do_sync_for_tool
     from .actions import do_validate_contracts
 
@@ -127,56 +131,89 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG, progress_callback=None
     if not characters:
         raise ActionError("No Doctrine character shared yet. Share Contracts on the Characters page.")
 
-    existing_by_id = {row[0]: row for row in storage.load_doctrine_contracts()}
     result = do_sync_for_tool("doctrine", extra={"structure_id": structure_id})
     match_result = do_validate_contracts(cfg)
 
     role_by_character = {cid: role for role, cid, _name in characters}
     fallback_role = characters[0][0] if characters else ""
-    finished: list[tuple[dict, str]] = []
-    seen_history: set[int] = set()
+    finished: dict[int, tuple[dict, list[tuple[str, int, str]]]] = {}
+    history_written = 0
     for owner in result.get("owners") or []:
         kinds = owner.get("kinds") or {}
         contracts = kinds.get("contracts")
         if not isinstance(contracts, dict):
             continue
-        if owner.get("owner_type") == "character":
-            role = role_by_character.get(owner.get("owner_id"), fallback_role)
+        history_written += contracts.get("history_written") or 0
+        owner_type, owner_id = owner.get("owner_type"), owner.get("owner_id")
+        if owner_type == "character":
+            role = role_by_character.get(owner_id, fallback_role)
         else:
-            role = fallback_role
+            role = contracts.get("auth_role") or fallback_role
         for raw in contracts.get("finished") or []:
-            cid = raw.get("contract_id")
-            if cid in seen_history:
-                continue
-            seen_history.add(cid)
-            finished.append((raw, role))
+            entry = finished.setdefault(raw["contract_id"], (raw, []))
+            entry[1].append((owner_type, owner_id, role))
 
-    client = ESIClient(tokens=tm)
-    acceptor_ids = {c.get("acceptor_id") for c, _role in finished if c.get("acceptor_id")}
-    acceptor_names = client.resolve_names(list(acceptor_ids)) if acceptor_ids else {}
-    history_rows: list[tuple] = []
-    for raw, role in finished:
-        cid = raw["contract_id"]
-        existing = existing_by_id.get(cid)
-        fitting_id = existing[9] if existing is not None else None
-        if fitting_id is None:
-            continue
-        fitting_row = storage.get_fitting(fitting_id)
-        if fitting_row is None:
-            continue
-        fitting_name, hull_type_id = fitting_row[2], fitting_row[4]
-        acceptor_id = raw.get("acceptor_id")
-        history_rows.append((
-            cid, role, fitting_id, fitting_name, hull_type_id, raw.get("title"), raw.get("price"),
-            acceptor_id, acceptor_names.get(acceptor_id) if acceptor_id is not None else None,
-            raw.get("date_issued"), raw.get("date_completed"),
-        ))
-    storage.upsert_doctrine_contract_history(history_rows)
+    history_written += _record_unmatched_finished(finished, tm)
     storage.set_esi_sync_time("doctrine", datetime.now(timezone.utc).isoformat())
     _emit_progress(progress_callback, {"phase": "sync", "message": "Matching contracts"})
     result["contracts_synced"] = match_result.get("revalidated", match_result.get("contracts_synced"))
-    result["history_written"] = len(history_rows)
+    result["history_written"] = history_written
     return result
+
+
+def _record_unmatched_finished(finished: dict[int, tuple[dict, list[tuple[str, int, str]]]],
+                               tm: TokenManager, cfg: DoctrineConfig = DOCTRINE_CONFIG) -> int:
+    """History for finished contracts the contracts fetcher could not record
+    (it only records ones the snapshot still had matched to a fitting): a
+    contract sold before it was ever matched, or one whose snapshot row an
+    earlier sync already dropped. Its items come from ESI (immutable, still
+    readable for ESI's 30-day contract window) and are matched like a live
+    contract. `finished`: contract_id -> (raw, [(owner_type, owner_id, role)])."""
+    recorded = storage.doctrine_contract_history_ids(list(finished))
+    todo = [(raw, owners) for cid, (raw, owners) in finished.items() if cid not in recorded]
+    if not todo:
+        return 0
+    client = ESIClient(tokens=tm)
+    candidates = engine.load_match_candidates()
+    matched: list[tuple[dict, str, str, tuple]] = []
+    # Corp owners first: a corp contract's items are read through the corp endpoint.
+    for raw, owners in todo:
+        cid = raw["contract_id"]
+        items_raw, role = None, None
+        for owner_type, owner_id, owner_role in sorted(owners, key=lambda o: o[0] != "corporation"):
+            try:
+                if owner_type == "corporation":
+                    items_raw = client.corporation_contract_items(owner_id, cid, auth_role=owner_role)
+                else:
+                    items_raw = client.character_contract_items(owner_id, cid, auth_role=owner_role)
+                role = owner_role
+                break
+            except ESIError as e:
+                log.info("contract %s items via %s %s failed: %s", cid, owner_type, owner_id, e)
+        if items_raw is None:
+            continue
+        items = [ContractItemRow(cid, it["record_id"], it["type_id"], it["quantity"],
+                                 it.get("is_included", True), it.get("is_singleton", False))
+                 for it in items_raw]
+        fitting_id, _score, _devs, _status = engine.match_and_validate_contract(
+            cid, raw.get("title"), items, candidates, cfg)
+        fitting = storage.get_fitting(fitting_id) if fitting_id else None
+        if fitting is not None:
+            matched.append((raw, role, fitting_id, fitting))
+    if not matched:
+        return 0
+    acceptor_ids = sorted({raw["acceptor_id"] for raw, *_ in matched if raw.get("acceptor_id")})
+    try:
+        names = client.resolve_names(acceptor_ids) if acceptor_ids else {}
+    except ESIError:
+        names = {}
+    storage.upsert_doctrine_contract_history([
+        (raw["contract_id"], role, fitting_id, fitting[2], fitting[4], raw.get("title"), raw.get("price"),
+         raw.get("acceptor_id"), names.get(raw.get("acceptor_id")), raw.get("date_issued"),
+         raw.get("date_completed"))
+        for raw, role, fitting_id, fitting in matched
+    ])
+    return len(matched)
 
 
 # =========================================================== asset sync (Stockpile)

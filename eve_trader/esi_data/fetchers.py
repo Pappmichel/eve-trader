@@ -614,6 +614,45 @@ def _write_contract_snapshot(
     return len(contract_rows)
 
 
+def _record_finished_history(client: ESIClient, finished: list[dict], *, auth_role: str) -> int:
+    """Writes doctrine_contract_history for finished contracts that the
+    snapshot still has matched to a fitting. Runs before the snapshot
+    replace, which drops every finished contract together with its
+    fitting match - so every sync path (scheduler, Characters page, Doctrine
+    asset sync), not just the Doctrine contract sync, records them. A
+    finished contract that was never matched is left to the Doctrine
+    contract sync, which matches it from its ESI items."""
+    if not finished:
+        return 0
+    recorded = storage.doctrine_contract_history_ids([c["contract_id"] for c in finished])
+    snapshot = {row[0]: row for row in storage.load_doctrine_contracts()}
+    pending: list[tuple[dict, str, tuple]] = []
+    for raw in finished:
+        cid = raw["contract_id"]
+        existing = snapshot.get(cid)
+        fitting_id = existing[9] if existing is not None else None
+        if cid in recorded or fitting_id is None:
+            continue
+        fitting = storage.get_fitting(fitting_id)
+        if fitting is not None:
+            pending.append((raw, fitting_id, fitting))
+    if not pending:
+        return 0
+    acceptor_ids = sorted({raw["acceptor_id"] for raw, _f, _r in pending if raw.get("acceptor_id")})
+    try:
+        names = client.resolve_names(acceptor_ids) if acceptor_ids else {}
+    except ESIError:
+        names = {}
+    rows = [
+        (raw["contract_id"], auth_role, fitting_id, fitting[2], fitting[4], raw.get("title"), raw.get("price"),
+         raw.get("acceptor_id"), names.get(raw.get("acceptor_id")), raw.get("date_issued"),
+         raw.get("date_completed"))
+        for raw, fitting_id, fitting in pending
+    ]
+    storage.upsert_doctrine_contract_history(rows)
+    return len(rows)
+
+
 def fetch_character_contracts(
     client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **kwargs,
 ) -> dict:
@@ -646,11 +685,13 @@ def fetch_character_contracts(
         client, [(c, False, None) for c in syncable],
         character_id=owner_id, auth_role=auth_role,
     )
+    history = _record_finished_history(client, finished, auth_role=auth_role)
     written = _write_contract_snapshot(
         syncable, items_info,
         owner_type="character", owner_id=owner_id, auth_role=auth_role, for_corp=False,
     )
-    return {"written": written, "finished": finished, "corporation_id": corporation_id}
+    return {"written": written, "finished": finished, "history_written": history,
+            "corporation_id": corporation_id}
 
 
 def fetch_corporation_contracts(
@@ -680,11 +721,12 @@ def fetch_corporation_contracts(
         client, [(c, True, owner_id) for c in syncable],
         character_id=None, auth_role=auth_role,
     )
+    history = _record_finished_history(client, finished, auth_role=auth_role)
     written = _write_contract_snapshot(
         syncable, items_info,
         owner_type="corporation", owner_id=owner_id, auth_role=auth_role, for_corp=True,
     )
-    return {"written": written, "finished": finished}
+    return {"written": written, "finished": finished, "history_written": history, "auth_role": auth_role}
 
 
 # Registry-driven dispatch: (kind, owner_type) -> fetcher.
