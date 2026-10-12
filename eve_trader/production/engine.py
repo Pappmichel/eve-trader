@@ -128,6 +128,7 @@ import logging
 import math
 import threading
 import time
+from dataclasses import replace
 from typing import Callable, Iterable, Optional
 
 from .. import hubs, storage
@@ -994,6 +995,118 @@ def _invention_need_row(type_id: int, type_name: str, activity: str,
         bpc_target_runs=t2_bpc_target_runs, t1_bpc_target_runs=t1_bpc_target_runs,
         special_order_runs=extra_runs,
     )
+
+
+def _use_stocked_relics(invention_list: list[InventionNeedRow], cfg: ProductionConfig,
+                        home: dict, jita: dict, selected_decryptors: dict[int, str],
+                        manual_stock: dict[int, float]) -> list[InventionNeedRow]:
+    """Tech III rows invent from relics already in stock before the most
+    profitable grade is bought (confirmed with the user 2026-10-12).
+
+    _invention_need_row sizes every Tech III row on the single most
+    profitable (grade, decryptor), so Intact or Malfunctioning relics in
+    stock were ignored whenever Wrecked won and more Wrecked went on the Buy
+    List. Here each Tech III row's demand is first covered by stocked relics
+    of the other grades, each with that grade's own best decryptor (or the
+    user's selected one), better net cost per run first. Each grade used
+    gets its own from_stock row; the original row keeps only the rest.
+    Coverage is compared in expected T2 BPC runs (probability x output runs
+    per attempt), for both the runs to invent now (runs_needed ->
+    recommended_invention_runs) and the relic buffer (t1_bpc_target_runs).
+
+    Only stock no row of the most profitable grade claims is used (stock
+    minus the summed t1_bpc_target_runs of the rows choosing that relic), so
+    a relic that is some other item's best grade is not taken away from it.
+    Relics shared by several items (one Hull Section grade serves all four
+    Tech III cruisers) are handed out in invention_list order. A from_stock
+    row's t1_bpc_target_runs never exceeds the stock it was given, so only
+    the most profitable grade can reach the Buy List; its datacores and
+    decryptor are still bought as needed. The build cost keeps the most
+    profitable grade's ME/TE (_tech_ii_mods)."""
+    relic_rows = [r for r in invention_list
+                  if storage.get_type_category(r.t1_blueprint_type_id) == ANCIENT_RELIC_CATEGORY_ID]
+    relic_row_ids = {id(r) for r in relic_rows}
+    if not relic_rows:
+        return invention_list
+
+    claimed: dict[int, float] = {}
+    for r in relic_rows:
+        claimed[r.t1_blueprint_type_id] = claimed.get(r.t1_blueprint_type_id, 0.0) + r.t1_bpc_target_runs
+    free: dict[int, float] = {}
+
+    def _free(relic_id: int) -> float:
+        if relic_id not in free:
+            free[relic_id] = max(0.0, math.floor(
+                _current_stock(relic_id, manual_stock, cfg, None) - claimed.get(relic_id, 0.0)))
+        return free[relic_id]
+
+    result: list[InventionNeedRow] = []
+    for row in invention_list:
+        if id(row) not in relic_row_ids:
+            result.append(row)
+            continue
+        _, bp = classify_activity(row.type_id)
+        best_yield = row.probability * row.output_runs
+        if bp is None or best_yield <= 0:
+            result.append(row)
+            continue
+        blueprint_id, activity_id, _ = bp
+        others = [c for c in storage.find_invention_recipe_candidates_by_product_type_id(blueprint_id)
+                  if c != row.t1_blueprint_type_id and _free(c) >= 1]
+        if not others:
+            result.append(row)
+            continue
+
+        reducible_cost = invention.reducible_material_cost(blueprint_id, activity_id, home, jita, cfg)
+        override = selected_decryptors.get(row.type_id)
+        options: list[InventionResult] = []
+        for relic_id in others:
+            try:
+                if override in DECRYPTORS:
+                    option = invention.estimate(relic_id, override, home, jita, cfg, reducible_cost,
+                                                product_type_id=blueprint_id)
+                else:
+                    option = invention.compare_decryptors(relic_id, home, jita, cfg, reducible_cost,
+                                                          product_type_id=blueprint_id)[0]
+            except ValueError:
+                continue
+            if option.probability > 0 and option.output_runs > 0:
+                options.append(option)
+        options.sort(key=lambda o: o.net_cost_per_run if o.net_cost_per_run is not None else float("inf"))
+
+        runs_left = float(row.runs_needed)
+        buffer_left = row.t1_bpc_target_runs * best_yield
+        for option in options:
+            if buffer_left <= 0 and runs_left <= 0:
+                break
+            relic_id = option.t1_blueprint_type_id
+            option_yield = option.probability * option.output_runs
+            wanted = max(math.ceil(buffer_left / option_yield) if buffer_left > 0 else 0,
+                         math.ceil(runs_left / option_yield) if runs_left > 0 else 0)
+            allotted = int(min(_free(relic_id), wanted))
+            if allotted <= 0:
+                continue
+            use_now = min(allotted, math.ceil(runs_left / option_yield)) if runs_left > 0 else 0
+            covered_runs = min(runs_left, use_now * option_yield)
+            free[relic_id] -= allotted
+            buffer_left -= allotted * option_yield
+            runs_left -= covered_runs
+            result.append(replace(
+                row, t1_blueprint_type_id=relic_id, t1_blueprint_name=option.t1_blueprint_name,
+                decryptor=option.decryptor, probability=option.probability, output_runs=option.output_runs,
+                runs_needed=math.ceil(covered_runs),
+                bpcs_needed=math.ceil(covered_runs / option.output_runs) if covered_runs > 0 else 0,
+                recommended_invention_runs=use_now, t1_bpc_target_runs=allotted, from_stock=True,
+            ))
+
+        runs_needed = max(0, math.ceil(runs_left - 1e-9))
+        bpcs_needed = math.ceil(runs_needed / row.output_runs) if runs_needed > 0 else 0
+        result.append(replace(
+            row, runs_needed=runs_needed, bpcs_needed=bpcs_needed,
+            recommended_invention_runs=math.ceil(bpcs_needed / row.probability) if bpcs_needed > 0 else 0,
+            t1_bpc_target_runs=max(0, math.ceil(buffer_left / best_yield - 1e-9)),
+        ))
+    return result
 
 
 def _alchemy_yield(type_id: int, cost_indices: CostIndices
@@ -2468,7 +2581,9 @@ def plan_production(cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict:
 
     # After _expand_all so stock_used already records manufacturing
     # consumption, and before _build_buy_list so Sorting's persisted pot
-    # (save_latest_buy_list below) includes these rows.
+    # (save_latest_buy_list below) includes these rows. Stocked relics of a
+    # less profitable grade are used before the best grade is bought.
+    invention_list = _use_stocked_relics(invention_list, cfg, home, jita, selected_decryptors, manual_stock)
     _merge_invention_inputs_into_buy_totals(
         invention_list, buy_totals, gross_demand, stock_used, manual_stock, cfg)
 
@@ -4758,7 +4873,10 @@ def _invention_input_demand(invention_list: list[InventionNeedRow]
         if decryptor is not None and decryptor.type_id != 0:
             demand[decryptor.type_id] = demand.get(decryptor.type_id, 0.0) + rec
 
-        recipe = storage.get_invention_recipe(need.t1_blueprint_type_id)
+        # Filtered by the invented blueprint: one relic grade invents all
+        # four Tech III cruisers, each with its own racial datacores.
+        _, bp = classify_activity(need.type_id)
+        recipe = storage.get_invention_recipe(need.t1_blueprint_type_id, bp[0] if bp else None)
         for datacore_id, datacore_qty in (recipe.get("datacores", []) if recipe else []):
             demand[datacore_id] = demand.get(datacore_id, 0.0) + datacore_qty * rec
     return demand, t1_blueprint_type_ids

@@ -60,7 +60,19 @@ export default function Invention() {
 
   const needsColumns = useMemo<ColumnDef<InventionNeedRow, any>[]>(() => [
     { header: 'T2 Item', accessorKey: 'type_name', size: 210 },
-    { header: 'T1 Blueprint', accessorKey: 't1_blueprint_name', size: 210 },
+    {
+      header: 'T1 Blueprint', accessorKey: 't1_blueprint_name', size: 240,
+      // A Tech III relic grade other than the most profitable one, invented
+      // from stock first and never bought (engine._use_stocked_relics).
+      cell: (i) => i.row.original.from_stock ? (
+        <Group gap={6} wrap="nowrap">
+          <Text size="sm">{i.getValue()}</Text>
+          <Tooltip label="Relics already in stock are used before the most profitable grade is bought">
+            <Badge color="accent" variant="light" size="sm">in stock</Badge>
+          </Tooltip>
+        </Group>
+      ) : i.getValue(),
+    },
     { header: 'Decryptor', accessorKey: 'decryptor', size: 130 },
     { header: 'Success Chance', accessorKey: 'probability', size: 140, cell: (i) => pct(i.getValue()) },
     { header: 'Runs/BPC', accessorKey: 'output_runs', size: 110, cell: (i) => qty(i.getValue()) },
