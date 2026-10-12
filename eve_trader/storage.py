@@ -1561,15 +1561,48 @@ def get_sde_snapshot_for_diff() -> dict:
         }
 
 
-def set_sde_refresh_state(refreshed_at: str, dump_etag: Optional[str]) -> None:
+def set_sde_refresh_state(refreshed_at: str, dump_etag: Optional[str],
+                          trading_inputs_changed_at: Optional[str] = None) -> None:
     """Records when refresh_sde() last completed and the Fuzzwork dump's ETag
-    at that moment - see sde_refresh_state's schema comment."""
+    at that moment - see sde_refresh_state's schema comment.
+    `trading_inputs_changed_at` is only written when given; None keeps the
+    stored value (an apply that changed nothing Trading reads)."""
     with connect() as conn:
         conn.execute(
-            "INSERT INTO sde_refresh_state (id, refreshed_at, dump_etag) VALUES (1, ?, ?) "
-            "ON CONFLICT(id) DO UPDATE SET refreshed_at = excluded.refreshed_at, dump_etag = excluded.dump_etag",
-            (refreshed_at, dump_etag),
+            "INSERT INTO sde_refresh_state (id, refreshed_at, dump_etag, trading_inputs_changed_at) "
+            "VALUES (1, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET refreshed_at = excluded.refreshed_at, dump_etag = excluded.dump_etag, "
+            "trading_inputs_changed_at = COALESCE(excluded.trading_inputs_changed_at, "
+            "sde_refresh_state.trading_inputs_changed_at)",
+            (refreshed_at, dump_etag, trading_inputs_changed_at),
         )
+
+
+def get_sde_trading_inputs_changed_at() -> Optional[str]:
+    """When an SDE apply last changed data Trading's candidate universe is
+    built from (see production/sde.py's apply_sde), or None if never."""
+    with connect() as conn:
+        row = conn.execute("SELECT trading_inputs_changed_at FROM sde_refresh_state WHERE id = 1").fetchone()
+    return row[0] if row and row[0] else None
+
+
+def load_sde_trading_universe_inputs() -> dict[str, list[tuple]]:
+    """Current sde_types/sde_groups/sde_market_groups/sde_categories rows in
+    the shape FetchedSde holds them, limited to the columns Trading's
+    candidate universe reads - compared against a fetched dump by
+    production/sde.py's apply_sde before it overwrites them."""
+    with connect() as conn:
+        return {
+            "types": [tuple(r) for r in conn.execute(
+                "SELECT type_id, group_id, type_name, volume, published, market_group_id, meta_level "
+                "FROM sde_types").fetchall()],
+            "groups": [tuple(r) for r in conn.execute(
+                "SELECT group_id, category_id, group_name FROM sde_groups").fetchall()],
+            "market_groups": [tuple(r) for r in conn.execute(
+                "SELECT market_group_id, parent_group_id, market_group_name FROM sde_market_groups").fetchall()],
+            "categories": [tuple(r) for r in conn.execute(
+                "SELECT category_id, category_name FROM sde_categories").fetchall()],
+        }
 
 
 def get_sde_refresh_state() -> Optional[tuple[str, Optional[str]]]:

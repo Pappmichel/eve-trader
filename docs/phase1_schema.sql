@@ -146,6 +146,12 @@ CREATE TABLE IF NOT EXISTS sde_refresh_state (
     refreshed_at TEXT NOT NULL,
     dump_etag TEXT
 );
+-- When an SDE apply last changed the data Trading's candidate universe is
+-- built from (published market types, groups, market groups, categories).
+-- An apply that changes nothing there leaves it alone, so Trading's
+-- "candidate list may be outdated" warning only appears after a real change.
+-- NULL = no such change recorded yet (no warning).
+ALTER TABLE sde_refresh_state ADD COLUMN IF NOT EXISTS trading_inputs_changed_at TEXT;
 
 CREATE TABLE IF NOT EXISTS goonmetrics_history (
     region_id INTEGER,

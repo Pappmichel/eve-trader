@@ -12,6 +12,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import struct
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -552,9 +553,48 @@ def fetch_sde(cfg: ProductionConfig = PRODUCTION_CONFIG, progress_callback=None)
     )
 
 
+def _float4(value):
+    """sde_types.volume is REAL (float4): round a CSV float the same way so a
+    value read back from Postgres compares equal to the one just fetched."""
+    if value is None:
+        return None
+    return struct.unpack("f", struct.pack("f", float(value)))[0]
+
+
+def trading_universe_inputs(types, groups, market_groups, categories) -> tuple:
+    """The part of the SDE Trading's candidate universe is built from
+    (candidate_discovery.build_candidate_universe: published, market-grouped
+    types with name/volume/meta level/group, group -> category, the market
+    group tree, category names), normalized so a fetched dump and the rows
+    already in the cache compare equal when nothing relevant changed.
+    Accepts FetchedSde rows or storage.load_sde_trading_universe_inputs()
+    rows (both start with type_id, group_id, name, volume, published,
+    market_group_id, meta_level)."""
+    type_rows = frozenset(
+        (int(r[0]), r[1], r[2], _float4(r[3]), r[5], r[6])
+        for r in types if r[4] and r[5] is not None
+    )
+    return (
+        type_rows,
+        frozenset((int(r[0]), r[1]) for r in groups),
+        frozenset((int(r[0]), r[1], r[2]) for r in market_groups),
+        frozenset((int(r[0]), r[1]) for r in categories),
+    )
+
+
 def apply_sde(fetched: FetchedSde) -> dict:
     """Writes a previously fetched dump into the local SDE cache and records
-    freshness. Safe to re-run any time (e.g. after a CCP balance patch)."""
+    freshness. Safe to re-run any time (e.g. after a CCP balance patch).
+
+    Also stamps sde_refresh_state.trading_inputs_changed_at, but only when
+    the data Trading's candidate universe reads actually changed - so the
+    "Trading candidate list may be outdated" warning (production/actions.
+    do_check_sde_freshness) doesn't fire after an apply that changed
+    nothing Trading uses."""
+    current = storage.load_sde_trading_universe_inputs()
+    trading_inputs_changed = trading_universe_inputs(
+        current["types"], current["groups"], current["market_groups"], current["categories"],
+    ) != trading_universe_inputs(fetched.types, fetched.groups, fetched.market_groups, fetched.categories)
     storage.replace_sde_data(
         types=fetched.types, groups=fetched.groups, market_groups=fetched.market_groups,
         blueprint_time=fetched.blueprint_time, blueprint_materials=fetched.blueprint_materials,
@@ -568,7 +608,8 @@ def apply_sde(fetched: FetchedSde) -> dict:
         pi_schematic_pins=fetched.pi_schematic_pins, pi_type_attributes=fetched.pi_type_attributes,
         pi_planets=fetched.pi_planets,
     )
-    storage.set_sde_refresh_state(datetime.now(timezone.utc).isoformat(), fetched.dump_etag)
+    now = datetime.now(timezone.utc).isoformat()
+    storage.set_sde_refresh_state(now, fetched.dump_etag, now if trading_inputs_changed else None)
     return storage.sde_row_counts()
 
 
