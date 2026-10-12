@@ -22,7 +22,7 @@ from . import esi_sync, invention, jobs, order_integrity, pricing, sde
 from .config import PRODUCTION_CONFIG, ProductionConfig, validate_production_overrides
 from .constants import DECRYPTORS, JOB_CATEGORIES
 from .engine import (
-    _PlanContext, _item_margin_detail_with_context, _structural_material_closure,
+    _PlanContext, _invention_input_type_ids, _item_margin_detail_with_context, _structural_material_closure,
     build_material_tree, compare_alchemy_profitability, discover_build_candidates, discover_ship_margins,
     distribution_recommendations, get_cached_discover_results, invention_logistics, item_margin_detail,
     invalidate_discover_cache, invalidate_ship_margin_cache, t1_bpc_invention_needs,
@@ -620,7 +620,12 @@ def do_estimate_invention(product_name: str, decryptor_name: str | None = None,
         )
     _, product_blueprint_id = recipe
 
-    type_ids = list(_structural_material_closure([product_blueprint_id]))
+    # Seeded with the blueprint's own build materials plus its invention
+    # inputs: the closure walks products, and a blueprint itself is no
+    # product, so seeding with product_blueprint_id alone priced nothing.
+    build_materials = [m for m, _qty in storage.get_blueprint_materials(product_blueprint_id, 1)]
+    type_ids = list(_structural_material_closure(build_materials)
+                    | _invention_input_type_ids(product_blueprint_id))
     home = pricing.home_prices(cfg, type_ids)
     jita = pricing.jita_prices(type_ids)
     # activity 1 = Manufacturing: the invented BPC's *own* build materials,

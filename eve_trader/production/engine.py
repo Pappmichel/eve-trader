@@ -4167,7 +4167,14 @@ def _structural_material_closure(seed_type_ids: Iterable[int]) -> set[int]:
     de-duplication means a shared base material (T1 minerals, common
     components) is only ever expanded once regardless of how many parents
     reach it - the walk is breadth-first specifically so a type_id already
-    visited at a shallower depth is never re-queued at a deeper one."""
+    visited at a shallower depth is never re-queued at a deeper one.
+
+    An invented (Tech II/III) item also pulls in its invention inputs
+    (_invention_input_type_ids): datacores, every decryptor and Tech III
+    relics. They are not blueprint materials, so without this they were
+    never priced and invention.estimate() saw all of them as unpriced
+    (confirmed live 2026-10-12: Loki invention showed 0 ISK for datacores,
+    decryptors and relics and no cost per run)."""
     visited: set[int] = set()
     frontier: set[int] = set(seed_type_ids)
     depth = 0
@@ -4175,16 +4182,31 @@ def _structural_material_closure(seed_type_ids: Iterable[int]) -> set[int]:
         visited |= frontier
         next_frontier: set[int] = set()
         for type_id in frontier:
-            _activity, bp = classify_activity(type_id)
+            activity, bp = classify_activity(type_id)
             if bp is None:
                 continue
             blueprint_id, activity_id, _product_qty = bp
             for material_id, _base_qty in storage.get_blueprint_materials(blueprint_id, activity_id):
                 if material_id not in visited:
                     next_frontier.add(material_id)
+            if activity == "Tech II":
+                visited |= _invention_input_type_ids(blueprint_id)
         frontier = next_frontier
         depth += 1
     return visited
+
+
+def _invention_input_type_ids(product_blueprint_type_id: int) -> set[int]:
+    """Bought inputs of every invention source for `product_blueprint_type_id`:
+    datacores, all real decryptors, and the source itself when it is a Tech
+    III relic (a real T1 blueprint is not bought - see invention.py)."""
+    type_ids = {d.type_id for d in DECRYPTORS.values() if d.type_id}
+    for source_id in storage.find_invention_recipe_candidates_by_product_type_id(product_blueprint_type_id):
+        recipe = storage.get_invention_recipe(source_id, product_blueprint_type_id)
+        type_ids.update(material_id for material_id, _qty in (recipe or {}).get("datacores", []))
+        if storage.get_type_category(source_id) == ANCIENT_RELIC_CATEGORY_ID:
+            type_ids.add(source_id)
+    return type_ids
 
 
 def build_material_tree(type_id: int, quantity: float, cfg: ProductionConfig, home: dict, jita: dict,
