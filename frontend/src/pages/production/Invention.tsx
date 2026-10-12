@@ -104,6 +104,9 @@ export default function Invention() {
   ], [])
 
   const columns = useMemo<ColumnDef<InventionResult, any>[]>(() => [
+    // Tech III compares every relic grade with every decryptor, so each row
+    // must name its source (a Tech II item has a single T1 blueprint).
+    { header: 'Invention Source', accessorKey: 't1_blueprint_name', size: 240 },
     { header: 'Decryptor', accessorKey: 'decryptor', size: 130 },
     { header: 'Success Chance', accessorKey: 'probability', size: 140, cell: (i) => pct(i.getValue()) },
     { header: 'BPC Runs', accessorKey: 'output_runs', size: 100, cell: (i) => qty(i.getValue()) },
