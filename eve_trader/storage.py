@@ -6961,6 +6961,18 @@ def upsert_doctrine_contract_history(rows: list[tuple]) -> None:
         )
 
 
+def doctrine_contract_history_ids(contract_ids: list[int]) -> set[int]:
+    """Which of `contract_ids` already have a history row."""
+    if not contract_ids:
+        return set()
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT contract_id FROM doctrine_contract_history WHERE contract_id = ANY(?)",
+            (list(contract_ids),),
+        ).fetchall()
+    return {r[0] for r in rows}
+
+
 def load_doctrine_contract_history() -> list[tuple]:
     """Most-recently-completed first; a history row with no date_completed
     at all (shouldn't normally happen - ESI sets it the moment a contract

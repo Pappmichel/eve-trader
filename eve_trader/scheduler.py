@@ -233,9 +233,15 @@ def _check_and_run_due_jobs_for_tenant(
     # a status entry - when something is actually due. do_sync_due re-derives
     # the same list, so the two cannot disagree.
     if esi_orchestrator.pending_due(granted_tools=grants):
+        # Doctrine's structure filter for the contracts fetcher, the same
+        # extra the Doctrine syncs pass - without it a scheduled sync stores
+        # (and records history for) contracts at every location.
+        from .doctrine.config import DOCTRINE_CONFIG
+        structure_id = DOCTRINE_CONFIG.effective_structure_id
+        extra = {"structure_id": structure_id} if structure_id is not None else None
         _run_job(
             tenant_id, "esi_data_sync",
-            lambda: esi_orchestrator.do_sync_due(granted_tools=grants),
+            lambda: esi_orchestrator.do_sync_due(granted_tools=grants, extra=extra),
         )
 
     if _portfolio_snapshot_due(cfg):

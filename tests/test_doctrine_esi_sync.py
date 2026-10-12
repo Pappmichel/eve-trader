@@ -102,3 +102,72 @@ def test_issued_by_own_identity_rejects_third_party_contract_merely_assigned():
 def test_issued_by_own_identity_false_when_corporation_id_unknown():
     contract = _contract(issuer_id=999, issuer_corporation_id=500)
     assert esi_sync._issued_by_own_identity(contract, character_id=42, corporation_id=None) is False
+
+
+# ------------------------------------------------------------- finished-contract history
+class _FakeClient:
+    def __init__(self, items=None):
+        self.items = items or {}
+        self.item_calls = []
+
+    def resolve_names(self, ids):
+        return {i: f"name{i}" for i in ids}
+
+    def character_contract_items(self, character_id, contract_id, auth_role):
+        self.item_calls.append(("character", character_id, contract_id))
+        return self.items[contract_id]
+
+    def corporation_contract_items(self, corporation_id, contract_id, auth_role):
+        self.item_calls.append(("corporation", corporation_id, contract_id))
+        return self.items[contract_id]
+
+
+def _finished(cid, **overrides):
+    return _contract(contract_id=cid, status="finished", title="t", price=1.0, acceptor_id=7,
+                     date_issued="2026-10-10T00:00:00Z", date_completed="2026-10-11T00:00:00Z", **overrides)
+
+
+def test_fetcher_records_history_for_matched_snapshot_contract_before_replace(monkeypatch):
+    """The scheduler's contracts sync replaces the snapshot without the
+    finished contract; its fitting match must be recorded first."""
+    from eve_trader import storage
+    from eve_trader.esi_data import fetchers
+
+    snapshot_row = (1, "role", False, 42, STRUCTURE_ID, "outstanding", "t", 1.0, None, "fit-1", 1.0, "valid", "x")
+    written = []
+    monkeypatch.setattr(storage, "doctrine_contract_history_ids", lambda ids: {3})
+    monkeypatch.setattr(storage, "load_doctrine_contracts",
+                        lambda: [snapshot_row, (2, *snapshot_row[1:9], None, None, "unmatched", "x"),
+                                 (3, *snapshot_row[1:])])
+    monkeypatch.setattr(storage, "get_fitting", lambda fid: (fid, "doc", "Fit Name", None, 999))
+    monkeypatch.setattr(storage, "upsert_doctrine_contract_history", lambda rows: written.extend(rows))
+
+    n = fetchers._record_finished_history(_FakeClient(), [_finished(1), _finished(2), _finished(3)],
+                                          auth_role="role")
+    assert n == 1
+    assert written == [(1, "role", "fit-1", "Fit Name", 999, "t", 1.0, 7, "name7",
+                        "2026-10-10T00:00:00Z", "2026-10-11T00:00:00Z")]
+
+
+def test_doctrine_sync_matches_finished_contract_missing_from_snapshot(monkeypatch):
+    """A finished contract whose snapshot row is already gone (or that was
+    never matched) is matched from its ESI items; recorded ones are skipped."""
+    from eve_trader import storage
+
+    client = _FakeClient(items={10: [{"record_id": 1, "type_id": 999, "quantity": 1}]})
+    written = []
+    monkeypatch.setattr(esi_sync, "ESIClient", lambda tokens=None: client)
+    monkeypatch.setattr(esi_sync.engine, "load_match_candidates", lambda: [])
+    monkeypatch.setattr(esi_sync.engine, "match_and_validate_contract",
+                        lambda cid, title, items, cands, cfg: ("fit-1", 1.0, [], "valid"))
+    monkeypatch.setattr(storage, "doctrine_contract_history_ids", lambda ids: {11})
+    monkeypatch.setattr(storage, "get_fitting", lambda fid: (fid, "doc", "Fit Name", None, 999))
+    monkeypatch.setattr(storage, "upsert_doctrine_contract_history", lambda rows: written.extend(rows))
+
+    finished = {
+        10: (_finished(10), [("character", 42, "char-role"), ("corporation", 500, "corp-role")]),
+        11: (_finished(11), [("character", 42, "char-role")]),
+    }
+    assert esi_sync._record_unmatched_finished(finished, tm=None) == 1
+    assert client.item_calls == [("corporation", 500, 10)]
+    assert [(r[0], r[1], r[2], r[8]) for r in written] == [(10, "corp-role", "fit-1", "name7")]

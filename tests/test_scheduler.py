@@ -499,7 +499,22 @@ def test_esi_job_gets_the_tenants_granted_tools(monkeypatch):
     monkeypatch.setattr(scheduler.tenant_eligibility, "granted_tools", lambda tid: {"production"})
     scheduler._check_and_run_due_jobs_for_tenant("t", TradingConfig(scheduler_enabled=True))
     assert seen == {"granted_tools": {"production"}}
-    assert calls == [("esi", {"granted_tools": {"production"}})]
+    assert [(name, kw["granted_tools"]) for name, kw in calls] == [("esi", {"production"})]
+
+
+def test_esi_job_passes_the_doctrine_structure(monkeypatch):
+    """Without the structure filter a scheduled contracts sync stores (and
+    records history for) Doctrine contracts at every location."""
+    from eve_trader.doctrine.config import DoctrineConfig, _doctrine_config_var
+
+    calls = _due_env(monkeypatch, sync_time=_hours_ago(1))
+    monkeypatch.setattr(esi_orchestrator, "pending_due", lambda **kw: [("character", 1, "contracts", "doctrine")])
+    token = _doctrine_config_var.set(DoctrineConfig(doctrine_structure_id=1049588174021))
+    try:
+        scheduler._check_and_run_due_jobs_for_tenant("t", TradingConfig(scheduler_enabled=True))
+    finally:
+        _doctrine_config_var.reset(token)
+    assert calls[0][1]["extra"] == {"structure_id": 1049588174021}
 
 
 def test_pipeline_needs_the_trading_grant(monkeypatch):
