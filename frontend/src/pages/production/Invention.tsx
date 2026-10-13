@@ -87,7 +87,14 @@ export default function Invention() {
     { header: 'Runs Needed', accessorKey: 'runs_needed', size: 130, cell: (i) => qty(i.getValue()) },
     { header: 'BPCs Needed', accessorKey: 'bpcs_needed', size: 130, cell: (i) => qty(i.getValue()) },
     { header: 'Recommended Invention Runs', accessorKey: 'recommended_invention_runs', size: 200, cell: (i) => qty(i.getValue()) },
-    { header: 'Stockpile %', accessorKey: 'stockpile_pct', size: 120, cell: (i) => stockpileBadge(i.getValue()) },
+    {
+      // No BPC target (stock target 0 and no shortfall): nothing to stock up,
+      // so show a dash instead of a percentage of zero (a red 0% read as
+      // "urgent, none on hand" next to 0 recommended runs). Empty in exports.
+      header: 'Stockpile %', id: 'stockpile_pct', size: 120, sortUndefined: 'last',
+      accessorFn: (r) => (r.bpc_target_runs > 0 ? r.stockpile_pct : undefined),
+      cell: (i) => (i.getValue() === undefined ? '–' : stockpileBadge(i.getValue())),
+    },
   ], [])
 
   const t1BpcColumns = useMemo<ColumnDef<T1BpcInventionNeedRow, any>[]>(() => [
@@ -169,7 +176,7 @@ export default function Invention() {
               which decryptor a job used). Runs needed = BPC Target − T2 BPCs Owned − In Invention.
               BPCs needed = runs needed ÷ runs per BPC, and recommended invention runs = BPCs needed ÷
               success chance, both rounded up. Stockpile % = (T2 BPCs Owned + In Invention) ÷ BPC
-              Target.
+              Target, or – when the BPC Target is 0 (nothing to stock up).
             </Text>
           </>
         )}
