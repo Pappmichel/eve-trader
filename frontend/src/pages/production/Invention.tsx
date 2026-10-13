@@ -65,10 +65,12 @@ export default function Invention() {
       // A Tech III relic grade other than the most profitable one, invented
       // from stock first and never bought (engine._use_stocked_relics).
       cell: (i) => i.row.original.from_stock ? (
-        <Group gap={6} wrap="nowrap">
-          <Text size="sm">{i.getValue()}</Text>
+        // inline-flex: a block Group pushed the cell's copy/filter icons onto a
+        // second line and made the row taller than the others.
+        <Group gap={6} wrap="nowrap" display="inline-flex" style={{ verticalAlign: 'middle', maxWidth: '100%' }}>
+          <Text size="sm" truncate>{i.getValue()}</Text>
           <Tooltip label="Relics already in stock are used before the most profitable grade is bought">
-            <Badge color="accent" variant="light" size="sm">in stock</Badge>
+            <Badge color="accent" variant="light" size="sm" style={{ flexShrink: 0 }}>in stock</Badge>
           </Tooltip>
         </Group>
       ) : i.getValue(),

@@ -531,10 +531,15 @@ export function DataTable<T>({
   useLayoutEffect(() => {
     const vp = scrollRef.current
     if (!vp) return
-    const row = vp.querySelector<HTMLElement>('tbody tr[data-dt-row]')
+    // The smallest mounted row, not the first one: a cell that still ends up
+    // taller than one line made the first row's height depend on the scroll
+    // position, and feeding that back into the virtualizer moved the rows, so
+    // the measurement flipped between two values on every frame (flicker).
+    const rowEls = vp.querySelectorAll<HTMLElement>('tbody tr[data-dt-row]')
+    const rowHeights = Array.from(rowEls, (el) => el.offsetHeight).filter((h) => h > 0)
     const head = vp.querySelector<HTMLElement>('thead')
     const next = {
-      row: row ? row.offsetHeight : measured.row,
+      row: rowHeights.length > 0 ? Math.min(...rowHeights) : measured.row,
       head: head ? head.offsetHeight : measured.head,
       hScroll: vp.scrollWidth > vp.clientWidth + 1,
     }
