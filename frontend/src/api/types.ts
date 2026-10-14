@@ -423,6 +423,8 @@ export interface InventionResult {
   // every material, rather than a silent (understated) 0.
   material_savings_per_run: number | null
   net_cost_per_run: number | null
+  // Picked over a cheaper option because its BPC has more runs.
+  preferred_for_runs: boolean
 }
 
 export interface AssetPlanBlocker {

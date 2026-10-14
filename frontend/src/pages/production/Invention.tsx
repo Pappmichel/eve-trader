@@ -241,11 +241,17 @@ export default function Invention() {
           <Card withBorder padding="sm" w={400}>
             <Text size="xs" c="dimmed" tt="uppercase">{best.t1_blueprint_name} → {best.product_name}</Text>
             <Title order={3} c="accent">{best.decryptor}</Title>
+            {best.preferred_for_runs && (
+              <Text size="xs" c="dimmed">
+                More BPC runs than the cheapest option, which is less than 1% of the build materials cheaper.
+              </Text>
+            )}
           </Card>
           <DataTable rowDetail data={results} columns={columns} maxHeight={400} />
           <Text size="xs" c="dimmed">
             Net cost/run = cost/run minus the material savings this decryptor's ME gives when building from this
-            BPC - 'Best' is then chosen the same way as in the build list.
+            BPC - 'Best' is then chosen the same way as in the build list: the cheapest, unless an option with
+            more BPC runs costs less than 1% of the build materials more (fewer invention and copy jobs).
           </Text>
         </>
       ) : (

@@ -280,6 +280,7 @@ class InventionResult(_Base):
     # every material - see production/invention.py's own comment.
     material_savings_per_run: Optional[float]
     net_cost_per_run: Optional[float]
+    preferred_for_runs: bool = False
 
 
 class AssetPlanBlocker(_Base):

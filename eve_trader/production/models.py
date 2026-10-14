@@ -476,6 +476,9 @@ class InventionResult:
     # attempt (invention.attempt_job_fee), included in total_attempt_cost.
     # 0 when ESI adjusted prices were unavailable.
     job_fee: float = 0.0
+    # True when invention.rank put this row first over a cheaper one because
+    # its BPC has more runs (within RUNS_PREFERENCE_FRACTION).
+    preferred_for_runs: bool = False
 
 
 @dataclass

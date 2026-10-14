@@ -170,3 +170,47 @@ def test_job_fees_weigh_more_on_few_run_decryptors(monkeypatch):
         return with_fees.expected_cost_per_run - without.expected_cost_per_run
 
     assert fee_per_run("Accelerant") > fee_per_run("Parity")
+
+
+def _result(decryptor, runs, net):
+    return invention.InventionResult(
+        t1_blueprint_type_id=1, t1_blueprint_name="T1", product_type_id=2, product_name="T2",
+        decryptor=decryptor, probability=0.5, output_runs=runs, datacore_cost=0.0, decryptor_cost=0.0,
+        relic_cost=0.0, total_attempt_cost=0.0, expected_cost_per_success=0.0, expected_cost_per_run=0.0,
+        me=0, te=0, material_savings_per_run=0.0, net_cost_per_run=net)
+
+
+def test_rank_prefers_more_bpc_runs_within_one_percent_of_material_cost():
+    # Material cost 100M: 1% = 1M. Parity is 0.6M dearer but has twice the runs.
+    accelerant, parity = _result("Accelerant", 2, -4.0e6), _result("Parity", 4, -3.4e6)
+
+    ranked = invention.rank([accelerant, parity], 100e6)
+
+    assert [r.decryptor for r in ranked] == ["Parity", "Accelerant"]
+    assert ranked[0].preferred_for_runs is True
+    assert ranked[1].preferred_for_runs is False
+
+
+def test_rank_keeps_the_cheapest_when_the_gap_is_one_percent_or_more():
+    accelerant, parity = _result("Accelerant", 2, -4.0e6), _result("Parity", 4, -2.9e6)
+
+    ranked = invention.rank([parity, accelerant], 100e6)
+
+    assert [r.decryptor for r in ranked] == ["Accelerant", "Parity"]
+    assert not ranked[0].preferred_for_runs
+
+
+def test_rank_picks_the_most_runs_among_all_near_ties_and_ignores_unpriced():
+    rows = [_result("Accelerant", 2, -4.0e6), _result("Parity", 4, -3.5e6),
+            _result("Attainment", 5, -3.2e6), _result("Augmentation", 10, None)]
+
+    ranked = invention.rank(rows, 100e6)
+
+    assert ranked[0].decryptor == "Attainment"
+
+
+def test_rank_without_a_material_cost_is_plain_cheapest_first():
+    accelerant, parity = _result("Accelerant", 2, -4.0e6), _result("Parity", 4, -3.99e6)
+
+    assert invention.rank([parity, accelerant], None)[0].decryptor == "Accelerant"
+    assert invention.rank([parity, accelerant], 0.0)[0].decryptor == "Accelerant"

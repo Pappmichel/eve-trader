@@ -38,7 +38,7 @@ must be bought for every attempt (relic_cost, reported by a user
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional
 
 from .. import storage
@@ -109,6 +109,36 @@ FETCH_RATES: object = object()
 
 def _resolve_rates(rates, cfg: ProductionConfig) -> Optional[FeeRates]:
     return fee_rates(cfg) if rates is FETCH_RATES else rates
+
+
+# Within this share of the invented item's build material cost per run, an
+# option whose BPC has more runs beats a cheaper one (confirmed with the
+# user 2026-10-14): fewer runs per BPC mean more invention and copy jobs,
+# and so more slots, for the same output - a cost the ISK figures miss.
+# Accelerant (2 runs) vs. Parity (4 runs) on T2 hulls is the case this is for.
+RUNS_PREFERENCE_FRACTION = 0.01
+
+
+def _net_key(result: InventionResult) -> float:
+    return result.net_cost_per_run if result.net_cost_per_run is not None else float("inf")
+
+
+def rank(results: list[InventionResult],
+         reducible_material_cost_per_run: Optional[float]) -> list[InventionResult]:
+    """Cheapest net cost per run first, except that the option with the most
+    BPC runs among those within RUNS_PREFERENCE_FRACTION x
+    `reducible_material_cost_per_run` of the cheapest moves to the front
+    (marked preferred_for_runs). No change without a known material cost."""
+    ranked = sorted(results, key=_net_key)
+    if not ranked or ranked[0].net_cost_per_run is None or not reducible_material_cost_per_run:
+        return ranked
+    limit = ranked[0].net_cost_per_run + RUNS_PREFERENCE_FRACTION * reducible_material_cost_per_run
+    close = [r for r in ranked if r.net_cost_per_run is not None and r.net_cost_per_run <= limit]
+    pick = max(close, key=lambda r: (r.output_runs, -r.net_cost_per_run))
+    if pick.output_runs <= ranked[0].output_runs:
+        return ranked
+    ranked.remove(pick)
+    return [replace(pick, preferred_for_runs=True)] + ranked
 
 
 def _manufacturing_eiv(blueprint_type_id: int, adjusted_prices: dict[int, float]) -> float:
@@ -290,7 +320,8 @@ def compare_decryptors(t1_blueprint_type_id: int, home: dict, jita: dict,
                         product_type_id: Optional[int] = None, rates=FETCH_RATES) -> list[InventionResult]:
     """One InventionResult per decryptor option (including "None"), cheapest
     net cost per BPC run first (expected invention cost minus the ME material
-    savings that decryptor gives on every subsequent build). Pass
+    savings that decryptor gives on every subsequent build), with rank()'s
+    more-runs preference for near-ties. Pass
     `product_type_id` when the T1 invents into more than one T2 (see
     estimate / storage.get_invention_recipe)."""
     rates = _resolve_rates(rates, cfg)
@@ -299,8 +330,7 @@ def compare_decryptors(t1_blueprint_type_id: int, home: dict, jita: dict,
                  product_type_id=product_type_id, rates=rates)
         for name in DECRYPTORS
     ]
-    results.sort(key=lambda r: r.net_cost_per_run if r.net_cost_per_run is not None else float("inf"))
-    return results
+    return rank(results, reducible_material_cost_per_run)
 
 
 def best_decryptor_for_item(t1_blueprint_type_id: int, home: dict, jita: dict,
@@ -345,8 +375,7 @@ def compare_recipes_and_decryptors(product_blueprint_type_id: int, home: dict, j
                                               product_type_id=product_blueprint_type_id, rates=rates))
         except ValueError:
             continue
-    results.sort(key=lambda r: r.net_cost_per_run if r.net_cost_per_run is not None else float("inf"))
-    return results
+    return rank(results, reducible_material_cost_per_run)
 
 
 def best_recipe_and_decryptor(product_blueprint_type_id: int, home: dict, jita: dict,
@@ -374,18 +403,12 @@ def best_recipe_for_decryptor(product_blueprint_type_id: int, decryptor_name: st
     None if no invention recipe/probability data exists for
     `product_blueprint_type_id` at all."""
     rates = _resolve_rates(rates, cfg)
-    best: Optional[InventionResult] = None
+    results: list[InventionResult] = []
     for candidate in storage.find_invention_recipe_candidates_by_product_type_id(product_blueprint_type_id):
         try:
-            result = estimate(candidate, decryptor_name, home, jita, cfg, reducible_material_cost_per_run,
-                              product_type_id=product_blueprint_type_id, rates=rates)
+            results.append(estimate(candidate, decryptor_name, home, jita, cfg, reducible_material_cost_per_run,
+                                    product_type_id=product_blueprint_type_id, rates=rates))
         except ValueError:
             continue
-        if best is None:
-            best = result
-            continue
-        best_key = best.net_cost_per_run if best.net_cost_per_run is not None else float("inf")
-        result_key = result.net_cost_per_run if result.net_cost_per_run is not None else float("inf")
-        if result_key < best_key:
-            best = result
-    return best
+    ranked = rank(results, reducible_material_cost_per_run)
+    return ranked[0] if ranked else None
