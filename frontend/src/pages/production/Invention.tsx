@@ -124,6 +124,7 @@ export default function Invention() {
     { header: 'Datacore Cost', accessorKey: 'datacore_cost', size: 140, cell: (i) => isk(i.getValue()) },
     { header: 'Decryptor Cost', accessorKey: 'decryptor_cost', size: 140, cell: (i) => isk(i.getValue()) },
     { header: 'Relic Cost', accessorKey: 'relic_cost', size: 140, cell: (i) => isk(i.getValue()) },
+    { header: 'Job Fees', accessorKey: 'job_fee', size: 130, cell: (i) => isk(i.getValue()) },
     { header: 'Cost/Success', accessorKey: 'expected_cost_per_success', size: 140, cell: (i) => isk(i.getValue()) },
     { header: 'Cost/Run', accessorKey: 'expected_cost_per_run', size: 130, cell: (i) => isk(i.getValue()) },
     { header: 'ME Savings/Run', accessorKey: 'material_savings_per_run', size: 150, cell: (i) => isk(i.getValue()) },

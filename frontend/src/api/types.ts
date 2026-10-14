@@ -412,6 +412,8 @@ export interface InventionResult {
   datacore_cost: number
   decryptor_cost: number
   relic_cost: number
+  // Invention + copy job fees per attempt.
+  job_fee: number
   total_attempt_cost: number
   expected_cost_per_success: number | null
   expected_cost_per_run: number | null
