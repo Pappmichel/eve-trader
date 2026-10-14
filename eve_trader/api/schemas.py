@@ -270,6 +270,7 @@ class InventionResult(_Base):
     datacore_cost: float
     decryptor_cost: float
     relic_cost: float
+    job_fee: float = 0.0
     total_attempt_cost: float
     expected_cost_per_success: Optional[float]
     expected_cost_per_run: Optional[float]
@@ -279,6 +280,7 @@ class InventionResult(_Base):
     # every material - see production/invention.py's own comment.
     material_savings_per_run: Optional[float]
     net_cost_per_run: Optional[float]
+    preferred_for_runs: bool = False
 
 
 class AssetPlanBlocker(_Base):

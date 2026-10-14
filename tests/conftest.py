@@ -60,6 +60,15 @@ def _reset_goonmetrics_region_coverage():
 
 
 @pytest.fixture(autouse=True)
+def _no_live_invention_fee_rates(monkeypatch):
+    """invention.estimate reads live ESI adjusted prices and cost indices for
+    its job fees unless a caller passes `rates`. Tests never reach ESI:
+    fees are left out unless a test passes its own FeeRates."""
+    from eve_trader.production import invention
+    monkeypatch.setattr(invention, "fee_rates", lambda cfg=None: None)
+
+
+@pytest.fixture(autouse=True)
 def _reset_shortlist_trends_cache():
     """actions.do_shortlist_trends caches per tenant; tests that monkeypatch
     storage must not get an earlier test's result back."""

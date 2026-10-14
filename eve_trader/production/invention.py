@@ -25,32 +25,140 @@ see this module's own known-simplifications paragraph below and estimate()'s
 relic_cost handling for why this matters for the total cost, not just how
 the "blueprint" gets acquired.
 
-Known simplifications: ignores job installation cost (facility fee) for the
-invention job itself, and - for a genuine T1 blueprint only, never a Tech
-III relic (see above) - ignores the T1 BPC's own copy cost (copying time +
-copy job fee to produce the blueprint copy an invention attempt consumes) -
-both real EVE costs, neither modeled here. Since both are omitted
-consistently across every decryptor choice for the same item, they don't
-change *which* decryptor `estimate` recommends unless two decryptors are
-close enough that this gap could plausibly flip the ranking - worth keeping
-in mind for genuinely marginal calls, confirmed real 2026-08-18. The T1-BPC-
-copy-cost omission specifically does NOT extend to a Tech III relic - unlike
-a T1 BPO you already own and can reprint near-for-free, a relic must be
-bought/looted fresh for every single attempt, so omitting its cost the same
-way would be a real, not-minor, understatement of Tech III's true cost
-(confirmed real, reported by a user, 2026-08-30 - see estimate()'s own
-relic_cost handling, which is why this simplification is now scoped to
-"a real blueprint" specifically, not "the invention input" generally).
+Job fees per attempt (added 2026-10-14, see attempt_job_fee): the invention
+job's own installation fee and, for a genuine T1 blueprint, the fee of the
+one-run copy job that makes the BPC the attempt consumes. Both used to be
+left out, which biased the decryptor ranking toward few-run decryptors
+(Accelerant, Process): they need the most attempts per BPC run, so every
+omitted per-attempt cost was understated most for them. The T1 BPC's
+copying *time* is still not modeled. A Tech III relic has no copy job but
+must be bought for every attempt (relic_cost, reported by a user
+2026-08-30).
 """
 from __future__ import annotations
 
+import logging
+from dataclasses import dataclass, replace
 from typing import Optional
 
 from .. import storage
 from . import pricing
 from .config import PRODUCTION_CONFIG, ProductionConfig
-from .constants import ANCIENT_RELIC_CATEGORY_ID, DECRYPTORS
+from .constants import (
+    ACTIVITY_MODS, ANCIENT_RELIC_CATEGORY_ID, DECRYPTORS, SCC_SURCHARGE_RATE, structure_rig_multiplier,
+)
 from .models import InventionResult
+
+logger = logging.getLogger(__name__)
+
+# EVE bases copying and invention fees on 2% of the manufacturing EIV (ME0
+# materials x ESI adjusted price) of the blueprint's product. For invention
+# that product is the *invented* item, not the T1 one - confirmed against a
+# real Vexor -> Ishtar job (forums.eveonline.com "Job Cost of Invention and
+# Copy": Ishtar EIV 137,610,231 x 0.02 = 2,752,205, the job's shown EIV).
+JOB_BASE_EIV_FRACTION = 0.02
+
+
+@dataclass(frozen=True)
+class FeeRates:
+    """Inputs for attempt_job_fee: ESI adjusted prices and the full job-cost
+    rate (system index x structure cost bonus + facility tax + SCC
+    surcharge, same shape as engine._job_cost_rate) for invention and
+    copying."""
+    adjusted_prices: dict[int, float]
+    invention_rate: float
+    copying_rate: float
+
+
+def fee_rates(cfg: ProductionConfig = PRODUCTION_CONFIG) -> Optional[FeeRates]:
+    """Invention and copy jobs are priced in the manufacturing system and
+    structure (cfg.manufacturing_system_id / manufacturing_structure_type).
+    A missing system or index falls back to the flat Tech II rate, like
+    engine._job_cost_rate. None if ESI's adjusted prices can't be read - the
+    fees are then left out (0) rather than guessed. Both ESI reads are
+    cached class-wide by ESIClient."""
+    from ..esi_client import ESIClient
+
+    client = ESIClient()
+    try:
+        adjusted = client.get_adjusted_prices()
+    except Exception as e:  # noqa: BLE001 - best-effort, same as engine._PlanContext
+        logger.warning("Invention job fees left out: ESI adjusted prices unavailable (%s)", e)
+        return None
+    indices: dict[str, float] = {}
+    if cfg.manufacturing_system_id is not None:
+        try:
+            indices = client.get_system_cost_indices(cfg.manufacturing_system_id,
+                                                     activities=("invention", "copying"))
+        except Exception:  # noqa: BLE001 - falls back to the flat rate below
+            indices = {}
+    cost_mult, _, _ = structure_rig_multiplier(cfg.manufacturing_structure_type, cfg.manufacturing_rig_tier)
+    flat = ACTIVITY_MODS["Tech II"].job_cost_rate
+    surcharge = cfg.facility_tax_rate + SCC_SURCHARGE_RATE
+    return FeeRates(
+        adjusted_prices=adjusted,
+        invention_rate=indices.get("invention", flat) * cost_mult + surcharge,
+        copying_rate=indices.get("copying", flat) * cost_mult + surcharge,
+    )
+
+
+# Default for every `rates` parameter below: read the live rates once per
+# public call (fee_rates). Pass None to leave job fees out.
+FETCH_RATES: object = object()
+
+
+def _resolve_rates(rates, cfg: ProductionConfig) -> Optional[FeeRates]:
+    return fee_rates(cfg) if rates is FETCH_RATES else rates
+
+
+# Within this share of the invented item's build material cost per run, an
+# option whose BPC has more runs beats a cheaper one (confirmed with the
+# user 2026-10-14): fewer runs per BPC mean more invention and copy jobs,
+# and so more slots, for the same output - a cost the ISK figures miss.
+# Accelerant (2 runs) vs. Parity (4 runs) on T2 hulls is the case this is for.
+RUNS_PREFERENCE_FRACTION = 0.01
+
+
+def _net_key(result: InventionResult) -> float:
+    return result.net_cost_per_run if result.net_cost_per_run is not None else float("inf")
+
+
+def rank(results: list[InventionResult],
+         reducible_material_cost_per_run: Optional[float]) -> list[InventionResult]:
+    """Cheapest net cost per run first, except that the option with the most
+    BPC runs among those within RUNS_PREFERENCE_FRACTION x
+    `reducible_material_cost_per_run` of the cheapest moves to the front
+    (marked preferred_for_runs). No change without a known material cost."""
+    ranked = sorted(results, key=_net_key)
+    if not ranked or ranked[0].net_cost_per_run is None or not reducible_material_cost_per_run:
+        return ranked
+    limit = ranked[0].net_cost_per_run + RUNS_PREFERENCE_FRACTION * reducible_material_cost_per_run
+    close = [r for r in ranked if r.net_cost_per_run is not None and r.net_cost_per_run <= limit]
+    pick = max(close, key=lambda r: (r.output_runs, -r.net_cost_per_run))
+    if pick.output_runs <= ranked[0].output_runs:
+        return ranked
+    ranked.remove(pick)
+    return [replace(pick, preferred_for_runs=True)] + ranked
+
+
+def _manufacturing_eiv(blueprint_type_id: int, adjusted_prices: dict[int, float]) -> float:
+    return sum(qty * adjusted_prices.get(material_id, 0.0)
+               for material_id, qty in storage.get_blueprint_materials(blueprint_type_id, 1))
+
+
+def attempt_job_fee(t1_blueprint_type_id: int, invented_blueprint_type_id: int, is_relic: bool,
+                    rates: Optional[FeeRates]) -> float:
+    """ISK of job fees one invention attempt costs: the invention job plus,
+    for a T1 blueprint (a relic is consumed as is), the one-run copy job
+    that makes the BPC it consumes. 0 when `rates` is None."""
+    if rates is None:
+        return 0.0
+    fee = (JOB_BASE_EIV_FRACTION * rates.invention_rate
+           * _manufacturing_eiv(invented_blueprint_type_id, rates.adjusted_prices))
+    if not is_relic:
+        fee += (JOB_BASE_EIV_FRACTION * rates.copying_rate
+                * _manufacturing_eiv(t1_blueprint_type_id, rates.adjusted_prices))
+    return fee
 
 
 def reducible_material_cost(manufacturing_blueprint_id: int, activity_id: int, home: dict, jita: dict,
@@ -91,7 +199,7 @@ def skill_multiplier(cfg: ProductionConfig = PRODUCTION_CONFIG) -> float:
 
 def estimate(t1_blueprint_type_id: int, decryptor_name: str, home: dict, jita: dict,
              cfg: ProductionConfig = PRODUCTION_CONFIG, reducible_material_cost_per_run: Optional[float] = 0.0,
-             product_type_id: Optional[int] = None) -> InventionResult:
+             product_type_id: Optional[int] = None, rates=FETCH_RATES) -> InventionResult:
     """`reducible_material_cost_per_run` is the cost of the resulting item's own
     build materials that actually scale with ME (base qty > 1 - EVE never
     reduces a material below 1 unit/run) - pass 0 to ignore build-side ME
@@ -101,7 +209,11 @@ def estimate(t1_blueprint_type_id: int, decryptor_name: str, home: dict, jita: d
     None too - deliberately NOT folded into all_prices_known below, which
     gates the separate, invention-attempt-only expected_cost_per_success/
     expected_cost_per_run (reducible_material_cost_per_run affects only the
-    build-side ME credit, not the cost of the invention attempt itself)."""
+    build-side ME credit, not the cost of the invention attempt itself).
+
+    `rates` (a FeeRates, FETCH_RATES or None) prices the per-attempt job
+    fees into total_attempt_cost - see attempt_job_fee."""
+    rates = _resolve_rates(rates, cfg)
     recipe = storage.get_invention_recipe(t1_blueprint_type_id, product_type_id)
     if recipe is None:
         raise ValueError(f"No invention recipe found for type ID {t1_blueprint_type_id}.")
@@ -153,10 +265,10 @@ def estimate(t1_blueprint_type_id: int, decryptor_name: str, home: dict, jita: d
     # slightly - so it IS priced and added to total_attempt_cost, gated by
     # the same all_prices_known/None-if-unpriced handling as every other
     # priced input above. A genuine T1 blueprint (category_id 9) never hits
-    # this branch, so Tech II's existing "ignore BPC copy cost" behavior is
-    # completely unchanged.
+    # this branch; its BPC costs a copy job fee instead (attempt_job_fee).
     relic_cost = 0.0
-    if storage.get_type_category(t1_blueprint_type_id) == ANCIENT_RELIC_CATEGORY_ID:
+    is_relic = storage.get_type_category(t1_blueprint_type_id) == ANCIENT_RELIC_CATEGORY_ID
+    if is_relic:
         sde_type = storage.get_sde_type(t1_blueprint_type_id)
         volume = sde_type[3] if sde_type else None
         price = pricing.buy_price(t1_blueprint_type_id, home, jita, volume, cfg)
@@ -164,7 +276,9 @@ def estimate(t1_blueprint_type_id: int, decryptor_name: str, home: dict, jita: d
             all_prices_known = False
         relic_cost = price or 0.0
 
-    total_attempt_cost = datacore_cost + decryptor_cost + relic_cost
+    job_fee = attempt_job_fee(t1_blueprint_type_id, recipe["product_type_id"], is_relic, rates)
+
+    total_attempt_cost = datacore_cost + decryptor_cost + relic_cost + job_fee
     expected_cost_per_success = (
         (total_attempt_cost / probability) if probability > 0 and all_prices_known else None
     )
@@ -190,6 +304,7 @@ def estimate(t1_blueprint_type_id: int, decryptor_name: str, home: dict, jita: d
         product_name=product_type[2] if product_type else str(recipe["product_type_id"]),
         decryptor=decryptor_name, probability=probability, output_runs=output_runs,
         datacore_cost=datacore_cost, decryptor_cost=decryptor_cost, relic_cost=relic_cost,
+        job_fee=job_fee,
         total_attempt_cost=total_attempt_cost,
         expected_cost_per_success=expected_cost_per_success,
         expected_cost_per_run=expected_cost_per_run,
@@ -202,24 +317,26 @@ def estimate(t1_blueprint_type_id: int, decryptor_name: str, home: dict, jita: d
 def compare_decryptors(t1_blueprint_type_id: int, home: dict, jita: dict,
                         cfg: ProductionConfig = PRODUCTION_CONFIG,
                         reducible_material_cost_per_run: Optional[float] = 0.0,
-                        product_type_id: Optional[int] = None) -> list[InventionResult]:
+                        product_type_id: Optional[int] = None, rates=FETCH_RATES) -> list[InventionResult]:
     """One InventionResult per decryptor option (including "None"), cheapest
     net cost per BPC run first (expected invention cost minus the ME material
-    savings that decryptor gives on every subsequent build). Pass
+    savings that decryptor gives on every subsequent build), with rank()'s
+    more-runs preference for near-ties. Pass
     `product_type_id` when the T1 invents into more than one T2 (see
     estimate / storage.get_invention_recipe)."""
+    rates = _resolve_rates(rates, cfg)
     results = [
         estimate(t1_blueprint_type_id, name, home, jita, cfg, reducible_material_cost_per_run,
-                 product_type_id=product_type_id)
+                 product_type_id=product_type_id, rates=rates)
         for name in DECRYPTORS
     ]
-    results.sort(key=lambda r: r.net_cost_per_run if r.net_cost_per_run is not None else float("inf"))
-    return results
+    return rank(results, reducible_material_cost_per_run)
 
 
 def best_decryptor_for_item(t1_blueprint_type_id: int, home: dict, jita: dict,
                              cfg: ProductionConfig = PRODUCTION_CONFIG,
-                             reducible_material_cost_per_run: Optional[float] = 0.0) -> Optional[InventionResult]:
+                             reducible_material_cost_per_run: Optional[float] = 0.0,
+                             rates=FETCH_RATES) -> Optional[InventionResult]:
     """The single cheapest (net cost per run) decryptor choice for ONE fixed
     invention-source candidate (t1_blueprint_type_id), or None if no
     invention recipe/probability data exists for it. For Tech III, the
@@ -227,7 +344,8 @@ def best_decryptor_for_item(t1_blueprint_type_id: int, home: dict, jita: dict,
     compares decryptors within - see best_recipe_and_decryptor below to also
     let the grade itself vary, which is what Tech III actually needs."""
     try:
-        results = compare_decryptors(t1_blueprint_type_id, home, jita, cfg, reducible_material_cost_per_run)
+        results = compare_decryptors(t1_blueprint_type_id, home, jita, cfg, reducible_material_cost_per_run,
+                                     rates=rates)
     except ValueError:
         return None
     return results[0] if results else None
@@ -235,7 +353,8 @@ def best_decryptor_for_item(t1_blueprint_type_id: int, home: dict, jita: dict,
 
 def compare_recipes_and_decryptors(product_blueprint_type_id: int, home: dict, jita: dict,
                                     cfg: ProductionConfig = PRODUCTION_CONFIG,
-                                    reducible_material_cost_per_run: Optional[float] = 0.0) -> list[InventionResult]:
+                                    reducible_material_cost_per_run: Optional[float] = 0.0,
+                                    rates=FETCH_RATES) -> list[InventionResult]:
     """Every (invention-source candidate, decryptor) combination for
     `product_blueprint_type_id`, cheapest net cost per run first - generalizes
     compare_decryptors (which only ever varies the decryptor, for one fixed
@@ -248,31 +367,34 @@ def compare_recipes_and_decryptors(product_blueprint_type_id: int, home: dict, j
     each with materially different odds/output/cost, all now compared
     side by side rather than the app silently always assuming the highest-
     probability (Intact) grade and never even showing the other two."""
+    rates = _resolve_rates(rates, cfg)
     results: list[InventionResult] = []
     for candidate in storage.find_invention_recipe_candidates_by_product_type_id(product_blueprint_type_id):
         try:
             results.extend(compare_decryptors(candidate, home, jita, cfg, reducible_material_cost_per_run,
-                                              product_type_id=product_blueprint_type_id))
+                                              product_type_id=product_blueprint_type_id, rates=rates))
         except ValueError:
             continue
-    results.sort(key=lambda r: r.net_cost_per_run if r.net_cost_per_run is not None else float("inf"))
-    return results
+    return rank(results, reducible_material_cost_per_run)
 
 
 def best_recipe_and_decryptor(product_blueprint_type_id: int, home: dict, jita: dict,
                                cfg: ProductionConfig = PRODUCTION_CONFIG,
-                               reducible_material_cost_per_run: Optional[float] = 0.0) -> Optional[InventionResult]:
+                               reducible_material_cost_per_run: Optional[float] = 0.0,
+                               rates=FETCH_RATES) -> Optional[InventionResult]:
     """The single globally-cheapest (candidate, decryptor) combination for
     `product_blueprint_type_id` - see compare_recipes_and_decryptors, this is
     just its first element. None if no invention recipe/probability data
     exists for `product_blueprint_type_id` at all."""
-    results = compare_recipes_and_decryptors(product_blueprint_type_id, home, jita, cfg, reducible_material_cost_per_run)
+    results = compare_recipes_and_decryptors(product_blueprint_type_id, home, jita, cfg, reducible_material_cost_per_run,
+                                             rates=rates)
     return results[0] if results else None
 
 
 def best_recipe_for_decryptor(product_blueprint_type_id: int, decryptor_name: str, home: dict, jita: dict,
                                cfg: ProductionConfig = PRODUCTION_CONFIG,
-                               reducible_material_cost_per_run: Optional[float] = 0.0) -> Optional[InventionResult]:
+                               reducible_material_cost_per_run: Optional[float] = 0.0,
+                               rates=FETCH_RATES) -> Optional[InventionResult]:
     """Like best_recipe_and_decryptor, but with the decryptor fixed - still
     explores every grade candidate (Tech III's Intact/Malfunctioning/Wrecked
     relics), picking whichever grade is cheapest with that one decryptor.
@@ -280,18 +402,13 @@ def best_recipe_for_decryptor(product_blueprint_type_id: int, decryptor_name: st
     selected_decryptors) but the grade itself should still be auto-optimized.
     None if no invention recipe/probability data exists for
     `product_blueprint_type_id` at all."""
-    best: Optional[InventionResult] = None
+    rates = _resolve_rates(rates, cfg)
+    results: list[InventionResult] = []
     for candidate in storage.find_invention_recipe_candidates_by_product_type_id(product_blueprint_type_id):
         try:
-            result = estimate(candidate, decryptor_name, home, jita, cfg, reducible_material_cost_per_run,
-                              product_type_id=product_blueprint_type_id)
+            results.append(estimate(candidate, decryptor_name, home, jita, cfg, reducible_material_cost_per_run,
+                                    product_type_id=product_blueprint_type_id, rates=rates))
         except ValueError:
             continue
-        if best is None:
-            best = result
-            continue
-        best_key = best.net_cost_per_run if best.net_cost_per_run is not None else float("inf")
-        result_key = result.net_cost_per_run if result.net_cost_per_run is not None else float("inf")
-        if result_key < best_key:
-            best = result
-    return best
+    ranked = rank(results, reducible_material_cost_per_run)
+    return ranked[0] if ranked else None

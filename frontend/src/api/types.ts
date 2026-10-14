@@ -412,6 +412,8 @@ export interface InventionResult {
   datacore_cost: number
   decryptor_cost: number
   relic_cost: number
+  // Invention + copy job fees per attempt.
+  job_fee: number
   total_attempt_cost: number
   expected_cost_per_success: number | null
   expected_cost_per_run: number | null
@@ -421,6 +423,8 @@ export interface InventionResult {
   // every material, rather than a silent (understated) 0.
   material_savings_per_run: number | null
   net_cost_per_run: number | null
+  // Picked over a cheaper option because its BPC has more runs.
+  preferred_for_runs: boolean
 }
 
 export interface AssetPlanBlocker {

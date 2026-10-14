@@ -472,6 +472,13 @@ class InventionResult:
     # unpriced material - an honest "unknown", not a silent 0).
     material_savings_per_run: Optional[float]
     net_cost_per_run: Optional[float]             # expected_cost_per_run - material_savings_per_run
+    # Invention job fee + (T1 blueprint only) the one-run copy job fee, per
+    # attempt (invention.attempt_job_fee), included in total_attempt_cost.
+    # 0 when ESI adjusted prices were unavailable.
+    job_fee: float = 0.0
+    # True when invention.rank put this row first over a cheaper one because
+    # its BPC has more runs (within RUNS_PREFERENCE_FRACTION).
+    preferred_for_runs: bool = False
 
 
 @dataclass
