@@ -3513,6 +3513,32 @@ def newest_esi_freshness_success_at() -> Optional[str]:
     return ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
 
 
+def newest_esi_freshness_success_for_tool(
+    tool_key: str, data_kinds: Optional[Iterable[str]] = None,
+) -> Optional[str]:
+    """Newest `last_success_at` over the (owner, kind) pairs shared with
+    `tool_key`, optionally narrowed to `data_kinds`.
+
+    A tool's "last ESI sync" readout: it moves no matter who fetched the
+    data - the tool's own button, Sync all, the scheduler, or another tool
+    sharing the same kind - since every fetch stamps esi_freshness.
+    None when nothing shared with the tool has ever succeeded."""
+    kinds = list(data_kinds) if data_kinds is not None else None
+    kind_clause = " AND f.data_kind = ANY(?)" if kinds is not None else ""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT MAX(f.last_success_at) FROM esi_freshness f "
+            "JOIN esi_sharing s ON s.tenant_id = f.tenant_id AND s.owner_type = f.owner_type "
+            "AND s.owner_id = f.owner_id AND s.data_kind = f.data_kind "
+            f"WHERE s.tool_key = ?{kind_clause}",
+            (tool_key, *((kinds,) if kinds is not None else ())),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    ts = row[0]
+    return ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+
+
 def _wallet_corp_divisions_to_replace(
     rows: list[tuple], divisions: Optional[list[int]],
 ) -> list[int]:

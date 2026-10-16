@@ -152,6 +152,32 @@ def test_newest_esi_freshness_success_at_is_max_across_kinds(tenant_pair):
         assert storage.newest_esi_freshness_success_at() is None
 
 
+def test_newest_esi_freshness_success_for_tool_reads_only_shared_pairs(tenant_pair):
+    tenant_a, tenant_b = tenant_pair
+    with storage.tenant_context(tenant_a):
+        assert storage.newest_esi_freshness_success_for_tool("production") is None
+        storage.upsert_esi_sharing("character", 1, "assets", "production")
+        storage.upsert_esi_sharing("character", 1, "assets", "doctrine")
+        storage.upsert_esi_sharing("character", 1, "contracts", "doctrine")
+        storage.upsert_esi_sharing("corporation", 9, "industry_jobs", "production")
+        storage.upsert_esi_freshness("character", 1, "assets", success=True, now="2026-09-01T00:00:00+00:00")
+        storage.upsert_esi_freshness("character", 1, "contracts", success=True, now="2026-09-05T00:00:00+00:00")
+        storage.upsert_esi_freshness("corporation", 9, "industry_jobs", success=True,
+                                     now="2026-09-03T00:00:00+00:00")
+        # Fetched (e.g. by Sync all) but not shared with production: ignored.
+        storage.upsert_esi_freshness("character", 2, "assets", success=True, now="2026-09-30T00:00:00+00:00")
+        # Shared, newer attempt failed: last_success_at stays at 09-01.
+        storage.upsert_esi_freshness("character", 1, "assets", success=False, error="x",
+                                     now="2026-09-20T00:00:00+00:00")
+
+        assert storage.newest_esi_freshness_success_for_tool("production").startswith("2026-09-03")
+        assert storage.newest_esi_freshness_success_for_tool("doctrine", ("assets",)).startswith("2026-09-01")
+        assert storage.newest_esi_freshness_success_for_tool("doctrine", ("contracts",)).startswith("2026-09-05")
+        assert storage.newest_esi_freshness_success_for_tool("doctrine", ("wallet",)) is None
+    with storage.tenant_context(tenant_b):
+        assert storage.newest_esi_freshness_success_for_tool("production") is None
+
+
 def test_capabilities_have_no_tool_key_column(_apply_esi_access_schema):
     with psycopg.connect(pg_helpers.OWNER_DSN) as conn:
         cols = {

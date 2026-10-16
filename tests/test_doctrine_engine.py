@@ -200,7 +200,7 @@ def test_fitting_status_excludes_expired_contracts_from_valid_count(monkeypatch)
         _contract_row(contract_id=1, validation_status="valid", status="outstanding"),
         _contract_row(contract_id=2, validation_status="valid", status="expired"),
     ])
-    monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: "2026-01-01T00:00:00Z")
+    monkeypatch.setattr(storage, "newest_esi_freshness_success_for_tool", lambda *a, **k: "2026-01-01T00:00:00Z")
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Some Hull", 100.0, 1, 1, 0, None))
 
     status = engine.fitting_status(_fitting(contract_target=2), stockpile_rows=[], assets_available=True)
@@ -213,7 +213,7 @@ def test_fitting_status_excludes_expired_contracts_from_tolerable_count(monkeypa
         _contract_row(contract_id=1, validation_status="tolerable", status="outstanding"),
         _contract_row(contract_id=2, validation_status="tolerable", status="expired"),
     ])
-    monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: "2026-01-01T00:00:00Z")
+    monkeypatch.setattr(storage, "newest_esi_freshness_success_for_tool", lambda *a, **k: "2026-01-01T00:00:00Z")
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Some Hull", 100.0, 1, 1, 0, None))
 
     status = engine.fitting_status(_fitting(contract_target=2), stockpile_rows=[], assets_available=True)
@@ -223,7 +223,7 @@ def test_fitting_status_excludes_expired_contracts_from_tolerable_count(monkeypa
 
 def test_fitting_status_resolves_hull_name(monkeypatch):
     monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **kwargs: [])
-    monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: None)
+    monkeypatch.setattr(storage, "newest_esi_freshness_success_for_tool", lambda *a, **k: None)
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Rifter", 20.0, 1, 1, 0, None))
 
     status = engine.fitting_status(_fitting(), stockpile_rows=[], assets_available=True)
@@ -234,7 +234,7 @@ def test_fitting_status_resolves_hull_name(monkeypatch):
 
 def test_fitting_status_multibuy_cost_none_without_home_prices(monkeypatch):
     monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **kwargs: [])
-    monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: None)
+    monkeypatch.setattr(storage, "newest_esi_freshness_success_for_tool", lambda *a, **k: None)
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Rifter", 20.0, 1, 1, 0, None))
 
     status = engine.fitting_status(_fitting(), stockpile_rows=[], assets_available=True)  # no home= passed
@@ -244,7 +244,7 @@ def test_fitting_status_multibuy_cost_none_without_home_prices(monkeypatch):
 
 def test_fitting_status_multibuy_cost_sums_hull_and_items(monkeypatch):
     monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **kwargs: [])
-    monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: None)
+    monkeypatch.setattr(storage, "newest_esi_freshness_success_for_tool", lambda *a, **k: None)
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Rifter", 20.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "load_fitting_items", lambda fitting_id: [
         (1, "low", MODULE, 2, False),       # 2x MODULE
@@ -264,7 +264,7 @@ def test_fitting_status_multibuy_cost_sums_hull_and_items(monkeypatch):
 
 def test_fitting_status_multibuy_cost_partial_when_some_item_price_missing(monkeypatch):
     monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **kwargs: [])
-    monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: None)
+    monkeypatch.setattr(storage, "newest_esi_freshness_success_for_tool", lambda *a, **k: None)
     names = {HULL_A: "Rifter", MODULE: "Damage Control II"}
     monkeypatch.setattr(storage, "get_sde_type",
                         lambda type_id: (type_id, 1, names[type_id], 20.0, 1, 1, 0, None))
@@ -279,7 +279,7 @@ def test_fitting_status_multibuy_cost_partial_when_some_item_price_missing(monke
 
 def test_fitting_status_multibuy_cost_none_when_no_item_priced(monkeypatch):
     monkeypatch.setattr(storage, "list_doctrine_contracts", lambda **kwargs: [])
-    monkeypatch.setattr(storage, "get_esi_sync_time", lambda scope: None)
+    monkeypatch.setattr(storage, "newest_esi_freshness_success_for_tool", lambda *a, **k: None)
     monkeypatch.setattr(storage, "get_sde_type", lambda type_id: (type_id, 1, "Rifter", 20.0, 1, 1, 0, None))
     monkeypatch.setattr(storage, "load_fitting_items", lambda fitting_id: [(1, "low", MODULE, 1, False)])
 
