@@ -4679,6 +4679,27 @@ OFFICE_TYPE_ID = 27  # generic "Office" item - a corp's rented hangar container,
 # stock" by including quantities that aren't actually available to build with.
 NON_STOCK_LOCATION_FLAGS = ("AssetSafety", "Deliveries", "CorpDeliveries", "CorpMarket")
 
+# Items inside an Asset Safety Wrap (or a delivery/market container) carry an
+# ordinary flag of their own ("Hangar", "CorpSAG1", ...) - only the wrap
+# itself has "AssetSafety". resolved_hangar_flag (see _resolve_hangar_flags)
+# inherits the outermost container's flag, so the wrap's contents resolve to
+# "AssetSafety" and are excluded through it. Checking the raw location_flag
+# alone counted e.g. 69 Epithals sitting in a wrap as hangar stock. Rows
+# synced before resolved_hangar_flag existed (NULL) fall back to the raw flag
+# until their next asset sync.
+_NON_STOCK_PLACEHOLDERS = ",".join("?" * len(NON_STOCK_LOCATION_FLAGS))
+NON_STOCK_SQL = (
+    f"(location_flag IS NULL OR location_flag NOT IN ({_NON_STOCK_PLACEHOLDERS})) "
+    f"AND (resolved_hangar_flag IS NULL OR resolved_hangar_flag NOT IN ({_NON_STOCK_PLACEHOLDERS}))"
+)
+NON_STOCK_SQL_PARAMS = NON_STOCK_LOCATION_FLAGS * 2
+
+
+def is_non_stock_asset(row: dict) -> bool:
+    """Python twin of NON_STOCK_SQL for already-fetched asset row dicts."""
+    return (row.get("location_flag") in NON_STOCK_LOCATION_FLAGS
+            or row.get("resolved_hangar_flag") in NON_STOCK_LOCATION_FLAGS)
+
 # Assembled ships and their fittings are not stock (confirmed with the user
 # 2026-10-03) - this applies to every demand calculation (Production,
 # Doctrine Stockpile, Sorting, Trading's covered/unlisted checks), not to
@@ -4851,7 +4872,6 @@ def esi_stock_at_location_bulk(type_ids: list[int], location_id: Optional[int],
     unique = list(dict.fromkeys(type_ids))
     if not unique:
         return {}
-    flag_placeholders = ",".join("?" * len(NON_STOCK_LOCATION_FLAGS))
     allowed_clause = ""
     allowed_params: tuple = ()
     if allowed_flags:
@@ -4880,17 +4900,17 @@ def esi_stock_at_location_bulk(type_ids: list[int], location_id: Optional[int],
                 rows = conn.execute(
                     f"SELECT type_id, COALESCE(SUM(quantity), 0) FROM {table} "
                     f"WHERE type_id = ANY(?) AND NOT assembled_or_fitted "
-                    f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))"
+                    f"AND {NON_STOCK_SQL}"
                     f"{allowed_clause}{exclude_clause}{owner_clause} GROUP BY type_id",
-                    (list(unique), *NON_STOCK_LOCATION_FLAGS, *allowed_params, *exclude_params, *owner_params),
+                    (list(unique), *NON_STOCK_SQL_PARAMS, *allowed_params, *exclude_params, *owner_params),
                 ).fetchall()
             else:
                 rows = conn.execute(
                     f"SELECT type_id, COALESCE(SUM(quantity), 0) FROM {table} "
                     f"WHERE type_id = ANY(?) AND resolved_location_id = ? AND NOT assembled_or_fitted "
-                    f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))"
+                    f"AND {NON_STOCK_SQL}"
                     f"{allowed_clause}{exclude_clause}{owner_clause} GROUP BY type_id",
-                    (list(unique), location_id, *NON_STOCK_LOCATION_FLAGS, *allowed_params, *exclude_params, *owner_params),
+                    (list(unique), location_id, *NON_STOCK_SQL_PARAMS, *allowed_params, *exclude_params, *owner_params),
                 ).fetchall()
             for tid, qty in rows:
                 if tid in totals:
@@ -4911,7 +4931,6 @@ def esi_stock_by_location_bulk(type_ids: list[int],
     unique = list(dict.fromkeys(type_ids))
     if not unique:
         return {}
-    flag_placeholders = ",".join("?" * len(NON_STOCK_LOCATION_FLAGS))
     allowed_clause = ""
     allowed_params: tuple = ()
     if allowed_flags:
@@ -4924,9 +4943,9 @@ def esi_stock_by_location_bulk(type_ids: list[int],
             rows = conn.execute(
                 f"SELECT type_id, resolved_location_id, COALESCE(SUM(quantity), 0) FROM {table} "
                 f"WHERE type_id = ANY(?) AND resolved_location_id IS NOT NULL AND NOT assembled_or_fitted "
-                f"AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders}))"
+                f"AND {NON_STOCK_SQL}"
                 f"{allowed_clause}{owner_clause} GROUP BY type_id, resolved_location_id",
-                (list(unique), *NON_STOCK_LOCATION_FLAGS, *allowed_params, *owner_params),
+                (list(unique), *NON_STOCK_SQL_PARAMS, *allowed_params, *owner_params),
             ).fetchall()
             for tid, location_id, qty in rows:
                 if tid in totals:
@@ -4950,7 +4969,6 @@ def esi_stock_from_asset_rows(
     if not unique:
         return {}
     wanted = set(unique)
-    non_stock = set(NON_STOCK_LOCATION_FLAGS)
     allowed = set(allowed_flags) if allowed_flags else None
     intake_pairs: set[tuple[str, str]] = set()
     if exclude_intake_at_location_id is not None:
@@ -4964,8 +4982,7 @@ def esi_stock_from_asset_rows(
         type_id = row.get("type_id")
         if type_id not in wanted or row.get("assembled_or_fitted"):
             continue
-        flag = row.get("location_flag")
-        if flag is not None and flag in non_stock:
+        if is_non_stock_asset(row):
             continue
         resolved_loc = row.get("resolved_location_id")
         if location_id is not None and resolved_loc != location_id:
@@ -5107,15 +5124,14 @@ def search_item_stock_locations(type_id: int,
 
     `owner_character_ids`/`owner_corporation_ids`: see `_owner_id_clause` -
     both None (the default) is unfiltered."""
-    flag_placeholders = ",".join("?" * len(NON_STOCK_LOCATION_FLAGS))
     with connect() as conn:
         raw_rows: list[tuple[int, str, float]] = []  # (resolved_location_id, owner_name, quantity)
         for table in ("character_assets", "corp_assets"):
             id_clause, id_params = _owner_id_clause(table, owner_character_ids, owner_corporation_ids)
             raw_rows.extend(conn.execute(
                 f"SELECT resolved_location_id, owner_name, quantity FROM {table} "
-                f"WHERE type_id = ? AND (location_flag IS NULL OR location_flag NOT IN ({flag_placeholders})){id_clause}",
-                (type_id, *NON_STOCK_LOCATION_FLAGS, *id_params),
+                f"WHERE type_id = ? AND {NON_STOCK_SQL}{id_clause}",
+                (type_id, *NON_STOCK_SQL_PARAMS, *id_params),
             ).fetchall())
 
         grouped: dict[tuple[int, str], float] = {}

@@ -56,6 +56,34 @@ def test_esi_stock_at_location_excludes_non_stock_flags(tenant):
     assert storage.esi_stock_at_location(TYPE_ID, LOCATION_ID) == 100
 
 
+def test_items_inside_an_asset_safety_wrap_are_not_stock(tenant):
+    # Real ESI shape: only the Asset Safety Wrap (type 60) carries the
+    # "AssetSafety" flag; its contents keep their own "Hangar"/"CorpSAG1"
+    # flag with the wrap's item_id as location_id.
+    wrap_id, corp_wrap_id = 800, 801
+    storage.replace_assets("character_assets", [
+        (1, TYPE_ID, LOCATION_ID, "Hangar", 100, 0, "pilot"),
+        (wrap_id, 60, LOCATION_ID, "AssetSafety", 1, 0, "pilot"),
+        (2, TYPE_ID, wrap_id, "Hangar", 69, 0, "pilot"),
+    ])
+    storage.replace_assets("corp_assets", [
+        (corp_wrap_id, 60, LOCATION_ID, "AssetSafety", 1, 0, "My Corp (corp)"),
+        (3, TYPE_ID, corp_wrap_id, "CorpSAG1", 500, 0, "My Corp (corp)"),
+    ])
+
+    assert storage.esi_stock_at_location(TYPE_ID, LOCATION_ID) == 100
+    assert storage.esi_stock_at_location(TYPE_ID, None) == 100
+    assert storage.esi_stock_by_location_bulk([TYPE_ID]) == {TYPE_ID: {LOCATION_ID: 100}}
+    assert [r[3] for r in storage.search_item_stock_locations(TYPE_ID)] == [100]
+    rows = [
+        {"type_id": TYPE_ID, "location_flag": "Hangar", "resolved_hangar_flag": "Hangar",
+         "resolved_location_id": LOCATION_ID, "quantity": 100},
+        {"type_id": TYPE_ID, "location_flag": "Hangar", "resolved_hangar_flag": "AssetSafety",
+         "resolved_location_id": LOCATION_ID, "quantity": 69},
+    ]
+    assert storage.esi_stock_from_asset_rows(rows, [TYPE_ID], LOCATION_ID) == {TYPE_ID: 100}
+
+
 def test_esi_stock_at_location_allowed_flags_restricts_to_named_divisions(tenant):
     storage.replace_assets("character_assets", [
         (1, TYPE_ID, LOCATION_ID, "Hangar", 100, 0, "pilot"),
