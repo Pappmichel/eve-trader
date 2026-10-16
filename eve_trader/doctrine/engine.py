@@ -461,7 +461,7 @@ def fitting_status(fitting: Fitting, cfg: DoctrineConfig = DOCTRINE_CONFIG,
     reasoning as `stockpile_rows` above - None (the default, e.g. a lone
     do_get_fitting_detail call) just means multibuy_cost comes back None."""
     contracts = contract_rows_from_db(storage.list_doctrine_contracts(fitting_id=fitting.fitting_id))
-    last_synced_at = storage.get_esi_sync_time("doctrine")
+    last_synced_at = storage.newest_esi_freshness_success_for_tool("doctrine", ("contracts",))
     # status == "expired" (the raw ESI contract status, separate from
     # validation_status) is excluded here even though SYNCABLE_CONTRACT_
     # STATUSES now lets expired contracts stay synced/visible (see that

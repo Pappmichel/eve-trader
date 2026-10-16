@@ -68,7 +68,7 @@ def do_sync_assets() -> dict:
 
 
 def do_get_asset_sync_time() -> dict:
-    return {"synced_at": storage.get_esi_sync_time("doctrine_assets")}
+    return {"synced_at": storage.newest_esi_freshness_success_for_tool("doctrine", ("assets",))}
 
 
 # ------------------------------------------------------------------ doctrines
@@ -532,7 +532,8 @@ def do_contract_history() -> dict:
 
 
 def do_get_esi_sync_time() -> dict:
-    return {"synced_at": storage.get_esi_sync_time("doctrine")}
+    # esi_freshness (see production.actions.do_get_esi_sync_time).
+    return {"synced_at": storage.newest_esi_freshness_success_for_tool("doctrine", ("contracts",))}
 
 
 # ------------------------------------------------------------------ settings

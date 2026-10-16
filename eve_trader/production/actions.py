@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 
 import requests
@@ -169,7 +169,6 @@ def do_sync_esi() -> dict:
     this remains the Production-page Sync button (do_sync_for_tool plus
     cache invalidation)."""
     result = esi_sync.sync_esi()
-    storage.set_esi_sync_time("production", datetime.now(timezone.utc).isoformat())
     # Owned-BPO ME/TE (storage.get_owned_bpo_best_me_te, used by _owned_bpo_mods
     # for every Tech I build-cost calc) comes from character_blueprints/
     # corp_blueprints - exactly what this just refreshed. Covers every case
@@ -186,7 +185,9 @@ def do_sync_esi() -> dict:
 
 
 def do_get_esi_sync_time() -> dict:
-    return {"synced_at": storage.get_esi_sync_time("production")}
+    # esi_freshness, not a stamp of this tool's own button: Sync all, the
+    # scheduler and other tools sharing the same kinds move it too.
+    return {"synced_at": storage.newest_esi_freshness_success_for_tool("production")}
 
 
 def do_add_stock_target(type_name: str, backup_stock: float = 0,

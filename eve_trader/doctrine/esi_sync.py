@@ -13,7 +13,6 @@ orchestrator, plus tool-specific post-processing:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import Optional
 
 from .. import storage
@@ -154,7 +153,6 @@ def sync_contracts(cfg: DoctrineConfig = DOCTRINE_CONFIG, progress_callback=None
             entry[1].append((owner_type, owner_id, role))
 
     history_written += _record_unmatched_finished(finished, tm)
-    storage.set_esi_sync_time("doctrine", datetime.now(timezone.utc).isoformat())
     _emit_progress(progress_callback, {"phase": "sync", "message": "Matching contracts"})
     result["contracts_synced"] = match_result.get("revalidated", match_result.get("contracts_synced"))
     result["history_written"] = history_written
@@ -254,5 +252,4 @@ def sync_assets() -> dict:
     if structure_id is not None:
         extra["structure_id"] = structure_id
     result = do_sync_for_tool("doctrine", extra=extra or None)
-    storage.set_esi_sync_time("doctrine_assets", datetime.now(timezone.utc).isoformat())
     return result
