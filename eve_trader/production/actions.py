@@ -1892,7 +1892,7 @@ def do_rebuild_realized(reset_opening: bool = False) -> dict:
     derives them again from today's ESI stock (they are also re-derived
     automatically when T0 or the shared owners change).
     """
-    from .realized import loader
+    from ..realized import loader
 
     try:
         return loader.rebuild_realized(reset_opening=bool(reset_opening))
@@ -1980,7 +1980,7 @@ def do_add_ledger_entry(entry_kind: str, amount: float, entry_date: str,
     Quantity is stored and not multiplied in. Opening-cost overrides use
     do_set_opening_cost. These rows adjust the period report; they are not
     FIFO layers (the costing engine consumes only opening_cost overrides)."""
-    from .realized import db as ledger_db
+    from ..realized import db as ledger_db
 
     kind = (entry_kind or "").strip()
     if kind not in ("cost", "revenue"):
@@ -2016,7 +2016,7 @@ def do_set_opening_cost(type_id: int, unit_cost: float, entry_date: str | None =
     the next rebuild; this call only stores the override."""
     from datetime import datetime, timezone
 
-    from .realized import db as ledger_db
+    from ..realized import db as ledger_db
 
     if int(type_id) <= 0:
         raise ActionError("type_id must be a positive item id.")
@@ -2038,8 +2038,8 @@ def do_reapply_freight_rate(dry_run: bool = False) -> dict:
     rebuild; the next recompute picks the new rate up. Home-structure and
     non-Forge buys stay without freight. `dry_run` only counts the
     purchases that would change (for the confirm dialog)."""
-    from .realized import db as ledger_db
-    from .realized.ingest import _freight_rate_for_forge
+    from ..realized import db as ledger_db
+    from ..realized.ingest import _freight_rate_for_forge
 
     rate = float(_freight_rate_for_forge(PRODUCTION_CONFIG))
     if dry_run:
@@ -2076,7 +2076,7 @@ def do_delete_ledger_entry(entry_id: int) -> dict:
     """Delete one manual entry or opening-cost override. Takes effect in
     the report at once for cost/revenue, on the next rebuild for an
     opening-cost override."""
-    from .realized import db as ledger_db
+    from ..realized import db as ledger_db
 
     if int(entry_id) <= 0:
         raise ActionError("entry_id must be positive.")
@@ -2101,7 +2101,7 @@ def do_get_realized_courier() -> dict:
 
 
 def _hidden_archive(owner_type: str, owner_id: int, kind: str, delete: bool) -> dict:
-    from .realized import access as ledger_access
+    from ..realized import access as ledger_access
     if owner_type not in ("character", "corporation"):
         raise ActionError("owner_type must be character or corporation.")
     try:

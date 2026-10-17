@@ -13,8 +13,8 @@ import pytest
 
 from eve_trader import storage
 from eve_trader.production import actions as production_actions
-from eve_trader.production.realized import db as ledger_db
-from eve_trader.production.realized import loader
+from eve_trader.realized import db as ledger_db
+from eve_trader.realized import loader
 
 from . import pg_helpers
 from .pg_helpers import (  # noqa: F401
@@ -81,7 +81,7 @@ def _no_planner_valuation(monkeypatch):
 @pytest.fixture(autouse=True)
 def _no_esi_names(monkeypatch):
     """Owner names fall back to ESI's public names endpoint; never call it here."""
-    from eve_trader.production.realized import names
+    from eve_trader.realized import names
     monkeypatch.setattr(names, "_esi_names", lambda ids: {})
 
 
@@ -632,7 +632,7 @@ def test_opening_is_valued_at_the_planner_price(tenant, monkeypatch):
 def test_owner_names_come_from_stored_data_before_esi(tenant, monkeypatch):
     """Corp names from corp_assets, job installers from synced jobs; ESI is
     asked only for ids found nowhere."""
-    from eve_trader.production.realized import names
+    from eve_trader.realized import names
 
     with storage.connect() as conn:
         conn.execute(

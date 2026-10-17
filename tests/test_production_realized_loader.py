@@ -12,9 +12,9 @@ from unittest.mock import patch
 import pytest
 
 from eve_trader import storage
-from eve_trader.production.realized import access as ledger_access
-from eve_trader.production.realized import db as ledger_db
-from eve_trader.production.realized import loader
+from eve_trader.realized import access as ledger_access
+from eve_trader.realized import db as ledger_db
+from eve_trader.realized import loader
 
 from . import pg_helpers
 from .pg_helpers import (  # noqa: F401
@@ -73,7 +73,7 @@ def _no_planner_valuation(monkeypatch):
 @pytest.fixture(autouse=True)
 def _no_esi_names(monkeypatch):
     """Owner names fall back to ESI's public names endpoint; never call it here."""
-    from eve_trader.production.realized import names
+    from eve_trader.realized import names
     monkeypatch.setattr(names, "_esi_names", lambda ids: {})
 
 

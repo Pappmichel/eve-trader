@@ -10,7 +10,7 @@ from typing import Iterable, Optional
 
 from psycopg.types.json import Jsonb
 
-from ... import storage
+from .. import storage
 
 # The Forge (Jita's region) - freight is applied only for buys here (D9).
 THE_FORGE_REGION_ID = 10000002

@@ -1,7 +1,7 @@
 """Display names for realized-profit warnings (no DB, no ESI)."""
 from __future__ import annotations
 
-from eve_trader.production.realized import names
+from eve_trader.realized import names
 
 
 def test_warning_items_get_names_links_and_readable_text(monkeypatch):

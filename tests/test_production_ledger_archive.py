@@ -12,9 +12,9 @@ import pytest
 
 from eve_trader import storage, tenant_eligibility
 from eve_trader.config import ACCESS_CONFIG
-from eve_trader.production.realized import access as ledger_access
-from eve_trader.production.realized import db as ledger_db
-from eve_trader.production.realized import ingest as ledger_ingest
+from eve_trader.realized import access as ledger_access
+from eve_trader.realized import db as ledger_db
+from eve_trader.realized import ingest as ledger_ingest
 
 from . import pg_helpers
 from .pg_helpers import (  # noqa: F401

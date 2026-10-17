@@ -25,8 +25,8 @@ data-kind registry, fetchers, orchestrator (`do_sync_for_tool` /
 Characters `do_*` actions live in `esi_data/actions.py`. It names tools as strings
 and imports no tool package — the same precedent as
 `auth.TOOL_ROLE_PREFIXES` and `access_gate.ALL_TOOL_KEYS`. One deliberate
-exception: `esi_data/fetchers.py` lazily imports `production.realized`
-right after a snapshot write to fill the Production realized-profit
+exception: `esi_data/fetchers.py` lazily imports `realized`
+right after a snapshot write to fill the realized-profit
 archive (`docs/PRODUCTION_REALIZED_PROFIT_PLAN.md`), only for kinds the
 owner shares with Production, and never lets an archive error fail the
 snapshot sync. Do not add a second tool import here. Do not put
@@ -116,7 +116,7 @@ they laid out side by side:
 | Is a *newly discovered* candidate historically worth importing? | Goonmetrics region-average history for `reference_region_id` (Insmother); ESI daily history for types Goonmetrics doesn't track (most blueprints, `esi_for_missing`). Untraded days (avgPrice 0) are not margin days | `history_backtest.py` |
 | What can I actually buy/sell *right now* on the live Trading shortlist? | Real ESI order-book stats (5th-percentile) for `jita_region_id`/C-J's own structure | `esi_client.region_order_stats`/`structure_order_stats`, via `shortlist.py` |
 | What's a Production build/buy decision worth? | Goonmetrics current-price quotes (`appraise.gnf.lt`) for the configured home/Jita markets | `production/pricing.py` |
-| What was an item without a purchase worth on that day? | What the planner would have paid: the cheaper of the buy-list purchase price (home market, or hub plus freight) and its build cost (`engine.planner_unit_values`), frozen per (type, day) in `ledger_valuation_prices`. Fallback where the planner has no value: The Forge daily average (Goonmetrics, then ESI daily history, then the nearest traded day within 7 days, cached in `ledger_reference_prices`). A day with no price at all stays `price_missing` (booked at 0 and flagged), never a guessed price | `production/realized/loader.py` |
+| What was an item without a purchase worth on that day? | What the planner would have paid: the cheaper of the buy-list purchase price (home market, or hub plus freight) and its build cost (`engine.planner_unit_values`), frozen per (type, day) in `ledger_valuation_prices`. Fallback where the planner has no value: The Forge daily average (Goonmetrics, then ESI daily history, then the nearest traded day within 7 days, cached in `ledger_reference_prices`). A day with no price at all stays `price_missing` (booked at 0 and flagged), never a guessed price | `realized/loader.py` |
 Each is the right tool for its own job (a historical region average smooths
 out noise for "is this worth tracking at all", a live order-book percentile
 is what you'd actually pay/receive right now) - don't assume a number from
@@ -126,9 +126,11 @@ this caused).
 
 ## Production realized profit
 
-Plan: `docs/PRODUCTION_REALIZED_PROFIT_PLAN.md`. Package
-`eve_trader/production/realized/` (`ingest.py`, `inputs.py`, `access.py`,
-`db.py`, `costing.py`, `loader.py`, `report.py`). The wallet / jobs /
+Plan: `docs/PRODUCTION_REALIZED_PROFIT_PLAN.md`. The shared archive and
+costing live in `eve_trader/realized/` (`ingest.py`, `inputs.py`,
+`access.py`, `db.py`, `costing.py`, `loader.py`, `names.py`). Production's
+report and planned-cost freeze stay in `eve_trader/production/realized/`
+(`report.py`, `planned.py`). The wallet / jobs /
 orders / contracts **archive** is the source of truth. Derived tables
 (`prod_cost_layers`, `prod_realized_results`, `prod_cost_draws`,
 `prod_job_records`, `prod_fee_lines`, `prod_job_losses`,

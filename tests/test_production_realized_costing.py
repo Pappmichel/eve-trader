@@ -8,8 +8,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from eve_trader.production.realized import costing as c
-from eve_trader.production.realized.costing import (
+from eve_trader.realized import costing as c
+from eve_trader.realized.costing import (
     ESTIMATED_COVERAGE_THRESHOLD,
     ContractItem,
     CostComponents,

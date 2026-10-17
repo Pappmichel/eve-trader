@@ -1,13 +1,13 @@
-"""Archive ESI snapshot rows into the Production ledger.
+"""Archive ESI snapshot rows into the realized-profit ledger.
 
 Called from `esi_data.fetchers` immediately after each snapshot write.
 Idempotent upserts, never deletes. Snapshot behaviour is unchanged.
 
-Deliberate layering note: fetchers lazy-import this module (a Production
-tool package). The plan places archive writes inside existing fetchers;
-esi_data otherwise imports no tool package - this is the one exception
-for Production realized profit (docs/PRODUCTION_REALIZED_PROFIT_PLAN.md,
-CLAUDE.md "Two tools, one backend").
+Deliberate layering note: fetchers lazy-import this module (the shared
+``realized`` package). The plan places archive writes inside existing
+fetchers; esi_data otherwise imports no tool package - this is the one
+exception (docs/PRODUCTION_REALIZED_PROFIT_PLAN.md, CLAUDE.md "Two tools,
+one backend").
 """
 from __future__ import annotations
 
@@ -15,10 +15,10 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from ... import hubs, storage
-from ...hubs import ALL_HUBS
-from .. import config as production_config
-from ..engine import _haul_volume
+from .. import hubs, storage
+from ..hubs import ALL_HUBS
+from ..production import config as production_config
+from ..production.engine import _haul_volume
 from . import db, inputs
 
 log = logging.getLogger(__name__)
@@ -354,7 +354,7 @@ def archive_industry_jobs(
     # started recently (planned.MAX_JOB_AGE). A lookup failure must not fail
     # the ESI sync, and it never calls ESI.
     try:
-        from . import planned
+        from ..production.realized import planned
         new_jobs = []
         for j in jobs:
             if j.get("job_id") is None or int(j["job_id"]) in known_jobs:

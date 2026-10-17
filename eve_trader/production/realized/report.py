@@ -21,8 +21,8 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from ... import storage
-from . import access, db, names as display_names
-from .costing import ACTIVITY_INVENTION, ESTIMATED_COVERAGE_THRESHOLD, CostComponents
+from ...realized import access, db, names as display_names
+from ...realized.costing import ACTIVITY_INVENTION, ESTIMATED_COVERAGE_THRESHOLD, CostComponents
 
 _EPS = 1e-9
 _CHAIN_DEPTH = 24
@@ -199,7 +199,7 @@ def _spending(by_activity: list[tuple], running: tuple, produced_in_stock: float
     consumed (datacores, decryptors, copies, fees). Plus two balances as of
     the latest rebuild: produced goods still in stock at cost, and the cost
     sitting in running jobs."""
-    from . import names as display_names
+    from ...realized import names as display_names
 
     fees = []
     invention_total = 0.0
@@ -1105,7 +1105,7 @@ def courier_comparison() -> dict:
     rate (D9). An unset home structure returns no months."""
     from ..config import PRODUCTION_CONFIG
     from ...config import TRADING_CONFIG
-    from .ingest import _freight_rate_for_forge
+    from ...realized.ingest import _freight_rate_for_forge
 
     home = PRODUCTION_CONFIG.home_location_id or TRADING_CONFIG.structure_id
     rate = float(_freight_rate_for_forge(PRODUCTION_CONFIG))

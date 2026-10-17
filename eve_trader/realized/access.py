@@ -6,7 +6,7 @@ rows stay in the archive and return if the share is granted again.
 """
 from __future__ import annotations
 
-from ...esi_data.access import is_shared, shared_owner_ids
+from ..esi_data.access import is_shared, shared_owner_ids
 from . import db
 
 # data_kind each ledger table is gated on
