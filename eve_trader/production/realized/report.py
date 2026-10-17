@@ -815,9 +815,10 @@ def _job_groups(rows: list[dict]) -> list[dict]:
         g["sold_share"] = (qty - left) / qty if qty > _EPS else None
         g["planned_unit_cost"] = pc / pq if pq > _EPS else None
         g["planned_difference_per_unit"] = (pa - pc) / pq if pq > _EPS else None
+        # Every attempt's cost (failed ones included) over the BPC runs the
+        # successful ones produced.
         g["cost_per_bpc_run"] = (
-            g["total_cost"] / g["successful_runs"]
-            if g["activity_id"] == ACTIVITY_INVENTION and g["successful_runs"] else None
+            g["total_cost"] / qty if g["activity_id"] == ACTIVITY_INVENTION and qty > _EPS else None
         )
         out.append(g)
     out.sort(key=lambda g: -g["total_cost"])

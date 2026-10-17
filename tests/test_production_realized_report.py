@@ -683,3 +683,21 @@ def test_jobs_filter_by_state_and_period_and_group_per_product(tenant):
     assert group["planned_unit_cost"] == pytest.approx(12.5)
     assert group["planned_difference_per_unit"] == pytest.approx(group["unit_cost"] - 12.5)
 
+
+def test_invention_group_cost_is_per_bpc_run_produced():
+    from eve_trader.production.realized import report
+
+    def row(state, cost, output):
+        return {
+            "activity_id": 8, "product_type_id": 999, "blueprint_type_id": 998,
+            "product_name": "T2 BPC", "blueprint_name": None, "output_unit": "bpc_run",
+            "runs": 1, "successful_runs": 1 if state == "produced" else 0, "state": state,
+            "input_cost": cost, "job_cost": 0.0, "output_quantity": output,
+            "output_quantity_left": output, "planned_unit_cost": None,
+            "flags": {"estimated": False, "assumed_me": False, "assumed_decryptor": False},
+        }
+
+    # Two attempts at 100 each; one succeeded with a 10-run copy.
+    [group] = report._job_groups([row("produced", 100.0, 10.0), row("failed", 100.0, 0.0)])
+    assert group["failed"] == 1
+    assert group["cost_per_bpc_run"] == pytest.approx(20.0)
