@@ -46,6 +46,7 @@ const Blueprints = lazy(() => import('./pages/production/Blueprints'))
 const ProductionUnlistedStock = lazy(() => import('./pages/production/UnlistedStock'))
 const BuildCandidates = lazy(() => import('./pages/production/BuildCandidates'))
 const Margin = lazy(() => import('./pages/production/Margin'))
+const RealizedProfit = lazy(() => import('./pages/production/realized/RealizedProfit'))
 const MaterialTree = lazy(() => import('./pages/production/MaterialTree'))
 const AssetSearch = lazy(() => import('./pages/production/AssetSearch'))
 const ProductionSettings = lazy(() => import('./pages/production/ProductionSettings'))
@@ -277,6 +278,7 @@ function App() {
               <Route path="unlisted-stock" element={<ProductionUnlistedStock />} />
               <Route path="build-candidates" element={<BuildCandidates />} />
               <Route path="margin" element={<Margin />} />
+              <Route path="realized" element={<RealizedProfit />} />
               <Route path="material-tree" element={<MaterialTree />} />
               <Route path="asset-search" element={<AssetSearch />} />
               <Route path="settings" element={<ProductionSettings />} />
