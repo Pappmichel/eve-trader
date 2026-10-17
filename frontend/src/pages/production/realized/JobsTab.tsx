@@ -23,8 +23,9 @@ const columns: ColumnDef<RealizedJobRow, any>[] = [
     ),
   },
   {
-    header: 'Activity', accessorKey: 'activity_id', size: 130,
-    cell: (info) => activityLabel(info.getValue()),
+    // Filter and sort by the label the cell shows ("Invention"), not the id.
+    header: 'Activity', id: 'activity', size: 130,
+    accessorFn: (row) => activityLabel(row.activity_id),
   },
   {
     header: 'Runs', accessorKey: 'runs', size: 120,

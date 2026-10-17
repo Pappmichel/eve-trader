@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { RealizedDay } from '../../../api/types'
-import { bucketWeekly, profitSeries } from './chart'
+import { bucketWeekly, compactIsk, profitSeries } from './chart'
 
 function day(date: string, profit: number): RealizedDay {
   return { date, revenue: 0, cost: 0, profit }
@@ -35,5 +35,16 @@ describe('profitSeries', () => {
       day('2026-10-06', 1),
     ], true)
     expect(series).toEqual([{ date: '2026-10-05', profit: 11, cumulative: 11 }])
+  })
+})
+
+describe('compactIsk', () => {
+  it('shortens axis labels and keeps the sign', () => {
+    expect(compactIsk(4_500_000_000)).toBe('4.5B')
+    expect(compactIsk(-320_000_000)).toBe('-320M')
+    expect(compactIsk(1_000_000)).toBe('1M')
+    expect(compactIsk(12_000)).toBe('12k')
+    expect(compactIsk(950)).toBe('950')
+    expect(compactIsk(0)).toBe('0')
   })
 })

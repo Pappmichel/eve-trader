@@ -39,3 +39,18 @@ export function profitSeries(days: RealizedDay[], weekly: boolean): ProfitPoint[
     return { date: row.date, profit: row.profit, cumulative: running }
   })
 }
+
+/** Short axis label for an ISK amount (1.5B, -320M, 12k). Tooltips keep the full isk(). */
+export function compactIsk(value: number): string {
+  if (!Number.isFinite(value)) return ''
+  const abs = Math.abs(value)
+  const units: [number, string][] = [[1e12, 'T'], [1e9, 'B'], [1e6, 'M'], [1e3, 'k']]
+  for (const [size, suffix] of units) {
+    if (abs >= size) {
+      const scaled = value / size
+      const digits = Math.abs(scaled) >= 100 ? 0 : 1
+      return `${scaled.toFixed(digits).replace(/\.0$/, '')}${suffix}`
+    }
+  }
+  return value.toFixed(0)
+}

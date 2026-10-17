@@ -6,7 +6,7 @@ import type { RealizedSummary } from '../../../api/types'
 import { HintCard } from '../../../components/HintCard'
 import { isk, pct, qty } from '../../../format'
 import { COLORS } from '../../../theme'
-import { profitSeries } from './chart'
+import { compactIsk, profitSeries } from './chart'
 import { coverageColor } from './coverage'
 import { CoverageBadge } from './flags'
 import type { RealizedPeriod } from './period'
@@ -102,7 +102,7 @@ export function OverviewTab({ summary, period }: { summary: RealizedSummary; per
             <ComposedChart data={points}>
               <CartesianGrid stroke={COLORS.border} />
               <XAxis dataKey="date" stroke={COLORS.textDim} tick={{ fontSize: 11 }} />
-              <YAxis stroke={COLORS.textDim} tickFormatter={(value) => isk(Number(value))} width={110} />
+              <YAxis stroke={COLORS.textDim} tick={{ fontSize: 11 }} tickFormatter={(value) => compactIsk(Number(value))} width={64} />
               <Tooltip
                 contentStyle={{ background: COLORS.surface2, border: `1px solid ${COLORS.border}` }}
                 formatter={(value, name) => [isk(Number(value)), name === 'cumulative' ? 'Cumulative' : 'Profit']}

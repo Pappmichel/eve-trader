@@ -988,3 +988,18 @@ spell out):
   purchase like the buy list does (cheaper of buying at C-J or the hub plus
   freight, and building), not at The Forge average - section 6
   "Valuation", `COSTING_VERSION` 3 re-derives the opening once.
+- **Second test-server pass 2026-10-17** (deployed b4326f0, real service
+  code, session-cookie browser walkthrough). Checked: background rebuild via
+  the HTTP job path; revenue = gross - tax and cost = draws + broker fee on
+  every sale; a sale chain adds up to the sale cost to the ISK; by-day and
+  product totals equal the summary; opening unit cost equals the frozen
+  planner valuation on T0; no contract between own characters is booked;
+  contract revenue never exceeds the contract price; no planned cost for
+  old jobs; override set/clear round trip; freight dry run 0; D11 revoke and
+  re-share; delete refused while shared; every realized route 200 through
+  the access gate (401 without a session); every tab, period, drawer, cost
+  chain and the Portfolio card in the browser with no console errors or
+  failed requests. Fixed from it: the Jobs filter matched the activity id,
+  not the "Invention" label shown; the chart's Y axis labels were cut off
+  (now 1.5B style). Known gap, unchanged: T1 BPC runs without a known
+  origin have no price (booked at 0, flagged; 88 on the test server).
