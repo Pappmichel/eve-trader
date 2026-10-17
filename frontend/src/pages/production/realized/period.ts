@@ -1,6 +1,8 @@
 // Period selector -> query string for /api/production/realized/summary and
 // /products. The backend rejects since_t0 combined with days or a range,
 // and a custom range needs both ends. Default is the last 30 days.
+// The backend's `end` is exclusive (a date means midnight UTC), so the
+// picked end date is sent as the following day: the end date is included.
 
 export type RealizedPeriod =
   | { mode: 'days'; days: 7 | 30 | 90 }
@@ -16,8 +18,15 @@ export function realizedPeriodSearch(period: RealizedPeriod): string {
   if (period.mode === 'since_t0') return 'since_t0=true'
   const params = new URLSearchParams()
   params.set('start', period.start)
-  params.set('end', period.end)
+  params.set('end', dayAfter(period.end))
   return params.toString()
+}
+
+function dayAfter(isoDate: string): string {
+  const parsed = new Date(`${isoDate.slice(0, 10)}T00:00:00Z`)
+  if (Number.isNaN(parsed.getTime())) return isoDate
+  parsed.setUTCDate(parsed.getUTCDate() + 1)
+  return parsed.toISOString().slice(0, 10)
 }
 
 /** True when the selected window is longer than 90 days (weekly chart bars). */
@@ -31,7 +40,7 @@ export function periodLongerThan90Days(
     const start = Date.parse(period.start)
     const end = Date.parse(period.end)
     if (Number.isNaN(start) || Number.isNaN(end)) return false
-    return (end - start) / MS_PER_DAY > 90
+    return (end - start) / MS_PER_DAY + 1 > 90
   }
   if (!cutoverT0) return false
   const t0 = Date.parse(cutoverT0)
@@ -44,7 +53,7 @@ export function customRangeError(start: string, end: string): string | null {
   const startAt = Date.parse(start)
   const endAt = Date.parse(end)
   if (Number.isNaN(startAt) || Number.isNaN(endAt)) return 'Enter valid dates.'
-  if (endAt <= startAt) return 'End must be after start.'
+  if (endAt < startAt) return 'End must not be before start.'
   return null
 }
 

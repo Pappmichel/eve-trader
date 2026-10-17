@@ -14,7 +14,7 @@ describe('realizedPeriodSearch', () => {
     expect(realizedPeriodSearch({ mode: 'days', days: 90 })).toBe('days=90')
     expect(realizedPeriodSearch({ mode: 'since_t0' })).toBe('since_t0=true')
     expect(realizedPeriodSearch({ mode: 'custom', start: '2026-07-01', end: '2026-10-01' }))
-      .toBe('start=2026-07-01&end=2026-10-01')
+      .toBe('start=2026-07-01&end=2026-10-02')
   })
 
   it('does not send since_t0 together with days', () => {
@@ -47,7 +47,11 @@ describe('periodLongerThan90Days', () => {
 describe('customRangeError', () => {
   it('requires both ends and a forward range', () => {
     expect(customRangeError('', '2026-10-01')).toMatch(/both/)
-    expect(customRangeError('2026-10-02', '2026-10-01')).toMatch(/after/)
+    expect(customRangeError('2026-10-02', '2026-10-01')).toMatch(/before/)
+    // The end date is inclusive, so a one-day range is valid.
+    expect(customRangeError('2026-10-01', '2026-10-01')).toBeNull()
+    expect(realizedPeriodSearch({ mode: 'custom', start: '2026-10-31', end: '2026-10-31' }))
+      .toBe('start=2026-10-31&end=2026-11-01')
     expect(customRangeError('2026-07-01', '2026-10-01')).toBeNull()
   })
 })

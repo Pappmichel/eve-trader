@@ -43,6 +43,13 @@ function ShareState({ shared }: { shared: boolean }) {
   )
 }
 
+export interface TableState {
+  isLoading: boolean
+  isError: boolean
+  onRetry: () => void
+  dataUpdatedAt?: number
+}
+
 function recordText(record: Record<string, string | number | null>): string {
   const entries = Object.entries(record)
   if (entries.length === 0) return '–'
@@ -50,10 +57,14 @@ function recordText(record: Record<string, string | number | null>): string {
 }
 
 export function LedgerTab({
-  opening, openingNeedsRebuild, hint, entries, archive,   characters,
+  opening, openingNeedsRebuild, hint, entries, archive, characters,
   onRebuildOffer, freightBusy, onFreightPreview,
+  openingState, entriesState, archiveState,
 }: {
   opening: RealizedOpeningRow[]
+  openingState?: TableState
+  entriesState?: TableState
+  archiveState?: TableState
   openingNeedsRebuild: boolean
   hint: string
   entries: RealizedLedgerEntry[]
@@ -222,6 +233,7 @@ export function LedgerTab({
             data={opening}
             columns={openingColumns}
             maxHeight={360}
+            {...openingState}
             getRowId={(row) => String(row.type_id)}
           />
         )}
@@ -251,6 +263,7 @@ export function LedgerTab({
           data={entries}
           columns={entryColumns}
           maxHeight={320}
+          {...entriesState}
           getRowId={(row) => String(row.entry_id)}
         />
       </div>
@@ -275,6 +288,7 @@ export function LedgerTab({
           data={archive}
           columns={archiveColumns}
           maxHeight={360}
+          {...archiveState}
           getRowId={(row) => `${row.owner_type}:${row.owner_id}`}
         />
       </div>

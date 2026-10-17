@@ -21,8 +21,13 @@ function Marker({ label, tip, color }: { label: string; tip: string; color: stri
   )
 }
 
-/** Every flag the API sent. `job` renders a null structure bonus as "unknown". */
-export function FlagMarkers({ flags, job = false }: { flags: RealizedFlags; job?: boolean }) {
+/** Every flag the API sent. `job` renders a null structure bonus as "unknown".
+ * `showCoverage` is off where the row already has its own coverage column. */
+export function FlagMarkers({ flags, job = false, showCoverage = true }: {
+  flags: RealizedFlags
+  job?: boolean
+  showCoverage?: boolean
+}) {
   return (
     <Group gap={4} wrap="wrap">
       {flags.estimated && <Marker label="estimated" tip="Part of this cost is an estimate (opening, unknown, or a missing price)." color="warn" />}
@@ -31,7 +36,7 @@ export function FlagMarkers({ flags, job = false }: { flags: RealizedFlags; job?
       {flags.assumed_decryptor && <Marker label="assumed decryptor" tip="The decryptor was derived, not stored on the job." color="warn" />}
       {flags.tax_missing && <Marker label="tax missing" tip="No sales-tax journal entry; revenue is gross." color="warn" />}
       {flags.detail_missing && <Marker label="detail missing" tip="The cost chain could not be expanded fully." color="warn" />}
-      {flags.coverage != null && <CoverageBadge coverage={flags.coverage} />}
+      {showCoverage && flags.coverage != null && <CoverageBadge coverage={flags.coverage} />}
       {(job || flags.no_structure_bonus !== null) && (
         <Marker
           label={`structure bonus: ${structureBonusText(flags.no_structure_bonus)}`}

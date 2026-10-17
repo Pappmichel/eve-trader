@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Badge, Button, Group, SegmentedControl, Stack, Tabs, Text, TextInput, Tooltip } from '@mantine/core'
 import { modals } from '@mantine/modals'
 
-import { ApiError, charactersApi, productionApi } from '../../../api/client'
+import { ApiError, charactersApi, gateApi, productionApi } from '../../../api/client'
 import type { RealizedSummary } from '../../../api/types'
 import { HintCard } from '../../../components/HintCard'
 import { JobProgress } from '../../../components/JobProgress'
@@ -58,6 +58,17 @@ function activePeriod(preset: Preset, custom: { start: string; end: string } | n
   if (preset === 'since_t0') return { mode: 'since_t0' }
   if (preset === '7' || preset === '30' || preset === '90') return { mode: 'days', days: Number(preset) as 7 | 30 | 90 }
   return DEFAULT_PERIOD
+}
+
+// Loading/error props for a Ledger-tab table, so a failed read shows the
+// table's error state instead of an empty table.
+function tableState(query: { isLoading: boolean; isError: boolean; dataUpdatedAt: number; refetch: () => unknown }) {
+  return {
+    isLoading: query.isLoading,
+    isError: query.isError,
+    onRetry: () => { void query.refetch() },
+    dataUpdatedAt: query.dataUpdatedAt,
+  }
 }
 
 function statusLine(summary: RealizedSummary): string {
@@ -120,9 +131,13 @@ export default function RealizedProfit() {
     queryKey: ['production', 'realized', 'archive'],
     queryFn: productionApi.realizedArchiveStatus,
   })
+  // Owner names come from the Characters tool. Without that grant the call
+  // is a 403, so archive owners then show their numeric id.
+  const gateQuery = useQuery({ queryKey: ['gate', 'status'], queryFn: gateApi.status })
   const charactersQuery = useQuery({
     queryKey: ['characters', 'owners'],
     queryFn: charactersApi.owners,
+    enabled: Boolean(gateQuery.data?.tools.includes('characters')),
   })
 
   useQueryError('Realized profit', summaryQuery.isError, summaryQuery.error)
@@ -184,6 +199,14 @@ export default function RealizedProfit() {
     try {
       const preview = await productionApi.reapplyRealizedFreight(true)
       const count = preview.would_update ?? 0
+      if (count === 0) {
+        notify({
+          title: 'Re-apply freight rate',
+          message: `Every purchase already uses ${isk(preview.freight_rate_per_m3)}/m³ (${preview.freight_label}).`,
+          color: 'accent',
+        })
+        return
+      }
       const purchases = count === 1 ? 'purchase' : 'purchases'
       modals.openConfirmModal({
         title: 'Re-apply current freight rate',
@@ -330,6 +353,9 @@ export default function RealizedProfit() {
       {tab === 'ledger' && (
         <LedgerTab
           opening={openingQuery.data?.rows ?? []}
+          openingState={tableState(openingQuery)}
+          entriesState={tableState(entriesQuery)}
+          archiveState={tableState(archiveQuery)}
           openingNeedsRebuild={Boolean(openingQuery.data?.needs_rebuild)}
           hint={hint}
           entries={entriesQuery.data?.rows ?? []}

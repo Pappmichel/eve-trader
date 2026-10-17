@@ -876,7 +876,11 @@ spell out):
     (`DELETE /realized/entries/{id}`) after a confirm. There is no
     dedicated clear endpoint, and `unit_cost` cannot be null.
   - A custom range is sent only after both dates are applied, so an
-    incomplete range is not requested.
+    incomplete range is not requested. The end date is inclusive: the
+    API's `end` is exclusive, so the page sends the following day.
+  - Archive owner names come from `/api/characters/owners`, read only
+    when the session holds the `characters` grant; otherwise the numeric
+    owner id is shown.
   - Auto-recompute is once per page visit. A module flag survives
     React StrictMode's remount in dev and clears shortly after a real
     unmount, so one open does not start two rebuilds.

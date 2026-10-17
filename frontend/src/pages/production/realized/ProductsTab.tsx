@@ -158,7 +158,7 @@ export function ProductsTab({ rows, needsRebuild, hint, periodQuery, typeId, loc
     {
       header: 'Flags', id: 'flags', size: 220,
       accessorFn: (row) => JSON.stringify(row.flags),
-      cell: (info) => <FlagMarkers flags={info.row.original.flags} />,
+      cell: (info) => <FlagMarkers flags={info.row.original.flags} showCoverage={false} />,
     },
   ]
 

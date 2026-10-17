@@ -6,7 +6,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { charactersApi, productionApi } from '../../../api/client'
+import { charactersApi, gateApi, productionApi } from '../../../api/client'
 import type { RealizedFlags, RealizedStatus, RealizedSummary } from '../../../api/types'
 import { resetAutoRebuildForTests } from './period'
 import RealizedProfit from './RealizedProfit'
@@ -42,6 +42,7 @@ vi.mock('../../../api/client', () => {
       itemNameOptions: vi.fn(),
     },
     charactersApi: { owners: vi.fn() },
+    gateApi: { status: vi.fn() },
   }
 })
 
@@ -117,6 +118,10 @@ describe('RealizedProfit', () => {
     vi.mocked(productionApi.structureNames).mockResolvedValue({})
     vi.mocked(productionApi.itemNameOptions).mockResolvedValue([])
     vi.mocked(charactersApi.owners).mockResolvedValue([])
+    vi.mocked(gateApi.status).mockResolvedValue({
+      enabled: true, logged_in: true, character_name: 'Pilot', tools: ['production'],
+      suspended: false, pending_access_requests: null,
+    })
     vi.mocked(productionApi.realizedSummary).mockResolvedValue(summary())
   })
 
@@ -190,6 +195,27 @@ describe('RealizedProfit', () => {
     await user.click(screen.getByRole('button', { name: 'Apply' }))
     await waitFor(() => expect(productionApi.reapplyRealizedFreight).toHaveBeenCalledWith(false))
     expect(await screen.findByText(/Recompute to include it in realized profit/)).toBeInTheDocument()
+  })
+
+  it('does not read Characters owners without the characters grant', async () => {
+    renderPage()
+    await screen.findByText('Cost of goods sold')
+    await waitFor(() => expect(gateApi.status).toHaveBeenCalled())
+    expect(charactersApi.owners).not.toHaveBeenCalled()
+  })
+
+  it('does not offer to apply a freight rate that changes nothing', async () => {
+    const user = userEvent.setup()
+    vi.mocked(productionApi.reapplyRealizedFreight).mockResolvedValue(
+      { dry_run: true, would_update: 0, freight_rate_per_m3: 500, freight_label: 'configured rate' },
+    )
+    renderPage()
+    await screen.findByText('Cost of goods sold')
+    await user.click(screen.getByRole('tab', { name: 'Ledger' }))
+    await user.click(await screen.findByRole('button', { name: 'Re-apply current freight rate' }))
+    await waitFor(() => expect(productionApi.reapplyRealizedFreight).toHaveBeenCalledWith(true))
+    expect(screen.queryByRole('button', { name: 'Apply' })).toBeNull()
+    expect(productionApi.reapplyRealizedFreight).toHaveBeenCalledTimes(1)
   })
 
   it('renders an unknown warning kind from its message', async () => {
