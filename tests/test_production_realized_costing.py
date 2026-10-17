@@ -879,3 +879,24 @@ def test_corp_side_contracts_count_only_through_a_tenant_character():
     assert layer.source_ref == "contract:23"
     assert layer.unit_cost == pytest.approx(10.0)
     assert not has_warning(result, "contract_party_unknown")
+
+
+def test_filling_a_buy_contract_is_a_sale_at_the_reward():
+    produced = job(1, BP, PRODUCT, 1, at(1, 10), at(2), 20.0, [(MINERAL, 4, "esi_blueprint")],
+                   output_quantity=2)
+    buyback = exchange(30, at(4), [item_line(PRODUCT, 2, included=False)],
+                       issuer=7001, acceptor=CHAR, reward=90.0, start=HOME)
+    result = rebuild_costing(snapshot(
+        wallet_transactions=[buy(MINERAL, 4, 5.0, at(1))],
+        industry_jobs=[produced],
+        contracts=[buyback],
+        production_type_ids={PRODUCT},
+        esi_stock_by_type={PRODUCT: 0},
+    ))
+    [sale] = result.realized_results
+    assert sale.source == "contract"
+    assert sale.type_id == PRODUCT
+    assert sale.quantity == 2
+    assert sale.gross == pytest.approx(90.0)
+    assert sale.sales_tax is None
+    assert sale.draws[0].origin == "produced"

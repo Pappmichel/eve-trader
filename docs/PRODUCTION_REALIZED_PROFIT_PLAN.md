@@ -919,8 +919,9 @@ spell out):
     - Only the exact status `finished` counts. Broader `finished_*` values
       are ignored.
     - Issuer-received items (the issuer asks for them) are costed at the
-      contract `reward`. Acceptor-given items are consumed as inventory and
-      are not realized sales; reward the acceptor receives is not booked.
+      contract `reward`. Acceptor-given items (a buy contract the tenant
+      fills, e.g. a buyback) are sales at the `reward`, split by reference
+      value like any contract sale (review decision with the user).
     - A contract BPO's capital line includes frozen freight. A market BPO
       buy does not, because that path returns before freight.
     - Planned cost is never a Jita quote. Misses store NULL with source

@@ -304,9 +304,9 @@ class ItemExchangeContract:
 
 @dataclass
 class _ContractView:
-    """How one contract moves items for this tenant. `sale_pool` is None
-    when the items the tenant gives are not a sale (the tenant accepted
-    and handed over what the issuer asked for)."""
+    """How one contract moves items for this tenant. `receive_pool` is what
+    the tenant pays for received items; `sale_pool` is what it gets for the
+    items it gives (None: the hand-over is not a sale)."""
     contract: ItemExchangeContract
     received: list
     given: list
@@ -864,14 +864,15 @@ class _Costing:
         acceptor = acceptor_char
         items = list(contract.items)
         if acceptor:
-            # Acceptor pays `price` and receives what the issuer included.
-            # Items the issuer asked for leave inventory and are not a sale.
+            # Acceptor pays `price` for what the issuer included, and hands
+            # over what the issuer asked for in exchange for `reward` (a buy
+            # contract, e.g. a buyback): that hand-over is a sale.
             return _ContractView(
                 contract,
                 [item for item in items if item.is_included],
                 [item for item in items if not item.is_included],
                 float(contract.price or 0),
-                None,
+                float(contract.reward or 0),
             )
         # Issuer receives `price` for included items and pays `reward` for
         # the items they asked for.
