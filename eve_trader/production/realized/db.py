@@ -8,6 +8,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Iterable, Optional
 
+from psycopg.types.json import Jsonb
+
 from ... import storage
 
 # The Forge (Jita's region) - freight is applied only for buys here (D9).
@@ -504,3 +506,200 @@ def lookup_blueprint_me_te(item_id: int) -> Optional[tuple[int, int, str]]:
 def lookup_manual_blueprint_me(blueprint_type_id: int) -> Optional[tuple[int, int]]:
     """Best ME/TE across manual originals of this type, else None."""
     return storage.manual_bpo_best_me_te(int(blueprint_type_id))
+
+
+# ====================================================================== Phase 2 bulk reads / derived writes
+# Owners are (owner_type, owner_id) pairs already gated by access.py.
+
+
+def _owner_in_clause(owners: list[tuple[str, int]]) -> tuple[str, list]:
+    if not owners:
+        return "FALSE", []
+    parts = []
+    params: list = []
+    for ot, oid in owners:
+        parts.append("(owner_type = ? AND owner_id = ?)")
+        params.extend([ot, int(oid)])
+    return "(" + " OR ".join(parts) + ")", params
+
+
+def list_wallet_transactions_for_owners(
+    owners: list[tuple[str, int]],
+) -> list[tuple]:
+    """All archived wallet txs for the given owners (one query)."""
+    where, params = _owner_in_clause(owners)
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT owner_type, owner_id, division, transaction_id, date, type_id, "
+            "location_id, unit_price, quantity, is_buy, journal_ref_id, region_id, "
+            "freight_rate_per_m3, freight_m3 "
+            "FROM ledger_wallet_transactions "
+            f"WHERE {where} ORDER BY date, transaction_id",
+            tuple(params),
+        ).fetchall()
+
+
+def list_wallet_journal_for_owners(
+    owners: list[tuple[str, int]],
+) -> list[tuple]:
+    where, params = _owner_in_clause(owners)
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT owner_type, owner_id, division, journal_id, date, ref_type, amount, "
+            "context_id, context_id_type "
+            "FROM ledger_wallet_journal "
+            f"WHERE {where} ORDER BY date, journal_id",
+            tuple(params),
+        ).fetchall()
+
+
+def list_market_orders_for_owners(
+    owners: list[tuple[str, int]],
+) -> list[tuple]:
+    where, params = _owner_in_clause(owners)
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT owner_type, owner_id, order_id, type_id, location_id, "
+            "is_buy_order, price, volume_total, issued, state "
+            "FROM ledger_market_orders "
+            f"WHERE {where} ORDER BY issued, order_id",
+            tuple(params),
+        ).fetchall()
+
+
+def list_industry_jobs_for_owners(
+    owners: list[tuple[str, int]],
+) -> list[tuple]:
+    """Full job rows needed by costing (dates, runs, cost, installer, …)."""
+    where, params = _owner_in_clause(owners)
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT owner_type, owner_id, job_id, activity_id, blueprint_id, "
+            "blueprint_type_id, product_type_id, runs, licensed_runs, "
+            "successful_runs, cost, facility_id, installer_id, "
+            "start_date, end_date, completed_date, status, probability "
+            "FROM ledger_industry_jobs "
+            f"WHERE {where} ORDER BY start_date, job_id",
+            tuple(params),
+        ).fetchall()
+
+
+def list_job_inputs_for_owners(
+    owners: list[tuple[str, int]],
+) -> list[tuple]:
+    """All frozen inputs for the owners' jobs: (owner_type, owner_id, job_id,
+    type_id, quantity, source)."""
+    where, params = _owner_in_clause(owners)
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT owner_type, owner_id, job_id, type_id, quantity, source "
+            "FROM ledger_job_inputs "
+            f"WHERE {where} ORDER BY job_id, type_id",
+            tuple(params),
+        ).fetchall()
+
+
+def oldest_wallet_transaction_date(
+    owners: list[tuple[str, int]],
+) -> Optional[datetime]:
+    """Cutover T0 candidate: oldest archived wallet tx among these owners."""
+    where, params = _owner_in_clause(owners)
+    with storage.connect() as conn:
+        row = conn.execute(
+            f"SELECT MIN(date) FROM ledger_wallet_transactions WHERE {where}",
+            tuple(params),
+        ).fetchone()
+    return row[0] if row and row[0] is not None else None
+
+
+def list_cached_reference_prices(
+    type_ids: list[int],
+) -> dict[tuple[int, object], tuple[float, str]]:
+    """{(type_id, price_date): (avg_price, source)} for the given types."""
+    if not type_ids:
+        return {}
+    unique = list(dict.fromkeys(int(t) for t in type_ids))
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, price_date, avg_price, source "
+            "FROM ledger_reference_prices WHERE type_id = ANY(?)",
+            (unique,),
+        ).fetchall()
+    return {(int(r[0]), r[1]): (float(r[2]), str(r[3])) for r in rows}
+
+
+def upsert_reference_prices(rows: list[tuple]) -> int:
+    """`rows`: (type_id, price_date, avg_price, source). Insert-only freeze."""
+    if not rows:
+        return 0
+    with storage.connect() as conn:
+        conn.executemany(
+            "INSERT INTO ledger_reference_prices (type_id, price_date, avg_price, source) "
+            "VALUES (?,?,?,?) "
+            "ON CONFLICT (tenant_id, type_id, price_date) DO NOTHING",
+            rows,
+        )
+    return len(rows)
+
+
+def list_opening_cost_overrides() -> dict[int, float]:
+    """Manual opening unit-cost overrides: type_id -> amount (ISK/unit)."""
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, amount FROM ledger_manual_entries "
+            "WHERE entry_kind = 'opening_cost' AND type_id IS NOT NULL",
+        ).fetchall()
+    return {int(r[0]): float(r[1]) for r in rows if r[0] is not None}
+
+
+def replace_derived_costing(
+    *,
+    layers: list[tuple],
+    results: list[tuple],
+    cutover_t0: Optional[datetime],
+    warnings: list,
+) -> int:
+    """Fully replace derived costing tables for this tenant (one rebuild).
+
+    `layers`: (type_id, unit, quantity_left, unit_cost, origin, source_ref,
+    cost_materials_bought, cost_materials_estimated, cost_freight, cost_job,
+    cost_invention, cost_fees, layer_date, job_id)
+    `results`: (sale_ref, type_id, quantity, revenue, cost, profit,
+    coverage_share, sale_date)
+    Returns the new prod_ledger_runs.run_id.
+    """
+    with storage.connect() as conn:
+        conn.execute("DELETE FROM prod_cost_layers")
+        conn.execute("DELETE FROM prod_realized_results")
+        if layers:
+            conn.executemany(
+                "INSERT INTO prod_cost_layers ("
+                "type_id, unit, quantity_left, unit_cost, origin, source_ref, "
+                "cost_materials_bought, cost_materials_estimated, cost_freight, "
+                "cost_job, cost_invention, cost_fees, layer_date, job_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                layers,
+            )
+        if results:
+            conn.executemany(
+                "INSERT INTO prod_realized_results ("
+                "sale_ref, type_id, quantity, revenue, cost, profit, "
+                "coverage_share, sale_date) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                results,
+            )
+        row = conn.execute(
+            "INSERT INTO prod_ledger_runs (cutover_t0, warnings) "
+            "VALUES (?, ?) RETURNING run_id",
+            (cutover_t0, Jsonb(list(warnings))),
+        ).fetchone()
+    return int(row[0])
+
+
+def latest_ledger_run() -> Optional[tuple]:
+    """(run_id, ran_at, cutover_t0, warnings) of the newest rebuild, or None."""
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT run_id, ran_at, cutover_t0, warnings "
+            "FROM prod_ledger_runs ORDER BY run_id DESC LIMIT 1",
+        ).fetchone()

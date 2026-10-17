@@ -6,7 +6,7 @@ rows stay in the archive and return if the share is granted again.
 """
 from __future__ import annotations
 
-from ...esi_data.access import is_shared
+from ...esi_data.access import is_shared, shared_owner_ids
 from . import db
 
 # data_kind each ledger table is gated on
@@ -25,6 +25,15 @@ _KIND_BY_TABLE = {
 
 def owner_shared_with_production(data_kind: str, owner_type: str, owner_id: int) -> bool:
     return is_shared(data_kind, "production", owner_type, int(owner_id))
+
+
+def shared_owners(data_kind: str) -> list[tuple[str, int]]:
+    """Every (owner_type, owner_id) shared with Production for `data_kind`."""
+    out: list[tuple[str, int]] = []
+    for owner_type in ("character", "corporation"):
+        for oid in shared_owner_ids(data_kind, "production", owner_type):
+            out.append((owner_type, int(oid)))
+    return out
 
 
 def list_wallet_transactions_for_production(
@@ -61,3 +70,49 @@ def count_archived_for_production(
     if not owner_shared_with_production(kind, owner_type, owner_id):
         return 0
     return db.count_ledger_rows(table, owner_type, owner_id)
+
+
+# ------------------------------------------------------------------ bulk (Phase 2)
+
+
+def list_all_wallet_transactions_for_production() -> list[tuple]:
+    owners = shared_owners("wallet")
+    if not owners:
+        return []
+    return db.list_wallet_transactions_for_owners(owners)
+
+
+def list_all_wallet_journal_for_production() -> list[tuple]:
+    owners = shared_owners("wallet")
+    if not owners:
+        return []
+    return db.list_wallet_journal_for_owners(owners)
+
+
+def list_all_market_orders_for_production() -> list[tuple]:
+    owners = shared_owners("market_orders")
+    if not owners:
+        return []
+    return db.list_market_orders_for_owners(owners)
+
+
+def list_all_industry_jobs_for_production() -> list[tuple]:
+    owners = shared_owners("industry_jobs")
+    if not owners:
+        return []
+    return db.list_industry_jobs_for_owners(owners)
+
+
+def list_all_job_inputs_for_production() -> list[tuple]:
+    owners = shared_owners("industry_jobs")
+    if not owners:
+        return []
+    return db.list_job_inputs_for_owners(owners)
+
+
+def cutover_t0_for_production():
+    """Oldest wallet transaction among owners shared for wallet, or None."""
+    owners = shared_owners("wallet")
+    if not owners:
+        return None
+    return db.oldest_wallet_transaction_date(owners)
