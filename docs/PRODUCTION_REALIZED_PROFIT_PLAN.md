@@ -366,10 +366,71 @@ Heavy enough to delegate to an Opus subagent (CLAUDE.md preference).
 cost components (incl. freight); drill-down tree; coverage; "fees without
 sale"; drift, overlap and archive-gap warnings; CLI.
 
-**Phase 4 - frontend.** New Production page "Realized Profit": summary
-(revenue, cost, profit, margin, coverage), table per product, drill-down of
-one sale's cost chain, warnings. Opening-cost override and manual-entry
-forms; corp "mine alone" switch.
+**Phase 4 - frontend.** New Production page "Realized Profit" (section 9a).
+
+### 9a. Frontend: Production -> "Realized Profit"
+
+One new tab in `ProductionLayout` (route `/production/realized`, lazy-loaded
+like every other Production page), placed after "Margin" so planned and
+realized margin sit next to each other. Built from existing components only:
+`DataTable` (sorting, filters, saved views, CSV export), `RowDetailDrawer`,
+`HintCard`, `FieldState`, `EditableCell`, recharts (as on Trading's Realized
+Trades page), `isk`/`pct`/`qty` formatters. Sub-tabs inside the page:
+
+1. **Overview**
+   - Header: period selector (7 / 30 / 90 days, since T0, custom range;
+     default 30 days), status line (archive since, T0, last recompute, last
+     wallet/jobs sync), "Recompute" button (`useAction`, background job like
+     other long actions).
+   - KPI cards: revenue, cost of goods sold, realized profit, margin %,
+     coverage % (color: green >= 90 %, yellow >= 70 %, red below; the profit
+     card says "estimated" below the threshold), units sold.
+   - Separate cards, *not* part of profit: "fees without sale" (unfilled/
+     relist broker fees), "capital in BPOs" (D3), "inventory at cost"
+     (unsold produced and opening stock).
+   - Chart: realized profit per day/week (bars), cumulative line.
+   - Cost structure: one stacked bar plus table - materials bought, materials
+     estimated (opening/unknown), freight (labeled "configured rate"), job
+     costs, invention, broker fees, sales tax.
+2. **Products** - one row per Production type sold in the period: units sold,
+   revenue, cost/unit, net sell/unit, profit, margin, coverage badge, warning
+   icon. Phase 5 adds "planned cost/unit" and the difference. Click a row ->
+   drawer with:
+   - the product's sales in the period (date, location, qty, net price,
+     profit),
+   - the **cost chain** as an expandable tree (same shape as Material Tree's
+     `TreeRow`): product -> job (#id, date, runs, job cost, facility) ->
+     inputs (qty, unit cost, origin badge). A `bought` input shows date,
+     location, price, freight; a `produced` input expands into its own job;
+     `opening`/`unknown` inputs are shown in the estimate color with the
+     reference price used; assumed ME/decryptor carry a small marker.
+3. **Jobs** - every job since T0: product, activity, runs, start/end,
+   input cost, job cost, unit cost of the output, share already sold, flags
+   (assumed ME/decryptor, no structure bonus, before T0). Invention jobs show
+   attempts, successes and cost per T2 BPC run.
+4. **Inventory** - remaining layers per type: quantity, cost basis per unit,
+   total, origin mix (bought/produced/opening/unknown), ESI stock and the drift
+   between them.
+5. **Warnings** - grouped `HintCard`s: inventory drift, Trading overlap,
+   archive gaps, sales outside the home structure, unresolved regions,
+   unmatched broker fees, assumed ME/decryptor, negative opening quantities.
+   Each links to the affected rows.
+6. **Ledger** - manual entries and overrides:
+   - opening inventory table (type, qty, reference price on T0, editable
+     real unit cost via `EditableCell`),
+   - manual ledger entries (cost or revenue, type, qty, amount, date, note),
+   - corp "mine alone" switches per corp/division (D7),
+   - "re-apply current freight rate" (confirm dialog showing how many
+     purchases change),
+   - per-character archive status; a character whose wallet/jobs are not
+     shared with Production shows `FieldState`'s "not shared" with a link to
+     the Characters page; hidden archive rows (D11) can be deleted here
+     (count-then-confirm, like turning off the mail archive).
+
+Early state: until the archive has data past T0 the page shows one hint
+("archive running since X; results start at T0") instead of empty tables.
+Numbers are English-only like the rest of the UI. Live verification per
+CLAUDE.md with a throwaway Playwright script before calling it done.
 
 **Phase 5 - extensions.** Contract buys/sells in costing (data archived since
 Phase 1); optional comparison of the configured freight rate with courier
