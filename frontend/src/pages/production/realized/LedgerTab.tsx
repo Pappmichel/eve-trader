@@ -1,14 +1,15 @@
 import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Anchor, Badge, Button, Group, NumberInput, Select, Stack, Text, TextInput, Title } from '@mantine/core'
 import { modals } from '@mantine/modals'
 import { IconTrash } from '@tabler/icons-react'
 import { Link } from 'react-router-dom'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { productionApi } from '../../../api/client'
+import { ApiError, productionApi } from '../../../api/client'
 import type {
   CharInfoField, EsiTokenCharacter, RealizedArchiveOwner,
-  RealizedLedgerEntry, RealizedOpeningRow,
+  RealizedCourierMonth, RealizedLedgerEntry, RealizedOpeningRow,
 } from '../../../api/types'
 import { DataTable } from '../../../components/DataTable'
 import { EditableNumberCell } from '../../../components/EditableCell'
@@ -17,7 +18,8 @@ import { HintCard } from '../../../components/HintCard'
 import { SearchableSelect } from '../../../components/SearchableSelect'
 import { useAction } from '../../../hooks/useAction'
 import { useItemNameOptions } from '../../../hooks/useStaticOptions'
-import { dateTime, isk, qty } from '../../../format'
+import { dateTime, isk, qty, volume } from '../../../format'
+import { notify } from '../../../notify'
 import { displayQty, ownerLabel } from './labels'
 
 const SHARE_KINDS = ['wallet', 'industry_jobs', 'market_orders', 'contracts'] as const
@@ -48,6 +50,107 @@ export interface TableState {
   isError: boolean
   onRetry: () => void
   dataUpdatedAt?: number
+}
+
+function CourierComparison() {
+  const query = useQuery({
+    queryKey: ['production', 'realized', 'courier'],
+    queryFn: productionApi.realizedCourier,
+    retry: false,
+  })
+  if (query.isLoading) return <Text size="sm" c="dimmed" mb="xs">Loading courier comparison…</Text>
+  if (query.isError) return <HintCard>Could not load the courier comparison.</HintCard>
+  const data = query.data
+  const rate = data?.configured_rate_per_m3
+  const columns: ColumnDef<RealizedCourierMonth, any>[] = [
+    { header: 'Month', accessorKey: 'month', size: 110 },
+    { header: 'Couriers', accessorKey: 'count', size: 100, cell: (info) => qty(info.getValue()) },
+    { header: 'Volume', accessorKey: 'volume_m3', size: 120, cell: (info) => volume(info.getValue()) },
+    { header: 'Reward', accessorKey: 'reward', size: 130, cell: (info) => isk(info.getValue()) },
+    { header: 'Paid ISK/m³', accessorKey: 'paid_isk_per_m3', size: 130, cell: (info) => isk(info.getValue()) },
+    { header: 'Configured rate', accessorKey: 'configured_rate_per_m3', size: 150, cell: (info) => isk(info.getValue()) },
+  ]
+  return (
+    <Stack gap="xs" mb="sm">
+      <Text size="sm" c="dimmed">
+        Finished couriers from The Forge to the home structure. Paid ISK/m³ is information only; cost stays the configured rate
+        {rate == null ? '' : ` (${isk(rate)} / m³)`}.
+      </Text>
+      {data && data.months.length > 0 ? (
+        <DataTable
+          tableId="production-realized-courier"
+          data={data.months}
+          columns={columns}
+          maxHeight={240}
+          getRowId={(row) => row.month}
+        />
+      ) : (
+        <Text size="sm" c="dimmed">No finished couriers from The Forge to the home structure.</Text>
+      )}
+    </Stack>
+  )
+}
+
+function HiddenArchiveCell({ row, characters, onDeleted }: {
+  row: RealizedArchiveOwner
+  characters: EsiTokenCharacter[] | undefined
+  onDeleted: () => void
+}) {
+  const remove = useAction(
+    'Delete archived rows',
+    (args: { ownerType: string; ownerId: number; kind: string }) =>
+      productionApi.deleteHiddenArchive(args.ownerType, args.ownerId, args.kind),
+    [['production', 'realized', 'archive']],
+    { effect: 'Deletes archived rows for a kind that is not shared with Production.' },
+  )
+  if (row.hidden_kinds.length === 0) return '–'
+  const label = ownerLabel(row.owner_type, row.owner_id, characters)
+
+  async function confirmDelete(kind: string) {
+    const kindLabel = kind.replaceAll('_', ' ')
+    try {
+      const counted = await productionApi.countHiddenArchive(row.owner_type, row.owner_id, kind)
+      modals.openConfirmModal({
+        title: `Delete archived ${kindLabel}?`,
+        children: (
+          <Text size="sm">
+            Delete {qty(counted.count)} archived {kindLabel} row(s) for {label}? They cannot be restored from this app.
+            The next recompute drops what depended on them.
+          </Text>
+        ),
+        labels: { confirm: 'Delete archived rows', cancel: 'Cancel' },
+        confirmProps: { color: 'danger' },
+        onConfirm: () => remove.mutate(
+          { ownerType: row.owner_type, ownerId: row.owner_id, kind },
+          { onSuccess: onDeleted },
+        ),
+      })
+    } catch (err) {
+      notify({
+        title: 'Delete archived rows',
+        color: 'danger',
+        message: err instanceof ApiError ? err.message : 'Could not count archived rows.',
+      })
+    }
+  }
+
+  return (
+    <Stack gap={4}>
+      <Text size="xs">Kept until shared again</Text>
+      {row.hidden_kinds.map((kind) => (
+        <Button
+          key={kind}
+          size="compact-xs"
+          color="danger"
+          variant="light"
+          loading={remove.isPending}
+          onClick={() => { void confirmDelete(kind) }}
+        >
+          Delete archived {kind.replaceAll('_', ' ')}
+        </Button>
+      ))}
+    </Stack>
+  )
 }
 
 function recordText(record: Record<string, string | number | null>): string {
@@ -199,9 +302,13 @@ export function LedgerTab({
     {
       header: 'Hidden', id: 'hidden', size: 220,
       accessorFn: (row) => row.hidden_kinds.join(', '),
-      cell: (info) => info.row.original.hidden_kinds.length === 0
-        ? '–'
-        : `Kept until shared again: ${info.row.original.hidden_kinds.join(', ')}`,
+      cell: (info) => (
+        <HiddenArchiveCell
+          row={info.row.original}
+          characters={characters}
+          onDeleted={() => onRebuildOffer('Archived rows deleted. Recompute to drop what depended on them.')}
+        />
+      ),
     },
   ]
 
@@ -270,6 +377,7 @@ export function LedgerTab({
 
       <div>
         <Title order={6} c="dimmed" tt="uppercase" mb="xs">Freight</Title>
+        <CourierComparison />
         <Text size="sm" c="dimmed" mb="xs">
           Re-apply writes the current configured rate onto purchases that already have a freight volume. It does not recompute profit.
         </Text>

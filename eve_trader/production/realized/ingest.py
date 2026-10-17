@@ -27,6 +27,7 @@ _FINISHED_CONTRACT_STATUSES = frozenset(
     ("finished", "finished_issuer", "finished_contractor"),
 )
 _ITEM_EXCHANGE = "item_exchange"
+_COURIER = "courier"
 
 # How far back each ESI list reaches, and the row caps Phase 0 found
 # (plan section 13a). A gap can only exist where one of these was exceeded.
@@ -304,6 +305,7 @@ def archive_industry_jobs(
 
     job_ids = [int(j["job_id"]) for j in jobs if j.get("job_id") is not None]
     has_inputs = db.job_ids_with_inputs(owner_type, owner_id, job_ids)
+    known_jobs = db.industry_job_ids_present(owner_type, owner_id, job_ids)
 
     rows: list[tuple] = []
     start_dates: list[datetime] = []
@@ -348,6 +350,14 @@ def archive_industry_jobs(
     db.upsert_ledger_industry_jobs(rows)
     db.insert_ledger_job_inputs(input_rows)
     _stamp(owner_type, owner_id, "industry_jobs", now)
+    # Planned cost is frozen only for jobs that were not already archived.
+    # A lookup failure must not fail the ESI sync, and it never calls ESI.
+    new_jobs = [j for j in jobs if j.get("job_id") is not None and int(j["job_id"]) not in known_jobs]
+    try:
+        from . import planned
+        planned.freeze_for_new_jobs(owner_type, int(owner_id), new_jobs)
+    except Exception:  # noqa: BLE001
+        log.exception("ledger planned-cost freeze failed for %s %s", owner_type, owner_id)
     return {"jobs": len(rows), "inputs": len(input_rows)}
 
 
@@ -411,29 +421,48 @@ def archive_contracts(
     items_by_contract: dict[int, list[dict]],
     now: Optional[datetime] = None,
 ) -> dict:
-    """Item-exchange contracts where this owner is issuer or acceptor."""
+    """Item-exchange contracts where this owner is issuer or acceptor, plus
+    finished courier contracts this owner issued. Couriers are archived for
+    the freight comparison and never enter costing. Item lines freeze The
+    Forge freight the first time they are inserted."""
     now = _now(now)
     rows: list[tuple] = []
     item_rows: list[tuple] = []
+    enricher = _TxnEnricher(production_config.PRODUCTION_CONFIG)
     for c in contracts:
-        if c.get("type") != _ITEM_EXCHANGE:
+        ctype = c.get("type")
+        issued = contract_issuer_matches(c, owner_type=owner_type, owner_id=owner_id)
+        if ctype == _COURIER:
+            if (c.get("status") or "") != "finished" or not issued:
+                continue
+        elif ctype != _ITEM_EXCHANGE:
             continue
         cid = c.get("contract_id")
         if cid is None:
             continue
+        start = c.get("start_location_id")
+        region = enricher.region(int(start)) if start is not None else None
         rows.append((
             owner_type, int(owner_id), int(cid),
             c.get("issuer_id"), c.get("issuer_corporation_id"), c.get("acceptor_id"),
-            c.get("start_location_id"), c.get("end_location_id"),
-            c.get("type") or _ITEM_EXCHANGE, c.get("status") or "",
+            start, c.get("end_location_id"),
+            ctype, c.get("status") or "",
             c.get("title"), c.get("price"), c.get("reward"),
             c.get("date_issued"), c.get("date_completed"), c.get("date_expired"),
+            c.get("volume"), c.get("collateral"), region,
         ))
+        if ctype != _ITEM_EXCHANGE:
+            continue
         for it in items_by_contract.get(int(cid), []):
+            quantity = int(it["quantity"])
+            rate, m3, frozen = None, None, False
+            if start is not None:
+                rate, m3, frozen = _contract_item_freight(enricher, int(start), int(it["type_id"]), quantity)
             item_rows.append((
                 owner_type, int(owner_id), int(cid), int(it["record_id"]),
-                int(it["type_id"]), int(it["quantity"]),
+                int(it["type_id"]), quantity,
                 bool(it.get("is_included", True)), bool(it.get("is_singleton", False)),
+                rate, m3, frozen,
             ))
     _check_gap(
         owner_type=owner_type, owner_id=owner_id, data_kind="contracts",
@@ -443,6 +472,26 @@ def archive_contracts(
     db.upsert_ledger_contract_items(item_rows)
     _stamp(owner_type, owner_id, "contracts", now)
     return {"contracts": len(rows), "items": len(item_rows)}
+
+
+def _contract_item_freight(enricher: _TxnEnricher, start_location: int, type_id: int, quantity: float):
+    """(rate, m3, frozen). Unresolved region stays unfrozen."""
+    region = enricher.region(int(start_location))
+    if region is None:
+        return None, None, False
+    rate, m3 = enricher.freight(region, int(start_location), int(type_id), quantity, True)
+    return rate, m3, True
+
+
+def contract_issuer_matches(
+    contract: dict, *, owner_type: str, owner_id: int,
+) -> bool:
+    """True when this owner issued the contract. A character matches
+    issuer_id; a corporation matches issuer_corporation_id."""
+    oid = int(owner_id)
+    if owner_type == "character":
+        return contract.get("issuer_id") == oid
+    return contract.get("issuer_corporation_id") == oid
 
 
 def contract_party_matches(

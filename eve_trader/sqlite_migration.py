@@ -182,6 +182,7 @@ KNOWN_NON_MIGRATED_TABLES: dict[str, str] = {
     "ledger_market_orders": "Postgres-native (Production realized profit archive - never existed in the pre-migration SQLite schema)",
     "ledger_industry_jobs": "Postgres-native (Production realized profit archive - never existed in the pre-migration SQLite schema)",
     "ledger_job_inputs": "Postgres-native (Production realized profit archive - never existed in the pre-migration SQLite schema)",
+    "ledger_job_planned_costs": "Postgres-native (Production realized profit Phase 5 - planner cost frozen at archive time, never existed in the pre-migration SQLite schema)",
     "ledger_blueprints": "Postgres-native (Production realized profit archive - never existed in the pre-migration SQLite schema)",
     "ledger_contracts": "Postgres-native (Production realized profit archive - never existed in the pre-migration SQLite schema)",
     "ledger_contract_items": "Postgres-native (Production realized profit archive - never existed in the pre-migration SQLite schema)",

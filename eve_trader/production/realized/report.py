@@ -340,7 +340,8 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
     }
 
 
-def _product_row(type_id: int, totals: tuple, assumed: tuple, warnings: list[str], names: dict) -> dict:
+def _product_row(type_id: int, totals: tuple, assumed: tuple, warnings: list[str], names: dict,
+                 planned: Optional[tuple] = None) -> dict:
     components = CostComponents(
         materials_bought=_num(totals[5]), materials_estimated=_num(totals[6]),
         freight=_num(totals[7]), job=_num(totals[8]), invention=_num(totals[9]),
@@ -352,6 +353,13 @@ def _product_row(type_id: int, totals: tuple, assumed: tuple, warnings: list[str
     cost = _num(totals[3])
     profit = _num(totals[4])
     cov, estimated = _coverage(components, price_missing)
+    covered_qty, covered_cost, covered_realized = planned or (0.0, 0.0, 0.0)
+    planned_cost = (covered_cost / covered_qty) if covered_qty > _EPS else None
+    # Realized minus planned over the same units (those with a planned value).
+    planned_difference = (
+        (covered_realized - covered_cost) / covered_qty if covered_qty > _EPS else None
+    )
+    planned_coverage = (covered_qty / qty) if qty > _EPS else None
     return {
         "type_id": int(type_id),
         "type_name": names.get(int(type_id)),
@@ -363,6 +371,9 @@ def _product_row(type_id: int, totals: tuple, assumed: tuple, warnings: list[str
         "profit": profit,
         "margin": (profit / revenue) if revenue else None,
         "coverage": cov,
+        "planned_cost_per_unit": planned_cost,
+        "planned_coverage": planned_coverage,
+        "planned_difference_per_unit": planned_difference,
         "warnings": sorted(set(warnings)),
         "flags": _flags(
             estimated=estimated, price_missing=price_missing,
@@ -386,11 +397,15 @@ def products(*, start: Optional[datetime], end: datetime, since_t0: bool, days: 
         for type_id, text in db.realized_warnings_by_type(start_at, end_at):
             warn[int(type_id)].append(str(text))
         names = _names({int(r[0]) for r in rows})
+        planned = db.planned_unit_cost_by_type(start_at, end_at)
     return {
         "period": period,
         "needs_rebuild": False,
         "rows": [
-            _product_row(int(row[0]), row, flags.get(int(row[0]), (False, False)), warn.get(int(row[0]), []), names)
+            _product_row(
+                int(row[0]), row, flags.get(int(row[0]), (False, False)),
+                warn.get(int(row[0]), []), names, planned.get(int(row[0])),
+            )
             for row in rows
         ],
     }
@@ -425,6 +440,7 @@ def _sale_dict(row, names: dict) -> dict:
             estimated=estimated, price_missing=price_missing,
             coverage=cov, tax_missing="tax_missing" in warnings,
         ),
+        "source": None if len(row) <= 21 or row[21] is None else str(row[21]),
     }
 
 
@@ -497,6 +513,7 @@ def _leaf(row, scale: float = 1.0) -> dict:
         "job_id": None if row[20] is None else int(row[20]),
         "flags": _draw_flags(row, detail_missing=origin == "produced"),
         "children": [],
+        "source": None if len(row) <= 24 or row[24] is None else str(row[24]),
     }
     return node
 
@@ -641,6 +658,7 @@ def jobs() -> dict:
         if run is None or changed:
             return {"cutover_t0": _iso(t0), "needs_rebuild": True, "rows": []}
         rows = db.list_job_records()
+        contract_jobs = db.job_refs_with_contract_draws()
         names = _names(
             {int(r[6]) for r in rows if r[6] is not None}
             | {int(r[5]) for r in rows}
@@ -685,6 +703,7 @@ def jobs() -> dict:
             "sold_share": sold_share,
             "cost_per_bpc_run": unit_cost if activity == ACTIVITY_INVENTION and unit_cost is not None else None,
             "facility_id": None if row[29] is None else int(row[29]),
+            "contract_input": str(row[0]) in contract_jobs,
             "cost_structure": _cost_structure(components, 0.0),
             "flags": _flags(
                 estimated=bool(row[22]) or bool(row[20]) or bool(row[21]),
@@ -919,6 +938,49 @@ def ledger_entries() -> dict:
             }
             for r in rows
         ],
+    }
+
+
+def courier_comparison() -> dict:
+    """Finished courier contracts from The Forge to the home structure,
+    per calendar month. Information only: costing still uses the configured
+    rate (D9). An unset home structure returns no months."""
+    from ..config import PRODUCTION_CONFIG
+    from ...config import TRADING_CONFIG
+    from .ingest import _freight_rate_for_forge
+
+    home = PRODUCTION_CONFIG.home_location_id or TRADING_CONFIG.structure_id
+    rate = float(_freight_rate_for_forge(PRODUCTION_CONFIG))
+    if not home:
+        return {"home_location_id": None, "configured_rate_per_m3": rate, "months": []}
+    with storage.batch_session():
+        rows = db.list_forge_home_couriers(access.shared_owners("contracts"), int(home))
+    buckets: dict[str, dict] = {}
+    for _cid, completed, volume, reward in rows:
+        when = completed
+        if isinstance(when, datetime) and when.tzinfo is not None:
+            when = when.astimezone(timezone.utc)
+        month = when.strftime("%Y-%m")
+        slot = buckets.setdefault(month, {"count": 0, "volume_m3": 0.0, "reward": 0.0})
+        slot["count"] += 1
+        slot["volume_m3"] += float(volume or 0)
+        slot["reward"] += float(reward or 0)
+    months = []
+    for month in sorted(buckets):
+        slot = buckets[month]
+        vol = slot["volume_m3"]
+        months.append({
+            "month": month,
+            "count": slot["count"],
+            "volume_m3": vol,
+            "reward": slot["reward"],
+            "paid_isk_per_m3": (slot["reward"] / vol) if vol > _EPS else None,
+            "configured_rate_per_m3": rate,
+        })
+    return {
+        "home_location_id": int(home),
+        "configured_rate_per_m3": rate,
+        "months": months,
     }
 
 

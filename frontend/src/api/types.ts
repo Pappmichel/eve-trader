@@ -2711,6 +2711,10 @@ export interface RealizedProductRow {
   profit: number
   margin: number | null
   coverage: number | null
+  planned_cost_per_unit: number | null
+  planned_coverage: number | null
+  /** Realized minus planned cost per unit, over the units that have a planned value. */
+  planned_difference_per_unit: number | null
   warnings: string[]
   flags: RealizedFlags
 }
@@ -2739,6 +2743,7 @@ export interface RealizedSaleRow {
   warnings: string[]
   cost_structure: CostStructureLine[]
   flags: RealizedFlags
+  source: string | null
 }
 
 export interface RealizedProductDetail {
@@ -2778,6 +2783,7 @@ export interface RealizedChainNode {
   share: number | null
   cost_share: number | null
   sale_ref: string | null
+  source: string | null
   flags: RealizedFlags
   children: RealizedChainNode[]
 }
@@ -2812,6 +2818,7 @@ export interface RealizedJobRow {
   sold_share: number | null
   cost_per_bpc_run: number | null
   facility_id: number | null
+  contract_input: boolean
   cost_structure: CostStructureLine[]
   flags: RealizedFlags
 }
@@ -2906,4 +2913,33 @@ export interface FreightReapplyResult {
   freight_rate_per_m3: number
   freight_label: string
   rebuild_required?: boolean
+}
+
+export interface RealizedCourierMonth {
+  month: string
+  count: number
+  volume_m3: number
+  reward: number
+  paid_isk_per_m3: number | null
+  configured_rate_per_m3: number
+}
+
+export interface RealizedCourierComparison {
+  home_location_id: number | null
+  configured_rate_per_m3: number
+  months: RealizedCourierMonth[]
+}
+
+export interface HiddenArchiveCount {
+  owner_type: string
+  owner_id: number
+  kind: string
+  count: number
+}
+
+export interface HiddenArchiveDeleted {
+  owner_type: string
+  owner_id: number
+  kind: string
+  deleted: number
 }

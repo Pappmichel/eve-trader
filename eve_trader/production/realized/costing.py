@@ -10,7 +10,8 @@ Event order
 Events at or after the cutover `t0` are sorted by
 ``(timestamp, KIND_RANK, id, owner_type, owner_id, division)``:
 
-    buy=10, job_start=20, job_cancel=30, job_end=40, sell=50
+    buy=10, contract_buy=10, job_start=20, job_cancel=30, job_end=40,
+    contract_give=48, sell=50
 
 So at the same second a purchase is available to a job that starts, a job's
 output is available to a sale, and a sale never consumes a job's inputs.
@@ -83,17 +84,25 @@ _BUILD_ACTIVITIES = frozenset({ACTIVITY_MANUFACTURING, ACTIVITY_REACTION})
 _KNOWN_ACTIVITIES = _RESEARCH_ACTIVITIES | _BUILD_ACTIVITIES | {ACTIVITY_COPYING, ACTIVITY_INVENTION}
 
 KIND_BUY = "buy"
+KIND_CONTRACT_BUY = "contract_buy"
 KIND_JOB_START = "job_start"
 KIND_JOB_CANCEL = "job_cancel"
 KIND_JOB_END = "job_end"
+KIND_CONTRACT_GIVE = "contract_give"
 KIND_SELL = "sell"
 KIND_RANK = {
     KIND_BUY: 10,
+    KIND_CONTRACT_BUY: 10,
     KIND_JOB_START: 20,
     KIND_JOB_CANCEL: 30,
     KIND_JOB_END: 40,
+    KIND_CONTRACT_GIVE: 48,
     KIND_SELL: 50,
 }
+
+SOURCE_MARKET = "market"
+SOURCE_CONTRACT = "contract"
+CONTRACT_ITEM_EXCHANGE = "item_exchange"
 
 UNIT_ITEM = "item"
 UNIT_BPC_RUN = "bpc_run"
@@ -244,6 +253,68 @@ class MarketOrder:
 
 
 @dataclass(frozen=True)
+class ContractItem:
+    """One item-exchange line. `is_included` is ESI's flag: true means the
+    issuer provides the item, false means the issuer asks for it.
+
+    `blueprint_runs` is set only for a blueprint: -1 is a BPO, a positive
+    number is the copy's runs, None/0 means the run count is unknown.
+    Freight is already frozen (rate x packaged m3); None means no freight.
+    """
+    record_id: int
+    type_id: int
+    quantity: float
+    is_included: bool
+    is_singleton: bool = False
+    is_blueprint: bool = False
+    blueprint_runs: Optional[int] = None
+    freight_rate_per_m3: Optional[float] = None
+    freight_m3: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class ItemExchangeContract:
+    """One finished item-exchange contract, already deduped by contract id.
+
+    `corp_issued` is true only when the archived row is the corporation's
+    own contract (owner is the corp and issuer_corporation_id matches). A
+    personal contract's issuer_corporation_id is the issuer's corp and does
+    not by itself make the issuer this tenant.
+    """
+    contract_id: int
+    owner_type: str
+    owner_id: int
+    date_completed: datetime
+    issuer_id: Optional[int] = None
+    issuer_corporation_id: Optional[int] = None
+    acceptor_id: Optional[int] = None
+    price: float = 0.0
+    reward: float = 0.0
+    start_location_id: Optional[int] = None
+    end_location_id: Optional[int] = None
+    items: Sequence[ContractItem] = ()
+    corp_issued: bool = False
+    status: str = "finished"
+    contract_type: str = CONTRACT_ITEM_EXCHANGE
+
+    @property
+    def ref(self) -> str:
+        return f"contract:{int(self.contract_id)}"
+
+
+@dataclass
+class _ContractView:
+    """How one contract moves items for this tenant. `receive_pool` is what
+    the tenant pays for received items; `sale_pool` is what it gets for the
+    items it gives (None: the hand-over is not a sale)."""
+    contract: ItemExchangeContract
+    received: list
+    given: list
+    receive_pool: float
+    sale_pool: Optional[float]
+
+
+@dataclass(frozen=True)
 class JobInput:
     type_id: int
     quantity: float
@@ -306,6 +377,13 @@ class LedgerSnapshot:
     # type_id -> opening quantity frozen by an earlier rebuild for this T0
     # and owner scope. None or missing types: computed from ESI stock now.
     frozen_opening: Optional[dict] = None
+    # Finished item-exchange contracts, deduped. Courier contracts never
+    # enter costing.
+    contracts: Sequence[ItemExchangeContract] = ()
+    # Corporation ids this tenant owns (registry corp + corp owners shared
+    # for the ledger). Used only with `corp_issued`, never as "anyone in
+    # this corp".
+    tenant_corporation_ids: frozenset = frozenset()
 
 
 # ====================================================================== outputs
@@ -327,6 +405,8 @@ class CostLayer:
     estimated_origin: bool = False
     # Some of its value had no price at all and was booked at 0.
     price_missing: bool = False
+    # market / contract for a bought layer; None for opening, produced, unknown.
+    source: Optional[str] = None
 
     @property
     def unit_cost(self) -> float:
@@ -348,6 +428,7 @@ class LayerDraw:
     components: CostComponents
     estimated_origin: bool
     price_missing: bool = False
+    source: Optional[str] = None
 
     @property
     def cost(self) -> float:
@@ -373,6 +454,7 @@ class RealizedResult:
     draws: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
     price_missing: bool = False
+    source: str = SOURCE_MARKET
 
     @property
     def estimated(self) -> bool:
@@ -497,6 +579,64 @@ class CostingResult:
         return {t: c.coverage() for t, c in sorted(by_type.items())}
 
 
+def split_exact(total: float, weights: Sequence[float]) -> list[float]:
+    """Split `total` by `weights` so the shares sum exactly to `total`.
+
+    The last positive weight absorbs the remainder. A zero total weight
+    puts the whole total on the last line.
+    """
+    n = len(weights)
+    if n == 0:
+        return []
+    positive = [float(w) if float(w) > _EPS else 0.0 for w in weights]
+    weight_sum = sum(positive)
+    if weight_sum <= _EPS:
+        shares = [0.0] * n
+        shares[-1] = float(total)
+        return shares
+    last = max(i for i, w in enumerate(positive) if w > _EPS)
+    shares: list[float] = []
+    allocated = 0.0
+    for i, w in enumerate(positive):
+        if i == last:
+            shares.append(float(total) - allocated)
+        elif w <= _EPS:
+            shares.append(0.0)
+        else:
+            share = float(total) * w / weight_sum
+            allocated += share
+            shares.append(share)
+    return shares
+
+
+def _contract_line_key(line: ContractItem) -> tuple:
+    if line.is_blueprint:
+        kind = "bpo" if line.blueprint_runs == -1 else "bpc"
+        return (kind, int(line.type_id))
+    return ("item", int(line.type_id))
+
+
+def allocate_contract_price(
+    lines: Sequence[ContractItem],
+    total: float,
+    unit_prices: Sequence[Optional[float]],
+) -> tuple[list[float], bool]:
+    """Split `total` across contract lines. Shares sum exactly to `total`.
+
+    One (type, unit) is split by quantity and does not consult reference
+    prices. Several types use quantity x reference price only when every
+    line has a positive price; otherwise every line is weighted by quantity
+    and the bool is True (a reference price was missing, or a blueprint
+    line has no per-run price and must not be mixed with ISK weights).
+    """
+    quantities = [float(line.quantity) for line in lines]
+    if len({_contract_line_key(line) for line in lines}) <= 1:
+        return split_exact(total, quantities), False
+    if len(unit_prices) == len(lines) and all(p is not None and float(p) > 0 for p in unit_prices):
+        return split_exact(total, [q * float(p) for q, p in zip(quantities, unit_prices)]), False
+    return split_exact(total, quantities), True
+
+
 # ====================================================================== engine
 def rebuild_costing(ledger: LedgerSnapshot) -> CostingResult:
     return _Costing(ledger).run()
@@ -558,14 +698,14 @@ class _Costing:
                    origin: str, source_ref: str, layer_date: Optional[datetime],
                    job_id: Optional[int] = None, assumed_me: bool = False,
                    assumed_decryptor: bool = False, estimated_origin: bool = False,
-                   price_missing: bool = False) -> CostLayer:
+                   price_missing: bool = False, source: Optional[str] = None) -> CostLayer:
         layer = CostLayer(
             layer_id=len(self.all_layers) + 1,
             type_id=int(type_id), unit=unit, quantity=float(quantity), quantity_left=float(quantity),
             origin=origin, source_ref=source_ref, unit_components=unit_components,
             layer_date=layer_date, job_id=job_id, assumed_me=assumed_me,
             assumed_decryptor=assumed_decryptor, estimated_origin=estimated_origin,
-            price_missing=price_missing,
+            price_missing=price_missing, source=source,
         )
         self.all_layers.append(layer)
         self.layers_by_key[(layer.type_id, unit)].append(layer)
@@ -630,6 +770,7 @@ class _Costing:
             layer_id=layer.layer_id, type_id=layer.type_id, unit=layer.unit, quantity=qty,
             origin=layer.origin, components=layer.unit_components.scale(qty),
             estimated_origin=layer.estimated_origin, price_missing=layer.price_missing,
+            source=layer.source,
         )
 
     # ---------------------------------------------------------------- events
@@ -665,8 +806,83 @@ class _Costing:
                     continue
                 when = max(when, job.start_date)
                 events.append((when, KIND_RANK[KIND_JOB_END], *base, KIND_JOB_END, job))
+        for contract in self.ledger.contracts:
+            view = self._classify_contract(contract)
+            if view is None:
+                continue
+            if view.received and view.given:
+                self.warn(
+                    f"contract_item_swap: {contract.ref} gives and receives items"
+                )
+            base = (int(contract.contract_id), contract.owner_type, int(contract.owner_id))
+            if view.received or view.receive_pool > _EPS:
+                events.append((contract.date_completed, KIND_RANK[KIND_CONTRACT_BUY], *base, 0,
+                               KIND_CONTRACT_BUY, view))
+            if view.given:
+                events.append((contract.date_completed, KIND_RANK[KIND_CONTRACT_GIVE], *base, 1,
+                               KIND_CONTRACT_GIVE, view))
         events.sort(key=lambda e: e[:6])
         return events
+
+    def _contract_sides(self, contract: ItemExchangeContract) -> tuple[bool, bool, bool, bool]:
+        """(issuer character, acceptor character, issuer corp, acceptor corp)
+        of this tenant. A corp side is never booked on its own (D7: corp data
+        is shared across tenants and corp wallets are not used); it only marks
+        a character-to-own-corp contract as an internal transfer."""
+        chars = self.ledger.tenant_character_ids
+        corps = self.ledger.tenant_corporation_ids
+        issuer_char = contract.issuer_id is not None and int(contract.issuer_id) in chars
+        acceptor_char = contract.acceptor_id is not None and int(contract.acceptor_id) in chars
+        issuer_corp = bool(
+            contract.corp_issued
+            and contract.issuer_corporation_id is not None
+            and int(contract.issuer_corporation_id) in corps
+        )
+        acceptor_corp = contract.acceptor_id is not None and int(contract.acceptor_id) in corps
+        return issuer_char, acceptor_char, issuer_corp, acceptor_corp
+
+    def _classify_contract(self, contract: ItemExchangeContract) -> Optional[_ContractView]:
+        """None when the contract is not a finished item exchange that one of
+        the tenant's characters issued or accepted against an outside party.
+        Internal transfers (character to character, or character to the
+        tenant's own corp) are skipped. A contract whose only tenant side is a
+        corporation is skipped too (D7): a corp contract counts only through
+        the member character that issued or accepted it."""
+        if contract.contract_type != CONTRACT_ITEM_EXCHANGE:
+            return None
+        if (contract.status or "").lower() != "finished" or contract.date_completed is None:
+            return None
+        if contract.date_completed < self.t0:
+            return None
+        issuer_char, acceptor_char, issuer_corp, acceptor_corp = self._contract_sides(contract)
+        if (issuer_char or issuer_corp) and (acceptor_char or acceptor_corp):
+            return None
+        if not issuer_char and not acceptor_char:
+            if not issuer_corp and not acceptor_corp:
+                self.warn(f"contract_party_unknown: {contract.ref}")
+            return None
+        acceptor = acceptor_char
+        items = list(contract.items)
+        if acceptor:
+            # Acceptor pays `price` for what the issuer included, and hands
+            # over what the issuer asked for in exchange for `reward` (a buy
+            # contract, e.g. a buyback): that hand-over is a sale.
+            return _ContractView(
+                contract,
+                [item for item in items if item.is_included],
+                [item for item in items if not item.is_included],
+                float(contract.price or 0),
+                float(contract.reward or 0),
+            )
+        # Issuer receives `price` for included items and pays `reward` for
+        # the items they asked for.
+        return _ContractView(
+            contract,
+            [item for item in items if not item.is_included],
+            [item for item in items if item.is_included],
+            float(contract.reward or 0),
+            float(contract.price or 0),
+        )
 
     def _net_item_flows(self, events: list[tuple]) -> dict[int, float]:
         flows: dict[int, float] = defaultdict(float)
@@ -684,6 +900,14 @@ class _Costing:
                         flows[int(inp.type_id)] -= float(inp.quantity)
             elif kind == KIND_JOB_END and obj.activity in _BUILD_ACTIVITIES and obj.product_type_id is not None:
                 flows[int(obj.product_type_id)] += self._build_output_qty(obj)
+            elif kind == KIND_CONTRACT_BUY:
+                for item in obj.received:
+                    if not item.is_blueprint:
+                        flows[int(item.type_id)] += float(item.quantity)
+            elif kind == KIND_CONTRACT_GIVE:
+                for item in obj.given:
+                    if not item.is_blueprint:
+                        flows[int(item.type_id)] -= float(item.quantity)
         return flows
 
     def _seed_opening(self, flows: dict[int, float]) -> None:
@@ -809,7 +1033,7 @@ class _Costing:
         total = CostComponents(materials_bought=value, freight=freight, fees=fee)
         self._new_layer(
             type_id=type_id, unit=UNIT_ITEM, quantity=qty, unit_components=total.scale(1.0 / qty),
-            origin=ORIGIN_BOUGHT, source_ref=tx.ref, layer_date=tx.date,
+            origin=ORIGIN_BOUGHT, source_ref=tx.ref, layer_date=tx.date, source=SOURCE_MARKET,
         )
 
     def _on_sell(self, tx: WalletTransaction) -> None:
@@ -853,12 +1077,156 @@ class _Costing:
             gross=gross, sales_tax=tax, broker_fee=fee, revenue=revenue, cost=cost,
             profit=revenue - cost, components=components, coverage_share=coverage,
             sale_date=tx.date, location_id=int(tx.location_id), draws=draws, warnings=result_warnings,
-            price_missing=price_missing,
+            price_missing=price_missing, source=SOURCE_MARKET,
         )
         if result.estimated:
             result.warnings.append("estimated")
             if coverage < ESTIMATED_COVERAGE_THRESHOLD:
                 self.warn(f"coverage_below_threshold: {tx.ref} type {type_id} coverage {coverage:.0%}")
+        self.results.append(result)
+
+    def _split_prices(self, lines: Sequence[ContractItem], when: datetime) -> list[Optional[float]]:
+        """Per-line reference prices for a multi-type split. A single type
+        does not look a price up. Blueprints have no per-run price."""
+        if len({_contract_line_key(line) for line in lines}) <= 1:
+            return [None] * len(lines)
+        prices: list[Optional[float]] = []
+        for line in lines:
+            if line.is_blueprint:
+                prices.append(None)
+            else:
+                prices.append(self._reference_price(int(line.type_id), UNIT_ITEM, when))
+        return prices
+
+    def _book_contract_acquisition(self, contract: ItemExchangeContract, item: ContractItem, share: float) -> None:
+        freight = 0.0
+        if item.freight_rate_per_m3 is not None and item.freight_m3 is not None:
+            freight = float(item.freight_rate_per_m3) * float(item.freight_m3)
+        if item.is_blueprint and item.blueprint_runs == -1:
+            self.capital[int(item.type_id)] += share + freight
+            return
+        if item.is_blueprint:
+            if item.blueprint_runs is None or int(item.blueprint_runs) <= 0:
+                self.warn(
+                    f"bpc_runs_unknown: {contract.ref} type {int(item.type_id)} "
+                    f"booked as {float(item.quantity):g} runs"
+                )
+                qty = float(item.quantity)
+            else:
+                qty = float(item.blueprint_runs) * float(item.quantity)
+            unit = UNIT_BPC_RUN
+        else:
+            qty = float(item.quantity)
+            unit = UNIT_ITEM
+        if qty <= _EPS:
+            return
+        components = CostComponents(materials_bought=share / qty, freight=freight / qty)
+        self._new_layer(
+            type_id=int(item.type_id), unit=unit, quantity=qty, unit_components=components,
+            origin=ORIGIN_BOUGHT, source_ref=contract.ref, layer_date=contract.date_completed,
+            source=SOURCE_CONTRACT,
+        )
+        if unit == UNIT_ITEM and int(item.type_id) in self.ledger.production_type_ids:
+            self.warn(
+                f"trading_overlap: Production type {int(item.type_id)} is also bought by {contract.ref}"
+            )
+
+    def _consume_contract_line(self, contract: ItemExchangeContract, item: ContractItem) -> None:
+        """Remove a given line from inventory without booking revenue."""
+        if item.is_blueprint and item.blueprint_runs == -1:
+            self.warn(f"bpo_sale_not_costed: type {int(item.type_id)} sold ({contract.ref})")
+            return
+        if item.is_blueprint:
+            if item.blueprint_runs is None or int(item.blueprint_runs) <= 0:
+                self.warn(
+                    f"bpc_runs_unknown: {contract.ref} type {int(item.type_id)} "
+                    f"booked as {float(item.quantity):g} runs"
+                )
+                qty = float(item.quantity)
+            else:
+                qty = float(item.blueprint_runs) * float(item.quantity)
+            self._consume(int(item.type_id), UNIT_BPC_RUN, qty, contract.date_completed,
+                          contract.ref, allow_unknown=False)
+            return
+        self._consume(int(item.type_id), UNIT_ITEM, float(item.quantity), contract.date_completed,
+                      contract.ref, allow_unknown=False)
+
+    def _on_contract_buy(self, view: _ContractView) -> None:
+        contract = view.contract
+        lines = list(view.received)
+        if not lines:
+            if view.receive_pool > _EPS:
+                self.warn(
+                    f"contract_without_items: {contract.ref} paid {view.receive_pool:g} with nothing received"
+                )
+            return
+        prices = self._split_prices(lines, contract.date_completed)
+        shares, fallback = allocate_contract_price(lines, view.receive_pool, prices)
+        if fallback:
+            self.warn(f"missing_reference_price: {contract.ref} price split by quantity")
+        for item, share in zip(lines, shares):
+            self._book_contract_acquisition(contract, item, share)
+
+    def _on_contract_give(self, view: _ContractView) -> None:
+        contract = view.contract
+        lines = list(view.given)
+        if not lines:
+            return
+        pool = 0.0 if view.sale_pool is None else float(view.sale_pool)
+        prices = self._split_prices(lines, contract.date_completed)
+        shares, fallback = allocate_contract_price(lines, pool, prices)
+        if view.sale_pool is not None and fallback:
+            self.warn(f"missing_reference_price: {contract.ref} price split by quantity")
+        production: dict[int, list] = defaultdict(lambda: [0.0, 0.0])
+        for item, share in zip(lines, shares):
+            if item.is_blueprint or int(item.type_id) not in self.ledger.production_type_ids:
+                self._consume_contract_line(contract, item)
+                continue
+            slot = production[int(item.type_id)]
+            slot[0] += float(item.quantity)
+            slot[1] += share
+        if view.sale_pool is None:
+            for type_id, (qty, _share) in production.items():
+                self._consume(type_id, UNIT_ITEM, qty, contract.date_completed, contract.ref,
+                              allow_unknown=False)
+            return
+        multi = len(production) > 1
+        for type_id, (qty, share) in sorted(production.items()):
+            sale_ref = f"{contract.ref}:{type_id}" if multi else contract.ref
+            self._book_contract_sale(contract, type_id, qty, share, sale_ref)
+
+    def _book_contract_sale(self, contract: ItemExchangeContract, type_id: int, qty: float,
+                            gross: float, sale_ref: str) -> None:
+        result_warnings: list[str] = []
+        location = contract.start_location_id
+        if (self.ledger.home_structure_id is not None and location is not None
+                and int(location) != int(self.ledger.home_structure_id)):
+            result_warnings.append("outside_home_structure")
+            self.warn(f"outside_home_structure: {sale_ref} type {type_id} sold at {location}")
+        draws, consumed = self._consume(
+            type_id, UNIT_ITEM, qty, contract.date_completed, sale_ref, sale_order=True,
+        )
+        if any(d.origin == ORIGIN_UNKNOWN for d in draws):
+            result_warnings.append("unknown_origin")
+        price_missing = any(d.price_missing for d in draws)
+        if price_missing:
+            result_warnings.append("price_missing")
+        coverage = consumed.coverage()
+        if coverage is None:
+            coverage = 0.0 if any(d.estimated_origin for d in draws) else 1.0
+        cost = consumed.total
+        result = RealizedResult(
+            result_id=len(self.results) + 1, sale_ref=sale_ref, type_id=type_id, quantity=qty,
+            gross=gross, sales_tax=None, broker_fee=0.0, revenue=gross, cost=cost,
+            profit=gross - cost, components=consumed, coverage_share=coverage,
+            sale_date=contract.date_completed, location_id=0 if location is None else int(location),
+            draws=draws, warnings=result_warnings, price_missing=price_missing,
+            source=SOURCE_CONTRACT,
+        )
+        if result.estimated:
+            result.warnings.append("estimated")
+            if coverage < ESTIMATED_COVERAGE_THRESHOLD:
+                self.warn(f"coverage_below_threshold: {sale_ref} type {type_id} coverage {coverage:.0%}")
         self.results.append(result)
 
     def _on_job_start(self, job: IndustryJob) -> None:
@@ -979,6 +1347,10 @@ class _Costing:
             when, kind, obj = ev[0], ev[6], ev[7]
             if kind == KIND_BUY:
                 self._on_buy(obj)
+            elif kind == KIND_CONTRACT_BUY:
+                self._on_contract_buy(obj)
+            elif kind == KIND_CONTRACT_GIVE:
+                self._on_contract_give(obj)
             elif kind == KIND_SELL:
                 self._on_sell(obj)
             elif kind == KIND_JOB_START:

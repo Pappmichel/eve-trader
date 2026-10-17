@@ -43,7 +43,9 @@ from . import access, db
 from .costing import (
     ORIGIN_BOUGHT,
     UNIT_ITEM,
+    ContractItem,
     IndustryJob,
+    ItemExchangeContract,
     JobInput,
     JournalEntry,
     LedgerSnapshot,
@@ -53,6 +55,10 @@ from .costing import (
 )
 
 log = logging.getLogger(__name__)
+
+# Bump when a rebuild must re-derive opening inventory once (Phase 5 adds
+# contract flows). NULL on an older run counts as older than this.
+COSTING_VERSION = 2
 
 # The Forge daily average is the reference price (plan section 6).
 _REFERENCE_REGION_ID = db.THE_FORGE_REGION_ID
@@ -102,6 +108,147 @@ def _tenant_character_ids() -> frozenset[int]:
     tenant_id = storage.get_current_tenant()
     entries = storage.list_tenant_registry_entries(str(tenant_id))
     return frozenset(int(eid) for et, eid in entries if et == "character")
+
+
+def _tenant_corporation_ids() -> frozenset[int]:
+    """Corps this tenant owns: each character's registered corporation, plus
+    corporation owners shared for the ledger kinds. A personal contract's
+    issuer_corporation_id is not enough on its own (that is the issuer's
+    corp, including corpmates). Report tests that never create the registry
+    table get an empty registry half and still see shared corp owners."""
+    import psycopg
+
+    ids: set[int] = set()
+    try:
+        tenant_id = storage.get_current_tenant()
+        with storage.connect_unscoped() as conn:
+            rows = conn.execute(
+                "SELECT corporation_id FROM tenant_registry_entries "
+                "WHERE tenant_id = ? AND corporation_id IS NOT NULL",
+                (str(tenant_id),),
+            ).fetchall()
+        ids.update(int(r[0]) for r in rows if r[0] is not None)
+    except (psycopg.errors.UndefinedTable, psycopg.errors.UndefinedColumn):
+        pass
+    for kind in ("contracts", "assets", "industry_jobs", "wallet"):
+        for owner_type, owner_id in access.shared_owners(kind):
+            if owner_type == "corporation":
+                ids.add(int(owner_id))
+    return frozenset(ids)
+
+
+def _opening_reset_for_version(explicit: bool) -> bool:
+    """True when this rebuild must re-derive opening quantities. An explicit
+    reset always does. Otherwise a missing run does not, and a run whose
+    costing_version is NULL or older than COSTING_VERSION does exactly once."""
+    if explicit:
+        return True
+    row = db.latest_costing_version()
+    if row is None:
+        return False
+    version = row[1]
+    return version is None or int(version) < COSTING_VERSION
+
+
+def _agreed_blueprint_runs(values: list[int]) -> Optional[int]:
+    found = {int(v) for v in values}
+    if len(found) == 1:
+        return next(iter(found))
+    return None
+
+
+def _freeze_contract_freight(enricher, start_location, type_id: int, quantity: float):
+    """(rate, m3, frozen). An unresolved start location stays unfrozen."""
+    if start_location is None:
+        return None, None, True
+    region = enricher.region(int(start_location))
+    if region is None:
+        return None, None, False
+    rate, m3 = enricher.freight(region, int(start_location), int(type_id), quantity, True)
+    return rate, m3, True
+
+
+def _load_contracts() -> tuple:
+    """Finished item-exchange contracts shared with Production, deduped by
+    contract id. Freight is frozen onto item rows the first time the start
+    location's region can be resolved. Courier rows are not returned."""
+    owners = access.shared_owners("contracts")
+    if not owners:
+        return ()
+    headers = db.list_contracts_for_owners(owners)
+    item_rows = db.list_contract_items_for_owners(owners)
+    items_by_key: dict[tuple, list] = defaultdict(list)
+    for row in item_rows:
+        items_by_key[(row[0], int(row[1]), int(row[2]))].append(row)
+    blueprint_types = _blueprint_type_ids({int(row[4]) for row in item_rows})
+    runs_by_type = db.blueprint_runs_by_type(
+        access.shared_owners("blueprints"), sorted(blueprint_types),
+    )
+    from . import ingest
+    enricher = ingest._TxnEnricher(PRODUCTION_CONFIG)
+    freight_updates: list[tuple] = []
+    region_updates: list[tuple] = []
+    grouped: dict[int, list] = defaultdict(list)
+    for row in headers:
+        grouped[int(row[2])].append(row)
+        if row[15] is None and row[6] is not None:
+            region = enricher.region(int(row[6]))
+            if region is not None:
+                region_updates.append((int(region), row[0], int(row[1]), int(row[2])))
+    if region_updates:
+        db.update_contract_regions(region_updates)
+
+    contracts = []
+    for contract_id, copies in grouped.items():
+        def _nitems(copy, cid=contract_id):
+            return len(items_by_key.get((copy[0], int(copy[1]), cid), ()))
+
+        copies.sort(key=lambda copy: (_nitems(copy) == 0, copy[0] != "corporation"))
+        chosen = copies[0]
+        if str(chosen[8] or "") != "item_exchange":
+            continue
+        if str(chosen[9] or "").lower() != "finished" or chosen[12] is None:
+            continue
+        item_copy = max(copies, key=_nitems)
+        corp_issued = any(
+            copy[0] == "corporation" and copy[4] is not None and int(copy[4]) == int(copy[1])
+            for copy in copies
+        )
+        built = []
+        for item in items_by_key.get((item_copy[0], int(item_copy[1]), contract_id), ()):
+            type_id = int(item[4])
+            quantity = float(item[5])
+            is_blueprint = type_id in blueprint_types
+            rate, m3, frozen = item[8], item[9], bool(item[10])
+            if not frozen:
+                rate, m3, frozen = _freeze_contract_freight(enricher, chosen[6], type_id, quantity)
+                if frozen:
+                    freight_updates.append((
+                        rate, m3, True, item[0], int(item[1]), int(item[2]), int(item[3]),
+                    ))
+            built.append(ContractItem(
+                record_id=int(item[3]), type_id=type_id, quantity=quantity,
+                is_included=bool(item[6]), is_singleton=bool(item[7]),
+                is_blueprint=is_blueprint,
+                blueprint_runs=_agreed_blueprint_runs(runs_by_type.get(type_id, [])) if is_blueprint else None,
+                freight_rate_per_m3=None if rate is None else float(rate),
+                freight_m3=None if m3 is None else float(m3),
+            ))
+        contracts.append(ItemExchangeContract(
+            contract_id=contract_id, owner_type=chosen[0], owner_id=int(chosen[1]),
+            date_completed=_as_utc(chosen[12]),
+            issuer_id=None if chosen[3] is None else int(chosen[3]),
+            issuer_corporation_id=None if chosen[4] is None else int(chosen[4]),
+            acceptor_id=None if chosen[5] is None else int(chosen[5]),
+            price=float(chosen[10] or 0), reward=float(chosen[11] or 0),
+            start_location_id=None if chosen[6] is None else int(chosen[6]),
+            end_location_id=None if chosen[7] is None else int(chosen[7]),
+            items=tuple(built), corp_issued=corp_issued,
+            status=str(chosen[9] or ""), contract_type=str(chosen[8] or "item_exchange"),
+        ))
+    if freight_updates:
+        db.update_contract_item_freight(freight_updates)
+    return tuple(contracts)
 
 
 def _blueprint_type_ids(type_ids: set[int]) -> set[int]:
@@ -405,8 +552,13 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
             uses_bpc=_uses_bpc(r, bp_runs, invented),
         ))
 
+    contracts = _load_contracts()
     production_types = _production_type_ids(job_rows)
     type_ids: set[int] = set(production_types)
+    for contract in contracts:
+        for item in contract.items:
+            if not item.is_blueprint:
+                type_ids.add(int(item.type_id))
     for tx in txs:
         type_ids.add(int(tx.type_id))
     for job in jobs:
@@ -439,6 +591,8 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
         relic_type_ids=_relic_type_ids(),
         bpo_type_ids=bpo_types,
         frozen_opening=_frozen_opening(t0, scope_hash, reset_opening),
+        contracts=contracts,
+        tenant_corporation_ids=_tenant_corporation_ids(),
     )
 
 
@@ -473,6 +627,7 @@ def _layer_row(layer) -> tuple:
         layer.layer_date, layer.job_id,
         float(layer.quantity), bool(layer.assumed_me), bool(layer.assumed_decryptor),
         bool(layer.estimated_origin), bool(layer.price_missing), int(layer.layer_id),
+        None if layer.source is None else str(layer.source),
     )
 
 
@@ -487,12 +642,14 @@ def _result_row(result) -> tuple:
         int(result.location_id),
         bool(result.price_missing), bool(result.estimated), list(result.warnings),
         *_components(result.components),
+        str(result.source or "market"),
     )
 
 
 def _draw_rows(result, snapshot) -> list[tuple]:
     layers = {int(layer.layer_id): layer for layer in result.all_layers}
     txs = {tx.ref: tx for tx in snapshot.wallet_transactions}
+    contracts = {int(contract.contract_id): contract for contract in snapshot.contracts}
 
     def one(kind: str, ref: str, seq: int, draw) -> tuple:
         layer = layers.get(int(draw.layer_id))
@@ -506,6 +663,15 @@ def _draw_rows(result, snapshot) -> list[tuple]:
             unit_price = float(tx.unit_price)
             if tx.freight_rate_per_m3 is not None:
                 rate = float(tx.freight_rate_per_m3)
+        elif layer is not None and layer.origin == ORIGIN_BOUGHT and str(layer.source_ref).startswith("contract:"):
+            contract = contracts.get(int(str(layer.source_ref).split(":", 1)[1]))
+            if contract is not None:
+                location_id = contract.start_location_id
+                unit_price = float(layer.unit_components.materials_bought)
+                for item in contract.items:
+                    if int(item.type_id) == int(layer.type_id) and item.freight_rate_per_m3 is not None:
+                        rate = float(item.freight_rate_per_m3)
+                        break
         elif layer is not None:
             # Opening / unknown / produced: the unit cost that was actually used.
             unit_price = float(layer.unit_cost)
@@ -520,6 +686,7 @@ def _draw_rows(result, snapshot) -> list[tuple]:
             None if layer is None else layer.layer_date,
             None if layer is None else layer.job_id,
             location_id, unit_price, rate,
+            None if layer is None or layer.source is None else str(layer.source),
         )
 
     rows = []
@@ -645,6 +812,7 @@ def _persist(snapshot, result, scope_hash: str) -> tuple[int, list]:
         frozen_opening=_frozen_rows(snapshot, result, scope_hash),
         reset_frozen_opening=snapshot.frozen_opening is None,
         owner_scope_hash=scope_hash,
+        costing_version=COSTING_VERSION,
     )
     return run_id, extra
 
@@ -657,12 +825,14 @@ def rebuild_realized(reset_opening: bool = False) -> dict:
     clears derived tables and records a run with a warning.
     """
     scope_hash = access.owner_scope_hash()
+    reset_opening = _opening_reset_for_version(reset_opening)
     snapshot = load_ledger_snapshot(scope_hash=scope_hash, reset_opening=reset_opening)
     if snapshot is None:
         warnings = ["no wallet archive yet; cutover T0 unknown"]
         run_id = db.replace_derived_costing(
             layers=[], results=[], cutover_t0=None, warnings=warnings,
             reset_frozen_opening=True, owner_scope_hash=scope_hash,
+            costing_version=COSTING_VERSION,
         )
         return {
             "run_id": run_id,

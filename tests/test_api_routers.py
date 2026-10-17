@@ -2235,6 +2235,36 @@ def test_realized_rebuild_conflict_maps_to_409(monkeypatch):
     assert resp.status_code == 409
 
 
+def test_realized_courier_and_hidden_delete_routes(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(production_actions, "do_get_realized_courier", lambda: {
+        "home_location_id": 42, "configured_rate_per_m3": 80.0,
+        "months": [{
+            "month": "2026-10", "count": 1, "volume_m3": 10.0, "reward": 500.0,
+            "paid_isk_per_m3": 50.0, "configured_rate_per_m3": 80.0,
+        }],
+    })
+
+    def _count(**kw):
+        seen["count"] = kw
+        return {"owner_type": kw["owner_type"], "owner_id": kw["owner_id"], "kind": kw["kind"], "count": 3}
+
+    def _delete(**kw):
+        raise production_actions.ActionError("wallet is shared with Production")
+
+    monkeypatch.setattr(production_actions, "do_count_hidden_archive_rows", _count)
+    monkeypatch.setattr(production_actions, "do_delete_hidden_archive_rows", _delete)
+    resp = client.get("/api/production/realized/courier")
+    assert resp.status_code == 200
+    assert resp.json()["months"][0]["paid_isk_per_m3"] == 50.0
+    counted = client.get("/api/production/realized/archive/character/5/contracts")
+    assert counted.status_code == 200
+    assert counted.json()["count"] == 3
+    assert seen["count"]["kind"] == "contracts"
+    refused = client.delete("/api/production/realized/archive/character/5/wallet")
+    assert refused.status_code == 400
+
+
 def test_realized_entry_action_error_maps_to_400(monkeypatch):
     def _raise(**kwargs):
         raise production_actions.ActionError("entry_kind must be cost or revenue.")

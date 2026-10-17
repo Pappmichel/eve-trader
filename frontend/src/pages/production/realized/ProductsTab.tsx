@@ -76,6 +76,12 @@ function ProductDrawer({ typeId, periodQuery, onClose, locationNames }: {
           <DetailRow label="Revenue" value={isk(product.revenue)} />
           <DetailRow label="Profit" value={isk(product.profit)} />
           <DetailRow label="Coverage" value={product.coverage == null ? '–' : pct(product.coverage)} muted={product.coverage == null} />
+          <DetailRow label="Planned cost/unit" value={product.planned_cost_per_unit == null ? '–' : isk(product.planned_cost_per_unit)} muted={product.planned_cost_per_unit == null} />
+          <DetailRow
+            label="Difference"
+            value={product.planned_difference_per_unit == null ? '–' : isk(product.planned_difference_per_unit)}
+            muted={product.planned_difference_per_unit == null}
+          />
           <FlagMarkers flags={product.flags} />
         </Stack>
       )}
@@ -109,7 +115,12 @@ function SaleBlock({ sale, open, onToggle, locationNames }: {
         </Button>
       </Group>
       <Text size="xs" c="dimmed">{locationLabel(sale.location_id, locationNames)}</Text>
-      {sale.sales_tax == null && <Badge size="xs" color="warn" variant="light">tax missing</Badge>}
+      <Group gap={4}>
+        {sale.source === 'contract' && <Badge size="xs" variant="light">contract</Badge>}
+        {sale.sales_tax == null && sale.source !== 'contract' && (
+          <Badge size="xs" color="warn" variant="light">tax missing</Badge>
+        )}
+      </Group>
       <FlagMarkers flags={sale.flags} />
       {open && <SaleChain saleRef={sale.sale_ref} locationNames={locationNames} />}
     </Stack>
@@ -135,6 +146,26 @@ export function ProductsTab({ rows, needsRebuild, hint, periodQuery, typeId, loc
     { header: 'Units sold', accessorKey: 'units_sold', size: 110, cell: (info) => qty(info.getValue()) },
     { header: 'Revenue', accessorKey: 'revenue', size: 130, cell: (info) => isk(info.getValue()) },
     { header: 'Cost/unit', accessorKey: 'cost_per_unit', size: 120, cell: (info) => isk(info.getValue()) },
+    {
+      header: 'Planned cost/unit', accessorKey: 'planned_cost_per_unit', size: 160,
+      cell: (info) => {
+        const planned = info.row.original.planned_cost_per_unit
+        if (planned == null) return '–'
+        const coverage = info.row.original.planned_coverage
+        const text = isk(planned)
+        if (coverage == null || coverage >= 1 - 1e-9) return text
+        return (
+          <Tooltip label={`Covers ${pct(coverage)} of sold units`}>
+            <span>{text}</span>
+          </Tooltip>
+        )
+      },
+    },
+    {
+      // Realized minus planned over the same units (API figure).
+      header: 'Difference', accessorKey: 'planned_difference_per_unit', size: 120,
+      cell: (info) => (info.getValue() == null ? '–' : isk(info.getValue())),
+    },
     { header: 'Net sell/unit', accessorKey: 'net_sell_per_unit', size: 130, cell: (info) => isk(info.getValue()) },
     { header: 'Profit', accessorKey: 'profit', size: 130, cell: (info) => isk(info.getValue()) },
     { header: 'Margin', accessorKey: 'margin', size: 100, cell: (info) => info.getValue() == null ? '–' : pct(info.getValue()) },

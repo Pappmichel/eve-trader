@@ -888,32 +888,60 @@ spell out):
     section 9a page, so the UI does not send it.
   - Deleting hidden archive rows and the D7 corp "mine alone" switch
     stay out of this phase, with no placeholders.
-- **Phase 5 - scoped 2026-10-17, not started.** One PR. Decisions
-  confirmed with the user:
-  - **Contracts in costing.** Finished item-exchange contracts from the
-    archive. Accepted buys become cost layers; a multi-item price is split
-    by reference value at the contract date (D4); bought BPCs get their
-    share as a runs layer. Contracts you issue that sell Production types
-    are revenue, split the same way, under the same "Production type" rule
-    as market sales; Doctrine ship contracts count when the hull is a
-    Production type. Contracts between the tenant's own characters/corps
-    are ignored.
-  - **Opening reset once on release.** Contract flows change what the
-    opening should have been, so the first rebuild after the release
-    re-derives the frozen opening once (a costing version marker on the
-    run, same effect as `--reset-opening`), then it stays frozen.
-  - **Planned vs actual.** When a job is first seen, the planner's
-    cost/unit for its product at that moment is frozen with the job. The
-    Products tab shows "planned cost/unit" and the difference to realized
-    cost/unit. Jobs seen before the release have no planned value ("–").
-  - **Courier comparison.** Finished courier contracts the tenant issued
-    are archived as well (reward, volume, start/end location). The Ledger
-    tab shows the paid ISK/m3 for The Forge -> home structure next to the
-    configured rate. Information only; cost stays the configured rate (D9).
-  - **Portfolio card.** "Realized Production profit" (last 30 days,
-    coverage badge, link to the page) next to Trading's realized profit.
-    Not part of the daily snapshot history.
-  - **Delete hidden archive rows** (D11) in the Ledger tab per owner and
-    kind, count first, then confirm.
+- **Phase 5 - done 2026-10-17.** One PR. What was built:
+  - Finished item-exchange contracts (`status = 'finished'` and
+    `date_completed` set) enter the pure costing snapshot. The tenant as
+    acceptor books issuer-provided items as `bought` layers with
+    `source = contract`, price split by reference value (D4) so the shares
+    sum exactly. The tenant as issuer books Production-type items it gives
+    as sales, same FIFO order as market sales, no sales tax and no broker
+    fee. Internal transfers (both sides are tenant owners) are skipped.
+    Both directions warn `contract_item_swap`. Forge freight is frozen on
+    the contract item. Sale chain, products drawer and jobs show a
+    contract badge via `source` / `contract_input`.
+  - `prod_ledger_runs.costing_version` (2). A latest run whose version is
+    NULL or lower forces one opening reset; the following rebuild freezes
+    the opening again.
+  - `ledger_job_planned_costs` freezes a cached planner cost/unit the first
+    time a job is archived (no network). Products show planned cost/unit,
+    the difference, and `planned_coverage`.
+  - Finished courier contracts the tenant issued are archived (`volume`,
+    `collateral`, `region_id`) and stay out of costing.
+    `GET /api/production/realized/courier` is Forge-to-home, per month.
+  - Portfolio shows last-30-day realized Production profit from the existing
+    summary action when the session's tools include `production`. Not added
+    to the daily snapshot.
+  - Ledger tab: count then confirm-delete of hidden archive rows. Refused
+    while the kind is shared with Production.
+  - Deviations:
+    - Channel is `source` (`market` / `contract`). Origin stays `bought`.
+      Section 3's origin `contract` is not used.
+    - Only the exact status `finished` counts. Broader `finished_*` values
+      are ignored.
+    - Issuer-received items (the issuer asks for them) are costed at the
+      contract `reward`. Acceptor-given items (a buy contract the tenant
+      fills, e.g. a buyback) are sales at the `reward`, split by reference
+      value like any contract sale (review decision with the user).
+    - A contract BPO's capital line includes frozen freight. A market BPO
+      buy does not, because that path returns before freight.
+    - Planned cost is never a Jita quote. Misses store NULL with source
+      `unavailable`. Cached sources, in order: in-memory build plan, asset
+      plan, ship-margin cache, discover cache.
+    - The portfolio card calls `/api/production/realized/summary`, which is
+      already production-gated. No figure was added to the portfolio route.
+    - Period `tax_missing_sales` counts sales whose tax is null except
+      `source = contract`, because a contract stores null tax on purpose.
+  - Review fixes:
+    - D7 for contracts: only a tenant *character* as issuer or acceptor
+      books a contract (a corp contract counts through the member who
+      issued or accepted it). A contract whose only tenant side is a corp
+      is skipped, and a character-to-own-corp contract is an internal
+      transfer. Before, a corp-issued or corp-accepted contract was booked
+      in every tenant sharing that corp.
+    - `planned_difference_per_unit` comes from the API and compares
+      realized and planned cost over the same units (those with a planned
+      value). The frontend used to subtract planned cost from the cost of
+      all sold units.
+    - The Portfolio card shows no figure until a recompute produced one.
   - Not in Phase 5: D7's corp "mine alone" switch (no corp token has the
     Accountant role, so there is no corp wallet data).

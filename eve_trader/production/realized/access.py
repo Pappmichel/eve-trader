@@ -127,6 +127,38 @@ def list_all_job_inputs_for_production() -> list[tuple]:
     return db.list_job_inputs_for_owners(owners)
 
 
+class ArchiveStillShared(Exception):
+    """The kind is still shared with Production, so its archive must stay."""
+
+    def __init__(self, kind: str):
+        self.kind = kind
+        super().__init__(
+            f"{kind} is shared with Production; stop sharing it before deleting archived rows"
+        )
+
+
+def _check_hidden_archive(owner_type: str, owner_id: int, kind: str) -> None:
+    if owner_type not in ("character", "corporation"):
+        raise ValueError("owner_type must be character or corporation")
+    db.hidden_archive_kind(kind)
+    if owner_shared_with_production(kind, owner_type, int(owner_id)):
+        raise ArchiveStillShared(kind)
+
+
+def count_hidden_archive_rows(owner_type: str, owner_id: int, kind: str) -> int:
+    """How many archived rows of `kind` this owner has. Refuses while the
+    kind is shared with Production."""
+    _check_hidden_archive(owner_type, owner_id, kind)
+    return db.count_owner_archive_rows(owner_type, int(owner_id), kind)
+
+
+def delete_hidden_archive_rows(owner_type: str, owner_id: int, kind: str) -> int:
+    """Delete that owner's archive rows, sync state and gaps for `kind`.
+    Refuses while the kind is shared with Production."""
+    _check_hidden_archive(owner_type, owner_id, kind)
+    return db.delete_owner_archive_kind(owner_type, int(owner_id), kind)
+
+
 def cutover_t0_for_production():
     """Cutover T0 = start of the shortest complete window (plan section 6).
 

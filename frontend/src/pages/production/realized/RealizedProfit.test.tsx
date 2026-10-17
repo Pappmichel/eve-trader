@@ -7,7 +7,9 @@ import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { charactersApi, gateApi, productionApi } from '../../../api/client'
-import type { RealizedFlags, RealizedStatus, RealizedSummary } from '../../../api/types'
+import type {
+  RealizedFlags, RealizedJobRow, RealizedProductRow, RealizedSaleRow, RealizedStatus, RealizedSummary,
+} from '../../../api/types'
 import { resetAutoRebuildForTests } from './period'
 import RealizedProfit from './RealizedProfit'
 
@@ -32,6 +34,9 @@ vi.mock('../../../api/client', () => {
       realizedOpening: vi.fn(),
       realizedEntries: vi.fn(),
       realizedArchiveStatus: vi.fn(),
+      realizedCourier: vi.fn(),
+      countHiddenArchive: vi.fn(),
+      deleteHiddenArchive: vi.fn(),
       startRealizedRebuild: vi.fn(),
       realizedRebuildStatus: vi.fn(),
       reapplyRealizedFreight: vi.fn(),
@@ -79,6 +84,39 @@ function summary(partial: Partial<RealizedSummary> = {}): RealizedSummary {
   }
 }
 
+function product(partial: Partial<RealizedProductRow> = {}): RealizedProductRow {
+  return {
+    type_id: 34, type_name: 'Tritanium', units_sold: 2, revenue: 100, cost: 40,
+    cost_per_unit: 20, net_sell_per_unit: 50, profit: 60, margin: 0.6, coverage: 1,
+    planned_cost_per_unit: null, planned_coverage: null, planned_difference_per_unit: null,
+    warnings: [], flags: flags(),
+    ...partial,
+  }
+}
+
+function sale(partial: Partial<RealizedSaleRow> = {}): RealizedSaleRow {
+  return {
+    sale_ref: 'sale-1', type_id: 34, type_name: 'Tritanium', quantity: 2,
+    revenue: 100, cost: 40, profit: 60, coverage: 1, sale_date: '2026-10-02T00:00:00Z',
+    gross: 100, sales_tax: null, broker_fee: 0, location_id: 1, net_price: 50,
+    warnings: [], cost_structure: [], flags: flags(), source: 'market',
+    ...partial,
+  }
+}
+
+function job(partial: Partial<RealizedJobRow> = {}): RealizedJobRow {
+  return {
+    job_ref: 'character:1:77', job_id: 77, owner_type: 'character', owner_id: 1,
+    activity_id: 1, blueprint_type_id: 1, blueprint_name: 'Widget Blueprint',
+    product_type_id: 34, product_name: 'Widget', runs: 1, successful_runs: 1,
+    start_date: '2026-10-01T00:00:00Z', end_date: '2026-10-02T00:00:00Z', status: 'delivered',
+    state: 'sold', job_cost: 10, input_cost: 20, unit_cost: 30, output_quantity: 1,
+    output_quantity_left: 0, output_unit: 'item', sold_share: 1, cost_per_bpc_run: null,
+    facility_id: 1, contract_input: false, cost_structure: [], flags: flags(),
+    ...partial,
+  }
+}
+
 function renderPage() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   render(
@@ -109,12 +147,33 @@ describe('RealizedProfit', () => {
     vi.mocked(productionApi.realizedProducts).mockResolvedValue({
       period: { start: null, end: null, since_t0: false, days: 30 }, needs_rebuild: false, rows: [],
     })
+    vi.mocked(productionApi.realizedSaleChain).mockResolvedValue({
+      sale: sale(),
+      tree: {
+        kind: 'product', origin: null, type_id: 34, type_name: 'Tritanium', quantity: 1, unit: null,
+        unit_cost: null, unit_price: null, reference_price: null, date: null, end_date: null,
+        location_id: null, freight: null, freight_label: null, freight_rate_per_m3: null,
+        source_ref: null, job_id: null, job_ref: null, activity_id: null, runs: null,
+        successful_runs: null, state: null, job_cost: null, facility_id: null, output_quantity: null,
+        cost_total: null, share: null, cost_share: null, sale_ref: 'sale-1', source: null,
+        flags: flags(), children: [],
+      },
+    })
     vi.mocked(productionApi.realizedJobs).mockResolvedValue({ cutover_t0: null, needs_rebuild: false, rows: [] })
     vi.mocked(productionApi.realizedInventory).mockResolvedValue({ needs_rebuild: false, rows: [] })
     vi.mocked(productionApi.realizedWarnings).mockResolvedValue({ needs_rebuild: false, groups: [] })
     vi.mocked(productionApi.realizedOpening).mockResolvedValue({ cutover_t0: null, needs_rebuild: false, rows: [] })
     vi.mocked(productionApi.realizedEntries).mockResolvedValue({ rows: [] })
     vi.mocked(productionApi.realizedArchiveStatus).mockResolvedValue({ rows: [] })
+    vi.mocked(productionApi.realizedCourier).mockResolvedValue({
+      home_location_id: null, configured_rate_per_m3: 0, months: [],
+    })
+    vi.mocked(productionApi.countHiddenArchive).mockResolvedValue({
+      owner_type: 'character', owner_id: 0, kind: 'wallet', count: 0,
+    })
+    vi.mocked(productionApi.deleteHiddenArchive).mockResolvedValue({
+      owner_type: 'character', owner_id: 0, kind: 'wallet', deleted: 0,
+    })
     vi.mocked(productionApi.structureNames).mockResolvedValue({})
     vi.mocked(productionApi.itemNameOptions).mockResolvedValue([])
     vi.mocked(charactersApi.owners).mockResolvedValue([])
@@ -233,5 +292,104 @@ describe('RealizedProfit', () => {
     expect(await screen.findByText('reactor_leak (1)')).toBeInTheDocument()
     expect(screen.getByText('Seal the vat')).toBeInTheDocument()
     expect(screen.queryByText('None.')).toBeNull()
+  })
+
+  it('shows planned cost and the difference from realized cost', async () => {
+    const user = userEvent.setup()
+    vi.mocked(productionApi.realizedProducts).mockResolvedValue({
+      period: { start: null, end: null, since_t0: false, days: 30 },
+      needs_rebuild: false,
+      rows: [
+        product({ planned_cost_per_unit: 8, planned_coverage: 1, planned_difference_per_unit: 12 }),
+        product({ type_id: 35, type_name: 'Pyerite', planned_cost_per_unit: null, planned_coverage: null }),
+      ],
+    })
+    renderPage()
+    await screen.findByText('Cost of goods sold')
+    await user.click(screen.getByRole('tab', { name: 'Products' }))
+    expect(await screen.findByRole('button', { name: /Planned cost\/unit/ })).toBeInTheDocument()
+    expect(screen.getByText('8 ISK')).toBeInTheDocument()
+    expect(screen.getByText('12 ISK')).toBeInTheDocument()
+    const pyerite = screen.getByText('Pyerite').closest('tr')
+    expect(pyerite?.textContent).toContain('–')
+  })
+
+  it('badges a contract sale and does not call it tax missing', async () => {
+    const user = userEvent.setup()
+    vi.mocked(productionApi.realizedProducts).mockResolvedValue({
+      period: { start: null, end: null, since_t0: false, days: 30 },
+      needs_rebuild: false,
+      rows: [product()],
+    })
+    vi.mocked(productionApi.realizedProduct).mockResolvedValue({
+      period: { start: null, end: null, since_t0: false, days: 30 },
+      needs_rebuild: false,
+      product: product(),
+      sales: [
+        sale({ sale_ref: 'contract:9', source: 'contract', sales_tax: null }),
+        sale({ sale_ref: 'market:1', source: 'market', sales_tax: null }),
+      ],
+    })
+    renderPage()
+    await screen.findByText('Cost of goods sold')
+    await user.click(screen.getByRole('tab', { name: 'Products' }))
+    await user.click(await screen.findByText('Tritanium'))
+    expect(await screen.findByText('contract')).toBeInTheDocument()
+    expect(screen.getAllByText('tax missing')).toHaveLength(1)
+  })
+
+  it('badges a job that drew a contract input', async () => {
+    const user = userEvent.setup()
+    vi.mocked(productionApi.realizedJobs).mockResolvedValue({
+      cutover_t0: null, needs_rebuild: false, rows: [job({ contract_input: true })],
+    })
+    renderPage()
+    await screen.findByText('Cost of goods sold')
+    await user.click(screen.getByRole('tab', { name: 'Jobs' }))
+    expect(await screen.findByText('Widget')).toBeInTheDocument()
+    expect(screen.getByText('contract')).toBeInTheDocument()
+  })
+
+  it('shows Forge-to-home courier months under Freight', async () => {
+    const user = userEvent.setup()
+    vi.mocked(productionApi.realizedCourier).mockResolvedValue({
+      home_location_id: 42,
+      configured_rate_per_m3: 80,
+      months: [{
+        month: '2026-10', count: 1, volume_m3: 10, reward: 500,
+        paid_isk_per_m3: 50, configured_rate_per_m3: 80,
+      }],
+    })
+    renderPage()
+    await screen.findByText('Cost of goods sold')
+    await user.click(screen.getByRole('tab', { name: 'Ledger' }))
+    expect(await screen.findByText('2026-10')).toBeInTheDocument()
+    expect(screen.getByText('50 ISK')).toBeInTheDocument()
+    expect(screen.getByText(/cost stays the configured rate/)).toBeInTheDocument()
+  })
+
+  it('counts hidden archive rows before deleting them', async () => {
+    const user = userEvent.setup()
+    vi.mocked(productionApi.realizedArchiveStatus).mockResolvedValue({
+      rows: [{
+        owner_type: 'character', owner_id: 7,
+        shared: { wallet: false, industry_jobs: true, market_orders: true, contracts: true },
+        last_sync: {}, gaps: {}, hidden_kinds: ['wallet'],
+      }],
+    })
+    vi.mocked(productionApi.countHiddenArchive).mockResolvedValue({
+      owner_type: 'character', owner_id: 7, kind: 'wallet', count: 4,
+    })
+    vi.mocked(productionApi.deleteHiddenArchive).mockResolvedValue({
+      owner_type: 'character', owner_id: 7, kind: 'wallet', deleted: 4,
+    })
+    renderPage()
+    await screen.findByText('Cost of goods sold')
+    await user.click(screen.getByRole('tab', { name: 'Ledger' }))
+    await user.click(await screen.findByRole('button', { name: 'Delete archived wallet' }))
+    expect(await screen.findByText(/Delete 4 archived wallet row/)).toBeInTheDocument()
+    expect(productionApi.deleteHiddenArchive).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Delete archived rows' }))
+    await waitFor(() => expect(productionApi.deleteHiddenArchive).toHaveBeenCalledWith('character', 7, 'wallet'))
   })
 })

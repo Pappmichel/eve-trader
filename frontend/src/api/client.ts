@@ -466,6 +466,15 @@ export const productionApi = {
       '/api/production/realized/opening-cost', body,
     ),
   realizedArchiveStatus: () => get<T.RealizedArchiveStatus>('/api/production/realized/archive-status'),
+  realizedCourier: () => get<T.RealizedCourierComparison>('/api/production/realized/courier'),
+  countHiddenArchive: (ownerType: string, ownerId: number, kind: string) =>
+    get<T.HiddenArchiveCount>(
+      `/api/production/realized/archive/${encodeURIComponent(ownerType)}/${ownerId}/${encodeURIComponent(kind)}`,
+    ),
+  deleteHiddenArchive: (ownerType: string, ownerId: number, kind: string) =>
+    del<T.HiddenArchiveDeleted>(
+      `/api/production/realized/archive/${encodeURIComponent(ownerType)}/${ownerId}/${encodeURIComponent(kind)}`,
+    ),
   reapplyRealizedFreight: (dryRun: boolean) =>
     post<T.FreightReapplyResult>(
       `/api/production/realized/freight/reapply?dry_run=${dryRun ? 'true' : 'false'}`,
