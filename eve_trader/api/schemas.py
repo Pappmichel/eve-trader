@@ -1029,6 +1029,7 @@ class ModuleShortlistRow(_Base):
     margin: Optional[float]
     profit_per_m3: Optional[float]
     decision: str
+    breakeven_buy_price: Optional[float] = None
 
 
 # Module Reprocessing's Mineral Shopping List - MineralRequirement,

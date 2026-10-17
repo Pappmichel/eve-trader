@@ -1467,6 +1467,7 @@ export interface ModuleShortlistRow {
   margin: number | null
   profit_per_m3: number | null
   decision: string
+  breakeven_buy_price: number | null
 }
 
 // Module Reprocessing's Mineral Shopping List - reuses MineralRequirement,

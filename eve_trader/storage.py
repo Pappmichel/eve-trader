@@ -5964,14 +5964,15 @@ def activate_module_reprocessing_shortlist_items(item_ids: Iterable[int]) -> Non
 def save_module_reprocessing_shortlist_snapshot(rows: list[tuple], run_ts: str) -> None:
     """rows: (item_id, item, active, volume_m3, landed_cost, yield_pct,
     mineral_value, refining_tax, net_sell, sell_listed_qty, profit_per_unit,
-    margin, profit_per_m3, decision) - see module_reprocessing/models.py's
-    ModuleShortlistRow for field meanings."""
+    margin, profit_per_m3, decision, breakeven_buy_price) - see
+    module_reprocessing/models.py's ModuleShortlistRow for field meanings."""
     with connect() as conn:
         conn.executemany(
             "INSERT INTO module_reprocessing_shortlist_snapshot (run_ts, item_id, item, active, volume_m3, "
             "landed_cost, yield_pct, mineral_value, refining_tax, net_sell, sell_listed_qty, profit_per_unit, "
-            "margin, profit_per_m3, decision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            [(run_ts, *row) for row in rows],
+            "margin, profit_per_m3, decision, breakeven_buy_price) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            # rows without the trailing optional column (older callers) store NULL.
+            [(run_ts, *row, *([None] * (15 - len(row)))) for row in rows],
         )
 
 

@@ -132,6 +132,10 @@ def evaluate_module_item(candidate: ModuleCandidate, active: bool,
     profit_per_unit = profit_per_portion / portion_size
     margin = profit_per_portion / landed_cost_per_portion if landed_cost_per_portion else None
     profit_per_m3 = (profit_per_unit / candidate.volume_m3) if candidate.volume_m3 else None
+    # Solves net_sell / portion_size = price * (1 + broker fee) + freight for
+    # price - same definition as Trading's shortlist.py breakeven_buy_price.
+    breakeven_buy_price = ((net_sell / portion_size - candidate.volume_m3 * cfg.freight_cost_per_m3)
+                           / (1 + trading_cfg.jita_buy_broker_fee))
 
     decision = _decision(active, True, profit_per_unit, margin, cfg)
 
@@ -139,7 +143,7 @@ def evaluate_module_item(candidate: ModuleCandidate, active: bool,
         item_id=candidate.type_id, item=candidate.item, active=active, volume_m3=candidate.volume_m3,
         landed_cost=unit_landed_cost, yield_pct=yield_pct, mineral_value=mineral_value, refining_tax=refining_tax,
         net_sell=net_sell, sell_listed_qty=sell_listed_qty, profit_per_unit=profit_per_unit, margin=margin,
-        profit_per_m3=profit_per_m3, decision=decision,
+        profit_per_m3=profit_per_m3, decision=decision, breakeven_buy_price=breakeven_buy_price,
     )
 
 

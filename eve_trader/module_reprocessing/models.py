@@ -64,6 +64,7 @@ class ModuleShortlistRow:
     margin: Optional[float]
     profit_per_m3: Optional[float]
     decision: str
+    breakeven_buy_price: Optional[float] = None  # highest purchase-region price per unit that still breaks even
 
 
 # ------------------------------------------------- Mineral Shopping List
