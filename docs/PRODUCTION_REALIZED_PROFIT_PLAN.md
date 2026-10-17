@@ -1,6 +1,6 @@
 # Production realized profit - plan
 
-Status: **Phase 1 in progress** (2026-10-17). Decisions D1-D12 (section 10)
+Status: **Phase 2 done** (2026-10-17). Decisions D1-D12 (section 10)
 are confirmed with the user. Revised the same day after a critical review
 against the code (section 12 lists what changed and why). See
 **Implementation status** at the end of this file.
@@ -223,11 +223,15 @@ possible. Attribution (D12):
   summed and spread over that character's *order-based* fills of the same
   period pro rata by fill value, so the total always equals what was really
   paid.
-- A fill is order-based when it matches one of the character's own orders
-  (type, location, side; price where unchanged). Instant buys from sell orders
-  (98 % of the buyer's fills) carry no fee.
-- Production gets the share that falls on fills of Production types; the
-  rest is listed as "fees on other trading" for transparency, not as a
+- A fill is order-based when the character has an order for the same type,
+  location and side. The price is not compared: the archive keeps only an
+  order's last price. Instant buys from sell orders (98 % of the buyer's
+  fills) carry no fee.
+- A buy fill keeps its fee share in its cost layer, whatever the type: the
+  fee is part of what the units cost and reaches Production only if a job
+  consumes them (clarified with the user in the Phase 2 review). A sell fill
+  of a Production type carries its share into the realized result; sell
+  fills of other types are listed as "fees on other trading", not a
   Production cost.
 - Fees of a period without any matching fill (unfilled or cancelled orders)
   are a separate "fees without sale" line, not a unit cost.
@@ -236,8 +240,12 @@ possible. Attribution (D12):
 
 **Cutover T0.** ESI windows differ (wallet about 30 days, completed jobs about
 90 days, order history 90 days). Costing starts at one date T0 = the start of
-the *shortest* complete window when the archive went live (practically: the
-oldest wallet transaction ESI still returned). Events before T0 are ignored:
+the *shortest* complete window when the archive went live. In practice that
+is the journal: transactions reach 30 days back, the journal only its newest
+10,000 entries. T0 = the oldest archived transaction, moved forward to the
+oldest archived journal entry of every wallet whose transactions are older
+than its journal (that journal was truncated; a quiet wallet whose journal
+starts with its first activity does not move T0). Events before T0 are ignored:
 a job that started before T0 consumes nothing in the ledger; its output, if
 still in stock, is part of the opening inventory. Without one common T0, jobs
 from day -90 would consume materials whose purchase was never archived.
@@ -712,7 +720,50 @@ spell out):
   - archive writes only for kinds shared with Production; D10 syncs only
     Production's own sharing rows; contract items fetched once per
     contract; jobs whose inputs could not be computed are retried.
-- **Phase 2 - not started.** Pure `costing.py` + golden tests.
+- **Phase 2 - done 2026-10-17.** Pure `eve_trader/production/realized/costing.py`
+  (no I/O) rebuilds FIFO layers and realized results from a `LedgerSnapshot`:
+  T0 cutover, D8 opening inventory, job consume/produce (manufacturing,
+  reaction, copy, invention with BPC-run layers, research → capital_in_bpos),
+  cancelled-job losses, D5 unknown-origin at reference price, D6 sale order
+  (produced → opening → rest), D7 corp jobs by installer, D12 broker-fee
+  spread by UTC day, freight as its own component (does not lower coverage),
+  coverage with `ESTIMATED_COVERAGE_THRESHOLD = 0.70`. Thin
+  `loader.py` reads via `access.py` (D11), fills/caches
+  `ledger_reference_prices`, and replaces `prod_cost_layers` /
+  `prod_realized_results` / `prod_ledger_runs` on each rebuild. Bulk archive
+  reads are one query per table for the shared-owner set. Golden tests:
+  `tests/test_production_realized_costing.py` (27); loader/DB:
+  `tests/test_production_realized_loader.py` (9).
+  Settled interpretations:
+  - Failed invention (`successful_runs == 0`) → `failed_invention_losses`
+    (plan unnamed this case).
+  - Missing sales-tax journal → revenue is gross + `tax_missing` warning
+    (never a modeled tax rate); T0 (section 6) keeps this to the rare case.
+  - No new schema file: derived tables were created in Phase 1's
+    `production_ledger_schema.sql`.
+  Review fixes (same day, checked against live data on the test server):
+  - invention output = successes x (recipe base runs + decryptor run
+    bonus); ESI's `licensed_runs` on an invention job is the input BPC's
+    runs (live: 300 vs 20 per success) and is never used;
+  - BPC runs are drawn only by jobs that ran on a BPC (`uses_bpc` from the
+    archived blueprint, runs -1 = BPO; T2/T3 blueprints are always copies),
+    so a BPO build no longer eats the copies made for invention;
+  - a value without any price is booked at 0 but flags the layer, every
+    layer built from it and every sale drawing from it (`price_missing`),
+    and such a sale is always "estimated";
+  - reference prices in two passes (costing reports the misses, the
+    loader fetches exactly those): Goonmetrics (~28 days), then ESI daily
+    history (~400 days), then the nearest traded day within 7 days; old
+    misses are cached so a rebuild never asks again;
+  - T0 per section 6 (journal start of a truncated wallet), so sales are
+    not booked gross for weeks;
+  - opening stock = assets shared with Production + quantities in open sell
+    orders and outstanding contracts;
+  - buy fills keep their fee share (5b); fills match orders without the
+    price; blueprints bought on the market are BPOs (`capital_in_bpos`,
+    D3);
+  - the loader's SDE blueprint-category query joined a column that does
+    not exist (`sde_types.category_id`); now via `sde_groups`.
 - **Phase 3 - not started.** Report / API / CLI.
 - **Phase 4 - not started.** Frontend.
 - **Phase 5 - not started.** Extensions (ask user first).
