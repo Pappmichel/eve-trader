@@ -410,8 +410,7 @@ Trading's).
   entry in "All hubs" mode) x packaged m3, frozen per purchase at ingest.
   Courier rewards actually paid are not used as the cost (section 5a).
 - **D10 retention:** archive-relevant kinds keep syncing for inactive tenants
-  holding `production` (section 8). *Proposal from the review, not yet
-  explicitly confirmed - confirm before Phase 1.*
+  holding `production` (section 8). Confirmed with the user 2026-10-17.
 - **D11 revoked share:** archive rows are hidden, not deleted; deletion only
   by explicit user action.
 
@@ -452,7 +451,7 @@ Corrections after checking the first draft against the code:
   the Special Orders integrity scan.
 - Contracts are archived from Phase 1; ESI drops finished contracts.
 - Inactivity data loss starts around day 44, not 30; retention exception
-  proposed (D10).
+  added (D10, confirmed).
 - Revoked shares: read gate at read time, rows hidden not deleted (D11).
 - Added Phase 0 checks V6 (corp jobs on the character endpoint), V7
   (cancelled jobs), V8 (decryptor derivation).
