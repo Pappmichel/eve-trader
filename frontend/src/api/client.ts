@@ -128,6 +128,20 @@ export const tradingApi = {
   sparklines: (typeIds: number[]) => get<Record<string, T.SparklineSeries>>(`/api/trading/history/sparklines?type_ids=${typeIds.join(',')}`),
   history: (typeId: number) => get<T.PriceHistory>(`/api/trading/history/${typeId}`),
   realizedTrades: () => get<T.RealizedTrade[]>('/api/trading/trades/realized'),
+  realizedSummary: (periodQuery: string) =>
+    get<T.TradingRealizedSummary>(`/api/trading/realized/summary?${periodQuery}`),
+  realizedItems: (periodQuery: string) =>
+    get<T.TradingRealizedItemList>(`/api/trading/realized/items?${periodQuery}`),
+  realizedItem: (typeId: number, periodQuery: string) =>
+    get<T.TradingRealizedItemDetail>(`/api/trading/realized/items/${typeId}?${periodQuery}`),
+  realizedSale: (saleRef: string) =>
+    get<T.TradingRealizedSaleDetail>(`/api/trading/realized/sales?sale_ref=${encodeURIComponent(saleRef)}`),
+  realizedInventory: () =>
+    get<{ needs_rebuild: boolean; rows: T.TradingRealizedInventoryRow[] }>('/api/trading/realized/inventory'),
+  realizedWarnings: () =>
+    get<{ needs_rebuild: boolean; rows: T.TradingRealizedWarning[] }>('/api/trading/realized/warnings'),
+  startRealizedRebuild: () => post<T.PipelineRunStatus>('/api/trading/realized/rebuild'),
+  realizedRebuildStatus: () => get<T.PipelineRunStatus>('/api/trading/realized/rebuild/status'),
   settings: () => get<T.TradingSettings>('/api/trading/settings'),
   updateSettings: (s: T.TradingSettings) => post<T.TradingSettings>('/api/trading/settings', s),
   walletDivisionOptions: () => get<{ wallet_division_ids: number[] }>(

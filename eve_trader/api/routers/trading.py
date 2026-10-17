@@ -13,6 +13,7 @@ from .. import schemas
 from ... import actions, storage
 from ...actions import ActionError
 from ...config import TRADING_CONFIG
+from ...trade_realized import actions as trade_realized_actions
 
 router = APIRouter()
 
@@ -272,7 +273,60 @@ def check_undercut():
 
 @router.post("/trades/reconcile")
 def reconcile_trades():
+    """Kept read-only for comparison (U10). The page uses /realized/rebuild."""
     return _wrap(actions.do_reconcile_trades)
+
+
+@router.get("/realized/summary")
+def trading_realized_summary(days: Optional[int] = None, start: Optional[str] = None,
+                             end: Optional[str] = None, since_t0: bool = False):
+    return _wrap(
+        trade_realized_actions.do_get_trading_realized_summary,
+        days=days, start=start, end=end, since_t0=since_t0,
+    )
+
+
+@router.get("/realized/items")
+def trading_realized_items(days: Optional[int] = None, start: Optional[str] = None,
+                           end: Optional[str] = None, since_t0: bool = False):
+    return _wrap(
+        trade_realized_actions.do_get_trading_realized_items,
+        days=days, start=start, end=end, since_t0=since_t0,
+    )
+
+
+@router.get("/realized/items/{type_id}")
+def trading_realized_item(type_id: int, days: Optional[int] = None, start: Optional[str] = None,
+                          end: Optional[str] = None, since_t0: bool = False):
+    return _wrap(
+        trade_realized_actions.do_get_trading_realized_item,
+        type_id=type_id, days=days, start=start, end=end, since_t0=since_t0,
+    )
+
+
+@router.get("/realized/sales")
+def trading_realized_sale(sale_ref: str):
+    return _wrap(trade_realized_actions.do_get_trading_realized_sale, sale_ref=sale_ref)
+
+
+@router.get("/realized/inventory")
+def trading_realized_inventory():
+    return _wrap(trade_realized_actions.do_get_trading_realized_inventory)
+
+
+@router.get("/realized/warnings")
+def trading_realized_warnings():
+    return _wrap(trade_realized_actions.do_get_trading_realized_warnings)
+
+
+@router.post("/realized/rebuild")
+def trading_realized_rebuild():
+    return _wrap(trade_realized_actions.do_start_trading_realized_rebuild)
+
+
+@router.get("/realized/rebuild/status")
+def trading_realized_rebuild_status():
+    return _wrap(trade_realized_actions.do_trading_realized_rebuild_status)
 
 
 # GitHub issue #46: buyer/seller are multi-character now, same pattern as

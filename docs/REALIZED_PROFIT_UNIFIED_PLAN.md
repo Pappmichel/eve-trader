@@ -1,6 +1,6 @@
 # Realized profit for Production, Trading, Doctrine and Station Trading - unified plan
 
-Status: **Phase 2 done (2026-10-17).** Phases 3-5 still to land.
+Status: **Phase 3 done (2026-10-17).** Phases 4, 4b and 5 still to land.
 Decisions U1-U11 and ST1-ST3 stay as confirmed 2026-10-18. This environment
 has no test server, so the section 2 counts were not re-measured; the
 reviewer measures them there. Each later phase ends with a review and a
@@ -177,6 +177,57 @@ locations per region and which of them receive freight under U4.
   Trading result for the non-Production line (`sale_ref`
   `contract:9:999`). That is U1 rule 5. The Production line on the same
   contract is unchanged.
+
+### Phase 3 - Trading report and page - done 2026-10-17
+
+- `eve_trader/trade_realized/` reads the ledger and keeps channel
+  `trading`. Summary, per item (units, average buy landed, average net
+  sell, profit, margin), per sale with the purchase lots, inventory of
+  unsold Trading goods in the global pool, and warnings. Routes under
+  `/api/trading/realized/*`. `POST /realized/rebuild` starts the same
+  background job as Production.
+- The Realized Trades page (`/trading/trades`) shows those API numbers.
+  The side-menu button and the spotlight command say Recompute and start
+  that job. The trading pipeline's last step calls the same rebuild
+  in-process (`rebuild_realized`) instead of `do_reconcile_trades`.
+- Portfolio's trading profit, margin, trade count and daily volatility
+  come from the last 30 days of the Trading channel. The three trading
+  stats and the trading history charts render only when the session's
+  gate status includes `trading`.
+- `eve-trader realized compare-trading [--days N]` prints the latest
+  `realized_trades` run next to the Trading channel for the same window,
+  per item and overall. It does not rebuild and does not write.
+  `realized_trades` and `do_reconcile_trades` stay (U10). The page no
+  longer reads them.
+- Tests: pure comparison and volatility; Postgres report (trading-only
+  wallet sale, station-trading sale and a doctrine-only contract sale
+  stay off the Trading page, revoking the share hides the run, compare
+  does not write); router tests for every new route. Full suite
+  3286 passed, 1 skipped. Frontend lint, vitest and build passed.
+- Live check on a throwaway tenant (deleted afterwards): a non-production
+  sale booked trading, revenue 40, cost 10, profit 30, margin 0.75.
+  `compare-trading` printed old profit 12 beside new profit 30.
+  `GET /api/trading/realized/summary` on the running server returned 401
+  because the access gate is on. The page was exercised in vitest
+  (empty / needs-rebuild, item table, period, sale and lot drill-down,
+  Portfolio gating). A browser session was not opened: the gate has no
+  local login that does not touch `config.yaml`.
+
+### Deviations (Phase 3)
+
+- A contract sale on the trading channel is shown when its archive owner
+  shares **wallet** with Trading. Trading has no contracts share (U3a
+  names wallet for market sales and contracts-with-Doctrine for doctrine).
+  A doctrine-only contract owner therefore stays off the Trading page
+  until that owner also shares wallet with Trading.
+- Portfolio's average margin is profit divided by cost of goods for the
+  last 30 days (freight and fees included), not profit divided by the
+  old reconcile run's buy cost.
+- Trading inventory is the global pool only. Leftovers in the station
+  pool wait for the Station Trading report (Phase 4b).
+- The pipeline result key is `rebuild_realized`. `POST /api/trading/trades/reconcile`
+  still exists and still writes `realized_trades`; nothing in the UI or
+  the pipeline calls it. Phase 5 removes that use.
 
 ## 1. Goal
 

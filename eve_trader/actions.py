@@ -1351,7 +1351,7 @@ PIPELINE_STEP_KEYS = (
     "build_universe",
     "build_focused",
     "refresh_and_prune_candidates",
-    "reconcile_trades",
+    "rebuild_realized",
 )
 
 
@@ -1384,8 +1384,10 @@ def do_pipeline(safe: bool = True, rebuild_universe: bool = False,
                  progress_callback=None) -> dict:
     """Runs the daily workflow. `rebuild_universe` re-crawls the *entire* ESI
     market-group tree (hundreds/thousands of requests) and is off by default -
-    that's an occasional setup step, not something to redo every day. Each
-    step is isolated so a failure (missing auth, network hiccup) in one step
+    that's an occasional setup step, not something to redo every day. The
+    last step recomputes the shared realized-profit ledger (the Trading
+    channel included) instead of replacing `realized_trades`. Each step is
+    isolated so a failure (missing auth, network hiccup) in one step
     doesn't prevent the others from running.
 
     Uses do_refresh_and_prune_candidates (not the separate find-candidates +
@@ -1421,12 +1423,13 @@ def do_pipeline(safe: bool = True, rebuild_universe: bool = False,
         results["refresh_and_prune_candidates"] = {"error": str(e)}
 
     _emit_progress(progress_callback, {
-        "phase": "reconcile", "message": "Reconciling trades",
+        "phase": "rebuild_realized", "message": "Recomputing realized profit",
     })
     try:
-        results["reconcile_trades"] = do_reconcile_trades()
+        from .production.actions import do_rebuild_realized
+        results["rebuild_realized"] = do_rebuild_realized()
     except (ActionError, ESIError) as e:
-        results["reconcile_trades"] = {"error": str(e)}
+        results["rebuild_realized"] = {"error": str(e)}
 
     failed = pipeline_failed_steps(results)
     if failed:

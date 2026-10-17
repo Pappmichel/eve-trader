@@ -2673,6 +2673,105 @@ export interface RealizedDay {
   profit: number
 }
 
+export interface TradingRealizedSummary {
+  period: RealizedPeriodInfo
+  status: RealizedStatus
+  revenue: number
+  cost_of_goods_sold: number
+  realized_profit: number
+  margin: number | null
+  coverage: number | null
+  estimated: boolean
+  units_sold: number
+  sale_count: number
+  price_missing: boolean
+  tax_missing_sales: number
+  cost_structure: CostStructureLine[]
+  by_day: RealizedDay[]
+  flags: RealizedFlags
+}
+
+export interface TradingRealizedItem {
+  type_id: number
+  type_name: string | null
+  units_sold: number
+  avg_buy_landed: number | null
+  avg_net_sell: number | null
+  profit: number
+  margin: number | null
+  coverage: number | null
+  warnings: string[]
+  flags: RealizedFlags
+}
+
+export interface TradingRealizedSale {
+  sale_ref: string
+  type_id: number
+  type_name: string | null
+  quantity: number
+  revenue: number
+  cost: number
+  profit: number
+  margin: number | null
+  coverage: number
+  sale_date: string | null
+  gross: number
+  sales_tax: number | null
+  broker_fee: number
+  location_id: number | null
+  location_name: string | null
+  net_price: number | null
+  warnings: string[]
+  flags: RealizedFlags
+  source: string | null
+}
+
+export interface TradingRealizedLot {
+  quantity: number
+  origin: string
+  layer_date: string | null
+  location_id: number | null
+  location_name: string | null
+  unit_price: number | null
+  freight: number
+  fees: number
+  unit_cost: number
+}
+
+export interface TradingRealizedItemList {
+  period: RealizedPeriodInfo
+  needs_rebuild: boolean
+  rows: TradingRealizedItem[]
+}
+
+export interface TradingRealizedItemDetail {
+  period: RealizedPeriodInfo
+  needs_rebuild: boolean
+  item: TradingRealizedItem
+  sales: TradingRealizedSale[]
+}
+
+export interface TradingRealizedSaleDetail {
+  sale: TradingRealizedSale
+  lots: TradingRealizedLot[]
+}
+
+export interface TradingRealizedInventoryRow {
+  type_id: number
+  type_name: string | null
+  pool: string
+  quantity: number
+  cost_per_unit: number | null
+  total: number
+  flags: RealizedFlags
+}
+
+export interface TradingRealizedWarning {
+  type_id: number
+  type_name: string | null
+  message: string
+}
+
 export interface RealizedJobFeeLine {
   activity_id: number
   label: string | null

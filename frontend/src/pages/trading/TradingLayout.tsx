@@ -8,6 +8,7 @@ import {
 
 import { productionApi, tradingApi } from '../../api/client'
 import { useAction } from '../../hooks/useAction'
+import { useBackgroundJob, useBackgroundJobStart } from '../../hooks/useBackgroundJob'
 import { useTradingPipelineJob } from '../../hooks/useRefreshAndPruneJob'
 import { useRoleCharacters } from '../../hooks/useRoleCharacters'
 import { ActionTierIcon, TIER_COPY } from '../../components/ActionTierIcon'
@@ -103,8 +104,14 @@ export default function TradingLayout() {
   // .../status until status != running). A second click while one is running
   // is a 409 rather than a second thread.
   const tradingJob = useTradingPipelineJob()
-  const reconcile = useAction('Reconcile Trades', tradingApi.reconcileTrades, [['trading', 'trades', 'realized']],
-    { tier: 'live', effect: 'Matches wallet transactions live from ESI against open positions.' })
+  const realizedJob = useBackgroundJob({
+    queryKey: ['trading', 'realized', 'rebuild'],
+    fetchStatus: tradingApi.realizedRebuildStatus,
+    resultKeys: [['trading', 'realized']],
+    labels: { rebuild_realized: 'Recompute' },
+    defaultLabel: 'Recompute',
+  })
+  const recompute = useBackgroundJobStart(realizedJob, () => tradingApi.startRealizedRebuild())
 
   return (
     <AppShell header={{ height: 56 }} navbar={{ width: 280, breakpoint: 'sm', collapsed: { mobile: !opened } }} padding={{ base: 'xs', sm: 'md' }}>
@@ -151,10 +158,10 @@ export default function TradingLayout() {
               {tradingJob.progressLabel && (
                 <JobProgress label={tradingJob.progressLabel} progress={tradingJob.status?.progress} />
               )}
-              <Tooltip label={reconcile.tooltip} disabled={!reconcile.tooltip} multiline w={280}>
-                <Button size="xs" variant="default" leftSection={reconcile.tierIcon}
-                  onClick={() => reconcile.mutate()} loading={reconcile.isPending}>
-                  Reconcile Trades
+              <Tooltip label="Rebuilds realized profit from the wallet archive. Does not fetch ESI." multiline w={280}>
+                <Button size="xs" variant="default"
+                  onClick={() => recompute.mutate()} loading={recompute.isPending || realizedJob.runningStatus}>
+                  Recompute
                 </Button>
               </Tooltip>
               <Tooltip label={liveJobTooltip('Runs sync, search, add, and shortlist cleanup all in one go.')} multiline w={280}>

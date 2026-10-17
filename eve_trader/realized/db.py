@@ -1391,7 +1391,7 @@ def list_remaining_layers() -> list[tuple]:
     with storage.connect() as conn:
         return conn.execute(
             "SELECT type_id, unit, quantity_left, unit_cost, origin, "
-            "assumed_me, assumed_decryptor, estimated_origin, price_missing "
+            "assumed_me, assumed_decryptor, estimated_origin, price_missing, pool "
             "FROM prod_cost_layers WHERE quantity_left > 0 "
             "ORDER BY type_id, logical_layer_id",
         ).fetchall()

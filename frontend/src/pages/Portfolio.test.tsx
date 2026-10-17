@@ -82,8 +82,9 @@ describe('Portfolio realized production profit', () => {
   it('does not fetch production profit unless the production grant is loaded', async () => {
     vi.mocked(gateApi.status).mockResolvedValue(gate(['portfolio']))
     renderPortfolio()
-    expect(await screen.findByText('Trading: Realized Profit')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Portfolio Overview' })).toBeInTheDocument()
     await waitFor(() => expect(gateApi.status).toHaveBeenCalled())
+    expect(screen.queryByText('Trading: Realized Profit')).toBeNull()
     expect(screen.queryByText('Realized Production profit')).toBeNull()
     expect(productionApi.realizedSummary).not.toHaveBeenCalled()
   })
@@ -91,9 +92,17 @@ describe('Portfolio realized production profit', () => {
   it('does not treat a missing tools list as every grant', async () => {
     vi.mocked(gateApi.status).mockResolvedValue({ ...gate([]), tools: undefined as unknown as string[] })
     renderPortfolio()
-    expect(await screen.findByText('Trading: Realized Profit')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Portfolio Overview' })).toBeInTheDocument()
     await waitFor(() => expect(gateApi.status).toHaveBeenCalled())
+    expect(screen.queryByText('Trading: Realized Profit')).toBeNull()
     expect(productionApi.realizedSummary).not.toHaveBeenCalled()
+  })
+
+  it('shows trading figures when the session holds trading', async () => {
+    vi.mocked(gateApi.status).mockResolvedValue(gate(['portfolio', 'trading']))
+    renderPortfolio()
+    expect(await screen.findByText('Trading: Realized Profit')).toBeInTheDocument()
+    expect(screen.getByText(/sales in the last 30 days/)).toBeInTheDocument()
   })
 
   it('shows the last 30 days from the summary action when production is granted', async () => {
