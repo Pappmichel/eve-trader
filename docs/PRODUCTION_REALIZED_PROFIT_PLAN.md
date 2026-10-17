@@ -1,6 +1,6 @@
 # Production realized profit - plan
 
-Status: **Phase 3 done** (2026-10-17). Decisions D1-D12 (section 10)
+Status: **Phase 4 done** (2026-10-17). Decisions D1-D12 (section 10)
 are confirmed with the user. Revised the same day after a critical review
 against the code (section 12 lists what changed and why). See
 **Implementation status** at the end of this file.
@@ -845,5 +845,43 @@ spell out):
   - Still open for Phase 4/5: deleting hidden archive rows
     (count-then-confirm) and D7's corp "mine alone" switch (corp wallets
     are not readable today anyway).
-- **Phase 4 - not started.** Frontend.
+- **Phase 4 - done 2026-10-17.** Production page "Realized Profit"
+  (`/production/realized`, tab after Margin, QuickNav
+  `production-realized`). Six sub-tabs (Overview, Products, Jobs,
+  Inventory, Warnings, Ledger), remembered per viewer in
+  `localStorage`. Period 7/30/90, since T0, or a custom range (default
+  30 days) maps onto the summary/products query. Recompute is
+  `useBackgroundJob` on `POST /realized/rebuild` (409 stays a warning).
+  One auto-recompute per page open when the report is stale, or when a
+  rebuild is required and an archive exists. KPI cards, the separate
+  "not part of realized profit" balances, manual-entry secondary line,
+  daily (or weekly, past 90 days) profit chart, and the API cost-structure
+  labels. Products open a drawer with the sale list and cost chain.
+  Jobs, inventory, warning groups, opening overrides, manual entries,
+  freight reapply (dry run, then confirm), and archive status are the
+  other tabs. Coverage colour, "estimated", and profit figures come from
+  the API. `needs_rebuild` replaces an empty table with the recompute
+  hint. Tests in `frontend/src/pages/production/realized/`.
+  Deviations:
+  - `RowDetailDrawer` takes an optional `size` (default `md`; existing
+    callers unchanged) so the product chain can use `xl`.
+  - Weekly bars group the API's daily `by_day` profits into Monday-UTC
+    weeks for display when the selected period is longer than 90 days.
+    The frontend does not compute a profit figure.
+  - `no_structure_bonus` null is "unknown" on job rows and job chain
+    nodes. On other rows a null is omitted, because that is the API
+    default when the flag does not apply. `true` is "no", `false` is
+    "applied".
+  - Clearing an opening override deletes that `opening_cost` ledger row
+    (`DELETE /realized/entries/{id}`) after a confirm. There is no
+    dedicated clear endpoint, and `unit_cost` cannot be null.
+  - A custom range is sent only after both dates are applied, so an
+    incomplete range is not requested.
+  - Auto-recompute is once per page visit. A module flag survives
+    React StrictMode's remount in dev and clears shortly after a real
+    unmount, so one open does not start two rebuilds.
+  - `POST /realized/rebuild?reset_opening=true` is not part of the
+    section 9a page, so the UI does not send it.
+  - Deleting hidden archive rows and the D7 corp "mine alone" switch
+    stay out of this phase, with no placeholders.
 - **Phase 5 - not started.** Extensions (ask user first).
