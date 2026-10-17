@@ -3,7 +3,8 @@ import { Accordion, Button, Group, Stack, Text } from '@mantine/core'
 
 import type { RealizedWarningGroup } from '../../../api/types'
 import { HintCard } from '../../../components/HintCard'
-import { warningTarget, warningTitle, type WarningFocus } from './labels'
+import { dateTime, isk } from '../../../format'
+import { displayQty, warningTarget, warningTitle, type WarningFocus } from './labels'
 
 function formatValue(value: unknown): string {
   if (value == null || value === '') return '–'
@@ -13,21 +14,59 @@ function formatValue(value: unknown): string {
   return JSON.stringify(value)
 }
 
+// Ids the API already resolved into a name (or into `text`) are not listed
+// again; an id without a name is shown under the same label instead.
+const HIDDEN = new Set([
+  'message', 'text', 'type_id', 'type_name', 'owner_id', 'owner_type', 'owner_name',
+  'location_id', 'location_name', 'job_id', 'job_ref', 'job_label',
+])
+const LABELS: Record<string, string> = {
+  ledger_qty: 'Ledger qty', esi_qty: 'ESI stock', drift: 'Drift', data_kind: 'Data',
+  gap_start: 'Gap from', gap_end: 'Gap to', fee_date: 'Fee day', amount: 'Amount',
+  count: 'Purchases', sale_ref: 'Sale',
+}
+
+function fieldValue(key: string, value: unknown): string {
+  if (typeof value === 'number' && key === 'amount') return isk(value)
+  if (typeof value === 'number' && (key === 'ledger_qty' || key === 'esi_qty' || key === 'drift')) return displayQty(value)
+  if (typeof value === 'string' && /^(gap_|fee_date)/.test(key)) return dateTime(value)
+  if (typeof value === 'string' && key === 'data_kind') return value.replaceAll('_', ' ')
+  return formatValue(value)
+}
+
+/** Named lines for an item's ids; `text` already names them for message items. */
+function namedLines(item: Record<string, unknown>): [string, string][] {
+  const lines: [string, string][] = []
+  const has = (key: string) => item[key] != null && item[key] !== ''
+  if (typeof item.text !== 'string') {
+    if (has('type_id')) lines.push(['Item', String(item.type_name ?? `Type ${item.type_id}`)])
+    if (has('job_ref')) lines.push(['Job', String(item.job_label ?? item.job_ref)])
+  }
+  if (has('owner_id')) lines.push(['Owner', String(item.owner_name ?? `${item.owner_type ?? ''} ${item.owner_id}`.trim())])
+  if (has('location_id')) lines.push(['Location', String(item.location_name ?? item.location_id)])
+  return lines
+}
+
 function WarningItem({ kind, item, onOpen }: {
   kind: string
   item: Record<string, unknown>
   onOpen: (focus: WarningFocus) => void
 }) {
   const target = warningTarget(kind, item)
-  const fields = Object.entries(item)
+  const fields = Object.entries(item).filter(([key]) => !HIDDEN.has(key))
+  const headline = typeof item.text === 'string' ? item.text : typeof item.message === 'string' ? item.message : null
+  const named = namedLines(item)
   return (
     <Group justify="space-between" align="flex-start" wrap="nowrap" gap="sm">
       <Stack gap={2}>
-        {typeof item.message === 'string' && <Text size="sm">{item.message}</Text>}
-        {fields.filter(([key]) => key !== 'message').map(([key, value]) => (
-          <Text key={key} size="xs" c="dimmed">{key}: {formatValue(value)}</Text>
+        {headline && <Text size="sm">{headline}</Text>}
+        {named.map(([label, value]) => (
+          <Text key={label} size="xs" c="dimmed">{label}: {value}</Text>
         ))}
-        {fields.length === 0 && <Text size="sm">{kind}</Text>}
+        {fields.map(([key, value]) => (
+          <Text key={key} size="xs" c="dimmed">{LABELS[key] ?? key.replaceAll('_', ' ')}: {fieldValue(key, value)}</Text>
+        ))}
+        {!headline && named.length === 0 && fields.length === 0 && <Text size="sm">{kind}</Text>}
       </Stack>
       {target && (
         <Button size="compact-xs" variant="subtle" onClick={() => onOpen(target)}>

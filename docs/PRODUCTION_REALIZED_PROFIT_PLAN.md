@@ -1003,3 +1003,13 @@ spell out):
   not the "Invention" label shown; the chart's Y axis labels were cut off
   (now 1.5B style). Known gap, unchanged: T1 BPC runs without a known
   origin have no price (booked at 0, flagged; 88 on the test server).
+- **Names instead of ids (2026-10-17, user request).** `realized/names.py`
+  resolves the ids the report hands out: warnings get `type_name`,
+  `owner_name`, `location_name`, `job_label`, a `text` with ids replaced by
+  names, and `type_id` / `job_ref` parsed from message-only warnings so the
+  page can link them; archive status and jobs get `owner_name` (jobs also
+  `facility_name`). Owner names come without ESI where possible: the
+  tenant's tokens, corp names from `corp_assets`, job installers from the
+  synced job tables. Only ids found nowhere go to ESI's public
+  /universe/names/ (cached for an hour, best effort; an id stays visible
+  when nothing resolves it).

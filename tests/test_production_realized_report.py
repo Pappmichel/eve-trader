@@ -66,7 +66,7 @@ def _wipe(_apply_production_ledger_schema):
         "prod_cost_draws", "prod_job_records", "prod_fee_lines", "prod_job_losses",
         "prod_capital_bpos", "prod_inventory_drift", "prod_opening_frozen",
         "prod_opening_lines", "prod_ledger_runs",
-        "esi_sharing", "character_assets", "corp_assets", "stock_targets",
+        "esi_sharing", "character_assets", "corp_assets", "stock_targets", "character_industry_jobs",
     )
     yield
 
@@ -76,6 +76,13 @@ def _no_planner_valuation(monkeypatch):
     """The planner valuation needs live market prices; tests that want one
     patch loader._planner_values themselves. Empty = The Forge fallback."""
     monkeypatch.setattr(loader, "_planner_values", lambda type_ids: {})
+
+
+@pytest.fixture(autouse=True)
+def _no_esi_names(monkeypatch):
+    """Owner names fall back to ESI's public names endpoint; never call it here."""
+    from eve_trader.production.realized import names
+    monkeypatch.setattr(names, "_esi_names", lambda ids: {})
 
 
 def _share(owner_id: int, data_kind: str):
@@ -620,4 +627,26 @@ def test_opening_is_valued_at_the_planner_price(tenant, monkeypatch):
     assert line["unit_cost"] == pytest.approx(7.0)
     assert line["reference_price"] == pytest.approx(7.0)
     assert line["valued_as"] == "buy_home"
+
+
+def test_owner_names_come_from_stored_data_before_esi(tenant, monkeypatch):
+    """Corp names from corp_assets, job installers from synced jobs; ESI is
+    asked only for ids found nowhere."""
+    from eve_trader.production.realized import names
+
+    with storage.connect() as conn:
+        conn.execute(
+            "INSERT INTO corp_assets (item_id, type_id, location_id, quantity, is_blueprint_copy, "
+            "owner_name, owner_corporation_id) VALUES (1, 34, ?, 1, 0, 'RichlTech (corp)', 98723738)",
+            (LOC,),
+        )
+        conn.execute(
+            "INSERT INTO character_industry_jobs (job_id, installer_id, installer_name) "
+            "VALUES (5, 2112543378, 'Corpmate')",
+        )
+    asked = []
+    monkeypatch.setattr(names, "_esi_names", lambda ids: asked.append(list(ids)) or {424242: "Stranger"})
+    found = names.owner_names([98723738, 2112543378, 424242])
+    assert found == {98723738: "RichlTech", 2112543378: "Corpmate", 424242: "Stranger"}
+    assert asked == [[424242]]
 

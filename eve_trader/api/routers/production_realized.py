@@ -199,6 +199,7 @@ class JobRow(BaseModel):
     job_id: int
     owner_type: str
     owner_id: int
+    owner_name: Optional[str] = None
     activity_id: int
     blueprint_type_id: int
     blueprint_name: Optional[str] = None
@@ -219,6 +220,7 @@ class JobRow(BaseModel):
     sold_share: Optional[float] = None
     cost_per_bpc_run: Optional[float] = None
     facility_id: Optional[int] = None
+    facility_name: Optional[str] = None
     contract_input: bool = False
     cost_structure: list[CostStructureLine]
     flags: RealizedFlags
@@ -298,6 +300,7 @@ class LedgerEntryList(BaseModel):
 class ArchiveOwnerRow(BaseModel):
     owner_type: str
     owner_id: int
+    owner_name: Optional[str] = None
     shared: dict[str, bool]
     last_sync: dict[str, Optional[str]]
     gaps: dict[str, int]

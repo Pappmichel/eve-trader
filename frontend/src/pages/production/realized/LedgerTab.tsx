@@ -104,7 +104,7 @@ function HiddenArchiveCell({ row, characters, onDeleted }: {
     { effect: 'Deletes archived rows for a kind that is not shared with Production.' },
   )
   if (row.hidden_kinds.length === 0) return '–'
-  const label = ownerLabel(row.owner_type, row.owner_id, characters)
+  const label = row.owner_name ?? ownerLabel(row.owner_type, row.owner_id, characters)
 
   async function confirmDelete(kind: string) {
     const kindLabel = kind.replaceAll('_', ' ')
@@ -300,7 +300,7 @@ export function LedgerTab({
   const archiveColumns: ColumnDef<RealizedArchiveOwner, any>[] = [
     {
       header: 'Owner', id: 'owner', size: 200,
-      accessorFn: (row) => ownerLabel(row.owner_type, row.owner_id, characters),
+      accessorFn: (row) => row.owner_name ?? ownerLabel(row.owner_type, row.owner_id, characters),
     },
     ...SHARE_KINDS.map((kind) => ({
       header: kind.replaceAll('_', ' '),

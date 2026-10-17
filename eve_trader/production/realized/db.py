@@ -1641,3 +1641,32 @@ def delete_owner_archive_kind(owner_type: str, owner_id: int, kind: str) -> int:
             (owner_type, int(owner_id), list(sync_kinds)),
         )
     return deleted
+
+
+_CORP_SUFFIX = " (corp)"
+
+
+def stored_owner_names(ids: list[int]) -> dict[int, str]:
+    """Character / corporation names the app already stored from earlier ESI
+    syncs, no ESI call: corporations from corp_assets (owner_name is
+    "<name> (corp)"), characters from the installer names of synced industry
+    jobs (corpmates included)."""
+    unique = sorted({int(i) for i in ids if i})
+    if not unique:
+        return {}
+    out: dict[int, str] = {}
+    with storage.connect() as conn:
+        for owner_id, name in conn.execute(
+            "SELECT DISTINCT owner_corporation_id, owner_name FROM corp_assets "
+            "WHERE owner_corporation_id = ANY(?)", (unique,),
+        ).fetchall():
+            if name:
+                text = str(name)
+                out[int(owner_id)] = text[: -len(_CORP_SUFFIX)] if text.endswith(_CORP_SUFFIX) else text
+        for table in ("character_industry_jobs", "corp_industry_jobs"):
+            for installer_id, name in conn.execute(
+                f"SELECT DISTINCT installer_id, installer_name FROM {table} "
+                "WHERE installer_id = ANY(?) AND installer_name IS NOT NULL", (unique,),
+            ).fetchall():
+                out.setdefault(int(installer_id), str(name))
+    return out

@@ -21,7 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from ... import storage
-from . import access, db
+from . import access, db, names as display_names
 from .costing import ACTIVITY_INVENTION, ESTIMATED_COVERAGE_THRESHOLD, CostComponents
 
 _EPS = 1e-9
@@ -664,6 +664,8 @@ def jobs() -> dict:
             | {int(r[5]) for r in rows}
             | {int(r[24]) for r in rows if r[24] is not None}
         )
+        owners = display_names.owner_names({int(r[3]) for r in rows})
+        facilities = display_names.location_names({int(r[29]) for r in rows if r[29] is not None})
     out = []
     for row in rows:
         components = CostComponents(
@@ -683,6 +685,7 @@ def jobs() -> dict:
             "job_id": int(row[1]),
             "owner_type": str(row[2]),
             "owner_id": int(row[3]),
+            "owner_name": owners.get(int(row[3])),
             "activity_id": activity,
             "blueprint_type_id": int(row[5]),
             "blueprint_name": names.get(int(row[5])),
@@ -703,6 +706,7 @@ def jobs() -> dict:
             "sold_share": sold_share,
             "cost_per_bpc_run": unit_cost if activity == ACTIVITY_INVENTION and unit_cost is not None else None,
             "facility_id": None if row[29] is None else int(row[29]),
+            "facility_name": None if row[29] is None else facilities.get(int(row[29])),
             "contract_input": str(row[0]) in contract_jobs,
             "cost_structure": _cost_structure(components, 0.0),
             "flags": _flags(
@@ -883,6 +887,16 @@ def warnings() -> dict:
     ordered = [{"kind": kind, "count": len(groups[kind]), "items": groups[kind]} for kind in SECTION_9A_KINDS]
     for kind in sorted(extra):
         ordered.append({"kind": kind, "count": len(extra[kind]), "items": extra[kind]})
+    job_map = {
+        str(row[0]): {
+            "type_id": None if row[6] is None else int(row[6]),
+            "activity": display_names.activity_label(row[4]),
+            "owner_id": int(row[3]),
+        }
+        for row in derived_jobs
+    }
+    with storage.batch_session():
+        display_names.label_warnings(ordered, job_map)
     return {"needs_rebuild": hidden, "groups": ordered}
 
 
@@ -1025,11 +1039,13 @@ def archive_status() -> dict:
             entry["archived_kinds"].add(share_kind)
     for (owner_type, owner_id, data_kind), count in gaps.items():
         slot(owner_type, owner_id)["gaps"][str(data_kind)] = count
+    owner_names = display_names.owner_names(owner_id for _owner_type, owner_id in owners)
     rows = []
     for key in sorted(owners):
         entry = owners[key]
         archived = entry.pop("archived_kinds")
         entry["hidden_kinds"] = sorted(k for k in archived if not entry["shared"][k])
         entry["last_sync"] = {k: _iso(v) for k, v in sorted(entry["last_sync"].items())}
+        entry["owner_name"] = owner_names.get(int(entry["owner_id"]))
         rows.append(entry)
     return {"rows": rows}

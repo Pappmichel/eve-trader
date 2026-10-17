@@ -107,6 +107,7 @@ function sale(partial: Partial<RealizedSaleRow> = {}): RealizedSaleRow {
 function job(partial: Partial<RealizedJobRow> = {}): RealizedJobRow {
   return {
     job_ref: 'character:1:77', job_id: 77, owner_type: 'character', owner_id: 1,
+    owner_name: 'Pilot', facility_name: null,
     activity_id: 1, blueprint_type_id: 1, blueprint_name: 'Widget Blueprint',
     product_type_id: 34, product_name: 'Widget', runs: 1, successful_runs: 1,
     start_date: '2026-10-01T00:00:00Z', end_date: '2026-10-02T00:00:00Z', status: 'delivered',
@@ -277,6 +278,35 @@ describe('RealizedProfit', () => {
     expect(productionApi.reapplyRealizedFreight).toHaveBeenCalledTimes(1)
   })
 
+  it('shows warning names and readable text instead of ids', async () => {
+    const user = userEvent.setup()
+    vi.mocked(productionApi.realizedWarnings).mockResolvedValue({
+      needs_rebuild: false,
+      groups: [
+        {
+          kind: 'archive_gap', count: 1, items: [{
+            owner_type: 'corporation', owner_id: 98723738, owner_name: 'RichlTech',
+            data_kind: 'wallet_journal', gap_start: '2026-10-01T00:00:00Z', gap_end: '2026-10-02T00:00:00Z',
+          }],
+        },
+        {
+          kind: 'trading_overlap', count: 1, items: [{
+            message: 'trading_overlap: Production type 34 is also bought on the market',
+            text: 'Tritanium is also bought on the market', type_id: 34, type_name: 'Tritanium',
+          }],
+        },
+      ],
+    })
+    renderPage()
+    await screen.findByText('Cost of goods sold')
+    await user.click(screen.getByRole('tab', { name: 'Warnings' }))
+    expect(await screen.findByText('Owner: RichlTech')).toBeInTheDocument()
+    expect(screen.getByText('Data: wallet journal')).toBeInTheDocument()
+    expect(screen.getByText('Tritanium is also bought on the market')).toBeInTheDocument()
+    expect(screen.queryByText(/98723738/)).toBeNull()
+    expect(screen.queryByText(/type 34/)).toBeNull()
+  })
+
   it('renders an unknown warning kind from its message', async () => {
     const user = userEvent.setup()
     vi.mocked(productionApi.realizedWarnings).mockResolvedValue({
@@ -372,7 +402,7 @@ describe('RealizedProfit', () => {
     const user = userEvent.setup()
     vi.mocked(productionApi.realizedArchiveStatus).mockResolvedValue({
       rows: [{
-        owner_type: 'character', owner_id: 7,
+        owner_type: 'character', owner_id: 7, owner_name: null,
         shared: { wallet: false, industry_jobs: true, market_orders: true, contracts: true },
         last_sync: {}, gaps: {}, hidden_kinds: ['wallet'],
       }],

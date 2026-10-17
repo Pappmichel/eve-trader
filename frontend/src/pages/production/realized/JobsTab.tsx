@@ -23,6 +23,10 @@ const columns: ColumnDef<RealizedJobRow, any>[] = [
     ),
   },
   {
+    header: 'Owner', id: 'owner', size: 150,
+    accessorFn: (row) => row.owner_name ?? `${row.owner_type} ${row.owner_id}`,
+  },
+  {
     // Filter and sort by the label the cell shows ("Invention"), not the id.
     header: 'Activity', id: 'activity', size: 130,
     accessorFn: (row) => activityLabel(row.activity_id),

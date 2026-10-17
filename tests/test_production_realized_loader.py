@@ -70,6 +70,13 @@ def _no_planner_valuation(monkeypatch):
     monkeypatch.setattr(loader, "_planner_values", lambda type_ids: {})
 
 
+@pytest.fixture(autouse=True)
+def _no_esi_names(monkeypatch):
+    """Owner names fall back to ESI's public names endpoint; never call it here."""
+    from eve_trader.production.realized import names
+    monkeypatch.setattr(names, "_esi_names", lambda ids: {})
+
+
 def _share(owner_id: int, data_kind: str):
     with storage.connect() as conn:
         conn.execute(

@@ -2798,6 +2798,8 @@ export interface RealizedJobRow {
   job_id: number
   owner_type: string
   owner_id: number
+  owner_name: string | null
+  facility_name: string | null
   activity_id: number
   blueprint_type_id: number
   blueprint_name: string | null
@@ -2898,6 +2900,8 @@ export interface RealizedLedgerEntryList {
 export interface RealizedArchiveOwner {
   owner_type: string
   owner_id: number
+  /** Character or corporation name; null when it could not be resolved. */
+  owner_name: string | null
   shared: Record<string, boolean>
   last_sync: Record<string, string | null>
   gaps: Record<string, number>
