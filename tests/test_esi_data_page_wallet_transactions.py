@@ -45,3 +45,19 @@ def test_boundary_transaction_repeated_across_pages_is_not_double_counted():
     ids = [t["transaction_id"] for t in result]
     assert ids.count(boundary_id) == 1
     assert len(result) == WALLET_TRANSACTIONS_PAGE_SIZE + 49  # not +50
+
+
+def test_transaction_repeated_inside_one_page_is_not_double_counted():
+    """Confirmed live 2026-10-17: ESI returned a first page of 2500 rows with
+    only 2499 distinct transaction ids. The old page-level filter only
+    compared against earlier pages, so both copies went into one INSERT and
+    every sync of that character failed with a duplicate-key error."""
+    page = [_txn(1), _txn(2), _txn(2), _txn(3)]
+    pages = [page]
+
+    def fetch_page(from_id):
+        return pages.pop(0) if pages else []
+
+    result = _page_wallet_transactions(fetch_page)
+
+    assert [t["transaction_id"] for t in result] == [1, 2, 3]
