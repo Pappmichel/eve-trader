@@ -1022,3 +1022,12 @@ spell out):
   `totals`. Rows carry `planned_unit_cost`. The tab defaults to "finished
   in period, by product"; a product opens its jobs; a warning's Open still
   shows the one job regardless of period and state.
+- **Spending apart from COGS (2026-10-18, user request).** The overview's
+  job costs (76 m on production) were only the job costs inside the units
+  sold; almost every sale drew opening stock, whose planner value is one
+  number per unit. The summary now has `spending`: fees paid for jobs
+  started in the period per activity, everything invention jobs consumed,
+  and two balances (produced goods still in stock at cost, cost sitting in
+  running jobs). The cost structure is titled "Cost of goods sold
+  breakdown" and `materials_estimated` reads "Opening / unknown stock
+  (planner value)".

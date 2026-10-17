@@ -701,3 +701,22 @@ def test_invention_group_cost_is_per_bpc_run_produced():
     [group] = report._job_groups([row("produced", 100.0, 10.0), row("failed", 100.0, 0.0)])
     assert group["failed"] == 1
     assert group["cost_per_bpc_run"] == pytest.approx(20.0)
+
+
+def test_summary_spending_shows_job_fees_apart_from_cost_of_goods_sold(tenant):
+    _seed_job_and_sale()
+    _rebuild({TYPE_A: 6, TYPE_B: 1})
+    summary = production_actions.do_get_realized_summary(days=30)
+    spending = summary["spending"]
+    [fees] = spending["job_fees"]
+    assert fees["label"] == "Manufacturing" and fees["jobs"] == 1
+    assert fees["amount"] == pytest.approx(40.0)
+    assert spending["job_fees_total"] == pytest.approx(40.0)
+    assert spending["invention_total"] == pytest.approx(0.0)
+    # One of the two produced units is still in stock, at half the job's cost.
+    [job] = production_actions.do_get_realized_jobs()["rows"]
+    assert spending["produced_in_stock"] == pytest.approx((job["input_cost"] + job["job_cost"]) / 2)
+    assert spending["running_jobs"] == 0 and spending["in_running_jobs"] == pytest.approx(0.0)
+    labels = {line["key"]: line["label"] for line in summary["cost_structure"]}
+    assert labels["materials_estimated"] == "Opening / unknown stock (planner value)"
+

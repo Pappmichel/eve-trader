@@ -72,6 +72,22 @@ class RealizedDay(BaseModel):
     profit: float
 
 
+class JobFeeLine(BaseModel):
+    activity_id: int
+    label: Optional[str] = None
+    jobs: int
+    amount: float
+
+
+class RealizedSpending(BaseModel):
+    job_fees: list[JobFeeLine]
+    job_fees_total: float
+    invention_total: float
+    produced_in_stock: float
+    running_jobs: int
+    in_running_jobs: float
+
+
 class RealizedSummary(BaseModel):
     period: RealizedPeriod
     status: RealizedStatus
@@ -94,6 +110,7 @@ class RealizedSummary(BaseModel):
     manual_revenues: float
     profit_including_manual: float
     cost_structure: list[CostStructureLine]
+    spending: Optional[RealizedSpending] = None
     by_day: list[RealizedDay]
     balances_as_of_rebuild: list[str]
     flags: RealizedFlags

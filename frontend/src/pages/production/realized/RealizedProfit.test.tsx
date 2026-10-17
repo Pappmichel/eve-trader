@@ -327,6 +327,25 @@ describe('RealizedProfit', () => {
     expect(await screen.findByText('Sale 119')).toBeInTheDocument()
   })
 
+  it('shows job spending apart from the cost of goods sold', async () => {
+    vi.mocked(productionApi.realizedSummary).mockResolvedValue(summary({
+      spending: {
+        job_fees: [
+          { activity_id: 1, label: 'Manufacturing', jobs: 616, amount: 6_412_000_000 },
+          { activity_id: 8, label: 'Invention', jobs: 379, amount: 156_000_000 },
+        ],
+        job_fees_total: 6_568_000_000, invention_total: 982_000_000,
+        produced_in_stock: 69_400_000_000, running_jobs: 389, in_running_jobs: 3_500_000_000,
+      },
+    }))
+    renderPage()
+    expect(await screen.findByText('Job fees paid')).toBeInTheDocument()
+    expect(screen.getByText('6,568,000,000 ISK')).toBeInTheDocument()
+    expect(screen.getByText('Manufacturing: 6,412,000,000 ISK (616 jobs)')).toBeInTheDocument()
+    expect(screen.getByText('389 jobs · balance as of the last recompute')).toBeInTheDocument()
+    expect(screen.getByText('Cost of goods sold breakdown')).toBeInTheDocument()
+  })
+
   it('renders an unknown warning kind from its message', async () => {
     const user = userEvent.setup()
     vi.mocked(productionApi.realizedWarnings).mockResolvedValue({

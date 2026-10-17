@@ -37,6 +37,7 @@ export function OverviewTab({ summary, period }: { summary: RealizedSummary; per
   const weekly = periodLongerThan90Days(period, summary.status.cutover_t0)
   const points = profitSeries(summary.by_day, weekly)
   const structure = summary.cost_structure
+  const spending = summary.spending
   const structureTotal = structure.reduce((sum, line) => sum + (line.amount > 0 ? line.amount : 0), 0)
   const coverage = coverageColor(summary.coverage)
 
@@ -91,6 +92,41 @@ export function OverviewTab({ summary, period }: { summary: RealizedSummary; per
         </SimpleGrid>
       </div>
 
+      {spending && (
+        <div>
+          <Title order={6} c="dimmed" tt="uppercase" mb={4}>Spent on jobs in this period</Title>
+          <Text size="xs" c="dimmed" mb="xs">
+            Jobs started in the period. Most of this is still in stock or in running jobs, so it is not in the cost of goods sold yet.
+          </Text>
+          <SimpleGrid cols={{ base: 1, xs: 2, md: 4 }}>
+            <Kpi
+              label="Job fees paid"
+              value={isk(spending.job_fees_total)}
+              extra={(
+                <Stack gap={0} mt={4}>
+                  {spending.job_fees.map((line) => (
+                    <Text key={line.activity_id} size="xs" c="dimmed">
+                      {line.label ?? `Activity ${line.activity_id}`}: {isk(line.amount)} ({qty(line.jobs)} jobs)
+                    </Text>
+                  ))}
+                </Stack>
+              )}
+            />
+            <Kpi label="Invention (inputs and fees)" value={isk(spending.invention_total)} />
+            <Kpi
+              label="Produced, still in stock"
+              value={isk(spending.produced_in_stock)}
+              hint="At cost · balance as of the last recompute"
+            />
+            <Kpi
+              label="In running jobs"
+              value={isk(spending.in_running_jobs)}
+              hint={`${qty(spending.running_jobs)} jobs · balance as of the last recompute`}
+            />
+          </SimpleGrid>
+        </div>
+      )}
+
       <div>
         <Title order={6} c="dimmed" tt="uppercase" mb="xs">
           {weekly ? 'Realized profit per week' : 'Realized profit per day'}
@@ -115,7 +151,10 @@ export function OverviewTab({ summary, period }: { summary: RealizedSummary; per
       </div>
 
       <div>
-        <Title order={6} c="dimmed" tt="uppercase" mb="xs">Cost structure</Title>
+        <Title order={6} c="dimmed" tt="uppercase" mb={4}>Cost of goods sold breakdown</Title>
+        <Text size="xs" c="dimmed" mb="xs">
+          What the units sold in this period cost. Opening and unknown stock is one planner value per unit, so build costs inside it are not split into job costs or invention.
+        </Text>
         <div
           aria-label="Cost structure"
           style={{ display: 'flex', height: 18, width: '100%', background: COLORS.surface2, borderRadius: 4, overflow: 'hidden' }}
