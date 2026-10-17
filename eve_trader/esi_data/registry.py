@@ -148,7 +148,9 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         corp_roles=("Accountant", "Junior_Accountant"),
         # "production" added for the realized-profit ledger archive
         # (docs/PRODUCTION_REALIZED_PROFIT_PLAN.md Phase 1).
-        consuming_tools=("trading", "production"),
+        # "station_trading" is the same wallet for the station-trading
+        # channel (docs/REALIZED_PROFIT_UNIFIED_PLAN.md ST2).
+        consuming_tools=("trading", "production", "station_trading"),
         freshness_tier=TIER_FREQUENT,
     ),
     OwnedDataKind(

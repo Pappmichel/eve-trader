@@ -530,12 +530,29 @@ def test_pipeline_needs_the_trading_grant(monkeypatch):
 def test_inactive_tenant_and_missing_master_switch_run_nothing(monkeypatch):
     calls = _due_env(monkeypatch)
     cfg = TradingConfig(scheduler_enabled=True)
-    # No production grant -> D10 retention off; inactive runs nothing.
-    monkeypatch.setattr(scheduler.tenant_eligibility, "granted_tools", lambda tid: {"trading"})
+    # No realized-profit grant -> D10 retention off; inactive runs nothing.
+    monkeypatch.setattr(scheduler.tenant_eligibility, "granted_tools", lambda tid: {"sorting"})
     monkeypatch.setattr(esi_orchestrator, "pending_due", lambda **kw: [("character", 1, "wallet", "production")])
     scheduler._check_and_run_due_jobs_for_tenant("t", cfg, active=False)
     scheduler._check_and_run_due_jobs_for_tenant("t", cfg, master_enabled=False)
     assert calls == []
+
+
+def test_inactive_tenant_with_trading_keeps_its_own_archive_shares(monkeypatch):
+    """D10 extended: an inactive Trading tenant still syncs Trading's shares."""
+    calls = _due_env(monkeypatch)
+    cfg = TradingConfig(scheduler_enabled=True)
+    monkeypatch.setattr(scheduler.tenant_eligibility, "granted_tools", lambda tid: {"trading"})
+    seen = {}
+
+    def pending_due(**kw):
+        seen.update(kw)
+        return [("character", 1, "wallet", "trading")]
+
+    monkeypatch.setattr(esi_orchestrator, "pending_due", pending_due)
+    scheduler._check_and_run_due_jobs_for_tenant("t", cfg, active=False)
+    assert seen.get("granted_tools") == {"trading"}
+    assert calls[0][1]["granted_tools"] == {"trading"}
 
 
 def test_inactive_tenant_with_production_keeps_archive_kinds(monkeypatch):
@@ -552,7 +569,7 @@ def test_inactive_tenant_with_production_keeps_archive_kinds(monkeypatch):
     monkeypatch.setattr(esi_orchestrator, "pending_due", pending_due)
     scheduler._check_and_run_due_jobs_for_tenant("t", cfg, active=False)
     assert seen.get("kinds") == tenant_eligibility.PRODUCTION_ARCHIVE_KINDS
-    # Only Production's own sharing rows, even when the tenant holds more tools.
+    # Only the realized tools this tenant still holds.
     assert seen.get("granted_tools") == {"production"}
     assert len(calls) == 1 and calls[0][0] == "esi"
     assert calls[0][1]["kinds"] == tenant_eligibility.PRODUCTION_ARCHIVE_KINDS

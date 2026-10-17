@@ -27,8 +27,8 @@ and imports no tool package — the same precedent as
 `auth.TOOL_ROLE_PREFIXES` and `access_gate.ALL_TOOL_KEYS`. One deliberate
 exception: `esi_data/fetchers.py` lazily imports `realized`
 right after a snapshot write to fill the realized-profit
-archive (`docs/PRODUCTION_REALIZED_PROFIT_PLAN.md`), only for kinds the
-owner shares with Production, and never lets an archive error fail the
+archive (`docs/REALIZED_PROFIT_UNIFIED_PLAN.md`), for an owner shared
+with any realized-profit tool, and never lets an archive error fail the
 snapshot sync. Do not add a second tool import here. Do not put
 ESI-owner sync back into `portfolio.py` or a tool's `esi_sync.py` by
 re-deriving a prefix-per-tool layout from a stale reading of this
@@ -136,8 +136,10 @@ orders / contracts **archive** is the source of truth. Derived tables
 `prod_job_records`, `prod_fee_lines`, `prod_job_losses`,
 `prod_capital_bpos`, `prod_inventory_drift`, `prod_ledger_runs`) are
 rebuilt from it and can be dropped and rebuilt. Archive reads go through
-`access.py` and only return owners shared with Production (D11); revoking
-a share hides those rows until it is granted again. Flags
+`access.py` and return the union of owners shared with any realized-profit
+tool (D11 / unified plan U3a); revoking the last such share hides those
+rows until one is granted again. A report filters with
+`shared_owners_for`. Flags
 (`estimated`, `price_missing`, `assumed_me`, `assumed_decryptor`,
 coverage, `no_structure_bonus`) are stored on the derived rows and must
 reach `/api/production/realized/` unchanged. Freight is the configured

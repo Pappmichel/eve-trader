@@ -183,6 +183,41 @@ def test_share_revoke_hides_archive_rows(tenant):
     ) == 1
 
 
+def test_union_scope_trading_only_doctrine_only_and_last_revoke(tenant):
+    """U3a: a wallet shared only with Trading, and contracts shared only
+    with Doctrine, are in the archive scope. Revoking the last realized
+    tool hides the owner. Adding a share changes the fingerprint."""
+    before = ledger_access.owner_scope_hash()
+    from eve_trader.esi_data import fetchers
+
+    _share(ALICE, "wallet", "trading")
+    assert fetchers._archive_for_production("wallet", "character", ALICE) is True
+    assert ("character", ALICE) in ledger_access.shared_owners("wallet")
+    assert ("character", ALICE) in ledger_access.shared_owners_for("wallet", "trading")
+    assert ("character", ALICE) not in ledger_access.shared_owners_for("wallet", "production")
+    ledger_db.upsert_ledger_wallet_transactions([(
+        "character", ALICE, 0, 8, DATE1, TYPE_ID, LOCATION_ID,
+        1.0, 1, True, 8, None, None, None,
+    )])
+    assert ledger_access.list_wallet_transactions_for_production("character", ALICE)
+    after_trading = ledger_access.owner_scope_hash()
+    assert after_trading != before
+
+    _share(BOB, "contracts", "doctrine")
+    assert ("character", BOB) in ledger_access.shared_owners("contracts")
+    assert ("character", BOB) not in ledger_access.shared_owners_for("contracts", "production")
+    assert ledger_access.owner_scope_hash() != after_trading
+
+    _share(ALICE, "wallet", "station_trading")
+    _revoke(ALICE, "wallet", "trading")
+    assert ("character", ALICE) in ledger_access.shared_owners("wallet")
+    _revoke(ALICE, "wallet", "station_trading")
+    assert ("character", ALICE) not in ledger_access.shared_owners("wallet")
+    assert ledger_access.list_wallet_transactions_for_production("character", ALICE) == []
+    assert fetchers._archive_for_production("wallet", "character", ALICE) is False
+    assert ledger_db.count_ledger_rows("ledger_wallet_transactions", "character", ALICE) == 1
+
+
 T0 = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 
 
@@ -360,11 +395,11 @@ def test_job_without_inputs_is_retried_and_research_is_never_frozen(tenant, monk
     assert calls == [70, 70]
 
 
-def test_production_archive_retention_requires_production_grant(monkeypatch):
+def test_production_archive_retention_requires_a_realized_tool(monkeypatch):
     monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", True)
-    monkeypatch.setattr(storage, "list_tool_grants_for_tenant", lambda t: ["trading"])
+    monkeypatch.setattr(storage, "list_tool_grants_for_tenant", lambda t: ["sorting"])
     assert tenant_eligibility.production_archive_retention("t") is False
-    monkeypatch.setattr(storage, "list_tool_grants_for_tenant", lambda t: ["production"])
+    monkeypatch.setattr(storage, "list_tool_grants_for_tenant", lambda t: ["trading"])
     assert tenant_eligibility.production_archive_retention("t") is True
     assert "wallet" in tenant_eligibility.PRODUCTION_ARCHIVE_KINDS
     assert "industry_jobs" in tenant_eligibility.PRODUCTION_ARCHIVE_KINDS

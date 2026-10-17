@@ -3,9 +3,9 @@
 Each fetcher calls an existing `ESIClient` method and writes the matching
 Phase 1/2 snapshot table. Group 3 is not a fetcher (name resolution stays
 opportunistic). This module imports no tool package at module level; the
-one deliberate exception is the lazily imported Production ledger archive
-(`realized`, docs/PRODUCTION_REALIZED_PROFIT_PLAN.md), which only
-runs for kinds shared with Production.
+one deliberate exception is the lazily imported realized-profit archive
+(`realized`, docs/REALIZED_PROFIT_UNIFIED_PLAN.md), which runs for an
+owner shared with any realized-profit tool and never fails the snapshot.
 """
 from __future__ import annotations
 
@@ -158,14 +158,14 @@ def _wallet_journal_rows(entries: list[dict], division: int) -> list[tuple]:
 
 
 def _archive_for_production(data_kind: str, owner_type: str, owner_id: int) -> bool:
-    """The Production ledger archives an owner's data only while that kind is
-    shared with Production. A wallet shared only with Trading, or contracts
-    shared only with Doctrine, are neither stored in the archive nor cost the
-    archive's extra ESI calls (order history, completed jobs, contract
-    items). Reads are gated again at read time (D11)."""
-    from .access import is_shared
+    """Archive an owner while any realized-profit tool shares this kind
+    (U3a). The name is historical. A wallet shared only with Trading, or
+    contracts shared only with Doctrine, are stored. Reads are gated again
+    at read time. The check is the one lazy import of the shared package's
+    access helper; the write imports stay in the archive functions."""
     try:
-        return is_shared(data_kind, "production", owner_type, int(owner_id))
+        from ..realized.access import owner_in_scope
+        return owner_in_scope(data_kind, owner_type, int(owner_id))
     except Exception:  # noqa: BLE001 - never fail the snapshot sync
         log.exception("ledger share check failed for %s %s %s", data_kind, owner_type, owner_id)
         return False

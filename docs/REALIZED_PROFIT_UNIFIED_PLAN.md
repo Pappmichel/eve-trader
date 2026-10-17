@@ -82,9 +82,37 @@ read-only comparison of `realized_trades` with the new Trading rules for
 the same window (Phase 3's `eve-trader realized compare-trading`); buy
 locations per region and which of them receive freight under U4.
 
+### Phase 1 - shared archive scope - done 2026-10-17
+
+- Moved the generic ledger (`access`, `costing`, `db`, `ingest`, `inputs`,
+  `loader`, `names`) to `eve_trader/realized/` with no behaviour change
+  (3262 passed). Production keeps `report.py` and `planned.py`.
+- `shared_owners` is the union over `KIND_TOOLS`. `shared_owners_for`
+  filters one tool. `owner_scope_hash` covers the union. The fetcher
+  archives when `owner_in_scope` is true. `station_trading` consumes
+  `wallet`. Inactive-tenant retention keeps the archive for
+  `production`, `trading`, `doctrine` or `station_trading`, and the
+  scheduler syncs only the realized tools that tenant still holds.
+- Characters page mirror (`frontend/src/esiRegistry.ts`) now lists
+  `production` and `station_trading` on Wallet, and `production` on
+  Contracts. The backend already had Production on both; the hand-kept
+  mirror did not, so those switches were not on the page.
+- Tests: union scope (Trading-only wallet, Doctrine-only contracts,
+  Station Trading keeps the wallet visible until the last share is
+  revoked, fingerprint changes), retention, scheduler. Full suite
+  3264 passed, 4 skipped. Frontend lint, vitest and build passed.
+- Live check on the local database: a character shared only with
+  Trading for wallet was in `shared_owners`, absent from
+  `shared_owners_for(..., "production")`, visible to the archive read,
+  and `archive_status` marked wallet shared. The seed was deleted.
+  `GET /api/production/realized/archive-status` on the running server
+  returned 401 because the access gate is on; the read above is the
+  same function that route calls.
+
 ### Deviations
 
-None.
+None. The Characters-page mirror update above restores switches the
+backend registry already defined; it does not change U1-U11 or ST1-ST3.
 
 ## 1. Goal
 
