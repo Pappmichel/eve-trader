@@ -90,7 +90,8 @@ def _check_gap(
       than the newest archived one.
 
     A quiet period without new rows is never a gap. The first sync of an
-    owner starts the archive and records nothing. Always stamps the sync."""
+    owner starts the archive and records nothing. The caller stamps the sync
+    (`_stamp`) only after its rows were written."""
     previous = db.last_archive_sync(owner_type, owner_id, data_kind, division)
     if previous is not None and window_days is not None:
         horizon = now - timedelta(days=window_days)
@@ -104,6 +105,10 @@ def _check_gap(
         )
         if dated and newest is not None and min(dated) > newest:
             _record_gap(owner_type, owner_id, data_kind, newest, min(dated))
+
+
+def _stamp(owner_type: str, owner_id: int, data_kind: str, now: datetime,
+           division: int = 0) -> None:
     db.mark_archive_synced(owner_type, owner_id, data_kind, now, division)
 
 
@@ -214,6 +219,7 @@ def _archive_journal(owner_type: str, owner_id: int, division: int,
         table="ledger_wallet_journal", date_column="date",
     )
     db.upsert_ledger_wallet_journal(rows)
+    _stamp(owner_type, owner_id, "wallet_journal", now, division)
     return len(rows)
 
 
@@ -241,6 +247,7 @@ def archive_wallet(
         now=now, division=journal_division, window_days=WALLET_WINDOW_DAYS,
     )
     inserted = _archive_txn_rows(owner_type, owner_id, txn_rows, _TxnEnricher(cfg))
+    _stamp(owner_type, owner_id, "wallet_transactions", now, journal_division)
     journal = _archive_journal(owner_type, owner_id, journal_division, journal_raw, now)
     return {"transactions": inserted, "journal": journal}
 
@@ -263,6 +270,8 @@ def archive_corp_wallet(
             now=now, division=division, window_days=WALLET_WINDOW_DAYS,
         )
     inserted = _archive_txn_rows("corporation", owner_id, txn_rows, _TxnEnricher(cfg))
+    for division in sorted(journal_entries_by_division):
+        _stamp("corporation", owner_id, "wallet_transactions", now, division)
     journal = 0
     for division, entries in sorted(journal_entries_by_division.items()):
         journal += _archive_journal("corporation", owner_id, division, entries, now)
@@ -288,6 +297,7 @@ def archive_industry_jobs(
     if not jobs:
         _check_gap(owner_type=owner_type, owner_id=owner_id, data_kind="industry_jobs",
                    now=now, window_days=INDUSTRY_JOBS_WINDOW_DAYS)
+        _stamp(owner_type, owner_id, "industry_jobs", now)
         return {"jobs": 0, "inputs": 0}
     cfg = cfg if cfg is not None else production_config.PRODUCTION_CONFIG
     selected = storage.load_selected_decryptors()
@@ -337,6 +347,7 @@ def archive_industry_jobs(
     )
     db.upsert_ledger_industry_jobs(rows)
     db.insert_ledger_job_inputs(input_rows)
+    _stamp(owner_type, owner_id, "industry_jobs", now)
     return {"jobs": len(rows), "inputs": len(input_rows)}
 
 
@@ -387,6 +398,7 @@ def archive_market_orders(
         now=now, window_days=ORDER_HISTORY_WINDOW_DAYS,
     )
     db.upsert_ledger_market_orders(rows)
+    _stamp(owner_type, owner_id, "market_orders", now)
     return {"orders": len(rows)}
 
 
@@ -429,6 +441,7 @@ def archive_contracts(
     )
     db.upsert_ledger_contracts(rows)
     db.upsert_ledger_contract_items(item_rows)
+    _stamp(owner_type, owner_id, "contracts", now)
     return {"contracts": len(rows), "items": len(item_rows)}
 
 
