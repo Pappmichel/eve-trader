@@ -80,7 +80,8 @@ at the doctrine structure. No cost or profit anywhere.
 | Freight rates | Production `haul_cost_per_m3` 900; Trading `import_cost_per_m3` 800; Doctrine `import_cost_per_m3` 900; hub table: The Forge 800, Domain 750 |
 | Home structure | Trading, Production and Doctrine all use 1049588174021 |
 | Market sells (seller) | 12,170 sells, 134.2 bn ISK; Production types 6,978 sells, 64.6 bn - the other ~70 bn are Trading goods |
-| Market buys | The Forge 83.9 bn; **Insmother (10000009) 31.3 bn** - not in the hub freight table, gets no freight today |
+| Market buys | Jita 4-4 by the buyer: 82.5 bn (imports); **at the home structure itself** (Insmother region, where C-J is) by the seller: 31.3 bn - home-market buys, correctly without freight; a few small buys at other stations |
+| Station trading | **no sell at Jita 4-4 at all** - the tool is not in use for real trades on this tenant; one character shares data with it |
 | Doctrine contracts | 47 finished in history since 2026-08-15 (9.86 bn); only 18 of them in the ledger archive (ESI lists ~30 days) |
 | Realized Trades | 1,366 rows, 2.69 bn profit, last sell 2026-09-22 (reconcile has not run since) |
 | Sharing | wallet: Production 2, Trading 2; contracts: Production 2, Doctrine 2 |
@@ -152,9 +153,9 @@ rejected, the same physical item would carry two costs.
 **U4 Freight** - one rate per hub for a purchase, frozen at ingest
 (confirmed): the shared hub freight table (`/api/hubs/freight`, already
 tenant-wide) for every hub, fallback Production's `haul_cost_per_m3`. The
-tools' own `import_cost_per_m3` fields stay planning inputs only. This also
-gives Insmother buys freight once the table has an entry (today: none). A
-purchase in the home structure's own region gets none. Changing the table
+tools' own `import_cost_per_m3` fields stay planning inputs only. A purchase
+at the home structure (or in its region) gets none; a purchase at another
+station of a hub region gets that hub's rate. Changing the table
 later is applied with the existing "re-apply current freight rate" (dry run,
 then confirm).
 
@@ -280,8 +281,8 @@ deploy list touched for no gain); new columns are idempotent additions.
   type is a Production type, else `trading`.
 - Layers get a `pool` (`global` or the Station Trading station id) and the
   draw order of ST1.
-- Purchases in any hub region get frozen freight from the hub table (U4);
-  the Forge-only rule goes.
+- Purchases in any hub region other than the home region get frozen freight
+  from the hub table (U4); the Forge-only rule goes.
 - Sales tax lookup keeps the id-gap fix; broker fees per day (D12) are
   spread over that day's order fills of **all** channels (today only the
   Production-relevant ones share the pool - check, and keep one pool per
@@ -337,8 +338,8 @@ this plan's status section.
 server: count doctrine contracts per month and their items' types; compare
 Trading's current `realized_trades` totals with what the new rules will
 produce for the same window (a read-only script against the archive) so the
-expected difference is known before switching; list hubs with buys and
-missing freight table entries.
+expected difference is known before switching; list buy locations per region
+and which of them get freight under U4.
 
 **Phase 1 - shared archive scope.** Package move (5.2) without behaviour
 change, then the union scope (U3) and retention. Tests: archive filled for
@@ -350,8 +351,8 @@ unchanged on the test server (regression check).
 Trading results, doctrine contract results, hub freight, fee pool check,
 `COSTING_VERSION` 4. Tests: pure costing cases for every channel rule, a
 doctrine contract with produced hull plus bought modules (origin split sums
-to cost), internal transfers, corp-issued contracts, an Insmother buy with
-freight. Production regression: same numbers except the documented doctrine
+to cost), internal transfers, corp-issued contracts, a hub buy with freight and a home-market buy
+without. Production regression: same numbers except the documented doctrine
 move.
 
 **Phase 3 - Trading report and page.** API, page, Portfolio, Recompute
