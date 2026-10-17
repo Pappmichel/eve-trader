@@ -39,6 +39,9 @@ def realized_cards(tool_keys) -> dict:
     if "doctrine" in keys:
         from .doctrine.realized import summary as doctrine_summary
         readers.append(("doctrine", doctrine_summary))
+    if "station_trading" in keys:
+        from .station_trading.realized import summary as station_summary
+        readers.append(("station_trading", station_summary))
     rows = []
     for tool, reader in readers:
         data = reader(**period)

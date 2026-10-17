@@ -1,6 +1,6 @@
 # Realized profit for Production, Trading, Doctrine and Station Trading - unified plan
 
-Status: **Phase 4 done (2026-10-17).** Phases 4b and 5 still to land.
+Status: **Phase 4b done (2026-10-17).** Phase 5 still to land.
 Decisions U1-U11 and ST1-ST3 stay as confirmed 2026-10-18. This environment
 has no test server, so the section 2 counts were not re-measured; the
 reviewer measures them there. Each later phase ends with a review and a
@@ -287,6 +287,55 @@ locations per region and which of them receive freight under U4.
   `buy_home` or `buy_hub` price on or before the sale date. A partial
   saving is not shown.
 - The cross-tool total does not include Station Trading until Phase 4b.
+
+### Phase 4b - Station Trading report and page - done 2026-10-17
+
+- `eve_trader/station_trading/realized.py` reads the station_trading
+  channel for owners whose wallet is shared with Station Trading.
+  Summary (revenue, cost, profit, margin, average buy, average sell net,
+  spread, turnover days, fees per day, open-position cost), per item,
+  per sale with the buy lots, and the station-pool leftover at cost.
+  Routes under `/api/station-trading/realized/*`. Recompute starts the
+  same background job as Production.
+- Turnover days are the quantity-weighted time from a draw's layer date
+  to the sale. A draw with no layer date stays out of that average.
+- The Station Trading page (`/station-trading/realized`) shows those API
+  numbers, the fee table, the item table, the sale and lot drill-down,
+  and the open position. The side-menu tab says Realized.
+- Portfolio shows a Station Trading card only when the session holds
+  `station_trading`. `GET /api/portfolio/realized-cards` now includes
+  that tool in the per-tool rows and in the total.
+- Tests: Postgres report (station sale of a stock-target hull stays on
+  this channel, a trading-only Jita sale stays off it, a home sale by a
+  station-trading owner stays off it, leftover station quantity is the
+  open position, turnover is three days, revoking the share sets
+  `sharing_changed`); router tests for every new route; realized-cards
+  sum includes station trading. Full suite 3296 passed, 1 skipped.
+  Frontend lint, vitest and build passed.
+- Live check on a throwaway tenant (deleted afterwards, id
+  `c4530b59-095a-46d5-bbf2-91d3d724f80d`): one station sale booked
+  revenue 12, cost 5, profit 7, spread 7, turnover 3 days, open position
+  5. The cross-tool total stayed null because only Station Trading had
+  a figure. `GET /api/station-trading/realized/summary` on the running
+  server returned 401 because the access gate is on. The page was
+  exercised in vitest (needs-rebuild, summary, fees, open position,
+  period, drill-down, Portfolio gating). A browser session was not
+  opened: the gate has no local login that does not touch `config.yaml`.
+
+### Deviations (Phase 4b)
+
+- Fees per day are the broker fee and sales tax booked on
+  station-trading sales. The unmatched fee pool is shared across
+  channels, so this report does not take it.
+- Average buy is cost of goods per unit. A broker fee that landed on
+  the sale is inside that average, and the spread is average sell net
+  minus that average.
+- A sale away from the station by an owner who shares wallet only with
+  Station Trading is channel `trading`. It stays off this page, and it
+  stays off the Trading page until that owner also shares wallet with
+  Trading (same U3a shape as Phase 3).
+- This page matches contract-channel rows with the wallet share.
+  Station Trading has no contracts share of its own.
 
 ## 1. Goal
 

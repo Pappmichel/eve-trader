@@ -75,6 +75,7 @@ const StationTradingOverview = lazy(() => import('./pages/station_trading/Overvi
 const StationTradingShortlist = lazy(() => import('./pages/station_trading/Shortlist'))
 const StationTradingUndercutCheck = lazy(() => import('./pages/station_trading/UndercutCheck'))
 const StationTradingSettings = lazy(() => import('./pages/station_trading/StationTradingSettings'))
+const StationTradingRealized = lazy(() => import('./pages/station_trading/RealizedProfit'))
 
 const SortingLayout = lazy(() => import('./pages/sorting/SortingLayout'))
 const SortingOverview = lazy(() => import('./pages/sorting/SortingOverview'))
@@ -310,6 +311,7 @@ function App() {
               <Route index element={<StationTradingOverview />} />
               <Route path="shortlist" element={<StationTradingShortlist />} />
               <Route path="undercut" element={<StationTradingUndercutCheck />} />
+              <Route path="realized" element={<StationTradingRealized />} />
               <Route path="settings" element={<StationTradingSettings />} />
             </Route>
 

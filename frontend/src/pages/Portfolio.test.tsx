@@ -4,7 +4,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { doctrineApi, gateApi, portfolioApi, productionApi } from '../api/client'
+import { doctrineApi, gateApi, portfolioApi, productionApi, stationTradingApi } from '../api/client'
 import type { GateStatus, PortfolioOverview, RealizedSummary, TotalWealth } from '../api/types'
 import Portfolio from './Portfolio'
 
@@ -22,6 +22,9 @@ vi.mock('../api/client', () => ({
     realizedSummary: vi.fn(),
   },
   doctrineApi: {
+    realizedSummary: vi.fn(),
+  },
+  stationTradingApi: {
     realizedSummary: vi.fn(),
   },
 }))
@@ -79,6 +82,10 @@ describe('Portfolio realized production profit', () => {
       realized_profit: 0, coverage: null, estimated: false, contracts: 0,
       status: { empty: true, needs_rebuild: true },
     } as never)
+    vi.mocked(stationTradingApi.realizedSummary).mockResolvedValue({
+      realized_profit: 0, coverage: null, estimated: false,
+      status: { empty: true, needs_rebuild: true },
+    } as never)
     vi.mocked(productionApi.itemNameOptions).mockResolvedValue([])
     vi.mocked(productionApi.realizedSummary).mockResolvedValue({
       realized_profit: 1234,
@@ -96,8 +103,10 @@ describe('Portfolio realized production profit', () => {
     expect(screen.queryByText('Trading: Realized Profit')).toBeNull()
     expect(screen.queryByText('Realized Production profit')).toBeNull()
     expect(screen.queryByText('Realized Doctrine profit')).toBeNull()
+    expect(screen.queryByText('Realized Station Trading profit')).toBeNull()
     expect(productionApi.realizedSummary).not.toHaveBeenCalled()
     expect(doctrineApi.realizedSummary).not.toHaveBeenCalled()
+    expect(stationTradingApi.realizedSummary).not.toHaveBeenCalled()
   })
 
   it('does not treat a missing tools list as every grant', async () => {
@@ -150,6 +159,19 @@ describe('Portfolio realized production profit', () => {
     renderPortfolio()
     expect(await screen.findByText('Realized profit total')).toBeInTheDocument()
     expect(screen.getByText('75 ISK')).toBeInTheDocument()
+  })
+
+  it('shows the station trading card only with that grant', async () => {
+    vi.mocked(gateApi.status).mockResolvedValue(gate(['portfolio', 'station_trading']))
+    vi.mocked(stationTradingApi.realizedSummary).mockResolvedValue({
+      realized_profit: 17, coverage: 1, estimated: false,
+      status: { empty: false, needs_rebuild: false },
+    } as never)
+    renderPortfolio()
+    expect(await screen.findByText('Realized Station Trading profit')).toBeInTheDocument()
+    expect(await screen.findByText('17 ISK')).toBeInTheDocument()
+    expect(stationTradingApi.realizedSummary).toHaveBeenCalledWith('days=30')
+    expect(screen.queryByText('Realized profit total')).toBeNull()
   })
 
   it('shows no figure before the first recompute', async () => {

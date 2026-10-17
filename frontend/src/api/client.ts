@@ -652,6 +652,22 @@ export const stationTradingApi = {
 
   traderCharacters: () => get<T.ProducerCharacter[]>('/api/station-trading/trader-characters'),
   removeCharacter: (roleKey: string) => del(`/api/station-trading/auth/character/${roleKey}`),
+  realizedSummary: (periodQuery: string) =>
+    get<T.StationRealizedSummary>(`/api/station-trading/realized/summary?${periodQuery}`),
+  realizedItems: (periodQuery: string) =>
+    get<T.StationRealizedItemList>(`/api/station-trading/realized/items?${periodQuery}`),
+  realizedItem: (typeId: number, periodQuery: string) =>
+    get<T.StationRealizedItemDetail>(`/api/station-trading/realized/items/${typeId}?${periodQuery}`),
+  realizedSale: (saleRef: string) =>
+    get<T.StationRealizedSaleDetail>(`/api/station-trading/realized/sales?sale_ref=${encodeURIComponent(saleRef)}`),
+  realizedPosition: () =>
+    get<{ needs_rebuild: boolean; rows: T.StationRealizedPositionRow[]; cost: number | null; units: number | null }>(
+      '/api/station-trading/realized/position',
+    ),
+  realizedWarnings: () =>
+    get<{ needs_rebuild: boolean; rows: T.TradingRealizedWarning[] }>('/api/station-trading/realized/warnings'),
+  startRealizedRebuild: () => post<T.PipelineRunStatus>('/api/station-trading/realized/rebuild'),
+  realizedRebuildStatus: () => get<T.PipelineRunStatus>('/api/station-trading/realized/rebuild/status'),
 }
 
 // ------------------------------------------------------------------- admin

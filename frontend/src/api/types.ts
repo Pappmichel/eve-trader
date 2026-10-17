@@ -2772,6 +2772,114 @@ export interface TradingRealizedWarning {
   message: string
 }
 
+export interface StationRealizedFeeDay {
+  date: string | null
+  broker_fee: number
+  sales_tax: number | null
+  total: number
+  tax_missing_sales: number
+}
+
+export interface StationRealizedSummary {
+  period: RealizedPeriodInfo
+  status: RealizedStatus
+  revenue: number
+  cost_of_goods_sold: number
+  realized_profit: number
+  margin: number | null
+  coverage: number | null
+  estimated: boolean
+  units_sold: number
+  sale_count: number
+  avg_buy: number | null
+  avg_sell_net: number | null
+  spread: number | null
+  turnover_days: number | null
+  price_missing: boolean
+  tax_missing_sales: number
+  fees_by_day: StationRealizedFeeDay[]
+  by_day: RealizedDay[]
+  open_position_cost: number | null
+  open_position_units: number | null
+  flags: RealizedFlags
+}
+
+export interface StationRealizedItem {
+  type_id: number
+  type_name: string | null
+  units_sold: number
+  avg_buy: number | null
+  avg_sell_net: number | null
+  spread: number | null
+  profit: number
+  margin: number | null
+  turnover_days: number | null
+  coverage: number | null
+  warnings: string[]
+  flags: RealizedFlags
+}
+
+export interface StationRealizedSale {
+  sale_ref: string
+  type_id: number
+  type_name: string | null
+  quantity: number
+  revenue: number
+  cost: number
+  profit: number
+  margin: number | null
+  coverage: number
+  sale_date: string | null
+  gross: number
+  sales_tax: number | null
+  broker_fee: number
+  location_id: number | null
+  location_name: string | null
+  net_price: number | null
+  warnings: string[]
+  flags: RealizedFlags
+  source: string | null
+}
+
+export interface StationRealizedLot {
+  quantity: number
+  origin: string
+  layer_date: string | null
+  location_id: number | null
+  location_name: string | null
+  unit_price: number | null
+  freight: number
+  fees: number
+  unit_cost: number
+}
+
+export interface StationRealizedItemList {
+  period: RealizedPeriodInfo
+  needs_rebuild: boolean
+  rows: StationRealizedItem[]
+}
+
+export interface StationRealizedItemDetail {
+  period: RealizedPeriodInfo
+  needs_rebuild: boolean
+  item: StationRealizedItem
+  sales: StationRealizedSale[]
+}
+
+export interface StationRealizedSaleDetail {
+  sale: StationRealizedSale
+  lots: StationRealizedLot[]
+}
+
+export interface StationRealizedPositionRow {
+  type_id: number
+  type_name: string | null
+  quantity: number
+  cost_per_unit: number | null
+  total: number
+  flags: RealizedFlags
+}
+
 export interface DoctrineOriginCost {
   kind: string
   location_id: number | null

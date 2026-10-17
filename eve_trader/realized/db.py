@@ -1240,6 +1240,63 @@ def realized_by_day(
         ).fetchall()
 
 
+def turnover_weighted_by_type(
+    start: datetime,
+    end: datetime,
+    *,
+    channel: Optional[str] = None,
+    wallet_owners: Optional[list] = None,
+    contract_owners: Optional[list] = None,
+) -> list[tuple]:
+    """(type_id, dated_quantity, weighted_seconds) from buy layer to sale.
+
+    Draws with no layer date are left out of both the quantity and the
+    seconds, so a missing buy date stays missing instead of counting as zero.
+    """
+    scope, extra = _result_scope_sql(
+        channel, alias="r", wallet_owners=wallet_owners, contract_owners=contract_owners,
+    )
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT r.type_id, "
+            "COALESCE(SUM(d.quantity) FILTER (WHERE d.layer_date IS NOT NULL), 0), "
+            "COALESCE(SUM(d.quantity * EXTRACT(EPOCH FROM (r.sale_date - d.layer_date))) "
+            "FILTER (WHERE d.layer_date IS NOT NULL), 0) "
+            "FROM prod_realized_results r "
+            "JOIN prod_cost_draws d ON d.consumer_kind = 'sale' AND d.consumer_ref = r.sale_ref "
+            "WHERE r.sale_date >= ? AND r.sale_date < ?"
+            + scope + " GROUP BY r.type_id",
+            (start, end, *extra),
+        ).fetchall()
+
+
+def fees_by_day(
+    start: datetime,
+    end: datetime,
+    *,
+    channel: Optional[str] = None,
+    wallet_owners: Optional[list] = None,
+    contract_owners: Optional[list] = None,
+) -> list[tuple]:
+    """(utc_date, broker_fee, sales_tax, tax_missing_sales) for sales in the window.
+
+    `sales_tax` is NULL when every sale that day stored no tax. Known taxes
+    still sum; a contract sale's NULL tax is not a missing tax.
+    """
+    scope, extra = _result_scope_sql(
+        channel, wallet_owners=wallet_owners, contract_owners=contract_owners,
+    )
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT (sale_date AT TIME ZONE 'UTC')::date, "
+            "COALESCE(SUM(broker_fee), 0), SUM(sales_tax), "
+            "COUNT(*) FILTER (WHERE sales_tax IS NULL AND source IS DISTINCT FROM 'contract') "
+            "FROM prod_realized_results WHERE sale_date >= ? AND sale_date < ?"
+            + scope + " GROUP BY 1 ORDER BY 1",
+            (start, end, *extra),
+        ).fetchall()
+
+
 def realized_by_type(
     start: datetime,
     end: datetime,
