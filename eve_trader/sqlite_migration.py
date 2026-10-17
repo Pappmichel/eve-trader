@@ -177,6 +177,20 @@ KNOWN_NON_MIGRATED_TABLES: dict[str, str] = {
     "pi_yield_samples": "Postgres-native (PI tool, docs/PI_PLAN.md - never existed in the pre-migration SQLite schema)",
     "character_pi_colonies": "Postgres-native (PI tool, ESI planets data kind - never existed in the pre-migration SQLite schema)",
     "pi_alert_state": "Postgres-native (PI tool, Discord alerts - never existed in the pre-migration SQLite schema)",
+    "ledger_wallet_transactions": "Postgres-native (Production realized profit archive - never existed in the pre-migration SQLite schema)",
+    "ledger_wallet_journal": "Postgres-native (Production realized profit archive - never existed in the pre-migration SQLite schema)",
+    "ledger_market_orders": "Postgres-native (Production realized profit archive - never existed in the pre-migration SQLite schema)",
+    "ledger_industry_jobs": "Postgres-native (Production realized profit archive - never existed in the pre-migration SQLite schema)",
+    "ledger_job_inputs": "Postgres-native (Production realized profit archive - never existed in the pre-migration SQLite schema)",
+    "ledger_blueprints": "Postgres-native (Production realized profit archive - never existed in the pre-migration SQLite schema)",
+    "ledger_contracts": "Postgres-native (Production realized profit archive - never existed in the pre-migration SQLite schema)",
+    "ledger_contract_items": "Postgres-native (Production realized profit archive - never existed in the pre-migration SQLite schema)",
+    "ledger_reference_prices": "Postgres-native (Production realized profit archive - never existed in the pre-migration SQLite schema)",
+    "ledger_manual_entries": "Postgres-native (Production realized profit archive - never existed in the pre-migration SQLite schema)",
+    "ledger_archive_gaps": "Postgres-native (Production realized profit archive - never existed in the pre-migration SQLite schema)",
+    "prod_cost_layers": "Postgres-native (Production realized profit derived layers - never existed in the pre-migration SQLite schema)",
+    "prod_realized_results": "Postgres-native (Production realized profit derived results - never existed in the pre-migration SQLite schema)",
+    "prod_ledger_runs": "Postgres-native (Production realized profit recompute runs - never existed in the pre-migration SQLite schema)",
 }
 
 
