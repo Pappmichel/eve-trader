@@ -1,10 +1,90 @@
 # Realized profit for Production, Trading, Doctrine and Station Trading - unified plan
 
-Status: **planned, all decisions (U1-U11, ST1-ST3) confirmed 2026-10-18.**
-Nothing in this plan is built yet. Each phase ends with a review and a
+Status: **Phase 0 done (2026-10-17, code confirmation only).**
+Decisions U1-U11 and ST1-ST3 stay as confirmed 2026-10-18. This environment
+has no test server, so the section 2 counts were not re-measured; the
+reviewer measures them there. Each later phase ends with a review and a
 test-server check like the Production realized-profit work
 (`docs/PRODUCTION_REALIZED_PROFIT_PLAN.md`, referred to as "the Production
 plan" below).
+
+## Status
+
+### Phase 0 - confirm against the code (no code change)
+
+Checked 2026-10-17. The plan's description of today's code matches the
+tree. Nothing here re-decides U1-U11 or ST1-ST3.
+
+- **Channel.** `costing._on_sell` books a `RealizedResult` only when the
+  type is in `production_type_ids`. Every other market sale only consumes
+  layers, and its broker-fee share lands in `fees_on_other_trading`.
+  Contract sales are per type (`_on_contract_give` / `_book_contract_sale`,
+  `sale_ref` `contract:<id>` or `contract:<id>:<type>`), and only
+  Production types become results. There is no `channel`, no doctrine
+  flag, and no station pool.
+- **Sharing.** `access.shared_owners` and `owner_scope_hash` ask
+  `is_shared(..., "production")` only. `fetchers._archive_for_production`
+  skips a wallet shared only with Trading and contracts shared only with
+  Doctrine. `tenant_eligibility.production_archive_retention` requires the
+  `production` grant; the scheduler passes `archive_tools = {"production"}`.
+- **Wallet consumers.** `registry.py` `wallet.consuming_tools` is
+  `("trading", "production")`. `station_trading` is not a wallet consumer
+  yet (ST2). `market_orders` already lists `station_trading`.
+- **Freight.** `_TxnEnricher.freight` returns nothing unless the buy's
+  region is The Forge (`db.THE_FORGE_REGION_ID`), and also nothing when
+  the location is the home structure. A home-region buy outside The Forge
+  (the Insmother / C-J buys in section 2) therefore already has no freight.
+  A buy in another hub region (Domain, and any Forge station that is not
+  the home structure) is the gap U4 closes: only The Forge is priced, at
+  Production's `haul_cost_per_m3` via `_freight_rate_for_forge`, not from
+  the shared hub table. `reapply_freight_rates` writes that one rate onto
+  every row that already has `freight_m3`.
+- **Fees.** `_attribute_broker_fees` already builds one pool per
+  `(owner, UTC day)` from `brokers_fee` and `market_provider_tax` and
+  spreads it over that day's order-based fills of every type. The pool is
+  paid once. Non-production sells do not become results, so their share is
+  parked on `fees_on_other_trading` instead of a Trading result. Sales tax
+  uses `_tax_entry_after` (first `transaction_tax` after the market
+  transaction in the same wallet and timestamp, before the next market
+  transaction), so a journal id gap is already handled.
+  `contract_brokers_fee` is named in the Production plan's Phase 0 notes
+  and is not applied.
+- **Opening and valuation.** `COSTING_VERSION` in `loader.py` is **3**
+  (CLAUDE.md still says 2). A run whose `costing_version` is NULL or lower
+  resets `prod_opening_frozen` once. Opening and unknown stock use
+  `engine.planner_unit_values`, frozen per `(type, day)` in
+  `ledger_valuation_prices`, with The Forge daily average only as
+  fallback. `planned.MAX_JOB_AGE` is 24 hours. Tenant characters are the
+  registry entry plus every token character (`loader._tenant_character_ids`).
+- **Doctrine and Station Trading.** `match_and_validate_contract` and
+  `doctrine_contract_history` exist and carry no cost. A doctrine contract
+  is not marked on `ledger_contracts`. `StationTradingConfig.station_id`
+  defaults to 60003760 (Jita 4-4). Station Trading reads orders and skills
+  only.
+- **`realized_trades`.** `do_reconcile_trades` still replaces the table.
+  Portfolio's `trading_realized_profit` and daily volatility read it. The
+  shortlist does not (issue #100). U10's "one release later" has not
+  started: this change is the release that makes the ledger the reader.
+  Phase 5 keeps the table and leaves a TODO.
+- **Internal transfers and corp contracts.** `_classify_contract` already
+  skips a contract whose issuer and acceptor are both tenant characters
+  or the tenant's own corp, and a corp-only side is not booked (D7). A
+  corp-issued contract counts when `issuer_id` is a tenant character.
+  U8 attributes that contract to the issuing character; the code already
+  books it through that character, and the corp wallet is not a second
+  sale.
+- **Names.** `production/realized/names.py` resolves type, owner and
+  location ids for the report. The API already returns names alongside ids.
+
+Test-server measurements still owed to the reviewer (section 2, not
+re-run here): doctrine contracts per month and their item types; a
+read-only comparison of `realized_trades` with the new Trading rules for
+the same window (Phase 3's `eve-trader realized compare-trading`); buy
+locations per region and which of them receive freight under U4.
+
+### Deviations
+
+None.
 
 ## 1. Goal
 
