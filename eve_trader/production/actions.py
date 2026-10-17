@@ -2033,23 +2033,35 @@ def do_set_opening_cost(type_id: int, unit_cost: float, entry_date: str | None =
 
 
 def do_reapply_freight_rate(dry_run: bool = False) -> dict:
-    """Write the current configured Forge freight rate onto purchases that
-    already have a frozen freight volume and a different rate. Does not
-    rebuild; the next recompute picks the new rate up. Home-structure and
-    non-Forge buys stay without freight. `dry_run` only counts the
-    purchases that would change (for the confirm dialog)."""
+    """Write the current per-hub freight rates onto purchases that already
+    have a frozen freight volume. Does not rebuild; the next recompute
+    picks the new rates up. Home-region buys and station-trade buys lose
+    freight (U4, ST3). `freight_rate_per_m3` is The Forge rate, reported
+    so the confirm dialog can name it; other hubs use their own entry.
+    `dry_run` only counts the purchases that would change."""
     from ..realized import db as ledger_db
-    from ..realized.ingest import _freight_rate_for_forge
+    from ..realized.ingest import _freight_rate_for_forge, _regions_with_freight
+    from ..station_trading.config import STATION_TRADING_CONFIG
 
     rate = float(_freight_rate_for_forge(PRODUCTION_CONFIG))
+    rates = _regions_with_freight(PRODUCTION_CONFIG)
+    home = PRODUCTION_CONFIG.home_location_id
+    home_region = ledger_db.region_id_for_location(int(home)) if home else None
+    clear_locations = [v for v in (home, STATION_TRADING_CONFIG.station_id) if v is not None]
+    clear_regions = [home_region] if home_region is not None else []
+    kwargs = {
+        "rates": rates,
+        "clear_location_ids": clear_locations,
+        "clear_region_ids": clear_regions,
+    }
     if dry_run:
         return {
             "dry_run": True,
-            "would_update": ledger_db.count_freight_rate_changes(rate),
+            "would_update": ledger_db.count_freight_rate_changes(**kwargs),
             "freight_rate_per_m3": rate,
             "freight_label": "configured rate",
         }
-    updated = ledger_db.reapply_freight_rates(rate)
+    updated = ledger_db.reapply_freight_rates(**kwargs)
     return {
         "dry_run": False,
         "updated": updated,

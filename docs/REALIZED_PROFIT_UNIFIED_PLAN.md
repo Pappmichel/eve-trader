@@ -1,6 +1,6 @@
 # Realized profit for Production, Trading, Doctrine and Station Trading - unified plan
 
-Status: **Phase 0 done (2026-10-17, code confirmation only).**
+Status: **Phase 2 done (2026-10-17).** Phases 3-5 still to land.
 Decisions U1-U11 and ST1-ST3 stay as confirmed 2026-10-18. This environment
 has no test server, so the section 2 counts were not re-measured; the
 reviewer measures them there. Each later phase ends with a review and a
@@ -109,10 +109,74 @@ locations per region and which of them receive freight under U4.
   returned 401 because the access gate is on; the read above is the
   same function that route calls.
 
+### Phase 2 - channels in the costing - done 2026-10-17
+
+- Channel on every external item sale. Doctrine item-exchange is one
+  result (`quantity` 1, `sale_ref` `contract:<id>`, `fitting_id` from
+  `doctrine_contract_history` when present, warning `unmatched_doctrine`
+  when it is not). A market sale at `StationTradingConfig.station_id` by
+  an owner whose wallet is shared with Station Trading is
+  `station_trading`. Other contract sales and market sales of Production
+  types stay `production`. Other market sales, and contract sales of
+  non-Production item types, are `trading`. A lone Production type on a
+  mixed contract keeps `sale_ref` `contract:<id>`; the trading lines use
+  `contract:<id>:<type>`.
+- Station pool (`CostLayer.pool`): a buy at the station enters that pool.
+  A sale at the station draws the station pool, then global. Every other
+  consumption draws global, then the station pool. Production types still
+  use the D6 order inside a pool. `COSTING_VERSION` is 4, so the next
+  rebuild resets `prod_opening_frozen` once.
+- Freight freezes from the shared hub table (`hubs.hub_freight_per_m3`,
+  fallback `haul_cost_per_m3`) for every hub region, not only The Forge
+  and not only in All-hubs mode. Home location, home region, and the
+  exact station-trading station freeze no freight. Reapply writes one
+  rate per region and clears freight on those three. It does not invent
+  freight for a row archived with `freight_m3` NULL, and it does not
+  rewrite contract-item freight.
+- Market broker fees stay one pool per owner and UTC day, spread over
+  that day's order-based fills of every channel, and the sell share sits
+  on the result. `contract_brokers_fee` is a second pool per wallet owner
+  and day (personal contracts key on the character, corp-issued on the
+  corporation), spread by contract price. `fees_on_other_trading` stays
+  on the result shape and is 0 for new runs. Sales tax is unchanged,
+  including the journal-id gap; contract sales still have no sales tax.
+- The Production report filters `channel = 'production'` and owners
+  shared with Production (a NULL owner stays visible until the rebuild).
+  Inventory layers are not filtered by channel.
+- Tests: the pure costing cases named in the task (each channel rule,
+  doctrine origin split, internal transfer, corp-issued contract, station
+  pool order, hub freight vs home buy, one broker-fee pool across
+  channels, contract broker fee). Production regression: the same
+  Production results except the doctrine contract moving off the
+  Production channel. Full suite 3278 passed, 1 skipped. Frontend lint,
+  vitest and build passed (the only UI change is the freight dialog
+  copy).
+- Live check on a throwaway tenant (deleted afterwards): a Production-type
+  sale at the home structure booked `production` (revenue 40, cost 10);
+  a non-production sale at Jita 4-4 by a Station Trading wallet owner
+  booked `station_trading` (revenue 9, cost 5); a Forge buy away from
+  that station froze freight 1600. `do_get_realized_summary(days=30)`
+  reported revenue 40, profit 30, units 1. `GET /api/production/realized/summary`
+  on the running server returned 401 because the access gate is on.
+
 ### Deviations
 
-None. The Characters-page mirror update above restores switches the
-backend registry already defined; it does not change U1-U11 or ST1-ST3.
+- Blueprint contract lines stay off the result list. A BPC sale would mix
+  run units into the Trading report, so those lines are consumed and not
+  booked. BPO hand-overs stay capital, as before.
+- U4's hub rate is used even when the tool is not in All-hubs mode.
+  `_freight_rate_for_forge` used to read the hub table only in that mode.
+  On a tenant whose hub table sets The Forge below `haul_cost_per_m3`,
+  the next ingest and a freight reapply move Forge purchases to the
+  table rate.
+- Reapply clears station and home freight that was already frozen, and
+  updates rows that already have `freight_m3`. It does not backfill a
+  historical non-Forge buy archived with `freight_m3` NULL, and it does
+  not rewrite contract-item freight. New ingests use U4.
+- `test_contract_sale_has_no_tax_and_follows_produced_fifo` now expects a
+  Trading result for the non-Production line (`sale_ref`
+  `contract:9:999`). That is U1 rule 5. The Production line on the same
+  contract is unchanged.
 
 ## 1. Goal
 

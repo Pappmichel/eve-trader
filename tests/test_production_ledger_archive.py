@@ -309,8 +309,10 @@ class _Counter:
         return self.result() if callable(self.result) else self.result
 
 
-def _txn(txn_id, quantity=5, is_buy=True):
-    return (0, txn_id, DATE1, TYPE_ID, LOCATION_ID, 10.0, quantity, is_buy, txn_id)
+def _txn(txn_id, quantity=5, is_buy=True, location=60000042):
+    """A Forge station that is not Jita 4-4. Jita 4-4 is the station-trading
+    station and freezes no freight (ST3)."""
+    return (0, txn_id, DATE1, TYPE_ID, location, 10.0, quantity, is_buy, txn_id)
 
 
 def test_wallet_archive_processes_only_new_rows_with_cached_lookups(tenant, monkeypatch):

@@ -32,7 +32,9 @@ from .. import storage
 from ..config import TRADING_CONFIG
 from ..esi_client import ESIClient, ESIError
 from ..goonmetrics_client import GoonmetricsClient
+from ..doctrine.config import DOCTRINE_CONFIG
 from ..production.config import PRODUCTION_CONFIG
+from ..station_trading.config import STATION_TRADING_CONFIG
 from ..production.constants import (
     ACTIVITY_INVENTION,
     ACTIVITY_MANUFACTURING,
@@ -58,8 +60,9 @@ log = logging.getLogger(__name__)
 
 # Bump when a rebuild must re-derive opening inventory once. 2: Phase 5
 # contract flows. 3: stock without a purchase is valued at the planner's
-# price instead of The Forge daily average. NULL counts as older.
-COSTING_VERSION = 3
+# price instead of The Forge daily average. 4: sale channels, station pool
+# and hub freight (unified plan Phase 2). NULL counts as older.
+COSTING_VERSION = 4
 
 # The Forge daily average is the reference price (plan section 6).
 _REFERENCE_REGION_ID = db.THE_FORGE_REGION_ID
@@ -180,10 +183,30 @@ def _freeze_contract_freight(enricher, start_location, type_id: int, quantity: f
     return rate, m3, True
 
 
+def _doctrine_fitting_ids(contract_ids: list[int]) -> dict[int, str]:
+    """fitting_id from doctrine_contract_history, when that table exists."""
+    if not contract_ids:
+        return {}
+    import psycopg
+
+    try:
+        with storage.connect() as conn:
+            rows = conn.execute(
+                "SELECT contract_id, fitting_id FROM doctrine_contract_history "
+                "WHERE contract_id = ANY(?)",
+                (list(contract_ids),),
+            ).fetchall()
+    except psycopg.errors.UndefinedTable:
+        return {}
+    return {int(row[0]): str(row[1]) for row in rows if row[1]}
+
+
 def _load_contracts() -> tuple:
-    """Finished item-exchange contracts shared with Production, deduped by
-    contract id. Freight is frozen onto item rows the first time the start
-    location's region can be resolved. Courier rows are not returned."""
+    """Finished item-exchange contracts shared with any realized tool, deduped
+    by contract id. Freight is frozen onto item rows the first time the start
+    location's region can be resolved. Courier rows are not returned.
+    `is_doctrine` is U7: doctrine structure, issuer is a tenant character,
+    archive owner shares contracts with Doctrine."""
     owners = access.shared_owners("contracts")
     if not owners:
         return ()
@@ -210,6 +233,10 @@ def _load_contracts() -> tuple:
     if region_updates:
         db.update_contract_regions(region_updates)
 
+    doc_owners = set(access.shared_owners_for("contracts", "doctrine"))
+    doc_structure = DOCTRINE_CONFIG.effective_structure_id
+    tenant_chars = _tenant_character_ids()
+    fittings = _doctrine_fitting_ids(list(grouped))
     contracts = []
     for contract_id, copies in grouped.items():
         def _nitems(copy, cid=contract_id):
@@ -246,17 +273,29 @@ def _load_contracts() -> tuple:
                 freight_rate_per_m3=None if rate is None else float(rate),
                 freight_m3=None if m3 is None else float(m3),
             ))
+        issuer_id = None if chosen[3] is None else int(chosen[3])
+        start_location_id = None if chosen[6] is None else int(chosen[6])
+        is_doctrine = (
+            doc_structure is not None
+            and (chosen[0], int(chosen[1])) in doc_owners
+            and start_location_id is not None
+            and int(start_location_id) == int(doc_structure)
+            and issuer_id is not None
+            and issuer_id in tenant_chars
+        )
         contracts.append(ItemExchangeContract(
             contract_id=contract_id, owner_type=chosen[0], owner_id=int(chosen[1]),
             date_completed=_as_utc(chosen[12]),
-            issuer_id=None if chosen[3] is None else int(chosen[3]),
+            issuer_id=issuer_id,
             issuer_corporation_id=None if chosen[4] is None else int(chosen[4]),
             acceptor_id=None if chosen[5] is None else int(chosen[5]),
             price=float(chosen[10] or 0), reward=float(chosen[11] or 0),
-            start_location_id=None if chosen[6] is None else int(chosen[6]),
+            start_location_id=start_location_id,
             end_location_id=None if chosen[7] is None else int(chosen[7]),
             items=tuple(built), corp_issued=corp_issued,
             status=str(chosen[9] or ""), contract_type=str(chosen[8] or "item_exchange"),
+            is_doctrine=is_doctrine,
+            fitting_id=fittings.get(contract_id) if is_doctrine else None,
         ))
     if freight_updates:
         db.update_contract_item_freight(freight_updates)
@@ -662,6 +701,14 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
         frozen_opening=_frozen_opening(t0, scope_hash, reset_opening),
         contracts=contracts,
         tenant_corporation_ids=_tenant_corporation_ids(),
+        station_trading_station_id=STATION_TRADING_CONFIG.station_id,
+        station_trading_wallet_owners=frozenset(
+            access.shared_owners_for("wallet", "station_trading"),
+        ),
+        doctrine_structure_id=DOCTRINE_CONFIG.effective_structure_id,
+        doctrine_contract_owners=frozenset(
+            access.shared_owners_for("contracts", "doctrine"),
+        ),
     )
 
 
@@ -699,6 +746,7 @@ def _layer_row(layer) -> tuple:
         float(layer.quantity), bool(layer.assumed_me), bool(layer.assumed_decryptor),
         bool(layer.estimated_origin), bool(layer.price_missing), int(layer.layer_id),
         None if layer.source is None else str(layer.source),
+        str(layer.pool or "global"),
     )
 
 
@@ -714,6 +762,11 @@ def _result_row(result) -> tuple:
         bool(result.price_missing), bool(result.estimated), list(result.warnings),
         *_components(result.components),
         str(result.source or "market"),
+        str(result.channel or "production"),
+        result.owner_type,
+        None if result.owner_id is None else int(result.owner_id),
+        result.fitting_id,
+        None if result.issuer_id is None else int(result.issuer_id),
     )
 
 
@@ -722,7 +775,7 @@ def _draw_rows(result, snapshot) -> list[tuple]:
     txs = {tx.ref: tx for tx in snapshot.wallet_transactions}
     contracts = {int(contract.contract_id): contract for contract in snapshot.contracts}
 
-    def one(kind: str, ref: str, seq: int, draw) -> tuple:
+    def one(kind: str, ref: str, seq: int, draw, channel) -> tuple:
         layer = layers.get(int(draw.layer_id))
         tx = txs.get(layer.source_ref) if layer is not None else None
         qty = float(draw.quantity)
@@ -758,15 +811,16 @@ def _draw_rows(result, snapshot) -> list[tuple]:
             None if layer is None else layer.job_id,
             location_id, unit_price, rate,
             None if layer is None or layer.source is None else str(layer.source),
+            channel,
         )
 
     rows = []
     for sale in result.realized_results:
         for seq, draw in enumerate(sale.draws):
-            rows.append(one("sale", sale.sale_ref, seq, draw))
+            rows.append(one("sale", sale.sale_ref, seq, draw, sale.channel))
     for job in result.jobs:
         for seq, draw in enumerate(job.draws):
-            rows.append(one("job", job.job_ref, seq, draw))
+            rows.append(one("job", job.job_ref, seq, draw, None))
     return rows
 
 

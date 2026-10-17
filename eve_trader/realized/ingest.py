@@ -16,7 +16,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from .. import hubs, storage
-from ..hubs import ALL_HUBS
 from ..production import config as production_config
 from ..production.engine import _haul_volume
 from . import db, inputs
@@ -59,14 +58,29 @@ def _now(now: Optional[datetime]) -> datetime:
     return now if now is not None else datetime.now(timezone.utc)
 
 
+def _freight_rate_for_region(region_id: int, cfg) -> float:
+    """U4: the shared hub table for this region, else Production's haul rate.
+    The tool's own import rate stays a planning input."""
+    return hubs.hub_freight_per_m3(int(region_id), fallback=float(cfg.haul_cost_per_m3))
+
+
 def _freight_rate_for_forge(cfg) -> float:
-    """Same rate the planner uses for The Forge buys (plan section 5a,
-    `pricing._freight_rate`): the hub table entry only in "All hubs" mode."""
-    if getattr(cfg, "hub_region_id", None) == ALL_HUBS:
-        return hubs.hub_freight_per_m3(
-            db.THE_FORGE_REGION_ID, fallback=cfg.haul_cost_per_m3,
-        )
-    return float(cfg.haul_cost_per_m3)
+    """The Forge rate a re-apply reports. Same number a Forge purchase freezes."""
+    return _freight_rate_for_region(db.THE_FORGE_REGION_ID, cfg)
+
+
+def _regions_with_freight(cfg) -> dict[int, float]:
+    """Region -> ISK/m3 for every trade hub and every explicit table entry."""
+    table = {}
+    from ..config import TRADING_CONFIG
+    raw = TRADING_CONFIG.hub_freight_cost_per_m3 or {}
+    regions = set(hubs.TRADE_HUBS)
+    for key in raw:
+        try:
+            regions.add(int(key))
+        except (TypeError, ValueError):
+            continue
+    return {region: _freight_rate_for_region(region, cfg) for region in regions}
 
 
 def _check_gap(
@@ -132,6 +146,11 @@ class _TxnEnricher:
         self.forge_rate = _freight_rate_for_forge(cfg)
         self._regions: dict[int, Optional[int]] = {}
         self._volumes: dict[int, Optional[float]] = {}
+        self.home_region_id = None
+        if self.home_location_id is not None:
+            self.home_region_id = self.region(int(self.home_location_id))
+        from ..station_trading.config import STATION_TRADING_CONFIG
+        self.station_id = STATION_TRADING_CONFIG.station_id
 
     def region(self, location_id: int) -> Optional[int]:
         loc = int(location_id)
@@ -146,15 +165,29 @@ class _TxnEnricher:
         return self._volumes[tid]
 
     def freight(self, region_id, location_id, type_id, quantity, is_buy):
-        """(freight_rate_per_m3, freight_m3) or (None, None)."""
-        if not is_buy or region_id != db.THE_FORGE_REGION_ID:
+        """(freight_rate_per_m3, freight_m3) or (None, None).
+
+        U4 / ST3: a buy at the home structure, in the home region, or at the
+        Station Trading station carries no freight. Another station in a hub
+        region (or a region with an explicit hub-table entry) freezes that
+        hub's rate. Anywhere else stays without freight.
+        """
+        if not is_buy or region_id is None:
             return None, None
+        region = int(region_id)
         if self.home_location_id is not None and int(location_id) == int(self.home_location_id):
+            return None, None
+        if self.home_region_id is not None and region == int(self.home_region_id):
+            return None, None
+        if self.station_id is not None and int(location_id) == int(self.station_id):
+            return None, None
+        rates = _regions_with_freight(self.cfg)
+        if region not in rates:
             return None, None
         vol = self.volume(type_id)
         if vol is None:
             return None, None
-        return self.forge_rate, float(vol) * float(quantity)
+        return rates[region], float(vol) * float(quantity)
 
 
 def _archive_txn_rows(owner_type: str, owner_id: int, txn_rows: list[tuple],

@@ -273,7 +273,7 @@ def test_missing_price_stays_flagged_on_the_report(tenant):
 def test_opening_cost_override_and_freight_reapply(tenant):
     _share(ALICE, "wallet")
     ledger_db.upsert_ledger_wallet_transactions([
-        ("character", ALICE, 0, 1, T0, TYPE_B, LOC, 1.0, 1, True, 1,
+        ("character", ALICE, 0, 1, T0, TYPE_B, 60000042, 1.0, 1, True, 1,
          10000002, 10.0, 3.0),
     ])
     stored = production_actions.do_set_opening_cost(TYPE_A, 12.5)
@@ -430,7 +430,7 @@ def test_status_is_stale_after_a_newer_archive_sync(tenant):
 def test_ledger_tab_reads_entries_freight_preview_and_archive_status(tenant):
     _share(ALICE, "wallet")
     ledger_db.upsert_ledger_wallet_transactions([
-        ("character", ALICE, 0, 1, T0, TYPE_B, LOC, 1.0, 1, True, 1,
+        ("character", ALICE, 0, 1, T0, TYPE_B, 60000042, 1.0, 1, True, 1,
          10000002, 10.0, 3.0),
     ])
     ledger_db.mark_archive_synced("character", ALICE, "wallet_transactions", T_SALE)

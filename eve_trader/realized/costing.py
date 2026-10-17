@@ -105,6 +105,18 @@ SOURCE_MARKET = "market"
 SOURCE_CONTRACT = "contract"
 CONTRACT_ITEM_EXCHANGE = "item_exchange"
 
+# Who sold it (unified plan U1). Origin on each draw stays independent.
+CHANNEL_PRODUCTION = "production"
+CHANNEL_TRADING = "trading"
+CHANNEL_DOCTRINE = "doctrine"
+CHANNEL_STATION_TRADING = "station_trading"
+
+# Station Trading's own buys (ST1). Everything else, including opening, is global.
+POOL_GLOBAL = "global"
+
+# Journal ref for the contract broker fee (U6). Not part of the market fee pool.
+CONTRACT_BROKER_FEE_REF = "contract_brokers_fee"
+
 UNIT_ITEM = "item"
 UNIT_BPC_RUN = "bpc_run"
 
@@ -297,6 +309,10 @@ class ItemExchangeContract:
     corp_issued: bool = False
     status: str = "finished"
     contract_type: str = CONTRACT_ITEM_EXCHANGE
+    # Set by the loader (U7). Costing books one doctrine result when this is
+    # true; an internal transfer is still skipped before that.
+    is_doctrine: bool = False
+    fitting_id: Optional[str] = None
 
     @property
     def ref(self) -> str:
@@ -385,6 +401,13 @@ class LedgerSnapshot:
     # for the ledger). Used only with `corp_issued`, never as "anyone in
     # this corp".
     tenant_corporation_ids: frozenset = frozenset()
+    # None: every layer stays in the global pool and draw order is unchanged.
+    station_trading_station_id: Optional[int] = None
+    # (owner_type, owner_id) whose wallet is shared with Station Trading.
+    station_trading_wallet_owners: frozenset = frozenset()
+    doctrine_structure_id: Optional[int] = None
+    # (owner_type, owner_id) whose contracts are shared with Doctrine.
+    doctrine_contract_owners: frozenset = frozenset()
 
 
 # ====================================================================== outputs
@@ -408,6 +431,8 @@ class CostLayer:
     price_missing: bool = False
     # market / contract for a bought layer; None for opening, produced, unknown.
     source: Optional[str] = None
+    # "global", or the Station Trading station id as text (ST1).
+    pool: str = POOL_GLOBAL
 
     @property
     def unit_cost(self) -> float:
@@ -456,6 +481,14 @@ class RealizedResult:
     warnings: list = field(default_factory=list)
     price_missing: bool = False
     source: str = SOURCE_MARKET
+    channel: str = CHANNEL_PRODUCTION
+    # Archive owner used by the report share filter. Market: wallet owner.
+    # Contract: the archived contract owner (a corp, for a corp contract).
+    owner_type: Optional[str] = None
+    owner_id: Optional[int] = None
+    fitting_id: Optional[str] = None
+    # Issuing character for a contract sale (U8). Display only.
+    issuer_id: Optional[int] = None
 
     @property
     def estimated(self) -> bool:
@@ -669,6 +702,7 @@ class _Costing:
         self.jobs_before_t0: list[str] = []
         self.skipped_corp_jobs: list[str] = []
         self.fee_by_tx: dict[tuple, float] = {}
+        self.contract_fee_by_ref: dict[str, float] = {}
         self.price_requests: set[tuple] = set()
 
     # ---------------------------------------------------------------- helpers
@@ -695,18 +729,48 @@ class _Costing:
             return float(job.successful_runs)
         return float(job.runs or 0)
 
+    def _station_id(self) -> Optional[int]:
+        sid = self.ledger.station_trading_station_id
+        return None if sid is None else int(sid)
+
+    def _pool_for_location(self, location_id) -> str:
+        """A buy at the Station Trading station enters that station's pool (ST1)."""
+        sid = self._station_id()
+        if sid is not None and location_id is not None and int(location_id) == sid:
+            return str(sid)
+        return POOL_GLOBAL
+
+    def _prefer_pools(self, location_id) -> Optional[list[str]]:
+        """Draw order for a consumption at `location_id`. None keeps today's
+        single-pool order (station id unset, so every layer is global)."""
+        sid = self._station_id()
+        if sid is None:
+            return None
+        station = str(sid)
+        if location_id is not None and int(location_id) == sid:
+            return [station, POOL_GLOBAL]
+        return [POOL_GLOBAL, station]
+
+    def _order_layers(self, layers: list, sale_order: bool) -> list:
+        if sale_order:
+            return ([layer for layer in layers if layer.origin == ORIGIN_PRODUCED]
+                    + [layer for layer in layers if layer.origin == ORIGIN_OPENING]
+                    + [layer for layer in layers if layer.origin not in (ORIGIN_PRODUCED, ORIGIN_OPENING)])
+        return list(layers)
+
     def _new_layer(self, *, type_id: int, unit: str, quantity: float, unit_components: CostComponents,
                    origin: str, source_ref: str, layer_date: Optional[datetime],
                    job_id: Optional[int] = None, assumed_me: bool = False,
                    assumed_decryptor: bool = False, estimated_origin: bool = False,
-                   price_missing: bool = False, source: Optional[str] = None) -> CostLayer:
+                   price_missing: bool = False, source: Optional[str] = None,
+                   pool: str = POOL_GLOBAL) -> CostLayer:
         layer = CostLayer(
             layer_id=len(self.all_layers) + 1,
             type_id=int(type_id), unit=unit, quantity=float(quantity), quantity_left=float(quantity),
             origin=origin, source_ref=source_ref, unit_components=unit_components,
             layer_date=layer_date, job_id=job_id, assumed_me=assumed_me,
             assumed_decryptor=assumed_decryptor, estimated_origin=estimated_origin,
-            price_missing=price_missing, source=source,
+            price_missing=price_missing, source=source, pool=pool,
         )
         self.all_layers.append(layer)
         self.layers_by_key[(layer.type_id, unit)].append(layer)
@@ -724,19 +788,26 @@ class _Costing:
         return float(price)
 
     def _consume(self, type_id: int, unit: str, quantity: float, when: datetime, context: str, *,
-                 sale_order: bool = False, allow_unknown: bool = True) -> tuple[list[LayerDraw], CostComponents]:
+                 sale_order: bool = False, allow_unknown: bool = True,
+                 at_location=None) -> tuple[list[LayerDraw], CostComponents]:
         """FIFO draw; `sale_order` applies D6 (produced, opening, rest).
         A shortfall draws from a new `unknown` layer at the reference price
-        on `when` (D5)."""
+        on `when` (D5). With a Station Trading station configured, a sale
+        there draws that station's pool first and any other consumption
+        draws the global pool first (ST1)."""
         need = float(quantity)
         draws: list[LayerDraw] = []
         layers = self.layers_by_key.get((int(type_id), unit), [])
-        if sale_order:
-            ordered = ([l for l in layers if l.origin == ORIGIN_PRODUCED]
-                       + [l for l in layers if l.origin == ORIGIN_OPENING]
-                       + [l for l in layers if l.origin not in (ORIGIN_PRODUCED, ORIGIN_OPENING)])
+        prefer = self._prefer_pools(at_location)
+        if prefer:
+            ordered: list = []
+            seen: set[str] = set()
+            for pool in prefer:
+                ordered.extend(self._order_layers([layer for layer in layers if layer.pool == pool], sale_order))
+                seen.add(pool)
+            ordered.extend(self._order_layers([layer for layer in layers if layer.pool not in seen], sale_order))
         else:
-            ordered = list(layers)
+            ordered = self._order_layers(layers, sale_order)
         for layer in ordered:
             if need <= _EPS:
                 break
@@ -1054,7 +1125,19 @@ class _Costing:
         self._new_layer(
             type_id=type_id, unit=UNIT_ITEM, quantity=qty, unit_components=total.scale(1.0 / qty),
             origin=ORIGIN_BOUGHT, source_ref=tx.ref, layer_date=tx.date, source=SOURCE_MARKET,
+            pool=self._pool_for_location(tx.location_id),
         )
+
+    def _market_channel(self, tx: WalletTransaction) -> str:
+        """U1: station sale by a Station Trading wallet owner, else a
+        Production type, else Trading. Doctrine is a contract channel."""
+        sid = self._station_id()
+        owners = {(ot, int(oid)) for ot, oid in self.ledger.station_trading_wallet_owners}
+        if sid is not None and int(tx.location_id) == sid and (tx.owner_type, int(tx.owner_id)) in owners:
+            return CHANNEL_STATION_TRADING
+        if int(tx.type_id) in self.ledger.production_type_ids:
+            return CHANNEL_PRODUCTION
+        return CHANNEL_TRADING
 
     def _on_sell(self, tx: WalletTransaction) -> None:
         type_id = int(tx.type_id)
@@ -1063,14 +1146,9 @@ class _Costing:
         if type_id in self.ledger.bpo_type_ids:
             self.warn(f"bpo_sale_not_costed: type {type_id} sold ({tx.ref})")
             return
-        if type_id not in self.ledger.production_type_ids:
-            self.fees_other += fee
-            if fee > _EPS:
-                self.other_trading_fees.append(OtherTradingFee(
-                    tx.owner_type, int(tx.owner_id), _day(tx.date), fee, tx.ref,
-                ))
-            self._consume(type_id, UNIT_ITEM, qty, tx.date, tx.ref, allow_unknown=False)
-            return
+        # Every market sale is a result (U1). The fee share stays on that
+        # result, so one owner/day pool is paid once across channels (U6).
+        production = type_id in self.ledger.production_type_ids
         gross = float(tx.unit_price) * qty
         result_warnings: list[str] = []
         tax = self._sales_tax(tx, gross)
@@ -1080,30 +1158,16 @@ class _Costing:
         if self.ledger.home_structure_id is not None and int(tx.location_id) != int(self.ledger.home_structure_id):
             result_warnings.append("outside_home_structure")
             self.warn(f"outside_home_structure: {tx.ref} type {type_id} sold at {tx.location_id}")
-        draws, consumed = self._consume(type_id, UNIT_ITEM, qty, tx.date, tx.ref, sale_order=True)
-        if any(d.origin == ORIGIN_UNKNOWN for d in draws):
-            result_warnings.append("unknown_origin")
-        price_missing = any(d.price_missing for d in draws)
-        if price_missing:
-            result_warnings.append("price_missing")
-        components = consumed.add(CostComponents(fees=fee))
-        coverage = components.coverage()
-        if coverage is None:
-            coverage = 0.0 if any(d.estimated_origin for d in draws) else 1.0
-        revenue = gross - (tax or 0.0)
-        cost = components.total
-        result = RealizedResult(
-            result_id=len(self.results) + 1, sale_ref=tx.ref, type_id=type_id, quantity=qty,
-            gross=gross, sales_tax=tax, broker_fee=fee, revenue=revenue, cost=cost,
-            profit=revenue - cost, components=components, coverage_share=coverage,
-            sale_date=tx.date, location_id=int(tx.location_id), draws=draws, warnings=result_warnings,
-            price_missing=price_missing, source=SOURCE_MARKET,
+        draws, consumed = self._consume(
+            type_id, UNIT_ITEM, qty, tx.date, tx.ref,
+            sale_order=production, at_location=tx.location_id,
         )
-        if result.estimated:
-            result.warnings.append("estimated")
-            if coverage < ESTIMATED_COVERAGE_THRESHOLD:
-                self.warn(f"coverage_below_threshold: {tx.ref} type {type_id} coverage {coverage:.0%}")
-        self.results.append(result)
+        self._append_sale(
+            sale_ref=tx.ref, type_id=type_id, quantity=qty, gross=gross, sales_tax=tax,
+            broker_fee=fee, draws=draws, consumed=consumed, when=tx.date,
+            location_id=int(tx.location_id), warnings=result_warnings, source=SOURCE_MARKET,
+            channel=self._market_channel(tx), owner_type=tx.owner_type, owner_id=int(tx.owner_id),
+        )
 
     def _split_prices(self, lines: Sequence[ContractItem], when: datetime) -> list[Optional[float]]:
         """Per-line reference prices for a multi-type split. A single type
@@ -1144,18 +1208,20 @@ class _Costing:
         self._new_layer(
             type_id=int(item.type_id), unit=unit, quantity=qty, unit_components=components,
             origin=ORIGIN_BOUGHT, source_ref=contract.ref, layer_date=contract.date_completed,
-            source=SOURCE_CONTRACT,
+            source=SOURCE_CONTRACT, pool=self._pool_for_location(contract.start_location_id),
         )
         if unit == UNIT_ITEM and int(item.type_id) in self.ledger.production_type_ids:
             self.warn(
                 f"trading_overlap: Production type {int(item.type_id)} is also bought by {contract.ref}"
             )
 
-    def _consume_contract_line(self, contract: ItemExchangeContract, item: ContractItem) -> None:
-        """Remove a given line from inventory without booking revenue."""
+    def _draw_given_line(self, contract: ItemExchangeContract, item: ContractItem, *,
+                         sale_order: bool) -> tuple[list[LayerDraw], CostComponents]:
+        """Draw one given contract line. A BPO is capital, not a layer."""
+        at = contract.start_location_id
         if item.is_blueprint and item.blueprint_runs == -1:
             self.warn(f"bpo_sale_not_costed: type {int(item.type_id)} sold ({contract.ref})")
-            return
+            return [], CostComponents()
         if item.is_blueprint:
             if item.blueprint_runs is None or int(item.blueprint_runs) <= 0:
                 self.warn(
@@ -1165,11 +1231,47 @@ class _Costing:
                 qty = float(item.quantity)
             else:
                 qty = float(item.blueprint_runs) * float(item.quantity)
-            self._consume(int(item.type_id), UNIT_BPC_RUN, qty, contract.date_completed,
-                          contract.ref, allow_unknown=False)
-            return
-        self._consume(int(item.type_id), UNIT_ITEM, float(item.quantity), contract.date_completed,
-                      contract.ref, allow_unknown=False)
+            return self._consume(
+                int(item.type_id), UNIT_BPC_RUN, qty, contract.date_completed,
+                contract.ref, allow_unknown=False, at_location=at,
+            )
+        return self._consume(
+            int(item.type_id), UNIT_ITEM, float(item.quantity), contract.date_completed,
+            contract.ref, sale_order=sale_order, at_location=at,
+        )
+
+    def _append_sale(self, *, sale_ref: str, type_id: int, quantity: float, gross: float,
+                     sales_tax: Optional[float], broker_fee: float, draws: list, consumed: CostComponents,
+                     when: datetime, location_id: int, warnings: list, source: str, channel: str,
+                     owner_type: Optional[str], owner_id: Optional[int],
+                     fitting_id: Optional[str] = None, issuer_id: Optional[int] = None) -> RealizedResult:
+        result_warnings = list(warnings)
+        if any(d.origin == ORIGIN_UNKNOWN for d in draws):
+            result_warnings.append("unknown_origin")
+        price_missing = any(d.price_missing for d in draws)
+        if price_missing:
+            result_warnings.append("price_missing")
+        components = consumed.add(CostComponents(fees=broker_fee))
+        coverage = components.coverage()
+        if coverage is None:
+            coverage = 0.0 if any(d.estimated_origin for d in draws) else 1.0
+        revenue = gross - (sales_tax or 0.0)
+        cost = components.total
+        result = RealizedResult(
+            result_id=len(self.results) + 1, sale_ref=sale_ref, type_id=type_id, quantity=quantity,
+            gross=gross, sales_tax=sales_tax, broker_fee=broker_fee, revenue=revenue, cost=cost,
+            profit=revenue - cost, components=components, coverage_share=coverage,
+            sale_date=when, location_id=int(location_id), draws=draws, warnings=result_warnings,
+            price_missing=price_missing, source=source, channel=channel,
+            owner_type=owner_type, owner_id=None if owner_id is None else int(owner_id),
+            fitting_id=fitting_id, issuer_id=issuer_id,
+        )
+        if result.estimated:
+            result.warnings.append("estimated")
+            if coverage < ESTIMATED_COVERAGE_THRESHOLD:
+                self.warn(f"coverage_below_threshold: {sale_ref} type {type_id} coverage {coverage:.0%}")
+        self.results.append(result)
+        return result
 
     def _on_contract_buy(self, view: _ContractView) -> None:
         contract = view.contract
@@ -1189,6 +1291,9 @@ class _Costing:
 
     def _on_contract_give(self, view: _ContractView) -> None:
         contract = view.contract
+        if contract.is_doctrine:
+            self._book_doctrine_contract(view)
+            return
         lines = list(view.given)
         if not lines:
             return
@@ -1197,57 +1302,103 @@ class _Costing:
         shares, fallback = allocate_contract_price(lines, pool, prices)
         if view.sale_pool is not None and fallback:
             self.warn(f"missing_reference_price: {contract.ref} price split by quantity")
-        production: dict[int, list] = defaultdict(lambda: [0.0, 0.0])
+        # Blueprints stay off the result list (BPO capital, BPC runs). Item
+        # lines become one result per type: Production types keep today's
+        # sale_ref, other types are Trading (U1 rule 5).
+        grouped: dict[int, list] = defaultdict(lambda: [0.0, 0.0, False])
         for item, share in zip(lines, shares):
-            if item.is_blueprint or int(item.type_id) not in self.ledger.production_type_ids:
-                self._consume_contract_line(contract, item)
+            if item.is_blueprint:
+                self._draw_given_line(contract, item, sale_order=False)
                 continue
-            slot = production[int(item.type_id)]
+            slot = grouped[int(item.type_id)]
             slot[0] += float(item.quantity)
             slot[1] += share
+            slot[2] = True
         if view.sale_pool is None:
-            for type_id, (qty, _share) in production.items():
-                self._consume(type_id, UNIT_ITEM, qty, contract.date_completed, contract.ref,
-                              allow_unknown=False)
+            for type_id, (qty, _share, _item) in grouped.items():
+                self._consume(
+                    type_id, UNIT_ITEM, qty, contract.date_completed, contract.ref,
+                    allow_unknown=False, at_location=contract.start_location_id,
+                )
             return
-        multi = len(production) > 1
-        for type_id, (qty, share) in sorted(production.items()):
-            sale_ref = f"{contract.ref}:{type_id}" if multi else contract.ref
-            self._book_contract_sale(contract, type_id, qty, share, sale_ref)
+        production_ids = [tid for tid in grouped if tid in self.ledger.production_type_ids]
+        fee_weights = [grouped[tid][1] for tid in sorted(grouped)]
+        fee_total = self.contract_fee_by_ref.get(contract.ref, 0.0)
+        fee_shares = split_exact(fee_total, fee_weights) if grouped else []
+        for type_id, fee in zip(sorted(grouped), fee_shares):
+            qty, share, _item = grouped[type_id]
+            production = type_id in self.ledger.production_type_ids
+            # A lone Production type keeps `contract:<id>` even when a
+            # Trading line shares the contract, so existing sale refs hold.
+            alone = (len(production_ids) == 1 and production) or len(grouped) == 1
+            sale_ref = contract.ref if alone else f"{contract.ref}:{type_id}"
+            self._book_contract_sale(
+                contract, type_id, qty, share, sale_ref,
+                channel=CHANNEL_PRODUCTION if production else CHANNEL_TRADING,
+                broker_fee=fee,
+            )
+
+    def _book_doctrine_contract(self, view: _ContractView) -> None:
+        """One result for the whole contract (U7): revenue is the contract
+        price, draws are every given line, channel is doctrine."""
+        contract = view.contract
+        lines = list(view.given)
+        if not lines:
+            return
+        draws: list[LayerDraw] = []
+        consumed = CostComponents()
+        for item in lines:
+            production = (not item.is_blueprint
+                          and int(item.type_id) in self.ledger.production_type_ids)
+            line_draws, line_cost = self._draw_given_line(contract, item, sale_order=production)
+            draws.extend(line_draws)
+            consumed = consumed.add(line_cost)
+        gross = 0.0 if view.sale_pool is None else float(view.sale_pool)
+        fee = self.contract_fee_by_ref.get(contract.ref, 0.0)
+        items = [item for item in lines if not item.is_blueprint]
+        if items:
+            type_id = int(max(items, key=lambda item: (float(item.quantity), -int(item.type_id))).type_id)
+        else:
+            type_id = 0
+        warnings: list[str] = []
+        location = contract.start_location_id
+        if (self.ledger.home_structure_id is not None and location is not None
+                and int(location) != int(self.ledger.home_structure_id)):
+            warnings.append("outside_home_structure")
+        if not contract.fitting_id:
+            warnings.append("unmatched_doctrine")
+        self._append_sale(
+            sale_ref=contract.ref, type_id=type_id, quantity=1.0, gross=gross, sales_tax=None,
+            broker_fee=fee, draws=draws, consumed=consumed, when=contract.date_completed,
+            location_id=0 if location is None else int(location), warnings=warnings,
+            source=SOURCE_CONTRACT, channel=CHANNEL_DOCTRINE,
+            owner_type=contract.owner_type, owner_id=int(contract.owner_id),
+            fitting_id=contract.fitting_id,
+            issuer_id=None if contract.issuer_id is None else int(contract.issuer_id),
+        )
 
     def _book_contract_sale(self, contract: ItemExchangeContract, type_id: int, qty: float,
-                            gross: float, sale_ref: str) -> None:
+                            gross: float, sale_ref: str, *, channel: str,
+                            broker_fee: float) -> None:
         result_warnings: list[str] = []
         location = contract.start_location_id
         if (self.ledger.home_structure_id is not None and location is not None
                 and int(location) != int(self.ledger.home_structure_id)):
             result_warnings.append("outside_home_structure")
             self.warn(f"outside_home_structure: {sale_ref} type {type_id} sold at {location}")
+        production = int(type_id) in self.ledger.production_type_ids
         draws, consumed = self._consume(
-            type_id, UNIT_ITEM, qty, contract.date_completed, sale_ref, sale_order=True,
+            type_id, UNIT_ITEM, qty, contract.date_completed, sale_ref,
+            sale_order=production, at_location=location,
         )
-        if any(d.origin == ORIGIN_UNKNOWN for d in draws):
-            result_warnings.append("unknown_origin")
-        price_missing = any(d.price_missing for d in draws)
-        if price_missing:
-            result_warnings.append("price_missing")
-        coverage = consumed.coverage()
-        if coverage is None:
-            coverage = 0.0 if any(d.estimated_origin for d in draws) else 1.0
-        cost = consumed.total
-        result = RealizedResult(
-            result_id=len(self.results) + 1, sale_ref=sale_ref, type_id=type_id, quantity=qty,
-            gross=gross, sales_tax=None, broker_fee=0.0, revenue=gross, cost=cost,
-            profit=gross - cost, components=consumed, coverage_share=coverage,
-            sale_date=contract.date_completed, location_id=0 if location is None else int(location),
-            draws=draws, warnings=result_warnings, price_missing=price_missing,
-            source=SOURCE_CONTRACT,
+        self._append_sale(
+            sale_ref=sale_ref, type_id=type_id, quantity=qty, gross=gross, sales_tax=None,
+            broker_fee=broker_fee, draws=draws, consumed=consumed, when=contract.date_completed,
+            location_id=0 if location is None else int(location), warnings=result_warnings,
+            source=SOURCE_CONTRACT, channel=channel,
+            owner_type=contract.owner_type, owner_id=int(contract.owner_id),
+            issuer_id=None if contract.issuer_id is None else int(contract.issuer_id),
         )
-        if result.estimated:
-            result.warnings.append("estimated")
-            if coverage < ESTIMATED_COVERAGE_THRESHOLD:
-                self.warn(f"coverage_below_threshold: {sale_ref} type {type_id} coverage {coverage:.0%}")
-        self.results.append(result)
 
     def _on_job_start(self, job: IndustryJob) -> None:
         job_cost = float(job.cost) if job.cost is not None else 0.0
@@ -1354,10 +1505,42 @@ class _Costing:
         rec.output_unit = unit
 
     # ---------------------------------------------------------------- run
+    def _attribute_contract_broker_fees(self) -> None:
+        """U6: contract_brokers_fee for one wallet and UTC day, spread by
+        contract price over the contracts that wallet issued that day, then
+        (later) by line gross so the total is paid once."""
+        pools: dict[tuple, float] = defaultdict(float)
+        for entry in self.ledger.journal_entries:
+            if entry.ref_type == CONTRACT_BROKER_FEE_REF and entry.date >= self.t0:
+                pools[(entry.owner_type, int(entry.owner_id), _day(entry.date))] += abs(float(entry.amount))
+        if not pools:
+            return
+        sales: dict[tuple, list] = defaultdict(list)
+        for contract in self.ledger.contracts:
+            view = self._classify_contract(contract)
+            if view is None or view.sale_pool is None or float(view.sale_pool) <= _EPS or not view.given:
+                continue
+            if contract.corp_issued and contract.issuer_corporation_id is not None:
+                key = ("corporation", int(contract.issuer_corporation_id), _day(contract.date_completed))
+            elif contract.issuer_id is not None:
+                key = ("character", int(contract.issuer_id), _day(contract.date_completed))
+            else:
+                continue
+            sales[key].append((contract.ref, float(view.sale_pool)))
+        for key, amount in pools.items():
+            lines = sales.get(key, [])
+            if not lines:
+                self.fees_without_sale.append(FeePeriod(key[0], key[1], key[2], amount))
+                continue
+            shares = split_exact(amount, [value for _ref, value in lines])
+            for (ref, _value), share in zip(lines, shares):
+                self.contract_fee_by_ref[ref] = self.contract_fee_by_ref.get(ref, 0.0) + share
+
     def run(self) -> CostingResult:
         events = self._build_events()
         self._index_journal()
         self._attribute_broker_fees()
+        self._attribute_contract_broker_fees()
         bought_types = sorted({int(e[7].type_id) for e in events if e[6] == KIND_BUY})
         for type_id in bought_types:
             if type_id in self.ledger.production_type_ids:
