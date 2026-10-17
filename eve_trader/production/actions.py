@@ -1948,9 +1948,19 @@ def do_get_realized_sale_chain(sale_ref: str) -> dict:
     return chain
 
 
-def do_get_realized_jobs() -> dict:
+def do_get_realized_jobs(days: int | None = None, start: str | None = None,
+                         end: str | None = None, since_t0: bool = False,
+                         state: str = "all") -> dict:
+    """Costed jobs. Without a period every job since T0; with one, finished
+    jobs that ended in it (running jobs are never cut). `state`: all /
+    finished / running."""
     from .realized import report
-    return report.jobs()
+    if state not in report.JOB_STATES:
+        raise ActionError(f"state must be one of {', '.join(report.JOB_STATES)}.")
+    if days is None and not start and not end and not since_t0:
+        return report.jobs(state=state)
+    period = _realized_period(days, start, end, since_t0)
+    return report.jobs(start=period["start"], end=period["end"], state=state)
 
 
 def do_get_realized_inventory() -> dict:

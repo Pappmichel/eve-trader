@@ -93,3 +93,12 @@ export function resetAutoRebuildForTests(): void {
   autoRebuildArmed = false
   clearTimeout(autoRebuildReset)
 }
+
+export type JobState = 'finished' | 'running' | 'all'
+
+/** Query string for /realized/jobs: the page period (finished jobs by end date) and the state. */
+export function jobsSearch(periodQuery: string, state: JobState, focused: boolean): string {
+  // A job opened from a warning must show regardless of period and state.
+  if (focused) return 'state=all'
+  return periodQuery ? `${periodQuery}&state=${state}` : `state=${state}`
+}

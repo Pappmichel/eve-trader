@@ -1013,3 +1013,12 @@ spell out):
   synced job tables. Only ids found nowhere go to ESI's public
   /universe/names/ (cached for an hour, best effort; an id stays visible
   when nothing resolves it).
+- **Jobs tab made useful (2026-10-17, user request).** `GET
+  /realized/jobs` takes the page period (finished jobs by end date; running
+  jobs are never cut) and `state` (finished / running / all). The response
+  adds `groups` (per activity and output type: jobs, runs, attempts and
+  successes, output, unit cost of the produced jobs, planned unit cost and
+  the difference over the same jobs, share sold, cost per BPC run) and
+  `totals`. Rows carry `planned_unit_cost`. The tab defaults to "finished
+  in period, by product"; a product opens its jobs; a warning's Open still
+  shows the one job regardless of period and state.

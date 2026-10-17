@@ -651,13 +651,25 @@ def _walk(nodes: list[dict]):
         yield from _walk(node.get("children") or [])
 
 
-def jobs() -> dict:
-    """Every costed job since T0 (jobs before T0 are a warning, not a row)."""
+JOB_STATES = ("all", "finished", "running")
+
+
+def jobs(*, start: Optional[datetime] = None, end: Optional[datetime] = None,
+         state: str = "all") -> dict:
+    """Costed jobs since T0 (jobs before T0 are a warning, not a row).
+
+    `state`: "finished" (everything but wip), "running" (wip) or "all".
+    `start`/`end` limit finished jobs to those that ended in [start, end);
+    running jobs are never cut by the period. `groups` sums the listed jobs
+    per (activity, output type); `totals` sums them all.
+    """
+    empty = {"cutover_t0": None, "needs_rebuild": True, "rows": [], "groups": [], "totals": _job_totals([])}
     with storage.batch_session():
         run, t0, changed = _run_state()
         if run is None or changed:
-            return {"cutover_t0": _iso(t0), "needs_rebuild": True, "rows": []}
-        rows = db.list_job_records()
+            return {**empty, "cutover_t0": _iso(t0)}
+        rows = [r for r in db.list_job_records() if _job_in_view(r, start, end, state)]
+        planned = db.planned_unit_costs_by_job()
         contract_jobs = db.job_refs_with_contract_draws()
         names = _names(
             {int(r[6]) for r in rows if r[6] is not None}
@@ -707,6 +719,7 @@ def jobs() -> dict:
             "cost_per_bpc_run": unit_cost if activity == ACTIVITY_INVENTION and unit_cost is not None else None,
             "facility_id": None if row[29] is None else int(row[29]),
             "facility_name": None if row[29] is None else facilities.get(int(row[29])),
+            "planned_unit_cost": planned.get((str(row[2]), int(row[3]), int(row[1]))),
             "contract_input": str(row[0]) in contract_jobs,
             "cost_structure": _cost_structure(components, 0.0),
             "flags": _flags(
@@ -717,7 +730,98 @@ def jobs() -> dict:
                 no_structure_bonus=None if row[23] is None else bool(row[23]),
             ),
         })
-    return {"cutover_t0": _iso(t0), "needs_rebuild": False, "rows": out}
+    return {
+        "cutover_t0": _iso(t0), "needs_rebuild": False, "rows": out,
+        "groups": _job_groups(out), "totals": _job_totals(out),
+    }
+
+
+def _job_in_view(row, start: Optional[datetime], end: Optional[datetime], state: str) -> bool:
+    running = str(row[12]) == "wip"
+    if state == "running":
+        return running
+    if state == "finished" and running:
+        return False
+    if running or (start is None and end is None):
+        return True
+    ended = row[10]
+    if ended is None:
+        return False
+    ended = _as_utc(ended)
+    return (start is None or ended >= start) and (end is None or ended < end)
+
+
+def _job_totals(rows: list[dict]) -> dict:
+    return {
+        "jobs": len(rows),
+        "input_cost": sum(r["input_cost"] for r in rows),
+        "job_cost": sum(r["job_cost"] for r in rows),
+        "total_cost": sum(r["input_cost"] + r["job_cost"] for r in rows),
+        "failed": sum(1 for r in rows if r["state"] == "failed"),
+        "cancelled": sum(1 for r in rows if r["state"] == "cancelled"),
+        "running": sum(1 for r in rows if r["state"] == "wip"),
+    }
+
+
+def _job_groups(rows: list[dict]) -> list[dict]:
+    """One row per (activity, output type). Unit cost is the produced jobs'
+    cost over their output; planned unit cost is weighted by the output of
+    the jobs that have one, and the difference compares those same jobs."""
+    groups: dict[tuple, dict] = {}
+    for r in rows:
+        key = (r["activity_id"], r["product_type_id"] if r["product_type_id"] is not None else r["blueprint_type_id"])
+        g = groups.get(key)
+        if g is None:
+            g = groups[key] = {
+                "activity_id": r["activity_id"],
+                "type_id": key[1],
+                "type_name": r["product_name"] or r["blueprint_name"],
+                "output_unit": r["output_unit"],
+                "jobs": 0, "runs": 0, "successful_runs": 0, "running": 0, "failed": 0, "cancelled": 0,
+                "input_cost": 0.0, "job_cost": 0.0, "output_quantity": 0.0, "output_left": 0.0,
+                "_produced_cost": 0.0, "_planned_qty": 0.0, "_planned_cost": 0.0, "_planned_actual": 0.0,
+                "estimated": False, "assumed": False,
+            }
+        cost = r["input_cost"] + r["job_cost"]
+        g["jobs"] += 1
+        g["runs"] += r["runs"]
+        g["successful_runs"] += r["successful_runs"] or 0
+        g["running"] += r["state"] == "wip"
+        g["failed"] += r["state"] == "failed"
+        g["cancelled"] += r["state"] == "cancelled"
+        g["input_cost"] += r["input_cost"]
+        g["job_cost"] += r["job_cost"]
+        g["estimated"] = g["estimated"] or bool(r["flags"]["estimated"])
+        g["assumed"] = g["assumed"] or bool(r["flags"]["assumed_me"] or r["flags"]["assumed_decryptor"])
+        if r["state"] == "produced" and r["output_quantity"] > _EPS:
+            qty = r["output_quantity"]
+            g["output_quantity"] += qty
+            g["output_left"] += r["output_quantity_left"] if r["output_quantity_left"] is not None else qty
+            g["_produced_cost"] += cost
+            if r.get("planned_unit_cost") is not None:
+                g["_planned_qty"] += qty
+                g["_planned_cost"] += qty * r["planned_unit_cost"]
+                g["_planned_actual"] += cost
+    out = []
+    for g in groups.values():
+        qty = g["output_quantity"]
+        pq = g.pop("_planned_qty")
+        pc = g.pop("_planned_cost")
+        pa = g.pop("_planned_actual")
+        produced_cost = g.pop("_produced_cost")
+        left = g.pop("output_left")
+        g["total_cost"] = g["input_cost"] + g["job_cost"]
+        g["unit_cost"] = produced_cost / qty if qty > _EPS else None
+        g["sold_share"] = (qty - left) / qty if qty > _EPS else None
+        g["planned_unit_cost"] = pc / pq if pq > _EPS else None
+        g["planned_difference_per_unit"] = (pa - pc) / pq if pq > _EPS else None
+        g["cost_per_bpc_run"] = (
+            g["total_cost"] / g["successful_runs"]
+            if g["activity_id"] == ACTIVITY_INVENTION and g["successful_runs"] else None
+        )
+        out.append(g)
+    out.sort(key=lambda g: -g["total_cost"])
+    return out
 
 
 def inventory() -> dict:

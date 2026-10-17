@@ -2800,6 +2800,8 @@ export interface RealizedJobRow {
   owner_id: number
   owner_name: string | null
   facility_name: string | null
+  /** Planner cost per unit frozen when the job was first seen; null when none was. */
+  planned_unit_cost: number | null
   activity_id: number
   blueprint_type_id: number
   blueprint_name: string | null
@@ -2825,10 +2827,47 @@ export interface RealizedJobRow {
   flags: RealizedFlags
 }
 
+/** Jobs summed per (activity, output type), computed by the API. */
+export interface RealizedJobGroup {
+  activity_id: number
+  type_id: number
+  type_name: string | null
+  output_unit: string | null
+  jobs: number
+  runs: number
+  successful_runs: number
+  running: number
+  failed: number
+  cancelled: number
+  input_cost: number
+  job_cost: number
+  total_cost: number
+  output_quantity: number
+  unit_cost: number | null
+  sold_share: number | null
+  planned_unit_cost: number | null
+  planned_difference_per_unit: number | null
+  cost_per_bpc_run: number | null
+  estimated: boolean
+  assumed: boolean
+}
+
+export interface RealizedJobTotals {
+  jobs: number
+  input_cost: number
+  job_cost: number
+  total_cost: number
+  failed: number
+  cancelled: number
+  running: number
+}
+
 export interface RealizedJobList {
   cutover_t0: string | null
   needs_rebuild: boolean
   rows: RealizedJobRow[]
+  groups: RealizedJobGroup[]
+  totals: RealizedJobTotals | null
 }
 
 export interface RealizedInventoryRow {
