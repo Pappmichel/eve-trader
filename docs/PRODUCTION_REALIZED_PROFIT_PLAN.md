@@ -1,6 +1,6 @@
 # Production realized profit - plan
 
-Status: **Phase 2 done** (2026-10-17). Decisions D1-D12 (section 10)
+Status: **Phase 3 done** (2026-10-17). Decisions D1-D12 (section 10)
 are confirmed with the user. Revised the same day after a critical review
 against the code (section 12 lists what changed and why). See
 **Implementation status** at the end of this file.
@@ -764,6 +764,55 @@ spell out):
     D3);
   - the loader's SDE blueprint-category query joined a column that does
     not exist (`sde_types.category_id`); now via `sde_groups`.
-- **Phase 3 - not started.** Report / API / CLI.
+- **Phase 3 - done 2026-10-17.** `report.py` aggregates the derived
+  tables (no second costing pass). `do_*` in `production/actions.py`:
+  rebuild, summary, products, product, sale chain, jobs, inventory,
+  warnings, manual cost/revenue entry, opening-cost override, freight
+  reapply. HTTP under `/api/production/realized/` (production grant,
+  Pydantic models keep the flags). HTTP rebuild is
+  `pipeline_runner` job `rebuild_realized`; the CLI calls
+  `do_rebuild_realized` in-process
+  (`eve-trader production realized rebuild|summary|entry|opening-cost|reapply-freight`,
+  each inside `tenant_scope.enter_tenant`). Drill-down is stored at
+  rebuild time in the same schema file. Tests:
+  `tests/test_production_realized_report.py` (SQL against Postgres) and
+  router tests in `tests/test_api_routers.py`.
+  Deviations:
+  - Section 8 names summary and product. Products list, sale chain,
+    jobs, inventory and warnings are extra reads because section 9a
+    needs them.
+  - Manual cost/revenue rows adjust the period
+    (`profit_including_manual`). They are not FIFO events. Costing
+    still consumes only `opening_cost` overrides. `amount` is the
+    entry's total ISK; `quantity` is stored and not multiplied in.
+  - `do_reapply_freight_rate` writes the current configured rate onto
+    rows that already have `freight_m3` and does not rebuild in the
+    same call (`rebuild_required`).
+  - Fees without a sale and fees on other trading live in
+    `prod_fee_lines`, not as warning strings. A UTC day is included
+    when it overlaps the period (D12 is per day).
+  - Capital in BPOs and inventory at cost are balances as of the
+    latest rebuild, not flows inside the period. Inventory at cost is
+    remaining produced and opening item layers. Bought leftovers still
+    appear on the inventory list.
+  - Sales tax is a cost-structure line and is already removed from
+    revenue, so it is not added to COGS. A missing journal stays null
+    (`tax_missing`); it is never coerced to zero.
+  - Any non-zero ESI-vs-ledger quantity is an inventory-drift warning.
+    Unresolved regions are grouped by location with a count.
+  - `structure_bonus_applied` is frozen on newly written job inputs.
+    Older rows stay NULL and the report shows `no_structure_bonus`
+    null rather than recomputing from the current settings. Jobs
+    before T0 stay warnings, not job rows.
+  - Costing copies `facility_id` onto jobs and records each
+    non-production fee share as `OtherTradingFee` (the existing
+    `fees_on_other_trading` total is unchanged).
+  - Section 8's recompute-after-every-wallet/jobs-sync is not hooked
+    up. A full rebuild inside the sync would hold that sync; the plan's
+    own later step is an incremental rebuild. Recompute is on demand.
+  - `prod_cost_layers` stays remaining-only. Consumed layers live on
+    as `prod_cost_draws`. The new derived tables are listed in
+    `sqlite_migration.KNOWN_NON_MIGRATED_TABLES` (rebuildable; they
+    never existed in the pre-migration SQLite schema).
 - **Phase 4 - not started.** Frontend.
 - **Phase 5 - not started.** Extensions (ask user first).
