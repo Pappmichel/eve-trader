@@ -32,7 +32,10 @@ function ProductionRealizedCard() {
     retry: false,
   })
   if (!allowed) return null
-  const data = summary.data
+  // No figure until a recompute produced one: 0 ISK would read as a result.
+  const data = summary.data && !summary.data.status.empty && !summary.data.status.needs_rebuild
+    ? summary.data
+    : undefined
   return (
     <Card withBorder padding="lg" radius="md" className="et-panel">
       <Title order={6} c="dimmed" tt="uppercase" mb="xs">Realized Production profit</Title>
@@ -43,7 +46,9 @@ function ProductionRealizedCard() {
           {data.estimated && <Badge size="xs" color="warn" variant="light">estimated</Badge>}
         </Group>
       )}
-      <Text size="xs" c="dimmed" mt={4}>Last 30 days</Text>
+      <Text size="xs" c="dimmed" mt={4}>
+        {summary.data && !data ? 'Not computed yet - recompute on the Realized Profit page.' : 'Last 30 days'}
+      </Text>
       <Anchor component={Link} to="/production/realized" size="xs">Realized profit</Anchor>
     </Card>
   )

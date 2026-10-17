@@ -88,7 +88,8 @@ function product(partial: Partial<RealizedProductRow> = {}): RealizedProductRow 
   return {
     type_id: 34, type_name: 'Tritanium', units_sold: 2, revenue: 100, cost: 40,
     cost_per_unit: 20, net_sell_per_unit: 50, profit: 60, margin: 0.6, coverage: 1,
-    planned_cost_per_unit: null, planned_coverage: null, warnings: [], flags: flags(),
+    planned_cost_per_unit: null, planned_coverage: null, planned_difference_per_unit: null,
+    warnings: [], flags: flags(),
     ...partial,
   }
 }
@@ -299,7 +300,7 @@ describe('RealizedProfit', () => {
       period: { start: null, end: null, since_t0: false, days: 30 },
       needs_rebuild: false,
       rows: [
-        product({ planned_cost_per_unit: 8, planned_coverage: 1 }),
+        product({ planned_cost_per_unit: 8, planned_coverage: 1, planned_difference_per_unit: 12 }),
         product({ type_id: 35, type_name: 'Pyerite', planned_cost_per_unit: null, planned_coverage: null }),
       ],
     })

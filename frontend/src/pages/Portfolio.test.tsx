@@ -75,6 +75,7 @@ describe('Portfolio realized production profit', () => {
       realized_profit: 1234,
       coverage: 0.5,
       estimated: true,
+      status: { empty: false, needs_rebuild: false },
     } as RealizedSummary)
   })
 
@@ -104,5 +105,16 @@ describe('Portfolio realized production profit', () => {
     expect(screen.getByText('estimated')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Realized profit' })).toHaveAttribute('href', '/production/realized')
     expect(productionApi.realizedSummary).toHaveBeenCalledWith('days=30')
+  })
+
+  it('shows no figure before the first recompute', async () => {
+    vi.mocked(gateApi.status).mockResolvedValue(gate(['portfolio', 'production']))
+    vi.mocked(productionApi.realizedSummary).mockResolvedValue({
+      realized_profit: 0, coverage: null, estimated: false,
+      status: { empty: true, needs_rebuild: true },
+    } as RealizedSummary)
+    renderPortfolio()
+    expect(await screen.findByText(/Not computed yet/)).toBeInTheDocument()
+    expect(screen.queryByText('0 ISK')).toBeNull()
   })
 })

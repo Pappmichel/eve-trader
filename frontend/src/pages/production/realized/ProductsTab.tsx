@@ -79,10 +79,8 @@ function ProductDrawer({ typeId, periodQuery, onClose, locationNames }: {
           <DetailRow label="Planned cost/unit" value={product.planned_cost_per_unit == null ? '–' : isk(product.planned_cost_per_unit)} muted={product.planned_cost_per_unit == null} />
           <DetailRow
             label="Difference"
-            value={product.cost_per_unit == null || product.planned_cost_per_unit == null
-              ? '–'
-              : isk(product.cost_per_unit - product.planned_cost_per_unit)}
-            muted={product.cost_per_unit == null || product.planned_cost_per_unit == null}
+            value={product.planned_difference_per_unit == null ? '–' : isk(product.planned_difference_per_unit)}
+            muted={product.planned_difference_per_unit == null}
           />
           <FlagMarkers flags={product.flags} />
         </Stack>
@@ -164,13 +162,9 @@ export function ProductsTab({ rows, needsRebuild, hint, periodQuery, typeId, loc
       },
     },
     {
-      header: 'Difference', id: 'planned_difference', size: 120,
-      accessorFn: (row) => (
-        row.cost_per_unit == null || row.planned_cost_per_unit == null
-          ? null
-          : row.cost_per_unit - row.planned_cost_per_unit
-      ),
-      cell: (info) => isk(info.getValue()),
+      // Realized minus planned over the same units (API figure).
+      header: 'Difference', accessorKey: 'planned_difference_per_unit', size: 120,
+      cell: (info) => (info.getValue() == null ? '–' : isk(info.getValue())),
     },
     { header: 'Net sell/unit', accessorKey: 'net_sell_per_unit', size: 130, cell: (info) => isk(info.getValue()) },
     { header: 'Profit', accessorKey: 'profit', size: 130, cell: (info) => isk(info.getValue()) },

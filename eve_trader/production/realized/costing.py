@@ -824,40 +824,44 @@ class _Costing:
         events.sort(key=lambda e: e[:6])
         return events
 
-    def _issuer_is_tenant(self, contract: ItemExchangeContract) -> bool:
+    def _contract_sides(self, contract: ItemExchangeContract) -> tuple[bool, bool, bool, bool]:
+        """(issuer character, acceptor character, issuer corp, acceptor corp)
+        of this tenant. A corp side is never booked on its own (D7: corp data
+        is shared across tenants and corp wallets are not used); it only marks
+        a character-to-own-corp contract as an internal transfer."""
         chars = self.ledger.tenant_character_ids
         corps = self.ledger.tenant_corporation_ids
-        if contract.issuer_id is not None and int(contract.issuer_id) in chars:
-            return True
-        return bool(
+        issuer_char = contract.issuer_id is not None and int(contract.issuer_id) in chars
+        acceptor_char = contract.acceptor_id is not None and int(contract.acceptor_id) in chars
+        issuer_corp = bool(
             contract.corp_issued
             and contract.issuer_corporation_id is not None
             and int(contract.issuer_corporation_id) in corps
         )
-
-    def _acceptor_is_tenant(self, contract: ItemExchangeContract) -> bool:
-        if contract.acceptor_id is None:
-            return False
-        acceptor = int(contract.acceptor_id)
-        return acceptor in self.ledger.tenant_character_ids or acceptor in self.ledger.tenant_corporation_ids
+        acceptor_corp = contract.acceptor_id is not None and int(contract.acceptor_id) in corps
+        return issuer_char, acceptor_char, issuer_corp, acceptor_corp
 
     def _classify_contract(self, contract: ItemExchangeContract) -> Optional[_ContractView]:
-        """None when the contract is not a finished item exchange this tenant
-        is exactly one side of. Both sides (an internal transfer) are skipped
-        with no warning. Neither side is warned and skipped."""
+        """None when the contract is not a finished item exchange that one of
+        the tenant's characters issued or accepted against an outside party.
+        Internal transfers (character to character, or character to the
+        tenant's own corp) are skipped. A contract whose only tenant side is a
+        corporation is skipped too (D7): a corp contract counts only through
+        the member character that issued or accepted it."""
         if contract.contract_type != CONTRACT_ITEM_EXCHANGE:
             return None
         if (contract.status or "").lower() != "finished" or contract.date_completed is None:
             return None
         if contract.date_completed < self.t0:
             return None
-        issuer = self._issuer_is_tenant(contract)
-        acceptor = self._acceptor_is_tenant(contract)
-        if issuer and acceptor:
+        issuer_char, acceptor_char, issuer_corp, acceptor_corp = self._contract_sides(contract)
+        if (issuer_char or issuer_corp) and (acceptor_char or acceptor_corp):
             return None
-        if not issuer and not acceptor:
-            self.warn(f"contract_party_unknown: {contract.ref}")
+        if not issuer_char and not acceptor_char:
+            if not issuer_corp and not acceptor_corp:
+                self.warn(f"contract_party_unknown: {contract.ref}")
             return None
+        acceptor = acceptor_char
         items = list(contract.items)
         if acceptor:
             # Acceptor pays `price` and receives what the issuer included.

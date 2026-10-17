@@ -353,8 +353,12 @@ def _product_row(type_id: int, totals: tuple, assumed: tuple, warnings: list[str
     cost = _num(totals[3])
     profit = _num(totals[4])
     cov, estimated = _coverage(components, price_missing)
-    covered_qty, covered_cost = planned or (0.0, 0.0)
+    covered_qty, covered_cost, covered_realized = planned or (0.0, 0.0, 0.0)
     planned_cost = (covered_cost / covered_qty) if covered_qty > _EPS else None
+    # Realized minus planned over the same units (those with a planned value).
+    planned_difference = (
+        (covered_realized - covered_cost) / covered_qty if covered_qty > _EPS else None
+    )
     planned_coverage = (covered_qty / qty) if qty > _EPS else None
     return {
         "type_id": int(type_id),
@@ -369,6 +373,7 @@ def _product_row(type_id: int, totals: tuple, assumed: tuple, warnings: list[str
         "coverage": cov,
         "planned_cost_per_unit": planned_cost,
         "planned_coverage": planned_coverage,
+        "planned_difference_per_unit": planned_difference,
         "warnings": sorted(set(warnings)),
         "flags": _flags(
             estimated=estimated, price_missing=price_missing,

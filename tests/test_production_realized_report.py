@@ -528,6 +528,8 @@ def test_planned_cost_survives_rebuild_and_weights_sold_units(tenant):
     [row] = production_actions.do_get_realized_products(days=30)["rows"]
     assert row["planned_cost_per_unit"] == pytest.approx(12.5)
     assert row["planned_coverage"] == pytest.approx(1.0)
+    # Every sold unit has a planned value, so the difference is per unit.
+    assert row["planned_difference_per_unit"] == pytest.approx(row["cost_per_unit"] - 12.5)
 
     _rebuild({TYPE_A: 6, TYPE_B: 1})
     [row] = production_actions.do_get_realized_products(days=30)["rows"]

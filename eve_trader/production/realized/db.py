@@ -1469,14 +1469,18 @@ def archive_gap_counts() -> dict[tuple, int]:
 
 
 def planned_unit_cost_by_type(start: datetime, end: datetime) -> dict[int, tuple]:
-    """type_id -> (covered_qty, covered_cost) for produced-layer sale draws
-    whose job has a non-null planned unit cost. covered_cost is
-    sum(draw qty x planned unit cost)."""
+    """type_id -> (covered_qty, covered_planned_cost, covered_realized_cost)
+    for produced-layer sale draws whose job has a non-null planned unit cost.
+    covered_planned_cost is sum(draw qty x planned unit cost);
+    covered_realized_cost is the realized cost of those same draws."""
     with storage.connect() as conn:
         rows = conn.execute(
             "SELECT r.type_id, "
             "COALESCE(SUM(d.quantity) FILTER (WHERE p.planned_unit_cost IS NOT NULL), 0), "
             "COALESCE(SUM(d.quantity * p.planned_unit_cost) "
+            "FILTER (WHERE p.planned_unit_cost IS NOT NULL), 0), "
+            "COALESCE(SUM(d.cost_materials_bought + d.cost_materials_estimated + d.cost_freight "
+            "+ d.cost_job + d.cost_invention + d.cost_fees) "
             "FILTER (WHERE p.planned_unit_cost IS NOT NULL), 0) "
             "FROM prod_realized_results r "
             "JOIN prod_cost_draws d ON d.consumer_kind = 'sale' AND d.consumer_ref = r.sale_ref "
@@ -1488,7 +1492,7 @@ def planned_unit_cost_by_type(start: datetime, end: datetime) -> dict[int, tuple
             "GROUP BY r.type_id",
             (start, end),
         ).fetchall()
-    return {int(r[0]): (float(r[1]), float(r[2])) for r in rows}
+    return {int(r[0]): (float(r[1]), float(r[2]), float(r[3])) for r in rows}
 
 
 def job_refs_with_contract_draws() -> set[str]:

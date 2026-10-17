@@ -852,3 +852,30 @@ def test_active_job_stays_work_in_progress():
     [wip] = result.work_in_progress
     assert wip.components.total == pytest.approx(20.0)
     assert result.layers == []
+
+
+def test_corp_side_contracts_count_only_through_a_tenant_character():
+    """D7: a corp contract books only via the member character that issued
+    or accepted it; corp-only and character-to-own-corp contracts are skipped."""
+    corp_only = exchange(
+        20, at(2), [item_line(MINERAL, 1)], issuer=7001, acceptor=CORP, price=15.0,
+    )
+    to_own_corp = exchange(
+        21, at(2), [item_line(MINERAL, 1)], issuer=CHAR, acceptor=CORP, price=0.0,
+    )
+    from_own_corp = exchange(
+        22, at(2), [item_line(MINERAL, 1)], issuer=7002, acceptor=CHAR, price=0.0,
+        issuer_corp=CORP, corp_issued=True,
+    )
+    member_issued = exchange(
+        23, at(2), [item_line(MINERAL, 2, included=False)], issuer=CHAR, acceptor=7001,
+        reward=20.0, issuer_corp=CORP, corp_issued=True,
+    )
+    result = rebuild_costing(snapshot(
+        contracts=[corp_only, to_own_corp, from_own_corp, member_issued],
+        tenant_corporation_ids={CORP},
+    ))
+    [layer] = result.all_layers
+    assert layer.source_ref == "contract:23"
+    assert layer.unit_cost == pytest.approx(10.0)
+    assert not has_warning(result, "contract_party_unknown")

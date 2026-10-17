@@ -2713,6 +2713,8 @@ export interface RealizedProductRow {
   coverage: number | null
   planned_cost_per_unit: number | null
   planned_coverage: number | null
+  /** Realized minus planned cost per unit, over the units that have a planned value. */
+  planned_difference_per_unit: number | null
   warnings: string[]
   flags: RealizedFlags
 }

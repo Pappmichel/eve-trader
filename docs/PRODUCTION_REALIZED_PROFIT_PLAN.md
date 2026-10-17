@@ -930,5 +930,17 @@ spell out):
       already production-gated. No figure was added to the portfolio route.
     - Period `tax_missing_sales` counts sales whose tax is null except
       `source = contract`, because a contract stores null tax on purpose.
+  - Review fixes:
+    - D7 for contracts: only a tenant *character* as issuer or acceptor
+      books a contract (a corp contract counts through the member who
+      issued or accepted it). A contract whose only tenant side is a corp
+      is skipped, and a character-to-own-corp contract is an internal
+      transfer. Before, a corp-issued or corp-accepted contract was booked
+      in every tenant sharing that corp.
+    - `planned_difference_per_unit` comes from the API and compares
+      realized and planned cost over the same units (those with a planned
+      value). The frontend used to subtract planned cost from the cost of
+      all sold units.
+    - The Portfolio card shows no figure until a recompute produced one.
   - Not in Phase 5: D7's corp "mine alone" switch (no corp token has the
     Accountant role, so there is no corp wallet data).

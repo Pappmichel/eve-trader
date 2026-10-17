@@ -112,6 +112,7 @@ class ProductRow(BaseModel):
     coverage: Optional[float] = None
     planned_cost_per_unit: Optional[float] = None
     planned_coverage: Optional[float] = None
+    planned_difference_per_unit: Optional[float] = None
     warnings: list[str]
     flags: RealizedFlags
 
