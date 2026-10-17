@@ -1,6 +1,6 @@
 # Production realized profit - plan
 
-Status: **Phase 1 in progress** (2026-10-17). Decisions D1-D12 (section 10)
+Status: **Phase 2 done** (2026-10-17). Decisions D1-D12 (section 10)
 are confirmed with the user. Revised the same day after a critical review
 against the code (section 12 lists what changed and why). See
 **Implementation status** at the end of this file.
@@ -712,7 +712,33 @@ spell out):
   - archive writes only for kinds shared with Production; D10 syncs only
     Production's own sharing rows; contract items fetched once per
     contract; jobs whose inputs could not be computed are retried.
-- **Phase 2 - not started.** Pure `costing.py` + golden tests.
+- **Phase 2 - done 2026-10-17.** Pure `eve_trader/production/realized/costing.py`
+  (no I/O) rebuilds FIFO layers and realized results from a `LedgerSnapshot`:
+  T0 cutover, D8 opening inventory, job consume/produce (manufacturing,
+  reaction, copy, invention with BPC-run layers, research → capital_in_bpos),
+  cancelled-job losses, D5 unknown-origin at reference price, D6 sale order
+  (produced → opening → rest), D7 corp jobs by installer, D12 broker-fee
+  spread by UTC day, freight as its own component (does not lower coverage),
+  coverage with `ESTIMATED_COVERAGE_THRESHOLD = 0.70`. Thin
+  `loader.py` reads via `access.py` (D11), fills/caches
+  `ledger_reference_prices`, and replaces `prod_cost_layers` /
+  `prod_realized_results` / `prod_ledger_runs` on each rebuild. Bulk archive
+  reads are one query per table for the shared-owner set. Golden tests:
+  `tests/test_production_realized_costing.py` (21); loader/DB:
+  `tests/test_production_realized_loader.py` (4).
+  Deviations / settled interpretations:
+  - D12 vs section 3 buy-fee row: broker fees land on fills of Production
+    types only; fees on other fills go to `fees_on_other_trading` (section 5b
+    wins over the generic buy-layer wording in section 3). Instant buys
+    still carry no fee.
+  - BPO vs BPC market buys share a type_id; `bpo_type_ids` is left empty so
+    buys become layers; research job costs still go to `capital_in_bpos`.
+  - Failed invention (`successful_runs == 0`) → `failed_invention_losses`
+    (plan unnamed this case).
+  - Missing sales-tax journal → revenue is gross + `tax_missing` warning
+    (never a modeled tax rate).
+  - No new schema file: derived tables were created in Phase 1's
+    `production_ledger_schema.sql`.
 - **Phase 3 - not started.** Report / API / CLI.
 - **Phase 4 - not started.** Frontend.
 - **Phase 5 - not started.** Extensions (ask user first).
