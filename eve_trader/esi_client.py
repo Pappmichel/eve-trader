@@ -996,6 +996,15 @@ class ESIClient:
         return self._get(f"/characters/{character_id}/orders/",
                           params={"datasource": "tranquility"}, auth_role=auth_role)
 
+    def character_orders_history(self, character_id: int, auth_role: str) -> list[dict]:
+        """Cancelled/expired/fulfilled personal orders (last 90 days). Same
+        scope as `character_orders`. Used by the Production ledger archive
+        for broker-fee attribution (docs/PRODUCTION_REALIZED_PROFIT_PLAN.md)."""
+        return self._get_all_pages(
+            f"/characters/{character_id}/orders/history/",
+            params={"datasource": "tranquility"}, auth_role=auth_role,
+        )
+
     def corporation_orders(self, corporation_id: int, auth_role: str) -> list[dict]:
         """Requires esi-markets.read_corporation_orders.v1 + the character
         holding the Accountant or Trader role in that corporation. Stock
@@ -1007,6 +1016,14 @@ class ESIClient:
         for stock physically in the corp hangar was invisible to both)."""
         return self._get_all_pages(f"/corporations/{corporation_id}/orders/",
                                     params={"datasource": "tranquility"}, auth_role=auth_role)
+
+    def corporation_orders_history(self, corporation_id: int, auth_role: str) -> list[dict]:
+        """Corp order history (last 90 days). Same scope/roles as
+        `corporation_orders`. Production ledger archive only."""
+        return self._get_all_pages(
+            f"/corporations/{corporation_id}/orders/history/",
+            params={"datasource": "tranquility"}, auth_role=auth_role,
+        )
 
     def character_affiliation(self, character_ids: list[int], *, timeout: float = 30,
                               retries: int = 3) -> dict[int, tuple[int, Optional[int]]]:
@@ -1118,20 +1135,42 @@ class ESIClient:
         return self._get_all_pages(f"/corporations/{corporation_id}/assets/",
                                     params={"datasource": "tranquility"}, auth_role=auth_role)
 
-    def character_industry_jobs(self, character_id: int, auth_role: str) -> list[dict]:
+    def character_industry_jobs(self, character_id: int, auth_role: str,
+                                *, include_completed: bool = False) -> list[dict]:
         """Requires esi-industry.read_character_jobs.v1. Confirmed against the
         ESI spec: unlike the corporation variant below, this endpoint has no
         `page` param / X-Pages header at all - plain _get (not _get_all_pages,
         which would still work by accident since it defaults to one page, but
-        implies pagination capability this endpoint doesn't have)."""
-        return self._get(f"/characters/{character_id}/industry/jobs/",
-                          params={"datasource": "tranquility", "include_completed": "false"}, auth_role=auth_role)
+        implies pagination capability this endpoint doesn't have).
 
-    def corporation_industry_jobs(self, corporation_id: int, auth_role: str) -> list[dict]:
-        """Requires esi-industry.read_corporation_jobs.v1 + Director role."""
-        return self._get_all_pages(f"/corporations/{corporation_id}/industry/jobs/",
-                                    params={"datasource": "tranquility", "include_completed": "false"},
-                                    auth_role=auth_role)
+        `include_completed=False` is the snapshot default (planner/jobs.py).
+        The Production ledger archive fetches a second pass with
+        `include_completed=True` (docs/PRODUCTION_REALIZED_PROFIT_PLAN.md).
+        """
+        return self._get(
+            f"/characters/{character_id}/industry/jobs/",
+            params={
+                "datasource": "tranquility",
+                "include_completed": "true" if include_completed else "false",
+            },
+            auth_role=auth_role,
+        )
+
+    def corporation_industry_jobs(self, corporation_id: int, auth_role: str,
+                                  *, include_completed: bool = False) -> list[dict]:
+        """Requires esi-industry.read_corporation_jobs.v1 + Director role.
+
+        Same `include_completed` split as `character_industry_jobs`: snapshot
+        stays active-only; the ledger archive uses completed=true.
+        """
+        return self._get_all_pages(
+            f"/corporations/{corporation_id}/industry/jobs/",
+            params={
+                "datasource": "tranquility",
+                "include_completed": "true" if include_completed else "false",
+            },
+            auth_role=auth_role,
+        )
 
     def character_blueprints(self, character_id: int, auth_role: str) -> list[dict]:
         """Requires esi-characters.read_blueprints.v1."""

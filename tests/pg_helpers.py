@@ -38,6 +38,7 @@ _ESI_ACCESS_SCHEMA_SQL = _DOCS_DIR / "esi_access_schema.sql"
 _PORTFOLIO_SCHEMA_SQL = _DOCS_DIR / "portfolio_schema.sql"
 _CHARACTER_MANAGEMENT_SCHEMA_SQL = _DOCS_DIR / "character_management_schema.sql"
 _PI_SCHEMA_SQL = _DOCS_DIR / "pi_schema.sql"
+_PRODUCTION_LEDGER_SCHEMA_SQL = _DOCS_DIR / "production_ledger_schema.sql"
 
 
 @functools.lru_cache(maxsize=1)
@@ -110,6 +111,8 @@ def _apply_phase1_schema() -> None:
         conn.execute(_PHASE2_SCHEMA_SQL.read_text())
         conn.execute(_CHARACTER_MANAGEMENT_SCHEMA_SQL.read_text())
         conn.execute(_PI_SCHEMA_SQL.read_text(encoding="utf-8"))
+        # Production realized-profit ledger (docs/PRODUCTION_REALIZED_PROFIT_PLAN.md).
+        conn.execute(_PRODUCTION_LEDGER_SCHEMA_SQL.read_text(encoding="utf-8"))
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -222,6 +225,17 @@ def _apply_character_management_schema(_apply_phase1_schema) -> None:
         return
     with psycopg.connect(OWNER_DSN, autocommit=True) as conn:
         conn.execute(_CHARACTER_MANAGEMENT_SCHEMA_SQL.read_text())
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _apply_production_ledger_schema(_apply_phase1_schema) -> None:
+    """docs/production_ledger_schema.sql (Production realized profit archive).
+    Depends on _apply_phase1_schema because its GRANTs target eve_trader_app
+    and it ALTERs esi_wallet_journal from esi_access_schema."""
+    if not _postgres_available():
+        return
+    with psycopg.connect(OWNER_DSN, autocommit=True) as conn:
+        conn.execute(_PRODUCTION_LEDGER_SCHEMA_SQL.read_text(encoding="utf-8"))
 
 
 @pytest.fixture

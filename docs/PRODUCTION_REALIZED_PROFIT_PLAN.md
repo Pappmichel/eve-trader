@@ -1,8 +1,9 @@
 # Production realized profit - plan
 
-Status: **planned, not started** (2026-10-17). Decisions D1-D12 (section 10)
+Status: **Phase 1 in progress** (2026-10-17). Decisions D1-D12 (section 10)
 are confirmed with the user. Revised the same day after a critical review
-against the code (section 12 lists what changed and why).
+against the code (section 12 lists what changed and why). See
+**Implementation status** at the end of this file.
 
 ## 1. Goal
 
@@ -677,3 +678,41 @@ spell out):
   `pricing._freight_rate`, `job_category_locations`, `selected_decryptors`,
   Goonmetrics/ESI daily history for reference prices: all exist as the plan
   assumes.
+
+## Implementation status
+
+- **Phase 0 - done 2026-10-17.** Live ESI checks V1-V8 on the test server
+  (Default tenant); results in sections 13 / 13a / 13b. Settled hard caps
+  (2000 jobs, 10,000 journal), D12 fee spread, probability-derived
+  decryptor, and the Phase 1 implementability list.
+- **Phase 1 - done 2026-10-17.** Append-only ledger schema
+  (`docs/production_ledger_schema.sql`) with RLS; ingest hooked into
+  existing ESI fetchers (wallet+journal context, completed jobs second
+  pass, order history, blueprints, contracts archive pass); frozen job
+  inputs / freight / region at first sight; D10 inactive-tenant retention
+  for archive kinds; D11 read gate via `is_shared`; Production per-skill
+  rows via `read_esi(..., table="skills")`. Deviation: fetchers
+  lazy-import `production.realized.ingest` (plan places archive writes in
+  fetchers; one deliberate esi_data→tool exception, now documented in
+  CLAUDE.md). Snapshot behaviour unchanged (`include_completed=false`).
+  Review fixes (same day, checked against live data on the test server):
+  - wallet archive enriches only rows new to the archive, with per-call
+    region/volume caches (was 83 s of lookups per hourly sync of the C-J
+    seller); unresolved regions are retried and then frozen;
+  - decryptor derivation needs the installer's real skills and an exact
+    match (0.005); no guessed skill factor, no loose band (72 of 352 live
+    jobs were mislabeled before); `selected_decryptors` is looked up by the
+    T2 item, not the T2 blueprint;
+  - gap detection only where ESI can have dropped rows: previous archive
+    sync older than the list's window (new `ledger_sync_state`), or a
+    capped response (journal 10,000 per division, jobs 2000) whose oldest
+    row is newer than the archive. Quiet periods are no longer gaps;
+  - Tech II ME fallback = selected decryptor's ME, else 2 (was 0); Tech I
+    fallback from `ACTIVITY_MODS`;
+  - archive writes only for kinds shared with Production; D10 syncs only
+    Production's own sharing rows; contract items fetched once per
+    contract; jobs whose inputs could not be computed are retried.
+- **Phase 2 - not started.** Pure `costing.py` + golden tests.
+- **Phase 3 - not started.** Report / API / CLI.
+- **Phase 4 - not started.** Frontend.
+- **Phase 5 - not started.** Extensions (ask user first).
