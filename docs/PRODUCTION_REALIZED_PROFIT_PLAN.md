@@ -1,6 +1,6 @@
 # Production realized profit - plan
 
-Status: **planned, not started** (2026-10-17). Decisions D1-D11 (section 10)
+Status: **planned, not started** (2026-10-17). Decisions D1-D12 (section 10)
 are confirmed with the user. Revised the same day after a critical review
 against the code (section 12 lists what changed and why).
 
@@ -216,7 +216,7 @@ Order fees come as two journal entries at the same second: `brokers_fee`
 names the order, the type or the side (Phase 0 V4). Matching a fee's time to
 an order's `issued` works for only about a third of them, because `issued`
 is overwritten by every price change. A per-fill link is therefore not
-possible. Attribution (D12, proposal):
+possible. Attribution (D12):
 
 - Per character and period, the real order fees (both entry types) are
   summed and spread over that character's *order-based* fills of the same
@@ -489,7 +489,7 @@ Trading's).
   by explicit user action.
 - **D12 broker fees:** real order fees per character and period, spread pro
   rata by value over that period's order-based fills (section 5b).
-  *Proposal from Phase 0, not yet confirmed.*
+  Confirmed with the user 2026-10-17.
 
 ## 11. Known limitations (by design)
 
@@ -594,3 +594,68 @@ doctrine 624503518). Only aggregates were printed; nothing was written.
   kind's frequent tier (1 h) is enough while the scheduler runs, and the D10
   retention exception is required, not optional. Gap detection compares each
   sync's oldest returned entry with the newest archived one.
+
+### 13a. Recheck after re-authorizing the Default tenant's characters (2026-10-17)
+
+The user re-authorized the characters; all checks were run again on the test
+server (same scripts, read-only, scripts deleted afterwards). V1-V5, V7 and
+V8 gave the same results. New or changed:
+
+- **V6 corp jobs - now readable for corp 98723738.** 15 of 18 tokens read
+  its corp jobs. With `include_completed=true`: 2000 jobs (2 pages of 1000;
+  355 active, 1645 completed back to 2026-09-23), `cost` and `probability`
+  on all, `successful_runs` on all finished ones. Still none of them appears
+  in the installers' character endpoints (0 of 350 checked), so corp jobs
+  come only from the corp endpoint. Corp 98370861 (the C-J seller
+  1560510246's corp) is still 403 for every token - jobs installed there
+  stay invisible until a Director of that corp authorizes.
+- **Corp job history depth.** 2000 rows is exactly 2 full pages; ESI may cap
+  the completed list. With about 70 corp jobs a day the corp history covers
+  roughly 24 days; the `industry_jobs` normal tier (6 h) is far inside that.
+- **Corp wallets not readable.** Only two tokens carry the corp wallet scope
+  (`buyer:92267134`, `producer:1560510246`) and both get 403 (no Accountant
+  role) on both corps. D7's "mine alone" corp-wallet option therefore has no
+  data today; corp job costs are unaffected (they come from the job's
+  `cost`).
+- **Transactions depth.** Paging with `from_id` returns the full 30 days
+  (12,009 transactions for the C-J seller). Only the journal is capped at 10
+  pages (about 7.5 days for that character).
+- **Bug found and fixed (commit 140c5bb).** The C-J seller's `wallet` sync
+  had failed on every run since 2026-10-05 with "duplicate key ...
+  esi_wallet_transactions_pkey": ESI returned a page of 2500 rows with only
+  2499 distinct transaction ids, and `_page_wallet_transactions` only
+  deduplicated against earlier pages. Now deduplicated per entry (also in
+  `trade_reconciliation`'s two live paging loops), with a regression test.
+  Without this fix the archive would receive nothing from the most important
+  character.
+
+### 13b. Implementability check against the code
+
+Everything the plan relies on exists or is a small, local extension. Points
+Phase 1 must handle explicitly (not new decisions, just work the plan did not
+spell out):
+
+- **Contracts:** `fetch_character_contracts`/`fetch_corporation_contracts`
+  are Doctrine-specific (filtered to Doctrine's structure and statuses). The
+  archive needs its own pass over the same ESI list in the same fetcher: all
+  item-exchange contracts where a tenant character/corp is issuer or
+  acceptor, items fetched once per finished contract.
+- **Order history:** the `market_orders` fetcher reads only open orders
+  (`client.character_orders`). Add `/characters/{id}/orders/history/` (and
+  the corp equivalent) to the same fetcher for `ledger_market_orders`; same
+  scope.
+- **Per-skill rows for Production:** `esi_data/access.py` routes per-skill
+  rows (`_read_character_skills`) only to `char_skills`, `char_skill_plans`
+  and `pi`; Production gets only slot counts. Add `production` to that
+  branch (or a filter) so the decryptor derivation can read the installer's
+  encryption and science skill levels.
+- **T2 BPC ME:** a BPC created and used up between two blueprint syncs (rare
+  tier, 24 h) never appears in `ledger_blueprints`. For invented BPCs the ME
+  follows from the derived decryptor (2 + decryptor ME bonus), so only
+  bought BPCs fall back to `assumed_me`.
+- **Corp job attribution:** `installer_id` is present on every corp job;
+  matching it against the tenant's registered characters is enough.
+- Retention exception (`tenant_eligibility`), `engine._haul_volume`,
+  `pricing._freight_rate`, `job_category_locations`, `selected_decryptors`,
+  Goonmetrics/ESI daily history for reference prices: all exist as the plan
+  assumes.
