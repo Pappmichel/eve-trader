@@ -467,12 +467,12 @@ def collect_trading_wallet_streams(
     (empty result is the truth) from "every owner was skipped because
     nothing shares Wallet with Trading" (empty result is an access
     problem). Confirmed real, destructive bug 2026-09-21: the two were
-    indistinguishable, and do_reconcile_trades feeds the result straight
-    into storage.save_realized_trades, which DELETEs the whole table
-    before inserting - so a tenant who shared only Market Orders (not
-    Wallet) silently wiped their entire realized-trade history the next
-    time Reconcile Trades ran, and Portfolio/Profit-per-Day went to
-    zero with `matched_trades: 0` looking like "nothing to match".
+    indistinguishable, and the retired reconcile command fed the result
+    straight into storage.save_realized_trades, which DELETEs the whole
+    table before inserting - so a tenant who shared only Market Orders
+    (not Wallet) silently wiped their entire realized-trade history the
+    next time Reconcile Trades ran. That command is gone; the ledger is
+    the live figure. This helper stays for the comparison tests.
     """
     from .esi_data.access import is_shared, read_esi
 

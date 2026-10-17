@@ -25,7 +25,7 @@ data-kind registry, fetchers, orchestrator (`do_sync_for_tool` /
 Characters `do_*` actions live in `esi_data/actions.py`. It names tools as strings
 and imports no tool package — the same precedent as
 `auth.TOOL_ROLE_PREFIXES` and `access_gate.ALL_TOOL_KEYS`. One deliberate
-exception: `esi_data/fetchers.py` lazily imports `realized`
+exception: `esi_data/fetchers.py` lazily imports `eve_trader.realized`
 right after a snapshot write to fill the realized-profit
 archive (`docs/REALIZED_PROFIT_UNIFIED_PLAN.md`), for an owner shared
 with any realized-profit tool, and never lets an archive error fail the
@@ -117,6 +117,7 @@ they laid out side by side:
 | What can I actually buy/sell *right now* on the live Trading shortlist? | Real ESI order-book stats (5th-percentile) for `jita_region_id`/C-J's own structure | `esi_client.region_order_stats`/`structure_order_stats`, via `shortlist.py` |
 | What's a Production build/buy decision worth? | Goonmetrics current-price quotes (`appraise.gnf.lt`) for the configured home/Jita markets | `production/pricing.py` |
 | What was an item without a purchase worth on that day? | What the planner would have paid: the cheaper of the buy-list purchase price (home market, or hub plus freight) and its build cost (`engine.planner_unit_values`), frozen per (type, day) in `ledger_valuation_prices`. Fallback where the planner has no value: The Forge daily average (Goonmetrics, then ESI daily history, then the nearest traded day within 7 days, cached in `ledger_reference_prices`). A day with no price at all stays `price_missing` (booked at 0 and flagged), never a guessed price | `realized/loader.py` |
+| What did a past sale actually earn? | The shared ledger: sale revenue minus the FIFO cost of the layers that sale drew, on one channel (`production`, `trading`, `doctrine`, `station_trading`). `realized_trades` is the retired matcher and is not a live figure | `eve_trader/realized/` plus each tool's report |
 Each is the right tool for its own job (a historical region average smooths
 out noise for "is this worth tracking at all", a live order-book percentile
 is what you'd actually pay/receive right now) - don't assume a number from
@@ -130,7 +131,12 @@ Plan: `docs/PRODUCTION_REALIZED_PROFIT_PLAN.md`. The shared archive and
 costing live in `eve_trader/realized/` (`ingest.py`, `inputs.py`,
 `access.py`, `db.py`, `costing.py`, `loader.py`, `names.py`). Production's
 report and planned-cost freeze stay in `eve_trader/production/realized/`
-(`report.py`, `planned.py`). The wallet / jobs /
+(`report.py`, `planned.py`). Trading
+(`eve_trader/trade_realized/`), Doctrine (`eve_trader/doctrine/realized.py`)
+and Station Trading (`eve_trader/station_trading/realized.py`) read the
+same derived rows and keep their own channel. Portfolio shows one card per
+granted tool and a total from `GET /api/portfolio/realized-cards` when at
+least two of those tools have a figure. The wallet / jobs /
 orders / contracts **archive** is the source of truth. Derived tables
 (`prod_cost_layers`, `prod_realized_results`, `prod_cost_draws`,
 `prod_job_records`, `prod_fee_lines`, `prod_job_losses`,
@@ -154,7 +160,7 @@ tenant). Opening quantities are frozen per type
 (`prod_opening_frozen`, not a derived table) and only re-derived when T0 or
 that fingerprint changes, on `--reset-opening`, or once when the latest run's
 `costing_version` is NULL or lower than the loader's current version
-(`prod_ledger_runs.costing_version`, currently 2). After that rebuild the
+(`prod_ledger_runs.costing_version`, currently 4). After that rebuild the
 opening is frozen again. Re-deriving it on every rebuild would make the
 inventory drift check always zero.
 
@@ -1004,7 +1010,7 @@ not just a labeling issue:
   chunked` pattern and was never affected by either bug. The `sell_volume`
   field itself is unchanged and still legitimately shown as "Listed Qty"
   (own column) - it's just never used for the Profit/Day multiplication.
-  Corp-wallet reconciliation assumes a single-member corp (see `trade_reconciliation.py`); a shared corp would mix other members' fills into realized profit and `average_daily_sold_by_type` (the figure #51 briefly used for Profit / Day before #100 switched it to market-wide volume).
+  Corp wallet rows still enter the realized-profit archive. A shared corp mixes other members' fills into that archive and therefore into ledger profit. Profit / Day does not read them: since #100 it uses market-wide volume. The old matcher in `trade_reconciliation.py` is no longer called by the app; `realized_trades` stays only so `eve-trader realized compare-trading` can print it beside the Trading channel until the next release.
 
 ## Real SDE data drives classification, not heuristics
 

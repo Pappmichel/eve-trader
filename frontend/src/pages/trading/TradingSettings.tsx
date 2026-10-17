@@ -123,8 +123,8 @@ export default function TradingSettings() {
         needs the Accountant or Junior Accountant role in that corp — not Director, and not Station Manager.
         A buyer or seller added before this scope existed needs a one-time re-login before corp fills appear.
         Corp fills are counted regardless of which member placed them; that is correct for a single-member
-        corp. In a shared corp this would pull other members&apos; trades into realized profit and into
-        average_daily_sold_by_type, which feeds Profit / Day on the shortlist.
+        corp. In a shared corp this pulls other members&apos; trades into the wallet archive and therefore
+        into realized profit. Profit / Day on the shortlist uses market-wide volume, not these fills.
       </Text>
       <MultiSelect label="Corp wallet divisions included in the wallet archive"
         data={divisionOptions.wallet_division_ids.map((id) => ({ value: String(id), label: `Division ${id}` }))}

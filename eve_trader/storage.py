@@ -1404,15 +1404,12 @@ def save_goonmetrics_history(points) -> None:
 
 
 def save_realized_trades(trades: list[RealizedTrade], run_ts: str) -> None:
-    # Replaced wholesale, not appended - do_reconcile_trades() re-matches the
-    # *entire* cfg.lookback_days window from scratch on every run (not
-    # incrementally), and the only read site (api/routers/trading.py
-    # get_realized_trades) always filters to MAX(run_ts) - so every previous
-    # run's rows are both redundant (near-total overlap with the new run's
-    # window) and permanently unreachable. Confirmed real bug: a naked INSERT
-    # here had bloated the table to ~19.8k rows across only 13 runs, with
-    # some exact (type_id, buy_date, sell_date, matched_qty) groups repeated
-    # up to 24 times.
+    # Wholesale replace. The retired matcher re-matched the whole lookback
+    # window on every run; a naked INSERT bloated the table to ~19.8k rows
+    # across 13 runs, with some (type_id, buy_date, sell_date, matched_qty)
+    # groups repeated up to 24 times. Nothing in the app calls this writer
+    # anymore. `eve-trader realized compare-trading` is the remaining read.
+    # Drop the writer with the table on the release after this one.
     with connect() as conn:
         conn.execute("DELETE FROM realized_trades")
         conn.executemany(

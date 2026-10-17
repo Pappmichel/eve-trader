@@ -1,6 +1,6 @@
 # Realized profit for Production, Trading, Doctrine and Station Trading - unified plan
 
-Status: **Phase 4b done (2026-10-17).** Phase 5 still to land.
+Status: **Phase 5 done (2026-10-17).** All phases of this plan have landed.
 Decisions U1-U11 and ST1-ST3 stay as confirmed 2026-10-18. This environment
 has no test server, so the section 2 counts were not re-measured; the
 reviewer measures them there. Each later phase ends with a review and a
@@ -336,6 +336,37 @@ locations per region and which of them receive freight under U4.
   Trading (same U3a shape as Phase 3).
 - This page matches contract-channel rows with the wallet share.
   Station Trading has no contracts share of its own.
+
+### Phase 5 - stop calling the old matcher - done 2026-10-17
+
+- The app no longer calls `do_reconcile_trades`. `POST /api/trading/trades/reconcile`,
+  `GET /api/trading/trades/realized` and `eve-trader reconcile-trades` are
+  gone. The trading pipeline, the pages and Portfolio already read the
+  ledger.
+- `trade_reconciliation.py` stays in the tree. Nothing in the running app
+  imports it except `fetch_recent_transactions`, which the Transactions
+  page still uses. `eve-trader realized compare-trading` is the one
+  remaining read of `realized_trades`.
+- CLAUDE.md (realized section, price-sources matrix, fetcher import,
+  costing version 4, Trading Profit / Day), the root README and
+  `deploy/README.md` describe the ledger instead of Reconcile Trades.
+- Full suite after the removal: 3293 passed, 1 skipped. Frontend lint,
+  vitest and build passed. No new seeded live check: this phase deletes
+  call sites and does not change a figure. The earlier throwaway-tenant
+  checks still cover the four reports.
+- With the access gate off, a TestClient gets 404 for
+  `GET /api/trading/trades/realized` and `POST /api/trading/trades/reconcile`.
+  `GET /api/trading/realized/summary?days=30` still returns 200. The running
+  server answers 401 on all three because the gate runs before routing, so
+  that 401 is not evidence the old routes are gone.
+
+### TODO (U10, not this release)
+
+Drop `realized_trades`, `storage.save_realized_trades`,
+`trade_reconciliation.py` (keep `fetch_recent_transactions` if the
+Transactions page still needs it, or move that helper first) and
+`eve-trader realized compare-trading` on the release after this one.
+The comparison window is not over. Do not drop the table in this change.
 
 ## 1. Goal
 

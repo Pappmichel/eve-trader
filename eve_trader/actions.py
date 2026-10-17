@@ -25,11 +25,7 @@ from .models import Candidate, ShortlistItem, ShortlistRow, UndercutRow, Unliste
 from .shortlist import (NO_MARKET_DATA_DECISION, SKIP_DECISION, _decision, audit_shortlist, average_market_daily_volume,
                         average_market_daily_isk_volume,
                          evaluate_shortlist, summary_counts, top_imports_by_daily_profit)
-from .trade_reconciliation import (
-    collect_trading_wallet_streams,
-    fetch_recent_transactions,
-    reconcile_realized_trades, summarize_realized,
-)
+from .trade_reconciliation import fetch_recent_transactions
 
 log = logging.getLogger("eve_trader.actions")
 
@@ -71,10 +67,8 @@ def _require_trading_wallet_role_key(role_key: str) -> str:
 
     So: accept any syntactically valid role_key (`validate_role_key` -
     the full F-05 domain, all seven prefixes), then gate purely on the
-    "wallet" sharing row for the resolved character_id (the same check
-    trade_reconciliation.collect_trading_wallet_streams already applies
-    for reconciliation) - sharing, not prefix, is what actually
-    authorizes a wallet read here. do_remove_trading_character is
+    "wallet" sharing row for the resolved character_id - sharing, not
+    prefix, is what actually authorizes a wallet read here. do_remove_trading_character is
     unaffected by this - it deliberately keeps its own buyer:/seller:-
     only gate (a token from another tool must stay removable only from
     the Characters page, matching TradingLayout.tsx's disabled "Unshare
@@ -147,15 +141,9 @@ def list_shared_trading_characters(tm: TokenManager | None = None,
     and lets its own per-character filtering (e.g. fetch_own_sell_orders
     only ever finds sell orders; fetch_buyer_already_covered only ever
     finds buy orders) naturally no-op for a character that has none of
-    that kind. The one place this isn't purely cosmetic is
-    do_reconcile_trades's collect_trading_wallet_streams, which used
-    buyer/seller membership to pick a shorter/longer transaction lookback
-    window and whether to fetch journal entries - passing this same list as
-    both its buyer_characters and seller_characters arguments there
-    deliberately makes every shared character use the longer (buyer)
-    lookback and always fetch journal, a safe superset of the old
-    behavior (never misses data, may do marginally more ESI paging) rather
-    than trying to guess which role a character "really" is.
+    that kind. The retired reconcile command used this same list for both
+    the old buyer and seller arguments. Realized profit now reads the
+    shared ledger, which archives every wallet shared with a realized tool.
 
     `auth_role` is resolved via the Phase 4 selector (largest-matching-
     scope token, same tie-break as everywhere else), preferring a token
@@ -1274,73 +1262,6 @@ def shortlist_skip_deactivation_days(cfg: TradingConfig = TRADING_CONFIG) -> dic
                                    - (now - dt.datetime.fromisoformat(since_str)).total_seconds() / 86400))
         for item_id, since_str in skip_since.items()
     }
-
-
-def do_reconcile_trades(cfg: TradingConfig = TRADING_CONFIG,
-                         oauth_cfg: OAuthConfig = OAUTH_CONFIG) -> dict:
-    tm = TokenManager(oauth_cfg)
-    # Buyer/seller merged into one sharing-based list (see
-    # list_shared_trading_characters's own docstring) - passed as both
-    # arguments below so collect_trading_wallet_streams treats every shared
-    # character with the longer (buyer) lookback window and always fetches
-    # journal, a safe superset of the old buyer-only/seller-only split.
-    shared_characters = list_shared_trading_characters(tm)
-    buyer_characters = shared_characters
-    seller_characters = shared_characters
-    if not shared_characters:
-        raise ActionError("At least one character needs to be shared with Trading (Characters page).")
-    client = ESIClient(cfg, tm)
-
-    items = storage.load_shortlist()
-    item_names = {i.item_id: i.item for i in items}
-    item_volumes = {i.item_id: i.volume_m3 for i in items}
-
-    # Per-owner: unshared wallets are omitted; shared+empty snapshots
-    # live-fetch that owner only. AccessorError / missing-tenant raise.
-    try:
-        snapshot_txns, snapshot_journal, readable_owners = collect_trading_wallet_streams(
-            [(cid, role) for role, cid, _name in buyer_characters],
-            [(cid, role) for role, cid, _name in seller_characters],
-            client, cfg,
-        )
-        # Refuse to "reconcile" when not one wallet was readable. Every
-        # shared character can pass the guard above on Market Orders or
-        # Assets sharing alone, while collect_trading_wallet_streams gates
-        # each owner on *Wallet* sharing specifically - so the result would
-        # be a perfectly empty, perfectly silent [], which
-        # storage.save_realized_trades turns into DELETE FROM
-        # realized_trades with nothing to insert. Confirmed real 2026-09-21:
-        # that wipes the entire realized-trade history (and with it
-        # Portfolio's realized profit and every Shortlist "Profit / Day")
-        # on a config that never shared a wallet. A genuine zero-match run
-        # with at least one readable wallet still saves [], which is
-        # correct - the emptiness is then the actual answer.
-        if readable_owners == 0:
-            raise ActionError(
-                "No character or corporation shares Wallet with Trading, so there is "
-                "nothing to reconcile - share Wallet on the Characters page. "
-                "(Existing realized trades were left untouched.)"
-            )
-        # Pooled across every registered buyer/seller character (GitHub issue
-        # #46) - every buyer's Jita buys are matched against every seller's
-        # structure sells, not paired 1:1 by character.
-        trades = reconcile_realized_trades(
-            [(cid, role) for role, cid, _name in buyer_characters],
-            [(cid, role) for role, cid, _name in seller_characters],
-            client, item_names, item_volumes, cfg,
-            snapshot_txns=snapshot_txns,
-            snapshot_journal=snapshot_journal,
-        )
-    except ESIError as e:
-        # Wallet/journal fetches have no per-character isolation of their
-        # own (unlike shortlist refresh's per-seller skip). A 401/timeout
-        # here used to reach POST /trades/reconcile as a raw 500 - _wrap
-        # only converts ActionError. do_pipeline already caught ESIError
-        # one level up, so the scheduled path was fine and the button wasn't.
-        raise ActionError(f"ESI access failed ({e}).") from e
-    storage.save_realized_trades(trades, now_ts())
-    summary = summarize_realized(trades)
-    return {"matched_trades": len(trades), **summary}
 
 
 # Steps do_pipeline isolates. Present in the result dict only when that

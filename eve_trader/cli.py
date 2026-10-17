@@ -12,7 +12,6 @@ Examples:
     eve-trader find-new-candidates --safe
     eve-trader add-to-shortlist
     eve-trader refresh-shortlist
-    eve-trader reconcile-trades
     eve-trader realized compare-trading --days 30
     eve-trader pipeline
 """
@@ -204,21 +203,6 @@ def refresh_shortlist():
                     f"max_profit/day={row['max_profit_per_day']:,.0f} ISK")
     if any(result["audit"].values()):
         click.echo(f"Audit warnings: {result['audit']}")
-
-
-@main.command("reconcile-trades")
-def reconcile_trades():
-    """Matches buyer/seller wallet transactions into realized trades."""
-    try:
-        result = actions.do_reconcile_trades()
-    except actions.ActionError as e:
-        click.echo(str(e))
-        return
-    click.echo(f"{result['matched_trades']} matched trades. "
-               f"Total profit={result['total_realized_profit']:,.0f} ISK, "
-               f"Avg margin={result['average_margin']:.1%}")
-    for item, profit in result["top3_items_by_profit"]:
-        click.echo(f"  Top: {item:<40} {profit:,.0f} ISK")
 
 
 @main.group("realized")

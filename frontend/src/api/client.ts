@@ -127,7 +127,6 @@ export const tradingApi = {
   historyTypeIds: () => get<T.HistoryTypeIdOption[]>('/api/trading/history/type-ids'),
   sparklines: (typeIds: number[]) => get<Record<string, T.SparklineSeries>>(`/api/trading/history/sparklines?type_ids=${typeIds.join(',')}`),
   history: (typeId: number) => get<T.PriceHistory>(`/api/trading/history/${typeId}`),
-  realizedTrades: () => get<T.RealizedTrade[]>('/api/trading/trades/realized'),
   realizedSummary: (periodQuery: string) =>
     get<T.TradingRealizedSummary>(`/api/trading/realized/summary?${periodQuery}`),
   realizedItems: (periodQuery: string) =>
@@ -160,7 +159,6 @@ export const tradingApi = {
     post<T.PipelineRunStatus>(`/api/trading/candidates/refresh-and-prune?safe=${safe}`),
   refreshAndPruneStatus: () =>
     get<T.PipelineRunStatus>('/api/trading/candidates/refresh-and-prune/status'),
-  reconcileTrades: () => post<Record<string, unknown>>('/api/trading/trades/reconcile'),
   runPipeline: (safe = true, rebuildUniverse = false) =>
     post<T.PipelineRunStatus>(
       `/api/trading/pipeline/run?safe=${safe}&rebuild_universe=${rebuildUniverse}`,

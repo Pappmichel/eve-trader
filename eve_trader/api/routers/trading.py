@@ -131,15 +131,6 @@ def get_price_history(type_id: int):
     }
 
 
-@router.get("/trades/realized", response_model=list[schemas.RealizedTrade])
-def get_realized_trades():
-    df = storage.read_table("realized_trades")
-    if df.empty:
-        return []
-    latest = df[df["run_ts"] == df["run_ts"].max()]
-    return [schemas.RealizedTrade(**r) for r in schemas.records(latest)]
-
-
 class TradingSettings(BaseModel):
     import_cost_per_m3: float
     structure_sell_haircut: float
@@ -269,12 +260,6 @@ def check_seller_unlisted_stock():
 @router.post("/seller/undercut", response_model=list[schemas.UndercutRow])
 def check_undercut():
     return _wrap(actions.do_check_undercut)["rows"]
-
-
-@router.post("/trades/reconcile")
-def reconcile_trades():
-    """Kept read-only for comparison (U10). The page uses /realized/rebuild."""
-    return _wrap(actions.do_reconcile_trades)
 
 
 @router.get("/realized/summary")
