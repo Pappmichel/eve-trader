@@ -674,6 +674,23 @@ def insert_planned_costs(rows: list[tuple]) -> int:
     return len(rows)
 
 
+def contract_titles(contract_ids: list[int]) -> dict[int, str]:
+    """First non-empty title stored for each contract id."""
+    ids = [int(i) for i in contract_ids]
+    if not ids:
+        return {}
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT contract_id, title FROM ledger_contracts "
+            "WHERE contract_id = ANY(?) AND title IS NOT NULL AND title <> ''",
+            (ids,),
+        ).fetchall()
+    out: dict[int, str] = {}
+    for contract_id, title in rows:
+        out.setdefault(int(contract_id), str(title))
+    return out
+
+
 def list_contracts_for_owners(owners: list[tuple[str, int]]) -> list[tuple]:
     """(owner_type, owner_id, contract_id, issuer_id, issuer_corporation_id,
     acceptor_id, start_location_id, end_location_id, type, status, price,
@@ -1317,6 +1334,67 @@ def list_sales_for_type(
             + scope + " ORDER BY sale_date, sale_ref",
             (int(type_id), start, end, *extra),
         ).fetchall()
+
+
+def list_scoped_results(
+    start: datetime,
+    end: datetime,
+    *,
+    channel: Optional[str] = None,
+    wallet_owners: Optional[list] = None,
+    contract_owners: Optional[list] = None,
+) -> list[tuple]:
+    """Sales in the window, including the doctrine fitting and the issuer.
+
+    Column order matches `get_realized_sale`, then owner_type, owner_id,
+    fitting_id, issuer_id.
+    """
+    scope, extra = _result_scope_sql(
+        channel, wallet_owners=wallet_owners, contract_owners=contract_owners,
+    )
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT sale_ref, type_id, quantity, revenue, cost, profit, coverage_share, "
+            "sale_date, gross, sales_tax, broker_fee, location_id, price_missing, "
+            "estimated, warnings, cost_materials_bought, cost_materials_estimated, "
+            "cost_freight, cost_job, cost_invention, cost_fees, source, "
+            "owner_type, owner_id, fitting_id, issuer_id "
+            "FROM prod_realized_results "
+            "WHERE sale_date >= ? AND sale_date < ?"
+            + scope + " ORDER BY sale_date, sale_ref",
+            (start, end, *extra),
+        ).fetchall()
+
+
+def produced_draw_totals(
+    start: datetime,
+    end: datetime,
+    *,
+    channel: Optional[str] = None,
+    wallet_owners: Optional[list] = None,
+    contract_owners: Optional[list] = None,
+) -> tuple:
+    """(contracts, units, cost) of produced-origin draws on sales in the window.
+
+    Cost is the draw's own components (materials, freight, job, invention,
+    fees on the draw). The sale's broker fee is not in that cost.
+    """
+    scope, extra = _result_scope_sql(
+        channel, alias="r", wallet_owners=wallet_owners, contract_owners=contract_owners,
+    )
+    with storage.connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(DISTINCT r.sale_ref) FILTER (WHERE d.origin = 'produced'), "
+            "COALESCE(SUM(d.quantity) FILTER (WHERE d.origin = 'produced'), 0), "
+            "COALESCE(SUM(d.cost_materials_bought + d.cost_materials_estimated "
+            "+ d.cost_freight + d.cost_job + d.cost_invention + d.cost_fees) "
+            "FILTER (WHERE d.origin = 'produced'), 0) "
+            "FROM prod_realized_results r "
+            "JOIN prod_cost_draws d ON d.consumer_kind = 'sale' AND d.consumer_ref = r.sale_ref "
+            "WHERE r.sale_date >= ? AND r.sale_date < ?" + scope,
+            (start, end, *extra),
+        ).fetchone()
+    return row
 
 
 def get_realized_sale(

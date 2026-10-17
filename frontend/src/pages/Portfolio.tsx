@@ -10,7 +10,7 @@ import { Link } from 'react-router-dom'
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid, Legend } from 'recharts'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { gateApi, portfolioApi, productionApi } from '../api/client'
+import { doctrineApi, gateApi, portfolioApi, productionApi } from '../api/client'
 import { DataTable } from '../components/DataTable'
 import { HintCard } from '../components/HintCard'
 import { SearchableSelect } from '../components/SearchableSelect'
@@ -50,6 +50,60 @@ function ProductionRealizedCard() {
         {summary.data && !data ? 'Not computed yet - recompute on the Realized Profit page.' : 'Last 30 days'}
       </Text>
       <Anchor component={Link} to="/production/realized" size="xs">Realized profit</Anchor>
+    </Card>
+  )
+}
+
+function DoctrineRealizedCard() {
+  const gate = useQuery({ queryKey: ['gate', 'status'], queryFn: gateApi.status })
+  const tools = gate.data?.tools
+  const allowed = Array.isArray(tools) && tools.includes('doctrine')
+  const summary = useQuery({
+    queryKey: ['doctrine', 'realized', 'summary', 'days=30'],
+    queryFn: () => doctrineApi.realizedSummary('days=30'),
+    enabled: allowed,
+    retry: false,
+  })
+  if (!allowed) return null
+  const data = summary.data && !summary.data.status.empty && !summary.data.status.needs_rebuild
+    ? summary.data
+    : undefined
+  return (
+    <Card withBorder padding="lg" radius="md" className="et-panel">
+      <Title order={6} c="dimmed" tt="uppercase" mb="xs">Realized Doctrine profit</Title>
+      <Text size="xl" fw={700}>{data ? isk(data.realized_profit) : '–'}</Text>
+      {data && (
+        <Group gap={6} mt={4}>
+          <CoverageBadge coverage={data.coverage} />
+          {data.estimated && <Badge size="xs" color="warn" variant="light">estimated</Badge>}
+        </Group>
+      )}
+      <Text size="xs" c="dimmed" mt={4}>
+        {summary.data && !data ? 'Not computed yet - recompute on the Doctrine realized page.' : 'Last 30 days'}
+      </Text>
+      <Anchor component={Link} to="/doctrine/realized" size="xs">Doctrine realized profit</Anchor>
+    </Card>
+  )
+}
+
+function RealizedTotalCard() {
+  const gate = useQuery({ queryKey: ['gate', 'status'], queryFn: gateApi.status })
+  const tools = gate.data?.tools
+  const held = Array.isArray(tools)
+    ? ['production', 'trading', 'doctrine'].filter((tool) => tools.includes(tool)).length
+    : 0
+  const cards = useQuery({
+    queryKey: ['portfolio', 'realized-cards'],
+    queryFn: portfolioApi.realizedCards,
+    enabled: held >= 2,
+    retry: false,
+  })
+  if (held < 2 || cards.data?.total == null) return null
+  return (
+    <Card withBorder padding="lg" radius="md" className="et-panel">
+      <Title order={6} c="dimmed" tt="uppercase" mb="xs">Realized profit total</Title>
+      <Text size="xl" fw={700}>{isk(cards.data.total)}</Text>
+      <Text size="xs" c="dimmed" mt={4}>Last 30 days, tools this session holds</Text>
     </Card>
   )
 }
@@ -311,6 +365,8 @@ export default function Portfolio() {
                 hint={`${qty(data.trading_trade_count)} sales in the last 30 days`} />
             )}
             <ProductionRealizedCard />
+            <DoctrineRealizedCard />
+            <RealizedTotalCard />
             {showTrading && (
               <Stat label="Trading: Average Margin" value={pct(data.trading_average_margin)} />
             )}

@@ -2772,6 +2772,98 @@ export interface TradingRealizedWarning {
   message: string
 }
 
+export interface DoctrineOriginCost {
+  kind: string
+  location_id: number | null
+  location_name: string | null
+  cost: number
+  quantity: number
+}
+
+export interface DoctrineRealizedSummary {
+  period: RealizedPeriodInfo
+  status: RealizedStatus
+  contracts: number
+  revenue: number
+  cost_of_goods_sold: number
+  realized_profit: number
+  margin: number | null
+  coverage: number | null
+  estimated: boolean
+  price_missing: boolean
+  production_saving: number | null
+  cost_by_origin: DoctrineOriginCost[]
+  by_day: RealizedDay[]
+  flags: RealizedFlags
+}
+
+export interface DoctrineRealizedFitting {
+  fitting_id: string | null
+  fitting_name: string | null
+  contracts: number
+  revenue: number
+  cost: number
+  profit: number
+  produced_cost: number
+  bought_cost: number
+  avg_price: number | null
+  avg_cost: number | null
+  avg_profit: number | null
+  produced_share: number | null
+  bought_share: number | null
+}
+
+export interface DoctrineRealizedContract {
+  sale_ref: string | null
+  contract_id: number | null
+  sale_date: string | null
+  fitting_id: string | null
+  fitting_name: string | null
+  buyer_id: number | null
+  buyer_name: string | null
+  issuer_id: number | null
+  issuer_name: string | null
+  price: number | null
+  revenue: number | null
+  cost: number | null
+  profit: number | null
+  margin: number | null
+  coverage: number | null
+  warnings: string[]
+  production_saving: number | null
+  before_archive: boolean
+  flags: RealizedFlags
+}
+
+export interface DoctrineRealizedLine {
+  type_id: number
+  type_name: string | null
+  quantity: number
+  origin: string
+  unit_cost: number | null
+  cost: number
+  origins: Record<string, number>
+  chain: RealizedChainNode[]
+}
+
+export interface DoctrineRealizedContractDetail extends DoctrineRealizedContract {
+  lines: DoctrineRealizedLine[]
+  cost_by_origin: DoctrineOriginCost[]
+}
+
+export interface RealizedToolCard {
+  tool: string
+  profit: number | null
+  coverage: number | null
+  estimated: boolean
+  empty: boolean
+}
+
+export interface RealizedToolCards {
+  rows: RealizedToolCard[]
+  total: number | null
+}
+
 export interface RealizedJobFeeLine {
   activity_id: number
   label: string | null
@@ -2816,6 +2908,7 @@ export interface RealizedSummary {
   by_day: RealizedDay[]
   balances_as_of_rebuild: string[]
   flags: RealizedFlags
+  sold_through_doctrine?: { contracts: number; units: number; cost: number }
 }
 
 export interface RealizedProductRow {

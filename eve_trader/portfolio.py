@@ -16,6 +16,44 @@ from .actions import ActionError
 from .config import TRADING_CONFIG, TradingConfig
 
 
+def realized_cards(tool_keys) -> dict:
+    """Last-30-day realized profit for each granted tool, plus a total.
+
+    The total is present only when at least two of those tools have a
+    figure. A tool that still needs a recompute contributes no number, so
+    a zero from an empty archive is not added in as a result. The page
+    shows `total` as returned.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    keys = {str(key) for key in (tool_keys or ())}
+    now = datetime.now(timezone.utc)
+    period = {"start": now - timedelta(days=30), "end": now, "since_t0": False, "days": 30}
+    readers = []
+    if "production" in keys:
+        from .production.realized.report import summary as production_summary
+        readers.append(("production", production_summary))
+    if "trading" in keys:
+        from .trade_realized.report import summary as trading_summary
+        readers.append(("trading", trading_summary))
+    if "doctrine" in keys:
+        from .doctrine.realized import summary as doctrine_summary
+        readers.append(("doctrine", doctrine_summary))
+    rows = []
+    for tool, reader in readers:
+        data = reader(**period)
+        empty = bool(data["status"]["empty"] or data["status"]["needs_rebuild"])
+        rows.append({
+            "tool": tool,
+            "profit": None if empty else data["realized_profit"],
+            "coverage": None if empty else data.get("coverage"),
+            "estimated": False if empty else bool(data.get("estimated")),
+            "empty": empty,
+        })
+    ready = [row["profit"] for row in rows if row["profit"] is not None]
+    return {"rows": rows, "total": sum(ready) if len(ready) >= 2 else None}
+
+
 def portfolio_overview(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     """Combines Trading's realized P&L (last 30 days of the ledger's Trading
     channel) with Production's stock value into one read-only summary, plus

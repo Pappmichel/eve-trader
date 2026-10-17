@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from .. import schemas
@@ -35,6 +35,13 @@ def get_portfolio_overview():
     # rework, section 5.4) - a real decision, so it lives in portfolio.py,
     # not here.
     return _wrap(portfolio.do_get_portfolio_overview)
+
+
+@router.get("/realized-cards")
+def get_realized_cards(request: Request):
+    """Cards for the tools this session holds. The total is already summed."""
+    keys = getattr(request.state, "tool_keys", ())
+    return portfolio.realized_cards(keys)
 
 
 @router.get("/history", response_model=list[schemas.PortfolioSnapshotRow])

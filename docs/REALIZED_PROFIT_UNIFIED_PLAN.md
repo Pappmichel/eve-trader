@@ -1,6 +1,6 @@
 # Realized profit for Production, Trading, Doctrine and Station Trading - unified plan
 
-Status: **Phase 3 done (2026-10-17).** Phases 4, 4b and 5 still to land.
+Status: **Phase 4 done (2026-10-17).** Phases 4b and 5 still to land.
 Decisions U1-U11 and ST1-ST3 stay as confirmed 2026-10-18. This environment
 has no test server, so the section 2 counts were not re-measured; the
 reviewer measures them there. Each later phase ends with a review and a
@@ -228,6 +228,65 @@ locations per region and which of them receive freight under U4.
 - The pipeline result key is `rebuild_realized`. `POST /api/trading/trades/reconcile`
   still exists and still writes `realized_trades`; nothing in the UI or
   the pipeline calls it. Phase 5 removes that use.
+
+### Phase 4 - Doctrine report and page - done 2026-10-17
+
+- `eve_trader/doctrine/realized.py` reads the doctrine channel. Summary
+  (contracts, revenue, cost, profit, margin, coverage, production saving,
+  cost by origin), per fitting, per contract with item lines and the
+  production chain, and finished doctrine history rows that are not in
+  the archive (`before_archive`, profit null). Routes under
+  `/api/doctrine/realized/*`. Contract detail takes `sale_ref` as a query
+  parameter because the ref contains a colon. Recompute starts the same
+  background job as Production.
+- A doctrine result with no `doctrine_contract_history` fitting is
+  resolved once per rebuild by `match_and_validate_contract`. History
+  wins and the matcher is not called. An unmatched contract keeps
+  `fitting_id` null and the warning `unmatched_doctrine`.
+- The Doctrine page (`/doctrine/realized`) shows those API numbers, the
+  origin split, the fitting and contract tables, the before-archive list,
+  and the contract drill-down (lines and `CostChainTree` for produced
+  lines). The side-menu tab says Realized.
+- Production's overview adds "Produced goods sold through Doctrine"
+  (`sold_through_doctrine`: contracts, units, cost of produced-origin
+  draws). That cost is not added to Production profit.
+- Portfolio shows a Doctrine card only when the session holds `doctrine`.
+  `GET /api/portfolio/realized-cards` returns last-30-day profit per
+  granted tool among production, trading and doctrine, and a total only
+  when at least two of those tools have a figure. The page shows that
+  total; it does not add the cards itself. Station Trading is not in the
+  sum yet (Phase 4b).
+- Tests: Postgres report (origin split sums to cost, doctrine-only share,
+  trading and station-trading sales stay off the Doctrine page, a
+  production-only contract at the doctrine structure stays off it,
+  before-archive row, revoking the doctrine share sets `sharing_changed`,
+  matcher fills a missing fitting); router tests for every new route;
+  `realized_cards` unit test. Full suite 3292 passed, 1 skipped.
+  Frontend lint, vitest (371) and build passed.
+- Live check on a throwaway tenant (deleted afterwards, id
+  `a0696dad-6ae1-446d-ace0-303069eaec93`): one finished doctrine contract
+  booked revenue 100, cost 35 (produced 15 + market 20), profit 65,
+  production saving 65, fitting "Stabber Fleet". Production revenue 0 and
+  sold-through cost 15. The cross-tool total stayed null because only
+  Doctrine had a figure. `GET /api/doctrine/realized/summary` on the
+  running server returned 401 because the access gate is on. The page
+  was exercised in vitest (needs-rebuild, summary and tables, period,
+  drill-down, Portfolio gating). A browser session was not opened: the
+  gate has no local login that does not touch `config.yaml`.
+
+### Deviations (Phase 4)
+
+- Contract detail loads the scoped results for a wide date window and
+  filters to the requested `sale_ref` in Python. The test server has on
+  the order of 50 doctrine contracts, so a dedicated SQL lookup was not
+  required.
+- The production-chain walk stays in `production.realized.report`
+  (`_children`, `_walk`). The doctrine report imports those two helpers.
+  Production does not import the doctrine report.
+- Production saving is null unless every produced line has a frozen
+  `buy_home` or `buy_hub` price on or before the sale date. A partial
+  saving is not shown.
+- The cross-tool total does not include Station Trading until Phase 4b.
 
 ## 1. Goal
 

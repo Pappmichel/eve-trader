@@ -14,6 +14,7 @@ from eve_trader.actions import ActionError, ConflictError
 from eve_trader.api.app import FRONTEND_DIST, create_app
 from eve_trader.models import ShortlistItem
 from eve_trader.production import actions as production_actions
+from eve_trader.doctrine import realized as doctrine_realized
 from eve_trader.trade_realized import actions as trade_realized_actions
 from eve_trader.production.models import AssetLocationRow, BuildCandidate, ShipMarginRow
 from eve_trader.sorting import actions as sorting_actions
@@ -2394,5 +2395,54 @@ def test_trading_realized_routes_call_the_trading_actions(monkeypatch):
 
 def test_trading_realized_bad_period_is_400():
     resp = client.get("/api/trading/realized/summary", params={"days": 0})
+    assert resp.status_code == 400
+    assert "days" in resp.json()["detail"]
+
+
+def test_doctrine_realized_routes_call_the_doctrine_actions(monkeypatch):
+    seen = {}
+
+    def summary(**kw):
+        seen["summary"] = kw
+        return {"realized_profit": 4.0, "contracts": 1, "status": {"empty": False, "needs_rebuild": False}}
+
+    def fittings(**kw):
+        seen["fittings"] = kw
+        return {"needs_rebuild": False, "rows": [{"fitting_id": "fit"}]}
+
+    def contracts(**kw):
+        seen["contracts"] = kw
+        return {"needs_rebuild": False, "rows": [], "before_archive": []}
+
+    def one(**kw):
+        seen["contract"] = kw
+        return {"sale_ref": kw["sale_ref"], "lines": []}
+
+    monkeypatch.setattr(doctrine_realized, "do_get_doctrine_realized_summary", summary)
+    monkeypatch.setattr(doctrine_realized, "do_get_doctrine_realized_fittings", fittings)
+    monkeypatch.setattr(doctrine_realized, "do_get_doctrine_realized_contracts", contracts)
+    monkeypatch.setattr(doctrine_realized, "do_get_doctrine_realized_contract", one)
+    monkeypatch.setattr(doctrine_realized, "do_get_doctrine_realized_warnings",
+                        lambda: {"needs_rebuild": True, "rows": []})
+    monkeypatch.setattr(doctrine_realized, "do_start_doctrine_realized_rebuild",
+                        lambda: {"run_id": "r", "status": "running", "job_name": "rebuild_realized"})
+    monkeypatch.setattr(doctrine_realized, "do_doctrine_realized_rebuild_status",
+                        lambda: {"status": "idle", "job_name": "rebuild_realized"})
+
+    assert client.get("/api/doctrine/realized/summary", params={"days": 7}).json()["realized_profit"] == 4.0
+    assert seen["summary"]["days"] == 7
+    assert client.get("/api/doctrine/realized/fittings", params={"since_t0": "true"}).status_code == 200
+    assert seen["fittings"]["since_t0"] is True
+    assert client.get("/api/doctrine/realized/contracts").json()["before_archive"] == []
+    body = client.get("/api/doctrine/realized/contract", params={"sale_ref": "contract:70"}).json()
+    assert body["sale_ref"] == "contract:70"
+    assert seen["contract"]["sale_ref"] == "contract:70"
+    assert client.get("/api/doctrine/realized/warnings").json()["needs_rebuild"] is True
+    assert client.post("/api/doctrine/realized/rebuild").json()["status"] == "running"
+    assert client.get("/api/doctrine/realized/rebuild/status").json()["status"] == "idle"
+
+
+def test_doctrine_realized_bad_period_is_400():
+    resp = client.get("/api/doctrine/realized/summary", params={"days": 0})
     assert resp.status_code == 400
     assert "days" in resp.json()["detail"]

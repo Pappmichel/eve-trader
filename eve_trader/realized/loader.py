@@ -201,6 +201,32 @@ def _doctrine_fitting_ids(contract_ids: list[int]) -> dict[int, str]:
     return {int(row[0]): str(row[1]) for row in rows if row[1]}
 
 
+def _match_doctrine_fitting(contract_id: int, title: Optional[str], items, candidates) -> Optional[str]:
+    """Fitting from the doctrine matcher when history has none (U7).
+
+    A miss (`unmatched` or no hull) stays unset so the result keeps the
+    unmatched_doctrine warning. History, when it has a fitting, wins and
+    this is not called.
+    """
+    from ..doctrine.engine import match_and_validate_contract
+    from ..doctrine.models import ContractItemRow
+
+    rows = [
+        ContractItemRow(
+            int(contract_id), int(item.record_id), int(item.type_id), float(item.quantity),
+            bool(item.is_included), bool(item.is_singleton),
+        )
+        for item in items
+        if item.is_included and not item.is_blueprint
+    ]
+    if not rows or not candidates:
+        return None
+    fitting_id, _score, _devs, _status = match_and_validate_contract(
+        int(contract_id), title, rows, candidates,
+    )
+    return None if not fitting_id else str(fitting_id)
+
+
 def _load_contracts() -> tuple:
     """Finished item-exchange contracts shared with any realized tool, deduped
     by contract id. Freight is frozen onto item rows the first time the start
@@ -237,6 +263,8 @@ def _load_contracts() -> tuple:
     doc_structure = DOCTRINE_CONFIG.effective_structure_id
     tenant_chars = _tenant_character_ids()
     fittings = _doctrine_fitting_ids(list(grouped))
+    titles = db.contract_titles(list(grouped))
+    match_candidates = None
     contracts = []
     for contract_id, copies in grouped.items():
         def _nitems(copy, cid=contract_id):
@@ -283,6 +311,14 @@ def _load_contracts() -> tuple:
             and issuer_id is not None
             and issuer_id in tenant_chars
         )
+        fitting_id = fittings.get(contract_id) if is_doctrine else None
+        if is_doctrine and not fitting_id:
+            if match_candidates is None:
+                from ..doctrine.engine import load_match_candidates
+                match_candidates = load_match_candidates()
+            fitting_id = _match_doctrine_fitting(
+                contract_id, titles.get(contract_id), built, match_candidates,
+            )
         contracts.append(ItemExchangeContract(
             contract_id=contract_id, owner_type=chosen[0], owner_id=int(chosen[1]),
             date_completed=_as_utc(chosen[12]),
@@ -295,7 +331,7 @@ def _load_contracts() -> tuple:
             items=tuple(built), corp_issued=corp_issued,
             status=str(chosen[9] or ""), contract_type=str(chosen[8] or "item_exchange"),
             is_doctrine=is_doctrine,
-            fitting_id=fittings.get(contract_id) if is_doctrine else None,
+            fitting_id=fitting_id,
         ))
     if freight_updates:
         db.update_contract_item_freight(freight_updates)

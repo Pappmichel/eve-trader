@@ -510,6 +510,7 @@ export const portfolioApi = {
       '/api/portfolio/manual-prices', { item_name: itemName, price },
     ),
   removeManualPrice: (typeId: number) => del(`/api/portfolio/manual-prices/${typeId}`),
+  realizedCards: () => get<T.RealizedToolCards>('/api/portfolio/realized-cards'),
 }
 
 // -------------------------------------------------------------- doctrine
@@ -587,6 +588,23 @@ export const doctrineApi = {
   hangarDivisionOptions: () => get<{ hangar_division_flags: string[] }>(
     '/api/doctrine/settings/hangar-division-options',
   ),
+  realizedSummary: (periodQuery: string) =>
+    get<T.DoctrineRealizedSummary>(`/api/doctrine/realized/summary?${periodQuery}`),
+  realizedFittings: (periodQuery: string) =>
+    get<{ needs_rebuild: boolean; rows: T.DoctrineRealizedFitting[] }>(
+      `/api/doctrine/realized/fittings?${periodQuery}`,
+    ),
+  realizedContracts: (periodQuery: string) =>
+    get<{ needs_rebuild: boolean; rows: T.DoctrineRealizedContract[]; before_archive: T.DoctrineRealizedContract[] }>(
+      `/api/doctrine/realized/contracts?${periodQuery}`,
+    ),
+  realizedContract: (saleRef: string) =>
+    get<T.DoctrineRealizedContractDetail>(`/api/doctrine/realized/contract?sale_ref=${encodeURIComponent(saleRef)}`),
+  realizedWarnings: () => get<{ needs_rebuild: boolean; rows: { type_id: number; warning: string }[] }>(
+    '/api/doctrine/realized/warnings',
+  ),
+  startRealizedRebuild: () => post<T.PipelineRunStatus>('/api/doctrine/realized/rebuild'),
+  realizedRebuildStatus: () => get<T.PipelineRunStatus>('/api/doctrine/realized/rebuild/status'),
 }
 
 // ------------------------------------------------------------- ore & minerals

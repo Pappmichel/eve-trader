@@ -201,7 +201,23 @@ def _empty_summary(period: dict, status: dict) -> dict:
         "by_day": [],
         "balances_as_of_rebuild": ["capital_in_bpos", "inventory_at_cost", "produced_in_stock", "in_running_jobs"],
         "flags": _flags(estimated=False, price_missing=False, coverage=None),
+        "sold_through_doctrine": {"contracts": 0, "units": 0.0, "cost": 0.0},
     }
+
+
+def _sold_through_doctrine(start: datetime, end: datetime) -> dict:
+    """Produced goods that left through a doctrine contract (U1).
+
+    Those sales stay on the doctrine channel. This line is the quantity and
+    cost of the produced draws, so Production can still see that output.
+    """
+    owners = list(access.shared_owners_for("contracts", "doctrine"))
+    if not owners:
+        return {"contracts": 0, "units": 0.0, "cost": 0.0}
+    contracts, units, cost = db.produced_draw_totals(
+        start, end, channel="doctrine", contract_owners=owners,
+    )
+    return {"contracts": int(contracts or 0), "units": _num(units), "cost": _num(cost)}
 
 
 def _spending(by_activity: list[tuple], running: tuple, produced_in_stock: float) -> dict:
@@ -326,6 +342,7 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
         if window is None:
             return _empty_summary(period, status)
         start_at, end_at = window
+        sold_through = _sold_through_doctrine(start_at, end_at)
         totals = db.realized_totals(start_at, end_at, **scope)
         components = CostComponents(
             materials_bought=_num(totals[4]), materials_estimated=_num(totals[5]),
@@ -385,6 +402,7 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
         "by_day": by_day,
         "balances_as_of_rebuild": ["capital_in_bpos", "inventory_at_cost", "produced_in_stock", "in_running_jobs"],
         "flags": flags,
+        "sold_through_doctrine": sold_through,
     }
 
 
