@@ -609,17 +609,35 @@ V8 gave the same results. New or changed:
   come only from the corp endpoint. Corp 98370861 (the C-J seller
   1560510246's corp) is still 403 for every token - jobs installed there
   stay invisible until a Director of that corp authorizes.
-- **Corp job history depth.** 2000 rows is exactly 2 full pages; ESI may cap
-  the completed list. With about 70 corp jobs a day the corp history covers
-  roughly 24 days; the `industry_jobs` normal tier (6 h) is far inside that.
+- **Corp job history depth.** 2000 rows, exactly 2 full pages (page 3 is
+  404), sorted newest first, oldest start 2026-09-23. The corp was founded in
+  2022 and its installers joined between 2022 and 2025, so "the corp is only
+  24 days old" does not explain the edge. The ESI spec documents no limit.
+  **Decision (user, 2026-10-17): treat 2000 rows as a hard cap** of the
+  corp list (`include_completed=true`); not proven by a before/after check.
+  At about 70 corp jobs a day the list covers roughly 24 days. Consequences
+  for Phase 1:
+  - the archive must sync corp `industry_jobs` well inside that window; the
+    normal tier (6 h) plus the D10 retention exception is enough;
+  - gap detection for jobs: if the oldest job of a sync is newer than the
+    newest archived job of that owner, completed jobs in between were lost -
+    report an archive gap for that period (same rule as the journal);
+  - the same cap is assumed for the character endpoint (392 rows today) and
+    handled by the same gap check.
 - **Corp wallets not readable.** Only two tokens carry the corp wallet scope
   (`buyer:92267134`, `producer:1560510246`) and both get 403 (no Accountant
   role) on both corps. D7's "mine alone" corp-wallet option therefore has no
   data today; corp job costs are unaffected (they come from the job's
   `cost`).
 - **Transactions depth.** Paging with `from_id` returns the full 30 days
-  (12,009 transactions for the C-J seller). Only the journal is capped at 10
-  pages (about 7.5 days for that character).
+  (12,009 transactions for the C-J seller).
+- **Journal cap - proven.** The character journal returns only the newest
+  10,000 entries (X-Pages 10, page 11 is 404), although the ESI spec says
+  "going 30 days back". Proof: 8,168 of the C-J seller's sales between
+  2026-09-17 and 2026-10-09 are in the transactions (inside the 30 days) and
+  none of them has a `market_transaction` journal entry, while 3,674 of
+  3,675 newer sales do. For that character the journal reaches back about
+  7.5 days.
 - **Bug found and fixed (commit 140c5bb).** The C-J seller's `wallet` sync
   had failed on every run since 2026-10-05 with "duplicate key ...
   esi_wallet_transactions_pkey": ESI returned a page of 2500 rows with only
