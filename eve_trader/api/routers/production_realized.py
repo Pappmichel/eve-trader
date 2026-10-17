@@ -221,15 +221,52 @@ class JobRow(BaseModel):
     cost_per_bpc_run: Optional[float] = None
     facility_id: Optional[int] = None
     facility_name: Optional[str] = None
+    planned_unit_cost: Optional[float] = None
     contract_input: bool = False
     cost_structure: list[CostStructureLine]
     flags: RealizedFlags
+
+
+class JobGroup(BaseModel):
+    activity_id: int
+    type_id: int
+    type_name: Optional[str] = None
+    output_unit: Optional[str] = None
+    jobs: int
+    runs: int
+    successful_runs: int
+    running: int
+    failed: int
+    cancelled: int
+    input_cost: float
+    job_cost: float
+    total_cost: float
+    output_quantity: float
+    unit_cost: Optional[float] = None
+    sold_share: Optional[float] = None
+    planned_unit_cost: Optional[float] = None
+    planned_difference_per_unit: Optional[float] = None
+    cost_per_bpc_run: Optional[float] = None
+    estimated: bool
+    assumed: bool
+
+
+class JobTotals(BaseModel):
+    jobs: int
+    input_cost: float
+    job_cost: float
+    total_cost: float
+    failed: int
+    cancelled: int
+    running: int
 
 
 class JobList(BaseModel):
     cutover_t0: Optional[str] = None
     needs_rebuild: bool = False
     rows: list[JobRow]
+    groups: list[JobGroup] = []
+    totals: Optional[JobTotals] = None
 
 
 class InventoryRow(BaseModel):
@@ -368,8 +405,10 @@ def realized_sale_chain(sale_ref: str):
 
 
 @router.get("/realized/jobs", response_model=JobList)
-def realized_jobs():
-    return _wrap(actions.do_get_realized_jobs)
+def realized_jobs(days: Optional[int] = None, start: Optional[str] = None,
+                  end: Optional[str] = None, since_t0: bool = False, state: str = "all"):
+    return _wrap(actions.do_get_realized_jobs, days=days, start=start, end=end,
+                 since_t0=since_t0, state=state)
 
 
 @router.get("/realized/inventory", response_model=InventoryList)

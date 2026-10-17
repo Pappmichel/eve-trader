@@ -107,10 +107,6 @@ export default function RealizedProfit() {
     queryFn: () => productionApi.realizedProducts(periodQuery),
     enabled: period != null,
   })
-  const jobsQuery = useQuery({
-    queryKey: ['production', 'realized', 'jobs'],
-    queryFn: productionApi.realizedJobs,
-  })
   const inventoryQuery = useQuery({
     queryKey: ['production', 'realized', 'inventory'],
     queryFn: productionApi.realizedInventory,
@@ -142,7 +138,6 @@ export default function RealizedProfit() {
 
   useQueryError('Realized profit', summaryQuery.isError, summaryQuery.error)
   useQueryError('Realized products', productsQuery.isError, productsQuery.error)
-  useQueryError('Realized jobs', jobsQuery.isError, jobsQuery.error)
   useQueryError('Realized inventory', inventoryQuery.isError, inventoryQuery.error)
   useQueryError('Realized warnings', warningsQuery.isError, warningsQuery.error)
 
@@ -319,16 +314,7 @@ export default function RealizedProfit() {
         />
       )}
       {tab === 'jobs' && (
-        <JobsTab
-          rows={jobsQuery.data?.rows ?? []}
-          needsRebuild={Boolean(jobsQuery.data?.needs_rebuild)}
-          hint={hint}
-          jobRef={jobFocus}
-          isLoading={jobsQuery.isLoading}
-          isError={jobsQuery.isError}
-          onRetry={() => { void jobsQuery.refetch() }}
-          updatedAt={jobsQuery.dataUpdatedAt}
-        />
+        <JobsTab periodQuery={periodQuery} hint={hint} jobRef={jobFocus} />
       )}
       {tab === 'inventory' && (
         <InventoryTab

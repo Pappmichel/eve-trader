@@ -446,7 +446,8 @@ export const productionApi = {
     get<T.RealizedProductDetail>(`/api/production/realized/products/${typeId}?${periodQuery}`),
   realizedSaleChain: (saleRef: string) =>
     get<T.RealizedSaleChain>(`/api/production/realized/sale-chain?sale_ref=${encodeURIComponent(saleRef)}`),
-  realizedJobs: () => get<T.RealizedJobList>('/api/production/realized/jobs'),
+  realizedJobs: (search = '') =>
+    get<T.RealizedJobList>(`/api/production/realized/jobs${search ? `?${search}` : ''}`),
   realizedInventory: () => get<T.RealizedInventoryList>('/api/production/realized/inventory'),
   realizedWarnings: () => get<T.RealizedWarningList>('/api/production/realized/warnings'),
   realizedOpening: () => get<T.RealizedOpeningList>('/api/production/realized/opening'),

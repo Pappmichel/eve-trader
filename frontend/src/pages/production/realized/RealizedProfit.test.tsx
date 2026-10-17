@@ -107,7 +107,7 @@ function sale(partial: Partial<RealizedSaleRow> = {}): RealizedSaleRow {
 function job(partial: Partial<RealizedJobRow> = {}): RealizedJobRow {
   return {
     job_ref: 'character:1:77', job_id: 77, owner_type: 'character', owner_id: 1,
-    owner_name: 'Pilot', facility_name: null,
+    owner_name: 'Pilot', facility_name: null, planned_unit_cost: null,
     activity_id: 1, blueprint_type_id: 1, blueprint_name: 'Widget Blueprint',
     product_type_id: 34, product_name: 'Widget', runs: 1, successful_runs: 1,
     start_date: '2026-10-01T00:00:00Z', end_date: '2026-10-02T00:00:00Z', status: 'delivered',
@@ -160,7 +160,9 @@ describe('RealizedProfit', () => {
         flags: flags(), children: [],
       },
     })
-    vi.mocked(productionApi.realizedJobs).mockResolvedValue({ cutover_t0: null, needs_rebuild: false, rows: [] })
+    vi.mocked(productionApi.realizedJobs).mockResolvedValue({
+      cutover_t0: null, needs_rebuild: false, rows: [], groups: [], totals: null,
+    })
     vi.mocked(productionApi.realizedInventory).mockResolvedValue({ needs_rebuild: false, rows: [] })
     vi.mocked(productionApi.realizedWarnings).mockResolvedValue({ needs_rebuild: false, groups: [] })
     vi.mocked(productionApi.realizedOpening).mockResolvedValue({ cutover_t0: null, needs_rebuild: false, rows: [] })
@@ -386,16 +388,32 @@ describe('RealizedProfit', () => {
     expect(screen.getAllByText('tax missing')).toHaveLength(1)
   })
 
-  it('badges a job that drew a contract input', async () => {
+  it('groups jobs per product and opens one product\'s jobs', async () => {
     const user = userEvent.setup()
     vi.mocked(productionApi.realizedJobs).mockResolvedValue({
-      cutover_t0: null, needs_rebuild: false, rows: [job({ contract_input: true })],
+      cutover_t0: null, needs_rebuild: false,
+      rows: [job({ contract_input: true }), job({ job_ref: 'character:1:78', job_id: 78, product_type_id: 35, product_name: 'Other' })],
+      groups: [{
+        activity_id: 1, type_id: 34, type_name: 'Widget', output_unit: 'item', jobs: 1, runs: 1,
+        successful_runs: 0, running: 0, failed: 0, cancelled: 0, input_cost: 100, job_cost: 20,
+        total_cost: 120, output_quantity: 10, unit_cost: 12, sold_share: 0.5, planned_unit_cost: 10,
+        planned_difference_per_unit: 2, cost_per_bpc_run: null, estimated: false, assumed: false,
+      }],
+      totals: { jobs: 2, input_cost: 100, job_cost: 20, total_cost: 120, failed: 0, cancelled: 0, running: 0 },
     })
     renderPage()
     await screen.findByText('Cost of goods sold')
     await user.click(screen.getByRole('tab', { name: 'Jobs' }))
-    expect(await screen.findByText('Widget')).toBeInTheDocument()
+    // Default: finished jobs of the selected period, summed per product.
+    await waitFor(() => expect(productionApi.realizedJobs).toHaveBeenCalledWith('days=30&state=finished'))
+    expect(await screen.findByText('12 ISK')).toBeInTheDocument()
+    expect(screen.getByText(/2 jobs · Total cost 120 ISK/)).toBeInTheDocument()
+    await user.click(screen.getByText('Widget'))
+    expect(await screen.findByRole('button', { name: 'Back to products' })).toBeInTheDocument()
     expect(screen.getByText('contract')).toBeInTheDocument()
+    expect(screen.queryByText('Other')).toBeNull()
+    await user.click(screen.getByText('Running'))
+    await waitFor(() => expect(productionApi.realizedJobs).toHaveBeenCalledWith('days=30&state=running'))
   })
 
   it('shows Forge-to-home courier months under Freight', async () => {

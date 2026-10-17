@@ -1670,3 +1670,13 @@ def stored_owner_names(ids: list[int]) -> dict[int, str]:
             ).fetchall():
                 out.setdefault(int(installer_id), str(name))
     return out
+
+
+def planned_unit_costs_by_job() -> dict[tuple[str, int, int], float]:
+    """(owner_type, owner_id, job_id) -> planned unit cost, where one was frozen."""
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_type, owner_id, job_id, planned_unit_cost FROM ledger_job_planned_costs "
+            "WHERE planned_unit_cost IS NOT NULL",
+        ).fetchall()
+    return {(str(r[0]), int(r[1]), int(r[2])): float(r[3]) for r in rows}

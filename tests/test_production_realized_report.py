@@ -650,3 +650,36 @@ def test_owner_names_come_from_stored_data_before_esi(tenant, monkeypatch):
     assert found == {98723738: "RichlTech", 2112543378: "Corpmate", 424242: "Stranger"}
     assert asked == [[424242]]
 
+
+def test_jobs_filter_by_state_and_period_and_group_per_product(tenant):
+    _seed_job_and_sale()
+    _rebuild({TYPE_A: 6, TYPE_B: 1})
+    all_jobs = production_actions.do_get_realized_jobs()
+    assert len(all_jobs["rows"]) == 1
+    assert production_actions.do_get_realized_jobs(state="running")["rows"] == []
+    assert len(production_actions.do_get_realized_jobs(state="finished")["rows"]) == 1
+    # The job ended at T_END: a period after it lists nothing finished.
+    after = (T_END + timedelta(days=1)).date().isoformat()
+    later = (T_END + timedelta(days=2)).date().isoformat()
+    assert production_actions.do_get_realized_jobs(start=after, end=later, state="finished")["rows"] == []
+    with pytest.raises(production_actions.ActionError):
+        production_actions.do_get_realized_jobs(state="done")
+
+    [group] = all_jobs["groups"]
+    row = all_jobs["rows"][0]
+    assert group["type_id"] == TYPE_B and group["jobs"] == 1
+    assert group["output_quantity"] == pytest.approx(2.0)
+    assert group["total_cost"] == pytest.approx(row["input_cost"] + row["job_cost"])
+    assert group["unit_cost"] == pytest.approx(group["total_cost"] / 2.0)
+    assert group["sold_share"] == pytest.approx(0.5)
+    assert group["planned_unit_cost"] is None
+    assert all_jobs["totals"]["jobs"] == 1
+    assert all_jobs["totals"]["total_cost"] == pytest.approx(group["total_cost"])
+
+    ledger_db.insert_planned_costs([("character", ALICE, 77, TYPE_B, 12.5, "discover_cache")])
+    listed = production_actions.do_get_realized_jobs()
+    assert listed["rows"][0]["planned_unit_cost"] == pytest.approx(12.5)
+    [group] = listed["groups"]
+    assert group["planned_unit_cost"] == pytest.approx(12.5)
+    assert group["planned_difference_per_unit"] == pytest.approx(group["unit_cost"] - 12.5)
+
