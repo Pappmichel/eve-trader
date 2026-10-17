@@ -39,8 +39,8 @@ view. A planned-vs-actual comparison is a later phase (section 9, phase 5).
 
 | Data | Where | Problem for this feature |
 |---|---|---|
-| Wallet transactions | `esi_wallet_transactions` (snapshot, DELETE-then-INSERT per sync) | ESI only returns about 30 days; older rows disappear on the next sync. Consumed only by `trading`. No `order_id`. |
-| Wallet journal | `esi_wallet_journal` (snapshot) | Same 30-day window. No `context_id`/`context_id_type`, so a journal entry cannot be linked to a job, transaction or contract (`trade_reconciliation._journal_from_snapshot` documents this gap). |
+| Wallet transactions | `esi_wallet_transactions` (snapshot, DELETE-then-INSERT per sync) | ESI returns at most 30 days, for a busy seller only about a week (journal capped at 10,000 entries, section 13); older rows disappear on the next sync. Consumed only by `trading`. No `order_id`. |
+| Wallet journal | `esi_wallet_journal` (snapshot) | Same window (10 pages max). No `context_id`/`context_id_type`, so a journal entry cannot be linked to a job, transaction or contract (`trade_reconciliation._journal_from_snapshot` documents this gap). |
 | Industry jobs | `character_industry_jobs`/`corp_industry_jobs` (snapshot) | Fetched with `include_completed=false`. The ESI fields `cost`, `blueprint_id`, `facility_id`, `licensed_runs`, `successful_runs`, `completed_date` are not stored. Invention jobs do not say which decryptor was used. |
 | Blueprints | `character_blueprints`/`corp_blueprints` (snapshot) | ME/TE are known only while the blueprint exists. A BPC consumed by a job is gone after the next sync. |
 | Contracts | consumed by Doctrine only | Prices/items of bought or sold item-exchange contracts are not kept for Production. |
@@ -64,9 +64,9 @@ cost, origin, date, cost components), fed only by real events:
 | Market buy (wallet transaction `is_buy`) | transaction date | + layer, origin `bought` | `unit_price x quantity` + buy-order broker fee (section 5b) + freight if bought in The Forge (section 5a) |
 | Contract buy (item exchange, we pay) | contract completed | + layers per item, origin `contract` | contract price, split across items (D4) |
 | Industry job (manufacturing, reaction, copy, invention) | `start_date` | - inputs consumed (FIFO) | inputs computed from SDE recipe + blueprint ME + structure bonus (section 5) |
-| Job cost | `start_date` | adds to the job's output | ESI job `cost`, plus the journal entry linked by `context_id = job_id` only if Phase 0 V1 shows it is not already included |
+| Job cost | `start_date` | adds to the job's output | ESI job `cost` only - it equals the sum of the job's journal entries (Phase 0 V1), which are never added again |
 | Job output | `end_date` | + layer of the product, T1 BPC runs or T2 BPC runs, origin `produced` | consumed input cost + job cost, divided by output quantity |
-| Cancelled job | cancel date | per Phase 0 V7 (materials returned or lost) | install cost stays a cost of the period |
+| Cancelled job | cancel date | inputs stay consumed (lost), no output (Phase 0 V7) | input and job cost go to a "cancelled jobs" loss line |
 | Market sell of a Production type (any location) | transaction date | - units (D6 order) -> **realized result** | gross, minus real `transaction_tax` (journal, `context_id`), minus the order's broker fee share (section 5b) |
 | Contract sell (Special Orders, Doctrine contracts) | contract completed | - items -> realized result | contract price received |
 
@@ -120,10 +120,15 @@ Raw archive (append-only, upsert by natural key, never deleted by a sync):
   `end_date`, `completed_date`, `status`, `probability`; plus owner columns.
 - `ledger_job_inputs` - inputs computed **once, when the job is first seen**
   and then frozen: `job_id`, `type_id`, `quantity`, plus how it was computed
-  (`blueprint_me`, `material_multiplier`, `decryptor_type_id`, `source` =
-  `esi_blueprint` / `manual_blueprint` / `assumed_me` / `assumed_decryptor`).
-  Freezing matters because the blueprint (and its ME) may be gone by the next
-  sync, and config can change later.
+  (`blueprint_me`, `material_multiplier`, `decryptor_type_id`, the installer's
+  invention skill levels used, `source` = `esi_blueprint` /
+  `archived_blueprint` / `manual_blueprint` / `assumed_me` /
+  `probability_decryptor` / `assumed_decryptor`). Freezing matters because
+  the blueprint (and its ME) may be gone by the next sync, and config can
+  change later.
+- `ledger_blueprints` - last seen ME/TE/runs per blueprint `item_id`, from
+  every blueprints sync. A BPC whose last run a job uses is gone from the next
+  snapshot; its ME is still known from here (Phase 0 V3).
 - `ledger_contracts`, `ledger_contract_items` - item-exchange contracts where
   a tenant character/corp is issuer or acceptor. Archived from Phase 1 even
   though costing uses them only in Phase 5, because ESI drops finished
@@ -164,12 +169,13 @@ SDE recipe with the planner's own formula and bonuses - `engine._material_qty`
 3. **Invention**: each attempt consumes the datacores, one decryptor (if
    any) and **one run of the T1 BPC**; all `runs` attempts consume, success or
    not. Output = `successful_runs` T2 BPCs. ESI does not say which decryptor
-   was used:
-   - first, derive it from the T2 BPCs that appear in the blueprints snapshot
-     at the job's output location after delivery (runs and ME identify the
-     decryptor);
-   - otherwise the decryptor selected in Production for that product
-     (`selected_decryptors`), flagged `assumed_decryptor`.
+   was used, but the job's `probability` does (Phase 0 V8): implied
+   multiplier = `probability` / (base probability x skill factor), with the
+   skill factor from the installer's real skills (`skills` kind: encryption
+   skill / 40, the two science skills / 30). It matched a decryptor exactly
+   on every live job. `None` and `Symmetry` share multiplier 1.0; for those
+   the decryptor selected in Production (`selected_decryptors`) decides, else
+   `None`, flagged `assumed_decryptor`. Skills are frozen with the inputs.
    The T2 BPC layer is kept in **runs**; a manufacturing job consumes runs
    from it.
 4. **Copying**: job cost only; output is `runs` copies x `licensed_runs`
@@ -205,18 +211,25 @@ rewards paid:
 
 ## 5b. Broker fees
 
-Broker fees are charged per order (and again on every price change), not per
-fill, and wallet transactions carry no `order_id`. Attribution:
+Order fees come as two journal entries at the same second: `brokers_fee`
+(no context id) and `market_provider_tax` (context = structure id). Neither
+names the order, the type or the side (Phase 0 V4). Matching a fee's time to
+an order's `issued` works for only about a third of them, because `issued`
+is overwritten by every price change. A per-fill link is therefore not
+possible. Attribution (D12, proposal):
 
-- Fills are matched to orders from `ledger_market_orders` (type, location,
-  price, time). The order's broker fees (journal `brokers_fee`, linked per
-  Phase 0 V2) are spread over its fills by quantity.
-- A fill that cannot be matched gets the modeled rate instead
-  (`jita_buy_broker_fee` for buys, `structure_broker_fee` for sells), flagged.
-  Instant buys from sell orders carry no broker fee.
-- Fees of orders that expire or are cancelled unfilled, and the unfilled share
-  of relist fees, are not unit costs; the report shows them as a separate
-  "fees without sale" line in the period.
+- Per character and period, the real order fees (both entry types) are
+  summed and spread over that character's *order-based* fills of the same
+  period pro rata by fill value, so the total always equals what was really
+  paid.
+- A fill is order-based when it matches one of the character's own orders
+  (type, location, side; price where unchanged). Instant buys from sell orders
+  (98 % of the buyer's fills) carry no fee.
+- Production gets the share that falls on fills of Production types; the
+  rest is listed as "fees on other trading" for transparency, not as a
+  Production cost.
+- Fees of a period without any matching fill (unfilled or cancelled orders)
+  are a separate "fees without sale" line, not a unit cost.
 
 ## 6. Cutover, opening inventory and coverage
 
@@ -329,8 +342,8 @@ tenants) and corp wallet entries do not say which member acted.
 
 ## 9. Phases
 
-**Phase 0 - live verification (read-only, one real character with industry
-activity).** Confirm before building on it:
+**Phase 0 - live verification - done 2026-10-17, results in section 13.**
+The checks were:
 - V1: does job `cost` already include SCC surcharge and facility tax, or is
   `industry_job_tax` in the journal an additional amount? (Avoid counting it
   twice.)
@@ -474,6 +487,9 @@ Trading's).
   holding `production` (section 8). Confirmed with the user 2026-10-17.
 - **D11 revoked share:** archive rows are hidden, not deleted; deletion only
   by explicit user action.
+- **D12 broker fees:** real order fees per character and period, spread pro
+  rata by value over that period's order-based fills (section 5b).
+  *Proposal from Phase 0, not yet confirmed.*
 
 ## 11. Known limitations (by design)
 
@@ -516,3 +532,65 @@ Corrections after checking the first draft against the code:
 - Revoked shares: read gate at read time, rows hidden not deleted (D11).
 - Added Phase 0 checks V6 (corp jobs on the character endpoint), V7
   (cancelled jobs), V8 (decryptor derivation).
+
+## 13. Phase 0 findings (2026-10-17, test server, Default tenant, read-only)
+
+Checked with throwaway scripts against live ESI using the stored tokens of the
+Default tenant's characters (seller/producer 1560510246, buyer 92267134,
+doctrine 624503518). Only aggregates were printed; nothing was written.
+
+- **V1 job cost - confirmed.** For all 349 jobs inside the journal window,
+  `industry_job_tax` plus the activity fee entry (`manufacturing`,
+  `reaction`, `researching_technology` for invention) sum to exactly the
+  job's `cost` (ratio 1.0 on 349/349). `cost` is the full amount; the journal
+  entries are its breakdown and must not be added.
+- **V2 journal context types.** `industry_job_tax`/`manufacturing`/
+  `reaction`/`researching_technology`: `industry_job_id`.
+  `market_transaction`, `market_escrow`: `market_transaction_id`.
+  `transaction_tax`: none (linked by journal id + 1, as in
+  `trade_reconciliation`). `brokers_fee`: none. `market_provider_tax`:
+  `structure_id`. `contract_brokers_fee`, `contract_reward_deposited`:
+  `contract_id`.
+- **V3 jobs.** `include_completed=true` returns `cost`, `blueprint_id`,
+  `facility_id`, `licensed_runs`, `completed_date`, `completed_character_id`
+  and `successful_runs` (on every delivered invention job). Oldest completed
+  job seen: 22 days (the character's history starts there; CCP documents 90
+  days - not contradicted). `blueprint_id` is in the blueprints snapshot for
+  all active manufacturing and copy jobs (12/12); invention consumes its T1
+  BPC at start (0/11 in snapshot) - irrelevant, ME does not matter for
+  invention. A BPC used up by a manufacturing job disappears, hence
+  `ledger_blueprints`.
+- **V4 fees - refuted as planned.** `brokers_fee` has no context; a time
+  match to an order's `issued` works for about a third (308 of 922 and 222 of
+  715); the rest are price changes (`issued` keeps only the last one). Every
+  order fee is a `brokers_fee` + `market_provider_tax` pair at the same
+  second. Buyer: 2450 of 2500 buy fills have no own buy order (instant buys,
+  no fee). Seller: 1041 of 2447 sell fills match no own order by price
+  (orders whose price was changed). Redesigned in section 5b (D12).
+- **V5 contracts - confirmed.** Items of finished item-exchange contracts are
+  readable (4/4, up to 1914 items). The contract list covers about 30 days.
+- **V6 corp jobs - important gap.** The character endpoint does **not** list
+  corp jobs (0 of 185 stored corp jobs appear in their installers' character
+  endpoints). The corp endpoint returns 403 "Character does not have
+  required role(s)" for **every one of the 18 stored tokens**: no character
+  currently has the Director role. The stored corp jobs (last sync
+  2026-10-12) are stale, and corp-installed jobs stay invisible - for the
+  planner too - until a Director re-authorizes with the corp jobs scope.
+  Without that, D7's corp-job part delivers nothing.
+- **V7 cancelled jobs.** The one cancelled job kept its full fees in the
+  journal (not refunded). ESI cannot show materials; player sources (older
+  forum posts) say materials of a cancelled job are lost and a BPO returns.
+  Modeled that way (section 3).
+- **V8 decryptor - T2 BPC route refuted, probability route confirmed.** No
+  T2 BPCs were found at the invention output locations (already used or
+  moved). But `probability` / (base probability x skill factor from the
+  character's real skills) matched a decryptor multiplier exactly on 352/352
+  invention jobs (Process 107, Attainment 76, Parity 76, None-or-Symmetry 64,
+  Optimized Attainment 21, Accelerant 8). Section 5 now uses this.
+- **New: journal depth.** ESI exposes only 10 journal pages (10,000
+  entries). For the C-J seller that is about 7.5 days, not 30; the first
+  transaction page (2500) covers about 6 days (older pages via `from_id`).
+  The archive must sync each character at least every few days. The `wallet`
+  kind's frequent tier (1 h) is enough while the scheduler runs, and the D10
+  retention exception is required, not optional. Gap detection compares each
+  sync's oldest returned entry with the newest archived one.
