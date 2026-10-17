@@ -88,8 +88,8 @@ Raw archive (append-only, upsert by natural key, never deleted by a sync):
 
 - `ledger_wallet_transactions` - same columns as `esi_wallet_transactions`
   plus `region_id`, `freight_rate_per_m3`, `freight_m3` (frozen at ingest for
-  The Forge buys, section 5a) and
-  plus `first_seen_at`.
+  The Forge buys, section 5a),
+  and `first_seen_at`.
 - `ledger_wallet_journal` - adds `context_id`, `context_id_type`,
   `first_party_id`, `second_party_id`, `description`, `tax`, `tax_receiver_id`
   to today's columns.
