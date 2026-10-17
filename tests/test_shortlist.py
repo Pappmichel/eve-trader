@@ -2,7 +2,8 @@ from eve_trader.config import TradingConfig
 from eve_trader.esi_client import OrderStats
 from eve_trader.goonmetrics_client import HISTORY_WINDOW_DAYS, HistoryPoint
 from eve_trader.models import ShortlistItem
-from eve_trader.shortlist import (audit_shortlist, average_market_daily_volume, evaluate_shortlist_item,
+from eve_trader.shortlist import (audit_shortlist, average_market_daily_isk_volume, average_market_daily_volume,
+                                   evaluate_shortlist, evaluate_shortlist_item,
                                    summary_counts, top_imports_by_daily_profit)
 
 
@@ -196,6 +197,27 @@ def test_average_market_daily_volume_keeps_type_ids_separate():
 
 def test_average_market_daily_volume_empty_history_returns_empty_dict():
     assert average_market_daily_volume([]) == {}
+
+
+def test_average_market_daily_isk_volume_weights_each_day_by_its_own_price():
+    points = [
+        HistoryPoint(region_id=10000009, type_id=123, date="2026-08-21", min_price=1.0, max_price=2.0,
+                     avg_price=100.0, movement=10.0, num_orders=5),
+        HistoryPoint(region_id=10000009, type_id=123, date="2026-08-20", min_price=1.0, max_price=2.0,
+                     avg_price=200.0, movement=20.0, num_orders=5),
+        # Untraded day: Goonmetrics reports avgPrice 0 and adds nothing.
+        HistoryPoint(region_id=10000009, type_id=123, date="2026-08-19", min_price=0.0, max_price=0.0,
+                     avg_price=0.0, movement=0.0, num_orders=0),
+    ]
+    assert average_market_daily_isk_volume(points) == {123: (10 * 100.0 + 20 * 200.0) / HISTORY_WINDOW_DAYS}
+
+
+def test_evaluate_shortlist_passes_isk_volume_through():
+    item = ShortlistItem(item="X", item_id=7, category="Module", volume_m3=1.0, active=True)
+    rows = evaluate_shortlist([item], {}, {}, {}, TradingConfig(),
+                              avg_daily_volume_by_item={7: 5.0}, avg_daily_isk_volume_by_item={7: 500.0})
+    assert rows[0].avg_daily_volume == 5.0
+    assert rows[0].avg_daily_isk_volume == 500.0
 
 
 def test_summary_counts_and_audit():

@@ -22,7 +22,7 @@ const ROW = {
   sell_volume: 1000, own_orders_remaining: 0, profit_per_unit: 50, margin: 0.5,
   profit_per_m3: 500, decision: 'Import', active: true, item_id: 1, volume_m3: 0.01,
   jita_sell: 95, import_cost: 5, meta_level: null, days_until_deactivation: null,
-  avg_daily_volume: 10000, breakeven_buy_price: 142,
+  avg_daily_volume: 10000, avg_daily_isk_volume: 1_500_000, breakeven_buy_price: 142,
 }
 
 function renderPage() {

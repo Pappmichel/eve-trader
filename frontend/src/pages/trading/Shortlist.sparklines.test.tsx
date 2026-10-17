@@ -25,6 +25,7 @@ const mkRow = (id: number): ShortlistRow => ({
   item: `Item ${id}`, category: 'Ship', landed_cost: 1000, net_sell: 1300, breakeven_buy_price: 1250, sell_volume: 10,
   own_orders_remaining: 0, profit_per_unit: 300, margin: 0.3, profit_per_m3: 100, decision: 'Import', active: true,
   item_id: id, volume_m3: 5, jita_sell: 900, import_cost: 50, meta_level: 0, days_until_deactivation: null, avg_daily_volume: 20,
+  avg_daily_isk_volume: 20_000,
 })
 
 describe('Shortlist 30d sparkline column', () => {
