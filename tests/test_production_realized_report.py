@@ -58,7 +58,7 @@ def _apply_production_ledger_schema(_apply_phase1_schema):
 def _wipe(_apply_production_ledger_schema):
     pg_helpers.wipe_tables(
         "ledger_wallet_transactions", "ledger_wallet_journal",
-        "ledger_industry_jobs", "ledger_job_inputs", "ledger_job_planned_costs",
+        "ledger_industry_jobs", "ledger_job_inputs", "ledger_job_planned_costs", "ledger_valuation_prices",
         "ledger_blueprints",
         "ledger_market_orders", "ledger_contracts", "ledger_contract_items",
         "ledger_archive_gaps", "ledger_sync_state", "ledger_reference_prices",
@@ -69,6 +69,13 @@ def _wipe(_apply_production_ledger_schema):
         "esi_sharing", "character_assets", "corp_assets", "stock_targets",
     )
     yield
+
+
+@pytest.fixture(autouse=True)
+def _no_planner_valuation(monkeypatch):
+    """The planner valuation needs live market prices; tests that want one
+    patch loader._planner_values themselves. Empty = The Forge fallback."""
+    monkeypatch.setattr(loader, "_planner_values", lambda type_ids: {})
 
 
 def _share(owner_id: int, data_kind: str):
@@ -595,3 +602,22 @@ def test_hidden_archive_delete_refuses_while_shared(tenant):
         ).fetchone()[0]
     assert gaps == 0
     assert syncs == 0
+
+
+def test_opening_is_valued_at_the_planner_price(tenant, monkeypatch):
+    """D5/D8: stock without a purchase is valued at what the planner would
+    pay (cheaper of buying and building), not The Forge daily average."""
+    _share(ALICE, "wallet")
+    ledger_db.upsert_ledger_wallet_transactions([
+        ("character", ALICE, 0, 1, T0, TYPE_A, LOC, 100.0, 10, True, 101,
+         None, None, None),
+    ])
+    monkeypatch.setattr(loader, "_planner_values", lambda type_ids: {TYPE_A: (7.0, "buy_home")})
+    _rebuild({TYPE_A: 15})
+    [line] = production_actions.do_get_realized_opening()["rows"]
+    assert line["type_id"] == TYPE_A
+    assert line["quantity"] == pytest.approx(5.0)
+    assert line["unit_cost"] == pytest.approx(7.0)
+    assert line["reference_price"] == pytest.approx(7.0)
+    assert line["valued_as"] == "buy_home"
+

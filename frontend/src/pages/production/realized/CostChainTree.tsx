@@ -91,7 +91,7 @@ export function CostChainTree({ node, locationNames, depth = 0 }: {
         )}
         {estimate && (
           <Text size="xs" c="warn" data-reference-price={node.reference_price ?? ''}>
-            Reference {node.reference_price == null ? '–' : isk(node.reference_price)}
+            Valued at {node.reference_price == null ? '–' : isk(node.reference_price)}
           </Text>
         )}
         {node.kind !== 'job' && node.kind !== 'product' && node.unit_cost != null && (

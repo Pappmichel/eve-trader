@@ -670,3 +670,26 @@ CREATE POLICY tenant_isolation ON ledger_job_planned_costs
     USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 GRANT SELECT, INSERT, UPDATE, DELETE ON ledger_job_planned_costs TO eve_trader_app;
+
+-- ====================================================== valuation prices
+-- What the planner would have paid for one unit (cheaper of the buy-list
+-- purchase price and its build cost), frozen per (type, day) the first time
+-- a rebuild needs it (plan D5/D8). Not derived: there is no price history
+-- for the home structure's market, so a dropped row could not be rebuilt.
+-- source: buy_home / buy_hub / build, or unavailable (fall back to The
+-- Forge daily average in ledger_reference_prices).
+CREATE TABLE IF NOT EXISTS ledger_valuation_prices (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    type_id INTEGER NOT NULL,
+    price_date DATE NOT NULL,
+    unit_value DOUBLE PRECISION,
+    source TEXT NOT NULL,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, type_id, price_date)
+);
+ALTER TABLE ledger_valuation_prices ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON ledger_valuation_prices;
+CREATE POLICY tenant_isolation ON ledger_valuation_prices
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON ledger_valuation_prices TO eve_trader_app;

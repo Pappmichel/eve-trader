@@ -267,6 +267,7 @@ class OpeningRow(BaseModel):
     reference_price: Optional[float] = None
     unit_cost: float
     price_source: str
+    valued_as: Optional[str] = None
     override_unit_cost: Optional[float] = None
     frozen_at: Optional[str] = None
     flags: RealizedFlags

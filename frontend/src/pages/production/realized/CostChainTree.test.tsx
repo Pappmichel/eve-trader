@@ -76,7 +76,7 @@ describe('CostChainTree', () => {
     expect(opening).toHaveAttribute('data-estimate', 'true')
     const unknown = screen.getByText('Mexallon')
     expect(unknown).toHaveAttribute('data-estimate', 'true')
-    expect(screen.getAllByText('Reference 8 ISK').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Valued at 8 ISK').length).toBeGreaterThan(0)
 
     expect(screen.getByText('assumed ME')).toBeInTheDocument()
     expect(screen.getByText('assumed decryptor')).toBeInTheDocument()

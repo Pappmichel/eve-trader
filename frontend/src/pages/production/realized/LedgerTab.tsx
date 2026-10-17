@@ -153,6 +153,21 @@ function HiddenArchiveCell({ row, characters, onDeleted }: {
   )
 }
 
+// How an opening value was found (plan D5/D8): the planner's cheaper of
+// buying (home market, or hub plus freight) and building, else The Forge
+// daily average.
+const VALUED_AS: Record<string, string> = {
+  buy_home: 'Buy at home market',
+  buy_hub: 'Buy at hub + freight',
+  build: 'Build cost',
+  forge_average: 'Forge average (no planner price)',
+}
+
+function valuedAsLabel(value: string | null | undefined): string {
+  if (!value) return '–'
+  return VALUED_AS[value] ?? value
+}
+
 function recordText(record: Record<string, string | number | null>): string {
   const entries = Object.entries(record)
   if (entries.length === 0) return '–'
@@ -209,7 +224,11 @@ export function LedgerTab({
     { header: 'Type', accessorKey: 'type_name', size: 200, cell: (info) => info.getValue() || `Type ${info.row.original.type_id}` },
     { header: 'Frozen quantity', accessorKey: 'quantity', size: 140, cell: (info) => displayQty(info.getValue()) },
     { header: 'Frozen at', accessorKey: 'frozen_at', size: 160, cell: (info) => when(info.getValue()) },
-    { header: 'Reference price on T0', accessorKey: 'reference_price', size: 180, cell: (info) => isk(info.getValue()) },
+    { header: 'Value on T0', accessorKey: 'reference_price', size: 150, cell: (info) => isk(info.getValue()) },
+    {
+      header: 'Valued as', accessorKey: 'valued_as', size: 170,
+      cell: (info) => valuedAsLabel(info.getValue()),
+    },
     { header: 'Unit cost used', accessorKey: 'unit_cost', size: 140, cell: (info) => isk(info.getValue()) },
     { header: 'Price source', accessorKey: 'price_source', size: 130 },
     {
@@ -233,7 +252,7 @@ export function LedgerTab({
               <Button size="compact-xs" variant="subtle" color="danger"
                 onClick={() => modals.openConfirmModal({
                   title: 'Clear opening cost override',
-                  children: <Text size="sm">Remove the override for {row.type_name || `type ${row.type_id}`}? The next recompute uses the reference price again.</Text>,
+                  children: <Text size="sm">Remove the override for {row.type_name || `type ${row.type_id}`}? The next recompute uses the planner value again.</Text>,
                   labels: { confirm: 'Clear override', cancel: 'Cancel' },
                   confirmProps: { color: 'danger' },
                   onConfirm: () => removeEntry.mutate(stored.entry_id, {

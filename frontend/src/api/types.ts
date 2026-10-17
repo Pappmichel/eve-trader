@@ -2866,6 +2866,8 @@ export interface RealizedOpeningRow {
   reference_price: number | null
   unit_cost: number
   price_source: string
+  /** How the T0 value was found: buy_home, buy_hub, build or forge_average. */
+  valued_as: string | null
   override_unit_cost: number | null
   frozen_at: string | null
   flags: RealizedFlags

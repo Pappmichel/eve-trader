@@ -270,7 +270,20 @@ day of use. There is no separate "own" origin (mined/refined/PI items produce
 no ESI event; decision D5): they are `opening` or `unknown` like any other
 item without a purchase.
 
-**Reference price** (used for D4, D5, D8 only): The Forge daily average from
+**Valuation (revised 2026-10-17 with the user).** Stock without a purchase
+(opening, unknown) and the D4 split weights use what the planner would
+actually pay for one unit: the cheaper of the buy-list purchase price
+(`pricing.buy_price`: home market, or hub plus freight, both with the buy
+broker fee) and the planner's build cost (`engine._unit_cost`, via
+`engine.planner_unit_values`). Example: Tritanium is cheaper at C-J, so it is
+valued at the C-J price, not at The Forge average. The value is frozen per
+(type, day) in `ledger_valuation_prices` the first time a rebuild needs it;
+the home structure's market has no history, so a day already past at that
+point gets that rebuild's price. Where the planner has no value (no sell
+order anywhere and not buildable) the reference price below is the
+fallback, labeled "Forge average".
+
+**Reference price** (fallback for the valuation above): The Forge daily average from
 the app's existing daily-history read (`price_history`: Goonmetrics region
 history for The Forge, ESI daily history for types Goonmetrics lacks), cached
 per (type, date) in `ledger_reference_prices` so a
@@ -482,7 +495,8 @@ Trading's).
   price paid. A single-type contract needs no split. Bought BPCs get their
   share as a runs layer.
 - **D5 inputs without a purchase: one profit figure.** Opening and unknown
-  inputs are valued at the reference price (section 6), flagged, with a
+  inputs are valued at the planner valuation (section 6; revised
+  2026-10-17, The Forge average is only the fallback), flagged, with a
   coverage %. No separate "own" origin for mined/refined/PI items (not
   detectable from ESI; the user chose no split), and therefore no second
   "cash cost" profit figure - with no own origin and estimates at market price
@@ -493,7 +507,7 @@ Trading's).
 - **D7 corp data:** corp jobs by `installer_id`; corp wallets only for corps
   or divisions marked "mine alone" (default off).
 - **D8 opening inventory: automatic, manually overridable**, at one cutover
-  T0, oldest layer, reference price on T0 (section 6).
+  T0, oldest layer, planner valuation on T0 (section 6).
 - **D9 freight:** every unit bought in The Forge gets freight to the home
   structure at the rate the planner uses (`haul_cost_per_m3`, or the hub table
   entry in "All hubs" mode) x packaged m3, frozen per purchase at ingest.
@@ -970,3 +984,7 @@ spell out):
   bug: with T0 one week back almost every sale draws on opening stock
   (coverage ~2 %), and C-J sells 10-30 % below the Forge average, so those
   sales show a loss against the opening's market value (D5).
+  Follow-up decision with the user the same day: value stock without a
+  purchase like the buy list does (cheaper of buying at C-J or the hub plus
+  freight, and building), not at The Forge average - section 6
+  "Valuation", `COSTING_VERSION` 3 re-derives the opening once.

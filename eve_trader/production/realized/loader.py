@@ -56,9 +56,10 @@ from .costing import (
 
 log = logging.getLogger(__name__)
 
-# Bump when a rebuild must re-derive opening inventory once (Phase 5 adds
-# contract flows). NULL on an older run counts as older than this.
-COSTING_VERSION = 2
+# Bump when a rebuild must re-derive opening inventory once. 2: Phase 5
+# contract flows. 3: stock without a purchase is valued at the planner's
+# price instead of The Forge daily average. NULL counts as older.
+COSTING_VERSION = 3
 
 # The Forge daily average is the reference price (plan section 6).
 _REFERENCE_REGION_ID = db.THE_FORGE_REGION_ID
@@ -72,6 +73,7 @@ _PRICE_NEAREST_DAYS = 7
 # a miss for them.
 _NEGATIVE_CACHE_MIN_AGE_DAYS = 2
 _MISSING_SOURCE = "none"
+_VALUATION_UNAVAILABLE = "unavailable"
 
 _DECRYPTOR_RUN_BONUS = {d.type_id: d.run_bonus for d in DECRYPTORS.values() if d.type_id}
 
@@ -342,16 +344,73 @@ def _uses_bpc(job_row: tuple, bp_runs: dict[int, int], invented: frozenset[int])
 
 # ------------------------------------------------------------ reference prices
 def _cached_prices(type_ids: set[int]) -> tuple[dict[tuple[int, date], float], set[tuple[int, date]]]:
-    """(prices, known misses) from ledger_reference_prices."""
+    """(prices, known misses) for stock without a purchase (D5/D8).
+
+    A (type, day) is valued at the frozen planner valuation
+    (ledger_valuation_prices: the cheaper of the buy-list purchase price and
+    the build cost). Only where the planner had no value ("unavailable")
+    does The Forge daily average (ledger_reference_prices) apply. A known
+    miss is a key neither source can price. A key with no valuation row yet
+    is neither: the next rebuild values it."""
+    ids = sorted(type_ids)
+    forge: dict[tuple[int, date], tuple[float, str]] = {
+        (int(tid), _as_date(pd)): hit for (tid, pd), hit in db.list_cached_reference_prices(ids).items()
+    }
     prices: dict[tuple[int, date], float] = {}
     misses: set[tuple[int, date]] = set()
-    for (tid, pd), (price, source) in db.list_cached_reference_prices(sorted(type_ids)).items():
+    for (tid, pd), (value, source) in db.list_cached_valuation_prices(ids).items():
         key = (int(tid), _as_date(pd))
-        if source == _MISSING_SOURCE:
+        if source != _VALUATION_UNAVAILABLE and value is not None:
+            prices[key] = float(value)
+            continue
+        hit = forge.get(key)
+        if hit is None:
+            continue
+        if hit[1] == _MISSING_SOURCE:
             misses.add(key)
         else:
-            prices[key] = float(price)
+            prices[key] = float(hit[0])
     return prices, misses
+
+
+def _planner_values(type_ids: set[int]) -> dict[int, tuple[float, str]]:
+    from ..engine import planner_unit_values
+    return planner_unit_values(type_ids, PRODUCTION_CONFIG)
+
+
+def _fetch_valuations(requests: set[tuple[int, date]]) -> dict[tuple[int, date], float]:
+    """Value the requested (type, day) pairs that have no valuation row yet
+    with today's planner prices and freeze them. The home structure's market
+    has no price history, so a day already past is valued at the price of
+    the rebuild that first needs it. A type the planner cannot price is
+    stored as unavailable and falls back to The Forge daily average. If the
+    planner priced nothing at all (an ESI outage), nothing is stored and the
+    next rebuild tries again."""
+    if not requests:
+        return {}
+    known = {(int(tid), _as_date(pd)) for (tid, pd) in
+             db.list_cached_valuation_prices(sorted({tid for tid, _d in requests}))}
+    todo = sorted(key for key in requests if key not in known)
+    if not todo:
+        return {}
+    try:
+        values = _planner_values({tid for tid, _d in todo})
+    except Exception:  # noqa: BLE001 - a valuation failure must not fail the rebuild
+        log.exception("realized: planner valuation failed; using The Forge daily average")
+        return {}
+    if not values:
+        return {}
+    rows: list[tuple] = []
+    found: dict[tuple[int, date], float] = {}
+    for tid, day in todo:
+        hit = values.get(tid)
+        if hit is None:
+            rows.append((tid, day, None, _VALUATION_UNAVAILABLE))
+        else:
+            rows.append((tid, day, float(hit[0]), str(hit[1])))
+            found[(tid, day)] = float(hit[0])
+    db.upsert_valuation_prices(rows)
+    return found
 
 
 def _pick_price(series: dict[date, tuple[float, str]], day: date) -> Optional[tuple[float, str]]:
@@ -615,7 +674,9 @@ def _run_costing(snapshot: LedgerSnapshot, today: Optional[date] = None):
         return result
     _prices, misses = _cached_prices({tid for tid, _d in requests})
     requests -= misses
-    found = _fetch_reference_prices(requests, today or datetime.now(timezone.utc).date())
+    found = _fetch_valuations(requests)
+    rest = requests - set(found)
+    found.update(_fetch_reference_prices(rest, today or datetime.now(timezone.utc).date()))
     if not found:
         return result
     merged = {**snapshot.reference_prices, **found}

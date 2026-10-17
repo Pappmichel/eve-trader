@@ -50,7 +50,7 @@ def _apply_production_ledger_schema(_apply_phase1_schema):
 def _wipe(_apply_production_ledger_schema):
     pg_helpers.wipe_tables(
         "ledger_wallet_transactions", "ledger_wallet_journal",
-        "ledger_industry_jobs", "ledger_job_inputs", "ledger_job_planned_costs",
+        "ledger_industry_jobs", "ledger_job_inputs", "ledger_job_planned_costs", "ledger_valuation_prices",
         "ledger_blueprints",
         "ledger_market_orders", "ledger_contracts", "ledger_contract_items",
         "ledger_archive_gaps", "ledger_sync_state", "ledger_reference_prices",
@@ -61,6 +61,13 @@ def _wipe(_apply_production_ledger_schema):
         "stock_targets",
     )
     yield
+
+
+@pytest.fixture(autouse=True)
+def _no_planner_valuation(monkeypatch):
+    """The planner valuation needs live market prices; tests that want one
+    patch loader._planner_values themselves. Empty = The Forge fallback."""
+    monkeypatch.setattr(loader, "_planner_values", lambda type_ids: {})
 
 
 def _share(owner_id: int, data_kind: str):
@@ -199,6 +206,10 @@ def test_reference_prices_fall_back_to_esi_and_nearest_day_and_cache_misses(tena
     # TYPE_A: no Oct 1 / Oct 2 trade -> nearest traded day (Oct 3, +2 days).
     assert found == {(TYPE_A, date(2026, 10, 1)): 50.0, (TYPE_B, date(2026, 10, 1)): 7.0}
     assert calls["esi"] == [[TYPE_B, 999]]
+    # The Forge average applies only where the planner had no value.
+    ledger_db.upsert_valuation_prices([
+        (tid, date(2026, 10, 1), None, "unavailable") for tid in (TYPE_A, TYPE_B, 999)
+    ] + [(999, date(2026, 10, 16), None, "unavailable")])
     prices, misses = loader._cached_prices({TYPE_A, TYPE_B, 999})
     assert prices == found
     assert misses == {(999, date(2026, 10, 1))}   # old enough -> cached as a miss
@@ -300,3 +311,45 @@ def test_tenant_characters_include_every_token_character(tenant, monkeypatch):
     ])
     assert loader._tenant_character_ids() == frozenset({ALICE, 910002, 910003})
 
+
+def test_planner_valuation_wins_and_forge_is_only_the_fallback(tenant, monkeypatch):
+    from datetime import date
+
+    day = date(2026, 10, 10)
+    ledger_db.upsert_reference_prices([
+        (TYPE_A, day, 337.0, "goonmetrics"), (TYPE_B, day, 9.0, "goonmetrics"),
+    ])
+    calls = []
+
+    def planner(type_ids):
+        calls.append(sorted(type_ids))
+        return {TYPE_A: (250.0, "build")}  # TYPE_B: no buy or build price
+
+    monkeypatch.setattr(loader, "_planner_values", planner)
+    found = loader._fetch_valuations({(TYPE_A, day), (TYPE_B, day)})
+    assert found == {(TYPE_A, day): 250.0}
+    assert calls == [[TYPE_A, TYPE_B]]
+    prices, misses = loader._cached_prices({TYPE_A, TYPE_B})
+    # Planner value beats the cached Forge average; TYPE_B falls back to it.
+    assert prices == {(TYPE_A, day): 250.0, (TYPE_B, day): 9.0}
+    assert misses == set()
+    # Frozen: a second call does not price again.
+    assert loader._fetch_valuations({(TYPE_A, day), (TYPE_B, day)}) == {}
+    assert len(calls) == 1
+    assert ledger_db.price_sources_on([TYPE_A, TYPE_B], day) == {TYPE_A: "build", TYPE_B: "forge_average"}
+
+
+def test_planner_outage_stores_nothing(tenant, monkeypatch):
+    from datetime import date
+
+    day = date(2026, 10, 10)
+    monkeypatch.setattr(loader, "_planner_values", lambda type_ids: {})
+    assert loader._fetch_valuations({(TYPE_A, day)}) == {}
+    assert ledger_db.list_cached_valuation_prices([TYPE_A]) == {}
+
+    def boom(type_ids):
+        raise RuntimeError("ESI down")
+
+    monkeypatch.setattr(loader, "_planner_values", boom)
+    assert loader._fetch_valuations({(TYPE_A, day)}) == {}
+    assert ledger_db.list_cached_valuation_prices([TYPE_A]) == {}

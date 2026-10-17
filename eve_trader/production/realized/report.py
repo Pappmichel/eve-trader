@@ -896,6 +896,7 @@ def opening() -> dict:
         rows = db.list_opening_lines()
         overrides = db.list_opening_cost_overrides()
         names = _names({int(r[0]) for r in rows})
+        valued_as = db.price_sources_on([int(r[0]) for r in rows], t0.date()) if t0 is not None else {}
     out = []
     for type_id, raw, qty, unit_cost, source, reference, frozen_at in rows:
         tid = int(type_id)
@@ -908,6 +909,8 @@ def opening() -> dict:
             "reference_price": None if reference is None else float(reference),
             "unit_cost": _num(unit_cost),
             "price_source": str(source),
+            # buy_home / buy_hub / build / forge_average: how the T0 value was found.
+            "valued_as": valued_as.get(tid),
             "override_unit_cost": None if override is None else float(override),
             "frozen_at": _iso(frozen_at),
             "flags": _flags(

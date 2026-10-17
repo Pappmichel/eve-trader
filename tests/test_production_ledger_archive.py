@@ -48,7 +48,7 @@ def _apply_production_ledger_schema(_apply_phase1_schema):
 def _wipe(_apply_production_ledger_schema):
     pg_helpers.wipe_tables(
         "ledger_wallet_transactions", "ledger_wallet_journal",
-        "ledger_industry_jobs", "ledger_job_inputs", "ledger_job_planned_costs",
+        "ledger_industry_jobs", "ledger_job_inputs", "ledger_job_planned_costs", "ledger_valuation_prices",
         "ledger_blueprints",
         "ledger_market_orders", "ledger_contracts", "ledger_contract_items",
         "ledger_archive_gaps", "ledger_sync_state", "esi_sharing",

@@ -5026,3 +5026,36 @@ def t1_bpc_invention_needs(invention_list: list[InventionNeedRow],
         ))
     rows.sort(key=lambda r: -r.missing)
     return rows
+
+
+@storage.with_batch_session()
+def planner_unit_values(type_ids: Iterable[int],
+                        cfg: ProductionConfig = PRODUCTION_CONFIG) -> dict[int, tuple[float, str]]:
+    """What the planner would pay for one unit right now: the cheaper of the
+    buy-list purchase price (pricing.buy_price: home market or hub plus
+    freight, both with the buy broker fee) and its own build cost, exactly
+    as _unit_cost decides it. {type_id: (value, source)} with source
+    "buy_home", "buy_hub" or "build"; types the planner cannot price are
+    left out. Production realized profit values stock without a purchase
+    with this (plan D5/D8)."""
+    ids = sorted({int(t) for t in type_ids})
+    if not ids:
+        return {}
+    ctx = _PlanContext(cfg, extra_type_ids=ids)
+    memo: dict[int, Optional[float]] = {}
+    t2_memo: dict[int, tuple[float, float, Optional[str]]] = {}
+    out: dict[int, tuple[float, str]] = {}
+    for type_id in ids:
+        value = _unit_cost(type_id, cfg, ctx.home, ctx.jita, memo, ctx.selected_decryptors,
+                           t2_memo, ctx.cost_indices, ctx.adjusted_prices)
+        if value is None or value <= 0:
+            continue
+        volume = _haul_volume(type_id, cfg)
+        buy = pricing.buy_price(type_id, ctx.home, ctx.jita, volume, cfg)
+        if buy is not None and value >= buy - 1e-9:
+            where = pricing.buy_source(type_id, ctx.home, ctx.jita, volume, cfg)
+            source = "buy_home" if where == "C-J" else "buy_hub"
+        else:
+            source = "build"
+        out[type_id] = (float(value), source)
+    return out

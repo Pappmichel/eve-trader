@@ -857,6 +857,60 @@ def upsert_reference_prices(rows: list[tuple]) -> int:
     return len(rows)
 
 
+def list_cached_valuation_prices(
+    type_ids: list[int],
+) -> dict[tuple[int, object], tuple[Optional[float], str]]:
+    """{(type_id, price_date): (unit_value, source)} for the given types.
+    unit_value is None for source "unavailable"."""
+    if not type_ids:
+        return {}
+    unique = list(dict.fromkeys(int(t) for t in type_ids))
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, price_date, unit_value, source "
+            "FROM ledger_valuation_prices WHERE type_id = ANY(?)",
+            (unique,),
+        ).fetchall()
+    return {(int(r[0]), r[1]): (None if r[2] is None else float(r[2]), str(r[3])) for r in rows}
+
+
+def upsert_valuation_prices(rows: list[tuple]) -> int:
+    """`rows`: (type_id, price_date, unit_value, source). Insert-only freeze."""
+    if not rows:
+        return 0
+    with storage.connect() as conn:
+        conn.executemany(
+            "INSERT INTO ledger_valuation_prices (type_id, price_date, unit_value, source) "
+            "VALUES (?,?,?,?) "
+            "ON CONFLICT (tenant_id, type_id, price_date) DO NOTHING",
+            rows,
+        )
+    return len(rows)
+
+
+def price_sources_on(type_ids: list[int], day) -> dict[int, str]:
+    """How each type was valued on `day`: the valuation source (buy_home /
+    buy_hub / build), else "forge_average" when only The Forge daily
+    average was used, else missing from the dict."""
+    if not type_ids:
+        return {}
+    unique = list(dict.fromkeys(int(t) for t in type_ids))
+    with storage.connect() as conn:
+        valued = conn.execute(
+            "SELECT type_id, source FROM ledger_valuation_prices "
+            "WHERE type_id = ANY(?) AND price_date = ? AND source <> 'unavailable'",
+            (unique, day),
+        ).fetchall()
+        forge = conn.execute(
+            "SELECT type_id FROM ledger_reference_prices "
+            "WHERE type_id = ANY(?) AND price_date = ? AND source <> 'none'",
+            (unique, day),
+        ).fetchall()
+    out = {int(r[0]): "forge_average" for r in forge}
+    out.update({int(r[0]): str(r[1]) for r in valued})
+    return out
+
+
 def list_opening_cost_overrides() -> dict[int, float]:
     """Manual opening unit-cost overrides: type_id -> amount (ISK/unit)."""
     with storage.connect() as conn:

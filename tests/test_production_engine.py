@@ -6181,3 +6181,24 @@ def test_use_stocked_relics_keeps_rows_unchanged_without_relics(monkeypatch):
                             decryptor="None", probability=0.5, output_runs=10, runs_needed=10, bpcs_needed=1,
                             recommended_invention_runs=2, t2_bpc_owned=0)
     assert engine._use_stocked_relics([need], ProductionConfig(), {}, {}, {}, {}) == [need]
+
+
+def test_planner_unit_values_takes_the_cheaper_of_buy_and_build(monkeypatch):
+    """Realized profit's valuation (plan D5/D8) is the planner's own
+    best-of-buy-or-build, labelled with where the value came from."""
+    from types import SimpleNamespace
+
+    from eve_trader.production import engine as eng
+
+    ctx = SimpleNamespace(home={}, jita={}, selected_decryptors={}, cost_indices={}, adjusted_prices={})
+    monkeypatch.setattr(eng, "_PlanContext", lambda cfg, extra_type_ids=(): ctx)
+    unit = {34: 4.0, 35: 9.0, 36: 50.0, 37: None}
+    monkeypatch.setattr(eng, "_unit_cost", lambda tid, *a, **k: unit[tid])
+    monkeypatch.setattr(eng, "_haul_volume", lambda tid, cfg: 0.01)
+    buy = {34: 4.0, 35: 9.0, 36: 80.0, 37: None}
+    where = {34: "C-J", 35: "Jita", 36: "Jita", 37: None}
+    monkeypatch.setattr(eng.pricing, "buy_price", lambda tid, *a, **k: buy[tid])
+    monkeypatch.setattr(eng.pricing, "buy_source", lambda tid, *a, **k: where[tid])
+    values = eng.planner_unit_values.__wrapped__([34, 35, 36, 37])
+    assert values == {34: (4.0, "buy_home"), 35: (9.0, "buy_hub"), 36: (50.0, "build")}
+
