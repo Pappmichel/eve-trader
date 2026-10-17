@@ -1,14 +1,14 @@
-# Realized profit for Production, Trading and Doctrine - unified plan
+# Realized profit for Production, Trading, Doctrine and Station Trading - unified plan
 
-Status: **draft, decisions open** (2026-10-18). Nothing in this plan is built
-yet. The decisions in section 4 need the user's confirmation before Phase 1
-starts; each phase ends with a review and a test-server check like the
-Production realized-profit work (`docs/PRODUCTION_REALIZED_PROFIT_PLAN.md`,
-referred to as "the Production plan" below).
+Status: **planned, decisions U1-U11 confirmed 2026-10-18; ST1-ST3 open.**
+Nothing in this plan is built yet. Each phase ends with a review and a
+test-server check like the Production realized-profit work
+(`docs/PRODUCTION_REALIZED_PROFIT_PLAN.md`, referred to as "the Production
+plan" below).
 
 ## 1. Goal
 
-One realized-profit ledger for the whole tenant, read by three tools:
+One realized-profit ledger for the whole tenant, read by four tools:
 
 - **Production** - goods it produced or that are Production types, sold on
   the market or by contract (what exists today).
@@ -18,8 +18,10 @@ One realized-profit ledger for the whole tenant, read by three tools:
   alliance members). New page, analogous to the other two, that shows for
   every contract how much of its cost came from **own production** and how
   much from **purchases/imports**.
+- **Station Trading** - buy and sell orders at one hub station (default
+  Jita 4-4), profit from the spread. New page.
 
-Every sale belongs to exactly one tool, so the three realized profits add up
+Every sale belongs to exactly one tool, so the four realized profits add up
 to the tenant's total realized profit without double counting. All three use
 the same inventory (FIFO layers), the same purchase prices, fees, freight
 and valuation, so the same item never has two different costs in two tools.
@@ -56,6 +58,14 @@ purchase at Production's rate. Report API, page, Portfolio card.
   (`trading_realized_profit`, daily volatility); the shortlist no longer uses
   it (issue #100).
 
+### Station Trading
+
+Trades on one station's order book (`StationTradingConfig.station_id`,
+default Jita 4-4, the same station Trading imports from). Reads market
+orders and skills only - **no wallet** (`registry.py`: wallet is consumed by
+Trading and Production). Shows live spreads; no cost or profit anywhere.
+Its own broker fee and sales tax settings are planning inputs.
+
 ### Doctrine
 
 `doctrine_contracts` is the active snapshot; `doctrine_contract_history`
@@ -80,7 +90,7 @@ at the doctrine structure. No cost or profit anywhere.
 Every realized result gets two independent labels:
 
 - **Channel** - *who sold it and how*. Decides which tool reports the sale.
-  `production`, `trading`, `doctrine`.
+  `production`, `trading`, `doctrine`, `station_trading`.
 - **Origin** of each unit's cost - *where the goods came from*. Already on
   every draw: `produced`, `bought` (market, with the hub region), `contract`
   (bought by contract), `opening`, `unknown`.
@@ -96,17 +106,20 @@ Channel rules (decision U1):
 
 1. A finished item-exchange contract that is a **doctrine contract** (U7)
    -> `doctrine`, for **all** its items, at the contract price.
-2. Any other contract sale and any market sale of a **Production type**
+2. A market sale **at the Station Trading station** by an owner whose
+   wallet is shared with Station Trading -> `station_trading` (ST2).
+3. Any other contract sale and any market sale of a **Production type**
    -> `production` (today's rule).
-3. Any other market sale at the home structure (or anywhere) -> `trading`.
-4. Other contract sales of non-Production types -> `trading`.
+4. Any other market sale (home structure or elsewhere) -> `trading`.
+5. Other contract sales of non-Production types -> `trading`.
 
-The tenant's total realized profit is the sum over all three channels.
+The tenant's total realized profit is the sum over all four channels.
 
-## 4. Decisions to confirm
+## 4. Decisions
 
-Recommendations are marked; alternatives are listed so the choice is
-explicit.
+U1-U11 confirmed with the user on 2026-10-18 (U11 changed: Station Trading
+is in scope, see ST1-ST3). The alternatives are kept so the reasoning stays
+visible.
 
 **U1 Channel rules** - as in section 3. A doctrine contract wins over the
 Production-type rule: a produced hull sold in a doctrine contract counts
@@ -114,16 +127,16 @@ for Doctrine, and Production's own report no longer shows it as a Production
 sale (today it does, via Phase 5's contract sales). Production's page gets a
 line "Produced goods sold through Doctrine" so that output is still visible.
 
-**U2 One inventory, one FIFO** (recommended). The three tools draw from one
+**U2 One inventory, one FIFO** (confirmed). The three tools draw from one
 set of layers per type (Production plan D2). Sale order stays Production
 plan D6 for Production types (produced, then opening, then the rest); for
 all other types plain FIFO. Alternative: separate inventories per tool -
 rejected, the same physical item would carry two costs.
 
-**U3 Sharing (D11) across three tools** - the important one.
-- (a) *Recommended:* the archive and the costing use the **union** of
-  owners shared with any of Production, Trading or Doctrine for a kind
-  (wallet: Trading/Production; contracts: Doctrine/Production; jobs,
+**U3 Sharing (D11) across the tools** - the important one.
+- (a) *Confirmed:* the archive and the costing use the **union** of
+  owners shared with any realized tool for a kind (wallet: Trading,
+  Production, Station Trading; contracts: Doctrine, Production; jobs,
   blueprints: Production). Each tool's page shows only results of its own
   channel, and only when the selling owner is shared with that tool (market
   sales: wallet; doctrine contracts: contracts with Doctrine). A buy shared
@@ -137,7 +150,7 @@ rejected, the same physical item would carry two costs.
   Cleanest semantically, more UI work, every tenant has to set it once.
 
 **U4 Freight** - one rate per hub for a purchase, frozen at ingest
-(recommended): the shared hub freight table (`/api/hubs/freight`, already
+(confirmed): the shared hub freight table (`/api/hubs/freight`, already
 tenant-wide) for every hub, fallback Production's `haul_cost_per_m3`. The
 tools' own `import_cost_per_m3` fields stay planning inputs only. This also
 gives Insmother buys freight once the table has an entry (today: none). A
@@ -157,7 +170,7 @@ apply to every channel. Contract sales carry no sales tax or broker fee
 (contract broker fees from the journal are spread over the issuer's
 contracts of that day, same idea as D12).
 
-**U7 What is a doctrine contract** (recommended): a finished item exchange
+**U7 What is a doctrine contract** (confirmed): a finished item exchange
 in the ledger archive whose issuer is a tenant character (including a corp
 contract issued by that character, Production plan D7), at the doctrine
 structure (`DoctrineConfig.effective_structure_id`), and whose owner shares
@@ -171,7 +184,7 @@ tenant's own characters or with its own corp stay internal transfers.
 the contract is attributed to the issuing character (same as D7 for corp
 jobs). Confirmed for Production contracts already; applies here too.
 
-**U9 No internal transfer price** (recommended). A produced hull sold in a
+**U9 No internal transfer price** (confirmed). A produced hull sold in a
 doctrine contract enters at its production cost; the whole margin is
 Doctrine's. The Doctrine page shows for the produced part an informational
 "production saving" = planner buy price - production cost, so the value
@@ -184,10 +197,39 @@ Portfolio's Trading figures read the ledger; the Reconcile button becomes
 "Recompute"; the table and `trade_reconciliation.py` are removed one
 release later (kept read-only for comparison in between).
 
-**U11 Out of scope**: Station Trading (buys and sells at one station, own
-tool), courier income, PI income, mining. They remain consumers of layers
-where their items pass through (a station-traded item still moves stock),
-but no channel and no report in this plan.
+**U11 Scope** (confirmed, changed from the draft): **Station Trading is a
+fourth channel** (ST1-ST3). Still out of scope: courier income, PI income,
+mining. Their items still move stock; a warning lists sales that fit no
+channel rule so nothing is silently lost.
+
+**ST1 Where station-trading stock comes from** (to confirm). The Production
+plan's D2 ignores location because moves between stations are invisible in
+ESI. Station Trading breaks that assumption: it buys and sells at the same
+station Trading imports from, and a Jita buy can be a station trade (stays
+and is resold there) or an import (hauled home).
+- *Recommended - station pool first:* a buy **at the Station Trading
+  station** goes into that station's pool. A sell at that station draws
+  from the station pool first (FIFO), then from the global pool. A sell
+  anywhere else (home structure) draws from the global pool, and when that
+  runs out, from the station pool (the item was evidently hauled). Station
+  trades then match their own buys; imports still find their Jita buys.
+- Alternative - by character: buys of characters that share their wallet
+  only with Station Trading form the station pool. Simpler, but breaks when
+  one character does both.
+- Alternative - global FIFO (D2 unchanged): a station sale may draw an
+  import lot and the reverse; Station Trading margins become meaningless.
+
+**ST2 Station Trading needs the wallet** (to confirm). `wallet` gets
+`station_trading` as a consuming tool (`esi_data/registry.py`), so the
+Characters page offers the switch. Only sales by owners sharing their wallet
+with Station Trading get the `station_trading` channel; a sale at that
+station by anyone else stays `trading`/`production`.
+
+**ST3 Station Trading's fees** (to confirm): real fees like every channel
+(U6) - broker fees per day spread over that day's fills, which already
+covers both legs (buy orders and sell orders) and relists; sales tax from
+the journal. The tool's `broker_fee_rate`/`sales_tax_rate` stay planning
+inputs. Station-trade buys get no freight (same station).
 
 ## 5. Data and engine changes
 
@@ -215,6 +257,7 @@ eve_trader/realized/            # shared: ingest, access, db, costing, loader, n
 eve_trader/production/realized/ # Production report + actions (thin)
 eve_trader/trade_realized/      # Trading report + actions (new; trade_reconciliation retired)
 eve_trader/doctrine/realized.py # Doctrine report + actions (new)
+eve_trader/station_trading/realized.py # Station Trading report + actions (new)
 ```
 
 Valuation (`planner_unit_values`) stays in `production/engine.py`; the
@@ -232,8 +275,11 @@ deploy list touched for no gain); new columns are idempotent additions.
   `fitting_id`. A doctrine contract books **one result per contract**
   (`sale_ref = contract:<id>`) with all items' draws, revenue = contract
   price, channel `doctrine`. Per-type results inside it are not created.
-- Market-sale channel: `production` when the type is a Production type,
-  else `trading`.
+- Market-sale channel: `station_trading` at the Station Trading station
+  for an owner sharing the wallet with it (ST2), else `production` when the
+  type is a Production type, else `trading`.
+- Layers get a `pool` (`global` or the Station Trading station id) and the
+  draw order of ST1.
 - Purchases in any hub region get frozen freight from the hub table (U4);
   the Forge-only rule goes.
 - Sales tax lookup keeps the id-gap fix; broker fees per day (D12) are
@@ -268,12 +314,18 @@ The old "top 3 items" becomes the sorted item table; cumulative chart stays.
   produced items the job chain (reuses the Production cost chain).
 - Production saving per contract (U9, information only).
 
+**Station Trading** (`/api/station-trading/realized/...`, page under
+Station Trading): summary, per item (units traded, avg buy, avg sell net of
+fees, spread captured, profit, margin, turnover days = time from buy to
+sell), per sale with the buy lot, fees per day, open position at cost
+(station pool left).
+
 **Production**: unchanged except channel filter, the new "sold through
 Doctrine" line (U1), and its contract sales no longer including doctrine
 contracts.
 
 **Portfolio**: one "Realized profit" card per tool the session holds, plus
-a total when it holds more than one.
+a total when it holds more than one (up to four).
 
 ## 6. Phases
 
@@ -311,6 +363,12 @@ server. `realized_trades` stays read-only (U10).
 fitting resolution, API, page, Portfolio card. Test server: every finished
 doctrine contract in the archive appears once, with an origin split.
 
+**Phase 4b - Station Trading.** Wallet sharing for Station Trading (ST2),
+station pool (ST1), channel, report, page, Portfolio card. Needs a
+character that actually station-trades on the test server; if none does,
+the phase is verified with a seeded test tenant and the Default tenant only
+confirms nothing else changed.
+
 **Phase 5 - clean-up.** Remove `trade_reconciliation.py` and
 `realized_trades` (with the Portfolio history figures that need it switched
 first), update CLAUDE.md (price sources matrix, realized section, the
@@ -325,9 +383,10 @@ fetcher exception), README.
 - **Sharing semantics (U3a)** widen what a cost can draw on; the page must
   say which owners are included. If the user prefers strict scopes, U3c is
   the clean path, at the cost of a Characters-page change.
-- **Station Trading** sells from the same assets in some setups; its sales
-  consume layers but are not reported (U11). A warning lists such sales so
-  they are not silently lost.
+- **Station pool (ST1)** is a heuristic: an item bought at the station and
+  hauled home looks like station stock until a home sale needs it. Drift
+  checks per pool would be wrong for the same reason, so drift stays per
+  type (global).
 - **Performance.** All channels in one rebuild: ~2x the results of today
   (12k sells instead of 7k on the test server); rebuild stays a background
   job (today 15-45 s).
