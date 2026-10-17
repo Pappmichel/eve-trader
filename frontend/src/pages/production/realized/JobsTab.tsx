@@ -38,7 +38,7 @@ const jobColumns: ColumnDef<RealizedJobRow, any>[] = [
   },
   {
     // Filter and sort by the label the cell shows ("Invention"), not the id.
-    header: 'Activity', id: 'activity', size: 130,
+    header: 'Activity', id: 'activity', size: 160,
     accessorFn: (row) => activityLabel(row.activity_id),
   },
   {
@@ -79,7 +79,7 @@ const groupColumns: ColumnDef<RealizedJobGroup, any>[] = [
     header: 'Product', accessorKey: 'type_name', size: 220,
     cell: (info) => info.getValue() || `Type ${info.row.original.type_id}`,
   },
-  { header: 'Activity', id: 'activity', size: 130, accessorFn: (row) => activityLabel(row.activity_id) },
+  { header: 'Activity', id: 'activity', size: 160, accessorFn: (row) => activityLabel(row.activity_id) },
   { header: 'Jobs', accessorKey: 'jobs', size: 80, cell: (info) => qty(info.getValue()) },
   {
     header: 'Runs', accessorKey: 'runs', size: 150,
