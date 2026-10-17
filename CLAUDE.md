@@ -146,8 +146,36 @@ stores a fingerprint of the shared owners (`access.owner_scope_hash`); the
 report hides a run whose fingerprint no longer matches, so D11 also holds
 for derived rows. Opening quantities are frozen per type
 (`prod_opening_frozen`, not a derived table) and only re-derived when T0 or
-that fingerprint changes or on `--reset-opening`; re-deriving them on every
-rebuild would make the inventory drift check always zero.
+that fingerprint changes, on `--reset-opening`, or once when the latest run's
+`costing_version` is NULL or lower than the loader's current version
+(`prod_ledger_runs.costing_version`, currently 2). After that rebuild the
+opening is frozen again. Re-deriving it on every rebuild would make the
+inventory drift check always zero.
+
+Finished item-exchange contracts (`status = 'finished'`, `date_completed`
+set) enter costing through `LedgerSnapshot.contracts`. A contract whose
+issuer and acceptor are both tenant owners is ignored. The tenant as
+acceptor books items the issuer provides (`is_included`) as `bought` layers
+dated `date_completed`, origin stays `bought` and `source` is `contract`;
+the price is split by reference value at that date (D4) and the shares sum
+exactly to the price. The tenant as issuer books Production-type items it
+gives as sales under the same FIFO order as market sales, with no sales tax
+and no broker fee. A contract that both gives and receives items is booked
+on both sides and warned `contract_item_swap`. Freight on a contract buy in
+The Forge is the configured rate times packaged m3, frozen on
+`ledger_contract_items` at ingest. Draws and sales persist `source`
+(`market` / `contract`). Courier contracts the tenant issued are archived
+(`volume`, `collateral`, `region_id`) and never enter costing;
+`GET /api/production/realized/courier` compares Forge-to-home reward per m3
+with the configured rate.
+
+`ledger_job_planned_costs` is an archive table (not in the rebuild's replace
+set). The first time a job is archived, a cached planner cost/unit is frozen
+if one is already in memory (build plan, asset plan, ship-margin cache, or
+discover cache); otherwise the row stores NULL. No new network call runs on
+that path. The products report exposes `planned_cost_per_unit` and
+`planned_coverage`. Hidden archive rows of a kind can be counted and deleted
+per owner while that kind is not shared with Production.
 
 ## Architecture: actions.py is the one entry point
 

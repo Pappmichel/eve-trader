@@ -68,6 +68,7 @@ export function CostChainTree({ node, locationNames, depth = 0 }: {
         </Text>
         {node.quantity != null && <Text size="xs" c="dimmed">× {qty(node.quantity)}{node.unit ? ` ${node.unit}` : ''}</Text>}
         {node.origin && <Badge size="xs" color={estimate ? 'warn' : 'gray'} variant="light">{node.origin}</Badge>}
+        {node.source === 'contract' && <Badge size="xs" variant="light">contract</Badge>}
         {node.kind === 'job' && node.job_id != null && <Text size="xs" c="dimmed">#{node.job_id}</Text>}
         {node.activity_id != null && <Badge size="xs" variant="outline">{activityLabel(node.activity_id)}</Badge>}
         {node.kind === 'job' && node.runs != null && <Text size="xs" c="dimmed">{qty(node.runs)} runs</Text>}

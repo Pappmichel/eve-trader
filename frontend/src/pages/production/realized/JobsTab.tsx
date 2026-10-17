@@ -1,3 +1,4 @@
+import { Badge } from '@mantine/core'
 import type { ColumnDef } from '@tanstack/react-table'
 
 import type { RealizedJobRow } from '../../../api/types'
@@ -14,7 +15,12 @@ function when(iso: string | null): string {
 const columns: ColumnDef<RealizedJobRow, any>[] = [
   {
     header: 'Product', accessorKey: 'product_name', size: 200,
-    cell: (info) => info.getValue() || info.row.original.blueprint_name || `Type ${info.row.original.product_type_id ?? info.row.original.blueprint_type_id}`,
+    cell: (info) => (
+      <>
+        {info.getValue() || info.row.original.blueprint_name || `Type ${info.row.original.product_type_id ?? info.row.original.blueprint_type_id}`}
+        {info.row.original.contract_input && <Badge size="xs" variant="light" ml={6}>contract</Badge>}
+      </>
+    ),
   },
   {
     header: 'Activity', accessorKey: 'activity_id', size: 130,

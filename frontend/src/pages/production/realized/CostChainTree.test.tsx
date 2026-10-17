@@ -18,7 +18,7 @@ function node(partial: Partial<RealizedChainNode> & Pick<RealizedChainNode, 'kin
     origin: null, type_id: null, type_name: null, quantity: null, unit: null,
     unit_cost: null, unit_price: null, reference_price: null, date: null, end_date: null,
     location_id: null, freight: null, freight_label: null, freight_rate_per_m3: null,
-    source_ref: null, job_id: null, job_ref: null, activity_id: null, runs: null,
+    source_ref: null, job_id: null, job_ref: null, activity_id: null, runs: null, source: null,
     successful_runs: null, state: null, job_cost: null, facility_id: null,
     output_quantity: null, cost_total: null, share: null, cost_share: null, sale_ref: null,
     flags: flags(), children: [],
@@ -39,7 +39,7 @@ describe('CostChainTree', () => {
             node({
               kind: 'purchase', origin: 'bought', type_name: 'Tritanium', quantity: 10,
               unit_cost: 6, unit_price: 5, freight: 10, freight_label: 'configured rate',
-              date: '2026-10-01T00:00:00Z', location_id: 60003760,
+              date: '2026-10-01T00:00:00Z', location_id: 60003760, source: 'contract',
             }),
             node({
               kind: 'estimate', origin: 'opening', type_name: 'Pyerite', quantity: 4,
@@ -70,6 +70,7 @@ describe('CostChainTree', () => {
     expect(screen.getByText('Freight 10 ISK (configured rate)')).toBeInTheDocument()
     expect(screen.getByText('Jita 4-4 (60003760)')).toBeInTheDocument()
     expect(screen.getByText('Price 5 ISK')).toBeInTheDocument()
+    expect(screen.getByText('contract')).toBeInTheDocument()
 
     const opening = screen.getByText('Pyerite')
     expect(opening).toHaveAttribute('data-estimate', 'true')

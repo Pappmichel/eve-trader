@@ -11,13 +11,16 @@ import pytest
 from eve_trader.production.realized import costing as c
 from eve_trader.production.realized.costing import (
     ESTIMATED_COVERAGE_THRESHOLD,
+    ContractItem,
     CostComponents,
     IndustryJob,
+    ItemExchangeContract,
     JobInput,
     JournalEntry,
     LedgerSnapshot,
     MarketOrder,
     WalletTransaction,
+    allocate_contract_price,
     rebuild_costing,
 )
 
@@ -88,7 +91,8 @@ def snapshot(**kw) -> LedgerSnapshot:
     kw.setdefault("t0", T0)
     kw.setdefault("tenant_character_ids", frozenset({CHAR, OTHER_CHAR}))
     kw.setdefault("home_structure_id", HOME)
-    for name in ("production_type_ids", "tenant_character_ids", "relic_type_ids", "bpo_type_ids"):
+    for name in ("production_type_ids", "tenant_character_ids", "tenant_corporation_ids",
+                 "relic_type_ids", "bpo_type_ids"):
         if name in kw:
             kw[name] = frozenset(kw[name])
     return LedgerSnapshot(**kw)
@@ -676,6 +680,169 @@ def test_market_blueprint_buy_is_bpo_capital():
     ))
     assert result.capital_in_bpos == {BP: 5_000_000.0}
     assert result.layers == []
+
+
+def item_line(type_id, qty, *, included=True, record=1, blueprint=False, runs=None,
+              rate=None, m3=None, singleton=False):
+    return ContractItem(
+        record_id=record, type_id=type_id, quantity=qty, is_included=included,
+        is_singleton=singleton, is_blueprint=blueprint, blueprint_runs=runs,
+        freight_rate_per_m3=rate, freight_m3=m3,
+    )
+
+
+def exchange(contract_id, when, items, *, issuer=CHAR, acceptor=7001, price=0.0, reward=0.0,
+             start=JITA, end=HOME, corp_issued=False, issuer_corp=None, status="finished",
+             contract_type="item_exchange", owner=CHAR):
+    return ItemExchangeContract(
+        contract_id=contract_id, owner_type="character", owner_id=owner, date_completed=when,
+        issuer_id=issuer, issuer_corporation_id=issuer_corp, acceptor_id=acceptor,
+        price=price, reward=reward, start_location_id=start, end_location_id=end,
+        items=tuple(items), corp_issued=corp_issued, status=status, contract_type=contract_type,
+    )
+
+
+def test_allocate_contract_price_sums_exactly_and_skips_a_single_type():
+    one = item_line(1, 4, record=1)
+    shares, fallback = allocate_contract_price([one], 80.0, [None])
+    assert shares == [80.0]
+    assert fallback is False
+
+    lines = [item_line(1, 1, record=1), item_line(1, 3, record=2)]
+    shares, fallback = allocate_contract_price(lines, 40.0, [9.0, 9.0])
+    assert shares == pytest.approx([10.0, 30.0])
+    assert sum(shares) == 40.0
+    assert fallback is False
+
+    mixed = [item_line(1, 1, record=1), item_line(2, 1, record=2), item_line(3, 1, record=3)]
+    shares, fallback = allocate_contract_price(mixed, 100.0, [1.0, 2.0, 3.0])
+    assert sum(shares) == 100.0
+    assert shares == pytest.approx([100 / 6, 200 / 6, 300 / 6])
+    assert fallback is False
+
+    shares, fallback = allocate_contract_price(mixed, 100.0, [1.0, None, 3.0])
+    assert fallback is True
+    assert sum(shares) == 100.0
+    assert shares == pytest.approx([100 / 3, 100 / 3, 100 / 3])
+
+
+def test_contract_buy_splits_by_reference_and_freezes_freight():
+    bought = exchange(50, at(2), [
+        item_line(MINERAL, 2, record=1, rate=100.0, m3=1.5),
+        item_line(FUEL, 1, record=2),
+    ], issuer=7001, acceptor=CHAR, price=30.0)
+    result = rebuild_costing(snapshot(
+        contracts=[bought],
+        reference_prices={(MINERAL, at(2).date()): 10.0, (FUEL, at(2).date()): 10.0},
+        production_type_ids={MINERAL},
+    ))
+    # 2*10 : 1*10 of 30 -> 20 and 10. Freight 100 * 1.5 stays on the mineral.
+    mineral = next(l for l in result.all_layers if l.type_id == MINERAL)
+    fuel = next(l for l in result.all_layers if l.type_id == FUEL)
+    assert mineral.origin == "bought" and mineral.source == "contract"
+    assert mineral.quantity == 2
+    assert mineral.unit_components.materials_bought == pytest.approx(10.0)
+    assert mineral.unit_components.freight == pytest.approx(75.0)
+    assert fuel.unit_cost == pytest.approx(10.0)
+    assert fuel.unit_components.freight == pytest.approx(0.0)
+    assert sum(l.unit_components.materials_bought * l.quantity for l in result.all_layers) == pytest.approx(30.0)
+    assert has_warning(result, "trading_overlap")
+    assert not has_warning(result, "tax_missing")
+
+
+def test_contract_sale_has_no_tax_and_follows_produced_fifo():
+    produced = job(1, BP, PRODUCT, 1, at(1, 10), at(2), 20.0, [(MINERAL, 4, "esi_blueprint")],
+                   output_quantity=2)
+    sale = exchange(9, at(4), [item_line(PRODUCT, 2), item_line(999, 2, record=2)],
+                    issuer=CHAR, acceptor=7001, price=100.0, start=JITA)
+    result = rebuild_costing(snapshot(
+        wallet_transactions=[buy(MINERAL, 4, 5.0, at(1))],
+        industry_jobs=[produced],
+        contracts=[sale],
+        reference_prices={(PRODUCT, at(4).date()): 40.0, (999, at(4).date()): 10.0},
+        production_type_ids={PRODUCT},
+        esi_stock_by_type={PRODUCT: 2},
+    ))
+    # Opening 2 at the reference price would exist if net flows ignored the
+    # contract sale. The sale removes 2 produced units: ESI stock 2 equals
+    # produced 2 - sold 2 + opening, so opening is 2. D6 draws produced first.
+    [r] = result.realized_results
+    assert r.source == "contract"
+    assert r.sale_ref == "contract:9"
+    assert r.quantity == 2
+    # Value weights 2*40 : 2*10 of 100 -> product revenue 80.
+    assert r.gross == pytest.approx(80.0)
+    assert r.sales_tax is None
+    assert r.broker_fee == 0
+    assert "tax_missing" not in r.warnings
+    assert r.draws[0].origin == "produced"
+    assert r.draws[0].quantity == 2
+    assert not has_warning(result, "tax_missing")
+    assert has_warning(result, "outside_home_structure")
+    # The non-production half is not a result.
+    assert [row.type_id for row in result.realized_results] == [PRODUCT]
+
+
+def test_contract_item_swap_books_both_directions():
+    swap = exchange(3, at(2), [
+        item_line(MINERAL, 4, included=False),
+        item_line(PRODUCT, 1, included=True, record=2),
+    ], issuer=CHAR, acceptor=7001, price=50.0, reward=12.0, start=HOME)
+    result = rebuild_costing(snapshot(
+        contracts=[swap],
+        production_type_ids={PRODUCT},
+        reference_prices={(PRODUCT, at(2).date()): 50.0},
+    ))
+    assert has_warning(result, "contract_item_swap")
+    [layer] = [l for l in result.all_layers if l.type_id == MINERAL and l.origin == "bought"]
+    assert layer.source == "contract"
+    assert layer.unit_cost == pytest.approx(3.0)  # reward 12 / 4
+    [sale] = result.realized_results
+    assert sale.type_id == PRODUCT
+    assert sale.gross == pytest.approx(50.0)
+    assert sale.source == "contract"
+
+
+def test_internal_contract_and_non_finished_are_ignored():
+    internal = exchange(1, at(2), [item_line(MINERAL, 5)], issuer=CHAR, acceptor=OTHER_CHAR, price=80.0)
+    unfinished = exchange(2, at(2), [item_line(MINERAL, 5)], issuer=7001, acceptor=CHAR,
+                          price=80.0, status="finished_issuer")
+    courier = exchange(3, at(2), [], issuer=CHAR, acceptor=7001, price=10.0, contract_type="courier")
+    result = rebuild_costing(snapshot(contracts=[internal, unfinished, courier]))
+    assert result.all_layers == []
+    assert result.realized_results == []
+    assert result.warnings == []
+
+
+def test_corpmate_personal_contract_is_not_an_internal_transfer():
+    """issuer_corporation_id alone is the issuer's corp, not this tenant."""
+    bought = exchange(
+        8, at(2), [item_line(MINERAL, 1)], issuer=7001, acceptor=CHAR, price=15.0,
+        issuer_corp=CORP, corp_issued=False,
+    )
+    result = rebuild_costing(snapshot(
+        contracts=[bought], tenant_corporation_ids={CORP},
+    ))
+    [layer] = result.all_layers
+    assert layer.type_id == MINERAL
+    assert layer.unit_cost == pytest.approx(15.0)
+
+
+def test_contract_bpc_and_bpo_follow_the_market_rules():
+    bpc = exchange(4, at(2), [item_line(BP, 1, blueprint=True, runs=10, singleton=True)],
+                   issuer=7001, acceptor=CHAR, price=100.0)
+    unknown = exchange(5, at(3), [item_line(BP, 1, blueprint=True, runs=None, singleton=True, record=1)],
+                       issuer=7001, acceptor=CHAR, price=30.0)
+    bpo = exchange(6, at(4), [item_line(BP, 1, blueprint=True, runs=-1, rate=10.0, m3=2.0)],
+                   issuer=7001, acceptor=CHAR, price=500.0)
+    result = rebuild_costing(snapshot(contracts=[bpc, unknown, bpo]))
+    runs = [l for l in result.all_layers if l.unit == c.UNIT_BPC_RUN]
+    assert [(l.quantity, l.unit_cost, l.source_ref) for l in runs] == [
+        (10, pytest.approx(10.0), "contract:4"),
+        (1, pytest.approx(30.0), "contract:5"),
+    ]
+    assert has_warning(result, "bpc_runs_unknown")
+    assert result.capital_in_bpos[BP] == pytest.approx(520.0)  # 500 + freight 20
 
 
 def test_active_job_stays_work_in_progress():

@@ -4116,6 +4116,17 @@ _ship_margin_cache_at: dict[str, float] = {}
 _ship_margin_cache_lock = threading.Lock()
 
 
+def get_cached_ship_margins() -> Optional[list[dict]]:
+    """Read-only: this tenant's last discover_ship_margins result, ignoring
+    the TTL. None when this process has never computed it. Does not scan
+    and does not call the network."""
+    tenant_id = storage.get_current_tenant()
+    with _ship_margin_cache_lock:
+        if tenant_id is None or tenant_id not in _ship_margin_cache:
+            return None
+        return list(_ship_margin_cache[tenant_id])
+
+
 def invalidate_ship_margin_cache(all_tenants: bool = False) -> None:
     """Forces the next discover_ship_margins call to re-scan - call alongside
     invalidate_discover_cache (see that function's own call sites in

@@ -627,3 +627,46 @@ CREATE POLICY tenant_isolation ON prod_opening_lines
     USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 GRANT SELECT, INSERT, UPDATE, DELETE ON prod_opening_lines TO eve_trader_app;
+
+-- ====================================================== Phase 5
+-- One-time opening reset when a rebuild's costing version is older than
+-- the code (NULL counts as older). Written on every successful rebuild.
+ALTER TABLE prod_ledger_runs ADD COLUMN IF NOT EXISTS costing_version INTEGER;
+
+-- Sale channel and the channel a draw's layer was bought on (market / contract).
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS source TEXT;
+ALTER TABLE prod_cost_draws ADD COLUMN IF NOT EXISTS source TEXT;
+ALTER TABLE prod_cost_layers ADD COLUMN IF NOT EXISTS source TEXT;
+
+-- Courier contracts (comparison only; never costed) plus the start-location
+-- region used to recognise a Forge pickup.
+ALTER TABLE ledger_contracts ADD COLUMN IF NOT EXISTS volume DOUBLE PRECISION;
+ALTER TABLE ledger_contracts ADD COLUMN IF NOT EXISTS collateral DOUBLE PRECISION;
+ALTER TABLE ledger_contracts ADD COLUMN IF NOT EXISTS region_id INTEGER;
+
+-- Freight frozen on a contract purchase the first time it can be resolved.
+-- A NULL region leaves freight_frozen false so a later rebuild can retry.
+ALTER TABLE ledger_contract_items ADD COLUMN IF NOT EXISTS freight_rate_per_m3 DOUBLE PRECISION;
+ALTER TABLE ledger_contract_items ADD COLUMN IF NOT EXISTS freight_m3 DOUBLE PRECISION;
+ALTER TABLE ledger_contract_items ADD COLUMN IF NOT EXISTS freight_frozen BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Planner cost/unit frozen the first time a job is archived. Not derived:
+-- a rebuild does not delete it, and jobs archived before this table existed
+-- stay without a row.
+CREATE TABLE IF NOT EXISTS ledger_job_planned_costs (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    owner_type TEXT NOT NULL CHECK (owner_type IN ('character', 'corporation')),
+    owner_id BIGINT NOT NULL,
+    job_id BIGINT NOT NULL,
+    product_type_id INTEGER NOT NULL,
+    planned_unit_cost DOUBLE PRECISION,
+    source TEXT NOT NULL,
+    computed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, owner_type, owner_id, job_id)
+);
+ALTER TABLE ledger_job_planned_costs ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON ledger_job_planned_costs;
+CREATE POLICY tenant_isolation ON ledger_job_planned_costs
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON ledger_job_planned_costs TO eve_trader_app;

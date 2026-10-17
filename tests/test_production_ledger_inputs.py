@@ -134,5 +134,5 @@ def test_contract_items_are_fetched_once_per_contract(monkeypatch):
     ]
     fetchers._archive_contracts_pass(object(), owner_type="character", owner_id=5,
                                      auth_role="r", raw_list=raw)
-    assert asked == [2]   # 1 already has items, 3 is someone else's, 4 is courier
-    assert [c["contract_id"] for c in archived[0]["contracts"]] == [1, 2]
+    assert asked == [2]   # 1 already has items, 3 is someone else's, 4 is a courier (no items)
+    assert [c["contract_id"] for c in archived[0]["contracts"]] == [1, 2, 4]

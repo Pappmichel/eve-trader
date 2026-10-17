@@ -58,7 +58,8 @@ def _apply_production_ledger_schema(_apply_phase1_schema):
 def _wipe(_apply_production_ledger_schema):
     pg_helpers.wipe_tables(
         "ledger_wallet_transactions", "ledger_wallet_journal",
-        "ledger_industry_jobs", "ledger_job_inputs", "ledger_blueprints",
+        "ledger_industry_jobs", "ledger_job_inputs", "ledger_job_planned_costs",
+        "ledger_blueprints",
         "ledger_market_orders", "ledger_contracts", "ledger_contract_items",
         "ledger_archive_gaps", "ledger_sync_state", "ledger_reference_prices",
         "ledger_manual_entries", "prod_cost_layers", "prod_realized_results",
@@ -449,3 +450,146 @@ def test_ledger_tab_reads_entries_freight_preview_and_archive_status(tenant):
     # BOB was archived but shares nothing with Production any more.
     assert rows[BOB]["shared"]["industry_jobs"] is False
     assert rows[BOB]["hidden_kinds"] == ["industry_jobs"]
+
+
+def test_null_costing_version_resets_opening_once(tenant):
+    _share(ALICE, "wallet")
+    ledger_db.upsert_ledger_wallet_transactions([
+        ("character", ALICE, 0, 1, T0, TYPE_A, LOC, 100.0, 10, True, 101,
+         None, None, None),
+    ])
+    first = _rebuild({TYPE_A: 15})
+    assert first["opening_frozen"] is False
+    assert production_actions.do_get_realized_opening()["rows"][0]["quantity"] == pytest.approx(5.0)
+    with storage.connect() as conn:
+        conn.execute("UPDATE prod_ledger_runs SET costing_version = NULL")
+
+    # Stock dropped, but the stored version is from before Phase 5, so this
+    # rebuild re-derives the opening instead of keeping 5.
+    second = _rebuild({TYPE_A: 12})
+    assert second["opening_frozen"] is False
+    assert production_actions.do_get_realized_opening()["rows"][0]["quantity"] == pytest.approx(2.0)
+
+    third = _rebuild({TYPE_A: 9})
+    assert third["opening_frozen"] is True
+    assert production_actions.do_get_realized_opening()["rows"][0]["quantity"] == pytest.approx(2.0)
+
+
+def test_contract_buy_and_sale_reach_the_report(tenant):
+    _share(ALICE, "wallet")
+    _share(ALICE, "contracts")
+    storage.upsert_stock_target(TYPE_A, "Trit")
+    ledger_db.upsert_ledger_wallet_transactions([
+        ("character", ALICE, 0, 1, T0, 1, LOC, 1.0, 1, True, 1, None, None, None),
+    ])
+    # Acceptor buys 4; issuer later sells 2 of the same type.
+    ledger_db.upsert_ledger_contracts([
+        ("character", ALICE, 501, 999, None, ALICE, None, None,
+         "item_exchange", "finished", "buy", 40.0, 0.0, T0, T_JOB, None),
+        ("character", ALICE, 502, ALICE, None, 999, None, None,
+         "item_exchange", "finished", "sell", 80.0, 0.0, T0, T_SALE, None),
+        ("character", ALICE, 503, ALICE, None, ALICE, None, None,
+         "item_exchange", "finished", "internal", 999.0, 0.0, T0, T_SALE, None),
+    ])
+    ledger_db.upsert_ledger_contract_items([
+        ("character", ALICE, 501, 1, TYPE_A, 4, True, False),
+        ("character", ALICE, 502, 1, TYPE_A, 2, True, False),
+        ("character", ALICE, 503, 1, TYPE_A, 9, True, False),
+    ])
+    _rebuild({})
+    sales = production_actions.do_get_realized_product(TYPE_A, days=30)["sales"]
+    assert len(sales) == 1
+    assert sales[0]["source"] == "contract"
+    assert sales[0]["revenue"] == pytest.approx(80.0)
+    assert sales[0]["sales_tax"] is None
+    assert "tax_missing" not in sales[0]["warnings"]
+    chain = production_actions.do_get_realized_sale_chain(sales[0]["sale_ref"])
+    [purchase] = chain["tree"]["children"]
+    assert purchase["source"] == "contract"
+    assert purchase["origin"] == "bought"
+    inventory = {row["type_id"]: row for row in production_actions.do_get_realized_inventory()["rows"]}
+    assert inventory[TYPE_A]["quantity"] == pytest.approx(2.0)
+    summary = production_actions.do_get_realized_summary(days=30)
+    assert summary["tax_missing_sales"] == 0
+    assert summary["flags"]["tax_missing"] is False
+
+
+def test_planned_cost_survives_rebuild_and_weights_sold_units(tenant):
+    _seed_job_and_sale()
+    _rebuild({TYPE_A: 6, TYPE_B: 1})
+    [row] = production_actions.do_get_realized_products(days=30)["rows"]
+    assert row["type_id"] == TYPE_B
+    assert row["planned_cost_per_unit"] is None
+    assert row["planned_coverage"] == pytest.approx(0.0)
+
+    ledger_db.insert_planned_costs([
+        ("character", ALICE, 77, TYPE_B, 12.5, "discover_cache"),
+    ])
+    [row] = production_actions.do_get_realized_products(days=30)["rows"]
+    assert row["planned_cost_per_unit"] == pytest.approx(12.5)
+    assert row["planned_coverage"] == pytest.approx(1.0)
+
+    _rebuild({TYPE_A: 6, TYPE_B: 1})
+    [row] = production_actions.do_get_realized_products(days=30)["rows"]
+    assert row["planned_cost_per_unit"] == pytest.approx(12.5)
+
+
+def test_courier_comparison_is_forge_to_home_only(tenant, monkeypatch):
+    from eve_trader.production.config import PRODUCTION_CONFIG
+
+    _share(ALICE, "contracts")
+    monkeypatch.setattr(PRODUCTION_CONFIG, "home_location_id", 42)
+    monkeypatch.setattr(PRODUCTION_CONFIG, "hub_region_id", 10000002)
+    monkeypatch.setattr(PRODUCTION_CONFIG, "haul_cost_per_m3", 80.0)
+    ledger_db.upsert_ledger_contracts([
+        ("character", ALICE, 11, ALICE, None, 5, 60003760, 42,
+         "courier", "finished", "jita", 0, 500.0, T0, T_SALE, None,
+         10.0, 1000.0, 10000002),
+        ("character", ALICE, 12, ALICE, None, 5, 1, 42,
+         "courier", "finished", "elsewhere", 0, 900.0, T0, T_SALE, None,
+         10.0, 1.0, 10000043),
+        ("character", ALICE, 13, ALICE, None, 5, 60003760, 42,
+         "courier", "outstanding", "open", 0, 50.0, T0, None, None,
+         1.0, 1.0, 10000002),
+    ])
+    report = production_actions.do_get_realized_courier()
+    assert report["home_location_id"] == 42
+    assert report["configured_rate_per_m3"] == pytest.approx(80.0)
+    assert report["months"] == [{
+        "month": "2026-10",
+        "count": 1,
+        "volume_m3": 10.0,
+        "reward": 500.0,
+        "paid_isk_per_m3": 50.0,
+        "configured_rate_per_m3": 80.0,
+    }]
+
+
+def test_hidden_archive_delete_refuses_while_shared(tenant):
+    _share(ALICE, "wallet")
+    ledger_db.upsert_ledger_wallet_transactions([
+        ("character", ALICE, 0, 1, T0, TYPE_A, LOC, 1.0, 1, True, 1, None, None, None),
+    ])
+    ledger_db.mark_archive_synced("character", BOB, "industry_jobs", T0)
+    ledger_db.upsert_ledger_industry_jobs([(
+        "character", BOB, 3, 1, 1, 1, TYPE_B, 1, None, None,
+        1.0, None, None, None, BOB, T_JOB, T_END, T_END, "delivered", None,
+    )])
+    ledger_db.record_archive_gap("character", BOB, "industry_jobs", T0, T_SALE)
+
+    with pytest.raises(production_actions.ActionError):
+        production_actions.do_count_hidden_archive_rows("character", ALICE, "wallet")
+    counted = production_actions.do_count_hidden_archive_rows("character", BOB, "industry_jobs")
+    assert counted["count"] == 1
+    deleted = production_actions.do_delete_hidden_archive_rows("character", BOB, "industry_jobs")
+    assert deleted["deleted"] == 1
+    assert production_actions.do_count_hidden_archive_rows("character", BOB, "industry_jobs")["count"] == 0
+    with storage.connect() as conn:
+        gaps = conn.execute(
+            "SELECT COUNT(*) FROM ledger_archive_gaps WHERE owner_id = ?", (BOB,),
+        ).fetchone()[0]
+        syncs = conn.execute(
+            "SELECT COUNT(*) FROM ledger_sync_state WHERE owner_id = ?", (BOB,),
+        ).fetchone()[0]
+    assert gaps == 0
+    assert syncs == 0

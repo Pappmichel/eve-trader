@@ -110,6 +110,8 @@ class ProductRow(BaseModel):
     profit: float
     margin: Optional[float] = None
     coverage: Optional[float] = None
+    planned_cost_per_unit: Optional[float] = None
+    planned_coverage: Optional[float] = None
     warnings: list[str]
     flags: RealizedFlags
 
@@ -138,6 +140,7 @@ class SaleRow(BaseModel):
     warnings: list[str]
     cost_structure: list[CostStructureLine]
     flags: RealizedFlags
+    source: Optional[str] = None
 
 
 class ProductDetail(BaseModel):
@@ -177,6 +180,7 @@ class ChainNode(BaseModel):
     share: Optional[float] = None
     cost_share: Optional[float] = None
     sale_ref: Optional[str] = None
+    source: Optional[str] = None
     flags: RealizedFlags
     children: list["ChainNode"] = []
 
@@ -214,6 +218,7 @@ class JobRow(BaseModel):
     sold_share: Optional[float] = None
     cost_per_bpc_run: Optional[float] = None
     facility_id: Optional[int] = None
+    contract_input: bool = False
     cost_structure: list[CostStructureLine]
     flags: RealizedFlags
 
@@ -411,3 +416,53 @@ def set_realized_opening_cost(req: OpeningCostRequest):
 @router.post("/realized/freight/reapply")
 def reapply_realized_freight(dry_run: bool = False):
     return _wrap(actions.do_reapply_freight_rate, dry_run=dry_run)
+
+
+class CourierMonth(BaseModel):
+    month: str
+    count: int
+    volume_m3: float
+    reward: float
+    paid_isk_per_m3: Optional[float] = None
+    configured_rate_per_m3: float
+
+
+class CourierComparison(BaseModel):
+    home_location_id: Optional[int] = None
+    configured_rate_per_m3: float
+    months: list[CourierMonth]
+
+
+class HiddenArchiveCount(BaseModel):
+    owner_type: str
+    owner_id: int
+    kind: str
+    count: int
+
+
+class HiddenArchiveDeleted(BaseModel):
+    owner_type: str
+    owner_id: int
+    kind: str
+    deleted: int
+
+
+@router.get("/realized/courier", response_model=CourierComparison)
+def realized_courier():
+    return _wrap(actions.do_get_realized_courier)
+
+
+@router.get("/realized/archive/{owner_type}/{owner_id}/{kind}", response_model=HiddenArchiveCount)
+def count_hidden_archive(owner_type: str, owner_id: int, kind: str):
+    return _wrap(
+        actions.do_count_hidden_archive_rows,
+        owner_type=owner_type, owner_id=owner_id, kind=kind,
+    )
+
+
+@router.delete("/realized/archive/{owner_type}/{owner_id}/{kind}", response_model=HiddenArchiveDeleted)
+def delete_hidden_archive(owner_type: str, owner_id: int, kind: str):
+    return _wrap(
+        actions.do_delete_hidden_archive_rows,
+        owner_type=owner_type, owner_id=owner_id, kind=kind,
+    )

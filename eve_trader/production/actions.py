@@ -2081,3 +2081,38 @@ def do_get_realized_archive_status() -> dict:
     but are no longer shared (hidden, D11)."""
     from .realized import report
     return report.archive_status()
+
+
+def do_get_realized_courier() -> dict:
+    """Monthly courier comparison for The Forge to the home structure.
+    Does not change costing."""
+    from .realized import report
+    return report.courier_comparison()
+
+
+def _hidden_archive(owner_type: str, owner_id: int, kind: str, delete: bool) -> dict:
+    from .realized import access as ledger_access
+    if owner_type not in ("character", "corporation"):
+        raise ActionError("owner_type must be character or corporation.")
+    try:
+        if delete:
+            count = ledger_access.delete_hidden_archive_rows(owner_type, int(owner_id), kind)
+        else:
+            count = ledger_access.count_hidden_archive_rows(owner_type, int(owner_id), kind)
+    except ledger_access.ArchiveStillShared as exc:
+        raise ActionError(str(exc)) from exc
+    except ValueError as exc:
+        raise ActionError(str(exc)) from exc
+    key = "deleted" if delete else "count"
+    return {"owner_type": owner_type, "owner_id": int(owner_id), "kind": kind, key: count}
+
+
+def do_count_hidden_archive_rows(owner_type: str, owner_id: int, kind: str) -> dict:
+    """How many archived rows of a hidden kind would be deleted."""
+    return _hidden_archive(owner_type, owner_id, kind, delete=False)
+
+
+def do_delete_hidden_archive_rows(owner_type: str, owner_id: int, kind: str) -> dict:
+    """Delete one owner's hidden archive rows of `kind`, plus sync state and
+    gaps. Refuses while that kind is shared with Production."""
+    return _hidden_archive(owner_type, owner_id, kind, delete=True)

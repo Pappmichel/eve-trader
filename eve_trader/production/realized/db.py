@@ -210,40 +210,61 @@ def upsert_ledger_contracts(rows: list[tuple]) -> int:
     """`rows`: (owner_type, owner_id, contract_id, issuer_id,
     issuer_corporation_id, acceptor_id, start_location_id, end_location_id,
     type, status, title, price, reward, date_issued, date_completed,
-    date_expired)."""
+    date_expired[, volume, collateral, region_id]).
+
+    A 16-field tuple leaves volume, collateral and region_id NULL and does
+    not wipe values already stored.
+    """
     if not rows:
         return 0
+    padded = []
+    for row in rows:
+        if len(row) < 16:
+            raise ValueError("ledger contract row is missing required fields")
+        extra = tuple(row[16:19])
+        padded.append(tuple(row[:16]) + extra + (None,) * (3 - len(extra)))
     with storage.connect() as conn:
         conn.executemany(
             "INSERT INTO ledger_contracts ("
             "owner_type, owner_id, contract_id, issuer_id, issuer_corporation_id, "
             "acceptor_id, start_location_id, end_location_id, type, status, title, "
-            "price, reward, date_issued, date_completed, date_expired) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "price, reward, date_issued, date_completed, date_expired, "
+            "volume, collateral, region_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT (tenant_id, owner_type, owner_id, contract_id) DO UPDATE SET "
             "status=EXCLUDED.status, acceptor_id=EXCLUDED.acceptor_id, "
             "date_completed=COALESCE(EXCLUDED.date_completed, ledger_contracts.date_completed), "
             "price=COALESCE(EXCLUDED.price, ledger_contracts.price), "
-            "reward=COALESCE(EXCLUDED.reward, ledger_contracts.reward)",
-            rows,
+            "reward=COALESCE(EXCLUDED.reward, ledger_contracts.reward), "
+            "volume=COALESCE(EXCLUDED.volume, ledger_contracts.volume), "
+            "collateral=COALESCE(EXCLUDED.collateral, ledger_contracts.collateral), "
+            "region_id=COALESCE(EXCLUDED.region_id, ledger_contracts.region_id)",
+            padded,
         )
     return len(rows)
 
 
 def upsert_ledger_contract_items(rows: list[tuple]) -> int:
     """`rows`: (owner_type, owner_id, contract_id, record_id, type_id,
-    quantity, is_included, is_singleton). Insert-only."""
+    quantity, is_included, is_singleton[, freight_rate_per_m3, freight_m3,
+    freight_frozen]). Insert-only. An 8-field tuple leaves freight unfrozen."""
     if not rows:
         return 0
+    padded = []
+    for row in rows:
+        extra = tuple(row[8:11])
+        if len(extra) < 3:
+            extra = extra + (None,) * (2 - len(extra)) + (False,)
+        padded.append(tuple(row[:8]) + extra)
     with storage.connect() as conn:
         conn.executemany(
             "INSERT INTO ledger_contract_items ("
             "owner_type, owner_id, contract_id, record_id, type_id, quantity, "
-            "is_included, is_singleton) "
-            "VALUES (?,?,?,?,?,?,?,?) "
+            "is_included, is_singleton, freight_rate_per_m3, freight_m3, freight_frozen) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT (tenant_id, owner_type, owner_id, contract_id, record_id) "
             "DO NOTHING",
-            rows,
+            padded,
         )
     return len(rows)
 
@@ -620,6 +641,116 @@ def wallet_window_starts(owners: list[tuple[str, int]]) -> list[tuple]:
         ).fetchall()
 
 
+def industry_job_ids_present(
+    owner_type: str, owner_id: int, job_ids: Iterable[int],
+) -> set[int]:
+    """Job ids already archived for this owner. A planned-cost freeze only
+    runs for ids that are not in this set."""
+    ids = sorted({int(j) for j in job_ids})
+    if not ids:
+        return set()
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT job_id FROM ledger_industry_jobs "
+            "WHERE owner_type = ? AND owner_id = ? AND job_id = ANY(?)",
+            (owner_type, int(owner_id), ids),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+def insert_planned_costs(rows: list[tuple]) -> int:
+    """`rows`: (owner_type, owner_id, job_id, product_type_id,
+    planned_unit_cost, source). Insert-only: the first archive wins."""
+    if not rows:
+        return 0
+    with storage.connect() as conn:
+        conn.executemany(
+            "INSERT INTO ledger_job_planned_costs ("
+            "owner_type, owner_id, job_id, product_type_id, planned_unit_cost, source) "
+            "VALUES (?,?,?,?,?,?) "
+            "ON CONFLICT (tenant_id, owner_type, owner_id, job_id) DO NOTHING",
+            rows,
+        )
+    return len(rows)
+
+
+def list_contracts_for_owners(owners: list[tuple[str, int]]) -> list[tuple]:
+    """(owner_type, owner_id, contract_id, issuer_id, issuer_corporation_id,
+    acceptor_id, start_location_id, end_location_id, type, status, price,
+    reward, date_completed, volume, collateral, region_id)."""
+    where, params = _owner_in_clause(owners)
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT owner_type, owner_id, contract_id, issuer_id, issuer_corporation_id, "
+            "acceptor_id, start_location_id, end_location_id, type, status, price, reward, "
+            "date_completed, volume, collateral, region_id "
+            "FROM ledger_contracts "
+            f"WHERE {where} ORDER BY date_completed, contract_id",
+            tuple(params),
+        ).fetchall()
+
+
+def list_contract_items_for_owners(owners: list[tuple[str, int]]) -> list[tuple]:
+    """(owner_type, owner_id, contract_id, record_id, type_id, quantity,
+    is_included, is_singleton, freight_rate_per_m3, freight_m3, freight_frozen)."""
+    where, params = _owner_in_clause(owners)
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT owner_type, owner_id, contract_id, record_id, type_id, quantity, "
+            "is_included, is_singleton, freight_rate_per_m3, freight_m3, freight_frozen "
+            "FROM ledger_contract_items "
+            f"WHERE {where} ORDER BY contract_id, record_id",
+            tuple(params),
+        ).fetchall()
+
+
+def update_contract_item_freight(rows: list[tuple]) -> int:
+    """`rows`: (freight_rate_per_m3, freight_m3, freight_frozen, owner_type,
+    owner_id, contract_id, record_id)."""
+    if not rows:
+        return 0
+    with storage.connect() as conn:
+        conn.executemany(
+            "UPDATE ledger_contract_items SET freight_rate_per_m3 = ?, freight_m3 = ?, "
+            "freight_frozen = ? WHERE owner_type = ? AND owner_id = ? "
+            "AND contract_id = ? AND record_id = ?",
+            rows,
+        )
+    return len(rows)
+
+
+def update_contract_regions(rows: list[tuple]) -> int:
+    """Fill a missing start-location region. `rows`: (region_id, owner_type,
+    owner_id, contract_id). Never overwrites a region already stored."""
+    if not rows:
+        return 0
+    with storage.connect() as conn:
+        conn.executemany(
+            "UPDATE ledger_contracts SET region_id = ? "
+            "WHERE owner_type = ? AND owner_id = ? AND contract_id = ? AND region_id IS NULL",
+            rows,
+        )
+    return len(rows)
+
+
+def blueprint_runs_by_type(owners: list[tuple[str, int]], type_ids: list[int]) -> dict[int, list[int]]:
+    """Every archived `runs` value per blueprint type_id. The caller decides
+    whether they agree."""
+    ids = sorted({int(i) for i in type_ids})
+    if not owners or not ids:
+        return {}
+    where, params = _owner_in_clause(owners)
+    with storage.connect() as conn:
+        rows = conn.execute(
+            f"SELECT type_id, runs FROM ledger_blueprints WHERE {where} AND type_id = ANY(?)",
+            (*params, ids),
+        ).fetchall()
+    out: dict[int, list[int]] = {}
+    for type_id, runs in rows:
+        out.setdefault(int(type_id), []).append(int(runs))
+    return out
+
+
 def blueprint_runs_by_item(owners: list[tuple[str, int]], item_ids: list[int]) -> dict[int, int]:
     """Last seen `runs` per blueprint item_id from the archive (-1 = BPO)."""
     ids = sorted({int(i) for i in item_ids})
@@ -752,6 +883,7 @@ def replace_derived_costing(
     frozen_opening: Optional[list[tuple]] = None,
     reset_frozen_opening: bool = False,
     owner_scope_hash: Optional[str] = None,
+    costing_version: Optional[int] = None,
 ) -> int:
     """Fully replace derived costing tables for this tenant (one rebuild).
 
@@ -780,6 +912,9 @@ def replace_derived_costing(
     for types seen for the first time; existing frozen rows are kept unless
     `reset_frozen_opening` clears them first (T0 or owner scope changed, or
     an explicit reset).
+    `costing_version` is stored on the run so the next rebuild can reset
+    opening once after a costing change.
+    Layer, result and draw tuples may end with `source` (market / contract).
     Returns the new prod_ledger_runs.run_id.
     """
     draws = draws or []
@@ -812,8 +947,8 @@ def replace_derived_costing(
                 "cost_materials_bought, cost_materials_estimated, cost_freight, "
                 "cost_job, cost_invention, cost_fees, layer_date, job_id, "
                 "quantity_original, assumed_me, assumed_decryptor, estimated_origin, "
-                "price_missing, logical_layer_id) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "price_missing, logical_layer_id, source) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 layers,
             )
         if result_params:
@@ -823,8 +958,8 @@ def replace_derived_costing(
                 "coverage_share, sale_date, gross, sales_tax, broker_fee, "
                 "location_id, price_missing, estimated, warnings, "
                 "cost_materials_bought, cost_materials_estimated, cost_freight, "
-                "cost_job, cost_invention, cost_fees) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "cost_job, cost_invention, cost_fees, source) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 result_params,
             )
         if draws:
@@ -835,8 +970,8 @@ def replace_derived_costing(
                 "cost_materials_bought, cost_materials_estimated, cost_freight, "
                 "cost_job, cost_invention, cost_fees, unit_cost, "
                 "estimated_origin, price_missing, assumed_me, assumed_decryptor, "
-                "layer_date, job_id, location_id, unit_price, freight_rate_per_m3) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "layer_date, job_id, location_id, unit_price, freight_rate_per_m3, source) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 draws,
             )
         if jobs:
@@ -895,11 +1030,21 @@ def replace_derived_costing(
                 frozen_opening,
             )
         row = conn.execute(
-            "INSERT INTO prod_ledger_runs (cutover_t0, warnings, owner_scope_hash) "
-            "VALUES (?, ?, ?) RETURNING run_id",
-            (cutover_t0, Jsonb(list(warnings)), owner_scope_hash),
+            "INSERT INTO prod_ledger_runs (cutover_t0, warnings, owner_scope_hash, costing_version) "
+            "VALUES (?, ?, ?, ?) RETURNING run_id",
+            (cutover_t0, Jsonb(list(warnings)), owner_scope_hash, costing_version),
         ).fetchone()
     return int(row[0])
+
+
+def latest_costing_version() -> Optional[tuple]:
+    """(run_id, costing_version) of the newest rebuild, or None when no run
+    exists. costing_version is None for a run written before Phase 5."""
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT run_id, costing_version FROM prod_ledger_runs "
+            "ORDER BY run_id DESC LIMIT 1",
+        ).fetchone()
 
 
 def latest_ledger_run() -> Optional[tuple]:
@@ -920,7 +1065,8 @@ def count_realized_results() -> int:
 
 def realized_totals(start: datetime, end: datetime) -> tuple:
     """One row of period aggregates. Sums ignore NULL sales tax; the tax-null
-    count is separate so a missing tax is not reported as zero tax."""
+    count is separate so a missing tax is not reported as zero tax. A
+    contract sale stores NULL tax on purpose and is not a missing tax."""
     with storage.connect() as conn:
         return conn.execute(
             "SELECT COALESCE(SUM(revenue), 0), COALESCE(SUM(cost), 0), "
@@ -930,7 +1076,7 @@ def realized_totals(start: datetime, end: datetime) -> tuple:
             "COALESCE(SUM(cost_freight), 0), COALESCE(SUM(cost_job), 0), "
             "COALESCE(SUM(cost_invention), 0), COALESCE(SUM(cost_fees), 0), "
             "COALESCE(SUM(sales_tax), 0), "
-            "COUNT(*) FILTER (WHERE sales_tax IS NULL), "
+            "COUNT(*) FILTER (WHERE sales_tax IS NULL AND source IS DISTINCT FROM 'contract'), "
             "COALESCE(BOOL_OR(price_missing), FALSE), COUNT(*) "
             "FROM prod_realized_results WHERE sale_date >= ? AND sale_date < ?",
             (start, end),
@@ -995,7 +1141,7 @@ def list_sales_for_type(type_id: int, start: datetime, end: datetime) -> list[tu
             "SELECT sale_ref, type_id, quantity, revenue, cost, profit, coverage_share, "
             "sale_date, gross, sales_tax, broker_fee, location_id, price_missing, "
             "estimated, warnings, cost_materials_bought, cost_materials_estimated, "
-            "cost_freight, cost_job, cost_invention, cost_fees "
+            "cost_freight, cost_job, cost_invention, cost_fees, source "
             "FROM prod_realized_results "
             "WHERE type_id = ? AND sale_date >= ? AND sale_date < ? "
             "ORDER BY sale_date, sale_ref",
@@ -1009,7 +1155,7 @@ def get_realized_sale(sale_ref: str) -> Optional[tuple]:
             "SELECT sale_ref, type_id, quantity, revenue, cost, profit, coverage_share, "
             "sale_date, gross, sales_tax, broker_fee, location_id, price_missing, "
             "estimated, warnings, cost_materials_bought, cost_materials_estimated, "
-            "cost_freight, cost_job, cost_invention, cost_fees "
+            "cost_freight, cost_job, cost_invention, cost_fees, source "
             "FROM prod_realized_results WHERE sale_ref = ?",
             (sale_ref,),
         ).fetchone()
@@ -1024,7 +1170,7 @@ def list_draws(consumer_kind: str, refs: list[str]) -> list[tuple]:
             "source_ref, cost_materials_bought, cost_materials_estimated, cost_freight, "
             "cost_job, cost_invention, cost_fees, unit_cost, estimated_origin, "
             "price_missing, assumed_me, assumed_decryptor, layer_date, job_id, "
-            "location_id, unit_price, freight_rate_per_m3 "
+            "location_id, unit_price, freight_rate_per_m3, source "
             "FROM prod_cost_draws WHERE consumer_kind = ? AND consumer_ref = ANY(?) "
             "ORDER BY consumer_ref, seq",
             (consumer_kind, list(refs)),
@@ -1320,3 +1466,120 @@ def archive_gap_counts() -> dict[tuple, int]:
             "GROUP BY owner_type, owner_id, data_kind",
         ).fetchall()
     return {(r[0], int(r[1]), str(r[2])): int(r[3]) for r in rows}
+
+
+def planned_unit_cost_by_type(start: datetime, end: datetime) -> dict[int, tuple]:
+    """type_id -> (covered_qty, covered_cost) for produced-layer sale draws
+    whose job has a non-null planned unit cost. covered_cost is
+    sum(draw qty x planned unit cost)."""
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT r.type_id, "
+            "COALESCE(SUM(d.quantity) FILTER (WHERE p.planned_unit_cost IS NOT NULL), 0), "
+            "COALESCE(SUM(d.quantity * p.planned_unit_cost) "
+            "FILTER (WHERE p.planned_unit_cost IS NOT NULL), 0) "
+            "FROM prod_realized_results r "
+            "JOIN prod_cost_draws d ON d.consumer_kind = 'sale' AND d.consumer_ref = r.sale_ref "
+            "AND d.origin = 'produced' "
+            "JOIN prod_job_records j ON j.output_layer_id = d.logical_layer_id "
+            "LEFT JOIN ledger_job_planned_costs p "
+            "ON p.owner_type = j.owner_type AND p.owner_id = j.owner_id AND p.job_id = j.job_id "
+            "WHERE r.sale_date >= ? AND r.sale_date < ? "
+            "GROUP BY r.type_id",
+            (start, end),
+        ).fetchall()
+    return {int(r[0]): (float(r[1]), float(r[2])) for r in rows}
+
+
+def job_refs_with_contract_draws() -> set[str]:
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT consumer_ref FROM prod_cost_draws "
+            "WHERE consumer_kind = 'job' AND source = 'contract'",
+        ).fetchall()
+    return {str(r[0]) for r in rows}
+
+
+def list_forge_home_couriers(
+    owners: list[tuple[str, int]], home_location_id: int,
+) -> list[tuple]:
+    """Finished courier contracts this tenant issued, from The Forge to the
+    home structure, deduped by contract_id.
+    (contract_id, date_completed, volume, reward)."""
+    if not owners:
+        return []
+    where, params = _owner_in_clause(owners)
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT DISTINCT ON (contract_id) contract_id, date_completed, volume, reward "
+            "FROM ledger_contracts "
+            f"WHERE {where} AND type = 'courier' AND status = 'finished' "
+            "AND date_completed IS NOT NULL AND region_id = ? AND end_location_id = ? "
+            "ORDER BY contract_id, date_completed",
+            (*params, THE_FORGE_REGION_ID, int(home_location_id)),
+        ).fetchall()
+
+
+_HIDDEN_ARCHIVE_KINDS = {
+    "wallet": (
+        ("ledger_wallet_transactions", "ledger_wallet_journal"),
+        ("wallet_transactions", "wallet_journal"),
+    ),
+    "industry_jobs": (
+        ("ledger_industry_jobs", "ledger_job_inputs", "ledger_job_planned_costs"),
+        ("industry_jobs",),
+    ),
+    "market_orders": (
+        ("ledger_market_orders",),
+        ("market_orders",),
+    ),
+    "contracts": (
+        ("ledger_contracts", "ledger_contract_items"),
+        ("contracts",),
+    ),
+}
+
+
+def hidden_archive_kind(kind: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    try:
+        return _HIDDEN_ARCHIVE_KINDS[kind]
+    except KeyError as exc:
+        raise ValueError(f"unknown archive kind {kind}") from exc
+
+
+def count_owner_archive_rows(owner_type: str, owner_id: int, kind: str) -> int:
+    tables, _sync = hidden_archive_kind(kind)
+    total = 0
+    with storage.connect() as conn:
+        for table in tables:
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE owner_type = ? AND owner_id = ?",
+                (owner_type, int(owner_id)),
+            ).fetchone()
+            total += int(row[0]) if row else 0
+    return total
+
+
+def delete_owner_archive_kind(owner_type: str, owner_id: int, kind: str) -> int:
+    """Delete one owner's archived rows of `kind`, plus that kind's sync
+    state and gap rows. Returns the archive-row count that was deleted."""
+    tables, sync_kinds = hidden_archive_kind(kind)
+    with storage.connect() as conn:
+        deleted = 0
+        for table in tables:
+            cur = conn.execute(
+                f"DELETE FROM {table} WHERE owner_type = ? AND owner_id = ?",
+                (owner_type, int(owner_id)),
+            )
+            deleted += int(cur.rowcount or 0)
+        conn.execute(
+            "DELETE FROM ledger_sync_state WHERE owner_type = ? AND owner_id = ? "
+            "AND data_kind = ANY(?)",
+            (owner_type, int(owner_id), list(sync_kinds)),
+        )
+        conn.execute(
+            "DELETE FROM ledger_archive_gaps WHERE owner_type = ? AND owner_id = ? "
+            "AND data_kind = ANY(?)",
+            (owner_type, int(owner_id), list(sync_kinds)),
+        )
+    return deleted
