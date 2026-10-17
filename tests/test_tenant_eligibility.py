@@ -49,3 +49,13 @@ def test_granted_tools_reads_the_tenants_grants_with_the_gate_on(monkeypatch):
     # gate on + no grants at all is a real (empty) restriction, not "unrestricted"
     monkeypatch.setattr(storage, "list_tool_grants_for_tenant", lambda t: [])
     assert tenant_eligibility.granted_tools("t") == set()
+
+
+def test_production_archive_retention_d10(monkeypatch):
+    monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", True)
+    monkeypatch.setattr(storage, "list_tool_grants_for_tenant", lambda t: ["trading"])
+    assert tenant_eligibility.production_archive_retention("t") is False
+    monkeypatch.setattr(storage, "list_tool_grants_for_tenant", lambda t: ["production", "trading"])
+    assert tenant_eligibility.production_archive_retention("t") is True
+    monkeypatch.setattr(ACCESS_CONFIG, "access_gate_enabled", False)
+    assert tenant_eligibility.production_archive_retention("t") is True

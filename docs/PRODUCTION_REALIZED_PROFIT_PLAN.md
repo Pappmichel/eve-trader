@@ -1,8 +1,9 @@
 # Production realized profit - plan
 
-Status: **planned, not started** (2026-10-17). Decisions D1-D12 (section 10)
+Status: **Phase 1 in progress** (2026-10-17). Decisions D1-D12 (section 10)
 are confirmed with the user. Revised the same day after a critical review
-against the code (section 12 lists what changed and why).
+against the code (section 12 lists what changed and why). See
+**Implementation status** at the end of this file.
 
 ## 1. Goal
 
@@ -677,3 +678,24 @@ spell out):
   `pricing._freight_rate`, `job_category_locations`, `selected_decryptors`,
   Goonmetrics/ESI daily history for reference prices: all exist as the plan
   assumes.
+
+## Implementation status
+
+- **Phase 0 - done 2026-10-17.** Live ESI checks V1-V8 on the test server
+  (Default tenant); results in sections 13 / 13a / 13b. Settled hard caps
+  (2000 jobs, 10,000 journal), D12 fee spread, probability-derived
+  decryptor, and the Phase 1 implementability list.
+- **Phase 1 - done 2026-10-17.** Append-only ledger schema
+  (`docs/production_ledger_schema.sql`) with RLS; ingest hooked into
+  existing ESI fetchers (wallet+journal context, completed jobs second
+  pass, order history, blueprints, contracts archive pass); frozen job
+  inputs / freight / region at first sight; D10 inactive-tenant retention
+  for archive kinds; D11 read gate via `is_shared`; Production per-skill
+  rows via `read_esi(..., table="skills")`. Deviation: fetchers
+  lazy-import `production.realized.ingest` (plan places archive writes in
+  fetchers; one deliberate esi_data→tool exception). Snapshot behaviour
+  unchanged (`include_completed=false`).
+- **Phase 2 - not started.** Pure `costing.py` + golden tests.
+- **Phase 3 - not started.** Report / API / CLI.
+- **Phase 4 - not started.** Frontend.
+- **Phase 5 - not started.** Extensions (ask user first).
