@@ -55,6 +55,9 @@ class FrozenInput:
     science_skill_1_level: Optional[int]
     science_skill_2_level: Optional[int]
     source: str
+    # None when this input has no structure/rig decision (invention, or a
+    # row frozen before the column existed). Never inferred later.
+    structure_bonus_applied: Optional[bool] = None
 
 
 def _activity_label(activity_id: int, product_type_id: Optional[int]) -> str:
@@ -300,7 +303,7 @@ def freeze_job_inputs(
         selected_decryptors=selected,
     )
     me = int(me or 0)
-    material_mult, _bonus = _material_multiplier_for_job(
+    material_mult, bonus_applied = _material_multiplier_for_job(
         activity_label, product_type_id_i, facility_id, me, cfg,
     )
     source = me_source
@@ -317,6 +320,7 @@ def freeze_job_inputs(
             science_skill_1_level=None,
             science_skill_2_level=None,
             source=source,
+            structure_bonus_applied=bool(bonus_applied),
         ))
     return out
 
@@ -383,5 +387,5 @@ def frozen_to_row(
         owner_type, int(owner_id), int(job_id), int(inp.type_id), float(inp.quantity),
         inp.blueprint_me, inp.material_multiplier, inp.decryptor_type_id,
         inp.encryption_skill_level, inp.science_skill_1_level, inp.science_skill_2_level,
-        inp.source,
+        inp.source, inp.structure_bonus_applied,
     )

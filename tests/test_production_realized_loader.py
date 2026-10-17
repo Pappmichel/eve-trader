@@ -25,7 +25,9 @@ psycopg = pytest.importorskip("psycopg")
 
 pytestmark = pg_helpers.postgres_required()
 
-_LEDGER_SCHEMA_SQL = Path(__file__).resolve().parent.parent / "docs" / "production_ledger_schema.sql"
+_DOCS = Path(__file__).resolve().parent.parent / "docs"
+_LEDGER_SCHEMA_SQL = _DOCS / "production_ledger_schema.sql"
+_SPECIAL_ORDERS_SCHEMA_SQL = _DOCS / "special_orders_schema.sql"
 
 ALICE = 910001
 TYPE_A = 34
@@ -41,6 +43,7 @@ def _apply_production_ledger_schema(_apply_phase1_schema):
         return
     with psycopg.connect(pg_helpers.OWNER_DSN, autocommit=True) as conn:
         conn.execute(_LEDGER_SCHEMA_SQL.read_text(encoding="utf-8"))
+        conn.execute(_SPECIAL_ORDERS_SCHEMA_SQL.read_text(encoding="utf-8"))
 
 
 @pytest.fixture(autouse=True)
@@ -51,6 +54,8 @@ def _wipe(_apply_production_ledger_schema):
         "ledger_market_orders", "ledger_contracts", "ledger_contract_items",
         "ledger_archive_gaps", "ledger_sync_state", "ledger_reference_prices",
         "ledger_manual_entries", "prod_cost_layers", "prod_realized_results",
+        "prod_cost_draws", "prod_job_records", "prod_fee_lines", "prod_job_losses",
+        "prod_capital_bpos", "prod_inventory_drift",
         "prod_ledger_runs", "esi_sharing", "character_assets", "corp_assets",
         "stock_targets",
     )

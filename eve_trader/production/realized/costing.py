@@ -272,6 +272,7 @@ class IndustryJob:
     output_quantity: Optional[float] = None
     output_runs_per_success: Optional[float] = None
     uses_bpc: Optional[bool] = None
+    facility_id: Optional[int] = None
 
     @property
     def activity(self) -> int:
@@ -398,6 +399,9 @@ class JobRecord:
     output_type_id: Optional[int] = None
     output_quantity: float = 0.0
     output_unit: Optional[str] = None
+    facility_id: Optional[int] = None
+    successful_runs: Optional[int] = None
+    end_date: Optional[datetime] = None
 
 
 @dataclass(frozen=True)
@@ -418,6 +422,20 @@ class FeePeriod:
     owner_id: int
     day: date
     amount: float
+
+
+@dataclass(frozen=True)
+class OtherTradingFee:
+    """Broker-fee share on a sell that is not a Production type (section 5b).
+
+    Kept per fill so a period report can filter it. The total stays
+    `CostingResult.fees_on_other_trading`.
+    """
+    owner_type: str
+    owner_id: int
+    day: date
+    amount: float
+    sale_ref: str
 
 
 @dataclass(frozen=True)
@@ -448,6 +466,7 @@ class CostingResult:
     warnings: list
     # (type_id, unit, day) lookups that found no reference price.
     price_requests: frozenset = frozenset()
+    other_trading_fees: list = field(default_factory=list)
 
     @property
     def work_in_progress(self) -> list:
@@ -493,6 +512,7 @@ class _Costing:
         self.cancelled: list[JobLoss] = []
         self.failed_invention: list[JobLoss] = []
         self.fees_without_sale: list[FeePeriod] = []
+        self.other_trading_fees: list[OtherTradingFee] = []
         self.fees_other = 0.0
         self.capital: dict[int, float] = defaultdict(float)
         self.opening_lines: list[OpeningLine] = []
@@ -779,6 +799,10 @@ class _Costing:
             return
         if type_id not in self.ledger.production_type_ids:
             self.fees_other += fee
+            if fee > _EPS:
+                self.other_trading_fees.append(OtherTradingFee(
+                    tx.owner_type, int(tx.owner_id), _day(tx.date), fee, tx.ref,
+                ))
             self._consume(type_id, UNIT_ITEM, qty, tx.date, tx.ref, allow_unknown=False)
             return
         gross = float(tx.unit_price) * qty
@@ -824,6 +848,9 @@ class _Costing:
             activity_id=job.activity, blueprint_type_id=int(job.blueprint_type_id),
             product_type_id=job.product_type_id, runs=int(job.runs or 0), start_date=job.start_date,
             status=job.status, job_cost=job_cost,
+            facility_id=None if job.facility_id is None else int(job.facility_id),
+            successful_runs=None if job.successful_runs is None else int(job.successful_runs),
+            end_date=job.end_date,
         )
         self.jobs.append(rec)
         if job.activity in _RESEARCH_ACTIVITIES:
@@ -954,4 +981,5 @@ class _Costing:
             skipped_corp_jobs=list(self.skipped_corp_jobs),
             warnings=list(self.warnings),
             price_requests=frozenset(self.price_requests),
+            other_trading_fees=list(self.other_trading_fees),
         )

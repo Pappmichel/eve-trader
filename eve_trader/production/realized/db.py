@@ -163,9 +163,11 @@ def job_ids_already_archived(
 def insert_ledger_job_inputs(rows: list[tuple]) -> int:
     """`rows`: (owner_type, owner_id, job_id, type_id, quantity, blueprint_me,
     material_multiplier, decryptor_type_id, encryption_skill_level,
-    science_skill_1_level, science_skill_2_level, source).
+    science_skill_1_level, science_skill_2_level, source,
+    structure_bonus_applied).
 
-    Insert-only: frozen at first sight.
+    Insert-only: frozen at first sight. `structure_bonus_applied` may be
+    None (unknown — a row frozen before that fact was stored).
     """
     if not rows:
         return 0
@@ -174,8 +176,9 @@ def insert_ledger_job_inputs(rows: list[tuple]) -> int:
             "INSERT INTO ledger_job_inputs ("
             "owner_type, owner_id, job_id, type_id, quantity, blueprint_me, "
             "material_multiplier, decryptor_type_id, encryption_skill_level, "
-            "science_skill_1_level, science_skill_2_level, source) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+            "science_skill_1_level, science_skill_2_level, source, "
+            "structure_bonus_applied) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT (tenant_id, owner_type, owner_id, job_id, type_id) DO NOTHING",
             rows,
         )
@@ -739,35 +742,131 @@ def replace_derived_costing(
     results: list[tuple],
     cutover_t0: Optional[datetime],
     warnings: list,
+    draws: Optional[list[tuple]] = None,
+    jobs: Optional[list[tuple]] = None,
+    fee_lines: Optional[list[tuple]] = None,
+    losses: Optional[list[tuple]] = None,
+    capital: Optional[list[tuple]] = None,
+    drift: Optional[list[tuple]] = None,
 ) -> int:
     """Fully replace derived costing tables for this tenant (one rebuild).
 
-    `layers`: (type_id, unit, quantity_left, unit_cost, origin, source_ref,
-    cost_materials_bought, cost_materials_estimated, cost_freight, cost_job,
-    cost_invention, cost_fees, layer_date, job_id)
-    `results`: (sale_ref, type_id, quantity, revenue, cost, profit,
-    coverage_share, sale_date)
+    The `prod_ledger_runs` row is inserted in the same transaction, after
+    every derived row, so a failed write leaves the previous run in place.
+
+    `layers`: remaining layers only. (type_id, unit, quantity_left, unit_cost,
+    origin, source_ref, six cost components, layer_date, job_id,
+    quantity_original, assumed_me, assumed_decryptor, estimated_origin,
+    price_missing, logical_layer_id)
+    `results`: one per Production sale. (sale_ref, type_id, quantity, revenue,
+    cost, profit, coverage_share, sale_date, gross, sales_tax, broker_fee,
+    location_id, price_missing, estimated, warnings list, six cost components)
+    `draws`: (consumer_kind, consumer_ref, seq, logical_layer_id, type_id,
+    unit, quantity, origin, source_ref, six components, unit_cost,
+    estimated_origin, price_missing, assumed_me, assumed_decryptor,
+    layer_date, job_id, location_id, unit_price, freight_rate_per_m3)
+    `jobs`: see `_JOB_INSERT` below.
+    `fee_lines`: (kind, owner_type, owner_id, fee_date, amount, sale_ref)
+    `losses`: (loss_kind, job_ref, job_id, loss_date, six components)
+    `capital`: (type_id, amount)
+    `drift`: (type_id, ledger_qty, esi_qty, drift)
     Returns the new prod_ledger_runs.run_id.
     """
+    draws = draws or []
+    jobs = jobs or []
+    fee_lines = fee_lines or []
+    losses = losses or []
+    capital = capital or []
+    drift = drift or []
+    result_params = [
+        (
+            *row[:14],
+            Jsonb(list(row[14])),
+            *row[15:],
+        )
+        for row in results
+    ]
     with storage.connect() as conn:
-        conn.execute("DELETE FROM prod_cost_layers")
-        conn.execute("DELETE FROM prod_realized_results")
+        for table in (
+            "prod_cost_layers", "prod_realized_results", "prod_cost_draws",
+            "prod_job_records", "prod_fee_lines", "prod_job_losses",
+            "prod_capital_bpos", "prod_inventory_drift",
+        ):
+            conn.execute(f"DELETE FROM {table}")
         if layers:
             conn.executemany(
                 "INSERT INTO prod_cost_layers ("
                 "type_id, unit, quantity_left, unit_cost, origin, source_ref, "
                 "cost_materials_bought, cost_materials_estimated, cost_freight, "
-                "cost_job, cost_invention, cost_fees, layer_date, job_id) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "cost_job, cost_invention, cost_fees, layer_date, job_id, "
+                "quantity_original, assumed_me, assumed_decryptor, estimated_origin, "
+                "price_missing, logical_layer_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 layers,
             )
-        if results:
+        if result_params:
             conn.executemany(
                 "INSERT INTO prod_realized_results ("
                 "sale_ref, type_id, quantity, revenue, cost, profit, "
-                "coverage_share, sale_date) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                results,
+                "coverage_share, sale_date, gross, sales_tax, broker_fee, "
+                "location_id, price_missing, estimated, warnings, "
+                "cost_materials_bought, cost_materials_estimated, cost_freight, "
+                "cost_job, cost_invention, cost_fees) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                result_params,
+            )
+        if draws:
+            conn.executemany(
+                "INSERT INTO prod_cost_draws ("
+                "consumer_kind, consumer_ref, seq, logical_layer_id, type_id, unit, "
+                "quantity, origin, source_ref, "
+                "cost_materials_bought, cost_materials_estimated, cost_freight, "
+                "cost_job, cost_invention, cost_fees, unit_cost, "
+                "estimated_origin, price_missing, assumed_me, assumed_decryptor, "
+                "layer_date, job_id, location_id, unit_price, freight_rate_per_m3) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                draws,
+            )
+        if jobs:
+            conn.executemany(
+                "INSERT INTO prod_job_records ("
+                "job_ref, job_id, owner_type, owner_id, activity_id, "
+                "blueprint_type_id, product_type_id, runs, successful_runs, "
+                "start_date, end_date, status, state, job_cost, "
+                "cost_materials_bought, cost_materials_estimated, cost_freight, "
+                "cost_job, cost_invention, cost_fees, "
+                "assumed_me, assumed_decryptor, price_missing, no_structure_bonus, "
+                "output_layer_id, output_type_id, output_quantity, "
+                "output_quantity_left, output_unit, facility_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                jobs,
+            )
+        if fee_lines:
+            conn.executemany(
+                "INSERT INTO prod_fee_lines ("
+                "kind, owner_type, owner_id, fee_date, amount, sale_ref) "
+                "VALUES (?,?,?,?,?,?)",
+                fee_lines,
+            )
+        if losses:
+            conn.executemany(
+                "INSERT INTO prod_job_losses ("
+                "loss_kind, job_ref, job_id, loss_date, "
+                "cost_materials_bought, cost_materials_estimated, cost_freight, "
+                "cost_job, cost_invention, cost_fees) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                losses,
+            )
+        if capital:
+            conn.executemany(
+                "INSERT INTO prod_capital_bpos (type_id, amount) VALUES (?,?)",
+                capital,
+            )
+        if drift:
+            conn.executemany(
+                "INSERT INTO prod_inventory_drift (type_id, ledger_qty, esi_qty, drift) "
+                "VALUES (?,?,?,?)",
+                drift,
             )
         row = conn.execute(
             "INSERT INTO prod_ledger_runs (cutover_t0, warnings) "
@@ -784,3 +883,351 @@ def latest_ledger_run() -> Optional[tuple]:
             "SELECT run_id, ran_at, cutover_t0, warnings "
             "FROM prod_ledger_runs ORDER BY run_id DESC LIMIT 1",
         ).fetchone()
+
+
+def count_realized_results() -> int:
+    with storage.connect() as conn:
+        row = conn.execute("SELECT COUNT(*) FROM prod_realized_results").fetchone()
+    return int(row[0]) if row else 0
+
+
+def realized_totals(start: datetime, end: datetime) -> tuple:
+    """One row of period aggregates. Sums ignore NULL sales tax; the tax-null
+    count is separate so a missing tax is not reported as zero tax."""
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT COALESCE(SUM(revenue), 0), COALESCE(SUM(cost), 0), "
+            "COALESCE(SUM(profit), 0), COALESCE(SUM(quantity), 0), "
+            "COALESCE(SUM(cost_materials_bought), 0), "
+            "COALESCE(SUM(cost_materials_estimated), 0), "
+            "COALESCE(SUM(cost_freight), 0), COALESCE(SUM(cost_job), 0), "
+            "COALESCE(SUM(cost_invention), 0), COALESCE(SUM(cost_fees), 0), "
+            "COALESCE(SUM(sales_tax), 0), "
+            "COUNT(*) FILTER (WHERE sales_tax IS NULL), "
+            "COALESCE(BOOL_OR(price_missing), FALSE), COUNT(*) "
+            "FROM prod_realized_results WHERE sale_date >= ? AND sale_date < ?",
+            (start, end),
+        ).fetchone()
+
+
+def realized_by_day(start: datetime, end: datetime) -> list[tuple]:
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT (sale_date AT TIME ZONE 'UTC')::date, "
+            "COALESCE(SUM(revenue), 0), COALESCE(SUM(cost), 0), COALESCE(SUM(profit), 0) "
+            "FROM prod_realized_results WHERE sale_date >= ? AND sale_date < ? "
+            "GROUP BY 1 ORDER BY 1",
+            (start, end),
+        ).fetchall()
+
+
+def realized_by_type(start: datetime, end: datetime) -> list[tuple]:
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT type_id, COALESCE(SUM(quantity), 0), COALESCE(SUM(revenue), 0), "
+            "COALESCE(SUM(cost), 0), COALESCE(SUM(profit), 0), "
+            "COALESCE(SUM(cost_materials_bought), 0), "
+            "COALESCE(SUM(cost_materials_estimated), 0), "
+            "COALESCE(SUM(cost_freight), 0), COALESCE(SUM(cost_job), 0), "
+            "COALESCE(SUM(cost_invention), 0), COALESCE(SUM(cost_fees), 0), "
+            "COALESCE(BOOL_OR(price_missing), FALSE) "
+            "FROM prod_realized_results WHERE sale_date >= ? AND sale_date < ? "
+            "GROUP BY type_id ORDER BY type_id",
+            (start, end),
+        ).fetchall()
+
+
+def realized_draw_flags_by_type(start: datetime, end: datetime) -> list[tuple]:
+    """(type_id, assumed_me, assumed_decryptor) for sales in the period."""
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT r.type_id, COALESCE(BOOL_OR(d.assumed_me), FALSE), "
+            "COALESCE(BOOL_OR(d.assumed_decryptor), FALSE) "
+            "FROM prod_realized_results r "
+            "JOIN prod_cost_draws d ON d.consumer_kind = 'sale' AND d.consumer_ref = r.sale_ref "
+            "WHERE r.sale_date >= ? AND r.sale_date < ? "
+            "GROUP BY r.type_id",
+            (start, end),
+        ).fetchall()
+
+
+def realized_warnings_by_type(start: datetime, end: datetime) -> list[tuple]:
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT r.type_id, w "
+            "FROM prod_realized_results r, "
+            "LATERAL jsonb_array_elements_text(COALESCE(r.warnings, '[]'::jsonb)) AS w "
+            "WHERE r.sale_date >= ? AND r.sale_date < ?",
+            (start, end),
+        ).fetchall()
+
+
+def list_sales_for_type(type_id: int, start: datetime, end: datetime) -> list[tuple]:
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT sale_ref, type_id, quantity, revenue, cost, profit, coverage_share, "
+            "sale_date, gross, sales_tax, broker_fee, location_id, price_missing, "
+            "estimated, warnings, cost_materials_bought, cost_materials_estimated, "
+            "cost_freight, cost_job, cost_invention, cost_fees "
+            "FROM prod_realized_results "
+            "WHERE type_id = ? AND sale_date >= ? AND sale_date < ? "
+            "ORDER BY sale_date, sale_ref",
+            (int(type_id), start, end),
+        ).fetchall()
+
+
+def get_realized_sale(sale_ref: str) -> Optional[tuple]:
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT sale_ref, type_id, quantity, revenue, cost, profit, coverage_share, "
+            "sale_date, gross, sales_tax, broker_fee, location_id, price_missing, "
+            "estimated, warnings, cost_materials_bought, cost_materials_estimated, "
+            "cost_freight, cost_job, cost_invention, cost_fees "
+            "FROM prod_realized_results WHERE sale_ref = ?",
+            (sale_ref,),
+        ).fetchone()
+
+
+def list_draws(consumer_kind: str, refs: list[str]) -> list[tuple]:
+    if not refs:
+        return []
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT consumer_ref, seq, logical_layer_id, type_id, unit, quantity, origin, "
+            "source_ref, cost_materials_bought, cost_materials_estimated, cost_freight, "
+            "cost_job, cost_invention, cost_fees, unit_cost, estimated_origin, "
+            "price_missing, assumed_me, assumed_decryptor, layer_date, job_id, "
+            "location_id, unit_price, freight_rate_per_m3 "
+            "FROM prod_cost_draws WHERE consumer_kind = ? AND consumer_ref = ANY(?) "
+            "ORDER BY consumer_ref, seq",
+            (consumer_kind, list(refs)),
+        ).fetchall()
+
+
+def list_jobs_by_output_layers(layer_ids: list[int]) -> list[tuple]:
+    ids = [int(i) for i in layer_ids if i is not None]
+    if not ids:
+        return []
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT job_ref, job_id, activity_id, blueprint_type_id, product_type_id, "
+            "runs, successful_runs, start_date, end_date, status, state, job_cost, "
+            "cost_materials_bought, cost_materials_estimated, cost_freight, cost_job, "
+            "cost_invention, cost_fees, assumed_me, assumed_decryptor, price_missing, "
+            "no_structure_bonus, output_layer_id, output_type_id, output_quantity, "
+            "output_quantity_left, output_unit, facility_id "
+            "FROM prod_job_records WHERE output_layer_id = ANY(?)",
+            (ids,),
+        ).fetchall()
+
+
+def list_job_records() -> list[tuple]:
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT job_ref, job_id, owner_type, owner_id, activity_id, "
+            "blueprint_type_id, product_type_id, runs, successful_runs, "
+            "start_date, end_date, status, state, job_cost, "
+            "cost_materials_bought, cost_materials_estimated, cost_freight, "
+            "cost_job, cost_invention, cost_fees, assumed_me, assumed_decryptor, "
+            "price_missing, no_structure_bonus, output_layer_id, output_type_id, "
+            "output_quantity, output_quantity_left, output_unit, facility_id "
+            "FROM prod_job_records ORDER BY start_date, job_id",
+        ).fetchall()
+
+
+def list_remaining_layers() -> list[tuple]:
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT type_id, unit, quantity_left, unit_cost, origin, "
+            "assumed_me, assumed_decryptor, estimated_origin, price_missing "
+            "FROM prod_cost_layers WHERE quantity_left > 0 "
+            "ORDER BY type_id, logical_layer_id",
+        ).fetchall()
+
+
+def list_inventory_drift() -> list[tuple]:
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT type_id, ledger_qty, esi_qty, drift FROM prod_inventory_drift "
+            "ORDER BY type_id",
+        ).fetchall()
+
+
+def fee_totals_between(start_day, end_day) -> tuple:
+    """(fees_without_sale, fees_on_other_trading) for UTC days that overlap
+    [start_day, end_day). end_day is exclusive."""
+    with storage.connect() as conn:
+        row = conn.execute(
+            "SELECT "
+            "COALESCE(SUM(amount) FILTER (WHERE kind = 'without_sale'), 0), "
+            "COALESCE(SUM(amount) FILTER (WHERE kind = 'other_trading'), 0) "
+            "FROM prod_fee_lines WHERE fee_date >= ? AND fee_date < ?",
+            (start_day, end_day),
+        ).fetchone()
+    return (float(row[0]), float(row[1])) if row else (0.0, 0.0)
+
+
+def list_fee_lines(kind: str) -> list[tuple]:
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT owner_type, owner_id, fee_date, amount, sale_ref "
+            "FROM prod_fee_lines WHERE kind = ? ORDER BY fee_date, owner_id",
+            (kind,),
+        ).fetchall()
+
+
+def loss_totals_between(start: datetime, end: datetime) -> tuple:
+    with storage.connect() as conn:
+        row = conn.execute(
+            "SELECT "
+            "COALESCE(SUM(cost_materials_bought + cost_materials_estimated + cost_freight "
+            "+ cost_job + cost_invention + cost_fees) "
+            "FILTER (WHERE loss_kind = 'cancelled'), 0), "
+            "COALESCE(SUM(cost_materials_bought + cost_materials_estimated + cost_freight "
+            "+ cost_job + cost_invention + cost_fees) "
+            "FILTER (WHERE loss_kind = 'failed_invention'), 0) "
+            "FROM prod_job_losses WHERE loss_date >= ? AND loss_date < ?",
+            (start, end),
+        ).fetchone()
+    return (float(row[0]), float(row[1])) if row else (0.0, 0.0)
+
+
+def capital_in_bpos_total() -> float:
+    with storage.connect() as conn:
+        row = conn.execute("SELECT COALESCE(SUM(amount), 0) FROM prod_capital_bpos").fetchone()
+    return float(row[0]) if row else 0.0
+
+
+def inventory_at_cost_total() -> float:
+    """Unsold produced and opening item layers (plan section 9a). Bought
+    leftovers stay on the inventory list and are not in this balance."""
+    with storage.connect() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(quantity_left * unit_cost), 0) FROM prod_cost_layers "
+            "WHERE unit = 'item' AND origin IN ('produced', 'opening')",
+        ).fetchone()
+    return float(row[0]) if row else 0.0
+
+
+def manual_entry_totals(start: datetime, end: datetime) -> tuple:
+    """(cost, revenue) of manual ledger entries in the period. `amount` is
+    the entry's total ISK; quantity is not multiplied in."""
+    with storage.connect() as conn:
+        row = conn.execute(
+            "SELECT "
+            "COALESCE(SUM(amount) FILTER (WHERE entry_kind = 'cost'), 0), "
+            "COALESCE(SUM(amount) FILTER (WHERE entry_kind = 'revenue'), 0) "
+            "FROM ledger_manual_entries "
+            "WHERE entry_kind IN ('cost', 'revenue') AND entry_date >= ? AND entry_date < ?",
+            (start, end),
+        ).fetchone()
+    return (float(row[0]), float(row[1])) if row else (0.0, 0.0)
+
+
+def list_ledger_sync_state() -> list[tuple]:
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT owner_type, owner_id, data_kind, last_synced_at FROM ledger_sync_state",
+        ).fetchall()
+
+
+def earliest_archived_transaction(owners: list[tuple[str, int]]) -> Optional[datetime]:
+    if not owners:
+        return None
+    where, params = _owner_in_clause(owners)
+    with storage.connect() as conn:
+        row = conn.execute(
+            f"SELECT MIN(first_seen_at) FROM ledger_wallet_transactions WHERE {where}",
+            tuple(params),
+        ).fetchone()
+    return row[0] if row else None
+
+
+def list_all_archive_gaps() -> list[tuple]:
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT owner_type, owner_id, data_kind, gap_start, gap_end "
+            "FROM ledger_archive_gaps ORDER BY gap_start",
+        ).fetchall()
+
+
+def unresolved_regions(owners: list[tuple[str, int]]) -> list[tuple]:
+    """(location_id, count) of archived transactions whose region is still NULL."""
+    if not owners:
+        return []
+    where, params = _owner_in_clause(owners)
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT location_id, COUNT(*) FROM ledger_wallet_transactions "
+            f"WHERE region_id IS NULL AND {where} GROUP BY location_id ORDER BY location_id",
+            tuple(params),
+        ).fetchall()
+
+
+def structure_bonus_applied_by_job(owners: list[tuple[str, int]]) -> dict[tuple, Optional[bool]]:
+    """(owner_type, owner_id, job_id) -> True/False, or None when every frozen
+    input left the flag unknown. One query."""
+    if not owners:
+        return {}
+    where, params = _owner_in_clause(owners)
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_type, owner_id, job_id, bool_and(structure_bonus_applied) "
+            f"FROM ledger_job_inputs WHERE {where} "
+            "GROUP BY owner_type, owner_id, job_id",
+            tuple(params),
+        ).fetchall()
+    return {
+        (r[0], int(r[1]), int(r[2])): (None if r[3] is None else bool(r[3]))
+        for r in rows
+    }
+
+
+def insert_manual_entry(
+    *,
+    entry_kind: str,
+    amount: float,
+    entry_date: datetime,
+    type_id: Optional[int],
+    quantity: Optional[float],
+    note: Optional[str],
+) -> int:
+    with storage.connect() as conn:
+        row = conn.execute(
+            "INSERT INTO ledger_manual_entries "
+            "(entry_kind, type_id, quantity, amount, entry_date, note) "
+            "VALUES (?,?,?,?,?,?) RETURNING entry_id",
+            (entry_kind, type_id, quantity, float(amount), entry_date, note),
+        ).fetchone()
+    return int(row[0])
+
+
+def replace_opening_cost(type_id: int, unit_cost: float, entry_date: datetime) -> int:
+    """One opening unit-cost override per type. The previous row is removed
+    in the same transaction as the insert."""
+    with storage.connect() as conn:
+        conn.execute(
+            "DELETE FROM ledger_manual_entries "
+            "WHERE entry_kind = 'opening_cost' AND type_id = ?",
+            (int(type_id),),
+        )
+        row = conn.execute(
+            "INSERT INTO ledger_manual_entries "
+            "(entry_kind, type_id, quantity, amount, entry_date, note) "
+            "VALUES ('opening_cost', ?, NULL, ?, ?, ?) RETURNING entry_id",
+            (int(type_id), float(unit_cost), entry_date, "opening unit cost override"),
+        ).fetchone()
+    return int(row[0])
+
+
+def reapply_freight_rates(rate: float) -> int:
+    """Set the frozen ISK/m3 rate on purchases that already have a freight
+    volume. Rows frozen with no freight (not a Forge buy, or the home
+    structure) are left alone."""
+    with storage.connect() as conn:
+        cur = conn.execute(
+            "UPDATE ledger_wallet_transactions SET freight_rate_per_m3 = ? "
+            "WHERE freight_m3 IS NOT NULL",
+            (float(rate),),
+        )
+    return int(cur.rowcount or 0)
