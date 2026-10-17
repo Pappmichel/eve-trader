@@ -1,6 +1,6 @@
 # Realized profit for Production, Trading, Doctrine and Station Trading - unified plan
 
-Status: **planned, decisions U1-U11 confirmed 2026-10-18; ST1-ST3 open.**
+Status: **planned, all decisions (U1-U11, ST1-ST3) confirmed 2026-10-18.**
 Nothing in this plan is built yet. Each phase ends with a review and a
 test-server check like the Production realized-profit work
 (`docs/PRODUCTION_REALIZED_PROFIT_PLAN.md`, referred to as "the Production
@@ -118,8 +118,8 @@ The tenant's total realized profit is the sum over all four channels.
 
 ## 4. Decisions
 
-U1-U11 confirmed with the user on 2026-10-18 (U11 changed: Station Trading
-is in scope, see ST1-ST3). The alternatives are kept so the reasoning stays
+U1-U11 and ST1-ST3 confirmed with the user on 2026-10-18 (U11 changed:
+Station Trading is in scope, see ST1-ST3). The alternatives are kept so the reasoning stays
 visible.
 
 **U1 Channel rules** - as in section 3. A doctrine contract wins over the
@@ -203,12 +203,12 @@ fourth channel** (ST1-ST3). Still out of scope: courier income, PI income,
 mining. Their items still move stock; a warning lists sales that fit no
 channel rule so nothing is silently lost.
 
-**ST1 Where station-trading stock comes from** (to confirm). The Production
+**ST1 Where station-trading stock comes from** (confirmed: station pool first). The Production
 plan's D2 ignores location because moves between stations are invisible in
 ESI. Station Trading breaks that assumption: it buys and sells at the same
 station Trading imports from, and a Jita buy can be a station trade (stays
 and is resold there) or an import (hauled home).
-- *Recommended - station pool first:* a buy **at the Station Trading
+- *Confirmed - station pool first:* a buy **at the Station Trading
   station** goes into that station's pool. A sell at that station draws
   from the station pool first (FIFO), then from the global pool. A sell
   anywhere else (home structure) draws from the global pool, and when that
@@ -220,13 +220,13 @@ and is resold there) or an import (hauled home).
 - Alternative - global FIFO (D2 unchanged): a station sale may draw an
   import lot and the reverse; Station Trading margins become meaningless.
 
-**ST2 Station Trading needs the wallet** (to confirm). `wallet` gets
+**ST2 Station Trading needs the wallet** (confirmed). `wallet` gets
 `station_trading` as a consuming tool (`esi_data/registry.py`), so the
 Characters page offers the switch. Only sales by owners sharing their wallet
 with Station Trading get the `station_trading` channel; a sale at that
 station by anyone else stays `trading`/`production`.
 
-**ST3 Station Trading's fees** (to confirm): real fees like every channel
+**ST3 Station Trading's fees** (confirmed): real fees like every channel
 (U6) - broker fees per day spread over that day's fills, which already
 covers both legs (buy orders and sell orders) and relists; sales tax from
 the journal. The tool's `broker_fee_rate`/`sales_tax_rate` stay planning
