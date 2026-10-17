@@ -14,6 +14,8 @@ function formatValue(value: unknown): string {
   return JSON.stringify(value)
 }
 
+const GROUP_PREVIEW = 50
+
 // Ids the API already resolved into a name (or into `text`) are not listed
 // again; an id without a name is shown under the same label instead.
 const HIDDEN = new Set([
@@ -91,11 +93,17 @@ export function WarningsTab({ groups, needsRebuild, hint, onOpen }: {
     seeded.current = true
     setOpened(groups.filter((group) => group.count > 0).map((group) => group.kind))
   }, [groups])
+  const [expanded, setExpanded] = useState<string[]>([])
   if (needsRebuild) return <HintCard>{hint}</HintCard>
   if (groups.length === 0) return <HintCard>No warnings.</HintCard>
   return (
     <Accordion multiple value={opened} onChange={setOpened}>
-      {groups.map((group) => (
+      {groups.map((group) => {
+        // A real ledger has thousands of items in a group; show the first
+        // ones and render the rest only on request.
+        const all = expanded.includes(group.kind)
+        const shown = all ? group.items : group.items.slice(0, GROUP_PREVIEW)
+        return (
         <Accordion.Item key={group.kind} value={group.kind}>
           <Accordion.Control>
             {warningTitle(group.kind)} ({group.count})
@@ -103,13 +111,20 @@ export function WarningsTab({ groups, needsRebuild, hint, onOpen }: {
           <Accordion.Panel keepMounted={false}>
             <Stack gap="sm">
               {group.items.length === 0 && <Text size="sm" c="dimmed">None.</Text>}
-              {group.items.map((item, index) => (
+              {shown.map((item, index) => (
                 <WarningItem key={`${group.kind}-${index}`} kind={group.kind} item={item} onOpen={onOpen} />
               ))}
+              {shown.length < group.items.length && (
+                <Button size="compact-xs" variant="subtle" w="fit-content"
+                  onClick={() => setExpanded((list) => [...list, group.kind])}>
+                  Show all {group.items.length}
+                </Button>
+              )}
             </Stack>
           </Accordion.Panel>
         </Accordion.Item>
-      ))}
+        )
+      })}
     </Accordion>
   )
 }

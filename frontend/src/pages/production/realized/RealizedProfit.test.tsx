@@ -307,6 +307,24 @@ describe('RealizedProfit', () => {
     expect(screen.queryByText(/type 34/)).toBeNull()
   })
 
+  it('shows the first 50 items of a large warning group until asked for all', async () => {
+    const user = userEvent.setup()
+    vi.mocked(productionApi.realizedWarnings).mockResolvedValue({
+      needs_rebuild: false,
+      groups: [{
+        kind: 'coverage_below_threshold', count: 120,
+        items: Array.from({ length: 120 }, (_, i) => ({ message: `m ${i}`, text: `Sale ${i}` })),
+      }],
+    })
+    renderPage()
+    await screen.findByText('Cost of goods sold')
+    await user.click(screen.getByRole('tab', { name: 'Warnings' }))
+    expect(await screen.findByText('Sale 49')).toBeInTheDocument()
+    expect(screen.queryByText('Sale 50')).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Show all 120' }))
+    expect(await screen.findByText('Sale 119')).toBeInTheDocument()
+  })
+
   it('renders an unknown warning kind from its message', async () => {
     const user = userEvent.setup()
     vi.mocked(productionApi.realizedWarnings).mockResolvedValue({
