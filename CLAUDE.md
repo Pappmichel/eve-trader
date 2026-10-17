@@ -141,7 +141,13 @@ coverage, `no_structure_bonus`) are stored on the derived rows and must
 reach `/api/production/realized/` unchanged. Freight is the configured
 rate and is labeled that way. HTTP recompute is a `pipeline_runner`
 background job; the CLI rebuild calls the same `do_rebuild_realized`
-in-process. A run row is written only after the replace commits.
+in-process. A run row is written only after the replace commits. Each run
+stores a fingerprint of the shared owners (`access.owner_scope_hash`); the
+report hides a run whose fingerprint no longer matches, so D11 also holds
+for derived rows. Opening quantities are frozen per type
+(`prod_opening_frozen`, not a derived table) and only re-derived when T0 or
+that fingerprint changes or on `--reset-opening`; re-deriving them on every
+rebuild would make the inventory drift check always zero.
 
 ## Architecture: actions.py is the one entry point
 

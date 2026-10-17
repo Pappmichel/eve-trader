@@ -217,7 +217,7 @@ def start_structure_name_resolve(force: bool = False) -> dict:
     )
 
 
-def start_rebuild_realized() -> dict:
+def start_rebuild_realized(reset_opening: bool = False) -> dict:
     """Background Production realized-profit rebuild. The CLI calls
     production.actions.do_rebuild_realized in-process; this is only the
     HTTP path, so a request is not held for the whole recompute."""
@@ -225,7 +225,7 @@ def start_rebuild_realized() -> dict:
     return start_job(
         TOOL_PRODUCTION, JOB_REBUILD_REALIZED,
         _JOB_LABELS[(TOOL_PRODUCTION, JOB_REBUILD_REALIZED)],
-        lambda cb: production_actions.do_rebuild_realized(),
+        lambda cb: production_actions.do_rebuild_realized(reset_opening=reset_opening),
     )
 
 

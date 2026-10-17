@@ -9,6 +9,10 @@ Fee pools are whole UTC days (D12). A day is included when it overlaps the
 period. Capital in BPOs and inventory at cost are balances as of the latest
 rebuild, not flows inside the period. Sales tax is listed in the cost
 structure and is already removed from revenue, so it is not added to COGS.
+
+D11: a run stores the fingerprint of the owners shared with Production.
+When the current sharing no longer matches, every read returns nothing
+from that run (`sharing_changed`) until the next rebuild.
 """
 from __future__ import annotations
 
@@ -186,9 +190,28 @@ def _empty_summary(period: dict, status: dict) -> dict:
     }
 
 
-def _status(run, t0, archive_since, wallet_sync, jobs_sync, results_ever: int) -> dict:
+def _run_state() -> tuple[Optional[tuple], Optional[datetime], bool]:
+    """(latest run, its T0, sharing_changed). `sharing_changed` is True when
+    the owners shared with Production differ from the ones the run was built
+    from (or the run predates the fingerprint); its rows must not be shown."""
+    run = db.latest_ledger_run()
+    if run is None:
+        return None, None, False
+    t0 = None if run[2] is None else _as_utc(run[2])
+    changed = run[4] is None or run[4] != access.owner_scope_hash()
+    return run, t0, changed
+
+
+def _status(run, t0, archive_since, wallet_sync, jobs_sync, results_ever: int,
+            *, sharing_changed: bool = False, last_sync: Optional[datetime] = None) -> dict:
+    stale = False
+    if run is not None and last_sync is not None and run[1] is not None:
+        stale = _as_utc(last_sync) > _as_utc(run[1])
     if run is None:
         hint = "Recompute to build realized profit from the archive."
+        empty = True
+    elif sharing_changed:
+        hint = "Sharing with Production changed since the last recompute. Recompute to update."
         empty = True
     elif t0 is None:
         hint = "no wallet archive yet; cutover T0 unknown"
@@ -202,7 +225,9 @@ def _status(run, t0, archive_since, wallet_sync, jobs_sync, results_ever: int) -
         empty = False
     return {
         "empty": empty,
-        "needs_rebuild": run is None,
+        "needs_rebuild": run is None or sharing_changed,
+        "sharing_changed": bool(sharing_changed),
+        "stale": stale,
         "hint": hint,
         "cutover_t0": _iso(t0),
         "archive_since": _iso(archive_since),
@@ -213,21 +238,26 @@ def _status(run, t0, archive_since, wallet_sync, jobs_sync, results_ever: int) -
     }
 
 
-def _sync_times() -> tuple[Optional[datetime], Optional[datetime], Optional[datetime]]:
-    wallet_owners = set(access.shared_owners("wallet"))
-    job_owners = set(access.shared_owners("industry_jobs"))
+def _sync_times() -> tuple[Optional[datetime], Optional[datetime], Optional[datetime], Optional[datetime]]:
+    """(archive_since, last wallet sync, last jobs sync, last sync of any
+    archive kind) over owners currently shared with Production."""
+    shared = {kind: set(access.shared_owners(kind)) for kind in set(_GAP_SHARE_KIND.values())}
     wallet_sync = None
     jobs_sync = None
+    any_sync = None
     for owner_type, owner_id, kind, synced in db.list_ledger_sync_state():
         key = (owner_type, int(owner_id))
-        if kind in ("wallet_transactions", "wallet_journal") and key in wallet_owners:
-            if wallet_sync is None or synced > wallet_sync:
-                wallet_sync = synced
-        elif kind == "industry_jobs" and key in job_owners:
-            if jobs_sync is None or synced > jobs_sync:
-                jobs_sync = synced
-    archive_since = db.earliest_archived_transaction(list(wallet_owners))
-    return archive_since, wallet_sync, jobs_sync
+        share_kind = _GAP_SHARE_KIND.get(str(kind))
+        if share_kind is None or key not in shared[share_kind] or synced is None:
+            continue
+        if any_sync is None or synced > any_sync:
+            any_sync = synced
+        if share_kind == "wallet" and (wallet_sync is None or synced > wallet_sync):
+            wallet_sync = synced
+        elif share_kind == "industry_jobs" and (jobs_sync is None or synced > jobs_sync):
+            jobs_sync = synced
+    archive_since = db.earliest_archived_transaction(list(shared["wallet"]))
+    return archive_since, wallet_sync, jobs_sync, any_sync
 
 
 def _period_dict(start: Optional[datetime], end: datetime, since_t0: bool, days: Optional[int]) -> dict:
@@ -241,12 +271,12 @@ def _period_dict(start: Optional[datetime], end: datetime, since_t0: bool, days:
 
 def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: Optional[int]) -> dict:
     with storage.batch_session():
-        run = db.latest_ledger_run()
-        t0 = None if run is None or run[2] is None else _as_utc(run[2])
-        archive_since, wallet_sync, jobs_sync = _sync_times()
+        run, t0, changed = _run_state()
+        archive_since, wallet_sync, jobs_sync, any_sync = _sync_times()
         results_ever = db.count_realized_results() if run is not None else 0
-        status = _status(run, t0, archive_since, wallet_sync, jobs_sync, results_ever)
-        window = None if run is None else _window(start, end, since_t0, t0)
+        status = _status(run, t0, archive_since, wallet_sync, jobs_sync, results_ever,
+                         sharing_changed=changed, last_sync=any_sync)
+        window = None if run is None or changed else _window(start, end, since_t0, t0)
         period = _period_dict(None if window is None else window[0], end, since_t0, days)
         if window is None:
             return _empty_summary(period, status)
@@ -344,12 +374,11 @@ def _product_row(type_id: int, totals: tuple, assumed: tuple, warnings: list[str
 
 def products(*, start: Optional[datetime], end: datetime, since_t0: bool, days: Optional[int]) -> dict:
     with storage.batch_session():
-        run = db.latest_ledger_run()
-        t0 = None if run is None or run[2] is None else _as_utc(run[2])
-        window = None if run is None else _window(start, end, since_t0, t0)
+        run, t0, changed = _run_state()
+        window = None if run is None or changed else _window(start, end, since_t0, t0)
         period = _period_dict(None if window is None else window[0], end, since_t0, days)
         if window is None:
-            return {"period": period, "rows": []}
+            return {"period": period, "rows": [], "needs_rebuild": run is None or changed}
         start_at, end_at = window
         rows = db.realized_by_type(start_at, end_at)
         flags = {int(r[0]): (bool(r[1]), bool(r[2])) for r in db.realized_draw_flags_by_type(start_at, end_at)}
@@ -359,6 +388,7 @@ def products(*, start: Optional[datetime], end: datetime, since_t0: bool, days: 
         names = _names({int(r[0]) for r in rows})
     return {
         "period": period,
+        "needs_rebuild": False,
         "rows": [
             _product_row(int(row[0]), row, flags.get(int(row[0]), (False, False)), warn.get(int(row[0]), []), names)
             for row in rows
@@ -403,9 +433,8 @@ def product(*, type_id: int, start: Optional[datetime], end: datetime,
     listing = products(start=start, end=end, since_t0=since_t0, days=days)
     match = next((row for row in listing["rows"] if row["type_id"] == int(type_id)), None)
     with storage.batch_session():
-        run = db.latest_ledger_run()
-        t0 = None if run is None or run[2] is None else _as_utc(run[2])
-        window = None if run is None else _window(start, end, since_t0, t0)
+        run, t0, changed = _run_state()
+        window = None if run is None or changed else _window(start, end, since_t0, t0)
         sales = [] if window is None else db.list_sales_for_type(int(type_id), window[0], window[1])
         names = _names({int(type_id)} | {int(row[1]) for row in sales})
     if match is None:
@@ -423,7 +452,12 @@ def product(*, type_id: int, start: Optional[datetime], end: datetime,
             "warnings": [],
             "flags": _flags(estimated=False, price_missing=False, coverage=None),
         }
-    return {"period": listing["period"], "product": match, "sales": [_sale_dict(row, names) for row in sales]}
+    return {
+        "period": listing["period"],
+        "needs_rebuild": listing["needs_rebuild"],
+        "product": match,
+        "sales": [_sale_dict(row, names) for row in sales],
+    }
 
 
 def _draw_flags(row, *, detail_missing: bool = False) -> dict:
@@ -437,9 +471,12 @@ def _draw_flags(row, *, detail_missing: bool = False) -> dict:
     )
 
 
-def _leaf(row) -> dict:
+def _leaf(row, scale: float = 1.0) -> dict:
+    """One input draw. `scale` is the share of the consuming job that this
+    sale accounts for, so quantities and freight add up to the sale."""
     origin = str(row[6])
-    qty = _num(row[5])
+    qty = _num(row[5]) * scale
+    estimated_origin = bool(row[15])
     node = {
         "kind": "estimate" if origin in ("opening", "unknown") else "purchase" if origin == "bought" else origin,
         "origin": origin,
@@ -448,10 +485,12 @@ def _leaf(row) -> dict:
         "unit": str(row[4]),
         "unit_cost": _num(row[14]),
         "unit_price": None if row[22] is None else float(row[22]),
-        "reference_price": None if origin not in ("opening", "unknown") or row[22] is None else float(row[22]),
+        # Only an estimate is valued at a reference price; an opening
+        # override is the user's own purchase price.
+        "reference_price": None if not estimated_origin or row[22] is None else float(row[22]),
         "date": _iso(row[19]),
         "location_id": None if row[21] is None else int(row[21]),
-        "freight": _num(row[10]),
+        "freight": _num(row[10]) * scale,
         "freight_label": FREIGHT_LABEL if origin == "bought" else None,
         "freight_rate_per_m3": None if row[23] is None else float(row[23]),
         "source_ref": row[7],
@@ -462,7 +501,11 @@ def _leaf(row) -> dict:
     return node
 
 
-def _job_node(job_row, draw_row, children: list) -> dict:
+def _job_node(job_row, draw_row, children: list, scale: float = 1.0,
+              share: Optional[float] = None) -> dict:
+    """`scale`: share of the parent's draw this sale accounts for. `share`:
+    the fraction of this job's output (and so of its inputs and costs)
+    that ends up in the sale."""
     components = CostComponents(
         materials_bought=_num(job_row[12]), materials_estimated=_num(job_row[13]),
         freight=_num(job_row[14]), job=_num(job_row[15]), invention=_num(job_row[16]),
@@ -472,7 +515,7 @@ def _job_node(job_row, draw_row, children: list) -> dict:
         "kind": "job",
         "origin": "produced",
         "type_id": int(draw_row[3]),
-        "quantity": _num(draw_row[5]),
+        "quantity": _num(draw_row[5]) * scale,
         "unit": str(draw_row[4]),
         "unit_cost": _num(draw_row[14]),
         "job_ref": str(job_row[0]),
@@ -494,14 +537,19 @@ def _job_node(job_row, draw_row, children: list) -> dict:
             no_structure_bonus=None if job_row[21] is None else bool(job_row[21]),
         ),
         "cost_total": components.total,
+        "share": share,
+        "cost_share": None if share is None else components.total * share,
         "children": children,
     }
 
 
-def _children(draws: list[tuple], depth: int, stack: set[str]) -> list[dict]:
+def _children(draws: list[tuple], depth: int, stack: set[str], scale: float = 1.0) -> list[dict]:
+    """Expand draws into nodes. A job's draws are the whole job's inputs;
+    `scale` (the share of that job this sale accounts for) brings them down
+    to what the sale actually consumed."""
     if depth >= _CHAIN_DEPTH:
         return [
-            {**_leaf(row), "flags": _draw_flags(row, detail_missing=True)}
+            {**_leaf(row, scale), "flags": _draw_flags(row, detail_missing=True)}
             for row in draws
         ]
     produced_ids = [int(row[2]) for row in draws if str(row[6]) == "produced"]
@@ -519,25 +567,35 @@ def _children(draws: list[tuple], depth: int, stack: set[str]) -> list[dict]:
     nodes = []
     for row in draws:
         if str(row[6]) != "produced":
-            nodes.append(_leaf(row))
+            nodes.append(_leaf(row, scale))
             continue
         job = jobs.get(int(row[2]))
         if job is None:
-            nodes.append(_leaf(row))
+            nodes.append(_leaf(row, scale))
             continue
         ref = str(job[0])
+        output_qty = _num(job[24])
+        share = (_num(row[5]) * scale / output_qty) if output_qty > _EPS else None
         if ref in stack:
-            nodes.append(_job_node(job, row, []))
+            nodes.append(_job_node(job, row, [], scale, share))
             node_flags = nodes[-1]["flags"]
             node_flags["detail_missing"] = True
             continue
-        inputs = _children(grouped.get(ref, []), depth + 1, stack | {ref})
-        nodes.append(_job_node(job, row, inputs))
+        inputs = _children(grouped.get(ref, []), depth + 1, stack | {ref},
+                           share if share is not None else scale)
+        if share is None:
+            for child in inputs:
+                child["flags"]["detail_missing"] = True
+        nodes.append(_job_node(job, row, inputs, scale, share))
     return nodes
 
 
 def sale_chain(sale_ref: str) -> Optional[dict]:
+    """None when the sale does not exist or the run is hidden (D11)."""
     with storage.batch_session():
+        run, _t0, changed = _run_state()
+        if run is None or changed:
+            return None
         row = db.get_realized_sale(sale_ref)
         if row is None:
             return None
@@ -579,8 +637,9 @@ def _walk(nodes: list[dict]):
 def jobs() -> dict:
     """Every costed job since T0 (jobs before T0 are a warning, not a row)."""
     with storage.batch_session():
-        run = db.latest_ledger_run()
-        t0 = None if run is None or run[2] is None else run[2]
+        run, t0, changed = _run_state()
+        if run is None or changed:
+            return {"cutover_t0": _iso(t0), "needs_rebuild": True, "rows": []}
         rows = db.list_job_records()
         names = _names(
             {int(r[6]) for r in rows if r[6] is not None}
@@ -635,11 +694,14 @@ def jobs() -> dict:
                 no_structure_bonus=None if row[23] is None else bool(row[23]),
             ),
         })
-    return {"cutover_t0": _iso(t0), "rows": out}
+    return {"cutover_t0": _iso(t0), "needs_rebuild": False, "rows": out}
 
 
 def inventory() -> dict:
     with storage.batch_session():
+        run, _t0, changed = _run_state()
+        if run is None or changed:
+            return {"needs_rebuild": True, "rows": []}
         layers = db.list_remaining_layers()
         drift_rows = {int(r[0]): r for r in db.list_inventory_drift()}
         grouped: dict[tuple, dict] = {}
@@ -707,7 +769,7 @@ def inventory() -> dict:
                 assumed_decryptor=slot["assumed_decryptor"],
             ),
         })
-    return {"rows": rows}
+    return {"needs_rebuild": False, "rows": rows}
 
 
 def _warning_kind(text: str) -> str:
@@ -723,9 +785,13 @@ def warnings() -> dict:
     with Production). Not filtered by the overview period."""
     groups: dict[str, list] = {kind: [] for kind in SECTION_9A_KINDS}
     with storage.batch_session():
-        run = db.latest_ledger_run()
-        texts = _warnings(run[3]) if run is not None else []
-        for type_id, ledger_qty, esi_qty, drift in db.list_inventory_drift():
+        run, _t0, changed = _run_state()
+        hidden = run is None or changed
+        texts = _warnings(run[3]) if not hidden else []
+        derived_drift = [] if hidden else db.list_inventory_drift()
+        derived_jobs = [] if hidden else db.list_job_records()
+        derived_fees = [] if hidden else db.list_fee_lines("without_sale")
+        for type_id, ledger_qty, esi_qty, drift in derived_drift:
             if abs(_num(drift)) <= _EPS:
                 continue
             groups["inventory_drift"].append({
@@ -734,12 +800,12 @@ def warnings() -> dict:
                 "esi_qty": _num(esi_qty),
                 "drift": _num(drift),
             })
-        for row in db.list_job_records():
+        for row in derived_jobs:
             if row[20]:
                 groups["assumed_me"].append({"job_ref": str(row[0]), "job_id": int(row[1])})
             if row[21]:
                 groups["assumed_decryptor"].append({"job_ref": str(row[0]), "job_id": int(row[1])})
-        for owner_type, owner_id, fee_date, amount, sale_ref in db.list_fee_lines("without_sale"):
+        for owner_type, owner_id, fee_date, amount, sale_ref in derived_fees:
             groups["unmatched_broker_fee"].append({
                 "owner_type": owner_type,
                 "owner_id": int(owner_id),
@@ -767,7 +833,7 @@ def warnings() -> dict:
                 "location_id": int(location_id),
                 "count": int(count),
             })
-        outside = db.realized_warnings_by_type(
+        outside = [] if hidden else db.realized_warnings_by_type(
             datetime(1970, 1, 1, tzinfo=timezone.utc),
             datetime(9999, 1, 1, tzinfo=timezone.utc),
         )
@@ -798,4 +864,107 @@ def warnings() -> dict:
     ordered = [{"kind": kind, "count": len(groups[kind]), "items": groups[kind]} for kind in SECTION_9A_KINDS]
     for kind in sorted(extra):
         ordered.append({"kind": kind, "count": len(extra[kind]), "items": extra[kind]})
-    return {"groups": ordered}
+    return {"needs_rebuild": hidden, "groups": ordered}
+
+
+def opening() -> dict:
+    """Opening inventory as the latest rebuild valued it, with the frozen
+    date and any opening-cost override (section 9a Ledger tab)."""
+    with storage.batch_session():
+        run, t0, changed = _run_state()
+        if run is None or changed:
+            return {"cutover_t0": _iso(t0), "needs_rebuild": True, "rows": []}
+        rows = db.list_opening_lines()
+        overrides = db.list_opening_cost_overrides()
+        names = _names({int(r[0]) for r in rows})
+    out = []
+    for type_id, raw, qty, unit_cost, source, reference, frozen_at in rows:
+        tid = int(type_id)
+        override = overrides.get(tid)
+        out.append({
+            "type_id": tid,
+            "type_name": names.get(tid),
+            "raw_quantity": _num(raw),
+            "quantity": _num(qty),
+            "reference_price": None if reference is None else float(reference),
+            "unit_cost": _num(unit_cost),
+            "price_source": str(source),
+            "override_unit_cost": None if override is None else float(override),
+            "frozen_at": _iso(frozen_at),
+            "flags": _flags(
+                estimated=str(source) in ("reference", "missing"),
+                price_missing=str(source) == "missing",
+            ),
+        })
+    return {"cutover_t0": _iso(t0), "needs_rebuild": False, "rows": out}
+
+
+def ledger_entries() -> dict:
+    """Manual entries (cost, revenue, opening_cost overrides), newest first."""
+    with storage.batch_session():
+        rows = db.list_manual_entries()
+        names = _names({int(r[2]) for r in rows if r[2] is not None})
+    return {
+        "rows": [
+            {
+                "entry_id": int(r[0]),
+                "entry_kind": str(r[1]),
+                "type_id": None if r[2] is None else int(r[2]),
+                "type_name": None if r[2] is None else names.get(int(r[2])),
+                "quantity": None if r[3] is None else float(r[3]),
+                "amount": _num(r[4]),
+                "entry_date": _iso(r[5]),
+                "note": r[6],
+                "created_at": _iso(r[7]),
+            }
+            for r in rows
+        ],
+    }
+
+
+_ARCHIVE_KINDS = ("wallet", "industry_jobs", "market_orders", "contracts")
+
+
+def archive_status() -> dict:
+    """One row per owner that is shared with Production or has archived
+    rows. `hidden_kinds`: archived but no longer shared (D11, rows kept)."""
+    with storage.batch_session():
+        shared = {kind: set(access.shared_owners(kind)) for kind in _ARCHIVE_KINDS}
+        sync_rows = db.list_ledger_sync_state()
+        gaps = db.archive_gap_counts()
+    owners: dict[tuple, dict] = {}
+
+    def slot(owner_type: str, owner_id: int) -> dict:
+        key = (owner_type, int(owner_id))
+        if key not in owners:
+            owners[key] = {
+                "owner_type": owner_type,
+                "owner_id": int(owner_id),
+                "shared": {kind: key in shared[kind] for kind in _ARCHIVE_KINDS},
+                "last_sync": {},
+                "gaps": {},
+                "archived_kinds": set(),
+            }
+        return owners[key]
+
+    for keys in shared.values():
+        for owner_type, owner_id in keys:
+            slot(owner_type, owner_id)
+    for owner_type, owner_id, data_kind, synced in sync_rows:
+        entry = slot(owner_type, owner_id)
+        previous = entry["last_sync"].get(str(data_kind))
+        if previous is None or (synced is not None and synced > previous):
+            entry["last_sync"][str(data_kind)] = synced
+        share_kind = _GAP_SHARE_KIND.get(str(data_kind))
+        if share_kind is not None:
+            entry["archived_kinds"].add(share_kind)
+    for (owner_type, owner_id, data_kind), count in gaps.items():
+        slot(owner_type, owner_id)["gaps"][str(data_kind)] = count
+    rows = []
+    for key in sorted(owners):
+        entry = owners[key]
+        archived = entry.pop("archived_kinds")
+        entry["hidden_kinds"] = sorted(k for k in archived if not entry["shared"][k])
+        entry["last_sync"] = {k: _iso(v) for k, v in sorted(entry["last_sync"].items())}
+        rows.append(entry)
+    return {"rows": rows}

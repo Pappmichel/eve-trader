@@ -303,6 +303,9 @@ class LedgerSnapshot:
     relic_type_ids: frozenset = frozenset()
     # D3: market buys of these types go to capital_in_bpos, never a layer.
     bpo_type_ids: frozenset = frozenset()
+    # type_id -> opening quantity frozen by an earlier rebuild for this T0
+    # and owner scope. None or missing types: computed from ESI stock now.
+    frozen_opening: Optional[dict] = None
 
 
 # ====================================================================== outputs
@@ -446,6 +449,8 @@ class OpeningLine:
     unit_cost: float
     price_source: str  # reference | override | missing | none
     layer_id: Optional[int]
+    # The Forge reference price on T0, also when an override is used.
+    reference_price: Optional[float] = None
 
 
 @dataclass
@@ -467,6 +472,9 @@ class CostingResult:
     # (type_id, unit, day) lookups that found no reference price.
     price_requests: frozenset = frozenset()
     other_trading_fees: list = field(default_factory=list)
+    # type_id -> opening quantity before clamping, for every type evaluated
+    # (frozen or computed in this run). The loader freezes the new ones.
+    opening_raw: dict = field(default_factory=dict)
 
     @property
     def work_in_progress(self) -> list:
@@ -516,6 +524,7 @@ class _Costing:
         self.fees_other = 0.0
         self.capital: dict[int, float] = defaultdict(float)
         self.opening_lines: list[OpeningLine] = []
+        self.opening_raw: dict[int, float] = {}
         self.jobs_before_t0: list[str] = []
         self.skipped_corp_jobs: list[str] = []
         self.fee_by_tx: dict[tuple, float] = {}
@@ -678,12 +687,22 @@ class _Costing:
         return flows
 
     def _seed_opening(self, flows: dict[int, float]) -> None:
+        """Opening quantity per type = ESI stock minus net flows since T0,
+        computed the first time a type is seen and then frozen (the loader
+        stores `opening_raw`). A frozen quantity is reused as is, so a later
+        loss or untracked move shows up as inventory drift instead of being
+        folded silently into the opening."""
         stock = self.ledger.esi_stock_by_type
+        frozen = self.ledger.frozen_opening or {}
         price_day = _day(self.t0)
-        for type_id in sorted(set(int(t) for t in stock) | set(flows)):
+        for type_id in sorted(set(int(t) for t in stock) | set(flows) | set(int(t) for t in frozen)):
             if type_id in self.ledger.bpo_type_ids:
                 continue
-            raw = float(stock.get(type_id, 0) or 0) - flows.get(type_id, 0.0)
+            if type_id in frozen:
+                raw = float(frozen[type_id])
+            else:
+                raw = float(stock.get(type_id, 0) or 0) - flows.get(type_id, 0.0)
+            self.opening_raw[type_id] = raw
             if raw < -_EPS:
                 self.warn(f"negative_opening: type {type_id} opening {raw:g} clamped to 0")
                 self.opening_lines.append(OpeningLine(type_id, raw, 0.0, 0.0, "none", None))
@@ -691,12 +710,13 @@ class _Costing:
             if raw <= _EPS:
                 continue
             override = self.ledger.opening_cost_overrides.get(type_id)
+            reference = self._reference_price(type_id, UNIT_ITEM, self.t0)
             missing = False
             if override is not None:
                 unit = CostComponents(materials_bought=float(override))
                 source = "override"
             else:
-                price = self._reference_price(type_id, UNIT_ITEM, self.t0)
+                price = reference
                 if price is None:
                     self.warn(f"missing_reference_price: type {type_id} on {price_day.isoformat()}, "
                               f"opening {raw:g} valued at 0")
@@ -709,7 +729,9 @@ class _Costing:
                 origin=ORIGIN_OPENING, source_ref=f"opening:{type_id}", layer_date=self.t0,
                 estimated_origin=override is None, price_missing=missing,
             )
-            self.opening_lines.append(OpeningLine(type_id, raw, raw, unit.total, source, layer.layer_id))
+            self.opening_lines.append(OpeningLine(
+                type_id, raw, raw, unit.total, source, layer.layer_id, reference,
+            ))
 
     def _attribute_broker_fees(self) -> None:
         """D12: per (owner, UTC day), real order fees spread over that day's
@@ -982,4 +1004,5 @@ class _Costing:
             warnings=list(self.warnings),
             price_requests=frozenset(self.price_requests),
             other_trading_fees=list(self.other_trading_fees),
+            opening_raw=dict(self.opening_raw),
         )

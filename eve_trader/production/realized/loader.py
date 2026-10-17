@@ -303,13 +303,31 @@ def _opening_stock(type_ids: set[int]) -> dict[int, float]:
 
 
 # ------------------------------------------------------------------ snapshot
-def load_ledger_snapshot() -> Optional[LedgerSnapshot]:
+def _frozen_opening(t0: datetime, scope_hash: str, reset: bool) -> Optional[dict[int, float]]:
+    """Opening quantities frozen by earlier rebuilds, or None when they must
+    be recomputed: nothing frozen yet, an explicit reset, or T0 / the
+    shared-owner fingerprint changed since they were frozen."""
+    if reset:
+        return None
+    rows = db.list_frozen_opening()
+    if not rows:
+        return None
+    for _tid, _raw, frozen_t0, frozen_hash, _at in rows:
+        if _as_utc(frozen_t0) != t0 or frozen_hash != scope_hash:
+            return None
+    return {int(r[0]): float(r[1]) for r in rows}
+
+
+def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
+                         reset_opening: bool = False) -> Optional[LedgerSnapshot]:
     """Assemble a LedgerSnapshot from the archive (with cached reference
     prices only), or None when T0 is unknown."""
     t0 = access.cutover_t0_for_production()
     if t0 is None:
         return None
     t0 = _as_utc(t0)
+    if scope_hash is None:
+        scope_hash = access.owner_scope_hash()
 
     tx_rows = access.list_all_wallet_transactions_for_production()
     journal_rows = access.list_all_wallet_journal_for_production()
@@ -420,6 +438,7 @@ def load_ledger_snapshot() -> Optional[LedgerSnapshot]:
         bpc_run_reference_prices={},  # no source for a per-run BPC price: missing + flagged
         relic_type_ids=_relic_type_ids(),
         bpo_type_ids=bpo_types,
+        frozen_opening=_frozen_opening(t0, scope_hash, reset_opening),
     )
 
 
@@ -579,7 +598,28 @@ def _drift_rows(result, esi_stock: dict) -> list[tuple]:
     return rows
 
 
-def _persist(snapshot, result) -> tuple[int, list]:
+def _opening_rows(result) -> list[tuple]:
+    return [
+        (int(line.type_id), float(line.raw_quantity), float(line.quantity),
+         float(line.unit_cost), str(line.price_source),
+         None if line.reference_price is None else float(line.reference_price))
+        for line in result.opening_lines
+    ]
+
+
+def _frozen_rows(snapshot, result, scope_hash: str) -> list[tuple]:
+    """Types whose opening quantity was computed in this run (not frozen
+    yet). Zero quantities are frozen too, so a type that had no opening
+    stock never gets one later."""
+    frozen = snapshot.frozen_opening or {}
+    return [
+        (int(tid), float(raw), snapshot.t0, scope_hash)
+        for tid, raw in sorted(result.opening_raw.items())
+        if int(tid) not in frozen
+    ]
+
+
+def _persist(snapshot, result, scope_hash: str) -> tuple[int, list]:
     """Write derived tables. Returns (run_id, warnings). The run row is
     written only inside replace_derived_costing, after the rows succeed."""
     bonus = db.structure_bonus_applied_by_job(access.shared_owners("industry_jobs"))
@@ -601,22 +641,28 @@ def _persist(snapshot, result) -> tuple[int, list]:
         drift=_drift_rows(result, snapshot.esi_stock_by_type),
         cutover_t0=snapshot.t0,
         warnings=extra,
+        opening_lines=_opening_rows(result),
+        frozen_opening=_frozen_rows(snapshot, result, scope_hash),
+        reset_frozen_opening=snapshot.frozen_opening is None,
+        owner_scope_hash=scope_hash,
     )
     return run_id, extra
 
 
-def rebuild_realized() -> dict:
+def rebuild_realized(reset_opening: bool = False) -> dict:
     """Load ledger → pure costing → replace derived tables.
 
     Returns a summary dict (counts, t0, run_id, warnings). Does not raise
     ActionError - callers in Phase 3 wrap that. An empty archive (no T0)
     clears derived tables and records a run with a warning.
     """
-    snapshot = load_ledger_snapshot()
+    scope_hash = access.owner_scope_hash()
+    snapshot = load_ledger_snapshot(scope_hash=scope_hash, reset_opening=reset_opening)
     if snapshot is None:
         warnings = ["no wallet archive yet; cutover T0 unknown"]
         run_id = db.replace_derived_costing(
             layers=[], results=[], cutover_t0=None, warnings=warnings,
+            reset_frozen_opening=True, owner_scope_hash=scope_hash,
         )
         return {
             "run_id": run_id,
@@ -627,7 +673,7 @@ def rebuild_realized() -> dict:
         }
 
     result = _run_costing(snapshot)
-    run_id, extra_warnings = _persist(snapshot, result)
+    run_id, extra_warnings = _persist(snapshot, result, scope_hash)
     return {
         "run_id": run_id,
         "cutover_t0": snapshot.t0.isoformat(),
@@ -638,6 +684,7 @@ def rebuild_realized() -> dict:
         "coverage": result.coverage(),
         "estimated_results": sum(1 for r in result.realized_results if r.estimated),
         "warnings": extra_warnings,
+        "opening_frozen": snapshot.frozen_opening is not None,
         "wallet_transactions": len(snapshot.wallet_transactions),
         "industry_jobs": len(snapshot.industry_jobs),
         "journal_entries": len(snapshot.journal_entries),

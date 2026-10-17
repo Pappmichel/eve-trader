@@ -2227,7 +2227,7 @@ def test_realized_summary_keeps_flags(monkeypatch):
 def test_realized_rebuild_conflict_maps_to_409(monkeypatch):
     from eve_trader.actions import ConflictError
 
-    def _raise():
+    def _raise(**kwargs):
         raise ConflictError("busy")
 
     monkeypatch.setattr(production_actions, "do_start_rebuild_realized", _raise)
@@ -2289,3 +2289,27 @@ def test_production_kpis_returns_counts_only(monkeypatch):
     resp = client.get("/api/production/kpis")
     assert resp.status_code == 200
     assert resp.json() == {"stock_targets": 2, "active_jobs": 3, "open_special_orders": 1}
+
+
+def test_realized_ledger_tab_routes(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(production_actions, "do_start_rebuild_realized",
+                        lambda **kw: seen.update(rebuild=kw) or {
+                            "run_id": "r1", "status": "running", "job_name": "rebuild_realized",
+                            "tool": "production"})
+    monkeypatch.setattr(production_actions, "do_reapply_freight_rate",
+                        lambda **kw: seen.update(freight=kw) or {"dry_run": True, "would_update": 3})
+    monkeypatch.setattr(production_actions, "do_delete_ledger_entry",
+                        lambda **kw: seen.update(delete=kw) or {"deleted": kw["entry_id"]})
+    monkeypatch.setattr(production_actions, "do_get_realized_archive_status", lambda: {"rows": [{
+        "owner_type": "character", "owner_id": 1, "shared": {"wallet": False},
+        "last_sync": {"wallet_transactions": None}, "gaps": {}, "hidden_kinds": ["wallet"],
+    }]})
+
+    assert client.post("/api/production/realized/rebuild?reset_opening=true").status_code == 200
+    assert seen["rebuild"] == {"reset_opening": True}
+    assert client.post("/api/production/realized/freight/reapply?dry_run=true").json()["would_update"] == 3
+    assert seen["freight"] == {"dry_run": True}
+    assert client.delete("/api/production/realized/entries/5").json() == {"deleted": 5}
+    body = client.get("/api/production/realized/archive-status").json()
+    assert body["rows"][0]["hidden_kinds"] == ["wallet"]

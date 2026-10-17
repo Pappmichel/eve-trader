@@ -63,7 +63,8 @@ def _wipe(_apply_production_ledger_schema):
         "ledger_archive_gaps", "ledger_sync_state", "ledger_reference_prices",
         "ledger_manual_entries", "prod_cost_layers", "prod_realized_results",
         "prod_cost_draws", "prod_job_records", "prod_fee_lines", "prod_job_losses",
-        "prod_capital_bpos", "prod_inventory_drift", "prod_ledger_runs",
+        "prod_capital_bpos", "prod_inventory_drift", "prod_opening_frozen",
+        "prod_opening_lines", "prod_ledger_runs",
         "esi_sharing", "character_assets", "corp_assets", "stock_targets",
     )
     yield
@@ -189,9 +190,10 @@ def test_chain_keeps_flags_cost_components_and_drift(tenant):
     assert purchase["kind"] == "purchase"
     assert purchase["origin"] == "bought"
     assert purchase["type_id"] == TYPE_A
-    assert purchase["quantity"] == pytest.approx(4.0)
+    # One of two output units was sold: half of the job's 4 inputs.
+    assert purchase["quantity"] == pytest.approx(2.0)
     assert purchase["unit_price"] == pytest.approx(100.0)
-    assert purchase["freight"] == pytest.approx(40.0)
+    assert purchase["freight"] == pytest.approx(20.0)
     assert purchase["freight_label"] == "configured rate"
     assert purchase["location_id"] == LOC
     assert purchase["flags"]["price_missing"] is False
@@ -274,8 +276,9 @@ def test_opening_cost_override_and_freight_reapply(tenant):
     assert layer[3] is False
     assert layer[4] is False
 
+    preview = production_actions.do_reapply_freight_rate(dry_run=True)
     updated = production_actions.do_reapply_freight_rate()
-    assert updated["updated"] == 1
+    assert updated["updated"] == preview["would_update"]
     assert updated["freight_label"] == "configured rate"
     assert updated["rebuild_required"] is True
     with storage.connect() as conn:
@@ -292,3 +295,157 @@ def test_custom_range_and_bad_period_are_action_errors(tenant):
         production_actions.do_add_ledger_entry("gift", 1.0, "2026-10-01")
     with pytest.raises(production_actions.ActionError):
         production_actions.do_get_realized_sale_chain("missing")
+
+
+def _seed_job_and_sale():
+    _share(ALICE, "wallet")
+    _share(ALICE, "industry_jobs")
+    ledger_db.upsert_ledger_wallet_transactions([
+        ("character", ALICE, 0, 1, T0, TYPE_A, LOC, 100.0, 10, True, 101,
+         10000002, 50.0, 2.0),
+        ("character", ALICE, 0, 2, T_SALE, TYPE_B, LOC_SELL, 500.0, 1, False, 102,
+         None, None, None),
+    ])
+    ledger_db.upsert_ledger_industry_jobs([(
+        "character", ALICE, 77, 1, 500, 9000, TYPE_B, 2, None, None,
+        40.0, 12345, None, None, ALICE, T_JOB, T_END, T_END, "delivered", None,
+    )])
+    ledger_db.insert_ledger_job_inputs([(
+        "character", ALICE, 77, TYPE_A, 4.0, 10, 0.9, None, None, None, None,
+        "esi_blueprint", False,
+    )])
+
+
+def test_revoked_share_hides_the_run_until_rebuild(tenant):
+    _seed_job_and_sale()
+    _rebuild({TYPE_A: 6, TYPE_B: 1})
+    sale_ref = production_actions.do_get_realized_product(TYPE_B, days=30)["sales"][0]["sale_ref"]
+    with storage.connect() as conn:
+        conn.execute(
+            "DELETE FROM esi_sharing WHERE owner_id = ? AND data_kind = 'industry_jobs'", (ALICE,),
+        )
+
+    summary = production_actions.do_get_realized_summary(days=30)
+    assert summary["status"]["sharing_changed"] is True
+    assert summary["status"]["needs_rebuild"] is True
+    assert summary["revenue"] == 0
+    assert production_actions.do_get_realized_products(days=30)["rows"] == []
+    assert production_actions.do_get_realized_product(TYPE_B, days=30)["sales"] == []
+    assert production_actions.do_get_realized_jobs()["rows"] == []
+    assert production_actions.do_get_realized_inventory()["rows"] == []
+    assert production_actions.do_get_realized_opening()["rows"] == []
+    assert production_actions.do_get_realized_warnings()["needs_rebuild"] is True
+    with pytest.raises(production_actions.ActionError):
+        production_actions.do_get_realized_sale_chain(sale_ref)
+
+    # Rebuilt without the job: TYPE_B is no longer a Production type.
+    _rebuild({TYPE_A: 6, TYPE_B: 1})
+    summary = production_actions.do_get_realized_summary(days=30)
+    assert summary["status"]["sharing_changed"] is False
+    assert summary["revenue"] == pytest.approx(0.0)
+
+    # Sharing again is a change too; the next rebuild brings the sale back.
+    _share(ALICE, "industry_jobs")
+    assert production_actions.do_get_realized_summary(days=30)["status"]["sharing_changed"] is True
+    _rebuild({TYPE_A: 6, TYPE_B: 1})
+    assert production_actions.do_get_realized_summary(days=30)["revenue"] == pytest.approx(500.0)
+
+
+def test_chain_scales_job_inputs_to_the_sold_share(tenant):
+    _seed_job_and_sale()
+    _rebuild({TYPE_A: 6, TYPE_B: 1})
+    sale_ref = production_actions.do_get_realized_product(TYPE_B, days=30)["sales"][0]["sale_ref"]
+    chain = production_actions.do_get_realized_sale_chain(sale_ref)
+    [job] = chain["tree"]["children"]
+    # 1 of the job's 2 output units was sold: half of its inputs and costs.
+    assert job["quantity"] == pytest.approx(1.0)
+    assert job["share"] == pytest.approx(0.5)
+    assert job["cost_share"] == pytest.approx(chain["sale"]["cost"])
+    [purchase] = job["children"]
+    assert purchase["quantity"] == pytest.approx(2.0)
+    assert purchase["freight"] == pytest.approx(20.0)
+
+
+def test_opening_is_frozen_so_a_later_loss_shows_as_drift(tenant):
+    _share(ALICE, "wallet")
+    ledger_db.upsert_ledger_wallet_transactions([
+        ("character", ALICE, 0, 1, T0, TYPE_A, LOC, 100.0, 10, True, 101,
+         None, None, None),
+    ])
+    first = _rebuild({TYPE_A: 15})
+    assert first["opening_frozen"] is False
+    [line] = production_actions.do_get_realized_opening()["rows"]
+    assert line["type_id"] == TYPE_A
+    assert line["quantity"] == pytest.approx(5.0)
+    assert line["frozen_at"] is not None
+
+    # 3 units disappear without an ESI event: the opening stays 5, the
+    # ledger still holds 15 and the gap is drift, not a smaller opening.
+    second = _rebuild({TYPE_A: 12})
+    assert second["opening_frozen"] is True
+    [line] = production_actions.do_get_realized_opening()["rows"]
+    assert line["quantity"] == pytest.approx(5.0)
+    inventory = {row["type_id"]: row for row in production_actions.do_get_realized_inventory()["rows"]}
+    assert inventory[TYPE_A]["quantity"] == pytest.approx(15.0)
+    assert inventory[TYPE_A]["drift"] == pytest.approx(-3.0)
+    drift = _group(production_actions.do_get_realized_warnings(), "inventory_drift")["items"]
+    assert drift == [{"type_id": TYPE_A, "ledger_qty": 15.0, "esi_qty": 12.0, "drift": -3.0}]
+
+    # An explicit reset derives the opening again from today's stock.
+    with patch.object(loader, "_opening_stock", return_value={TYPE_A: 12}):
+        with patch.object(loader, "_fetch_reference_prices", return_value={}):
+            with patch.object(loader, "_tenant_character_ids", return_value=frozenset({ALICE})):
+                production_actions.do_rebuild_realized(reset_opening=True)
+    [line] = production_actions.do_get_realized_opening()["rows"]
+    assert line["quantity"] == pytest.approx(2.0)
+    inventory = {row["type_id"]: row for row in production_actions.do_get_realized_inventory()["rows"]}
+    assert inventory[TYPE_A]["drift"] == pytest.approx(0.0)
+
+
+def test_status_is_stale_after_a_newer_archive_sync(tenant):
+    _seed_job_and_sale()
+    _rebuild({TYPE_A: 6, TYPE_B: 1})
+    assert production_actions.do_get_realized_summary(days=30)["status"]["stale"] is False
+    ledger_db.mark_archive_synced(
+        "character", ALICE, "wallet_transactions", datetime.now(timezone.utc) + timedelta(minutes=1),
+    )
+    assert production_actions.do_get_realized_summary(days=30)["status"]["stale"] is True
+
+
+def test_ledger_tab_reads_entries_freight_preview_and_archive_status(tenant):
+    _share(ALICE, "wallet")
+    ledger_db.upsert_ledger_wallet_transactions([
+        ("character", ALICE, 0, 1, T0, TYPE_B, LOC, 1.0, 1, True, 1,
+         10000002, 10.0, 3.0),
+    ])
+    ledger_db.mark_archive_synced("character", ALICE, "wallet_transactions", T_SALE)
+    ledger_db.mark_archive_synced("character", BOB, "industry_jobs", T_SALE)
+    ledger_db.record_archive_gap("character", ALICE, "wallet_transactions", T0, T_SALE)
+
+    entry = production_actions.do_add_ledger_entry("cost", 7.0, "2026-10-05", note="hauling")
+    production_actions.do_set_opening_cost(TYPE_A, 3.0)
+    kinds = sorted(row["entry_kind"] for row in production_actions.do_list_ledger_entries()["rows"])
+    assert kinds == ["cost", "opening_cost"]
+    production_actions.do_delete_ledger_entry(entry["entry_id"])
+    kinds = [row["entry_kind"] for row in production_actions.do_list_ledger_entries()["rows"]]
+    assert kinds == ["opening_cost"]
+    with pytest.raises(production_actions.ActionError):
+        production_actions.do_delete_ledger_entry(entry["entry_id"])
+
+    preview = production_actions.do_reapply_freight_rate(dry_run=True)
+    expected = 0 if preview["freight_rate_per_m3"] == pytest.approx(10.0) else 1
+    assert preview["would_update"] == expected
+    with storage.connect() as conn:
+        rate = conn.execute("SELECT freight_rate_per_m3 FROM ledger_wallet_transactions").fetchone()[0]
+    assert rate == pytest.approx(10.0)
+    assert production_actions.do_reapply_freight_rate()["updated"] == expected
+    assert production_actions.do_reapply_freight_rate(dry_run=True)["would_update"] == 0
+
+    rows = {row["owner_id"]: row for row in production_actions.do_get_realized_archive_status()["rows"]}
+    assert rows[ALICE]["shared"]["wallet"] is True
+    assert rows[ALICE]["hidden_kinds"] == []
+    assert rows[ALICE]["gaps"] == {"wallet_transactions": 1}
+    assert rows[ALICE]["last_sync"]["wallet_transactions"] is not None
+    # BOB was archived but shares nothing with Production any more.
+    assert rows[BOB]["shared"]["industry_jobs"] is False
+    assert rows[BOB]["hidden_kinds"] == ["industry_jobs"]

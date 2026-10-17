@@ -54,6 +54,8 @@ class RealizedPeriod(BaseModel):
 class RealizedStatus(BaseModel):
     empty: bool
     needs_rebuild: bool
+    sharing_changed: bool = False
+    stale: bool = False
     hint: Optional[str] = None
     cutover_t0: Optional[str] = None
     archive_since: Optional[str] = None
@@ -114,6 +116,7 @@ class ProductRow(BaseModel):
 
 class ProductList(BaseModel):
     period: RealizedPeriod
+    needs_rebuild: bool = False
     rows: list[ProductRow]
 
 
@@ -139,6 +142,7 @@ class SaleRow(BaseModel):
 
 class ProductDetail(BaseModel):
     period: RealizedPeriod
+    needs_rebuild: bool = False
     product: ProductRow
     sales: list[SaleRow]
 
@@ -170,6 +174,8 @@ class ChainNode(BaseModel):
     facility_id: Optional[int] = None
     output_quantity: Optional[float] = None
     cost_total: Optional[float] = None
+    share: Optional[float] = None
+    cost_share: Optional[float] = None
     sale_ref: Optional[str] = None
     flags: RealizedFlags
     children: list["ChainNode"] = []
@@ -214,6 +220,7 @@ class JobRow(BaseModel):
 
 class JobList(BaseModel):
     cutover_t0: Optional[str] = None
+    needs_rebuild: bool = False
     rows: list[JobRow]
 
 
@@ -231,6 +238,7 @@ class InventoryRow(BaseModel):
 
 
 class InventoryList(BaseModel):
+    needs_rebuild: bool = False
     rows: list[InventoryRow]
 
 
@@ -241,7 +249,56 @@ class WarningGroup(BaseModel):
 
 
 class WarningList(BaseModel):
+    needs_rebuild: bool = False
     groups: list[WarningGroup]
+
+
+class OpeningRow(BaseModel):
+    type_id: int
+    type_name: Optional[str] = None
+    raw_quantity: float
+    quantity: float
+    reference_price: Optional[float] = None
+    unit_cost: float
+    price_source: str
+    override_unit_cost: Optional[float] = None
+    frozen_at: Optional[str] = None
+    flags: RealizedFlags
+
+
+class OpeningList(BaseModel):
+    cutover_t0: Optional[str] = None
+    needs_rebuild: bool = False
+    rows: list[OpeningRow]
+
+
+class LedgerEntryRow(BaseModel):
+    entry_id: int
+    entry_kind: str
+    type_id: Optional[int] = None
+    type_name: Optional[str] = None
+    quantity: Optional[float] = None
+    amount: float
+    entry_date: Optional[str] = None
+    note: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class LedgerEntryList(BaseModel):
+    rows: list[LedgerEntryRow]
+
+
+class ArchiveOwnerRow(BaseModel):
+    owner_type: str
+    owner_id: int
+    shared: dict[str, bool]
+    last_sync: dict[str, Optional[str]]
+    gaps: dict[str, int]
+    hidden_kinds: list[str]
+
+
+class ArchiveStatus(BaseModel):
+    rows: list[ArchiveOwnerRow]
 
 
 class RebuildStarted(BaseModel):
@@ -267,8 +324,8 @@ class OpeningCostRequest(BaseModel):
 
 
 @router.post("/realized/rebuild", response_model=RebuildStarted)
-def start_realized_rebuild():
-    return _wrap(actions.do_start_rebuild_realized)
+def start_realized_rebuild(reset_opening: bool = False):
+    return _wrap(actions.do_start_rebuild_realized, reset_opening=reset_opening)
 
 
 @router.get("/realized/rebuild/status")
@@ -315,6 +372,26 @@ def realized_warnings():
     return _wrap(actions.do_get_realized_warnings)
 
 
+@router.get("/realized/opening", response_model=OpeningList)
+def realized_opening():
+    return _wrap(actions.do_get_realized_opening)
+
+
+@router.get("/realized/archive-status", response_model=ArchiveStatus)
+def realized_archive_status():
+    return _wrap(actions.do_get_realized_archive_status)
+
+
+@router.get("/realized/entries", response_model=LedgerEntryList)
+def list_realized_entries():
+    return _wrap(actions.do_list_ledger_entries)
+
+
+@router.delete("/realized/entries/{entry_id}")
+def delete_realized_entry(entry_id: int):
+    return _wrap(actions.do_delete_ledger_entry, entry_id=entry_id)
+
+
 @router.post("/realized/entries")
 def add_realized_entry(req: LedgerEntryRequest):
     return _wrap(
@@ -332,5 +409,5 @@ def set_realized_opening_cost(req: OpeningCostRequest):
 
 
 @router.post("/realized/freight/reapply")
-def reapply_realized_freight():
-    return _wrap(actions.do_reapply_freight_rate)
+def reapply_realized_freight(dry_run: bool = False):
+    return _wrap(actions.do_reapply_freight_rate, dry_run=dry_run)

@@ -584,3 +584,46 @@ CREATE POLICY tenant_isolation ON prod_inventory_drift
     USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 GRANT SELECT, INSERT, UPDATE, DELETE ON prod_inventory_drift TO eve_trader_app;
+
+-- ====================================================== Phase 3 review fixes
+-- Fingerprint of the owners shared with Production (per data kind) when the
+-- run was built. The report hides a run whose owners no longer match (D11).
+ALTER TABLE prod_ledger_runs ADD COLUMN IF NOT EXISTS owner_scope_hash TEXT;
+
+-- Opening quantity per type, frozen the first time a rebuild sees the type
+-- (D8). Not a derived table: a rebuild keeps it and only adds new types. It
+-- is cleared when T0 or the shared-owner fingerprint changes, or on an
+-- explicit reset. Freezing is what makes the inventory drift check real.
+CREATE TABLE IF NOT EXISTS prod_opening_frozen (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    type_id INTEGER NOT NULL,
+    raw_quantity DOUBLE PRECISION NOT NULL,
+    cutover_t0 TIMESTAMPTZ NOT NULL,
+    owner_scope_hash TEXT NOT NULL,
+    frozen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, type_id)
+);
+ALTER TABLE prod_opening_frozen ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON prod_opening_frozen;
+CREATE POLICY tenant_isolation ON prod_opening_frozen
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON prod_opening_frozen TO eve_trader_app;
+
+-- Derived: the opening inventory as the latest rebuild valued it.
+CREATE TABLE IF NOT EXISTS prod_opening_lines (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    type_id INTEGER NOT NULL,
+    raw_quantity DOUBLE PRECISION NOT NULL,
+    quantity DOUBLE PRECISION NOT NULL,
+    unit_cost DOUBLE PRECISION NOT NULL,
+    price_source TEXT NOT NULL,
+    reference_price DOUBLE PRECISION,
+    PRIMARY KEY (tenant_id, type_id)
+);
+ALTER TABLE prod_opening_lines ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON prod_opening_lines;
+CREATE POLICY tenant_isolation ON prod_opening_lines
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON prod_opening_lines TO eve_trader_app;

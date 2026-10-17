@@ -523,10 +523,14 @@ def _realized_call(tenant_id: str | None, fn):
 
 
 @realized_group.command("rebuild")
+@click.option("--reset-opening", is_flag=True, default=False,
+              help="Derive the frozen opening quantities again from today's ESI stock.")
 @_tenant_id_option
-def realized_rebuild(tenant_id: str | None):
+def realized_rebuild(reset_opening: bool, tenant_id: str | None):
     """Rebuild derived realized-profit tables from the archive."""
-    result = _realized_call(tenant_id, production_actions.do_rebuild_realized)
+    result = _realized_call(
+        tenant_id, lambda: production_actions.do_rebuild_realized(reset_opening=reset_opening),
+    )
     click.echo(
         f"run {result['run_id']}  t0={result.get('cutover_t0')}  "
         f"layers={result.get('layers')}  sales={result.get('realized_results')}"
@@ -594,10 +598,19 @@ def realized_opening_cost(type_id: int, unit_cost: float, tenant_id: str | None)
 
 
 @realized_group.command("reapply-freight")
+@click.option("--dry-run", is_flag=True, default=False, help="Only count the purchases that would change.")
 @_tenant_id_option
-def realized_reapply_freight(tenant_id: str | None):
+def realized_reapply_freight(dry_run: bool, tenant_id: str | None):
     """Write the current configured freight rate onto Forge purchases."""
-    result = _realized_call(tenant_id, production_actions.do_reapply_freight_rate)
+    result = _realized_call(
+        tenant_id, lambda: production_actions.do_reapply_freight_rate(dry_run=dry_run),
+    )
+    if dry_run:
+        click.echo(
+            f"{result['would_update']} purchases would change to "
+            f"{result['freight_rate_per_m3']} ISK/m3 ({result['freight_label']})"
+        )
+        return
     click.echo(
         f"updated {result['updated']} purchases to {result['freight_rate_per_m3']} ISK/m3 "
         f"({result['freight_label']}); rebuild to apply"

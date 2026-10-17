@@ -1880,27 +1880,31 @@ def _finite_non_negative(name: str, value) -> float:
     return number
 
 
-def do_rebuild_realized() -> dict:
+def do_rebuild_realized(reset_opening: bool = False) -> dict:
     """Rebuild derived realized-profit tables from the archive.
 
     CLI and the background worker call this in-process. The HTTP route
     starts it via do_start_rebuild_realized so a request is not held for
     the whole recompute. The run row is written only after the replace
     transaction commits.
+
+    `reset_opening` drops the frozen opening quantities so this rebuild
+    derives them again from today's ESI stock (they are also re-derived
+    automatically when T0 or the shared owners change).
     """
     from .realized import loader
 
     try:
-        return loader.rebuild_realized()
+        return loader.rebuild_realized(reset_opening=bool(reset_opening))
     except ActionError:
         raise
     except Exception as e:
         raise ActionError(f"Realized profit rebuild failed: {e}") from e
 
 
-def do_start_rebuild_realized() -> dict:
+def do_start_rebuild_realized(reset_opening: bool = False) -> dict:
     from .. import pipeline_runner
-    return pipeline_runner.start_rebuild_realized()
+    return pipeline_runner.start_rebuild_realized(reset_opening=bool(reset_opening))
 
 
 def do_realized_rebuild_status() -> dict:
@@ -2018,19 +2022,62 @@ def do_set_opening_cost(type_id: int, unit_cost: float, entry_date: str | None =
     }
 
 
-def do_reapply_freight_rate() -> dict:
+def do_reapply_freight_rate(dry_run: bool = False) -> dict:
     """Write the current configured Forge freight rate onto purchases that
-    already have a frozen freight volume. Does not rebuild; the next
-    recompute picks the new rate up. Home-structure and non-Forge buys stay
-    without freight."""
+    already have a frozen freight volume and a different rate. Does not
+    rebuild; the next recompute picks the new rate up. Home-structure and
+    non-Forge buys stay without freight. `dry_run` only counts the
+    purchases that would change (for the confirm dialog)."""
     from .realized import db as ledger_db
     from .realized.ingest import _freight_rate_for_forge
 
     rate = float(_freight_rate_for_forge(PRODUCTION_CONFIG))
+    if dry_run:
+        return {
+            "dry_run": True,
+            "would_update": ledger_db.count_freight_rate_changes(rate),
+            "freight_rate_per_m3": rate,
+            "freight_label": "configured rate",
+        }
     updated = ledger_db.reapply_freight_rates(rate)
     return {
+        "dry_run": False,
         "updated": updated,
         "freight_rate_per_m3": rate,
         "freight_label": "configured rate",
         "rebuild_required": True,
     }
+
+
+def do_get_realized_opening() -> dict:
+    """Opening inventory of the latest rebuild (section 9a Ledger tab):
+    quantity, reference price on T0, the unit cost used, and the override."""
+    from .realized import report
+    return report.opening()
+
+
+def do_list_ledger_entries() -> dict:
+    """Manual cost/revenue entries and opening-cost overrides."""
+    from .realized import report
+    return report.ledger_entries()
+
+
+def do_delete_ledger_entry(entry_id: int) -> dict:
+    """Delete one manual entry or opening-cost override. Takes effect in
+    the report at once for cost/revenue, on the next rebuild for an
+    opening-cost override."""
+    from .realized import db as ledger_db
+
+    if int(entry_id) <= 0:
+        raise ActionError("entry_id must be positive.")
+    if not ledger_db.delete_manual_entry(int(entry_id)):
+        raise ActionError(f"No ledger entry {int(entry_id)}.")
+    return {"deleted": int(entry_id)}
+
+
+def do_get_realized_archive_status() -> dict:
+    """Per owner: which archive kinds are shared with Production, last
+    archive sync per kind, recorded gaps, and kinds that have archived rows
+    but are no longer shared (hidden, D11)."""
+    from .realized import report
+    return report.archive_status()

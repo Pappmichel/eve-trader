@@ -257,6 +257,12 @@ produced - consumed - sold). Negative results are set to 0 and listed as a
 warning. The result is the *oldest* layer (FIFO consumes it first), origin
 `opening`, valued at the reference price on T0. The user can override the
 unit cost per type with a real purchase price.
+The quantity is computed the first time a rebuild sees a type and then
+**frozen** (`prod_opening_frozen`, decided in the Phase 3 review). Re-deriving
+it on every rebuild from today's stock would make ledger stock equal ESI
+stock by construction, so the drift check below could never fire. Frozen
+quantities are re-derived when T0 or the owners shared with Production
+change, or on an explicit reset (`rebuild --reset-opening`).
 
 **Unknown origin (D5).** When a consumption or sale finds no layer (or not
 enough), it draws from an `unknown` layer valued at the reference price on the
@@ -814,5 +820,30 @@ spell out):
     as `prod_cost_draws`. The new derived tables are listed in
     `sqlite_migration.KNOWN_NON_MIGRATED_TABLES` (rebuildable; they
     never existed in the pre-migration SQLite schema).
+  Review fixes (2026-10-17):
+  - D11 for derived rows: a run stores `owner_scope_hash` (the owners
+    shared with Production per kind). Every report read compares it and
+    returns nothing from that run when sharing changed
+    (`status.sharing_changed`, `needs_rebuild` on every list) until the
+    next rebuild. The sale chain is then an ActionError.
+  - `status.stale`: an archive sync of a shared owner is newer than the
+    last recompute. Recompute stays on demand; Phase 4 can recompute when
+    the page opens and the status is stale.
+  - Sale chain: a job's inputs are scaled to the share of the job's
+    output the sale consumed (`share`, `cost_share` on job nodes), so
+    the tree adds up to the sale's cost. `reference_price` is shown only
+    for estimated layers, not for an opening-cost override.
+  - Opening quantities are frozen (section 6). Drift is now real; it
+    stopped being a copy of `negative_opening`.
+  - Ledger tab API (section 9a.6): `GET /realized/opening` (frozen
+    quantity, reference price on T0, unit cost used, override),
+    `GET /realized/entries`, `DELETE /realized/entries/{id}`,
+    `GET /realized/archive-status` (shared kinds, last sync, gaps,
+    hidden kinds per owner), `POST /realized/freight/reapply?dry_run=true`
+    (count for the confirm dialog; the update touches only rows whose
+    rate differs), `POST /realized/rebuild?reset_opening=true`.
+  - Still open for Phase 4/5: deleting hidden archive rows
+    (count-then-confirm) and D7's corp "mine alone" switch (corp wallets
+    are not readable today anyway).
 - **Phase 4 - not started.** Frontend.
 - **Phase 5 - not started.** Extensions (ask user first).

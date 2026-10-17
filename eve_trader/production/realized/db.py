@@ -748,6 +748,10 @@ def replace_derived_costing(
     losses: Optional[list[tuple]] = None,
     capital: Optional[list[tuple]] = None,
     drift: Optional[list[tuple]] = None,
+    opening_lines: Optional[list[tuple]] = None,
+    frozen_opening: Optional[list[tuple]] = None,
+    reset_frozen_opening: bool = False,
+    owner_scope_hash: Optional[str] = None,
 ) -> int:
     """Fully replace derived costing tables for this tenant (one rebuild).
 
@@ -770,6 +774,12 @@ def replace_derived_costing(
     `losses`: (loss_kind, job_ref, job_id, loss_date, six components)
     `capital`: (type_id, amount)
     `drift`: (type_id, ledger_qty, esi_qty, drift)
+    `opening_lines`: (type_id, raw_quantity, quantity, unit_cost,
+    price_source, reference_price)
+    `frozen_opening`: (type_id, raw_quantity, cutover_t0, owner_scope_hash)
+    for types seen for the first time; existing frozen rows are kept unless
+    `reset_frozen_opening` clears them first (T0 or owner scope changed, or
+    an explicit reset).
     Returns the new prod_ledger_runs.run_id.
     """
     draws = draws or []
@@ -778,6 +788,8 @@ def replace_derived_costing(
     losses = losses or []
     capital = capital or []
     drift = drift or []
+    opening_lines = opening_lines or []
+    frozen_opening = frozen_opening or []
     result_params = [
         (
             *row[:14],
@@ -790,7 +802,7 @@ def replace_derived_costing(
         for table in (
             "prod_cost_layers", "prod_realized_results", "prod_cost_draws",
             "prod_job_records", "prod_fee_lines", "prod_job_losses",
-            "prod_capital_bpos", "prod_inventory_drift",
+            "prod_capital_bpos", "prod_inventory_drift", "prod_opening_lines",
         ):
             conn.execute(f"DELETE FROM {table}")
         if layers:
@@ -868,19 +880,34 @@ def replace_derived_costing(
                 "VALUES (?,?,?,?)",
                 drift,
             )
+        if opening_lines:
+            conn.executemany(
+                "INSERT INTO prod_opening_lines (type_id, raw_quantity, quantity, "
+                "unit_cost, price_source, reference_price) VALUES (?,?,?,?,?,?)",
+                opening_lines,
+            )
+        if reset_frozen_opening:
+            conn.execute("DELETE FROM prod_opening_frozen")
+        if frozen_opening:
+            conn.executemany(
+                "INSERT INTO prod_opening_frozen (type_id, raw_quantity, cutover_t0, "
+                "owner_scope_hash) VALUES (?,?,?,?) ON CONFLICT (tenant_id, type_id) DO NOTHING",
+                frozen_opening,
+            )
         row = conn.execute(
-            "INSERT INTO prod_ledger_runs (cutover_t0, warnings) "
-            "VALUES (?, ?) RETURNING run_id",
-            (cutover_t0, Jsonb(list(warnings))),
+            "INSERT INTO prod_ledger_runs (cutover_t0, warnings, owner_scope_hash) "
+            "VALUES (?, ?, ?) RETURNING run_id",
+            (cutover_t0, Jsonb(list(warnings)), owner_scope_hash),
         ).fetchone()
     return int(row[0])
 
 
 def latest_ledger_run() -> Optional[tuple]:
-    """(run_id, ran_at, cutover_t0, warnings) of the newest rebuild, or None."""
+    """(run_id, ran_at, cutover_t0, warnings, owner_scope_hash) of the
+    newest rebuild, or None."""
     with storage.connect() as conn:
         return conn.execute(
-            "SELECT run_id, ran_at, cutover_t0, warnings "
+            "SELECT run_id, ran_at, cutover_t0, warnings, owner_scope_hash "
             "FROM prod_ledger_runs ORDER BY run_id DESC LIMIT 1",
         ).fetchone()
 
@@ -1220,14 +1247,76 @@ def replace_opening_cost(type_id: int, unit_cost: float, entry_date: datetime) -
     return int(row[0])
 
 
+def count_freight_rate_changes(rate: float) -> int:
+    """Purchases `reapply_freight_rates(rate)` would change."""
+    with storage.connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM ledger_wallet_transactions "
+            "WHERE freight_m3 IS NOT NULL AND freight_rate_per_m3 IS DISTINCT FROM ?",
+            (float(rate),),
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
 def reapply_freight_rates(rate: float) -> int:
     """Set the frozen ISK/m3 rate on purchases that already have a freight
-    volume. Rows frozen with no freight (not a Forge buy, or the home
-    structure) are left alone."""
+    volume and a different rate. Rows frozen with no freight (not a Forge
+    buy, or the home structure) are left alone."""
     with storage.connect() as conn:
         cur = conn.execute(
             "UPDATE ledger_wallet_transactions SET freight_rate_per_m3 = ? "
-            "WHERE freight_m3 IS NOT NULL",
-            (float(rate),),
+            "WHERE freight_m3 IS NOT NULL AND freight_rate_per_m3 IS DISTINCT FROM ?",
+            (float(rate), float(rate)),
         )
     return int(cur.rowcount or 0)
+
+
+def list_frozen_opening() -> list[tuple]:
+    """(type_id, raw_quantity, cutover_t0, owner_scope_hash, frozen_at)."""
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT type_id, raw_quantity, cutover_t0, owner_scope_hash, frozen_at "
+            "FROM prod_opening_frozen ORDER BY type_id",
+        ).fetchall()
+
+
+def list_opening_lines() -> list[tuple]:
+    """Opening inventory of the latest rebuild joined with the frozen date.
+    (type_id, raw_quantity, quantity, unit_cost, price_source,
+    reference_price, frozen_at)."""
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT o.type_id, o.raw_quantity, o.quantity, o.unit_cost, o.price_source, "
+            "o.reference_price, f.frozen_at "
+            "FROM prod_opening_lines o "
+            "LEFT JOIN prod_opening_frozen f ON f.type_id = o.type_id "
+            "ORDER BY o.type_id",
+        ).fetchall()
+
+
+def list_manual_entries() -> list[tuple]:
+    """(entry_id, entry_kind, type_id, quantity, amount, entry_date, note,
+    created_at), newest entry date first."""
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT entry_id, entry_kind, type_id, quantity, amount, entry_date, note, created_at "
+            "FROM ledger_manual_entries ORDER BY entry_date DESC, entry_id DESC",
+        ).fetchall()
+
+
+def delete_manual_entry(entry_id: int) -> bool:
+    with storage.connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM ledger_manual_entries WHERE entry_id = ?", (int(entry_id),),
+        )
+    return bool(cur.rowcount)
+
+
+def archive_gap_counts() -> dict[tuple, int]:
+    """(owner_type, owner_id, data_kind) -> number of recorded gaps."""
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT owner_type, owner_id, data_kind, COUNT(*) FROM ledger_archive_gaps "
+            "GROUP BY owner_type, owner_id, data_kind",
+        ).fetchall()
+    return {(r[0], int(r[1]), str(r[2])): int(r[3]) for r in rows}

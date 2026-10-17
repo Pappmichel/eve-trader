@@ -55,8 +55,8 @@ def _wipe(_apply_production_ledger_schema):
         "ledger_archive_gaps", "ledger_sync_state", "ledger_reference_prices",
         "ledger_manual_entries", "prod_cost_layers", "prod_realized_results",
         "prod_cost_draws", "prod_job_records", "prod_fee_lines", "prod_job_losses",
-        "prod_capital_bpos", "prod_inventory_drift",
-        "prod_ledger_runs", "esi_sharing", "character_assets", "corp_assets",
+        "prod_capital_bpos", "prod_inventory_drift", "prod_opening_frozen",
+        "prod_opening_lines", "prod_ledger_runs", "esi_sharing", "character_assets", "corp_assets",
         "stock_targets",
     )
     yield
