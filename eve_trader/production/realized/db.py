@@ -1680,3 +1680,37 @@ def planned_unit_costs_by_job() -> dict[tuple[str, int, int], float]:
             "WHERE planned_unit_cost IS NOT NULL",
         ).fetchall()
     return {(str(r[0]), int(r[1]), int(r[2])): float(r[3]) for r in rows}
+
+
+_JOB_TOTAL = ("cost_materials_bought + cost_materials_estimated + cost_freight + cost_job "
+              "+ cost_invention + cost_fees")
+
+
+def job_spend_between(start: datetime, end: datetime) -> list[tuple]:
+    """Per activity, costed jobs started in [start, end):
+    (activity_id, jobs, fees paid, total cost incl. consumed inputs)."""
+    with storage.connect() as conn:
+        return conn.execute(
+            f"SELECT activity_id, count(*), COALESCE(sum(job_cost), 0), COALESCE(sum({_JOB_TOTAL}), 0) "
+            "FROM prod_job_records WHERE start_date >= ? AND start_date < ? GROUP BY activity_id",
+            (start, end),
+        ).fetchall()
+
+
+def running_job_cost() -> tuple:
+    """(running jobs, cost already put into them) as of the latest rebuild."""
+    with storage.connect() as conn:
+        return conn.execute(
+            f"SELECT count(*), COALESCE(sum({_JOB_TOTAL}), 0) FROM prod_job_records WHERE state = 'wip'",
+        ).fetchone()
+
+
+def produced_stock_value() -> float:
+    """Produced units still in stock, at their cost (latest rebuild)."""
+    with storage.connect() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(sum(quantity_left * (cost_materials_bought + cost_materials_estimated "
+            "+ cost_freight + cost_job + cost_invention + cost_fees)), 0) "
+            "FROM prod_cost_layers WHERE origin = 'produced'",
+        ).fetchone()
+    return float(row[0] or 0.0)

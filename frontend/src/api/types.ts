@@ -2673,6 +2673,24 @@ export interface RealizedDay {
   profit: number
 }
 
+export interface RealizedJobFeeLine {
+  activity_id: number
+  label: string | null
+  jobs: number
+  amount: number
+}
+
+/** Spent on jobs started in the period, apart from the cost of goods sold. */
+export interface RealizedSpending {
+  job_fees: RealizedJobFeeLine[]
+  job_fees_total: number
+  invention_total: number
+  /** Balances as of the latest recompute. */
+  produced_in_stock: number
+  running_jobs: number
+  in_running_jobs: number
+}
+
 export interface RealizedSummary {
   period: RealizedPeriodInfo
   status: RealizedStatus
@@ -2695,6 +2713,7 @@ export interface RealizedSummary {
   manual_revenues: number
   profit_including_manual: number
   cost_structure: CostStructureLine[]
+  spending?: RealizedSpending | null
   by_day: RealizedDay[]
   balances_as_of_rebuild: string[]
   flags: RealizedFlags

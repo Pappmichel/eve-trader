@@ -52,7 +52,9 @@ _GAP_SHARE_KIND = {
 
 COST_STRUCTURE_LABELS = (
     ("materials_bought", "Materials bought"),
-    ("materials_estimated", "Materials estimated"),
+    # Opening and unknown stock is one planner value per unit (buy or build),
+    # so any build cost inside it cannot be split into job/invention here.
+    ("materials_estimated", "Opening / unknown stock (planner value)"),
     ("freight", f"Freight ({FREIGHT_LABEL})"),
     ("job", "Job costs"),
     ("invention", "Invention"),
@@ -184,9 +186,40 @@ def _empty_summary(period: dict, status: dict) -> dict:
         "manual_revenues": 0.0,
         "profit_including_manual": 0.0,
         "cost_structure": _cost_structure(zero, 0.0),
+        "spending": _spending([], (0, 0.0), 0.0),
         "by_day": [],
-        "balances_as_of_rebuild": ["capital_in_bpos", "inventory_at_cost"],
+        "balances_as_of_rebuild": ["capital_in_bpos", "inventory_at_cost", "produced_in_stock", "in_running_jobs"],
         "flags": _flags(estimated=False, price_missing=False, coverage=None),
+    }
+
+
+def _spending(by_activity: list[tuple], running: tuple, produced_in_stock: float) -> dict:
+    """What was spent on jobs started in the period, apart from the cost of
+    goods sold: the fees paid per activity, and everything an invention job
+    consumed (datacores, decryptors, copies, fees). Plus two balances as of
+    the latest rebuild: produced goods still in stock at cost, and the cost
+    sitting in running jobs."""
+    from . import names as display_names
+
+    fees = []
+    invention_total = 0.0
+    for activity_id, jobs, job_fees, total in by_activity:
+        fees.append({
+            "activity_id": int(activity_id),
+            "label": display_names.activity_label(activity_id),
+            "jobs": int(jobs),
+            "amount": _num(job_fees),
+        })
+        if int(activity_id) == ACTIVITY_INVENTION:
+            invention_total += _num(total)
+    fees.sort(key=lambda row: -row["amount"])
+    return {
+        "job_fees": fees,
+        "job_fees_total": sum(row["amount"] for row in fees),
+        "invention_total": invention_total,
+        "produced_in_stock": _num(produced_in_stock),
+        "running_jobs": int(running[0] or 0),
+        "in_running_jobs": _num(running[1]),
     }
 
 
@@ -304,6 +337,8 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
         manual_costs, manual_revenues = db.manual_entry_totals(start_at, end_at)
         capital = db.capital_in_bpos_total()
         inventory = db.inventory_at_cost_total()
+        spending = _spending(db.job_spend_between(start_at, end_at), db.running_job_cost(),
+                             db.produced_stock_value())
         by_day = [
             {"date": _iso(row[0]), "revenue": _num(row[1]), "cost": _num(row[2]), "profit": _num(row[3])}
             for row in db.realized_by_day(start_at, end_at)
@@ -334,8 +369,9 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
         "manual_revenues": manual_revenues,
         "profit_including_manual": profit + manual_revenues - manual_costs,
         "cost_structure": _cost_structure(components, tax),
+        "spending": spending,
         "by_day": by_day,
-        "balances_as_of_rebuild": ["capital_in_bpos", "inventory_at_cost"],
+        "balances_as_of_rebuild": ["capital_in_bpos", "inventory_at_cost", "produced_in_stock", "in_running_jobs"],
         "flags": flags,
     }
 
