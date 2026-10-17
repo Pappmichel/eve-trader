@@ -166,6 +166,10 @@ CREATE TABLE IF NOT EXISTS ledger_job_inputs (
     science_skill_1_level INTEGER,
     science_skill_2_level INTEGER,
     source TEXT NOT NULL,
+    -- NULL: frozen before this column existed (unknown, never guessed).
+    -- TRUE/FALSE: whether the structure/rig bonus was applied when inputs
+    -- were frozen (plan section 5). Not recomputed later; config can change.
+    structure_bonus_applied BOOLEAN,
     PRIMARY KEY (tenant_id, owner_type, owner_id, job_id, type_id)
 );
 ALTER TABLE ledger_job_inputs ENABLE ROW LEVEL SECURITY;
@@ -388,3 +392,238 @@ CREATE POLICY tenant_isolation ON prod_ledger_runs
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 GRANT SELECT, INSERT, UPDATE, DELETE ON prod_ledger_runs TO eve_trader_app;
 GRANT USAGE, SELECT ON SEQUENCE prod_ledger_runs_run_id_seq TO eve_trader_app;
+
+-- ====================================================== Phase 3: report columns
+-- Flags and cost components the API must not drop. Nullable additions so a
+-- re-run of this file against an already-loaded database is a no-op.
+ALTER TABLE ledger_job_inputs ADD COLUMN IF NOT EXISTS structure_bonus_applied BOOLEAN;
+
+ALTER TABLE prod_cost_layers ADD COLUMN IF NOT EXISTS quantity_original DOUBLE PRECISION;
+ALTER TABLE prod_cost_layers ADD COLUMN IF NOT EXISTS assumed_me BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE prod_cost_layers ADD COLUMN IF NOT EXISTS assumed_decryptor BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE prod_cost_layers ADD COLUMN IF NOT EXISTS estimated_origin BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE prod_cost_layers ADD COLUMN IF NOT EXISTS price_missing BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE prod_cost_layers ADD COLUMN IF NOT EXISTS logical_layer_id INTEGER;
+
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS gross DOUBLE PRECISION;
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS sales_tax DOUBLE PRECISION;
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS broker_fee DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS location_id BIGINT;
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS price_missing BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS estimated BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS warnings JSONB;
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS cost_materials_bought DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS cost_materials_estimated DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS cost_freight DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS cost_job DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS cost_invention DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS cost_fees DOUBLE PRECISION NOT NULL DEFAULT 0;
+
+CREATE INDEX IF NOT EXISTS idx_prod_realized_results_sale_date
+    ON prod_realized_results (sale_date);
+CREATE INDEX IF NOT EXISTS idx_prod_realized_results_type
+    ON prod_realized_results (type_id);
+
+-- Draw edges for the per-sale cost chain. logical_layer_id is the id the
+-- costing engine assigned in this rebuild (not the BIGSERIAL layer_id).
+CREATE TABLE IF NOT EXISTS prod_cost_draws (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    draw_id BIGSERIAL,
+    consumer_kind TEXT NOT NULL CHECK (consumer_kind IN ('sale', 'job')),
+    consumer_ref TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    logical_layer_id INTEGER NOT NULL,
+    type_id INTEGER NOT NULL,
+    unit TEXT NOT NULL,
+    quantity DOUBLE PRECISION NOT NULL,
+    origin TEXT NOT NULL,
+    source_ref TEXT,
+    cost_materials_bought DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_materials_estimated DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_freight DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_job DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_invention DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_fees DOUBLE PRECISION NOT NULL DEFAULT 0,
+    unit_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+    estimated_origin BOOLEAN NOT NULL DEFAULT FALSE,
+    price_missing BOOLEAN NOT NULL DEFAULT FALSE,
+    assumed_me BOOLEAN NOT NULL DEFAULT FALSE,
+    assumed_decryptor BOOLEAN NOT NULL DEFAULT FALSE,
+    layer_date TIMESTAMPTZ,
+    job_id BIGINT,
+    location_id BIGINT,
+    unit_price DOUBLE PRECISION,
+    freight_rate_per_m3 DOUBLE PRECISION,
+    PRIMARY KEY (tenant_id, draw_id)
+);
+ALTER TABLE prod_cost_draws ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON prod_cost_draws;
+CREATE POLICY tenant_isolation ON prod_cost_draws
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+CREATE INDEX IF NOT EXISTS idx_prod_cost_draws_consumer
+    ON prod_cost_draws (consumer_kind, consumer_ref);
+CREATE INDEX IF NOT EXISTS idx_prod_cost_draws_layer
+    ON prod_cost_draws (logical_layer_id);
+GRANT SELECT, INSERT, UPDATE, DELETE ON prod_cost_draws TO eve_trader_app;
+GRANT USAGE, SELECT ON SEQUENCE prod_cost_draws_draw_id_seq TO eve_trader_app;
+
+CREATE TABLE IF NOT EXISTS prod_job_records (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    job_ref TEXT NOT NULL,
+    job_id BIGINT NOT NULL,
+    owner_type TEXT NOT NULL,
+    owner_id BIGINT NOT NULL,
+    activity_id INTEGER NOT NULL,
+    blueprint_type_id INTEGER NOT NULL,
+    product_type_id INTEGER,
+    runs INTEGER NOT NULL,
+    successful_runs INTEGER,
+    start_date TIMESTAMPTZ,
+    end_date TIMESTAMPTZ,
+    status TEXT,
+    state TEXT NOT NULL,
+    job_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_materials_bought DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_materials_estimated DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_freight DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_job DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_invention DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_fees DOUBLE PRECISION NOT NULL DEFAULT 0,
+    assumed_me BOOLEAN NOT NULL DEFAULT FALSE,
+    assumed_decryptor BOOLEAN NOT NULL DEFAULT FALSE,
+    price_missing BOOLEAN NOT NULL DEFAULT FALSE,
+    no_structure_bonus BOOLEAN,
+    output_layer_id INTEGER,
+    output_type_id INTEGER,
+    output_quantity DOUBLE PRECISION NOT NULL DEFAULT 0,
+    output_quantity_left DOUBLE PRECISION,
+    output_unit TEXT,
+    facility_id BIGINT,
+    PRIMARY KEY (tenant_id, job_ref)
+);
+ALTER TABLE prod_job_records ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON prod_job_records;
+CREATE POLICY tenant_isolation ON prod_job_records
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+CREATE INDEX IF NOT EXISTS idx_prod_job_records_output_layer
+    ON prod_job_records (output_layer_id);
+CREATE INDEX IF NOT EXISTS idx_prod_job_records_start
+    ON prod_job_records (start_date);
+GRANT SELECT, INSERT, UPDATE, DELETE ON prod_job_records TO eve_trader_app;
+
+CREATE TABLE IF NOT EXISTS prod_fee_lines (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    fee_id BIGSERIAL,
+    kind TEXT NOT NULL CHECK (kind IN ('without_sale', 'other_trading')),
+    owner_type TEXT NOT NULL,
+    owner_id BIGINT NOT NULL,
+    fee_date DATE NOT NULL,
+    amount DOUBLE PRECISION NOT NULL,
+    sale_ref TEXT,
+    PRIMARY KEY (tenant_id, fee_id)
+);
+ALTER TABLE prod_fee_lines ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON prod_fee_lines;
+CREATE POLICY tenant_isolation ON prod_fee_lines
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+CREATE INDEX IF NOT EXISTS idx_prod_fee_lines_date ON prod_fee_lines (fee_date);
+GRANT SELECT, INSERT, UPDATE, DELETE ON prod_fee_lines TO eve_trader_app;
+GRANT USAGE, SELECT ON SEQUENCE prod_fee_lines_fee_id_seq TO eve_trader_app;
+
+CREATE TABLE IF NOT EXISTS prod_job_losses (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    loss_id BIGSERIAL,
+    loss_kind TEXT NOT NULL CHECK (loss_kind IN ('cancelled', 'failed_invention')),
+    job_ref TEXT NOT NULL,
+    job_id BIGINT NOT NULL,
+    loss_date TIMESTAMPTZ NOT NULL,
+    cost_materials_bought DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_materials_estimated DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_freight DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_job DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_invention DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_fees DOUBLE PRECISION NOT NULL DEFAULT 0,
+    PRIMARY KEY (tenant_id, loss_id)
+);
+ALTER TABLE prod_job_losses ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON prod_job_losses;
+CREATE POLICY tenant_isolation ON prod_job_losses
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+CREATE INDEX IF NOT EXISTS idx_prod_job_losses_date ON prod_job_losses (loss_date);
+GRANT SELECT, INSERT, UPDATE, DELETE ON prod_job_losses TO eve_trader_app;
+GRANT USAGE, SELECT ON SEQUENCE prod_job_losses_loss_id_seq TO eve_trader_app;
+
+CREATE TABLE IF NOT EXISTS prod_capital_bpos (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    type_id INTEGER NOT NULL,
+    amount DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY (tenant_id, type_id)
+);
+ALTER TABLE prod_capital_bpos ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON prod_capital_bpos;
+CREATE POLICY tenant_isolation ON prod_capital_bpos
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON prod_capital_bpos TO eve_trader_app;
+
+CREATE TABLE IF NOT EXISTS prod_inventory_drift (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    type_id INTEGER NOT NULL,
+    ledger_qty DOUBLE PRECISION NOT NULL,
+    esi_qty DOUBLE PRECISION NOT NULL,
+    drift DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY (tenant_id, type_id)
+);
+ALTER TABLE prod_inventory_drift ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON prod_inventory_drift;
+CREATE POLICY tenant_isolation ON prod_inventory_drift
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON prod_inventory_drift TO eve_trader_app;
+
+-- ====================================================== Phase 3 review fixes
+-- Fingerprint of the owners shared with Production (per data kind) when the
+-- run was built. The report hides a run whose owners no longer match (D11).
+ALTER TABLE prod_ledger_runs ADD COLUMN IF NOT EXISTS owner_scope_hash TEXT;
+
+-- Opening quantity per type, frozen the first time a rebuild sees the type
+-- (D8). Not a derived table: a rebuild keeps it and only adds new types. It
+-- is cleared when T0 or the shared-owner fingerprint changes, or on an
+-- explicit reset. Freezing is what makes the inventory drift check real.
+CREATE TABLE IF NOT EXISTS prod_opening_frozen (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    type_id INTEGER NOT NULL,
+    raw_quantity DOUBLE PRECISION NOT NULL,
+    cutover_t0 TIMESTAMPTZ NOT NULL,
+    owner_scope_hash TEXT NOT NULL,
+    frozen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, type_id)
+);
+ALTER TABLE prod_opening_frozen ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON prod_opening_frozen;
+CREATE POLICY tenant_isolation ON prod_opening_frozen
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON prod_opening_frozen TO eve_trader_app;
+
+-- Derived: the opening inventory as the latest rebuild valued it.
+CREATE TABLE IF NOT EXISTS prod_opening_lines (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    type_id INTEGER NOT NULL,
+    raw_quantity DOUBLE PRECISION NOT NULL,
+    quantity DOUBLE PRECISION NOT NULL,
+    unit_cost DOUBLE PRECISION NOT NULL,
+    price_source TEXT NOT NULL,
+    reference_price DOUBLE PRECISION,
+    PRIMARY KEY (tenant_id, type_id)
+);
+ALTER TABLE prod_opening_lines ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON prod_opening_lines;
+CREATE POLICY tenant_isolation ON prod_opening_lines
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON prod_opening_lines TO eve_trader_app;

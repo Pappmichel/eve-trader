@@ -272,6 +272,7 @@ class IndustryJob:
     output_quantity: Optional[float] = None
     output_runs_per_success: Optional[float] = None
     uses_bpc: Optional[bool] = None
+    facility_id: Optional[int] = None
 
     @property
     def activity(self) -> int:
@@ -302,6 +303,9 @@ class LedgerSnapshot:
     relic_type_ids: frozenset = frozenset()
     # D3: market buys of these types go to capital_in_bpos, never a layer.
     bpo_type_ids: frozenset = frozenset()
+    # type_id -> opening quantity frozen by an earlier rebuild for this T0
+    # and owner scope. None or missing types: computed from ESI stock now.
+    frozen_opening: Optional[dict] = None
 
 
 # ====================================================================== outputs
@@ -398,6 +402,9 @@ class JobRecord:
     output_type_id: Optional[int] = None
     output_quantity: float = 0.0
     output_unit: Optional[str] = None
+    facility_id: Optional[int] = None
+    successful_runs: Optional[int] = None
+    end_date: Optional[datetime] = None
 
 
 @dataclass(frozen=True)
@@ -421,6 +428,20 @@ class FeePeriod:
 
 
 @dataclass(frozen=True)
+class OtherTradingFee:
+    """Broker-fee share on a sell that is not a Production type (section 5b).
+
+    Kept per fill so a period report can filter it. The total stays
+    `CostingResult.fees_on_other_trading`.
+    """
+    owner_type: str
+    owner_id: int
+    day: date
+    amount: float
+    sale_ref: str
+
+
+@dataclass(frozen=True)
 class OpeningLine:
     type_id: int
     raw_quantity: float
@@ -428,6 +449,8 @@ class OpeningLine:
     unit_cost: float
     price_source: str  # reference | override | missing | none
     layer_id: Optional[int]
+    # The Forge reference price on T0, also when an override is used.
+    reference_price: Optional[float] = None
 
 
 @dataclass
@@ -448,6 +471,10 @@ class CostingResult:
     warnings: list
     # (type_id, unit, day) lookups that found no reference price.
     price_requests: frozenset = frozenset()
+    other_trading_fees: list = field(default_factory=list)
+    # type_id -> opening quantity before clamping, for every type evaluated
+    # (frozen or computed in this run). The loader freezes the new ones.
+    opening_raw: dict = field(default_factory=dict)
 
     @property
     def work_in_progress(self) -> list:
@@ -493,9 +520,11 @@ class _Costing:
         self.cancelled: list[JobLoss] = []
         self.failed_invention: list[JobLoss] = []
         self.fees_without_sale: list[FeePeriod] = []
+        self.other_trading_fees: list[OtherTradingFee] = []
         self.fees_other = 0.0
         self.capital: dict[int, float] = defaultdict(float)
         self.opening_lines: list[OpeningLine] = []
+        self.opening_raw: dict[int, float] = {}
         self.jobs_before_t0: list[str] = []
         self.skipped_corp_jobs: list[str] = []
         self.fee_by_tx: dict[tuple, float] = {}
@@ -658,12 +687,22 @@ class _Costing:
         return flows
 
     def _seed_opening(self, flows: dict[int, float]) -> None:
+        """Opening quantity per type = ESI stock minus net flows since T0,
+        computed the first time a type is seen and then frozen (the loader
+        stores `opening_raw`). A frozen quantity is reused as is, so a later
+        loss or untracked move shows up as inventory drift instead of being
+        folded silently into the opening."""
         stock = self.ledger.esi_stock_by_type
+        frozen = self.ledger.frozen_opening or {}
         price_day = _day(self.t0)
-        for type_id in sorted(set(int(t) for t in stock) | set(flows)):
+        for type_id in sorted(set(int(t) for t in stock) | set(flows) | set(int(t) for t in frozen)):
             if type_id in self.ledger.bpo_type_ids:
                 continue
-            raw = float(stock.get(type_id, 0) or 0) - flows.get(type_id, 0.0)
+            if type_id in frozen:
+                raw = float(frozen[type_id])
+            else:
+                raw = float(stock.get(type_id, 0) or 0) - flows.get(type_id, 0.0)
+            self.opening_raw[type_id] = raw
             if raw < -_EPS:
                 self.warn(f"negative_opening: type {type_id} opening {raw:g} clamped to 0")
                 self.opening_lines.append(OpeningLine(type_id, raw, 0.0, 0.0, "none", None))
@@ -671,12 +710,13 @@ class _Costing:
             if raw <= _EPS:
                 continue
             override = self.ledger.opening_cost_overrides.get(type_id)
+            reference = self._reference_price(type_id, UNIT_ITEM, self.t0)
             missing = False
             if override is not None:
                 unit = CostComponents(materials_bought=float(override))
                 source = "override"
             else:
-                price = self._reference_price(type_id, UNIT_ITEM, self.t0)
+                price = reference
                 if price is None:
                     self.warn(f"missing_reference_price: type {type_id} on {price_day.isoformat()}, "
                               f"opening {raw:g} valued at 0")
@@ -689,7 +729,9 @@ class _Costing:
                 origin=ORIGIN_OPENING, source_ref=f"opening:{type_id}", layer_date=self.t0,
                 estimated_origin=override is None, price_missing=missing,
             )
-            self.opening_lines.append(OpeningLine(type_id, raw, raw, unit.total, source, layer.layer_id))
+            self.opening_lines.append(OpeningLine(
+                type_id, raw, raw, unit.total, source, layer.layer_id, reference,
+            ))
 
     def _attribute_broker_fees(self) -> None:
         """D12: per (owner, UTC day), real order fees spread over that day's
@@ -779,6 +821,10 @@ class _Costing:
             return
         if type_id not in self.ledger.production_type_ids:
             self.fees_other += fee
+            if fee > _EPS:
+                self.other_trading_fees.append(OtherTradingFee(
+                    tx.owner_type, int(tx.owner_id), _day(tx.date), fee, tx.ref,
+                ))
             self._consume(type_id, UNIT_ITEM, qty, tx.date, tx.ref, allow_unknown=False)
             return
         gross = float(tx.unit_price) * qty
@@ -824,6 +870,9 @@ class _Costing:
             activity_id=job.activity, blueprint_type_id=int(job.blueprint_type_id),
             product_type_id=job.product_type_id, runs=int(job.runs or 0), start_date=job.start_date,
             status=job.status, job_cost=job_cost,
+            facility_id=None if job.facility_id is None else int(job.facility_id),
+            successful_runs=None if job.successful_runs is None else int(job.successful_runs),
+            end_date=job.end_date,
         )
         self.jobs.append(rec)
         if job.activity in _RESEARCH_ACTIVITIES:
@@ -954,4 +1003,6 @@ class _Costing:
             skipped_corp_jobs=list(self.skipped_corp_jobs),
             warnings=list(self.warnings),
             price_requests=frozenset(self.price_requests),
+            other_trading_fees=list(self.other_trading_fees),
+            opening_raw=dict(self.opening_raw),
         )

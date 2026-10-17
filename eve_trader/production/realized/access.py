@@ -36,6 +36,23 @@ def shared_owners(data_kind: str) -> list[tuple[str, int]]:
     return out
 
 
+# Every kind a rebuild reads. A change in who shares any of them changes
+# what the derived tables may show.
+SCOPE_KINDS = ("wallet", "industry_jobs", "market_orders", "contracts", "assets", "blueprints")
+
+
+def owner_scope_hash() -> str:
+    """Fingerprint of the owners shared with Production per kind in
+    SCOPE_KINDS. A rebuild stores it; the report compares it on every read
+    and hides a run built from owners that are no longer shared (D11)."""
+    import hashlib
+    import json
+
+    scope = {kind: sorted([t, int(i)] for t, i in shared_owners(kind)) for kind in SCOPE_KINDS}
+    text = json.dumps(scope, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
 def list_wallet_transactions_for_production(
     owner_type: str, owner_id: int,
 ) -> list[tuple]:

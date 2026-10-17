@@ -41,6 +41,7 @@ from ..constants import (
 )
 from . import access, db
 from .costing import (
+    ORIGIN_BOUGHT,
     UNIT_ITEM,
     IndustryJob,
     JobInput,
@@ -302,13 +303,31 @@ def _opening_stock(type_ids: set[int]) -> dict[int, float]:
 
 
 # ------------------------------------------------------------------ snapshot
-def load_ledger_snapshot() -> Optional[LedgerSnapshot]:
+def _frozen_opening(t0: datetime, scope_hash: str, reset: bool) -> Optional[dict[int, float]]:
+    """Opening quantities frozen by earlier rebuilds, or None when they must
+    be recomputed: nothing frozen yet, an explicit reset, or T0 / the
+    shared-owner fingerprint changed since they were frozen."""
+    if reset:
+        return None
+    rows = db.list_frozen_opening()
+    if not rows:
+        return None
+    for _tid, _raw, frozen_t0, frozen_hash, _at in rows:
+        if _as_utc(frozen_t0) != t0 or frozen_hash != scope_hash:
+            return None
+    return {int(r[0]): float(r[1]) for r in rows}
+
+
+def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
+                         reset_opening: bool = False) -> Optional[LedgerSnapshot]:
     """Assemble a LedgerSnapshot from the archive (with cached reference
     prices only), or None when T0 is unknown."""
     t0 = access.cutover_t0_for_production()
     if t0 is None:
         return None
     t0 = _as_utc(t0)
+    if scope_hash is None:
+        scope_hash = access.owner_scope_hash()
 
     tx_rows = access.list_all_wallet_transactions_for_production()
     journal_rows = access.list_all_wallet_journal_for_production()
@@ -373,6 +392,7 @@ def load_ledger_snapshot() -> Optional[LedgerSnapshot]:
             licensed_runs=int(r[8]) if r[8] is not None else None,
             successful_runs=int(r[9]) if r[9] is not None else None,
             cost=float(r[10]) if r[10] is not None else None,
+            facility_id=int(r[11]) if r[11] is not None else None,
             installer_id=int(r[12]) if r[12] is not None else None,
             start_date=_as_utc(r[13]) if r[13] is not None else None,
             end_date=_as_utc(r[14]) if r[14] is not None else None,
@@ -418,6 +438,7 @@ def load_ledger_snapshot() -> Optional[LedgerSnapshot]:
         bpc_run_reference_prices={},  # no source for a per-run BPC price: missing + flagged
         relic_type_ids=_relic_type_ids(),
         bpo_type_ids=bpo_types,
+        frozen_opening=_frozen_opening(t0, scope_hash, reset_opening),
     )
 
 
@@ -437,14 +458,21 @@ def _run_costing(snapshot: LedgerSnapshot, today: Optional[date] = None):
     return rebuild_costing(dataclasses.replace(snapshot, reference_prices=merged))
 
 
+def _components(c) -> tuple:
+    return (
+        float(c.materials_bought), float(c.materials_estimated), float(c.freight),
+        float(c.job), float(c.invention), float(c.fees),
+    )
+
+
 def _layer_row(layer) -> tuple:
-    c = layer.unit_components
     return (
         int(layer.type_id), str(layer.unit), float(layer.quantity_left),
         float(layer.unit_cost), str(layer.origin), str(layer.source_ref),
-        float(c.materials_bought), float(c.materials_estimated), float(c.freight),
-        float(c.job), float(c.invention), float(c.fees),
+        *_components(layer.unit_components),
         layer.layer_date, layer.job_id,
+        float(layer.quantity), bool(layer.assumed_me), bool(layer.assumed_decryptor),
+        bool(layer.estimated_origin), bool(layer.price_missing), int(layer.layer_id),
     )
 
 
@@ -453,21 +481,188 @@ def _result_row(result) -> tuple:
         str(result.sale_ref), int(result.type_id), float(result.quantity),
         float(result.revenue), float(result.cost), float(result.profit),
         float(result.coverage_share), result.sale_date,
+        float(result.gross),
+        None if result.sales_tax is None else float(result.sales_tax),
+        float(result.broker_fee),
+        int(result.location_id),
+        bool(result.price_missing), bool(result.estimated), list(result.warnings),
+        *_components(result.components),
     )
 
 
-def rebuild_realized() -> dict:
+def _draw_rows(result, snapshot) -> list[tuple]:
+    layers = {int(layer.layer_id): layer for layer in result.all_layers}
+    txs = {tx.ref: tx for tx in snapshot.wallet_transactions}
+
+    def one(kind: str, ref: str, seq: int, draw) -> tuple:
+        layer = layers.get(int(draw.layer_id))
+        tx = txs.get(layer.source_ref) if layer is not None else None
+        qty = float(draw.quantity)
+        location_id = None
+        unit_price = None
+        rate = None
+        if layer is not None and layer.origin == ORIGIN_BOUGHT and tx is not None:
+            location_id = int(tx.location_id)
+            unit_price = float(tx.unit_price)
+            if tx.freight_rate_per_m3 is not None:
+                rate = float(tx.freight_rate_per_m3)
+        elif layer is not None:
+            # Opening / unknown / produced: the unit cost that was actually used.
+            unit_price = float(layer.unit_cost)
+        return (
+            kind, ref, seq, int(draw.layer_id), int(draw.type_id), str(draw.unit),
+            qty, str(draw.origin), None if layer is None else layer.source_ref,
+            *_components(draw.components),
+            (draw.components.total / qty) if qty else 0.0,
+            bool(draw.estimated_origin), bool(draw.price_missing),
+            bool(layer.assumed_me) if layer is not None else False,
+            bool(layer.assumed_decryptor) if layer is not None else False,
+            None if layer is None else layer.layer_date,
+            None if layer is None else layer.job_id,
+            location_id, unit_price, rate,
+        )
+
+    rows = []
+    for sale in result.realized_results:
+        for seq, draw in enumerate(sale.draws):
+            rows.append(one("sale", sale.sale_ref, seq, draw))
+    for job in result.jobs:
+        for seq, draw in enumerate(job.draws):
+            rows.append(one("job", job.job_ref, seq, draw))
+    return rows
+
+
+def _job_rows(result, bonus_by_job: dict) -> list[tuple]:
+    layers = {int(layer.layer_id): layer for layer in result.all_layers}
+    rows = []
+    for job in result.jobs:
+        left = None
+        if job.output_layer_id is not None:
+            layer = layers.get(int(job.output_layer_id))
+            if layer is not None:
+                left = float(layer.quantity_left)
+        applied = bonus_by_job.get((job.owner_type, int(job.owner_id), int(job.job_id)))
+        no_structure_bonus = None if applied is None else (not applied)
+        rows.append((
+            job.job_ref, int(job.job_id), job.owner_type, int(job.owner_id),
+            int(job.activity_id), int(job.blueprint_type_id),
+            None if job.product_type_id is None else int(job.product_type_id),
+            int(job.runs), job.successful_runs, job.start_date, job.end_date,
+            job.status, job.state, float(job.job_cost),
+            *_components(job.components),
+            bool(job.assumed_me), bool(job.assumed_decryptor), bool(job.price_missing),
+            no_structure_bonus, job.output_layer_id, job.output_type_id,
+            float(job.output_quantity), left, job.output_unit, job.facility_id,
+        ))
+    return rows
+
+
+def _fee_rows(result) -> list[tuple]:
+    rows = [
+        ("without_sale", p.owner_type, int(p.owner_id), p.day, float(p.amount), None)
+        for p in result.fees_without_sale
+    ]
+    rows.extend(
+        ("other_trading", f.owner_type, int(f.owner_id), f.day, float(f.amount), f.sale_ref)
+        for f in result.other_trading_fees
+    )
+    return rows
+
+
+def _loss_rows(result) -> list[tuple]:
+    rows = []
+    for kind, items in (
+        ("cancelled", result.cancelled_job_losses),
+        ("failed_invention", result.failed_invention_losses),
+    ):
+        for loss in items:
+            rows.append((
+                kind, loss.job_ref, int(loss.job_id), loss.date, *_components(loss.components),
+            ))
+    return rows
+
+
+def _drift_rows(result, esi_stock: dict) -> list[tuple]:
+    ledger: dict[int, float] = defaultdict(float)
+    for layer in result.layers:
+        if layer.unit == UNIT_ITEM:
+            ledger[int(layer.type_id)] += float(layer.quantity_left)
+    esi = {int(k): float(v) for k, v in (esi_stock or {}).items()}
+    rows = []
+    for type_id in sorted(set(ledger) | set(esi)):
+        ledger_qty = ledger.get(type_id, 0.0)
+        esi_qty = esi.get(type_id, 0.0)
+        if abs(ledger_qty) <= 1e-9 and abs(esi_qty) <= 1e-9:
+            continue
+        rows.append((type_id, ledger_qty, esi_qty, esi_qty - ledger_qty))
+    return rows
+
+
+def _opening_rows(result) -> list[tuple]:
+    return [
+        (int(line.type_id), float(line.raw_quantity), float(line.quantity),
+         float(line.unit_cost), str(line.price_source),
+         None if line.reference_price is None else float(line.reference_price))
+        for line in result.opening_lines
+    ]
+
+
+def _frozen_rows(snapshot, result, scope_hash: str) -> list[tuple]:
+    """Types whose opening quantity was computed in this run (not frozen
+    yet). Zero quantities are frozen too, so a type that had no opening
+    stock never gets one later."""
+    frozen = snapshot.frozen_opening or {}
+    return [
+        (int(tid), float(raw), snapshot.t0, scope_hash)
+        for tid, raw in sorted(result.opening_raw.items())
+        if int(tid) not in frozen
+    ]
+
+
+def _persist(snapshot, result, scope_hash: str) -> tuple[int, list]:
+    """Write derived tables. Returns (run_id, warnings). The run row is
+    written only inside replace_derived_costing, after the rows succeed."""
+    bonus = db.structure_bonus_applied_by_job(access.shared_owners("industry_jobs"))
+    extra = list(result.warnings)
+    for ref in result.jobs_before_t0:
+        extra.append(f"job_before_t0: {ref} started before cutover and consumes nothing")
+    for ref in result.skipped_corp_jobs:
+        extra.append(
+            f"skipped_corp_job: {ref} installer is not one of this tenant's characters"
+        )
+    run_id = db.replace_derived_costing(
+        layers=[_layer_row(layer) for layer in result.layers],
+        results=[_result_row(row) for row in result.realized_results],
+        draws=_draw_rows(result, snapshot),
+        jobs=_job_rows(result, bonus),
+        fee_lines=_fee_rows(result),
+        losses=_loss_rows(result),
+        capital=[(int(tid), float(amt)) for tid, amt in result.capital_in_bpos.items()],
+        drift=_drift_rows(result, snapshot.esi_stock_by_type),
+        cutover_t0=snapshot.t0,
+        warnings=extra,
+        opening_lines=_opening_rows(result),
+        frozen_opening=_frozen_rows(snapshot, result, scope_hash),
+        reset_frozen_opening=snapshot.frozen_opening is None,
+        owner_scope_hash=scope_hash,
+    )
+    return run_id, extra
+
+
+def rebuild_realized(reset_opening: bool = False) -> dict:
     """Load ledger → pure costing → replace derived tables.
 
     Returns a summary dict (counts, t0, run_id, warnings). Does not raise
     ActionError - callers in Phase 3 wrap that. An empty archive (no T0)
     clears derived tables and records a run with a warning.
     """
-    snapshot = load_ledger_snapshot()
+    scope_hash = access.owner_scope_hash()
+    snapshot = load_ledger_snapshot(scope_hash=scope_hash, reset_opening=reset_opening)
     if snapshot is None:
         warnings = ["no wallet archive yet; cutover T0 unknown"]
         run_id = db.replace_derived_costing(
             layers=[], results=[], cutover_t0=None, warnings=warnings,
+            reset_frozen_opening=True, owner_scope_hash=scope_hash,
         )
         return {
             "run_id": run_id,
@@ -478,34 +673,18 @@ def rebuild_realized() -> dict:
         }
 
     result = _run_costing(snapshot)
-    # Persist remaining layers (quantity_left > 0) and all realized sales.
-    layer_rows = [_layer_row(L) for L in result.layers]
-    result_rows = [_result_row(r) for r in result.realized_results]
-    extra_warnings = list(result.warnings)
-    if result.fees_without_sale_total:
-        extra_warnings.append(
-            f"fees_without_sale={result.fees_without_sale_total:.2f}"
-        )
-    if result.fees_on_other_trading:
-        extra_warnings.append(
-            f"fees_on_other_trading={result.fees_on_other_trading:.2f}"
-        )
-    run_id = db.replace_derived_costing(
-        layers=layer_rows,
-        results=result_rows,
-        cutover_t0=snapshot.t0,
-        warnings=extra_warnings,
-    )
+    run_id, extra_warnings = _persist(snapshot, result, scope_hash)
     return {
         "run_id": run_id,
         "cutover_t0": snapshot.t0.isoformat(),
-        "layers": len(layer_rows),
-        "realized_results": len(result_rows),
+        "layers": len(result.layers),
+        "realized_results": len(result.realized_results),
         "jobs": len(result.jobs),
         "cancelled_losses": len(result.cancelled_job_losses),
         "coverage": result.coverage(),
         "estimated_results": sum(1 for r in result.realized_results if r.estimated),
         "warnings": extra_warnings,
+        "opening_frozen": snapshot.frozen_opening is not None,
         "wallet_transactions": len(snapshot.wallet_transactions),
         "industry_jobs": len(snapshot.industry_jobs),
         "journal_entries": len(snapshot.journal_entries),

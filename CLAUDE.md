@@ -108,7 +108,7 @@ covers only a few regions (The Forge, Insmother, Delve); for any other region
 `goonmetrics_client.region_has_goonmetrics_history` is false and
 `price_history` reads ESI daily history instead.
 
-**Price sources matrix** - three different price sources answer three
+**Price sources matrix** - four different price sources answer four
 different questions, deliberately, not by accident, but nowhere else are
 they laid out side by side:
 | Question | Source | Where |
@@ -116,12 +116,38 @@ they laid out side by side:
 | Is a *newly discovered* candidate historically worth importing? | Goonmetrics region-average history for `reference_region_id` (Insmother); ESI daily history for types Goonmetrics doesn't track (most blueprints, `esi_for_missing`). Untraded days (avgPrice 0) are not margin days | `history_backtest.py` |
 | What can I actually buy/sell *right now* on the live Trading shortlist? | Real ESI order-book stats (5th-percentile) for `jita_region_id`/C-J's own structure | `esi_client.region_order_stats`/`structure_order_stats`, via `shortlist.py` |
 | What's a Production build/buy decision worth? | Goonmetrics current-price quotes (`appraise.gnf.lt`) for the configured home/Jita markets | `production/pricing.py` |
+| What was an item without a purchase worth on that day? | The Forge daily average: Goonmetrics, then ESI daily history, then the nearest traded day within 7 days, cached in `ledger_reference_prices`. A day with no price stays `price_missing` (booked at 0 and flagged), never a guessed price | `production/realized/loader.py` |
 Each is the right tool for its own job (a historical region average smooths
 out noise for "is this worth tracking at all", a live order-book percentile
 is what you'd actually pay/receive right now) - don't assume a number from
 one is interchangeable with a same-named-sounding number from another
 (see Finding 2.5's discovery/live-shortlist mismatch for a concrete case
 this caused).
+
+## Production realized profit
+
+Plan: `docs/PRODUCTION_REALIZED_PROFIT_PLAN.md`. Package
+`eve_trader/production/realized/` (`ingest.py`, `inputs.py`, `access.py`,
+`db.py`, `costing.py`, `loader.py`, `report.py`). The wallet / jobs /
+orders / contracts **archive** is the source of truth. Derived tables
+(`prod_cost_layers`, `prod_realized_results`, `prod_cost_draws`,
+`prod_job_records`, `prod_fee_lines`, `prod_job_losses`,
+`prod_capital_bpos`, `prod_inventory_drift`, `prod_ledger_runs`) are
+rebuilt from it and can be dropped and rebuilt. Archive reads go through
+`access.py` and only return owners shared with Production (D11); revoking
+a share hides those rows until it is granted again. Flags
+(`estimated`, `price_missing`, `assumed_me`, `assumed_decryptor`,
+coverage, `no_structure_bonus`) are stored on the derived rows and must
+reach `/api/production/realized/` unchanged. Freight is the configured
+rate and is labeled that way. HTTP recompute is a `pipeline_runner`
+background job; the CLI rebuild calls the same `do_rebuild_realized`
+in-process. A run row is written only after the replace commits. Each run
+stores a fingerprint of the shared owners (`access.owner_scope_hash`); the
+report hides a run whose fingerprint no longer matches, so D11 also holds
+for derived rows. Opening quantities are frozen per type
+(`prod_opening_frozen`, not a derived table) and only re-derived when T0 or
+that fingerprint changes or on `--reset-opening`; re-deriving them on every
+rebuild would make the inventory drift check always zero.
 
 ## Architecture: actions.py is the one entry point
 
