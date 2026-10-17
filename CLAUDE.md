@@ -144,7 +144,9 @@ background job; the CLI rebuild calls the same `do_rebuild_realized`
 in-process. A run row is written only after the replace commits. Each run
 stores a fingerprint of the shared owners (`access.owner_scope_hash`); the
 report hides a run whose fingerprint no longer matches, so D11 also holds
-for derived rows. Opening quantities are frozen per type
+for derived rows. The tenant's characters are the registry entry plus every character
+holding a token in the tenant (the registry alone has one character per
+tenant). Opening quantities are frozen per type
 (`prod_opening_frozen`, not a derived table) and only re-derived when T0 or
 that fingerprint changes, on `--reset-opening`, or once when the latest run's
 `costing_version` is NULL or lower than the loader's current version

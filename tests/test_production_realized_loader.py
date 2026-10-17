@@ -281,3 +281,22 @@ def test_bulk_wallet_read_is_one_owner_set(tenant):
     rows = ledger_access.list_all_wallet_transactions_for_production()
     assert len(rows) == 2
     assert {r[5] for r in rows} == {TYPE_A, TYPE_B}
+
+
+def test_tenant_characters_include_every_token_character(tenant, monkeypatch):
+    """The registry holds only the login character; the tenant's other
+    characters come from its tokens (corp jobs by installer, internal
+    contracts)."""
+    from types import SimpleNamespace
+
+    from eve_trader import auth
+
+    monkeypatch.setattr(storage, "list_tenant_registry_entries",
+                        lambda tenant_id: [("character", ALICE)])
+    monkeypatch.setattr(auth.TokenManager, "list_records", lambda self: [
+        SimpleNamespace(character_id=ALICE, role=f"producer:{ALICE}"),
+        SimpleNamespace(character_id=910002, role="producer:910002"),
+        SimpleNamespace(character_id=910003, role="buyer:910003"),
+    ])
+    assert loader._tenant_character_ids() == frozenset({ALICE, 910002, 910003})
+

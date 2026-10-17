@@ -350,11 +350,18 @@ def archive_industry_jobs(
     db.upsert_ledger_industry_jobs(rows)
     db.insert_ledger_job_inputs(input_rows)
     _stamp(owner_type, owner_id, "industry_jobs", now)
-    # Planned cost is frozen only for jobs that were not already archived.
-    # A lookup failure must not fail the ESI sync, and it never calls ESI.
-    new_jobs = [j for j in jobs if j.get("job_id") is not None and int(j["job_id"]) not in known_jobs]
+    # Planned cost is frozen only for jobs that were not already archived and
+    # started recently (planned.MAX_JOB_AGE). A lookup failure must not fail
+    # the ESI sync, and it never calls ESI.
     try:
         from . import planned
+        new_jobs = []
+        for j in jobs:
+            if j.get("job_id") is None or int(j["job_id"]) in known_jobs:
+                continue
+            started = _parse_esi_time(j.get("start_date"))
+            if started is not None and now - started <= planned.MAX_JOB_AGE:
+                new_jobs.append(j)
         planned.freeze_for_new_jobs(owner_type, int(owner_id), new_jobs)
     except Exception:  # noqa: BLE001
         log.exception("ledger planned-cost freeze failed for %s %s", owner_type, owner_id)

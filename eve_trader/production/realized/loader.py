@@ -105,9 +105,19 @@ def _production_type_ids(job_rows: list[tuple]) -> frozenset[int]:
 
 
 def _tenant_character_ids() -> frozenset[int]:
+    """The tenant's own characters: the registry entry (the login character)
+    plus every character that holds a token in this tenant. The registry
+    alone has one character per tenant, so a tenant's other characters
+    would read as outsiders (their corp jobs skipped, contracts between
+    them booked as sales)."""
     tenant_id = storage.get_current_tenant()
     entries = storage.list_tenant_registry_entries(str(tenant_id))
-    return frozenset(int(eid) for et, eid in entries if et == "character")
+    ids = {int(eid) for et, eid in entries if et == "character"}
+    from ...auth import TokenManager
+    from ...config import OAUTH_CONFIG
+    ids.update(int(rec.character_id) for rec in TokenManager(OAUTH_CONFIG).list_records()
+               if rec.character_id is not None)
+    return frozenset(ids)
 
 
 def _tenant_corporation_ids() -> frozenset[int]:

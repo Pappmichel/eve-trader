@@ -65,6 +65,7 @@ Inputs the loader must prepare (not checked here)
 """
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -994,23 +995,42 @@ class _Costing:
         mt = self._mt_by_tx.get(tx.key)
         if mt is None:
             return None
-        tax_entry = self._journal_by_id.get((mt.owner_type, int(mt.owner_id), int(mt.division), int(mt.journal_id) + 1))
-        if (tax_entry is None or tax_entry.ref_type != TRANSACTION_TAX_REF_TYPE
-                or tax_entry.date != mt.date):
+        tax_entry = self._tax_entry_after(mt)
+        if tax_entry is None:
             return None
         tax = -float(tax_entry.amount)
         if gross <= _EPS or not (0.0 <= tax / gross <= MAX_PLAUSIBLE_TAX_RATE):
             return None
         return tax
 
+    def _tax_entry_after(self, mt: JournalEntry) -> Optional[JournalEntry]:
+        """The transaction_tax entry that belongs to a market_transaction
+        entry: the first one after it in the same wallet with the same
+        timestamp, before the next market_transaction. It is usually the
+        next journal id, but real journals also leave a gap (id + 2)."""
+        wallet = (mt.owner_type, int(mt.owner_id), int(mt.division))
+        ids = self._journal_ids.get(wallet, [])
+        pos = bisect_right(ids, int(mt.journal_id))
+        while pos < len(ids):
+            entry = self._journal_by_id[(*wallet, ids[pos])]
+            if entry.date != mt.date or entry.ref_type == MARKET_TRANSACTION_REF_TYPE:
+                return None
+            if entry.ref_type == TRANSACTION_TAX_REF_TYPE:
+                return entry
+            pos += 1
+        return None
+
     def _index_journal(self) -> None:
         self._journal_by_id: dict[tuple, JournalEntry] = {}
         self._mt_by_tx: dict[tuple, JournalEntry] = {}
+        ids: dict[tuple, list[int]] = defaultdict(list)
         for j in self.ledger.journal_entries:
             self._journal_by_id[(j.owner_type, int(j.owner_id), int(j.division), int(j.journal_id))] = j
+            ids[(j.owner_type, int(j.owner_id), int(j.division))].append(int(j.journal_id))
             if (j.ref_type == MARKET_TRANSACTION_REF_TYPE and j.context_id_type == "market_transaction_id"
                     and j.context_id is not None):
                 self._mt_by_tx[(j.owner_type, int(j.owner_id), int(j.division), int(j.context_id))] = j
+        self._journal_ids = {wallet: sorted(set(values)) for wallet, values in ids.items()}
 
     # ---------------------------------------------------------------- handlers
     def _on_buy(self, tx: WalletTransaction) -> None:

@@ -7,6 +7,7 @@ network call and must not raise into the ESI sync (the caller still guards it).
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Optional
 
 from . import db
@@ -18,6 +19,11 @@ SOURCE_ASSET_PLAN = "asset_plan"
 SOURCE_SHIP_MARGIN = "ship_margin_cache"
 SOURCE_DISCOVER = "discover_cache"
 SOURCE_UNAVAILABLE = "unavailable"
+
+# Only a job first seen this soon after its start gets a planned cost. The
+# first sync of an owner archives its whole job history; today's planner
+# figure is not what was planned for those older jobs.
+MAX_JOB_AGE = timedelta(hours=24)
 
 
 def _number(value) -> Optional[float]:

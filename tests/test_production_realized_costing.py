@@ -900,3 +900,37 @@ def test_filling_a_buy_contract_is_a_sale_at_the_reward():
     assert sale.gross == pytest.approx(90.0)
     assert sale.sales_tax is None
     assert sale.draws[0].origin == "produced"
+
+
+def test_sales_tax_is_found_after_a_journal_id_gap():
+    """Real journals (test server, 2026-10-10): two fills in one second,
+    taxes at mt + 1 and at mt + 2. The second tax must not be missed, and a
+    sale never takes the tax of the next market_transaction."""
+    first = sell(PRODUCT, 1, 100.0, at(2), tx_id=501)
+    second = sell(PRODUCT, 1, 200.0, at(2), tx_id=502)
+    third = sell(PRODUCT, 1, 300.0, at(2), tx_id=503)
+    when = at(2)
+    journal = [
+        JournalEntry("character", CHAR, 643, when, "market_transaction", 100.0,
+                     context_id=501, context_id_type="market_transaction_id"),
+        JournalEntry("character", CHAR, 644, when, "transaction_tax", -3.0),
+        JournalEntry("character", CHAR, 680, when, "market_transaction", 200.0,
+                     context_id=502, context_id_type="market_transaction_id"),
+        JournalEntry("character", CHAR, 682, when, "transaction_tax", -6.0),
+        # No tax entry of its own before the next market_transaction.
+        JournalEntry("character", CHAR, 690, when, "market_transaction", 300.0,
+                     context_id=503, context_id_type="market_transaction_id"),
+        JournalEntry("character", CHAR, 700, when, "market_transaction", 1.0,
+                     context_id=999, context_id_type="market_transaction_id"),
+        JournalEntry("character", CHAR, 701, when, "transaction_tax", -0.03),
+    ]
+    result = rebuild_costing(snapshot(
+        wallet_transactions=[first, second, third],
+        journal_entries=journal,
+        esi_stock_by_type={PRODUCT: 0},
+        reference_prices={(PRODUCT, at(2).date()): 10.0},
+        production_type_ids={PRODUCT},
+    ))
+    taxes = {r.gross: r.sales_tax for r in result.realized_results}
+    assert taxes == {100.0: pytest.approx(3.0), 200.0: pytest.approx(6.0), 300.0: None}
+

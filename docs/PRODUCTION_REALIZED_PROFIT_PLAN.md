@@ -945,3 +945,28 @@ spell out):
     - The Portfolio card shows no figure until a recompute produced one.
   - Not in Phase 5: D7's corp "mine alone" switch (no corp token has the
     Accountant role, so there is no corp wallet data).
+- **Test-server verification 2026-10-17** (Default tenant, real archive:
+  17k wallet transactions, 12k journal entries, 2.4k jobs, 108 contracts).
+  Fixed from it:
+  - The tenant's characters were only the registry entry (one login
+    character). Every other character read as an outsider: 2000 corp jobs
+    were skipped and contracts between own characters were booked as sales
+    at price 0 (-96 bn ISK in 30 days). Tenant characters are now the
+    registry entry plus every character holding a token in the tenant.
+  - Sales tax was looked up only at `journal_id + 1` of the
+    market_transaction entry; real journals also put it at + 2, so 2 % of
+    sales showed "tax missing". It is now the first transaction_tax entry
+    after it with the same timestamp, before the next market_transaction.
+    Remaining misses are the newest sales whose journal ESI has not served
+    yet (journal cache lags transactions).
+  - The first sync of an owner archives its whole job history, and every
+    job got a "planned" row. Planned cost is now frozen only for jobs first
+    seen within 24 h of their start (`planned.MAX_JOB_AGE`).
+  Checked and correct: reference prices equal ESI's Forge daily average;
+  freight is 900 ISK/m3 x packaged m3 on Forge buys only; opening stays
+  frozen without a reset; D11 hides the run on revoke and shows it again
+  on re-share; hidden-row delete is refused while shared; doctrine
+  contracts a member issued for the corp are contract sales. Expected, not a
+  bug: with T0 one week back almost every sale draws on opening stock
+  (coverage ~2 %), and C-J sells 10-30 % below the Forge average, so those
+  sales show a loss against the opening's market value (D5).

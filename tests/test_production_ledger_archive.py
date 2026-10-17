@@ -424,3 +424,36 @@ def test_market_orders_and_blueprints_upsert(tenant):
         }],
     )
     assert ledger_db.count_ledger_rows("ledger_market_orders", "character", ALICE) == 1
+
+
+def test_planned_cost_is_frozen_only_for_recently_started_new_jobs(tenant, monkeypatch):
+    from eve_trader.production.realized import planned
+
+    monkeypatch.setattr(ledger_ingest.inputs, "freeze_job_inputs", lambda **kw: [])
+    monkeypatch.setattr(planned, "lookup_planned_unit_cost", lambda type_id: (12.5, "discover_cache"))
+    now = datetime(2026, 10, 17, 12, 0, tzinfo=timezone.utc)
+
+    def job(job_id, started):
+        return {
+            "job_id": job_id, "activity_id": 1, "blueprint_id": 1, "blueprint_type_id": 999,
+            "product_type_id": 34, "runs": 1, "licensed_runs": None, "successful_runs": None,
+            "cost": 100.0, "facility_id": None, "station_id": None, "output_location_id": None,
+            "installer_id": ALICE, "start_date": started.isoformat(), "end_date": None,
+            "completed_date": None, "status": "active", "probability": None,
+        }
+
+    recent = job(1, now - timedelta(hours=3))
+    old = job(2, now - timedelta(days=5))
+    ledger_ingest.archive_industry_jobs(owner_type="character", owner_id=ALICE,
+                                        jobs=[recent, old], now=now)
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT job_id, planned_unit_cost, source FROM ledger_job_planned_costs ORDER BY job_id"
+        ).fetchall()
+    assert rows == [(1, 12.5, "discover_cache")]
+
+    # A later sync never adds a value for a job that was already archived.
+    ledger_ingest.archive_industry_jobs(owner_type="character", owner_id=ALICE,
+                                        jobs=[recent, old], now=now + timedelta(hours=1))
+    with storage.connect() as conn:
+        assert conn.execute("SELECT count(*) FROM ledger_job_planned_costs").fetchone()[0] == 1
