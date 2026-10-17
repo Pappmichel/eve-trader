@@ -506,6 +506,117 @@ def manual_locations_unname(location_id: int, tenant_id: str | None):
     click.echo(f"Unnamed location {location_id}.")
 
 
+@production_group.group("realized")
+def realized_group():
+    """Realized Production profit (docs/PRODUCTION_REALIZED_PROFIT_PLAN.md).
+    Same do_* actions as /api/production/realized. Each command runs inside
+    tenant_scope.enter_tenant."""
+
+
+def _realized_call(tenant_id: str | None, fn):
+    try:
+        with tenant_scope.enter_tenant(tenant_id or storage.DEFAULT_TENANT_ID):
+            return fn()
+    except actions.ActionError as e:
+        click.echo(str(e), err=True)
+        raise SystemExit(1) from e
+
+
+@realized_group.command("rebuild")
+@click.option("--reset-opening", is_flag=True, default=False,
+              help="Derive the frozen opening quantities again from today's ESI stock.")
+@_tenant_id_option
+def realized_rebuild(reset_opening: bool, tenant_id: str | None):
+    """Rebuild derived realized-profit tables from the archive."""
+    result = _realized_call(
+        tenant_id, lambda: production_actions.do_rebuild_realized(reset_opening=reset_opening),
+    )
+    click.echo(
+        f"run {result['run_id']}  t0={result.get('cutover_t0')}  "
+        f"layers={result.get('layers')}  sales={result.get('realized_results')}"
+    )
+    for warning in result.get("warnings") or []:
+        click.echo(f"warning: {warning}")
+
+
+@realized_group.command("summary")
+@click.option("--days", type=int, default=None, help="Window length in days (default 30).")
+@click.option("--since-t0", is_flag=True, default=False, help="From cutover T0 to now.")
+@click.option("--start", default=None, help="Custom range start (ISO date or datetime).")
+@click.option("--end", default=None, help="Custom range end (ISO date or datetime).")
+@_tenant_id_option
+def realized_summary(days: int | None, since_t0: bool, start: str | None, end: str | None,
+                     tenant_id: str | None):
+    """Print realized profit for a period."""
+    result = _realized_call(tenant_id, lambda: production_actions.do_get_realized_summary(
+        days=days, start=start, end=end, since_t0=since_t0,
+    ))
+    status = result["status"]
+    if status.get("hint"):
+        click.echo(status["hint"])
+    click.echo(
+        f"revenue {result['revenue']:,.2f}  cogs {result['cost_of_goods_sold']:,.2f}  "
+        f"profit {result['realized_profit']:,.2f}  "
+        f"coverage {result['coverage']}  estimated {result['estimated']}"
+    )
+    click.echo(
+        f"fees without sale {result['fees_without_sale']:,.2f}  "
+        f"fees on other trading {result['fees_on_other_trading']:,.2f}  "
+        f"capital in BPOs {result['capital_in_bpos']:,.2f}  "
+        f"inventory at cost {result['inventory_at_cost']:,.2f}"
+    )
+    for line in result["cost_structure"]:
+        click.echo(f"  {line['label']}: {line['amount']:,.2f}")
+
+
+@realized_group.command("entry")
+@click.option("--kind", type=click.Choice(["cost", "revenue"]), required=True)
+@click.option("--amount", type=float, required=True, help="Total ISK of this entry.")
+@click.option("--date", "entry_date", required=True, help="ISO date or datetime.")
+@click.option("--type-id", type=int, default=None)
+@click.option("--quantity", type=float, default=None)
+@click.option("--note", default=None)
+@_tenant_id_option
+def realized_entry(kind: str, amount: float, entry_date: str, type_id: int | None,
+                   quantity: float | None, note: str | None, tenant_id: str | None):
+    """Add a manual cost or revenue ledger entry."""
+    result = _realized_call(tenant_id, lambda: production_actions.do_add_ledger_entry(
+        entry_kind=kind, amount=amount, entry_date=entry_date, type_id=type_id,
+        quantity=quantity, note=note,
+    ))
+    click.echo(f"entry {result['entry_id']} {result['entry_kind']} {result['amount']}")
+
+
+@realized_group.command("opening-cost")
+@click.argument("type_id", type=int)
+@click.argument("unit_cost", type=float)
+@_tenant_id_option
+def realized_opening_cost(type_id: int, unit_cost: float, tenant_id: str | None):
+    """Set the opening unit cost for TYPE_ID. Applied on the next rebuild."""
+    result = _realized_call(tenant_id, lambda: production_actions.do_set_opening_cost(type_id, unit_cost))
+    click.echo(f"type {result['type_id']} opening unit cost {result['unit_cost']} (next rebuild)")
+
+
+@realized_group.command("reapply-freight")
+@click.option("--dry-run", is_flag=True, default=False, help="Only count the purchases that would change.")
+@_tenant_id_option
+def realized_reapply_freight(dry_run: bool, tenant_id: str | None):
+    """Write the current configured freight rate onto Forge purchases."""
+    result = _realized_call(
+        tenant_id, lambda: production_actions.do_reapply_freight_rate(dry_run=dry_run),
+    )
+    if dry_run:
+        click.echo(
+            f"{result['would_update']} purchases would change to "
+            f"{result['freight_rate_per_m3']} ISK/m3 ({result['freight_label']})"
+        )
+        return
+    click.echo(
+        f"updated {result['updated']} purchases to {result['freight_rate_per_m3']} ISK/m3 "
+        f"({result['freight_label']}); rebuild to apply"
+    )
+
+
 @main.group("admin")
 def admin_group():
     """Operator-only admin recovery. There is no HTTP equivalent for

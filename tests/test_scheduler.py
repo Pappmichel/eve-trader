@@ -4,7 +4,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from eve_trader import actions, backup, config, scheduler, storage
+from eve_trader import actions, backup, config, scheduler, storage, tenant_eligibility
 from eve_trader.config import TradingConfig
 from eve_trader.esi_data import orchestrator as esi_orchestrator
 
@@ -530,9 +530,34 @@ def test_pipeline_needs_the_trading_grant(monkeypatch):
 def test_inactive_tenant_and_missing_master_switch_run_nothing(monkeypatch):
     calls = _due_env(monkeypatch)
     cfg = TradingConfig(scheduler_enabled=True)
+    # No production grant -> D10 retention off; inactive runs nothing.
+    monkeypatch.setattr(scheduler.tenant_eligibility, "granted_tools", lambda tid: {"trading"})
+    monkeypatch.setattr(esi_orchestrator, "pending_due", lambda **kw: [("character", 1, "wallet", "production")])
     scheduler._check_and_run_due_jobs_for_tenant("t", cfg, active=False)
     scheduler._check_and_run_due_jobs_for_tenant("t", cfg, master_enabled=False)
     assert calls == []
+
+
+def test_inactive_tenant_with_production_keeps_archive_kinds(monkeypatch):
+    """D10: inactive + production grant still syncs wallet/jobs/orders/contracts."""
+    calls = _due_env(monkeypatch)
+    cfg = TradingConfig(scheduler_enabled=True)
+    monkeypatch.setattr(scheduler.tenant_eligibility, "granted_tools", lambda tid: {"production"})
+    seen = {}
+
+    def pending_due(**kw):
+        seen.update(kw)
+        return [("character", 1, "wallet", "production")]
+
+    monkeypatch.setattr(esi_orchestrator, "pending_due", pending_due)
+    scheduler._check_and_run_due_jobs_for_tenant("t", cfg, active=False)
+    assert seen.get("kinds") == tenant_eligibility.PRODUCTION_ARCHIVE_KINDS
+    # Only Production's own sharing rows, even when the tenant holds more tools.
+    assert seen.get("granted_tools") == {"production"}
+    assert len(calls) == 1 and calls[0][0] == "esi"
+    assert calls[0][1]["kinds"] == tenant_eligibility.PRODUCTION_ARCHIVE_KINDS
+    assert calls[0][1]["granted_tools"] == {"production"}
+    assert "trading" not in calls
 
 
 def test_failed_pipeline_backs_off_instead_of_retrying_every_tick(monkeypatch):

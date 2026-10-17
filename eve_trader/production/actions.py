@@ -1823,3 +1823,296 @@ def do_remove_manual_blueprint_me_te_override(type_id: int) -> dict:
     invalidate_discover_cache()
     invalidate_ship_margin_cache()
     return {"removed": type_id}
+
+
+# ---------------------------------------------------- realized profit (Phase 3)
+def _realized_period(days: int | None, start: str | None, end: str | None, since_t0: bool):
+    """Resolve the overview window. Default is the last 30 days. `since_t0`
+    is the whole ledger from cutover and cannot be combined with another range."""
+    from datetime import datetime, timedelta, timezone
+
+    if since_t0 and (days is not None or start or end):
+        raise ActionError("since_t0 cannot be combined with days or a custom range.")
+    now = datetime.now(timezone.utc)
+    if since_t0:
+        return {"start": None, "end": now, "since_t0": True, "days": None}
+    if start or end:
+        if not start or not end:
+            raise ActionError("A custom range needs both start and end.")
+        start_at = _parse_realized_time(start, "start")
+        end_at = _parse_realized_time(end, "end")
+        if end_at <= start_at:
+            raise ActionError("end must be after start.")
+        return {"start": start_at, "end": end_at, "since_t0": False, "days": None}
+    window = 30 if days is None else int(days)
+    if window < 1 or window > 3660:
+        raise ActionError("days must be between 1 and 3660.")
+    return {"start": now - timedelta(days=window), "end": now, "since_t0": False, "days": window}
+
+
+def _parse_realized_time(value: str, name: str):
+    from datetime import datetime, timezone
+
+    text = (value or "").strip()
+    if not text:
+        raise ActionError(f"{name} is required.")
+    try:
+        if len(text) == 10:
+            parsed = datetime.fromisoformat(text)
+        else:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as e:
+        raise ActionError(f"{name} must be an ISO date or datetime.") from e
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _finite_non_negative(name: str, value) -> float:
+    import math
+
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as e:
+        raise ActionError(f"{name} must be a number.") from e
+    if not math.isfinite(number) or number < 0:
+        raise ActionError(f"{name} must be zero or positive.")
+    return number
+
+
+def do_rebuild_realized(reset_opening: bool = False) -> dict:
+    """Rebuild derived realized-profit tables from the archive.
+
+    CLI and the background worker call this in-process. The HTTP route
+    starts it via do_start_rebuild_realized so a request is not held for
+    the whole recompute. The run row is written only after the replace
+    transaction commits.
+
+    `reset_opening` drops the frozen opening quantities so this rebuild
+    derives them again from today's ESI stock (they are also re-derived
+    automatically when T0 or the shared owners change).
+    """
+    from .realized import loader
+
+    try:
+        return loader.rebuild_realized(reset_opening=bool(reset_opening))
+    except ActionError:
+        raise
+    except Exception as e:
+        raise ActionError(f"Realized profit rebuild failed: {e}") from e
+
+
+def do_start_rebuild_realized(reset_opening: bool = False) -> dict:
+    from .. import pipeline_runner
+    return pipeline_runner.start_rebuild_realized(reset_opening=bool(reset_opening))
+
+
+def do_realized_rebuild_status() -> dict:
+    from .. import pipeline_runner
+    return pipeline_runner.job_status(
+        pipeline_runner.TOOL_PRODUCTION, pipeline_runner.JOB_REBUILD_REALIZED,
+    )
+
+
+def do_get_realized_summary(days: int | None = None, start: str | None = None,
+                            end: str | None = None, since_t0: bool = False) -> dict:
+    from .realized import report
+    period = _realized_period(days, start, end, since_t0)
+    return report.summary(**period)
+
+
+def do_get_realized_products(days: int | None = None, start: str | None = None,
+                             end: str | None = None, since_t0: bool = False) -> dict:
+    from .realized import report
+    period = _realized_period(days, start, end, since_t0)
+    return report.products(**period)
+
+
+def do_get_realized_product(type_id: int, days: int | None = None, start: str | None = None,
+                            end: str | None = None, since_t0: bool = False) -> dict:
+    if int(type_id) <= 0:
+        raise ActionError("type_id must be a positive item id.")
+    from .realized import report
+    period = _realized_period(days, start, end, since_t0)
+    return report.product(type_id=int(type_id), **period)
+
+
+def do_get_realized_sale_chain(sale_ref: str) -> dict:
+    ref = (sale_ref or "").strip()
+    if not ref or len(ref) > 200:
+        raise ActionError("sale_ref is required.")
+    from .realized import report
+    chain = report.sale_chain(ref)
+    if chain is None:
+        raise ActionError(f"No realized sale {ref}.")
+    return chain
+
+
+def do_get_realized_jobs() -> dict:
+    from .realized import report
+    return report.jobs()
+
+
+def do_get_realized_inventory() -> dict:
+    from .realized import report
+    return report.inventory()
+
+
+def do_get_realized_warnings() -> dict:
+    from .realized import report
+    return report.warnings()
+
+
+def do_add_ledger_entry(entry_kind: str, amount: float, entry_date: str,
+                        type_id: int | None = None, quantity: float | None = None,
+                        note: str | None = None) -> dict:
+    """A manual cost or revenue. `amount` is the entry's total ISK.
+    Quantity is stored and not multiplied in. Opening-cost overrides use
+    do_set_opening_cost. These rows adjust the period report; they are not
+    FIFO layers (the costing engine consumes only opening_cost overrides)."""
+    from .realized import db as ledger_db
+
+    kind = (entry_kind or "").strip()
+    if kind not in ("cost", "revenue"):
+        raise ActionError("entry_kind must be cost or revenue.")
+    total = _finite_non_negative("amount", amount)
+    when = _parse_realized_time(entry_date, "entry_date")
+    if type_id is not None and int(type_id) <= 0:
+        raise ActionError("type_id must be a positive item id.")
+    qty = None
+    if quantity is not None:
+        qty = _finite_non_negative("quantity", quantity)
+    text = (note or "").strip() or None
+    if text is not None and len(text) > 500:
+        raise ActionError("note must be 500 characters or fewer.")
+    entry_id = ledger_db.insert_manual_entry(
+        entry_kind=kind, amount=total, entry_date=when,
+        type_id=None if type_id is None else int(type_id),
+        quantity=qty, note=text,
+    )
+    return {
+        "entry_id": entry_id,
+        "entry_kind": kind,
+        "type_id": None if type_id is None else int(type_id),
+        "quantity": qty,
+        "amount": total,
+        "entry_date": when.isoformat(),
+        "note": text,
+    }
+
+
+def do_set_opening_cost(type_id: int, unit_cost: float, entry_date: str | None = None) -> dict:
+    """Override the opening layer's unit cost for one type. Takes effect on
+    the next rebuild; this call only stores the override."""
+    from datetime import datetime, timezone
+
+    from .realized import db as ledger_db
+
+    if int(type_id) <= 0:
+        raise ActionError("type_id must be a positive item id.")
+    cost = _finite_non_negative("unit_cost", unit_cost)
+    when = datetime.now(timezone.utc) if not entry_date else _parse_realized_time(entry_date, "entry_date")
+    entry_id = ledger_db.replace_opening_cost(int(type_id), cost, when)
+    return {
+        "entry_id": entry_id,
+        "type_id": int(type_id),
+        "unit_cost": cost,
+        "entry_date": when.isoformat(),
+        "applied_on_next_rebuild": True,
+    }
+
+
+def do_reapply_freight_rate(dry_run: bool = False) -> dict:
+    """Write the current configured Forge freight rate onto purchases that
+    already have a frozen freight volume and a different rate. Does not
+    rebuild; the next recompute picks the new rate up. Home-structure and
+    non-Forge buys stay without freight. `dry_run` only counts the
+    purchases that would change (for the confirm dialog)."""
+    from .realized import db as ledger_db
+    from .realized.ingest import _freight_rate_for_forge
+
+    rate = float(_freight_rate_for_forge(PRODUCTION_CONFIG))
+    if dry_run:
+        return {
+            "dry_run": True,
+            "would_update": ledger_db.count_freight_rate_changes(rate),
+            "freight_rate_per_m3": rate,
+            "freight_label": "configured rate",
+        }
+    updated = ledger_db.reapply_freight_rates(rate)
+    return {
+        "dry_run": False,
+        "updated": updated,
+        "freight_rate_per_m3": rate,
+        "freight_label": "configured rate",
+        "rebuild_required": True,
+    }
+
+
+def do_get_realized_opening() -> dict:
+    """Opening inventory of the latest rebuild (section 9a Ledger tab):
+    quantity, reference price on T0, the unit cost used, and the override."""
+    from .realized import report
+    return report.opening()
+
+
+def do_list_ledger_entries() -> dict:
+    """Manual cost/revenue entries and opening-cost overrides."""
+    from .realized import report
+    return report.ledger_entries()
+
+
+def do_delete_ledger_entry(entry_id: int) -> dict:
+    """Delete one manual entry or opening-cost override. Takes effect in
+    the report at once for cost/revenue, on the next rebuild for an
+    opening-cost override."""
+    from .realized import db as ledger_db
+
+    if int(entry_id) <= 0:
+        raise ActionError("entry_id must be positive.")
+    if not ledger_db.delete_manual_entry(int(entry_id)):
+        raise ActionError(f"No ledger entry {int(entry_id)}.")
+    return {"deleted": int(entry_id)}
+
+
+def do_get_realized_archive_status() -> dict:
+    """Per owner: which archive kinds are shared with Production, last
+    archive sync per kind, recorded gaps, and kinds that have archived rows
+    but are no longer shared (hidden, D11)."""
+    from .realized import report
+    return report.archive_status()
+
+
+def do_get_realized_courier() -> dict:
+    """Monthly courier comparison for The Forge to the home structure.
+    Does not change costing."""
+    from .realized import report
+    return report.courier_comparison()
+
+
+def _hidden_archive(owner_type: str, owner_id: int, kind: str, delete: bool) -> dict:
+    from .realized import access as ledger_access
+    if owner_type not in ("character", "corporation"):
+        raise ActionError("owner_type must be character or corporation.")
+    try:
+        if delete:
+            count = ledger_access.delete_hidden_archive_rows(owner_type, int(owner_id), kind)
+        else:
+            count = ledger_access.count_hidden_archive_rows(owner_type, int(owner_id), kind)
+    except ledger_access.ArchiveStillShared as exc:
+        raise ActionError(str(exc)) from exc
+    except ValueError as exc:
+        raise ActionError(str(exc)) from exc
+    key = "deleted" if delete else "count"
+    return {"owner_type": owner_type, "owner_id": int(owner_id), "kind": kind, key: count}
+
+
+def do_count_hidden_archive_rows(owner_type: str, owner_id: int, kind: str) -> dict:
+    """How many archived rows of a hidden kind would be deleted."""
+    return _hidden_archive(owner_type, owner_id, kind, delete=False)
+
+
+def do_delete_hidden_archive_rows(owner_type: str, owner_id: int, kind: str) -> dict:
+    """Delete one owner's hidden archive rows of `kind`, plus sync state and
+    gaps. Refuses while that kind is shared with Production."""
+    return _hidden_archive(owner_type, owner_id, kind, delete=True)

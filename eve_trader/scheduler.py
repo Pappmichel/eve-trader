@@ -216,11 +216,31 @@ def _check_and_run_due_jobs_for_tenant(
 
     if not master_enabled or not cfg.scheduler_enabled:
         return
-    if not active:
-        return
 
     # None = no restriction (gate off); otherwise the tenant's current grants.
     grants = tenant_eligibility.granted_tools(tenant_id)
+
+    if not active:
+        # D10: inactive tenants that still hold production keep syncing the
+        # archive-relevant kinds so ESI's short wallet/jobs windows are not
+        # lost (docs/PRODUCTION_REALIZED_PROFIT_PLAN.md). Everything else
+        # (pipeline, portfolio, other kinds) stays off.
+        if tenant_eligibility.production_archive_retention(tenant_id, grants):
+            archive_kinds = tenant_eligibility.PRODUCTION_ARCHIVE_KINDS
+            # Only sharing rows of Production itself: a wallet shared just
+            # with Trading has no archive to keep and stays idle like the rest.
+            archive_tools = {"production"}
+            if esi_orchestrator.pending_due(granted_tools=archive_tools, kinds=archive_kinds):
+                from .doctrine.config import DOCTRINE_CONFIG
+                structure_id = DOCTRINE_CONFIG.effective_structure_id
+                extra = {"structure_id": structure_id} if structure_id is not None else None
+                _run_job(
+                    tenant_id, "esi_data_sync",
+                    lambda: esi_orchestrator.do_sync_due(
+                        granted_tools=archive_tools, extra=extra, kinds=archive_kinds,
+                    ),
+                )
+        return
 
     if tenant_eligibility.may_use("trading", grants) and _job_due(
         storage.get_esi_sync_time("trading"),

@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Container, Title, Text, SimpleGrid, Card, Group, Stack, Button, Loader, Center, SegmentedControl,
-  NumberInput, ActionIcon, Alert, Divider,
+  NumberInput, ActionIcon, Alert, Divider, Badge, Anchor,
 } from '@mantine/core'
 import { IconArrowLeft, IconTrash, IconCheck } from '@tabler/icons-react'
 import { modals } from '@mantine/modals'
@@ -10,7 +10,7 @@ import { Link } from 'react-router-dom'
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid, Legend } from 'recharts'
 import type { ColumnDef } from '@tanstack/react-table'
 
-import { portfolioApi } from '../api/client'
+import { gateApi, portfolioApi, productionApi } from '../api/client'
 import { DataTable } from '../components/DataTable'
 import { HintCard } from '../components/HintCard'
 import { SearchableSelect } from '../components/SearchableSelect'
@@ -19,6 +19,40 @@ import { useItemNameOptions } from '../hooks/useStaticOptions'
 import { isk, qty, pct, dateTime } from '../format'
 import { COLORS } from '../theme'
 import type { ManualItemPriceRow, PortfolioSnapshotRow } from '../api/types'
+import { CoverageBadge } from './production/realized/flags'
+
+function ProductionRealizedCard() {
+  const gate = useQuery({ queryKey: ['gate', 'status'], queryFn: gateApi.status })
+  const tools = gate.data?.tools
+  const allowed = Array.isArray(tools) && tools.includes('production')
+  const summary = useQuery({
+    queryKey: ['production', 'realized', 'summary', 'days=30'],
+    queryFn: () => productionApi.realizedSummary('days=30'),
+    enabled: allowed,
+    retry: false,
+  })
+  if (!allowed) return null
+  // No figure until a recompute produced one: 0 ISK would read as a result.
+  const data = summary.data && !summary.data.status.empty && !summary.data.status.needs_rebuild
+    ? summary.data
+    : undefined
+  return (
+    <Card withBorder padding="lg" radius="md" className="et-panel">
+      <Title order={6} c="dimmed" tt="uppercase" mb="xs">Realized Production profit</Title>
+      <Text size="xl" fw={700}>{data ? isk(data.realized_profit) : '–'}</Text>
+      {data && (
+        <Group gap={6} mt={4}>
+          <CoverageBadge coverage={data.coverage} />
+          {data.estimated && <Badge size="xs" color="warn" variant="light">estimated</Badge>}
+        </Group>
+      )}
+      <Text size="xs" c="dimmed" mt={4}>
+        {summary.data && !data ? 'Not computed yet - recompute on the Realized Profit page.' : 'Last 30 days'}
+      </Text>
+      <Anchor component={Link} to="/production/realized" size="xs">Realized profit</Anchor>
+    </Card>
+  )
+}
 
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
@@ -272,6 +306,7 @@ export default function Portfolio() {
           <SimpleGrid cols={{ base: 1, xs: 2 }} spacing="md">
             <Stat label="Trading: Realized Profit" value={isk(data.trading_realized_profit)}
               hint={`${qty(data.trading_trade_count)} matched trades in latest reconciliation`} />
+            <ProductionRealizedCard />
             <Stat label="Trading: Average Margin" value={pct(data.trading_average_margin)} />
             <Stat label="Trading: Daily Profit Volatility"
               value={data.trading_daily_profit_volatility === null ? '–' : isk(data.trading_daily_profit_volatility)}

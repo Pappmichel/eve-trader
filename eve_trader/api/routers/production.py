@@ -182,6 +182,31 @@ def get_last_asset_plan():
     return _last_asset_plan.get(_tenant_key())
 
 
+def peek_cached_unit_build_cost(type_id: int):
+    """(unit cost, source) from the in-memory Build or asset plan, or None.
+
+    No tenant, no plan, or a plan row without a cost returns None. Never
+    computes a plan and never calls the network.
+    """
+    try:
+        key = _tenant_key()
+    except Exception:  # noqa: BLE001
+        return None
+    plan = _last_plan.get(key) or {}
+    for job in plan.get("build_list") or []:
+        tid = getattr(job, "type_id", None)
+        cost = getattr(job, "unit_build_cost", None)
+        if tid is not None and int(tid) == int(type_id) and cost is not None:
+            return float(cost), "build_plan"
+    asset = _last_asset_plan.get(key) or {}
+    for job in asset.get("jobs") or []:
+        tid = getattr(job, "type_id", None)
+        cost = getattr(job, "unit_build_cost", None)
+        if tid is not None and int(tid) == int(type_id) and cost is not None:
+            return float(cost), "asset_plan"
+    return None
+
+
 @router.get("/market-status", response_model=list[schemas.MarketStatusRow])
 def get_market_status():
     return _wrap(actions.do_market_status)["rows"]

@@ -192,9 +192,13 @@ def fetch_recent_transactions(character_id: int, auth_role: str, client: ESIClie
         page = client.character_wallet_transactions(character_id, auth_role=auth_role, from_id=from_id)
         if not page:
             break
-        new_on_this_page = [t for t in page if t["transaction_id"] not in seen_ids]
-        all_txns.extend(new_on_this_page)
-        seen_ids.update(t["transaction_id"] for t in new_on_this_page)
+        # Dedupe per entry, not per page: ESI can repeat a transaction inside
+        # one page too (confirmed live 2026-10-17: 2499 unique ids in a page
+        # of 2500), which a page-level filter against earlier pages misses.
+        for t in page:
+            if t["transaction_id"] not in seen_ids:
+                seen_ids.add(t["transaction_id"])
+                all_txns.append(t)
         oldest = min(page, key=lambda t: t["transaction_id"])
         # len(page) < WALLET_TRANSACTIONS_PAGE_SIZE as the "no more pages"
         # signal relies on ESI's per-call cap staying fixed at 2500 - correct
@@ -242,9 +246,13 @@ def fetch_recent_corporation_transactions(corporation_id: int, division: int, au
             corporation_id, division, auth_role=auth_role, from_id=from_id)
         if not page:
             break
-        new_on_this_page = [t for t in page if t["transaction_id"] not in seen_ids]
-        all_txns.extend(new_on_this_page)
-        seen_ids.update(t["transaction_id"] for t in new_on_this_page)
+        # Dedupe per entry, not per page: ESI can repeat a transaction inside
+        # one page too (confirmed live 2026-10-17: 2499 unique ids in a page
+        # of 2500), which a page-level filter against earlier pages misses.
+        for t in page:
+            if t["transaction_id"] not in seen_ids:
+                seen_ids.add(t["transaction_id"])
+                all_txns.append(t)
         oldest = min(page, key=lambda t: t["transaction_id"])
         if _parse_iso(oldest["date"]) < cutoff or len(page) < WALLET_TRANSACTIONS_PAGE_SIZE:
             break

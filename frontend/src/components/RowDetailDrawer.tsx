@@ -4,14 +4,16 @@ import { Drawer, Group, Stack, Text } from '@mantine/core'
 // Side panel for the detail of one table row. Open state is owned by the page
 // (usually mirrored in the URL, e.g. ?item=<id>, so back/forward and shared
 // links work); this component only renders it.
-export function RowDetailDrawer({ opened, onClose, title, children }: {
+export function RowDetailDrawer({ opened, onClose, title, children, size = 'md' }: {
   opened: boolean
   onClose: () => void
   title: ReactNode
   children: ReactNode
+  /** Drawer width. Defaults to the historical `md` so existing pages stay put. */
+  size?: string | number
 }) {
   return (
-    <Drawer opened={opened} onClose={onClose} position="right" size="md" title={title} padding="md" withCloseButton>
+    <Drawer opened={opened} onClose={onClose} position="right" size={size} title={title} padding="md" withCloseButton>
       <Stack gap="md">{children}</Stack>
     </Drawer>
   )

@@ -3612,7 +3612,10 @@ def replace_wallet_journal(
     owner_id: int,
     divisions: Optional[list[int]] = None,
 ) -> None:
-    """`rows`: (division, journal_id, date, ref_type, amount).
+    """`rows`: (division, journal_id, date, ref_type, amount[, context_id,
+    context_id_type, first_party_id, second_party_id, description, tax,
+    tax_receiver_id]). Extra context fields are optional so older 5-field
+    callers keep working; Production ledger Phase 1 always sends them.
 
     Same character-vs-corp DELETE scoping as `replace_wallet_transactions`.
     """
@@ -3620,6 +3623,12 @@ def replace_wallet_journal(
     insert_char = owner_id if is_character else None
     insert_corp = None if is_character else owner_id
     id_column = "owner_character_id" if is_character else "owner_corporation_id"
+
+    def _pad(r: tuple) -> tuple:
+        if len(r) >= 12:
+            return tuple(r[:12])
+        return tuple(r) + (None,) * (12 - len(r))
+
     with connect() as conn:
         if is_character:
             conn.execute(
@@ -3638,11 +3647,15 @@ def replace_wallet_journal(
         conn.executemany(
             "INSERT INTO esi_wallet_journal ("
             "owner_type, owner_id, division, journal_id, date, ref_type, amount, "
+            "context_id, context_id_type, first_party_id, second_party_id, "
+            "description, tax, tax_receiver_id, "
             "owner_character_id, owner_corporation_id) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
-                (owner_type, owner_id, r[0], r[1], r[2], r[3], r[4], insert_char, insert_corp)
-                for r in rows
+                (owner_type, owner_id, p[0], p[1], p[2], p[3], p[4],
+                 p[5], p[6], p[7], p[8], p[9], p[10], p[11],
+                 insert_char, insert_corp)
+                for p in (_pad(r) for r in rows)
             ],
         )
 

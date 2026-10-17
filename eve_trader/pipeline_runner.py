@@ -57,6 +57,7 @@ JOB_PIPELINE = "pipeline"
 JOB_SYNC_CONTRACTS = "sync_contracts"
 JOB_SDE_PREVIEW = "sde_preview"
 JOB_DISCOVER_BUILD_CANDIDATES = "discover_build_candidates"
+JOB_REBUILD_REALIZED = "rebuild_realized"
 JOB_STRUCTURE_RESOLVE = "structure_resolve"  # docs/MANUAL_TRACKING_PLAN.md phase 8
 
 _JOB_LABELS: dict[tuple[str, str], str] = {
@@ -67,6 +68,7 @@ _JOB_LABELS: dict[tuple[str, str], str] = {
     (TOOL_ADMIN, JOB_SDE_PREVIEW): "Preview SDE",
     (TOOL_ADMIN, JOB_STRUCTURE_RESOLVE): "Resolve Structure Names",
     (TOOL_PRODUCTION, JOB_DISCOVER_BUILD_CANDIDATES): "Discover Build Candidates",
+    (TOOL_PRODUCTION, JOB_REBUILD_REALIZED): "Rebuild Realized Profit",
 }
 
 # worker(progress_callback) -> result dict (or any JSON-serializable value)
@@ -212,6 +214,18 @@ def start_structure_name_resolve(force: bool = False) -> dict:
         TOOL_ADMIN, JOB_STRUCTURE_RESOLVE,
         _JOB_LABELS[(TOOL_ADMIN, JOB_STRUCTURE_RESOLVE)],
         lambda cb: admin_mod.do_resolve_structure_names(force=force, progress_callback=cb),
+    )
+
+
+def start_rebuild_realized(reset_opening: bool = False) -> dict:
+    """Background Production realized-profit rebuild. The CLI calls
+    production.actions.do_rebuild_realized in-process; this is only the
+    HTTP path, so a request is not held for the whole recompute."""
+    from .production import actions as production_actions
+    return start_job(
+        TOOL_PRODUCTION, JOB_REBUILD_REALIZED,
+        _JOB_LABELS[(TOOL_PRODUCTION, JOB_REBUILD_REALIZED)],
+        lambda cb: production_actions.do_rebuild_realized(reset_opening=reset_opening),
     )
 
 

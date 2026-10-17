@@ -24,7 +24,12 @@ data-kind registry, fetchers, orchestrator (`do_sync_for_tool` /
 `do_sync_all`), and fail-closed accessor (`read_esi`, `is_shared`) live here.
 Characters `do_*` actions live in `esi_data/actions.py`. It names tools as strings
 and imports no tool package — the same precedent as
-`auth.TOOL_ROLE_PREFIXES` and `access_gate.ALL_TOOL_KEYS`. Do not put
+`auth.TOOL_ROLE_PREFIXES` and `access_gate.ALL_TOOL_KEYS`. One deliberate
+exception: `esi_data/fetchers.py` lazily imports `production.realized`
+right after a snapshot write to fill the Production realized-profit
+archive (`docs/PRODUCTION_REALIZED_PROFIT_PLAN.md`), only for kinds the
+owner shares with Production, and never lets an archive error fail the
+snapshot sync. Do not add a second tool import here. Do not put
 ESI-owner sync back into `portfolio.py` or a tool's `esi_sync.py` by
 re-deriving a prefix-per-tool layout from a stale reading of this
 paragraph. Tool `do_sync_esi` / `do_sync_contracts` / `do_sync_assets`
@@ -103,7 +108,7 @@ covers only a few regions (The Forge, Insmother, Delve); for any other region
 `goonmetrics_client.region_has_goonmetrics_history` is false and
 `price_history` reads ESI daily history instead.
 
-**Price sources matrix** - three different price sources answer three
+**Price sources matrix** - four different price sources answer four
 different questions, deliberately, not by accident, but nowhere else are
 they laid out side by side:
 | Question | Source | Where |
@@ -111,12 +116,68 @@ they laid out side by side:
 | Is a *newly discovered* candidate historically worth importing? | Goonmetrics region-average history for `reference_region_id` (Insmother); ESI daily history for types Goonmetrics doesn't track (most blueprints, `esi_for_missing`). Untraded days (avgPrice 0) are not margin days | `history_backtest.py` |
 | What can I actually buy/sell *right now* on the live Trading shortlist? | Real ESI order-book stats (5th-percentile) for `jita_region_id`/C-J's own structure | `esi_client.region_order_stats`/`structure_order_stats`, via `shortlist.py` |
 | What's a Production build/buy decision worth? | Goonmetrics current-price quotes (`appraise.gnf.lt`) for the configured home/Jita markets | `production/pricing.py` |
+| What was an item without a purchase worth on that day? | What the planner would have paid: the cheaper of the buy-list purchase price (home market, or hub plus freight) and its build cost (`engine.planner_unit_values`), frozen per (type, day) in `ledger_valuation_prices`. Fallback where the planner has no value: The Forge daily average (Goonmetrics, then ESI daily history, then the nearest traded day within 7 days, cached in `ledger_reference_prices`). A day with no price at all stays `price_missing` (booked at 0 and flagged), never a guessed price | `production/realized/loader.py` |
 Each is the right tool for its own job (a historical region average smooths
 out noise for "is this worth tracking at all", a live order-book percentile
 is what you'd actually pay/receive right now) - don't assume a number from
 one is interchangeable with a same-named-sounding number from another
 (see Finding 2.5's discovery/live-shortlist mismatch for a concrete case
 this caused).
+
+## Production realized profit
+
+Plan: `docs/PRODUCTION_REALIZED_PROFIT_PLAN.md`. Package
+`eve_trader/production/realized/` (`ingest.py`, `inputs.py`, `access.py`,
+`db.py`, `costing.py`, `loader.py`, `report.py`). The wallet / jobs /
+orders / contracts **archive** is the source of truth. Derived tables
+(`prod_cost_layers`, `prod_realized_results`, `prod_cost_draws`,
+`prod_job_records`, `prod_fee_lines`, `prod_job_losses`,
+`prod_capital_bpos`, `prod_inventory_drift`, `prod_ledger_runs`) are
+rebuilt from it and can be dropped and rebuilt. Archive reads go through
+`access.py` and only return owners shared with Production (D11); revoking
+a share hides those rows until it is granted again. Flags
+(`estimated`, `price_missing`, `assumed_me`, `assumed_decryptor`,
+coverage, `no_structure_bonus`) are stored on the derived rows and must
+reach `/api/production/realized/` unchanged. Freight is the configured
+rate and is labeled that way. HTTP recompute is a `pipeline_runner`
+background job; the CLI rebuild calls the same `do_rebuild_realized`
+in-process. A run row is written only after the replace commits. Each run
+stores a fingerprint of the shared owners (`access.owner_scope_hash`); the
+report hides a run whose fingerprint no longer matches, so D11 also holds
+for derived rows. The tenant's characters are the registry entry plus every character
+holding a token in the tenant (the registry alone has one character per
+tenant). Opening quantities are frozen per type
+(`prod_opening_frozen`, not a derived table) and only re-derived when T0 or
+that fingerprint changes, on `--reset-opening`, or once when the latest run's
+`costing_version` is NULL or lower than the loader's current version
+(`prod_ledger_runs.costing_version`, currently 2). After that rebuild the
+opening is frozen again. Re-deriving it on every rebuild would make the
+inventory drift check always zero.
+
+Finished item-exchange contracts (`status = 'finished'`, `date_completed`
+set) enter costing through `LedgerSnapshot.contracts`. A contract whose
+issuer and acceptor are both tenant owners is ignored. The tenant as
+acceptor books items the issuer provides (`is_included`) as `bought` layers
+dated `date_completed`, origin stays `bought` and `source` is `contract`;
+the price is split by reference value at that date (D4) and the shares sum
+exactly to the price. The tenant as issuer books Production-type items it
+gives as sales under the same FIFO order as market sales, with no sales tax
+and no broker fee. A contract that both gives and receives items is booked
+on both sides and warned `contract_item_swap`. Freight on a contract buy in
+The Forge is the configured rate times packaged m3, frozen on
+`ledger_contract_items` at ingest. Draws and sales persist `source`
+(`market` / `contract`). Courier contracts the tenant issued are archived
+(`volume`, `collateral`, `region_id`) and never enter costing;
+`GET /api/production/realized/courier` compares Forge-to-home reward per m3
+with the configured rate.
+
+`ledger_job_planned_costs` is an archive table (not in the rebuild's replace
+set). The first time a job is archived, a cached planner cost/unit is frozen
+if one is already in memory (build plan, asset plan, ship-margin cache, or
+discover cache); otherwise the row stores NULL. No new network call runs on
+that path. The products report exposes `planned_cost_per_unit` and
+`planned_coverage`. Hidden archive rows of a kind can be counted and deleted
+per owner while that kind is not shared with Production.
 
 ## Architecture: actions.py is the one entry point
 

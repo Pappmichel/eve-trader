@@ -2189,6 +2189,126 @@ def test_data_versions_route_returns_the_action_result(monkeypatch):
     assert resp.json() == {"esi": "x", "portfolio": None}
 
 
+def _realized_flags():
+    return {
+        "estimated": True, "price_missing": True, "assumed_me": False,
+        "assumed_decryptor": False, "coverage": 0.0, "tax_missing": True,
+        "detail_missing": False, "no_structure_bonus": None,
+    }
+
+
+def test_realized_summary_keeps_flags(monkeypatch):
+    monkeypatch.setattr(production_actions, "do_get_realized_summary", lambda **kw: {
+        "period": {"start": "2026-09-17T00:00:00+00:00", "end": "2026-10-17T00:00:00+00:00",
+                   "since_t0": False, "days": kw["days"]},
+        "status": {"empty": False, "needs_rebuild": False, "hint": None, "cutover_t0": None,
+                   "archive_since": None, "last_recompute": None, "last_wallet_sync": None,
+                   "last_jobs_sync": None, "run_id": 1},
+        "revenue": 1.0, "cost_of_goods_sold": 1.0, "realized_profit": 0.0, "margin": 0.0,
+        "coverage": 0.0, "estimated": True, "units_sold": 1.0, "price_missing": True,
+        "tax_missing_sales": 1, "fees_without_sale": 2.0, "fees_on_other_trading": 3.0,
+        "capital_in_bpos": 4.0, "inventory_at_cost": 5.0, "cancelled_job_losses": 0.0,
+        "failed_invention_losses": 0.0, "manual_costs": 0.0, "manual_revenues": 0.0,
+        "profit_including_manual": 0.0,
+        "cost_structure": [{"key": "freight", "label": "Freight (configured rate)", "amount": 0.0}],
+        "by_day": [], "balances_as_of_rebuild": ["capital_in_bpos", "inventory_at_cost"],
+        "flags": _realized_flags(),
+    })
+    resp = client.get("/api/production/realized/summary?days=7")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["flags"]["price_missing"] is True
+    assert body["flags"]["estimated"] is True
+    assert body["flags"]["tax_missing"] is True
+    assert body["cost_structure"][0]["label"] == "Freight (configured rate)"
+    assert body["period"]["days"] == 7
+
+
+def test_realized_rebuild_conflict_maps_to_409(monkeypatch):
+    from eve_trader.actions import ConflictError
+
+    def _raise(**kwargs):
+        raise ConflictError("busy")
+
+    monkeypatch.setattr(production_actions, "do_start_rebuild_realized", _raise)
+    resp = client.post("/api/production/realized/rebuild")
+    assert resp.status_code == 409
+
+
+def test_realized_courier_and_hidden_delete_routes(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(production_actions, "do_get_realized_courier", lambda: {
+        "home_location_id": 42, "configured_rate_per_m3": 80.0,
+        "months": [{
+            "month": "2026-10", "count": 1, "volume_m3": 10.0, "reward": 500.0,
+            "paid_isk_per_m3": 50.0, "configured_rate_per_m3": 80.0,
+        }],
+    })
+
+    def _count(**kw):
+        seen["count"] = kw
+        return {"owner_type": kw["owner_type"], "owner_id": kw["owner_id"], "kind": kw["kind"], "count": 3}
+
+    def _delete(**kw):
+        raise production_actions.ActionError("wallet is shared with Production")
+
+    monkeypatch.setattr(production_actions, "do_count_hidden_archive_rows", _count)
+    monkeypatch.setattr(production_actions, "do_delete_hidden_archive_rows", _delete)
+    resp = client.get("/api/production/realized/courier")
+    assert resp.status_code == 200
+    assert resp.json()["months"][0]["paid_isk_per_m3"] == 50.0
+    counted = client.get("/api/production/realized/archive/character/5/contracts")
+    assert counted.status_code == 200
+    assert counted.json()["count"] == 3
+    assert seen["count"]["kind"] == "contracts"
+    refused = client.delete("/api/production/realized/archive/character/5/wallet")
+    assert refused.status_code == 400
+
+
+def test_realized_entry_action_error_maps_to_400(monkeypatch):
+    def _raise(**kwargs):
+        raise production_actions.ActionError("entry_kind must be cost or revenue.")
+
+    monkeypatch.setattr(production_actions, "do_add_ledger_entry", _raise)
+    resp = client.post("/api/production/realized/entries", json={
+        "entry_kind": "cost", "amount": 1, "entry_date": "2026-10-01",
+    })
+    assert resp.status_code == 400
+
+
+def test_realized_sale_chain_route_passes_sale_ref(monkeypatch):
+    seen = {}
+
+    def _chain(sale_ref):
+        seen["sale_ref"] = sale_ref
+        flags = _realized_flags()
+        return {
+            "sale": {
+                "sale_ref": sale_ref, "type_id": 34, "type_name": None, "quantity": 1.0,
+                "revenue": 1.0, "cost": 0.0, "profit": 1.0, "coverage": 0.0,
+                "sale_date": None, "gross": 1.0, "sales_tax": None, "broker_fee": 0.0,
+                "location_id": None, "net_price": 1.0, "warnings": ["price_missing"],
+                "cost_structure": [], "flags": flags,
+            },
+            "tree": {
+                "kind": "product", "type_id": 34, "quantity": 1.0, "sale_ref": sale_ref,
+                "flags": flags,
+                "children": [{
+                    "kind": "estimate", "origin": "unknown", "type_id": 34, "quantity": 1.0,
+                    "reference_price": 0.0, "flags": flags, "children": [],
+                }],
+            },
+        }
+
+    monkeypatch.setattr(production_actions, "do_get_realized_sale_chain", _chain)
+    resp = client.get("/api/production/realized/sale-chain", params={"sale_ref": "tx:character:1:0:9"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert seen["sale_ref"] == "tx:character:1:0:9"
+    assert body["tree"]["children"][0]["flags"]["price_missing"] is True
+    assert body["tree"]["children"][0]["origin"] == "unknown"
+
+
 def test_production_kpis_returns_counts_only(monkeypatch):
     monkeypatch.setattr(storage, "load_stock_targets", lambda: [(1, "A", 0, 1, 1), (2, "B", 0, 1, 1)])
     monkeypatch.setattr(storage, "list_industry_jobs", lambda *a, **k: [("esi-job",)])
@@ -2199,3 +2319,27 @@ def test_production_kpis_returns_counts_only(monkeypatch):
     resp = client.get("/api/production/kpis")
     assert resp.status_code == 200
     assert resp.json() == {"stock_targets": 2, "active_jobs": 3, "open_special_orders": 1}
+
+
+def test_realized_ledger_tab_routes(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(production_actions, "do_start_rebuild_realized",
+                        lambda **kw: seen.update(rebuild=kw) or {
+                            "run_id": "r1", "status": "running", "job_name": "rebuild_realized",
+                            "tool": "production"})
+    monkeypatch.setattr(production_actions, "do_reapply_freight_rate",
+                        lambda **kw: seen.update(freight=kw) or {"dry_run": True, "would_update": 3})
+    monkeypatch.setattr(production_actions, "do_delete_ledger_entry",
+                        lambda **kw: seen.update(delete=kw) or {"deleted": kw["entry_id"]})
+    monkeypatch.setattr(production_actions, "do_get_realized_archive_status", lambda: {"rows": [{
+        "owner_type": "character", "owner_id": 1, "shared": {"wallet": False},
+        "last_sync": {"wallet_transactions": None}, "gaps": {}, "hidden_kinds": ["wallet"],
+    }]})
+
+    assert client.post("/api/production/realized/rebuild?reset_opening=true").status_code == 200
+    assert seen["rebuild"] == {"reset_opening": True}
+    assert client.post("/api/production/realized/freight/reapply?dry_run=true").json()["would_update"] == 3
+    assert seen["freight"] == {"dry_run": True}
+    assert client.delete("/api/production/realized/entries/5").json() == {"deleted": 5}
+    body = client.get("/api/production/realized/archive-status").json()
+    assert body["rows"][0]["hidden_kinds"] == ["wallet"]
