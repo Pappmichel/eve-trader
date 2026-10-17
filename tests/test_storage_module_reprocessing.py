@@ -216,6 +216,16 @@ def test_save_and_read_latest_module_reprocessing_snapshot(tenant):
     assert df.iloc[0]["decision"] == "Import"
 
 
+
+def test_module_reprocessing_snapshot_stores_breakeven_buy_price(tenant):
+    row = (100, "200mm AutoCannon I", True, 0.01, 1.9, 0.5, 473.15, 0.0, 473.15, 50.0, 471.24, 247.0, 47124.0,
+           "Import", 457.4)
+    storage.save_module_reprocessing_shortlist_snapshot([row], "2026-09-27T00:00:00")
+
+    df = storage.latest_module_reprocessing_snapshot()
+
+    assert df.iloc[0]["breakeven_buy_price"] == pytest.approx(457.4)
+
 def test_latest_module_reprocessing_snapshot_only_returns_the_newest_run(tenant):
     old_row = (100, "200mm AutoCannon I", True, 0.01, 1.9, 0.5, 473.15, 0.0, 473.15, 50.0, 471.24, 247.0,
                47124.0, "Skip")

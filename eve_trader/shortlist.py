@@ -63,7 +63,8 @@ def _decision(active: bool, item_id: Optional[int], sell_volume: Optional[float]
 def evaluate_shortlist_item(item: ShortlistItem, own_orders_remaining: float,
                              jita_stats: Optional[OrderStats], structure_stats: Optional[OrderStats],
                              cfg: TradingConfig = TRADING_CONFIG, buyer_already_covered: bool = False,
-                             avg_daily_volume: Optional[float] = None) -> ShortlistRow:
+                             avg_daily_volume: Optional[float] = None,
+                             avg_daily_isk_volume: Optional[float] = None) -> ShortlistRow:
     """Computes landed cost, net sell, margin, and decision for a single
     shortlist item. `jita_stats`/`structure_stats` are pre-fetched (see evaluate_shortlist) -
     this function itself makes no network calls. `buyer_already_covered`:
@@ -98,7 +99,7 @@ def evaluate_shortlist_item(item: ShortlistItem, own_orders_remaining: float,
                                 own_orders_remaining, buyer_already_covered, cfg),
             active=item.active, item_id=item.item_id, volume_m3=item.volume_m3,
             jita_sell=None, import_cost=None, meta_level=item.meta_level,
-            avg_daily_volume=avg_daily_volume,
+            avg_daily_volume=avg_daily_volume, avg_daily_isk_volume=avg_daily_isk_volume,
         )
 
     # Deliberately sell_percentile (the ask price, an instant-buy fill), not
@@ -133,7 +134,7 @@ def evaluate_shortlist_item(item: ShortlistItem, own_orders_remaining: float,
         decision=decision, active=item.active, item_id=item.item_id,
         volume_m3=item.volume_m3, jita_sell=jita_sell, import_cost=import_cost,
         meta_level=item.meta_level, avg_daily_volume=avg_daily_volume,
-        breakeven_buy_price=breakeven_buy_price,
+        avg_daily_isk_volume=avg_daily_isk_volume, breakeven_buy_price=breakeven_buy_price,
     )
 
 
@@ -141,7 +142,8 @@ def evaluate_shortlist(items: list[ShortlistItem], own_orders_by_item: dict[int,
                         jita_stats_by_item: dict[int, OrderStats], structure_stats_by_item: dict[int, OrderStats],
                         cfg: TradingConfig = TRADING_CONFIG,
                         buyer_already_covered_ids: frozenset[int] = frozenset(),
-                        avg_daily_volume_by_item: Optional[dict[int, float]] = None) -> list[ShortlistRow]:
+                        avg_daily_volume_by_item: Optional[dict[int, float]] = None,
+                        avg_daily_isk_volume_by_item: Optional[dict[int, float]] = None) -> list[ShortlistRow]:
     """Recomputes every shortlist row's margin/decision in one pass.
     `jita_stats_by_item`/`structure_stats_by_item` are pre-fetched once for
     every active item_id in `items` (see ESIClient.region_order_stats_bulk/
@@ -149,8 +151,10 @@ def evaluate_shortlist(items: list[ShortlistItem], own_orders_by_item: dict[int,
     itself, unlike the old per-item-call version which re-downloaded the
     entire structure order book on every single item. `avg_daily_volume_by_item`
     (see average_market_daily_volume) feeds each row's avg_daily_volume -
-    GitHub issue #100."""
+    GitHub issue #100; `avg_daily_isk_volume_by_item` (see
+    average_market_daily_isk_volume) is the same turnover in ISK."""
     avg_daily_volume_by_item = avg_daily_volume_by_item or {}
+    avg_daily_isk_volume_by_item = avg_daily_isk_volume_by_item or {}
     rows = []
     for item in items:
         remaining = own_orders_by_item.get(item.item_id, 0.0)
@@ -158,8 +162,9 @@ def evaluate_shortlist(items: list[ShortlistItem], own_orders_by_item: dict[int,
         structure_stats = structure_stats_by_item.get(item.item_id) if item.item_id else None
         buyer_covered = item.item_id in buyer_already_covered_ids
         avg_daily_volume = avg_daily_volume_by_item.get(item.item_id) if item.item_id else None
+        avg_daily_isk_volume = avg_daily_isk_volume_by_item.get(item.item_id) if item.item_id else None
         rows.append(evaluate_shortlist_item(item, remaining, jita_stats, structure_stats, cfg, buyer_covered,
-                                             avg_daily_volume))
+                                             avg_daily_volume, avg_daily_isk_volume))
     return rows
 
 
@@ -192,6 +197,19 @@ def average_market_daily_volume(history_points: list[HistoryPoint]) -> dict[int,
     by_type: dict[int, float] = defaultdict(float)
     for point in history_points:
         by_type[point.type_id] += point.movement
+    return {type_id: total / HISTORY_WINDOW_DAYS for type_id, total in by_type.items()}
+
+
+def average_market_daily_isk_volume(history_points: list[HistoryPoint]) -> dict[int, float]:
+    """average_market_daily_volume valued in ISK: each day's traded
+    quantity times that day's region average price, summed and divided by
+    the same HISTORY_WINDOW_DAYS. Weighting by each day's own price (rather
+    than multiplying the unit average by one current price) keeps it the
+    real turnover the region history recorded. Untraded days (movement 0)
+    add nothing."""
+    by_type: dict[int, float] = defaultdict(float)
+    for point in history_points:
+        by_type[point.type_id] += point.movement * point.avg_price
     return {type_id: total / HISTORY_WINDOW_DAYS for type_id, total in by_type.items()}
 
 

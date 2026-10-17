@@ -251,6 +251,13 @@ ${sparkTitle('Buy hub', series.hub)}` : 'Loading…'
       cell: (i) => qty(i.getValue()),
     },
     {
+      // Same region history valued in ISK: each day's traded quantity x that
+      // day's region average price, averaged over the history window.
+      header: 'Market Volume (ISK/day)', accessorKey: 'avg_daily_isk_volume', size: 160,
+      cell: (i) => isk(i.getValue()),
+      meta: { headerHint: 'Average daily traded value in the reference region (quantity x region average price)' },
+    },
+    {
       // GitHub issue #100: profit_per_unit x avg_daily_volume (real
       // market-wide traded quantity from Goonmetrics region history), not
       // sell_volume/order-book depth (#51) and not this trader's own sales

@@ -1230,8 +1230,8 @@ def mark_shortlist_refreshed(item_ids: Iterable[int], refreshed_at: str) -> None
 _SHORTLIST_SNAPSHOT_INSERT = (
     "INSERT INTO shortlist_snapshot (run_ts, item_id, item, category, landed_cost, net_sell, "
     "sell_volume, own_orders_remaining, profit_per_unit, margin, profit_per_m3, decision, active, "
-    "volume_m3, jita_sell, import_cost, meta_level, avg_daily_volume, breakeven_buy_price) "
-    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    "volume_m3, jita_sell, import_cost, meta_level, avg_daily_volume, breakeven_buy_price, "
+    "avg_daily_isk_volume) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 )
 
 
@@ -1239,7 +1239,7 @@ def _shortlist_snapshot_params(rows: list[ShortlistRow], run_ts: str) -> list[tu
     return [(run_ts, r.item_id, r.item, r.category, r.landed_cost, r.net_sell, r.sell_volume,
              r.own_orders_remaining, r.profit_per_unit, r.margin, r.profit_per_m3, r.decision,
              int(r.active), r.volume_m3, r.jita_sell, r.import_cost, r.meta_level,
-             r.avg_daily_volume, r.breakeven_buy_price) for r in rows]
+             r.avg_daily_volume, r.breakeven_buy_price, r.avg_daily_isk_volume) for r in rows]
 
 
 def replace_shortlist_snapshot_run(rows: list[ShortlistRow], run_ts: str) -> None:
@@ -1310,6 +1310,7 @@ def load_latest_shortlist_rows() -> list[ShortlistRow]:
             import_cost=_snapshot_opt_float(rec.get("import_cost")),
             meta_level=_snapshot_opt_int(rec.get("meta_level")),
             avg_daily_volume=_snapshot_opt_float(rec.get("avg_daily_volume")),
+            avg_daily_isk_volume=_snapshot_opt_float(rec.get("avg_daily_isk_volume")),
             breakeven_buy_price=_snapshot_opt_float(rec.get("breakeven_buy_price")),
         ))
     return rows
@@ -5964,14 +5965,15 @@ def activate_module_reprocessing_shortlist_items(item_ids: Iterable[int]) -> Non
 def save_module_reprocessing_shortlist_snapshot(rows: list[tuple], run_ts: str) -> None:
     """rows: (item_id, item, active, volume_m3, landed_cost, yield_pct,
     mineral_value, refining_tax, net_sell, sell_listed_qty, profit_per_unit,
-    margin, profit_per_m3, decision) - see module_reprocessing/models.py's
-    ModuleShortlistRow for field meanings."""
+    margin, profit_per_m3, decision, breakeven_buy_price) - see
+    module_reprocessing/models.py's ModuleShortlistRow for field meanings."""
     with connect() as conn:
         conn.executemany(
             "INSERT INTO module_reprocessing_shortlist_snapshot (run_ts, item_id, item, active, volume_m3, "
             "landed_cost, yield_pct, mineral_value, refining_tax, net_sell, sell_listed_qty, profit_per_unit, "
-            "margin, profit_per_m3, decision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            [(run_ts, *row) for row in rows],
+            "margin, profit_per_m3, decision, breakeven_buy_price) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            # rows without the trailing optional column (older callers) store NULL.
+            [(run_ts, *row, *([None] * (15 - len(row)))) for row in rows],
         )
 
 

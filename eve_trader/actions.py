@@ -23,6 +23,7 @@ from .esi_client import ESIClient, ESIError
 from .goonmetrics_client import GoonmetricsClient
 from .models import Candidate, ShortlistItem, ShortlistRow, UndercutRow, UnlistedStockRow
 from .shortlist import (NO_MARKET_DATA_DECISION, SKIP_DECISION, _decision, audit_shortlist, average_market_daily_volume,
+                        average_market_daily_isk_volume,
                          evaluate_shortlist, summary_counts, top_imports_by_daily_profit)
 from .trade_reconciliation import (
     collect_trading_wallet_streams,
@@ -710,6 +711,7 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
 
     jita_stats_by_item: dict = {}
     avg_daily_volume_by_item: dict = {}
+    avg_daily_isk_volume_by_item: dict = {}
     batches = select_shortlist_refresh_batches(priced_items, cfg.shortlist_refresh_batch_size)
     total_batches = len(batches)
     gm = GoonmetricsClient(cfg)
@@ -744,6 +746,7 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
                 history_points = gm.price_history_chunked(cfg.reference_region_id, batch_ids,
                                                           esi_for_missing=set(batch_ids))
                 avg_daily_volume_by_item.update(average_market_daily_volume(history_points))
+                avg_daily_isk_volume_by_item.update(average_market_daily_isk_volume(history_points))
                 # Also the only refresh of these items' stored history: the
                 # candidate search (the other writer) skips items already on
                 # the shortlist, so without this their Price History and
@@ -767,6 +770,7 @@ def _refresh_shortlist_rows(cfg: TradingConfig = TRADING_CONFIG,
                 cfg=cfg,
                 buyer_already_covered_ids=buyer_already_covered_ids,
                 avg_daily_volume_by_item=avg_daily_volume_by_item,
+                avg_daily_isk_volume_by_item=avg_daily_isk_volume_by_item,
             )
             for row in batch_rows:
                 if row.item_id:

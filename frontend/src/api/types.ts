@@ -45,6 +45,9 @@ export interface ShortlistRow {
   // depth) and NOT this trader's own sales. null means Goonmetrics has no
   // history for this item in that region.
   avg_daily_volume: number | null
+  // The same turnover in ISK (each day's quantity x that day's region
+  // average price, averaged over the history window).
+  avg_daily_isk_volume: number | null
 }
 
 export interface NewCandidateResult {
@@ -1467,6 +1470,7 @@ export interface ModuleShortlistRow {
   margin: number | null
   profit_per_m3: number | null
   decision: string
+  breakeven_buy_price: number | null
 }
 
 // Module Reprocessing's Mineral Shopping List - reuses MineralRequirement,

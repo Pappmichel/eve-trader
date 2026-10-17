@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS module_reprocessing_shortlist_snapshot (
     profit_per_m3 DOUBLE PRECISION,
     decision TEXT NOT NULL
 );
+-- Highest purchase-region price per unit that still breaks even (mirrors shortlist_snapshot's column).
+ALTER TABLE module_reprocessing_shortlist_snapshot ADD COLUMN IF NOT EXISTS breakeven_buy_price DOUBLE PRECISION;
 CREATE INDEX IF NOT EXISTS idx_module_reprocessing_shortlist_snapshot_tenant
     ON module_reprocessing_shortlist_snapshot (tenant_id);
 ALTER TABLE module_reprocessing_shortlist_snapshot ENABLE ROW LEVEL SECURITY;

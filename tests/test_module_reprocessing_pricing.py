@@ -68,6 +68,31 @@ def test_evaluate_module_item_profitable_is_import(monkeypatch, trading_cfg, cfg
     assert row.profit_per_unit is not None and row.profit_per_unit > 0
 
 
+
+def test_evaluate_module_item_breakeven_buy_price_gives_zero_profit(monkeypatch, trading_cfg, cfg):
+    monkeypatch.setattr(storage, "get_portion_size", lambda type_id: 1)
+    monkeypatch.setattr(storage, "get_type_materials", lambda type_id: [(34, 100.0)])
+    item_stats = OrderStats(sell_percentile=1.0, sell_volume=5.0, buy_percentile=None, buy_volume=0.0)
+    tritanium = OrderStats(sell_percentile=10.0, sell_volume=1_000_000.0, buy_percentile=None, buy_volume=0.0)
+
+    row = evaluate_module_item(_candidate(volume_m3=0.001), True, item_stats, {34: tritanium}, trading_cfg, cfg)
+
+    # (net_sell - 0.001 m3 x 900 freight) / (1 + 0.0147 broker fee)
+    assert row.breakeven_buy_price == pytest.approx((row.net_sell - 0.9) / 1.0147)
+    # Buying at exactly the breakeven price yields zero profit.
+    at_breakeven = OrderStats(sell_percentile=row.breakeven_buy_price, sell_volume=5.0,
+                              buy_percentile=None, buy_volume=0.0)
+    row2 = evaluate_module_item(_candidate(volume_m3=0.001), True, at_breakeven, {34: tritanium}, trading_cfg, cfg)
+    assert row2.profit_per_unit == pytest.approx(0.0, abs=1e-9)
+
+
+def test_evaluate_module_item_breakeven_buy_price_none_without_mineral_data(monkeypatch, trading_cfg, cfg):
+    monkeypatch.setattr(storage, "get_portion_size", lambda type_id: 1)
+    monkeypatch.setattr(storage, "get_type_materials", lambda type_id: [(34, 100.0)])
+    item_stats = OrderStats(sell_percentile=1000.0, sell_volume=5.0, buy_percentile=None, buy_volume=0.0)
+    row = evaluate_module_item(_candidate(), True, item_stats, {}, trading_cfg, cfg)
+    assert row.breakeven_buy_price is None
+
 def test_evaluate_module_item_scrapmetal_skill_increases_yield(monkeypatch, trading_cfg):
     monkeypatch.setattr(storage, "get_portion_size", lambda type_id: 1)
     monkeypatch.setattr(storage, "get_type_materials", lambda type_id: [(34, 100.0)])

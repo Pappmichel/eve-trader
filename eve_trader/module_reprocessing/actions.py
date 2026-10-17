@@ -140,7 +140,8 @@ def do_refresh_shortlist(cfg: ModuleReprocessingConfig = MODULE_REPROCESSING_CON
 
 def _row_to_tuple(r: ModuleShortlistRow) -> tuple:
     return (r.item_id, r.item, r.active, r.volume_m3, r.landed_cost, r.yield_pct, r.mineral_value,
-            r.refining_tax, r.net_sell, r.sell_listed_qty, r.profit_per_unit, r.margin, r.profit_per_m3, r.decision)
+            r.refining_tax, r.net_sell, r.sell_listed_qty, r.profit_per_unit, r.margin, r.profit_per_m3, r.decision,
+            r.breakeven_buy_price)
 
 
 def do_deactivate_shortlist_items(item_ids: list[int]) -> dict:

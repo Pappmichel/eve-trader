@@ -65,6 +65,8 @@ class ShortlistRow(_Base):
     # Real average daily *market-wide* traded quantity (GitHub issue #100) -
     # see shortlist.average_market_daily_volume / models.ShortlistRow.
     avg_daily_volume: Optional[float] = None
+    # The same turnover in ISK - see shortlist.average_market_daily_isk_volume.
+    avg_daily_isk_volume: Optional[float] = None
     # Highest hub buy price that still breaks even (GitHub issue #221).
     breakeven_buy_price: Optional[float] = None
     # Not part of the underlying shortlist_snapshot row - computed by the
@@ -1029,6 +1031,7 @@ class ModuleShortlistRow(_Base):
     margin: Optional[float]
     profit_per_m3: Optional[float]
     decision: str
+    breakeven_buy_price: Optional[float] = None
 
 
 # Module Reprocessing's Mineral Shopping List - MineralRequirement,
