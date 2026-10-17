@@ -2622,3 +2622,288 @@ export interface PiChainPlanResult {
   zone: string
   allow_buy: boolean
 }
+
+// ---- Production realized profit (docs/PRODUCTION_REALIZED_PROFIT_PLAN.md Phase 4)
+// Shapes match eve_trader/api/routers/production_realized.py. Flags are copied
+// through; the page does not recompute coverage, estimates, or profit.
+
+export interface RealizedFlags {
+  estimated: boolean
+  price_missing: boolean
+  assumed_me: boolean
+  assumed_decryptor: boolean
+  coverage: number | null
+  tax_missing: boolean
+  detail_missing: boolean
+  /** null on a job means the bonus is unknown, not absent. */
+  no_structure_bonus: boolean | null
+}
+
+export interface CostStructureLine {
+  key: string
+  label: string
+  amount: number
+}
+
+export interface RealizedPeriodInfo {
+  start: string | null
+  end: string | null
+  since_t0: boolean
+  days: number | null
+}
+
+export interface RealizedStatus {
+  empty: boolean
+  needs_rebuild: boolean
+  sharing_changed: boolean
+  stale: boolean
+  hint: string | null
+  cutover_t0: string | null
+  archive_since: string | null
+  last_recompute: string | null
+  last_wallet_sync: string | null
+  last_jobs_sync: string | null
+  run_id: number | null
+}
+
+export interface RealizedDay {
+  date: string
+  revenue: number
+  cost: number
+  profit: number
+}
+
+export interface RealizedSummary {
+  period: RealizedPeriodInfo
+  status: RealizedStatus
+  revenue: number
+  cost_of_goods_sold: number
+  realized_profit: number
+  margin: number | null
+  coverage: number | null
+  estimated: boolean
+  units_sold: number
+  price_missing: boolean
+  tax_missing_sales: number
+  fees_without_sale: number
+  fees_on_other_trading: number
+  capital_in_bpos: number
+  inventory_at_cost: number
+  cancelled_job_losses: number
+  failed_invention_losses: number
+  manual_costs: number
+  manual_revenues: number
+  profit_including_manual: number
+  cost_structure: CostStructureLine[]
+  by_day: RealizedDay[]
+  balances_as_of_rebuild: string[]
+  flags: RealizedFlags
+}
+
+export interface RealizedProductRow {
+  type_id: number
+  type_name: string | null
+  units_sold: number
+  revenue: number
+  cost: number
+  cost_per_unit: number | null
+  net_sell_per_unit: number | null
+  profit: number
+  margin: number | null
+  coverage: number | null
+  warnings: string[]
+  flags: RealizedFlags
+}
+
+export interface RealizedProductList {
+  period: RealizedPeriodInfo
+  needs_rebuild: boolean
+  rows: RealizedProductRow[]
+}
+
+export interface RealizedSaleRow {
+  sale_ref: string
+  type_id: number
+  type_name: string | null
+  quantity: number
+  revenue: number
+  cost: number
+  profit: number
+  coverage: number
+  sale_date: string | null
+  gross: number
+  sales_tax: number | null
+  broker_fee: number
+  location_id: number | null
+  net_price: number | null
+  warnings: string[]
+  cost_structure: CostStructureLine[]
+  flags: RealizedFlags
+}
+
+export interface RealizedProductDetail {
+  period: RealizedPeriodInfo
+  needs_rebuild: boolean
+  product: RealizedProductRow
+  sales: RealizedSaleRow[]
+}
+
+export interface RealizedChainNode {
+  kind: string
+  origin: string | null
+  type_id: number | null
+  type_name: string | null
+  quantity: number | null
+  unit: string | null
+  unit_cost: number | null
+  unit_price: number | null
+  reference_price: number | null
+  date: string | null
+  end_date: string | null
+  location_id: number | null
+  freight: number | null
+  freight_label: string | null
+  freight_rate_per_m3: number | null
+  source_ref: string | null
+  job_id: number | null
+  job_ref: string | null
+  activity_id: number | null
+  runs: number | null
+  successful_runs: number | null
+  state: string | null
+  job_cost: number | null
+  facility_id: number | null
+  output_quantity: number | null
+  cost_total: number | null
+  share: number | null
+  cost_share: number | null
+  sale_ref: string | null
+  flags: RealizedFlags
+  children: RealizedChainNode[]
+}
+
+export interface RealizedSaleChain {
+  sale: RealizedSaleRow
+  tree: RealizedChainNode
+}
+
+export interface RealizedJobRow {
+  job_ref: string
+  job_id: number
+  owner_type: string
+  owner_id: number
+  activity_id: number
+  blueprint_type_id: number
+  blueprint_name: string | null
+  product_type_id: number | null
+  product_name: string | null
+  runs: number
+  successful_runs: number | null
+  start_date: string | null
+  end_date: string | null
+  status: string | null
+  state: string
+  job_cost: number
+  input_cost: number
+  unit_cost: number | null
+  output_quantity: number
+  output_quantity_left: number | null
+  output_unit: string | null
+  sold_share: number | null
+  cost_per_bpc_run: number | null
+  facility_id: number | null
+  cost_structure: CostStructureLine[]
+  flags: RealizedFlags
+}
+
+export interface RealizedJobList {
+  cutover_t0: string | null
+  needs_rebuild: boolean
+  rows: RealizedJobRow[]
+}
+
+export interface RealizedInventoryRow {
+  type_id: number
+  type_name: string | null
+  unit: string
+  quantity: number
+  cost_per_unit: number | null
+  total: number
+  origin_mix: Record<string, number>
+  esi_stock: number | null
+  drift: number | null
+  flags: RealizedFlags
+}
+
+export interface RealizedInventoryList {
+  needs_rebuild: boolean
+  rows: RealizedInventoryRow[]
+}
+
+export interface RealizedWarningGroup {
+  kind: string
+  count: number
+  items: Record<string, unknown>[]
+}
+
+export interface RealizedWarningList {
+  needs_rebuild: boolean
+  groups: RealizedWarningGroup[]
+}
+
+export interface RealizedOpeningRow {
+  type_id: number
+  type_name: string | null
+  raw_quantity: number
+  quantity: number
+  reference_price: number | null
+  unit_cost: number
+  price_source: string
+  override_unit_cost: number | null
+  frozen_at: string | null
+  flags: RealizedFlags
+}
+
+export interface RealizedOpeningList {
+  cutover_t0: string | null
+  needs_rebuild: boolean
+  rows: RealizedOpeningRow[]
+}
+
+export interface RealizedLedgerEntry {
+  entry_id: number
+  entry_kind: string
+  type_id: number | null
+  type_name: string | null
+  quantity: number | null
+  amount: number
+  entry_date: string | null
+  note: string | null
+  created_at: string | null
+}
+
+export interface RealizedLedgerEntryList {
+  rows: RealizedLedgerEntry[]
+}
+
+export interface RealizedArchiveOwner {
+  owner_type: string
+  owner_id: number
+  shared: Record<string, boolean>
+  last_sync: Record<string, string | null>
+  gaps: Record<string, number>
+  hidden_kinds: string[]
+}
+
+export interface RealizedArchiveStatus {
+  rows: RealizedArchiveOwner[]
+}
+
+export interface FreightReapplyResult {
+  dry_run: boolean
+  would_update?: number
+  updated?: number
+  freight_rate_per_m3: number
+  freight_label: string
+  rebuild_required?: boolean
+}

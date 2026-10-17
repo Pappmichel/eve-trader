@@ -435,6 +435,43 @@ export const productionApi = {
     get<{ rows: T.SpecialOrderEventRow[] }>(
       orderId ? `/api/production/special-orders/${orderId}/events` : '/api/production/special-orders/events',
     ),
+
+  // Realized profit (docs/PRODUCTION_REALIZED_PROFIT_PLAN.md). `periodQuery`
+  // is the search string from realizedPeriodSearch (days / since_t0 / start+end).
+  realizedSummary: (periodQuery: string) =>
+    get<T.RealizedSummary>(`/api/production/realized/summary?${periodQuery}`),
+  realizedProducts: (periodQuery: string) =>
+    get<T.RealizedProductList>(`/api/production/realized/products?${periodQuery}`),
+  realizedProduct: (typeId: number, periodQuery: string) =>
+    get<T.RealizedProductDetail>(`/api/production/realized/products/${typeId}?${periodQuery}`),
+  realizedSaleChain: (saleRef: string) =>
+    get<T.RealizedSaleChain>(`/api/production/realized/sale-chain?sale_ref=${encodeURIComponent(saleRef)}`),
+  realizedJobs: () => get<T.RealizedJobList>('/api/production/realized/jobs'),
+  realizedInventory: () => get<T.RealizedInventoryList>('/api/production/realized/inventory'),
+  realizedWarnings: () => get<T.RealizedWarningList>('/api/production/realized/warnings'),
+  realizedOpening: () => get<T.RealizedOpeningList>('/api/production/realized/opening'),
+  realizedEntries: () => get<T.RealizedLedgerEntryList>('/api/production/realized/entries'),
+  addRealizedEntry: (body: {
+    entry_kind: 'cost' | 'revenue'
+    amount: number
+    entry_date: string
+    type_id?: number | null
+    quantity?: number | null
+    note?: string | null
+  }) => post<T.RealizedLedgerEntry>('/api/production/realized/entries', body),
+  deleteRealizedEntry: (entryId: number) =>
+    del<{ deleted: number }>(`/api/production/realized/entries/${entryId}`),
+  setRealizedOpeningCost: (body: { type_id: number; unit_cost: number; entry_date?: string | null }) =>
+    post<{ entry_id: number; type_id: number; unit_cost: number; entry_date: string; applied_on_next_rebuild: boolean }>(
+      '/api/production/realized/opening-cost', body,
+    ),
+  realizedArchiveStatus: () => get<T.RealizedArchiveStatus>('/api/production/realized/archive-status'),
+  reapplyRealizedFreight: (dryRun: boolean) =>
+    post<T.FreightReapplyResult>(
+      `/api/production/realized/freight/reapply?dry_run=${dryRun ? 'true' : 'false'}`,
+    ),
+  startRealizedRebuild: () => post<T.PipelineRunStatus>('/api/production/realized/rebuild'),
+  realizedRebuildStatus: () => get<T.PipelineRunStatus>('/api/production/realized/rebuild/status'),
 }
 
 // ------------------------------------------------------------- portfolio
