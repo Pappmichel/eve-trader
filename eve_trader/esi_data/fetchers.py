@@ -140,10 +140,137 @@ def _wallet_txn_rows(txns: list[dict], division: int) -> list[tuple]:
 
 
 def _wallet_journal_rows(entries: list[dict], division: int) -> list[tuple]:
+    """Snapshot rows including journal context fields (production ledger
+    plan Phase 1 - also unblocks trade_reconciliation's deferred real-tax
+    linkage from snapshots)."""
     return [
-        (division, e["id"], e["date"], e.get("ref_type") or "", e.get("amount") or 0.0)
+        (
+            division, e["id"], e["date"], e.get("ref_type") or "", e.get("amount") or 0.0,
+            e.get("context_id"), e.get("context_id_type"),
+            e.get("first_party_id"), e.get("second_party_id"),
+            e.get("description"), e.get("tax"), e.get("tax_receiver_id"),
+        )
         for e in entries
     ]
+
+
+def _archive_wallet(owner_type: str, owner_id: int, txn_rows: list[tuple],
+                    journal: list[dict], *, journal_division: int = 0,
+                    journal_by_division: Optional[dict[int, list[dict]]] = None) -> None:
+    """Lazy-import Production ledger ingest (plan Phase 1). Snapshot write
+    already happened; this never deletes or changes the snapshot."""
+    from ..production.realized import ingest as ledger_ingest
+    try:
+        if owner_type == "corporation" and journal_by_division is not None:
+            ledger_ingest.archive_corp_wallet(
+                owner_id=owner_id, txn_rows=txn_rows,
+                journal_entries_by_division=journal_by_division,
+            )
+        else:
+            ledger_ingest.archive_wallet(
+                owner_type=owner_type, owner_id=owner_id, txn_rows=txn_rows,
+                journal_raw=journal, journal_division=journal_division,
+            )
+    except Exception:  # noqa: BLE001 - archive must not fail the snapshot sync
+        log.exception("ledger wallet archive failed for %s %s", owner_type, owner_id)
+
+
+def _archive_industry_jobs(client: ESIClient, owner_type: str, owner_id: int,
+                           auth_role: str) -> None:
+    """Second ESI pass with include_completed=true for the ledger only."""
+    from ..production.realized import ingest as ledger_ingest
+    try:
+        if owner_type == "character":
+            jobs = client.character_industry_jobs(
+                owner_id, auth_role=auth_role, include_completed=True,
+            )
+        else:
+            jobs = client.corporation_industry_jobs(
+                owner_id, auth_role=auth_role, include_completed=True,
+            )
+        ledger_ingest.archive_industry_jobs(
+            owner_type=owner_type, owner_id=owner_id, jobs=jobs,
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("ledger industry_jobs archive failed for %s %s", owner_type, owner_id)
+
+
+def _archive_blueprints(owner_type: str, owner_id: int, bps: list[dict]) -> None:
+    from ..production.realized import ingest as ledger_ingest
+    try:
+        ledger_ingest.archive_blueprints(
+            owner_type=owner_type, owner_id=owner_id, blueprints=bps,
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("ledger blueprints archive failed for %s %s", owner_type, owner_id)
+
+
+def _archive_market_orders(client: ESIClient, owner_type: str, owner_id: int,
+                           auth_role: str, open_orders: list[dict]) -> None:
+    from ..production.realized import ingest as ledger_ingest
+    try:
+        if owner_type == "character":
+            history = client.character_orders_history(owner_id, auth_role=auth_role)
+        else:
+            history = client.corporation_orders_history(owner_id, auth_role=auth_role)
+        # History rows carry state; open orders often do not - tag them open.
+        tagged_open = [{**o, "state": o.get("state") or "open"} for o in open_orders]
+        ledger_ingest.archive_market_orders(
+            owner_type=owner_type, owner_id=owner_id,
+            orders=tagged_open + list(history or []),
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("ledger market_orders archive failed for %s %s", owner_type, owner_id)
+
+
+def _archive_contracts_pass(
+    client: ESIClient,
+    *,
+    owner_type: str,
+    owner_id: int,
+    auth_role: str,
+    raw_list: list[dict],
+    corporation_id: Optional[int] = None,
+) -> None:
+    """Separate from Doctrine's filtered snapshot: every item-exchange
+    contract where this owner is issuer or acceptor (plan section 13b)."""
+    from ..production.realized import ingest as ledger_ingest
+    try:
+        candidates = [
+            c for c in raw_list
+            if c.get("type") == _CONTRACT_TYPE_ITEM_EXCHANGE
+            and ledger_ingest.contract_party_matches(
+                c, owner_type=owner_type, owner_id=owner_id,
+                corporation_id=corporation_id,
+            )
+        ]
+        entries = [
+            (c, owner_type == "corporation", owner_id if owner_type == "corporation" else None)
+            for c in candidates
+        ]
+        items_info = _fetch_contract_items_for(
+            client, entries,
+            character_id=owner_id if owner_type == "character" else None,
+            auth_role=auth_role,
+        )
+        items_by_contract: dict[int, list[dict]] = {}
+        for cid, items in items_info.get("fetched", {}).items():
+            items_by_contract[int(cid)] = items
+        # Doctrine-carried rows are (record_id, type_id, qty, is_incl, is_single).
+        for cid, carried in items_info.get("carried", {}).items():
+            items_by_contract[int(cid)] = [
+                {
+                    "record_id": t[0], "type_id": t[1], "quantity": t[2],
+                    "is_included": t[3], "is_singleton": t[4],
+                }
+                for t in carried
+            ]
+        ledger_ingest.archive_contracts(
+            owner_type=owner_type, owner_id=owner_id,
+            contracts=candidates, items_by_contract=items_by_contract,
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("ledger contracts archive failed for %s %s", owner_type, owner_id)
 
 
 # ------------------------------------------------------------------ assets
@@ -173,6 +300,7 @@ def fetch_corporation_assets(
 def fetch_character_industry_jobs(
     client: ESIClient, owner_id: int, auth_role: str, owner_name: str, **_kwargs,
 ) -> dict:
+    # Snapshot stays include_completed=false (planner / jobs.py).
     jobs = client.character_industry_jobs(owner_id, auth_role=auth_role)
     installer_ids = {j.get("installer_id") for j in jobs if j.get("installer_id")}
     names = client.resolve_names(list(installer_ids)) if installer_ids else {}
@@ -180,6 +308,7 @@ def fetch_character_industry_jobs(
         "character_industry_jobs", _industry_job_rows(jobs, names),
         owner_character_id=owner_id,
     )
+    _archive_industry_jobs(client, "character", owner_id, auth_role)
     return {"written": len(jobs)}
 
 
@@ -193,6 +322,7 @@ def fetch_corporation_industry_jobs(
         "corp_industry_jobs", _industry_job_rows(jobs, names),
         owner_corporation_id=owner_id,
     )
+    _archive_industry_jobs(client, "corporation", owner_id, auth_role)
     return {"written": len(jobs)}
 
 
@@ -205,6 +335,7 @@ def fetch_character_blueprints(
         "character_blueprints", _blueprint_rows(bps),
         owner_character_id=owner_id,
     )
+    _archive_blueprints("character", owner_id, bps)
     return {"written": len(bps)}
 
 
@@ -216,6 +347,7 @@ def fetch_corporation_blueprints(
         "corp_blueprints", _blueprint_rows(bps),
         owner_corporation_id=owner_id,
     )
+    _archive_blueprints("corporation", owner_id, bps)
     return {"written": len(bps)}
 
 
@@ -241,6 +373,7 @@ def fetch_character_market_orders(
     storage.replace_sell_orders(
         rows, owner_character_id=owner_id, owner_name=owner_name,
     )
+    _archive_market_orders(client, "character", owner_id, auth_role, orders)
     return {"written": len(rows)}
 
 
@@ -252,6 +385,7 @@ def fetch_corporation_market_orders(
     storage.replace_sell_orders(
         rows, owner_corporation_id=owner_id, owner_name=owner_name,
     )
+    _archive_market_orders(client, "corporation", owner_id, auth_role, orders)
     return {"written": len(rows)}
 
 
@@ -265,12 +399,14 @@ def fetch_character_wallet(
         )
     )
     journal = client.character_wallet_journal(owner_id, auth_role=auth_role)
+    txn_rows = _wallet_txn_rows(txns, 0)
     storage.replace_wallet_transactions(
-        _wallet_txn_rows(txns, 0), owner_type="character", owner_id=owner_id,
+        txn_rows, owner_type="character", owner_id=owner_id,
     )
     storage.replace_wallet_journal(
         _wallet_journal_rows(journal, 0), owner_type="character", owner_id=owner_id,
     )
+    _archive_wallet("character", owner_id, txn_rows, journal, journal_division=0)
     return {"written": len(txns), "journal": len(journal)}
 
 
@@ -292,6 +428,7 @@ def fetch_corporation_wallet(
     unread = list(WALLET_DIVISION_IDS)
     txn_rows: list[tuple] = []
     journal_rows: list[tuple] = []
+    journal_by_division: dict[int, list[dict]] = {}
     readable: list[int] = []
     last_error: Optional[BaseException] = None
     for role in roles:
@@ -315,6 +452,7 @@ def fetch_corporation_wallet(
             readable.append(division)
             txn_rows.extend(_wallet_txn_rows(txns, division))
             journal_rows.extend(_wallet_journal_rows(journal, division))
+            journal_by_division[division] = journal
         unread = still_unread
     if not readable:
         if last_error is not None:
@@ -327,6 +465,10 @@ def fetch_corporation_wallet(
     storage.replace_wallet_journal(
         journal_rows, owner_type="corporation", owner_id=owner_id,
         divisions=readable,
+    )
+    _archive_wallet(
+        "corporation", owner_id, txn_rows, [],
+        journal_by_division=journal_by_division,
     )
     return {"written": len(txn_rows), "journal": len(journal_rows), "divisions": readable}
 
@@ -694,6 +836,12 @@ def fetch_character_contracts(
         syncable, items_info,
         owner_type="character", owner_id=owner_id, auth_role=auth_role, for_corp=False,
     )
+    # Production ledger archive: all item-exchange where this character is
+    # issuer/acceptor - separate from Doctrine's structure filter (13b).
+    _archive_contracts_pass(
+        client, owner_type="character", owner_id=owner_id, auth_role=auth_role,
+        raw_list=raw_list, corporation_id=corporation_id,
+    )
     return {"written": written, "finished": finished, "history_written": history,
             "corporation_id": corporation_id}
 
@@ -729,6 +877,10 @@ def fetch_corporation_contracts(
     written = _write_contract_snapshot(
         syncable, items_info,
         owner_type="corporation", owner_id=owner_id, auth_role=auth_role, for_corp=True,
+    )
+    _archive_contracts_pass(
+        client, owner_type="corporation", owner_id=owner_id, auth_role=auth_role,
+        raw_list=raw_list,
     )
     return {"written": written, "finished": finished, "history_written": history, "auth_role": auth_role}
 

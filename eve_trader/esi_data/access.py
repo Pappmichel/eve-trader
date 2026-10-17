@@ -113,7 +113,14 @@ def read_esi(data_kind: str, tool_key: str, **filters) -> list[dict]:
     elif data_kind == "contracts":
         rows.extend(_read_contracts(tool_key, owner_type_filter, owner_id_filter))
     elif data_kind == "skills":
+        # Default Production/Station Trading path still returns job-slot
+        # rows from character_slots. Production may also request per-skill
+        # rows with table="skills"|"attributes" for invention decryptor
+        # derivation (docs/PRODUCTION_REALIZED_PROFIT_PLAN.md Phase 0 V8 /
+        # 13b) - same shape as char_skills, under Production's own share.
         if tool_key in ("char_skills", "char_skill_plans", "pi"):
+            rows.extend(_read_character_skills(tool_key, owner_id_filter, filters.get("table")))
+        elif tool_key == "production" and filters.get("table") in ("skills", "attributes"):
             rows.extend(_read_character_skills(tool_key, owner_id_filter, filters.get("table")))
         else:
             rows.extend(_read_skills(tool_key, owner_id_filter))
@@ -457,12 +464,13 @@ def _read_implants(tool_key: str, owner_id) -> list[dict]:
 
 
 def _read_character_skills(tool_key: str, owner_id, table: Optional[str]) -> list[dict]:
-    """`read_esi("skills", "char_skills")` (also `"char_skill_plans"`, each
-    under its own sharing row): per-skill rows, or with
-    `table="attributes"` the attribute block + SP totals (one row per
-    character). Deliberately a separate shape from `_read_skills`, which
-    returns Production's job-slot rows from `character_slots` - the same
-    data kind, two tools, two row shapes, each under its own sharing row."""
+    """`read_esi("skills", "char_skills")` (also `"char_skill_plans"`,
+    `"pi"`, and Production with an explicit `table="skills"|"attributes"`):
+    per-skill rows, or with `table="attributes"` the attribute block + SP
+    totals (one row per character). Deliberately a separate shape from
+    `_read_skills`, which returns Production's job-slot rows from
+    `character_slots` - the same data kind, two row shapes, each under
+    its own sharing row."""
     ids = _filter_ids(_shared_owner_ids("skills", tool_key, "character"), owner_id)
     if table == "attributes":
         return [

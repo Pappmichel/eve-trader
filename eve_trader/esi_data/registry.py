@@ -130,7 +130,10 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         # ESIClient.corporation_contracts documents the scope only — do
         # not invent a Director-or-otherwise role to fill the table.
         corp_roles=(),
-        consuming_tools=("doctrine",),
+        # "production" added for the realized-profit ledger archive
+        # (docs/PRODUCTION_REALIZED_PROFIT_PLAN.md Phase 1) - Doctrine's
+        # own structure-filtered snapshot is unchanged.
+        consuming_tools=("doctrine", "production"),
         freshness_tier=TIER_NORMAL,
     ),
     OwnedDataKind(
@@ -143,7 +146,9 @@ OWNED_DATA_KINDS: tuple[OwnedDataKind, ...] = (
         # Accountant and Junior_Accountant identically on the corp
         # wallet routes. Both, not a newly invented role.
         corp_roles=("Accountant", "Junior_Accountant"),
-        consuming_tools=("trading",),
+        # "production" added for the realized-profit ledger archive
+        # (docs/PRODUCTION_REALIZED_PROFIT_PLAN.md Phase 1).
+        consuming_tools=("trading", "production"),
         freshness_tier=TIER_FREQUENT,
     ),
     OwnedDataKind(
