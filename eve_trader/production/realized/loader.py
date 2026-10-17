@@ -8,26 +8,40 @@ beyond assembling inputs the plan already names.
 Expected scale (plan Phase 0 / lessons): the C-J seller alone can have
 ~12,000 wallet transactions / 30 days and ~10,000 journal entries / week.
 All archive reads here are one query per table for the shared-owner set
-(not per-row round trips). Reference-price history is fetched once per
-missing (type) batch and frozen; a recompute never re-fetches a cached day.
+(not per-row round trips).
+
+Reference prices are fetched in two passes: costing runs once with what is
+cached, reports exactly the (type, day) lookups that missed
+(`CostingResult.price_requests`), the loader fetches only those and runs
+again. Goonmetrics covers only ~28 days (live 2026-10-17: 09-18..10-15 on
+10-17), so days it lacks come from ESI's daily history (~400 days), else the
+nearest traded day within `_PRICE_NEAREST_DAYS`. A day nothing can price is
+cached as a miss (source "none") once it is older than
+`_NEGATIVE_CACHE_MIN_AGE_DAYS`, so a rebuild never asks again.
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 from collections import defaultdict
-from datetime import date, datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from ... import storage
 from ...config import TRADING_CONFIG
+from ...esi_client import ESIClient, ESIError
 from ...goonmetrics_client import GoonmetricsClient
+from ..config import PRODUCTION_CONFIG
 from ..constants import (
     ACTIVITY_INVENTION,
     ACTIVITY_MANUFACTURING,
     ACTIVITY_REACTION,
+    DECRYPTORS,
 )
 from . import access, db
 from .costing import (
+    UNIT_ITEM,
     IndustryJob,
     JobInput,
     JournalEntry,
@@ -44,6 +58,15 @@ _REFERENCE_REGION_ID = db.THE_FORGE_REGION_ID
 
 # SDE category for blueprints - excluded from ESI stock for opening (items only).
 _BLUEPRINT_CATEGORY_ID = 9
+
+# A day without trades takes the nearest traded day, earlier first.
+_PRICE_NEAREST_DAYS = 7
+# Today's and yesterday's averages may not be published yet - never cache
+# a miss for them.
+_NEGATIVE_CACHE_MIN_AGE_DAYS = 2
+_MISSING_SOURCE = "none"
+
+_DECRYPTOR_RUN_BONUS = {d.type_id: d.run_bonus for d in DECRYPTORS.values() if d.type_id}
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -84,16 +107,13 @@ def _blueprint_type_ids(type_ids: set[int]) -> set[int]:
     """Subset of type_ids that are blueprints (SDE category 9)."""
     if not type_ids:
         return set()
-    out: set[int] = set()
     with storage.connect() as conn:
         rows = conn.execute(
-            "SELECT type_id FROM sde_types "
-            "WHERE type_id = ANY(?) AND category_id = ?",
+            "SELECT t.type_id FROM sde_types t JOIN sde_groups g ON g.group_id = t.group_id "
+            "WHERE t.type_id = ANY(?) AND g.category_id = ?",
             (list(type_ids), _BLUEPRINT_CATEGORY_ID),
         ).fetchall()
-    for r in rows:
-        out.add(int(r[0]))
-    return out
+    return {int(r[0]) for r in rows}
 
 
 def _relic_type_ids() -> frozenset[int]:
@@ -107,7 +127,8 @@ def _relic_type_ids() -> frozenset[int]:
             "SELECT DISTINCT p.blueprint_type_id "
             "FROM sde_blueprint_products p "
             "JOIN sde_types t ON t.type_id = p.blueprint_type_id "
-            "WHERE p.activity_id = ? AND t.category_id <> ?",
+            "JOIN sde_groups g ON g.group_id = t.group_id "
+            "WHERE p.activity_id = ? AND g.category_id <> ?",
             (ACTIVITY_INVENTION, _BLUEPRINT_CATEGORY_ID),
         ).fetchall()
     return frozenset(int(r[0]) for r in rows)
@@ -133,126 +154,157 @@ def _output_quantity(job_row: tuple) -> Optional[float]:
     return float(qty_runs) * float(per)
 
 
-def _ensure_reference_prices(
-    needed: set[tuple[int, date]],
-) -> dict[tuple[int, date], float]:
-    """Return prices for every (type_id, day) in `needed`, fetching+caching misses.
+def _output_runs_per_success(job_row: tuple, inputs: list[JobInput]) -> Optional[float]:
+    """Invention: recipe base runs + the frozen decryptor's run bonus. ESI's
+    licensed_runs on an invention job is not this (Phase 2 review)."""
+    if int(job_row[3]) != ACTIVITY_INVENTION or job_row[6] is None:
+        return None
+    recipe = storage.get_invention_recipe(int(job_row[5]), int(job_row[6]))
+    if not recipe or not recipe.get("base_runs"):
+        return None
+    bonus = next((_DECRYPTOR_RUN_BONUS[i.type_id] for i in inputs if i.type_id in _DECRYPTOR_RUN_BONUS), 0)
+    return float(recipe["base_runs"]) + float(bonus)
 
-    Uses The Forge daily average via Goonmetrics (ESI for types Goonmetrics
-    does not track). Writes new rows to ledger_reference_prices once; never
-    overwrites (deterministic recompute).
-    """
-    if not needed:
-        return {}
-    type_ids = sorted({tid for tid, _d in needed})
-    cached = db.list_cached_reference_prices(type_ids)
-    out: dict[tuple[int, date], float] = {}
-    missing_types: set[int] = set()
-    for tid, day in needed:
-        hit = cached.get((tid, day))
-        if hit is None:
-            # price_date from Postgres may be date already; also try iso.
-            missing_types.add(tid)
+
+def _uses_bpc(job_row: tuple, bp_runs: dict[int, int], invented: frozenset[int]) -> Optional[bool]:
+    """Manufacturing/reaction only: did the job run on a BPC? From the
+    archived blueprint (runs -1 = BPO); a T2/T3 blueprint is always a copy."""
+    activity_id = int(job_row[3])
+    if activity_id == 9:
+        activity_id = ACTIVITY_REACTION
+    if activity_id not in (ACTIVITY_MANUFACTURING, ACTIVITY_REACTION):
+        return None
+    blueprint_id = job_row[4]
+    if blueprint_id is not None and int(blueprint_id) in bp_runs:
+        return bp_runs[int(blueprint_id)] != -1
+    if int(job_row[5]) in invented:
+        return True
+    return None
+
+
+# ------------------------------------------------------------ reference prices
+def _cached_prices(type_ids: set[int]) -> tuple[dict[tuple[int, date], float], set[tuple[int, date]]]:
+    """(prices, known misses) from ledger_reference_prices."""
+    prices: dict[tuple[int, date], float] = {}
+    misses: set[tuple[int, date]] = set()
+    for (tid, pd), (price, source) in db.list_cached_reference_prices(sorted(type_ids)).items():
+        key = (int(tid), _as_date(pd))
+        if source == _MISSING_SOURCE:
+            misses.add(key)
         else:
-            out[(tid, day)] = float(hit[0])
+            prices[key] = float(price)
+    return prices, misses
 
-    # Re-check with normalised dates from cache keys.
-    if missing_types:
-        # Some cache hits may have been missed due to date type mismatch.
-        for (tid, pd), (price, _src) in cached.items():
-            d = _as_date(pd)
-            if (tid, d) in needed and (tid, d) not in out:
-                out[(tid, d)] = float(price)
-        missing_types = {tid for tid, d in needed if (tid, d) not in out}
 
-    if not missing_types:
+def _pick_price(series: dict[date, tuple[float, str]], day: date) -> Optional[tuple[float, str]]:
+    """Exact day, else the nearest traded day (earlier first) within
+    _PRICE_NEAREST_DAYS. Deterministic for a given series."""
+    if day in series:
+        return series[day]
+    for offset in range(1, _PRICE_NEAREST_DAYS + 1):
+        for candidate, label in ((day - timedelta(days=offset), "prior_day"),
+                                 (day + timedelta(days=offset), "next_day")):
+            hit = series.get(candidate)
+            if hit is not None:
+                return hit[0], f"{hit[1]}_{label}"
+    return None
+
+
+def _esi_history(type_ids: list[int]) -> dict[int, dict[date, tuple[float, str]]]:
+    client = ESIClient()
+
+    def one(tid: int):
+        try:
+            return tid, client.region_market_history(_REFERENCE_REGION_ID, tid)
+        except ESIError:
+            return tid, []
+
+    out: dict[int, dict[date, tuple[float, str]]] = defaultdict(dict)
+    if not type_ids:
         return out
-
-    client = GoonmetricsClient()
-    # Fetch full history windows; pick the day we need. esi_for_missing =
-    # every type so blueprints etc. still get a price when Goonmetrics
-    # omits them.
-    points = client.price_history_chunked(
-        _REFERENCE_REGION_ID,
-        sorted(missing_types),
-        esi_for_missing=set(missing_types),
-    )
-    by_type_day: dict[tuple[int, date], tuple[float, str]] = {}
-    for p in points:
-        avg = float(p.avg_price or 0.0)
-        # Untraded days (avgPrice 0) are not a usable reference (same rule as
-        # history_backtest: zero averages are not real prices).
-        if avg <= 0.0:
-            continue
-        d = _as_date(p.date)
-        # Prefer Goonmetrics when both exist; first write wins via upsert DO NOTHING.
-        key = (int(p.type_id), d)
-        if key not in by_type_day:
-            # HistoryPoint has no source field; Goonmetrics is the primary path.
-            by_type_day[key] = (avg, "goonmetrics_or_esi")
-
-    to_insert: list[tuple] = []
-    for tid, day in needed:
-        if (tid, day) in out:
-            continue
-        hit = by_type_day.get((tid, day))
-        if hit is None:
-            continue
-        price, source = hit
-        out[(tid, day)] = price
-        to_insert.append((tid, day, price, source))
-    if to_insert:
-        db.upsert_reference_prices(to_insert)
+    with ThreadPoolExecutor(max_workers=min(6, len(type_ids))) as pool:
+        for tid, rows in pool.map(storage.with_current_tenant(one), type_ids):
+            for row in rows or []:
+                avg = float(row.get("average") or 0.0)
+                if avg > 0:
+                    out[int(tid)][_as_date(row["date"])] = (avg, "esi")
     return out
 
 
-def _collect_price_needs(
-    t0: datetime,
-    txs: list[WalletTransaction],
-    jobs: list[IndustryJob],
-    stock_types: set[int],
-) -> set[tuple[int, date]]:
-    """(type_id, day) pairs the engine may look up (opening, unknown, shortfall)."""
-    needs: set[tuple[int, date]] = set()
-    t0_day = _as_utc(t0).date()
-    for tid in stock_types:
-        needs.add((tid, t0_day))
-    for tx in txs:
-        if _as_utc(tx.date) < _as_utc(t0):
-            continue
-        day = _as_utc(tx.date).date()
-        needs.add((int(tx.type_id), day))
-        needs.add((int(tx.type_id), t0_day))
-    for job in jobs:
-        if job.start_date is None:
-            continue
-        if _as_utc(job.start_date) < _as_utc(t0):
-            continue
-        day = _as_utc(job.start_date).date()
-        for inp in job.inputs:
-            needs.add((int(inp.type_id), day))
-            needs.add((int(inp.type_id), t0_day))
-        if job.blueprint_type_id:
-            needs.add((int(job.blueprint_type_id), day))
-        if job.product_type_id:
-            needs.add((int(job.product_type_id), t0_day))
-    return needs
+def _fetch_reference_prices(requests: set[tuple[int, date]], today: date) -> dict[tuple[int, date], float]:
+    """Price exactly the requested (type, day) pairs, cache the results (and
+    old misses), return the prices found."""
+    if not requests:
+        return {}
+    types = sorted({tid for tid, _d in requests})
+    series: dict[int, dict[date, tuple[float, str]]] = defaultdict(dict)
+    for p in GoonmetricsClient().price_history_chunked(_REFERENCE_REGION_ID, types):
+        avg = float(p.avg_price or 0.0)
+        # Untraded days (avgPrice 0) are not a price (history_backtest rule).
+        if avg > 0:
+            series[int(p.type_id)][_as_date(p.date)] = (avg, "goonmetrics")
+
+    found: dict[tuple[int, date], tuple[float, str]] = {}
+    for tid, day in requests:
+        hit = _pick_price(series[tid], day)
+        if hit is not None:
+            found[(tid, day)] = hit
+    esi_types = sorted({tid for tid, day in requests if (tid, day) not in found})
+    for tid, points in _esi_history(esi_types).items():
+        for day_, point in points.items():
+            series[tid].setdefault(day_, point)
+    for tid, day in requests:
+        if (tid, day) not in found:
+            hit = _pick_price(series[tid], day)
+            if hit is not None:
+                found[(tid, day)] = hit
+
+    rows = [(tid, day, price, source) for (tid, day), (price, source) in sorted(found.items())]
+    cutoff = today - timedelta(days=_NEGATIVE_CACHE_MIN_AGE_DAYS)
+    rows += [(tid, day, 0.0, _MISSING_SOURCE) for tid, day in sorted(requests)
+             if (tid, day) not in found and day <= cutoff]
+    db.upsert_reference_prices(rows)
+    return {key: price for key, (price, _source) in found.items()}
 
 
-def _esi_stock_excluding_blueprints(type_ids: set[int]) -> dict[int, float]:
-    """Tenant-wide ESI stock (assembled/fitted already excluded), no blueprints."""
+# ------------------------------------------------------------------- stock
+def _opening_stock(type_ids: set[int]) -> dict[int, float]:
+    """Items the tenant holds today, for the opening inventory (D8): assets
+    shared with Production (assembled ships/fitting excluded by the stock
+    reader, blueprints excluded), plus quantities still listed in open sell
+    orders and outstanding contracts - they left the hangar, not the
+    inventory."""
     if not type_ids:
         return {}
     blueprints = _blueprint_type_ids(type_ids)
     item_ids = [t for t in type_ids if t not in blueprints]
     if not item_ids:
         return {}
-    # location_id=None -> all locations (D2: one inventory per type).
-    return storage.esi_stock_at_location_bulk(item_ids, location_id=None)
+    asset_owners = access.shared_owners("assets")
+    stock = storage.esi_stock_at_location_bulk(
+        item_ids, location_id=None,
+        owner_character_ids=[oid for ot, oid in asset_owners if ot == "character"],
+        owner_corporation_ids=[oid for ot, oid in asset_owners if ot == "corporation"],
+    )
+    totals = defaultdict(float, {int(k): float(v) for k, v in stock.items()})
+    order_owners = access.shared_owners("market_orders")
+    listed = db.listed_sell_qty_by_type(
+        [oid for ot, oid in order_owners if ot == "character"],
+        [oid for ot, oid in order_owners if ot == "corporation"],
+    )
+    in_contracts = db.outstanding_contract_qty_by_type(access.shared_owners("contracts"))
+    for extra in (listed, in_contracts):
+        for tid, qty in extra.items():
+            if tid in blueprints:
+                continue
+            totals[int(tid)] += float(qty)
+    return {tid: qty for tid, qty in totals.items() if qty > 0}
 
 
+# ------------------------------------------------------------------ snapshot
 def load_ledger_snapshot() -> Optional[LedgerSnapshot]:
-    """Assemble a LedgerSnapshot from the archive, or None when T0 is unknown."""
+    """Assemble a LedgerSnapshot from the archive (with cached reference
+    prices only), or None when T0 is unknown."""
     t0 = access.cutover_t0_for_production()
     if t0 is None:
         return None
@@ -303,9 +355,16 @@ def load_ledger_snapshot() -> Optional[LedgerSnapshot]:
         )
         for r in order_rows
     ]
+
+    bp_runs = db.blueprint_runs_by_item(
+        access.shared_owners("blueprints"),
+        [int(r[4]) for r in job_rows if r[4] is not None],
+    )
+    invented = db.invented_blueprint_type_ids()
     jobs: list[IndustryJob] = []
     for r in job_rows:
         key = (r[0], int(r[1]), int(r[2]))
+        job_inputs = list(inputs_by_job.get(key, ()))
         jobs.append(IndustryJob(
             owner_type=r[0], owner_id=int(r[1]), job_id=int(r[2]),
             activity_id=int(r[3]), blueprint_type_id=int(r[5]),
@@ -320,8 +379,10 @@ def load_ledger_snapshot() -> Optional[LedgerSnapshot]:
             completed_date=_as_utc(r[15]) if r[15] is not None else None,
             status=str(r[16]) if r[16] is not None else None,
             probability=float(r[17]) if r[17] is not None else None,
-            inputs=tuple(inputs_by_job.get(key, ())),
+            inputs=tuple(job_inputs),
             output_quantity=_output_quantity(r),
+            output_runs_per_success=_output_runs_per_success(r, job_inputs),
+            uses_bpc=_uses_bpc(r, bp_runs, invented),
         ))
 
     production_types = _production_type_ids(job_rows)
@@ -335,15 +396,16 @@ def load_ledger_snapshot() -> Optional[LedgerSnapshot]:
         for inp in job.inputs:
             type_ids.add(int(inp.type_id))
 
-    stock = _esi_stock_excluding_blueprints(type_ids)
+    stock = _opening_stock(type_ids)
     type_ids.update(stock.keys())
-
-    price_needs = _collect_price_needs(t0, txs, jobs, set(stock.keys()) | set(production_types))
-    ref_prices = _ensure_reference_prices(price_needs)
+    prices, _misses = _cached_prices(type_ids)
+    # D3: the market only trades blueprint originals, so a blueprint bought
+    # there is a BPO (capital), never an inventory layer.
+    bpo_types = frozenset(_blueprint_type_ids({int(tx.type_id) for tx in txs if tx.is_buy}))
 
     return LedgerSnapshot(
         t0=t0,
-        reference_prices=ref_prices,
+        reference_prices=prices,
         esi_stock_by_type={int(k): float(v) for k, v in stock.items()},
         production_type_ids=production_types,
         tenant_character_ids=_tenant_character_ids(),
@@ -352,13 +414,27 @@ def load_ledger_snapshot() -> Optional[LedgerSnapshot]:
         market_orders=tuple(orders),
         industry_jobs=tuple(jobs),
         opening_cost_overrides=db.list_opening_cost_overrides(),
-        home_structure_id=TRADING_CONFIG.structure_id,
-        bpc_run_reference_prices={},  # BPC-run unknowns stay 0 + warning (plan: no guess)
+        home_structure_id=PRODUCTION_CONFIG.home_location_id or TRADING_CONFIG.structure_id,
+        bpc_run_reference_prices={},  # no source for a per-run BPC price: missing + flagged
         relic_type_ids=_relic_type_ids(),
-        # BPO vs BPC share a type_id; wallet txs cannot tell them apart.
-        # Leave empty so buys become layers; capital_in_bpos still gets research.
-        bpo_type_ids=frozenset(),
+        bpo_type_ids=bpo_types,
     )
+
+
+def _run_costing(snapshot: LedgerSnapshot, today: Optional[date] = None):
+    """Run costing; fetch exactly the item prices it missed (minus cached
+    misses) and run once more if anything new was found."""
+    result = rebuild_costing(snapshot)
+    requests = {(tid, day) for tid, unit, day in result.price_requests if unit == UNIT_ITEM}
+    if not requests:
+        return result
+    _prices, misses = _cached_prices({tid for tid, _d in requests})
+    requests -= misses
+    found = _fetch_reference_prices(requests, today or datetime.now(timezone.utc).date())
+    if not found:
+        return result
+    merged = {**snapshot.reference_prices, **found}
+    return rebuild_costing(dataclasses.replace(snapshot, reference_prices=merged))
 
 
 def _layer_row(layer) -> tuple:
@@ -401,7 +477,7 @@ def rebuild_realized() -> dict:
             "warnings": warnings,
         }
 
-    result = rebuild_costing(snapshot)
+    result = _run_costing(snapshot)
     # Persist remaining layers (quantity_left > 0) and all realized sales.
     layer_rows = [_layer_row(L) for L in result.layers]
     result_rows = [_result_row(r) for r in result.realized_results]
@@ -428,6 +504,7 @@ def rebuild_realized() -> dict:
         "jobs": len(result.jobs),
         "cancelled_losses": len(result.cancelled_job_losses),
         "coverage": result.coverage(),
+        "estimated_results": sum(1 for r in result.realized_results if r.estimated),
         "warnings": extra_warnings,
         "wallet_transactions": len(snapshot.wallet_transactions),
         "industry_jobs": len(snapshot.industry_jobs),

@@ -34,15 +34,33 @@ never lowers coverage. Opening layers at the reference price, unknown-origin
 layers (D5) and the consumed inputs of a job whose frozen inputs are
 `assumed_me`/`assumed_decryptor` are materials_estimated.
 
+A value that has no price at all (no reference price for an opening or
+unknown-origin quantity) is booked at 0 and marks the layer, every layer
+built from it and every sale drawing from it `price_missing`; such a sale
+is always "estimated", whatever its coverage says (a 0 would otherwise
+count as neither real nor estimated cost).
+
 Inputs the loader must prepare (not checked here)
 -------------------------------------------------
 - `esi_stock_by_type`: items only - assembled ships and their fitting
-  excluded, blueprints (BPOs and BPCs) excluded.
+  excluded, blueprints (BPOs and BPCs) excluded; items listed in open sell
+  orders or outstanding contracts included (they left the hangar, not the
+  inventory).
 - `IndustryJob.output_quantity` for manufacturing/reaction: runs x the SDE
   product quantity. Without it the output defaults to `successful_runs` or
   `runs` (one unit per run).
+- `IndustryJob.output_runs_per_success` for invention: the recipe's base
+  runs + the decryptor's run bonus. ESI's `licensed_runs` on an invention
+  job is NOT that (live: 300 on jobs whose success yields 20 runs).
+- `IndustryJob.uses_bpc` for manufacturing/reaction: True when the job ran
+  on a BPC (consumes BPC runs), False for a BPO, None when unknown (treated
+  like a BPO: no BPC runs drawn).
 - `reference_prices` are item prices; BPC runs use the separate
   `bpc_run_reference_prices` (a BPO market price is not a per-run price).
+  Every lookup that finds nothing is listed in `CostingResult.price_requests`
+  so the loader can fetch exactly those and run again.
+- `bpo_type_ids`: blueprint types bought on the market - always BPOs, since
+  BPCs cannot be traded there (D3: capital, never a layer).
 """
 from __future__ import annotations
 
@@ -252,6 +270,8 @@ class IndustryJob:
     probability: Optional[float] = None
     inputs: Sequence[JobInput] = ()
     output_quantity: Optional[float] = None
+    output_runs_per_success: Optional[float] = None
+    uses_bpc: Optional[bool] = None
 
     @property
     def activity(self) -> int:
@@ -301,6 +321,8 @@ class CostLayer:
     assumed_decryptor: bool = False
     # Valued without any real purchase (opening at reference price, unknown).
     estimated_origin: bool = False
+    # Some of its value had no price at all and was booked at 0.
+    price_missing: bool = False
 
     @property
     def unit_cost(self) -> float:
@@ -321,6 +343,7 @@ class LayerDraw:
     origin: str
     components: CostComponents
     estimated_origin: bool
+    price_missing: bool = False
 
     @property
     def cost(self) -> float:
@@ -345,10 +368,11 @@ class RealizedResult:
     location_id: int
     draws: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
+    price_missing: bool = False
 
     @property
     def estimated(self) -> bool:
-        return self.coverage_share < ESTIMATED_COVERAGE_THRESHOLD
+        return self.price_missing or self.coverage_share < ESTIMATED_COVERAGE_THRESHOLD
 
 
 @dataclass
@@ -369,6 +393,7 @@ class JobRecord:
     components: CostComponents = CostComponents()
     assumed_me: bool = False
     assumed_decryptor: bool = False
+    price_missing: bool = False
     output_layer_id: Optional[int] = None
     output_type_id: Optional[int] = None
     output_quantity: float = 0.0
@@ -421,6 +446,8 @@ class CostingResult:
     jobs_before_t0: list  # job refs
     skipped_corp_jobs: list  # job refs
     warnings: list
+    # (type_id, unit, day) lookups that found no reference price.
+    price_requests: frozenset = frozenset()
 
     @property
     def work_in_progress(self) -> list:
@@ -452,10 +479,6 @@ def _day(ts: datetime) -> date:
     return ts.date()
 
 
-def _price_key(price: float) -> float:
-    return round(float(price), 2)
-
-
 class _Costing:
     def __init__(self, ledger: LedgerSnapshot):
         self.ledger = ledger
@@ -476,6 +499,7 @@ class _Costing:
         self.jobs_before_t0: list[str] = []
         self.skipped_corp_jobs: list[str] = []
         self.fee_by_tx: dict[tuple, float] = {}
+        self.price_requests: set[tuple] = set()
 
     # ---------------------------------------------------------------- helpers
     def warn(self, msg: str) -> None:
@@ -504,13 +528,15 @@ class _Costing:
     def _new_layer(self, *, type_id: int, unit: str, quantity: float, unit_components: CostComponents,
                    origin: str, source_ref: str, layer_date: Optional[datetime],
                    job_id: Optional[int] = None, assumed_me: bool = False,
-                   assumed_decryptor: bool = False, estimated_origin: bool = False) -> CostLayer:
+                   assumed_decryptor: bool = False, estimated_origin: bool = False,
+                   price_missing: bool = False) -> CostLayer:
         layer = CostLayer(
             layer_id=len(self.all_layers) + 1,
             type_id=int(type_id), unit=unit, quantity=float(quantity), quantity_left=float(quantity),
             origin=origin, source_ref=source_ref, unit_components=unit_components,
             layer_date=layer_date, job_id=job_id, assumed_me=assumed_me,
             assumed_decryptor=assumed_decryptor, estimated_origin=estimated_origin,
+            price_missing=price_missing,
         )
         self.all_layers.append(layer)
         self.layers_by_key[(layer.type_id, unit)].append(layer)
@@ -522,7 +548,10 @@ class _Costing:
     def _reference_price(self, type_id: int, unit: str, when: datetime) -> Optional[float]:
         table = self.ledger.bpc_run_reference_prices if unit == UNIT_BPC_RUN else self.ledger.reference_prices
         price = table.get((int(type_id), _day(when)))
-        return float(price) if price is not None else None
+        if price is None:
+            self.price_requests.add((int(type_id), unit, _day(when)))
+            return None
+        return float(price)
 
     def _consume(self, type_id: int, unit: str, quantity: float, when: datetime, context: str, *,
                  sale_order: bool = False, allow_unknown: bool = True) -> tuple[list[LayerDraw], CostComponents]:
@@ -548,7 +577,8 @@ class _Costing:
             need -= take
         if need > _EPS and allow_unknown:
             price = self._reference_price(type_id, unit, when)
-            if price is None:
+            missing = price is None
+            if missing:
                 self.warn(f"missing_reference_price: type {type_id} ({unit}) on {_day(when).isoformat()}, "
                           f"unknown-origin {need:g} valued at 0")
                 price = 0.0
@@ -557,7 +587,7 @@ class _Costing:
                 type_id=type_id, unit=unit, quantity=need,
                 unit_components=CostComponents(materials_estimated=price),
                 origin=ORIGIN_UNKNOWN, source_ref=f"unknown:{context}", layer_date=when,
-                estimated_origin=True,
+                estimated_origin=True, price_missing=missing,
             )
             draws.append(self._take(layer, need))
         return draws, _sum_components(d.components for d in draws)
@@ -570,7 +600,7 @@ class _Costing:
         return LayerDraw(
             layer_id=layer.layer_id, type_id=layer.type_id, unit=layer.unit, quantity=qty,
             origin=layer.origin, components=layer.unit_components.scale(qty),
-            estimated_origin=layer.estimated_origin,
+            estimated_origin=layer.estimated_origin, price_missing=layer.price_missing,
         )
 
     # ---------------------------------------------------------------- events
@@ -641,43 +671,47 @@ class _Costing:
             if raw <= _EPS:
                 continue
             override = self.ledger.opening_cost_overrides.get(type_id)
+            missing = False
             if override is not None:
                 unit = CostComponents(materials_bought=float(override))
                 source = "override"
             else:
-                price = self.ledger.reference_prices.get((type_id, price_day))
+                price = self._reference_price(type_id, UNIT_ITEM, self.t0)
                 if price is None:
                     self.warn(f"missing_reference_price: type {type_id} on {price_day.isoformat()}, "
                               f"opening {raw:g} valued at 0")
-                    price, source = 0.0, "missing"
+                    price, source, missing = 0.0, "missing", True
                 else:
                     source = "reference"
                 unit = CostComponents(materials_estimated=float(price))
             layer = self._new_layer(
                 type_id=type_id, unit=UNIT_ITEM, quantity=raw, unit_components=unit,
                 origin=ORIGIN_OPENING, source_ref=f"opening:{type_id}", layer_date=self.t0,
-                estimated_origin=override is None,
+                estimated_origin=override is None, price_missing=missing,
             )
             self.opening_lines.append(OpeningLine(type_id, raw, raw, unit.total, source, layer.layer_id))
 
     def _attribute_broker_fees(self) -> None:
         """D12: per (owner, UTC day), real order fees spread over that day's
-        order-based fills pro rata by value."""
+        order-based fills pro rata by value.
+
+        A fill is order-based when the owner has an order for the same type,
+        location and side. The price is deliberately not compared: an order's
+        price changes with every update and the archive keeps only the last
+        one (Phase 0 V4: 1041 of 2447 sell fills had no same-price order)."""
         pools: dict[tuple, float] = defaultdict(float)
         for j in self.ledger.journal_entries:
             if j.ref_type in FEE_REF_TYPES and j.date >= self.t0:
                 pools[(j.owner_type, int(j.owner_id), _day(j.date))] += abs(float(j.amount))
         own_orders = {
-            (o.owner_type, int(o.owner_id), int(o.type_id), int(o.location_id), bool(o.is_buy_order),
-             _price_key(o.price))
+            (o.owner_type, int(o.owner_id), int(o.type_id), int(o.location_id), bool(o.is_buy_order))
             for o in self.ledger.market_orders
         }
         fills: dict[tuple, list[WalletTransaction]] = defaultdict(list)
         for tx in self.ledger.wallet_transactions:
             if tx.date < self.t0:
                 continue
-            key = (tx.owner_type, int(tx.owner_id), int(tx.type_id), int(tx.location_id), bool(tx.is_buy),
-                   _price_key(tx.unit_price))
+            key = (tx.owner_type, int(tx.owner_id), int(tx.type_id), int(tx.location_id), bool(tx.is_buy))
             if key in own_orders:
                 fills[(tx.owner_type, int(tx.owner_id), _day(tx.date))].append(tx)
         for period in sorted(pools):
@@ -714,15 +748,16 @@ class _Costing:
 
     # ---------------------------------------------------------------- handlers
     def _on_buy(self, tx: WalletTransaction) -> None:
+        """A buy fill always carries its fee share in its layer (D12 / 5b):
+        the fee is part of what the units cost. It reaches Production only
+        if a job consumes the units; a Trading import that is sold again
+        never touches a Production result."""
         fee = self.fee_by_tx.get(tx.key, 0.0)
         type_id = int(tx.type_id)
         value = float(tx.unit_price) * float(tx.quantity)
         if type_id in self.ledger.bpo_type_ids:
             self.capital[type_id] += value + fee
             return
-        if type_id not in self.ledger.production_type_ids:
-            self.fees_other += fee
-            fee = 0.0
         freight = 0.0
         if tx.freight_rate_per_m3 is not None and tx.freight_m3 is not None:
             freight = float(tx.freight_rate_per_m3) * float(tx.freight_m3)
@@ -758,6 +793,9 @@ class _Costing:
         draws, consumed = self._consume(type_id, UNIT_ITEM, qty, tx.date, tx.ref, sale_order=True)
         if any(d.origin == ORIGIN_UNKNOWN for d in draws):
             result_warnings.append("unknown_origin")
+        price_missing = any(d.price_missing for d in draws)
+        if price_missing:
+            result_warnings.append("price_missing")
         components = consumed.add(CostComponents(fees=fee))
         coverage = components.coverage()
         if coverage is None:
@@ -769,10 +807,12 @@ class _Costing:
             gross=gross, sales_tax=tax, broker_fee=fee, revenue=revenue, cost=cost,
             profit=revenue - cost, components=components, coverage_share=coverage,
             sale_date=tx.date, location_id=int(tx.location_id), draws=draws, warnings=result_warnings,
+            price_missing=price_missing,
         )
         if result.estimated:
             result.warnings.append("estimated")
-            self.warn(f"coverage_below_threshold: {tx.ref} type {type_id} coverage {coverage:.0%}")
+            if coverage < ESTIMATED_COVERAGE_THRESHOLD:
+                self.warn(f"coverage_below_threshold: {tx.ref} type {type_id} coverage {coverage:.0%}")
         self.results.append(result)
 
     def _on_job_start(self, job: IndustryJob) -> None:
@@ -805,11 +845,15 @@ class _Costing:
                 consumed = consumed.as_invention()
             components = components.add(consumed)
             rec.draws.extend(draws)
-        if job.activity in _BUILD_ACTIVITIES and self._remaining(job.blueprint_type_id, UNIT_BPC_RUN) > _EPS:
+        if job.activity in _BUILD_ACTIVITIES and job.uses_bpc:
+            # Only a job that ran on a BPC uses BPC runs - a BPO job must not
+            # eat the copies made for invention. A shortfall (BPC invented or
+            # bought before T0) is unknown origin and flagged, never free.
             draws, consumed = self._consume(int(job.blueprint_type_id), UNIT_BPC_RUN, float(job.runs or 0),
                                             job.start_date, job.ref)
             components = components.add(consumed)
             rec.draws.extend(draws)
+        rec.price_missing = any(d.price_missing for d in rec.draws)
         if job.activity == ACTIVITY_INVENTION:
             components = components.add(CostComponents(invention=job_cost))
         else:
@@ -839,12 +883,16 @@ class _Costing:
                 self.warn(f"invention_outcome_unknown: {job.ref} has no successful_runs, cost not booked")
                 return
             out_type, unit = job.product_type_id, UNIT_BPC_RUN
-            qty = float(job.successful_runs) * float(job.licensed_runs or 1)
-            if qty <= _EPS:
+            if int(job.successful_runs) <= 0:
                 rec.state = "failed"
                 self.pending.pop(job.ref)
                 self.failed_invention.append(JobLoss(job.ref, int(job.job_id), when, rec.components))
                 return
+            if not job.output_runs_per_success:
+                self.warn(f"invention_runs_unknown: {job.ref} runs per success unknown, "
+                          f"cost stays in progress")
+                return
+            qty = float(job.successful_runs) * float(job.output_runs_per_success)
         elif job.activity == ACTIVITY_COPYING:
             out_type, unit = job.blueprint_type_id, UNIT_BPC_RUN
             qty = float(job.runs or 0) * float(job.licensed_runs or 1)
@@ -860,6 +908,7 @@ class _Costing:
             unit_components=rec.components.scale(1.0 / qty), origin=ORIGIN_PRODUCED,
             source_ref=job.ref, layer_date=when, job_id=int(job.job_id),
             assumed_me=rec.assumed_me, assumed_decryptor=rec.assumed_decryptor,
+            price_missing=rec.price_missing,
         )
         rec.state = "produced"
         rec.output_layer_id = layer.layer_id
@@ -904,4 +953,5 @@ class _Costing:
             jobs_before_t0=list(self.jobs_before_t0),
             skipped_corp_jobs=list(self.skipped_corp_jobs),
             warnings=list(self.warnings),
+            price_requests=frozenset(self.price_requests),
         )

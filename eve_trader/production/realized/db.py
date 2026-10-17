@@ -599,6 +599,87 @@ def list_job_inputs_for_owners(
         ).fetchall()
 
 
+def wallet_window_starts(owners: list[tuple[str, int]]) -> list[tuple]:
+    """Per (owner_type, owner_id, division): (oldest archived transaction,
+    oldest archived journal entry or None). One query."""
+    if not owners:
+        return []
+    where, params = _owner_in_clause(owners)
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT t.owner_type, t.owner_id, t.division, MIN(t.date), ("
+            "  SELECT MIN(j.date) FROM ledger_wallet_journal j "
+            "  WHERE j.owner_type = t.owner_type AND j.owner_id = t.owner_id "
+            "  AND j.division = t.division) "
+            f"FROM ledger_wallet_transactions t WHERE {where} "
+            "GROUP BY t.owner_type, t.owner_id, t.division",
+            tuple(params),
+        ).fetchall()
+
+
+def blueprint_runs_by_item(owners: list[tuple[str, int]], item_ids: list[int]) -> dict[int, int]:
+    """Last seen `runs` per blueprint item_id from the archive (-1 = BPO)."""
+    ids = sorted({int(i) for i in item_ids})
+    if not owners or not ids:
+        return {}
+    where, params = _owner_in_clause(owners)
+    with storage.connect() as conn:
+        rows = conn.execute(
+            f"SELECT item_id, runs FROM ledger_blueprints WHERE {where} AND item_id = ANY(?)",
+            (*params, ids),
+        ).fetchall()
+    return {int(r[0]): int(r[1]) for r in rows}
+
+
+def invented_blueprint_type_ids() -> frozenset[int]:
+    """Blueprint types that are invention outputs (T2/T3 BPCs only exist as
+    copies, so a job on one always uses BPC runs)."""
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT product_type_id FROM sde_blueprint_products WHERE activity_id = 8",
+        ).fetchall()
+    return frozenset(int(r[0]) for r in rows)
+
+
+def listed_sell_qty_by_type(character_ids: list[int], corporation_ids: list[int]) -> dict[int, float]:
+    """Quantity still listed in open sell orders, per type, for the given
+    owners (items in a sell order are not in the asset list)."""
+    if not character_ids and not corporation_ids:
+        return {}
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, COALESCE(SUM(volume_remain), 0) FROM character_sell_orders "
+            "WHERE owner_character_id = ANY(?) OR owner_corporation_id = ANY(?) "
+            "GROUP BY type_id",
+            ([int(c) for c in character_ids], [int(c) for c in corporation_ids]),
+        ).fetchall()
+    return {int(r[0]): float(r[1]) for r in rows}
+
+
+def outstanding_contract_qty_by_type(owners: list[tuple[str, int]]) -> dict[int, float]:
+    """Included items of outstanding item-exchange contracts the owners
+    issued, per type, each contract counted once even if archived for both a
+    character and its corp."""
+    if not owners:
+        return {}
+    where, params = _owner_in_clause(owners)
+    where = where.replace("owner_type", "c.owner_type").replace("owner_id", "c.owner_id")
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT type_id, SUM(quantity) FROM ("
+            "  SELECT DISTINCT ON (c.contract_id, i.record_id) i.type_id, i.quantity "
+            "  FROM ledger_contracts c JOIN ledger_contract_items i "
+            "    ON i.owner_type = c.owner_type AND i.owner_id = c.owner_id "
+            "   AND i.contract_id = c.contract_id "
+            f"  WHERE {where} AND c.status = 'outstanding' AND i.is_included "
+            "   AND ((c.owner_type = 'character' AND c.issuer_id = c.owner_id) "
+            "     OR (c.owner_type = 'corporation' AND c.issuer_corporation_id = c.owner_id)) "
+            ") x GROUP BY type_id",
+            tuple(params),
+        ).fetchall()
+    return {int(r[0]): float(r[1]) for r in rows}
+
+
 def oldest_wallet_transaction_date(
     owners: list[tuple[str, int]],
 ) -> Optional[datetime]:

@@ -111,8 +111,23 @@ def list_all_job_inputs_for_production() -> list[tuple]:
 
 
 def cutover_t0_for_production():
-    """Oldest wallet transaction among owners shared for wallet, or None."""
+    """Cutover T0 = start of the shortest complete window (plan section 6).
+
+    Transactions reach 30 days back, the journal only its newest 10,000
+    entries (Phase 0 13a) - about a week for a busy seller. A wallet whose
+    oldest archived transaction is older than its oldest archived journal
+    entry lost journal history, so sales before that point have no sales tax
+    or broker fees: T0 moves to the latest such journal start. A quiet
+    wallet whose journal simply starts with its first activity is not
+    truncated and does not move T0. None while no wallet is archived."""
     owners = shared_owners("wallet")
     if not owners:
         return None
-    return db.oldest_wallet_transaction_date(owners)
+    starts = db.wallet_window_starts(owners)
+    if not starts:
+        return None
+    t0 = min(row[3] for row in starts)
+    for _ot, _oid, _div, tx_start, journal_start in starts:
+        if journal_start is not None and tx_start < journal_start:
+            t0 = max(t0, journal_start)
+    return t0

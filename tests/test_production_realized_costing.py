@@ -56,14 +56,22 @@ def sell(type_id, qty, price, when, *, location=HOME, owner=CHAR, tx_id=None):
 
 def job(activity, blueprint, product, runs, start, end, cost, inputs=(), *, status="delivered",
         licensed_runs=None, successful_runs=None, output_quantity=None, owner_type="character",
-        owner=CHAR, installer=CHAR, completed=None, job_id=None):
+        owner=CHAR, installer=CHAR, completed=None, job_id=None, runs_per_success=None,
+        uses_bpc=None):
     return IndustryJob(
         owner_type=owner_type, owner_id=owner, job_id=job_id or next(_job_ids), activity_id=activity,
         blueprint_type_id=blueprint, product_type_id=product, runs=runs, start_date=start,
         end_date=end, completed_date=completed, status=status, licensed_runs=licensed_runs,
         successful_runs=successful_runs, cost=cost, installer_id=installer,
         inputs=tuple(JobInput(t, q, s) for t, q, s in inputs), output_quantity=output_quantity,
+        output_runs_per_success=runs_per_success, uses_bpc=uses_bpc,
     )
+
+
+# ESI reports the *input* BPC's runs as licensed_runs on an invention job
+# (live 2026-10-17: 300 while a success yields 20 runs). Every invention job
+# below carries it to prove the engine ignores it.
+ESI_INVENTION_LICENSED_RUNS = 300
 
 
 def tax_pair(tx: WalletTransaction, journal_id: int, tax: float):
@@ -112,11 +120,11 @@ def full_chain_ledger(**overrides):
     copy = job(c.ACTIVITY_COPYING, T1_BP, T1_BP, 1, at(1, 12), at(1, 14), 40.0, licensed_runs=2)
     invention = job(c.ACTIVITY_INVENTION, T1_BP, T2_BP, 2, at(2, 13), at(3, 13), 60.0,
                     [(DATACORE, 4, "probability_decryptor"), (T1_BP, 2, "probability_decryptor")],
-                    licensed_runs=10, successful_runs=1)
+                    licensed_runs=ESI_INVENTION_LICENSED_RUNS, successful_runs=1, runs_per_success=10)
     component = job(c.ACTIVITY_MANUFACTURING, COMP_BP, T2_COMP, 10, at(2, 14), at(3, 14), 100.0,
-                    [(COMPOSITE, 100, "esi_blueprint")], output_quantity=10)
+                    [(COMPOSITE, 100, "esi_blueprint")], output_quantity=10, uses_bpc=False)
     module = job(c.ACTIVITY_MANUFACTURING, T2_BP, T2_MODULE, 5, at(3, 15), at(4, 15), 150.0,
-                 [(T2_COMP, 10, "esi_blueprint")], output_quantity=5)
+                 [(T2_COMP, 10, "esi_blueprint")], output_quantity=5, uses_bpc=True)
     sale = sell(T2_MODULE, 5, 400.0, at(5, 10))
     kw = dict(
         wallet_transactions=[goo, fuel, cores, sale],
@@ -136,7 +144,8 @@ def test_full_chain_minerals_to_t2_module_sale():
     # = 1600 for 200 composite -> 8.00/unit (bought 6.00, freight 0.50, job 1.50).
     # Copy: job 40 for 1 copy x 2 runs -> T1 BPC 20/run (job).
     # Invention: datacores 200 + 2 T1 runs 40 + job 60 = 300, all invention,
-    # 1 success x 10 runs -> T2 BPC 30/run.
+    # 1 success x 10 runs per success -> T2 BPC 30/run (licensed_runs=300
+    # from ESI would have given 1/run).
     # Component: 100 composite x 8 = 800 + job 100 = 900 / 10 -> 90/unit
     # (bought 60, freight 5, job 25).
     # Module: 10 components 900 + 5 T2 runs 150 + job 150 = 1200 / 5 -> 240/unit.
@@ -283,7 +292,8 @@ def test_assumed_me_inputs_become_estimated_materials():
 def test_probability_vs_assumed_decryptor_invention():
     def invention(source, start):
         return job(c.ACTIVITY_INVENTION, T1_BP, T2_BP, 2, start, start + timedelta(hours=10), 60.0,
-                   [(DATACORE, 4, source), (T1_BP, 2, source)], licensed_runs=10, successful_runs=1)
+                   [(DATACORE, 4, source), (T1_BP, 2, source)],
+                   licensed_runs=ESI_INVENTION_LICENSED_RUNS, successful_runs=1, runs_per_success=10)
 
     proven = invention("probability_decryptor", at(2))
     assumed = invention("assumed_decryptor", at(3))
@@ -311,7 +321,7 @@ def test_invention_bpc_shortfall_draws_unknown_bpc_runs():
     # BPC-run table (missing -> 0 + warning), never from the BPO item price.
     inv = job(c.ACTIVITY_INVENTION, T1_BP, T2_BP, 2, at(2), at(3), 60.0,
               [(DATACORE, 4, "probability_decryptor"), (T1_BP, 2, "probability_decryptor")],
-              licensed_runs=10, successful_runs=2)
+              licensed_runs=ESI_INVENTION_LICENSED_RUNS, successful_runs=2, runs_per_success=10)
     ledger = snapshot(
         wallet_transactions=[buy(DATACORE, 4, 50.0, at(1))],
         industry_jobs=[inv],
@@ -321,13 +331,17 @@ def test_invention_bpc_shortfall_draws_unknown_bpc_runs():
     assert has_warning(result, "unknown_origin: type 300 (bpc_run)")
     assert has_warning(result, "missing_reference_price: type 300 (bpc_run)")
     [layer] = [l for l in result.layers if l.type_id == T2_BP]
-    # 200 + 60 = 260 over 2 successes x 10 runs = 13/run.
+    # 200 + 60 = 260 over 2 successes x 10 runs = 13/run - and the 0 for the
+    # unpriced T1 BPC runs marks the layer, it is not a free input.
     assert layer.quantity == 20 and layer.unit_cost == pytest.approx(13.0)
+    assert layer.price_missing
+    assert (T1_BP, c.UNIT_BPC_RUN, at(2).date()) in result.price_requests
 
 
 def test_failed_invention_is_its_own_loss_line():
     inv = job(c.ACTIVITY_INVENTION, T1_BP, T2_BP, 1, at(2), at(3), 30.0,
-              [(DATACORE, 2, "probability_decryptor")], licensed_runs=10, successful_runs=0)
+              [(DATACORE, 2, "probability_decryptor")], licensed_runs=ESI_INVENTION_LICENSED_RUNS,
+              successful_runs=0, runs_per_success=10)
     result = rebuild_costing(snapshot(wallet_transactions=[buy(DATACORE, 2, 50.0, at(1))],
                                       industry_jobs=[inv]))
     [loss] = result.failed_invention_losses
@@ -396,14 +410,16 @@ def test_job_inputs_consume_plain_fifo_opening_first():
 # ---------------------------------------------------------------- 9 D12 broker fees
 def test_broker_fee_pool_spread_by_fill_value():
     OTHER, Q = 35, 702
-    p_sale = sell(PRODUCT, 3, 100.0, at(2, 12), tx_id=7001)       # value 300, matches sell order
-    m_fill = buy(OTHER, 20, 5.0, at(2, 13), tx_id=7002)           # value 100, matches buy order
-    instant = buy(OTHER, 10, 6.0, at(2, 14), tx_id=7003)          # no own order at 6 -> instant buy
-    q_fill = buy(Q, 10, 20.0, at(2, 15), tx_id=7004)              # value 200, matches buy order
+    p_sale = sell(PRODUCT, 3, 100.0, at(2, 12), tx_id=7001)       # value 300, own sell order
+    m_fill = buy(OTHER, 20, 5.0, at(2, 13), tx_id=7002)           # value 100, own buy order
+    instant = buy(OTHER, 10, 6.0, at(2, 14), location=JITA, tx_id=7003)  # no own order there
+    q_fill = buy(Q, 10, 20.0, at(2, 15), tx_id=7004)              # value 200, own buy order
     ledger = snapshot(
         wallet_transactions=[p_sale, m_fill, instant, q_fill],
         market_orders=[
-            MarketOrder("character", CHAR, 1, PRODUCT, HOME, False, 100.0),
+            # The archive keeps only an order's last price: matching ignores
+            # it (the sell order now shows 95, the fill was at 100).
+            MarketOrder("character", CHAR, 1, PRODUCT, HOME, False, 95.0),
             MarketOrder("character", CHAR, 2, OTHER, HOME, True, 5.0),
             MarketOrder("character", CHAR, 3, Q, HOME, True, 20.0),
         ],
@@ -428,16 +444,18 @@ def test_broker_fee_pool_spread_by_fill_value():
     assert r.broker_fee == pytest.approx(30.0)
     assert r.cost == pytest.approx(3 * 60.0 + 30.0)
     assert r.profit == pytest.approx(300.0 - 210.0)
-    assert result.fees_on_other_trading == pytest.approx(10.0)
+    # Buy fills keep their fee in the layer, Production type or not (5b):
+    # it reaches a Production result only if a job consumes the units.
+    assert result.fees_on_other_trading == pytest.approx(0.0)
     [q_layer] = [l for l in result.layers if l.type_id == Q]
     assert q_layer.unit_components == CostComponents(materials_bought=20.0, fees=2.0)
     [other_order, other_instant] = [l for l in result.layers if l.type_id == OTHER]
-    assert other_order.unit_components.fees == 0 and other_instant.unit_components.fees == 0
+    assert other_order.unit_components.fees == pytest.approx(0.5)   # 10 over 20 units
+    assert other_instant.unit_components.fees == 0
     assert [(p.day, p.amount) for p in result.fees_without_sale] == [(at(3).date(), 15.0)]
     assert result.fees_without_sale_total == pytest.approx(15.0)
     # Every ISK of fees since T0 is accounted for once.
-    assert r.broker_fee + result.fees_on_other_trading + 20.0 + result.fees_without_sale_total == \
-        pytest.approx(75.0)
+    assert r.broker_fee + 10.0 + 20.0 + result.fees_without_sale_total == pytest.approx(75.0)
 
 
 # ---------------------------------------------------------------- 10 freight
@@ -553,6 +571,111 @@ def test_sale_outside_home_structure_is_warned():
     ))
     assert "outside_home_structure" in result.realized_results[0].warnings
     assert has_warning(result, "outside_home_structure:")
+
+
+# ---------------------------------------------------------------- Phase 2 review fixes
+def test_invention_without_runs_per_success_stays_in_progress():
+    """licensed_runs is never used as a fallback for the output runs."""
+    inv = job(c.ACTIVITY_INVENTION, T1_BP, T2_BP, 1, at(2), at(3), 30.0,
+              [(DATACORE, 2, "probability_decryptor")], licensed_runs=ESI_INVENTION_LICENSED_RUNS,
+              successful_runs=1)
+    result = rebuild_costing(snapshot(wallet_transactions=[buy(DATACORE, 2, 50.0, at(1))],
+                                      industry_jobs=[inv]))
+    assert [l for l in result.layers if l.type_id == T2_BP] == []
+    [wip] = result.work_in_progress
+    assert wip.components.total == pytest.approx(130.0)
+    assert has_warning(result, f"invention_runs_unknown: {inv.ref}")
+
+
+def test_bpo_job_does_not_eat_the_copies_made_for_invention():
+    """A T1 build on the BPO and a copy job of the same blueprint: the
+    copies' runs stay for invention, the build carries no copy cost."""
+    copy = job(c.ACTIVITY_COPYING, T1_BP, T1_BP, 1, at(1, 9), at(1, 10), 40.0, licensed_runs=4)
+    on_bpo = job(1, T1_BP, PRODUCT, 2, at(1, 12), at(2), 10.0, [(MINERAL, 2, "esi_blueprint")],
+                 output_quantity=2, uses_bpc=False)
+    unknown = job(1, T1_BP, PRODUCT, 2, at(1, 13), at(2), 10.0, [(MINERAL, 2, "esi_blueprint")],
+                  output_quantity=2, uses_bpc=None)
+    result = rebuild_costing(snapshot(
+        wallet_transactions=[buy(MINERAL, 4, 5.0, at(1, 8))],
+        industry_jobs=[copy, on_bpo, unknown],
+        production_type_ids={PRODUCT},
+    ))
+    # Copy: 40 for 1 copy x 4 runs -> 10/run, all 4 runs still there.
+    assert remaining(result, T1_BP, c.UNIT_BPC_RUN) == [("produced", 4, pytest.approx(10.0))]
+    # Each build: 2 x 5 minerals + job 10 = 20 for 2 units -> 10/unit.
+    assert [l.unit_cost for l in result.layers if l.type_id == PRODUCT] == [
+        pytest.approx(10.0), pytest.approx(10.0)]
+
+
+def test_t2_build_without_a_bpc_layer_is_flagged_not_free():
+    """A T2 BPC invented before T0: its runs have no layer and no price.
+    The sale must say so (estimated), not show 100 % real coverage."""
+    build = job(1, T2_BP, T2_MODULE, 1, at(1, 10), at(2), 50.0, [(MINERAL, 10, "esi_blueprint")],
+                output_quantity=1, uses_bpc=True)
+    result = rebuild_costing(snapshot(
+        wallet_transactions=[buy(MINERAL, 10, 10.0, at(1, 8)), sell(T2_MODULE, 1, 500.0, at(3))],
+        industry_jobs=[build],
+        production_type_ids={T2_MODULE},
+    ))
+    [r] = result.realized_results
+    # 100 minerals + 50 job; the BPC run is booked at 0 and flagged.
+    assert r.cost == pytest.approx(150.0)
+    assert r.coverage_share == pytest.approx(1.0)
+    assert r.price_missing and r.estimated
+    assert "price_missing" in r.warnings and "estimated" in r.warnings
+    assert has_warning(result, "unknown_origin: type 320 (bpc_run)")
+
+
+def test_opening_without_a_price_is_estimated_and_requested():
+    ledger = snapshot(
+        wallet_transactions=[sell(PRODUCT, 2, 100.0, at(2))],
+        esi_stock_by_type={PRODUCT: 3},
+        production_type_ids={PRODUCT},
+    )
+    result = rebuild_costing(ledger)
+    [r] = result.realized_results
+    assert r.cost == 0 and r.price_missing and r.estimated
+    assert (PRODUCT, c.UNIT_ITEM, T0.date()) in result.price_requests
+    [line] = result.opening_lines
+    assert line.price_source == "missing"
+    # With the price supplied, the same ledger is a normal estimated opening.
+    priced = rebuild_costing(snapshot(
+        wallet_transactions=[sell(PRODUCT, 2, 100.0, at(2))],
+        esi_stock_by_type={PRODUCT: 3},
+        production_type_ids={PRODUCT},
+        reference_prices={(PRODUCT, T0.date()): 40.0},
+    ))
+    assert priced.realized_results[0].cost == pytest.approx(80.0)
+    assert not priced.realized_results[0].price_missing
+    assert priced.price_requests == frozenset()
+
+
+def test_buy_order_fee_on_an_input_reaches_the_product_cost():
+    """Minerals bought through a buy order carry their fee share into the
+    job and the sale (open question 1 of the Phase 2 PR)."""
+    mineral_fill = buy(MINERAL, 10, 10.0, at(1, 8), tx_id=8001)
+    ledger = snapshot(
+        wallet_transactions=[mineral_fill, sell(PRODUCT, 1, 500.0, at(3), location=JITA)],
+        market_orders=[MarketOrder("character", CHAR, 9, MINERAL, HOME, True, 10.0)],
+        journal_entries=[JournalEntry("character", CHAR, 1, at(1, 7), "brokers_fee", -2.0)],
+        industry_jobs=[job(1, BP, PRODUCT, 1, at(1, 10), at(2), 20.0, [(MINERAL, 10, "esi_blueprint")],
+                           output_quantity=1)],
+        production_type_ids={PRODUCT},
+    )
+    result = rebuild_costing(ledger)
+    [r] = result.realized_results
+    # 100 minerals + 2 fee + 20 job.
+    assert r.cost == pytest.approx(122.0)
+    assert r.components.fees == pytest.approx(2.0)
+
+
+def test_market_blueprint_buy_is_bpo_capital():
+    result = rebuild_costing(snapshot(
+        wallet_transactions=[buy(BP, 1, 5_000_000.0, at(1))],
+        bpo_type_ids={BP},
+    ))
+    assert result.capital_in_bpos == {BP: 5_000_000.0}
+    assert result.layers == []
 
 
 def test_active_job_stays_work_in_progress():
