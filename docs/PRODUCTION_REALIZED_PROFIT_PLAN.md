@@ -1,7 +1,7 @@
 # Production realized profit - plan
 
-Status: **draft, not started** (2026-10-17). Decisions D1-D8 below are
-proposals and still need the user's confirmation.
+Status: **planned, not started** (2026-10-17). Decisions D1-D8 (section 10)
+are confirmed with the user.
 
 ## 1. Goal
 
@@ -153,9 +153,11 @@ Some inputs will have no real purchase behind them:
 - loot, gifts, items moved in from another tenant/corp,
 - purchases older than the archive or outside ESI's view.
 
-When a consumption or sale finds no layer (or not enough), it draws from an
-`unknown` layer valued by the fallback rule (D5). Every result row stores which
-share of its cost came from real figures. The report shows a **coverage %**
+Stock present at go-live is an `opening` layer placed first in FIFO order
+(D8). When a consumption or sale still finds no layer (or not enough), it
+draws from an `unknown` layer. Both are valued per D5 (market value view and
+cash cost view). Every result row stores which share of its cost came from
+real figures. The report shows a **coverage %**
 per product and in total, and a figure is labeled "estimated" below a
 threshold. This is the honest version of the rule "only prices that were really
 paid": where none exists, the user sees that, instead of a silently invented
@@ -251,27 +253,45 @@ refining origin costs (customs/reprocessing tax from the journal); planned vs
 actual per product (engine estimate at job start vs realized); Portfolio
 integration (realized Production profit next to Trading's).
 
-## 10. Decisions to confirm
+## 10. Decisions (confirmed with the user 2026-10-17)
 
-- **D1 cost method: FIFO layers** (proposal) vs moving average. FIFO matches
-  Trading, keeps the drill-down to individual jobs/purchases, and is
-  deterministic. Moving average is simpler but loses the chain link.
-- **D2 one inventory per type for the whole tenant** (proposal), ignoring
-  location. Moves between stations are invisible in ESI; per-location layers
-  would mismatch constantly.
-- **D3 BPOs are not part of unit cost** (proposal): shown as capital
-  investment, no amortization. Copy/research job costs are counted.
-- **D4 contract price split across items**: by reference market value at
-  contract date (proposal; the only place a quote is used, as a weight only).
-- **D5 unknown cost basis**: value at the reference price on the day of use,
-  flagged as estimated (proposal) - alternatives: zero (overstates profit) or
-  exclude the sale from the report.
-- **D6 Trading overlap**: produced layers first, Trading untouched (proposal).
-- **D7 corp data**: corp jobs by `installer_id`; corp wallets only for corps
-  marked single-member (proposal).
-- **D8 opening inventory**: at go-live, the current ESI stock gets one
-  `opening` layer at the reference price of that day, flagged (proposal) - or
-  the user enters real costs manually.
+- **D1 cost method: FIFO layers**, not moving average. Matches Trading, keeps
+  the drill-down to individual jobs/purchases, deterministic.
+- **D2 one inventory per type for the whole tenant**, ignoring location.
+  Moves between stations are invisible in ESI; per-location layers would
+  mismatch constantly. Freight is a separate cost item (phase 5).
+- **D3 BPOs are not part of unit cost.** Shown as a separate "capital in
+  BPOs" line, no amortization; a BPO sale shows its own gain/loss (sale price
+  minus purchase price). Copy/research/invention job costs are counted.
+- **D4 contract price split across items by reference market value** at the
+  contract date. The quote is only a weight; the split always sums to the real
+  price paid. A single-type contract needs no split. Bought BPCs get their
+  share and are then consumed per run.
+- **D5 unknown cost basis: both views.** Every cost is tagged by origin
+  (`bought`, `contract`, `produced`, `own` = mined/refined/PI, `opening`,
+  `unknown`). The report shows two profits side by side:
+  - *Profit at market value*: own/unknown inputs valued at the reference
+    price on the day of use - the real production profit.
+  - *Profit at cash cost*: own/unknown inputs count only with the ISK
+    actually paid for them (customs, reprocessing tax from the journal, else
+    0) - what really came in.
+  Coverage % (share of cost from real figures) is shown with both.
+- **D6 Trading overlap: produced layers first, Trading untouched.** A sale
+  counts for Production up to the produced quantity; any remainder stays
+  Trading's. `trade_reconciliation.py` is not changed; types that are both
+  produced and imported are listed as an overlap warning.
+- **D7 corp data:** corp jobs are always included when `installer_id` is one
+  of the tenant's characters. Corp wallets are used only for corps (optionally
+  per wallet division) the user explicitly marks as "mine alone" - a per-tenant
+  setting, default off. Without it, inputs bought from a corp wallet have
+  `unknown` origin (D5).
+- **D8 opening inventory: automatic, manually overridable.** At go-live the
+  opening quantity per type is derived as: current ESI stock minus net ledger
+  flows since the archive's earliest event (bought + produced - consumed -
+  sold). It becomes the *oldest* layer (so FIFO consumes it first, not the
+  newer known purchases), origin `opening`, valued at the reference price of
+  the go-live day and treated like `unknown` in D5. The user can override the
+  unit cost per type with a real purchase price (`ledger_manual_entries`).
 
 ## 11. Known limitations (by design)
 
