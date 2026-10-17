@@ -637,6 +637,7 @@ def pending_due(
     granted_tools: Optional[Iterable[str]] = None,
     demand: Iterable[tuple[str, int, str]] = (),
     now: Optional[datetime] = None,
+    kinds: Optional[Iterable[str]] = None,
 ) -> list[tuple[str, int, str, str]]:
     """The sharing rows `do_sync_due` would refresh right now. The scheduler
     asks this first so an idle tick starts no job thread at all; `do_sync_due`
@@ -652,8 +653,13 @@ def pending_due(
     `on_demand` kinds (registry `schedule_mode`) are only due for an
     `(owner_type, owner_id, kind)` present in `demand`; nothing supplies one
     yet - the opt-in alerts will (CLAUDE.md "Discord alerts").
+
+    `kinds` None = every kind; otherwise only those data_kind keys (Production
+    archive retention D10 passes wallet/industry_jobs/market_orders/contracts
+    for inactive tenants that still hold production).
     """
     wanted = set(demand)
+    kind_filter = set(kinds) if kinds is not None else None
     sharing = storage.list_esi_sharing()
     if granted_tools is not None:
         granted = set(granted_tools)
@@ -662,6 +668,8 @@ def pending_due(
     for row in sharing:
         spec = _KIND_BY_KEY.get(row[2])
         if spec is None or spec.live_only:
+            continue
+        if kind_filter is not None and row[2] not in kind_filter:
             continue
         if row[0] == "corporation" and spec.corporation_scope is None:
             continue
@@ -684,6 +692,7 @@ def do_sync_due(
     now: Optional[datetime] = None,
     granted_tools: Optional[Iterable[str]] = None,
     demand: Iterable[tuple[str, int, str]] = (),
+    kinds: Optional[Iterable[str]] = None,
 ) -> dict:
     """Refresh every shared (owner, kind) that is past its freshness-tier
     interval since the last success and past the failure backoff since the
@@ -694,7 +703,9 @@ def do_sync_due(
     due-ness and stamp freshness, which pushes those pairs past the next
     scheduled tick. The scheduler calls this once per tenant.
     """
-    due = pending_due(granted_tools=granted_tools, demand=demand, now=now)
+    due = pending_due(
+        granted_tools=granted_tools, demand=demand, now=now, kinds=kinds,
+    )
     if not due:
         return _empty_result(None)
     return _sync(due, client=client, tool_key=None, extra=extra)
