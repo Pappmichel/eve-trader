@@ -552,8 +552,11 @@ def test_inactive_tenant_with_production_keeps_archive_kinds(monkeypatch):
     monkeypatch.setattr(esi_orchestrator, "pending_due", pending_due)
     scheduler._check_and_run_due_jobs_for_tenant("t", cfg, active=False)
     assert seen.get("kinds") == tenant_eligibility.PRODUCTION_ARCHIVE_KINDS
+    # Only Production's own sharing rows, even when the tenant holds more tools.
+    assert seen.get("granted_tools") == {"production"}
     assert len(calls) == 1 and calls[0][0] == "esi"
     assert calls[0][1]["kinds"] == tenant_eligibility.PRODUCTION_ARCHIVE_KINDS
+    assert calls[0][1]["granted_tools"] == {"production"}
     assert "trading" not in calls
 
 

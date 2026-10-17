@@ -245,8 +245,10 @@ def upsert_ledger_contract_items(rows: list[tuple]) -> int:
 
 def newest_archived_date(
     table: str, owner_type: str, owner_id: int, date_column: str,
+    division: Optional[int] = None,
 ) -> Optional[datetime]:
-    """Newest archived timestamp for gap detection (NULL if archive empty)."""
+    """Newest archived timestamp for gap detection (NULL if archive empty).
+    `division` narrows the wallet tables to one wallet division."""
     allowed = {
         "ledger_wallet_transactions": "date",
         "ledger_wallet_journal": "date",
@@ -256,13 +258,132 @@ def newest_archived_date(
     }
     if table not in allowed or date_column != allowed[table]:
         raise ValueError(f"unsupported gap table/column {table}.{date_column}")
+    sql = f"SELECT MAX({date_column}) FROM {table} WHERE owner_type = ? AND owner_id = ?"
+    params: list = [owner_type, int(owner_id)]
+    if division is not None:
+        if table not in ("ledger_wallet_transactions", "ledger_wallet_journal"):
+            raise ValueError(f"{table} has no wallet division")
+        sql += " AND division = ?"
+        params.append(int(division))
+    with storage.connect() as conn:
+        row = conn.execute(sql, tuple(params)).fetchone()
+    return row[0] if row and row[0] is not None else None
+
+
+def last_archive_sync(
+    owner_type: str, owner_id: int, data_kind: str, division: int = 0,
+) -> Optional[datetime]:
+    """When this (owner, kind, division) was last archived, or None."""
     with storage.connect() as conn:
         row = conn.execute(
-            f"SELECT MAX({date_column}) FROM {table} "
-            "WHERE owner_type = ? AND owner_id = ?",
-            (owner_type, int(owner_id)),
+            "SELECT last_synced_at FROM ledger_sync_state "
+            "WHERE owner_type = ? AND owner_id = ? AND data_kind = ? AND division = ?",
+            (owner_type, int(owner_id), data_kind, int(division)),
         ).fetchone()
-    return row[0] if row and row[0] is not None else None
+    return row[0] if row else None
+
+
+def mark_archive_synced(
+    owner_type: str, owner_id: int, data_kind: str, synced_at: datetime,
+    division: int = 0,
+) -> None:
+    with storage.connect() as conn:
+        conn.execute(
+            "INSERT INTO ledger_sync_state (owner_type, owner_id, data_kind, division, last_synced_at) "
+            "VALUES (?,?,?,?,?) "
+            "ON CONFLICT (tenant_id, owner_type, owner_id, data_kind, division) "
+            "DO UPDATE SET last_synced_at = EXCLUDED.last_synced_at",
+            (owner_type, int(owner_id), data_kind, int(division), synced_at),
+        )
+
+
+def archived_transaction_keys(
+    owner_type: str, owner_id: int, transaction_ids: Iterable[int],
+) -> set[tuple[int, int]]:
+    """(division, transaction_id) pairs already archived for this owner -
+    one query, so a sync only processes rows that are new to the archive."""
+    ids = sorted({int(t) for t in transaction_ids})
+    if not ids:
+        return set()
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT division, transaction_id FROM ledger_wallet_transactions "
+            "WHERE owner_type = ? AND owner_id = ? AND transaction_id = ANY(?)",
+            (owner_type, int(owner_id), ids),
+        ).fetchall()
+    return {(int(r[0]), int(r[1])) for r in rows}
+
+
+def transactions_missing_region(owner_type: str, owner_id: int) -> list[tuple]:
+    """(division, transaction_id, location_id, type_id, quantity, is_buy) of
+    archived rows whose region could not be resolved yet."""
+    with storage.connect() as conn:
+        return conn.execute(
+            "SELECT division, transaction_id, location_id, type_id, quantity, is_buy "
+            "FROM ledger_wallet_transactions "
+            "WHERE owner_type = ? AND owner_id = ? AND region_id IS NULL",
+            (owner_type, int(owner_id)),
+        ).fetchall()
+
+
+def set_transaction_region(rows: list[tuple]) -> int:
+    """`rows`: (region_id, freight_rate_per_m3, freight_m3, owner_type,
+    owner_id, division, transaction_id). Only fills rows whose region is
+    still NULL, so a frozen value is never overwritten."""
+    if not rows:
+        return 0
+    with storage.connect() as conn:
+        conn.executemany(
+            "UPDATE ledger_wallet_transactions SET region_id = ?, "
+            "freight_rate_per_m3 = ?, freight_m3 = ? "
+            "WHERE owner_type = ? AND owner_id = ? AND division = ? "
+            "AND transaction_id = ? AND region_id IS NULL",
+            rows,
+        )
+    return len(rows)
+
+
+def job_ids_with_inputs(
+    owner_type: str, owner_id: int, job_ids: Iterable[int],
+) -> set[int]:
+    ids = sorted({int(j) for j in job_ids})
+    if not ids:
+        return set()
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT job_id FROM ledger_job_inputs "
+            "WHERE owner_type = ? AND owner_id = ? AND job_id = ANY(?)",
+            (owner_type, int(owner_id), ids),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+def contract_ids_with_items(
+    owner_type: str, owner_id: int, contract_ids: Iterable[int],
+) -> set[int]:
+    ids = sorted({int(c) for c in contract_ids})
+    if not ids:
+        return set()
+    with storage.connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT contract_id FROM ledger_contract_items "
+            "WHERE owner_type = ? AND owner_id = ? AND contract_id = ANY(?)",
+            (owner_type, int(owner_id), ids),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+def manufactured_product_of(blueprint_type_id: int) -> Optional[int]:
+    """The item a blueprint manufactures (activity 1), e.g. the T2 module of
+    an invented T2 BPC - `selected_decryptors` is keyed by that item."""
+    with storage.connect() as conn:
+        row = conn.execute(
+            "SELECT product_type_id FROM sde_blueprint_products "
+            "WHERE blueprint_type_id = ? AND activity_id = 1 "
+            "ORDER BY product_type_id LIMIT 1",
+            (int(blueprint_type_id),),
+        ).fetchone()
+    return int(row[0]) if row else None
 
 
 def record_archive_gap(
@@ -287,7 +408,8 @@ def count_ledger_rows(table: str, owner_type: str, owner_id: int) -> int:
     allowed = {
         "ledger_wallet_transactions", "ledger_wallet_journal",
         "ledger_industry_jobs", "ledger_market_orders", "ledger_contracts",
-        "ledger_blueprints", "ledger_job_inputs", "ledger_archive_gaps",
+        "ledger_contract_items", "ledger_blueprints", "ledger_job_inputs",
+        "ledger_archive_gaps",
     }
     if table not in allowed:
         raise ValueError(f"unsupported ledger table {table}")

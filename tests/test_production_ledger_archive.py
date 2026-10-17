@@ -50,7 +50,7 @@ def _wipe(_apply_production_ledger_schema):
         "ledger_wallet_transactions", "ledger_wallet_journal",
         "ledger_industry_jobs", "ledger_job_inputs", "ledger_blueprints",
         "ledger_market_orders", "ledger_contracts", "ledger_contract_items",
-        "ledger_archive_gaps", "esi_sharing",
+        "ledger_archive_gaps", "ledger_sync_state", "esi_sharing",
     )
     yield
 
@@ -182,28 +182,181 @@ def test_share_revoke_hides_archive_rows(tenant):
     ) == 1
 
 
-def test_gap_detection_records_when_sync_oldest_is_newer_than_archive(tenant):
-    # Seed an old archived journal entry.
-    ledger_db.upsert_ledger_wallet_journal([(
-        "character", ALICE, 0, 1, DATE1, "brokers_fee", -10.0,
-        None, None, None, None, None, None, None,
-    )])
-    # Sync whose oldest entry is newer than DATE1 -> gap.
-    journal = [
-        {"id": 10, "date": DATE2, "ref_type": "brokers_fee", "amount": -5.0},
-        {"id": 11, "date": "2026-10-11T12:00:00+00:00", "ref_type": "brokers_fee", "amount": -5.0},
+T0 = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
+
+
+def _journal(start_id: int, count: int, first_date: datetime) -> list[dict]:
+    return [
+        {"id": start_id + i, "date": (first_date + timedelta(seconds=i)).isoformat(),
+         "ref_type": "brokers_fee", "amount": -1.0}
+        for i in range(count)
     ]
+
+
+def test_quiet_period_without_new_rows_is_not_a_gap(tenant):
+    """A character with no wallet activity for a while must not get a gap:
+    the previous archive sync was inside ESI's window, nothing expired."""
+    ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE, txn_rows=[],
+                                 journal_raw=_journal(1, 1, T0), now=T0)
+    later = T0 + timedelta(days=10)
+    ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE, txn_rows=[],
+                                 journal_raw=_journal(100, 1, later), now=later)
+    assert ledger_db.list_archive_gaps("character", ALICE) == []
+
+
+def test_sync_older_than_the_wallet_window_records_a_gap(tenant):
+    """Previous archive sync 45 days ago: ESI only keeps 30 days, so the
+    span from that sync to the window start may be lost."""
+    ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE, txn_rows=[],
+                                 journal_raw=_journal(1, 1, T0), now=T0)
+    later = T0 + timedelta(days=45)
+    ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE, txn_rows=[],
+                                 journal_raw=_journal(100, 1, later), now=later)
+    gaps = {g[0]: (g[1], g[2]) for g in ledger_db.list_archive_gaps("character", ALICE)}
+    assert set(gaps) == {"wallet_transactions", "wallet_journal"}
+    assert gaps["wallet_journal"] == (T0, later - timedelta(days=30))
+
+
+def test_capped_journal_records_a_gap_only_when_the_cap_is_hit(tenant):
+    """The journal returns only the newest 10,000 entries (Phase 0 13a). A
+    full response whose oldest entry is newer than the archive lost the
+    entries in between; 9,999 entries means ESI returned everything."""
+    ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE, txn_rows=[],
+                                 journal_raw=_journal(1, 1, T0), now=T0)
+    newer = T0 + timedelta(days=2)
     ledger_ingest.archive_wallet(
-        owner_type="character", owner_id=ALICE, txn_rows=[], journal_raw=journal,
+        owner_type="character", owner_id=ALICE, txn_rows=[],
+        journal_raw=_journal(1000, ledger_ingest.JOURNAL_ENTRY_CAP - 1, newer),
+        now=newer + timedelta(hours=1),
+    )
+    assert ledger_db.list_archive_gaps("character", ALICE) == []
+
+    newest = T0 + timedelta(days=4)
+    ledger_ingest.archive_wallet(
+        owner_type="character", owner_id=ALICE, txn_rows=[],
+        journal_raw=_journal(50_000, ledger_ingest.JOURNAL_ENTRY_CAP, newest),
+        now=newest + timedelta(hours=1),
     )
     gaps = ledger_db.list_archive_gaps("character", ALICE)
-    assert len(gaps) == 1
-    assert gaps[0][0] == "wallet_journal"
-    # Resync with overlapping history must not invent another gap for the same window.
-    ledger_ingest.archive_wallet(
-        owner_type="character", owner_id=ALICE, txn_rows=[], journal_raw=journal,
-    )
-    assert len(ledger_db.list_archive_gaps("character", ALICE)) == 1
+    assert [(g[0], g[2]) for g in gaps] == [("wallet_journal", newest)]
+
+
+def test_capped_corp_jobs_record_a_gap(tenant, monkeypatch):
+    """Corp industry jobs are treated as capped at 2000 rows (13a)."""
+    monkeypatch.setattr(ledger_ingest.inputs, "freeze_job_inputs", lambda **kw: [])
+
+    def job(job_id, start):
+        return {"job_id": job_id, "activity_id": 1, "blueprint_id": None,
+                "blueprint_type_id": 999, "product_type_id": TYPE_ID, "runs": 1,
+                "cost": 1.0, "installer_id": ALICE, "start_date": start.isoformat(),
+                "end_date": start.isoformat(), "status": "delivered"}
+
+    corp = 98000001
+    ledger_ingest.archive_industry_jobs(owner_type="corporation", owner_id=corp,
+                                        jobs=[job(1, T0)], now=T0)
+    newer = T0 + timedelta(days=1)
+    jobs = [job(10 + i, newer + timedelta(seconds=i)) for i in range(ledger_ingest.INDUSTRY_JOBS_ROW_CAP)]
+    ledger_ingest.archive_industry_jobs(owner_type="corporation", owner_id=corp, jobs=jobs,
+                                        now=newer + timedelta(hours=1))
+    gaps = ledger_db.list_archive_gaps("corporation", corp)
+    assert [(g[0], g[1], g[2]) for g in gaps] == [("industry_jobs", T0, newer)]
+    assert ledger_db.count_ledger_rows("ledger_industry_jobs", "corporation", corp) == 2001
+
+
+class _Counter:
+    def __init__(self, result):
+        self.result = result
+        self.calls = []
+
+    def __call__(self, *args, **kwargs):
+        self.calls.append(args)
+        return self.result() if callable(self.result) else self.result
+
+
+def _txn(txn_id, quantity=5, is_buy=True):
+    return (0, txn_id, DATE1, TYPE_ID, LOCATION_ID, 10.0, quantity, is_buy, txn_id)
+
+
+def test_wallet_archive_processes_only_new_rows_with_cached_lookups(tenant, monkeypatch):
+    """A sync re-sends ESI's whole 30-day list every hour. Only rows new to
+    the archive are enriched, and region/volume are looked up once per
+    location/type per call (Phase 1 review: 83 s per sync before)."""
+    from eve_trader.production.config import ProductionConfig
+
+    region = _Counter(ledger_db.THE_FORGE_REGION_ID)
+    volume = _Counter(2.0)
+    monkeypatch.setattr(ledger_db, "region_id_for_location", region)
+    monkeypatch.setattr(ledger_ingest, "_haul_volume", volume)
+    cfg = ProductionConfig(haul_cost_per_m3=500.0, home_location_id=None)
+
+    ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE,
+                                 txn_rows=[_txn(1), _txn(2), _txn(3, is_buy=False)],
+                                 journal_raw=[], cfg=cfg, now=T0)
+    assert len(region.calls) == 1 and len(volume.calls) == 1
+    stored = {r[3]: r for r in ledger_db.list_ledger_wallet_transactions("character", ALICE)}
+    # Freight frozen per buy: 500 ISK/m3 x 2 m3 x 5 units; sells carry none.
+    assert stored[1][11:] == (ledger_db.THE_FORGE_REGION_ID, 500.0, 10.0)
+    assert stored[3][12:] == (None, None)
+
+    ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE,
+                                 txn_rows=[_txn(1), _txn(2), _txn(3, is_buy=False), _txn(4)],
+                                 journal_raw=[], cfg=cfg, now=T0 + timedelta(hours=1))
+    # Only the new row 4 is enriched (one region, one volume lookup).
+    assert len(region.calls) == 2 and len(volume.calls) == 2
+    assert ledger_db.count_ledger_rows("ledger_wallet_transactions", "character", ALICE) == 4
+
+
+def test_unresolved_region_is_filled_on_a_later_sync(tenant, monkeypatch):
+    """A structure not resolvable at first sight must not lose its freight
+    forever: a later sync fills region and freight once (still frozen)."""
+    from eve_trader.production.config import ProductionConfig
+
+    cfg = ProductionConfig(haul_cost_per_m3=500.0, home_location_id=None)
+    monkeypatch.setattr(ledger_ingest, "_haul_volume", lambda type_id, cfg: 2.0)
+    monkeypatch.setattr(ledger_db, "region_id_for_location", lambda loc: None)
+    ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE, txn_rows=[_txn(1)],
+                                 journal_raw=[], cfg=cfg, now=T0)
+    assert ledger_db.list_ledger_wallet_transactions("character", ALICE)[0][11:] == (None, None, None)
+
+    monkeypatch.setattr(ledger_db, "region_id_for_location", lambda loc: ledger_db.THE_FORGE_REGION_ID)
+    ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE, txn_rows=[_txn(1)],
+                                 journal_raw=[], cfg=cfg, now=T0 + timedelta(hours=1))
+    assert ledger_db.list_ledger_wallet_transactions("character", ALICE)[0][11:] == (
+        ledger_db.THE_FORGE_REGION_ID, 500.0, 10.0)
+
+    # Frozen from here on: a later rate change does not rewrite it.
+    cfg2 = ProductionConfig(haul_cost_per_m3=900.0, home_location_id=None)
+    ledger_ingest.archive_wallet(owner_type="character", owner_id=ALICE, txn_rows=[_txn(1)],
+                                 journal_raw=[], cfg=cfg2, now=T0 + timedelta(hours=2))
+    assert ledger_db.list_ledger_wallet_transactions("character", ALICE)[0][12] == 500.0
+
+
+def test_job_without_inputs_is_retried_and_research_is_never_frozen(tenant, monkeypatch):
+    calls = []
+
+    def freeze(**kw):
+        calls.append(kw["job"]["job_id"])
+        if len(calls) == 1:
+            return []  # e.g. SDE not loaded yet
+        return [ledger_ingest.inputs.FrozenInput(
+            type_id=34, quantity=10.0, blueprint_me=10, material_multiplier=0.9,
+            decryptor_type_id=None, encryption_skill_level=None,
+            science_skill_1_level=None, science_skill_2_level=None, source="assumed_me")]
+
+    monkeypatch.setattr(ledger_ingest.inputs, "freeze_job_inputs", freeze)
+    manufacturing = {"job_id": 70, "activity_id": 1, "blueprint_type_id": 999,
+                     "product_type_id": 34, "runs": 1, "start_date": DATE1, "status": "active"}
+    research = {**manufacturing, "job_id": 71, "activity_id": 4}
+    ledger_ingest.archive_industry_jobs(owner_type="character", owner_id=ALICE,
+                                        jobs=[manufacturing, research], now=T0)
+    assert ledger_db.count_ledger_rows("ledger_job_inputs", "character", ALICE) == 0
+    ledger_ingest.archive_industry_jobs(owner_type="character", owner_id=ALICE,
+                                        jobs=[manufacturing, research], now=T0 + timedelta(hours=6))
+    assert ledger_db.count_ledger_rows("ledger_job_inputs", "character", ALICE) == 1
+    ledger_ingest.archive_industry_jobs(owner_type="character", owner_id=ALICE,
+                                        jobs=[manufacturing, research], now=T0 + timedelta(hours=12))
+    # Retried once, then frozen; the research job is never computed.
+    assert calls == [70, 70]
 
 
 def test_production_archive_retention_requires_production_grant(monkeypatch):

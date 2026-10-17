@@ -6,12 +6,13 @@ Idempotent upserts, never deletes. Snapshot behaviour is unchanged.
 Deliberate layering note: fetchers lazy-import this module (a Production
 tool package). The plan places archive writes inside existing fetchers;
 esi_data otherwise imports no tool package - this is the one exception
-for Production realized profit (docs/PRODUCTION_REALIZED_PROFIT_PLAN.md).
+for Production realized profit (docs/PRODUCTION_REALIZED_PROFIT_PLAN.md,
+CLAUDE.md "Two tools, one backend").
 """
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from ... import hubs, storage
@@ -27,6 +28,18 @@ _FINISHED_CONTRACT_STATUSES = frozenset(
 )
 _ITEM_EXCHANGE = "item_exchange"
 
+# How far back each ESI list reaches, and the row caps Phase 0 found
+# (plan section 13a). A gap can only exist where one of these was exceeded.
+JOURNAL_ENTRY_CAP = 10_000        # proven: newest 10,000 entries only
+INDUSTRY_JOBS_ROW_CAP = 2_000     # assumed hard cap (user decision 2026-10-17)
+WALLET_WINDOW_DAYS = 30
+CONTRACTS_WINDOW_DAYS = 30
+ORDER_HISTORY_WINDOW_DAYS = 90
+INDUSTRY_JOBS_WINDOW_DAYS = 90
+
+# Activities whose jobs consume materials (manufacturing, invention, reaction).
+_ACTIVITIES_WITH_INPUTS = frozenset({1, 8, 11})
+
 
 def _parse_esi_time(value) -> Optional[datetime]:
     if value is None:
@@ -41,8 +54,13 @@ def _parse_esi_time(value) -> Optional[datetime]:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def _now(now: Optional[datetime]) -> datetime:
+    return now if now is not None else datetime.now(timezone.utc)
+
+
 def _freight_rate_for_forge(cfg) -> float:
-    """Same rate the planner uses for The Forge buys (plan section 5a)."""
+    """Same rate the planner uses for The Forge buys (plan section 5a,
+    `pricing._freight_rate`): the hub table entry only in "All hubs" mode."""
     if getattr(cfg, "hub_region_id", None) == ALL_HUBS:
         return hubs.hub_freight_per_m3(
             db.THE_FORGE_REGION_ID, fallback=cfg.haul_cost_per_m3,
@@ -50,35 +68,155 @@ def _freight_rate_for_forge(cfg) -> float:
     return float(cfg.haul_cost_per_m3)
 
 
-def _maybe_record_gap(
+def _check_gap(
     *,
     owner_type: str,
     owner_id: int,
     data_kind: str,
-    table: str,
-    date_column: str,
-    sync_dates: list[datetime],
+    now: datetime,
+    division: int = 0,
+    window_days: Optional[int] = None,
+    cap: Optional[int] = None,
+    row_count: int = 0,
+    sync_dates: Optional[list[datetime]] = None,
+    table: Optional[str] = None,
+    date_column: Optional[str] = None,
 ) -> None:
-    """If the oldest row of this sync is newer than the newest archived row,
-    completed history in between was lost - record an archive gap."""
-    dated = [d for d in sync_dates if d is not None]
-    if not dated:
-        return
-    oldest_sync = min(dated)
-    newest_archived = db.newest_archived_date(table, owner_type, owner_id, date_column)
-    if newest_archived is None:
-        return
-    if oldest_sync > newest_archived:
-        db.record_archive_gap(
-            owner_type, owner_id, data_kind, newest_archived, oldest_sync,
+    """Record an archive gap only where ESI can really have dropped rows:
+
+    - windowed list: the previous archive sync is older than ESI's window,
+      so rows from (previous sync, window start) may have expired unseen;
+    - capped list: this response hit the row cap and its oldest row is newer
+      than the newest archived one.
+
+    A quiet period without new rows is never a gap. The first sync of an
+    owner starts the archive and records nothing. Always stamps the sync."""
+    previous = db.last_archive_sync(owner_type, owner_id, data_kind, division)
+    if previous is not None and window_days is not None:
+        horizon = now - timedelta(days=window_days)
+        if previous < horizon:
+            _record_gap(owner_type, owner_id, data_kind, previous, horizon)
+    if previous is not None and cap is not None and row_count >= cap and table:
+        dated = [d for d in (sync_dates or []) if d is not None]
+        newest = db.newest_archived_date(
+            table, owner_type, owner_id, date_column,
+            division=division if table in ("ledger_wallet_transactions", "ledger_wallet_journal") else None,
         )
-        log.warning(
-            "ledger archive gap for %s %s/%s: archived newest %s, sync oldest %s",
-            data_kind, owner_type, owner_id, newest_archived, oldest_sync,
-        )
+        if dated and newest is not None and min(dated) > newest:
+            _record_gap(owner_type, owner_id, data_kind, newest, min(dated))
+    db.mark_archive_synced(owner_type, owner_id, data_kind, now, division)
+
+
+def _record_gap(owner_type, owner_id, data_kind, start, end) -> None:
+    db.record_archive_gap(owner_type, owner_id, data_kind, start, end)
+    log.warning(
+        "ledger archive gap for %s %s/%s: %s .. %s",
+        data_kind, owner_type, owner_id, start, end,
+    )
 
 
 # ------------------------------------------------------------------ wallet
+class _TxnEnricher:
+    """Region + frozen freight for wallet rows, with per-call caches: a sync
+    of one character touches thousands of rows at very few locations/types."""
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.home_location_id = getattr(cfg, "home_location_id", None)
+        self.forge_rate = _freight_rate_for_forge(cfg)
+        self._regions: dict[int, Optional[int]] = {}
+        self._volumes: dict[int, Optional[float]] = {}
+
+    def region(self, location_id: int) -> Optional[int]:
+        loc = int(location_id)
+        if loc not in self._regions:
+            self._regions[loc] = db.region_id_for_location(loc)
+        return self._regions[loc]
+
+    def volume(self, type_id: int) -> Optional[float]:
+        tid = int(type_id)
+        if tid not in self._volumes:
+            self._volumes[tid] = _haul_volume(tid, self.cfg)
+        return self._volumes[tid]
+
+    def freight(self, region_id, location_id, type_id, quantity, is_buy):
+        """(freight_rate_per_m3, freight_m3) or (None, None)."""
+        if not is_buy or region_id != db.THE_FORGE_REGION_ID:
+            return None, None
+        if self.home_location_id is not None and int(location_id) == int(self.home_location_id):
+            return None, None
+        vol = self.volume(type_id)
+        if vol is None:
+            return None, None
+        return self.forge_rate, float(vol) * float(quantity)
+
+
+def _archive_txn_rows(owner_type: str, owner_id: int, txn_rows: list[tuple],
+                      enricher: _TxnEnricher) -> int:
+    """Insert only rows new to the archive, then retry region resolution
+    for archived rows that are still unresolved. Returns rows inserted."""
+    known = db.archived_transaction_keys(owner_type, owner_id, [r[1] for r in txn_rows])
+    ledger_txns: list[tuple] = []
+    for r in txn_rows:
+        division, txn_id, date, type_id, location_id, unit_price, quantity, is_buy, journal_ref_id = r
+        if (int(division), int(txn_id)) in known:
+            continue
+        region_id = enricher.region(location_id)
+        rate, m3 = enricher.freight(region_id, location_id, type_id, quantity, is_buy)
+        ledger_txns.append((
+            owner_type, int(owner_id), int(division), int(txn_id), date,
+            int(type_id), int(location_id), float(unit_price), int(quantity),
+            bool(is_buy), int(journal_ref_id), region_id, rate, m3,
+        ))
+    db.upsert_ledger_wallet_transactions(ledger_txns)
+
+    updates: list[tuple] = []
+    for division, txn_id, location_id, type_id, quantity, is_buy in db.transactions_missing_region(
+            owner_type, owner_id):
+        region_id = enricher.region(location_id)
+        if region_id is None:
+            continue
+        rate, m3 = enricher.freight(region_id, location_id, type_id, quantity, is_buy)
+        updates.append((region_id, rate, m3, owner_type, int(owner_id), int(division), int(txn_id)))
+    db.set_transaction_region(updates)
+    return len(ledger_txns)
+
+
+def _journal_rows(owner_type: str, owner_id: int, division: int,
+                  entries: list[dict]) -> tuple[list[tuple], list[datetime]]:
+    rows: list[tuple] = []
+    dates: list[datetime] = []
+    for e in entries:
+        jid = e.get("id")
+        if jid is None:
+            continue
+        date = e.get("date")
+        rows.append((
+            owner_type, int(owner_id), int(division), int(jid), date,
+            e.get("ref_type") or "", float(e.get("amount") or 0.0),
+            e.get("context_id"), e.get("context_id_type"),
+            e.get("first_party_id"), e.get("second_party_id"),
+            e.get("description"), e.get("tax"), e.get("tax_receiver_id"),
+        ))
+        dt = _parse_esi_time(date)
+        if dt is not None:
+            dates.append(dt)
+    return rows, dates
+
+
+def _archive_journal(owner_type: str, owner_id: int, division: int,
+                     entries: list[dict], now: datetime) -> int:
+    rows, dates = _journal_rows(owner_type, owner_id, division, entries)
+    _check_gap(
+        owner_type=owner_type, owner_id=owner_id, data_kind="wallet_journal",
+        now=now, division=division, window_days=WALLET_WINDOW_DAYS,
+        cap=JOURNAL_ENTRY_CAP, row_count=len(rows), sync_dates=dates,
+        table="ledger_wallet_journal", date_column="date",
+    )
+    db.upsert_ledger_wallet_journal(rows)
+    return len(rows)
+
+
 def archive_wallet(
     *,
     owner_type: str,
@@ -87,6 +225,7 @@ def archive_wallet(
     journal_raw: list[dict],
     journal_division: int = 0,
     cfg=None,
+    now: Optional[datetime] = None,
 ) -> dict:
     """Archive wallet transactions + journal after the snapshot write.
 
@@ -96,61 +235,14 @@ def archive_wallet(
     (needs context_id etc.).
     """
     cfg = cfg if cfg is not None else production_config.PRODUCTION_CONFIG
-    home_location_id = getattr(cfg, "home_location_id", None)
-    forge_rate = _freight_rate_for_forge(cfg)
-
-    ledger_txns: list[tuple] = []
-    txn_dates: list[datetime] = []
-    for r in txn_rows:
-        division, txn_id, date, type_id, location_id, unit_price, quantity, is_buy, journal_ref_id = r
-        region_id = db.region_id_for_location(int(location_id))
-        freight_rate = None
-        freight_m3 = None
-        if is_buy and region_id == db.THE_FORGE_REGION_ID:
-            if home_location_id is None or int(location_id) != int(home_location_id):
-                vol = _haul_volume(int(type_id), cfg)
-                if vol is not None:
-                    freight_rate = forge_rate
-                    freight_m3 = float(vol) * float(quantity)
-        ledger_txns.append((
-            owner_type, int(owner_id), int(division), int(txn_id), date,
-            int(type_id), int(location_id), float(unit_price), int(quantity),
-            bool(is_buy), int(journal_ref_id), region_id, freight_rate, freight_m3,
-        ))
-        dt = _parse_esi_time(date)
-        if dt is not None:
-            txn_dates.append(dt)
-
-    _maybe_record_gap(
+    now = _now(now)
+    _check_gap(
         owner_type=owner_type, owner_id=owner_id, data_kind="wallet_transactions",
-        table="ledger_wallet_transactions", date_column="date", sync_dates=txn_dates,
+        now=now, division=journal_division, window_days=WALLET_WINDOW_DAYS,
     )
-    db.upsert_ledger_wallet_transactions(ledger_txns)
-
-    journal_rows: list[tuple] = []
-    journal_dates: list[datetime] = []
-    for e in journal_raw:
-        jid = e.get("id")
-        if jid is None:
-            continue
-        date = e.get("date")
-        journal_rows.append((
-            owner_type, int(owner_id), int(journal_division), int(jid), date,
-            e.get("ref_type") or "", float(e.get("amount") or 0.0),
-            e.get("context_id"), e.get("context_id_type"),
-            e.get("first_party_id"), e.get("second_party_id"),
-            e.get("description"), e.get("tax"), e.get("tax_receiver_id"),
-        ))
-        dt = _parse_esi_time(date)
-        if dt is not None:
-            journal_dates.append(dt)
-
-    _maybe_record_gap(
-        owner_type=owner_type, owner_id=owner_id, data_kind="wallet_journal",
-        table="ledger_wallet_journal", date_column="date", sync_dates=journal_dates,
-    )
-    db.upsert_ledger_wallet_journal(journal_rows)
-    return {"transactions": len(ledger_txns), "journal": len(journal_rows)}
+    inserted = _archive_txn_rows(owner_type, owner_id, txn_rows, _TxnEnricher(cfg))
+    journal = _archive_journal(owner_type, owner_id, journal_division, journal_raw, now)
+    return {"transactions": inserted, "journal": journal}
 
 
 def archive_corp_wallet(
@@ -159,63 +251,22 @@ def archive_corp_wallet(
     txn_rows: list[tuple],
     journal_entries_by_division: dict[int, list[dict]],
     cfg=None,
+    now: Optional[datetime] = None,
 ) -> dict:
-    """Corp wallet: txns already carry division; journal is per division."""
+    """Corp wallet: txns already carry division; journal and gap checks are
+    per division (each division is its own ESI list with its own cap)."""
     cfg = cfg if cfg is not None else production_config.PRODUCTION_CONFIG
-    # Reuse character path for txns (division already in rows).
-    home_location_id = getattr(cfg, "home_location_id", None)
-    forge_rate = _freight_rate_for_forge(cfg)
-    ledger_txns: list[tuple] = []
-    txn_dates: list[datetime] = []
-    for r in txn_rows:
-        division, txn_id, date, type_id, location_id, unit_price, quantity, is_buy, journal_ref_id = r
-        region_id = db.region_id_for_location(int(location_id))
-        freight_rate = None
-        freight_m3 = None
-        if is_buy and region_id == db.THE_FORGE_REGION_ID:
-            if home_location_id is None or int(location_id) != int(home_location_id):
-                vol = _haul_volume(int(type_id), cfg)
-                if vol is not None:
-                    freight_rate = forge_rate
-                    freight_m3 = float(vol) * float(quantity)
-        ledger_txns.append((
-            "corporation", int(owner_id), int(division), int(txn_id), date,
-            int(type_id), int(location_id), float(unit_price), int(quantity),
-            bool(is_buy), int(journal_ref_id), region_id, freight_rate, freight_m3,
-        ))
-        dt = _parse_esi_time(date)
-        if dt is not None:
-            txn_dates.append(dt)
-    _maybe_record_gap(
-        owner_type="corporation", owner_id=owner_id, data_kind="wallet_transactions",
-        table="ledger_wallet_transactions", date_column="date", sync_dates=txn_dates,
-    )
-    db.upsert_ledger_wallet_transactions(ledger_txns)
-
-    journal_rows: list[tuple] = []
-    journal_dates: list[datetime] = []
-    for division, entries in journal_entries_by_division.items():
-        for e in entries:
-            jid = e.get("id")
-            if jid is None:
-                continue
-            date = e.get("date")
-            journal_rows.append((
-                "corporation", int(owner_id), int(division), int(jid), date,
-                e.get("ref_type") or "", float(e.get("amount") or 0.0),
-                e.get("context_id"), e.get("context_id_type"),
-                e.get("first_party_id"), e.get("second_party_id"),
-                e.get("description"), e.get("tax"), e.get("tax_receiver_id"),
-            ))
-            dt = _parse_esi_time(date)
-            if dt is not None:
-                journal_dates.append(dt)
-    _maybe_record_gap(
-        owner_type="corporation", owner_id=owner_id, data_kind="wallet_journal",
-        table="ledger_wallet_journal", date_column="date", sync_dates=journal_dates,
-    )
-    db.upsert_ledger_wallet_journal(journal_rows)
-    return {"transactions": len(ledger_txns), "journal": len(journal_rows)}
+    now = _now(now)
+    for division in sorted(journal_entries_by_division):
+        _check_gap(
+            owner_type="corporation", owner_id=owner_id, data_kind="wallet_transactions",
+            now=now, division=division, window_days=WALLET_WINDOW_DAYS,
+        )
+    inserted = _archive_txn_rows("corporation", owner_id, txn_rows, _TxnEnricher(cfg))
+    journal = 0
+    for division, entries in sorted(journal_entries_by_division.items()):
+        journal += _archive_journal("corporation", owner_id, division, entries, now)
+    return {"transactions": inserted, "journal": journal}
 
 
 # ----------------------------------------------------------- industry jobs
@@ -225,18 +276,24 @@ def archive_industry_jobs(
     owner_id: int,
     jobs: list[dict],
     cfg=None,
+    now: Optional[datetime] = None,
 ) -> dict:
     """Archive completed+active jobs (include_completed=true payload).
 
-    Freezes inputs only for jobs not already in the archive.
+    Inputs are frozen the first time they can be computed: a job archived
+    earlier without inputs (e.g. SDE not loaded yet) is retried on the next
+    sync; a job that has inputs is never recomputed.
     """
+    now = _now(now)
     if not jobs:
+        _check_gap(owner_type=owner_type, owner_id=owner_id, data_kind="industry_jobs",
+                   now=now, window_days=INDUSTRY_JOBS_WINDOW_DAYS)
         return {"jobs": 0, "inputs": 0}
     cfg = cfg if cfg is not None else production_config.PRODUCTION_CONFIG
     selected = storage.load_selected_decryptors()
 
     job_ids = [int(j["job_id"]) for j in jobs if j.get("job_id") is not None]
-    already = db.job_ids_already_archived(owner_type, owner_id, job_ids)
+    has_inputs = db.job_ids_with_inputs(owner_type, owner_id, job_ids)
 
     rows: list[tuple] = []
     start_dates: list[datetime] = []
@@ -264,7 +321,7 @@ def archive_industry_jobs(
         if dt is not None:
             start_dates.append(dt)
 
-        if int(jid) not in already:
+        if activity_id in _ACTIVITIES_WITH_INPUTS and int(jid) not in has_inputs:
             frozen = inputs.freeze_job_inputs(
                 owner_type=owner_type, owner_id=owner_id, job={**j, "activity_id": activity_id},
                 cfg=cfg, selected_decryptors=selected,
@@ -272,13 +329,15 @@ def archive_industry_jobs(
             for inp in frozen:
                 input_rows.append(inputs.frozen_to_row(owner_type, owner_id, int(jid), inp))
 
-    _maybe_record_gap(
+    _check_gap(
         owner_type=owner_type, owner_id=owner_id, data_kind="industry_jobs",
-        table="ledger_industry_jobs", date_column="start_date", sync_dates=start_dates,
+        now=now, window_days=INDUSTRY_JOBS_WINDOW_DAYS,
+        cap=INDUSTRY_JOBS_ROW_CAP, row_count=len(rows), sync_dates=start_dates,
+        table="ledger_industry_jobs", date_column="start_date",
     )
     db.upsert_ledger_industry_jobs(rows)
     db.insert_ledger_job_inputs(input_rows)
-    return {"jobs": len(rows), "inputs": len(input_rows), "new_jobs": len(job_ids) - len(already & set(job_ids))}
+    return {"jobs": len(rows), "inputs": len(input_rows)}
 
 
 # -------------------------------------------------------------- blueprints
@@ -307,28 +366,25 @@ def archive_market_orders(
     owner_type: str,
     owner_id: int,
     orders: list[dict],
+    now: Optional[datetime] = None,
 ) -> dict:
     """Open orders + order history rows (same shape from ESI)."""
+    now = _now(now)
     rows: list[tuple] = []
-    issued_dates: list[datetime] = []
     for o in orders:
         oid = o.get("order_id")
         if oid is None:
             continue
-        issued = o.get("issued")
         rows.append((
             owner_type, int(owner_id), int(oid), int(o["type_id"]),
             int(o["location_id"]), o.get("region_id"),
             bool(o.get("is_buy_order")), float(o["price"]),
             int(o.get("volume_total") or o.get("volume_remain") or 0),
-            o.get("volume_remain"), issued, o.get("state"),
+            o.get("volume_remain"), o.get("issued"), o.get("state"),
         ))
-        dt = _parse_esi_time(issued)
-        if dt is not None:
-            issued_dates.append(dt)
-    _maybe_record_gap(
+    _check_gap(
         owner_type=owner_type, owner_id=owner_id, data_kind="market_orders",
-        table="ledger_market_orders", date_column="issued", sync_dates=issued_dates,
+        now=now, window_days=ORDER_HISTORY_WINDOW_DAYS,
     )
     db.upsert_ledger_market_orders(rows)
     return {"orders": len(rows)}
@@ -341,11 +397,12 @@ def archive_contracts(
     owner_id: int,
     contracts: list[dict],
     items_by_contract: dict[int, list[dict]],
+    now: Optional[datetime] = None,
 ) -> dict:
     """Item-exchange contracts where this owner is issuer or acceptor."""
+    now = _now(now)
     rows: list[tuple] = []
     item_rows: list[tuple] = []
-    issued_dates: list[datetime] = []
     for c in contracts:
         if c.get("type") != _ITEM_EXCHANGE:
             continue
@@ -360,18 +417,15 @@ def archive_contracts(
             c.get("title"), c.get("price"), c.get("reward"),
             c.get("date_issued"), c.get("date_completed"), c.get("date_expired"),
         ))
-        dt = _parse_esi_time(c.get("date_issued"))
-        if dt is not None:
-            issued_dates.append(dt)
         for it in items_by_contract.get(int(cid), []):
             item_rows.append((
                 owner_type, int(owner_id), int(cid), int(it["record_id"]),
                 int(it["type_id"]), int(it["quantity"]),
                 bool(it.get("is_included", True)), bool(it.get("is_singleton", False)),
             ))
-    _maybe_record_gap(
+    _check_gap(
         owner_type=owner_type, owner_id=owner_id, data_kind="contracts",
-        table="ledger_contracts", date_column="date_issued", sync_dates=issued_dates,
+        now=now, window_days=CONTRACTS_WINDOW_DAYS,
     )
     db.upsert_ledger_contracts(rows)
     db.upsert_ledger_contract_items(item_rows)
@@ -384,14 +438,7 @@ def contract_party_matches(
     """True when this tenant owner is issuer or acceptor of the contract."""
     oid = int(owner_id)
     if owner_type == "character":
-        if contract.get("issuer_id") == oid or contract.get("acceptor_id") == oid:
-            return True
-        if corporation_id is not None and contract.get("issuer_corporation_id") == int(corporation_id):
-            # Character's corp issued it - still relevant for the archive when
-            # the character is the issuer_id path above; corp-issued without
-            # this character as issuer is the corp owner's problem.
-            return contract.get("issuer_id") == oid
-        return False
+        return contract.get("issuer_id") == oid or contract.get("acceptor_id") == oid
     return (
         contract.get("issuer_corporation_id") == oid
         or contract.get("acceptor_id") == oid

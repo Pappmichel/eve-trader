@@ -303,6 +303,27 @@ CREATE POLICY tenant_isolation ON ledger_archive_gaps
     WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
 GRANT SELECT, INSERT, UPDATE, DELETE ON ledger_archive_gaps TO eve_trader_app;
 
+-- ====================================================== archive sync state
+-- Last time each (owner, kind, wallet division) was archived. Gap detection
+-- for windowed ESI lists (wallet 30 days, order history / jobs 90 days)
+-- compares against this, not against the newest archived row, so a quiet
+-- period with no new rows is never reported as lost history.
+CREATE TABLE IF NOT EXISTS ledger_sync_state (
+    tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,
+    owner_type TEXT NOT NULL CHECK (owner_type IN ('character', 'corporation')),
+    owner_id BIGINT NOT NULL,
+    data_kind TEXT NOT NULL,
+    division INTEGER NOT NULL DEFAULT 0,
+    last_synced_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (tenant_id, owner_type, owner_id, data_kind, division)
+);
+ALTER TABLE ledger_sync_state ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON ledger_sync_state;
+CREATE POLICY tenant_isolation ON ledger_sync_state
+    USING (tenant_id = current_setting('app.tenant_id', false)::uuid)
+    WITH CHECK (tenant_id = current_setting('app.tenant_id', false)::uuid);
+GRANT SELECT, INSERT, UPDATE, DELETE ON ledger_sync_state TO eve_trader_app;
+
 -- ====================================================== derived (rebuildable; Phase 2+)
 CREATE TABLE IF NOT EXISTS prod_cost_layers (
     tenant_id UUID NOT NULL DEFAULT current_setting('app.tenant_id', false)::uuid,

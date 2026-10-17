@@ -227,14 +227,17 @@ def _check_and_run_due_jobs_for_tenant(
         # (pipeline, portfolio, other kinds) stays off.
         if tenant_eligibility.production_archive_retention(tenant_id, grants):
             archive_kinds = tenant_eligibility.PRODUCTION_ARCHIVE_KINDS
-            if esi_orchestrator.pending_due(granted_tools=grants, kinds=archive_kinds):
+            # Only sharing rows of Production itself: a wallet shared just
+            # with Trading has no archive to keep and stays idle like the rest.
+            archive_tools = {"production"}
+            if esi_orchestrator.pending_due(granted_tools=archive_tools, kinds=archive_kinds):
                 from .doctrine.config import DOCTRINE_CONFIG
                 structure_id = DOCTRINE_CONFIG.effective_structure_id
                 extra = {"structure_id": structure_id} if structure_id is not None else None
                 _run_job(
                     tenant_id, "esi_data_sync",
                     lambda: esi_orchestrator.do_sync_due(
-                        granted_tools=grants, extra=extra, kinds=archive_kinds,
+                        granted_tools=archive_tools, extra=extra, kinds=archive_kinds,
                     ),
                 )
         return

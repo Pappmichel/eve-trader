@@ -15,6 +15,7 @@ from .. import config as production_config
 from ..constants import (
     ACTIVITY_INVENTION,
     ACTIVITY_MANUFACTURING,
+    ACTIVITY_MODS,
     ACTIVITY_REACTION,
     DECRYPTORS,
     structure_rig_multiplier,
@@ -34,8 +35,13 @@ _ACTIVITY_COPYING = 5
 _ACTIVITY_RESEARCH_TE = 3
 _ACTIVITY_RESEARCH_ME = 4
 
-# Tolerance when matching probability -> decryptor multiplier.
-_DECRYPTOR_MULT_TOLERANCE = 1e-6
+# Tolerance when matching probability -> decryptor multiplier. Phase 0 V8
+# matched every live job within 0.005; multipliers are 0.1 apart, so
+# anything outside this band is not a match and must not be guessed.
+_DECRYPTOR_MULT_TOLERANCE = 0.005
+
+# Activity labels whose blueprints are never researched (ME 0).
+_UNRESEARCHED_LABELS = frozenset({"Faction", "Storyline", "Officer", "Deadspace", "Reaction"})
 
 
 @dataclass(frozen=True)
@@ -67,8 +73,18 @@ def _resolve_blueprint_me(
     blueprint_type_id: int,
     activity_label: str,
     cfg,
+    product_type_id: Optional[int] = None,
+    selected_decryptors: Optional[dict[int, str]] = None,
 ) -> tuple[Optional[int], str]:
-    """Returns (me, source). source matches ledger_job_inputs.source vocabulary."""
+    """Returns (me, source). source matches ledger_job_inputs.source vocabulary.
+
+    Fallbacks when the blueprint itself was never seen (plan 13b):
+    - Tech II: an invented BPC's ME is the decryptor's (DECRYPTORS me_bonus is
+      the absolute ME); the decryptor selected in Production for the product,
+      else the no-decryptor baseline (ME 2);
+    - Tech I: the planner's research baseline (ACTIVITY_MODS["Tech I"]);
+    - Faction/Storyline/Officer/Deadspace/Reaction: ME 0 (not researchable).
+    """
     if blueprint_id is not None:
         hit = db.lookup_blueprint_me_te(int(blueprint_id))
         if hit is not None:
@@ -77,12 +93,14 @@ def _resolve_blueprint_me(
     manual = db.lookup_manual_blueprint_me(int(blueprint_type_id))
     if manual is not None:
         return int(manual[0]), "manual_blueprint"
-    # Activity defaults: T2/faction ME0; Tech I uses the configured baseline
-    # (ACTIVITY_MODS "perfect research" ME10 -> material_mult 0.90 => ME 10).
-    if activity_label in ("Tech II", "Faction", "Storyline", "Officer", "Deadspace", "Reaction"):
+    if activity_label == "Tech II":
+        name = (selected_decryptors or {}).get(int(product_type_id)) if product_type_id is not None else None
+        decryptor = DECRYPTORS.get(name) if name else None
+        return (decryptor or DECRYPTORS["None"]).me_bonus, "assumed_me"
+    if activity_label in _UNRESEARCHED_LABELS:
         return 0, "assumed_me"
-    # Tech I baseline ME10 (1 - me/100 = 0.90).
-    return 10, "assumed_me"
+    baseline = ACTIVITY_MODS["Tech I"].material_multiplier
+    return int(round((1.0 - baseline) * 100)), "assumed_me"
 
 
 def _material_multiplier_for_job(
@@ -124,6 +142,9 @@ def _installer_skill_levels(installer_id: Optional[int], skill_ids: list[int]) -
     rows = read_esi(
         "skills", "production", owner_id=int(installer_id), table="skills",
     )
+    if not rows:
+        # Shared but never synced: no skill data at all, not "every skill 0".
+        return {}
     by_id = {int(r["skill_id"]): int(r["active_level"]) for r in rows}
     return {sid: by_id.get(sid, 0) for sid in skill_ids}
 
@@ -138,32 +159,40 @@ def _is_encryption_skill(skill_type_id: int) -> bool:
 
 def _invention_skill_factor(
     blueprint_type_id: int, installer_id: Optional[int],
-) -> tuple[float, Optional[int], Optional[int], Optional[int], list[int]]:
-    """Skill factor from installer's real skills (enc/40 + sci/30 each).
+) -> tuple[Optional[float], Optional[int], Optional[int], Optional[int]]:
+    """Skill factor from the installer's real skills: 1 + encryption/40 +
+    (science 1 + science 2)/30. Returns (factor, enc, sci1, sci2).
 
-    Returns (factor, enc_level, sci1_level, sci2_level, skill_type_ids).
-    Missing share/levels -> factor 1.0 with None levels (still usable for
-    decryptor match when probability already includes skills - Phase 0 used
-    real skills; without them we fall back carefully).
-    """
+    factor is None whenever the real levels are not known (skills not shared
+    with Production, never synced, or a recipe whose skills are not exactly
+    one encryption + two science skills). A guessed factor would turn the
+    probability match into a confident wrong answer, so the caller must
+    then treat the decryptor as assumed."""
     required = list(storage.get_blueprint_skills(int(blueprint_type_id), ACTIVITY_INVENTION))
     skill_ids = [int(sid) for sid, _lvl in required]
+    enc_ids = [sid for sid in skill_ids if _is_encryption_skill(sid)]
+    science_ids = [sid for sid in skill_ids if sid not in enc_ids]
+    if len(enc_ids) != 1 or len(science_ids) != 2:
+        return None, None, None, None
     levels = _installer_skill_levels(installer_id, skill_ids)
-    enc_id = next((sid for sid in skill_ids if _is_encryption_skill(sid)), None)
-    science_ids = [sid for sid in skill_ids if sid != enc_id]
-    enc_level = levels.get(enc_id) if enc_id is not None else None
-    sci1 = levels.get(science_ids[0]) if len(science_ids) > 0 else None
-    sci2 = levels.get(science_ids[1]) if len(science_ids) > 1 else None
-    if enc_level is None and sci1 is None and sci2 is None:
-        return 1.0, None, None, None, skill_ids
-    factor = 1.0
-    if enc_level is not None:
-        factor += enc_level / 40.0
-    if sci1 is not None:
-        factor += sci1 / 30.0
-    if sci2 is not None:
-        factor += sci2 / 30.0
-    return factor, enc_level, sci1, sci2, skill_ids
+    if not levels:
+        return None, None, None, None
+    enc = levels[enc_ids[0]]
+    sci1, sci2 = levels[science_ids[0]], levels[science_ids[1]]
+    return 1.0 + enc / 40.0 + (sci1 + sci2) / 30.0, enc, sci1, sci2
+
+
+def _selected_decryptor(
+    t2_blueprint_type_id: Optional[int], selected_decryptors: dict[int, str],
+) -> Optional[str]:
+    """The decryptor selected in Production for an invention output.
+    `selected_decryptors` is keyed by the manufactured T2 *item* (engine.
+    _tech_ii_mods), while an invention job names the T2 *blueprint*."""
+    if t2_blueprint_type_id is None:
+        return None
+    item = db.manufactured_product_of(int(t2_blueprint_type_id))
+    name = selected_decryptors.get(item) if item is not None else None
+    return name if name in DECRYPTORS else None
 
 
 def _match_decryptor(
@@ -175,64 +204,40 @@ def _match_decryptor(
 ) -> tuple[Optional[int], str, Optional[int], Optional[int], Optional[int]]:
     """Returns (decryptor_type_id, source, enc, sci1, sci2).
 
-    Phase 0 V8: implied_mult = probability / (base * skill_factor).
-    None vs Symmetry (both 1.0): selected_decryptors, else None, flagged.
-    """
-    skill_factor, enc, sci1, sci2, _ids = _invention_skill_factor(
-        blueprint_type_id, installer_id,
-    )
+    Phase 0 V8: implied multiplier = probability / (base x skill factor)
+    with the installer's real skills, accepted only within
+    _DECRYPTOR_MULT_TOLERANCE of a decryptor's multiplier ->
+    `probability_decryptor`. Everything else is `assumed_decryptor`: the
+    decryptor selected in Production for the product, else none. None and
+    Symmetry share multiplier 1.0; the selection decides between them only
+    when it is one of the two."""
+    selected = _selected_decryptor(product_type_id, selected_decryptors)
+    skill_factor, enc, sci1, sci2 = _invention_skill_factor(blueprint_type_id, installer_id)
+
+    def assumed(name: Optional[str]):
+        d = DECRYPTORS.get(name) if name else None
+        return (d.type_id or None) if d else None, "assumed_decryptor", enc, sci1, sci2
+
     recipe = storage.get_invention_recipe(int(blueprint_type_id), product_type_id)
-    if probability is None or recipe is None or recipe.get("base_probability") is None:
-        # Fall back to selected / None.
-        override = None
-        if product_type_id is not None:
-            override = selected_decryptors.get(int(product_type_id))
-        if override and override in DECRYPTORS:
-            return DECRYPTORS[override].type_id or None, "assumed_decryptor", enc, sci1, sci2
-        return None, "assumed_decryptor", enc, sci1, sci2
+    base = recipe.get("base_probability") if recipe else None
+    # A probability of 1.0 may be capped (min(1, ...)) and says nothing.
+    if (probability is None or skill_factor is None or not base
+            or float(probability) >= 1.0):
+        return assumed(selected)
 
-    base = float(recipe["base_probability"])
-    denom = base * skill_factor
-    if denom <= 0:
-        return None, "assumed_decryptor", enc, sci1, sci2
-    implied = float(probability) / denom
-
+    implied = float(probability) / (float(base) * skill_factor)
     matches = [
-        (name, d) for name, d in DECRYPTORS.items()
+        name for name, d in DECRYPTORS.items()
         if abs(d.probability_multiplier - implied) <= _DECRYPTOR_MULT_TOLERANCE
     ]
     if not matches:
-        # Closest match within a looser band, else assumed.
-        closest = min(
-            DECRYPTORS.items(),
-            key=lambda kv: abs(kv[1].probability_multiplier - implied),
-        )
-        if abs(closest[1].probability_multiplier - implied) < 0.05:
-            matches = [closest]
-        else:
-            override = selected_decryptors.get(int(product_type_id)) if product_type_id else None
-            if override and override in DECRYPTORS:
-                return DECRYPTORS[override].type_id or None, "assumed_decryptor", enc, sci1, sci2
-            return None, "assumed_decryptor", enc, sci1, sci2
-
-    # None and Symmetry both 1.0.
-    names = {m[0] for m in matches}
-    if names == {"None", "Symmetry"} or (len(matches) == 1 and matches[0][0] in ("None", "Symmetry") and abs(implied - 1.0) <= _DECRYPTOR_MULT_TOLERANCE):
-        # Prefer selected_decryptors for the invented *product* type when set.
-        override = None
-        if product_type_id is not None:
-            override = selected_decryptors.get(int(product_type_id))
-        if override in ("None", "Symmetry"):
-            d = DECRYPTORS[override]
+        return assumed(selected)
+    if set(matches) <= {"None", "Symmetry"}:
+        if selected in ("None", "Symmetry"):
+            d = DECRYPTORS[selected]
             return (d.type_id or None), "probability_decryptor", enc, sci1, sci2
-        if override and override in DECRYPTORS:
-            # Selected something else but probability says 1.0 - still assume
-            # from selection only when probability is ambiguous.
-            d = DECRYPTORS[override]
-            return (d.type_id or None), "assumed_decryptor", enc, sci1, sci2
-        return None, "assumed_decryptor", enc, sci1, sci2
-
-    name, d = matches[0]
+        return assumed("None")
+    d = DECRYPTORS[matches[0]]
     return (d.type_id or None), "probability_decryptor", enc, sci1, sci2
 
 
@@ -291,6 +296,8 @@ def freeze_job_inputs(
         blueprint_type_id,
         activity_label,
         cfg,
+        product_type_id=product_type_id_i,
+        selected_decryptors=selected,
     )
     me = int(me or 0)
     material_mult, _bonus = _material_multiplier_for_job(

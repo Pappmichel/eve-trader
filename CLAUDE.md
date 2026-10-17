@@ -24,7 +24,12 @@ data-kind registry, fetchers, orchestrator (`do_sync_for_tool` /
 `do_sync_all`), and fail-closed accessor (`read_esi`, `is_shared`) live here.
 Characters `do_*` actions live in `esi_data/actions.py`. It names tools as strings
 and imports no tool package — the same precedent as
-`auth.TOOL_ROLE_PREFIXES` and `access_gate.ALL_TOOL_KEYS`. Do not put
+`auth.TOOL_ROLE_PREFIXES` and `access_gate.ALL_TOOL_KEYS`. One deliberate
+exception: `esi_data/fetchers.py` lazily imports `production.realized`
+right after a snapshot write to fill the Production realized-profit
+archive (`docs/PRODUCTION_REALIZED_PROFIT_PLAN.md`), only for kinds the
+owner shares with Production, and never lets an archive error fail the
+snapshot sync. Do not add a second tool import here. Do not put
 ESI-owner sync back into `portfolio.py` or a tool's `esi_sync.py` by
 re-deriving a prefix-per-tool layout from a stale reading of this
 paragraph. Tool `do_sync_esi` / `do_sync_contracts` / `do_sync_assets`
