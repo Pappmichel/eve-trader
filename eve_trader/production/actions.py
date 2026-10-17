@@ -1823,3 +1823,214 @@ def do_remove_manual_blueprint_me_te_override(type_id: int) -> dict:
     invalidate_discover_cache()
     invalidate_ship_margin_cache()
     return {"removed": type_id}
+
+
+# ---------------------------------------------------- realized profit (Phase 3)
+def _realized_period(days: int | None, start: str | None, end: str | None, since_t0: bool):
+    """Resolve the overview window. Default is the last 30 days. `since_t0`
+    is the whole ledger from cutover and cannot be combined with another range."""
+    from datetime import datetime, timedelta, timezone
+
+    if since_t0 and (days is not None or start or end):
+        raise ActionError("since_t0 cannot be combined with days or a custom range.")
+    now = datetime.now(timezone.utc)
+    if since_t0:
+        return {"start": None, "end": now, "since_t0": True, "days": None}
+    if start or end:
+        if not start or not end:
+            raise ActionError("A custom range needs both start and end.")
+        start_at = _parse_realized_time(start, "start")
+        end_at = _parse_realized_time(end, "end")
+        if end_at <= start_at:
+            raise ActionError("end must be after start.")
+        return {"start": start_at, "end": end_at, "since_t0": False, "days": None}
+    window = 30 if days is None else int(days)
+    if window < 1 or window > 3660:
+        raise ActionError("days must be between 1 and 3660.")
+    return {"start": now - timedelta(days=window), "end": now, "since_t0": False, "days": window}
+
+
+def _parse_realized_time(value: str, name: str):
+    from datetime import datetime, timezone
+
+    text = (value or "").strip()
+    if not text:
+        raise ActionError(f"{name} is required.")
+    try:
+        if len(text) == 10:
+            parsed = datetime.fromisoformat(text)
+        else:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as e:
+        raise ActionError(f"{name} must be an ISO date or datetime.") from e
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _finite_non_negative(name: str, value) -> float:
+    import math
+
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as e:
+        raise ActionError(f"{name} must be a number.") from e
+    if not math.isfinite(number) or number < 0:
+        raise ActionError(f"{name} must be zero or positive.")
+    return number
+
+
+def do_rebuild_realized() -> dict:
+    """Rebuild derived realized-profit tables from the archive.
+
+    CLI and the background worker call this in-process. The HTTP route
+    starts it via do_start_rebuild_realized so a request is not held for
+    the whole recompute. The run row is written only after the replace
+    transaction commits.
+    """
+    from .realized import loader
+
+    try:
+        return loader.rebuild_realized()
+    except ActionError:
+        raise
+    except Exception as e:
+        raise ActionError(f"Realized profit rebuild failed: {e}") from e
+
+
+def do_start_rebuild_realized() -> dict:
+    from .. import pipeline_runner
+    return pipeline_runner.start_rebuild_realized()
+
+
+def do_realized_rebuild_status() -> dict:
+    from .. import pipeline_runner
+    return pipeline_runner.job_status(
+        pipeline_runner.TOOL_PRODUCTION, pipeline_runner.JOB_REBUILD_REALIZED,
+    )
+
+
+def do_get_realized_summary(days: int | None = None, start: str | None = None,
+                            end: str | None = None, since_t0: bool = False) -> dict:
+    from .realized import report
+    period = _realized_period(days, start, end, since_t0)
+    return report.summary(**period)
+
+
+def do_get_realized_products(days: int | None = None, start: str | None = None,
+                             end: str | None = None, since_t0: bool = False) -> dict:
+    from .realized import report
+    period = _realized_period(days, start, end, since_t0)
+    return report.products(**period)
+
+
+def do_get_realized_product(type_id: int, days: int | None = None, start: str | None = None,
+                            end: str | None = None, since_t0: bool = False) -> dict:
+    if int(type_id) <= 0:
+        raise ActionError("type_id must be a positive item id.")
+    from .realized import report
+    period = _realized_period(days, start, end, since_t0)
+    return report.product(type_id=int(type_id), **period)
+
+
+def do_get_realized_sale_chain(sale_ref: str) -> dict:
+    ref = (sale_ref or "").strip()
+    if not ref or len(ref) > 200:
+        raise ActionError("sale_ref is required.")
+    from .realized import report
+    chain = report.sale_chain(ref)
+    if chain is None:
+        raise ActionError(f"No realized sale {ref}.")
+    return chain
+
+
+def do_get_realized_jobs() -> dict:
+    from .realized import report
+    return report.jobs()
+
+
+def do_get_realized_inventory() -> dict:
+    from .realized import report
+    return report.inventory()
+
+
+def do_get_realized_warnings() -> dict:
+    from .realized import report
+    return report.warnings()
+
+
+def do_add_ledger_entry(entry_kind: str, amount: float, entry_date: str,
+                        type_id: int | None = None, quantity: float | None = None,
+                        note: str | None = None) -> dict:
+    """A manual cost or revenue. `amount` is the entry's total ISK.
+    Quantity is stored and not multiplied in. Opening-cost overrides use
+    do_set_opening_cost. These rows adjust the period report; they are not
+    FIFO layers (the costing engine consumes only opening_cost overrides)."""
+    from .realized import db as ledger_db
+
+    kind = (entry_kind or "").strip()
+    if kind not in ("cost", "revenue"):
+        raise ActionError("entry_kind must be cost or revenue.")
+    total = _finite_non_negative("amount", amount)
+    when = _parse_realized_time(entry_date, "entry_date")
+    if type_id is not None and int(type_id) <= 0:
+        raise ActionError("type_id must be a positive item id.")
+    qty = None
+    if quantity is not None:
+        qty = _finite_non_negative("quantity", quantity)
+    text = (note or "").strip() or None
+    if text is not None and len(text) > 500:
+        raise ActionError("note must be 500 characters or fewer.")
+    entry_id = ledger_db.insert_manual_entry(
+        entry_kind=kind, amount=total, entry_date=when,
+        type_id=None if type_id is None else int(type_id),
+        quantity=qty, note=text,
+    )
+    return {
+        "entry_id": entry_id,
+        "entry_kind": kind,
+        "type_id": None if type_id is None else int(type_id),
+        "quantity": qty,
+        "amount": total,
+        "entry_date": when.isoformat(),
+        "note": text,
+    }
+
+
+def do_set_opening_cost(type_id: int, unit_cost: float, entry_date: str | None = None) -> dict:
+    """Override the opening layer's unit cost for one type. Takes effect on
+    the next rebuild; this call only stores the override."""
+    from datetime import datetime, timezone
+
+    from .realized import db as ledger_db
+
+    if int(type_id) <= 0:
+        raise ActionError("type_id must be a positive item id.")
+    cost = _finite_non_negative("unit_cost", unit_cost)
+    when = datetime.now(timezone.utc) if not entry_date else _parse_realized_time(entry_date, "entry_date")
+    entry_id = ledger_db.replace_opening_cost(int(type_id), cost, when)
+    return {
+        "entry_id": entry_id,
+        "type_id": int(type_id),
+        "unit_cost": cost,
+        "entry_date": when.isoformat(),
+        "applied_on_next_rebuild": True,
+    }
+
+
+def do_reapply_freight_rate() -> dict:
+    """Write the current configured Forge freight rate onto purchases that
+    already have a frozen freight volume. Does not rebuild; the next
+    recompute picks the new rate up. Home-structure and non-Forge buys stay
+    without freight."""
+    from .realized import db as ledger_db
+    from .realized.ingest import _freight_rate_for_forge
+
+    rate = float(_freight_rate_for_forge(PRODUCTION_CONFIG))
+    updated = ledger_db.reapply_freight_rates(rate)
+    return {
+        "updated": updated,
+        "freight_rate_per_m3": rate,
+        "freight_label": "configured rate",
+        "rebuild_required": True,
+    }
