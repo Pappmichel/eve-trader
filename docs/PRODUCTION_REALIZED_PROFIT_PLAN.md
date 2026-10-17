@@ -1,6 +1,6 @@
 # Production realized profit - plan
 
-Status: **planned, not started** (2026-10-17). Decisions D1-D8 (section 10)
+Status: **planned, not started** (2026-10-17). Decisions D1-D9 (section 10)
 are confirmed with the user.
 
 ## 1. Goal
@@ -57,7 +57,7 @@ cost, origin, date), fed only by real events:
 |---|---|---|
 | Market buy (wallet transaction `is_buy`) | + layer | `unit_price x quantity` + buy-order broker fee (journal `brokers_fee`) |
 | Contract buy (item exchange, we pay) | + layers per item | contract price (journal `contract_price`), split across items (D4) |
-| Freight (courier contract we issued, or manual entry) | adds cost to the layers moved | journal courier reward, split by m3 |
+| Freight for every unit bought in The Forge | adds cost to that purchase's layer | configured freight rate x packaged m3 (section 5a, D9) |
 | Industry job start (manufacturing, reaction, copy, invention) | - inputs consumed (FIFO) | inputs computed from SDE recipe + blueprint ME + structure bonus (section 5) |
 | Job cost | adds to the job's output | ESI job `cost` + journal `industry_job_tax` linked by `context_id = job_id` |
 | Job delivered | + layer of the product (or T2 BPC) | sum of consumed input cost + job cost, divided by output quantity |
@@ -87,6 +87,8 @@ root `README.md` and `.cursor/start.sh` (CLAUDE.md, "A brand-new schema file").
 Raw archive (append-only, upsert by natural key, never deleted by a sync):
 
 - `ledger_wallet_transactions` - same columns as `esi_wallet_transactions`
+  plus `region_id`, `freight_rate_per_m3`, `freight_m3` (frozen at ingest for
+  The Forge buys, section 5a) and
   plus `first_seen_at`.
 - `ledger_wallet_journal` - adds `context_id`, `context_id_type`,
   `first_party_id`, `second_party_id`, `description`, `tax`, `tax_receiver_id`
@@ -143,6 +145,33 @@ SDE recipe the same way the planner does (`engine._material_qty`), with:
 
 `order_integrity.py`/`engine.py` already contain the recipe and bonus logic;
 reuse it, do not re-derive it.
+
+## 5a. Freight for items bought in The Forge (D9)
+
+Everything bought in The Forge (region 10000002, wallet transaction
+`location_id` resolved to its region) still has to be hauled to the home
+structure. The user ships it with courier contracts, but the freight cost used
+here is **the rate configured in Settings**, not the courier rewards paid:
+
+- Rate: `hubs.hub_freight_per_m3(10000002, fallback=ProductionConfig.
+  haul_cost_per_m3)` - the Jita/The Forge entry of the shared hub freight
+  table, else Production's own "haul cost per m3". Same lookup the planner
+  uses, so planned and realized freight agree.
+- Volume: packaged volume of the type (`storage.get_cached_packaged_volume`,
+  SDE volume otherwise) x quantity bought.
+- Freight cost = rate x m3, added to the purchase's cost layer (unit cost =
+  (price + broker fee + freight) / quantity) and shown as its own cost
+  component in the drill-down and the summary.
+- The rate is **frozen per purchase at ingest time** (stored on the ledger
+  row, like `ledger_job_inputs`). Settings have no history; a later rate
+  change must not rewrite past results. A recompute keeps the frozen rate; an
+  explicit "re-apply current freight rate" action can update it if wanted.
+- Purchases at the home structure itself carry no freight. Purchases in other
+  regions are not freighted in this version (listed as a warning if they
+  occur), since only The Forge -> home is a regular route.
+- Freight counts as a real cost in both D5 views (market value and cash cost).
+  It is labeled "configured rate" in the report so it is never mistaken for a
+  paid courier reward.
 
 ## 6. Unknown cost basis and coverage
 
@@ -248,7 +277,11 @@ drill-down tree; coverage; drift and overlap warnings; CLI.
 (revenue, cost, profit, margin, coverage), table per product, drill-down of
 one sale's cost chain, warnings. Opening-inventory and manual-entry forms.
 
-**Phase 5 - extensions.** Contract buys/sells and courier freight; PI and
+Freight (section 5a) is part of phases 1-3: the rate is frozen in phase 1's
+ingest, applied in phase 2's costing, shown as its own component in phase 3.
+
+**Phase 5 - extensions.** Contract buys/sells; optional comparison of the
+configured freight rate with courier rewards actually paid; PI and
 refining origin costs (customs/reprocessing tax from the journal); planned vs
 actual per product (engine estimate at job start vs realized); Portfolio
 integration (realized Production profit next to Trading's).
@@ -259,7 +292,7 @@ integration (realized Production profit next to Trading's).
   the drill-down to individual jobs/purchases, deterministic.
 - **D2 one inventory per type for the whole tenant**, ignoring location.
   Moves between stations are invisible in ESI; per-location layers would
-  mismatch constantly. Freight is a separate cost item (phase 5).
+  mismatch constantly. Freight is added at purchase time instead (D9).
 - **D3 BPOs are not part of unit cost.** Shown as a separate "capital in
   BPOs" line, no amortization; a BPO sale shows its own gain/loss (sale price
   minus purchase price). Copy/research/invention job costs are counted.
@@ -292,6 +325,12 @@ integration (realized Production profit next to Trading's).
   newer known purchases), origin `opening`, valued at the reference price of
   the go-live day and treated like `unknown` in D5. The user can override the
   unit cost per type with a real purchase price (`ledger_manual_entries`).
+- **D9 freight (added 2026-10-17):** every unit bought in The Forge gets
+  freight to the home structure added to its cost, at the freight rate
+  configured in Settings (hub freight table entry for The Forge, else
+  Production's `haul_cost_per_m3`) x packaged m3, frozen per purchase at
+  ingest. Courier rewards actually paid are not used as the cost (user's
+  choice); see section 5a.
 
 ## 11. Known limitations (by design)
 
