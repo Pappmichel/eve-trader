@@ -429,7 +429,7 @@ Trades page), `isk`/`pct`/`qty` formatters. Sub-tabs inside the page:
 
 Early state: until the archive has data past T0 the page shows one hint
 ("archive running since X; results start at T0") instead of empty tables.
-Numbers are English-only like the rest of the UI. Live verification per
+UI text is English like the rest of the app. Live verification per
 CLAUDE.md with a throwaway Playwright script before calling it done.
 
 **Phase 5 - extensions.** Contract buys/sells in costing (data archived since
