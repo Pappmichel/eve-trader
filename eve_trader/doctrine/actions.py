@@ -486,6 +486,10 @@ def do_list_contracts(fitting_id: Optional[str] = None, status: Optional[str] = 
 
     rows = []
     for c in contracts:
+        # No doctrine hull at all: not a doctrine ship sale. The row stays
+        # stored so it is not re-matched on every read, but it is not listed.
+        if c.validation_status == engine.NO_HULL_MATCH:
+            continue
         hull_type_id, hull_name = hull_by_fitting_id.get(c.matched_fitting_id, (None, None))
         rows.append({**asdict(c), "source_character_name": character_names.get(c.source_role),
                      "hull_type_id": hull_type_id, "hull_name": hull_name})
