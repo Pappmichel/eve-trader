@@ -11,13 +11,14 @@ because Trading has no contracts share of its own.
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from .. import storage
 from ..realized import access, db, names as display_names
-from ..realized.costing import ESTIMATED_COVERAGE_THRESHOLD, CostComponents
+from ..realized.costing import ESTIMATED_COVERAGE_THRESHOLD, CostComponents, freight_split
 
 CHANNEL = "trading"
 
@@ -182,11 +183,19 @@ def _period_dict(start: Optional[datetime], end: datetime, since_t0: bool, days:
     }
 
 
+def _with_split(components: CostComponents, courier, configured) -> CostComponents:
+    courier_f, configured_f = freight_split(courier, configured, components.freight)
+    return dataclasses.replace(
+        components, freight_courier=courier_f, freight_configured=configured_f,
+    )
+
+
 def _cost_structure(components: CostComponents, sales_tax: float) -> list[dict]:
     amounts = {
         "materials_bought": components.materials_bought,
         "materials_estimated": components.materials_estimated,
-        "freight": components.freight,
+        "freight_courier": components.freight_courier,
+        "freight_configured": components.freight_configured,
         "job": components.job,
         "invention": components.invention,
         "broker_fees": components.fees,
@@ -195,7 +204,8 @@ def _cost_structure(components: CostComponents, sales_tax: float) -> list[dict]:
     labels = (
         ("materials_bought", "Materials bought"),
         ("materials_estimated", "Opening / unknown stock (planner value)"),
-        ("freight", "Freight (configured rate)"),
+        ("freight_courier", "Freight from couriers"),
+        ("freight_configured", "Freight (configured rate)"),
         ("job", "Job costs"),
         ("invention", "Invention"),
         ("broker_fees", "Broker fees"),
@@ -241,11 +251,11 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
             return _empty_summary(period, status)
         start_at, end_at = window
         totals = db.realized_totals(start_at, end_at, **scope)
-        components = CostComponents(
+        components = _with_split(CostComponents(
             materials_bought=_num(totals[4]), materials_estimated=_num(totals[5]),
             freight=_num(totals[6]), job=_num(totals[7]), invention=_num(totals[8]),
             fees=_num(totals[9]),
-        )
+        ), totals[14], totals[15])
         price_missing = bool(totals[12])
         sales_count = int(totals[13])
         cov, estimated = _coverage(components, price_missing) if sales_count else (None, False)
@@ -331,7 +341,11 @@ def items(*, start: Optional[datetime], end: datetime, since_t0: bool, days: Opt
 
 
 def _sale_dict(row, names: dict, locations: dict[int, str]) -> dict:
-    components = _components_from(row, 15)
+    components = _with_split(
+        _components_from(row, 15),
+        row[22] if len(row) > 23 else 0,
+        row[23] if len(row) > 23 else 0,
+    )
     price_missing = bool(row[12])
     estimated = bool(row[13])
     qty = _num(row[2])

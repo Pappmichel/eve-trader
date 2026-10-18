@@ -156,6 +156,13 @@ export default function RealizedTrades() {
               <CoverageBadge coverage={summary.coverage} />
             </Card>
           </SimpleGrid>
+          <Stack gap={2}>
+            {summary.cost_structure
+              .filter((line) => line.key === 'freight_courier' || line.key === 'freight_configured')
+              .map((line) => (
+                <Text key={line.key} size="sm">{line.label}: {isk(line.amount)}</Text>
+              ))}
+          </Stack>
 
           <Title order={6} c="dimmed" tt="uppercase">
             {weekly ? 'Realized profit per week' : 'Realized profit per day'}

@@ -1,7 +1,7 @@
 # Real freight from courier contracts - plan
 
-Status: **Phase 1 built** (2026-10-18). Decisions F1-F7 stay as confirmed.
-Phases 2 and 3 are not started.
+Status: **Phase 2 built** (2026-10-18). Decisions F1-F7 stay as confirmed.
+Phase 3 (Trading contracts share, docs) is not started.
 
 Phase 1 assigns a shipment rate in the pure costing engine and loads the
 couriers that rate comes from. A finished courier that ends at the home
@@ -22,24 +22,52 @@ archive freight columns are not rewritten. `COSTING_VERSION` stays 4.
 
 Failed couriers are now archived (same row, no items) so the warning can
 fire on a rebuild. Expired and deleted couriers are still not archived.
-Nothing is persisted on the derived tables yet (Phase 2). The monthly
-Forge-to-home courier comparison is unchanged until Phase 2 replaces it.
+Phase 2 persists `freight_source` and `shipment_ref` on layers and draws,
+and the courier / configured freight amounts on results, draws and job
+records (`ADD COLUMN IF NOT EXISTS` on `docs/production_ledger_schema.sql`).
+`COSTING_VERSION` stays 4. Every tool's summary splits freight into
+"Freight from couriers" and "Freight (configured rate)". Production and
+Trading put that split on `cost_structure` (the old single `freight` line
+is gone). Doctrine and Station Trading add `freight_from_couriers` and
+`freight_configured`. Rows written before the columns existed keep the
+whole freight amount on the configured rate (`freight_split`). Coverage
+is unchanged.
 
-Tests: `pytest -q` 3304 passed, 4 skipped. New pure cases cover a purchase
-before, between and after shipments, two couriers one minute apart, a
-purchase by someone other than the issuer, a contract buy, a station no
-courier starts from, a failed courier, an expired courier, ST3 on a courier
-rate, and a full-chain regression with no couriers (every layer, draw and
-result number). Postgres: revoking the contracts share changes the
-owner-scope fingerprint and the next rebuild uses the configured rate;
-failed couriers are stored and expired ones are not.
+`GET /api/production/realized/courier` is a shipment list: couriers, issued
+date, volume, reward, ISK/m3, collateral, freight booked on the assigned
+purchases, and gap (reward − booked). Booked freight is replayed by
+`plan_freight` on a read-only snapshot (no freight freeze, no region
+update). The list also has F6 rows ("reward without courier details") for
+`contract_reward_deposited` journal entries whose contract is not archived,
+and failed couriers with collateral. A bought draw's cost chain says
+"Courier <id> · <rate> ISK/m3" or "Configured rate (no courier yet)".
+`do_reapply_freight_rate` still writes the configured rate; the dialog
+says a courier-covered purchase is not affected.
+
+Tests: `pytest -q` 3304 passed, 4 skipped (the old Forge-month comparison
+test was replaced by the shipment-list test, so the count is unchanged).
+Frontend: `npm run lint`, `npm test` (380 passed), `npm run build`.
 
 Live check (local Postgres, throwaway tenant, seed deleted afterwards):
-the six section-2 couriers form five shipments. The 10-03 pair is
-`236650353,236650362` at 800.040406 ISK/m3. A purchase after 2026-10-12
-06:58 UTC stays at the configured 900. A purchase at a station no courier
-starts from stays at its frozen rate. A failed courier warns
-`collateral 1500000000` and sets no rate. Log:
+the six section-2 couriers are five shipments. The 10-03 pair is
+`236650353,236650362` at 800.040406 ISK/m3. Booked freight on that pair is
+the shipment rate times frozen m3, and the gap is reward minus booked.
+A purchase after 2026-10-12 06:58 UTC (806 m3) stays at 900 ISK/m3
+(725,400 ISK) and the cost chain says "Configured rate (no courier yet)".
+The first shipment's buy says "Courier 236378813 · 900.0746 ISK/m3".
+Summary COGS splits 206,736.47 from couriers and 732,900 configured
+(the 806 m3 plus an Amarr buy no courier starts from). A failed courier
+is listed with collateral 1,500,000,000 and warns on rebuild. An
+unarchived `contract_reward_deposited` is an F6 row. Log:
+`/opt/cursor/artifacts/phase2-courier-live.log`.
+
+Phase 1 tests, still green in that same run: a purchase before, between
+and after shipments, two couriers one minute apart, a purchase by someone
+other than the issuer, a contract buy, a station no courier starts from,
+a failed courier, an expired courier, ST3 on a courier rate, and a
+full-chain regression with no couriers. Postgres: revoking the contracts
+share changes the owner-scope fingerprint and the next rebuild uses the
+configured rate. Phase 1 live log:
 `/opt/cursor/artifacts/phase1-courier-live.log`.
 
 ### Deviations
@@ -49,8 +77,15 @@ starts from stays at its frozen rate. A failed courier warns
   the plan did not name. Phase 2 needs them so a produced sale can split
   mixed freight. They are not part of `total`.
 - Assignment uses the home structure as the only end filter, from any start
-  station. Section 3 already says that. The old comparison route is still
-  Forge-only until Phase 2.
+  station. Section 3 already says that. Phase 2 replaced the Forge-only
+  monthly comparison with that shipment list.
+- `prod_realized_results` and `prod_job_records` also store the freight
+  split. A produced sale can mix courier and configured freight, and the
+  summary reads the stored sums. The two amounts are a split of
+  `cost_freight`, not an addition to it.
+- Booked freight on the shipment list is computed from the archive at read
+  time. It is not a new table, and it stays correct when the derived rows
+  are stale (`needs_rebuild` is still reported).
 Builds on `docs/REALIZED_PROFIT_UNIFIED_PLAN.md` (U4: freight from the hub
 table) and the Production plan's D9 (freight is the configured rate and is
 labeled that way).

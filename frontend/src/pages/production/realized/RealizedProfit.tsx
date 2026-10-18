@@ -207,7 +207,7 @@ export default function RealizedProfit() {
         title: 'Re-apply current freight rate',
         children: (
           <Text size="sm">
-            {count} {purchases} would change to the current per-hub freight rate. The Forge rate is {isk(preview.freight_rate_per_m3)}/m³ ({preview.freight_label}). Home-region and station-trade buys stay without freight.
+            {count} {purchases} would change to the current per-hub freight rate. The Forge rate is {isk(preview.freight_rate_per_m3)}/m³ ({preview.freight_label}). Purchases a courier shipment covers are not affected. Home-region and station-trade buys stay without freight.
           </Text>
         ),
         labels: { confirm: 'Apply', cancel: 'Cancel' },

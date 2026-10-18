@@ -2797,6 +2797,8 @@ export interface StationRealizedSummary {
   turnover_days: number | null
   price_missing: boolean
   tax_missing_sales: number
+  freight_from_couriers?: number
+  freight_configured?: number
   fees_by_day: StationRealizedFeeDay[]
   by_day: RealizedDay[]
   open_position_cost: number | null
@@ -2900,6 +2902,8 @@ export interface DoctrineRealizedSummary {
   estimated: boolean
   price_missing: boolean
   production_saving: number | null
+  freight_from_couriers?: number
+  freight_configured?: number
   cost_by_origin: DoctrineOriginCost[]
   by_day: RealizedDay[]
   flags: RealizedFlags
@@ -3279,19 +3283,51 @@ export interface FreightReapplyResult {
   rebuild_required?: boolean
 }
 
-export interface RealizedCourierMonth {
-  month: string
-  count: number
+export interface RealizedCourierContract {
+  contract_id: number
+  issued: string | null
   volume_m3: number
   reward: number
-  paid_isk_per_m3: number | null
-  configured_rate_per_m3: number
+  collateral: number
+}
+
+export interface RealizedCourierShipment {
+  shipment_ref: string
+  contract_ids: number[]
+  issued: string | null
+  start_location_id: number
+  end_location_id: number
+  volume_m3: number
+  reward: number
+  isk_per_m3: number | null
+  collateral: number
+  booked_freight: number
+  gap: number
+  couriers: RealizedCourierContract[]
+}
+
+export interface RealizedRewardWithoutCourier {
+  contract_id: number | null
+  date: string | null
+  amount: number
+  label: string
+}
+
+export interface RealizedFailedCourier {
+  contract_id: number
+  issued: string | null
+  collateral: number
+  volume_m3: number | null
+  reward: number
 }
 
 export interface RealizedCourierComparison {
   home_location_id: number | null
   configured_rate_per_m3: number
-  months: RealizedCourierMonth[]
+  needs_rebuild: boolean
+  shipments: RealizedCourierShipment[]
+  rewards_without_courier: RealizedRewardWithoutCourier[]
+  failed: RealizedFailedCourier[]
 }
 
 export interface HiddenArchiveCount {

@@ -173,6 +173,16 @@ export default function RealizedProfit() {
               <Text size="xs" c="dimmed">Open position {money(summary.open_position_cost)}</Text>
             </Card>
           </SimpleGrid>
+          {(typeof summary.freight_from_couriers === 'number' || typeof summary.freight_configured === 'number') && (
+            <Stack gap={2}>
+              {typeof summary.freight_from_couriers === 'number' && (
+                <Text size="sm">Freight from couriers: {isk(summary.freight_from_couriers)}</Text>
+              )}
+              {typeof summary.freight_configured === 'number' && (
+                <Text size="sm">Freight (configured rate): {isk(summary.freight_configured)}</Text>
+              )}
+            </Stack>
+          )}
 
           <Title order={6} c="dimmed" tt="uppercase">
             {weekly ? 'Realized profit per week' : 'Realized profit per day'}

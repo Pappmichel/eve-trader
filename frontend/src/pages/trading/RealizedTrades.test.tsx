@@ -93,6 +93,18 @@ describe('Trading realized profit page', () => {
     expect(screen.queryByText('Realized profit')).toBeNull()
   })
 
+  it('shows the freight split from the API cost structure', async () => {
+    vi.mocked(tradingApi.realizedSummary).mockResolvedValue(summary({
+      cost_structure: [
+        { key: 'freight_courier', label: 'Freight from couriers', amount: 160 },
+        { key: 'freight_configured', label: 'Freight (configured rate)', amount: 20 },
+      ],
+    }))
+    renderPage()
+    expect(await screen.findByText('Freight from couriers: 160 ISK')).toBeInTheDocument()
+    expect(screen.getByText('Freight (configured rate): 20 ISK')).toBeInTheDocument()
+  })
+
   it('shows API profit and leaves a null margin as a dash', async () => {
     renderPage()
     expect(await screen.findByText('30 ISK')).toBeInTheDocument()

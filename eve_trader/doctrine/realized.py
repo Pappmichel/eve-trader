@@ -15,7 +15,7 @@ from .. import storage
 from ..actions import ActionError
 from ..production.realized.report import _children, _walk
 from ..realized import access, db, names as display_names
-from ..realized.costing import ESTIMATED_COVERAGE_THRESHOLD, CostComponents
+from ..realized.costing import ESTIMATED_COVERAGE_THRESHOLD, CostComponents, freight_split
 
 CHANNEL = "doctrine"
 _BUY_SOURCES = ("buy_home", "buy_hub")
@@ -184,6 +184,8 @@ def _empty_summary(period: dict, status: dict) -> dict:
         "estimated": False,
         "price_missing": False,
         "production_saving": None,
+        "freight_from_couriers": 0.0,
+        "freight_configured": 0.0,
         "cost_by_origin": [],
         "by_day": [],
         "flags": _flags(estimated=False, price_missing=False, coverage=None),
@@ -397,6 +399,9 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
         freight=_num(totals[6]), job=_num(totals[7]), invention=_num(totals[8]),
         fees=_num(totals[9]),
     )
+    freight_from_couriers, freight_configured = freight_split(
+        _num(totals[14]), _num(totals[15]), components.freight,
+    )
     price_missing = bool(totals[12])
     count = int(totals[13])
     cov, estimated = _coverage(components, price_missing) if count else (None, False)
@@ -422,6 +427,8 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
         "estimated": estimated,
         "price_missing": price_missing,
         "production_saving": sum(saving_parts) if saving_parts else None,
+        "freight_from_couriers": freight_from_couriers,
+        "freight_configured": freight_configured,
         "cost_by_origin": _origin_rows(draws, {}, broker),
         "by_day": by_day,
         "flags": _flags(estimated=estimated, price_missing=price_missing, coverage=cov),

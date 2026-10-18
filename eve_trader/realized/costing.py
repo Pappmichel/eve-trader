@@ -742,6 +742,17 @@ def _format_rate(rate: float) -> str:
     return text or "0"
 
 
+def freight_split(courier: float, configured: float, freight: float) -> tuple[float, float]:
+    """(courier, configured). A row written before the split existed keeps
+    its whole freight on the configured rate."""
+    courier_f = 0.0 if courier is None else float(courier)
+    configured_f = 0.0 if configured is None else float(configured)
+    freight_f = 0.0 if freight is None else float(freight)
+    if abs(courier_f) <= _EPS and abs(configured_f) <= _EPS and abs(freight_f) > _EPS:
+        return 0.0, freight_f
+    return courier_f, configured_f
+
+
 def freight_label(source: Optional[str], shipment_ref: Optional[str],
                   rate: Optional[float]) -> Optional[str]:
     """Cost-chain text for a bought draw (F7)."""

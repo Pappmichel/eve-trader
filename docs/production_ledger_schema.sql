@@ -709,3 +709,17 @@ ALTER TABLE prod_cost_layers ADD COLUMN IF NOT EXISTS pool TEXT NOT NULL DEFAULT
 ALTER TABLE prod_cost_draws ADD COLUMN IF NOT EXISTS channel TEXT;
 CREATE INDEX IF NOT EXISTS idx_prod_realized_results_channel
     ON prod_realized_results (channel, sale_date);
+
+-- Courier freight (docs/COURIER_FREIGHT_PLAN.md). The split is part of
+-- cost_freight, not an extra cost. freight_source is "courier" or
+-- "configured". A rebuild replaces these derived rows.
+ALTER TABLE prod_cost_layers ADD COLUMN IF NOT EXISTS freight_source TEXT;
+ALTER TABLE prod_cost_layers ADD COLUMN IF NOT EXISTS shipment_ref TEXT;
+ALTER TABLE prod_cost_draws ADD COLUMN IF NOT EXISTS freight_source TEXT;
+ALTER TABLE prod_cost_draws ADD COLUMN IF NOT EXISTS shipment_ref TEXT;
+ALTER TABLE prod_cost_draws ADD COLUMN IF NOT EXISTS cost_freight_courier DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE prod_cost_draws ADD COLUMN IF NOT EXISTS cost_freight_configured DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS cost_freight_courier DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE prod_realized_results ADD COLUMN IF NOT EXISTS cost_freight_configured DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE prod_job_records ADD COLUMN IF NOT EXISTS cost_freight_courier DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE prod_job_records ADD COLUMN IF NOT EXISTS cost_freight_configured DOUBLE PRECISION NOT NULL DEFAULT 0;

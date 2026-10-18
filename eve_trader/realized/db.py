@@ -1018,8 +1018,8 @@ def replace_derived_costing(
                 "cost_materials_bought, cost_materials_estimated, cost_freight, "
                 "cost_job, cost_invention, cost_fees, layer_date, job_id, "
                 "quantity_original, assumed_me, assumed_decryptor, estimated_origin, "
-                "price_missing, logical_layer_id, source, pool) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "price_missing, logical_layer_id, source, pool, freight_source, shipment_ref) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 layers,
             )
         if result_params:
@@ -1030,8 +1030,9 @@ def replace_derived_costing(
                 "location_id, price_missing, estimated, warnings, "
                 "cost_materials_bought, cost_materials_estimated, cost_freight, "
                 "cost_job, cost_invention, cost_fees, source, channel, "
-                "owner_type, owner_id, fitting_id, issuer_id) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "owner_type, owner_id, fitting_id, issuer_id, "
+                "cost_freight_courier, cost_freight_configured) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 result_params,
             )
         if draws:
@@ -1043,8 +1044,9 @@ def replace_derived_costing(
                 "cost_job, cost_invention, cost_fees, unit_cost, "
                 "estimated_origin, price_missing, assumed_me, assumed_decryptor, "
                 "layer_date, job_id, location_id, unit_price, freight_rate_per_m3, source, "
-                "channel) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "channel, freight_source, shipment_ref, cost_freight_courier, "
+                "cost_freight_configured) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 draws,
             )
         if jobs:
@@ -1057,8 +1059,9 @@ def replace_derived_costing(
                 "cost_job, cost_invention, cost_fees, "
                 "assumed_me, assumed_decryptor, price_missing, no_structure_bonus, "
                 "output_layer_id, output_type_id, output_quantity, "
-                "output_quantity_left, output_unit, facility_id) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "output_quantity_left, output_unit, facility_id, "
+                "cost_freight_courier, cost_freight_configured) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 jobs,
             )
         if fee_lines:
@@ -1212,7 +1215,8 @@ def realized_totals(
             "COALESCE(SUM(cost_invention), 0), COALESCE(SUM(cost_fees), 0), "
             "COALESCE(SUM(sales_tax), 0), "
             "COUNT(*) FILTER (WHERE sales_tax IS NULL AND source IS DISTINCT FROM 'contract'), "
-            "COALESCE(BOOL_OR(price_missing), FALSE), COUNT(*) "
+            "COALESCE(BOOL_OR(price_missing), FALSE), COUNT(*), "
+            "COALESCE(SUM(cost_freight_courier), 0), COALESCE(SUM(cost_freight_configured), 0) "
             "FROM prod_realized_results WHERE sale_date >= ? AND sale_date < ?"
             + scope,
             (start, end, *extra),
@@ -1316,7 +1320,8 @@ def realized_by_type(
             "COALESCE(SUM(cost_materials_estimated), 0), "
             "COALESCE(SUM(cost_freight), 0), COALESCE(SUM(cost_job), 0), "
             "COALESCE(SUM(cost_invention), 0), COALESCE(SUM(cost_fees), 0), "
-            "COALESCE(BOOL_OR(price_missing), FALSE) "
+            "COALESCE(BOOL_OR(price_missing), FALSE), "
+            "COALESCE(SUM(cost_freight_courier), 0), COALESCE(SUM(cost_freight_configured), 0) "
             "FROM prod_realized_results WHERE sale_date >= ? AND sale_date < ?"
             + scope + " GROUP BY type_id ORDER BY type_id",
             (start, end, *extra),
@@ -1385,7 +1390,8 @@ def list_sales_for_type(
             "SELECT sale_ref, type_id, quantity, revenue, cost, profit, coverage_share, "
             "sale_date, gross, sales_tax, broker_fee, location_id, price_missing, "
             "estimated, warnings, cost_materials_bought, cost_materials_estimated, "
-            "cost_freight, cost_job, cost_invention, cost_fees, source "
+            "cost_freight, cost_job, cost_invention, cost_fees, source, "
+            "cost_freight_courier, cost_freight_configured "
             "FROM prod_realized_results "
             "WHERE type_id = ? AND sale_date >= ? AND sale_date < ?"
             + scope + " ORDER BY sale_date, sale_ref",
@@ -1469,7 +1475,8 @@ def get_realized_sale(
             "SELECT sale_ref, type_id, quantity, revenue, cost, profit, coverage_share, "
             "sale_date, gross, sales_tax, broker_fee, location_id, price_missing, "
             "estimated, warnings, cost_materials_bought, cost_materials_estimated, "
-            "cost_freight, cost_job, cost_invention, cost_fees, source "
+            "cost_freight, cost_job, cost_invention, cost_fees, source, "
+            "cost_freight_courier, cost_freight_configured "
             "FROM prod_realized_results WHERE sale_ref = ?" + scope,
             (sale_ref, *extra),
         ).fetchone()
@@ -1484,7 +1491,8 @@ def list_draws(consumer_kind: str, refs: list[str]) -> list[tuple]:
             "source_ref, cost_materials_bought, cost_materials_estimated, cost_freight, "
             "cost_job, cost_invention, cost_fees, unit_cost, estimated_origin, "
             "price_missing, assumed_me, assumed_decryptor, layer_date, job_id, "
-            "location_id, unit_price, freight_rate_per_m3, source "
+            "location_id, unit_price, freight_rate_per_m3, source, "
+            "freight_source, shipment_ref "
             "FROM prod_cost_draws WHERE consumer_kind = ? AND consumer_ref = ANY(?) "
             "ORDER BY consumer_ref, seq",
             (consumer_kind, list(refs)),
@@ -1517,7 +1525,8 @@ def list_job_records() -> list[tuple]:
             "cost_materials_bought, cost_materials_estimated, cost_freight, "
             "cost_job, cost_invention, cost_fees, assumed_me, assumed_decryptor, "
             "price_missing, no_structure_bonus, output_layer_id, output_type_id, "
-            "output_quantity, output_quantity_left, output_unit, facility_id "
+            "output_quantity, output_quantity_left, output_unit, facility_id, "
+            "cost_freight_courier, cost_freight_configured "
             "FROM prod_job_records ORDER BY start_date, job_id",
         ).fetchall()
 

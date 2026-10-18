@@ -162,6 +162,16 @@ export default function DoctrineRealizedProfit() {
               <Text size="xs" c="dimmed">Production saving {money(summary.production_saving)}</Text>
             </Card>
           </SimpleGrid>
+          {(typeof summary.freight_from_couriers === 'number' || typeof summary.freight_configured === 'number') && (
+            <Stack gap={2}>
+              {typeof summary.freight_from_couriers === 'number' && (
+                <Text size="sm">Freight from couriers: {isk(summary.freight_from_couriers)}</Text>
+              )}
+              {typeof summary.freight_configured === 'number' && (
+                <Text size="sm">Freight (configured rate): {isk(summary.freight_configured)}</Text>
+              )}
+            </Stack>
+          )}
 
           <Title order={6} c="dimmed" tt="uppercase">Cost by origin</Title>
           <Stack gap={2}>

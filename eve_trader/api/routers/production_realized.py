@@ -479,19 +479,51 @@ def reapply_realized_freight(dry_run: bool = False):
     return _wrap(actions.do_reapply_freight_rate, dry_run=dry_run)
 
 
-class CourierMonth(BaseModel):
-    month: str
-    count: int
+class CourierContractRow(BaseModel):
+    contract_id: int
+    issued: Optional[str] = None
     volume_m3: float
     reward: float
-    paid_isk_per_m3: Optional[float] = None
-    configured_rate_per_m3: float
+    collateral: float
+
+
+class CourierShipment(BaseModel):
+    shipment_ref: str
+    contract_ids: list[int]
+    issued: Optional[str] = None
+    start_location_id: int
+    end_location_id: int
+    volume_m3: float
+    reward: float
+    isk_per_m3: Optional[float] = None
+    collateral: float
+    booked_freight: float
+    gap: float
+    couriers: list[CourierContractRow]
+
+
+class RewardWithoutCourier(BaseModel):
+    contract_id: Optional[int] = None
+    date: Optional[str] = None
+    amount: float
+    label: str
+
+
+class FailedCourier(BaseModel):
+    contract_id: int
+    issued: Optional[str] = None
+    collateral: float
+    volume_m3: Optional[float] = None
+    reward: float
 
 
 class CourierComparison(BaseModel):
     home_location_id: Optional[int] = None
     configured_rate_per_m3: float
-    months: list[CourierMonth]
+    needs_rebuild: bool
+    shipments: list[CourierShipment]
+    rewards_without_courier: list[RewardWithoutCourier]
+    failed: list[FailedCourier]
 
 
 class HiddenArchiveCount(BaseModel):
