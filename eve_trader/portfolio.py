@@ -766,11 +766,16 @@ def total_wealth(cfg: TradingConfig = TRADING_CONFIG) -> dict:
     this is just that design's visible edge case for blueprints
     specifically, since (unlike assets/wallet) there's no partial-credit
     fallback for them."""
+    from .production.config import PRODUCTION_CONFIG
+    # The freight rate _priced adds to Jita quotes, so the page can state
+    # the pricing rule with the number actually used.
+    freight = float(PRODUCTION_CONFIG.haul_cost_per_m3 or 0.0)
     collected = _collect_wealth(cfg)
     if collected is None:
-        return {**_EMPTY_WEALTH, "sync": dict(_EMPTY_SYNC)}
+        return {**_EMPTY_WEALTH, "sync": dict(_EMPTY_SYNC), "freight_per_m3": freight}
     result = _wealth_from(collected)
     result.pop("_built", None)
+    result["freight_per_m3"] = freight
     return result
 
 

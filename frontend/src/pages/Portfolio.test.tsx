@@ -63,6 +63,7 @@ const wealth: TotalWealth = {
   wealth_unpriced_items: 1,
   characters_missing_wallet_scope: [],
   sync: { assets: null, blueprints: null, listed: null, contracts: null, wallet: null, escrow: null },
+  freight_per_m3: 900,
 }
 
 const breakdown = {
@@ -134,6 +135,7 @@ describe('Portfolio overview', () => {
     expect(screen.queryByText('Trading: Realized Profit')).toBeNull()
     expect(await screen.findByText('Listed')).toBeInTheDocument()
     expect(screen.getByText('Escrow')).toBeInTheDocument()
+    expect(screen.getByText(/Jita sell price\s+plus freight \(900 ISK\/m³/)).toBeInTheDocument()
     expect(await screen.findByText('Tritanium · Alice · Jita · 5')).toBeInTheDocument()
     expect(screen.getAllByText('Alice').length).toBeGreaterThan(0)
     expect(screen.getAllByText('100 ISK · 100%').length).toBeGreaterThan(0)

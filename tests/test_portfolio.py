@@ -495,6 +495,13 @@ def test_total_wealth_scoped_to_portfolio_sharing_only(monkeypatch):
     assert result["characters_missing_wallet_scope"] == []
 
 
+def test_total_wealth_reports_the_freight_rate_its_prices_use(monkeypatch):
+    from eve_trader.production.config import PRODUCTION_CONFIG
+    monkeypatch.setattr(PRODUCTION_CONFIG, "haul_cost_per_m3", 900.0)
+    _stub_sharing(monkeypatch)
+    assert portfolio.total_wealth(TradingConfig())["freight_per_m3"] == 900.0
+
+
 def test_total_wealth_flags_asset_sharer_missing_wallet_scope_even_if_never_shared_wallet_balance(monkeypatch):
     # Confirmed real bug in review: the wallet-scope warning banner exists
     # to nudge a character who shares assets/blueprints into ALSO sharing

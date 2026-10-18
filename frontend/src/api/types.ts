@@ -755,6 +755,7 @@ export interface TotalWealth {
   wealth_unpriced_items: number
   characters_missing_wallet_scope: CharacterMissingWalletScope[]
   sync: WealthSync
+  freight_per_m3?: number | null
 }
 
 export interface WealthShareRow {
