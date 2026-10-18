@@ -26,6 +26,12 @@ _CARD_LINKS = {
     "station_trading": "/station-trading/realized",
 }
 _CARD_ORDER = ("production", "trading", "doctrine", "station_trading")
+_TOOL_LABELS = {
+    "production": "Production",
+    "trading": "Trading",
+    "doctrine": "Doctrine",
+    "station_trading": "Station Trading",
+}
 
 
 def _realized_window(period: str) -> dict:
@@ -65,6 +71,29 @@ def _sales_count(data: dict):
     return None
 
 
+def _freight_of(data: dict) -> tuple[float, float]:
+    """Courier and configured-rate freight from one tool's summary.
+
+    Production and Trading put the split on `cost_structure`. Doctrine and
+    Station Trading put it on `freight_from_couriers` / `freight_configured`.
+    """
+    rows = data.get("cost_structure")
+    if isinstance(rows, list):
+        amounts = {
+            row.get("key"): row.get("amount")
+            for row in rows if isinstance(row, dict)
+        }
+        if "freight_courier" in amounts or "freight_configured" in amounts:
+            return (
+                float(amounts.get("freight_courier") or 0.0),
+                float(amounts.get("freight_configured") or 0.0),
+            )
+    courier = data.get("freight_from_couriers")
+    if courier is None:
+        courier = data.get("freight_courier")
+    return float(courier or 0.0), float(data.get("freight_configured") or 0.0)
+
+
 def realized_cards(tool_keys, period: str = "30") -> dict:
     """Realized profit for each granted tool over `period`, plus a total.
 
@@ -77,9 +106,17 @@ def realized_cards(tool_keys, period: str = "30") -> dict:
     """
     window = _realized_window(period)
     rows = []
+    courier = 0.0
+    configured = 0.0
+    saw_figure = False
     for tool, reader in _card_readers(tool_keys):
         data = reader(**window)
         empty = bool(data["status"]["empty"] or data["status"]["needs_rebuild"])
+        if not empty:
+            saw_figure = True
+            part_courier, part_configured = _freight_of(data)
+            courier += part_courier
+            configured += part_configured
         rows.append({
             "tool": tool,
             "profit": None if empty else data["realized_profit"],
@@ -93,7 +130,12 @@ def realized_cards(tool_keys, period: str = "30") -> dict:
         })
     rows.sort(key=lambda row: _CARD_ORDER.index(row["tool"]))
     ready = [row["profit"] for row in rows if row["profit"] is not None]
-    return {"rows": rows, "total": sum(ready) if ready else None, "period": str(period or "30")}
+    return {
+        "rows": rows,
+        "total": sum(ready) if ready else None,
+        "period": str(period or "30"),
+        "freight": None if not saw_figure else {"courier": courier, "configured": configured},
+    }
 
 
 def _day(value) -> date:
@@ -168,6 +210,123 @@ def realized_history(tool_keys, period: str = "30", bucket: Optional[str] = None
         "period": str(period or "30"),
         "rows": rows,
     }
+
+
+def _parse_time(value) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _portfolio_data_kinds():
+    from .esi_data.registry import OWNED_DATA_KINDS
+    return [
+        kind for kind in OWNED_DATA_KINDS
+        if "portfolio" in kind.consuming_tools and not kind.live_only
+    ]
+
+
+def _tier_hours(cfg: TradingConfig, tier: str) -> float:
+    return {
+        "frequent": cfg.esi_frequent_interval_hours,
+        "normal": cfg.esi_normal_interval_hours,
+        "rare": cfg.esi_rare_interval_hours,
+    }.get(tier, cfg.esi_normal_interval_hours)
+
+
+def _stale_portfolio_labels(cfg: TradingConfig, now: datetime) -> list[str]:
+    """Labels of Portfolio kinds whose shared owners are past the tier interval."""
+    shares = storage.list_esi_sharing("portfolio")
+    freshness = {
+        (row[0], int(row[1]), row[2]): row[3]
+        for row in storage.list_esi_freshness()
+    }
+    labels = []
+    for kind in _portfolio_data_kinds():
+        owners = [
+            (owner_type, int(owner_id))
+            for owner_type, owner_id, data_kind, _tool in shares
+            if data_kind == kind.key
+        ]
+        if not owners:
+            continue
+        limit = now - timedelta(hours=_tier_hours(cfg, kind.freshness_tier))
+        stale = False
+        for owner in owners:
+            synced = _parse_time(freshness.get((*owner, kind.key)))
+            if synced is None or synced <= limit:
+                stale = True
+                break
+        if stale:
+            labels.append(kind.label)
+    return labels
+
+
+def attention(tool_keys, cfg: TradingConfig = TRADING_CONFIG, now: Optional[datetime] = None) -> dict:
+    """What the Portfolio page should ask the viewer to do.
+
+    Each item is `{key, text, link}`. A realized tool is listed only when
+    its summary says `needs_rebuild`. An empty archive that already has a
+    run is not a recompute. Stale ESI is one line naming the Portfolio
+    kinds that are past their tier interval for an owner shared with
+    Portfolio. Stock targets are listed only when this session holds
+    Production and none are saved.
+    """
+    now = now or datetime.now(timezone.utc)
+    items = []
+    wealth = total_wealth(cfg)
+    missing = wealth.get("characters_missing_wallet_scope") or []
+    if missing:
+        names = ", ".join(row["character_name"] for row in missing)
+        verb = "has" if len(missing) == 1 else "have"
+        items.append({
+            "key": "wallet_scope",
+            "text": (
+                f"{names} {verb} no wallet scope, so their balance is left "
+                "out of Total Wealth."
+            ),
+            "link": "/character-management/characters",
+        })
+    for tool, reader in _card_readers(tool_keys):
+        data = reader(**_realized_window("30"))
+        status = data.get("status") or {}
+        if status.get("needs_rebuild"):
+            items.append({
+                "key": f"recompute_{tool}",
+                "text": f"{_TOOL_LABELS[tool]} realized profit needs a recompute.",
+                "link": _CARD_LINKS[tool],
+            })
+    unpriced = int(wealth.get("wealth_unpriced_items") or 0)
+    if unpriced:
+        noun = "item is" if unpriced == 1 else "items are"
+        items.append({
+            "key": "unpriced",
+            "text": f"{unpriced} unpriced {noun} excluded from Total Wealth.",
+            "link": "#unpriced",
+        })
+    stale = _stale_portfolio_labels(cfg, now)
+    if stale:
+        items.append({
+            "key": "stale_esi",
+            "text": "ESI data shared with Portfolio is stale: " + ", ".join(stale) + ".",
+            "link": "/character-management/characters",
+        })
+    if "production" in {str(key) for key in (tool_keys or ())} and not storage.load_stock_targets():
+        items.append({
+            "key": "stock_targets",
+            "text": "Production has no stock targets configured.",
+            "link": "/production/stock-targets",
+        })
+    return {"items": items}
 
 
 def wealth_change(today: Optional[date] = None) -> dict:

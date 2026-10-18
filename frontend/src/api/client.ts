@@ -510,6 +510,7 @@ export const portfolioApi = {
       '/api/portfolio/manual-prices', { item_name: itemName, price },
     ),
   removeManualPrice: (typeId: number) => del(`/api/portfolio/manual-prices/${typeId}`),
+  attention: () => get<T.PortfolioAttention>('/api/portfolio/attention'),
   realizedCards: (period = '30') =>
     get<T.RealizedToolCards>(`/api/portfolio/realized-cards?period=${encodeURIComponent(period)}`),
   realizedHistory: (period = '30') =>

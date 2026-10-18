@@ -1720,6 +1720,21 @@ def test_realized_cards_unknown_period_is_400():
     assert resp.status_code == 400
 
 
+def test_portfolio_attention_route(monkeypatch):
+    from eve_trader import portfolio
+    seen = {}
+
+    def _attention(tool_keys, cfg=None, now=None):
+        seen["keys"] = tuple(tool_keys)
+        return {"items": []}
+
+    monkeypatch.setattr(portfolio, "attention", _attention)
+    resp = client.get("/api/portfolio/attention")
+    assert resp.status_code == 200
+    assert resp.json() == {"items": []}
+    assert "portfolio" in seen["keys"]
+
+
 def test_get_portfolio_history_defaults_to_unbounded(monkeypatch):
     from eve_trader import portfolio
     calls = {}

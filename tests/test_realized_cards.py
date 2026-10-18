@@ -91,6 +91,50 @@ def test_realized_cards_periods_and_since_t0_uses_the_ledger_window(monkeypatch)
     assert captured[0]["days"] is None
 
 
+def test_realized_cards_freight_sums_only_tools_with_a_figure(monkeypatch):
+    def production(**_kw):
+        return _summary(
+            realized_profit=10.0,
+            cost_structure=[
+                {"key": "freight_courier", "amount": 3},
+                {"key": "freight_configured", "amount": 1},
+            ],
+        )
+
+    def trading(**_kw):
+        return _summary(
+            status={"empty": True, "needs_rebuild": True},
+            realized_profit=0.0,
+            cost_structure=[
+                {"key": "freight_courier", "amount": 99},
+                {"key": "freight_configured", "amount": 99},
+            ],
+        )
+
+    def doctrine(**_kw):
+        data = _summary(realized_profit=1.0, freight_from_couriers=2, freight_configured=4)
+        data.pop("sale_count")
+        data["contracts"] = 1
+        return data
+
+    def station(**_kw):
+        return _summary(realized_profit=4.0)
+
+    monkeypatch.setattr("eve_trader.production.realized.report.summary", production)
+    monkeypatch.setattr("eve_trader.trade_realized.report.summary", trading)
+    monkeypatch.setattr("eve_trader.doctrine.realized.summary", doctrine)
+    monkeypatch.setattr("eve_trader.station_trading.realized.summary", station)
+
+    cards = portfolio.realized_cards(["production", "trading", "doctrine"])
+    assert cards["freight"] == {"courier": 5.0, "configured": 5.0}
+
+    empty = portfolio.realized_cards(["trading"])
+    assert empty["freight"] is None
+
+    one = portfolio.realized_cards(["station_trading"])
+    assert one["freight"] == {"courier": 0.0, "configured": 0.0}
+
+
 def test_realized_cards_rejects_an_unknown_period():
     try:
         portfolio.realized_cards(["trading"], period="14")

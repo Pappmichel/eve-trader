@@ -3081,10 +3081,26 @@ export interface RealizedToolCard {
   link: string
 }
 
+export interface RealizedFreight {
+  courier: number
+  configured: number
+}
+
 export interface RealizedToolCards {
   rows: RealizedToolCard[]
   total: number | null
   period: string
+  freight: RealizedFreight | null
+}
+
+export interface AttentionItem {
+  key: string
+  text: string
+  link: string
+}
+
+export interface PortfolioAttention {
+  items: AttentionItem[]
 }
 
 export interface RealizedJobFeeLine {

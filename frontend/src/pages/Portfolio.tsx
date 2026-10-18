@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Container, Title, Text, SimpleGrid, Card, Group, Stack, Button, Loader, Center, SegmentedControl,
-  NumberInput, ActionIcon, Alert, Divider, Badge, Anchor, Tabs, Progress,
+  NumberInput, ActionIcon, Divider, Badge, Anchor, Tabs, Progress,
 } from '@mantine/core'
 import { IconArrowLeft, IconTrash, IconCheck } from '@tabler/icons-react'
 import { modals } from '@mantine/modals'
@@ -19,7 +19,7 @@ import { useItemNameOptions } from '../hooks/useStaticOptions'
 import { isk, qty, pct, dateTime } from '../format'
 import { CHANNEL_COLORS, COLORS } from '../theme'
 import { toolLabel } from '../esiRegistry'
-import type { ManualItemPriceRow, PortfolioCapital, PortfolioSnapshotRow, RealizedHistory, RealizedToolCard, WealthBreakdown, WealthChange, WealthShareRow } from '../api/types'
+import type { AttentionItem, ManualItemPriceRow, PortfolioCapital, PortfolioSnapshotRow, RealizedHistory, RealizedToolCard, WealthBreakdown, WealthChange, WealthShareRow } from '../api/types'
 import { CoverageBadge } from './production/realized/flags'
 
 const PERIOD_KEY = 'portfolio-realized-period'
@@ -81,6 +81,19 @@ function WealthChanges({ change }: { change: WealthChange | undefined }) {
         <Text key={row.label} size="xs" c="dimmed">
           {row.label}: {row.point ? `${isk(row.point.isk)} (${pct(row.point.pct)})` : '–'}
         </Text>
+      ))}
+    </Stack>
+  )
+}
+
+function AttentionStrip({ items }: { items: AttentionItem[] | undefined }) {
+  if (!items || items.length === 0) return null
+  return (
+    <Stack gap={4}>
+      {items.map((item) => (
+        item.link.startsWith('#')
+          ? <Anchor key={item.key} href={item.link} size="sm">{item.text}</Anchor>
+          : <Anchor key={item.key} component={Link} to={item.link} size="sm">{item.text}</Anchor>
       ))}
     </Stack>
   )
@@ -341,7 +354,7 @@ function WealthBreakdownSection({ breakdown }: { breakdown: WealthBreakdown | un
       </Tabs>
 
       {unpriced.length > 0 && (
-        <Stack gap="xs">
+        <Stack id="unpriced" gap="xs">
           <Title order={6}>Unpriced</Title>
           <Text size="xs" c="dimmed">Excluded from the total until a manual price is set.</Text>
           {unpriced.map((row) => (
@@ -387,17 +400,6 @@ function TotalWealthSection({ breakdown }: { breakdown: WealthBreakdown | undefi
         ))}
       </SimpleGrid>
       <WealthBreakdownSection breakdown={breakdown} />
-
-      {data.characters_missing_wallet_scope.length > 0 && (
-        <Alert color="warn" variant="light" title="Wallet balance not included for some characters">
-          {data.characters_missing_wallet_scope.map((c) => c.character_name).join(', ')}{' '}
-          {data.characters_missing_wallet_scope.length === 1 ? 'shares' : 'share'} Assets/Blueprints with Portfolio
-          but {data.characters_missing_wallet_scope.length === 1 ? 'has' : 'have'} no wallet scope
-          shared - reauthorize on the{' '}
-          <Text component={Link} to="/character-management/characters" span c="accent" td="underline">Characters page</Text>
-          {' '}to include their ISK balance.
-        </Alert>
-      )}
     </Stack>
   )
 }
@@ -466,6 +468,7 @@ function RealizedHistoryChart({ history }: { history: RealizedHistory | undefine
 }
 
 export default function Portfolio() {
+  const attention = useQuery({ queryKey: ['portfolio', 'attention'], queryFn: portfolioApi.attention })
   const overview = useQuery({ queryKey: ['portfolio', 'overview'], queryFn: portfolioApi.overview })
   const wealth = useQuery({ queryKey: ['portfolio', 'wealth'], queryFn: portfolioApi.wealth })
   const breakdown = useQuery({ queryKey: ['portfolio', 'breakdown'], queryFn: portfolioApi.wealthBreakdown })
@@ -495,6 +498,7 @@ export default function Portfolio() {
       </Group>
 
       <Stack gap="lg">
+        <AttentionStrip items={attention.data?.items} />
         {wealth.isLoading && <Center h={80}><Loader color="accent" /></Center>}
         {wealth.data && (
           <Card withBorder padding="lg" radius="md" className="et-panel">
@@ -517,6 +521,11 @@ export default function Portfolio() {
               hint="Tools this session holds" />
           )}
         </SimpleGrid>
+        {cards.data?.freight && (
+          <Text size="sm">
+            Freight from couriers {isk(cards.data.freight.courier)} · configured rate {isk(cards.data.freight.configured)}
+          </Text>
+        )}
 
         <RealizedHistoryChart history={realized.data} />
         <CapitalSection capital={capital.data} />

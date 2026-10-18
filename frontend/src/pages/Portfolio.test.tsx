@@ -18,6 +18,7 @@ vi.mock('../api/client', () => ({
     wealthBreakdown: vi.fn(),
     capital: vi.fn(),
     manualPrices: vi.fn(),
+    attention: vi.fn(),
     realizedCards: vi.fn(),
     realizedHistory: vi.fn(),
   },
@@ -76,7 +77,7 @@ const breakdown = {
 }
 
 function cards(rows: RealizedToolCards['rows'], total: number | null): RealizedToolCards {
-  return { rows, total, period: '30' }
+  return { rows, total, period: '30', freight: null }
 }
 
 function renderPortfolio() {
@@ -109,6 +110,7 @@ describe('Portfolio overview', () => {
       total: { cost_basis: 40, market_value: 50, unrealized: 10, estimated: false, coverage: 1 },
     })
     vi.mocked(portfolioApi.manualPrices).mockResolvedValue([])
+    vi.mocked(portfolioApi.attention).mockResolvedValue({ items: [] })
     vi.mocked(portfolioApi.realizedCards).mockResolvedValue(cards([], null))
     vi.mocked(portfolioApi.realizedHistory).mockResolvedValue({
       bucket: 'day', channels: [], period: '30', rows: [],
@@ -175,5 +177,24 @@ describe('Portfolio overview', () => {
     await user.click(within(periodControl).getByRole('radio', { name: '7d' }))
     await waitFor(() => expect(portfolioApi.realizedCards).toHaveBeenCalledWith('7'))
     expect(localStorage.getItem('portfolio-realized-period')).toBe('7')
+  })
+
+  it('shows the attention list and the freight split from the API', async () => {
+    vi.mocked(portfolioApi.attention).mockResolvedValue({
+      items: [{
+        key: 'wallet_scope',
+        text: 'Alice has no wallet scope, so their balance is left out of Total Wealth.',
+        link: '/character-management/characters',
+      }],
+    })
+    vi.mocked(portfolioApi.realizedCards).mockResolvedValue({
+      ...cards([], null),
+      freight: { courier: 12, configured: 3 },
+    })
+    renderPortfolio()
+    const link = await screen.findByRole('link', { name: /Alice has no wallet scope/ })
+    expect(link).toHaveAttribute('href', '/character-management/characters')
+    expect(await screen.findByText('Freight from couriers 12 ISK · configured rate 3 ISK')).toBeInTheDocument()
+    expect(screen.queryByText('Wallet balance not included for some characters')).toBeNull()
   })
 })

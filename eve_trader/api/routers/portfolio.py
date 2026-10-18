@@ -44,6 +44,13 @@ def get_realized_cards(request: Request, period: str = "30"):
     return _wrap(portfolio.realized_cards, tool_keys=keys, period=period)
 
 
+@router.get("/attention")
+def get_portfolio_attention(request: Request):
+    """Actions for this session: scope, recompute, unpriced, stale ESI, stock targets."""
+    keys = getattr(request.state, "tool_keys", ())
+    return _wrap(portfolio.attention, tool_keys=keys)
+
+
 @router.get("/realized-history")
 def get_realized_history(request: Request, period: str = "30", bucket: Optional[str] = None):
     """Stacked realized profit for the tools this session holds."""

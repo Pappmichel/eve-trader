@@ -1,28 +1,55 @@
 # Portfolio overview - plan
 
-Status: **in progress 2026-10-18**. Decisions P1-P7 stand as confirmed.
-Phases 1-3 are built. Phases 4-5 are not.
+Status: **built 2026-10-18**. Decisions P1-P7 stand as confirmed.
+Phases 1-5 are built.
 
 Deviations:
 - A Portfolio-only share of `market_orders` or `contracts` is archived
   into the ledger (`fetchers._shared_with_portfolio`) so Total Wealth can
-  read outstanding contract items and, once filled, buy-order escrow.
-  Portfolio is not added to `realized.access.KIND_TOOLS`, so costing
-  still ignores a share that no realized-profit tool holds.
+  read outstanding contract items and buy-order escrow. Portfolio is not
+  added to `realized.access.KIND_TOOLS`, so costing still ignores a share
+  that no realized-profit tool holds.
 - Until `ledger_market_orders.escrow` is filled, any archived open buy
-  makes `wealth_escrow` None. It is not estimated.
+  makes wealth and capital escrow None. It is not estimated. A later
+  history row without the field does not wipe an escrow already stored
+  (`COALESCE` on conflict).
+- Unrealized profit uses the cost of units that also have a market price.
+  Unpriced stock is left out of both sides, so unrealized equals market
+  minus that cost, and coverage falls by the unpriced quantity.
+- Contract price shares use current wealth prices as weights, then
+  quantity weights. The historical reference split is not recomputed.
+- While a running job is included, its market value is None, so the
+  capital total's market value and unrealized are None. Its cost is still
+  listed on the bucket.
+- `tenant_tokens` is read `ORDER BY role`. Corp-wallet member order is
+  that role-key order. An unordered read made the later-member wallet
+  test fail inside the full suite.
 
 Phase 1 tests: `tests/test_realized_cards.py`
-(periods, since_t0 window, single-tool total, recompute adds nothing),
-`tests/test_portfolio.py` wealth_change gaps and percent, router period
-forwarding, vitest `Portfolio.test.tsx` (4). Phase 2 tests:
-`tests/test_portfolio_history.py` (day gaps, Monday weeks, since-T0 week
-buckets, channels the session does not hold, a recompute adds no days).
-Phase 3 tests: `tests/test_portfolio_wealth.py` (assets and listed orders
-of the same type both count, sharing gate, breakdown sums, C-J/Jita
-grouping, unpriced list, unknown escrow left out of the total).
-Full pytest 3333 passed, 1 skipped. Frontend lint, vitest (378) and
-build passed. Live page check follows with the finished page.
+(periods, since_t0 window, single-tool total, recompute adds nothing,
+freight from cost_structure and from doctrine's top-level fields, an
+empty tool adds no freight), `tests/test_portfolio.py` wealth_change
+gaps and percent, router period forwarding, vitest `Portfolio.test.tsx`.
+Phase 2 tests: `tests/test_portfolio_history.py` (day gaps, Monday weeks,
+since-T0 week buckets, channels the session does not hold, a recompute
+adds no days). Phase 3 tests: `tests/test_portfolio_wealth.py` (assets
+and listed orders of the same type both count, sharing gate, breakdown
+sums, C-J/Jita grouping, unpriced list, unknown escrow left out of the
+total). Phase 4 tests: `tests/test_portfolio_capital.py` (FIFO listed and
+contract layers, missing escrow, estimated opening coverage, running
+jobs, unpriced stock left out of both sides) and the escrow archive
+round-trip in `tests/test_production_ledger_archive.py`. Phase 5 tests:
+`tests/test_portfolio_attention.py` (wallet scope, recompute only when
+`needs_rebuild`, unpriced link, stock targets only with Production,
+stale ESI limited to overdue Portfolio kinds). Full pytest 3345 passed,
+1 skipped. Frontend lint, vitest (379) and build passed. Live check
+against the local dev database: Total Wealth 185 ISK from assets 50,
+listed 20, wallet 100 and escrow 15, with the unpriced stack excluded;
+attention listed wallet scope, both recomputes, the unpriced item, stale
+Assets / Market Orders / Wallet Balance, and missing stock targets;
+capital escrow was 15 ISK from the ledger; realized cards stayed empty
+and freight was null because both tools need a recompute. Seed rows were
+removed afterwards.
 Builds on `docs/PORTFOLIO_REWORK_PLAN.md` (Total Wealth, snapshots, manual
 prices) and `docs/REALIZED_PROFIT_UNIFIED_PLAN.md` (one ledger, four
 channels, `GET /api/portfolio/realized-cards`).
