@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Container, Title, Text, SimpleGrid, Card, Group, Stack, Button, Loader, Center, SegmentedControl,
-  NumberInput, ActionIcon, Divider, Badge, Anchor, Tabs, Progress,
+  NumberInput, ActionIcon, Divider, Badge, Anchor, Tabs, Progress, ScrollArea,
 } from '@mantine/core'
 import { IconArrowLeft, IconTrash, IconCheck } from '@tabler/icons-react'
 import { modals } from '@mantine/modals'
@@ -362,18 +362,23 @@ function WealthBreakdownSection({ breakdown }: { breakdown: WealthBreakdown | un
               ? `, largest quantity first: ${unpriced.length} of ${breakdown.unpriced_types} types shown.`
               : '.'}
           </Text>
-          {unpriced.map((row) => (
-            <Group key={`${row.component}-${row.type_id}-${row.owner_name}-${row.location_name}`} justify="space-between">
-              <Text size="sm">{row.type_name ?? `Type ${row.type_id}`} · {row.owner_name} · {row.location_name} · {qty(row.quantity)}</Text>
-              <NumberInput aria-label={`Manual price for ${row.type_name ?? row.type_id}`} min={0} w={160}
-                disabled={!row.type_name || setPrice.isPending}
-                onBlur={(event) => {
-                  const price = Number(event.currentTarget.value)
-                  if (!row.type_name || event.currentTarget.value === '' || Number.isNaN(price)) return
-                  setPrice.mutate({ itemName: row.type_name, price })
-                }} />
-            </Group>
-          ))}
+          {/* Fixed height: up to 100 rows would otherwise push everything below off the page. */}
+          <ScrollArea.Autosize mah={320} type="auto" offsetScrollbars>
+            <Stack gap="xs">
+              {unpriced.map((row) => (
+                <Group key={`${row.component}-${row.type_id}-${row.owner_name}-${row.location_name}`} justify="space-between">
+                  <Text size="sm">{row.type_name ?? `Type ${row.type_id}`} · {row.owner_name} · {row.location_name} · {qty(row.quantity)}</Text>
+                  <NumberInput aria-label={`Manual price for ${row.type_name ?? row.type_id}`} min={0} w={160}
+                    disabled={!row.type_name || setPrice.isPending}
+                    onBlur={(event) => {
+                      const price = Number(event.currentTarget.value)
+                      if (!row.type_name || event.currentTarget.value === '' || Number.isNaN(price)) return
+                      setPrice.mutate({ itemName: row.type_name, price })
+                    }} />
+                </Group>
+              ))}
+            </Stack>
+          </ScrollArea.Autosize>
         </Stack>
       )}
     </Stack>
