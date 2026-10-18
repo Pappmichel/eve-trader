@@ -1,6 +1,7 @@
 # Real freight from courier contracts - plan
 
-Status: **draft, decisions F1-F7 open** (2026-10-18). Nothing is built yet.
+Status: **planned, decisions F1-F7 confirmed 2026-10-18** (all as
+recommended). Nothing is built yet.
 Builds on `docs/REALIZED_PROFIT_UNIFIED_PLAN.md` (U4: freight from the hub
 table) and the Production plan's D9 (freight is the configured rate and is
 labeled that way).
@@ -75,10 +76,10 @@ on the purchases it was assigned (sum of rate x m3). A large gap means
 purchases that were not shipped (left at the hub, sold there, station
 trading) or a shipment that carried goods not bought in that window.
 
-## 4. Decisions to confirm
+## 4. Decisions (confirmed)
 
 **F1 Assignment of purchases to a shipment.**
-- *Recommended:* first shipment issued at or after the purchase, from the
+- *Confirmed:* first shipment issued at or after the purchase, from the
   purchase's station. Simple and matches the data (section 2).
 - Alternative: allocate each shipment's total reward over its window's
   purchases by m3, so booked freight equals the reward exactly. Wrong
@@ -87,11 +88,11 @@ trading) or a shipment that carried goods not bought in that window.
 - Alternative: one rolling average rate per month. Robust but hides that a
   shipment cost 900 instead of 800.
 
-**F2 Grouping couriers into one shipment.** *Recommended:* same issuer,
+**F2 Grouping couriers into one shipment.** *Confirmed:* same issuer,
 same start and end, issued within 2 hours of each other.
 
 **F3 Which purchases a shipment can cover.**
-- *Recommended:* purchases by **any** tenant owner at the courier's start
+- *Confirmed:* purchases by **any** tenant owner at the courier's start
   station. The buyer and the courier issuer may differ.
 - Alternative: only the issuer's own purchases. Exact for today's data
   (Jason buys and ships), wrong for a setup where several buyers share one
@@ -99,22 +100,22 @@ same start and end, issued within 2 hours of each other.
 
 **F4 Sharing.** Couriers are read from the `contracts` kind. That kind is
 consumed by Production and Doctrine only, so a Trading-only tenant cannot
-share couriers. *Recommended:* add `trading` to the contracts consumers
+share couriers. *Confirmed:* add `trading` to the contracts consumers
 (`esi_data/registry.py`, `realized/access.KIND_TOOLS`). The Trading report
 does not show contract sales of its own from this (they stay as today).
 
-**F5 Couriers that did not finish.** *Recommended:* only `finished`
+**F5 Couriers that did not finish.** *Confirmed:* only `finished`
 couriers make a shipment. A `failed` courier is a warning with its
 collateral (the goods are gone, the collateral is income); `expired` /
 `deleted` are ignored (the reward was refunded).
 
 **F6 Couriers without a contract row** (older than ESI's contract window, or
 issued before the scope was granted), known only from
-`contract_reward_deposited`. *Recommended:* ignore for the rate, list them
+`contract_reward_deposited`. *Confirmed:* ignore for the rate, list them
 in the reconciliation as "reward without courier details". A guessed volume
 would be a guessed rate.
 
-**F7 Labels and coverage.** *Recommended:* freight keeps not lowering
+**F7 Labels and coverage.** *Confirmed:* freight keeps not lowering
 coverage (D9). Each draw/layer carries `freight_source` = `courier` (with
 contract id and rate) or `configured`. The UI says "Courier 236959145 · 800
 ISK/m3" or "Configured rate (no courier yet)". A courier rate is a real
