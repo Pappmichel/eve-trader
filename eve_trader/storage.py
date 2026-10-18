@@ -1108,9 +1108,12 @@ def load_all_tenant_tokens() -> dict[str, dict]:
     """Returns {role: record} for every token stored under the current
     tenant - TokenManager always operates on its whole store at once (same
     "read everything in one go" shape its old file-based _load() had), not
-    a single role in isolation."""
+    a single role in isolation. Ordered by role so a later listing sees a
+    stable first-seen order."""
     with connect() as conn:
-        rows = conn.execute("SELECT role, record FROM tenant_tokens").fetchall()
+        rows = conn.execute(
+            "SELECT role, record FROM tenant_tokens ORDER BY role"
+        ).fetchall()
     return {role: record for role, record in rows}
 
 
