@@ -1,6 +1,7 @@
 # Portfolio overview - plan
 
-Status: **planned 2026-10-18, decisions open** (section 4). Nothing is built.
+Status: **planned 2026-10-18, decisions P1-P7 confirmed the same day** (all
+as recommended). Nothing is built.
 Builds on `docs/PORTFOLIO_REWORK_PLAN.md` (Total Wealth, snapshots, manual
 prices) and `docs/REALIZED_PROFIT_UNIFIED_PLAN.md` (one ledger, four
 channels, `GET /api/portfolio/realized-cards`).
@@ -173,35 +174,35 @@ the ledger has one and market value:
 - Replace "Everything above is read-only." with nothing; the manual-price
   section is editable.
 
-## 4. Decisions
+## 4. Decisions (confirmed)
 
-**P1 Combined Value.** *Recommended:* stop showing it; keep writing the
+**P1 Combined Value.** *Confirmed:* stop showing it; keep writing the
 column for old history. Alternative: drop the column (loses history).
 
-**P2 Total with one tool.** *Recommended:* always show the total when at
+**P2 Total with one tool.** *Confirmed:* always show the total when at
 least one tool has a figure (it then equals that card). Alternative: keep
 "two or more" as today.
 
-**P3 Trading margin/volatility.** *Recommended:* move to the Trading
+**P3 Trading margin/volatility.** *Confirmed:* move to the Trading
 realized page. Alternative: keep on Portfolio under the Trading card.
 
-**P4 Wealth completeness.** *Recommended:* add listed, contract and escrow
+**P4 Wealth completeness.** *Confirmed:* add listed, contract and escrow
 components through Portfolio's own sharing (new consuming tool on
 `market_orders` and `contracts`). Alternative: read them through the
 realized-tool union (no new sharing, but Portfolio would then show data
 the user did not share with Portfolio - against PORTFOLIO_REWORK_PLAN
 section 4).
 
-**P5 Capital section scope.** *Recommended:* read the realized-tool union
+**P5 Capital section scope.** *Confirmed:* read the realized-tool union
 (the ledger already does, and cost basis only exists there), labeled
 "from the realized-profit ledger". Alternative: restrict to owners that
 also share with Portfolio (consistent scope, but cost basis gaps).
 
-**P6 Market value price.** *Recommended:* one price function for wealth
+**P6 Market value price.** *Confirmed:* one price function for wealth
 and capital (manual, home sell, Jita sell). Alternative: Jita buy for a
 liquidation value - a second number to explain.
 
-**P7 Period default.** *Recommended:* 30 days. Alternative: since T0.
+**P7 Period default.** *Confirmed:* 30 days. Alternative: since T0.
 
 ## 5. Phases
 
