@@ -19,12 +19,28 @@ REALIZED_TOOLS = ("production", "trading", "doctrine", "station_trading")
 # has orders for the fee pool and assets for opening stock.
 KIND_TOOLS = {
     "wallet": ("production", "trading", "station_trading"),
-    "contracts": ("production", "doctrine"),
+    # Trading is here so a Trading contracts share prices courier freight (F4).
+    # Item-exchange sales stay on ITEM_EXCHANGE_TOOLS.
+    "contracts": ("production", "doctrine", "trading"),
     "industry_jobs": ("production",),
     "blueprints": ("production",),
     "market_orders": ("production", "trading", "station_trading"),
     "assets": ("production", "trading", "doctrine"),
 }
+
+# Item exchanges (sales, buys, outstanding quantity). A Trading-only
+# contracts share must not book those as sales (F4). Couriers use
+# KIND_TOOLS["contracts"], which includes Trading.
+ITEM_EXCHANGE_TOOLS = ("production", "doctrine")
+
+
+def shared_item_exchange_owners() -> list[tuple[str, int]]:
+    """Owners whose item-exchange contracts enter costing."""
+    seen: set[tuple[str, int]] = set()
+    for tool in ITEM_EXCHANGE_TOOLS:
+        seen.update(shared_owners_for("contracts", tool))
+    return sorted(seen)
+
 
 # data_kind each ledger table is gated on
 _KIND_BY_TABLE = {

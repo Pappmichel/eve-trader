@@ -2241,10 +2241,24 @@ def test_realized_rebuild_conflict_maps_to_409(monkeypatch):
 def test_realized_courier_and_hidden_delete_routes(monkeypatch):
     seen = {}
     monkeypatch.setattr(production_actions, "do_get_realized_courier", lambda: {
-        "home_location_id": 42, "configured_rate_per_m3": 80.0,
-        "months": [{
-            "month": "2026-10", "count": 1, "volume_m3": 10.0, "reward": 500.0,
-            "paid_isk_per_m3": 50.0, "configured_rate_per_m3": 80.0,
+        "home_location_id": 42, "configured_rate_per_m3": 80.0, "needs_rebuild": False,
+        "shipments": [{
+            "shipment_ref": "11", "contract_ids": [11], "issued": "2026-10-01T12:00:00+00:00",
+            "start_location_id": 60003760, "end_location_id": 42,
+            "volume_m3": 10.0, "reward": 500.0, "isk_per_m3": 50.0, "collateral": 0.0,
+            "booked_freight": 200.0, "gap": 300.0,
+            "couriers": [{
+                "contract_id": 11, "issued": "2026-10-01T12:00:00+00:00",
+                "volume_m3": 10.0, "reward": 500.0, "collateral": 0.0,
+            }],
+        }],
+        "rewards_without_courier": [{
+            "contract_id": 999, "date": "2026-10-01T12:00:00+00:00",
+            "amount": 10.0, "label": "reward without courier details",
+        }],
+        "failed": [{
+            "contract_id": 14, "issued": "2026-10-01T12:00:00+00:00",
+            "collateral": 1500.0, "volume_m3": 1.0, "reward": 0.0,
         }],
     })
 
@@ -2259,7 +2273,11 @@ def test_realized_courier_and_hidden_delete_routes(monkeypatch):
     monkeypatch.setattr(production_actions, "do_delete_hidden_archive_rows", _delete)
     resp = client.get("/api/production/realized/courier")
     assert resp.status_code == 200
-    assert resp.json()["months"][0]["paid_isk_per_m3"] == 50.0
+    body = resp.json()
+    assert body["shipments"][0]["isk_per_m3"] == 50.0
+    assert body["shipments"][0]["gap"] == 300.0
+    assert body["rewards_without_courier"][0]["label"] == "reward without courier details"
+    assert body["failed"][0]["collateral"] == 1500.0
     counted = client.get("/api/production/realized/archive/character/5/contracts")
     assert counted.status_code == 200
     assert counted.json()["count"] == 3

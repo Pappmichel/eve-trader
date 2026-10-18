@@ -99,6 +99,15 @@ describe('Station Trading realized profit page', () => {
     expect(screen.queryByText('7 ISK')).toBeNull()
   })
 
+  it('shows the freight split when the summary carries it', async () => {
+    vi.mocked(stationTradingApi.realizedSummary).mockResolvedValue(summary({
+      freight_from_couriers: 40, freight_configured: 5,
+    }))
+    renderPage()
+    expect(await screen.findByText('Freight from couriers: 40 ISK')).toBeInTheDocument()
+    expect(screen.getByText('Freight (configured rate): 5 ISK')).toBeInTheDocument()
+  })
+
   it('shows API spread, fees and the open position, and leaves a null margin as a dash', async () => {
     renderPage()
     expect((await screen.findAllByText('7 ISK')).length).toBeGreaterThan(0)

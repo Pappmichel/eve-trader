@@ -131,8 +131,11 @@ def test_contract_items_are_fetched_once_per_contract(monkeypatch):
         {"contract_id": 2, "type": "item_exchange", "issuer_id": 5, "status": "outstanding"},
         {"contract_id": 3, "type": "item_exchange", "issuer_id": 6, "status": "finished"},
         {"contract_id": 4, "type": "courier", "issuer_id": 5, "status": "finished"},
+        {"contract_id": 5, "type": "courier", "issuer_id": 5, "status": "failed"},
+        {"contract_id": 6, "type": "courier", "issuer_id": 5, "status": "expired"},
+        {"contract_id": 7, "type": "courier", "issuer_id": 5, "status": "deleted"},
     ]
     fetchers._archive_contracts_pass(object(), owner_type="character", owner_id=5,
                                      auth_role="r", raw_list=raw)
-    assert asked == [2]   # 1 already has items, 3 is someone else's, 4 is a courier (no items)
-    assert [c["contract_id"] for c in archived[0]["contracts"]] == [1, 2, 4]
+    assert asked == [2]   # 1 already has items, 3 is someone else's, couriers have no items
+    assert [c["contract_id"] for c in archived[0]["contracts"]] == [1, 2, 4, 5]

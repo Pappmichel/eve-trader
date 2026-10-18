@@ -16,7 +16,7 @@ from typing import Optional
 from .. import storage
 from ..actions import ActionError
 from ..realized import access, db, names as display_names
-from ..realized.costing import ESTIMATED_COVERAGE_THRESHOLD, CostComponents
+from ..realized.costing import ESTIMATED_COVERAGE_THRESHOLD, CostComponents, freight_split
 from .config import STATION_TRADING_CONFIG
 
 CHANNEL = "station_trading"
@@ -257,6 +257,8 @@ def _empty_summary(period: dict, status: dict) -> dict:
         "turnover_days": None,
         "price_missing": False,
         "tax_missing_sales": 0,
+        "freight_from_couriers": 0.0,
+        "freight_configured": 0.0,
         "fees_by_day": [],
         "by_day": [],
         "open_position_cost": None,
@@ -307,6 +309,9 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
             freight=_num(totals[6]), job=_num(totals[7]), invention=_num(totals[8]),
             fees=_num(totals[9]),
         )
+        freight_from_couriers, freight_configured = freight_split(
+            _num(totals[14]), _num(totals[15]), components.freight,
+        )
         price_missing = bool(totals[12])
         sales_count = int(totals[13])
         cov, estimated = _coverage(components, price_missing) if sales_count else (None, False)
@@ -342,6 +347,8 @@ def summary(*, start: Optional[datetime], end: datetime, since_t0: bool, days: O
         "turnover_days": _turnover_days(dated_qty, dated_seconds),
         "price_missing": price_missing,
         "tax_missing_sales": int(totals[11]) if sales_count else 0,
+        "freight_from_couriers": freight_from_couriers,
+        "freight_configured": freight_configured,
         "fees_by_day": fees,
         "by_day": by_day,
         "open_position_cost": sum(row["total"] for row in position),

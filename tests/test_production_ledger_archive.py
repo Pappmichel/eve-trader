@@ -494,3 +494,30 @@ def test_planned_cost_is_frozen_only_for_recently_started_new_jobs(tenant, monke
                                         jobs=[recent, old], now=now + timedelta(hours=1))
     with storage.connect() as conn:
         assert conn.execute("SELECT count(*) FROM ledger_job_planned_costs").fetchone()[0] == 1
+
+
+def test_failed_couriers_are_archived_and_expired_ones_are_not(tenant, monkeypatch):
+    monkeypatch.setattr(ledger_db, "region_id_for_location", lambda loc: 10000002)
+    now = datetime(2026, 10, 12, 6, 58, tzinfo=timezone.utc)
+    common = {
+        "issuer_id": ALICE, "acceptor_id": 1, "start_location_id": LOCATION_ID,
+        "end_location_id": 42, "date_issued": DATE1, "volume": 100, "reward": 80_000,
+        "collateral": 1_500_000_000,
+    }
+    ledger_ingest.archive_contracts(
+        owner_type="character", owner_id=ALICE,
+        contracts=[
+            {"contract_id": 1, "type": "courier", "status": "finished", **common},
+            {"contract_id": 2, "type": "courier", "status": "failed", **common},
+            {"contract_id": 3, "type": "courier", "status": "expired", **common},
+            {"contract_id": 4, "type": "courier", "status": "deleted", **common},
+            {"contract_id": 5, "type": "courier", "status": "outstanding", **common},
+        ],
+        items_by_contract={},
+        now=now,
+    )
+    rows = ledger_db.list_couriers_for_owners([("character", ALICE)])
+    assert sorted(int(row[0]) for row in rows) == [1, 2]
+    failed = next(row for row in rows if int(row[0]) == 2)
+    assert failed[7] == pytest.approx(1_500_000_000)
+    assert failed[8] == "failed"

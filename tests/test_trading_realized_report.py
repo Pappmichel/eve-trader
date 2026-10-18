@@ -199,3 +199,44 @@ def test_compare_trading_reads_both_sides_without_writing(tenant):
     with storage.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM realized_trades").fetchone()[0] == before
         assert conn.execute("SELECT COUNT(*) FROM prod_realized_results").fetchone()[0] == results_before
+
+
+def test_trading_contracts_share_prices_couriers_and_skips_item_exchanges(tenant, monkeypatch):
+    from eve_trader.production.config import PRODUCTION_CONFIG
+    from eve_trader.realized import access
+
+    monkeypatch.setattr(PRODUCTION_CONFIG, "home_location_id", HOME)
+    monkeypatch.setattr(PRODUCTION_CONFIG, "haul_cost_per_m3", 900.0)
+    monkeypatch.setattr(ledger_db, "region_id_for_location", lambda loc: None)
+    _share(ALICE, "wallet", "trading")
+    before = access.owner_scope_hash()
+    _share(ALICE, "contracts", "trading")
+    assert access.owner_scope_hash() != before
+    assert access.shared_owners("contracts") == [("character", ALICE)]
+    assert access.shared_item_exchange_owners() == []
+
+    ledger_db.upsert_ledger_contracts([
+        ("character", ALICE, 70, ALICE, None, 999, HOME, None,
+         "item_exchange", "finished", "sell", 50.0, 0.0, T0, T_SALE, None),
+        ("character", ALICE, 80, ALICE, None, 999, JITA, HOME,
+         "courier", "finished", "haul", 0.0, 8000.0, T0, T_SALE, None,
+         100.0, 0.0, 10000002),
+    ])
+    ledger_db.upsert_ledger_contract_items([
+        ("character", ALICE, 70, 1, CONTRACT_WIDGET, 1, True, False),
+    ])
+    ledger_db.upsert_ledger_wallet_transactions([
+        ("character", ALICE, 0, 1, T0, WIDGET, JITA, 10.0, 1, True, 1,
+         10000002, 900.0, 10.0),
+        ("character", ALICE, 0, 2, T_SALE, WIDGET, HOME, 40.0, 1, False, 2,
+         None, None, None),
+    ])
+    _rebuild()
+    types = {int(row[1]) for row in _channels()}
+    assert CONTRACT_WIDGET not in types
+    assert types == {WIDGET}
+    summary = trade_actions.do_get_trading_realized_summary(days=30)
+    structure = {line["key"]: line["amount"] for line in summary["cost_structure"]}
+    assert structure["freight_courier"] == pytest.approx(800.0)
+    assert structure["freight_configured"] == pytest.approx(0.0)
+    assert summary["revenue"] == pytest.approx(40.0)

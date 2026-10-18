@@ -46,6 +46,7 @@ from .costing import (
     ORIGIN_BOUGHT,
     UNIT_ITEM,
     ContractItem,
+    CourierContract,
     IndustryJob,
     ItemExchangeContract,
     JobInput,
@@ -227,13 +228,140 @@ def _match_doctrine_fitting(contract_id: int, title: Optional[str], items, candi
     return None if not fitting_id else str(fitting_id)
 
 
+def _load_couriers() -> tuple:
+    """Couriers whose contracts are shared with a realized tool (D11).
+
+    Finished rows become shipments in costing. A failed row is a warning.
+    Expired and deleted rows are loaded and then ignored. Item-exchange
+    contracts stay on `_load_contracts` and are never mixed in here.
+    """
+    owners = access.shared_owners("contracts")
+    if not owners:
+        return ()
+    out = []
+    for row in db.list_couriers_for_owners(owners):
+        out.append(CourierContract(
+            contract_id=int(row[0]),
+            issuer_id=None if row[1] is None else int(row[1]),
+            start_location_id=None if row[2] is None else int(row[2]),
+            end_location_id=None if row[3] is None else int(row[3]),
+            date_issued=None if row[4] is None else _as_utc(row[4]),
+            volume=None if row[5] is None else float(row[5]),
+            reward=0.0 if row[6] is None else float(row[6]),
+            collateral=0.0 if row[7] is None else float(row[7]),
+            status=str(row[8] or ""),
+        ))
+    return tuple(out)
+
+
+# Purchase window of the shipment list. It starts before any archive row
+# so a shipment also matches purchases from before cutover T0; the list
+# reports those apart from freight that costing books.
+_FREIGHT_LIST_T0 = datetime(2003, 1, 1, tzinfo=timezone.utc)
+
+
+def _load_item_exchanges_readonly() -> tuple:
+    """Finished item exchanges with freight already frozen on the archive.
+
+    The shipment list calls this on a GET. It does not resolve regions or
+    freeze freight (that stays on the rebuild path in `_load_contracts`).
+    Item exchanges stay on production and doctrine shares (F4).
+    """
+    owners = access.shared_item_exchange_owners()
+    if not owners:
+        return ()
+    headers = db.list_contracts_for_owners(owners)
+    item_rows = db.list_contract_items_for_owners(owners)
+    items_by_key: dict[tuple, list] = defaultdict(list)
+    for row in item_rows:
+        items_by_key[(row[0], int(row[1]), int(row[2]))].append(row)
+    grouped: dict[int, list] = defaultdict(list)
+    for row in headers:
+        grouped[int(row[2])].append(row)
+    contracts = []
+    for contract_id, copies in grouped.items():
+        def _nitems(copy, cid=contract_id):
+            return len(items_by_key.get((copy[0], int(copy[1]), cid), ()))
+
+        copies.sort(key=lambda copy: (_nitems(copy) == 0, copy[0] != "corporation"))
+        chosen = copies[0]
+        if str(chosen[8] or "") != "item_exchange":
+            continue
+        if str(chosen[9] or "").lower() != "finished" or chosen[12] is None:
+            continue
+        item_copy = max(copies, key=_nitems)
+        corp_issued = any(
+            copy[0] == "corporation" and copy[4] is not None and int(copy[4]) == int(copy[1])
+            for copy in copies
+        )
+        built = []
+        for item in items_by_key.get((item_copy[0], int(item_copy[1]), contract_id), ()):
+            built.append(ContractItem(
+                record_id=int(item[3]), type_id=int(item[4]), quantity=float(item[5]),
+                is_included=bool(item[6]), is_singleton=bool(item[7]),
+                freight_rate_per_m3=None if item[8] is None else float(item[8]),
+                freight_m3=None if item[9] is None else float(item[9]),
+            ))
+        contracts.append(ItemExchangeContract(
+            contract_id=contract_id, owner_type=chosen[0], owner_id=int(chosen[1]),
+            date_completed=_as_utc(chosen[12]),
+            date_issued=_as_utc(chosen[16]) if len(chosen) > 16 and chosen[16] is not None else None,
+            issuer_id=None if chosen[3] is None else int(chosen[3]),
+            issuer_corporation_id=None if chosen[4] is None else int(chosen[4]),
+            acceptor_id=None if chosen[5] is None else int(chosen[5]),
+            price=float(chosen[10] or 0), reward=float(chosen[11] or 0),
+            start_location_id=None if chosen[6] is None else int(chosen[6]),
+            end_location_id=None if chosen[7] is None else int(chosen[7]),
+            items=tuple(built), corp_issued=corp_issued,
+            status=str(chosen[9] or ""), contract_type=str(chosen[8] or "item_exchange"),
+        ))
+    return tuple(contracts)
+
+
+def load_freight_snapshot() -> tuple[LedgerSnapshot, Optional[datetime]]:
+    """(snapshot, cutover T0) for the shipment list.
+
+    Read-only: no freight freeze, no region update, no ledger run. The
+    snapshot holds every archived purchase (`_FREIGHT_LIST_T0`), so the
+    caller can tell purchases before cutover T0, which costing never
+    freights, from the ones it does.
+    """
+    cutover = access.cutover_t0_for_production()
+    cutover = None if cutover is None else _as_utc(cutover)
+    t0 = _FREIGHT_LIST_T0
+    txs = [
+        WalletTransaction(
+            owner_type=r[0], owner_id=int(r[1]), division=int(r[2]),
+            transaction_id=int(r[3]), date=_as_utc(r[4]), type_id=int(r[5]),
+            location_id=int(r[6]), unit_price=float(r[7]), quantity=float(r[8]),
+            is_buy=bool(r[9]), journal_ref_id=int(r[10]) if r[10] is not None else None,
+            region_id=int(r[11]) if r[11] is not None else None,
+            freight_rate_per_m3=float(r[12]) if r[12] is not None else None,
+            freight_m3=float(r[13]) if r[13] is not None else None,
+        )
+        for r in access.list_all_wallet_transactions_for_production()
+    ]
+    snapshot = LedgerSnapshot(
+        t0=t0,
+        tenant_character_ids=_tenant_character_ids(),
+        wallet_transactions=tuple(txs),
+        home_structure_id=PRODUCTION_CONFIG.home_location_id or TRADING_CONFIG.structure_id,
+        bpo_type_ids=frozenset(_blueprint_type_ids({int(tx.type_id) for tx in txs if tx.is_buy})),
+        contracts=_load_item_exchanges_readonly(),
+        couriers=_load_couriers(),
+        tenant_corporation_ids=_tenant_corporation_ids(),
+    )
+    return snapshot, cutover
+
+
 def _load_contracts() -> tuple:
     """Finished item-exchange contracts shared with any realized tool, deduped
     by contract id. Freight is frozen onto item rows the first time the start
     location's region can be resolved. Courier rows are not returned.
     `is_doctrine` is U7: doctrine structure, issuer is a tenant character,
-    archive owner shares contracts with Doctrine."""
-    owners = access.shared_owners("contracts")
+    archive owner shares contracts with Doctrine. Trading's contracts share
+    prices couriers only; it does not add item-exchange sales (F4)."""
+    owners = access.shared_item_exchange_owners()
     if not owners:
         return ()
     headers = db.list_contracts_for_owners(owners)
@@ -585,7 +713,7 @@ def _opening_stock(type_ids: set[int]) -> dict[int, float]:
         [oid for ot, oid in order_owners if ot == "character"],
         [oid for ot, oid in order_owners if ot == "corporation"],
     )
-    in_contracts = db.outstanding_contract_qty_by_type(access.shared_owners("contracts"))
+    in_contracts = db.outstanding_contract_qty_by_type(access.shared_item_exchange_owners())
     for extra in (listed, in_contracts):
         for tid, qty in extra.items():
             if tid in blueprints:
@@ -738,6 +866,7 @@ def load_ledger_snapshot(*, scope_hash: Optional[str] = None,
         bpo_type_ids=bpo_types,
         frozen_opening=_frozen_opening(t0, scope_hash, reset_opening),
         contracts=contracts,
+        couriers=_load_couriers(),
         tenant_corporation_ids=_tenant_corporation_ids(),
         # No station pool until someone shares a wallet with Station Trading,
         # so a tenant without it keeps one global pool (ST1).
@@ -785,6 +914,8 @@ def _layer_row(layer) -> tuple:
         bool(layer.estimated_origin), bool(layer.price_missing), int(layer.layer_id),
         None if layer.source is None else str(layer.source),
         str(layer.pool or "global"),
+        None if layer.freight_source is None else str(layer.freight_source),
+        None if layer.shipment_ref is None else str(layer.shipment_ref),
     )
 
 
@@ -805,6 +936,8 @@ def _result_row(result) -> tuple:
         None if result.owner_id is None else int(result.owner_id),
         result.fitting_id,
         None if result.issuer_id is None else int(result.issuer_id),
+        float(result.components.freight_courier),
+        float(result.components.freight_configured),
     )
 
 
@@ -819,21 +952,17 @@ def _draw_rows(result, snapshot) -> list[tuple]:
         qty = float(draw.quantity)
         location_id = None
         unit_price = None
-        rate = None
+        # The rate that costing applied (courier or configured), not the
+        # frozen archive rate. ST3 clears it on a station draw.
+        rate = None if draw.freight_rate_per_m3 is None else float(draw.freight_rate_per_m3)
         if layer is not None and layer.origin == ORIGIN_BOUGHT and tx is not None:
             location_id = int(tx.location_id)
             unit_price = float(tx.unit_price)
-            if tx.freight_rate_per_m3 is not None and draw.components.freight > 0:
-                rate = float(tx.freight_rate_per_m3)
         elif layer is not None and layer.origin == ORIGIN_BOUGHT and str(layer.source_ref).startswith("contract:"):
             contract = contracts.get(int(str(layer.source_ref).split(":", 1)[1]))
             if contract is not None:
                 location_id = contract.start_location_id
                 unit_price = float(layer.unit_components.materials_bought)
-                for item in contract.items:
-                    if int(item.type_id) == int(layer.type_id) and item.freight_rate_per_m3 is not None:
-                        rate = float(item.freight_rate_per_m3)
-                        break
         elif layer is not None:
             # Opening / unknown / produced: the unit cost that was actually used.
             unit_price = float(layer.unit_cost)
@@ -850,6 +979,10 @@ def _draw_rows(result, snapshot) -> list[tuple]:
             location_id, unit_price, rate,
             None if layer is None or layer.source is None else str(layer.source),
             channel,
+            None if draw.freight_source is None else str(draw.freight_source),
+            None if draw.shipment_ref is None else str(draw.shipment_ref),
+            float(draw.components.freight_courier),
+            float(draw.components.freight_configured),
         )
 
     rows = []
@@ -883,6 +1016,8 @@ def _job_rows(result, bonus_by_job: dict) -> list[tuple]:
             bool(job.assumed_me), bool(job.assumed_decryptor), bool(job.price_missing),
             no_structure_bonus, job.output_layer_id, job.output_type_id,
             float(job.output_quantity), left, job.output_unit, job.facility_id,
+            float(job.components.freight_courier),
+            float(job.components.freight_configured),
         ))
     return rows
 

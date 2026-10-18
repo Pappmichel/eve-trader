@@ -275,12 +275,13 @@ def _archive_contracts_pass(
                 corporation_id=corporation_id,
             )
         ]
-        # Finished couriers this owner issued are archived for the freight
-        # comparison. They have no items and never enter costing.
+        # Finished and failed couriers this owner issued are archived so
+        # costing can price freight (F5). They have no items and never
+        # enter costing as buys or sales. Expired and deleted are skipped.
         couriers = [
             c for c in raw_list
             if c.get("type") == "courier"
-            and (c.get("status") or "") == "finished"
+            and (c.get("status") or "") in ("finished", "failed")
             and ledger_ingest.contract_issuer_matches(
                 c, owner_type=owner_type, owner_id=owner_id,
             )
